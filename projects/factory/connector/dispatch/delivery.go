@@ -1748,7 +1748,7 @@ func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 			return e.st.Enqueue(ctx, tx, store.OutboxActivation, fmt.Sprintf("activation/%d", wi.ID), 0, "",
 				activationPayload{
 					WorkID: wi.ID, IssueID: wi.IssueID, IssueKey: wi.IssueKey,
-					Project: b.ItsaplanProject, Agent: wi.AgentKey,
+					Project: b.ItsaplanProject, Column: b.Review.DoneColumn, Agent: wi.AgentKey,
 					IssueURL: e.expand(e.cfg.Links.Issue, wi, 0, ""), PRURL: pr.URL, CommentKey: commentKey,
 					Step: step, HeadURL: "https://github.com/" + b.repo() + "/commit/" + d.HeadSHA,
 				})

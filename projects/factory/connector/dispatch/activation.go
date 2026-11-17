@@ -41,21 +41,8 @@ func reviewedActivation(p *ReviewPolicy, d *github.PullRequestDetail, checks []g
 			}
 		}
 	}
-	// A configured trusted person can explicitly assess the action too.
-	// An approval without an assessment does not authorize the commit prose.
-	latest := map[string]github.Review{}
-	for _, r := range d.Reviews { // oldest first
-		if p.trustedReviewer(r.Author) && (r.State == "APPROVED" || r.State == "CHANGES_REQUESTED" || r.State == "DISMISSED") {
-			latest[strings.ToLower(r.Author)] = r
-		}
-	}
-	for _, r := range latest {
-		if r.State == "APPROVED" && r.CommitSHA == d.HeadSHA {
-			if step, ok := github.ActivationTrailer(r.Body); ok && step != "none" && len(step) <= github.MaxActivationAssessment {
-				return step
-			}
-		}
-	}
+	// Review bodies have no authenticated edit provenance on this read path.
+	// Even a trusted author's approval cannot supply activation instructions.
 	return ""
 }
 
@@ -64,6 +51,7 @@ type activationPayload struct {
 	IssueID    int64             `json:"issueId"`
 	IssueKey   string            `json:"issueKey"`
 	Project    string            `json:"project"`
+	Column     string            `json:"doneColumn,omitempty"`
 	Agent      string            `json:"agent"`
 	IssueURL   string            `json:"issueUrl"`
 	PRURL      string            `json:"prUrl"`
@@ -575,7 +563,7 @@ func (e *Engine) observeActivation(ctx context.Context, it *store.OutboxItem, p 
 	if issueState(follow, project.Columns) != "completed" {
 		return e.st.WaitActivation(ctx, it.ID, e.cfg.Now().Add(e.cfg.Heartbeat))
 	}
-	return e.completeIssue(ctx, it, issueDonePayload{IssueID: follow.ID, Project: p.Project}, follow)
+	return e.completeIssue(ctx, it, issueDonePayload{IssueID: follow.ID, Project: p.Project, Column: p.Column}, follow)
 }
 
 // completeIssue queues the next activation ancestor in the same transaction as

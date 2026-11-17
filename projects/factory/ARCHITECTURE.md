@@ -1357,8 +1357,9 @@ flowchart TD
 ```
 
 The reviewer independently assesses pending activation against the commit, diff
-and trusted main context. Its authenticated check binds the assessment to the
-head; a trusted person's APPROVED review can also supply an activation trailer.
+and trusted main context. Only its authenticated check supplies an assessment
+bound to the head. Human review bodies lack authenticated edit provenance on the
+connector's read path and cannot supply instructions, even with an approval.
 Raw commit instructions never reach issue comments or delegated tasks. An
 externally merged, unassessed head creates an undelegated follow-up and a handoff.
 
@@ -1380,10 +1381,11 @@ run. Refused or exhausted operations leave an actionable comment on the original
 This coordinator-only fallback preserves ownership, including automatic assignees.
 
 A follow-up merged with `none`, or completed in the tracker, completes its recorded
-parent only while still started and linked. Further activation chains the same
-way. Stops, cancellation, takeover and unlinking prevent completion. Pending
-observation waits without spending retries; API failures, including 401/403, use
-the existing bounds. Rollback recovery revives only `unknown kind activation`
+parent only while still started and linked, using the binding's Done column saved
+at merge. Further activation chains the same way. Stops, cancellation, takeover
+and unlinking prevent completion. Pending observation waits without spending
+retries; API failures, including 401/403, use the existing bounds. Rollback
+recovery revives only `unknown kind activation`
 items, preserving send markers. Conditional parent completion uses that same kind.
 The API has no conditional PATCH; a change after the final ownership read can race.
 

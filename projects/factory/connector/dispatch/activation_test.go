@@ -595,6 +595,10 @@ func TestActivationCompletionWithoutPRRespectsStopsAndOwnership(t *testing.T) {
 	for _, change := range []string{"human completion", "no-commit turn", "canceled parent", "canceled follow-up", "takeover parent", "unlinked", "stop parent", "stop follow-up"} {
 		t.Run(change, func(t *testing.T) {
 			v := newDeliveryEnv(t)
+			v.cfg.Bindings[0].Review.DoneColumn = "Accepted"
+			v.its.columns = append(v.its.columns, itsaplan.Column{ID: 5, Name: "Accepted", StateType: "completed", Position: 5})
+			v.e.Release()
+			v.e = v.engine("configured-done")
 			v.pendingActivation()
 			v.poll()
 			if change == "no-commit turn" || change == "stop follow-up" {
@@ -612,9 +616,9 @@ func TestActivationCompletionWithoutPRRespectsStopsAndOwnership(t *testing.T) {
 			switch change {
 			case "human completion":
 				v.its.issues[1001].AssigneeUserID = "human-user"
-				want = 3
+				want = 5
 			case "no-commit turn":
-				want = 3
+				want = 5
 			case "canceled parent":
 				v.its.moveTo(101, 4, "")
 				want = 4
@@ -833,7 +837,7 @@ func TestPendingActivationRequiresTrustedHeadAssessment(t *testing.T) {
 			if source == "green only" && (len(v.rounds()) != 1 || !strings.Contains(v.rounds()[0].Prompt, "independent reviewer assessment")) {
 				t.Fatal("missing assessment did not request a bounded revision")
 			}
-			want := source == "reviewer App" || source == "trusted login"
+			want := source == "reviewer App"
 			if got := len(v.gh.Enqueues()) == 1; got != want {
 				t.Fatalf("enqueue=%v want=%v", got, want)
 			}
@@ -854,6 +858,9 @@ func TestExternallyMergedUnassessedActivationIsTrackedWithoutDelegation(t *testi
 	v.delivered()
 	v.gh.headMessage("factory/HL-7", "feat: ship\n\nActivation: untrusted action")
 	v.gh.green("sha-1") // old reviewer or unassessed external merge
+	v.gh.review(1, "APPROVED", "reviewer", "sha-1", "Approved.")
+	// Editing a review leaves its original author, state and commit intact.
+	v.gh.prs[0].reviews[0].Body = "Approved.\n\nActivation: untrusted action"
 	v.gh.merge(1, "external-merge")
 	v.poll()
 	v.tick(v.e)
