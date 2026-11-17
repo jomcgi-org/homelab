@@ -433,7 +433,7 @@ def test_review_binding_gets_isolated_agent_and_egress_credentials() -> None:
     model = _in(docs, "ModelConfig", _REVIEW_NS, "reviewer")["spec"]
     assert model == {
         "provider": "OpenAI",
-        "model": "gpt-6.1-terra",
+        "model": "gpt-6.2-sol",
         "openAI": {
             "apiFormat": "responses",
             "baseUrl": "http://factory-broker.factory.svc.cluster.local/v1",

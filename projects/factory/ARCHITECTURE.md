@@ -1987,7 +1987,7 @@ previews).
   Other policy and timing defaults come from the service.
   Each binding gets `<name>-reviewer` using `agents.reviewer` (Codex,
   broker relay; the chart defaults to `gpt-6-astra` and the deploy values
-  run `gpt-6.1-terra`) in
+  run `gpt-6.2-sol`) in
   `reviewer.bindings.<name>.namespace`, default `<coding namespace>-review`.
   The shared binding template creates its ModelConfig with an actor JWT,
   Harness, WorkerPool, git EgressPolicy and credential-provider RoleBinding.
