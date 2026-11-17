@@ -296,11 +296,22 @@ Agents rediscover the same failing checks and conventions on each run; a
 recalled lesson costs a few hundred tokens.
 
 Hindsight runs in namespace `hindsight`, one replica of the upstream image
-with its embedding model and reranker built in (Hugging Face offline). Its
-state is database `factory_hindsight` on `factory-db`, so the existing WAL
-archive and daily backups cover it. `retain`, consolidation and `reflect` call
-`claude-haiku-5-5` with the key from 1Password `factory-hindsight`; `recall`
-uses only the local models.
+with its reranker built in (Hugging Face offline). Its state is database
+`factory_hindsight` on `factory-db`, so the existing WAL archive and daily
+backups cover it. `retain`, consolidation and `reflect` call
+`claude-haiku-5-5` with the key from 1Password `factory-hindsight`.
+Embeddings use `mongodb/voyage-4-large` through OpenRouter, with the key from
+1Password `factory-discord-llm` that Discord memory also uses, and OpenRouter
+routes only to providers that keep no data.
+
+**Why.** On a 494-fact factory test set, Voyage 4 Large had the best
+nDCG@10 (0.781) of ten models, against 0.522 for a stand-in for the image's
+local `bge-small-en-v1.5`. Its 1,024 dimensions fit pgvector's index limit
+([HOME-176](https://factory-plan.jomcgi.dev/factory/issue/HOME-176)). Joe
+chose one OpenRouter key for both instances
+([HOME-130 comment 1439](https://factory-plan.jomcgi.dev/factory/issue/HOME-130#comment-1439)).
+Hindsight changes an empty vector column to a new model's dimension at
+startup; once rows exist, a model change needs `hindsight-admin reembed`.
 
 Two keys separate the callers. The REST API takes only the tenant key, which
 nothing outside the pod holds. MCP takes the agents' token

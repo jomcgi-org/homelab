@@ -31,8 +31,10 @@ spec:
         - ports:
             - port: "5432"
               protocol: TCP
+    # Haiku for the LLM work, and OpenRouter for embeddings.
     - toFQDNs:
         - matchName: api.anthropic.com
+        - matchName: openrouter.ai
       toPorts:
         - ports:
             - port: "443"

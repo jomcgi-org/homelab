@@ -44,6 +44,11 @@ def deployed_env():
     # Postgres, and the LLM key is never used here.
     assert "HINDSIGHT_API_DATABASE_URL" not in env
     env["HINDSIGHT_API_LLM_API_KEY"] = "unused-in-this-test"
+    # The test has no network, so it embeds with the image's local model
+    # instead of OpenRouter. Authentication does not depend on the model.
+    for name in [n for n in env if n.startswith("HINDSIGHT_API_EMBEDDINGS_")]:
+        del env[name]
+    env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] = "local"
     return env
 
 

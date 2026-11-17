@@ -3,6 +3,7 @@
 import base64
 import copy
 import importlib.util
+import json
 from pathlib import Path
 from unittest.mock import Mock, mock_open, patch
 
@@ -163,7 +164,32 @@ def test_only_the_egress_gateway_reaches_hindsight():
         }
     ]
     fqdns = [f for r in policy["spec"]["egress"] for f in r.get("toFQDNs", [])]
-    assert fqdns == [{"matchName": "api.anthropic.com"}]
+    assert fqdns == [{"matchName": "api.anthropic.com"}, {"matchName": "openrouter.ai"}]
+
+
+def test_embeddings_use_voyage_through_openrouter_without_data_retention():
+    # HOME-176: the shared OpenRouter key (HOME-130 comment 1439), a model
+    # whose 1,024 dimensions pgvector can index, and no data-keeping providers.
+    (deployment,) = [
+        d for d in read("resources/hindsight.yaml") if d["kind"] == "Deployment"
+    ]
+    (container,) = deployment["spec"]["template"]["spec"]["containers"]
+    env = {e["name"]: e.get("value", e.get("valueFrom")) for e in container["env"]}
+    assert env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "openrouter"
+    assert env["HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL"] == "mongodb/voyage-4-large"
+    assert env["HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY"] == {
+        "secretKeyRef": {"name": "hindsight-openrouter", "key": "api-key"}
+    }
+    assert json.loads(env["HINDSIGHT_API_EMBEDDINGS_OPENAI_EXTRA_BODY"]) == {
+        "provider": {"data_collection": "deny"}
+    }
+    (item,) = [
+        d
+        for d in read("resources/secrets.yaml")
+        if d["kind"] == "OnePasswordItem"
+        and d["metadata"]["name"] == "hindsight-openrouter"
+    ]
+    assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-discord-llm"
 
 
 def test_boundary_test_runs_the_deployed_image():
