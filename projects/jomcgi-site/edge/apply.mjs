@@ -32,26 +32,42 @@ export function planRoutes(live, wanted, script) {
   };
 }
 
-/** True when every field of `want` is in `have` with the same value. */
-export function covers(have, want) {
-  if (want === null || typeof want !== "object") return have === want;
-  if (have === null || typeof have !== "object") return false;
-  if (Array.isArray(want)) {
-    return (
-      Array.isArray(have) &&
-      have.length === want.length &&
-      want.every((item, i) => covers(have[i], item))
-    );
+// Fields Cloudflare adds to every stored rule. Only these are ignored when a
+// live rule is compared with the file; any other difference is a change.
+const METADATA = new Set(["id", "ref", "version", "last_updated"]);
+
+/** Deep equality of JSON values; object key order does not matter. */
+export function equal(a, b) {
+  if (
+    a === null ||
+    b === null ||
+    typeof a !== "object" ||
+    typeof b !== "object"
+  ) {
+    return a === b;
   }
-  return Object.keys(want).every((key) => covers(have[key], want[key]));
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const keys = Object.keys(a);
+  return (
+    keys.length === Object.keys(b).length &&
+    keys.every((key) => Object.hasOwn(b, key) && equal(a[key], b[key]))
+  );
+}
+
+/** True when a live rule is the file's rule plus Cloudflare's metadata only. */
+export function sameRule(live, want) {
+  const configured = Object.fromEntries(
+    Object.entries(live).filter(([key]) => !METADATA.has(key)),
+  );
+  return equal(configured, want);
 }
 
 const ruleKey = (rule) => `${rule.description}\n${rule.expression}`;
 
 /**
  * Live rules not in the file (by description and expression), and whether
- * the live list already matches the file in order. Cloudflare may add default
- * fields to a rule it returns, so a match means the file's fields are there.
+ * the live list is exactly the file's list, in order. A setting added in the
+ * dashboard to a known rule is a difference, so the PUT overwrites it.
  */
 export function planCacheRules(live, wanted) {
   const known = new Set(wanted.map(ruleKey));
@@ -59,7 +75,7 @@ export function planCacheRules(live, wanted) {
     unknown: live.filter((rule) => !known.has(ruleKey(rule))),
     same:
       live.length === wanted.length &&
-      wanted.every((rule, i) => covers(live[i], rule)),
+      wanted.every((rule, i) => sameRule(live[i], rule)),
   };
 }
 
@@ -133,7 +149,8 @@ export async function apply(
     patterns,
     script,
   );
-  const rules = planCacheRules(await liveRules(call, zone), rulesFile.rules);
+  const live = await liveRules(call, zone);
+  const rules = planCacheRules(live, rulesFile.rules);
   const stop = [
     ...routes.conflicts.map((p) => `route ${p} belongs to another Worker`),
     ...rules.unknown.map(
@@ -145,7 +162,16 @@ export async function apply(
 
   for (const p of routes.create) log.push(`create route ${p} -> ${script}`);
   for (const r of routes.remove) log.push(`delete route ${r.pattern}`);
-  if (!rules.same) log.push(`put ${rulesFile.rules.length} cache rule(s)`);
+  if (!rules.same) {
+    rulesFile.rules.forEach((rule, i) => {
+      if (!live[i] || !sameRule(live[i], rule)) {
+        log.push(
+          `cache rule ${i + 1} "${rule.description}" differs from the file`,
+        );
+      }
+    });
+    log.push(`put ${rulesFile.rules.length} cache rule(s)`);
+  }
   if (!log.length) log.push("no change");
   if (dryRun) return log;
 

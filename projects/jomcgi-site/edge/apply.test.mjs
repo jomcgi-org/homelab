@@ -2,12 +2,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { apply, checkRules, covers, planRoutes } from "./apply.mjs";
+import { apply, checkRules, equal, planRoutes, sameRule } from "./apply.mjs";
 
 const read = (name) =>
   JSON.parse(readFileSync(new URL(name, import.meta.url), "utf8"));
 const ROUTES = read("./routes.json");
 const RULES = read("./cache-rules.json");
+// The complete live entrypoint rules, read from the zone on 2026-11-17.
+const LIVE = read("./testdata/live-cache-rules-2026-11-17.json").rules;
 const SCRIPT = ROUTES.script;
 
 const result = (value) => ({
@@ -67,22 +69,19 @@ function fakeZone({
 const routesFile = (patterns) => ({ ...ROUTES, patterns });
 const MONOLITH = { id: "m", version: "1", ...RULES.rules[0] };
 
-test("the files are valid and import the live Monolith rule unchanged", () => {
+test("the files are valid and import the live Monolith rule completely", () => {
   assert.equal(ROUTES.zone, RULES.zone);
   checkRules(RULES.rules);
-  assert.deepEqual(RULES.rules[0], {
-    description: "Monolith",
-    expression:
-      '(http.host eq "jomcgi.dev") or (http.host eq "private.jomcgi.dev")',
-    action: "set_cache_settings",
-    action_parameters: {
-      cache: true,
-      edge_ttl: { mode: "bypass_by_default" },
-      respect_strong_etags: true,
-      serve_stale: { disable_stale_while_updating: false },
-    },
-    enabled: true,
-  });
+  // The zone held one rule. Apart from Cloudflare's metadata, the file's
+  // copy has exactly its settings, so the first PUT drops nothing.
+  assert.equal(LIVE.length, 1);
+  assert.deepEqual(
+    Object.keys(LIVE[0])
+      .filter((key) => !(key in RULES.rules[0]))
+      .sort(),
+    ["id", "last_updated", "ref", "version"],
+  );
+  assert.ok(sameRule(LIVE[0], RULES.rules[0]));
 });
 
 test("creates missing routes, deletes stale ones, and leaves other Workers alone", async () => {
@@ -143,16 +142,13 @@ test("stops before any write when a live cache rule is not in the file", async (
   assert.deepEqual(zone.state.writes, []);
 });
 
-test("sends no write when the zone already matches, even with fields Cloudflare adds", async () => {
+test("sends no write when the zone already matches, with Cloudflare's metadata", async () => {
   const stored = RULES.rules.map((rule, i) => ({
     id: `c${i}`,
+    ref: `c${i}`,
     version: "3",
     last_updated: "x",
     ...rule,
-    action_parameters: {
-      ...rule.action_parameters,
-      origin_error_page_passthru: false,
-    },
   }));
   const zone = fakeZone({
     routes: ROUTES.patterns.map((pattern) => ({ pattern, script: SCRIPT })),
@@ -161,6 +157,36 @@ test("sends no write when the zone already matches, even with fields Cloudflare 
   const log = await apply(zone.call, ROUTES, RULES);
   assert.deepEqual(zone.state.writes, []);
   assert.deepEqual(log, ["no change", "read-back matches the files"]);
+});
+
+test("overwrites a setting added in the dashboard to a known rule", async () => {
+  const edited = {
+    ...LIVE[0],
+    action_parameters: {
+      ...LIVE[0].action_parameters,
+      browser_ttl: { mode: "override_origin", default: 60 },
+    },
+  };
+  const zone = fakeZone({
+    routes: ROUTES.patterns.map((pattern) => ({ pattern, script: SCRIPT })),
+    rules: [edited],
+  });
+  const log = await apply(zone.call, ROUTES, RULES);
+  assert.ok(log.includes('cache rule 1 "Monolith" differs from the file'));
+  assert.ok(
+    zone.state.writes.includes(
+      "PUT /zones/z1/rulesets/phases/http_request_cache_settings/entrypoint",
+    ),
+  );
+  assert.ok(
+    zone.state.rules.every((rule, i) => sameRule(rule, RULES.rules[i])),
+  );
+});
+
+test("a live rule with an unknown top-level field is a difference", () => {
+  assert.ok(
+    !sameRule({ ...LIVE[0], logging: { enabled: false } }, RULES.rules[0]),
+  );
 });
 
 test("writes the rules when the entrypoint does not exist yet", async () => {
@@ -199,13 +225,14 @@ test("rejects a rule with fields this script does not write", () => {
   assert.throws(() => checkRules([missing]), /must have exactly/);
 });
 
-test("covers compares nested values and array order", () => {
+test("equal compares nested values exactly, in array order", () => {
   assert.ok(
-    covers({ a: { b: 1, c: 2 }, d: [1, 2] }, { a: { b: 1 }, d: [1, 2] }),
+    equal({ a: { b: 1, c: 2 }, d: [1, 2] }, { d: [1, 2], a: { c: 2, b: 1 } }),
   );
-  assert.ok(!covers({ a: { b: 2 } }, { a: { b: 1 } }));
-  assert.ok(!covers({ d: [2, 1] }, { d: [1, 2] }));
-  assert.ok(!covers({}, { a: false }));
+  assert.ok(!equal({ a: { b: 1, c: 2 } }, { a: { b: 1 } }));
+  assert.ok(!equal({ a: { b: 1 } }, { a: { b: 1, c: 2 } }));
+  assert.ok(!equal({ d: [2, 1] }, { d: [1, 2] }));
+  assert.ok(!equal({}, { a: false }));
 });
 
 test("planRoutes ignores routes of other Workers", () => {

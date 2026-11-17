@@ -26,6 +26,7 @@ js_test(
         "apply.mjs",
         "cache-rules.json",
         "routes.json",
+        "testdata/live-cache-rules-2026-11-17.json",
     ],
     entry_point = "apply.test.mjs",
 )
