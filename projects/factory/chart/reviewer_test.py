@@ -76,6 +76,8 @@ def _helm(
         # The Discord bot is chart_test.py's; these renders leave it out.
         "--set",
         "discord.agent.enabled=false",
+        "--set",
+        "discord.bridge.enabled=false",
     ]
     if enable:
         args += [
