@@ -97,6 +97,8 @@ def test_release_marker_changes_with_the_chart_and_the_image():
     assert marker == {
         "chart": version,
         "stage": "dev",
+        "edge": "false",
+        "serveRoutes": "false",
         "image": f"ghcr.io/jomcgi/homelab/projects/jomcgi-site@{DIGEST}",
     }
 
@@ -151,6 +153,20 @@ def test_serve_routes_turns_the_routes_on():
     assert {"name": "EDGE_SERVE_ROUTES", "value": "true"} in env
 
 
+def test_toggling_the_route_switch_changes_the_release_marker():
+    # Argo CD does not diff the edge hook, so the switch must change a
+    # non-hook resource, or a values-only PR (and its revert) would not sync.
+    off = docs(render(*PROD))["ConfigMap/jomcgi-site-release"]["data"]
+    on = docs(render(*PROD, "--set", "edge.serveRoutes=true"))[
+        "ConfigMap/jomcgi-site-release"
+    ]["data"]
+    assert (off["edge"], off["serveRoutes"]) == ("true", "false")
+    assert (on["edge"], on["serveRoutes"]) == ("true", "true")
+    assert {k: v for k, v in off.items() if k != "serveRoutes"} == {
+        k: v for k, v in on.items() if k != "serveRoutes"
+    }
+
+
 def test_dev_has_no_edge_job():
     rendered = docs(render())
     assert "Job/jomcgi-site-edge" not in rendered
@@ -168,6 +184,10 @@ def test_dev_has_no_edge_job():
         ),
         (
             [*PROD, "--set-string", "edge.serveRoutes=yes"],
+            "edge.serveRoutes must be true or false",
+        ),
+        (
+            ["--set-string", "edge.serveRoutes=yes"],
             "edge.serveRoutes must be true or false",
         ),
     ],

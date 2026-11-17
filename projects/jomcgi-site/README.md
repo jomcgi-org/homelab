@@ -16,15 +16,15 @@ wrangler.jsonc ─────────────────────�
 
 ## Layout
 
-| Path | What |
-| --- | --- |
-| `web/` | The Astryx app: one HTML entry per page, the nav and section list in `src/sections.ts`, hosting headers in `public/_headers`. |
-| `wrangler.jsonc` | The Worker, its assets and the dev host. Prod lists no routes. |
-| `edge/` | The prod Worker's routes and the zone's cache rules, and `apply`, which makes Cloudflare match them (HOME-192). |
-| `wrangler/` | The pinned `wrangler` CLI, packaged as image layers by rules_js. |
-| `apko.yaml` | The deploy image: bash and busybox for the rules_js launcher, CA roots, and Node's C++ runtime. |
-| `chart/` | The deploy Job (factory Helm library), its 1Password items and its only egress, `api.cloudflare.com:443`. |
-| `deploy/` | The dev stage's Argo CD Application. |
+| Path             | What                                                                                                                          |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `web/`           | The Astryx app: one HTML entry per page, the nav and section list in `src/sections.ts`, hosting headers in `public/_headers`. |
+| `wrangler.jsonc` | The Worker, its assets and the dev host. Prod lists no routes.                                                                |
+| `edge/`          | The prod Worker's routes and the zone's cache rules, and `apply`, which makes Cloudflare match them (HOME-192).               |
+| `wrangler/`      | The pinned `wrangler` CLI, packaged as image layers by rules_js.                                                              |
+| `apko.yaml`      | The deploy image: bash and busybox for the rules_js launcher, CA roots, and Node's C++ runtime.                               |
+| `chart/`         | The deploy Job (factory Helm library), its 1Password items and its only egress, `api.cloudflare.com:443`.                     |
+| `deploy/`        | The dev stage's Argo CD Application.                                                                                          |
 
 ## Contracts
 
@@ -71,9 +71,11 @@ Bazel runs the same checks: `bb remote test //projects/jomcgi-site/...`.
 
 CI publishes the image and chart on merge. A sync of the stage's Application
 runs the deploy Job as an Argo CD Sync hook. Argo CD does not diff hooks, so
-the `jomcgi-site-release` ConfigMap carries the chart version and the image
-digest. Each new chart or image, a change to the Job alone included, makes
-the Application OutOfSync and syncs it again. A failed deploy is a failed sync.
+the `jomcgi-site-release` ConfigMap carries the chart version, the image
+digest, the stage and the edge switches (`edge`, `serveRoutes`). Each new
+chart or image, a change to a Job alone, and a change to `edge.serveRoutes`
+alone make the Application OutOfSync and sync it again. A failed deploy is a
+failed sync.
 
 The dev Application is listed in
 `projects/platform-factory/kustomization.yaml`. Its Job reads 1Password item
