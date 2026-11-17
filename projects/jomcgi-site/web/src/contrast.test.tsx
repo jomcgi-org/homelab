@@ -347,7 +347,7 @@ describe("token contrast", () => {
     const LITERAL =
       /#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix|light-dark)\(/i;
     const COLOUR_PROPERTY =
-      /(?:^|[;{\s])((?:background|border|outline|text-decoration|column-rule)(?:-[a-z]+)*|color|fill|stroke|caret-color|accent-color|box-shadow|text-shadow)\s*:\s*([^;}]+)/gi;
+      /(?:^|[;{\s])((?:background|border(?!-(?:collapse|spacing)\b)|outline|text-decoration|column-rule)(?:-[a-z]+)*|color|fill|stroke|caret-color|accent-color|box-shadow|text-shadow)\s*:\s*([^;}]+)/gi;
     const ALLOWED = new Set([
       "inherit",
       "initial",

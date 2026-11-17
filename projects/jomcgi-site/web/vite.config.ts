@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { blogContent, manifest } from "./blog-content.mjs";
+import { factoryFixtures } from "./factory-fixtures";
 
 // Every page is its own HTML entry, so each route ships only its own chunks.
 // Hashed files go under /assets/, which public/_headers caches forever.
@@ -13,7 +14,7 @@ const page = (file: string) => resolve(process.cwd(), file);
 export default defineConfig({
   base: "/",
   resolve: { conditions: ["browser", "module", "import", "default"] },
-  plugins: [blogContent(), svelte()],
+  plugins: [blogContent(), svelte(), factoryFixtures()],
   esbuild: { jsx: "automatic" },
   optimizeDeps: { esbuildOptions: { target: "es2022" } },
   build: {
@@ -24,6 +25,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         index: page("index.html"),
+        factory: page("factory/index.html"),
         "404": page("404.html"),
         cv: page("cv.html"),
         scotland: page("scotland.html"),

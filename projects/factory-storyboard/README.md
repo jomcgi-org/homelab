@@ -4,10 +4,8 @@ The public, read-only storyboard will tell the factory's story from goals
 through individual agent sessions. This package defines its snapshot contract
 and invented fixtures. No real sessions were used. It deploys nothing.
 
-HOME-68 is split into two reviewable changes: this contract and fixture slice,
-then the Astryx site on `factory/HOME-68-site`, based on `factory/HOME-68`.
-The second slice adds `web/`, all four pages, the snapshot reader and browser
-tests. Review its diff against this slice until this slice lands on `main`.
+HOME-68 added this contract and its fixtures. The reader lives at `/factory`
+in `projects/jomcgi-site/web` (HOME-224). This package has no separate site.
 
 ## Snapshot contract
 
@@ -81,12 +79,14 @@ so existing files cannot be overwritten.
 The repository formatter excludes immutable fixture objects to preserve
 their addresses.
 
-## Later slices
+## Reader and publication
 
-The site will fetch `/data/manifest.json`, then `/data/<object path>`, and
-poll the manifest every 60 seconds. Missing or invalid objects must leave
-the rest of the page readable. Vite will serve fixtures at those paths in
-development and tests; the production build will contain no fixture data.
+The reader fetches `/data/factory/manifest.json`, then
+`/data/factory/<object path>`, and polls the manifest every 60 seconds.
+`schema/validate.ts` interprets the JSON Schema subset used by this contract
+without generating code. The reader verifies hashes before displaying objects.
+Missing or invalid objects leave the rest of the page readable. Vite serves
+fixtures at those paths in development and tests; production builds contain none.
 
 The factory-cluster publisher will write sanitized objects and then the
 manifest to Garage. A mirror will copy them to Cloudflare R2. A narrative
@@ -94,9 +94,8 @@ agent will write plain-text narrative fields using stat placeholders. These
 writers share this contract; the monolith's publication payloads do not carry
 over.
 
-The Worker will serve the built site and `/data/*` from R2, with `index.html`
-as the fallback for client-side routes. It must serve JSON 404s for missing
-data instead of that HTML fallback, allow the manifest to refresh, and cache
-immutable objects by their content address. It will send the site's CSP as
-an HTTP header, including `style-src 'self'` and `frame-ancestors 'none'`.
-There is no image, chart, route or Worker deployment in this package.
+HOME-213 publishes snapshots under the site's `/data/factory/` path. The site's
+`/factory/*` rewrite serves its pre-rendered shell for client routes. Data paths
+stay outside that rewrite. The site keeps `style-src 'self'` and
+`frame-ancestors 'none'`. HOME-225 activates the production edge routes after
+data publication. This package has no image, chart, route or Worker deployment.

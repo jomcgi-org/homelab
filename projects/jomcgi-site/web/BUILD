@@ -22,12 +22,14 @@ js_library(
             "dist/**",
             "node_modules/**",
             "src/**/*.test.tsx",
+            "src/factory/test-fixtures.ts",
             "src/setup.ts",
         ],
     ) + [
         "blog-content.d.mts",
         "blog-content.mjs",
         "build.mjs",
+        "factory-fixtures.ts",
         "package.json",
         "tsconfig.json",
         "vite.config.ts",
@@ -44,6 +46,7 @@ js_library(
         ":node_modules/react-dom",
         ":node_modules/svelte",
         ":node_modules/vite",
+        "//projects/factory-storyboard:web_schema",
         "//projects/monolith/frontend:blog_sources",
     ],
 )
@@ -75,6 +78,17 @@ js_test(
     args = ["$(rootpath :build)"],
     data = [":build"],
     entry_point = "budget.mjs",
+)
+
+js_test(
+    name = "factory_built_test",
+    args = ["$(rootpath :build)"],
+    data = [
+        "budget.mjs",
+        ":build",
+        ":node_modules/happy-dom",
+    ],
+    entry_point = "factory-built.test.mjs",
 )
 
 # Fails on an empty root, a missing post, or missing manifest titles/sections.
@@ -128,6 +142,7 @@ js_library(
         "budget.mjs",
         "prerendered.d.mts",
         "prerendered.mjs",
+        "src/factory/test-fixtures.ts",
         "src/setup.ts",
         "vitest.config.ts",
     ],
@@ -140,6 +155,7 @@ js_library(
         ":node_modules/happy-dom",
         ":node_modules/vitest",
         ":src",
+        "//projects/factory-storyboard:web_fixtures",
         "//projects/monolith/frontend:scotland_migration_sources",
     ],
 )
