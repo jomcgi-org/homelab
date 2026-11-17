@@ -386,8 +386,13 @@ def finalize_claim(
     claim: ClaimedOccurrence,
     content: str,
     now: datetime,
+    *,
+    end: bool = False,
 ) -> bool:
-    """Atomically enqueue a claimed occurrence and complete/advance its task."""
+    """Atomically enqueue a claimed occurrence and complete/advance its task.
+
+    ``end`` cancels a recurring task after this occurrence instead of
+    advancing it."""
     now = as_utc(now)
     task = session.get(ScheduledTask, claim.task_id)
     occurrence = session.get(ScheduledTaskOccurrence, claim.occurrence_id)
@@ -420,6 +425,9 @@ def finalize_claim(
     occurrence.enqueued_at = now
     if task.schedule_kind == "one_shot":
         task.status = "completed"
+        task.completed_at = now
+    elif end:
+        task.status = "cancelled"
         task.completed_at = now
     else:
         task.status = "pending"
@@ -483,10 +491,10 @@ def _claim_with_engine(engine, now: datetime, claimant: str) -> list[ClaimedOccu
 
 
 def _finalize_with_engine(
-    engine, claim: ClaimedOccurrence, content: str, now: datetime
+    engine, claim: ClaimedOccurrence, content: str, now: datetime, end: bool = False
 ) -> bool:
     with Session(engine) as session:
-        result = finalize_claim(session, claim, content, now)
+        result = finalize_claim(session, claim, content, now, end=end)
         session.commit()
         return result
 
@@ -529,14 +537,27 @@ async def _default_digest_builder(engine, claim: ClaimedOccurrence) -> str:
     return f"📋 Scheduled {payload['mode']} digest:\n{digest}"
 
 
+# A digest reads chat.messages, which only the Discord gateway fills. Without
+# the gateway (DISCORD_GATEWAY_ENABLED=false, HOME-221) a digest would repeat
+# old messages, so its next occurrence posts this notice and ends the task.
+DIGEST_STOPPED = (
+    "📋 Scheduled {mode} digest stopped: this bot no longer stores this "
+    "channel's messages, so a digest would only repeat old ones."
+)
+
+
 async def drain_once(
     engine,
     *,
     now: datetime | None = None,
     claimant: str | None = None,
     digest_builder: Callable[[object, ClaimedOccurrence], Awaitable[str]] | None = None,
+    digests: bool = True,
 ) -> int:
-    """Claim and enqueue due work once. Returns finalized occurrence count."""
+    """Claim and enqueue due work once. Returns finalized occurrence count.
+
+    With ``digests`` false, a due digest posts ``DIGEST_STOPPED`` once and its
+    task ends; reminders are unchanged."""
     now = as_utc(now or datetime.now(timezone.utc))
     claimant = claimant or uuid.uuid4().hex
     claims = await asyncio.to_thread(_claim_with_engine, engine, now, claimant)
@@ -544,13 +565,17 @@ async def drain_once(
     for claim in claims:
         try:
             payload = json.loads(claim.payload_json)
+            end = False
             if claim.task_kind == "reminder":
                 content = f"⏰ <@{claim.author_id}> reminder: {payload['content']}"
+            elif not digests:
+                content = DIGEST_STOPPED.format(mode=payload.get("mode", "summary"))
+                end = True
             else:
                 builder = digest_builder or _default_digest_builder
                 content = await builder(engine, claim)
             if await asyncio.to_thread(
-                _finalize_with_engine, engine, claim, content, now
+                _finalize_with_engine, engine, claim, content, now, end
             ):
                 finalized += 1
         except Exception as exc:
@@ -559,13 +584,16 @@ async def drain_once(
     return finalized
 
 
-async def run_scheduler(engine, poll_interval: float = POLL_INTERVAL_SECONDS) -> None:
-    """Leader lifecycle loop for persisted scheduled tasks."""
+async def run_scheduler(
+    engine, poll_interval: float = POLL_INTERVAL_SECONDS, digests: bool = True
+) -> None:
+    """Leader lifecycle loop for persisted scheduled tasks. ``digests`` is
+    false when the bot has no gateway session to store channel messages."""
     instance = uuid.uuid4().hex
     logger.info("Discord scheduled-task drain started (poll=%.1fs)", poll_interval)
     while True:
         try:
-            await drain_once(engine, claimant=instance)
+            await drain_once(engine, claimant=instance, digests=digests)
         except Exception:
             logger.exception("scheduled-task drain tick failed")
         await asyncio.sleep(poll_interval)
