@@ -139,12 +139,16 @@ async function liveRules(call, zone) {
   return data.result.rules || [];
 }
 
-/** Plans, checks, writes and reads back. Returns the log lines. */
+/**
+ * Plans, checks, writes and reads back. Returns the log lines. With
+ * `serveRoutes` false the wanted route list is empty, so every route of the
+ * Worker is deleted and its paths go back to the hub; cache rules still apply.
+ */
 export async function apply(
   call,
   routesFile,
   rulesFile,
-  { dryRun = false } = {},
+  { dryRun = false, serveRoutes = true } = {},
 ) {
   if (routesFile.zone !== rulesFile.zone)
     throw new Error("routes and rules name different zones");
@@ -157,7 +161,8 @@ export async function apply(
   );
   if (zones.length !== 1) throw new Error(`zone ${routesFile.zone} not found`);
   const zone = zones[0].id;
-  const { script, patterns } = routesFile;
+  const { script } = routesFile;
+  const patterns = serveRoutes ? routesFile.patterns : [];
 
   const routes = planRoutes(
     await ok(call, "GET", `/zones/${zone}/workers/routes`),

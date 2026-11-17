@@ -1,6 +1,8 @@
 // Tests for apply.mjs against an in-memory zone. Run: node apply.test.mjs
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
   apply,
@@ -115,6 +117,40 @@ test("creates missing routes, deletes stale ones, and leaves other Workers alone
   );
   assert.ok(log.includes("delete route jomcgi.dev/hikes*"));
   assert.ok(log.includes("read-back matches the files"));
+});
+
+test("with routes off, deletes every route of the Worker and still applies the rules", async () => {
+  const zone = fakeZone({
+    routes: [
+      ...ROUTES.patterns.map((pattern) => ({ pattern, script: SCRIPT })),
+      { pattern: "jomcgi.dev/other*", script: "other-worker" },
+    ],
+    rules: [MONOLITH],
+  });
+  const log = await apply(zone.call, ROUTES, RULES, { serveRoutes: false });
+  assert.deepEqual(
+    zone.state.routes.map((route) => route.pattern),
+    ["jomcgi.dev/other*"],
+  );
+  for (const pattern of ROUTES.patterns) {
+    assert.ok(log.includes(`delete route ${pattern}`));
+  }
+  assert.ok(
+    zone.state.rules.every((rule, i) => sameRule(rule, RULES.rules[i])),
+  );
+});
+
+test("main refuses to run unless EDGE_SERVE_ROUTES is true or false", () => {
+  const main = fileURLToPath(new URL("./main.mjs", import.meta.url));
+  for (const value of [undefined, "", "yes", "TRUE"]) {
+    // Keep the parent's environment: the rules_js node wrapper needs it.
+    const env = { ...process.env, CLOUDFLARE_API_TOKEN: "unused" };
+    delete env.EDGE_SERVE_ROUTES;
+    if (value !== undefined) env.EDGE_SERVE_ROUTES = value;
+    const run = spawnSync(process.execPath, [main], { env, encoding: "utf8" });
+    assert.notEqual(run.status, 0, `EDGE_SERVE_ROUTES=${value}`);
+    assert.match(run.stderr, /EDGE_SERVE_ROUTES must be "true" or "false"/);
+  }
 });
 
 test("changes nothing when a wanted route belongs to another Worker", async () => {

@@ -127,7 +127,12 @@ def test_prod_deploys_the_prod_worker_and_applies_the_edge_config():
     assert container["command"] == ["/app/projects/jomcgi-site/edge/apply"]
     assert container["image"].endswith(f"@{DIGEST}")
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
-    assert [env["name"] for env in container["env"]] == ["CLOUDFLARE_API_TOKEN"]
+    assert [env["name"] for env in container["env"]] == [
+        "CLOUDFLARE_API_TOKEN",
+        "EDGE_SERVE_ROUTES",
+    ]
+    # Routes stay off until the prod Application turns them on.
+    assert container["env"][1]["value"] == "false"
     policy = rendered["CiliumNetworkPolicy/jomcgi-site-edge"]["spec"]
     assert policy["egress"] == [
         {
@@ -136,6 +141,14 @@ def test_prod_deploys_the_prod_worker_and_applies_the_edge_config():
         }
     ]
     assert rendered["ConfigMap/jomcgi-site-release"]["data"]["stage"] == "prod"
+
+
+def test_serve_routes_turns_the_routes_on():
+    rendered = docs(render(*PROD, "--set", "edge.serveRoutes=true"))
+    env = rendered["Job/jomcgi-site-edge"]["spec"]["template"]["spec"]["containers"][0][
+        "env"
+    ]
+    assert {"name": "EDGE_SERVE_ROUTES", "value": "true"} in env
 
 
 def test_dev_has_no_edge_job():
@@ -152,6 +165,10 @@ def test_dev_has_no_edge_job():
         (
             ["--set", "workloads.jomcgi-site-deploy.args[3]=--env"],
             "--env comes from .Values.stage",
+        ),
+        (
+            [*PROD, "--set-string", "edge.serveRoutes=yes"],
+            "edge.serveRoutes must be true or false",
         ),
     ],
 )
