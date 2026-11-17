@@ -194,6 +194,27 @@ def test_embeddings_use_voyage_through_openrouter_without_data_retention():
     assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-discord-llm"
 
 
+def test_a_decision_model_ranks_recall_and_no_local_model_loads():
+    # HOME-182: Jev 1.14 through OpenRouter's System One endpoint, on the
+    # shared key; no reranker model and no local fallback (Joe, HOME-130
+    # comment 1498).
+    (deployment,) = [
+        d for d in read("resources/hindsight.yaml") if d["kind"] == "Deployment"
+    ]
+    (container,) = deployment["spec"]["template"]["spec"]["containers"]
+    env = {e["name"]: e.get("value", e.get("valueFrom")) for e in container["env"]}
+    assert env["HINDSIGHT_API_DECISION_MODEL_PROVIDER"] == "typesafe"
+    assert env["HINDSIGHT_API_DECISION_MODEL_BASE_URL"] == "https://openrouter.ai/api"
+    assert env["HINDSIGHT_API_DECISION_MODEL_MODEL"] == "typesafe/jev-1.14"
+    assert env["HINDSIGHT_API_DECISION_MODEL_API_KEY"] == {
+        "secretKeyRef": {"name": "hindsight-openrouter", "key": "api-key"}
+    }
+    assert env["HINDSIGHT_API_RERANKER_PROVIDER"] == "rrf"
+    assert "HINDSIGHT_API_RECALL_DECISION_MODEL_FALLBACK" not in env
+    # Embeddings are remote too, so nothing loads a model in the pod.
+    assert env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "openrouter"
+
+
 def test_boundary_test_runs_the_deployed_image():
     # boundary_test runs inside this image (BUILD exec_properties); an image
     # bump that skipped it would leave the new version's boundary untested.
@@ -280,6 +301,9 @@ def test_preflight_runs_after_the_secrets_and_before_the_deployment():
         ("DATABASE_URL", "HINDSIGHT_API_DATABASE_URL"),
         ("EMBEDDINGS_MODEL", "HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL"),
         ("EMBEDDINGS_EXTRA_BODY", "HINDSIGHT_API_EMBEDDINGS_OPENAI_EXTRA_BODY"),
+        ("DECISION_MODEL", "HINDSIGHT_API_DECISION_MODEL_MODEL"),
+        ("DECISION_MODEL_BASE_URL", "HINDSIGHT_API_DECISION_MODEL_BASE_URL"),
+        ("OPENROUTER_API_KEY", "HINDSIGHT_API_DECISION_MODEL_API_KEY"),
     ):
         assert env[name] == api_env[api_name], name
 
@@ -338,7 +362,10 @@ def test_preflight_stops_the_sync_on_a_bad_key_model_or_stored_rows(monkeypatch)
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
     monkeypatch.setenv("EMBEDDINGS_MODEL", "mongodb/voyage-4-large")
+    monkeypatch.setenv("DECISION_MODEL", "typesafe/jev-1.14")
+    monkeypatch.setenv("DECISION_MODEL_BASE_URL", "https://openrouter.ai/api")
     monkeypatch.setenv("DATABASE_URL", "postgres://unused")
+    monkeypatch.setattr(script, "decision_answers", lambda key, url, model: None)
     monkeypatch.setattr(script, "model_dimension", lambda key, model, extra: 1536)
     with pytest.raises(SystemExit, match="returns 1536 dimensions, not 1024"):
         script.main()
@@ -356,6 +383,14 @@ def test_preflight_stops_the_sync_on_a_bad_key_model_or_stored_rows(monkeypatch)
 
     monkeypatch.setattr(script, "database", empty)
     script.main()
+
+    # Recall has no local fallback, so a decision model that fails stops it.
+    def refused(key, url, model):
+        raise SystemExit(f"The decision model {model} refused: HTTP 401")
+
+    monkeypatch.setattr(script, "decision_answers", refused)
+    with pytest.raises(SystemExit, match="decision model typesafe/jev-1.14 refused"):
+        script.main()
 
 
 def test_preflight_reads_every_schema(monkeypatch):

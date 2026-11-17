@@ -295,14 +295,27 @@ do not spend Codex quota
 Agents rediscover the same failing checks and conventions on each run; a
 recalled lesson costs a few hundred tokens.
 
-Hindsight runs in namespace `hindsight`, one replica of the upstream image
-with its reranker built in (Hugging Face offline). Its state is database
-`factory_hindsight` on `factory-db`, so the existing WAL archive and daily
-backups cover it. `retain`, consolidation and `reflect` call
-`claude-haiku-5-5` with the key from 1Password `factory-hindsight`.
-Embeddings use `mongodb/voyage-4-large` through OpenRouter, with the key from
-1Password `factory-discord-llm` that Discord memory also uses, and OpenRouter
-routes only to providers that keep no data.
+Hindsight runs in namespace `hindsight`, one replica of the upstream image,
+with no local embedding or reranker model. Its state is database `factory_hindsight` on
+`factory-db`, so the existing WAL archive and daily backups cover it.
+`retain`, consolidation and `reflect` call `claude-haiku-5-5` with the key
+from 1Password `factory-hindsight`. Embeddings use `mongodb/voyage-4-large`
+through OpenRouter, with the key from 1Password `factory-discord-llm` that
+Discord memory also uses, and OpenRouter routes only to providers that keep
+no data. The decision model, `typesafe/jev-1.14` through OpenRouter's System
+One endpoint on the same key, ranks recall and settles the yes-or-no
+judgments of consolidation, reflect and page refresh. The reranker is `rrf`,
+which loads no model. Recall has no local fallback, so it fails while
+OpenRouter or Jev is unavailable.
+
+**Why the decision model.** Joe chose a decision model with no local
+fallback ([HOME-130 comment 1498](https://factory-plan.jomcgi.dev/factory/issue/HOME-130#comment-1498)).
+Hindsight's own question decided the order of the top 30 Voyage 4 Large
+candidates for the same 32 graded questions. On candidates from
+embeddings and BM25 together, Jev 1.14 raised nDCG@10 by 0.079, in 0.29 s per
+recall ([HOME-182](https://factory-plan.jomcgi.dev/factory/issue/HOME-182)).
+Liquid `d1` made no significant difference; Cloudflare `clef` and Upstage
+`solar-decide-flash` made it worse.
 
 **Why.** On a 494-fact factory test set, Voyage 4 Large had the best
 nDCG@10 (0.781) of ten models, against 0.522 for a stand-in for the image's
@@ -315,9 +328,10 @@ chose one OpenRouter key for both instances
 refuses to start on a model with another dimension once rows exist. Each sync
 first runs the `hindsight-preflight` Sync hook (wave -1, after the 1Password
 items). It needs the same Secrets as the API pod, embeds one string through
-OpenRouter, and fails when the key is empty or refused, when the model
-returns another dimension, or when stored rows in any schema have another
-dimension. The sync then stops before the Deployment, and the running pod
+OpenRouter, asks the decision model one question, and fails when the key is
+empty or refused, when the embedding model returns another dimension, when
+the decision model gives no answer, or when stored rows in any schema have
+another dimension. The sync then stops before the Deployment, and the running pod
 keeps serving.
 
 **Rollback.** The way back to the image's local model is a revert of the

@@ -6,6 +6,8 @@ alone, when:
 
 - the OpenRouter key is empty, OpenRouter rejects the key or model, or the
   model returns another dimension than EMBEDDINGS_DIMENSIONS;
+- the decision model (System One at DECISION_MODEL_BASE_URL) refuses or does
+  not answer. Recall has no local fallback, so the pod would serve failures;
 - stored rows have another dimension than EMBEDDINGS_DIMENSIONS. Hindsight
   resizes an empty vector column at startup but refuses one with rows.
 
@@ -53,6 +55,28 @@ def quoted(name):
     return '"' + name.replace('"', '""') + '"'
 
 
+def decision_answers(key, base_url, model):
+    """Ask the decision model one question, as Hindsight's System One client does."""
+    body = {
+        "model": model,
+        "state": "Question: Is this a preflight check?",
+        "questions": {"q": {"type": "noul", "instructions": "This is a preflight."}},
+    }
+    req = urllib.request.Request(
+        base_url.rstrip("/") + "/v1/systemone",
+        method="POST",
+        data=json.dumps(body).encode(),
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            answer = (json.load(resp).get("answers") or {}).get("q") or {}
+    except urllib.error.HTTPError as e:
+        raise SystemExit(f"The decision model {model} refused: HTTP {e.code}")
+    if not isinstance(answer.get("noul"), (int, float)):
+        raise SystemExit(f"The decision model {model} gave no answer")
+
+
 async def stored(conn):
     """{schema.table: (column type, rows with a vector)} in every schema."""
     out = {}
@@ -95,6 +119,9 @@ def main():
     returned = model_dimension(key, model, extra)
     if returned != dimension:
         raise SystemExit(f"{model} returns {returned} dimensions, not {dimension}")
+    decision_answers(
+        key, os.environ["DECISION_MODEL_BASE_URL"], os.environ["DECISION_MODEL"]
+    )
     columns = asyncio.run(database(os.environ["DATABASE_URL"]))
     for table, (column, rows) in columns.items():
         print(f"{table}: {column}, {rows} rows with a vector")
