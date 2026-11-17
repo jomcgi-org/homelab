@@ -44,6 +44,16 @@ def deployed_env():
     assert "HINDSIGHT_API_DATABASE_URL" not in env
     env["HINDSIGHT_API_LLM_BASE_URL"] = "http://127.0.0.1:1/v1"
     env["HINDSIGHT_API_LLM_API_KEY"] = "unused-in-this-test"
+    # The test has no network, so it embeds with the image's local model
+    # instead of OpenRouter. Authentication does not depend on the model.
+    for name in [n for n in env if n.startswith("HINDSIGHT_API_EMBEDDINGS_")]:
+        del env[name]
+    env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] = "local"
+    # Nor can it reach the decision model; recall then keeps the reranker
+    # order (rrf). Authentication and disabled MCP do not depend on either.
+    for name in [n for n in env if n.startswith("HINDSIGHT_API_DECISION_MODEL_")]:
+        del env[name]
+    env["HINDSIGHT_API_DECISION_MODEL_PROVIDER"] = "none"
     return env
 
 

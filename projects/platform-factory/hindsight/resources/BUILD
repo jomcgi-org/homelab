@@ -11,6 +11,12 @@ exports_files(
     visibility = ["//projects/platform-factory/factory-db:__pkg__"],
 )
 
+# hindsight-discord runs a copy; its keys_test keeps the two equal.
+exports_files(
+    ["preflight.py"],
+    visibility = ["//projects/platform-factory/hindsight-discord:__pkg__"],
+)
+
 filegroup(
     name = "keys_resources",
     srcs = [

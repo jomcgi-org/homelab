@@ -24,6 +24,18 @@ set the LLM credential and endpoint (`https://openrouter.ai/api/v1`). HOME-163
 requires a $250 monthly limit on this item. The model ID is a literal in
 `resources/hindsight.yaml`; change it through a PR.
 
+Embeddings and the decision model match the factory Hindsight
+(`projects/factory/ARCHITECTURE.md`, "Memory"), on the same `api-key`: Voyage 4
+Large through OpenRouter (1,024 dimensions, `data_collection: deny`), and
+TypeSafe Jev 1.14 through OpenRouter's System One endpoint, which ranks recall
+with no local fallback. No model loads in the pod. The `hindsight-preflight`
+Sync hook runs a copy of the factory's `preflight.py` (`keys_test` keeps the
+two equal). It checks the key, that the decision model answers from one
+endpoint, and that stored vectors match the embedding dimension. A failure
+stops the sync and keeps the running pod. To change the embedding model
+after banks hold vectors, re-embed first, as the factory's "Memory" section
+describes.
+
 The API permits ingress only from `factory-discord` and egress only to
 `factory-db:5432` and `openrouter.ai:443`. The cluster baseline also permits
 DNS through CoreDNS. Key Jobs have separate labels and API-server egress.
