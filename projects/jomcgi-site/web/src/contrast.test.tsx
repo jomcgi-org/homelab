@@ -1,4 +1,11 @@
-import { readdirSync, readFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -33,16 +40,59 @@ export function colour(value: string): Colour | undefined {
   return undefined;
 }
 
-/** Every custom property declared in a stylesheet, whatever its value. */
+/**
+ * Every custom property declared in a stylesheet, whatever its value. A
+ * declaration ends at `;` or at the block's closing brace.
+ */
 export function customProperties(css: string): Map<string, string> {
   const found = new Map<string, string>();
   for (const [, name, value] of css.matchAll(
-    /(--[a-z0-9-]+)\s*:\s*([^;]+);/gi,
+    /(--[a-z0-9-]+)\s*:\s*([^;}]+)/gi,
   )) {
     found.set(name!, value!.trim());
   }
   return found;
 }
+
+/** Every stylesheet under a directory, at any depth. */
+export function stylesheets(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return stylesheets(path);
+    return entry.name.endsWith(".css") ? [path] : [];
+  });
+}
+
+// CSS named colour keywords (CSS Color 4), which a font or other token could
+// otherwise carry.
+const NAMED_COLOURS = new Set(
+  `
+  aliceblue antiquewhite aqua aquamarine azure beige bisque black
+  blanchedalmond blue blueviolet brown burlywood cadetblue chartreuse
+  chocolate coral cornflowerblue cornsilk crimson cyan darkblue darkcyan
+  darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta
+  darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen
+  darkslateblue darkslategray darkslategrey darkturquoise darkviolet deeppink
+  deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite forestgreen
+  fuchsia gainsboro ghostwhite gold goldenrod gray green greenyellow grey
+  honeydew hotpink indianred indigo ivory khaki lavender lavenderblush
+  lawngreen lemonchiffon lightblue lightcoral lightcyan lightgoldenrodyellow
+  lightgray lightgreen lightgrey lightpink lightsalmon lightseagreen
+  lightskyblue lightslategray lightslategrey lightsteelblue lightyellow lime
+  limegreen linen magenta maroon mediumaquamarine mediumblue mediumorchid
+  mediumpurple mediumseagreen mediumslateblue mediumspringgreen
+  mediumturquoise mediumvioletred midnightblue mintcream mistyrose moccasin
+  navajowhite navy oldlace olive olivedrab orange orangered orchid
+  palegoldenrod palegreen paleturquoise palevioletred papayawhip peachpuff
+  peru pink plum powderblue purple rebeccapurple red rosybrown royalblue
+  saddlebrown salmon sandybrown seagreen seashell sienna silver skyblue
+  slateblue slategray slategrey snow springgreen steelblue tan teal thistle
+  tomato turquoise violet wheat white whitesmoke yellow yellowgreen
+  transparent currentcolor
+  `
+    .trim()
+    .split(/\s+/),
+);
 
 function luminance(hex: string): number {
   const [r, g, b] = [1, 3, 5].map((i) => {
@@ -78,6 +128,12 @@ const SYNTAX: Record<OtherRole, RegExp> = {
   shadow: /^none$/,
 };
 const isOther = (role: Role): role is OtherRole => role in SYNTAX;
+
+/** A non-colour token's value matches its syntax and names no colour. */
+function validOther(role: OtherRole, value: string): boolean {
+  const words = value.toLowerCase().match(/[a-z][a-z0-9-]*/g) ?? [];
+  return SYNTAX[role].test(value) && !words.some((w) => NAMED_COLOURS.has(w));
+}
 
 const ROLES: Record<string, Role> = {
   "--color-accent": "non-text",
@@ -137,7 +193,9 @@ describe("token contrast", () => {
     for (const [name, value] of declared) {
       const role = ROLES[name]!;
       if (isOther(role)) {
-        expect(value, `${name} (${role})`).toMatch(SYNTAX[role]);
+        expect(validOther(role, value), `${name} (${role}): ${value}`).toBe(
+          true,
+        );
       } else {
         expect(colour(value), `${name}: ${value}`).toBeDefined();
       }
@@ -145,17 +203,52 @@ describe("token contrast", () => {
   });
 
   it("finds every custom property, so an unlisted colour fails the role check", () => {
-    const css = `--warning: #fff; --brand: rgb(0 0 0); --radius-page: 0;`;
+    const css = `--warning: #fff; --brand: rgb(0 0 0); --radius-page: 0;
+      :root { --last: #000 }`;
     expect([...customProperties(css).keys()]).toEqual([
       "--warning",
       "--brand",
       "--radius-page",
+      "--last",
     ]);
+    expect(validOther("font", '"Avenir Next", system-ui, sans-serif')).toBe(
+      true,
+    );
+    expect(validOther("font", "red")).toBe(false);
+    expect(validOther("font", '"Iowan", rebeccapurple')).toBe(false);
     expect(colour("#fff")).toEqual({ light: "#ffffff", dark: "#ffffff" });
     expect(colour("rgb(0 0 0)")).toBeUndefined();
     for (const role of ["font", "radius", "shadow"] as const) {
       expect("#fff").not.toMatch(SYNTAX[role]);
       expect("rgb(0 0 0)").not.toMatch(SYNTAX[role]);
+    }
+  });
+
+  it("finds stylesheets at any depth", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sheets-"));
+    mkdirSync(join(dir, "components"));
+    writeFileSync(join(dir, "top.css"), "a {}");
+    writeFileSync(join(dir, "components", "card.css"), "b {}");
+    expect(stylesheets(dir).sort()).toEqual(
+      [join(dir, "components", "card.css"), join(dir, "top.css")].sort(),
+    );
+  });
+
+  it("keeps colours and inline styles out of the TypeScript sources", () => {
+    const LITERAL =
+      /#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color-mix|light-dark)\(/i;
+    const sources = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) return sources(path);
+        return /\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)
+          ? [path]
+          : [];
+      });
+    for (const file of sources("src")) {
+      const code = readFileSync(file, "utf8");
+      expect(code, file).not.toMatch(LITERAL);
+      expect(code, file).not.toMatch(/@stylexjs\/stylex|\bstyle=\{/);
     }
   });
 
@@ -176,15 +269,12 @@ describe("token contrast", () => {
       "dotted",
       "double",
     ]);
-    const sheets = readdirSync("src").filter(
-      (name) => name.endsWith(".css") && name !== "palette.css",
+    const sheets = stylesheets("src").filter(
+      (path) => path !== join("src", "palette.css"),
     );
-    expect(sheets.length).toBeGreaterThan(0);
+    expect(sheets).toContain(join("src", "site.css"));
     for (const sheet of sheets) {
-      const css = readFileSync(join("src", sheet), "utf8").replace(
-        /\/\*[\s\S]*?\*\//g,
-        "",
-      );
+      const css = readFileSync(sheet, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
       expect([...customProperties(css).keys()], sheet).toEqual([]);
       expect(css, sheet).not.toMatch(LITERAL);
       for (const [, property, value] of css.matchAll(COLOUR_PROPERTY)) {

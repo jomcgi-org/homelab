@@ -2,10 +2,14 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { render } from "@testing-library/react";
 import axe from "axe-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Theme } from "@astryxdesign/core/theme";
 import { neutralTheme } from "@astryxdesign/theme-neutral/built";
+import { mount } from "./mount";
 import { PAGES } from "./pages";
+
+// Entry scripts call mount(); recording the call shows which page each mounts.
+vi.mock("./mount", () => ({ mount: vi.fn() }));
 
 /** Every HTML entry in the app, at any depth, outside build and package dirs. */
 function htmlEntries(dir = ".", prefix = ""): string[] {
@@ -13,7 +17,7 @@ function htmlEntries(dir = ".", prefix = ""): string[] {
     (entry) => {
       const path = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
-        return ["dist", "node_modules", "public"].includes(entry.name)
+        return ["dist", "node_modules"].includes(entry.name)
           ? []
           : htmlEntries(dir, path);
       }
@@ -24,15 +28,26 @@ function htmlEntries(dir = ".", prefix = ""): string[] {
 
 describe("page registry", () => {
   it("registers every HTML entry, and nothing else", () => {
+    // public/ is copied into the site as is, so a page there would skip both
+    // the registry and axe. It may hold no HTML.
     expect(htmlEntries().sort()).toEqual(Object.keys(PAGES).sort());
   });
 
-  it.each(Object.keys(PAGES))("%s mounts its registered page", (entry) => {
-    const html = readFileSync(entry, "utf8");
-    const script = html.match(/<script[^>]*\ssrc="\.\/([^"]+)"/)?.[1];
-    expect(script, `${entry} has no entry script`).toBeDefined();
-    expect(readFileSync(script!, "utf8")).toContain(`PAGES["${entry}"]`);
-  });
+  it.each(Object.keys(PAGES))(
+    "%s mounts its registered page",
+    async (entry) => {
+      const html = readFileSync(entry, "utf8");
+      const scripts = [...html.matchAll(/<script\b[^>]*\ssrc="([^"]+)"/g)].map(
+        (match) => match[1]!,
+      );
+      expect(scripts, `${entry} must have one entry script`).toHaveLength(1);
+      vi.mocked(mount).mockClear();
+      await import(/* @vite-ignore */ `../${scripts[0]!.replace(/^\.\//, "")}`);
+      expect(vi.mocked(mount)).toHaveBeenCalledTimes(1);
+      const element = vi.mocked(mount).mock.calls[0]![0] as { type: unknown };
+      expect(element.type).toBe(PAGES[entry]);
+    },
+  );
 });
 
 // Structural accessibility rules on every registered page. happy-dom has no
