@@ -144,7 +144,10 @@ if run env STAGE=dev MODE=refresh FENCE_SLEEP=5 2>/dev/null; then
 	echo "a hung fence check should fail the refresh"
 	exit 1
 fi
-! grep -q wrangler "$work/calls" || { echo "deployed after a hung check"; exit 1; }
+! grep -q wrangler "$work/calls" || {
+	echo "deployed after a hung check"
+	exit 1
+}
 
 # 6c. sync: if the live release cannot be confirmed at the end (every check
 #     errors), the sync fails so Argo CD retries.
@@ -157,7 +160,11 @@ fi
 # 6d. sync: errors during the window but a good final check: success.
 reset $'1\n1\n'
 run env STAGE=prod MODE=sync >/dev/null
-tail -n1 "$work/calls" | grep -q "^$F_PROD$" || { echo "sync should end with a confirming check"; cat "$work/calls"; exit 1; }
+tail -n1 "$work/calls" | grep -q "^$F_PROD$" || {
+	echo "sync should end with a confirming check"
+	cat "$work/calls"
+	exit 1
+}
 
 # 7. A bad stage, mode or window stops before any step.
 for args in "STAGE= MODE=sync" "STAGE=staging MODE=sync" "STAGE=dev MODE=" "STAGE=dev MODE=other" "STAGE=dev MODE=sync SYNC_WINDOW=2"; do
