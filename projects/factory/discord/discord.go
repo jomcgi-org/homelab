@@ -9,7 +9,26 @@
 // every reply sends allowed_mentions {"parse": []}, so text cannot ping.
 package discord
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
+
+// discordEpoch is the time of snowflake 0.
+const discordEpoch = 1420070400000
+
+// SentAt is when a message was sent: its timestamp, or else the time in its
+// snowflake ID. An unreadable ID is the zero time, which is old.
+func SentAt(m Message) time.Time {
+	if !m.Timestamp.IsZero() {
+		return m.Timestamp
+	}
+	id, err := strconv.ParseUint(m.ID, 10, 64)
+	if err != nil {
+		return time.Time{}
+	}
+	return time.UnixMilli(int64(id>>22) + discordEpoch)
+}
 
 // User is the subset of a Discord user the bridge reads.
 type User struct {

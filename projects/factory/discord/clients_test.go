@@ -62,6 +62,9 @@ func TestHindsightRequestsStayInTheChannelScope(t *testing.T) {
 	if string(recall) != `{"max_tokens":2000,"query":"code word?","tags":["channel:c1"],"tags_match":"all_strict"}` {
 		t.Errorf("recall body = %s", recall)
 	}
+	if bodies["/v1/default/banks/discord-g1/memories"]["async"] != false {
+		t.Error("retain is asynchronous: the channel's next turn could recall before it is stored")
+	}
 	items := bodies["/v1/default/banks/discord-g1/memories"]["items"].([]any)
 	item, _ := json.Marshal(items[0])
 	if string(item) != `{"content":"ann: hi","context":"Discord channel c1","document_id":"discord:c1:2026-11-17","observation_scopes":[["channel:c1"]],"tags":["channel:c1"],"timestamp":"2026-11-17T23:30:00Z","update_mode":"append"}` {
