@@ -30,6 +30,9 @@ cat >"$work/bin/wrangler" <<'STUB'
 #!/usr/bin/env bash
 echo "wrangler $*" >>"$CALLS"
 test -f "$(dirname "$3")/web/dist/data/stars/latest.json"
+# wrangler writes .wrangler/tmp under its working directory: it must be the
+# writable site copy, not the read-only image directory.
+[[ "$PWD" == "$(dirname "$3")" ]] || { echo "wrangler ran from $PWD" >&2; exit 9; }
 STUB
 chmod +x "$work/bin/"*
 
