@@ -1,0 +1,33 @@
+# Deferred start integration test
+
+`//projects/factory/tests/itsaplan:integration_test` runs in normal PR CI.
+It exercises the chart adapter against itsaplan v1.10.0's real route guard,
+authorization, comment, issue-update and run-enqueue services. PostgreSQL
+triggers fail or suppress the enqueue after the delegate write to verify
+transaction rollback and recovery. Other cases check concurrent retries,
+agent-to-agent delegation with `runnerScope: team`, eligibility and recovery
+after a full Todo column has capacity again.
+
+```sh
+bazel test //projects/factory/tests/itsaplan:integration_test
+```
+
+`MODULE.bazel` pins the upstream commit. `fixture.bzl` fetches Bun 1.4.4 by
+SHA-256 and installs the API's dependencies from upstream's frozen lockfile
+with lifecycle scripts disabled. This happens during repository fetching,
+before the test runs. The fixture archive preserves Bun's package links.
+The test itself needs no downloads, Docker daemon or external service.
+
+The launcher extracts a writable upstream copy, mounts the same four adapter
+files as the chart and creates a private PostgreSQL 16 from `@postgres_test`.
+It chooses a local port, creates and migrates `factory_test`, runs the suite
+and stops PostgreSQL in cleanup. Credentials are synthetic. Caller-supplied
+database URLs are ignored. Missing fixtures or any suite failure fail the
+target; the test has no skip or manual tag.
+
+For local pytest, supply `BUN_BIN`, `ITSAPLAN_ARCHIVE` (an archive of the
+pinned checkout with its locked API dependencies installed), `PG_BIN` and
+`PG_SHARE`. The same launcher still creates and deletes its own database.
+The chart's `deferred_test` target also retains the portable in-memory
+fault-injection suite. Revalidate both targets before changing the pinned
+itsaplan release; the adapter refuses other versions at startup.

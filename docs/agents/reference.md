@@ -184,6 +184,15 @@ not yet hold a run for its `blocked_by` links (HOME-55), so delegate a
 dependent issue only after its blocker is Done. Never predict a new issue's
 key: other sessions create issues concurrently, so read it from the response.
 
+To schedule factory work for later, put the issue in Backlog, set its start
+date, add the project label `deferred`, and leave its delegate empty. The
+bootstrap creates this label in each bound project. On the first poll on
+or after that UTC date, the connector comments with the date, moves the
+issue to Todo, then delegates it to the binding's coding agent. Archived
+issues are skipped. Removing the label before the start cancels the
+schedule. A stored operator stop still holds the issue. Open blockers do
+not delay a scheduled start (HOME-55).
+
 ## Human handoff
 
 A HOME issue in Todo or In Progress that is assigned to Joe with no delegate

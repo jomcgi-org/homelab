@@ -89,6 +89,28 @@ type seen struct {
 	body                     map[string]any
 }
 
+func TestDeferredWIPConflictIsDistinct(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		wip  bool
+	}{
+		{`{"error":"Column is full","code":"wip_limit_exceeded"}`, true},
+		{`{"error":"Issue is no longer eligible"}`, false},
+		{`{"error":"wip_limit_exceeded"}`, false},
+		{`{"code":"other_conflict"}`, false},
+		{`not json`, false},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			var got seen
+			c := server(t, 409, tc.body, &got)
+			_, err := c.StartDeferred(context.Background(), 118, DeferredRequest{})
+			if !errors.Is(err, ErrConflict) || errors.Is(err, ErrWIPLimit) != tc.wip {
+				t.Fatalf("conflict = %v, want WIP = %v", err, tc.wip)
+			}
+		})
+	}
+}
+
 func TestGateIssueWritesUseCoordinatorAndExplicitNullDelegate(t *testing.T) {
 	var got seen
 	c := server(t, 201, `{"id":42,"identifier":"HOME-42"}`, &got)

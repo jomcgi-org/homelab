@@ -25,6 +25,7 @@ go_library(
         "20261116240000_admission_holds.sql",
         "20261117000000_renovate_majors.sql",
         "20261117010000_task_metadata.sql",
+        "20261117010000_deferred.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],

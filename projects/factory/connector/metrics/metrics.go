@@ -6,19 +6,20 @@ import "github.com/prometheus/client_golang/prometheus"
 
 // Metrics is the connector's metric set.
 type Metrics struct {
-	Claims        *prometheus.CounterVec // agent, outcome
-	Sends         *prometheus.CounterVec // kind, outcome
-	Heartbeats    *prometheus.CounterVec // outcome
-	Results       *prometheus.CounterVec // status
-	Blocked       *prometheus.CounterVec // class
-	Retries       *prometheus.CounterVec // class
-	Cancellations *prometheus.CounterVec // reason, state
-	Events        *prometheus.CounterVec // outcome
-	Reassignments prometheus.Counter
-	WriterEpoch   prometheus.Gauge
-	TickErrors    *prometheus.CounterVec // phase
-	HeldRuns      prometheus.Gauge
-	OldestHold    prometheus.Gauge
+	Claims          *prometheus.CounterVec // agent, outcome
+	Sends           *prometheus.CounterVec // kind, outcome
+	Heartbeats      *prometheus.CounterVec // outcome
+	Results         *prometheus.CounterVec // status
+	Blocked         *prometheus.CounterVec // class
+	Retries         *prometheus.CounterVec // class
+	Cancellations   *prometheus.CounterVec // reason, state
+	Events          *prometheus.CounterVec // outcome
+	DeferredStarted prometheus.Counter
+	Reassignments   prometheus.Counter
+	WriterEpoch     prometheus.Gauge
+	TickErrors      *prometheus.CounterVec // phase
+	HeldRuns        prometheus.Gauge
+	OldestHold      prometheus.Gauge
 
 	PullRequests      *prometheus.CounterVec // outcome
 	ReviewEvents      *prometheus.CounterVec // kind, disposition
@@ -78,6 +79,10 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name: "factory_connector_event_batches_total",
 			Help: "itsaplan run event batches by outcome (ok, conflict, not_found, error).",
 		}, []string{"outcome"}),
+		DeferredStarted: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "factory_connector_deferred_started_total",
+			Help: "Deferred issues delegated on or after their UTC start date.",
+		}),
 		Reassignments: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "factory_connector_reassignments_total",
 			Help: "Runs that moved a work item to another agent key.",
@@ -88,7 +93,7 @@ func New(reg prometheus.Registerer) *Metrics {
 		}),
 		TickErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_tick_errors_total",
-			Help: "Errors by dispatch phase (heartbeats, claims, quota, admissions, runs, cancellations, delivery, outbox, sessions, admission_metrics).",
+			Help: "Errors by dispatch phase (heartbeats, deferred, claims, quota, admissions, runs, cancellations, delivery, outbox, sessions, admission_metrics).",
 		}, []string{"phase"}),
 		PullRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_pull_requests_total",
@@ -138,13 +143,13 @@ func New(reg prometheus.Registerer) *Metrics {
 		CredentialRefusals: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_credential_refusals_total",
 			Help: "itsaplan 401 and 403 answers by key role (agent, coordinator) and kind: an outbox kind " +
-				"(result, comment, issue_done), a lookup (admission, replacement, brief, issue_check, run_check) or a runner call " +
+				"(result, comment, issue_done, deferred_start), a lookup (admission, replacement, brief, issue_check, run_check, deferred_poll) or a runner call " +
 				"(claim, heartbeat, events).",
 		}, []string{"role", "kind"}),
 	}
 	if reg != nil {
 		reg.MustRegister(m.Claims, m.Sends, m.Heartbeats, m.Results, m.Blocked, m.Retries,
-			m.Cancellations, m.Events, m.Reassignments, m.WriterEpoch, m.TickErrors,
+			m.DeferredStarted, m.Cancellations, m.Events, m.Reassignments, m.WriterEpoch, m.TickErrors,
 			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.RebaseRounds, m.SplitRounds, m.IdleRounds, m.MergeQueue, m.CILogReads, m.SessionRecoveries, m.SessionsDeleted, m.StuckTurns, m.CredentialRefusals,
 			m.HeldRuns, m.OldestHold)
 	}

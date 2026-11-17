@@ -575,3 +575,35 @@ def test_errors_never_print_response_credentials_or_invite_tokens(bootstrap):
         '{"password":"private-password"}',
     )
     assert "private-" not in str(error)
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_deferred_labels_cover_all_bindings_and_resume(bootstrap, interrupted):
+    script, _, _ = bootstrap
+    script.CONFIG["deferredProjects"] = ["HOME", "OTHER", "HOME"]
+    labels = {
+        "/projects/7.HOME": [{"id": 4, "name": "existing"}],
+        "/projects/7.OTHER": [{"id": 9, "name": "deferred", "color": "red"}],
+    }
+    writes = []
+
+    class Session:
+        def call(self, method, path, body=None):
+            if method == "GET":
+                return {"labels": labels[path]}
+            assert method == "POST" and body == {"name": "deferred"}
+            labels[path.removesuffix("/labels")].append({"id": 5, **body})
+            writes.append(path)
+            if interrupted and len(writes) == 1:
+                raise OSError("response lost after creation")
+
+    session = Session()
+    if interrupted:
+        with pytest.raises(OSError):
+            script.ensure_deferred_labels(session, 7)
+    script.ensure_deferred_labels(session, 7)
+    script.ensure_deferred_labels(session, 7)
+    assert writes == ["/projects/7.HOME/labels"]
+    assert labels["/projects/7.OTHER"] == [
+        {"id": 9, "name": "deferred", "color": "red"}
+    ]

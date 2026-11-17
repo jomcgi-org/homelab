@@ -8,7 +8,7 @@ Idempotent; every step reads before it writes:
    client secret from OIDC_SECRET (written there by Authentik's secret-init),
    written when it differs from what STATE_SECRET records, or on the first
    sync more than a day after the last write.
-3. The team and project from CONFIG, in the admin's workspace.
+3. The team and project from CONFIG, and the deferred label in bound projects.
 4. Each external agent from CONFIG, working in that project. The api returns
    an agent's API key once, at creation or rotation, and this writes it to
    Secret AGENT_SECRET_PREFIX<username>. An agent whose Secret holds no
@@ -289,6 +289,17 @@ def ensure_project(session, team_id):
     project = session.call("POST", f"/teams/{team_id}/projects", body)
     print(f"created project {want['key']} ({project['id']})")
     return project["id"]
+
+
+def ensure_deferred_labels(session, team_id):
+    """Install the opt-in in every bound project, preserving existing labels."""
+    for key in sorted(set(CONFIG.get("deferredProjects", []))):
+        scoped = key if "." in key else f"{team_id}.{key}"
+        path = "/projects/" + urllib.parse.quote(scoped, safe="")
+        project = session.call("GET", path)
+        if not any(label["name"] == "deferred" for label in project["labels"]):
+            session.call("POST", path + "/labels", {"name": "deferred"})
+            print(f"created deferred label in {key}")
 
 
 def find_account(session, path, email):
@@ -652,6 +663,7 @@ def main():
         ensure_settings(session, oidc["client-secret"])
         team_id = ensure_team(session)
         project_id = ensure_project(session, team_id)
+        ensure_deferred_labels(session, team_id)
         ensure_agents(session, team_id, project_id)
         ensure_sessions(session, team_id)
     finally:

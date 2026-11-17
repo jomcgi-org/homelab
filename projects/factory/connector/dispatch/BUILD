@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "admission.go",
         "classify.go",
+        "deferred.go",
         "delivery.go",
         "engine.go",
         "human_gate.go",
@@ -33,6 +34,7 @@ go_test(
     srcs = [
         "admission_test.go",
         "artifact_transcript_test.go",
+        "deferred_test.go",
         "delivery_test.go",
         "engine_test.go",
         "fakes_test.go",

@@ -5,6 +5,30 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # targets, and a BUILD file there would take them out of :chart.
 # gazelle:exclude files
 
+filegroup(
+    name = "deferred_adapter",
+    srcs = [
+        "files/itsaplan/client.ts",
+        "files/itsaplan/deferred.ts",
+        "files/itsaplan/factory.ts",
+        "files/itsaplan/transaction.ts",
+    ],
+    visibility = ["//projects/factory:__subpackages__"],
+)
+
+py_test(
+    name = "deferred_test",
+    srcs = ["deferred_test.py"],
+    data = [
+        "deferred.test.mjs",
+        "files/itsaplan/deferred.ts",
+        "files/itsaplan/transaction.ts",
+        "@nodejs_linux_amd64//:node_bin",
+    ],
+    env = {"NODE_BIN": "$(rootpath @nodejs_linux_amd64//:node_bin)"},
+    deps = ["@pip//pytest"],
+)
+
 # helm_chart's glob includes values-homelab.yaml as an optional values file.
 # package_test checks it matches deploy/values.yaml until the Application
 # switches to bundled values after a compatible release has published.
@@ -49,15 +73,17 @@ py_test(
         "//projects/factory/deploy:application.yaml",
         "//projects/factory/deploy:deploy_values",
         "//projects/factory/deploy:render_lock",
-        # :chart carries chart_test.py, which this target also collects.
+        # :chart carries the chart's Python tests, including the Node transaction suite.
         "//projects/platform-factory/substrate/resources:network-policy.yaml",
         "@multitool//tools/helm",
+        "@nodejs_linux_amd64//:node_bin",
     ],
     env = {
         "APPLICATION": "$(rootpath //projects/factory/deploy:application.yaml)",
         "CHART_PACKAGE": "$(rootpath :chart.package)",
         "DEPLOY_VALUES": "$(rootpath //projects/factory/deploy:deploy_values)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "NODE_BIN": "$(rootpath @nodejs_linux_amd64//:node_bin)",
         "RENDER_LOCK": "$(rootpath //projects/factory/deploy:render_lock)",
         "SUBSTRATE_NETWORK_POLICY": "$(rootpath //projects/platform-factory/substrate/resources:network-policy.yaml)",
     },

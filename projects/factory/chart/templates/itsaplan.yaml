@@ -33,6 +33,33 @@ Secrets (factory-buckets, factory-db-secrets) create it either way.
 {{- $_ := set $env $k (toString $v) }}
 {{- end }}
 {{- $checksum := toJson $env | sha256sum }}
+{{- $adapter := dict }}
+{{- $mounts := dict
+  "client.ts" "/app/packages/db/src/client.ts"
+  "transaction.ts" "/app/packages/db/src/factory-transaction.ts"
+  "deferred.ts" "/app/apps/api/src/factory-deferred.ts"
+  "factory.ts" "/app/apps/api/src/factory.ts"
+  "index.ts" "/app/apps/api/src/factory-index.ts"
+}}
+{{- range $file, $_ := $mounts }}
+{{- $_ := set $adapter $file ($.Files.Get (printf "files/itsaplan/%s" $file)) }}
+{{- end }}
+# The v1.10.0 API adapter commits deferred starts and their runs atomically.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-deferred
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+data:
+  {{- range $file, $content := $adapter }}
+  {{ $file }}: |
+    {{- $content | nindent 4 }}
+  {{- end }}
+---
 # BETTER_AUTH_SECRET and APP_ENCRYPTION_KEY, generated once by
 # itsaplan-secret-init. They must never change: the first signs every
 # session, the second encrypts the instance's stored credentials (the OIDC
@@ -182,6 +209,7 @@ spec:
         {{- include "factory.itsaplanSelector" (dict "root" . "component" "api") | nindent 8 }}
       annotations:
         checksum/config: {{ $checksum }}
+        checksum/deferred: {{ toJson $adapter | sha256sum }}
     spec:
       serviceAccountName: {{ $name }}
       automountServiceAccountToken: false
@@ -212,7 +240,7 @@ spec:
       containers:
         - name: api
           image: {{ $i.images.api }}
-          command: [bun, run, apps/api/src/index.ts]
+          command: [bun, run, apps/api/src/factory-index.ts]
           ports:
             - name: http
               containerPort: 3000
@@ -241,11 +269,20 @@ spec:
           resources:
             {{- toYaml $i.resources.api | nindent 12 }}
           volumeMounts:
+            {{- range $file, $path := $mounts }}
+            - name: deferred
+              mountPath: {{ $path }}
+              subPath: {{ $file }}
+              readOnly: true
+            {{- end }}
             - name: tmp
               mountPath: /tmp
             - name: backups
               mountPath: /backups
       volumes:
+        - name: deferred
+          configMap:
+            name: {{ $name }}-deferred
         - name: tmp
           emptyDir: {}
         - name: backups

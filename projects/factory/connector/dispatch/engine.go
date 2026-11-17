@@ -28,6 +28,9 @@ import (
 
 // Itsaplan is the subset of the itsaplan client dispatch uses.
 type Itsaplan interface {
+	Project(context.Context, string) (*itsaplan.Project, error)
+	ProjectIssues(context.Context, string) ([]itsaplan.Issue, error)
+	StartDeferred(context.Context, int64, itsaplan.DeferredRequest) (*itsaplan.DeferredReceipt, error)
 	Claim(ctx context.Context, agent string) (*itsaplan.Run, error)
 	Heartbeat(ctx context.Context, agent string, runID int64, attempt int) error
 	Events(ctx context.Context, agent string, runID int64, attempt, offset int, events []itsaplan.Event) (int, error)
@@ -374,6 +377,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 		fn   func(context.Context) error
 	}{
 		{"heartbeats", e.Heartbeats},
+		{"deferred", e.sweepDeferred},
 		{"claims", e.claim},
 		{"quota", e.checkQuota},
 		{"admissions", e.stepAdmissions},
@@ -2594,6 +2598,8 @@ func (e *Engine) refused(ctx context.Context, it *store.OutboxItem, err error) b
 
 func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 	switch it.Kind {
+	case store.OutboxDeferredStart:
+		return e.deliverDeferred(ctx, it)
 	case store.OutboxComment:
 		var p commentPayload
 		if err := json.Unmarshal(it.Payload, &p); err != nil {
