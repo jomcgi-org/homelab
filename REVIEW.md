@@ -167,10 +167,11 @@ A medium is justified by one of:
 - **A decision**: the accepted issue or spec, or Joe, chose this behaviour.
   For itsaplan, the service verifies the quoted text's provenance as `joe`
   or `joesessions`, including edits; creation authorship alone is not proof.
-  The code review gets no itsaplan text and nothing derived from it: the
-  issue and its decisions are private and this review is public, so only
-  the goal check judges against them. For the code review, Joe's decision
-  is a comment from his account on the PR.
+  The code review gets no itsaplan text and no evidence read from it, only
+  the goal check's fixed public findings: the issue and its decisions are
+  private and this review is public, so only the goal check judges against
+  them. For the code review, Joe's decision is a comment from his account
+  on the PR.
   An agent's issue can define work without authorizing an exception. A
   missing, unreadable or untrusted decision link stays `unverified`.
 
