@@ -38,6 +38,13 @@ type Config struct {
 	QueueDepth int `json:"-"`
 }
 
+// dedupeWindow is how long a message ID is remembered. An older message
+// starts nothing, so a pruned ID can never start a second turn.
+const dedupeWindow = 24 * time.Hour
+
+// maxNotices bounds the fixed replies waiting to be sent.
+const maxNotices = 16
+
 // Fixed replies; none carries model output or Discord text.
 const (
 	ReplyBusy    = "I'm busy in this channel; try again in a minute."
@@ -57,12 +64,19 @@ type Bridge struct {
 	Log     *slog.Logger
 	Now     func() time.Time
 
-	mu     sync.Mutex
-	botID  string
-	queues map[string]chan Message
-	seen   map[string]time.Time
-	turns  map[string][]time.Time
-	wg     sync.WaitGroup
+	mu      sync.Mutex
+	botID   string
+	queues  map[string]chan Message
+	seen    map[string]time.Time
+	turns   map[string][]time.Time
+	notices chan notice
+	wg      sync.WaitGroup
+}
+
+// notice is a fixed reply sent off the gateway's reader.
+type notice struct {
+	m    Message
+	text string
 }
 
 // SetBot records the bot's own user from READY.
@@ -104,9 +118,15 @@ func (b *Bridge) Handle(ctx context.Context, m Message) {
 		return
 	}
 	now := b.now()
+	if now.Sub(SentAt(m)) > dedupeWindow {
+		return // Older than the IDs the bridge remembers.
+	}
 	b.mu.Lock()
 	if b.seen == nil {
 		b.seen, b.turns, b.queues = map[string]time.Time{}, map[string][]time.Time{}, map[string]chan Message{}
+		b.notices = make(chan notice, maxNotices)
+		b.wg.Add(1)
+		go b.notify(ctx)
 	}
 	if _, dup := b.seen[m.ID]; dup {
 		b.mu.Unlock()
@@ -122,15 +142,40 @@ func (b *Bridge) Handle(ctx context.Context, m Message) {
 		b.wg.Add(1)
 		go b.worker(ctx, q)
 	}
+	notices := b.notices
 	b.mu.Unlock()
 	if !allowed {
-		b.reply(ctx, m, ReplyLimited)
+		b.queueNotice(ctx, notices, m, ReplyLimited)
 		return
 	}
 	select {
 	case q <- m:
 	default:
-		b.reply(ctx, m, ReplyBusy)
+		b.queueNotice(ctx, notices, m, ReplyBusy)
+	}
+}
+
+// queueNotice never blocks the gateway: when the notice queue is full, the
+// notice is dropped.
+func (b *Bridge) queueNotice(ctx context.Context, notices chan notice, m Message, text string) {
+	select {
+	case notices <- notice{m, text}:
+	default:
+		b.Log.WarnContext(ctx, "notice dropped", "channel", m.ChannelID, "message", m.ID)
+	}
+}
+
+// notify sends fixed replies one at a time, off the gateway's reader, so a
+// rate-limited reply never delays heartbeats or other channels.
+func (b *Bridge) notify(ctx context.Context) {
+	defer b.wg.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case n := <-b.notices:
+			b.reply(ctx, n.m, n.text)
+		}
 	}
 }
 
@@ -204,10 +249,10 @@ func (b *Bridge) take(now time.Time, m Message) bool {
 	return true
 }
 
-// prune drops message IDs older than a day. b.mu is held.
+// prune drops message IDs past the window. b.mu is held.
 func (b *Bridge) prune(now time.Time) {
 	for id, at := range b.seen {
-		if now.Sub(at) > 24*time.Hour {
+		if now.Sub(at) > dedupeWindow {
 			delete(b.seen, id)
 		}
 	}

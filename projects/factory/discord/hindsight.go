@@ -105,12 +105,14 @@ func (h *Hindsight) Recall(ctx context.Context, guildID, channelID, query string
 	return texts, nil
 }
 
-// Retain appends an exchange to the channel's document for the day.
+// Retain appends an exchange to the channel's document for the day. It
+// waits until Hindsight has stored it, so the channel's next turn recalls it
+// and a failed retain is an error, not a lost memory.
 func (h *Hindsight) Retain(ctx context.Context, guildID, channelID string, at time.Time, content string) error {
 	if err := h.ensureBank(ctx, guildID); err != nil {
 		return err
 	}
-	body := map[string]any{"items": []RetainItem{NewRetain(channelID, at, content)}, "async": true}
+	body := map[string]any{"items": []RetainItem{NewRetain(channelID, at, content)}, "async": false}
 	return h.call(ctx, http.MethodPost, "/v1/default/banks/"+BankID(guildID)+"/memories", body, nil)
 }
 
@@ -151,7 +153,8 @@ func (h *Hindsight) call(ctx context.Context, method, path string, in, out any) 
 	req.Header.Set("Content-Type", "application/json")
 	client := h.HTTP
 	if client == nil {
-		client = &http.Client{Timeout: 60 * time.Second}
+		// A synchronous retain runs the LLM's extraction.
+		client = &http.Client{Timeout: 3 * time.Minute}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
