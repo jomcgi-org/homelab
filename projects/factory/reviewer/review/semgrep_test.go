@@ -240,13 +240,19 @@ func TestSemgrepPromptCannotEscapeAndHasBounds(t *testing.T) {
 }
 
 func TestSemgrepStampSurvivesStateTrimming(t *testing.T) {
-	st := State{Semgrep: &SemgrepStamp{Digest: strings.Repeat("a", 64), Verified: false}}
+	st := State{
+		Semgrep:     &SemgrepStamp{Digest: strings.Repeat("a", 64), Verified: false},
+		IssueDigest: strings.Repeat("b", 64), IssuesPending: true,
+	}
 	for i := range maxStored {
 		st.Blocking = append(st.Blocking, Finding{ID: fmt.Sprint(i), Severity: SeverityHigh, Title: strings.Repeat("x", 1000), Detail: strings.Repeat("x", 4000)})
 	}
 	loaded, ok := LoadState(encodeState(st))
 	if !ok || loaded.Semgrep == nil || *loaded.Semgrep != *st.Semgrep {
 		t.Fatal("state trimming lost Semgrep gate")
+	}
+	if loaded.IssueDigest != st.IssueDigest || !loaded.IssuesPending {
+		t.Fatal("state trimming lost the issue evidence binding or pending hold")
 	}
 }
 
@@ -301,5 +307,121 @@ func TestSemgrepPriorAgentCollisionRemainsBlocking(t *testing.T) {
 	saved, ok := LoadState(h.gh.check(shaA).Text)
 	if !ok || h.gh.check(shaA).Conclusion != ConclusionFailure || len(saved.Previous()) != 1 || saved.Previous()[0].Severity != SeverityCritical {
 		t.Fatalf("earlier collision lost: %+v", saved)
+	}
+}
+
+// Both evidence bindings must survive task recovery; neither can authorize a
+// completed report when its own snapshot changed while the service was down.
+func TestSemgrepAndIssueEvidenceOnTaskRecovery(t *testing.T) {
+	for _, change := range []string{"none", "issue", "semgrep"} {
+		t.Run(change, func(t *testing.T) {
+			h, api := issueHarness(t)
+			h.cfg.Semgrep = &Semgrep{AppID: scanApp, CheckName: scanName, Wait: time.Nanosecond}
+			h.gh.addCheck(shaA, scanName, scanApp, "success")
+			e, ctx, stop := h.start()
+			old := runReview(t, h, e, ctx, 7, shaA)
+			eventually(t, "both evidence bindings recorded", func() bool {
+				rec := RecordedTask(h.gh.check(shaA).Summary)
+				return rec.ID == old && rec.Issues != "" && rec.Semgrep != ""
+			})
+			before := RecordedTask(h.gh.check(shaA).Summary)
+			stop()
+			switch change {
+			case "issue":
+				api.issue.Description = "Changed private issue evidence"
+			case "semgrep":
+				h.gh.withLock(func() {
+					h.gh.prs[7].Comments = []github.Comment{{ID: 1, Author: semgrepAuthor, Body: "New Semgrep evidence"}}
+				})
+			}
+			h.k.finish(old, kagent.StateCompleted, report(t, passing))
+			e, ctx, _ = h.start()
+			e.Tick(ctx)
+			if change != "none" {
+				var fresh string
+				eventually(t, "new attempt for changed evidence", func() bool {
+					fresh = h.taskOn(7, shaA, 2)
+					return fresh != "" && fresh != old
+				})
+				if h.gh.check(shaA).Conclusion == ConclusionSuccess {
+					t.Fatal("old task passed with changed evidence")
+				}
+				h.k.finish(fresh, kagent.StateCompleted, report(t, passing))
+			}
+			e.Wait()
+			c := h.gh.check(shaA)
+			st, ok := LoadState(c.Text)
+			if !ok || c.Conclusion != ConclusionSuccess || st.Semgrep == nil || !st.Semgrep.Verified || st.IssueDigest == "" || st.IssuesPending {
+				t.Fatalf("current evidence did not pass: %+v, %s", st, c.Summary)
+			}
+			if (st.IssueDigest != before.Issues) != (change == "issue") || (st.Semgrep.Digest != before.Semgrep) != (change == "semgrep") {
+				t.Fatalf("wrong evidence changed: before %+v, after %+v", before, st)
+			}
+			want := 1
+			if change != "none" {
+				want++
+			}
+			if len(h.k.sent()) != want {
+				t.Fatalf("sent %d tasks, want %d", len(h.k.sent()), want)
+			}
+			for _, msg := range h.k.sent() {
+				if strings.Contains(msg.Parts[0].Text, api.issue.Description) {
+					t.Fatal("private issue text reached the code review prompt")
+				}
+			}
+		})
+	}
+}
+
+func TestSemgrepLateScanWithIssueEvidence(t *testing.T) {
+	h, _ := issueHarness(t)
+	h.cfg.Semgrep = &Semgrep{AppID: scanApp, CheckName: scanName, Wait: time.Nanosecond}
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	first := h.gh.check(shaA)
+	before, ok := LoadState(first.Text)
+	if !ok || first.Conclusion != ConclusionFailure || before.IssueDigest == "" || before.Semgrep == nil || before.Semgrep.Verified {
+		t.Fatalf("missing scan did not block alongside issue evidence: %+v", before)
+	}
+	h.gh.addCheck(shaA, scanName, scanApp, "success")
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	last := h.gh.check(shaA)
+	after, ok := LoadState(last.Text)
+	if !ok || last.ID == first.ID || last.Conclusion != ConclusionSuccess || after.IssueDigest != before.IssueDigest || after.Semgrep == nil || !after.Semgrep.Verified {
+		t.Fatalf("late scan did not refresh both evidence bindings: %+v", after)
+	}
+	e.Tick(ctx)
+	e.Wait()
+	if len(h.k.sent()) != 2 || h.gh.check(shaA).Conclusion != ConclusionSuccess {
+		t.Fatal("unchanged evidence failed to retain its completed review")
+	}
+}
+
+func TestSemgrepAndIssueEvidenceKeepTheAttemptBound(t *testing.T) {
+	h, _ := issueHarness(t)
+	h.cfg.Semgrep = &Semgrep{AppID: scanApp, CheckName: scanName, Wait: time.Nanosecond}
+	h.gh.addCheck(shaA, scanName, scanApp, "success")
+	e, ctx, _ := h.start()
+	e.Tick(ctx)
+	for attempt := 1; attempt <= MaxAttempts; attempt++ {
+		var task string
+		eventually(t, "review attempt", func() bool {
+			task = h.taskOn(7, shaA, attempt)
+			return task != ""
+		})
+		h.k.finish(task, kagent.StateCompleted, "No usable findings report")
+	}
+	e.Wait()
+	st, ok := LoadState(h.gh.check(shaA).Text)
+	if !ok || st.Semgrep == nil || !st.Semgrep.NoReport || st.IssueDigest == "" {
+		t.Fatalf("exhausted review lost its evidence bindings: %+v", st)
+	}
+	for range 2 {
+		e.Tick(ctx)
+		if h.gh.check(shaA).Status != "completed" || h.gh.check(shaA).Conclusion != ConclusionFailure || len(h.k.sent()) != MaxAttempts {
+			t.Fatal("unchanged evidence restarted an exhausted review or allowed it to pass")
+		}
 	}
 }

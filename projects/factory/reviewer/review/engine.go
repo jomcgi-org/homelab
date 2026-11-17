@@ -964,7 +964,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 
 	l := e.prLog(b, pr)
 	kind := "reattach"
-	if run == nil || run.Status == "completed" || sharedHeadHeld(run) || issuesPending(run) {
+	if run == nil || run.Status == "completed" || issuesPending(run) {
 		kind = "new"
 		now := e.cfg.Now().UTC()
 		st := State{Gate: &Gate{Labels: gateLabels(b, pr.Labels), ObservedLabels: gateLabels(b, pr.Labels)}}
@@ -1226,6 +1226,11 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				st, _ := LoadState(run.Text)
 				st.Semgrep = in.semgrep.stamp()
 				st.Semgrep.NoReport = true
+				if b.ItsaplanProject != "" {
+					// Preserve the exhausted attempt bound while both evidence
+					// snapshots stay unchanged. NoReport still forbids a pass.
+					st.IssueDigest = issueDigest(in.issues)
+				}
 				o.Output.Text = encodeState(st)
 				if in.semgrep.Unavailable != "" {
 					o.Output.Summary += "\n\n**medium** `semgrep:unverified`: " + in.semgrep.Unavailable + "."
