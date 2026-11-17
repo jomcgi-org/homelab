@@ -2,6 +2,20 @@
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
+# Parent globs stop here, so supply source data to the domain import guard.
+filegroup(
+    name = "boundary_sources",
+    srcs = glob(
+        ["**/*.py"],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "**/tests/**/*.py",
+        ],
+    ),
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 # Package boundary keeps the private exporter out of the public backend glob.
 py_library(
     name = "export",

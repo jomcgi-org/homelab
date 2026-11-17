@@ -2365,7 +2365,10 @@ _IMPORT_BOUNDARY_SRCS = glob(
         "**/test_*.py",
         "*/tests/**/*.py",
     ],
-) + ["//projects/monolith/auth:boundary_sources"]
+) + [
+    "//projects/monolith/auth:boundary_sources",
+    "//projects/monolith/trips/export:boundary_sources",
+]
 
 # Capture Bazel's exact source selection independently of the test runfiles.
 # The test compares this manifest to what it can actually discover at runtime,
