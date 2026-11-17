@@ -103,11 +103,13 @@ $S
 $F_DEV
 $D --env dev $M" "refresh deploys over its own release"
 
-# 4. refresh: another release is live at the start, or appears before the
-#    deploy: skip with exit 0 and no deploy.
-reset 10
-run env STAGE=dev MODE=refresh
-expect "$F_DEV" "refresh skips at the start"
+# 4. refresh: another release (10) or no deployment (11) at the start, or
+#    another release before the deploy: skip with exit 0 and no deploy.
+for code in 10 11; do
+	reset "$code"
+	run env STAGE=dev MODE=refresh
+	expect "$F_DEV" "refresh skips at the start (fence $code)"
+done
 reset $'0\n10\n'
 run env STAGE=dev MODE=refresh
 expect "$F_DEV
@@ -156,6 +158,15 @@ if run env STAGE=prod MODE=sync 2>/dev/null; then
 	echo "a sync that cannot confirm its release should fail"
 	exit 1
 fi
+
+# 6c2. sync: every check reports no deployment (11). Each one deploys again,
+#      and the sync still fails, because only its own label confirms it.
+reset $'11\n11\n11\n11\n11\n11\n11\n11\n'
+if run env STAGE=prod MODE=sync 2>/dev/null; then
+	echo "a sync that never sees its own label should fail"
+	exit 1
+fi
+(($(grep -c '^wrangler deploy' "$work/calls") >= 2)) || { echo "no deployment should trigger a redeploy"; cat "$work/calls"; exit 1; }
 
 # 6d. sync: errors during the window but a good final check: success.
 reset $'1\n1\n'

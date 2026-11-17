@@ -31,7 +31,12 @@ export async function liveMessage(
   return latest.annotations?.["workers/message"] ?? "";
 }
 
-/** True when this release may deploy over what is live. */
-export function isCurrent(live, release) {
-  return live === null || live === releaseMessage(release);
+/**
+ * How the live deployment relates to this release: "current" when it carries
+ * this release's label, "none" when the Worker has no deployment, and
+ * "other" for anything else (another release, or no label).
+ */
+export function classify(live, release) {
+  if (live === null) return "none";
+  return live === releaseMessage(release) ? "current" : "other";
 }

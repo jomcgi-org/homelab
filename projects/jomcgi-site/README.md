@@ -78,7 +78,8 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
   seconds. The hook re-checks for 300 seconds after its deploy and deploys
   again if a refresh replaced it, so the hook always deploys last and an
   older refresh never leaves an older release live; it then confirms its
-  release is live, or fails the sync so Argo CD retries. Every check runs
+  release is live (only its own label counts; "no deployment" does not),
+  or fails the sync so Argo CD retries. Every check runs
   under a timeout. A failed check fails the refresh Job; only "another
   release is live" is a skip. Same-origin static assets need no CORS and cost
   nothing per request. HOME-178 planned a public bucket on `data.jomcgi.dev`;
