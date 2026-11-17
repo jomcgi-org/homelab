@@ -7,7 +7,12 @@ alone, when:
 - the OpenRouter key is empty, OpenRouter rejects the key or model, or the
   model returns another dimension than EMBEDDINGS_DIMENSIONS;
 - the decision model (System One at DECISION_MODEL_BASE_URL) refuses or does
-  not answer. Recall has no local fallback, so the pod would serve failures;
+  not answer. Recall has no local fallback, so the pod would serve failures.
+  Hindsight cannot send OpenRouter's data policy with decision calls, so the
+  model must have exactly one OpenRouter endpoint, and it must answer when the
+  request requires zero data retention. OpenRouter's preferences cannot pin
+  one variant of a provider (`only` and `ignore` match every variant), so a
+  second endpoint stops the sync for a person to check;
 - stored rows have another dimension than EMBEDDINGS_DIMENSIONS. Hindsight
   resizes an empty vector column at startup but refuses one with rows.
 
@@ -55,13 +60,33 @@ def quoted(name):
     return '"' + name.replace('"', '""') + '"'
 
 
-def decision_answers(key, base_url, model):
+ENDPOINTS_URL = "https://openrouter.ai/api/v1/models/{}/endpoints"
+# OpenRouter routes such a request only to an endpoint that keeps no data.
+ZERO_RETENTION = {"zdr": True, "data_collection": "deny", "allow_fallbacks": False}
+
+
+def decision_endpoints(key, model):
+    """The provider tag of every endpoint OpenRouter lists for ``model``."""
+    req = urllib.request.Request(
+        ENDPOINTS_URL.format(model), headers={"Authorization": f"Bearer {key}"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            endpoints = json.load(resp)["data"]["endpoints"]
+    except urllib.error.HTTPError as e:
+        raise SystemExit(f"OpenRouter lists no endpoints for {model}: HTTP {e.code}")
+    return [e["tag"] for e in endpoints]
+
+
+def decision_answers(key, base_url, model, provider=None):
     """Ask the decision model one question, as Hindsight's System One client does."""
     body = {
         "model": model,
         "state": "Question: Is this a preflight check?",
         "questions": {"q": {"type": "noul", "instructions": "This is a preflight."}},
     }
+    if provider is not None:
+        body["provider"] = provider
     req = urllib.request.Request(
         base_url.rstrip("/") + "/v1/systemone",
         method="POST",
@@ -72,9 +97,15 @@ def decision_answers(key, base_url, model):
         with urllib.request.urlopen(req, timeout=60) as resp:
             answer = (json.load(resp).get("answers") or {}).get("q") or {}
     except urllib.error.HTTPError as e:
-        raise SystemExit(f"The decision model {model} refused: HTTP {e.code}")
+        raise SystemExit(
+            f"The decision model {model} refused{via(provider)}: HTTP {e.code}"
+        )
     if not isinstance(answer.get("noul"), (int, float)):
-        raise SystemExit(f"The decision model {model} gave no answer")
+        raise SystemExit(f"The decision model {model} gave no answer{via(provider)}")
+
+
+def via(provider):
+    return " with zero data retention" if provider else ""
 
 
 async def stored(conn):
@@ -119,9 +150,15 @@ def main():
     returned = model_dimension(key, model, extra)
     if returned != dimension:
         raise SystemExit(f"{model} returns {returned} dimensions, not {dimension}")
-    decision_answers(
-        key, os.environ["DECISION_MODEL_BASE_URL"], os.environ["DECISION_MODEL"]
-    )
+    decision = os.environ["DECISION_MODEL"]
+    endpoints = decision_endpoints(key, decision)
+    if len(endpoints) != 1:
+        raise SystemExit(
+            f"{decision} has OpenRouter endpoints {endpoints}, not exactly one: "
+            "check each one's data policy, then update the preflight"
+        )
+    base_url = os.environ["DECISION_MODEL_BASE_URL"]
+    decision_answers(key, base_url, decision, ZERO_RETENTION)
     columns = asyncio.run(database(os.environ["DATABASE_URL"]))
     for table, (column, rows) in columns.items():
         print(f"{table}: {column}, {rows} rows with a vector")

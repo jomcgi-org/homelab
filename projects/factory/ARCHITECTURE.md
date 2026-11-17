@@ -306,7 +306,12 @@ no data. The decision model, `typesafe/jev-1.14` through OpenRouter's System
 One endpoint on the same key, ranks recall and settles the yes-or-no
 judgments of consolidation, reflect and page refresh. The reranker is `rrf`,
 which loads no model. Recall has no local fallback, so it fails while
-OpenRouter or Jev is unavailable.
+OpenRouter or Jev is unavailable. Hindsight cannot send OpenRouter's data
+policy with decision calls, so the preflight requires Jev to have exactly
+one OpenRouter endpoint, and requires that endpoint to answer a request that
+requires zero data retention. OpenRouter's routing preferences cannot pin
+one variant of a provider, so a second endpoint stops the sync for a person
+to check.
 
 **Why the decision model.** Joe chose a decision model with no local
 fallback ([HOME-130 comment 1498](https://factory-plan.jomcgi.dev/factory/issue/HOME-130#comment-1498)).
@@ -334,15 +339,21 @@ the decision model gives no answer, or when stored rows in any schema have
 another dimension. The sync then stops before the Deployment, and the running pod
 keeps serving.
 
-**Rollback.** The way back to the image's local model is a revert of the
-commits of #8144 (HOME-176). It removes the OpenRouter settings, the
-preflight and their tests together. While no rows hold vectors, the revert
-is enough. After the first retain, re-embed first; no API pod has to run:
+**Rollback.** Two levers, by what failed:
 
-1. `kubectl apply -f projects/platform-factory/hindsight/recovery/reembed-local.yaml`
-   re-embeds every row with the local model. ArgoCD never applies this Job.
-2. Merge the revert.
-3. In the running pod, run `hindsight-admin reembed --all-schemas --finish`.
+- **The decision model.** Revert the commits of #8147 (HOME-182). Recall
+  returns to the image's `hs-rerank-1` cross-encoder, and consolidation,
+  reflect and page refresh to the LLM. Nothing stored changes.
+- **OpenRouter as a whole.** Revert #8147's commits first, then #8144's
+  (HOME-176). Together they remove every OpenRouter setting, the preflight
+  and their tests, so nothing references the OpenRouter Secret. While no rows
+  hold vectors, the reverts are enough. After the first retain, re-embed
+  first; no API pod has to run:
+
+  1. `kubectl apply -f projects/platform-factory/hindsight/recovery/reembed-local.yaml`
+     re-embeds every row with the local model. ArgoCD never applies this Job.
+  2. Merge the reverts.
+  3. In the running pod, run `hindsight-admin reembed --all-schemas --finish`.
 
 `projects/platform-factory/hindsight/rollback_test.py` runs these steps in the
 deployed image without network, from 1,024-dimensional vectors, and
