@@ -1889,8 +1889,8 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			applyGoal(r, prior, b.ItsaplanProject, key, in.goal)
 		}
 		// Joe's decisions come from the trusted comments the prompt showed;
-		// a high finding justified by one counts only when its note links
-		// it (Decisions.decided). After a restart the task's message was not
+		// a finding justified by one counts only when its note links it
+		// (Decisions.decided). After a restart the task's message was not
 		// built here, so read them again. A failed read assesses nothing:
 		// the attempt ends without a report and is retried.
 		comments := in.comments

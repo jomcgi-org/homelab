@@ -232,7 +232,7 @@ type Blocked struct {
 	Repeated bool
 	// Note is the agent's note on a previous finding.
 	Note string
-	// Decision is Joe's comment that justified an accepted high finding.
+	// Decision is Joe's comment that justified an accepted finding.
 	Decision *DecisionStamp
 	// Reason says why a previous finding still blocks.
 	Reason string
@@ -275,8 +275,8 @@ func withdrawn(note string) bool {
 
 // Decisions are Joe's comments on one PR: the trusted comments by a
 // `humanApprovers` login, which are Joe's accounts (REVIEW.md "Joe
-// decides"). Only they can justify a high finding (REVIEW.md "Clearing a
-// finding without a fix").
+// decides"). Only they can justify a high finding, or a medium one whose
+// note starts "decision:" (REVIEW.md "Clearing a finding without a fix").
 type Decisions struct {
 	Repo     string
 	Number   int
@@ -287,12 +287,27 @@ type Decisions struct {
 	Carried []DecisionStamp
 }
 
-// DecisionStamp is Joe's comment that justified high finding Finding, with
-// a hash of its text then: an edit or a deletion revokes it.
+// DecisionStamp is Joe's comment that justified finding Finding, with a
+// hash of its text then: an edit or a deletion revokes it. Severity is the
+// finding's severity then; a stamp without one is high.
 type DecisionStamp struct {
-	Finding string `json:"finding,omitempty"`
-	ID      int64  `json:"id"`
-	Hash    string `json:"hash"`
+	Finding  string `json:"finding,omitempty"`
+	ID       int64  `json:"id"`
+	Hash     string `json:"hash"`
+	Severity string `json:"severity,omitempty"`
+}
+
+// severity is the severity a revoked decision restores its finding at.
+func (st DecisionStamp) severity() string {
+	if st.Severity == SeverityMedium {
+		return SeverityMedium
+	}
+	return SeverityHigh
+}
+
+// decisionNote reports a note that claims Joe's decision.
+func decisionNote(note string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(note)), "decision:")
 }
 
 func bodyHash(body string) string {
@@ -300,13 +315,13 @@ func bodyHash(body string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// decided is Joe's comment that note cites to justify finding id, or nil.
-// The note starts "decision:" and links the comment on this PR
-// (https://github.com/<repo>/pull/<n>#issuecomment-<id>, or /issues/), and
-// the comment's text names id. The agent's note alone grants nothing.
-func (d Decisions) decided(note, id string) *DecisionStamp {
-	if d.Repo == "" || d.Number <= 0 || strings.TrimSpace(id) == "" ||
-		!strings.HasPrefix(strings.ToLower(strings.TrimSpace(note)), "decision:") {
+// decided is Joe's comment that note cites to justify finding id at
+// severity, or nil. The note starts "decision:" and links the comment on
+// this PR (https://github.com/<repo>/pull/<n>#issuecomment-<id>, or
+// /issues/), and the comment's text names id. The agent's note alone grants
+// nothing.
+func (d Decisions) decided(note, id, severity string) *DecisionStamp {
+	if d.Repo == "" || d.Number <= 0 || strings.TrimSpace(id) == "" || !decisionNote(note) {
 		return nil
 	}
 	link := regexp.MustCompile(`(?i)https://github\.com/` + regexp.QuoteMeta(d.Repo) + `/(?:pull|issues)/` +
@@ -318,7 +333,7 @@ func (d Decisions) decided(note, id string) *DecisionStamp {
 		}
 		for _, c := range d.Comments {
 			if c.ID == cid && namesID(c.Body, id) {
-				return &DecisionStamp{Finding: clip(id, maxTitle), ID: cid, Hash: bodyHash(c.Body)}
+				return &DecisionStamp{Finding: clip(id, maxTitle), ID: cid, Hash: bodyHash(c.Body), Severity: severity}
 			}
 		}
 	}
@@ -414,9 +429,11 @@ const MaxLow = 5
 // severity: the finding was wrong). One whose severity on this head is
 // medium is also accepted when justified with any note, and one whose
 // severity is high when the note cites Joe's comment that names it
-// (Decisions.decided). Anything else (open, unaccounted for, a justified
-// critical, a justified high without such a decision, a justification
-// without a note) still blocks. A previous
+// (Decisions.decided). A medium one whose note starts "decision:" needs
+// such a comment too, so that an edit or a deletion of it revokes the
+// decision. Anything else (open, unaccounted for, a justified critical, a
+// justified high or a "decision:" medium without such a comment, a
+// justification without a note) still blocks. A previous
 // finding reported again keeps the higher of its two severities unless it
 // is marked fixed or withdrawn. A previous human-gate finding that is not
 // fixed or withdrawn is a human-gate finding of this head too: only a
@@ -426,7 +443,7 @@ func Assess(r *Report, prior []Finding) Assessment {
 }
 
 // AssessDecided is Assess with Joe's comments on the PR, which can justify a
-// high finding.
+// high or a medium finding.
 func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 	var a Assessment
 	status := map[string]Previous{}
@@ -440,22 +457,21 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 		priorByID[p.ID] = p
 	}
 	// justified judges a justification by the finding's severity on this
-	// head, so a medium one raised to high needs Joe's decision.
+	// head, so a medium one raised to high needs Joe's decision. A note
+	// that claims Joe's decision is checked and stamped at any severity.
 	justified := func(id, severity string) (string, *DecisionStamp, bool) {
 		p, wasPrior := priorByID[id]
 		s, ok := status[id]
 		note := strings.TrimSpace(s.Note)
-		if !wasPrior || !ok || s.Status != StatusJustified || note == "" || isGate(p) {
+		if !wasPrior || !ok || s.Status != StatusJustified || note == "" || isGate(p) ||
+			(severity != SeverityMedium && severity != SeverityHigh) {
 			return note, nil, false
 		}
-		switch severity {
-		case SeverityMedium:
+		if severity == SeverityMedium && !decisionNote(note) {
 			return note, nil, true
-		case SeverityHigh:
-			st := d.decided(note, id)
-			return note, st, st != nil
 		}
-		return note, nil, false
+		st := d.decided(note, id, severity)
+		return note, st, st != nil
 	}
 	cleared := func(id string) bool {
 		s, ok := status[id]
@@ -468,14 +484,17 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 	}
 	// The previous head's decisions: one that holds stays relied on, even
 	// when the bounded cleared record lost its finding. One whose comment
-	// changed is revoked, and its finding is high again.
-	revoked := map[string]bool{}
+	// changed is revoked, and its finding blocks again at the highest
+	// severity it was decided at.
+	revoked := map[string]string{}
 	for _, st := range d.Carried {
 		switch {
 		case d.holds(st):
 			a.Carried = append(a.Carried, st)
 		case st.Finding != "":
-			revoked[st.Finding] = true
+			if cur, ok := revoked[st.Finding]; !ok || rank(st.severity()) < rank(cur) {
+				revoked[st.Finding] = st.severity()
+			}
 		}
 	}
 	current := map[string]bool{}
@@ -491,9 +510,9 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 			reason[f.ID] = fmt.Sprintf("reported again as %s; it keeps its earlier severity", f.Severity)
 			f.Severity = p.Severity
 		}
-		if revoked[f.ID] && rank(f.Severity) > rank(SeverityHigh) {
-			reason[f.ID] = fmt.Sprintf("reported again as %s after Joe's decision changed; it stays high", f.Severity)
-			f.Severity, f.Lowered = SeverityHigh, ""
+		if sev, ok := revoked[f.ID]; ok && rank(f.Severity) > rank(sev) {
+			reason[f.ID] = fmt.Sprintf("reported again as %s after Joe's decision changed; it stays %s", f.Severity, sev)
+			f.Severity, f.Lowered = sev, ""
 		}
 		switch {
 		case f.Severity == SeverityLow && f.Lowered != "":
@@ -558,6 +577,8 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 			b.Reason = "justified, but a high finding needs a note starting \"decision:\" that links Joe's comment naming it"
 		case s.Status == StatusJustified && p.Severity != SeverityMedium:
 			b.Reason = "justified, but only a medium or a decided high finding can be justified"
+		case s.Status == StatusJustified && decisionNote(note):
+			b.Reason = "justified as Joe's decision, but the note does not link Joe's comment on this PR naming it"
 		case s.Status == StatusJustified:
 			b.Reason = "justified without a note"
 		default:
@@ -565,19 +586,21 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 		}
 		a.Blocking = append(a.Blocking, b)
 	}
-	// A revoked decision restores its finding as a blocking high, unless
-	// this review reports it (high at least, above) or accounts for it.
+	// A revoked decision restores its finding as blocking, unless this
+	// review reports it (at the decided severity at least, above) or
+	// accounts for it.
 	for _, st := range d.Carried {
-		if !revoked[st.Finding] || current[st.Finding] {
+		sev := revoked[st.Finding]
+		if sev == "" || current[st.Finding] {
 			continue
 		}
 		if _, was := priorByID[st.Finding]; was {
 			continue
 		}
-		revoked[st.Finding] = false // Once, for several stamps of one finding.
+		revoked[st.Finding] = "" // Once, for several stamps of one finding.
 		a.Blocking = append(a.Blocking, Blocked{
 			Finding: Finding{
-				ID: st.Finding, Severity: SeverityHigh, Title: "Joe's decision on this finding was edited or deleted",
+				ID: st.Finding, Severity: sev, Title: "Joe's decision on this finding was edited or deleted",
 				Detail: "An earlier head passed on Joe's decision for this finding. Its comment has changed, so the finding blocks until it is fixed or decided again.",
 			},
 			Carried: true, Reason: "Joe's decision changed",
@@ -742,7 +765,7 @@ type State struct {
 	Session *SessionRef `json:"session,omitempty"`
 
 	// Decisions are Joe's comments this head's review relied on to accept
-	// a high finding. Every poll checks they still hold (engine.go).
+	// a finding. Every poll checks they still hold (engine.go).
 	Decisions []DecisionStamp `json:"decisions,omitempty"`
 
 	// IssueDigest binds the report to the external evidence it reviewed.
@@ -769,8 +792,8 @@ type Cleared struct {
 	Status string `json:"status"`
 	Title  string `json:"title,omitempty"`
 	Note   string `json:"note,omitempty"`
-	// Decision is Joe's comment that justified a high finding, set only
-	// by Assess; Decisions.Revalidate clears it when the comment changes.
+	// Decision is Joe's comment that justified a finding, set only by
+	// Assess; Decisions.Revalidate clears it when the comment changes.
 	Decision *DecisionStamp `json:"decision,omitempty"`
 }
 
@@ -871,7 +894,7 @@ func Render(a Assessment, r *Report, gate *Gate, footer string) Outcome {
 		s.WriteString("\n")
 	}
 	if len(a.Accepted) > 0 {
-		s.WriteString("### Accepted\n\nMedium findings from the previous review, justified by the agent:\n\n")
+		s.WriteString("### Accepted\n\nFindings from the previous review, justified by the agent or by Joe's decision:\n\n")
 		for _, b := range a.Accepted {
 			writeFinding(&s, b.Finding)
 			fmt.Fprintf(&s, "  Justification: %s\n", oneLine(b.Note, maxMessage))
