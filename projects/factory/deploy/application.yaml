@@ -91,6 +91,15 @@ spec:
       namespace: factory
       name: factory-itsaplan-agent-factory-reviewer
       jsonPointers: [/data]
+    # The Discord history import Job runs once per runId (chart
+    # templates/discord.yaml). Its pod template names the connector image and
+    # the chart version, which most releases change, and a Job's template is
+    # immutable. Ignoring /spec keeps the finished Job as it ran; a new import
+    # is a new runId, so a new Job name.
+    - group: batch
+      kind: Job
+      namespace: factory-discord
+      jsonPointers: [/spec]
   syncPolicy:
     automated:
       prune: true

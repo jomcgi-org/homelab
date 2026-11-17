@@ -401,6 +401,9 @@ spec:
 # server with `history: true` into its bank, one document per channel-day.
 # A new runId starts a new run; days already stored are skipped. The bridge's
 # label gives it the bridge's egress and hindsight-discord's admission.
+# The finished Job stays as it ran: deploy/application.yaml ignores /spec of
+# Jobs in this namespace, so a new connector image or chart version neither
+# fails the sync (a Job's template is immutable) nor starts another run.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -408,12 +411,6 @@ metadata:
   namespace: {{ $b.namespace }}
   labels:
     {{- include "factory.labels" . | nindent 4 }}
-  annotations:
-    # A Job's template is immutable, and this one names the shared connector
-    # image. When the image or settings change, Argo CD deletes and recreates
-    # the Job instead of failing the sync; the new run skips the days already
-    # imported, so it costs only Discord reads.
-    argocd.argoproj.io/sync-options: Force=true,Replace=true
 spec:
   backoffLimit: 2
   activeDeadlineSeconds: {{ $d.import.deadlineSeconds }}
