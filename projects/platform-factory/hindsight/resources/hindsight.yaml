@@ -69,7 +69,7 @@ spec:
                   name: hindsight-db
                   key: DATABASE_URL
             # Fact extraction, consolidation and reflect (HOME-130 comment
-            # 913). Recall uses only the local models below.
+            # 913).
             - name: HINDSIGHT_API_LLM_PROVIDER
               value: anthropic
             - name: HINDSIGHT_API_LLM_MODEL
@@ -97,8 +97,22 @@ spec:
                   key: mcp-token
             - name: HINDSIGHT_API_MCP_ENABLED_TOOLS
               value: recall,retain
-            # The image bakes in the embedding model and reranker; no
-            # Hugging Face egress.
+            # Embeddings: Voyage 4 Large through OpenRouter, on the key Joe
+            # shares with Discord memory (HOME-176, HOME-130 comment 1439).
+            # Its 1,024 dimensions fit pgvector's 2,000-dimension index.
+            # OpenRouter routes only to providers that keep no data.
+            - name: HINDSIGHT_API_EMBEDDINGS_PROVIDER
+              value: openrouter
+            - name: HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL
+              value: mongodb/voyage-4-large
+            - name: HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-openrouter
+                  key: api-key
+            - name: HINDSIGHT_API_EMBEDDINGS_OPENAI_EXTRA_BODY
+              value: '{"provider": {"data_collection": "deny"}}'
+            # The image bakes in the reranker; no Hugging Face egress.
             - name: HF_HUB_OFFLINE
               value: "1"
             - name: TRANSFORMERS_OFFLINE
