@@ -1,0 +1,51 @@
+# Hindsight under the cluster-wide default-deny
+# (projects/platform-factory/network-policy/).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: hindsight
+  namespace: hindsight-discord
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-discord
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-db
+            cnpg.io/cluster: factory-db
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    - toFQDNs:
+        - matchName: openrouter.ai
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+# The key Jobs read and write Secrets and nothing else.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: hindsight-keys
+  namespace: hindsight-discord
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight-keys
+  egress:
+    - toEntities: [kube-apiserver]

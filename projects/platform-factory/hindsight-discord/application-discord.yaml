@@ -1,0 +1,39 @@
+# Create the future bridge's namespace and tenant-key placeholder (HOME-163).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hindsight-discord-key
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/platform-factory/hindsight-discord/discord
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: factory-discord
+  # The PostSync Job in hindsight-discord writes the tenant key.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: hindsight-discord-key
+      jsonPointers: [/data]
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

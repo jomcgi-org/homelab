@@ -22,13 +22,21 @@ LOGINS = [
     ),
     ("factory-db-reviewer-login", "factory_reviewer", "factory", "factory-reviewer-db"),
     ("factory-db-hindsight-login", "factory_hindsight", "hindsight", "hindsight-db"),
+    (
+        "factory-db-discord-hindsight-login",
+        "factory_discord_hindsight",
+        "hindsight-discord",
+        "hindsight-db",
+    ),
 ]
 REVIEWER_LOGIN = ("factory-db", "factory-db-reviewer-login")
 REVIEWER_CONNECTION = ("factory", "factory-reviewer-db")
-HINDSIGHT_LOGIN = ("factory-db", "factory-db-hindsight-login")
-HINDSIGHT_CONNECTION = ("hindsight", "hindsight-db")
 # Each client's placeholders and the Role that lets factory-db-setup fill them.
-CLIENT_SECRETS = ["factory/secrets.yaml", "../hindsight/resources/secrets.yaml"]
+CLIENT_SECRETS = [
+    "factory/secrets.yaml",
+    "../hindsight/resources/secrets.yaml",
+    "../hindsight-discord/resources/secrets.yaml",
+]
 
 
 def read(path):
@@ -113,14 +121,18 @@ def provisioning(monkeypatch):
     return script, api
 
 
-@pytest.mark.parametrize("existing", [False, True], ids=["fresh", "add-later-logins"])
+@pytest.mark.parametrize(
+    "existing_count", [0, 2, 4], ids=["fresh", "later-logins", "discord"]
+)
 def test_provisioning_preserves_passwords_and_reruns_without_writes(
-    provisioning, existing, capsys
+    provisioning, existing_count, capsys
 ):
     script, api = provisioning
     old_passwords = {}
-    if existing:
-        for index, (name, login, namespace, target) in enumerate(LOGINS[:2]):
+    if existing_count:
+        for index, (name, login, namespace, target) in enumerate(
+            LOGINS[:existing_count]
+        ):
             old_passwords[name] = str(index + 1) * 48
             api.secrets[("factory-db", name)]["data"]["password"] = encode(
                 old_passwords[name]
@@ -132,29 +144,25 @@ def test_provisioning_preserves_passwords_and_reruns_without_writes(
             api.secrets[(namespace, target)]["data"] = {"DATABASE_URL": encode(url)}
 
     script.main("init")
-    assert set(api.writes) == (
-        {REVIEWER_LOGIN, HINDSIGHT_LOGIN}
-        if existing
-        else {("factory-db", name) for name, _, _, _ in LOGINS}
-    )
+    assert set(api.writes) == {
+        ("factory-db", name) for name, _, _, _ in LOGINS[existing_count:]
+    }
     script.secrets.token_hex.assert_called_with(24)
-    assert script.secrets.token_hex.call_count == (2 if existing else 4)
+    assert script.secrets.token_hex.call_count == len(LOGINS) - existing_count
     passwords = {}
     for name, login, _, _ in LOGINS:
         data = api.secrets[("factory-db", name)]["data"]
         assert base64.b64decode(data["username"]).decode() == login
         passwords[name] = base64.b64decode(data["password"]).decode()
         assert passwords[name] == old_passwords.get(name, "c" * 48)
-    assert "DATABASE_URL" not in api.secrets[REVIEWER_CONNECTION]["data"]
-    assert "DATABASE_URL" not in api.secrets[HINDSIGHT_CONNECTION]["data"]
+    for _, _, namespace, target in LOGINS[existing_count:]:
+        assert "DATABASE_URL" not in api.secrets[(namespace, target)]["data"]
 
     api.writes.clear()
     script.main("connections")
-    assert set(api.writes) == (
-        {REVIEWER_CONNECTION, HINDSIGHT_CONNECTION}
-        if existing
-        else {(namespace, target) for _, _, namespace, target in LOGINS}
-    )
+    assert set(api.writes) == {
+        (namespace, target) for _, _, namespace, target in LOGINS[existing_count:]
+    }
     for name, login, namespace, target in LOGINS:
         data = api.secrets[(namespace, target)]["data"]
         assert set(data) == {"DATABASE_URL"}
@@ -173,7 +181,7 @@ def test_provisioning_preserves_passwords_and_reruns_without_writes(
     script.main("connections")
     assert api.secrets == snapshot
     assert api.writes == []
-    assert script.secrets.token_hex.call_count == (2 if existing else 4)
+    assert script.secrets.token_hex.call_count == len(LOGINS) - existing_count
     output = capsys.readouterr().out
     assert all(password not in output for password in passwords.values())
 
@@ -199,7 +207,7 @@ def test_connections_repair_a_stale_url_without_rotating_login(provisioning):
     script.main("connections")
     assert api.secrets[REVIEWER_LOGIN] == login
     assert api.writes == [REVIEWER_CONNECTION]
-    assert script.secrets.token_hex.call_count == 4
+    assert script.secrets.token_hex.call_count == len(LOGINS)
 
 
 def test_managed_roles_and_databases_use_the_provisioned_logins():
@@ -226,10 +234,11 @@ def test_managed_roles_and_databases_use_the_provisioned_logins():
             "Prune=false,Delete=false"
         )
     # Hindsight's migrations need both in public, and vector needs a superuser.
-    assert databases["factory_hindsight"]["spec"]["extensions"] == [
-        {"name": name, "ensure": "present", "schema": "public"}
-        for name in ("vector", "pg_trgm")
-    ]
+    for name in ("factory_hindsight", "factory_discord_hindsight"):
+        assert databases[name]["spec"]["extensions"] == [
+            {"name": extension, "ensure": "present", "schema": "public"}
+            for extension in ("vector", "pg_trgm")
+        ]
 
 
 @pytest.mark.parametrize(
@@ -239,6 +248,9 @@ def test_managed_roles_and_databases_use_the_provisioned_logins():
         ("factory", "factory-connector", "5432", True),
         ("hindsight", "hindsight", "5432", True),
         ("hindsight", "hindsight-keys", "5432", False),
+        ("hindsight-discord", "hindsight", "5432", True),
+        ("hindsight-discord", "hindsight-keys", "5432", False),
+        ("factory-discord", "hindsight", "5432", False),
         ("other", "factory-reviewer", "5432", False),
         ("factory", "unrelated", "5432", False),
         ("factory", "factory-reviewer", "8000", False),

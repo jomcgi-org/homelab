@@ -329,6 +329,13 @@ supporting chart and `factory-r-homelab/hindsight-mcp` holds a token. That
 change updates `deploy/render.sha256`; a fresh coding session confirms the
 tools.
 
+Discord memory has a separate process, database and REST tenant key under
+[`hindsight-discord`](../platform-factory/hindsight-discord/README.md)
+([HOME-163](https://factory-plan.jomcgi.dev/factory/issue/HOME-163)). It calls
+DeepSeek through the dedicated OpenRouter credential. Its manifests disable
+MCP and admit only namespace `factory-discord`. The linked runbook records
+the boundary and rollout checks; the bridge remains HOME-162.
+
 ## itsaplan
 
 Step 6 (#7817). The chart's own templates (`templates/itsaplan*.yaml`) run

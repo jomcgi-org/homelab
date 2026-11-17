@@ -84,6 +84,13 @@ spec:
         connectionLimit: -1
         passwordSecret:
           name: factory-db-hindsight-login
+      - name: factory_discord_hindsight
+        ensure: present
+        login: true
+        inherit: true
+        connectionLimit: -1
+        passwordSecret:
+          name: factory-db-discord-hindsight-login
   backup:
     retentionPolicy: "14d"
     # The in-tree barman-cloud integration, as kagent-pg; CloudNativePG 1.31
@@ -162,6 +169,32 @@ spec:
     name: factory-db
   name: factory_hindsight
   owner: factory_hindsight
+  ensure: present
+  databaseReclaimPolicy: retain
+  extensions:
+    - name: vector
+      ensure: present
+      schema: public
+    - name: pg_trgm
+      ensure: present
+      schema: public
+---
+# Discord's memory store (projects/platform-factory/hindsight-discord). Its
+# migrations need vector and pg_trgm in public; creating vector needs a
+# superuser, so the operator installs both here.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: factory-db-discord-hindsight
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  cluster:
+    name: factory-db
+  name: factory_discord_hindsight
+  owner: factory_discord_hindsight
   ensure: present
   databaseReclaimPolicy: retain
   extensions:
