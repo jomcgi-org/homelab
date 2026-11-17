@@ -110,6 +110,14 @@ remaining is medium `goal`. The latter clears with a fix or an owner: a
 HOME issue that names the remainder. Listing remaining work never waives
 the safe-to-merge checks or makes an unsolved stated problem pass.
 
+A gap in a test or check that the PR itself adds is low and never blocks,
+when the code that the check covers works today and the gap only lets a
+future change pass the check unnoticed. A check that fails, that passes on
+a defect in today's code or that never runs keeps its normal severity. For
+example, each review round on #8145 found a new way around its colour and
+page checks, and none of them was a defect in the site
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-184)).
+
 1. **Would CI fail on it?** Report nothing.
 2. **Can you name the input or state, what fails, where, and what resolves
    it?** If any is missing, the finding is low.

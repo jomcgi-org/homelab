@@ -265,6 +265,24 @@ func TestGoalPromptHoldsNoPRText(t *testing.T) {
 	}
 }
 
+// A gap in a check the PR adds is not a missing implementation (HOME-184):
+// the prompt tells the goal check to judge the check against the cases the
+// issue names, and keeps a missing or failing check not_met.
+func TestGoalPromptJudgesChecksByTheCasesTheIssueNames(t *testing.T) {
+	in := &IssueContext{Issue: &IssueEvidence{Key: "HOME-174", Title: "Goal", Description: "1. A test fails an over-budget page.", Status: "Todo", Trusted: true}}
+	files := []github.PullRequestFile{{Path: "x.test.ts", Status: "added", Patch: "+test"}}
+	got := GoalPrompt("jomcgi-org/homelab", github.PullRequest{Number: 8145, HeadSHA: shaA}, files, in)
+	for _, want := range []string{
+		"for the cases the issue names",
+		"A way a future change could get around the check does not make the criterion",
+		"A check that is missing, fails, or never runs remains",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("goal prompt lacks %q", want)
+		}
+	}
+}
+
 // Replay the HOME-120/#8122 failure with a synthetic diff and recorded-form
 // replies. This checks the prompt contract and service behavior without a
 // live model call. The human gate still requires approval.
