@@ -21,6 +21,11 @@ export default defineConfig({
         index: page("index.html"),
         "404": page("404.html"),
         cv: page("cv.html"),
+        scotland: page("scotland.html"),
+        "scotland-privacy": page("scotland/privacy.html"),
+        "scotland-terms": page("scotland/terms.html"),
+        "scotland-support": page("scotland/support.html"),
+        slop: page("slop.html"),
       },
       onwarn(warning, warn) {
         if (warning.code !== "MODULE_LEVEL_DIRECTIVE") warn(warning);

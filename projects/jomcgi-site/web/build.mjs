@@ -2,7 +2,7 @@
 // entry. A page reads fully, with its real preview tags, before any script
 // runs; the browser then hydrates the same tree (HOME-178 performance contract).
 // Usage: node build.mjs (from this directory)
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { build, createServer } from "vite";
@@ -19,6 +19,12 @@ const server = await createServer({
 });
 try {
   const { MARK, render } = await server.ssrLoadModule("/src/prerender.tsx");
+  const { marketplace } = await server.ssrLoadModule("/src/scotland-data.ts");
+  await mkdir("dist/scotland", { recursive: true });
+  await writeFile(
+    "dist/scotland/marketplace.json",
+    `${JSON.stringify(marketplace, null, 2)}\n`,
+  );
   const { PAGES } = await server.ssrLoadModule("/src/pages.tsx");
   for (const entry of Object.keys(PAGES)) {
     const file = join("dist", entry);

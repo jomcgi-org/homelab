@@ -21,7 +21,9 @@ describe("pages", () => {
       }),
     ).toBeTruthy();
     const nav = screen.getByRole("navigation", { name: "Site" });
-    for (const section of SECTIONS) {
+    for (const section of SECTIONS.filter(
+      (section) => section.listed !== false,
+    )) {
       expect(
         within(nav)
           .getByRole("link", { name: section.name })

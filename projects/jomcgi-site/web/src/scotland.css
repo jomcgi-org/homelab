@@ -1,0 +1,69 @@
+/* Connector pages share the site's palette and keep setup snippets readable
+ * on narrow screens without making the page itself scroll horizontally. */
+.scotland-section {
+  min-width: 0;
+  scroll-margin-top: var(--spacing-4);
+}
+
+.scotland-section a,
+.scotland-links a {
+  color: var(--color-text-accent);
+  text-underline-offset: 0.2em;
+}
+
+.scotland-band {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-3);
+  padding: var(--spacing-3);
+  margin-bottom: var(--spacing-4);
+  background: var(--color-background-muted);
+  border-top: 1px solid var(--color-border);
+}
+
+.scotland-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-4);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.scotland-code {
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: var(--spacing-4);
+  margin: 0;
+  background: var(--color-background-muted);
+  border-block: 1px solid var(--color-border);
+}
+
+.scotland-spec {
+  margin: 0;
+}
+
+.scotland-spec > div {
+  display: grid;
+  grid-template-columns: minmax(7rem, 12rem) minmax(0, 1fr);
+  gap: var(--spacing-3);
+  padding-block: var(--spacing-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.scotland-spec dt {
+  font-weight: 600;
+}
+
+.scotland-spec dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 40rem) {
+  .scotland-spec > div {
+    grid-template-columns: 1fr;
+  }
+}

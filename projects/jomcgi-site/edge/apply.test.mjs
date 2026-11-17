@@ -21,6 +21,61 @@ const RULES = read("./cache-rules.json");
 const LIVE = read("./testdata/live-cache-rules-2026-11-17.json").rules;
 const SCRIPT = ROUTES.script;
 
+// A Worker route's * can span path separators. Check intersection with the
+// whole protected subtree, including endpoints added to the connector later.
+function canMatchPrefix(pattern, prefix) {
+  const seen = new Set();
+  function visit(p, s) {
+    const key = `${p}:${s}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    if (s === prefix.length) return true;
+    if (p === pattern.length) return false;
+    if (pattern[p] === "*") return visit(p + 1, s) || visit(p, s + 1);
+    return pattern[p] === prefix[s] && visit(p + 1, s + 1);
+  }
+  return visit(0, 0);
+}
+
+test("Scotland and slop own only exact static URLs", () => {
+  const paths = [
+    "/scotland",
+    "/scotland/privacy",
+    "/scotland/terms",
+    "/scotland/support",
+    "/scotland/marketplace.json",
+    "/slop",
+  ];
+  for (const path of paths)
+    assert.ok(ROUTES.patterns.includes(`jomcgi.dev${path}`));
+  for (const pattern of ROUTES.patterns) {
+    const route = pattern.replace(/^https?:\/\//, "");
+    for (const prefix of [
+      "jomcgi.dev/scotland/mcp",
+      "jomcgi.dev/scotland/v1/",
+      "jomcgi.dev/slop/factory",
+    ]) {
+      assert.ok(
+        !canMatchPrefix(route, prefix),
+        `${pattern} could intercept ${prefix}`,
+      );
+    }
+  }
+});
+
+test("the boundary check catches broad routes and future connector endpoints", () => {
+  for (const pattern of [
+    "jomcgi.dev/*",
+    "jomcgi.dev/scotland*",
+    "*jomcgi.dev/scotland/*",
+    "jomcgi.dev/scotland/v*/future/endpoint",
+  ]) {
+    assert.ok(canMatchPrefix(pattern, "jomcgi.dev/scotland/v1/"));
+  }
+  assert.ok(canMatchPrefix("jomcgi.dev/slop/*", "jomcgi.dev/slop/factory"));
+  assert.ok(!canMatchPrefix("jomcgi.dev/scotland", "jomcgi.dev/scotland/mcp"));
+});
+
 const result = (value) => ({
   status: 200,
   data: { success: true, result: value },

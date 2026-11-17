@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { render } from "@testing-library/react";
 import axe from "axe-core";
 import { describe, expect, it, vi } from "vitest";
@@ -42,7 +42,9 @@ describe("page registry", () => {
       );
       expect(scripts, `${entry} must have one entry script`).toHaveLength(1);
       vi.mocked(mount).mockClear();
-      await import(/* @vite-ignore */ `../${scripts[0]!.replace(/^\.\//, "")}`);
+      await import(
+        /* @vite-ignore */ `../${join(dirname(entry), scripts[0]!)}`
+      );
       expect(vi.mocked(mount)).toHaveBeenCalledTimes(1);
       const element = vi.mocked(mount).mock.calls[0]![0] as { type: unknown };
       expect(element.type).toBe(PAGES[entry]);
@@ -93,7 +95,8 @@ describe("per-page code", () => {
     "%s reaches its own page and no other, nor the registry",
     (entry) => {
       const html = readFileSync(entry, "utf8");
-      const script = html.match(/<script\b[^>]*\ssrc="\.\/src\/([^"]+)"/)![1]!;
+      const src = html.match(/<script\b[^>]*\ssrc="([^"]+)"/)![1]!;
+      const script = relative("src", join(dirname(entry), src));
       const reached = closure(script);
       expect(reached.has("pages.tsx")).toBe(false);
       expect([...reached].filter((f) => pageModules.has(f))).toEqual([

@@ -1,3 +1,8 @@
+import { SlopPage } from "./slop-page";
+import { ScotlandSupportPage } from "./scotland-support-page";
+import { ScotlandTermsPage } from "./scotland-terms-page";
+import { ScotlandPrivacyPage } from "./scotland-privacy-page";
+import { ScotlandPage } from "./scotland-page";
 import { CvPage } from "./cv-page";
 import { HomePage } from "./home-page";
 import { NotFoundPage } from "./not-found-page";
@@ -12,4 +17,9 @@ export const PAGES: Record<string, () => React.JSX.Element> = {
   "index.html": HomePage,
   "404.html": NotFoundPage,
   "cv.html": CvPage,
+  "slop.html": SlopPage,
+  "scotland/support.html": ScotlandSupportPage,
+  "scotland/terms.html": ScotlandTermsPage,
+  "scotland/privacy.html": ScotlandPrivacyPage,
+  "scotland.html": ScotlandPage,
 };
