@@ -574,13 +574,11 @@ def skip_paused_occurrences(session: Session, now: datetime) -> int:
     next at its first cron instant after ``now`` instead. Returns the count.
     """
     now = as_utc(now)
-    skipped = 0
-    for task in _due_digests(session, now):
-        if _paused(session, task):
-            task.next_run_at = next_cron_at(task.cron_expression or "", now)
-            session.add(task)
-            skipped += 1
-    return skipped
+    skipped = [task for task in _due_digests(session, now) if _paused(session, task)]
+    for task in skipped:
+        task.next_run_at = next_cron_at(task.cron_expression or "", now)
+    session.add_all(skipped)
+    return len(skipped)
 
 
 def _pause_step_with_engine(engine, now: datetime, digests: bool) -> int:
