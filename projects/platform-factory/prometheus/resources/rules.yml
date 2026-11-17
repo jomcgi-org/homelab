@@ -92,11 +92,12 @@ groups:
           severity: critical
         annotations:
           summary: "Codex grant {{ $labels.grant }} is out of quota: a person must reset it or change the account"
-          # The reset of each window the grant has used up; a grant refused
-          # with no window at 100% lists every window's reset instead.
+          # For each window the grant has used up: its reset, or that it has
+          # none (never another window's). A grant refused with no window at
+          # 100% lists every window's reset instead.
           description: >-
             Coder turns fail until then.
-            {{ range query (printf `max by (window) (factory_broker_quota_resets_at_seconds{provider="codex"}) and on (window) (max by (window) (factory_broker_grant_quota_used_percent{grant=%q}) >= 100)` $labels.grant) }}The {{ .Labels.window }} window resets at {{ .Value | humanizeTimestamp }}. {{ else }}{{ range query `max by (window) (factory_broker_quota_resets_at_seconds{provider="codex"})` }}The {{ .Labels.window }} window resets at {{ .Value | humanizeTimestamp }}. {{ end }}{{ end }}Runbook: projects/factory-cluster/README.md, "Alerts".
+            {{ $full := query (printf `max by (window) (factory_broker_grant_quota_used_percent{grant=%q}) >= 100` $labels.grant) }}{{ if $full }}{{ range $full }}{{ $w := .Labels.window }}{{ with query (printf `max(factory_broker_quota_resets_at_seconds{provider="codex",window=%q})` $w) }}The {{ $w }} window resets at {{ . | first | value | humanizeTimestamp }}. {{ else }}The {{ $w }} window has no reset time. {{ end }}{{ end }}{{ else }}{{ range query `max by (window) (factory_broker_quota_resets_at_seconds{provider="codex"})` }}The {{ .Labels.window }} window resets at {{ .Value | humanizeTimestamp }}. {{ end }}{{ end }}Runbook: projects/factory-cluster/README.md, "Alerts".
       # Grouped by grant only, so a move between not-ready states keeps the
       # 10 min timer; the summary names the current state.
       - alert: FactoryCodexGrantNotReady

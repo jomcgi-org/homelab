@@ -777,7 +777,7 @@ curl -s -X POST -H 'Content-Type: application/json' http://localhost:9093/api/v2
 | `NodeDiskFilling` | A node's root filesystem is more than 75% full for 15 min. Image garbage collection starts at 85% and the kubelet evicts pods at 90% |
 | `KagentSuspendTimedOut` | A `SuspendActor` call passed kagent's fixed 30 s deadline. Each scrape (30 s) that shows more timeouts sends one message with the count, so two timeouts in one scrape give one message. The alert ends an hour later and sends nothing then |
 | `FactoryCodexQuotaLow` | A Codex grant has used 90% or more of a quota window for 5 min |
-| `FactoryCodexQuotaExhausted` | A Codex grant is out of quota for 5 min. Coder and review turns fail until a person resets the plan or changes the account. The message gives the reset time of each window the grant has used up, or of every window when none reads 100% |
+| `FactoryCodexQuotaExhausted` | A Codex grant is out of quota for 5 min. Coder and review turns fail until a person resets the plan or changes the account. The message gives, for each window the grant has used up, its reset time or that it has none; when no window reads 100%, every window's reset |
 | `FactoryCodexGrantNotReady` | A Codex grant is in a state other than `ready` (`login_required`, `refresh_blocked`, `error` or `missing`) for 10 min, also across a move between those states. The message names the current state |
 | `FactoryCodexQuotaReadingStale` | The broker's newest Codex quota reading is more than 2 h old, or there is no reading at all, for 15 min, so the quota alerts could not fire |
 
