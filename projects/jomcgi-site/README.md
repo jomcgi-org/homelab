@@ -94,6 +94,22 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
   tokens in `src/palette.css` meet WCAG contrast in light and dark modes.
   Colour contrast on real CSS is checked in a browser after deploy (HOME-174).
 
+## Blog
+
+`web/blog-content.mjs` reads the hub's public post manifest and shared
+markdown renderer at build time. It renders the original static figures and
+moves their numeric inline dimensions into a stylesheet. Every post has an
+HTML entry and a page module; `src/blog.test.tsx` checks the manifest, preview
+tags, recordings and sections. Add both entries when adding a post.
+
+The index applies `?tag=` in the browser. The replay islands copy the public
+Svelte components into `web/src/embeds`, with the site palette and SVG
+positioning. Each Load button imports its component and recording. Playback,
+scrubbing, the incident graph and the coding trace run locally.
+
+`edge/routes.json` includes the blog and shared asset patterns. The prod
+edge apply job owns these routes; `wrangler.jsonc` lists no prod routes.
+
 ## Build and test
 
 From `web/`: `pnpm build`, `pnpm test`, `pnpm typecheck`, `pnpm budget`,
