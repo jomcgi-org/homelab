@@ -1,6 +1,8 @@
 package review
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -148,6 +150,12 @@ func TestGoalCheckPublishesOnlyServiceWording(t *testing.T) {
 	goals := goalTexts(h)
 	if len(goals) != 1 || !strings.Contains(goals[0], "PRIVATE-TWO") || strings.Contains(h.k.sent()[0].Parts[0].Text, "PRIVATE") {
 		t.Fatal("only the goal check may receive the issue")
+	}
+	for _, m := range h.k.sent() {
+		sum := sha256.Sum256([]byte(m.Parts[0].Text))
+		if strings.Contains(m.MessageID, "/goal/") && strings.Contains(m.MessageID, hex.EncodeToString(sum[:16])) {
+			t.Fatal("the goal message ID carries an unkeyed hash of the issue text")
+		}
 	}
 	out := published(t, h)
 	if strings.Contains(out, "PRIVATE") || !strings.Contains(out, "HOME-58 criterion 2: not met") || !strings.Contains(out, "HOME-58 criterion 3: unclear") {

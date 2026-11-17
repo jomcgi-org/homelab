@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -155,17 +156,24 @@ func goalKey(in *IssueContext) string {
 
 // goalCheck answers for the head's goal check: the cached answer when it
 // judged this head and evidence, else a task in a fresh kagent session. The
-// message ID hashes the prompt, so a restart finds the same task. Nil is
-// unavailable; the logs name only a fixed reason.
+// message ID carries a MAC of the prompt, so a restart finds the same task.
+// The prompt holds private issue text, so the MAC uses the evidence key, as
+// sealIssues does. Nil is unavailable; the logs name only a fixed reason.
 func (e *Engine) goalCheck(ctx context.Context, b *Binding, pr github.PullRequest, in *inputs, l *slog.Logger) *GoalCheck {
 	digest := issueDigest(in.issues)
 	if g := in.goal; g != nil && g.Head == pr.HeadSHA && g.Digest == digest {
 		return g
 	}
 	text := GoalPrompt(b.repo(), pr, in.files, in.issues)
-	sum := sha256.Sum256([]byte(text))
+	key, err := e.evidenceKey()
+	if err != nil {
+		l.WarnContext(ctx, "goal check unavailable", "reason", "key")
+		return nil
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(text))
 	msg := kagent.Message{
-		MessageID: MessageID(b.repo(), pr.Number, pr.HeadSHA) + "/goal/" + hex.EncodeToString(sum[:16]),
+		MessageID: MessageID(b.repo(), pr.Number, pr.HeadSHA) + "/goal/" + hex.EncodeToString(mac.Sum(nil)[:16]),
 		Parts:     []kagent.Part{{Text: text}},
 		Metadata:  map[string]any{"factory.jomcgi.dev/repository": b.repo(), "factory.jomcgi.dev/pull-request": pr.Number, "factory.jomcgi.dev/head": pr.HeadSHA},
 	}
