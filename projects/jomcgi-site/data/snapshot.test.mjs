@@ -42,6 +42,13 @@ test("signGet matches AWS SigV4 for a fixed request", () => {
     headers.Authorization,
     /^AWS4-HMAC-SHA256 Credential=AKID\/20261117\/auto\/s3\/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=[0-9a-f]{64}$/,
   );
+  // Known answer, computed by an independent SigV4 implementation (Python
+  // hmac/hashlib) from the same inputs.
+  assert.ok(
+    headers.Authorization.endsWith(
+      "Signature=9736c8622ac774838ea618508ceb4df1345f0ab86f9c2006048e409a1e7b2df2",
+    ),
+  );
   // Deterministic: the same inputs give the same signature.
   const again = signGet(
     "https://abc.r2.cloudflarestorage.com/stars/sites.json",

@@ -1,7 +1,9 @@
 {{- /*
 The deploy Job's STAGE (run.sh passes it to `wrangler deploy --env`) comes from
-.Values.stage, so one value picks the stage. The refresh CronJob runs the same
-command on a schedule. The edge Job joins the workloads only in prod (values.yaml `edge`),
+.Values.stage, so one value picks the stage, and CHART_VERSION labels each
+deploy. The refresh CronJob runs the same command on a schedule with
+MODE=refresh, so run.sh's release fence keeps it from replacing a newer
+release (the Job runs MODE=sync). The edge Job joins the workloads only in prod (values.yaml `edge`),
 with EDGE_SERVE_ROUTES from edge.serveRoutes.
 */}}
 {{- if not (has .Values.stage (list "dev" "prod")) }}
@@ -12,11 +14,13 @@ with EDGE_SERVE_ROUTES from edge.serveRoutes.
 {{- end }}
 {{- $deploy := index .Values.workloads "jomcgi-site-deploy" }}
 {{- range $deploy.env }}
-{{- if eq .name "STAGE" }}
-{{- fail "the deploy Job's STAGE comes from .Values.stage; do not set it in env" }}
+{{- if has .name (list "STAGE" "MODE" "CHART_VERSION") }}
+{{- fail (printf "the deploy Job's %s comes from the chart; do not set it in env" .name) }}
 {{- end }}
 {{- end }}
-{{- $_ := set $deploy "env" (append $deploy.env (dict "name" "STAGE" "value" .Values.stage)) }}
+{{- $base := deepCopy $deploy.env }}
+{{- $release := list (dict "name" "STAGE" "value" .Values.stage) (dict "name" "CHART_VERSION" "value" .Chart.Version) }}
+{{- $_ := set $deploy "env" (concat $base $release (list (dict "name" "MODE" "value" "sync"))) }}
 {{- if .Values.refresh.enabled }}
 {{- $refresh := deepCopy $deploy }}
 {{- $_ := unset $refresh "hook" }}
@@ -24,6 +28,7 @@ with EDGE_SERVE_ROUTES from edge.serveRoutes.
 {{- $_ := set $refresh "kind" "CronJob" }}
 {{- $_ := set $refresh "schedule" .Values.refresh.schedule }}
 {{- $_ := set $refresh "concurrencyPolicy" "Forbid" }}
+{{- $_ := set $refresh "env" (concat $base $release (list (dict "name" "MODE" "value" "refresh"))) }}
 {{- $_ := set .Values.workloads "jomcgi-site-refresh" $refresh }}
 {{- end }}
 {{- if .Values.edge.enabled }}
