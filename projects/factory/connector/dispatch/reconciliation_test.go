@@ -35,8 +35,14 @@ func TestAcceptedInitialSendWithEveryResponseLostNeverStartsSecondWriter(t *test
 	v := newEnv(t)
 	v.kg.loseFor = map[string]bool{"itsaplan-run/1/initial": true}
 	v.dispatchReconciliationInitial()
-	v.kg.tool(v.kg.lastTask(), "ci-1", kagent.PartToolCall) // busy past the progress lease
-	v.tickReconciliation(30, v.cfg.DispatchWindow)
+	// Two tool calls keep the turn busy past the progress lease, each inside
+	// the tool lease.
+	task := v.kg.lastTask()
+	v.kg.tool(task, "ci-1", kagent.PartToolCall)
+	v.tickReconciliation(15, v.cfg.DispatchWindow)
+	v.kg.tool(task, "ci-1", kagent.PartToolResponse)
+	v.kg.tool(task, "ci-2", kagent.PartToolCall)
+	v.tickReconciliation(15, v.cfg.DispatchWindow)
 	if got := v.kg.Executions(); got != 1 {
 		t.Fatalf("executions = %d; accepted initial send is still running, want one writer", got)
 	}

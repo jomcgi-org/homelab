@@ -267,6 +267,31 @@ func terminalFixture(t *testing.T) (*recoveryFixture, *store.Run) {
 	return f, r
 }
 
+// An accepted turn with an open tool call is past its liveness lease only
+// once the tool lease has passed since its last task event. A turn without
+// one keeps the progress lease (HOME-159).
+func TestLeaseExpiredBoundsAnOpenToolCall(t *testing.T) {
+	f, _ := terminalFixture(t)
+	expired := func(after time.Duration) bool {
+		t.Helper()
+		now := f.now.Add(after)
+		got, err := f.st.LeaseExpired(f.ctx, now.Add(-5*time.Minute), now.Add(-20*time.Minute), now.Add(-time.Hour))
+		f.must(err)
+		return len(got) == 1 && got[0].ID == f.target.ID
+	}
+	f.must(f.st.SetAttemptEvents(f.ctx, f.st.DB, f.target.ID, 3, true, f.now))
+	if expired(59 * time.Minute) {
+		t.Fatal("an open tool call expired inside the tool lease")
+	}
+	if !expired(61 * time.Minute) {
+		t.Fatal("an open tool call held its turn past the tool lease")
+	}
+	f.must(f.st.SetAttemptEvents(f.ctx, f.st.DB, f.target.ID, 4, false, f.now))
+	if expired(19*time.Minute) || !expired(21*time.Minute) {
+		t.Fatal("a turn without an open tool call left the progress lease")
+	}
+}
+
 func TestTaskOutcomeRejectsChangedGenerations(t *testing.T) {
 	for name, query := range map[string]string{
 		"closed run":       `UPDATE run SET state = 'closed'`,

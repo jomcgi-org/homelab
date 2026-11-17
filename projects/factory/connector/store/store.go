@@ -879,7 +879,11 @@ func (s *Store) SetAttemptEvents(ctx context.Context, q Querier, id int64, count
 // not held, without a running tool call and without a pending
 // cancellation. A turn whose task the connector has not read yet is not
 // quiet: event_at is unset on a new attempt and, at rollout, on one sent
-// before the migration, whose activity is unknown.
+// before the migration, whose activity is unknown. An open tool call keeps
+// its exemption here without a bound: a turn that waits on a tool sends no
+// model call, so the exhausted quota does not explain its silence, and a
+// quota_stall cancellation would pause the grant as a quota failure. The
+// liveness lease's ToolLease bounds that turn instead (LeaseExpired).
 func (s *Store) QuietAttempts(ctx context.Context, before time.Time) ([]*Attempt, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT `+attemptCols+` FROM delivery_attempt a
 		WHERE a.state = 'accepted' AND a.error IS NULL AND a.event_at < $1
@@ -906,19 +910,21 @@ func (s *Store) QuietAttempts(ctx context.Context, before time.Time) ([]*Attempt
 // LeaseExpired lists the running turns past their liveness lease (HOME-141):
 // the latest attempt of a dispatched run without a stop or a pending
 // cancellation, either sent before sentBefore without a task, or accepted
-// with no task event or open tool call since quietBefore. A recovery hold
-// does not exempt a turn: the lease's cancellation settles it. An operator's
-// attestation does: its recovery owns the turn. A turn whose
-// task the connector has not read yet has no event_at and waits for a read.
-func (s *Store) LeaseExpired(ctx context.Context, sentBefore, quietBefore time.Time) ([]*Attempt, error) {
+// with no task event since quietBefore and no open tool call, or since
+// toolBefore with one (HOME-159). A recovery hold does not exempt a turn:
+// the lease's cancellation settles it. An operator's attestation does: its
+// recovery owns the turn. A turn whose task the connector has not read yet
+// has no event_at and waits for a read.
+func (s *Store) LeaseExpired(ctx context.Context, sentBefore, quietBefore, toolBefore time.Time) ([]*Attempt, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT `+attemptCols+` FROM delivery_attempt a
 		WHERE ((a.state = 'ambiguous' AND a.task_id IS NULL AND a.sent_at < $1)
-				OR (a.state = 'accepted' AND a.event_at < $2 AND NOT a.tool_running))
+				OR (a.state = 'accepted' AND NOT a.tool_running AND a.event_at < $2)
+				OR (a.state = 'accepted' AND a.tool_running AND a.event_at < $3))
 			AND a.id = (SELECT max(id) FROM delivery_attempt WHERE run_id = a.run_id)
 			AND EXISTS (SELECT 1 FROM run r WHERE r.id = a.run_id AND r.state = 'dispatched' AND r.stopped_reason IS NULL)
 			AND NOT EXISTS (SELECT 1 FROM cancellation c WHERE c.delivery_attempt_id = a.id AND c.state = 'pending')
 			AND NOT EXISTS (SELECT 1 FROM recovery_hold h WHERE h.target_attempt_id = a.id AND h.state = 'attested')
-		ORDER BY a.id`, sentBefore, quietBefore)
+		ORDER BY a.id`, sentBefore, quietBefore, toolBefore)
 	if err != nil {
 		return nil, err
 	}

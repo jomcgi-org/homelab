@@ -12,12 +12,14 @@ import (
 )
 
 // Liveness lease (HOME-141). A dispatched turn must show a kagent task
-// within TaskLease of its send, and a task event or an open tool call at
-// least every ProgressLease. A turn past its lease gets a lease_expired
-// cancellation. A cancellation of any reason that kagent has not confirmed
-// within ForceDelete deletes the turn's session with force, which ends its
-// runtime Actor. Its confirmation closes the attempt as abandoned, and the
-// run takes an engineering retry in a fresh session.
+// within TaskLease of its send, and a task event at least every
+// ProgressLease, or every ToolLease while a tool call is open. kagent keeps
+// a tool call open when the runtime that ran it dies (HOME-159). A turn past
+// its lease gets a lease_expired cancellation. A cancellation of any reason
+// that kagent has not confirmed within ForceDelete deletes the turn's
+// session with force, which ends its runtime Actor. Its confirmation closes
+// the attempt as abandoned, and the run takes an engineering retry in a
+// fresh session.
 //
 // The steps, each counted in factory_connector_stuck_turns_total{step}.
 const (
@@ -31,12 +33,12 @@ const (
 
 // checkLeases requests a lease_expired cancellation for each running turn
 // past its lease. A turn with a task is read again first, as the quota stall
-// does (cancelIfQuiet): a changed task or an open tool call restarts its
-// lease. A send with no task needs no read here: its cancellation looks the
-// message up in kagent before it decides anything.
+// does (cancelIfQuiet): a changed task restarts its lease, and an open tool
+// call extends it to ToolLease. A send with no task needs no read here: its
+// cancellation looks the message up in kagent before it decides anything.
 func (e *Engine) checkLeases(ctx context.Context) error {
 	now := e.cfg.Now()
-	expired, err := e.st.LeaseExpired(ctx, now.Add(-e.cfg.TaskLease), now.Add(-e.cfg.ProgressLease))
+	expired, err := e.st.LeaseExpired(ctx, now.Add(-e.cfg.TaskLease), now.Add(-e.cfg.ProgressLease), now.Add(-e.cfg.ToolLease))
 	if err != nil {
 		return err
 	}
