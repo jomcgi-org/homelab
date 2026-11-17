@@ -83,22 +83,23 @@ func writeCommits(b *strings.Builder, base, sha string, c Commits) {
 		fmt.Fprintf(b, "The PR has no commits%s.\n\n", scope)
 		return
 	}
-	// Each message is quoted line by line, as trusted comments are, so no
-	// line of it starts a line of the prompt.
+	// writeUntrusted quotes each line of the block, including the commit
+	// headers and separators. Count those quotes toward the prompt budget.
 	var shown, clipped []string
 	total := 0
 	for i := len(c.List) - 1; i >= 0 && len(shown) < maxPromptCommits; i-- {
 		sha := oneLine(c.List[i].SHA, 64)
 		msg := strings.TrimSpace(strings.ReplaceAll(c.List[i].Commit.Message, "\r\n", "\n"))
-		entry := fmt.Sprintf("commit %s\n%s\n", sha, quote(clip(msg, maxPromptCommitLength)))
-		if len(shown) > 0 && total+len(entry) > maxPromptCommitText {
+		entry := fmt.Sprintf("commit %s\n%s\n", sha, clip(msg, maxPromptCommitLength))
+		size := len(quote(entry + "\n"))
+		if len(shown) > 0 && total+size > maxPromptCommitText {
 			break
 		}
 		if len(msg) > maxPromptCommitLength {
 			clipped = append(clipped, sha)
 		}
 		shown = append(shown, entry)
-		total += len(entry)
+		total += size
 	}
 	fmt.Fprintf(b, "The block holds the PR's commits%s, oldest first, each message quoted line by line", scope)
 	if left := len(c.List) - len(shown); left > 0 {

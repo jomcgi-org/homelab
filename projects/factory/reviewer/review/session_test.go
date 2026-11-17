@@ -109,7 +109,7 @@ func TestLaterHeadResumesThePreviousSession(t *testing.T) {
 		"`x.go:correctness` high x.go:2: Breaks x",
 		"`git -C pr diff " + shaA + " " + sessionShaB + "`",
 		"Your earlier reading of the PR's unchanged code still holds",
-		"Changed since " + shaA + " (1):\n- modified \"interdiff-bbbb.go\" (+1 -0)",
+		"Changed since " + shaA + " (1):\n> - modified \"interdiff-bbbb.go\" (+1 -0)",
 		"<untrusted-pr-description-" + sessionShaB[:12] + "-",
 		"<untrusted-pr-content-" + sessionShaB[:12] + "-",
 		"End your reply with exactly one fenced JSON block",

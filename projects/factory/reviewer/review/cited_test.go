@@ -63,14 +63,14 @@ func TestCitedPullRequestsReachThePromptAsFixedClassEvidence(t *testing.T) {
 		t.Errorf("cited author text reached the prompt")
 	}
 	blocks, _ := untrustedBlocks(t, prompt)
-	want := "#75: pull request into main, state MERGED, merged at 2026-11-15T15:35:36Z as " + shaM +
+	want := "> #75: pull request into main, state MERGED, merged at 2026-11-15T15:35:36Z as " + shaM +
 		"; its timeline shows it entered the merge queue, last added by renovate-app.\n" +
-		"- author renovate-app; merged by (unrecognized login); auto-merge last enabled by renovate-app; pending auto-merge request by none\n" +
-		"- head " + shaC + ": commit author account renovate-app[bot]; signature VALID (signed by GitHub)\n" +
-		"- check \"factory review\" on the head: success\n" +
-		"- check \"pr-checks\" on the head: success\n" +
-		"#76: not a pull request in this repository (an issue, or nothing).\n" +
-		"#77: the reviewer service could not read it."
+		"> - author renovate-app; merged by (unrecognized login); auto-merge last enabled by renovate-app; pending auto-merge request by none\n" +
+		"> - head " + shaC + ": commit author account renovate-app[bot]; signature VALID (signed by GitHub)\n" +
+		"> - check \"factory review\" on the head: success\n" +
+		"> - check \"pr-checks\" on the head: success\n" +
+		"> #76: not a pull request in this repository (an issue, or nothing).\n" +
+		"> #77: the reviewer service could not read it."
 	if blocks["cited"] != want {
 		t.Errorf("cited block =\n%s\nwant\n%s", blocks["cited"], want)
 	}
