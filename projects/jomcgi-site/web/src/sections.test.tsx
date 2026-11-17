@@ -4,7 +4,7 @@ import { GROUPS, ORIGIN, SECTIONS, hrefFor, sectionsIn } from "./sections";
 describe("URL contract", () => {
   it("gives every section one top-level prefix", () => {
     for (const section of SECTIONS) {
-      expect(section.path).toMatch(/^\/[a-z]+$/);
+      expect(section.path).toMatch(/^\/[a-z]+(?:-[a-z]+)*$/);
     }
     const paths = SECTIONS.map((section) => section.path);
     expect(new Set(paths).size).toBe(paths.length);

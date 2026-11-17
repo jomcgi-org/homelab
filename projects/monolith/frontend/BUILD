@@ -1175,3 +1175,24 @@ js_library(
         ":node_modules/svelte",
     ],
 )
+
+# Shared with the static site; model-bench keeps writing this one snapshot.
+js_library(
+    name = "leaderboard_sources",
+    srcs = [
+        "src/lib/public/llm-leaderboard/leaderboard.json",
+        "src/lib/public/llm-leaderboard/model.d.ts",
+        "src/lib/public/llm-leaderboard/model.js",
+    ],
+    visibility = ["//projects/jomcgi-site/web:__pkg__"],
+)
+
+# Original content is available to the migration parity check only.
+js_library(
+    name = "leaderboard_migration_sources",
+    srcs = [
+        "src/lib/public/components/Seo.svelte",
+        "src/routes/public/app/llm-leaderboard/+page.svelte",
+    ],
+    visibility = ["//projects/jomcgi-site/web:__pkg__"],
+)

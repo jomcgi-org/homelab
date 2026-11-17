@@ -18,6 +18,15 @@
   --color-blog-success: light-dark(#24613e, #8dd5a6);
   --color-blog-warning: light-dark(#904218, #efb68f);
   --font-family-code: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --lb-fail: light-dark(#ad2424, #ff9999);
+  --lb-provider-1: light-dark(#2a78d6, #3987e5);
+  --lb-provider-2: light-dark(#c74d20, #df693c);
+  --lb-provider-3: light-dark(#11845b, #199e70);
+  --lb-provider-4: light-dark(#9c6900, #c98500);
+  --lb-provider-5: light-dark(#b94b79, #df6594);
+  --lb-provider-6: light-dark(#008300, #21a521);
+  --lb-provider-7: light-dark(#4a3aa7, #9085e9);
+  --lb-provider-8: light-dark(#c43939, #e66767);
   --font-family-body: "Avenir Next", "Segoe UI", system-ui, sans-serif;
   --font-family-heading:
     "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
