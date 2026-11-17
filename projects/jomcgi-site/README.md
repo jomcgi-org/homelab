@@ -161,6 +161,10 @@ to load on intent. Each entry hydrates only its own page through `mount.tsx`.
 | Palette, inline styles and accessibility | `web/src/contrast.test.tsx` scans TypeScript and CSS and checks both palette modes; `web/src/a11y.test.tsx` runs axe on every registered page (`web:test`). |
 | Exact routes and unlisted drafts | `edge/apply.test.mjs` checks route patterns against the connector and factory paths (`edge:apply_test`); `web/src/scotland.test.tsx` checks `live`, the drafts index exclusion, and noindex metadata and headers (`web:test`). |
 
+The [local browser verification](validation/scotland-browser.md) records
+hydration with the compiled scripts and full axe results for these five pages.
+All 20 light/dark and desktop/mobile cases passed, including colour contrast.
+
 The six URLs use exact patterns in `edge/routes.json`. The connector keeps
 `/scotland/mcp` and `/scotland/v1/*`; `/slop/factory` stays on the hub. The hub
 pages remain available for rollback when the section patterns are removed.
