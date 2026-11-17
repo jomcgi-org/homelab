@@ -49,6 +49,11 @@ def deployed_env():
     for name in [n for n in env if n.startswith("HINDSIGHT_API_EMBEDDINGS_")]:
         del env[name]
     env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] = "local"
+    # Nor can it reach the decision model; recall then keeps the reranker
+    # order (rrf). Authentication and the MCP tools do not depend on either.
+    for name in [n for n in env if n.startswith("HINDSIGHT_API_DECISION_MODEL_")]:
+        del env[name]
+    env["HINDSIGHT_API_DECISION_MODEL_PROVIDER"] = "none"
     return env
 
 

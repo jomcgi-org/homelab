@@ -119,7 +119,27 @@ spec:
                   key: api-key
             - name: HINDSIGHT_API_EMBEDDINGS_OPENAI_EXTRA_BODY
               value: '{"provider": {"data_collection": "deny"}}'
-            # The image bakes in the reranker; no Hugging Face egress.
+            # Decision model: TypeSafe Jev 1.14 through OpenRouter's System
+            # One endpoint (<base>/v1/systemone), on the same key. It ranks
+            # recall and settles consolidation, reflect and page judgments
+            # (HOME-182). No local fallback: a recall fails while it is
+            # unavailable (Joe, HOME-130 comment 1498).
+            - name: HINDSIGHT_API_DECISION_MODEL_PROVIDER
+              value: typesafe
+            - name: HINDSIGHT_API_DECISION_MODEL_BASE_URL
+              value: https://openrouter.ai/api
+            - name: HINDSIGHT_API_DECISION_MODEL_MODEL
+              value: typesafe/jev-1.14
+            - name: HINDSIGHT_API_DECISION_MODEL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-openrouter
+                  key: api-key
+            # The decision model ranks recall; rrf keeps the order and loads no
+            # model.
+            - name: HINDSIGHT_API_RERANKER_PROVIDER
+              value: rrf
+            # No local model runs, and nothing fetches one.
             - name: HF_HUB_OFFLINE
               value: "1"
             - name: TRANSFORMERS_OFFLINE
@@ -166,7 +186,8 @@ spec:
             sizeLimit: 1Gi
 ---
 # Before a sync replaces the API pod (resources/preflight.py): the OpenRouter
-# key works, and the embedding model's dimension matches any stored vectors.
+# key works, the decision model answers, and the embedding model's dimension
+# matches any stored vectors.
 # A failure stops the sync in this wave, so the running pod keeps serving.
 # Wave -1 runs after the 1Password items (-2) and before the Deployment (0).
 apiVersion: batch/v1
@@ -220,6 +241,10 @@ spec:
               value: mongodb/voyage-4-large
             - name: EMBEDDINGS_EXTRA_BODY
               value: '{"provider": {"data_collection": "deny"}}'
+            - name: DECISION_MODEL
+              value: typesafe/jev-1.14
+            - name: DECISION_MODEL_BASE_URL
+              value: https://openrouter.ai/api
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
