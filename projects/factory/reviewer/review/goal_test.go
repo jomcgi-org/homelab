@@ -275,8 +275,8 @@ func TestGoalCheckStagedSemgrepReplay(t *testing.T) {
 		pr := h.gh.prs[7]
 		pr.Author, pr.Body, pr.HeadRef = "jomcgi-factory[bot]", "Refs HOME-120", "factory/HOME-120"
 		pr.Files = []github.PullRequestFile{
-			{Path: "projects/factory/reviewer/review/semgrep.go", Status: "added", Patch: "+waitForScan(head)\n+gateWhenMissing(\"semgrep:unverified\")\n+reviewAgainOnLateScan(head)"},
-			{Path: "projects/factory/chart/values.yaml", Status: "modified", Patch: "+  semgrep: null"},
+			{Path: "projects/factory/reviewer/review/semgrep.go", Status: "added", Additions: 3, Patch: "+waitForScan(head)\n+gateWhenMissing(\"semgrep:unverified\")\n+reviewAgainOnLateScan(head)"},
+			{Path: "projects/factory/chart/values.yaml", Status: "modified", Additions: 1, Patch: "+  semgrep: null"},
 		}
 	})
 	h.k.goalReplies = []string{
@@ -296,7 +296,7 @@ func TestGoalCheckStagedSemgrepReplay(t *testing.T) {
 	c := h.gh.check(shaA)
 	st, _ := LoadState(c.Text)
 	if st.Goal == nil || st.Goal.Overall != goalLive || len(st.Goal.Criteria) != 3 || st.Goal.Criteria[2].Verdict != goalLive || len(st.Blocking) != 0 {
-		t.Fatal("staged implementation produced a not_met or blocking goal verdict")
+		t.Fatalf("staged implementation produced a not_met or blocking goal verdict: goal=%+v blocking=%+v", st.Goal, st.Blocking)
 	}
 	if st.Gate == nil || c.Conclusion != ConclusionFailure {
 		t.Fatal("the staged verdict bypassed the human gate")
