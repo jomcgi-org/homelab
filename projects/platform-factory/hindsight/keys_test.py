@@ -471,13 +471,18 @@ def test_new_banks_start_with_schema_v1():
     labels = {g["key"]: g for g in bank["entity_labels"]}
     assert set(labels) == {"app", "kind"}
     assert all(g["tag"] and g["optional"] for g in labels.values())
+    # One project per fact, so the app:* scope gives each project its own
+    # consolidation pass (boundary_test checks it with Hindsight's code).
+    assert labels["app"]["type"] == "value"
     apps = [v["value"] for v in labels["app"]["values"]]
     assert apps == sorted(set(apps)), "app values must be unique and sorted"
-    assert "platform-factory/hindsight" in apps and "factory" in apps
-    for app in apps:
-        top, _, rest = app.partition("/")
-        if rest:
-            assert top in ("platform", "platform-gke", "platform-factory"), app
+    # A directory name under projects/, or under one of the three platform
+    # groups, whose own roots are values too. No "..", no deeper paths.
+    groups = ("platform", "platform-gke", "platform-factory")
+    path = re.compile(r"(?:(?:" + "|".join(groups) + r")/)?[a-z0-9][a-z0-9-]*")
+    assert [a for a in apps if not path.fullmatch(a)] == []
+    assert set(groups) <= set(apps)
+    assert {"factory", "platform-factory/hindsight"} <= set(apps)
     assert [v["value"] for v in labels["kind"]["values"]] == [
         "lesson",
         "incident",

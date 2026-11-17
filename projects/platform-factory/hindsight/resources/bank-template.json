@@ -5,8 +5,8 @@
     "entity_labels": [
       {
         "key": "app",
-        "description": "The homelab project the fact is about: its directory under projects/. Leave it out when the fact is about the repository as a whole.",
-        "type": "multi-values",
+        "description": "The one homelab project the fact is mainly about: its directory under projects/, or a platform group's own root (platform, platform-gke, platform-factory). Leave it out when the fact is about the repository as a whole.",
+        "type": "value",
         "optional": true,
         "tag": true,
         "values": [
@@ -63,6 +63,12 @@
           },
           {
             "value": "operators"
+          },
+          {
+            "value": "platform"
+          },
+          {
+            "value": "platform-factory"
           },
           {
             "value": "platform-factory/argocd"
@@ -141,6 +147,9 @@
           },
           {
             "value": "platform-factory/substrate"
+          },
+          {
+            "value": "platform-gke"
           },
           {
             "value": "platform-gke/argo-workflows"
