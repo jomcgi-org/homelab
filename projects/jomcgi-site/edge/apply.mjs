@@ -95,11 +95,31 @@ export function cloudflareClient(token, request = https.request) {
     });
 }
 
-export async function applyCacheSettings({ file, accountId, client }) {
+export async function applyCacheSettings({
+  file,
+  imported,
+  accountId,
+  client,
+  mode = "apply",
+}) {
+  if (!["apply", "restore"].includes(mode))
+    throw new Error("Mode must be apply or restore");
   validateFile(file);
+  validateFile(imported);
+  if (
+    !imported.rules.length ||
+    !isDeepStrictEqual(
+      file.rules.slice(0, imported.rules.length),
+      imported.rules,
+    )
+  ) {
+    throw new Error(
+      "The desired file must retain the imported rules unchanged and in order",
+    );
+  }
   if (!accountId) throw new Error("CLOUDFLARE_ACCOUNT_ID is required");
 
-  // Reuse the deploy token's Zone:Read access, without another secret field.
+  // Resolve with the deploy token; a denied zone lookup fails before any PUT.
   const query = new URLSearchParams({
     name: "jomcgi.dev",
     "account.id": accountId,
@@ -144,24 +164,61 @@ export async function applyCacheSettings({ file, accountId, client }) {
     );
   }
 
+  const liveSettings = live.map(settings);
+  for (const [index, rule] of imported.rules.entries()) {
+    if (!isDeepStrictEqual(liveSettings[index], rule)) {
+      throw new Error(
+        `Refusing to change imported rule ${JSON.stringify(rule.description)}: live settings or order differ from the HOME-192 import`,
+      );
+    }
+  }
+  // Restore removes only this release's known addition. A dashboard edit to
+  // any setting, or a different rule order, needs review before a rollback.
+  if (
+    mode === "restore" &&
+    !isDeepStrictEqual(liveSettings, file.rules) &&
+    !isDeepStrictEqual(liveSettings, imported.rules)
+  ) {
+    throw new Error(
+      "Refusing to restore: live rules differ from both the desired file and the import",
+    );
+  }
+  const target = mode === "restore" ? imported : file;
+
   // Never copy IDs or versions from a GET into the PUT. Each apply sends the
   // same complete body, including the imported Monolith rule.
-  await client(endpoint, "PUT", JSON.stringify(file));
-  if (!isDeepStrictEqual((await readRules()).map(settings), file.rules)) {
+  await client(endpoint, "PUT", JSON.stringify(target));
+  if (!isDeepStrictEqual((await readRules()).map(settings), target.rules)) {
     throw new Error(
-      "Cache-settings verification failed: live rules differ from cache-settings.json",
+      "Cache-settings verification failed: live rules differ from the target",
     );
   }
 }
 
-export async function main() {
+export async function main(args = process.argv.slice(2)) {
+  if (
+    args.length > 1 ||
+    (args.length === 1 && !["apply", "restore"].includes(args[0]))
+  ) {
+    throw new Error("Usage: apply [apply|restore]");
+  }
   const file = JSON.parse(
     await readFile(new URL("./cache-settings.json", import.meta.url), "utf8"),
   );
+  const imported = JSON.parse(
+    await readFile(
+      new URL("./imported/2026-11-17.json", import.meta.url),
+      "utf8",
+    ),
+  );
   await applyCacheSettings({
     file,
+    imported,
+    mode: args[0] ?? "apply",
     accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
     client: cloudflareClient(process.env.CLOUDFLARE_API_TOKEN),
   });
-  console.log("Verified jomcgi.dev cache-settings entrypoint");
+  console.log(
+    `Verified jomcgi.dev cache-settings entrypoint (${args[0] ?? "apply"})`,
+  );
 }

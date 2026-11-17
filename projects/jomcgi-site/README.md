@@ -94,9 +94,12 @@ sequenceDiagram
 ```
 
 The Job ignores only Cloudflare's rule IDs, refs, versions and timestamps
-during verification. API failures, malformed responses and readback differences
-fail the Job. A dashboard-only rule must be imported and reviewed before sync.
-The apply sends one PUT per run, with the same body on each repeat.
+during verification. Before PUT, it also checks the imported Monolith settings
+and position against the [supplied baseline](edge/imported/README.md).
+Drift stops the Job instead of changing Monolith. API failures, malformed
+responses and readback differences fail the Job. A dashboard-only rule must
+be imported and reviewed before sync. Each apply sends one PUT with the same
+body on each repeat.
 
 `edge.apply` defaults to false. Only `deploy/application.yaml` enables it for
 dev. Zone rules are shared by all stages. When prod exists, move the setting
@@ -104,6 +107,33 @@ from dev to prod in the same change. The Job reads the zone and cache-settings
 entrypoint and writes only that entrypoint, using the existing token and account
 fields. It requires zone read access as well as cache-settings read/write access.
 It makes IPv4 HTTPS requests only to `api.cloudflare.com`.
+
+## Restore before a downgrade
+
+Chart `0.3.0` has no edge hook. Lowering the pin or reverting this change alone
+leaves the Cloudflare entrypoint unchanged. Restore the entrypoint first:
+
+1. Keep the deployed chart pin and `edge.apply: true` in `deploy/application.yaml`.
+2. Set `edge.mode: restore` in its `valuesObject` and sync through GitOps.
+3. Confirm the edge Job succeeds and logs `Verified jomcgi.dev cache-settings entrypoint (restore)`.
+4. Lower the chart pin or revert the change only after that sync succeeds.
+
+The mode changes the release ConfigMap, which triggers the Sync hook.
+Restoration sends the imported rules in one PUT and reads them back.
+It refuses unknown rules, changed settings or a different order.
+Repeating restoration sends the same body. To reapply, set `edge.mode: apply`.
+Restoration changes cache policy; it does not purge previously cached objects.
+
+## Writer coordination
+
+The Job owns cache-rule writes during a sync. Pause automated syncs and wait
+for the edge Job to finish before editing the dashboard. Import dashboard
+changes before resuming syncs. Do not run a second apply or restore concurrently.
+
+The Cloudflare generated [entrypoint update contract](https://github.com/cloudflare/cloudflare-typescript/blob/0eb9ef0ea40c1fe38e4b19be92f41bd7466bc1d6/src/resources/rulesets/phases/phases.ts#L9323)
+exposes no expected-version parameter. The GET/PUT sequence does not provide
+an atomic concurrency check. A dashboard write between them can be overwritten;
+writer coordination remains an operational requirement, not an enforced lock.
 
 Rate limits and cache-key changes are outside this configuration. Redirects
 remain in `web/public/_redirects`.

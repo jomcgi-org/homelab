@@ -8,6 +8,12 @@ import { applyCacheSettings, cloudflareClient } from "./apply.mjs";
 const file = JSON.parse(
   await readFile(new URL("./cache-settings.json", import.meta.url), "utf8"),
 );
+const imported = JSON.parse(
+  await readFile(
+    new URL("./imported/2026-11-17.json", import.meta.url),
+    "utf8",
+  ),
+);
 const accountId = "a".repeat(32);
 const zoneId = "b".repeat(32);
 const phase = "http_request_cache_settings";
@@ -87,12 +93,13 @@ async function api(t, { rules = [monolith], afterPut, reply, zones } = {}) {
   });
   return {
     calls,
-    apply: (desired = file) =>
-      applyCacheSettings({ file: desired, accountId, client }),
+    apply: (desired = file, mode = "apply") =>
+      applyCacheSettings({ file: desired, imported, accountId, client, mode }),
   };
 }
 
 test("imports Monolith unchanged and respects object TTLs on data.jomcgi.dev", () => {
+  assert.deepEqual(imported, { rules: [monolith] });
   assert.deepEqual(file.rules, [
     monolith,
     {
@@ -143,9 +150,100 @@ for (const rule of [
   });
 }
 
-test("updates settings for a rule with the same description and expression", async (t) => {
-  const { apply } = await api(t, { rules: [{ ...monolith, enabled: false }] });
+test("updates the managed data rule without changing the import", async (t) => {
+  const { apply } = await api(t, {
+    rules: [monolith, { ...file.rules[1], enabled: false }],
+  });
   await apply();
+});
+
+for (const [name, rules] of [
+  ["disabled import", [{ ...monolith, enabled: false }]],
+  [
+    "changed TTL",
+    [
+      {
+        ...monolith,
+        action_parameters: {
+          ...monolith.action_parameters,
+          edge_ttl: { mode: "respect_origin" },
+        },
+      },
+    ],
+  ],
+  ["missing import", []],
+  ["changed order", file.rules.toReversed()],
+]) {
+  test(`refuses to change Monolith before PUT: ${name}`, async (t) => {
+    const { apply, calls } = await api(t, { rules });
+    await assert.rejects(
+      apply(),
+      /Refusing to change imported rule "Monolith"/,
+    );
+    assert.ok(calls.every(({ method }) => method === "GET"));
+  });
+}
+
+test("restores the imported entrypoint before a chart downgrade and repeats the same body", async (t) => {
+  const { apply, calls } = await api(t);
+  await apply();
+  await apply(file, "restore");
+  await apply(file, "restore");
+  const puts = calls.filter(({ method }) => method === "PUT");
+  assert.equal(puts.length, 3);
+  assert.equal(puts[0].body, JSON.stringify(file));
+  assert.equal(puts[1].body, JSON.stringify(imported));
+  assert.equal(puts[2].body, puts[1].body);
+  // Each write includes successful readback through the real HTTP client.
+  assert.deepEqual(
+    calls.map(({ method }) => method),
+    [
+      "GET",
+      "GET",
+      "PUT",
+      "GET",
+      "GET",
+      "GET",
+      "PUT",
+      "GET",
+      "GET",
+      "GET",
+      "PUT",
+      "GET",
+    ],
+  );
+});
+
+for (const [name, rules] of [
+  [
+    "new dashboard rule",
+    [...file.rules, { ...monolith, description: "Dashboard only" }],
+  ],
+  ["edited data rule", [monolith, { ...file.rules[1], enabled: false }]],
+  ["reordered rules", file.rules.toReversed()],
+]) {
+  test(`restore refuses to overwrite ${name}`, async (t) => {
+    const { apply, calls } = await api(t, { rules });
+    await assert.rejects(apply(file, "restore"), /Refusing/);
+    assert.ok(calls.every(({ method }) => method === "GET"));
+  });
+}
+
+test("restore fails if Cloudflare does not return the imported entrypoint", async (t) => {
+  const { apply } = await api(t, {
+    rules: file.rules,
+    afterPut: () => file.rules,
+  });
+  await assert.rejects(apply(file, "restore"), /verification failed/);
+});
+
+test("rejects an edited import in the desired file before contacting Cloudflare", async (t) => {
+  const { apply, calls } = await api(t);
+  await assert.rejects(
+    apply({ rules: [{ ...monolith, enabled: false }, file.rules[1]] }),
+    /retain the imported rules unchanged/,
+  );
+  assert.equal(calls.length, 0);
 });
 
 for (const [name, afterPut] of [

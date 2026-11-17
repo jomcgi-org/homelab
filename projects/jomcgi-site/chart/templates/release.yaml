@@ -22,4 +22,5 @@ data:
   chart: {{ .Chart.Version | quote }}
   stage: {{ .Values.stage | quote }}
   edgeApply: {{ .Values.edge.apply | quote }}
+  edgeMode: {{ .Values.edge.mode | quote }}
   image: {{ printf "%s@%s" .Values.image.repository .Values.image.digest | quote }}

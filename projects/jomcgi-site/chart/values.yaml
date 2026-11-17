@@ -12,6 +12,8 @@ stage: dev
 # this today; move that setting to prod when prod exists.
 edge:
   apply: false
+  # Restore the imported entrypoint and verify it before lowering the chart pin.
+  mode: apply # apply or restore; restore requires apply: true.
 
 workloads:
   jomcgi-site-deploy:

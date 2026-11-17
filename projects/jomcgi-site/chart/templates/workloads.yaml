@@ -1,8 +1,16 @@
 {{- if not (kindIs "bool" .Values.edge.apply) -}}
 {{- fail "edge.apply must be a boolean" -}}
 {{- end -}}
+{{- if not (has .Values.edge.mode (list "apply" "restore")) -}}
+{{- fail "edge.mode must be apply or restore" -}}
+{{- end -}}
+{{- if and (eq .Values.edge.mode "restore") (not .Values.edge.apply) -}}
+{{- fail "edge.mode=restore requires edge.apply=true" -}}
+{{- end -}}
 {{- $ctx := deepCopy . -}}
 {{- if not .Values.edge.apply -}}
 {{- $_ := unset $ctx.Values.workloads "jomcgi-site-edge" -}}
+{{- else -}}
+{{- $_ := set (index $ctx.Values.workloads "jomcgi-site-edge") "args" (list .Values.edge.mode) -}}
 {{- end -}}
 {{ include "factory-library.all" $ctx }}

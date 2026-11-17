@@ -99,6 +99,7 @@ def test_release_marker_changes_with_the_chart_and_the_image():
         "chart": version,
         "stage": "dev",
         "edgeApply": "false",
+        "edgeMode": "apply",
         "image": f"ghcr.io/jomcgi/homelab/projects/jomcgi-site@{DIGEST}",
     }
 
@@ -150,7 +151,7 @@ def test_edge_apply_can_move_to_prod_without_changing_zone_rules(stage):
     assert pod["securityContext"]["runAsNonRoot"] is True
     container = pod["containers"][0]
     assert container["command"] == ["/app/projects/jomcgi-site/edge/apply"]
-    assert not container.get("args")
+    assert container["args"] == ["apply"]
     assert container["image"].endswith(f"@{DIGEST}")
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
     assert {
@@ -166,12 +167,31 @@ def test_edge_apply_can_move_to_prod_without_changing_zone_rules(stage):
     assert marker["edgeApply"] == "true"
 
 
+def test_restore_uses_the_same_job_and_changes_the_release_marker():
+    apply = docs(render("--set", "edge.apply=true"))
+    restore = docs(render("--set", "edge.apply=true,edge.mode=restore"))
+    assert restore["Job/jomcgi-site-edge"]["spec"]["template"]["spec"]["containers"][0][
+        "args"
+    ] == ["restore"]
+    assert restore["ConfigMap/jomcgi-site-release"]["data"]["edgeMode"] == "restore"
+    assert (
+        apply["ConfigMap/jomcgi-site-release"]
+        != restore["ConfigMap/jomcgi-site-release"]
+    )
+    assert (
+        apply["CiliumNetworkPolicy/jomcgi-site-edge"]
+        == restore["CiliumNetworkPolicy/jomcgi-site-edge"]
+    )
+
+
 @pytest.mark.parametrize(
     "extra, error",
     [
         (["--set", "stage=staging"], "stage must be dev or prod"),
         (["--set", "stage=prod"], "--env argument must match .Values.stage"),
         (["--set-string", "edge.apply=false"], "edge.apply must be a boolean"),
+        (["--set", "edge.mode=unknown"], "edge.mode must be apply or restore"),
+        (["--set", "edge.mode=restore"], "edge.mode=restore requires edge.apply=true"),
     ],
 )
 def test_stage_guard(extra, error):

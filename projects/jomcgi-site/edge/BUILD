@@ -7,6 +7,7 @@ js_library(
     srcs = [
         "apply.mjs",
         "cache-settings.json",
+        "imported/2026-11-17.json",
     ],
 )
 
