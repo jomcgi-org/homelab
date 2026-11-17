@@ -99,13 +99,13 @@ func safe(s string) string {
 	return untrustedTag.ReplaceAllString(s, "untrusted-")
 }
 
-// writeUntrusted writes text the PR's author wrote between delimiters named
-// for the head and a 128-bit digest of the block's own text. Text that holds
+// writeUntrusted quotes each line of the PR author's text between delimiters
+// named for the head and a 128-bit digest of the block's own text. Text that holds
 // its own block's closer would need a SHA-256 preimage search on that scale,
 // so even a delimiter the sanitizer missed (a look-alike character, say)
 // cannot close the block in practice.
 func writeUntrusted(b *strings.Builder, kind, sha, text string) {
-	text = strings.TrimRight(safe(text), "\n")
+	text = quote(strings.TrimRight(safe(text), "\n"))
 	sum := sha256.Sum256([]byte(text))
 	tag := fmt.Sprintf("untrusted-pr-%s-%s-%s", kind, sha[:min(12, len(sha))], hex.EncodeToString(sum[:16]))
 	fmt.Fprintf(b, "<%s>\n%s\n</%s>\n\n", tag, text, tag)
