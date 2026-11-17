@@ -2,36 +2,77 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"time"
 )
 
-// An admission-held delegation can be stopped before it has a work item.
-// Closing that run does not clear its stop or authorize automatic delegation.
-// Use the same check for fresh enqueues, rollback recovery and delivery.
-const deferredStoppedSQL = `
-	EXISTS (SELECT 1 FROM work_item WHERE issue_id = $1 AND state = 'stopped')
-	OR EXISTS (SELECT 1 FROM run WHERE issue_id = $1 AND work_item_id IS NULL AND stopped_reason IS NOT NULL)`
+// lockDeferredFence serializes enqueue and send admission with stops and
+// explicit re-admission. These callers take no work-item or run locks after
+// this lock; StopIssue and ResolveWorkItem take it last.
+func lockDeferredFence(ctx context.Context, tx *sql.Tx, issueID int64) (generation int64, stopped bool, err error) {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO deferred_fence (issue_id) VALUES ($1) ON CONFLICT DO NOTHING`, issueID); err != nil {
+		return
+	}
+	err = tx.QueryRowContext(ctx, `SELECT generation, stopped FROM deferred_fence WHERE issue_id = $1 FOR UPDATE`, issueID).Scan(&generation, &stopped)
+	return
+}
+
+// stopDeferred runs in the same transaction as the stop of a work item or
+// unlinked run. A later explicit admission clears stopped, never generation.
+func stopDeferred(ctx context.Context, tx *sql.Tx, issueID int64) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO deferred_fence (issue_id, generation, stopped) VALUES ($1, 1, true)
+		ON CONFLICT (issue_id) DO UPDATE SET generation = deferred_fence.generation + 1, stopped = true`, issueID)
+	return err
+}
 
 // EnqueueDeferred admits an eligible issue, or resumes the same request if an
 // older connector abandoned its unsupported kind during a chart rollback.
 // The caller checks current tracker eligibility; stored stops also block this
 // upsert. Preserve the original payload, send marker and error retry count.
-func (s *Store) EnqueueDeferred(ctx context.Context, q Querier, dedupe string, issueID int64, payload any) error {
+func (s *Store) EnqueueDeferred(ctx context.Context, tx *sql.Tx, dedupe string, issueID int64, payload any) error {
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	_, err = q.ExecContext(ctx, `
-		INSERT INTO outbox (kind, dedupe_key, payload, next_attempt_at)
-		SELECT 'deferred_start', $2, $3, $4
-		WHERE NOT (`+deferredStoppedSQL+`)
+	generation, stopped, err := lockDeferredFence(ctx, tx, issueID)
+	if err != nil || stopped {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO outbox (kind, dedupe_key, payload, next_attempt_at, deferred_stop_generation)
+		VALUES ('deferred_start', $1, $2, $3, $4)
 		ON CONFLICT (dedupe_key) DO UPDATE
 		SET abandoned_at = NULL, last_error = NULL, next_attempt_at = EXCLUDED.next_attempt_at
 		WHERE outbox.kind = 'deferred_start' AND outbox.delivered_at IS NULL
 			AND outbox.abandoned_at IS NOT NULL
-			AND outbox.last_error = 'unknown kind deferred_start'`, issueID, dedupe, b, s.now())
+			AND outbox.last_error = 'unknown kind deferred_start'
+			AND outbox.deferred_stop_generation = EXCLUDED.deferred_stop_generation`, dedupe, b, s.now(), generation)
 	return err
+}
+
+// AdmitDeferred checks the request's original stop generation and journals
+// this send under the same lock as StopIssue. The caller holds the writer
+// fence through commit and sends only if admitted is true.
+func (s *Store) AdmitDeferred(ctx context.Context, tx *sql.Tx, id, issueID int64) (bool, error) {
+	generation, stopped, err := lockDeferredFence(ctx, tx, issueID)
+	if err != nil {
+		return false, err
+	}
+	var requestGeneration int64
+	if err := tx.QueryRowContext(ctx, `SELECT deferred_stop_generation FROM outbox WHERE id = $1`, id).Scan(&requestGeneration); err != nil {
+		return false, err
+	}
+	if stopped || requestGeneration != generation {
+		return false, s.OutboxAbandon(ctx, tx, id, "deferred issue stopped")
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE outbox SET send_started_at = now()
+		WHERE id = $1 AND kind = 'deferred_start' AND delivered_at IS NULL AND abandoned_at IS NULL`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 // DeferredWait keeps the same receipt key pending while Todo is full. A WIP
@@ -45,6 +86,6 @@ func (s *Store) DeferredWait(ctx context.Context, q Querier, id int64, next time
 // moved back to Backlog and its delegate was removed.
 func (s *Store) DeferredStopped(ctx context.Context, issueID int64) (bool, error) {
 	var stopped bool
-	err := s.DB.QueryRowContext(ctx, `SELECT `+deferredStoppedSQL, issueID).Scan(&stopped)
+	err := s.DB.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM deferred_fence WHERE issue_id = $1 AND stopped)`, issueID).Scan(&stopped)
 	return stopped, err
 }

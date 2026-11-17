@@ -114,19 +114,18 @@ func (e *Engine) deliverDeferred(ctx context.Context, it *store.OutboxItem) erro
 	if b == nil || b.ItsaplanProject != p.ProjectKey || len(b.Agents) == 0 || b.Agents[0] != p.AgentKey {
 		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "deferred binding changed")
 	}
-	stopped, err := e.st.DeferredStopped(ctx, p.IssueID)
-	if err != nil {
-		return err
-	}
-	if stopped {
-		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "deferred issue stopped")
-	}
-	// Journal every attempt, including a retry after a crash before the send.
+	// Journal every attempt and check its stop generation in one transaction,
+	// including a retry after a crash before the send.
+	var admitted bool
 	if err := e.w.Tx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE outbox SET send_started_at = now() WHERE id = $1`, it.ID)
+		var err error
+		admitted, err = e.st.AdmitDeferred(ctx, tx, it.ID, p.IssueID)
 		return err
 	}); err != nil {
 		return err
+	}
+	if !admitted {
+		return nil
 	}
 	if err := e.guard(ctx); err != nil {
 		return err

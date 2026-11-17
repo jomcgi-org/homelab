@@ -443,3 +443,60 @@ func TestDeferredWIPWaitHonorsStoppedUnlinkedAdmission(t *testing.T) {
 		t.Fatalf("original stopped run = %+v", r)
 	}
 }
+
+func TestDeferredReadmissionAllowsNewScheduleButFencesOldRequest(t *testing.T) {
+	v := deferredEnv(t)
+	v.its.add(1, "coder", 118, "HL-118", "Original work")
+	i := v.its.issues[118]
+	i.Description = "Deliver the deferred work."
+	i.StartDate = "2026-11-13"
+	delegate := "coder-id"
+	i.ColumnID, i.DelegateUserID = 2, &delegate
+	v.dependency(118, 119, "HL-119", 2)
+	v.tick(v.e)
+	v.held(1)
+
+	i.ColumnID, i.DelegateUserID = 1, nil
+	v.its.deferredErr = itsaplan.ErrWIPLimit
+	v.tick(v.e)
+	// Delay the original request until after the explicit re-admission.
+	if _, err := v.st.DB.Exec(`UPDATE outbox SET next_attempt_at = $1 WHERE kind = 'deferred_start'`, v.clk.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if stopped, err := v.st.StopIssue(v.ctx, "HL-118", "operator stop", "operator"); err != nil || stopped.HeldRuns != 1 {
+		t.Fatalf("cancel = %+v, %v", stopped, err)
+	}
+	i.ColumnID, i.DelegateUserID = 2, &delegate
+	v.its.moveTo(119, 3, "")
+	v.its.add(2, "coder", 118, "HL-118", "Explicit re-admission")
+	v.tick(v.e)
+	if r := v.run(2); r.WorkItemID == 0 || r.StopRequested {
+		t.Fatalf("new delegation was not admitted: %+v", r)
+	}
+	if r := v.run(1); r.WorkItemID != 0 || !r.StopRequested || r.State != store.RunClosed {
+		t.Fatalf("old admission lost its stop: %+v", r)
+	}
+
+	// Even after re-admission and restart, the pre-stop date cannot run.
+	i.ColumnID, i.DelegateUserID = 1, nil
+	v.its.deferredErr = nil
+	v.e.Release()
+	v.e = v.engine("after-readmission")
+	v.clk.Advance(time.Hour)
+	v.tick(v.e)
+	if len(v.its.deferredWrites) != 0 {
+		t.Fatal("old request borrowed the new admission")
+	}
+	var abandoned bool
+	if err := v.st.DB.QueryRow(`SELECT abandoned_at IS NOT NULL AND last_error = 'deferred issue stopped'
+		FROM outbox WHERE dedupe_key = 'deferred/118/2026-11-13'`).Scan(&abandoned); err != nil || !abandoned {
+		t.Fatalf("old request abandoned = %v, %v", abandoned, err)
+	}
+
+	i.StartDate = "2026-11-14"
+	v.tick(v.e)
+	if len(v.its.deferredWrites) != 3 || v.its.deferredReceipt == nil ||
+		v.its.deferredReceipt.Key != "deferred/118/2026-11-14" || testutil.ToFloat64(v.m.DeferredStarted) != 1 {
+		t.Fatal("old stopped run blocked the new schedule")
+	}
+}
