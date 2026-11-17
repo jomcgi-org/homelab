@@ -1,6 +1,7 @@
 // discord-bridge connects Bosun to Discord's gateway (HOME-162): it answers
 // messages that tag the bot in allowlisted servers, with memory from
-// hindsight-discord and turns on a kagent Agent.
+// hindsight-discord and turns on a kagent Agent. "discord-bridge import"
+// replays allowlisted servers' history into their banks instead (HOME-164).
 package main
 
 import (
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -21,7 +23,11 @@ import (
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	if err := run(log); err != nil {
+	command := run
+	if len(os.Args) > 1 && os.Args[1] == "import" {
+		command = runImport
+	}
+	if err := command(log); err != nil {
 		log.Error("discord bridge stopped", "error", err)
 		os.Exit(1)
 	}
@@ -123,6 +129,69 @@ func run(log *slog.Logger) error {
 	stop()
 	bridge.Wait()
 	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
+}
+
+// runImport replays history once and exits. A run that reaches its document
+// cap succeeds; the next run continues where it stopped.
+func runImport(log *slog.Logger) error {
+	var cfg struct{ policy, token, hindsightURL, hindsightKey string }
+	for name, dst := range map[string]*string{
+		"DISCORD_POLICY_FILE": &cfg.policy, "DISCORD_TOKEN_FILE": &cfg.token,
+		"HINDSIGHT_URL": &cfg.hindsightURL, "HINDSIGHT_KEY_FILE": &cfg.hindsightKey,
+	} {
+		v, err := env(name)
+		if err != nil {
+			return err
+		}
+		*dst = v
+	}
+	data, err := os.ReadFile(cfg.policy)
+	if err != nil {
+		return err
+	}
+	policy, err := discord.ParsePolicy(data)
+	if err != nil {
+		return err
+	}
+	number := func(name string, fallback int) (int, error) {
+		v := os.Getenv(name)
+		if v == "" {
+			return fallback, nil
+		}
+		return strconv.Atoi(v)
+	}
+	maxDocs, err := number("IMPORT_MAX_DOCUMENTS", 500)
+	if err != nil {
+		return err
+	}
+	workers, err := number("IMPORT_WORKERS", 2)
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	rest := &discord.REST{Token: fileValue(cfg.token)}
+	me, err := rest.Me(ctx)
+	if err != nil {
+		return fmt.Errorf("bot user: %w", err)
+	}
+	im := &discord.Importer{
+		Source:       rest,
+		Store:        &discord.Hindsight{BaseURL: strings.TrimSuffix(cfg.hindsightURL, "/"), Key: fileValue(cfg.hindsightKey)},
+		Config:       policy,
+		BotID:        me.ID,
+		IncludeBots:  os.Getenv("IMPORT_INCLUDE_BOTS") == "true",
+		MaxDocuments: maxDocs,
+		Workers:      workers,
+		Log:          log,
+	}
+	stats, err := im.Run(ctx)
+	log.Info("history import finished", "channels", stats.Channels, "retained", stats.Retained,
+		"skipped", stats.Skipped, "capped", stats.Capped)
+	if errors.Is(err, discord.ErrCapped) {
 		return nil
 	}
 	return err

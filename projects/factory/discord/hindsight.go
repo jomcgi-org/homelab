@@ -136,21 +136,38 @@ func (h *Hindsight) ensureBank(ctx context.Context, guildID string) error {
 	return nil
 }
 
+// StatusError is a non-2xx Hindsight answer.
+type StatusError struct {
+	Method, Path string
+	Status       int
+	Body         string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("hindsight: %s %s: HTTP %d: %s", e.Method, e.Path, e.Status, e.Body)
+}
+
 func (h *Hindsight) call(ctx context.Context, method, path string, in, out any) error {
 	key, err := h.Key()
 	if err != nil {
 		return fmt.Errorf("hindsight: tenant key: %w", err)
 	}
-	body, err := json.Marshal(in)
-	if err != nil {
-		return err
+	var body io.Reader
+	if in != nil {
+		data, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(data)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, h.BaseURL+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, h.BaseURL+path, body)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
-	req.Header.Set("Content-Type", "application/json")
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	client := h.HTTP
 	if client == nil {
 		// A synchronous retain runs the LLM's extraction.
@@ -166,7 +183,7 @@ func (h *Hindsight) call(ctx context.Context, method, path string, in, out any) 
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("hindsight: %s %s: HTTP %d: %s", method, path, resp.StatusCode, clip(string(data), 300))
+		return &StatusError{Method: method, Path: path, Status: resp.StatusCode, Body: clip(string(data), 300)}
 	}
 	if out == nil {
 		return nil
