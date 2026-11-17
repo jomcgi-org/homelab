@@ -208,12 +208,13 @@ def test_boundary_test_runs_the_deployed_image():
     assert images == [f"docker://{repository}@{digest}"] * 2
 
 
-def test_the_script_configmap_name_is_not_a_role_resource_name():
+def test_the_script_configmap_names_are_not_role_resource_names():
     # Kustomize renames a generated ConfigMap with a hash suffix and rewrites
     # every Role resourceName that matches it, Secrets included. A shared name
     # left the Jobs without access to hindsight-keys, waiting forever.
     (kustomization,) = read("resources/kustomization.yaml")
-    (generator,) = kustomization["configMapGenerator"]
+    generators = {g["name"] for g in kustomization["configMapGenerator"]}
+    assert generators == {"hindsight-keys-script", "hindsight-preflight-script"}
     documents = read("resources/secrets.yaml") + read("agents/secrets.yaml")
     names = {
         name
@@ -222,11 +223,175 @@ def test_the_script_configmap_name_is_not_a_role_resource_name():
         for rule in doc["rules"]
         for name in rule.get("resourceNames", [])
     }
-    assert generator["name"] not in names
+    assert not generators & names
     volumes = [
         volume["configMap"]["name"]
         for doc in documents
         if doc["kind"] == "Job"
         for volume in doc["spec"]["template"]["spec"]["volumes"]
     ]
-    assert volumes == [generator["name"]] * 2
+    assert volumes == ["hindsight-keys-script"] * 2
+
+
+def manifest(path, kind, name=None):
+    (doc,) = [
+        d
+        for d in read(path)
+        if d["kind"] == kind and (name is None or d["metadata"]["name"] == name)
+    ]
+    return doc
+
+
+def container_env(pod_spec):
+    (container,) = pod_spec["containers"]
+    env = {e["name"]: e.get("value", e.get("valueFrom")) for e in container["env"]}
+    return container, env
+
+
+def test_preflight_runs_after_the_secrets_and_before_the_deployment():
+    job = manifest("resources/hindsight.yaml", "Job", "hindsight-preflight")
+    annotations = job["metadata"]["annotations"]
+    assert annotations["argocd.argoproj.io/hook"] == "Sync"
+    assert annotations["argocd.argoproj.io/hook-delete-policy"] == "BeforeHookCreation"
+    # After the 1Password items and placeholders (-2), before the Deployment (0).
+    assert annotations["argocd.argoproj.io/sync-wave"] == "-1"
+    for doc in read("resources/secrets.yaml"):
+        if doc["kind"] in ("OnePasswordItem", "Secret"):
+            wave = doc["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]
+            assert wave == "-2"
+    deployment = manifest("resources/hindsight.yaml", "Deployment")
+    assert "argocd.argoproj.io/sync-wave" not in deployment["metadata"].get(
+        "annotations", {}
+    )
+
+    container, env = container_env(job["spec"]["template"]["spec"])
+    api, api_env = container_env(deployment["spec"]["template"]["spec"])
+    assert container["image"] == api["image"]
+    assert container["command"][-1] == "/scripts/preflight.py"
+    # The same Secrets and settings as the API pod, so a missing one stops here.
+    assert env["EMBEDDINGS_DIMENSIONS"] == "1024"  # mongodb/voyage-4-large
+    for name, api_name in (
+        ("EMBEDDINGS_PROVIDER", "HINDSIGHT_API_EMBEDDINGS_PROVIDER"),
+        ("OPENROUTER_API_KEY", "HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY"),
+        ("DATABASE_URL", "HINDSIGHT_API_DATABASE_URL"),
+        ("EMBEDDINGS_MODEL", "HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL"),
+        ("EMBEDDINGS_EXTRA_BODY", "HINDSIGHT_API_EMBEDDINGS_OPENAI_EXTRA_BODY"),
+    ):
+        assert env[name] == api_env[api_name], name
+
+
+def test_only_the_api_pod_serves_and_every_pod_can_reach_the_database():
+    service = manifest("resources/hindsight.yaml", "Service")
+    assert service["spec"]["selector"] == {
+        "app.kubernetes.io/name": "hindsight",
+        "app.kubernetes.io/component": "api",
+    }
+    pods = {
+        "api": manifest("resources/hindsight.yaml", "Deployment"),
+        "preflight": manifest("resources/hindsight.yaml", "Job", "hindsight-preflight"),
+        "reembed": manifest("recovery/reembed-local.yaml", "Job"),
+    }
+    for component, doc in pods.items():
+        # factory-db's policy admits app.kubernetes.io/name: hindsight.
+        assert doc["spec"]["template"]["metadata"]["labels"] == {
+            "app.kubernetes.io/name": "hindsight",
+            "app.kubernetes.io/component": component,
+        }
+
+
+def load_preflight():
+    spec = importlib.util.spec_from_file_location(
+        "hindsight_preflight", ROOT / "resources/preflight.py"
+    )
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    return script
+
+
+V384, V1024 = "vector(384)", "vector(1024)"
+
+
+@pytest.mark.parametrize(
+    "columns,dimension,ok",
+    [
+        ({}, 1024, True),  # A new database: Hindsight creates the tables.
+        ({"memory_units": (V384, 0), "mental_models": (V384, 0)}, 1024, True),
+        ({"memory_units": (V1024, 9), "mental_models": (V1024, 0)}, 1024, True),
+        ({"memory_units": (V384, 9), "mental_models": (V384, 0)}, 1024, False),
+        ({"memory_units": (V1024, 0), "mental_models": (V1024, 2)}, 384, False),
+    ],
+)
+def test_preflight_refuses_only_rows_of_another_dimension(columns, dimension, ok):
+    assert (load_preflight().refused(columns, dimension) == []) == ok
+
+
+def test_preflight_stops_the_sync_on_a_bad_key_model_or_stored_rows(monkeypatch):
+    script = load_preflight()
+    monkeypatch.setenv("EMBEDDINGS_PROVIDER", "openrouter")
+    monkeypatch.setenv("EMBEDDINGS_DIMENSIONS", "1024")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    with pytest.raises(SystemExit, match="empty api-key"):
+        script.main()
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    monkeypatch.setenv("EMBEDDINGS_MODEL", "mongodb/voyage-4-large")
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
+    monkeypatch.setattr(script, "model_dimension", lambda key, model, extra: 1536)
+    with pytest.raises(SystemExit, match="returns 1536 dimensions, not 1024"):
+        script.main()
+    monkeypatch.setattr(script, "model_dimension", lambda key, model, extra: 1024)
+
+    async def rows_at_384(url):
+        return {"memory_units": (V384, 3)}
+
+    monkeypatch.setattr(script, "database", rows_at_384)
+    with pytest.raises(SystemExit, match=r"holds 3 rows as vector\(384\)"):
+        script.main()
+
+    async def empty(url):
+        return {"memory_units": (V384, 0)}
+
+    monkeypatch.setattr(script, "database", empty)
+    script.main()
+
+
+def test_preflight_lets_a_rollback_to_the_local_model_through(monkeypatch):
+    # After recovery/reembed-local.yaml, rows hold 384 dimensions and the
+    # reverted settings name the local provider: no OpenRouter call, no key.
+    script = load_preflight()
+    monkeypatch.setenv("EMBEDDINGS_PROVIDER", "local")
+    monkeypatch.setenv("EMBEDDINGS_DIMENSIONS", "384")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgres://unused")
+
+    def no_call(*args):
+        raise AssertionError("the local provider must not call OpenRouter")
+
+    async def reembedded(url):
+        return {"memory_units": (V384, 3), "mental_models": (V384, 0)}
+
+    monkeypatch.setattr(script, "model_dimension", no_call)
+    monkeypatch.setattr(script, "database", reembedded)
+    script.main()
+
+
+def test_recovery_job_runs_what_rollback_test_proves():
+    job = manifest("recovery/reembed-local.yaml", "Job")
+    container, env = container_env(job["spec"]["template"]["spec"])
+    deployment = manifest("resources/hindsight.yaml", "Deployment")
+    api, api_env = container_env(deployment["spec"]["template"]["spec"])
+    assert container["image"] == api["image"]
+    assert container["command"] == [
+        "/app/api/.venv/bin/hindsight-admin",
+        "reembed",
+        "--all-schemas",
+    ]
+    assert env["HINDSIGHT_API_DATABASE_URL"] == api_env["HINDSIGHT_API_DATABASE_URL"]
+    # rollback_test's local_env: the image's model, no LLM, no Hugging Face egress.
+    assert env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "local"
+    assert env["HINDSIGHT_API_LLM_PROVIDER"] == "none"
+    assert env["HF_HUB_OFFLINE"] == env["TRANSFORMERS_OFFLINE"] == "1"
+    # Break-glass only: ArgoCD never applies it.
+    for path in ("kustomization.yaml", "resources/kustomization.yaml"):
+        (kustomization,) = read(path)
+        assert not any("recovery" in r for r in kustomization.get("resources", []))

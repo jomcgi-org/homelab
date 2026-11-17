@@ -15,8 +15,11 @@ metadata:
   labels:
     app.kubernetes.io/name: hindsight
 spec:
+  # Only the API pod. The preflight and recovery Jobs share the name label,
+  # which factory-db's policy admits, but serve nothing.
   selector:
     app.kubernetes.io/name: hindsight
+    app.kubernetes.io/component: api
   ports:
     - name: http
       port: 8888
@@ -39,6 +42,7 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: hindsight
+        app.kubernetes.io/component: api
     spec:
       serviceAccountName: hindsight
       automountServiceAccountToken: false
@@ -157,3 +161,81 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 1Gi
+---
+# Before a sync replaces the API pod (resources/preflight.py): the OpenRouter
+# key works, and the embedding model's dimension matches any stored vectors.
+# A failure stops the sync in this wave, so the running pod keeps serving.
+# Wave -1 runs after the 1Password items (-2) and before the Deployment (0).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hindsight-preflight
+  namespace: hindsight
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  backoffLimit: 2
+  # Also bounds a wait for a Secret the operator has not written.
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hindsight
+        app.kubernetes.io/component: preflight
+    spec:
+      serviceAccountName: hindsight
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: preflight
+          image: ghcr.io/vectorize-io/hindsight-api:1.2.1@sha256:662109ece429871a81e036427fb93fbb09ba9dc4b01d320d356f114c0e1aedd8
+          command: [/app/api/.venv/bin/python, -I, -B, /scripts/preflight.py]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-db
+                  key: DATABASE_URL
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-openrouter
+                  key: api-key
+            # Equal to the Deployment's (keys_test). For a rollback to the
+            # image's model: provider local, 384 dimensions.
+            - name: EMBEDDINGS_PROVIDER
+              value: openrouter
+            - name: EMBEDDINGS_DIMENSIONS
+              value: "1024"
+            - name: EMBEDDINGS_MODEL
+              value: mongodb/voyage-4-large
+            - name: EMBEDDINGS_EXTRA_BODY
+              value: '{"provider": {"data_collection": "deny"}}'
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: hindsight-preflight-script

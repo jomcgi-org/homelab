@@ -20,3 +20,11 @@ configMapGenerator:
     options:
       annotations:
         argocd.argoproj.io/sync-wave: "-2"
+  # resources/preflight.py, for the hindsight-preflight Sync hook.
+  - name: hindsight-preflight-script
+    namespace: hindsight
+    files:
+      - preflight.py
+    options:
+      annotations:
+        argocd.argoproj.io/sync-wave: "-2"

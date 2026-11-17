@@ -311,19 +311,28 @@ local `bge-small-en-v1.5`. Its 1,024 dimensions fit pgvector's index limit
 chose one OpenRouter key for both instances
 ([HOME-130 comment 1439](https://factory-plan.jomcgi.dev/factory/issue/HOME-130#comment-1439)).
 
-**Rollback.** While `memory_units` and `mental_models` hold no rows, a revert
-of the manifest is enough: Hindsight resizes an empty vector column at
-startup. After the first retain, it refuses to start on a model with another
-dimension. To go back to the image's local model:
+**Preflight.** Hindsight resizes an empty vector column at startup and
+refuses to start on a model with another dimension once rows exist. Each sync
+first runs the `hindsight-preflight` Sync hook (wave -1, after the 1Password
+items). It needs the same Secrets as the API pod, embeds one string through
+OpenRouter, and fails when the key is empty or refused, or when stored rows
+have another dimension. The sync then stops before the Deployment, and the
+running pod keeps serving.
 
-1. In the running pod, run
-   `HINDSIGHT_API_EMBEDDINGS_PROVIDER=local hindsight-admin reembed --all-schemas`.
-   Recall keeps working on the old vectors while it fills a new column.
-2. Revert the manifest.
-3. Run `hindsight-admin reembed --all-schemas --finish`.
+**Rollback.** While no rows hold vectors, a revert of the manifest is enough.
+After the first retain, go back to the image's local model like this; no API
+pod has to run:
+
+1. `kubectl apply -f projects/platform-factory/hindsight/recovery/reembed-local.yaml`
+   re-embeds every row with the local model. ArgoCD never applies this Job.
+2. In `resources/hindsight.yaml`, set the Deployment's embeddings provider
+   back to `local`, and the preflight's `EMBEDDINGS_PROVIDER` to `local` and
+   `EMBEDDINGS_DIMENSIONS` to `384`. The preflight then checks only the rows.
+3. In the running pod, run `hindsight-admin reembed --all-schemas --finish`.
 
 `projects/platform-factory/hindsight/rollback_test.py` runs these steps in the
-deployed image, without network, from 1,024-dimensional vectors.
+deployed image without network, from 1,024-dimensional vectors, and
+`keys_test` pins the recovery Job to its settings.
 
 Two keys separate the callers. The REST API takes only the tenant key, which
 nothing outside the pod holds. MCP takes the agents' token

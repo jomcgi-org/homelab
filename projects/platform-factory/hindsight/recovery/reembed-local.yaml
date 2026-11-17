@@ -1,0 +1,66 @@
+# Break-glass: re-embed every stored memory with the image's local model when
+# the API pod cannot start, for example while OpenRouter is down. It needs no
+# running API pod. Not in kustomization.yaml, so ArgoCD never applies it.
+#
+#   kubectl apply -f projects/platform-factory/hindsight/recovery/reembed-local.yaml
+#
+# Then revert the embeddings change and finish in the running pod
+# (projects/factory/ARCHITECTURE.md, Memory). rollback_test runs the same
+# command and settings in this image. keys_test pins them to it.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hindsight-reembed-local
+  namespace: hindsight
+spec:
+  # reembed resumes where it stopped.
+  backoffLimit: 3
+  activeDeadlineSeconds: 7200
+  template:
+    metadata:
+      labels:
+        # factory-db admits this name; the Service selects only component api.
+        app.kubernetes.io/name: hindsight
+        app.kubernetes.io/component: reembed
+    spec:
+      serviceAccountName: hindsight
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: reembed
+          image: ghcr.io/vectorize-io/hindsight-api:1.2.1@sha256:662109ece429871a81e036427fb93fbb09ba9dc4b01d320d356f114c0e1aedd8
+          command: [/app/api/.venv/bin/hindsight-admin, reembed, --all-schemas]
+          env:
+            - name: HINDSIGHT_API_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-db
+                  key: DATABASE_URL
+            - name: HINDSIGHT_API_EMBEDDINGS_PROVIDER
+              value: local
+            - name: HINDSIGHT_API_LLM_PROVIDER
+              value: none
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: TRANSFORMERS_OFFLINE
+              value: "1"
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The model libraries write caches under the home directory.
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1536Mi
+            limits:
+              memory: 3Gi
