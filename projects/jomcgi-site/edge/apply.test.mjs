@@ -153,7 +153,7 @@ test("main refuses to run unless EDGE_SERVE_ROUTES is true or false", () => {
   }
 });
 
-test("changes nothing when a wanted route belongs to another Worker", async () => {
+test("a route conflict blocks only the route writes, then the run fails", async () => {
   const zone = fakeZone({
     routes: [
       { pattern: "jomcgi.dev/cv", script: "other-worker" },
@@ -163,26 +163,45 @@ test("changes nothing when a wanted route belongs to another Worker", async () =
   });
   await assert.rejects(
     apply(zone.call, routesFile(["jomcgi.dev/cv"]), RULES),
-    /belongs to another Worker/,
+    /belongs to another Worker; no route was changed/,
   );
-  assert.deepEqual(zone.state.writes, []);
+  assert.ok(!zone.state.writes.some((w) => w.includes("/workers/routes")));
+  // The cache-rules half is independent and still applies.
+  assert.ok(
+    zone.state.rules.every((rule, i) => sameRule(rule, RULES.rules[i])),
+  );
 });
 
-test("stops before any write when a live cache rule is not in the file", async () => {
-  const dashboard = {
-    id: "d",
-    description: "made in the dashboard",
-    expression: "true",
-    action: "set_cache_settings",
-    action_parameters: { cache: false },
-    enabled: true,
-  };
-  const zone = fakeZone({ rules: [MONOLITH, dashboard] });
+const DASHBOARD_RULE = {
+  id: "d",
+  description: "made in the dashboard",
+  expression: "true",
+  action: "set_cache_settings",
+  action_parameters: { cache: false },
+  enabled: true,
+};
+
+test("an unknown live cache rule blocks only the cache-rules write, then the run fails", async () => {
+  const zone = fakeZone({ rules: [MONOLITH, DASHBOARD_RULE] });
   await assert.rejects(
     apply(zone.call, ROUTES, RULES),
-    /"made in the dashboard" is not in cache-rules.json/,
+    /"made in the dashboard" is not in cache-rules.json; no cache rule was changed/,
   );
-  assert.deepEqual(zone.state.writes, []);
+  assert.ok(!zone.state.writes.some((w) => w.startsWith("PUT")));
+  assert.deepEqual(zone.state.rules, [MONOLITH, DASHBOARD_RULE]);
+});
+
+test("rollback with routes off still deletes the routes when a dashboard cache rule exists", async () => {
+  const zone = fakeZone({
+    routes: ROUTES.patterns.map((pattern) => ({ pattern, script: SCRIPT })),
+    rules: [MONOLITH, DASHBOARD_RULE],
+  });
+  await assert.rejects(
+    apply(zone.call, ROUTES, RULES, { serveRoutes: false }),
+    /not fully applied/,
+  );
+  assert.deepEqual(zone.state.routes, []);
+  assert.deepEqual(zone.state.rules, [MONOLITH, DASHBOARD_RULE]);
 });
 
 test("sends no write when the zone already matches, with Cloudflare's metadata", async () => {
