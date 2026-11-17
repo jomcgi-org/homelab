@@ -421,6 +421,11 @@
       "required": ["enabled"],
       "additionalProperties": false,
       "properties": {
+        "ownershipJournalVersion": {
+          "description": "0 stages the compatible reader without creating a journal; 2 activates creation after a compatible rollback chart is published. Existing journals are always reconciled.",
+          "type": "integer",
+          "enum": [0, 2]
+        },
         "enabled": {
           "type": "boolean"
         },

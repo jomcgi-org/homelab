@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -51,6 +52,7 @@ func waitForQuotaCheck(t *testing.T, h *harness) recorded {
 // restart and give each resumed send a new identity without using a retry.
 func TestQuotaFailuresSpendNoAttempt(t *testing.T) {
 	h := newHarness(t)
+	h.cfg.StatePath = filepath.Join(t.TempDir(), "ownership.json")
 	addPR7(h)
 	q := &fakeQuota{}
 	h.cfg.Quota = q
@@ -111,6 +113,86 @@ func TestQuotaFailuresSpendNoAttempt(t *testing.T) {
 	})
 	if h.gh.checkCount() != 1 || h.k.rejections() != 0 {
 		t.Fatal("quota resumes created another check or reused a message identity")
+	}
+}
+
+func TestUncertainQuotaRetryKeepsOwnershipAfterRestart(t *testing.T) {
+	for _, closed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("closed=%t", closed), func(t *testing.T) {
+			h := newHarness(t)
+			h.cfg.StatePath = filepath.Join(t.TempDir(), "ownership.json")
+			h.cfg.Concurrency = 1
+			addPR7(h)
+			q := &fakeQuota{}
+			h.cfg.Quota = q
+			e, ctx, stop := h.start()
+			first := runReview(t, h, e, ctx, 7, shaA)
+			h.k.finish(first, kagent.StateFailed, "usage_limit_reached")
+			rec := waitForQuotaCheck(t, h)
+			dispatchCtx, cancelDispatch := context.WithCancel(ctx)
+			defer cancelDispatch()
+			h.k.mu.Lock()
+			h.k.loseResponse = true
+			h.k.listErr = errors.New("task history unavailable")
+			h.k.afterSend = cancelDispatch
+			h.k.mu.Unlock()
+			q.set(github.QuotaReading{ReceivedAt: rec.QuotaSince.Add(time.Second)}, nil)
+			e.Tick(dispatchCtx)
+			id := h.msgID(7, shaA, 1) + "/quota-1"
+			eventually(t, "uncertain quota retry", func() bool {
+				return h.k.taskFor(id) != ""
+			})
+			old := h.k.taskFor(id)
+			stop()
+			if h.gh.check(shaA).Title != "Waiting for Codex quota" {
+				t.Fatal("test published the dispatch before its simulated shutdown")
+			}
+
+			// The saved check still has its quota marker. Neither an exhausted
+			// grant nor a closed PR may hide the unresolved execution.
+			q.set(github.QuotaReading{Exhausted: true}, nil)
+			if closed {
+				h.gh.withLock(func() { h.gh.prs[7].Closed = true })
+			}
+			h.k.cancellation("fail", nil)
+			e, ctx, _ = h.start()
+			if e.loadErr != nil {
+				t.Fatalf("quota retry journal cannot reload: %v", e.loadErr)
+			}
+			for range 3 {
+				e.Tick(ctx)
+			}
+			if len(h.k.sent()) != 2 || testutil.ToFloat64(h.m.InFlight) != 1 {
+				t.Fatal("uncertain quota retry was replayed or released its slot")
+			}
+			h.k.mu.Lock()
+			h.k.listErr = nil
+			h.k.mu.Unlock()
+			eventually(t, "original quota retry recovered", func() bool {
+				e.Tick(ctx)
+				return RecordedTask(h.gh.check(shaA).Summary).ID == old
+			})
+			if closed {
+				pendingCancellation(t, h, old)
+				h.k.cancellation("", nil)
+				eventually(t, "closed quota retry stopped", func() bool {
+					e.Tick(ctx)
+					return h.gh.check(shaA).Conclusion == ConclusionCancelled
+				})
+				task, err := h.k.GetTask(ctx, testAgent, old)
+				if err != nil || !kagent.Terminal(task.Status.State) {
+					t.Fatalf("closed retry still runs: %v, %v", task, err)
+				}
+			} else {
+				h.k.finish(old, kagent.StateFailed, "usage_limit_reached")
+				if got := waitForQuotaCheck(t, h); got.Attempt != 1 || got.QuotaRetry != 2 {
+					t.Fatalf("lost the recovered quota retry identity: %+v", got)
+				}
+			}
+			if len(h.k.sent()) != 2 {
+				t.Fatal("recovery sent a replacement for an uncertain quota retry")
+			}
+		})
 	}
 }
 

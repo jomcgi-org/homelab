@@ -1,0 +1,100 @@
+# Rendered from main 1094f01ff with deploy/values.yaml. No journal or cancellation contract.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: factory-reviewer
+  namespace: factory
+  labels:
+    helm.sh/chart: factory-0.39.0
+    app.kubernetes.io/instance: factory
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: factory
+  annotations:
+    argocd.argoproj.io/sync-wave: '1'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: factory-reviewer
+      app.kubernetes.io/instance: factory
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: factory-reviewer
+        app.kubernetes.io/instance: factory
+        app.kubernetes.io/part-of: factory
+      annotations:
+        checksum/config: 2100a54646371eca032d718647bf0ba4c8ba67c657309978385036546ef7d772
+    spec:
+      serviceAccountName: factory-reviewer
+      automountServiceAccountToken: false
+      imagePullSecrets:
+      - name: ghcr-imagepull-secret
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: reviewer
+        image: ghcr.io/jomcgi/homelab/projects/factory/reviewer:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: FACTORY_REVIEWER_CONFIG
+          value: /etc/factory-reviewer/config.yaml
+        ports:
+        - name: metrics
+          containerPort: 9090
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          periodSeconds: 30
+        resources:
+          limits:
+            memory: 256Mi
+          requests:
+            cpu: 20m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: config
+          mountPath: /etc/factory-reviewer
+          readOnly: true
+        - name: kagent-token
+          mountPath: /var/run/secrets/kagent
+          readOnly: true
+        - name: broker-token
+          mountPath: /var/run/secrets/factory-broker
+          readOnly: true
+      volumes:
+      - name: config
+        configMap:
+          name: factory-reviewer
+      - name: kagent-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: kagent-invocation
+              expirationSeconds: 3600
+              path: token
+      - name: broker-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: factory-broker
+              expirationSeconds: 3600
+              path: token

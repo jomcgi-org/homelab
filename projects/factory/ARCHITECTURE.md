@@ -1893,7 +1893,7 @@ previews).
   (`factory_reviewer_comment_writes_total`) and retried on the next poll.
   It edits only a comment its bot
   login wrote, and its own comment never reaches the agent.
-  Check runs hold review state; the private audit volume keeps goal replies. The
+  Check runs publish review state; the private audit volume keeps goal replies. The
   in-progress run names its attempt and kagent task, and a completed one
   keeps its blocking findings, human gate and kagent session in a hidden
   block, at most 48,000 characters, for the next head. A compressed comment
@@ -1932,10 +1932,65 @@ previews).
   no record to match when it moved off one of the PR's heads, other than by
   adding commits to the current head and staying open, before any hold
   write succeeded and the reviewer restarted.
+- **Code-review execution ownership.**
+  After activation, a kept PVC stores an atomic, fsynced ownership journal at
+  `/var/lib/factory-reviewer-ownership/ownership.json`. It indexes unfinished checks
+  and their original agent and task identities so recovery includes closed
+  PRs and superseded heads. Before dispatch it also saves the exact message;
+  an uncertain send is recovered only by reading every task state and page
+  for its opening message ID. It is never replayed: kagent may remove the
+  creation receipt while the original actor still executes. Empty, missing
+  or failed reads keep a visible unresolved dispatch and its capacity until
+  positive evidence identifies the original task. Journal version 2 preserves
+  this intent; version 1 readers reject it. Unreadable
+  state fences new work; the process keeps polling and fails queued merge
+  groups closed even when loading the journal fails. Pending cancellations
+  do not suspend other PRs' gate reconciliation.
+  **Why.** GitHub's open PR listing cannot rediscover cancellation work after
+  its PR closes. A failed cancellation must keep its execution slot across
+  process and pod replacement (#8013).
+- **Reviewer rollout and rollback.** HOME-30 ships the compatible reader
+  and kept PVC before activating journal creation. The chart default
+  `reviewer.ownershipJournalVersion: 0` omits the new config key, so the
+  previous binary can still parse its config. If no journal exists, this
+  release uses memory only and creates no journal. The task marker keeps
+  its old format; a separate marker carries cancellation intent. The old
+  reader can still find the original task ID when the chart pin is lowered.
+  There is no admission fence to block that rollback.
+
+  ```mermaid
+  flowchart LR
+    A[Reader release: default 0] --> B{Journal exists?}
+    B -->|No| C[Memory only; old-format task identity]
+    B -->|Yes| D[Recover and update all durable ownership]
+    E[Later release: default 2] --> F[Create journal before dispatch]
+    F -->|Lower pin to reader release| D
+  ```
+
+  HOME-30 activation remains a follow-up after this reader chart is
+  published and available as the preceding rollback chart. The activating
+  release changes the **chart default** to 2. Keep the setting out of both
+  `deploy/values.yaml` and `values-homelab.yaml`: git values take effect
+  before CI advances the chart pin, which would activate the first reader
+  release while its preceding chart still cannot read a journal.
+
+  Lowering the activating release's pin to the reader release restores
+  default 0, but an existing journal is always read and updated. Pending
+  cancellations and uncertain sends keep their identity and capacity;
+  closed PRs and superseded heads are still reconciled. A corrupt or
+  unreadable journal still fences new work and keeps queue gates closed.
+  There is no manual drain or policy-removal step. Retain this reader chart
+  as the compatibility floor after activation; pre-reader charts cannot
+  consume durable ownership.
+  **Why.** The preceding release must understand new state before a writer
+  produces it. Before activation, memory-only ownership still has the
+  pre-existing restart limitation for closed PRs and unresolved sends;
+  the durable acceptance criteria become live in the activating release
+  (#8013). The engine tests cover both stages and rollback between them.
 - **Chart wiring.** `reviewer.enabled` defaults to false. Enabling it creates
   one `factory-reviewer` Deployment in `broker.namespace`, with `Recreate`
-  and a kept ServiceAccount. Projected tokens use audiences `factory-broker`
-  and `kagent-invocation`; the pod mounts no App key. The chart pins the
+  and a kept ServiceAccount and ownership PVC. Projected tokens use audiences
+  `factory-broker` and `kagent-invocation`; the pod mounts no App key. The chart pins the
   reviewer image and supplies the namespace's GHCR pull secret. Its config
   derives repositories and agents from each binding, uses App ID 5758326,
   and defaults `enqueueAuthors` and `humanApprovers` to `[jomcgi]`.
@@ -2298,13 +2353,23 @@ previews).
   coding runs; a retry adds `/attempt-<n>`. A later head's first attempt
   resumes the previous head's session and adds `/resume` (below); every
   other attempt opens a fresh session. Each
-  attempt's message is built once and resent byte for byte: at most 20
-  sends, then one more after a dispatch window. When
-  no open PR still has a head, its task and check are cancelled: at once
+  attempt's message is built once and resent byte for byte only after a
+  definite refusal: at most 20 sends, then one more after a dispatch window.
+  Ambiguous sends retain ownership and recover through task reads. When
+  no open PR still has a head, cancellation is requested: at once
   when the PR moved to another head, and after two complete listings in a
   row leave the PR out when it closed, since a PR closing between page
-  reads shifts another off both pages. The
-  agent has its own binding, a read-only repository token and no push. The
+  reads shifts another off both pages. The check displays "Cancellation
+  pending" and retains its task and attempt until a task read or cancel
+  response confirms that exact task terminal. Failed, missing-task and
+  nonterminal responses retain ownership and retry. Timeouts use the same
+  path before advancing attempts; a replacement head waits for its old
+  cancellation. Changed or unreadable issue evidence and changed Semgrep
+  evidence use the same cancellation path. Pending code-review work counts
+  against concurrency after restart too. Goal-check dispatch and cancellation
+  ownership remain separate follow-up work for HOME-30; `review/goal.go`
+  keeps its existing lifecycle in this reader release.
+  The agent has its own binding, a read-only repository token and no push. The
   service then completes the check on that exact SHA from the agent's
   findings and, on a pass with required CI green, enqueues Joe's PRs. The agent never
   holds the reviewer App's credentials, and the broker mints the author's and

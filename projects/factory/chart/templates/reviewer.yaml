@@ -48,6 +48,24 @@ spec:
     requests:
       storage: 1Gi
 ---
+# Keep cancellation ownership across reviewer Pod replacements.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    # Create with its consumer for WaitForFirstConsumer storage classes.
+    argocd.argoproj.io/sync-wave: "1"
+    {{- include "factory.keep" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -112,6 +130,8 @@ spec:
             capabilities:
               drop: [ALL]
           volumeMounts:
+            - name: ownership
+              mountPath: /var/lib/factory-reviewer-ownership
             - name: goal-audit
               mountPath: /var/lib/factory-reviewer
             - name: config
@@ -129,6 +149,9 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
+        - name: ownership
+          persistentVolumeClaim:
+            claimName: {{ $name }}
         - name: goal-audit
           persistentVolumeClaim:
             claimName: {{ $name }}-goal-audit

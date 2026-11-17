@@ -378,6 +378,90 @@ def test_audit_retention_survives_rollback() -> None:
     assert policy["spec"]["ingress"] == policy["spec"]["egress"] == []
 
 
+def test_execution_ownership_survives_reviewer_pod_replacement() -> None:
+    docs = _render()
+    pvc = _in(docs, "PersistentVolumeClaim", "factory", "factory-reviewer")
+    assert _KEEP.items() <= pvc["metadata"]["annotations"].items()
+    assert pvc["spec"]["accessModes"] == ["ReadWriteOnce"]
+    pod = _pod(docs, "factory-reviewer")
+    assert pod["securityContext"]["fsGroup"] == 65532
+    volumes = {v["name"]: v for v in pod["volumes"]}
+    mounts = {m["name"]: m for m in pod["containers"][0]["volumeMounts"]}
+    assert (
+        volumes["ownership"]["persistentVolumeClaim"]["claimName"] == "factory-reviewer"
+    )
+    assert mounts["ownership"]["mountPath"] == "/var/lib/factory-reviewer-ownership"
+    deployment = _in(docs, "Deployment", "factory", "factory-reviewer")
+    # Ownership and goal replies use separate claims and mount paths. The
+    # retained audit pruner receives only the goal claim (tested above).
+    assert (
+        volumes["ownership"]["persistentVolumeClaim"]
+        != volumes["goal-audit"]["persistentVolumeClaim"]
+    )
+    paths = [m["mountPath"] for m in mounts.values()]
+    assert len(paths) == len(set(paths))
+    # A WaitForFirstConsumer claim must not block its consumer's sync wave.
+    assert (
+        pvc["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]
+        == deployment["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]
+    )
+    assert deployment["spec"]["replicas"] == 1
+    assert deployment["spec"]["strategy"]["type"] == "Recreate"
+
+
+def test_reader_release_keeps_the_legacy_pin_rollback_available() -> None:
+    docs = _render()
+    config = _config(docs, "factory-reviewer")
+    # The shipped defaults and deploy values do not create a journal or emit
+    # a key the preceding release's strict parser cannot read.
+    assert "ownershipJournalVersion" not in config
+    assert (
+        "ownershipJournalVersion" not in yaml.safe_load(_DEPLOY.read_text())["reviewer"]
+    )
+    assert (
+        "ownershipJournalVersion"
+        not in yaml.safe_load((_CHART / "values-homelab.yaml").read_text())["reviewer"]
+    )
+    assert not any(
+        d["kind"] in ("ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding")
+        and "reviewer" in d["metadata"]["name"]
+        for d in docs
+    )
+    current = _in(docs, "Deployment", "factory", "factory-reviewer")
+    legacy = yaml.safe_load(
+        (_CHART / "testdata/reviewer-before-ownership.yaml").read_text()
+    )
+    # Lowering the pin can restore the old Deployment: its identity and
+    # immutable selector still match, and no kept admission fence blocks it.
+    assert current["metadata"]["name"] == legacy["metadata"]["name"]
+    assert current["spec"]["selector"] == legacy["spec"]["selector"]
+    old_pod, new_pod = (
+        legacy["spec"]["template"]["spec"],
+        current["spec"]["template"]["spec"],
+    )
+    assert old_pod["serviceAccountName"] == new_pod["serviceAccountName"]
+    assert old_pod["containers"][0]["env"] == new_pod["containers"][0]["env"]
+
+
+def test_later_activation_uses_the_same_storage_as_its_rollback_reader() -> None:
+    reader, active = _render(), _render(["reviewer.ownershipJournalVersion=2"])
+    assert _config(active, "factory-reviewer")["ownershipJournalVersion"] == 2
+    for docs in (reader, active):
+        pod = _pod(docs, "factory-reviewer")
+        volume = next(v for v in pod["volumes"] if v["name"] == "ownership")
+        mount = next(
+            m for m in pod["containers"][0]["volumeMounts"] if m["name"] == "ownership"
+        )
+        assert volume["persistentVolumeClaim"]["claimName"] == "factory-reviewer"
+        assert mount["mountPath"] == "/var/lib/factory-reviewer-ownership"
+        assert (
+            _KEEP.items()
+            <= _in(docs, "PersistentVolumeClaim", "factory", "factory-reviewer")[
+                "metadata"
+            ]["annotations"].items()
+        )
+
+
 def test_reviewer_identity_is_mandatory_and_isolated() -> None:
     docs = _render()
     config = json.loads(
@@ -719,6 +803,7 @@ def test_long_default_namespace_requires_an_explicit_review_namespace() -> None:
     "overrides",
     [
         [],
+        ["reviewer.ownershipJournalVersion=2"],
         ["reviewer.commentAuthor=jomcgi-factory-review[bot]"],
         [
             "reviewer.bindings.homelab.enqueueAuthors=[]",
@@ -747,6 +832,7 @@ def test_service_strict_parser_accepts_rendered_config(overrides: list[str]) -> 
     )
     assert result.returncode == 0, result.stderr
     parsed = json.loads(result.stdout)
+    assert config.get("ownershipJournalVersion", 0) == parsed["OwnershipJournalVersion"]
     assert parsed["AppID"] == 5758326
     assert parsed["GitHubURL"] == "https://api.github.com"
     (binding,) = parsed["Bindings"]

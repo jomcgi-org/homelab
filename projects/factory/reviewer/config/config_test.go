@@ -76,6 +76,20 @@ func TestParseKeepsExplicitEmptyLists(t *testing.T) {
 	}
 }
 
+func TestOwnershipJournalContract(t *testing.T) {
+	for setting, want := range map[string]int{"": 0, "ownershipJournalVersion: 0\n": 0, "ownershipJournalVersion: 2\n": 2} {
+		c, err := Parse([]byte(sample + setting))
+		if err != nil || c.OwnershipJournalVersion != want {
+			t.Fatalf("ownership contract %q: config=%+v, err=%v", setting, c, err)
+		}
+	}
+	for _, version := range []string{"-1", "1", "3"} {
+		if _, err := Parse([]byte(sample + "ownershipJournalVersion: " + version + "\n")); err == nil {
+			t.Fatalf("accepted unsupported ownership journal version %s", version)
+		}
+	}
+}
+
 func TestParseRejectsInvalidFiles(t *testing.T) {
 	for name, file := range map[string]string{
 		"unknown field":       sample + "extra: true\n",

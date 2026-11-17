@@ -134,6 +134,15 @@ func (c *Client) PullRequestCreationBoundary(ctx context.Context, repo string) (
 	return pulls[0].CreatedAt, nil
 }
 
+// PullRequest reads the current PR, including its labels and description.
+func (c *Client) PullRequest(ctx context.Context, repo string, number int) (*PullRequest, error) {
+	var p restPull
+	if err := c.do(ctx, repo, http.MethodGet, repoPath(repo)+"/pulls/"+strconv.Itoa(number), nil, &p); err != nil {
+		return nil, err
+	}
+	return p.pr(), nil
+}
+
 // ListPullRequests lists every open PR into base, oldest first, page by
 // page. Pages are sorted by creation, so a new PR or push changes one page
 // and the others stay answered by 304. complete is false only past

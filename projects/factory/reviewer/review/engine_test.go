@@ -290,9 +290,12 @@ func addPR7(h *harness) {
 // runReview ticks until a head's review has its first task and returns it.
 func runReview(t *testing.T, h *harness, e *Engine, ctx context.Context, number int, sha string) string {
 	t.Helper()
-	e.Tick(ctx)
 	var task string
-	eventually(t, "the review task", func() bool { task = h.taskOn(number, sha, 1); return task != "" })
+	eventually(t, "the review task", func() bool {
+		e.Tick(ctx)
+		task = h.taskOn(number, sha, 1)
+		return task != ""
+	})
 	return task
 }
 
@@ -589,22 +592,22 @@ func TestRestartReattachesWithoutASecondTask(t *testing.T) {
 	}
 }
 
-// TestReattachWithoutRecordedTaskResendsTheMessage covers a restart between
-// the send and recording its task: the same message finds the same task.
-func TestReattachWithoutRecordedTaskResendsTheMessage(t *testing.T) {
+// A lost send response is recovered through task history without replaying
+// a request that could open a replacement execution.
+func TestLostSendResponseFindsTheOriginalTask(t *testing.T) {
 	h := newHarness(t)
 	addPR7(h)
 	h.k.loseResponse = true // the first send's answer is lost
 	e, ctx, _ := h.start()
 	e.Tick(ctx)
-	eventually(t, "the resent message", func() bool { return len(h.k.sent()) >= 2 })
+	eventually(t, "the original send", func() bool { return len(h.k.sent()) == 1 })
 	msgA := h.msgID(7, shaA, 1)
 	task := h.k.taskFor(msgA)
 	eventually(t, "the task recorded on the check", func() bool { return RecordedTask(h.gh.check(shaA).Summary).ID == task })
 	h.k.finish(task, kagent.StateCompleted, report(t, passing))
 	eventually(t, "the check to pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
-	if executions, _ := h.k.state(); executions != 1 {
-		t.Fatalf("executions = %d, want one task", executions)
+	if executions, _ := h.k.state(); executions != 1 || len(h.k.sent()) != 1 {
+		t.Fatalf("executions = %d, sends = %d; want one each", executions, len(h.k.sent()))
 	}
 	for _, m := range h.k.sent() {
 		if m.MessageID != msgA {
@@ -626,7 +629,7 @@ func TestSupersededHeadCancelsTheOldReview(t *testing.T) {
 	if _, cancels := h.k.state(); !slices.Contains(cancels, old) {
 		t.Fatalf("cancels = %v, want the old task", cancels)
 	}
-	// The new head started in the same poll: reviews are keyed by commit.
+	// The new head can start after the old task stops.
 	newer := runReview(t, h, e, ctx, 7, shaB)
 	eventually(t, "the old review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 1 })
 
@@ -836,6 +839,12 @@ func TestTimeoutRetriesInANewSessionThenFails(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(h.m.Retries.WithLabelValues("homelab")); got != 2 {
 		t.Fatalf("retries = %v", got)
+	}
+	for _, id := range []string{first, second, third} {
+		task, err := h.k.GetTask(ctx, testAgent, id)
+		if err != nil || !kagent.Terminal(task.Status.State) {
+			t.Fatalf("timeout left execution %s running: %v, %v", id, task, err)
+		}
 	}
 }
 
@@ -1934,7 +1943,7 @@ func TestLabelHistoryReadFailureRevokesAndRecoversWithoutChurn(t *testing.T) {
 	reads := "GET /repos/" + testRepo + "/issues/7/events"
 	h.gh.failWith(reads, 502)
 	h.k.finish(task, kagent.StateCompleted, report(t, passing))
-	eventually(t, "the failed final history read", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	waitForOwnedWorker(t, h, e, "the failed final history read")
 	failIf(t, h.gh.check(shaA).Status != "in_progress", "incomplete history let a task complete")
 	h.gh.failWith(reads, 0)
 	e.Tick(ctx)
@@ -1970,7 +1979,9 @@ func TestObservedHoldSurvivesUnavailableThenLaggingHistory(t *testing.T) {
 			} else {
 				e.Tick(ctx)
 			}
-			eventually(t, "the history failure", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			if running {
+				waitForOwnedWorker(t, h, e, "the history failure")
+			}
 			stop()
 			h.gh.label(7)
 			h.gh.failWith(reads, 0)
@@ -2042,7 +2053,7 @@ func TestCompletionRetriesCurrentGateReadWithoutAnotherTask(t *testing.T) {
 	task := runReview(t, h, e, ctx, 7, shaA)
 	h.gh.failGraphQL("pull_request", true)
 	h.k.finish(task, kagent.StateCompleted, report(t, passing))
-	eventually(t, "failed current PR read", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	waitForOwnedWorker(t, h, e, "failed current PR read")
 	check := h.gh.check(shaA)
 	failIf(t, check.Status != "in_progress" || RecordedTask(check.Summary).ID != task, "failed read lost the attached task: %+v", check)
 	h.gh.label(7, "needs-human")
@@ -2245,6 +2256,7 @@ func TestReplacementPRCannotReuseForeignPassAfterLostDuplicateWrites(t *testing.
 		t.Run(fmt.Sprint("in progress ", inProgress), func(t *testing.T) {
 			h := newPR7Harness(t)
 			e, ctx, stop := startPassedReview(t, h)
+			original := h.taskOn(7, shaA, 1)
 			if inProgress {
 				task := h.taskOn(7, shaA, 1)
 				h.gh.withLock(func() {
@@ -2270,9 +2282,11 @@ func TestReplacementPRCannotReuseForeignPassAfterLostDuplicateWrites(t *testing.
 			h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
 			e.Tick(ctx)
 			failIf(t, h.gh.check("mg-9").Conclusion != ConclusionFailure || len(h.gh.enqueues()) != 0, "replacement PR reused the foreign pass")
-			eventually(t, "a current review or stale completion", func() bool { return h.taskOn(9, shaA, 1) != "" || h.gh.check(shaA).Status == "completed" })
-			failIf(t, h.taskOn(9, shaA, 1) == "", "replacement attached to a foreign task without its own review")
-			completeReview(t, h, runReview(t, h, e, ctx, 9, shaA), shaA, "replacement review")
+			// The old check may complete cancellation before a later poll
+			// admits the replacement. It still needs its own execution.
+			replacement := runReview(t, h, e, ctx, 9, shaA)
+			failIf(t, replacement == original, "replacement attached to a foreign task without its own review")
+			completeReview(t, h, replacement, shaA, "replacement review")
 			failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "replacement review lost the unknown hold")
 			eventually(t, "the replacement worker", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
 			approveAndCheck(t, h, e, ctx, 9, shaA, "fresh approval", "replacement remained stuck after review and approval")

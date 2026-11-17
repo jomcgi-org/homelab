@@ -20,6 +20,10 @@ const DefaultCheckName = "factory review"
 
 // Config is the reviewer's whole configuration.
 type Config struct {
+	// OwnershipJournalVersion opts into creating a v2 journal. Zero reads
+	// and updates existing journals, but does not create one. This lets the
+	// compatible reader and PVC ship before a later release activates writes.
+	OwnershipJournalVersion int `yaml:"ownershipJournalVersion"`
 	// Semgrep enables evidence from the Semgrep GitHub App; nil is off.
 	Semgrep *Semgrep `yaml:"semgrep"`
 	// BrokerURL is the credential broker's admin port; the reviewer's GitHub
@@ -184,6 +188,9 @@ func Parse(b []byte) (*Config, error) {
 	dec.KnownFields(true)
 	if err := dec.Decode(&c); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
+	}
+	if c.OwnershipJournalVersion != 0 && c.OwnershipJournalVersion != 2 {
+		return nil, fmt.Errorf("config: ownershipJournalVersion must be 0 or 2")
 	}
 	c.BrokerURL = strings.TrimSuffix(c.BrokerURL, "/")
 	c.KagentURL = strings.TrimSuffix(c.KagentURL, "/")

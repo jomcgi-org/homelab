@@ -511,6 +511,10 @@ connector:
 # chart publish; neither the connector's reviewerCheck nor a ruleset changes here.
 reviewer:
   enabled: false
+  # Stage the reader and PVC first. A later chart release may default to 2 only
+  # after this compatible chart is published as the rollback target.
+  # 0 defers creation; it still reconciles and updates an existing journal.
+  ownershipJournalVersion: 0
   # Overwritten at build time by helm_chart(images = ...).
   image:
     repository: ghcr.io/jomcgi/homelab/projects/factory/reviewer

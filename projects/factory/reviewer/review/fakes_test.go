@@ -414,29 +414,20 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if q.Get("state") != "open" || pr.Closed || pr.Base != q.Get("base") {
 				continue
 			}
-			labels := []map[string]string{}
-			for _, l := range pr.Labels {
-				labels = append(labels, map[string]string{"name": l})
-			}
-			headRef := pr.HeadRef
-			if headRef == "" {
-				headRef = fmt.Sprintf("branch-%d", pr.Number)
-			}
-			out = append(out, map[string]any{
-				"number": pr.Number, "node_id": fmt.Sprintf("PR_%d", pr.Number), "state": "open", "draft": pr.Draft,
-				"title": pr.Title, "body": pr.Body, "user": map[string]string{"login": pr.Author}, "labels": labels,
-				"html_url":   fmt.Sprintf("https://github.com/%s/pull/%d", testRepo, pr.Number),
-				"updated_at": pr.Updated.UTC().Format(time.RFC3339),
-				"created_at": pr.Created.UTC().Format(time.RFC3339),
-				"head":       map[string]any{"ref": headRef, "sha": pr.Head, "repo": map[string]string{"full_name": pr.HeadRepo}},
-				"base":       map[string]string{"ref": pr.Base},
-			})
+			out = append(out, pullJSON(pr))
 		}
 		served := page(out, q)
 		if c := f.closeAfterPage; c[1] != 0 && first(q["page"]) == strconv.Itoa(c[0]) {
 			f.prs[c[1]].Closed, f.closeAfterPage = true, [2]int{}
 		}
 		f.get(w, r, served)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/pulls/") && !strings.Contains(strings.TrimPrefix(path, "/pulls/"), "/"):
+		n, _ := strconv.Atoi(strings.TrimPrefix(path, "/pulls/"))
+		if pr := f.prs[n]; pr != nil {
+			f.get(w, r, pullJSON(pr))
+		} else {
+			http.NotFound(w, r)
+		}
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/commits/") && strings.HasSuffix(path, "/check-runs"):
 		sha := strings.TrimSuffix(strings.TrimPrefix(path, "/commits/"), "/check-runs")
 		latest := map[string]*fakeCheck{}
@@ -644,6 +635,30 @@ type checkWrite struct {
 	StartedAt   *time.Time             `json:"started_at"`
 	CompletedAt *time.Time             `json:"completed_at"`
 	Output      *github.CheckRunOutput `json:"output"`
+}
+
+func pullJSON(pr *fakePR) map[string]any {
+	labels := []map[string]string{}
+	for _, l := range pr.Labels {
+		labels = append(labels, map[string]string{"name": l})
+	}
+	state := "open"
+	if pr.Closed {
+		state = "closed"
+	}
+	headRef := pr.HeadRef
+	if headRef == "" {
+		headRef = fmt.Sprintf("branch-%d", pr.Number)
+	}
+	return map[string]any{
+		"number": pr.Number, "node_id": fmt.Sprintf("PR_%d", pr.Number), "state": state, "draft": pr.Draft,
+		"title": pr.Title, "body": pr.Body, "user": map[string]string{"login": pr.Author}, "labels": labels,
+		"html_url":   fmt.Sprintf("https://github.com/%s/pull/%d", testRepo, pr.Number),
+		"updated_at": pr.Updated.UTC().Format(time.RFC3339),
+		"created_at": pr.Created.UTC().Format(time.RFC3339),
+		"head":       map[string]any{"ref": headRef, "sha": pr.Head, "repo": map[string]string{"full_name": pr.HeadRepo}},
+		"base":       map[string]string{"ref": pr.Base},
+	}
 }
 
 func (f *fakeGitHub) apply(w http.ResponseWriter, c *fakeCheck, b checkWrite) bool {
@@ -942,6 +957,9 @@ type fakeKagent struct {
 	sendErr []error
 	// loseResponse accepts the next send but loses its answer.
 	loseResponse bool
+	// cancelMode injects transport failures and nonterminal/invalid replies.
+	cancelMode string
+	getErr     error
 	// afterSend runs after each send, outside the lock.
 	afterSend func()
 	// revision is the Agent's current revision, which a new session is
@@ -950,6 +968,9 @@ type fakeKagent struct {
 	revisions map[string]string
 	// listErr fails ListTasks.
 	listErr error
+	// hidden models removed public task/receipt records without stopping
+	// the original execution.
+	hidden map[string]bool
 	// goal is the reply a goal check's task finishes with as it opens;
 	// empty leaves it working. onGoal, if set, runs as it opens.
 	goal        string
@@ -1056,11 +1077,14 @@ func (k *fakeKagent) send(agent kagent.AgentRef, msg kagent.Message) (*kagent.Ta
 func (k *fakeKagent) GetTask(_ context.Context, agent kagent.AgentRef, id string) (*kagent.Task, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if k.getErr != nil {
+		return nil, k.getErr
+	}
 	t, ok := k.tasks[id]
-	if !ok || t.agent != agent {
+	if !ok || t.agent != agent || k.hidden[id] {
 		return nil, fmt.Errorf("%w: task", kagent.ErrTaskNotFound)
 	}
-	if t.cancelRequested && !kagent.Terminal(t.task.Status.State) {
+	if t.cancelRequested && k.cancelMode != "delayed" && !kagent.Terminal(t.task.Status.State) {
 		t.task.Status = kagent.TaskStatus{State: kagent.StateCanceled}
 	}
 	return copyTask(&t.task), nil
@@ -1080,31 +1104,58 @@ func (k *fakeKagent) CancelTask(_ context.Context, agent kagent.AgentRef, id str
 	if kagent.Terminal(t.task.Status.State) {
 		return nil, errors.New("task not cancelable")
 	}
+	switch k.cancelMode {
+	case "fail":
+		return nil, errors.New("cancel transport unavailable")
+	case "lost":
+		t.task.Status.State = kagent.StateCanceled
+		return nil, errors.New("cancel response lost")
+	case "terminal":
+		t.task.Status.State = kagent.StateCanceled
+		return copyTask(&t.task), nil
+	case "wrong":
+		return &kagent.Task{ID: "other-task", Status: kagent.TaskStatus{State: kagent.StateCanceled}}, nil
+	case "nil":
+		return nil, nil
+	}
 	t.cancelRequested = true
 	return copyTask(&t.task), nil
 }
 
-// ListTasks lists every task of one session of the agent, without history,
-// on one page.
+// ListTasks lists every task state, optionally within one session, in pages.
 func (k *fakeKagent) ListTasks(_ context.Context, agent kagent.AgentRef, contextID, state, pageToken string) (*kagent.TaskPage, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.listErr != nil {
 		return nil, k.listErr
 	}
-	if contextID == "" || state != "" || pageToken != "" {
+	if state != "" {
 		return nil, fmt.Errorf("unexpected listing %q %q %q", contextID, state, pageToken)
+	}
+	start := 0
+	if pageToken != "" {
+		var err error
+		start, err = strconv.Atoi(pageToken)
+		if err != nil || start < 0 {
+			return nil, fmt.Errorf("invalid page token %q", pageToken)
+		}
 	}
 	out := []*kagent.Task{}
 	for _, t := range k.tasks {
-		if t.agent == agent && t.task.ContextID == contextID {
+		if t.agent == agent && (contextID == "" || t.task.ContextID == contextID) && !k.hidden[t.task.ID] {
 			c := t.task
 			c.History, c.Artifacts = nil, nil
 			out = append(out, &c)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return &kagent.TaskPage{Tasks: out, TotalSize: len(out), PageSize: 100}, nil
+	start = min(start, len(out))
+	end := min(start+100, len(out))
+	next := ""
+	if end < len(out) {
+		next = strconv.Itoa(end)
+	}
+	return &kagent.TaskPage{Tasks: out[start:end], TotalSize: len(out), PageSize: 100, NextPageToken: next}, nil
 }
 
 // open starts a task in an existing session outside the reviewer, as an
@@ -1116,6 +1167,12 @@ func (k *fakeKagent) open(contextID string) string {
 	id := fmt.Sprintf("task-%d", len(k.tasks)+1)
 	k.tasks[id] = &fakeTask{agent: agent, task: kagent.Task{ID: id, ContextID: contextID, Status: kagent.TaskStatus{State: kagent.StateCanceled}}}
 	return id
+}
+
+func (k *fakeKagent) cancellation(mode string, getErr error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.cancelMode, k.getErr = mode, getErr
 }
 
 // finish ends a task with an agent reply.

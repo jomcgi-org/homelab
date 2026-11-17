@@ -66,7 +66,7 @@ func New(reg prometheus.Registerer) *Metrics {
 		}, []string{"binding"}),
 		InFlight: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "factory_reviewer_reviews_in_flight",
-			Help: "Reviews this process is running, bounded by the configured concurrency.",
+			Help: "Owned review slots, including pending cancellations and work recovered after restart. New reviews obey the configured concurrency.",
 		}),
 		Enqueues: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_reviewer_enqueues_total",

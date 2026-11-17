@@ -203,8 +203,10 @@ py_test(
     data = [
         "Chart.lock",
         "Chart.yaml",
+        "testdata/reviewer-before-ownership.yaml",
         "values.schema.json",
         "values.yaml",
+        "values-homelab.yaml",
         "//projects/factory/chart/configcheck",
         "//projects/factory/deploy:deploy_values",
         "//projects/factory/deploy:render_lock",

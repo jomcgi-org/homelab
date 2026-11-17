@@ -70,6 +70,9 @@ system:serviceaccount:{{ .Values.broker.namespace }}:{{ include "factory.reviewe
 {{- with $c.commentAuthor }}
 {{- $_ := set $config "commentAuthor" . }}
 {{- end }}
+{{- if $c.ownershipJournalVersion }}
+{{- $_ := set $config "ownershipJournalVersion" (int $c.ownershipJournalVersion) }}
+{{- end }}
 {{- with $c.semgrep }}
 {{- $_ := set $config "semgrep" . }}
 {{- end }}
