@@ -167,6 +167,9 @@ A medium is justified by one of:
 - **A decision**: the accepted issue or spec, or Joe, chose this behaviour.
   For itsaplan, the service verifies the quoted text's provenance as `joe`
   or `joesessions`, including edits; creation authorship alone is not proof.
+  The code review gets the service's verdict on each itsaplan link in the
+  diff, never its private text; the goal check reads the text. A link the
+  service marks verified is not `unverified`.
   An agent's issue can define work without authorizing an exception. A
   missing, unreadable or untrusted decision link stays `unverified`.
 
@@ -188,7 +191,8 @@ finding ID, the evidence it accepts and the check after rollout. Live
 evidence says what ran, when, and its result. Report the finding
 `justified` with a note that starts `decision:` and links the comment, only
 after you read that it accepts the evidence and names the check. Do not ask
-again for evidence you cannot read: name the check after rollout instead.
+again for evidence you cannot read: name the check after rollout instead
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-188#comment-1550)).
 At either severity, the service checks the author, the link, the finding
 ID and that the text is unchanged. An edit or a deletion of the comment
 revokes the decision and restores the finding at the severity it was

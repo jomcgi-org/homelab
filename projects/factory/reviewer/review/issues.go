@@ -60,6 +60,15 @@ type IssueContext struct {
 	digest string // The evidence MAC (sealIssues); never marshaled.
 }
 
+// linkedEvidence is the checked itsaplan links, for the code review
+// prompt, which shows no text from them (writeLinked).
+func linkedEvidence(in *IssueContext) []DecisionEvidence {
+	if in == nil {
+		return nil
+	}
+	return in.Decisions
+}
+
 // issueDigest is the evidence MAC, or "" for a PR that gets no evidence.
 func issueDigest(in *IssueContext) string {
 	if in == nil {

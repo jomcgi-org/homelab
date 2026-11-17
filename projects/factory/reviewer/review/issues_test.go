@@ -722,10 +722,43 @@ func TestCodeReviewPromptHasNoIssueText(t *testing.T) {
 			if api.issueReads == 0 || api.commentReads == 0 {
 				t.Fatal("trusted author's evidence was not read")
 			}
-			if p := h.k.sent()[0].Parts[0].Text; strings.Contains(p, "PRIVATE") || !strings.Contains(p, "the PR description stands in") {
+			p := h.k.sent()[0].Parts[0].Text
+			if strings.Contains(p, "PRIVATE") || !strings.Contains(p, "the PR description stands in") {
 				t.Fatal("issue text reached the code-review prompt")
 			}
+			// The link's provenance verdict reaches it, without the text.
+			if !strings.Contains(p, "- `https://factory-plan.jomcgi.dev/factory/issue/HOME-58#comment-1`: verified provenance.\n") {
+				t.Fatalf("the code-review prompt lacks the link's verdict:\n%s", p)
+			}
 		})
+	}
+}
+
+// TestLinkedVerdicts: the code review gets fixed text for each linked work
+// item, and never its author or text.
+func TestLinkedVerdicts(t *testing.T) {
+	base := "https://factory-plan.jomcgi.dev/factory/issue/HOME-1"
+	p := Prompt(PromptInput{Repo: testRepo, Number: 7, Base: "main", SHA: shaA, Linked: []DecisionEvidence{
+		{URL: base + "#comment-1", Author: "joesessions", Text: "PRIVATE-1", Exists: true, Trusted: true, Reason: "verified authorship"},
+		{URL: base + "#comment-2", Author: "factoryadmin", Text: "PRIVATE-2", Exists: true, Reason: "untrusted author"},
+		{URL: base + "#comment-3", Author: "joe", Text: "PRIVATE-3", Exists: true, Trusted: true, Clipped: true, Reason: "text exceeds bound"},
+		{URL: base + "#comment-4", Reason: "unreadable or missing"},
+	}})
+	for _, want := range []string{
+		"- `" + base + "#comment-1`: verified provenance.\n",
+		"- `" + base + "#comment-2`: unverified: a trusted account did not write its current text.\n",
+		"- `" + base + "#comment-3`: verified provenance, but its text is longer than the goal check reads.\n",
+		"- `" + base + "#comment-4`: missing or unreadable; it is no evidence.\n",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt lacks %q", want)
+		}
+	}
+	if strings.Contains(p, "PRIVATE") || strings.Contains(p, "factoryadmin") || strings.Contains(p, "joesessions wrote") {
+		t.Fatalf("a linked item's text or author reached the prompt:\n%s", p)
+	}
+	if strings.Contains(Prompt(PromptInput{Repo: testRepo, Number: 7, Base: "main", SHA: shaA}), "## Linked work items") {
+		t.Fatal("a PR with no links got the section")
 	}
 }
 

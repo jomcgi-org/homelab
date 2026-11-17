@@ -72,6 +72,10 @@ type PromptInput struct {
 	// Cited is the service's evidence about pull requests the description
 	// cites (cited.go).
 	Cited []CitedPR
+	// Linked is the service's check of each itsaplan work item the diff
+	// links (issueContext). The prompt gets only the link and the verdict:
+	// the text is private and the review is public (Joe's decision on #8116).
+	Linked []DecisionEvidence
 	// Commits are the author's commit messages since PreviousHead
 	// (commits.go); nil leaves the section out.
 	Commits *Commits
@@ -317,6 +321,8 @@ func Prompt(in PromptInput) string {
 		}
 	}
 
+	writeLinked(&b, in.Linked)
+
 	if len(in.Cited) > 0 {
 		b.WriteString("## Pull requests the description cites\n\n")
 		fmt.Fprintf(&b, "The reviewer service read these from GitHub for the numbers the description cites (at most %d), "+
@@ -445,4 +451,36 @@ func quote(s string) string {
 		return r
 	}, strings.ReplaceAll(s, "\r\n", "\n"))
 	return "> " + strings.ReplaceAll(s, "\n", "\n> ")
+}
+
+// writeLinked lists the itsaplan links in the diff with the service's
+// verdict on each, never their text. The URLs come from the diff, so they
+// are public already.
+func writeLinked(b *strings.Builder, linked []DecisionEvidence) {
+	if len(linked) == 0 {
+		return
+	}
+	b.WriteString("## Linked work items\n\n" +
+		"The diff links these itsaplan work items. The service read each one. Their text is private and this review is " +
+		"public, so you get only the service's verdict on each link's provenance. A link marked verified exists, and a " +
+		"trusted account (`joe` or `joesessions`) wrote its current text: do not report it as unverifiable. The goal " +
+		"check reads the text and judges the issue's criteria against it.\n\n")
+	for _, d := range linked {
+		fmt.Fprintf(b, "- `%s`: %s.\n", oneLine(d.URL, maxTitle), linkedVerdict(d))
+	}
+	b.WriteString("\n")
+}
+
+// linkedVerdict is fixed text for a link's provenance.
+func linkedVerdict(d DecisionEvidence) string {
+	switch {
+	case !d.Exists:
+		return "missing or unreadable; it is no evidence"
+	case !d.Trusted:
+		return "unverified: a trusted account did not write its current text"
+	case d.Clipped:
+		return "verified provenance, but its text is longer than the goal check reads"
+	default:
+		return "verified provenance"
+	}
 }

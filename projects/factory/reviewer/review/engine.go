@@ -1762,7 +1762,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		Title: pr.Title, Body: pr.Body, Author: pr.Author, Files: in.files, Rules: rules,
 		Previous: in.prior.Previous(), Cleared: joeDecisions(b, pr, comments).Revalidate(in.prior.Cleared), PreviousHead: in.priorHead, Interdiff: interdiff, PreviousUnknown: in.priorUnknown,
 		Resumed: plan.resume != nil, RulesHeld: plan.resume != nil && plan.rules != "" && plan.resume.Rules == plan.rules,
-		Comments: comments, DroppedComments: dropped, Cited: cited, Commits: &commits, Gate: in.gate, Attempt: attempt,
+		Comments: comments, DroppedComments: dropped, Cited: cited, Linked: linkedEvidence(in.issues), Commits: &commits, Gate: in.gate, Attempt: attempt,
 		CheckName: e.cfg.CheckName, Semgrep: in.semgrep,
 	})
 	id, contextID := AttemptMessageID(repo, pr.Number, pr.HeadSHA, run.ID, attempt), ""
