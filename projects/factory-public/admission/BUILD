@@ -7,11 +7,15 @@ go_test(
     data = [
         "//projects/factory-public/chart",
         "//projects/factory-public/chart:Chart.yaml",
+        "//projects/platform-factory/garage/resources:bootstrap.yaml",
+        "//projects/platform-factory/garage/resources:claim-admission.yaml",
         "@envtest_1_37_0_linux_amd64//:assets",
         "@envtest_1_37_0_linux_amd64//:kube-apiserver",
         "@multitool//tools/helm",
     ],
     env = {
+        "GARAGE_BOOTSTRAP": "$(rootpath //projects/platform-factory/garage/resources:bootstrap.yaml)",
+        "GARAGE_CLAIM_GUARD": "$(rootpath //projects/platform-factory/garage/resources:claim-admission.yaml)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "MIRROR_CHART": "$(rootpath //projects/factory-public/chart:Chart.yaml)",
         "TEST_APISERVER": "$(rootpath @envtest_1_37_0_linux_amd64//:kube-apiserver)",

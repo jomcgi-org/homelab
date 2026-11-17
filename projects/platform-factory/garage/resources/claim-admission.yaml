@@ -1,0 +1,41 @@
+# A consumer's ConfigMap permissions must not authorize Garage bucket grants.
+# Only the trusted GitOps controller may write declarations in garage. Match
+# the reserved name as well as old/new labels, including removal and deletion.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: garage-claim-authorizations
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [configmaps]
+  matchConditions:
+    - name: garage-namespace
+      expression: request.namespace == "garage"
+    - name: authorization
+      expression: >-
+        (object != null && (object.metadata.name.startsWith("garage-claim-") ||
+          (has(object.metadata.labels) && "factory.jomcgi.dev/garage-claim" in object.metadata.labels))) ||
+        (oldObject != null && (oldObject.metadata.name.startsWith("garage-claim-") ||
+          (has(oldObject.metadata.labels) && "factory.jomcgi.dev/garage-claim" in oldObject.metadata.labels)))
+  validations:
+    - expression: request.userInfo.username == "system:serviceaccount:argocd:argocd-application-controller"
+      message: Only ArgoCD may change Garage claim authorizations.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: garage-claim-authorizations
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  policyName: garage-claim-authorizations
+  validationActions: [Deny]

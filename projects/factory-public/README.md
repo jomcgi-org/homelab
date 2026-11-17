@@ -20,9 +20,12 @@ below and enables it through a values change.
 ## Provisioning result
 
 The implementation uses HOME-66's garage-init fallback. The existing
-initializer discovers labeled ConfigMaps and reconciles each access grant.
-Each ConfigMap names a Garage Secret by sharing its name. Secret access is
-restricted to those names; discovery never grants Secret list permission.
+initializer reads authorization ConfigMaps only in the protected `garage`
+namespace. The single bucket entry renders them with the bound consumer namespace,
+Secret name, bucket and access. An admission policy permits changes only from the
+authenticated ArgoCD application controller. Consumer ConfigMaps and mutable
+Secret labels cannot grant bucket access. Secret access stays restricted to the
+named Garage keys; discovery never grants Secret list permission.
 
 The operator trial was limited to source and chart rendering on 2026-11-17.
 Upstream commit 28f953ad52aa9dcfe5b7922a31d1e7bb6301f910 supports a
@@ -54,10 +57,10 @@ helm pull oci://ghcr.io/rajsinghtech/charts/garage-operator --version 0.9.0 --de
 dial tcp: lookup ghcr.io on 169.254.17.1:53: no such host
 ```
 
-This worker has no Kubernetes client or cluster credentials. No live operator
+This worker has no configured cluster connection or credentials. No live operator
 trial ran, and this result establishes no operator defect. The fallback keeps
 Garage's existing layout and key ownership, with no unverified operator rollout.
-The library README describes its namespaced Secret discovery permissions.
+The library README describes the authorization boundary and Secret permissions.
 
 ## Validation
 
@@ -82,8 +85,13 @@ PR CI runs //projects/factory-public/admission:admission_test against a private
 Kubernetes API server. It impersonates API callers with create/update rights
 and tests Pods, Jobs and CronJobs, including forged owners and reserved
 ServiceAccounts. It also checks garage-init's rendered RBAC: named Garage
-Secrets are readable and writable, while Secret lists and R2 Secret access
-are denied. These tests use no cluster credentials.
+Secrets are readable and writable, while Secret lists, R2 Secret access and
+consumer ConfigMap discovery are denied. It gives a simulated attacker ConfigMap
+write rights and verifies that bucket/access changes, binding changes, label
+removal, deletion and forged declarations are denied in `garage`. ArgoCD requests
+remain allowed. Python tests verify that reconciliation reads only these protected
+declarations and rejects invalid bindings before granting access. These tests use
+no cluster credentials.
 
 ## HOME-137 acceptance evidence
 
@@ -98,6 +106,13 @@ resources. Local renders and tests do not establish completion of the live
 criterion. The operator trial could not reach the live cluster; the fallback
 is documented above. HOME-137 remains operationally incomplete until the
 landing owner records the live evidence.
+
+Review round 6 on 2026-11-17 leaves `HOME-137:goal` and
+`HOME-137:goal:criterion-3` unresolved. This binding has no kubeconfig, Kubernetes
+service endpoint or 1Password connection. DNS lookups for factory-plan.jomcgi.dev,
+factory-data.jomcgi.dev and garage.garage.svc fail with `Name does not resolve`.
+No live object, cache-header, timing or deletion evidence can be collected here.
+The live criterion remains part of HOME-137; this PR does not move or waive it.
 
 ## Before enabling the first mirror
 

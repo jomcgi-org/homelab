@@ -30,26 +30,36 @@ Secret/consumer-factory-public-mirror-s3:
       argocd.argoproj.io/sync-options: Prune=false,Delete=false
       helm.sh/resource-policy: keep
   type: Opaque
-ConfigMap/consumer-factory-public-s3:
+ConfigMap/garage-claim-d588bcde9e974e4fd9b541d8b577a691ca73eef97238a55839bd94729e6583e1:
   apiVersion: v1
   kind: ConfigMap
   metadata:
-    name: consumer-factory-public-s3
+    name: garage-claim-d588bcde9e974e4fd9b541d8b577a691ca73eef97238a55839bd94729e6583e1
+    namespace: garage
     labels:
-      factory.jomcgi.dev/garage-bucket: factory-public
-      factory.jomcgi.dev/garage-access: write
+      factory.jomcgi.dev/garage-claim: 'true'
     annotations:
       argocd.argoproj.io/sync-wave: '-2'
-ConfigMap/consumer-factory-public-mirror-s3:
+  data:
+    namespace: test
+    secretName: consumer-factory-public-s3
+    bucket: factory-public
+    access: write
+ConfigMap/garage-claim-1897e831187803f0bda65975c99ac95100634df05bd0c8c1c8156d3940f79972:
   apiVersion: v1
   kind: ConfigMap
   metadata:
-    name: consumer-factory-public-mirror-s3
+    name: garage-claim-1897e831187803f0bda65975c99ac95100634df05bd0c8c1c8156d3940f79972
+    namespace: garage
     labels:
-      factory.jomcgi.dev/garage-bucket: factory-public
-      factory.jomcgi.dev/garage-access: read
+      factory.jomcgi.dev/garage-claim: 'true'
     annotations:
       argocd.argoproj.io/sync-wave: '-2'
+  data:
+    namespace: test
+    secretName: consumer-factory-public-mirror-s3
+    bucket: factory-public
+    access: read
 Role/consumer-factory-public-s3:
   apiVersion: rbac.authorization.k8s.io/v1
   kind: Role
@@ -84,20 +94,6 @@ Role/consumer-factory-public-mirror-s3:
     verbs:
     - get
     - update
-Role/consumer-garage-discovery:
-  apiVersion: rbac.authorization.k8s.io/v1
-  kind: Role
-  metadata:
-    name: consumer-garage-discovery
-    annotations:
-      argocd.argoproj.io/sync-wave: '-2'
-  rules:
-  - apiGroups:
-    - ''
-    resources:
-    - configmaps
-    verbs:
-    - list
 RoleBinding/consumer-factory-public-s3:
   apiVersion: rbac.authorization.k8s.io/v1
   kind: RoleBinding
@@ -124,21 +120,6 @@ RoleBinding/consumer-factory-public-mirror-s3:
     apiGroup: rbac.authorization.k8s.io
     kind: Role
     name: consumer-factory-public-mirror-s3
-  subjects:
-  - kind: ServiceAccount
-    name: garage-init
-    namespace: garage
-RoleBinding/consumer-garage-discovery:
-  apiVersion: rbac.authorization.k8s.io/v1
-  kind: RoleBinding
-  metadata:
-    name: consumer-garage-discovery
-    annotations:
-      argocd.argoproj.io/sync-wave: '-2'
-  roleRef:
-    apiGroup: rbac.authorization.k8s.io
-    kind: Role
-    name: consumer-garage-discovery
   subjects:
   - kind: ServiceAccount
     name: garage-init

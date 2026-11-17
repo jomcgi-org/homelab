@@ -221,13 +221,26 @@ Consumers reference those fields through their workload env declarations.
 The ArgoCD Application must ignore /data for each claim Secret and set
 RespectIgnoreDifferences=true and ServerSideApply=true.
 
-Garage provisioning uses the HOME-137 garage-init fallback. Each claim is a
-ConfigMap labeled factory.jomcgi.dev/garage-bucket and
-factory.jomcgi.dev/garage-access, with the same name as its Garage Secret.
-The ConfigMap contains no credentials. Discovery lists namespace metadata and
-then labeled ConfigMap metadata in opted-in namespaces. The consumer grants
-ConfigMap list and only get/update on its named Garage Secrets.
-The garage-init identity cannot list Secrets or read the mirror R2 Secret.
+Garage provisioning uses the HOME-137 garage-init fallback. Each bucket entry
+also renders a credential-free authorization ConfigMap in the `garage` namespace.
+Its data binds the consumer namespace, Secret name, bucket and access. Its name
+is `garage-claim-` followed by the SHA-256 of `NAMESPACE/SECRET`; reconciliation
+checks that binding before granting access. The chart's ArgoCD project must allow
+resources in both the consumer and `garage` namespaces.
+
+The Garage application installs `garage-claim-authorizations`, a kept admission
+policy and Deny binding. Only the authenticated ArgoCD application controller may
+create, update or delete these declarations. The guard matches the reserved name
+prefix and old/new claim labels, so stripping labels cannot bypass it. Consumer
+namespace writers cannot edit this trusted declaration; choosing a ServiceAccount
+on a Pod does not change the authenticated caller.
+
+Discovery lists ConfigMaps only in `garage`, with no namespace enumeration or
+consumer ConfigMap access. Consumer ConfigMaps and Secret labels are never grant
+inputs. Consumers grant only get/update on their named Garage Secrets. Garage-init
+cannot write authorizations, list Secrets or read the mirror R2 Secret. Install the
+Garage guard before the first consumer; ArgoCD and cluster administrators remain
+trusted to approve access through reviewed Git changes.
 
 Reconciliation runs after Garage syncs and every ten minutes. No credentials
 are generated during Helm rendering. Existing keys survive retries and Garage
@@ -250,7 +263,8 @@ publishes the same manifest to Docker Hub and GHCR.
 
 ```mermaid
 flowchart LR
-  claim[Labeled claim ConfigMap] -->|discover| init[garage-init]
+  argo[ArgoCD controller] -->|protected declaration in garage| claim[Authorized namespace, Secret, bucket and access]
+  claim -->|read and validate binding| init[garage-init]
   init -->|get and update named key only| key[Garage Secret]
   init -->|bucket and scoped key| garage[Garage]
   item[1Password item] -->|operator| credential[R2 Secret]
