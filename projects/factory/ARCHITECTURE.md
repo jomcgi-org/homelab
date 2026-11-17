@@ -482,14 +482,22 @@ sequenceDiagram
   C->>O: Complete start
 ```
 
-The connector records each request's stop generation at enqueue. Stops on
-work items and unlinked held runs advance that generation in the stop
-transaction. Explicit re-admission permits new schedules; older requests
-keep their generation and stay fenced. Closing a stopped run permits no
-new schedule. Send admission locks the generation through the transaction
-that records `send_started_at`, under the writer fence. A stop that commits
-first prevents the send (HOME-151). Existing requests without a generation
-are conservatively fenced on upgrade if the issue has a recorded stop.
+The connector records each request's stop generation at enqueue. Database
+triggers advance that generation when a stop transaction commits, including
+writes from rollback versions. The triggers also record explicit
+re-admission and stamp requests inserted by older connectors. Re-admission
+permits new schedules; older requests keep their generation and stay fenced.
+Closing a stopped run permits no new schedule. Send admission locks the
+generation through the transaction that records `send_started_at`, under
+the writer fence. A stop that commits first prevents the send (HOME-151).
+
+On upgrade, pending requests proven to follow every historical stop keep
+their schedule. If later metadata writes erased that ordering evidence,
+the request remains pending with `deferred stop order unknown`. One issue
+comment explains the hold and reconciliation: delegate explicitly, then
+choose a different start date for a later automatic start. The hold consumes
+no error retries. Repeated delivery and rollback recovery preserve the
+original request and never attach a newer generation to it.
 The chart mounts a small adapter into the pinned itsaplan v1.10.0 API. Its
 authenticated route uses the core work-item edit guard and the existing
 comment and issue-update services. A request-scoped database client puts

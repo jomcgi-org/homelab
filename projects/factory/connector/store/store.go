@@ -609,12 +609,6 @@ func (s *Store) ResolveWorkItem(ctx context.Context, runID int64, n NewWorkItem)
 			}
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE run SET work_item_id = $2, updated_at = now() WHERE id = $1`, runID, w.ID)
-		if err != nil {
-			return err
-		}
-		// A new explicit admission permits future schedules. Old requests
-		// retain their generation and cannot cross the stop it clears.
-		_, err = tx.ExecContext(ctx, `UPDATE deferred_fence SET stopped = false WHERE issue_id = $1`, n.IssueID)
 		return err
 	})
 	return w, reassigned, err

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -498,5 +499,37 @@ func TestDeferredReadmissionAllowsNewScheduleButFencesOldRequest(t *testing.T) {
 	if len(v.its.deferredWrites) != 3 || v.its.deferredReceipt == nil ||
 		v.its.deferredReceipt.Key != "deferred/118/2026-11-14" || testutil.ToFloat64(v.m.DeferredStarted) != 1 {
 		t.Fatal("old stopped run blocked the new schedule")
+	}
+}
+
+func TestDeferredUnknownStopOrderNotifiesOnceAcrossRestart(t *testing.T) {
+	v := deferredEnv(t)
+	v.its.deferredErr = itsaplan.ErrWIPLimit
+	v.tick(v.e)
+	// Model the migration's ambiguous boundary on a pending WIP request.
+	if _, err := v.st.DB.Exec(`UPDATE outbox SET deferred_stop_generation = NULL WHERE kind = 'deferred_start'`); err != nil {
+		t.Fatal(err)
+	}
+	v.its.deferredErr = nil
+	v.clk.Advance(time.Minute)
+	v.tick(v.e)
+	v.tick(v.e) // Deliver the durable reconciliation notice.
+	v.e.Release()
+	v.e = v.engine("reconcile-after-restart")
+	v.clk.Advance(2 * time.Hour)
+	v.tick(v.e)
+	v.tick(v.e)
+	comments := v.its.Comments()
+	if len(comments) != 1 || !strings.Contains(comments[0].body, "delegate the issue explicitly") {
+		t.Fatalf("reconciliation comments = %+v", comments)
+	}
+	var held bool
+	if err := v.st.DB.QueryRow(`SELECT abandoned_at IS NULL AND delivered_at IS NULL
+		AND tries = 0 AND last_error = 'deferred stop order unknown'
+		FROM outbox WHERE kind = 'deferred_start'`).Scan(&held); err != nil || !held {
+		t.Fatalf("legacy request remains held = %v, %v", held, err)
+	}
+	if len(v.its.deferredWrites) != 0 || testutil.ToFloat64(v.m.DeferredStarted) != 0 {
+		t.Fatal("ambiguous request started while awaiting reconciliation")
 	}
 }

@@ -4,26 +4,20 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
 // lockDeferredFence serializes enqueue and send admission with stops and
 // explicit re-admission. These callers take no work-item or run locks after
-// this lock; StopIssue and ResolveWorkItem take it last.
+// this lock. Deferred database triggers take it when stop and admission
+// transactions commit, including transactions from rollback versions.
 func lockDeferredFence(ctx context.Context, tx *sql.Tx, issueID int64) (generation int64, stopped bool, err error) {
 	if _, err = tx.ExecContext(ctx, `INSERT INTO deferred_fence (issue_id) VALUES ($1) ON CONFLICT DO NOTHING`, issueID); err != nil {
 		return
 	}
 	err = tx.QueryRowContext(ctx, `SELECT generation, stopped FROM deferred_fence WHERE issue_id = $1 FOR UPDATE`, issueID).Scan(&generation, &stopped)
 	return
-}
-
-// stopDeferred runs in the same transaction as the stop of a work item or
-// unlinked run. A later explicit admission clears stopped, never generation.
-func stopDeferred(ctx context.Context, tx *sql.Tx, issueID int64) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO deferred_fence (issue_id, generation, stopped) VALUES ($1, 1, true)
-		ON CONFLICT (issue_id) DO UPDATE SET generation = deferred_fence.generation + 1, stopped = true`, issueID)
-	return err
 }
 
 // EnqueueDeferred admits an eligible issue, or resumes the same request if an
@@ -47,7 +41,8 @@ func (s *Store) EnqueueDeferred(ctx context.Context, tx *sql.Tx, dedupe string, 
 		WHERE outbox.kind = 'deferred_start' AND outbox.delivered_at IS NULL
 			AND outbox.abandoned_at IS NOT NULL
 			AND outbox.last_error = 'unknown kind deferred_start'
-			AND outbox.deferred_stop_generation = EXCLUDED.deferred_stop_generation`, dedupe, b, s.now(), generation)
+			AND (outbox.deferred_stop_generation IS NULL
+				OR outbox.deferred_stop_generation = EXCLUDED.deferred_stop_generation)`, dedupe, b, s.now(), generation)
 	return err
 }
 
@@ -59,11 +54,25 @@ func (s *Store) AdmitDeferred(ctx context.Context, tx *sql.Tx, id, issueID int64
 	if err != nil {
 		return false, err
 	}
-	var requestGeneration int64
+	var requestGeneration sql.NullInt64
 	if err := tx.QueryRowContext(ctx, `SELECT deferred_stop_generation FROM outbox WHERE id = $1`, id).Scan(&requestGeneration); err != nil {
 		return false, err
 	}
-	if stopped || requestGeneration != generation {
+	if !requestGeneration.Valid {
+		// Legacy timestamps can prove a request followed a stop, but later
+		// updates can erase that evidence. Keep uncertainty recoverable and
+		// tell the operator how to authorize a new schedule.
+		if _, err := tx.ExecContext(ctx, `UPDATE outbox SET last_error = 'deferred stop order unknown',
+			next_attempt_at = $2 WHERE id = $1`, id, s.now().Add(time.Hour)); err != nil {
+			return false, err
+		}
+		return false, s.Enqueue(ctx, tx, OutboxComment, fmt.Sprintf("comment/deferred-reconcile/%d", id), 0, "",
+			map[string]any{"issueId": issueID, "body": "The factory held this deferred start because its order relative to an earlier stop is unknown. " +
+				"The request remains pending and will not start automatically. To authorize work, delegate the issue explicitly. " +
+				"After that admission, a different start date creates a new schedule. " +
+				fmt.Sprintf("Deferred request: %d.", id)})
+	}
+	if stopped || requestGeneration.Int64 != generation {
 		return false, s.OutboxAbandon(ctx, tx, id, "deferred issue stopped")
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE outbox SET send_started_at = now()
