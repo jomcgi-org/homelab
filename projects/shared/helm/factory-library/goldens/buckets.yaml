@@ -140,8 +140,6 @@ Deployment/app:
           factory.jomcgi.dev/garage-client: 'true'
       spec:
         automountServiceAccountToken: false
-        imagePullSecrets:
-        - name: ghcr-imagepull-secret
         securityContext:
           runAsNonRoot: true
           runAsUser: 65532
@@ -150,7 +148,7 @@ Deployment/app:
             type: RuntimeDefault
         containers:
         - name: app
-          image: ghcr.io/jomcgi/example@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          image: registry.example/public@sha256:0000000000000000000000000000000000000000000000000000000000000000
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

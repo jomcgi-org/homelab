@@ -329,6 +329,7 @@ def test_job_without_hook_is_a_plain_resource(chart):
 
 def bucket_config():
     config = values()
+    config["image"]["repository"] = "registry.example/public"
     config["buckets"] = [
         {
             "name": "factory-public",
