@@ -12,6 +12,7 @@ exports_files(
 filegroup(
     name = "keys_resources",
     srcs = [
+        "bank-template.json",
         "hindsight.yaml",
         "keys.py",
         "kustomization.yaml",

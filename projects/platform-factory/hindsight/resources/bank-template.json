@@ -1,0 +1,288 @@
+{
+  "version": "1",
+  "bank": {
+    "retain_mission": "Keep what a coding agent working on the homelab repository can reuse in a later run: a check that failed and what fixed it, a convention it had to discover, a dead end, a decision and its reason, or where something lives. Keep the issue key, PR or commit, and whether CI or a live check confirmed it. Drop chatter, restated instructions, log dumps and credentials.",
+    "entity_labels": [
+      {
+        "key": "app",
+        "description": "The homelab project the fact is about: its directory under projects/. Leave it out when the fact is about the repository as a whole.",
+        "type": "multi-values",
+        "optional": true,
+        "tag": true,
+        "values": [
+          {
+            "value": "design-system"
+          },
+          {
+            "value": "embervm"
+          },
+          {
+            "value": "factory"
+          },
+          {
+            "value": "factory-cluster"
+          },
+          {
+            "value": "factory-landing"
+          },
+          {
+            "value": "factory-storyboard"
+          },
+          {
+            "value": "firecracker"
+          },
+          {
+            "value": "gke-apps"
+          },
+          {
+            "value": "gke-cluster"
+          },
+          {
+            "value": "inference"
+          },
+          {
+            "value": "loom"
+          },
+          {
+            "value": "mcp"
+          },
+          {
+            "value": "model-bench"
+          },
+          {
+            "value": "monolith"
+          },
+          {
+            "value": "monolith-agents"
+          },
+          {
+            "value": "monolith-public"
+          },
+          {
+            "value": "oom-inference"
+          },
+          {
+            "value": "operators"
+          },
+          {
+            "value": "platform-factory/argocd"
+          },
+          {
+            "value": "platform-factory/authentik"
+          },
+          {
+            "value": "platform-factory/cert-manager"
+          },
+          {
+            "value": "platform-factory/cfgate"
+          },
+          {
+            "value": "platform-factory/cilium"
+          },
+          {
+            "value": "platform-factory/cloudnative-pg"
+          },
+          {
+            "value": "platform-factory/edge"
+          },
+          {
+            "value": "platform-factory/edge-admission"
+          },
+          {
+            "value": "platform-factory/edge-tunnel"
+          },
+          {
+            "value": "platform-factory/external-secrets"
+          },
+          {
+            "value": "platform-factory/factory-buckets"
+          },
+          {
+            "value": "platform-factory/factory-db"
+          },
+          {
+            "value": "platform-factory/factory-edge"
+          },
+          {
+            "value": "platform-factory/garage"
+          },
+          {
+            "value": "platform-factory/grafana"
+          },
+          {
+            "value": "platform-factory/hindsight"
+          },
+          {
+            "value": "platform-factory/kagent-postgres"
+          },
+          {
+            "value": "platform-factory/kargo"
+          },
+          {
+            "value": "platform-factory/kube-system-defaults"
+          },
+          {
+            "value": "platform-factory/network-policy"
+          },
+          {
+            "value": "platform-factory/onepassword"
+          },
+          {
+            "value": "platform-factory/otel-collector"
+          },
+          {
+            "value": "platform-factory/prometheus"
+          },
+          {
+            "value": "platform-factory/renovate"
+          },
+          {
+            "value": "platform-factory/runtimeclasses"
+          },
+          {
+            "value": "platform-factory/substrate"
+          },
+          {
+            "value": "platform-gke/argo-workflows"
+          },
+          {
+            "value": "platform-gke/argocd"
+          },
+          {
+            "value": "platform-gke/atlas-operator"
+          },
+          {
+            "value": "platform-gke/authentik"
+          },
+          {
+            "value": "platform-gke/cert-manager"
+          },
+          {
+            "value": "platform-gke/cloudflare-gateway"
+          },
+          {
+            "value": "platform-gke/cloudnative-pg"
+          },
+          {
+            "value": "platform-gke/kargo"
+          },
+          {
+            "value": "platform-gke/kyverno"
+          },
+          {
+            "value": "platform-gke/onepassword"
+          },
+          {
+            "value": "platform-gke/otel-collector"
+          },
+          {
+            "value": "platform-gke/polylane"
+          },
+          {
+            "value": "platform-gke/priority-classes"
+          },
+          {
+            "value": "platform-gke/renovate"
+          },
+          {
+            "value": "platform-gke/spire"
+          },
+          {
+            "value": "platform-gke/tailscale"
+          },
+          {
+            "value": "platform/argo-workflows"
+          },
+          {
+            "value": "platform/argocd"
+          },
+          {
+            "value": "platform/atlas-operator"
+          },
+          {
+            "value": "platform/authentik"
+          },
+          {
+            "value": "platform/cert-manager"
+          },
+          {
+            "value": "platform/cf-ingress-library"
+          },
+          {
+            "value": "platform/cloudflare-gateway"
+          },
+          {
+            "value": "platform/cloudnative-pg"
+          },
+          {
+            "value": "platform/honeycomb"
+          },
+          {
+            "value": "platform/kargo"
+          },
+          {
+            "value": "platform/kyverno"
+          },
+          {
+            "value": "platform/onepassword"
+          },
+          {
+            "value": "platform/otel-collector"
+          },
+          {
+            "value": "platform/polylane"
+          },
+          {
+            "value": "platform/priority-classes"
+          },
+          {
+            "value": "platform/renovate"
+          },
+          {
+            "value": "platform/spire"
+          },
+          {
+            "value": "scotland-connector"
+          },
+          {
+            "value": "sextant"
+          },
+          {
+            "value": "shared"
+          }
+        ]
+      },
+      {
+        "key": "kind",
+        "description": "What the fact is.",
+        "type": "value",
+        "optional": true,
+        "tag": true,
+        "values": [
+          {
+            "value": "lesson",
+            "description": "A fix, a convention or a dead end learned from work."
+          },
+          {
+            "value": "incident",
+            "description": "Something that broke, and why."
+          },
+          {
+            "value": "decision",
+            "description": "A choice someone made, and its reason."
+          },
+          {
+            "value": "reference",
+            "description": "Where something lives or how to reach it."
+          }
+        ]
+      }
+    ],
+    "entities_allow_free_form": true,
+    "default_observation_scopes": [
+      [
+        "app:*"
+      ]
+    ]
+  }
+}

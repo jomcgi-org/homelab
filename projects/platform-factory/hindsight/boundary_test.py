@@ -37,6 +37,10 @@ def deployed_env():
     for entry in container["env"]:
         if "value" in entry:
             env[entry["name"]] = entry["value"]
+        elif "configMapKeyRef" in entry["valueFrom"]:
+            # The bank template's ConfigMap holds resources/<key>.
+            key = entry["valueFrom"]["configMapKeyRef"]["key"]
+            env[entry["name"]] = (ROOT / "resources" / key).read_text()
         elif entry["valueFrom"]["secretKeyRef"]["key"] in SECRET_VALUES:
             key = entry["valueFrom"]["secretKeyRef"]["key"]
             env[entry["name"]] = SECRET_VALUES[key]
@@ -213,3 +217,16 @@ def test_recall_works_with_the_mcp_token(server):
     )
     assert "error" not in reply, reply
     assert reply["result"].get("isError") is not True, reply
+
+
+def test_new_banks_get_the_schema(server):
+    # Hindsight validates the template when it creates a bank (HOME-183).
+    template = json.loads((ROOT / "resources/bank-template.json").read_text())
+    assert request(server, "PUT", "/v1/default/banks/schema", TENANT_KEY, {})[0] == 200
+    path = "/v1/default/banks/schema/config"
+    status, _, text = request(server, "GET", path, TENANT_KEY)
+    assert status == 200, text
+    config = json.loads(text)["config"]
+    assert config["retain_mission"] == template["bank"]["retain_mission"]
+    assert [g["key"] for g in config["entity_labels"]] == ["app", "kind"]
+    assert config["default_observation_scopes"] == [["app:*"]]

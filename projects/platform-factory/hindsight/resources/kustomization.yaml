@@ -28,3 +28,11 @@ configMapGenerator:
     options:
       annotations:
         argocd.argoproj.io/sync-wave: "-2"
+  # resources/bank-template.json, the schema every new bank starts with.
+  - name: hindsight-bank-template
+    namespace: hindsight
+    files:
+      - bank-template.json
+    options:
+      annotations:
+        argocd.argoproj.io/sync-wave: "-2"

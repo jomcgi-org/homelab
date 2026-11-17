@@ -104,6 +104,15 @@ spec:
                   key: mcp-token
             - name: HINDSIGHT_API_MCP_ENABLED_TOOLS
               value: recall,retain
+            # Schema v1 for every new bank (HOME-183): the retain mission and
+            # the app and kind labels, which extraction turns into tags.
+            # Hindsight applies it only when it creates a bank; change an
+            # existing bank with PATCH .../config or POST .../import.
+            - name: HINDSIGHT_API_DEFAULT_BANK_TEMPLATE
+              valueFrom:
+                configMapKeyRef:
+                  name: hindsight-bank-template
+                  key: bank-template.json
             # Embeddings: Voyage 4 Large through OpenRouter, on the key Joe
             # shares with Discord memory (HOME-176, HOME-130 comment 1439).
             # Its 1,024 dimensions fit pgvector's 2,000-dimension index.
