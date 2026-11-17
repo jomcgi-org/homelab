@@ -277,11 +277,11 @@ use the same files. Production builds include no fixtures and show unavailable
 states until HOME-213 publishes snapshots. SVG charts have value tables;
 the layout uses the shared light/dark palette and 16px phone gutters.
 
-`web:test` covers every fixture page, schema rejection, hash verification,
-polling, partial failure, navigation, plain-text rendering and axe in both themes.
-It also checks the Vite routes, CSP and palette contracts.
-`web:factory_built_test` checks the emitted shell, assets, rewrite and absence
-of fixture data. `web:budget_test` includes the Factory entry in the 150 KiB limit.
+The [Factory acceptance evidence](validation/factory.md) maps each required
+case to its test and records the local commands and results for a named revision.
+`web:test` covers fixtures, failures, navigation, text rendering, axe, CSP and
+palette rules. `web:factory_built_test` checks the emitted shell and publication
+boundary. `web:budget_test` measures the Factory entry against 150 KiB.
 
 **Why.** HOME-178's "One site" decision places the storyboard in this site.
 HOME-224 keeps `sections.ts` at `live: false`, with no changes to production
