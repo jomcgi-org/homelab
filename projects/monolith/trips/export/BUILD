@@ -16,6 +16,14 @@ filegroup(
     visibility = ["//projects/monolith:__pkg__"],
 )
 
+# Markdown read by the monolith doc-manifest genrules. See
+# //projects/monolith:repo_docs_srcs.
+filegroup(
+    name = "repo_docs",
+    srcs = ["README.md"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 # Package boundary keeps the private exporter out of the public backend glob.
 py_library(
     name = "export",

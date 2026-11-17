@@ -245,6 +245,7 @@ filegroup(
         "//projects/monolith/dev/deploy:repo_docs",
         "//projects/monolith/dev/grimoire:repo_docs",
         "//projects/monolith/frontend:repo_docs",
+        "//projects/monolith/trips/export:repo_docs",
         "//projects/monolith/web/grimoire:repo_docs",
         "//projects/operators/oci-model-cache:repo_docs",
         "//projects/platform-factory/external-secrets:repo_docs",
