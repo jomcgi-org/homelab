@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+exports_files(["export_run_usage.sql"])
+
 go_library(
     name = "store",
     srcs = [

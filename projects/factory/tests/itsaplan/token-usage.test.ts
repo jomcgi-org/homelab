@@ -1,13 +1,47 @@
 // Run against the pinned itsaplan API and its real migrated PostgreSQL schema.
-import { beforeEach, expect, test } from "bun:test";
+import { SQL } from "bun";
+import { afterAll, beforeEach, expect, test } from "bun:test";
 import { db, agentRun, issue, projectColumn } from "@repo/db";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { apiKeyApi, authedApi, createProject } from "./__tests__/helpers/app";
 import { signUpTestUser } from "./__tests__/helpers/auth";
 import { createAgent } from "./__tests__/helpers/agents";
 import { resetDb } from "./__tests__/helpers/db";
 
-beforeEach(resetDb);
+const connector = new SQL(process.env.FACTORY_CONNECTOR_DATABASE_URL!);
+beforeEach(async () => {
+  await resetDb();
+  await connector`TRUNCATE run, work_item, repo_binding CASCADE`;
+});
+afterAll(() => connector.close());
+
+async function localRun(
+  runId: number,
+  issueId: number,
+  usage?: { inputTokens: number; outputTokens: number },
+) {
+  // Revision rounds resolve the issue through work_item; shared runs can be
+  // accounted for before they are attached to a work item.
+  let workItemId = null;
+  if (runId < 0) {
+    await connector`INSERT INTO repo_binding
+      (name, owner, repo, base_branch, itsaplan_project, kagent_namespace,
+       kagent_agent, branch_prefix, max_engineering_retries)
+      VALUES ('homelab', 'org', 'homelab', 'main', 'HOME', 'factory', 'coder', 'factory/', 2)
+      ON CONFLICT DO NOTHING`;
+    const [item] = await connector`INSERT INTO work_item
+      (binding_name, issue_id, issue_key, branch, agent_key, kagent_namespace, kagent_agent)
+      VALUES ('homelab', ${issueId}, 'HOME-fixture', 'factory/fixture', 'coder', 'factory', 'coder')
+      ON CONFLICT (issue_id) DO UPDATE SET issue_id = excluded.issue_id RETURNING id`;
+    workItemId = item.id;
+  }
+  await connector`INSERT INTO run
+    (id, issue_id, work_item_id, origin, agent_key, trigger, prompt, system_prompt,
+     attempt, state, input_tokens, output_tokens)
+    VALUES (${runId}, ${runId > 0 ? issueId : null}, ${workItemId},
+      ${runId > 0 ? "itsaplan" : "connector"}, 'coder', 'issue_delegated', '', '', 1,
+      'closed', ${usage?.inputTokens ?? null}, ${usage?.outputTokens ?? null})`;
+}
 
 async function fixture() {
   const owner = await signUpTestUser();
@@ -78,19 +112,36 @@ async function fixture() {
   return { client, project, coder, todo, done, canceled, newIssue, run, move };
 }
 
+async function runReport(env: Record<string, string> = {}) {
+  // Execute the shipped export/import/report command against both real schemas.
+  const child = Bun.spawn(["bash", process.env.USAGE_REPORT!], {
+    env: { ...process.env, ...env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { stdout, stderr, code };
+}
+
 async function report() {
-  // This is the shipped operator query, not a second implementation in a test.
-  const query = await Bun.file(
-    new URL("./delivered_issue_usage.sql", import.meta.url),
-  ).text();
-  const rows = await db.execute(sql.raw(query));
-  // PostgreSQL returns bigint sums as strings; keep SQL NULL distinct from zero.
+  const result = await runReport();
+  expect(result.stderr).toBe("");
+  expect(result.code).toBe(0);
+  const [header, ...rows] = result.stdout.trim().split("\n");
+  const keys = header!.split(",");
+  // The report contains only issue keys and numbers; empty CSV fields are NULL.
   return rows.map((row) =>
     Object.fromEntries(
-      Object.entries(row).map(([key, value]) => [
-        key,
-        key === "issue_key" || value === null ? value : Number(value),
-      ]),
+      row
+        .split(",")
+        .map((value, index) => [
+          keys[index],
+          index === 0 ? value : value === "" ? null : Number(value),
+        ]),
     ),
   );
 }
@@ -125,6 +176,79 @@ test("HTTP run results persist nonzero usage; manual Done sums successful, faile
       total_tokens: 770,
     },
   ]);
+});
+
+test("consolidated delivery includes shared 300 and revision 200 exactly once, plus unknown rounds", async () => {
+  const f = await fixture();
+  const delivered = await f.newIssue("Revised before manual Done");
+  const other = await f.newIssue("Another issue");
+  const usage = { inputTokens: 270, outputTokens: 30 };
+  const shared = await f.run(delivered.id, usage);
+  await localRun(shared, delivered.id, usage);
+  await localRun(-1, delivered.id, { inputTokens: 180, outputTokens: 20 });
+  await localRun(-2, delivered.id);
+  await localRun(-3, other.id, { inputTokens: 9000, outputTokens: 900 });
+  expect(await report()).toEqual([]);
+  await f.move(delivered.id, f.done.id);
+  expect(await report()).toEqual([
+    {
+      issue_key: "HOME-1",
+      runs: 3,
+      unmeasured_runs: 1,
+      input_tokens: 450,
+      output_tokens: 50,
+      total_tokens: 500,
+    },
+  ]);
+});
+
+test("shared runs use local cancellation totals and fall back to itsaplan measurements", async () => {
+  const f = await fixture();
+  const delivered = await f.newIssue("Canceled work then delivered");
+  const [canceled] = await db
+    .insert(agentRun)
+    .values({
+      agentId: f.coder.agent.id,
+      projectId: f.project.project.id,
+      issueId: delivered.id,
+      prompt: "Canceled after work",
+      status: "canceled",
+    })
+    .returning();
+  await localRun(canceled!.id, delivered.id, {
+    inputTokens: 100,
+    outputTokens: 10,
+  });
+  const shared = await f.run(delivered.id, {
+    inputTokens: 200,
+    outputTokens: 20,
+  });
+  await localRun(shared, delivered.id);
+  await f.move(delivered.id, f.done.id);
+  expect(await report()).toEqual([
+    {
+      issue_key: "HOME-1",
+      runs: 2,
+      unmeasured_runs: 0,
+      input_tokens: 300,
+      output_tokens: 30,
+      total_tokens: 330,
+    },
+  ]);
+});
+
+test("an unavailable database fails the command without publishing partial totals", async () => {
+  for (const variable of [
+    "FACTORY_CONNECTOR_DATABASE_URL",
+    "ITSAPLAN_DATABASE_URL",
+  ]) {
+    const unavailable = new URL(process.env[variable]!);
+    unavailable.pathname = "/missing_report_database";
+    const result = await runReport({ [variable]: unavailable.toString() });
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("missing_report_database");
+  }
 });
 
 test("Done history survives reopening, repeated delivery, column changes and archiving", async () => {

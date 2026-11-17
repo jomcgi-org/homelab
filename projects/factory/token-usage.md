@@ -73,42 +73,67 @@ broker connects as `factory_broker_accounting`.
 | --- | --- |
 | 1: byte-preserving JSON and SSE accounting, attributed by actor | `broker/relay/tokens_test.go` tests chunk boundaries, completion-before-forwarding and unchanged response bytes. `dispatch/usage_test.go:TestRunTokenTotalsFromRelay` ignores a forged session header and excludes other sessions and namespaces. |
 | 2: totals sent to itsaplan | `TestRunTokenTotalsFromRelay` drives the relay, PostgreSQL, connector outbox and production itsaplan HTTP client. The endpoint receives `usage.inputTokens=300` and `usage.outputTokens=20`, with 150 cached tokens stored locally. A second run in the same session receives only its own 400/10 tokens. `TestRunTokenResultSurvivesHTTPFailureAndRestart` checks the same payload is delivered after an HTTP 503 and writer restart. |
-| 3: tokens per delivered issue | `tests/itsaplan/token-usage.test.ts` executes the operator query against the pinned upstream migrations. It uses the real result API and manual Done moves, includes failed/canceled runs, preserves unknowns, and tests reopened/archived issues and project isolation. `store/usage_test.go:TestDeliveredIssueUsage` tests the separate connector diagnostic query. |
+| 3: tokens per delivered issue | `tests/itsaplan/token-usage.test.ts` executes the complete export/import/report command against migrated connector and itsaplan databases. A shared 300-token run plus a 200-token revision yields 500, counted once; an unknown revision increments `unmeasured_runs`. It also tests cancellation totals, database failures, manual Done, reopened/archived issues and project isolation. |
 | 4: streamed, non-streamed, missing usage and correct run | `broker/relay/tokens_test.go:TestRelayKeepsUsageWithCallingActor` checks JSON, SSE and missing usage for two signed actors, including the call IDs passed to the recorder. `dispatch/usage_test.go:TestInterleavedRunTokenAttribution` interleaves those formats across two active runs, finishes them in reverse order and checks each run's stored and HTTP totals. `TestRunWithoutResponseUsageStaysUnknown` tests both missing formats; `TestUsageBeforeSessionAcknowledgementAndAcrossRetry` tests early calls and retries. |
 | Database boundary | `TestAccountingLoginCannotChangeDispatchState` rejects direct table access, state changes and role escalation, then records usage despite caller-created tables and a hostile search path. |
 
 ## Tokens per delivered issue
 
-Run [the itsaplan query](connector/itsaplan/delivered_issue_usage.sql) in
-`itsaplan`. It sums `agent_run.input_tokens` and `output_tokens` over **all
-runs** of each HOME issue that reached a completed column, including failed
-and canceled runs. It does not require a factory outbox receipt or a merge.
+Run [the consolidated report](connector/itsaplan/report-delivered-usage.sh)
+with connections to the connector and its associated itsaplan database.
+It sums input and output tokens over **all runs** of each HOME issue that
+reached a completed column, including failed, canceled and connector-owned
+revision runs. It does not require a factory outbox receipt or a merge.
 Current completed columns and the status-history `stateType` snapshots cover
 manual Done moves, repeated delivery, reopening, renaming a column and
 archiving. Issues with no runs remain visible. Totals stay null when no run
 has measured usage.
 
 ```bash
-psql "$ITSAPLAN_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 \
-  --file projects/factory/connector/itsaplan/delivered_issue_usage.sql
+# Set FACTORY_CONNECTOR_DATABASE_URL and ITSAPLAN_DATABASE_URL in the environment.
+bash projects/factory/connector/itsaplan/report-delivered-usage.sh > delivered-issue-usage.csv
 ```
 
-The query targets the [pinned itsaplan v1.10.0 schema](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/packages/db/src/schema/app.ts).
-`tests/itsaplan/token-usage.test.ts` runs that exact SQL after the upstream
-migrations, and sends measured and unmeasured results through the real API
-before checking the report. A report row is one issue, even if it reached
-Done more than once. Save the report and rollout time for each comparison
-cohort; historical missing usage cannot be reconstructed.
+The command needs `bash`, `psql`, SELECT access to the source tables and
+TEMP permission in itsaplan. It exports [connector run totals](connector/store/export_run_usage.sql)
+to a private temporary CSV, then loads a session-local table in itsaplan.
+It makes no persistent database writes and changes no service permissions.
+A failed export stops the report. The temporary file is deleted on exit.
+The [consolidated SQL](connector/itsaplan/delivered_issue_usage.sql) requires
+that import, so it cannot silently fall back to an itsaplan-only report.
 
-For cached-input detail and connector-owned revision rounds (which have no
-itsaplan `agent_run` row), run [the connector diagnostic query](connector/store/delivered_issue_usage.sql)
+```text
+connector.run -> temporary CSV -> itsaplan temporary table
+                                      |
+                         FULL JOIN agent_run by shared ID
+                                      |
+                       issue + current/past Done status -> CSV
+```
+
+Positive itsaplan run IDs shared by the two databases count once. Negative
+connector-owned revision IDs count as additional runs, even with null usage.
+For a shared run, measured connector totals take precedence; missing local
+values fall back to itsaplan. This includes cancellation totals that itsaplan's
+already-closed result endpoint cannot accept. For example, a shared run with
+300 tokens and a connector-only revision with 200 produce **500**, not 300
+or 800. Cached input is already part of input and is not added again.
+
+The query targets the [pinned itsaplan v1.10.0 schema](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/packages/db/src/schema/app.ts).
+`tests/itsaplan/token-usage.test.ts` runs the command after both databases'
+migrations and sends measured and unmeasured results through the real API.
+A report row is one issue, even if it reached Done more than once. Run the
+report after the cohort's runs finish: the two databases are read in sequence,
+not in a shared transaction. Save the CSV and rollout time for each comparison
+cohort. Historical missing usage cannot be reconstructed.
+
+For cached-input detail, run [the connector diagnostic query](connector/store/delivered_issue_usage.sql)
 in `factory_connector`. It covers the narrower set of factory-confirmed
 Done moves and sums all local runs, including failed and revision runs.
 The query requires a delivered `issue_done` outbox row: local `work_item.state`
 becomes `done` at merge, before itsaplan accepts that move. A pending or
-abandoned move does not prove delivery. Use the itsaplan query above for the
-full Done cohort. Do not add the two reports together: itsaplan run IDs are
-also present in the connector database.
+abandoned move does not prove delivery. The consolidated report above already
+includes these runs and covers the full Done cohort; the diagnostic is not
+an additional cost to add to it.
 
 ```bash
 psql "$FACTORY_CONNECTOR_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 \
