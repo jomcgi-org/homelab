@@ -159,6 +159,10 @@ to load on intent. Each entry hydrates only its own page through `mount.tsx`.
 The six URLs use exact patterns in `edge/routes.json`. The connector keeps
 `/scotland/mcp` and `/scotland/v1/*`; `/slop/factory` stays on the hub. The hub
 pages remain available for rollback when the section patterns are removed.
+`exactBecause` records HOME-207's explicit exceptions to the wildcard rule:
+query-string variants such as `/scotland?ref=x` and `/slop?ref=x` still reach
+the hub. Descendants are also outside these six exact patterns. The edge
+tests check this alongside the query-safe wildcard routes from HOME-203.
 
 Local artifact checks do not establish a live migration. Production serving
 still depends on the `edge.serveRoutes` switch and promotion described above.

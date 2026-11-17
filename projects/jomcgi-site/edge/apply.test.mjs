@@ -20,6 +20,14 @@ const RULES = read("./cache-rules.json");
 // The complete live entrypoint rules, read from the zone on 2026-11-17.
 const LIVE = read("./testdata/live-cache-rules-2026-11-17.json").rules;
 const SCRIPT = ROUTES.script;
+const SCOTLAND_AND_SLOP_PATHS = [
+  "/scotland",
+  "/scotland/privacy",
+  "/scotland/terms",
+  "/scotland/support",
+  "/scotland/marketplace.json",
+  "/slop",
+];
 
 // A Worker route's * can span path separators. Check intersection with the
 // whole protected subtree, including endpoints added to the connector later.
@@ -38,15 +46,7 @@ function canMatchPrefix(pattern, prefix) {
 }
 
 test("Scotland and slop own only exact static URLs", () => {
-  const paths = [
-    "/scotland",
-    "/scotland/privacy",
-    "/scotland/terms",
-    "/scotland/support",
-    "/scotland/marketplace.json",
-    "/slop",
-  ];
-  for (const path of paths)
+  for (const path of SCOTLAND_AND_SLOP_PATHS)
     assert.ok(ROUTES.patterns.includes(`jomcgi.dev${path}`));
   for (const pattern of ROUTES.patterns) {
     const route = pattern.replace(/^https?:\/\//, "");
@@ -143,6 +143,17 @@ function routeMatches(pattern, url) {
     : url === pattern;
 }
 const served = (url) => ROUTES.patterns.some((p) => routeMatches(p, url));
+
+test("the exact Scotland and slop exceptions leave queries and descendants on the hub", () => {
+  for (const path of SCOTLAND_AND_SLOP_PATHS) {
+    const url = `jomcgi.dev${path}`;
+    assert.ok(served(url), path);
+    assert.ok(ROUTES.exactBecause[url], `${path} needs an exact-match reason`);
+    for (const suffix of ["?ref=x", "/future-page", "/future-page?ref=x"]) {
+      assert.ok(!served(`${url}${suffix}`), `${path}${suffix}`);
+    }
+  }
+});
 
 // Paths that other services or the hub still own on jomcgi.dev.
 const STAYS_ON_THE_HUB = [
