@@ -465,8 +465,9 @@ connector:
   # least 210s), acquireRetry (5s), reviewPoll (60s), quotaStall (10m). The
   # liveness lease (HOME-141): taskLease (5m) for a send to show a kagent
   # task, progressLease (20m) for a running turn to show a task event or an
-  # open tool call, and forceDelete (10m) for kagent to confirm a
-  # cancellation before the connector deletes the session with force.
+  # open tool call, toolLease (60m, HOME-159) for an open tool call to show a
+  # task event, and forceDelete (10m) for kagent to confirm a cancellation
+  # before the connector deletes the session with force.
   intervals: {}
   # URL templates in PR bodies and Done comments: {issue}, {issueId}, {run},
   # {namespace}, {agent} and {session} are replaced. An empty issue link is

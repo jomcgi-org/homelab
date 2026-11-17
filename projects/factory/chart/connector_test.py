@@ -326,6 +326,7 @@ def test_bindings_derive_from_repositories() -> None:
             "connector.intervals.poll=10s",
             "connector.intervals.quotaStall=15m",
             "connector.intervals.progressLease=25m",
+            "connector.intervals.toolLease=90m",
         ]
     )
     config = _config(docs)
@@ -355,6 +356,7 @@ def test_bindings_derive_from_repositories() -> None:
         "poll": "10s",
         "quotaStall": "15m",
         "progressLease": "25m",
+        "toolLease": "90m",
     }
     assert config["links"] == {
         "issue": "https://factory-plan.jomcgi.dev/issue/{issueId}",
