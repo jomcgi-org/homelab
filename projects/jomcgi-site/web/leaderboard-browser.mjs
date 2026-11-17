@@ -1,15 +1,14 @@
-// Real-browser complement to the hermetic artifact and component tests.
-// From web/: node leaderboard-browser.mjs dist (Playwright installed separately).
+// :leaderboard_browser_test runs in PR CI with an npm-packaged Chromium.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { preview } from "vite";
 import axe from "axe-core";
+import { chromium } from "playwright";
 import "./leaderboard-built.mjs";
 
-const { chromium } = await import(
-  process.env.SITE_PLAYWRIGHT_MODULE || "playwright"
-);
 const dist = resolve(process.argv[2]);
 const csp = readFileSync(join(dist, "_headers"), "utf8").match(
   /Content-Security-Policy: (.*)/,
@@ -25,10 +24,34 @@ const server = await preview({
   },
 });
 let browser;
+const scratch = mkdtempSync(join(tmpdir(), "leaderboard-browser-"));
 try {
+  let executablePath = process.env.SITE_CHROMIUM_EXECUTABLE;
+  if (!executablePath) {
+    process.env.TMPDIR = scratch;
+    const { default: chrome, inflate } = await import("@sparticuz/chromium");
+    const require = createRequire(import.meta.url);
+    const bin = join(dirname(require.resolve("@sparticuz/chromium")), "../bin");
+    await inflate(join(bin, "al2023.tar.br"));
+    executablePath = await chrome.executablePath();
+    const xml = (path) => path.replaceAll("&", "&amp;").replaceAll("<", "&lt;");
+    process.env.FONTCONFIG_FILE = join(scratch, "fonts.conf");
+    writeFileSync(
+      process.env.FONTCONFIG_FILE,
+      `<fontconfig><dir>${xml(join(scratch, "fonts"))}</dir><cachedir>${xml(join(scratch, "cache"))}</cachedir></fontconfig>`,
+    );
+    process.env.LD_LIBRARY_PATH = [
+      join(scratch, "al2023/lib"),
+      process.env.LD_LIBRARY_PATH,
+    ]
+      .filter(Boolean)
+      .join(":");
+  }
+  // Playwright defaults preserve web security and the production CSP.
   browser = await chromium.launch({
-    executablePath: process.env.SITE_CHROMIUM_EXECUTABLE,
+    executablePath,
   });
+  console.log(`Chromium ${browser.version()}`);
   for (const width of [390, 1280])
     for (const colorScheme of ["light", "dark"]) {
       const context = await browser.newContext({
@@ -84,21 +107,17 @@ try {
             .getByRole("button", { name: "Tokens per task", exact: true })
             .click();
         assert.equal(await page.locator("[style]:not([style=''])").count(), 0);
-        const violations = await page.evaluate(async () =>
-          (await window.axe.run()).violations.map(({ id, nodes }) => ({
-            id,
-            targets: nodes.map((node) => node.target),
-          })),
+        const violations = await page.evaluate(
+          async () => (await window.axe.run()).violations,
         );
         assert.deepEqual(violations, [], `${width}/${colorScheme}/${name}`);
       }
       assert.deepEqual(errors, [], "no browser or hydration errors");
-      console.log(
-        `ok   ${width}/${colorScheme}: deferred request, first-click hydration, full axe on all three selections`,
-      );
+      console.log(`ok   ${width}/${colorScheme}: deferred hydration and axe`);
       await context.close();
     }
 } finally {
   await browser?.close();
   await server.close();
+  rmSync(scratch, { recursive: true, force: true });
 }
