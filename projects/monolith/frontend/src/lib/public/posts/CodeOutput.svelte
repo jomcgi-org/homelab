@@ -70,7 +70,10 @@
     scrollbar-color: var(--color-text-accent) var(--color-border);
   }
   .copied {
-    background: var(--color-background-muted);
+    background: var(--color-text-accent);
+    color: var(--color-background-surface);
+    text-decoration: underline;
+    text-underline-offset: 0.15em;
   }
   .stream-cursor {
     display: inline-block;

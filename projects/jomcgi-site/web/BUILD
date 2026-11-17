@@ -77,13 +77,15 @@ js_test(
     entry_point = "budget.mjs",
 )
 
-# Fails when a built page's root is empty or still holds its marker.
+# Fails on an empty root, a missing post, or missing manifest titles/sections.
 js_test(
     name = "prerendered_test",
     args = ["$(rootpath :build)"],
     data = [
         "budget.mjs",
         ":build",
+        ":node_modules/happy-dom",
+        "//projects/monolith/frontend:blog_sources",
     ],
     entry_point = "prerendered.mjs",
 )

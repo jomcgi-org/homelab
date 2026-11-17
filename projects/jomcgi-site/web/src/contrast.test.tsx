@@ -200,6 +200,57 @@ const PAIRS: [string, string, number][] = [
   ]),
 ];
 
+describe("replay visual keys", () => {
+  const rule = (file: string, selector: string) => {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(
+      readFileSync(join(replayDir, file), "utf8").match(
+        /<style>([\s\S]*?)<\/style>/,
+      )![1]!,
+    );
+    return [...sheet.cssRules].find(
+      (r) => (r as CSSStyleRule).selectorText === selector,
+    ) as CSSStyleRule;
+  };
+  it.each(["light", "dark"] as const)(
+    "distinguishes copied tokens and trace series in %s mode",
+    (mode) => {
+      const value = (file: string, selector: string, property: string) =>
+        rule(file, selector).style.getPropertyValue(property);
+      const ink = (file: string, selector: string, property: string) =>
+        palette.get(
+          value(file, selector, property).match(/var\((--[\w-]+)\)/)![1]!,
+        )![mode];
+      const output = "CodeOutput.svelte";
+      const copied = ink(output, ".copied", "background");
+      expect(
+        contrast(copied, ink(output, "pre", "background")),
+      ).toBeGreaterThanOrEqual(3);
+      expect(
+        contrast(copied, ink(output, ".copied", "color")),
+      ).toBeGreaterThanOrEqual(4.5);
+      expect(value(output, ".copied", "text-decoration")).toContain(
+        "underline",
+      );
+      const trace = "DraftTrace.svelte";
+      const lookup = ink(trace, "rect.lookup", "fill");
+      const draft = ink(trace, "rect.draft", "stroke");
+      expect(draft).not.toBe(lookup);
+      expect(lookup).toBe(ink(trace, ".key.lookup::before", "background"));
+      expect(draft).toBe(ink(trace, ".key.draft::before", "border-color"));
+      expect(ink(trace, "rect.draft", "fill")).toBe(
+        ink(trace, ".key.draft::before", "background"),
+      );
+      expect(value(trace, "rect.draft", "stroke-width")).not.toBe("0");
+      for (const background of backgrounds)
+        for (const series of [lookup, draft])
+          expect(
+            contrast(series, palette.get(background)![mode]),
+          ).toBeGreaterThanOrEqual(3);
+    },
+  );
+});
+
 describe("token contrast", () => {
   it("declares each custom property in palette.css once", () => {
     // A second declaration under another selector could carry an unchecked

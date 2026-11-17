@@ -121,7 +121,9 @@
     fill: var(--color-text-accent);
   }
   rect.draft {
-    fill: var(--color-text-accent);
+    fill: var(--color-background-surface);
+    stroke: var(--color-blog-success);
+    stroke-width: 1;
   }
   rect.single {
     fill: var(--color-text-primary);
@@ -162,7 +164,9 @@
     background: var(--color-text-accent);
   }
   .key.draft::before {
-    background: var(--color-text-accent);
+    background: var(--color-background-surface);
+    border: 1px solid;
+    border-color: var(--color-blog-success);
   }
   .key.single::before {
     background: var(--color-text-primary);
