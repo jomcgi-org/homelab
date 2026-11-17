@@ -565,6 +565,7 @@ js_library(
         "src/lib/public/llm-leaderboard/leaderboard.css",
         "src/lib/public/llm-leaderboard/model.js",
         "src/lib/public/seo.js",
+        "src/routes/public/+page.svelte",
         "src/lib/public/styles/design-system.css",
         "src/lib/public/styles/technical-drawing.css",
         # Imported by global.css through the production root layout.
@@ -1221,6 +1222,23 @@ js_library(
     srcs = [
         "src/lib/public/components/Seo.svelte",
         "src/routes/public/app/llm-leaderboard/+page.svelte",
+    ],
+    visibility = ["//projects/jomcgi-site/web:__pkg__"],
+)
+
+# Public identity and posts are shared build-time inputs for the static site.
+js_library(
+    name = "public_site_inputs",
+    srcs = [
+        "preview/fonts/OFL.txt",
+        "preview/fonts/SchibstedGrotesk.ttf",
+        "src/lib/manifest.js",
+        "src/lib/public/posts/posts-manifest.json",
+        "src/lib/public/seo.js",
+        "src/routes/public/+page.svelte",
+        "static/apple-touch-icon.png",
+        "static/favicon.svg",
+        "static/joe-grey.png",
     ],
     visibility = ["//projects/jomcgi-site/web:__pkg__"],
 )

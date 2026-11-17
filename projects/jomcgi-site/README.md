@@ -92,7 +92,8 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
   a unit test proves it fails an over-budget page.
 - **Accessibility.** Pages have no axe violations in happy-dom, and the colour
   tokens in `src/palette.css` meet WCAG contrast in light and dark modes.
-  Colour contrast on real CSS is checked in a browser after deploy (HOME-174).
+  Run the home browser check below for full axe with real layout (HOME-206);
+  the delivery owner verifies the deployed site after promotion (HOME-174).
 
 ## Blog
 
@@ -256,6 +257,27 @@ CI publishes the dev build after merge. The landing owner must verify the deploy
 before production promotion. Local build and browser results do not establish
 deployed verification. Removing `jomcgi.dev/docs*` rolls docs back to the hub.
 
+### HOME-206 acceptance checks
+
+HOME-206 requires `jomcgi.dev/` and its machine-readable files to be static
+build outputs. `:prerendered_test` checks the emitted home through
+[home-built.mjs](web/home-built.mjs), including crawler contents and copied
+assets. The seven exact edge routes activate them on promotion.
+
+| Criterion | Requirement | Evidence |
+| --- | --- | --- |
+| 1 | Same home text, layout, portrait, keypad and clock; keypad links use `hrefFor`. | [home-built.mjs](web/home-built.mjs) compares emitted text and keypad order to the hub source, checks the page structure, clock placeholder and original portrait bytes. [home.test.tsx](web/src/home.test.tsx) checks link migration and the clock across daylight saving. |
+| 7 | Copy the content, title, description, canonical URL, Open Graph and Twitter tags. | [home-built.mjs](web/home-built.mjs) compares the emitted HTML with the original hub page and shared public origin. The latest post titles, dates and URLs must match the manifest. |
+| 8 | Interactive parts hydrate. Large data or heavy code loads on intent through a dynamic import. Each route stays under the 150 KiB JavaScript budget. | [home-browser.mjs](web/home-browser.mjs) holds the built entry while checking static content, then proves hydration retains the original DOM. It checks the clock, focus readouts, saved scheme, actual portrait network requests and canvas startup on keyboard/pointer intent, plus reduced motion. [budget.mjs](web/budget.mjs) measures every built entry for `:budget_test`. |
+| 9 | No inline styles, colour literals or named colours outside `palette.css`. No axe violations. | [contrast.test.tsx](web/src/contrast.test.tsx) checks source colours and tokens. [home-browser.mjs](web/home-browser.mjs) runs full axe, including colour contrast and visible labels, against the built CSS in both schemes, at desktop and portrait/landscape phone sizes. It rejects inline/injected styles after interaction. |
+
+Run `pnpm test`, `pnpm build`, `pnpm budget` and `node prerendered.mjs dist`
+from `web/`. Then run `pnpm test:browser` with `PLAYWRIGHT_MODULE` pointing to
+Playwright's `index.mjs` (tested with 1.63.0) and optionally `CHROMIUM_PATH`
+pointing to a browser executable. This check serves `dist/` locally with
+the production CSP. It is a local acceptance command; CI still runs the
+per-page happy-dom axe, source palette, hydration, artifact and budget tests.
+
 ## Deploy
 
 CI publishes the image and chart on merge. A sync of the stage's Application
@@ -276,10 +298,22 @@ on `next.jomcgi.dev`: that PR is the promotion. The Jobs read 1Password item
 from the home network only, and pods reach Cloudflare over IPv4. Kargo
 takes over both pins when HOME-116 slice 2 lands.
 
-`public/robots.txt` lets crawlers fetch every page, so they can read each
-page's indexing rules. `public/_headers` sends `X-Robots-Tag: noindex` for
-the preview host and the unlisted `/slop` drafts note. The note also keeps its
-`noindex, nofollow` meta tag.
+`build.mjs` generates robots, sitemap, llms.txt and the web manifest from
+the shared public identity and posts manifest, and copies the hub icons.
+Robots allows `/`, keeps `/slop` disallowed and names the canonical sitemap.
+The home page retains the keypad, portrait and London clock, with the latest
+two posts read at build time. It omits the hub-only stats ticker and retired
+notes. `public/_headers` sends `X-Robots-Tag: noindex` for the preview host
+and the unlisted `/slop` drafts note, which also keeps `noindex, nofollow`.
+
+After the dev deploy, the delivery owner verifies HOME-206 criterion 11 on
+`next.jomcgi.dev`. Check the root and all six metadata/icon paths against the
+built files. Check the portrait before and after intent, the clock, keypad
+and scheme toggle on desktop and mobile. Run axe in both schemes, including
+colour contrast, and check for hydration errors or hub stats requests.
+This live verification remains pending until that deploy. After prod
+promotion, verify the exact routes and paths that must still reach their
+other owners. A pre-merge local build cannot establish this deployment state.
 
 After the dev deployment, check the three blog URLs above on
 `next.jomcgi.dev`. With JavaScript disabled, the index and post text must

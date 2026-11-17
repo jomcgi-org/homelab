@@ -6,7 +6,7 @@
     "dev": "vite",
     "build": "node build.mjs",
     "test": "vitest run",
-    "test:browser": "node leaderboard-browser.mjs dist",
+    "test:browser": "node home-browser.mjs dist && node leaderboard-browser.mjs dist",
     "typecheck": "tsc --noEmit",
     "budget": "node budget.mjs dist factory/index.html",
     "predev": "node prepare-local.mjs",

@@ -19,6 +19,15 @@ export interface Section {
   listed?: boolean;
 }
 
+export const HOME: Section = {
+  name: "Home",
+  group: "About",
+  path: "/",
+  legacy: "/",
+  live: true,
+  summary: "Joe McGinley, Scotland.",
+};
+
 export const GROUPS: readonly Group[] = ["Writing", "Apps", "Factory", "About"];
 
 export const SECTIONS: readonly Section[] = [
