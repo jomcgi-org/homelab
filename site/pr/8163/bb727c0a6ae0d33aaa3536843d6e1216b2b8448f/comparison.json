@@ -1,6 +1,6 @@
 {
-  "head": "0ef32865b6fbcee48a36c6646746b11ab563d3d6",
-  "baseline": "7c8c90d2bd991d481a3481a9fefd306d513365c9",
+  "head": "bb727c0a6ae0d33aaa3536843d6e1216b2b8448f",
+  "baseline": "cc841b45dc336c3394f5529444cbfde64c875c13",
   "baseline_kind": "git merge-base",
   "rows": [
     {
@@ -657,7 +657,7 @@
       "after": "captures/factory/after-overview-live-1440x1000-dark-100pct-opening.png",
       "before": "captures/factory/before-overview-live-1440x1000-dark-100pct-opening.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 1440,
         "height": 1000
@@ -695,7 +695,7 @@
       "after": "captures/factory/after-overview-live-1440x1000-light-100pct-opening.png",
       "before": "captures/factory/before-overview-live-1440x1000-light-100pct-opening.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 1440,
         "height": 1000
@@ -1056,7 +1056,7 @@
       "after": "captures/review/after-gaps-pending-390-dark.png",
       "before": "captures/review/before-gaps-pending-390-dark.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1075,7 +1075,7 @@
       "after": "captures/review/after-gaps-pending-390-light.png",
       "before": "captures/review/before-gaps-pending-390-light.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1208,7 +1208,7 @@
       "after": "captures/review/after-notes-pending-390-dark.png",
       "before": "captures/review/before-notes-pending-390-dark.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1873,7 +1873,7 @@
       "after": "captures/stars/after-historical-dark-390.png",
       "before": "captures/stars/before-historical-dark-390.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1457
