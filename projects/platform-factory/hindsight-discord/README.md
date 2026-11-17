@@ -32,9 +32,25 @@ with no local fallback. No model loads in the pod. The `hindsight-preflight`
 Sync hook runs a copy of the factory's `preflight.py` (`keys_test` keeps the
 two equal). It checks the key, that the decision model answers from one
 endpoint, and that stored vectors match the embedding dimension. A failure
-stops the sync and keeps the running pod. To change the embedding model
-after banks hold vectors, re-embed first, as the factory's "Memory" section
-describes.
+stops the sync and keeps the running pod.
+
+### Models and rollback
+
+While no bank holds vectors, reverting #8170 (HOME-204) is enough: Hindsight
+resizes an empty vector column at startup. After the first retain, the local
+model cannot start on 1,024-dimensional rows, so re-embed first. No API pod
+has to run:
+
+1. `KUBECONFIG=~/.kube/factory.yaml kubectl apply -f
+   projects/platform-factory/hindsight-discord/recovery/reembed-local.yaml`
+   re-embeds every row in `factory_discord_hindsight` with the image's local
+   model. ArgoCD never applies this Job.
+2. Merge the revert of #8170.
+3. In the running `hindsight-discord` pod, run
+   `hindsight-admin reembed --all-schemas --finish`.
+
+The factory Hindsight's `rollback_test` proves these steps in this image, and
+`keys_test` pins the Job to the same command and settings.
 
 The API permits ingress only from `factory-discord` and egress only to
 `factory-db:5432` and `openrouter.ai:443`. The cluster baseline also permits
