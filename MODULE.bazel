@@ -145,6 +145,18 @@ multiarch_http_file(
     extract_path = "kubeconform",
 )
 
+# promtool runs the factory Prometheus's rule tests
+# (//projects/platform-factory/prometheus/resources:rules_test). Test-only,
+# amd64 Linux like kubeconform, and the same release as the deployed
+# Prometheus.
+multiarch_http_file(
+    name = "promtool_3_15_1_linux_amd64",
+    amd64_sha256 = "6a726885328ad9efebbf36e876ce2fb6225468a71fd1e7ce3ba666d5f4d97a84",
+    amd64_url = "https://github.com/prometheus/prometheus/releases/download/v3.15.1/prometheus-3.15.1.linux-amd64.tar.gz",
+    binary_name = "promtool",
+    extract_path = "prometheus-3.15.1.linux-amd64/promtool",
+)
+
 # Atlas and CloudNativePG do not ship their CRDs in the local wrapper
 # chart renders. Pin the exact operator-version CRDs as inputs, then convert
 # them to the same offline kubeconform schema layout inside the test.

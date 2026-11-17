@@ -1,0 +1,126 @@
+# One Alertmanager for Prometheus's rules (rules.yml). It posts to the
+# homelab Discord channel through a webhook and depends on nothing else in
+# the homelab, so an alert still arrives when the hub is down.
+#
+# The 1Password operator writes item factory-alerts-discord, field
+# webhook-url, into Secret alertmanager-discord. The volume is optional: if
+# the item is missing, Alertmanager still starts, each Discord send fails and
+# it logs the missing file. The README's path test shows that.
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: alertmanager-discord
+  namespace: prometheus
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  itemPath: "vaults/k8s-homelab/items/factory-alerts-discord"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: prometheus
+  labels:
+    app.kubernetes.io/name: alertmanager
+spec:
+  selector:
+    app.kubernetes.io/name: alertmanager
+  ports:
+    - name: http
+      port: 9093
+      targetPort: http
+---
+# Silences and the notification log live in an emptyDir: a restart forgets
+# them, and an alert that is still firing is sent again.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: prometheus
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: alertmanager
+    spec:
+      automountServiceAccountToken: false
+      # node-1 is the operator's workstation.
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values: [node-1]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: alertmanager
+          image: quay.io/prometheus/alertmanager:v0.34.2@sha256:39d8bb3966c694a124428a3a88fbcffd40bd069129ecd47c059f8a3f17c55f3b
+          args:
+            - --config.file=/etc/alertmanager/config/alertmanager.yml
+            - --storage.path=/alertmanager
+            - --web.listen-address=:9093
+            # One replica: no gossip listener.
+            - --cluster.listen-address=
+          ports:
+            - name: http
+              containerPort: 9093
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            periodSeconds: 30
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alertmanager/config
+              readOnly: true
+            - name: discord
+              mountPath: /etc/alertmanager/discord
+              readOnly: true
+            - name: data
+              mountPath: /alertmanager
+      volumes:
+        - name: config
+          configMap:
+            name: alertmanager-config
+        - name: discord
+          secret:
+            secretName: alertmanager-discord
+            optional: true
+            items:
+              - key: webhook-url
+                path: webhook-url
+        - name: data
+          emptyDir: {}

@@ -1,0 +1,232 @@
+# promtool unit tests for rules.yml (BUILD: rules_test). One sample a minute.
+rule_files:
+  - rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # A root filesystem over 75% for 15 min fires once per node. One under it,
+  # /boot, a loop device and the device of another mount do not.
+  - interval: 1m
+    input_series:
+      - series: 'container_fs_usage_bytes{job="kubelet-cadvisor", id="/", node="node-1", device="overlay_0-72"}'
+        values: "80x30"
+      - series: 'container_fs_limit_bytes{job="kubelet-cadvisor", id="/", node="node-1", device="overlay_0-72"}'
+        values: "100x30"
+      - series: 'container_fs_usage_bytes{job="kubelet-cadvisor", id="/", node="node-1", device="overlay_0-79"}'
+        values: "80x30"
+      - series: 'container_fs_limit_bytes{job="kubelet-cadvisor", id="/", node="node-1", device="overlay_0-79"}'
+        values: "100x30"
+      - series: 'container_fs_usage_bytes{job="kubelet-cadvisor", id="/", node="node-2", device="overlay_0-59"}'
+        values: "70x30"
+      - series: 'container_fs_limit_bytes{job="kubelet-cadvisor", id="/", node="node-2", device="overlay_0-59"}'
+        values: "100x30"
+      - series: 'container_fs_usage_bytes{job="kubelet-cadvisor", id="/", node="node-2", device="/dev/nvme0n1p2"}'
+        values: "90x30"
+      - series: 'container_fs_limit_bytes{job="kubelet-cadvisor", id="/", node="node-2", device="/dev/nvme0n1p2"}'
+        values: "100x30"
+      - series: 'container_fs_usage_bytes{job="kubelet-cadvisor", id="/", node="node-1", device="/dev/loop0"}'
+        values: "100x30"
+      - series: 'container_fs_limit_bytes{job="kubelet-cadvisor", id="/", node="node-1", device="/dev/loop0"}'
+        values: "100x30"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: NodeDiskFilling
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: NodeDiskFilling
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              node: node-1
+            exp_annotations:
+              summary: "node-1's root filesystem is 80% full"
+              description: 'Image garbage collection starts at 85% and the kubelet evicts pods at 90%. Runbook: projects/factory-cluster/README.md, "Alerts".'
+
+  # A new pod's first timeout: its counter appears at 1. It fires for an
+  # hour, then stops. Successful suspends never fire.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="kagent-controller", pod="kagent-controller-a"}'
+        values: "1x300"
+      - series: 'process_start_time_seconds{job="kagent-controller", pod="kagent-controller-a"}'
+        values: "-86400x300"
+      - series: 'rpc_client_call_duration_seconds_count{job="kagent-controller", pod="kagent-controller-a", rpc_method="substrate.ateapi.v1.Control/SuspendActor", rpc_response_status_code="DEADLINE_EXCEEDED", server_address="10.42.0.1"}'
+        values: "_x120 1x180"
+      - series: 'rpc_client_call_duration_seconds_count{job="kagent-controller", pod="kagent-controller-a", rpc_method="substrate.ateapi.v1.Control/SuspendActor", rpc_response_status_code="OK", server_address="10.42.0.1"}'
+        values: "1+1x300"
+    alert_rule_test:
+      - eval_time: 119m
+        alertname: KagentSuspendTimedOut
+        exp_alerts: []
+      - eval_time: 125m
+        alertname: KagentSuspendTimedOut
+        exp_alerts: &timeout_1
+          - exp_labels:
+              severity: critical
+              pod: kagent-controller-a
+              timeouts: "1"
+              started: "-86400"
+            exp_annotations:
+              summary: A kagent session suspend passed the 30 s limit (1 since the controller started)
+              description: &suspend_description 'kagent keeps the session locked and its worker slot held until a person deletes the worker pod and reverts the session. Runbook: projects/factory-cluster/README.md, "Alerts".'
+      - eval_time: 170m
+        alertname: KagentSuspendTimedOut
+        exp_alerts: *timeout_1
+      - eval_time: 185m
+        alertname: KagentSuspendTimedOut
+        exp_alerts: []
+
+  # A second timeout while the first one fires is a new alert, so
+  # Alertmanager sends it.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="kagent-controller", pod="kagent-controller-a"}'
+        values: "1x200"
+      - series: 'process_start_time_seconds{job="kagent-controller", pod="kagent-controller-a"}'
+        values: "-86400x200"
+      - series: 'rpc_client_call_duration_seconds_count{job="kagent-controller", pod="kagent-controller-a", rpc_method="substrate.ateapi.v1.Control/SuspendActor", rpc_response_status_code="DEADLINE_EXCEEDED", server_address="10.42.0.1"}'
+        values: "_x30 1x30 2x140"
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: KagentSuspendTimedOut
+        exp_alerts: *timeout_1
+      - eval_time: 70m
+        alertname: KagentSuspendTimedOut
+        exp_alerts: &timeout_2
+          - exp_labels:
+              severity: critical
+              pod: kagent-controller-a
+              timeouts: "2"
+              started: "-86400"
+            exp_annotations:
+              summary: A kagent session suspend passed the 30 s limit (2 since the controller started)
+              description: *suspend_description
+
+  # A later timeout on an existing series fires for an hour after it.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="kagent-controller", pod="kagent-controller-a"}'
+        values: "1x600"
+      - series: 'process_start_time_seconds{job="kagent-controller", pod="kagent-controller-a"}'
+        values: "-86400x600"
+      - series: 'rpc_client_call_duration_seconds_count{job="kagent-controller", pod="kagent-controller-a", rpc_method="substrate.ateapi.v1.Control/SuspendActor", rpc_response_status_code="DEADLINE_EXCEEDED", server_address="10.42.0.1"}'
+        values: "1x400 2x200"
+    alert_rule_test:
+      - eval_time: 300m
+        alertname: KagentSuspendTimedOut
+        exp_alerts: []
+      - eval_time: 420m
+        alertname: KagentSuspendTimedOut
+        exp_alerts: *timeout_2
+      - eval_time: 470m
+        alertname: KagentSuspendTimedOut
+        exp_alerts: []
+
+  # A container restart drops the counter; the first timeout after it
+  # brings back the same series at 1, the value it had before. It fires.
+  # A counter that existed when the rule started does not.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="kagent-controller", pod="kagent-controller-a"}'
+        values: "1x300"
+      - series: 'process_start_time_seconds{job="kagent-controller", pod="kagent-controller-a"}'
+        values: "-86400x100 6060x200"
+      - series: 'rpc_client_call_duration_seconds_count{job="kagent-controller", pod="kagent-controller-a", rpc_method="substrate.ateapi.v1.Control/SuspendActor", rpc_response_status_code="DEADLINE_EXCEEDED", server_address="10.42.0.1"}'
+        values: "1x100 stale _x18 1x180"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: KagentSuspendTimedOut
+        exp_alerts: []
+      - eval_time: 110m
+        alertname: KagentSuspendTimedOut
+        exp_alerts: []
+      - eval_time: 125m
+        alertname: KagentSuspendTimedOut
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              pod: kagent-controller-a
+              timeouts: "1"
+              started: "6060"
+            exp_annotations:
+              summary: A kagent session suspend passed the 30 s limit (1 since the controller started)
+              description: *suspend_description
+
+  # A timeout fires, then the controller restarts and its first scrape
+  # already shows a timeout, with the same count. It is a new alert, with
+  # the new start time, and the old one ends. It fires for the new
+  # process's first hour.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="kagent-controller", pod="kagent-controller-a"}'
+        values: "1x300"
+      - series: 'process_start_time_seconds{job="kagent-controller", pod="kagent-controller-a"}'
+        values: "-86400x100 6050x200"
+      - series: 'rpc_client_call_duration_seconds_count{job="kagent-controller", pod="kagent-controller-a", rpc_method="substrate.ateapi.v1.Control/SuspendActor", rpc_response_status_code="DEADLINE_EXCEEDED", server_address="10.42.0.1"}'
+        values: "_x80 1x220"
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: KagentSuspendTimedOut
+        exp_alerts: *timeout_1
+      - eval_time: 105m
+        alertname: KagentSuspendTimedOut
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              pod: kagent-controller-a
+              timeouts: "1"
+              started: "6050"
+            exp_annotations:
+              summary: A kagent session suspend passed the 30 s limit (1 since the controller started)
+              description: *suspend_description
+      - eval_time: 165m
+        alertname: KagentSuspendTimedOut
+        exp_alerts: []
+
+  # A failed scrape (up 0) for 20 min and a 40-minute gap with no samples
+  # at all do not look like a timeout.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="kagent-controller", pod="kagent-controller-a"}'
+        values: "1x100 0x20 1x180"
+      - series: 'process_start_time_seconds{job="kagent-controller", pod="kagent-controller-a"}'
+        values: "-86400x100 _x20 -86400x180"
+      - series: 'rpc_client_call_duration_seconds_count{job="kagent-controller", pod="kagent-controller-a", rpc_method="substrate.ateapi.v1.Control/SuspendActor", rpc_response_status_code="DEADLINE_EXCEEDED", server_address="10.42.0.1"}'
+        values: "1x100 stale _x19 1x180"
+      - series: 'up{job="kagent-controller", pod="kagent-controller-b"}'
+        values: "1x100 _x40 1x160"
+      - series: 'process_start_time_seconds{job="kagent-controller", pod="kagent-controller-b"}'
+        values: "-86400x100 _x40 -86400x160"
+      - series: 'rpc_client_call_duration_seconds_count{job="kagent-controller", pod="kagent-controller-b", rpc_method="substrate.ateapi.v1.Control/SuspendActor", rpc_response_status_code="DEADLINE_EXCEEDED", server_address="10.42.0.1"}'
+        values: "1x100 _x40 1x160"
+    alert_rule_test:
+      - eval_time: 125m
+        alertname: KagentSuspendTimedOut
+        exp_alerts: []
+      - eval_time: 150m
+        alertname: KagentSuspendTimedOut
+        exp_alerts: []
+      - eval_time: 200m
+        alertname: KagentSuspendTimedOut
+        exp_alerts: []
+
+  # A second Substrate API server address gives a second series, which
+  # starts at 1 while the first one exists. It fires.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="kagent-controller", pod="kagent-controller-a"}'
+        values: "1x400"
+      - series: 'process_start_time_seconds{job="kagent-controller", pod="kagent-controller-a"}'
+        values: "-86400x400"
+      - series: 'rpc_client_call_duration_seconds_count{job="kagent-controller", pod="kagent-controller-a", rpc_method="substrate.ateapi.v1.Control/SuspendActor", rpc_response_status_code="DEADLINE_EXCEEDED", server_address="10.42.0.1"}'
+        values: "1x400"
+      - series: 'rpc_client_call_duration_seconds_count{job="kagent-controller", pod="kagent-controller-a", rpc_method="substrate.ateapi.v1.Control/SuspendActor", rpc_response_status_code="DEADLINE_EXCEEDED", server_address="10.42.0.2"}'
+        values: "_x300 1x100"
+    alert_rule_test:
+      - eval_time: 290m
+        alertname: KagentSuspendTimedOut
+        exp_alerts: []
+      - eval_time: 310m
+        alertname: KagentSuspendTimedOut
+        exp_alerts: *timeout_2

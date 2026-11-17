@@ -1,7 +1,8 @@
 # The prometheus namespace's allowlist under the cluster-wide default-deny
 # (projects/platform-factory/network-policy/). Prometheus reaches each target
 # on its metrics port only; scrape-ingress.yaml admits it at the other end.
-# Grafana is its only client; operators use a port-forward.
+# Grafana is its only client; operators use a port-forward. Prometheus sends
+# alerts to Alertmanager, which posts them to Discord.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -91,6 +92,41 @@ spec:
       toPorts:
         - ports:
             - port: "3903"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: alertmanager
+      toPorts:
+        - ports:
+            - port: "9093"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: alertmanager
+  namespace: prometheus
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "9093"
+              protocol: TCP
+  egress:
+    # Discord's webhook API; a webhook URL on another host needs it here.
+    - toFQDNs:
+        - matchName: discord.com
+      toPorts:
+        - ports:
+            - port: "443"
               protocol: TCP
 ---
 apiVersion: cilium.io/v2

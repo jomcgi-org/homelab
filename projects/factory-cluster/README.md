@@ -58,7 +58,7 @@ router must reserve these three leases.
 | Secrets | 1Password Connect + operator, `k8s-homelab` vault; Authentik's secret key and OIDC client secrets are generated in the cluster | Recovery needs the existing `authentik-secrets`. Copying it to 1Password remains on #7952 |
 | etcd snapshots | every 6 hours, 20 kept, on each node's disk | Off-node copies come later |
 | Observability | The hub's otel-collector chart (`values-factory.yaml`) shipping to Honeycomb's `homelab` environment, tagged `k8s.cluster.name=factory` and `deployment.environment=factory` | One telemetry stack and one ingest key for both clusters. A DaemonSet reads each node's kubelet, `/proc`, Cilium agent (:9962) and Hubble (:9965) metrics and its warning-and-above pod logs (redacted; `authentik` and `ate-system` excluded); one Deployment watches Warning events and scrapes the API servers and Cilium operators. Every source is allowlisted and scraped every 120s to stay inside the shared event budget |
-| Metrics view | Prometheus v3.15.1 (one replica, 7 days or 4 GB on a local-path volume) with kube-state-metrics v2.20.0, and Grafana 13.3.1 at factory-grafana.jomcgi.dev; plain manifests, images pinned by digest | The operators' dashboards #7817 names, next to Honeycomb rather than replacing it. No operator or chart: one scrape file names every target, and its RBAC, egress and each target's ingress are written out by hand ([Metrics view](#metrics-view)) |
+| Metrics view | Prometheus v3.15.1 (one replica, 7 days or 4 GB on a local-path volume) with kube-state-metrics v2.20.0, Alertmanager v0.34.2 posting to Discord, and Grafana 13.3.1 at factory-grafana.jomcgi.dev; plain manifests, images pinned by digest | The operators' dashboards #7817 names, next to Honeycomb rather than replacing it. No operator or chart: one scrape file names every target, and its RBAC, egress and each target's ingress are written out by hand ([Metrics view](#metrics-view)). Alerts reach Discord without the hub ([Alerts](#alerts)) |
 
 Traefik and ServiceLB are disabled.
 
@@ -752,6 +752,84 @@ KUBECONFIG=~/.kube/factory.yaml kubectl -n grafana port-forward svc/grafana 3000
 KUBECONFIG=~/.kube/factory.yaml kubectl -n prometheus port-forward svc/prometheus 9090:9090
 ```
 
+### Alerts
+
+Prometheus evaluates `resources/rules.yml` and sends firing alerts to one
+Alertmanager (`resources/alertmanager.yaml`), which posts them to the homelab
+Discord channel through a webhook. The path uses nothing in the hub, so an
+alert arrives while the hub is down. Alertmanager keeps silences in an
+emptyDir: a restart forgets them.
+
+The webhook URL comes from 1Password item `factory-alerts-discord` in vault
+`k8s-homelab`, field `webhook-url`. To create it, in the Discord channel open
+Edit Channel, Integrations, Webhooks, New Webhook, and copy the URL. If the
+item is missing, Alertmanager starts but logs a failed send for each alert.
+To test the path:
+
+```bash
+KUBECONFIG=~/.kube/factory.yaml kubectl -n prometheus port-forward svc/alertmanager 9093:9093 &
+curl -s -X POST -H 'Content-Type: application/json' http://localhost:9093/api/v2/alerts \
+  -d '[{"labels":{"alertname":"AlertPathTest"},"annotations":{"summary":"test"}}]'
+```
+
+| Alert | Fires when |
+| --- | --- |
+| `NodeDiskFilling` | A node's root filesystem is more than 75% full for 15 min. Image garbage collection starts at 85% and the kubelet evicts pods at 90% |
+| `KagentSuspendTimedOut` | A `SuspendActor` call passed kagent's fixed 30 s deadline. Each scrape (30 s) that shows more timeouts sends one message with the count, so two timeouts in one scrape give one message. The alert ends an hour later and sends nothing then |
+
+**NodeDiskFilling.** Find the largest directories with
+`ssh node-N 'sudo du -xh --max-depth=3 / | sort -h | tail -20'`. The usual
+users are local-path volumes under `/var/lib/rancher/k3s/storage` (rustfs
+snapshots, Garage, the databases), images (`sudo k3s crictl rmi --prune`) and,
+on node-1, Claude scratch under `/tmp/claude-1000`. Ask before you delete a
+directory that a running session uses.
+
+**KagentSuspendTimedOut.** kagent v1.0.1 keeps the Actor SUSPENDING, refuses
+every turn and delete for the session, and holds its worker slot. To free
+every locked session:
+
+```bash
+# 1. The locked sessions: the same quiescence claim (session and executor)
+#    seen twice, a minute apart. A suspend that is still running has at most
+#    30 s, and the table records no claim time.
+claims() { KUBECONFIG=~/.kube/factory.yaml kubectl -n kagent-pg exec kagent-pg-1 -c postgres -- \
+  psql -d kagent -At -c "select distinct s.id || ' ' || e.quiescence_executor_id
+    from kagent.session s join kagent.session_task_event e using (history_id)
+    where e.quiescence_pending and e.quiescence_executor_id is not null" | sort; }
+FIRST=$(claims); sleep 60
+SESSIONS=$(comm -12 <(echo "$FIRST") <(claims) | cut -d' ' -f1 | sort -u)
+KUBECONFIG=~/.kube/factory.yaml kubectl -n kagent port-forward svc/kagent-controller 18083:8083 &
+for SESSION in $SESSIONS; do
+  # 2. Its worker pod: homelab-codex-* for a coder, homelab-reviewer-* for a reviewer.
+  POD=$(KUBECONFIG=~/.kube/factory.yaml kubectl -n ate-system exec postgres-0 -c postgres -- \
+    psql -U postgres -d atepg -At -c "select substring(encode(proto, 'escape')
+      from 'homelab-[a-z]+-[0-9a-f]{8,10}-[a-z0-9]{5}') from substrate.actors where name = 'session-$SESSION'")
+  # The worker namespace and the session's creator, who reverts it.
+  case "$POD" in
+    homelab-codex-*) NS=factory-r-homelab SA=factory-connector ;;
+    homelab-reviewer-*) NS=factory-r-homelab-review SA=factory-reviewer ;;
+    *) echo "$SESSION: no worker pod found"; continue ;;
+  esac
+  # 3. Delete that pod and wait; the Actor crashes within seconds.
+  KUBECONFIG=~/.kube/factory.yaml kubectl -n "$NS" delete pod "$POD" --wait=true
+  sleep 10
+  # 4. Revert the session as its creator. grpc-status 0 means done.
+  TOKEN=$(KUBECONFIG=~/.kube/factory.yaml kubectl -n factory create token "$SA" \
+    --audience kagent-invocation --duration 10m)
+  echo "$SESSION:"
+  python3 -c 'import struct,sys; s=sys.argv[1].encode(); m=b"\n"+bytes([len(s)])+s
+sys.stdout.buffer.write(b"\0"+struct.pack(">I",len(m))+m)' "$SESSION" |
+    curl -sS --http2-prior-knowledge -H 'Content-Type: application/grpc' -H 'TE: trailers' \
+      -H "Authorization: Bearer $TOKEN" --data-binary @- -o /dev/null -D - \
+      http://127.0.0.1:18083/kagent.api.v1.SessionService/RevertSession | grep -i grpc-status
+done
+kill %1
+```
+
+Run it again until step 1 finds no session. Revert before the connector
+sends to the session again. A connector recovery hold left by a send to the
+crashed session needs `connector recovery confirm-fenced`.
+
 ## Not yet done
 
 These come from the #7817 step 1 checklist:
@@ -780,9 +858,8 @@ These come from the #7817 step 1 checklist:
 - Spreading the cloudflared replicas across nodes: cfgate v0.2.0-alpha.11's
   CloudflareTunnel has no topologySpreadConstraints or affinity field, so
   placement is the scheduler's default spreading.
-- Alerting on the factory telemetry. Honeycomb's single free trigger is taken
-  (`projects/platform/honeycomb/README.md`), and Prometheus runs no rules or
-  Alertmanager.
+- More alerts: a stuck connector run (HOME-141), CNPG archiving and backup
+  age, and a heartbeat that shows the alert path itself works.
 - Metrics that outlive the cluster: Prometheus keeps seven days on one
   node's disk, so a lost node or rebuild starts it empty.
 

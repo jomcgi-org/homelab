@@ -1,0 +1,69 @@
+# Prometheus's alert rules (prometheus.yml loads them). Alertmanager
+# (alertmanager.yml) sends each one to the homelab Discord channel. The
+# runbook for each alert is in projects/factory-cluster/README.md, "Alerts".
+groups:
+  - name: nodes
+    rules:
+      # cAdvisor reports each container's writable layer (device overlay_*)
+      # with the usage of the filesystem under it: the one that holds
+      # containerd's images and layers. k3s keeps containerd, the kubelet
+      # directory and the local-path volumes on the root filesystem, because
+      # projects/factory-cluster/nodes/k3s-config.yaml sets no other data
+      # directory. Image garbage collection starts at 85% and the kubelet
+      # evicts pods at 90% (the same file).
+      - alert: NodeDiskFilling
+        expr: |
+          max by (node) (
+            container_fs_usage_bytes{job="kubelet-cadvisor", id="/", device=~"overlay_.+"}
+              / container_fs_limit_bytes{job="kubelet-cadvisor", id="/", device=~"overlay_.+"}
+          ) > 0.75
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }}'s root filesystem is {{ $value | humanizePercentage }} full"
+          description: >-
+            Image garbage collection starts at 85% and the kubelet evicts pods
+            at 90%. Runbook: projects/factory-cluster/README.md, "Alerts".
+
+  - name: kagent
+    rules:
+      # The suspend timeouts that the kagent controller process has counted,
+      # or 0 while its target is up and it has counted none. The counter
+      # itself first appears at 1, in a new pod or after a container
+      # restart; the 0 before it makes that first timeout a step. While the
+      # target is down this is absent, so a scrape gap is no step.
+      - record: kagent:suspend_timeouts:sum
+        expr: |
+          sum by (pod) (rpc_client_call_duration_seconds_count{job="kagent-controller", rpc_method="substrate.ateapi.v1.Control/SuspendActor", rpc_response_status_code="DEADLINE_EXCEEDED"})
+          or
+          0 * group by (pod) (up{job="kagent-controller"} == 1)
+      # kagent v1.0.1 bounds SuspendActor by a fixed 30 s deadline. A suspend
+      # past it leaves the Actor SUSPENDING and the session locked, and its
+      # worker slot held, until a person deletes the worker pod.
+      # The alert fires for an hour after the count rises, or while a
+      # controller process younger than an hour has counted a timeout: its
+      # first scrape can already show one. Its labels are the count and the
+      # process start time, so each scrape (30 s) that shows more timeouts,
+      # and each restarted process, is a new alert, and Alertmanager sends it.
+      - alert: KagentSuspendTimedOut
+        expr: |
+          (
+            count_values by (pod) ("timeouts", kagent:suspend_timeouts:sum > 0)
+              * on (pod) group_left (started)
+            count_values by (pod) ("started", process_start_time_seconds{job="kagent-controller"})
+          )
+            and on (pod)
+          (
+            increase(kagent:suspend_timeouts:sum[1h]) > 0
+            or
+            time() - process_start_time_seconds{job="kagent-controller"} < 3600
+          )
+        labels:
+          severity: critical
+        annotations:
+          summary: "A kagent session suspend passed the 30 s limit ({{ $labels.timeouts }} since the controller started)"
+          description: >-
+            kagent keeps the session locked and its worker slot held until a
+            person deletes the worker pod and reverts the session. Runbook:
+            projects/factory-cluster/README.md, "Alerts".
