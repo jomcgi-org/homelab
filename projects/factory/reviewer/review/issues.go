@@ -398,7 +398,7 @@ func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullReq
 		}
 		e.numberCriteria(in)
 		e.followUps(ctx, b, p, goal, in)
-		e.issueSwitches(ctx, b, p, in)
+		e.issueSwitches(ctx, b, p, goal, in)
 	}
 	for _, ref := range refs {
 		d := DecisionEvidence{URL: ref.url, Reason: "unreadable or missing"}

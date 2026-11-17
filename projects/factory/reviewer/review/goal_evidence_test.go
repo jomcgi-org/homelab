@@ -180,12 +180,16 @@ func TestServiceCriteriaPreserveIdentityAcrossRemovalAndRestart(t *testing.T) {
 	}
 	api.issue.Description = "## Done when\n"
 	empty := e.issueContext(context.Background(), b, pr, nil, after.History)
-	if !empty.CriteriaKnown || goalResolved(prior[1].ID, "HOME-58", nil, empty) == "" {
+	valid := &GoalCheck{Overall: goalMet}
+	if !empty.CriteriaKnown || goalResolved(prior[1].ID, "HOME-58", valid, empty) == "" {
 		t.Fatal("empty acceptance section did not prove removal")
+	}
+	if goalResolved(prior[1].ID, "HOME-58", nil, empty) != "" {
+		t.Fatal("removal resolved a finding without a valid current answer")
 	}
 	api.issue.Description = "Criteria in an unsupported format"
 	unknown := e.issueContext(context.Background(), b, pr, nil, after.History)
-	if goalResolved(prior[1].ID, "HOME-58", nil, unknown) != "" {
+	if goalResolved(prior[1].ID, "HOME-58", valid, unknown) != "" {
 		t.Fatal("unknown criteria proved removal")
 	}
 	a, _ = ParseGoal(goalReply(`{"criteria":[],"overall":"met"}`))
@@ -197,6 +201,112 @@ func TestServiceCriteriaPreserveIdentityAcrossRemovalAndRestart(t *testing.T) {
 	restored := e.issueContext(context.Background(), b, pr, nil, after.History)
 	if restored.Criteria[0].Number != 2 || restored.Criteria[1].Number != 4 {
 		t.Fatalf("restored IDs: %+v", restored.Criteria)
+	}
+}
+
+func TestConditionalGoalResolutionsRequireCurrentAnswer(t *testing.T) {
+	for _, tc := range []struct {
+		name, id string
+		in       *IssueContext
+	}{
+		{"removal", "HOME-58:goal:criterion-1", &IssueContext{
+			CriteriaKnown: true, History: []GoalHistory{{Key: "HOME-58", Criteria: []string{"fingerprint"}}},
+		}},
+		{"switch", "HOME-57:goal", &IssueContext{
+			Switches: []SwitchEvidence{{Key: "HOME-57", Retired: true}},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prior := []Finding{{ID: tc.id, Severity: SeverityMedium}}
+			for _, valid := range []bool{false, true} {
+				var g *GoalCheck
+				if valid {
+					g = &GoalCheck{Overall: goalMet}
+				}
+				r := &Report{Previous: []Previous{{ID: tc.id, Status: StatusFixed, Note: "PRIVATE model claim"}}}
+				applyGoal(r, prior, "HOME", "HOME-58", g, tc.in)
+				a := Assess(r, prior)
+				if (len(a.Fixed) == 1) != valid || (a.Conclusion == ConclusionSuccess) != valid {
+					t.Fatalf("valid answer %t: %+v", valid, a)
+				}
+				if !valid && !slices.ContainsFunc(a.Blocking, func(b Blocked) bool { return b.ID == tc.id }) {
+					t.Fatal("missing answer discarded the earlier blocker")
+				}
+				for _, p := range r.Previous {
+					if strings.Contains(p.Note, "PRIVATE") {
+						t.Fatal("model text reached the resolution")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestRemovedCriterionRequiresCurrentAnswerAndReopensAfterRestart(t *testing.T) {
+	h, api := issueHarness(t)
+	withComments(h)
+	original := "## Done when\n- PRIVATE first\n- PRIVATE removed\n- PRIVATE last"
+	api.issue.Description = original
+	h.k.goal = goalReply(`{"criteria":[{"criterion":1,"verdict":"met"},{"criterion":2,"verdict":"not_met"},{"criterion":3,"verdict":"met"}],"overall":"met"}`)
+	e, ctx, stop := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	id := "HOME-58:goal:criterion-2"
+	st, _ := LoadState(h.gh.check(shaA).Text)
+	if len(st.Blocking) != 1 || st.Blocking[0].ID != id {
+		t.Fatalf("initial goal findings: %+v", st.Blocking)
+	}
+	stop()
+
+	// Reconstruct the service from stored state. Reordering the remaining
+	// items must not turn criterion 2 into a different, passing criterion.
+	api.issue.Description = "## Done when\n- PRIVATE last\n- PRIVATE first"
+	h.k.goal = "PRIVATE invalid answer"
+	e, ctx, stop = h.start()
+	e.Tick(ctx)
+	task = runReview(t, h, e, ctx, 7, shaA)
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	st, _ = LoadState(h.gh.check(shaA).Text)
+	if h.gh.check(shaA).Conclusion != ConclusionFailure ||
+		!slices.ContainsFunc(st.Blocking, func(f Finding) bool { return f.ID == id }) || len(st.GoalClosed) != 0 {
+		t.Fatal("removal cleared the blocker without a valid current answer")
+	}
+
+	// A new evidence snapshot permits another goal answer on the same head.
+	api.issue.Title += " PRIVATE clarification"
+	h.k.goal = goalReply(`{"criteria":[{"criterion":1,"verdict":"met"},{"criterion":2,"verdict":"met"}],"overall":"met"}`)
+	e.Tick(ctx)
+	task = runReview(t, h, e, ctx, 7, shaA)
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	st, _ = LoadState(h.gh.check(shaA).Text)
+	if h.gh.check(shaA).Conclusion != ConclusionSuccess || st.Goal == nil ||
+		len(st.Goal.Criteria) != 2 || st.Goal.Criteria[0].Criterion != 3 || st.Goal.Criteria[1].Criterion != 1 ||
+		len(st.GoalClosed) != 1 || st.GoalClosed[0] != (GoalClosure{ID: id, Severity: SeverityMedium}) {
+		t.Fatalf("removed criterion was not conditionally resolved: %+v", st)
+	}
+	if out := published(t, h); strings.Contains(out, "PRIVATE") || !strings.Contains(out, "no longer contains criterion 2") {
+		t.Fatalf("removal published private text or lost the evidence note: %s", out)
+	}
+	stop()
+
+	// Reintroducing the criterion after another restart restores the original
+	// blocker. Neither the earlier pass nor a model omission can hide it.
+	api.issue.Description = original
+	e, ctx, _ = h.start()
+	e.Tick(ctx)
+	if h.gh.check(shaA).Conclusion == ConclusionSuccess {
+		t.Fatal("restored criterion retained the old pass")
+	}
+	task = runReview(t, h, e, ctx, 7, shaA)
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	st, _ = LoadState(h.gh.check(shaA).Text)
+	if h.gh.check(shaA).Conclusion != ConclusionFailure ||
+		!slices.ContainsFunc(st.Blocking, func(f Finding) bool { return f.ID == id && f.Severity == SeverityMedium }) {
+		t.Fatal("model omission lost the restored criterion's original blocker")
 	}
 }
 
@@ -240,7 +350,7 @@ func TestCriteriaBoundsAndKeyRotationCannotProveRemoval(t *testing.T) {
 				history[0].Criteria = make([]string, maxGoalHistory)
 			}
 			after := e.issueContext(context.Background(), b, pr, nil, history)
-			if after.CriteriaKnown || len(after.Findings) == 0 || goalResolved("HOME-58:goal:criterion-1", "HOME-58", nil, after) != "" {
+			if after.CriteriaKnown || len(after.Findings) == 0 || goalResolved("HOME-58:goal:criterion-1", "HOME-58", &GoalCheck{Overall: goalMet}, after) != "" {
 				t.Fatal("unverifiable inventory proved removal")
 			}
 		})
@@ -248,7 +358,7 @@ func TestCriteriaBoundsAndKeyRotationCannotProveRemoval(t *testing.T) {
 }
 
 func TestIssueSwitchRequiresRetirementOrTrustedDecision(t *testing.T) {
-	for _, name := range []string{"open", "canceled", "completed", "duplicate", "inward duplicate", "trusted decision", "untrusted decision", "edited decision", "missing", "read failure"} {
+	for _, name := range []string{"open", "canceled", "completed", "duplicate", "inward duplicate", "unrelated duplicate", "wrong duplicate id", "trusted decision", "untrusted decision", "edited decision", "missing", "read failure"} {
 		t.Run(name, func(t *testing.T) {
 			e, b, api, pr := issueSetup()
 			old := &itsaplan.Issue{ID: 96, ProjectID: 3, Identifier: "HOME-57", ColumnID: 2}
@@ -258,10 +368,16 @@ func TestIssueSwitchRequiresRetirementOrTrustedDecision(t *testing.T) {
 			switch name {
 			case "canceled", "completed":
 				api.project.Columns[0].StateType = name
-			case "duplicate", "inward duplicate":
+			case "duplicate", "inward duplicate", "unrelated duplicate", "wrong duplicate id":
 				old.Links = []itsaplan.IssueLink{{Kind: "duplicates", Direction: "outward", Issue: itsaplan.IssueRef{ID: 95, Identifier: "HOME-58"}}}
 				if name == "inward duplicate" {
 					old.Links[0].Direction = "inward"
+				}
+				if name == "unrelated duplicate" {
+					old.Links[0].Issue.Identifier = "HOME-99"
+				}
+				if name == "wrong duplicate id" {
+					old.Links[0].Issue.ID = 999
 				}
 			case "untrusted decision":
 				api.comments[1].ActorUserID = "bot"
@@ -292,6 +408,9 @@ func TestIssueSwitchRequiresRetirementOrTrustedDecision(t *testing.T) {
 				note := goalResolved(id, "HOME-58", g, in)
 				if (note != "") != want || strings.Contains(note, "PRIVATE") {
 					t.Fatalf("resolution %s: %q", id, note)
+				}
+				if goalResolved(id, "HOME-58", nil, in) != "" {
+					t.Fatal("switch resolved a finding without a valid current answer")
 				}
 			}
 			if (len(in.Pending) > 0) != (name == "read failure") {

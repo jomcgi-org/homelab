@@ -44,13 +44,14 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   number. Any other field or value voids it. The service writes every
   public word from those values, with finding IDs from the issue key and
   criterion number, and a parse failure shows only a fixed class. An
-  earlier goal finding stays open until a valid answer resolves it, the
-  service proves its criterion was removed, or evidence authorizes an
-  issue switch. A switch requires a verified trusted decision or an earlier
-  issue marked canceled or duplicate. Conditional resolutions are checked
-  again on each review. These paths replace the same-issue-only rule with
+  earlier goal finding stays open until a valid current answer resolves it,
+  with a service inventory additionally required for criterion removal and
+  verified evidence for an issue switch. A switch requires a trusted
+  decision, an earlier issue marked canceled, or an outward duplicate link
+  whose key and ID match the corrected issue. Conditional resolutions are
+  checked again on each review. These paths replace the same-issue-only rule with
   `TestOwnedCriterionWithdrawsEarlierMediumWithServiceText`,
-  `TestServiceCriteriaPreserveIdentityAcrossRemovalAndRestart` and
+  `TestRemovedCriterionRequiresCurrentAnswerAndReopensAfterRestart` and
   `TestIssueSwitchRequiresRetirementOrTrustedDecision` in the reviewer suite.
   The goal check's reasons stay private: only the connector
   reads them from the reviewer's internal listener, posts them on the issue

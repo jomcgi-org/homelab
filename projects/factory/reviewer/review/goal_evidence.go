@@ -231,7 +231,7 @@ func (e *Engine) followUps(ctx context.Context, b *Binding, p *itsaplan.Project,
 	}
 }
 
-func (e *Engine) issueSwitches(ctx context.Context, b *Binding, p *itsaplan.Project, in *IssueContext) {
+func (e *Engine) issueSwitches(ctx context.Context, b *Binding, p *itsaplan.Project, goal *itsaplan.Issue, in *IssueContext) {
 	for _, h := range in.History {
 		if h.Key == in.Issue.Key {
 			continue
@@ -248,7 +248,8 @@ func (e *Engine) issueSwitches(ctx context.Context, b *Binding, p *itsaplan.Proj
 			}
 			s.Retired = ok && s.Column.StateType == "canceled"
 			for _, link := range i.Links {
-				if link.Kind == "duplicates" && link.Direction == "outward" && link.Issue.ID > 0 && link.Issue.Identifier != h.Key && issueNumber(link.Issue.Identifier, b.ItsaplanProject) > 0 {
+				if link.Kind == "duplicates" && link.Direction == "outward" && link.Issue.ID > 0 &&
+					link.Issue.ID == goal.ID && link.Issue.Identifier == goal.Identifier {
 					s.Duplicates = append(s.Duplicates, link)
 					s.Retired = true
 				}

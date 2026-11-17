@@ -294,11 +294,12 @@ func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck, co
 }
 
 // goalResolved says how a valid answer resolves an earlier goal finding that
-// it does not report again, or "" when nothing does. Service inventories
-// prove removal; tracker retirement or a trusted decision permits a switch.
-// Model omission and a changed PR reference alone prove neither.
+// it does not report again, or "" when nothing does. Every resolution needs
+// a valid current answer. A service inventory additionally proves removal;
+// tracker retirement or a trusted decision permits a switch. Model omission
+// and a changed PR reference alone prove neither.
 func goalResolved(id, key string, g *GoalCheck, contexts ...*IssueContext) string {
-	if key == "" {
+	if key == "" || g == nil {
 		return ""
 	}
 	issue, rest, _ := strings.Cut(id, ":goal")
@@ -311,13 +312,11 @@ func goalResolved(id, key string, g *GoalCheck, contexts ...*IssueContext) strin
 			if s.Retired {
 				return "The service verified that the earlier goal issue is canceled or marked as a duplicate."
 			}
-			if g != nil {
-				for _, v := range g.Switches {
-					if v.Issue == n+1 && v.Decision > 0 && v.Decision <= len(in.Decisions) {
-						d := in.Decisions[v.Decision-1]
-						if d.Exists && d.Trusted && !d.Clipped {
-							return "A verified trusted decision authorizes the corrected goal issue reference."
-						}
+			for _, v := range g.Switches {
+				if v.Issue == n+1 && v.Decision > 0 && v.Decision <= len(in.Decisions) {
+					d := in.Decisions[v.Decision-1]
+					if d.Exists && d.Trusted && !d.Clipped {
+						return "A verified trusted decision authorizes the corrected goal issue reference."
 					}
 				}
 			}
@@ -331,9 +330,6 @@ func goalResolved(id, key string, g *GoalCheck, contexts ...*IssueContext) strin
 				return "The service verified that the issue no longer contains criterion " + strconv.Itoa(n) + "."
 			}
 		}
-	}
-	if g == nil {
-		return ""
 	}
 	if rest == "" {
 		if g.Overall != goalMet {
