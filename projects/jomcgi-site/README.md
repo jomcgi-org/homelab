@@ -6,9 +6,9 @@ Serving costs nothing, a crawler cannot cause per-request charges, and no
 public request reaches a cluster. Sections move here one path at a time.
 
 ```
-web/ (Astryx pages) ──vite──► dist ─┐
-wrangler/ (pinned CLI) ─────────────┼─► image ─► Argo CD Sync hook Job ─► wrangler deploy --env <stage>
-wrangler.jsonc ─────────────────────┘
+web/ (Astryx pages) ──vite, pre-render──► dist ──┐
+wrangler/ (pinned CLI) ──────────────────────────┼─► image ─► Argo CD Sync hook Job ─► wrangler deploy --env <stage>
+wrangler.jsonc ──────────────────────────────────┘
   dev  → Worker jomcgi-site-dev on next.jomcgi.dev
   prod → Worker jomcgi-site on the jomcgi.dev routes in wrangler.jsonc
 ```
@@ -30,6 +30,12 @@ wrangler.jsonc ─────────────────────�
   its current jomcgi.dev page until it goes live here. Setting `live: true` in
   `src/sections.ts` and adding the prefix to the prod `routes` in
   `wrangler.jsonc` moves it. Removing the route rolls it back.
+- **Pre-render.** `build.mjs` runs the Vite build, then renders each page
+  with React at build time into its HTML entry, in place of `<!--ssr-->`.
+  A page reads fully, with its preview tags, before any script runs, and the
+  browser hydrates the same tree (`src/root.tsx`). `:prerendered_test` fails a
+  built page whose root is empty, and a unit test fails a page whose
+  hydration does not match its HTML. Each entry imports only its own page.
 - **Caching.** `/assets/*` files are named by content hash and cached forever.
   A deploy serves new files at once, so routine releases need no cache purge.
 - **Performance.** Each page's initial JavaScript must stay under 150 KiB

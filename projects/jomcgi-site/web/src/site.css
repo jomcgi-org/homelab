@@ -76,3 +76,87 @@
     padding: var(--spacing-3);
   }
 }
+
+/* CV (cv.html) */
+.cv-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-3);
+}
+
+.cv-contact,
+.cv-index,
+.cv-tags {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-3);
+}
+
+.cv-contact a,
+.cv-index a {
+  color: var(--color-text-accent);
+  text-underline-offset: 0.2em;
+}
+
+.cv-tags li {
+  padding: 0 var(--spacing-3);
+  border: 1px solid var(--color-border);
+  font-size: 0.875rem;
+}
+
+.cv-job {
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--spacing-4);
+}
+
+.cv-job-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spacing-3);
+}
+
+.cv-dates,
+.cv-role {
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+.cv-bullets {
+  margin: 0;
+  padding-left: var(--spacing-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-3);
+}
+
+.cv-skills {
+  margin: 0;
+  display: grid;
+  gap: var(--spacing-4);
+}
+
+.cv-skills > div {
+  display: grid;
+  grid-template-columns: minmax(10rem, 14rem) 1fr;
+  gap: var(--spacing-4);
+}
+
+.cv-skills dt {
+  font-weight: 600;
+}
+
+.cv-skills dd {
+  margin: 0;
+}
+
+@media (max-width: 40rem) {
+  .cv-skills > div {
+    grid-template-columns: 1fr;
+    gap: var(--spacing-3);
+  }
+}

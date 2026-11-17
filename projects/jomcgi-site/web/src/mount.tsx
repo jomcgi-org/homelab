@@ -3,15 +3,11 @@ import "@astryxdesign/core/astryx.css";
 import "@astryxdesign/theme-neutral/theme.css";
 import "./palette.css";
 import "./site.css";
-import { StrictMode, type ReactNode } from "react";
-import { createRoot } from "react-dom/client";
-import { Theme } from "@astryxdesign/core/theme";
-import { neutralTheme } from "@astryxdesign/theme-neutral/built";
+import type { ReactNode } from "react";
+import { hydrateRoot } from "react-dom/client";
+import { Root } from "./root";
 
+/** Hydrates the HTML that build.mjs rendered from the same page. */
 export function mount(page: ReactNode) {
-  createRoot(document.getElementById("root")!).render(
-    <StrictMode>
-      <Theme theme={neutralTheme}>{page}</Theme>
-    </StrictMode>,
-  );
+  hydrateRoot(document.getElementById("root")!, <Root>{page}</Root>);
 }

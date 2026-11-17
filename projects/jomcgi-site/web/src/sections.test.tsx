@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { GROUPS, ORIGIN, SECTIONS, hrefFor, sectionsIn } from "./sections";
 
@@ -23,16 +22,6 @@ describe("URL contract", () => {
       expect(hrefFor(section)).toBe(
         section.live ? section.path : `${ORIGIN}${section.legacy}`,
       );
-    }
-  });
-
-  it("paints the same links in the static HTML before JavaScript runs", () => {
-    for (const page of ["index.html", "404.html"]) {
-      const html = readFileSync(page, "utf8");
-      const links = [...html.matchAll(/<nav[\s\S]*?<\/nav>/g)]
-        .flatMap(([nav]) => [...nav.matchAll(/href="([^"]+)"/g)])
-        .map((match) => match[1]);
-      expect(links).toEqual(SECTIONS.map(hrefFor));
     }
   });
 });
