@@ -218,7 +218,9 @@ func TestActivationAssessmentSurvivesBoundedStateAndSessionUpdate(t *testing.T) 
 	step := &github.ActivationAssessment{HeadSHA: shaA, Text: strings.Repeat("x", github.MaxActivationAssessment)}
 	goal := &GoalCheck{Head: shaA, Digest: "evidence", Overall: goalMet, Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalMet}}}
 	scan := &SemgrepStamp{Digest: strings.Repeat("d", 64), NoReport: true}
-	st := State{Activation: step, Goal: goal, Semgrep: scan}
+	decision := DecisionStamp{Finding: "prior.go:rollout", ID: 42, Hash: strings.Repeat("d", 64)}
+	st := stateOf(Assessment{Carried: []DecisionStamp{decision}}, &Report{ActivationHead: shaA, Activation: step.Text}, nil)
+	st.Goal, st.Semgrep = goal, scan
 	for i := range 80 {
 		st.Blocking = append(st.Blocking, Finding{
 			ID: fmt.Sprintf("f%d:correctness", i), Severity: SeverityHigh,
@@ -238,6 +240,9 @@ func TestActivationAssessmentSurvivesBoundedStateAndSessionUpdate(t *testing.T) 
 	}
 	if got.Semgrep == nil || *got.Semgrep != *scan {
 		t.Fatalf("lost Semgrep gate: %+v", got.Semgrep)
+	}
+	if len(got.Decisions) != 1 || got.Decisions[0] != decision {
+		t.Fatalf("lost decision evidence: %+v", got.Decisions)
 	}
 }
 
