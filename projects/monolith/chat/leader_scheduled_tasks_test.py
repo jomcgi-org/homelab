@@ -76,8 +76,8 @@ async def test_gateway_off_logs_in_over_rest_and_still_drains():
     try:
         bot.login.assert_awaited_once_with("test-token")
         bot.start.assert_not_awaited()
-        # The outbox drain and the scheduler run. Nothing stores new channel
-        # messages without the gateway, so digests read Discord over REST.
+        # The outbox drain and the scheduler run; digests read Discord over
+        # REST, so they do not depend on the gateway storing messages.
         assert outbox_drain.await_count == 1
         assert scheduler.await_count == 1
         assert scheduler.await_args.kwargs["digest_builder"] is not None
@@ -98,7 +98,7 @@ async def test_gateway_on_by_default_connects_and_sweeps_locks():
         bot.start.assert_awaited_once_with("test-token")
         bot.login.assert_not_awaited()
         assert scheduler.await_count == 1
-        assert scheduler.await_args.kwargs["digest_builder"] is None
+        assert scheduler.await_args.kwargs["digest_builder"] is not None
         assert len(tasks) == 4
         ready = outbox_drain.await_args.kwargs["ready"]
         bot.user = MagicMock()
