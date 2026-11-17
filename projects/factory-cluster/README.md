@@ -776,6 +776,24 @@ curl -s -X POST -H 'Content-Type: application/json' http://localhost:9093/api/v2
 | --- | --- |
 | `NodeDiskFilling` | A node's root filesystem is more than 75% full for 15 min. Image garbage collection starts at 85% and the kubelet evicts pods at 90% |
 | `KagentSuspendTimedOut` | A `SuspendActor` call passed kagent's fixed 30 s deadline. Each scrape (30 s) that shows more timeouts sends one message with the count, so two timeouts in one scrape give one message. The alert ends an hour later and sends nothing then |
+| `FactoryCodexQuotaLow` | A Codex grant has used 90% or more of a quota window for 5 min |
+| `FactoryCodexQuotaExhausted` | A Codex grant is out of quota for 5 min. Coder and review turns fail until a person resets the plan or changes the account. The message gives the window's reset time |
+| `FactoryCodexGrantNotReady` | A Codex grant is in a state other than `ready` (`login_required`, `refresh_blocked`, `error` or `missing`) for 10 min |
+| `FactoryCodexQuotaReadingStale` | The broker has not read the Codex quota for more than 2 h, for 15 min, so the quota alerts could not fire |
+
+**FactoryCodexQuotaLow, FactoryCodexQuotaExhausted.** Read the grant's usage
+on the broker's metrics: `factory_broker_grant_quota_used_percent` and
+`factory_broker_quota_resets_at_seconds` (Prometheus, port-forward
+`svc/prometheus` 9090). A person resets the plan or logs the broker in to
+another account (`projects/factory/broker`, device login). Coder turns that
+hung on HTTP 429 may need `connector cancel` afterwards.
+
+**FactoryCodexGrantNotReady.** Log the broker in again with its device login
+(`projects/factory/broker`). `refresh_blocked` means a refresh token was
+reused; see the broker's logs first.
+
+**FactoryCodexQuotaReadingStale.** Check the broker's usage reads
+(`factory_broker_codex_usage_refresh_total` by outcome) and its logs.
 
 **NodeDiskFilling.** Find the largest directories with
 `ssh node-N 'sudo du -xh --max-depth=3 / | sort -h | tail -20'`. The usual
