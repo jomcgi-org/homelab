@@ -1926,6 +1926,16 @@ The PR comment explains the check. Ruleset 9180009 requires the check
 from reviewer App 5758326 alongside `pr-checks`.
 [Required-check decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6882698416)
 
+- **Review order (HOME-220).** Running reviews retain their slots. The poller
+  reattaches in-progress checks before starting new reviews. Within each
+  `enqueueAuthors` priority, new starts use the time this process first saw
+  the current head need a review, oldest first. It records all candidates
+  even while slots are full. Metadata updates to an eligible PR preserve
+  that wait; a changed head or a successful start resets it. PR number breaks ties within
+  one poll. Waiting times are in memory and begin again after a restart.
+  This prevents later updates from repeatedly overtaking an untouched head
+  ([HOME-220](https://factory-plan.jomcgi.dev/factory/issue/HOME-220)).
+
 For issue-backed reviews, the service verifies the provenance of decision
 evidence. Only the goal assessment receives private issue text. Its public
 result uses fixed wording. The connector owns feedback to the delivery

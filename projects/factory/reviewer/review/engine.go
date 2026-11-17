@@ -209,6 +209,7 @@ type Engine struct {
 	// Only the polling goroutine uses these.
 	groups       map[string]string    // merge group commit: the conclusion of its review check
 	enqueueAfter map[string]time.Time // repo#pr@sha: next enqueue attempt after a failure
+	waiting      map[prKey]*waitingHead
 
 	// Under mu: each binding's last session sweep, and whether one runs.
 	swept    map[string]time.Time
@@ -219,6 +220,14 @@ type Engine struct {
 type headKey struct {
 	binding string
 	sha     string
+}
+
+// waitingHead records when a current head first needed a new review in this
+// process. PR metadata updates cannot change its place in the queue.
+type waitingHead struct {
+	sha      string
+	since    time.Time
+	unlisted int
 }
 
 type heldContext struct {
@@ -348,7 +357,7 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 	return &Engine{
 		cfg: cfg, gh: gh, tasks: tasks, m: m, log: log, rules: rules, epoch: rand.Text(),
 		inflight: map[headKey]*running{}, pendingHolds: map[headKey]*github.CheckRun{}, contexts: map[string]*heldContext{}, recoveries: map[prKey]recovery{},
-		groups: map[string]string{}, enqueueAfter: map[string]time.Time{},
+		groups: map[string]string{}, enqueueAfter: map[string]time.Time{}, waiting: map[prKey]*waitingHead{},
 		heads: map[prKey]string{}, comments: map[prKey]*commentState{}, commentLimits: map[prKey]bool{}, commentReplays: map[prKey]int64{},
 		swept: map[string]time.Time{}, sweeping: map[string]bool{},
 	}
@@ -479,6 +488,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			// A cancelled review is no review: the head is current again.
 			start = append(start, candidate{pr, nil})
 		case run.Status != "completed":
+			delete(e.waiting, prKey{b.Name, pr.Number})
 			attach = append(attach, candidate{pr, run})
 		case unread:
 			reviews[pr.Number] = nil // An unconfirmed decision must not let a pass enqueue.
@@ -529,6 +539,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 				}
 				continue
 			}
+			delete(e.waiting, prKey{b.Name, pr.Number})
 			cur, held := e.reconcileGate(ctx, b, pr, cur)
 			// A failed write returns nil; do not refetch the stale pass.
 			reviews[pr.Number] = cur
@@ -538,6 +549,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			e.replayComment(ctx, b, pr, reviews[pr.Number])
 		}
 	}
+	e.prioritizeStarts(b, prs, start, complete)
 	// Reviews already in progress (after a restart) go before new heads.
 	waiting := append(attach, start...)
 	for i, c := range waiting {
@@ -672,8 +684,9 @@ func (e *Engine) rememberHold(key headKey, prev *github.CheckRun, o Outcome) {
 	e.mu.Unlock()
 }
 
-// prioritize orders a listing for the review slots: PRs whose authors the
-// binding enqueues first, then the most recently updated.
+// prioritize preserves reconciliation and reattachment order: authors the
+// binding enqueues first, then the most recently updated. New review starts
+// have their own wait order in prioritizeStarts.
 func prioritize(b *Binding, prs []github.PullRequest) {
 	sort.SliceStable(prs, func(i, j int) bool {
 		ei, ej := containsFold(b.EnqueueAuthors, prs[i].Author), containsFold(b.EnqueueAuthors, prs[j].Author)
@@ -681,6 +694,55 @@ func prioritize(b *Binding, prs []github.PullRequest) {
 			return ei
 		}
 		return prs[i].UpdatedAt.After(prs[j].UpdatedAt)
+	})
+}
+
+// prioritizeStarts registers every candidate before any slot is taken, even
+// when all slots are full. Within an author priority, the oldest wait wins;
+// heads first seen in the same poll use PR number as a stable tie breaker.
+func (e *Engine) prioritizeStarts(b *Binding, prs []github.PullRequest, start []candidate, complete bool) {
+	listed := make(map[int]github.PullRequest, len(prs))
+	for _, pr := range prs {
+		listed[pr.Number] = pr
+	}
+	for key, w := range e.waiting {
+		if key.binding != b.Name {
+			continue
+		}
+		pr, ok := listed[key.number]
+		if !ok {
+			// A page shift can omit an open PR from one complete listing.
+			if complete {
+				w.unlisted++
+				if w.unlisted >= closedAfter {
+					delete(e.waiting, key)
+				}
+			}
+			continue
+		}
+		w.unlisted = 0
+		if pr.HeadSHA != w.sha || pr.BaseRef != b.BaseBranch || pr.Draft || b.skipped(&pr) {
+			delete(e.waiting, key)
+		}
+	}
+	now := e.cfg.Now()
+	for _, c := range start {
+		key := prKey{b.Name, c.pr.Number}
+		if e.waiting[key] == nil {
+			e.waiting[key] = &waitingHead{sha: c.pr.HeadSHA, since: now}
+		}
+	}
+	sort.Slice(start, func(i, j int) bool {
+		pi, pj := start[i].pr, start[j].pr
+		ei, ej := containsFold(b.EnqueueAuthors, pi.Author), containsFold(b.EnqueueAuthors, pj.Author)
+		if ei != ej {
+			return ei
+		}
+		wi, wj := e.waiting[prKey{b.Name, pi.Number}], e.waiting[prKey{b.Name, pj.Number}]
+		if !wi.since.Equal(wj.since) {
+			return wi.since.Before(wj.since)
+		}
+		return pi.Number < pj.Number
 	})
 }
 
@@ -1054,6 +1116,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		l.InfoContext(ctx, "re-attaching to an in-progress review", "check_run", run.ID)
 	}
 	e.m.ReviewsStarted.WithLabelValues(b.Name, kind).Inc()
+	delete(e.waiting, prKey{b.Name, pr.Number})
 	e.wg.Add(1)
 	go func() {
 		defer close(r.done)

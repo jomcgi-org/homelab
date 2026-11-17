@@ -736,7 +736,7 @@ func TestConcurrencyCapsReviewsInFlight(t *testing.T) {
 
 // TestListingIsPagedAndPrioritized lists 120 PRs: the one whose author the
 // binding enqueues sits on the second page and takes the only slot first,
-// then the most recently updated.
+// then PR number breaks the tie between heads first seen in the same poll.
 func TestListingIsPagedAndPrioritized(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.Concurrency = 1
@@ -756,8 +756,113 @@ func TestListingIsPagedAndPrioritized(t *testing.T) {
 	eventually(t, "a free slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
 	e.Tick(ctx)
 	eventually(t, "the second task", func() bool { return len(h.k.sent()) == 2 })
-	if !strings.Contains(h.k.sent()[1].MessageID, "/120/") {
-		t.Fatalf("second review = %s, want the most recently updated PR 120", h.k.sent()[1].MessageID)
+	if !strings.Contains(h.k.sent()[1].MessageID, "/1/") {
+		t.Fatalf("second review = %s, want PR 1 among heads with equal waits", h.k.sent()[1].MessageID)
+	}
+}
+
+func TestWaitingHeadStartsBeforeUpdatedPRs(t *testing.T) {
+	for _, updateWaiting := range []bool{false, true} {
+		t.Run(fmt.Sprintf("update_waiting=%t", updateWaiting), func(t *testing.T) {
+			h := newHarness(t)
+			h.cfg.Concurrency = 1
+			h.cfg.Bindings[0].EnqueueAuthors = nil
+			addPR7(h)
+			e, ctx, _ := h.start()
+			running := runReview(t, h, e, ctx, 7, shaA)
+			base := time.Now().UTC().Truncate(time.Second)
+			waiting := strings.Repeat("b", 40)
+			h.gh.addPR(&fakePR{Number: 20, Head: waiting, Updated: base})
+			e.Tick(ctx)
+
+			// Keep the only slot occupied for several polls. Each poll brings
+			// a new head, with a lower PR number and a more recent update.
+			for n := 1; n <= 3; n++ {
+				h.gh.addPR(&fakePR{Number: n, Head: fmt.Sprintf("%040d", n), Updated: base.Add(time.Duration(n) * time.Minute)})
+				if updateWaiting {
+					h.gh.withLock(func() { h.gh.prs[20].Updated = base.Add(time.Duration(n+10) * time.Minute) })
+				}
+				e.Tick(ctx)
+				if h.gh.checkCount() != 1 || len(h.k.sent()) != 1 {
+					t.Fatal("a waiting head started while the review slot was full")
+				}
+			}
+			if _, cancels := h.k.state(); len(cancels) != 0 {
+				t.Fatalf("waiting heads cancelled the running review: %v", cancels)
+			}
+
+			h.k.finish(running, kagent.StateCompleted, report(t, passing))
+			eventually(t, "a free slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			e.Tick(ctx)
+			eventually(t, "the longest-waiting head", func() bool { return h.taskOn(20, waiting, 1) != "" })
+			for n := 1; n <= 3; n++ {
+				if c := h.gh.check(fmt.Sprintf("%040d", n)); c != nil {
+					t.Fatalf("PR %d overtook the waiting head: %+v", n, c)
+				}
+			}
+		})
+	}
+}
+
+func TestNewHeadResetsReviewWait(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Concurrency = 1
+	h.cfg.Bindings[0].EnqueueAuthors = nil
+	addPR7(h)
+	e, ctx, _ := h.start()
+	running := runReview(t, h, e, ctx, 7, shaA)
+	oldHead, newHead, waiting := strings.Repeat("b", 40), strings.Repeat("c", 40), strings.Repeat("d", 40)
+	h.gh.addPR(&fakePR{Number: 1, Head: oldHead})
+	e.Tick(ctx)
+	h.gh.addPR(&fakePR{Number: 20, Head: waiting})
+	e.Tick(ctx)
+	h.gh.push(1, newHead)
+	e.Tick(ctx)
+
+	h.k.finish(running, kagent.StateCompleted, report(t, passing))
+	eventually(t, "a free slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	e.Tick(ctx)
+	eventually(t, "the head waiting before the push", func() bool { return h.taskOn(20, waiting, 1) != "" })
+	if h.gh.check(oldHead) != nil || h.gh.check(newHead) != nil {
+		t.Fatal("a replacement head inherited the previous head's wait")
+	}
+}
+
+func TestReattachmentsKeepOrderBeforeWaitingHeads(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Bindings[0].EnqueueAuthors = nil
+	older, newer, waiting := strings.Repeat("b", 40), strings.Repeat("c", 40), strings.Repeat("d", 40)
+	base := time.Now().UTC().Truncate(time.Second)
+	h.gh.addPR(&fakePR{Number: 10, Head: older, Updated: base})
+	h.gh.addPR(&fakePR{Number: 20, Head: newer, Updated: base.Add(time.Minute)})
+	e1, ctx1, stop1 := h.start()
+	e1.Tick(ctx1)
+	eventually(t, "both recorded tasks", func() bool {
+		return h.taskOn(10, older, 1) != "" && h.taskOn(20, newer, 1) != "" &&
+			RecordedTask(h.gh.check(older).Summary).ID != "" && RecordedTask(h.gh.check(newer).Summary).ID != ""
+	})
+	stop1()
+	h.cfg.Concurrency = 1
+	h.gh.addPR(&fakePR{Number: 1, Head: waiting, Updated: base.Add(2 * time.Minute)})
+	e2, ctx2, _ := h.start()
+	for range 3 {
+		e2.Tick(ctx2)
+	}
+	if !e2.isRunning(headKey{"homelab", newer}) || e2.isRunning(headKey{"homelab", older}) || h.gh.check(waiting) != nil {
+		t.Fatal("reattachment did not keep the previous newest-update order ahead of new starts")
+	}
+	h.k.finish(h.taskOn(20, newer, 1), kagent.StateCompleted, report(t, passing))
+	eventually(t, "the first resumed slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	e2.Tick(ctx2)
+	if !e2.isRunning(headKey{"homelab", older}) || h.gh.check(waiting) != nil {
+		t.Fatal("a waiting head overtook the second reattachment")
+	}
+	h.k.finish(h.taskOn(10, older, 1), kagent.StateCompleted, report(t, passing))
+	eventually(t, "the second resumed slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	e2.Tick(ctx2)
+	eventually(t, "the new head after reattachments", func() bool { return h.taskOn(1, waiting, 1) != "" })
+	if executions, _ := h.k.state(); executions != 3 {
+		t.Fatalf("executions = %d, want the two resumed tasks and one new task", executions)
 	}
 }
 
