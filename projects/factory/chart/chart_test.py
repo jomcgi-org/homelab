@@ -1058,6 +1058,19 @@ def test_discord_bridge_reaches_only_discord_its_memory_and_its_agent() -> None:
     ]
     (token,) = volumes["kagent"]["projected"]["sources"]
     assert token["serviceAccountToken"]["audience"] == "kagent-invocation"
+    mounts = {m["name"]: (m["mountPath"], m["readOnly"]) for m in c["volumeMounts"]}
+    assert mounts == {
+        "discord": ("/var/run/secrets/discord", True),
+        "hindsight": ("/var/run/secrets/hindsight", True),
+        "kagent": ("/var/run/secrets/kagent", True),
+        "policy": ("/etc/discord-bridge", True),
+    }
+    # Each file the bridge reads is a mounted key.
+    assert env["DISCORD_TOKEN_FILE"] == "/var/run/secrets/discord/token"
+    assert env["HINDSIGHT_KEY_FILE"] == "/var/run/secrets/hindsight/tenant-api-key"
+    assert env["KAGENT_TOKEN_FILE"] == "/var/run/secrets/kagent/token"
+    assert env["DISCORD_POLICY_FILE"] == "/etc/discord-bridge/policy.json"
+    assert c["securityContext"]["readOnlyRootFilesystem"] is True
     policy = _in(docs, "ConfigMap", ns, "discord-bridge-policy")
     parsed = yaml.safe_load(policy["data"]["policy.json"])
     assert parsed["guilds"] == {"123": {"channels": ["456"]}}
@@ -1076,6 +1089,11 @@ def test_discord_bridge_reaches_only_discord_its_memory_and_its_agent() -> None:
         for e in rule.get("toEndpoints", [])
     ]
     assert peers == ["hindsight-discord", "kagent"]
+    ports = [
+        [p["port"] for to in rule["toPorts"] for p in to["ports"]]
+        for rule in egress["egress"]
+    ]
+    assert ports == [["443"], ["8888"], ["8083"]]
     controller = _in(docs, "CiliumNetworkPolicy", "kagent", "kagent-controller")
     admitted = [
         m["matchLabels"] for m in controller["spec"]["ingress"][0]["fromEndpoints"]
@@ -1097,6 +1115,18 @@ def test_discord_is_off_by_default_and_checks_its_wiring() -> None:
         _render(["discord.bridge.enabled=true"])
     with pytest.raises(RuntimeError, match="kagent.rbac.namespaces"):
         _render(["discord.agent.enabled=true"])
+    # The Agent's namespace is its own, and its runtime matches every other.
+    for namespace in ("factory-discord", "kagent", "factory"):
+        with pytest.raises(RuntimeError, match="must be the Discord Agent's alone"):
+            _render(
+                [
+                    "discord.agent.enabled=true",
+                    f"discord.agent.namespace={namespace}",
+                    f"kagent.rbac.namespaces={{kagent,factory-r-homelab,{namespace}}}",
+                ]
+            )
+    with pytest.raises(RuntimeError, match="resources must equal"):
+        _render(_DISCORD[:1] + _DISCORD[2:3] + ["discord.agent.resources.memory=1Gi"])
     # A bare channel ID is a float to Helm and would lose digits.
     with pytest.raises(RuntimeError, match="quote each channel ID"):
         _render(

@@ -216,6 +216,15 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+    # The Discord bot's model calls (factory chart `discord.agent`), with the
+    # dedicated OpenRouter key the gateway injects. kagent admits this origin
+    # only for actors whose ModelConfig names it.
+    - toFQDNs:
+        - matchName: openrouter.ai
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
     # Public tool downloads for a binding with `toolchain: homelab`, matching
     # the factory chart's EgressPolicy homelab-tools, which admits them per
     # actor. No credential is injected on these origins.
