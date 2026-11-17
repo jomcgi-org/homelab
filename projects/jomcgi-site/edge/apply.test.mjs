@@ -350,6 +350,15 @@ test("a live rule with an unknown top-level setting is a difference", () => {
   );
 });
 
+test("registering prod with routes off on today's zone writes nothing", async () => {
+  // cache-rules.json equals the live entrypoint (LIVE), and routes are off,
+  // so the first prod sync needs no write permission at all.
+  const zone = fakeZone({ rules: LIVE });
+  const log = await apply(zone.call, ROUTES, RULES, { serveRoutes: false });
+  assert.deepEqual(zone.state.writes, []);
+  assert.deepEqual(log, ["no change", "read-back matches the files"]);
+});
+
 test("writes the rules when the entrypoint does not exist yet", async () => {
   const zone = fakeZone({ rules: null, extra: { ref: "r" } });
   await apply(zone.call, ROUTES, RULES);
@@ -362,7 +371,7 @@ test("writes the rules when the entrypoint does not exist yet", async () => {
 });
 
 test("fails when the read-back does not match", async () => {
-  const zone = fakeZone({ rules: [MONOLITH], dropOnPut: true });
+  const zone = fakeZone({ rules: [], dropOnPut: true });
   await assert.rejects(
     apply(zone.call, ROUTES, RULES),
     /read-back does not match/,
@@ -370,7 +379,7 @@ test("fails when the read-back does not match", async () => {
 });
 
 test("a dry run plans and writes nothing", async () => {
-  const zone = fakeZone({ rules: [MONOLITH] });
+  const zone = fakeZone({ rules: [] });
   const log = await apply(zone.call, ROUTES, RULES, { dryRun: true });
   assert.deepEqual(zone.state.writes, []);
   assert.ok(log.includes(`create route jomcgi.dev/cv* -> ${SCRIPT}`));
@@ -380,7 +389,7 @@ test("a dry run plans and writes nothing", async () => {
 test("a dry run that a route conflict would block writes nothing and fails with the plan", async () => {
   const zone = fakeZone({
     routes: [{ pattern: "jomcgi.dev/cv", script: "other-worker" }],
-    rules: [MONOLITH],
+    rules: [],
   });
   await assert.rejects(
     apply(zone.call, routesFile(["jomcgi.dev/cv"]), RULES, { dryRun: true }),
