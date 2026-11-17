@@ -34,24 +34,51 @@ export function contrast(a: string, b: string): number {
 
 const palette = tokens(readFileSync("src/palette.css", "utf8"));
 
-// [foreground, background, minimum ratio]: 4.5 for text (WCAG 1.4.3),
-// 3 for focus rings and component borders (WCAG 1.4.11).
+// Every colour token has one role, and each role has its WCAG minimum:
+// text 4.5:1 (1.4.3) and non-text UI 3:1 (1.4.11) on every background.
+// `on-accent` text sits on the accent fill instead. Decorative borders, such
+// as the dividers between list items, have no minimum under 1.4.11.
+type Role = "text" | "on-accent" | "non-text" | "background" | "decorative";
+
+const ROLES: Record<string, Role> = {
+  "--color-accent": "non-text",
+  "--color-on-accent": "on-accent",
+  "--color-text-accent": "text",
+  "--color-icon-accent": "non-text",
+  "--color-background-body": "background",
+  "--color-background-surface": "background",
+  "--color-background-card": "background",
+  "--color-background-muted": "background",
+  "--color-text-primary": "text",
+  "--color-text-secondary": "text",
+  "--color-border": "decorative",
+  "--color-border-emphasized": "non-text",
+  "--focus-outline-color": "non-text",
+};
+
+const withRole = (role: Role) =>
+  Object.keys(ROLES).filter((token) => ROLES[token] === role);
+const backgrounds = withRole("background");
+
 const PAIRS: [string, string, number][] = [
-  ...["body", "surface", "card", "muted"].flatMap((background) =>
-    ["text-primary", "text-secondary", "text-accent"].map(
-      (text): [string, string, number] => [
-        `--color-${text}`,
-        `--color-background-${background}`,
-        4.5,
-      ],
-    ),
+  ...withRole("text").flatMap((token) =>
+    backgrounds.map((bg): [string, string, number] => [token, bg, 4.5]),
   ),
-  ["--color-on-accent", "--color-accent", 4.5],
-  ["--focus-outline-color", "--color-background-body", 3],
-  ["--color-border-emphasized", "--color-background-body", 3],
+  ...withRole("non-text").flatMap((token) =>
+    backgrounds.map((bg): [string, string, number] => [token, bg, 3]),
+  ),
+  ...withRole("on-accent").map((token): [string, string, number] => [
+    token,
+    "--color-accent",
+    4.5,
+  ]),
 ];
 
 describe("token contrast", () => {
+  it("gives every colour token in palette.css exactly one role", () => {
+    expect([...palette.keys()].sort()).toEqual(Object.keys(ROLES).sort());
+  });
+
   it("computes WCAG ratios", () => {
     expect(contrast("#000000", "#ffffff")).toBeCloseTo(21, 5);
     expect(contrast("#777777", "#ffffff")).toBeCloseTo(4.48, 2);

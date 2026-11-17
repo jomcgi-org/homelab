@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   BUDGET_BYTES,
+  htmlPages,
   initialScripts,
   measure,
   overBudget,
@@ -40,7 +41,18 @@ describe("JS budget check", () => {
       join(dist, "light.html"),
       '<script type="module" src="/assets/small.js"></script>',
     );
+    // A section page in a subdirectory, as later sections add (/hikes/).
+    mkdirSync(join(dist, "hikes"));
+    writeFileSync(
+      join(dist, "hikes/index.html"),
+      '<script type="module" src="../assets/big.js"></script>',
+    );
     const pages = overBudget(measure(dist)).map((result) => result.page);
-    expect(pages).toEqual(["heavy.html"]);
+    expect(htmlPages(dist).sort()).toEqual([
+      "heavy.html",
+      "hikes/index.html",
+      "light.html",
+    ]);
+    expect(pages.sort()).toEqual(["heavy.html", "hikes/index.html"]);
   });
 });

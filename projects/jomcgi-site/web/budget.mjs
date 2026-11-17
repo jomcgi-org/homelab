@@ -3,7 +3,7 @@
 // preloads; dynamic imports load on intent and are not counted.
 // Usage: node budget.mjs <dist directory>
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { gzipSync } from "node:zlib";
 
 export const BUDGET_BYTES = 150 * 1024;
@@ -14,19 +14,30 @@ export function initialScripts(html) {
   return [...new Set([...html.matchAll(pattern)].map((match) => match[1]))];
 }
 
+/** Every HTML page under dist, at any depth (e.g. "hikes/index.html"). */
+export function htmlPages(dist, prefix = "") {
+  return readdirSync(join(dist, prefix), { withFileTypes: true }).flatMap(
+    (entry) => {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) return htmlPages(dist, path);
+      return entry.name.endsWith(".html") ? [path] : [];
+    },
+  );
+}
+
 export function measure(dist) {
-  return readdirSync(dist)
-    .filter((name) => name.endsWith(".html"))
-    .map((page) => {
-      const html = readFileSync(join(dist, page), "utf8");
-      const bytes = initialScripts(html)
-        .map(
-          (src) =>
-            gzipSync(readFileSync(join(dist, src.replace(/^\//, "")))).length,
-        )
-        .reduce((sum, size) => sum + size, 0);
-      return { page, bytes };
-    });
+  return htmlPages(dist).map((page) => {
+    const html = readFileSync(join(dist, page), "utf8");
+    const bytes = initialScripts(html)
+      .map((src) =>
+        src.startsWith("/")
+          ? join(dist, src.slice(1))
+          : join(dist, dirname(page), src),
+      )
+      .map((file) => gzipSync(readFileSync(file)).length)
+      .reduce((sum, size) => sum + size, 0);
+    return { page, bytes };
+  });
 }
 
 export function overBudget(results) {
