@@ -12,18 +12,20 @@ npm_link_all_packages(name = "node_modules")
 
 js_library(
     name = "src",
+    # Every HTML file, so the page-registry test sees each one in the sandbox.
     srcs = glob(
         [
+            "**/*.html",
             "public/**",
             "src/**",
         ],
         exclude = [
+            "dist/**",
+            "node_modules/**",
             "src/**/*.test.tsx",
             "src/setup.ts",
         ],
     ) + [
-        "404.html",
-        "index.html",
         "package.json",
         "tsconfig.json",
         "vite.config.ts",

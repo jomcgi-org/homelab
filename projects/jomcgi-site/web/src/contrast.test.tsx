@@ -238,6 +238,20 @@ describe("token contrast", () => {
     }
   });
 
+  it("serves no stylesheets, scripts, SVG or HTML from public/", () => {
+    // public/ is copied into the site unchecked, so anything that can carry
+    // colour or code must live under src, where the checks run.
+    const files = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+        entry.isDirectory()
+          ? files(join(dir, entry.name))
+          : [join(dir, entry.name)],
+      );
+    expect(
+      files("public").filter((path) => /\.(?:css|m?js|svg|html?)$/i.test(path)),
+    ).toEqual([]);
+  });
+
   it("finds stylesheets at any depth", () => {
     const dir = mkdtempSync(join(tmpdir(), "sheets-"));
     mkdirSync(join(dir, "components"));
@@ -250,7 +264,7 @@ describe("token contrast", () => {
 
   it("keeps colours and inline styles out of the TypeScript sources", () => {
     const LITERAL =
-      /#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color-mix|light-dark)\(/i;
+      /#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix|light-dark)\(/i;
     const sources = (dir: string): string[] =>
       readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
         const path = join(dir, entry.name);
@@ -291,6 +305,19 @@ describe("token contrast", () => {
       const css = readFileSync(sheet, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
       expect([...customProperties(css).keys()], sheet).toEqual([]);
       expect(css, sheet).not.toMatch(LITERAL);
+      // A colour keyword can hide in any property, such as
+      // filter: drop-shadow(0 0 2px red), not only in colour properties.
+      for (const [, value] of css.matchAll(/[a-z-]+\s*:\s*([^;{}]+)/gi)) {
+        const keywords = (
+          value!.toLowerCase().match(/[a-z][a-z-]*/g) ?? []
+        ).filter(
+          (word) =>
+            NAMED_COLOURS.has(word) &&
+            word !== "transparent" &&
+            word !== "currentcolor",
+        );
+        expect(keywords, `${sheet}: ${value!.trim()}`).toEqual([]);
+      }
       for (const [, property, value] of css.matchAll(COLOUR_PROPERTY)) {
         // var(--token, fallback): the token must exist in palette.css, and the
         // fallback is checked like any other value, because the browser can
