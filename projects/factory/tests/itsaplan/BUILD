@@ -2,6 +2,12 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 exports_files(["fixture.bzl"])
 
+filegroup(
+    name = "repo_docs",
+    srcs = ["README.md"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 py_test(
     name = "integration_test",
     size = "large",
