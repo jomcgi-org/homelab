@@ -154,41 +154,30 @@ the remaining hub paths outside the site's routes.
 
 ## LLM leaderboard
 
-`/llm-leaderboard` pre-renders the hub page's charts and tables. Its selector,
-scatter axes, role index and sortable table hydrate from the same snapshot.
-The legacy `/app/llm-leaderboard` paths redirect with 301 responses.
+`/llm-leaderboard` pre-renders the hub report. Its selector, charts and
+sortable tables hydrate on intent or a linked `?m=` selection.
+`/app/llm-leaderboard` and its descendants redirect with 301 responses.
+The deploy image serves `web:build` through an assets-only Worker.
 
-`projects/model-bench` still writes
+`projects/model-bench` writes the sole snapshot at
 `projects/monolith/frontend/src/lib/public/llm-leaderboard/leaderboard.json`.
-The site imports that file and the hub's `model.js` through the owning Bazel
-package's `:leaderboard_sources` dependency. A new report therefore rebuilds
-the page; there is no second committed snapshot or request-time data fetch.
-The complete report is HTML, including SVG charts. The snapshot, chart code
-and selector load in one dynamic import on pointer, focus or keyboard intent.
-A linked `?m=` selection also triggers hydration. An interaction during the
-download is replayed once handlers exist. The initial route stays under the
-150 KiB JavaScript budget. All paint is in `src/palette.css`.
+The site imports it and the hub model through `:leaderboard_sources`.
 
-The HOME-208 contract has checks against both emitted files and hydrated
-components. The deploy image copies `web:build` into the assets directory in
-`wrangler.jsonc`; that Worker has no request handler. These checks verify
-the static artifact before deployment:
-
-| Contract | Evidence in `web/` |
+| Contract | Checks in `web/` |
 | --- | --- |
-| Static report and legacy 301 redirects | `:leaderboard_built_test` reads `dist/llm-leaderboard.html` with page scripts disabled and checks `dist/_redirects`. |
-| Interactive parts hydrate; large data and code load on intent | `leaderboard-intent.test.tsx` holds the import pending, then tests first-click replay, search input and linked selections. |
-| Each route stays below 150 KiB initial JavaScript | `:budget_test` measures every entry. `:leaderboard_built_test` also measures this route and rejects snapshot IDs in initial scripts or preloads. |
-| No inline styles or colours outside the palette; no axe violations | `contrast.test.tsx` checks sources and both palette modes. `leaderboard.test.tsx` checks hydrated selections. `:leaderboard_built_test` runs structural axe on emitted HTML. |
-| Original content and metadata | `leaderboard.test.tsx` compares these with the hub source and uses the shared snapshot for task descriptions and readings. |
+| Static HTML, redirects, deferred snapshot and 150 KiB JS budget | `:leaderboard_built_test` reads emitted files; `:budget_test` measures every route. |
+| Content, metadata, hydration and input replay | `leaderboard.test.tsx` and `leaderboard-intent.test.tsx`. |
+| Palette-only paint and accessibility | `contrast.test.tsx`, component axe tests and emitted-HTML axe. `leaderboard-browser.mjs` adds full browser axe, including contrast, after selection and axis changes. |
 
-From `web/`, run `pnpm build && node leaderboard-built.mjs dist`, then
-`pnpm test` and `pnpm budget`. The artifact check prints the measured byte
-budget and fails on missing redirects or structural axe violations.
-The DOM tests do not measure CSS layout; live browser checks still apply.
-
-After the dev deploy, verify `https://next.jomcgi.dev/llm-leaderboard`, both
-legacy redirects and a linked `?m=` selection before prod promotion.
+For browser verification, install Playwright separately, then from `web/`
+run `node leaderboard-browser.mjs dist` after `pnpm build`. Set
+`SITE_PLAYWRIGHT_MODULE` to its module path and `SITE_CHROMIUM_EXECUTABLE`
+if using a separate Chromium install. The check serves the artifact with
+its production CSP at 390/1280 px in both themes. It holds the report's
+chunk pending, checks first-click hydration, then scans all three selections.
+This browser command is manual; the artifact and unit tests run in Bazel.
+After dev deploy, verify the page, both legacy redirects and a linked
+selection on `https://next.jomcgi.dev` before prod promotion.
 
 ## Build and test
 
