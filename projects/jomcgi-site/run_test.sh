@@ -166,7 +166,11 @@ if run env STAGE=prod MODE=sync 2>/dev/null; then
 	echo "a sync that never sees its own label should fail"
 	exit 1
 fi
-(($(grep -c '^wrangler deploy' "$work/calls") >= 2)) || { echo "no deployment should trigger a redeploy"; cat "$work/calls"; exit 1; }
+(($(grep -c '^wrangler deploy' "$work/calls") >= 2)) || {
+	echo "no deployment should trigger a redeploy"
+	cat "$work/calls"
+	exit 1
+}
 
 # 6d. sync: errors during the window but a good final check: success.
 reset $'1\n1\n'
