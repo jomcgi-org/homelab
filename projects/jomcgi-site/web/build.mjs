@@ -14,11 +14,7 @@ const server = await createServer({
   appType: "custom",
   logLevel: "warn",
   cacheDir: join(tmpdir(), "jomcgi-site-vite"),
-  optimizeDeps: {
-    noDiscovery: true,
-    include: [],
-    esbuildOptions: { target: "es2022" },
-  },
+  optimizeDeps: { noDiscovery: true, include: [] },
   server: { middlewareMode: true, hmr: false, watch: null },
 });
 try {

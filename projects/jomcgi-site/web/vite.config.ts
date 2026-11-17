@@ -1,7 +1,6 @@
 import { resolve } from "node:path";
 import { defineConfig } from "vite";
-import { svelte } from "@sveltejs/vite-plugin-svelte";
-import { blogContent, manifest } from "./blog-content.mjs";
+import { blogContent } from "./blog-content.mjs";
 
 // Every page is its own HTML entry, so each route ships only its own chunks.
 // Hashed files go under /assets/, which public/_headers caches forever.
@@ -12,10 +11,8 @@ const page = (file: string) => resolve(process.cwd(), file);
 
 export default defineConfig({
   base: "/",
-  resolve: { conditions: ["browser", "module", "import", "default"] },
-  plugins: [blogContent(), svelte()],
+  plugins: [blogContent()],
   esbuild: { jsx: "automatic" },
-  optimizeDeps: { esbuildOptions: { target: "es2022" } },
   build: {
     outDir: "dist",
     target: "es2022",
@@ -32,12 +29,6 @@ export default defineConfig({
         "scotland-support": page("scotland/support.html"),
         slop: page("slop.html"),
         blog: page("blog.html"),
-        ...Object.fromEntries(
-          manifest.map(({ slug }) => [
-            `blog/${slug}`,
-            page(`blog/${slug}.html`),
-          ]),
-        ),
       },
       onwarn(warning, warn) {
         if (warning.code !== "MODULE_LEVEL_DIRECTIVE") warn(warning);

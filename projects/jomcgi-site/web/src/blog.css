@@ -11,13 +11,8 @@
   font-size: 1.8rem;
   margin-block: 1.5rem 1rem;
 }
-.blog h3 {
-  font-size: 1.3rem;
-  margin-block: 1.5rem 1rem;
-}
 .blog h1,
-.blog h2,
-.blog h3 {
+.blog h2 {
   font-family: var(--font-family-heading);
 }
 .blog p {
@@ -29,9 +24,7 @@
   text-decoration: underline;
   text-underline-offset: 0.2em;
 }
-.blog a:focus-visible,
-.blog button:focus-visible,
-.blog input:focus-visible {
+.blog a:focus-visible {
   outline: 2px solid var(--focus-outline-color);
   outline-offset: 3px;
 }
@@ -57,99 +50,4 @@
 .blog-tags [aria-current] {
   color: var(--color-on-accent);
   background: var(--color-accent);
-}
-.blog-subsection {
-  margin-left: 1.5rem;
-}
-.blog-prose {
-  min-width: 0;
-}
-.blog-prose > h2 {
-  padding-top: 1.5rem;
-  border-top: 1px solid var(--color-border);
-}
-.blog table {
-  border-collapse: collapse;
-  width: 100%;
-  font-size: 0.9rem;
-}
-.blog th,
-.blog td {
-  text-align: left;
-  vertical-align: top;
-  padding: 0.65rem;
-  border-bottom: 1px solid var(--color-border);
-}
-.blog th {
-  font-weight: 600;
-}
-.blog caption {
-  text-align: left;
-  font-weight: 600;
-  padding-block: 0.75rem;
-}
-.table-scroll {
-  overflow-x: auto;
-}
-.blog pre {
-  overflow-x: auto;
-  padding: 1rem;
-  background: var(--color-background-muted);
-}
-.blog code {
-  font-family: var(--font-family-code);
-}
-.blog .fig {
-  margin: 1.5rem 0;
-  border: 1px solid var(--color-border);
-}
-.blog figcaption {
-  padding: 0.75rem 1rem;
-  font-weight: 600;
-  border-bottom: 1px solid var(--color-border);
-}
-.blog .fig-art {
-  padding: 1rem;
-}
-.blog .fig-art svg {
-  width: 100%;
-  height: auto;
-}
-.blog-embed {
-  min-width: 0;
-  margin-block: 1rem;
-}
-.blog-embed > button {
-  padding: 0.75rem 1rem;
-  border: 1px solid var(--color-border-emphasized);
-  color: var(--color-text-primary);
-  background: var(--color-background-muted);
-  cursor: pointer;
-}
-.blog-embed .sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-  border: 0;
-}
-@media (prefers-reduced-motion: reduce) {
-  .blog *,
-  .blog *::before,
-  .blog *::after {
-    animation: none !important;
-    transition: none !important;
-  }
-}
-
-.blog > *,
-.blog-embed > * {
-  min-width: 0;
-}
-.blog .table-scroll:focus-visible {
-  outline: 2px solid var(--focus-outline-color);
 }
