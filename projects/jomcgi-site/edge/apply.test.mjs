@@ -183,6 +183,12 @@ test("routed pages are served with and without a query string", () => {
     "/blog/",
     "/blog/ember-conformance",
     "/blog/125b-on-a-4090",
+    "/llm-leaderboard",
+    "/llm-leaderboard/",
+    "/llm-leaderboard/anything",
+    "/app/llm-leaderboard",
+    "/app/llm-leaderboard/",
+    "/app/llm-leaderboard/anything",
     "/notes",
     "/ember",
     "/ember/firecracker",
@@ -192,6 +198,8 @@ test("routed pages are served with and without a query string", () => {
   ]) {
     assert.ok(served(`jomcgi.dev${path}`), path);
     assert.ok(served(`jomcgi.dev${path}?ref=x`), `${path}?ref=x`);
+    const selection = `${path}?m=qwen%2Fqwen3.8-27b`;
+    assert.ok(served(`jomcgi.dev${selection}`), selection);
   }
   assert.ok(served("jomcgi.dev/blog?tag=inference"));
 });

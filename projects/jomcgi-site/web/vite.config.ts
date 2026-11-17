@@ -40,6 +40,7 @@ export default defineConfig({
             page(`blog/${slug}.html`),
           ]),
         ),
+        "llm-leaderboard": page("llm-leaderboard.html"),
       },
       onwarn(warning, warn) {
         if (warning.code !== "MODULE_LEVEL_DIRECTIVE") warn(warning);

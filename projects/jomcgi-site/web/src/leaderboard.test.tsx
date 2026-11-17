@@ -2,7 +2,6 @@ import axe from "axe-core";
 import { readFileSync } from "node:fs";
 import { act } from "react";
 import { hydrateRoot } from "react-dom/client";
-import { renderToString } from "react-dom/server";
 import {
   fireEvent,
   render,
@@ -11,6 +10,7 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { LlmLeaderboardPage } from "./llm-leaderboard-page";
 import { LeaderboardContent } from "./leaderboard-content";
 import { leaderboard } from "./leaderboard-data";
 import { Scatter } from "./leaderboard-charts";
@@ -22,6 +22,7 @@ import {
   serializeSelection,
   shortName,
 } from "./leaderboard-model";
+import { render as prerender } from "./prerender";
 import { Root } from "./root";
 
 const modelIds = (table: HTMLElement) =>
@@ -36,18 +37,11 @@ function renderPage() {
     </Root>,
   );
 }
-function prerenderReport() {
-  return renderToString(
-    <Root>
-      <LeaderboardContent data={leaderboard} />
-    </Root>,
-  );
-}
 afterEach(() => window.history.replaceState(null, "", "/"));
 
 it("pre-renders the shared snapshot, charts, task descriptions and exact ranked readings", () => {
   const host = document.createElement("div");
-  host.innerHTML = prerenderReport();
+  host.innerHTML = prerender("llm-leaderboard.html");
   expect(host.querySelector("[style]")).toBeNull();
   const models = rank(leaderboard.models).filter((m) =>
     presetIds(leaderboard.models, "default").has(m.id),
@@ -78,13 +72,62 @@ it("pre-renders the shared snapshot, charts, task descriptions and exact ranked 
     );
 });
 
+it("keeps the hub title, description and preview metadata", () => {
+  const source = readFileSync(
+    "../../monolith/frontend/src/routes/public/app/llm-leaderboard/+page.svelte",
+    "utf8",
+  );
+  const seo = source.match(
+    /<Seo\s+title="([^"]+)"\s+description="([^"]+)"\s+path="([^"]+)"/,
+  )!;
+  const head = new DOMParser().parseFromString(
+    readFileSync("llm-leaderboard.html", "utf8"),
+    "text/html",
+  );
+  expect(head.title).toBe(seo[1]);
+  for (const selector of [
+    'meta[name="description"]',
+    'meta[property="og:description"]',
+    'meta[name="twitter:description"]',
+  ])
+    expect(head.querySelector(selector)?.getAttribute("content")).toBe(seo[2]);
+  for (const selector of [
+    'meta[property="og:title"]',
+    'meta[name="twitter:title"]',
+  ])
+    expect(head.querySelector(selector)?.getAttribute("content")).toBe(seo[1]);
+  expect(
+    head.querySelector('link[rel="canonical"]')?.getAttribute("href"),
+  ).toBe(`https://jomcgi.dev${seo[3]}`);
+  expect(
+    head.querySelector('meta[property="og:url"]')?.getAttribute("content"),
+  ).toBe(`https://jomcgi.dev${seo[3]}`);
+  expect(
+    head.querySelector('meta[property="og:type"]')?.getAttribute("content"),
+  ).toBe("website");
+  expect(
+    head
+      .querySelector('meta[property="og:site_name"]')
+      ?.getAttribute("content"),
+  ).toBe("Joe McGinley");
+  expect(
+    head.querySelector('meta[name="twitter:card"]')?.getAttribute("content"),
+  ).toBe("summary");
+  expect(
+    readFileSync("public/_redirects", "utf8").trim().split("\n"),
+  ).toContain("/app/llm-leaderboard /llm-leaderboard 301");
+  expect(
+    readFileSync("public/_redirects", "utf8").trim().split("\n"),
+  ).toContain("/app/llm-leaderboard/* /llm-leaderboard 301");
+});
+
 it("copies the hub introduction, captions and source link verbatim", () => {
   const source = readFileSync(
     "../../monolith/frontend/src/routes/public/app/llm-leaderboard/+page.svelte",
     "utf8",
   );
   const host = document.createElement("div");
-  host.innerHTML = prerenderReport();
+  host.innerHTML = prerender("llm-leaderboard.html");
   const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
   const lead = source.match(/<div class="lead">([\s\S]*?)<\/div>/)![1]!;
   const original = new DOMParser().parseFromString(lead, "text/html");
@@ -146,7 +189,7 @@ it("hydrates linked selections without a mismatch and keeps unrelated query para
     `/llm-leaderboard?keep=yes&m=${encodeURIComponent(m.id)}#task-1`,
   );
   const host = document.createElement("div");
-  host.innerHTML = prerenderReport();
+  host.innerHTML = prerender("llm-leaderboard.html");
   document.body.append(host);
   const errors: unknown[] = [];
   let root: ReturnType<typeof hydrateRoot>;
@@ -154,7 +197,7 @@ it("hydrates linked selections without a mismatch and keeps unrelated query para
     root = hydrateRoot(
       host,
       <Root>
-        <LeaderboardContent data={leaderboard} />
+        <LlmLeaderboardPage />
       </Root>,
       { onRecoverableError: (error) => errors.push(error) },
     );
