@@ -12,7 +12,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from chat import outbox as discord_outbox
 from chat.models import DiscordOutbox, ScheduledTask, ScheduledTaskOccurrence
 from chat.scheduled_tasks import (
-    DIGEST_STOPPED,
+    DIGEST_PAUSED,
     MAX_GENERATION_ATTEMPTS,
     cancel_task,
     claim_due,
@@ -385,34 +385,41 @@ def test_cron_semantics_use_standard_dom_dow_or_and_utc():
 
 
 @pytest.mark.asyncio
-async def test_digest_without_gateway_posts_one_notice_and_ends(engine):
+async def test_digest_without_gateway_pauses_with_one_notice_and_resumes(engine):
     # HOME-221: with the gateway off, chat.messages gets no new messages, so a
-    # digest would repeat old ones. It posts one notice and its task ends;
-    # a reminder still fires.
-    digest_id, _ = _insert_due(engine, kind="digest")
+    # digest would repeat old ones. It pauses: one notice, the task keeps its
+    # schedule, and it runs again when digests resume. A reminder still fires.
+    digest_id, digest_due = _insert_due(engine, kind="digest")
     reminder_id, _ = _insert_due(engine)
-    build = AsyncMock()
+    build = AsyncMock(return_value="📋 Scheduled summary digest:\nfresh")
+    paused = dict(claimant="leader-a", digest_builder=build, digests=False)
     delivered = await drain_once(
-        engine,
-        now=datetime(2026, 9, 12, 12, 16, tzinfo=timezone.utc),
-        claimant="leader-a",
-        digest_builder=build,
-        digests=False,
+        engine, now=datetime(2026, 9, 12, 12, 16, tzinfo=timezone.utc), **paused
     )
-    assert delivered == 2
+    assert delivered == 1  # the reminder; the notice is not an occurrence
+    await drain_once(
+        engine, now=datetime(2026, 9, 12, 12, 31, tzinfo=timezone.utc), **paused
+    )
     build.assert_not_awaited()
     with Session(engine) as session:
         contents = sorted(row.content for row in session.query(DiscordOutbox).all())
         assert contents == sorted(
-            [DIGEST_STOPPED.format(mode="summary"), "⏰ <@456> reminder: stand up"]
+            [DIGEST_PAUSED.format(mode="summary"), "⏰ <@456> reminder: stand up"]
         )
-        assert session.get(ScheduledTask, digest_id).status == "cancelled"
+        digest = session.get(ScheduledTask, digest_id)
+        assert digest.status == "pending"
+        assert digest.next_run_at.replace(tzinfo=timezone.utc) == digest_due.replace(
+            tzinfo=timezone.utc
+        )
         assert session.get(ScheduledTask, reminder_id).status == "completed"
-    later = await drain_once(
+    resumed = await drain_once(
         engine,
-        now=datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc),
+        now=datetime(2026, 9, 12, 12, 46, tzinfo=timezone.utc),
         claimant="leader-a",
-        digests=False,
+        digest_builder=build,
     )
-    assert later == 0
-
+    assert resumed == 1
+    build.assert_awaited_once()
+    with Session(engine) as session:
+        assert session.get(ScheduledTask, digest_id).status == "pending"
+        assert session.query(DiscordOutbox).count() == 3
