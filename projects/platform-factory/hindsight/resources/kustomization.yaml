@@ -8,7 +8,7 @@ resources:
   - hindsight.yaml
 
 configMapGenerator:
-  - name: hindsight-keys
+  - name: hindsight-keys-script
     namespace: hindsight
     files:
       - keys.py

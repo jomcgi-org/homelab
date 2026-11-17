@@ -177,3 +177,27 @@ def test_boundary_test_runs_the_deployed_image():
     digest = container["image"].rsplit("@", 1)[1]
     build = (ROOT / "BUILD").read_text()
     assert f'"test.container-image": "docker://{repository}@{digest}"' in build
+
+
+def test_the_script_configmap_name_is_not_a_role_resource_name():
+    # Kustomize renames a generated ConfigMap with a hash suffix and rewrites
+    # every Role resourceName that matches it, Secrets included. A shared name
+    # left the Jobs without access to hindsight-keys, waiting forever.
+    (kustomization,) = read("resources/kustomization.yaml")
+    (generator,) = kustomization["configMapGenerator"]
+    documents = read("resources/secrets.yaml") + read("agents/secrets.yaml")
+    names = {
+        name
+        for doc in documents
+        if doc["kind"] == "Role"
+        for rule in doc["rules"]
+        for name in rule.get("resourceNames", [])
+    }
+    assert generator["name"] not in names
+    volumes = [
+        volume["configMap"]["name"]
+        for doc in documents
+        if doc["kind"] == "Job"
+        for volume in doc["spec"]["template"]["spec"]["volumes"]
+    ]
+    assert volumes == [generator["name"]] * 2
