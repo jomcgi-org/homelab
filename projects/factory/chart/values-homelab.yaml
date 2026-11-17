@@ -81,7 +81,8 @@ kagent:
           authority: factory-home
 
 # The Codex agent's model: gpt-6.2-astra, the frontier model, at the broker's
-# xhigh reasoning effort (Joe, 2026-11-14; 6.2 on 2026-11-17, HOME-226). Codex (0.169.1, from the
+# xhigh reasoning effort (Joe, 2026-11-14; 6.2 on 2026-11-17:
+# https://github.com/jomcgi-org/homelab/pull/8193#issuecomment-6963828989). Codex (0.169.1, from the
 # kagent fork above) gives a model its apply_patch edit tool only when it is
 # in its bundled catalogue (codex-rs/models-manager/models.json); with a
 # model outside it the first run (HOME-1) had no way to edit files.
@@ -105,7 +106,9 @@ agents:
         requests:
           memory: 1536Mi
   # The reviewer reads and never edits, so it needs no apply_patch. It runs
-  # gpt-6.2-sol (Joe, 2026-11-17, HOME-226), which Codex 0.169.1 has in its
+  # gpt-6.2-sol (Joe, 2026-11-17:
+  # https://github.com/jomcgi-org/homelab/pull/8193#issuecomment-6963828989),
+  # which Codex 0.169.1 has in its
   # catalogue; before that it ran gpt-6.1-terra to spend less of the Codex
   # quota (https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6881930021).
   # The broker's reasoningEffort (xhigh) applies to it as to the coder.
