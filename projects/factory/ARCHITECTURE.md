@@ -437,7 +437,7 @@ Discord gateway ─► discord-bridge (factory-discord) ─► kagent controller
   sends Discord text to the Agent only as JSON data. Replies cannot mention
   anyone. It ships in the connector image.
 - **Agent** (chart `discord.agent`): its own namespace and atespace, one
-  small gVisor worker (Joe, HOME-162 comment 1799), no tools, and web search
+  small gVisor worker ([Joe's decision](https://github.com/jomcgi-org/homelab/pull/8188#issuecomment-6960669519)), no tools, and web search
   through the model (":online"). Its ModelConfig names only the
   `factory-discord-llm` key; kagent gives the actor a placeholder and
   Substrate's egress gateway injects the key (the namespace's
@@ -446,9 +446,13 @@ Discord gateway ─► discord-bridge (factory-discord) ─► kagent controller
   bridge is on; hindsight-discord admits only pods labelled
   `factory-discord-bridge`. No factory agent, key or memory sees Discord
   content.
-- **Rollout**: the Agent is on and can be checked over A2A. The bridge stays
-  off until Bosun's token is in 1Password item `factory-discord` (field
-  `token`) and the hub monolith's bot is off, so no message gets two replies.
+- **Rollout**: the chart ships both off. A values change turns the Agent on
+  once a chart version with these templates is published (the deploy pins a
+  published chart), and its namespace joins `kagent.rbac.namespaces` then.
+  The bridge stays off until Bosun's token is in 1Password item
+  `factory-discord` (field `token`) and the hub monolith's bot is off, so no
+  message gets two replies. Substrate's egress gateway admits `openrouter.ai`
+  for the Agent's model calls.
 
 ## itsaplan
 

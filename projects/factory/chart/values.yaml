@@ -334,7 +334,7 @@ discord:
     resources:
       cpu: "4"
       memory: 8Gi
-    # People rarely tag the bot (Joe, 2026-11-17), so one small worker. Its
+    # People rarely tag the bot (Joe's decision on #8188), so one small worker. Its
     # limits hold the actor's plus gVisor's sentry.
     concurrency: 1
     worker:
