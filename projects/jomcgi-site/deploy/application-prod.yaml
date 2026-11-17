@@ -1,6 +1,7 @@
 # The prod stage of the jomcgi.dev site (HOME-200). A sync runs the deploy Job,
 # which publishes Worker jomcgi-site, then the PostSync edge Job, which makes
-# zone jomcgi.dev's Workers routes and cache rules match edge/ (HOME-192).
+# zone jomcgi.dev's Workers routes and cache rules match edge/ (HOME-192), with
+# the routes on or off by edge.serveRoutes (HOME-201).
 #
 # Promotion is this pin. CI write-back edits only application.yaml, so this
 # file moves by PR, after the same chart is verified on next.jomcgi.dev. Kargo
@@ -26,6 +27,9 @@ spec:
         stage: prod
         edge:
           enabled: true
+          # Off: the edge Job keeps no route, so jomcgi.dev stays on the hub.
+          # HOME-202 turns it on in its own PR; reverting that is the rollback.
+          serveRoutes: false
   destination:
     server: https://kubernetes.default.svc
     namespace: jomcgi-site-prod

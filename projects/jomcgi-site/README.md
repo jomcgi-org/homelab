@@ -28,7 +28,7 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
 | `wrangler/`      | The pinned `wrangler` CLI, packaged as image layers by rules_js.                                                              |
 | `apko.yaml`      | The deploy image: bash and busybox for the rules_js launcher, CA roots, and Node's C++ runtime.                               |
 | `chart/`         | The deploy Job (factory Helm library), its 1Password items and its only egress, `api.cloudflare.com:443`.                     |
-| `deploy/` | The stages' Argo CD Applications: `application.yaml` (dev) and `application-prod.yaml` (prod). |
+| `deploy/`        | The stages' Argo CD Applications: `application.yaml` (dev) and `application-prod.yaml` (prod).                                |
 
 ## Contracts
 
