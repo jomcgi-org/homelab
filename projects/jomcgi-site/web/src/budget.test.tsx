@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,6 +33,25 @@ const over = (dist: string) =>
     .sort();
 
 describe("JS budget check", () => {
+  it.each([
+    ["missing", undefined, 1],
+    ["empty", "<main>Factory story</main>", 1],
+    ["oversized", '<script src="/assets/big.js"></script>', 1],
+    ["within budget", '<script src="/assets/small.js"></script>', 0],
+  ])("requires a Factory entry: %s", (_, html, status) => {
+    const dist = site({
+      "index.html": "<main>Home</main>",
+      ...(html === undefined ? {} : { "factory/index.html": html }),
+    });
+    const result = spawnSync(
+      process.execPath,
+      ["budget.mjs", dist, "factory/index.html"],
+      { encoding: "utf8" },
+    );
+    expect(result.status, result.stdout + result.stderr).toBe(status);
+    expect(result.stdout + result.stderr).toContain("factory/index.html");
+  });
+
   it("counts the module entry and its preloads, not lazy chunks", () => {
     const html = `
       <script type="module" crossorigin src="/assets/home-abc.js"></script>

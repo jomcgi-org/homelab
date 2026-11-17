@@ -1,15 +1,14 @@
 # Factory acceptance evidence
 
-Local checks on 2026-11-17 cover the site tree at `99ca767349b12653c323e962c6aa211987fd6dbf`
-for HOME-224, PR #8197, with Node 22.23.5, pnpm 10.34.5 and locked dependencies.
-Subsequent changes to this record affect documentation only.
+Local checks for HOME-224, PR #8197, on 2026-11-17 use Node 22.23.5,
+pnpm 10.34.5 and locked dependencies. Remote Bazel checks run in PR CI.
 
 ## The storyboard is part of the site
 
-The [registry](../web/src/pages.tsx) and [Vite entries](../web/vite.config.ts)
-include `factory/index.html` in the existing pre-rendered site build.
-The [Factory component](../web/src/factory-page.tsx) selects client routes;
-[_redirects](../web/public/_redirects) serves the same shell on descendants.
+The [registry](../web/src/pages.tsx) and [Vite entries](../web/vite.config.ts) build
+`factory/index.html`; [_redirects](../web/public/_redirects) serves that shell on
+descendants. [App.test.tsx](../web/src/factory/App.test.tsx) hydrates the site's
+registered shell at all four fixture routes, with no recoverable hydration errors.
 
 | Route | Content in [Pages.tsx](../web/src/factory/Pages.tsx) | Fixture assertion in [App.test.tsx](../web/src/factory/App.test.tsx) |
 | --- | --- | --- |
@@ -18,27 +17,22 @@ The [Factory component](../web/src/factory-page.tsx) selects client routes;
 | `/factory/issues/DEMO-104` | `IssuePage`: creation, turns, PR, reviews, checks, queue and merge in one timeline | Both review rounds, failed and passed checks, queue entry, PR and session links |
 | `/factory/sessions/demo-build` | `SessionPage`: transcript, folded tools and inline diffs | 28 turns, withheld content, closed tool details and the literal diff |
 
-The [reader](../web/src/factory/data.ts) uses the HOME-68 types and JSON Schema,
-verifies hashes and polls `/data/factory/manifest.json` every 60 seconds.
-The schema, types and fixture bytes have no diff against the merge base.
+The [reader](../web/src/factory/data.ts) validates HOME-68 schema and hashes,
+fetches `/data/factory/` on this origin and polls the manifest every 60 seconds.
 
 ## Criterion 1: fixture and contract tests
 
-[`web:test`](../web/BUILD) includes the following through `test_src` and
-`src/**/*.test.tsx`, with the shared schema and fixture dependencies.
-
 | Required case | Checkable assertion |
 | --- | --- |
-| Every page renders from fixtures | `App.test.tsx`, `renders the fixture page at %s`, checks four routes and expected headings. [schema.test.tsx](../web/src/factory/schema.test.tsx) checks every fixture, hash and cross-link. |
+| Every page renders from fixtures | `App.test.tsx`, `hydrates the site's pre-rendered Factory shell from fixtures at %s`, checks all four headings and document titles. [schema.test.tsx](../web/src/factory/schema.test.tsx) checks every fixture, hash and cross-link. |
 | Unknown stat placeholder | [data.test.tsx](../web/src/factory/data.test.tsx), `fills repeated, zero and fractional stats and uses a dash for unknown keys`, checks exact output. |
 | Malformed object preserves other content | `App.test.tsx`, `shows a malformed issue inline and keeps sibling issues visible`, requires `Issue DEMO-101 not available.` and the valid DEMO-104 link together. |
 | Script-looking fixture text stays text | `App.test.tsx`, `renders withheld turns, folded tool calls and inline diffs as text`, requires the literal `<script>alert("fixture")</script>` and no script element. |
 | Axe on each page | [contracts.test.tsx](../web/src/factory/contracts.test.tsx) checks the four fixture routes in both themes, with chart tables and tool details open. |
 | CSP and palette | `contracts.test.tsx` rejects inline style elements and attributes and checks `style-src 'self'`. [contrast.test.tsx](../web/src/contrast.test.tsx) scans nested CSS and TypeScript, restricts colours to `palette.css`, and checks both themes' token contrast. |
 
-Axe disables `color-contrast` because happy-dom has no layout; token contrast
-has separate assertions. [serving.test.tsx](../web/src/factory/serving.test.tsx)
-checks route shells, exact fixture bytes and JSON 404s for invalid data paths.
+[`web:test`](../web/BUILD) includes these tests and fixture inputs. Axe disables
+`color-contrast` in happy-dom; token contrast has separate assertions.
 
 ## Criterion 2: the built Factory entry is within budget
 
@@ -52,18 +46,14 @@ pnpm budget
 node factory-built.test.mjs dist
 ```
 
-All commands exited 0: **254 tests passed in 15 files**, plus four artifact tests.
-The Factory entry measured **110,848 bytes (108.3 KiB)** of initial gzipped
-JavaScript against **153,600 bytes (150 KiB)**.
-
-[`budget.mjs`](../web/budget.mjs), used by `web:budget_test`, counts scripts
-and module preloads in every HTML entry. The [artifact test](../web/factory-built.test.mjs)
-also requires a nonempty Factory entry within budget, the pre-rendered shell,
-local assets, the rewrite and no fictional production data.
-
-The combined build also passed `prerendered.mjs` (including both blog posts),
-`marketplace.test.mjs` and all seven `scotland-built.test.mjs` checks.
-These are local results; remote Bazel checks run in PR CI.
+All commands exited 0: **258 tests in 15 files**, plus three artifact tests.
+Factory measured **110,848 bytes (108.3 KiB)** against **153,600 bytes (150 KiB)**.
+[`web:budget_test`](../web/BUILD) and `pnpm budget` both pass `factory/index.html`
+to [budget.mjs](../web/budget.mjs): missing, empty or oversized entries fail.
+[budget.test.tsx](../web/src/budget.test.tsx) exercises these CLI failures and a pass.
+The budget counts initial scripts and preloads; all 12 built entries passed.
+The artifact tests check the shell, local assets, rewrite and no fictional data;
+`prerendered.mjs`, `marketplace.test.mjs` and seven Scotland artifact checks passed.
 
 ## Scope and rollout
 

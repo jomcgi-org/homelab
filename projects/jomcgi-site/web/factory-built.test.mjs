@@ -5,7 +5,6 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { Window } from "happy-dom";
-import { measure, BUDGET_BYTES } from "./budget.mjs";
 
 const dist = process.argv[2];
 assert.ok(dist, "usage: node factory-built.test.mjs <dist directory>");
@@ -81,15 +80,4 @@ test("the production output carries no invented snapshots", () => {
       /Fixture edition|fictional reading list|demo-build|DEMO-104/,
     );
   }
-});
-
-test("Factory has an entry inside the initial JavaScript budget", () => {
-  const factory = measure(dist).find(
-    ({ page }) => page === "factory/index.html",
-  );
-  assert.ok(factory, "missing Factory entry");
-  assert.ok(
-    factory.bytes > 0 && factory.bytes <= BUDGET_BYTES,
-    `${factory.bytes} bytes`,
-  );
 });

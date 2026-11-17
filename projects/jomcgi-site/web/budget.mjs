@@ -1,7 +1,7 @@
 // Fails when a page's initial JavaScript is over budget (HOME-174 performance
 // contract). Initial JS is the page's module entry plus every chunk it
 // preloads; dynamic imports load on intent and are not counted.
-// Usage: node budget.mjs <dist directory>
+// Usage: node budget.mjs <dist directory> [required page ...]
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -92,10 +92,18 @@ export function overBudget(results) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const dist = process.argv[2];
   if (!dist) {
-    console.error("usage: node budget.mjs <dist directory>");
+    console.error(
+      "usage: node budget.mjs <dist directory> [required page ...]",
+    );
     process.exit(2);
   }
   const results = measure(dist);
+  for (const required of process.argv.slice(3)) {
+    if (!results.some(({ page, bytes }) => page === required && bytes > 0)) {
+      console.error(`${required}: missing entry or no initial JavaScript`);
+      process.exit(1);
+    }
+  }
   if (results.length === 0) {
     console.error(`no HTML pages in ${dist}`);
     process.exit(1);

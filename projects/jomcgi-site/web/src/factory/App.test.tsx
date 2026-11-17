@@ -8,6 +8,8 @@ import {
 } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { FactoryPage as App } from "../factory-page";
+import { render as prerender } from "../prerender";
+import { Root } from "../root";
 import { Pages, withheldMessage } from "./Pages";
 import {
   fixtureFiles,
@@ -24,20 +26,33 @@ it.each([
   ["/factory/goals/reading-list", "Return to the reading list"],
   ["/factory/issues/DEMO-104", "Open a saved reading list"],
   ["/factory/sessions/demo-build", "Remember the saved reading list"],
-])("renders the fixture page at %s", async (path, title) => {
-  window.history.replaceState(null, "", path);
-  mockFiles();
-  render(<App />);
-  expect(
-    await screen.findByRole("heading", { level: 1, name: title }),
-  ).toBeDefined();
-  expect(
-    screen.getByText(
-      /Every goal, issue, session and measurement here is made up/,
-    ),
-  ).toBeDefined();
-  expect(document.title).toBe(`${title} · Factory · jomcgi.dev`);
-});
+])(
+  "hydrates the site's pre-rendered Factory shell from fixtures at %s",
+  async (path, title) => {
+    window.history.replaceState(null, "", path);
+    mockFiles();
+    const container = document.createElement("div");
+    container.innerHTML = prerender("factory/index.html");
+    document.body.appendChild(container);
+    const onRecoverableError = vi.fn();
+    render(
+      <Root>
+        <App />
+      </Root>,
+      { container, hydrate: true, onRecoverableError },
+    );
+    expect(
+      await screen.findByRole("heading", { level: 1, name: title }),
+    ).toBeDefined();
+    expect(
+      screen.getByText(
+        /Every goal, issue, session and measurement here is made up/,
+      ),
+    ).toBeDefined();
+    expect(document.title).toBe(`${title} · Factory · jomcgi.dev`);
+    expect(onRecoverableError).not.toHaveBeenCalled();
+  },
+);
 
 it("shows all the story charts with tables and fills the unknown stat", async () => {
   const snapshot = await fixtureSnapshot();

@@ -278,7 +278,7 @@ states until HOME-213 publishes snapshots. SVG charts have value tables;
 the layout uses the shared light/dark palette and 16px phone gutters.
 
 The [Factory acceptance evidence](validation/factory.md) maps each required
-case to its test and records the local commands and results for a named revision.
+case to its test and records the local commands and results.
 `web:test` covers fixtures, failures, navigation, text rendering, axe, CSP and
 palette rules. `web:factory_built_test` checks the emitted shell and publication
 boundary. `web:budget_test` measures the Factory entry against 150 KiB.
