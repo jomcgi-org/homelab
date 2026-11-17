@@ -8,6 +8,11 @@ image:
 # Worker jomcgi-site on the jomcgi.dev routes listed in wrangler.jsonc.
 stage: dev
 
+# Zone rules have one owner across all stages. Only the dev Application enables
+# this today; move that setting to prod when prod exists.
+edge:
+  apply: false
+
 workloads:
   jomcgi-site-deploy:
     kind: Job
@@ -53,6 +58,36 @@ workloads:
     network:
       # The Cloudflare API is the only egress. wrangler's npm update check
       # times out against this policy and does not fail the deploy.
+      egress:
+        - peer: cloudflare-api
+          fqdn: api.cloudflare.com
+          port: 443
+
+  jomcgi-site-edge:
+    kind: Job
+    hook: Sync
+    containerName: edge
+    backoffLimit: 1
+    command:
+      - /app/projects/jomcgi-site/edge/apply
+    env:
+      - name: CLOUDFLARE_API_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: jomcgi-site-cloudflare
+            key: api-token
+      - name: CLOUDFLARE_ACCOUNT_ID
+        valueFrom:
+          secretKeyRef:
+            name: jomcgi-site-cloudflare
+            key: account-id
+    resources:
+      requests:
+        cpu: 100m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+    network:
       egress:
         - peer: cloudflare-api
           fqdn: api.cloudflare.com

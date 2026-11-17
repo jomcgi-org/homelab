@@ -1,1 +1,8 @@
-{{ include "factory-library.all" . }}
+{{- if not (kindIs "bool" .Values.edge.apply) -}}
+{{- fail "edge.apply must be a boolean" -}}
+{{- end -}}
+{{- $ctx := deepCopy . -}}
+{{- if not .Values.edge.apply -}}
+{{- $_ := unset $ctx.Values.workloads "jomcgi-site-edge" -}}
+{{- end -}}
+{{ include "factory-library.all" $ctx }}

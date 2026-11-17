@@ -23,7 +23,7 @@ genrule(
     """,
 )
 
-# The deploy Job's image: `wrangler deploy --env <stage>` with the pinned CLI.
+# Both Sync hooks use this image: the Worker deploy and the zone's cache rules.
 apko_image(
     name = "image",
     arm64 = False,
@@ -31,6 +31,7 @@ apko_image(
     contents = "@jomcgi_site_lock//:contents",
     tars = [
         ":site_tar",
+        "//projects/jomcgi-site/edge:layers",
         "//projects/jomcgi-site/wrangler:layers",
     ],
 )

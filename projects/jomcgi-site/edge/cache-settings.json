@@ -1,0 +1,28 @@
+{
+  "rules": [
+    {
+      "description": "Monolith",
+      "expression": "(http.host eq \"jomcgi.dev\") or (http.host eq \"private.jomcgi.dev\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": true,
+        "edge_ttl": { "mode": "bypass_by_default" },
+        "respect_strong_etags": true,
+        "serve_stale": { "disable_stale_while_updating": false }
+      },
+      "enabled": true
+    },
+    {
+      "description": "data.jomcgi.dev",
+      "expression": "http.host eq \"data.jomcgi.dev\"",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": true,
+        "edge_ttl": { "mode": "respect_origin" },
+        "browser_ttl": { "mode": "respect_origin" },
+        "serve_stale": { "disable_stale_while_updating": false }
+      },
+      "enabled": true
+    }
+  ]
+}

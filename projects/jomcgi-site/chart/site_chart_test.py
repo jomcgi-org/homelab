@@ -1,5 +1,6 @@
-"""Render the deploy Job, its release marker and its network boundary."""
+"""Render the site Sync hooks, their release marker and their network boundary."""
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -97,12 +98,16 @@ def test_release_marker_changes_with_the_chart_and_the_image():
     assert marker == {
         "chart": version,
         "stage": "dev",
+        "edgeApply": "false",
         "image": f"ghcr.io/jomcgi/homelab/projects/jomcgi-site@{DIGEST}",
     }
 
 
-def test_only_egress_is_the_cloudflare_api():
-    policy = docs(render())["CiliumNetworkPolicy/jomcgi-site-deploy"]["spec"]
+@pytest.mark.parametrize("workload", ["jomcgi-site-deploy", "jomcgi-site-edge"])
+def test_only_egress_is_the_cloudflare_api(workload):
+    policy = docs(render("--set", "edge.apply=true"))[
+        f"CiliumNetworkPolicy/{workload}"
+    ]["spec"]
     assert policy["enableDefaultDeny"] == {"ingress": True, "egress": True}
     assert policy.get("ingress", []) == []
     assert policy["egress"] == [
@@ -113,11 +118,60 @@ def test_only_egress_is_the_cloudflare_api():
     ]
 
 
+def test_edge_apply_is_off_by_default():
+    rendered = docs(render())
+    assert "Job/jomcgi-site-edge" not in rendered
+    assert "CiliumNetworkPolicy/jomcgi-site-edge" not in rendered
+
+
+@pytest.mark.parametrize("stage", ["dev", "prod"])
+def test_edge_apply_can_move_to_prod_without_changing_zone_rules(stage):
+    rendered = docs(
+        render(
+            "--set",
+            "edge.apply=true",
+            "--set",
+            f"stage={stage}",
+            "--set-json",
+            "workloads.jomcgi-site-deploy.args="
+            + json.dumps(
+                ["deploy", "--config", "/app/site/wrangler.jsonc", "--env", stage]
+            ),
+        )
+    )
+    assert len([key for key in rendered if key.startswith("Job/")]) == 2
+    job = rendered["Job/jomcgi-site-edge"]
+    assert job["metadata"]["annotations"] == {
+        "argocd.argoproj.io/hook": "Sync",
+        "argocd.argoproj.io/hook-delete-policy": "BeforeHookCreation,HookSucceeded",
+    }
+    pod = job["spec"]["template"]["spec"]
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    container = pod["containers"][0]
+    assert container["command"] == ["/app/projects/jomcgi-site/edge/apply"]
+    assert not container.get("args")
+    assert container["image"].endswith(f"@{DIGEST}")
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert {
+        env["name"]: env["valueFrom"]["secretKeyRef"] for env in container["env"]
+    } == {
+        "CLOUDFLARE_API_TOKEN": {"name": "jomcgi-site-cloudflare", "key": "api-token"},
+        "CLOUDFLARE_ACCOUNT_ID": {
+            "name": "jomcgi-site-cloudflare",
+            "key": "account-id",
+        },
+    }
+    marker = rendered["ConfigMap/jomcgi-site-release"]["data"]
+    assert marker["edgeApply"] == "true"
+
+
 @pytest.mark.parametrize(
     "extra, error",
     [
         (["--set", "stage=staging"], "stage must be dev or prod"),
         (["--set", "stage=prod"], "--env argument must match .Values.stage"),
+        (["--set-string", "edge.apply=false"], "edge.apply must be a boolean"),
     ],
 )
 def test_stage_guard(extra, error):

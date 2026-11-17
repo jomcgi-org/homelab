@@ -20,6 +20,9 @@ spec:
     targetRevision: 0.4.9
     helm:
       releaseName: jomcgi-site-dev
+      valuesObject:
+        edge:
+          apply: true
   destination:
     server: https://kubernetes.default.svc
     namespace: jomcgi-site-dev
