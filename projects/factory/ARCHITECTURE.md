@@ -1809,7 +1809,7 @@ previews).
   (`factory_reviewer_comment_writes_total`) and retried on the next poll.
   It edits only a comment its bot
   login wrote, and its own comment never reaches the agent.
-  Check runs are its only state: the
+  Check runs hold review state; the private audit volume keeps goal replies. The
   in-progress run names its attempt and kagent task, and a completed one
   keeps its blocking findings, human gate and kagent session in a hidden
   block, at most 48,000 characters, for the next head. A compressed comment
@@ -2036,8 +2036,9 @@ previews).
   usable report, and only when a trusted author's PR names an issue that
   resolves with its full text. Its task opens a fresh session of the
   review agent with message ID `<check external ID>/goal/<prompt HMAC>`,
-  so a restart finds the same task. No review resumes that session, so the
-  service deletes it once it reads the answer. The prompt holds the issue
+  so a restart finds the same task. No review resumes that session. The
+  service deletes it after saving the full reply to the private audit volume.
+  The prompt holds the issue
   and its status, the linked decisions with their provenance, and the file
   list and patches (at most 60,000 bytes). It holds no PR title,
   description or comment, so only the head and the evidence digest decide
@@ -2046,9 +2047,13 @@ previews).
   block: a verdict for each acceptance criterion by number, and an overall
   verdict for the stated problem. The verdicts are `met`, `not_met`,
   `after_rollout` (only a rollout or live use can show it) and `unclear`.
+  When the issue plans later enablement, implemented criteria behind that
+  switch are `after_rollout`. The overall verdict follows the same rule.
+  Missing implementation is still `not_met`. Only the issue or a trusted
+  decision establishes staging; a claim in the diff cannot defer a criterion.
   Any other field or value, no overall verdict, numbers other than 1 to N
   once each, more than 50 criteria or a second value voids the answer. The
-  service reads no other text of the reply, and posts only its own:
+  service uses only those fields for findings, and posts only its own text:
 
   | Answer                      | Finding ID                | Title                                         | Severity |
   | --------------------------- | ------------------------- | --------------------------------------------- | -------- |
@@ -2069,13 +2074,57 @@ previews).
   of another issue that the PR names now, leaves the finding open. Only the
   issue text or a linked trusted decision moves a criterion to another
   issue. HOME-157 adds service-verified follow-ups, removed criteria and
-  issue switches. The check's State keeps the answer for its head and evidence
-  digest, so a fresh review of the same evidence makes no second call; an
-  unavailable answer is not kept.
+  issue switches. If the code review has no blockers apart from the human
+  gate, any `not_met` gets one confirmation call (HOME-158). That call opens
+  a fresh session with the same evidence and a request to check planned
+  staging. It receives neither the first reply nor the code review's prose.
+  A valid confirmation supplies the verdict, including a confirmed `not_met`.
+  A failed confirmation produces the medium `unavailable` finding; it cannot
+  publish the first answer's high. Existing blockers and human holds still apply.
+  The check's State caches the final answer for its head and evidence digest.
+  A fresh review of that evidence reuses it; unavailable answers are not cached.
+
+  ```mermaid
+  flowchart LR
+    G[Goal reply] --> A[Private audit volume]
+    A --> P[Parse numbers and verdicts]
+    P -->|initial not_met and no code blockers| C[Fresh confirmation session]
+    C --> A
+    P -->|final verdict| S[Service wording]
+    S --> H[Public GitHub check and comment]
+  ```
+
+  **Private audit (HOME-158).** PVC `factory-reviewer-goal-audit` provides
+  1 GiB on the default storage class, mounted only by the reviewer service.
+  JSON files under `/var/lib/factory-reviewer/goal-audit` keep each full final
+  reply, including its rationale and malformed answers. Each record names
+  the repository, PR, head, issue key, evidence HMAC, message, task, session,
+  task state, receipt time and phase (`initial` or `confirmation`).
+  The filename hashes the message and task IDs. Retries keep the first record
+  and timestamp; a replacement task gets its own record.
+  The service syncs the file and directory before deleting the session or
+  accepting the verdict. A failed audit write leaves the session intact and
+  gives a medium `unavailable` finding. Storage errors log only fixed text.
+  The directory has mode `0700`; files have mode `0600`.
+
+  Retention is 14 days from first receipt. The service deletes expired files
+  at startup and hourly, including when no PR is open. Deletion can lag expiry
+  by one hour while the service runs. After downtime, startup removes expired
+  files before reviews start. Temporary files from interrupted writes are removed too.
+  The PVC survives Pod replacement. The chart configures no backup or public read endpoint.
+  Operators with private Pod access can find a PR's records with:
+
+  ```sh
+  kubectl -n factory exec deploy/factory-reviewer -- sh -c \
+    'grep -l "\"pull_request\":8122," /var/lib/factory-reviewer/goal-audit/*.json'
+  ```
+
+  Read the matching files in a private operator console. Never copy replies
+  to GitHub, service logs or public artifacts. Review agents receive no mount.
   **Why.** Joe chose structured verdicts on 2026-11-16
   ([decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6931275436)): fixed wording from enum values cannot carry
-  issue text, whatever the model writes, and the call costs Codex quota
-  only once per head and evidence.
+  issue text, whatever the model writes. HOME-158 adds a private audit after
+  the staged Semgrep implementation in #8122 received a false `not_met`.
 
 - **Human gate.** Joe decided the gate on 2026-11-14 (#7817,
   [decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6878730211))

@@ -261,6 +261,120 @@ func TestGoalPromptHoldsNoPRText(t *testing.T) {
 	}
 }
 
+// Replay the HOME-120/#8122 failure with a synthetic diff and recorded-form
+// replies. This checks the prompt contract and service behavior without a
+// live model call. The human gate still requires approval.
+func TestGoalCheckStagedSemgrepReplay(t *testing.T) {
+	h, api := issueHarness(t)
+	withComments(h)
+	api.issue.Identifier, api.issue.Title = "HOME-120", "Read Semgrep findings in the reviewer"
+	api.issue.Description = "Done when:\n1. Wait for the Semgrep scan on the exact head.\n" +
+		"2. A missing scan adds the semgrep:unverified gate.\n3. A late scan triggers re-review.\n\n" +
+		"Config and rollout: enable Semgrep in a follow-up PR after chart write-back."
+	h.gh.withLock(func() {
+		pr := h.gh.prs[7]
+		pr.Author, pr.Body, pr.HeadRef = "jomcgi-factory[bot]", "Refs HOME-120", "factory/HOME-120"
+		pr.Files = []github.PullRequestFile{
+			{Path: "projects/factory/reviewer/review/semgrep.go", Status: "added", Patch: "+waitForScan(head)\n+gateWhenMissing(\"semgrep:unverified\")\n+reviewAgainOnLateScan(head)"},
+			{Path: "projects/factory/chart/values.yaml", Status: "modified", Patch: "+  semgrep: null"},
+		}
+	})
+	h.k.goalReplies = []string{
+		goalReply(`{"criteria":[{"criterion":1,"verdict":"met"},{"criterion":2,"verdict":"met"},{"criterion":3,"verdict":"not_met"}],"overall":"not_met"}`),
+		"PRIVATE: Config and rollout defers enablement; the diff implements all three paths.\n\n```json\n" +
+			`{"criteria":[{"criterion":1,"verdict":"met"},{"criterion":2,"verdict":"met"},{"criterion":3,"verdict":"after_rollout"}],"overall":"after_rollout"}` + "\n```",
+	}
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	texts := goalTexts(h)
+	if len(texts) != 2 || !strings.Contains(texts[0], "Config and rollout") || !strings.Contains(texts[0], "semgrep: null") ||
+		!strings.Contains(texts[0], `a criterion implemented by this diff behind that switch is "after_rollout", not "not_met"`) ||
+		!strings.Contains(texts[1], "Reassess the issue and diff independently") {
+		t.Fatal("staged replay lost the rollout rule, evidence or independent confirmation")
+	}
+	c := h.gh.check(shaA)
+	st, _ := LoadState(c.Text)
+	if st.Goal == nil || st.Goal.Overall != goalLive || len(st.Goal.Criteria) != 3 || st.Goal.Criteria[2].Verdict != goalLive || len(st.Blocking) != 0 {
+		t.Fatal("staged implementation produced a not_met or blocking goal verdict")
+	}
+	if st.Gate == nil || c.Conclusion != ConclusionFailure {
+		t.Fatal("the staged verdict bypassed the human gate")
+	}
+	for _, m := range h.k.sent() {
+		if strings.Contains(m.MessageID, "/goal/") && m.ContextID != "" {
+			t.Fatal("confirmation must open a fresh session")
+		}
+	}
+	records := auditRecords(t, h.cfg.GoalAudit.(*FileGoalAudit))
+	if len(records) != 2 || records[0].Phase == records[1].Phase || records[0].SessionID == records[1].SessionID {
+		t.Fatal("audit must retain both independent replies")
+	}
+	if strings.Contains(published(t, h)+h.log.String(), "PRIVATE") {
+		t.Fatal("private rationale was published")
+	}
+	// A poll or process restart reuses the settled answer, including the
+	// human gate, without another goal call.
+	e2, ctx2, _ := h.start()
+	e2.Tick(ctx2)
+	e2.Wait()
+	if len(goalTexts(h)) != 2 {
+		t.Fatal("cached confirmation ran again")
+	}
+}
+
+func TestGoalCheckConfirmsEachNegativeAndFailsClosed(t *testing.T) {
+	for _, initial := range []string{
+		`{"criteria":[],"overall":"not_met"}`,
+		`{"criteria":[{"criterion":1,"verdict":"not_met"}],"overall":"met"}`,
+	} {
+		for _, valid := range []bool{false, true} {
+			h, _ := issueHarness(t)
+			second := "PRIVATE malformed confirmation"
+			if valid {
+				second = goalReply(initial)
+			}
+			h.k.goalReplies = []string{goalReply(initial), second}
+			e, ctx, _ := h.start()
+			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+			e.Wait()
+			c := h.gh.check(shaA)
+			st, _ := LoadState(c.Text)
+			if len(goalTexts(h)) != 2 || c.Conclusion != ConclusionFailure || (st.Goal != nil) != valid {
+				t.Fatal("negative needs one confirmation; failed confirmation cannot pass")
+			}
+			if !valid && (len(st.Blocking) != 1 || st.Blocking[0].Severity != SeverityMedium || st.Blocking[0].ID != "HOME-58:goal:unavailable") {
+				t.Fatal("failed confirmation must not publish the first answer's high")
+			}
+		}
+	}
+}
+
+func TestGoalConfirmationNeedsNoCodeBlockers(t *testing.T) {
+	for _, prior := range []bool{false, true} {
+		r := &Report{}
+		finding := Finding{ID: "x.go:correctness", Severity: SeverityHigh}
+		var previous []Finding
+		if prior {
+			previous = []Finding{finding}
+		} else {
+			r.Findings = []Finding{finding}
+		}
+		if codeReviewClear(r, previous, "HOME") {
+			t.Fatal("current and carried code blockers cannot count as a contradiction")
+		}
+	}
+	h, _ := issueHarness(t)
+	h.k.goal = goalReply(`{"criteria":[],"overall":"not_met"}`)
+	e, ctx, _ := h.start()
+	r := &Report{Summary: "Missing implementation", Findings: []Finding{{ID: "x.go:correctness", Severity: SeverityHigh, Title: "Missing handler", Detail: "Implement the handler."}}}
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, r))
+	e.Wait()
+	if len(goalTexts(h)) != 1 || h.gh.check(shaA).Conclusion != ConclusionFailure {
+		t.Fatal("matching code and goal blockers need no confirmation")
+	}
+}
+
 // goalTexts returns the text of each goal check message sent so far.
 func goalTexts(h *harness) []string {
 	var out []string
@@ -294,7 +408,7 @@ func TestGoalCheckPublishesOnlyServiceWording(t *testing.T) {
 	h.k.finish(task, kagent.StateCompleted, report(t, passing))
 	e.Wait()
 	goals := goalTexts(h)
-	if len(goals) != 1 || !strings.Contains(goals[0], "PRIVATE-TWO") || strings.Contains(h.k.sent()[0].Parts[0].Text, "PRIVATE") {
+	if len(goals) != 2 || !strings.Contains(goals[0], "PRIVATE-TWO") || strings.Contains(h.k.sent()[0].Parts[0].Text, "PRIVATE") {
 		t.Fatal("only the goal check may receive the issue")
 	}
 	for _, m := range h.k.sent() {
@@ -312,8 +426,16 @@ func TestGoalCheckPublishesOnlyServiceWording(t *testing.T) {
 	if c.Conclusion != ConclusionFailure || st.Goal == nil || len(st.Goal.Criteria) != 3 || st.Goal.Head != shaA {
 		t.Fatalf("check = %s, goal %+v", c.Conclusion, st.Goal)
 	}
-	if d := cleaner.deletions(); len(d) != 1 || d[0] == "" {
+	if d := cleaner.deletions(); len(d) != 2 || d[0] == "" || d[0] == d[1] {
 		t.Fatalf("goal session deletions = %v", d)
+	}
+	for _, r := range auditRecords(t, h.cfg.GoalAudit.(*FileGoalAudit)) {
+		if r.Reply != h.k.goal || r.Head != shaA || r.Issue != "HOME-58" || r.Digest != st.Goal.Digest {
+			t.Fatal("audit lost the full reply or its evidence binding")
+		}
+	}
+	if strings.Contains(h.log.String(), "PRIVATE") {
+		t.Fatal("goal reply leaked to logs")
 	}
 }
 

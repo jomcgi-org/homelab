@@ -952,8 +952,9 @@ type fakeKagent struct {
 	listErr error
 	// goal is the reply a goal check's task finishes with as it opens;
 	// empty leaves it working. onGoal, if set, runs as it opens.
-	goal   string
-	onGoal func()
+	goal        string
+	onGoal      func()
+	goalReplies []string // Optional successive replies, then fall back to goal.
 }
 
 type fakeTask struct {
@@ -1036,9 +1037,13 @@ func (k *fakeKagent) send(agent kagent.AgentRef, msg kagent.Message) (*kagent.Ta
 	if k.onGoal != nil && strings.Contains(msg.MessageID, "/goal/") {
 		k.onGoal()
 	}
-	if k.goal != "" && strings.Contains(msg.MessageID, "/goal/") {
+	goal := k.goal
+	if strings.Contains(msg.MessageID, "/goal/") && len(k.goalReplies) > 0 {
+		goal, k.goalReplies = k.goalReplies[0], k.goalReplies[1:]
+	}
+	if goal != "" && strings.Contains(msg.MessageID, "/goal/") {
 		t := &k.tasks[id].task
-		reply := &kagent.Message{MessageID: id + "-reply", TaskID: id, Role: "ROLE_AGENT", Parts: []kagent.Part{{Text: k.goal}}}
+		reply := &kagent.Message{MessageID: id + "-reply", TaskID: id, Role: "ROLE_AGENT", Parts: []kagent.Part{{Text: goal}}}
 		t.History, t.Status = append(t.History, reply), kagent.TaskStatus{State: kagent.StateCompleted, Message: reply}
 	}
 	if k.loseResponse {
@@ -1279,12 +1284,17 @@ func (s *syncBuffer) String() string {
 }
 
 func newHarness(t *testing.T) *harness {
+	audit, err := OpenGoalAudit(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	gh, srv := newFakeGitHub(t)
 	k := newFakeKagent()
 	h := &harness{
 		t: t, gh: gh, k: k, m: metrics.New(nil), log: &syncBuffer{}, srv: srv,
 		sessions: &fakeSessions{k: k, set: map[string]*kagent.Session{}, errs: map[string]error{}},
 		cfg: Config{
+			GoalAudit: audit,
 			CheckName: "factory review", AppID: testAppID, Concurrency: 2,
 			TaskPoll: 2 * time.Millisecond, Reissue: 2 * time.Millisecond, Timeout: 10 * time.Second,
 			RetryBackoff: 2 * time.Millisecond, MaxSends: 3, DispatchWindow: 5 * time.Millisecond,

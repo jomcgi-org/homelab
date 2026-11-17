@@ -2,7 +2,8 @@
 // open PRs into the base branch, keeps a `factory review` check run on every
 // head, sends each new head to the binding's kagent reviewer agent,
 // completes the check from the agent's findings and enqueues heads that pass
-// with required CI green. Check runs are its only state
+// with required CI green. Check runs hold review state; a private volume
+// keeps goal replies for audit
 // (projects/factory/ARCHITECTURE.md, "Merge authority"). It holds the
 // reviewer App's token; the agent never sees it.
 package review
@@ -164,6 +165,9 @@ type Config struct {
 	Cleaner SessionCleaner
 	// Quota pauses dispatch while the shared Codex grant is exhausted.
 	Quota Quota
+	// GoalAudit persists private goal replies before their sessions are deleted.
+	// Without it a goal check is unavailable.
+	GoalAudit GoalAudit
 }
 
 // Engine runs the reviewer.
@@ -1805,7 +1809,7 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		if key == "" {
 			in.goal = nil // The State keeps no answer for another issue.
 		} else {
-			in.goal = e.goalCheck(ctx, b, pr, in, l)
+			in.goal = e.goalCheck(ctx, b, pr, in, r, l)
 		}
 		prior := in.prior.Previous()
 		since, err := e.interdiff(ctx, b, pr, in, l)

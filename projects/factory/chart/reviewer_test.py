@@ -207,6 +207,7 @@ def test_one_kept_identity_and_private_image() -> None:
     for probe in ("readinessProbe", "livenessProbe"):
         assert container[probe]["httpGet"] == {"path": "/healthz", "port": "metrics"}
     assert pod["securityContext"]["runAsNonRoot"] is True
+    assert pod["securityContext"]["fsGroupChangePolicy"] == "OnRootMismatch"
     assert container["securityContext"] == {
         "allowPrivilegeEscalation": False,
         "readOnlyRootFilesystem": True,
@@ -229,6 +230,35 @@ def test_tokens_and_config_paths_match_the_pod() -> None:
     volumes = {v["name"]: v for v in pod["volumes"]}
     mounts = {m["name"]: m for m in pod["containers"][0]["volumeMounts"]}
     config = _config(docs, "factory-reviewer")
+
+    claim = _in(docs, "PersistentVolumeClaim", "factory", "factory-reviewer-goal-audit")
+    assert claim["spec"]["accessModes"] == ["ReadWriteOnce"]
+    assert claim["spec"]["resources"]["requests"]["storage"] == "1Gi"
+    deploy = _in(docs, "Deployment", "factory", "factory-reviewer")
+    assert (
+        claim["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]
+        == deploy["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]
+    )
+    assert (
+        volumes["goal-audit"]["persistentVolumeClaim"]["claimName"]
+        == claim["metadata"]["name"]
+    )
+    assert mounts["goal-audit"] == {
+        "name": "goal-audit",
+        "mountPath": "/var/lib/factory-reviewer",
+    }
+    # No agent or other workload receives the private audit volume.
+    for workload in docs:
+        if workload["kind"] not in ("Deployment", "StatefulSet", "DaemonSet", "Job"):
+            continue
+        if workload["metadata"]["name"] == "factory-reviewer":
+            continue
+        other = workload["spec"]["template"]["spec"]
+        assert not any(
+            v.get("persistentVolumeClaim", {}).get("claimName")
+            == claim["metadata"]["name"]
+            for v in other.get("volumes", [])
+        )
     for name, audience, key in (
         ("broker-token", "factory-broker", "brokerTokenFile"),
         ("kagent-token", "kagent-invocation", "kagentTokenFile"),
