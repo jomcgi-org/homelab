@@ -90,7 +90,7 @@ const HARD_Y: YAxis<Model> = {
   title: "Hard-task pass",
   axis: "hard-task pass",
   point: "of hard tasks",
-  corner: "Claude\'s pass rate, for less",
+  corner: "Claude's pass rate, for less",
 };
 const TABS: MetricKey[] = ["cost", "wall", "tokens", "turns"];
 const W = 1040,

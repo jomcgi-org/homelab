@@ -7,6 +7,9 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Not available")));
 });
 
+// Supply build-time HTML to the page registry, including deferred islands.
+vi.stubEnv("SSR", true);
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
