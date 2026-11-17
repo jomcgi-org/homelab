@@ -2,7 +2,10 @@
 
 Everything here runs on exactly one replica at a time (the elected leader):
 the Discord bot, the outbox drain that posts rows enqueued by any replica or
-Argo job and the bot-coupled message-lock sweep. The framework invokes
+Argo job and the bot-coupled message-lock sweep. With
+``DISCORD_GATEWAY_ENABLED=false`` the bot logs in over REST only: the outbox
+drain and the scheduler still run, and the gateway work (replies, commands,
+ambient processing, the lock sweep) does not. The framework invokes
 ``leader_start`` on acquire and
 ``leader_stop`` on resign/shutdown (see framework/core.py).
 """
@@ -70,21 +73,37 @@ async def leader_start(app: FastAPI) -> list[asyncio.Task]:
     bot = create_bot()
     app.state.bot = bot
 
+    # Discord gives every process with the token its own gateway session, and
+    # each one receives every message. When another process (the factory's
+    # Discord bridge, HOME-162) holds the session, this one must not open a
+    # second, or each tag gets two replies. login() alone is REST: it fetches
+    # channels and sends, and on_ready (the command sync) never runs.
+    gateway = os.environ.get("DISCORD_GATEWAY_ENABLED", "true").lower() != "false"
+
     async def _start_bot_when_ready():
+        if not gateway:
+            await bot.login(discord_token)
+            logger.info("Discord bot logged in over REST only; gateway off")
+            return
         await wait_for_sidecar()
         await bot.start(discord_token)
+
+    def _ready() -> bool:
+        return bot.is_ready() if gateway else bot.user is not None
 
     bot_task = asyncio.create_task(_start_bot_when_ready())
     bot_task.add_done_callback(log_task_exception)
     register_leader_tasks(app, [bot_task])
     tasks.append(bot_task)
-    logger.info("Discord bot starting")
+    logger.info("Discord bot starting (gateway=%s)", gateway)
 
     # Leader-only Discord outbox drain: posts rows enqueued by any replica
     # or Argo job (notify, changelog) through this pod's bot connection.
     from chat.outbox import run_outbox_drain
 
-    drain_task = asyncio.create_task(run_outbox_drain(bot, get_engine()))
+    drain_task = asyncio.create_task(
+        run_outbox_drain(bot, get_engine(), ready=_ready)
+    )
     drain_task.add_done_callback(log_task_exception)
     register_leader_tasks(app, [drain_task])
     tasks.append(drain_task)
@@ -101,6 +120,10 @@ async def leader_start(app: FastAPI) -> list[asyncio.Task]:
     register_leader_tasks(app, [scheduler_task])
     tasks.append(scheduler_task)
     logger.info("Discord scheduled-task drain starting")
+
+    if not gateway:
+        # The lock sweep re-processes messages the gateway received.
+        return tasks
 
     # Bot-coupled lock sweep (reclaims expired message locks via SKIP LOCKED).
     async def _lock_sweep_loop():

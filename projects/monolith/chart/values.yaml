@@ -1580,6 +1580,11 @@ healthAlerts:
 
 chat:
   enabled: false
+  # false: no Discord gateway session. The leader logs in over REST only, so
+  # the outbox drain and the reminder scheduler still post, while replies,
+  # slash commands, ambient processing and the lock sweep stay off. Set it
+  # when another process holds the same bot token's gateway session (HOME-221).
+  discordGateway: true
   # Pause Discord attention classification and automatic message triggers.
   # Keeps storage/KG, mentions, commands, agent threads and Notify running.
   discordAmbientEnabled: true
