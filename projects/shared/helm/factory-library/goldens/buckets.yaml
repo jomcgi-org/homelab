@@ -30,6 +30,26 @@ Secret/consumer-factory-public-mirror-s3:
       argocd.argoproj.io/sync-options: Prune=false,Delete=false
       helm.sh/resource-policy: keep
   type: Opaque
+ConfigMap/consumer-factory-public-s3:
+  apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: consumer-factory-public-s3
+    labels:
+      factory.jomcgi.dev/garage-bucket: factory-public
+      factory.jomcgi.dev/garage-access: write
+    annotations:
+      argocd.argoproj.io/sync-wave: '-2'
+ConfigMap/consumer-factory-public-mirror-s3:
+  apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: consumer-factory-public-mirror-s3
+    labels:
+      factory.jomcgi.dev/garage-bucket: factory-public
+      factory.jomcgi.dev/garage-access: read
+    annotations:
+      argocd.argoproj.io/sync-wave: '-2'
 Role/consumer-factory-public-s3:
   apiVersion: rbac.authorization.k8s.io/v1
   kind: Role
@@ -75,7 +95,7 @@ Role/consumer-garage-discovery:
   - apiGroups:
     - ''
     resources:
-    - secrets
+    - configmaps
     verbs:
     - list
 RoleBinding/consumer-factory-public-s3:
@@ -169,6 +189,7 @@ CronJob/consumer-factory-public-mirror:
   spec:
     schedule: '* * * * *'
     concurrencyPolicy: Forbid
+    suspend: false
     jobTemplate:
       spec:
         backoffLimit: 1
@@ -366,30 +387,169 @@ ValidatingAdmissionPolicy/test-consumer-factory-public-mirror-r2:
     - name: mirror-namespace
       expression: request.namespace == "test"
     variables:
+    - name: podSpec
+      expression: object.spec
+    - name: usesAccount
+      expression: (has(variables.podSpec.serviceAccountName) && variables.podSpec.serviceAccountName
+        == "consumer-factory-public-mirror") || (has(variables.podSpec.serviceAccount)
+        && variables.podSpec.serviceAccount == "consumer-factory-public-mirror")
     - name: usesSecret
-      expression: "(has(object.spec.volumes) && object.spec.volumes.exists(v,\n  (has(v.secret)\
-        \ && v.secret.secretName == \"consumer-factory-public-mirror-r2\") ||\n  (has(v.projected)\
-        \ && v.projected.sources.exists(s,\n    has(s.secret) && s.secret.name ==\
-        \ \"consumer-factory-public-mirror-r2\")))) ||\n(has(object.spec.imagePullSecrets)\
-        \ && object.spec.imagePullSecrets.exists(s,\n  s.name == \"consumer-factory-public-mirror-r2\"\
-        )) ||\nobject.spec.containers.exists(c,\n  (has(c.envFrom) && c.envFrom.exists(e,\n\
+      expression: "(has(variables.podSpec.volumes) && variables.podSpec.volumes.exists(v,\n\
+        \  (has(v.secret) && v.secret.secretName == \"consumer-factory-public-mirror-r2\"\
+        ) ||\n  (has(v.projected) && v.projected.sources.exists(s,\n    has(s.secret)\
+        \ && s.secret.name == \"consumer-factory-public-mirror-r2\")))) ||\n(has(variables.podSpec.imagePullSecrets)\
+        \ && variables.podSpec.imagePullSecrets.exists(s,\n  s.name == \"consumer-factory-public-mirror-r2\"\
+        )) ||\nvariables.podSpec.containers.exists(c,\n  (has(c.envFrom) && c.envFrom.exists(e,\n\
         \    has(e.secretRef) && e.secretRef.name == \"consumer-factory-public-mirror-r2\"\
         )) ||\n  (has(c.env) && c.env.exists(e,\n    has(e.valueFrom) && has(e.valueFrom.secretKeyRef)\
         \ &&\n    e.valueFrom.secretKeyRef.name == \"consumer-factory-public-mirror-r2\"\
-        ))) ||\n(has(object.spec.initContainers) && object.spec.initContainers.exists(c,\n\
+        ))) ||\n(has(variables.podSpec.initContainers) && variables.podSpec.initContainers.exists(c,\n\
         \  (has(c.envFrom) && c.envFrom.exists(e,\n    has(e.secretRef) && e.secretRef.name\
         \ == \"consumer-factory-public-mirror-r2\")) ||\n  (has(c.env) && c.env.exists(e,\n\
         \    has(e.valueFrom) && has(e.valueFrom.secretKeyRef) &&\n    e.valueFrom.secretKeyRef.name\
-        \ == \"consumer-factory-public-mirror-r2\")))) ||\n(has(object.spec.ephemeralContainers)\
-        \ && object.spec.ephemeralContainers.exists(c,\n  (has(c.envFrom) && c.envFrom.exists(e,\n\
-        \    has(e.secretRef) && e.secretRef.name == \"consumer-factory-public-mirror-r2\"\
+        \ == \"consumer-factory-public-mirror-r2\")))) ||\n(has(variables.podSpec.ephemeralContainers)\
+        \ && variables.podSpec.ephemeralContainers.exists(c,\n  (has(c.envFrom) &&\
+        \ c.envFrom.exists(e,\n    has(e.secretRef) && e.secretRef.name == \"consumer-factory-public-mirror-r2\"\
         )) ||\n  (has(c.env) && c.env.exists(e,\n    has(e.valueFrom) && has(e.valueFrom.secretKeyRef)\
         \ &&\n    e.valueFrom.secretKeyRef.name == \"consumer-factory-public-mirror-r2\"\
         ))))"
     validations:
-    - expression: '!variables.usesSecret || (has(object.spec.serviceAccountName) &&
-        object.spec.serviceAccountName == "consumer-factory-public-mirror")'
-      message: Only this mirror ServiceAccount may use its R2 Secret.
+    - expression: "!(variables.usesSecret || variables.usesAccount) || (request.operation\
+        \ == \"UPDATE\" && oldObject != null &&\n  request.userInfo.username == \"\
+        system:serviceaccount:kube-system:generic-garbage-collector\" &&\n  object.spec\
+        \ == oldObject.spec) ||\n(has(variables.podSpec.serviceAccountName) && variables.podSpec.serviceAccountName\
+        \ == \"consumer-factory-public-mirror\" &&\n  request.userInfo.username in\
+        \ [\"system:serviceaccount:kube-system:job-controller\"] &&\n  has(object.metadata.ownerReferences)\
+        \ && object.metadata.ownerReferences.exists(o,\n    o.apiVersion == \"batch/v1\"\
+        \ && o.kind == \"Job\" &&\n    has(o.controller) && o.controller) && request.subResource\
+        \ != \"ephemeralcontainers\")"
+      message: Only the mirror controller chain may use its R2 Secret or ServiceAccount.
+ValidatingAdmissionPolicy/test-consumer-factory-public-mirror-r2-jobs:
+  apiVersion: admissionregistration.k8s.io/v1
+  kind: ValidatingAdmissionPolicy
+  metadata:
+    name: test-consumer-factory-public-mirror-r2-jobs
+    annotations:
+      argocd.argoproj.io/sync-wave: '-3'
+      argocd.argoproj.io/sync-options: Prune=false,Delete=false
+      helm.sh/resource-policy: keep
+  spec:
+    failurePolicy: Fail
+    matchConstraints:
+      resourceRules:
+      - apiGroups:
+        - batch
+        apiVersions:
+        - v1
+        operations:
+        - CREATE
+        - UPDATE
+        resources:
+        - jobs
+    matchConditions:
+    - name: mirror-namespace
+      expression: request.namespace == "test"
+    variables:
+    - name: podSpec
+      expression: object.spec.template.spec
+    - name: usesAccount
+      expression: (has(variables.podSpec.serviceAccountName) && variables.podSpec.serviceAccountName
+        == "consumer-factory-public-mirror") || (has(variables.podSpec.serviceAccount)
+        && variables.podSpec.serviceAccount == "consumer-factory-public-mirror")
+    - name: usesSecret
+      expression: "(has(variables.podSpec.volumes) && variables.podSpec.volumes.exists(v,\n\
+        \  (has(v.secret) && v.secret.secretName == \"consumer-factory-public-mirror-r2\"\
+        ) ||\n  (has(v.projected) && v.projected.sources.exists(s,\n    has(s.secret)\
+        \ && s.secret.name == \"consumer-factory-public-mirror-r2\")))) ||\n(has(variables.podSpec.imagePullSecrets)\
+        \ && variables.podSpec.imagePullSecrets.exists(s,\n  s.name == \"consumer-factory-public-mirror-r2\"\
+        )) ||\nvariables.podSpec.containers.exists(c,\n  (has(c.envFrom) && c.envFrom.exists(e,\n\
+        \    has(e.secretRef) && e.secretRef.name == \"consumer-factory-public-mirror-r2\"\
+        )) ||\n  (has(c.env) && c.env.exists(e,\n    has(e.valueFrom) && has(e.valueFrom.secretKeyRef)\
+        \ &&\n    e.valueFrom.secretKeyRef.name == \"consumer-factory-public-mirror-r2\"\
+        ))) ||\n(has(variables.podSpec.initContainers) && variables.podSpec.initContainers.exists(c,\n\
+        \  (has(c.envFrom) && c.envFrom.exists(e,\n    has(e.secretRef) && e.secretRef.name\
+        \ == \"consumer-factory-public-mirror-r2\")) ||\n  (has(c.env) && c.env.exists(e,\n\
+        \    has(e.valueFrom) && has(e.valueFrom.secretKeyRef) &&\n    e.valueFrom.secretKeyRef.name\
+        \ == \"consumer-factory-public-mirror-r2\")))) ||\n(has(variables.podSpec.ephemeralContainers)\
+        \ && variables.podSpec.ephemeralContainers.exists(c,\n  (has(c.envFrom) &&\
+        \ c.envFrom.exists(e,\n    has(e.secretRef) && e.secretRef.name == \"consumer-factory-public-mirror-r2\"\
+        )) ||\n  (has(c.env) && c.env.exists(e,\n    has(e.valueFrom) && has(e.valueFrom.secretKeyRef)\
+        \ &&\n    e.valueFrom.secretKeyRef.name == \"consumer-factory-public-mirror-r2\"\
+        ))))"
+    validations:
+    - expression: "!(variables.usesSecret || variables.usesAccount) || (request.operation\
+        \ == \"UPDATE\" && oldObject != null &&\n  request.userInfo.username == \"\
+        system:serviceaccount:kube-system:generic-garbage-collector\" &&\n  object.spec\
+        \ == oldObject.spec) ||\n(has(variables.podSpec.serviceAccountName) && variables.podSpec.serviceAccountName\
+        \ == \"consumer-factory-public-mirror\" &&\n  request.userInfo.username in\
+        \ [\"system:serviceaccount:kube-system:cronjob-controller\", \"system:serviceaccount:kube-system:job-controller\"\
+        ] &&\n  has(object.metadata.ownerReferences) && object.metadata.ownerReferences.exists(o,\n\
+        \    o.apiVersion == \"batch/v1\" && o.kind == \"CronJob\" &&\n    o.name\
+        \ == \"consumer-factory-public-mirror\" &&\n    has(o.controller) && o.controller)\
+        \ &&\n  (request.operation != \"CREATE\" || request.userInfo.username == \"\
+        system:serviceaccount:kube-system:cronjob-controller\"))"
+      message: Only the mirror controller chain may use its R2 Secret or ServiceAccount.
+ValidatingAdmissionPolicy/test-consumer-factory-public-mirror-r2-cronjobs:
+  apiVersion: admissionregistration.k8s.io/v1
+  kind: ValidatingAdmissionPolicy
+  metadata:
+    name: test-consumer-factory-public-mirror-r2-cronjobs
+    annotations:
+      argocd.argoproj.io/sync-wave: '-3'
+      argocd.argoproj.io/sync-options: Prune=false,Delete=false
+      helm.sh/resource-policy: keep
+  spec:
+    failurePolicy: Fail
+    matchConstraints:
+      resourceRules:
+      - apiGroups:
+        - batch
+        apiVersions:
+        - v1
+        operations:
+        - CREATE
+        - UPDATE
+        resources:
+        - cronjobs
+    matchConditions:
+    - name: mirror-namespace
+      expression: request.namespace == "test"
+    variables:
+    - name: podSpec
+      expression: object.spec.jobTemplate.spec.template.spec
+    - name: usesAccount
+      expression: (has(variables.podSpec.serviceAccountName) && variables.podSpec.serviceAccountName
+        == "consumer-factory-public-mirror") || (has(variables.podSpec.serviceAccount)
+        && variables.podSpec.serviceAccount == "consumer-factory-public-mirror")
+    - name: usesSecret
+      expression: "(has(variables.podSpec.volumes) && variables.podSpec.volumes.exists(v,\n\
+        \  (has(v.secret) && v.secret.secretName == \"consumer-factory-public-mirror-r2\"\
+        ) ||\n  (has(v.projected) && v.projected.sources.exists(s,\n    has(s.secret)\
+        \ && s.secret.name == \"consumer-factory-public-mirror-r2\")))) ||\n(has(variables.podSpec.imagePullSecrets)\
+        \ && variables.podSpec.imagePullSecrets.exists(s,\n  s.name == \"consumer-factory-public-mirror-r2\"\
+        )) ||\nvariables.podSpec.containers.exists(c,\n  (has(c.envFrom) && c.envFrom.exists(e,\n\
+        \    has(e.secretRef) && e.secretRef.name == \"consumer-factory-public-mirror-r2\"\
+        )) ||\n  (has(c.env) && c.env.exists(e,\n    has(e.valueFrom) && has(e.valueFrom.secretKeyRef)\
+        \ &&\n    e.valueFrom.secretKeyRef.name == \"consumer-factory-public-mirror-r2\"\
+        ))) ||\n(has(variables.podSpec.initContainers) && variables.podSpec.initContainers.exists(c,\n\
+        \  (has(c.envFrom) && c.envFrom.exists(e,\n    has(e.secretRef) && e.secretRef.name\
+        \ == \"consumer-factory-public-mirror-r2\")) ||\n  (has(c.env) && c.env.exists(e,\n\
+        \    has(e.valueFrom) && has(e.valueFrom.secretKeyRef) &&\n    e.valueFrom.secretKeyRef.name\
+        \ == \"consumer-factory-public-mirror-r2\")))) ||\n(has(variables.podSpec.ephemeralContainers)\
+        \ && variables.podSpec.ephemeralContainers.exists(c,\n  (has(c.envFrom) &&\
+        \ c.envFrom.exists(e,\n    has(e.secretRef) && e.secretRef.name == \"consumer-factory-public-mirror-r2\"\
+        )) ||\n  (has(c.env) && c.env.exists(e,\n    has(e.valueFrom) && has(e.valueFrom.secretKeyRef)\
+        \ &&\n    e.valueFrom.secretKeyRef.name == \"consumer-factory-public-mirror-r2\"\
+        ))))"
+    validations:
+    - expression: "!(variables.usesSecret || variables.usesAccount || object.metadata.name\
+        \ == \"consumer-factory-public-mirror\") || (request.operation == \"UPDATE\"\
+        \ && oldObject != null &&\n  request.userInfo.username == \"system:serviceaccount:kube-system:generic-garbage-collector\"\
+        \ &&\n  object.spec == oldObject.spec) ||\n(has(variables.podSpec.serviceAccountName)\
+        \ && variables.podSpec.serviceAccountName == \"consumer-factory-public-mirror\"\
+        \ &&\n  object.metadata.name == \"consumer-factory-public-mirror\" &&\n  request.userInfo.username\
+        \ == \"system:serviceaccount:argocd:argocd-application-controller\")"
+      message: Only the mirror controller chain may use its R2 Secret or ServiceAccount.
 ValidatingAdmissionPolicyBinding/test-consumer-factory-public-mirror-r2:
   apiVersion: admissionregistration.k8s.io/v1
   kind: ValidatingAdmissionPolicyBinding
@@ -401,5 +561,31 @@ ValidatingAdmissionPolicyBinding/test-consumer-factory-public-mirror-r2:
       helm.sh/resource-policy: keep
   spec:
     policyName: test-consumer-factory-public-mirror-r2
+    validationActions:
+    - Deny
+ValidatingAdmissionPolicyBinding/test-consumer-factory-public-mirror-r2-jobs:
+  apiVersion: admissionregistration.k8s.io/v1
+  kind: ValidatingAdmissionPolicyBinding
+  metadata:
+    name: test-consumer-factory-public-mirror-r2-jobs
+    annotations:
+      argocd.argoproj.io/sync-wave: '-3'
+      argocd.argoproj.io/sync-options: Prune=false,Delete=false
+      helm.sh/resource-policy: keep
+  spec:
+    policyName: test-consumer-factory-public-mirror-r2-jobs
+    validationActions:
+    - Deny
+ValidatingAdmissionPolicyBinding/test-consumer-factory-public-mirror-r2-cronjobs:
+  apiVersion: admissionregistration.k8s.io/v1
+  kind: ValidatingAdmissionPolicyBinding
+  metadata:
+    name: test-consumer-factory-public-mirror-r2-cronjobs
+    annotations:
+      argocd.argoproj.io/sync-wave: '-3'
+      argocd.argoproj.io/sync-options: Prune=false,Delete=false
+      helm.sh/resource-policy: keep
+  spec:
+    policyName: test-consumer-factory-public-mirror-r2-cronjobs
     validationActions:
     - Deny

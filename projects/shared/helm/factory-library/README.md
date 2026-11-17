@@ -212,6 +212,7 @@ buckets:
       r2Bucket: factory-public
       itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
       # schedule: "* * * * *"
+      # suspend: true  # Stage the mirror while verifying its destination.
 ```
 
 Each entry creates a kept Secret named RELEASE-BUCKET-s3. Its fields are
@@ -220,25 +221,27 @@ Consumers reference those fields through their workload env declarations.
 The ArgoCD Application must ignore /data for each claim Secret and set
 RespectIgnoreDifferences=true and ServerSideApply=true.
 
-Garage provisioning uses the HOME-137 fallback: garage-init discovers Secrets
-labeled factory.jomcgi.dev/garage-bucket and factory.jomcgi.dev/garage-access.
-It runs after Garage syncs and every ten minutes. No credentials are generated
-during Helm rendering. Existing keys survive retries and Garage rebuilds.
-A narrower access value revokes unwanted permissions without rotating the key.
+Garage provisioning uses the HOME-137 garage-init fallback. Each claim is a
+ConfigMap labeled factory.jomcgi.dev/garage-bucket and
+factory.jomcgi.dev/garage-access, with the same name as its Garage Secret.
+The ConfigMap contains no credentials. Discovery lists namespace metadata and
+then labeled ConfigMap metadata in opted-in namespaces. The consumer grants
+ConfigMap list and only get/update on its named Garage Secrets.
+The garage-init identity cannot list Secrets or read the mirror R2 Secret.
 
-Discovery lists namespace metadata, then labeled Secret metadata in namespaces
-that grant list access. Each consumer renders that namespaced list Role and
-get/update Roles restricted to its claim names. Kubernetes RBAC cannot restrict
-list by label or metadata. The trusted garage-init account can therefore read
-all Secrets in opted-in namespaces, including the mirror credential.
-It receives no cluster-wide Secret permission. Retiring a kept claim requires
-an explicit Garage key revocation; deleting the chart does not revoke the key.
+Reconciliation runs after Garage syncs and every ten minutes. No credentials
+are generated during Helm rendering. Existing keys survive retries and Garage
+rebuilds. Narrower access revokes unwanted rights without rotating the key.
+Retiring a kept claim requires explicit Garage key revocation; deleting the
+chart does not revoke the key.
 
 Adding public creates a separate read-only Garage key, a OnePasswordItem and
-a mirror CronJob. The Job runs every minute with Forbid concurrency, its own
+a mirror CronJob. Its default schedule is every minute with Forbid concurrency, its own
 ServiceAccount and no mounted token. It uses the stock rclone/rclone image at
 the 1.76.0 multi-platform digest. The optional public.image accepts only the
 stock repository and a SHA-256 digest; tags fail rendering.
+Set public.suspend to true while checking a destination. The first consumer
+is suspended until its dedicated bucket, credential scope and endpoint are verified.
 
 The digest comes from the
 [upstream 1.76.0 package](https://github.com/rclone/rclone/pkgs/container/rclone/1515701921?tag=1.76.0).
@@ -247,7 +250,8 @@ publishes the same manifest to Docker Hub and GHCR.
 
 ```mermaid
 flowchart LR
-  claim[Labeled Garage Secret] -->|reconcile| init[garage-init]
+  claim[Labeled claim ConfigMap] -->|discover| init[garage-init]
+  init -->|get and update named key only| key[Garage Secret]
   init -->|bucket and scoped key| garage[Garage]
   item[1Password item] -->|operator| credential[R2 Secret]
   garage -->|read on 3900| mirror[rclone CronJob]
@@ -265,10 +269,34 @@ R2 hostname on 443. The script rejects an endpoint that differs from that host.
 A new R2 account requires a reviewed change to factory-library.r2Host.
 No wildcard R2 egress is rendered.
 
-A kept ValidatingAdmissionPolicy and Deny binding restrict the R2 Secret to
-that mirror's ServiceAccount in its namespace. They check direct and projected
-volumes, env, envFrom, imagePullSecrets, init containers and ephemeral containers.
-These policies govern Pod references, not direct Kubernetes Secret API reads.
+Three kept ValidatingAdmissionPolicies and Deny bindings guard the R2 Secret
+and reserved mirror ServiceAccount. They check volumes, projected volumes,
+env, envFrom, imagePullSecrets, init containers and ephemeral containers.
+The rules check authenticated API callers and the controller ownership chain:
+
+```mermaid
+flowchart LR
+  argo[ArgoCD application controller] -->|create or update named CronJob| cron[Mirror CronJob]
+  cc[kube-system cronjob-controller] -->|create owned Job| job[Mirror Job]
+  jc[kube-system job-controller] -->|create owned Pod| pod[Mirror Pod]
+  pod -->|mirror ServiceAccount| secret[R2 Secret]
+```
+
+A Pod creator cannot opt into this chain by choosing a ServiceAccount or
+forging owner references. Job and CronJob creation are also guarded, so those
+controllers cannot be used to obtain the credential indirectly. Ephemeral
+container updates to mirror Pods are denied. The Job controller may update
+its Jobs; only ArgoCD may change the CronJob, including its suspension.
+The garbage collector may update metadata only, preserving the entire spec.
+
+These checks require the factory cluster's per-controller ServiceAccounts
+(kube-controller-manager --use-service-account-credentials). The identities
+are fixed in the template. Verify them before enabling a new cluster; an
+unrecognized controller fails closed. The existing Substrate identity guard
+uses the same cluster convention. Cluster administrators, ArgoCD, the two
+controllers and principals that can impersonate them remain trusted.
+Direct Secret reads and exec access require separate RBAC; these policies do
+not grant either capability. The mirror ServiceAccount has no API permissions.
 
 Each run syncs payloads excluding the root manifest.json with
 Cache-Control: public, max-age=31536000, immutable. After a successful sync,

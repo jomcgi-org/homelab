@@ -5,7 +5,7 @@
 # ArgoCD owns garage-secrets and each consumer's key Secret as empty
 # placeholders and ignores their data. Each consumer namespace grants the
 # garage-init ServiceAccount get and update on its own Secret names. Library
-# consumers also grant namespaced Secret list for metadata discovery. The
+# consumers grant namespaced ConfigMap list for non-secret claim discovery. The
 # cluster role below lists namespaces; it grants no cluster-wide Secret access.
 apiVersion: v1
 kind: Secret

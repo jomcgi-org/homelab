@@ -360,6 +360,43 @@ def test_public_bucket_defaults(chart):
     golden("buckets", docs)
 
 
+def test_bucket_discovery_cannot_list_credentials(chart):
+    docs = objects(render(chart, bucket_config()))
+    claims = {
+        d["metadata"]["name"]: d for d in docs.values() if d["kind"] == "ConfigMap"
+    }
+    secrets = {d["metadata"]["name"] for d in docs.values() if d["kind"] == "Secret"}
+    assert set(claims) == secrets
+    assert len(claims) == 2
+    assert all("data" not in claim for claim in claims.values())
+    for claim in claims.values():
+        assert claim["metadata"]["labels"]["factory.jomcgi.dev/garage-bucket"] == (
+            "factory-public"
+        )
+    for doc in docs.values():
+        if doc["kind"] != "Role":
+            continue
+        for rule in doc["rules"]:
+            if "secrets" in rule["resources"]:
+                assert rule["verbs"] == ["get", "update"]
+                assert set(rule["resourceNames"]) <= secrets
+            else:
+                assert rule == {
+                    "apiGroups": [""],
+                    "resources": ["configmaps"],
+                    "verbs": ["list"],
+                }
+
+
+@pytest.mark.parametrize("suspend", [False, True])
+def test_public_bucket_suspension(chart, suspend):
+    config = bucket_config()
+    config["buckets"][0]["public"]["suspend"] = suspend
+    job = objects(render(chart, config))["CronJob/consumer-factory-public-mirror"]
+    assert job["spec"]["suspend"] is suspend
+    assert job["spec"]["schedule"] == "* * * * *"
+
+
 def test_private_bucket_and_custom_schedule(chart):
     config = bucket_config()
     config["buckets"][0].pop("public")

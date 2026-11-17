@@ -13,8 +13,8 @@ The consumer's Secret is the source of truth for its key: credentials are
 generated into it when absent and imported into Garage when Garage lacks
 them, so a rerun never rotates a key and a rebuilt Garage gets the same keys
 back. ArgoCD creates every Secret named here empty and ignores its data; this
-script only updates those names. Library consumers also declare labeled
-Secrets, discovered through metadata lists in namespaces that grant list access.
+script only updates those names. Library consumers declare labeled ConfigMaps
+with the same names as their credential Secrets. Discovery never lists Secrets.
 
 Uses only the standard library and the pod's service account token.
 """
@@ -324,14 +324,14 @@ def list_metadata(path, **query):
 
 
 def discover_grants():
-    # Namespace enumeration carries no Secret access. Consumers opt in with a
-    # namespaced list Role; updates remain restricted to exact claim names.
+    # Claims contain no credentials. RBAC allows listing ConfigMaps and only
+    # get/update on each named Garage Secret; it never allows Secret lists.
     for namespace in list_metadata("/api/v1/namespaces"):
         ns = namespace["metadata"]["name"]
-        for secret in list_metadata(
-            f"/api/v1/namespaces/{ns}/secrets", labelSelector=CLAIM_LABEL
+        for claim in list_metadata(
+            f"/api/v1/namespaces/{ns}/configmaps", labelSelector=CLAIM_LABEL
         ):
-            meta = secret["metadata"]
+            meta = claim["metadata"]
             labels = meta.get("labels", {})
             bucket = labels.get(CLAIM_LABEL, "")
             access = labels.get(ACCESS_LABEL, "")

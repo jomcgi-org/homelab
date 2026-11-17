@@ -23,6 +23,7 @@ go_test(
         "@io_k8s_apimachinery//pkg/runtime/schema",
         "@io_k8s_apimachinery//pkg/util/yaml",
         "@io_k8s_client_go//dynamic",
+        "@io_k8s_client_go//rest",
         "@io_k8s_sigs_controller_runtime//pkg/envtest",
     ],
 )

@@ -29,7 +29,8 @@ fi
 
 {{- define "factory-library.mirror" -}}
 {{- $public := .public | default dict -}}
-{{- include "factory-library.keys" (dict "path" "public bucket" "value" $public "allowed" (list "r2Bucket" "schedule" "itemPath" "image")) -}}
+{{- include "factory-library.keys" (dict "path" "public bucket" "value" $public "allowed" (list "r2Bucket" "schedule" "itemPath" "image" "suspend")) -}}
+{{- if and (hasKey $public "suspend") (not (kindIs "bool" $public.suspend)) -}}{{- fail "factory-library: public.suspend must be a boolean" -}}{{- end -}}
 {{- $r2Bucket := required "factory-library: public.r2Bucket is required" $public.r2Bucket -}}
 {{- include "factory-library.name" $r2Bucket -}}
 {{- if lt (len $r2Bucket) 3 -}}{{- fail "factory-library: public.r2Bucket must be at least 3 characters" -}}{{- end -}}
@@ -72,5 +73,5 @@ metadata:
 type: Opaque
 spec:
   itemPath: {{ $path }}
-{{ include "factory-library.cronjob" (dict "root" .root "name" $name "workload" $workload "mirror" true) }}
+{{ include "factory-library.cronjob" (dict "root" .root "name" $name "workload" $workload "mirror" true "suspend" ($public.suspend | default false)) }}
 {{- end -}}
