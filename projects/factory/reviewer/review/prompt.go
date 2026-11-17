@@ -214,8 +214,10 @@ func Prompt(in PromptInput) string {
 		} else {
 			fmt.Fprintf(&b, "The review of the earlier head %s raised these blocking findings. Account for every one in \"previous\": "+
 				"\"fixed\" when the failure it describes no longer occurs, whichever fix was chosen; \"justified\" with a note when it "+
-				"is a medium finding the author has good reason to keep; \"justified\" with a note starting \"withdrawn:\" when the "+
-				"finding was wrong, whatever its severity; \"open\" otherwise. A finding left out stays open. If one is still present, "+
+				"is a medium finding the author has good reason to keep; \"justified\" with a note starting \"decision:\" and the "+
+				"comment's link when it is a high finding whose failure depends only on state you cannot read (a live cluster, a "+
+				"secret store, an outside service) and a trusted comment from Joe names its id and accepts it; \"justified\" with a "+
+				"note starting \"withdrawn:\" when the finding was wrong, whatever its severity; \"open\" otherwise. A finding left out stays open. If one is still present, "+
 				"also report it in \"findings\" with the same id. Never widen a finding under its id: a further variant (another input, "+
 				"path or interleaving) is a new finding with its own id, rated on its own.\n\n",
 				in.PreviousHead)
@@ -244,13 +246,19 @@ func Prompt(in PromptInput) string {
 			if LaterScope(in.PreviousHead, in.Interdiff) != nil {
 				fmt.Fprintf(&b, "Reviews of earlier heads cleared these findings. A fixed one present again on this head is a "+
 					"regression: raise it at its own severity. Raise a justified or withdrawn one again when a change since %s, "+
-					"in any file, affects it, and always when it is present on this head at high or critical severity:\n\n", in.PreviousHead)
+					"in any file, affects it, and always when it is present on this head at high or critical severity. The "+
+					"exception is one marked `decided`: Joe accepted it in a comment the service checked, so raise it again "+
+					"when a change since then affects what his decision covers, or at critical severity:\n\n", in.PreviousHead)
 			} else {
 				b.WriteString("Reviews of earlier heads cleared these findings. The interdiff below cannot show that they stay " +
 					"cleared, so check each again as part of the full review:\n\n")
 			}
 			for _, c := range in.Cleared {
-				fmt.Fprintf(&b, "- `%s` %s: %s", oneLine(c.ID, maxTitle), oneLine(c.Status, 20), oneLine(c.Title, maxTitle))
+				status := c.Status
+				if c.Decision != nil {
+					status = "decided" // Decisions.Revalidate checked Joe's comment.
+				}
+				fmt.Fprintf(&b, "- `%s` %s: %s", oneLine(c.ID, maxTitle), oneLine(status, 20), oneLine(c.Title, maxTitle))
 				if c.Note != "" {
 					fmt.Fprintf(&b, ". Note: %s", oneLine(c.Note, maxClearedNote))
 				}

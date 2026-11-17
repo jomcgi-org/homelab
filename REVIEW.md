@@ -170,8 +170,19 @@ A finding the author shows to be wrong is withdrawn at any severity: check
 the evidence, then report it `justified` with a note that starts
 `withdrawn`. So is a finding that the Severity tests on `main` now rate
 lower than when it was raised: withdraw it with a note naming the test,
-and report it again under the same ID at its new severity. A high or
-critical finding clears no other way.
+and report it again under the same ID at its new severity.
+
+A high finding whose failure depends only on state the reviewer cannot
+read, such as a live cluster, a secret store or an outside service, is
+also justified by Joe's decision in a comment on the PR from his account,
+a `humanApprovers` login. The decision names the finding ID, the evidence
+it accepts and the check after rollout. Report the finding `justified`
+with a note that starts `decision:` and links the comment, only after you
+read that it accepts the evidence and names the check. The service checks
+the author, the link, the finding ID and that the text is unchanged. An
+edit or a deletion of the comment revokes the decision and restores the
+finding. A critical finding, and every other high finding, clears no other
+way.
 
 ## Later heads
 
@@ -181,6 +192,8 @@ PR:
 - Account for each earlier blocking finding as fixed, justified or open,
   under the same ID and severity. A finding is fixed when the failure it
   described no longer occurs, whichever fix the reviewer would have chosen.
+  A finding justified by Joe's decision stays justified while the head
+  leaves alone what the decision covers.
   A further variant is a new finding, rated on its own under the next rule.
 - Review what changed since the last reviewed head and what that affects.
 - On lines the earlier review covered and the new head left alone, a new

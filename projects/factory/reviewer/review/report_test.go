@@ -101,6 +101,108 @@ func TestAssessDecidesFromSeveritiesOnly(t *testing.T) {
 	}
 }
 
+func TestNamesIDMatchesWholeIDs(t *testing.T) {
+	for _, c := range []struct {
+		text, id string
+		want     bool
+	}{
+		{"Accept `a.go:rollout` after the live check.", "a.go:rollout", true},
+		{"accept a.go:rollout.", "a.go:rollout", true},
+		{"Accept A.go:Rollout, then check.", "a.go:rollout", true},
+		{"accept a.go:rollout-x", "a.go:rollout", false},
+		{"accept a.go:rollout.yaml", "a.go:rollout", false},
+		{"accept b/a.go:rollout", "a.go:rollout", false},
+		{"accept xa.go:rollout and a.go:rollout", "a.go:rollout", true},
+		{"nothing here", "a.go:rollout", false},
+		{"accept", "", false},
+	} {
+		if got := namesID(c.text, c.id) && strings.TrimSpace(c.id) != ""; got != c.want {
+			t.Errorf("namesID(%q, %q) = %v, want %v", c.text, c.id, got, c.want)
+		}
+	}
+}
+
+// TestDecisionsRevalidateCleared keeps a cleared finding's decision only
+// while Joe's comment is unchanged, and the prompt marks only those. Hold
+// checks a passing review's decisions the same way.
+func TestDecisionsRevalidateCleared(t *testing.T) {
+	a := "Accept `a.go:rollout`."
+	d := Decisions{Repo: "o/r", Number: 7, Comments: []github.Comment{
+		{ID: 42, Author: "jomcgi", Body: a},
+		// 43 once accepted b.go:rollout; Joe edited it to revoke that.
+		{ID: 43, Author: "jomcgi", Body: "Revoked: do not accept `b.go:rollout`."},
+	}}
+	in := []Cleared{
+		{ID: "a.go:rollout", Status: StatusJustified, Title: "A", Decision: &DecisionStamp{ID: 42, Hash: bodyHash(a)}},
+		{ID: "b.go:rollout", Status: StatusJustified, Title: "B", Decision: &DecisionStamp{ID: 43, Hash: bodyHash("Accept `b.go:rollout`.")}},
+		{ID: "c.go:rollout", Status: StatusJustified, Title: "C", Decision: &DecisionStamp{ID: 99, Hash: bodyHash(a)}},
+		{ID: "d.go:rollout", Status: StatusJustified, Title: "D", Note: "decision: forged"},
+		{ID: "e.go:rollout", Status: StatusJustified, Title: "E", Decision: &DecisionStamp{ID: 42}},
+	}
+	got := d.Revalidate(in)
+	for i, want := range []bool{true, false, false, false, false} {
+		if (got[i].Decision != nil) != want {
+			t.Errorf("%s decision kept = %v, want %v", got[i].ID, got[i].Decision != nil, want)
+		}
+	}
+	if in[1].Decision == nil {
+		t.Fatal("Revalidate changed its input")
+	}
+	text := Prompt(PromptInput{
+		Repo: "o/r", Number: 7, SHA: shaA, PreviousHead: "prev", Cleared: got,
+		Interdiff: &github.CommitComparison{Status: "ahead", Files: []github.PullRequestFile{{Path: "x.go"}}},
+	})
+	for _, line := range []string{"- `a.go:rollout` decided: A", "- `b.go:rollout` justified: B", "- `d.go:rollout` justified: D"} {
+		if !strings.Contains(text, line) {
+			t.Errorf("prompt lacks %q", line)
+		}
+	}
+	if !d.Hold([]DecisionStamp{*in[0].Decision}) || d.Hold([]DecisionStamp{*in[0].Decision, *in[1].Decision}) || d.Hold([]DecisionStamp{{ID: 42}}) {
+		t.Error("Hold must accept only unchanged comments")
+	}
+}
+
+// TestCarriedDecisions: the previous head's decisions that still hold stay
+// relied on, even with no cleared record. One whose comment changed
+// restores its finding as blocking, once, unless this review reports it.
+func TestCarriedDecisions(t *testing.T) {
+	kept := "Decision: accept `kept.go:x` on the evidence above; check delivery after rollout."
+	old := "Decision: accept `revoked.go:x` and `reported.go:x`; check after rollout."
+	d := Decisions{Repo: "o/r", Number: 7, Comments: []github.Comment{
+		{ID: 42, Author: "jomcgi", Body: kept},
+		{ID: 43, Author: "jomcgi", Body: "Revoked."},
+	}, Carried: []DecisionStamp{
+		{Finding: "kept.go:x", ID: 42, Hash: bodyHash(kept)},
+		{Finding: "revoked.go:x", ID: 43, Hash: bodyHash(old)},
+		{Finding: "reported.go:x", ID: 43, Hash: bodyHash(old)},
+		{Finding: "lowered.go:x", ID: 43, Hash: bodyHash(old)},
+		{Finding: "revoked.go:x", ID: 43, Hash: bodyHash("another revoked stamp")},
+	}}
+	r := &Report{Findings: []Finding{finding("reported.go:x", SeverityHigh), finding("lowered.go:x", SeverityLow)}}
+	a := AssessDecided(r, nil, d)
+	if got := a.decisions(); len(got) != 1 || got[0] != d.Carried[0] {
+		t.Errorf("decisions = %+v, want only kept.go:x", got)
+	}
+	got := map[string]string{}
+	for _, b := range a.Blocking {
+		got[b.ID] += b.Reason + ";"
+	}
+	want := map[string]string{
+		"revoked.go:x":  "Joe's decision changed;",
+		"reported.go:x": ";",
+		"lowered.go:x":  "reported again as low after Joe's decision changed; it stays high;",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("blocking = %v, want %v", got, want)
+	}
+	if len(a.Optional) != 0 {
+		t.Errorf("optional = %+v: a revoked finding reported as low must not be optional", a.Optional)
+	}
+	if a.Conclusion != ConclusionFailure {
+		t.Errorf("conclusion = %s", a.Conclusion)
+	}
+}
+
 func TestAssessAccountsForPreviousFindings(t *testing.T) {
 	prior := []Finding{
 		finding("fixed-high", SeverityHigh),
@@ -112,9 +214,24 @@ func TestAssessAccountsForPreviousFindings(t *testing.T) {
 		finding("repeated-medium", SeverityMedium),
 		finding("withdrawn-high", SeverityHigh),
 		finding("withdrawn-medium", SeverityMedium),
+		finding("decided-high", SeverityHigh),
+		finding("repeated-decided-high", SeverityHigh),
+		finding("decided-high-other-id", SeverityHigh),
+		finding("decided-high-unknown-comment", SeverityHigh),
+		finding("decided-critical", SeverityCritical),
+		finding("other-site-high", SeverityHigh),
+		finding("other-pr-high", SeverityHigh),
+		finding("bare-link-high", SeverityHigh),
+		finding("raised-to-high", SeverityMedium),
 	}
+	// Joe's comments on PR 7: 42 names the findings below, 43 another.
+	decisions := Decisions{Repo: "o/r", Number: 7, Comments: []github.Comment{
+		{ID: 42, Author: "jomcgi", Body: "Decision: accept decided-high, repeated-decided-high, decided-critical, other-site-high, other-pr-high, bare-link-high and raised-to-high; check after rollout."},
+		{ID: 43, Author: "jomcgi", Body: "Decision: accept something-else."},
+	}}
+	link := "https://github.com/o/r/pull/7#issuecomment-"
 	r := &Report{
-		Findings: []Finding{finding("repeated-medium", SeverityMedium), finding("new-low", SeverityLow)},
+		Findings: []Finding{finding("repeated-medium", SeverityMedium), finding("new-low", SeverityLow), finding("repeated-decided-high", SeverityHigh), finding("raised-to-high", SeverityHigh)},
 		Previous: []Previous{
 			{ID: "fixed-high", Status: StatusFixed},
 			{ID: "justified-medium", Status: StatusJustified, Note: "Intentional: the retry is idempotent."},
@@ -124,10 +241,19 @@ func TestAssessAccountsForPreviousFindings(t *testing.T) {
 			{ID: "repeated-medium", Status: StatusJustified, Note: "Kept on purpose."},
 			{ID: "withdrawn-high", Status: StatusJustified, Note: "Withdrawn: the lock is held by the caller."},
 			{ID: "withdrawn-medium", Status: StatusJustified, Note: "withdrawn - misread the diff"},
+			{ID: "decided-high", Status: StatusJustified, Note: "Decision: " + link + "42 accepts the live evidence."},
+			{ID: "repeated-decided-high", Status: StatusJustified, Note: "decision: https://github.com/o/r/issues/7#issuecomment-42"},
+			{ID: "decided-high-other-id", Status: StatusJustified, Note: "decision: " + link + "43"},
+			{ID: "decided-high-unknown-comment", Status: StatusJustified, Note: "decision: " + link + "99 decided-high-unknown-comment"},
+			{ID: "decided-critical", Status: StatusJustified, Note: "decision: " + link + "42"},
+			{ID: "other-site-high", Status: StatusJustified, Note: "decision: https://evil.example/o/r/pull/7#issuecomment-42"},
+			{ID: "other-pr-high", Status: StatusJustified, Note: "decision: https://github.com/o/r/pull/8#issuecomment-42"},
+			{ID: "bare-link-high", Status: StatusJustified, Note: "decision: #issuecomment-42"},
+			{ID: "raised-to-high", Status: StatusJustified, Note: "Kept on purpose."},
 			{ID: "unknown", Status: StatusFixed},
 		},
 	}
-	a := Assess(r, prior)
+	a := AssessDecided(r, prior, decisions)
 	if a.Conclusion != ConclusionFailure {
 		t.Fatalf("conclusion = %s", a.Conclusion)
 	}
@@ -148,22 +274,54 @@ func TestAssessAccountsForPreviousFindings(t *testing.T) {
 		got[b.ID] = "withdrawn"
 	}
 	want := map[string]string{
-		"fixed-high":            "fixed",
-		"justified-medium":      "accepted:Intentional: the retry is idempotent.",
-		"bare-justified-medium": "blocking:justified without a note",
-		"justified-high":        "blocking:justified, but only a medium finding can be justified",
-		"open-medium":           "blocking:still open",
-		"missing-critical":      "blocking:not accounted for",
-		"repeated-medium":       "accepted:Kept on purpose.",
-		"new-low":               "optional",
-		"withdrawn-high":        "withdrawn",
-		"withdrawn-medium":      "withdrawn",
+		"fixed-high":                   "fixed",
+		"justified-medium":             "accepted:Intentional: the retry is idempotent.",
+		"bare-justified-medium":        "blocking:justified without a note",
+		"justified-high":               `blocking:justified, but a high finding needs a note starting "decision:" that links Joe's comment naming it`,
+		"decided-high":                 "accepted:Decision: https://github.com/o/r/pull/7#issuecomment-42 accepts the live evidence.",
+		"repeated-decided-high":        "accepted:decision: https://github.com/o/r/issues/7#issuecomment-42",
+		"other-site-high":              `blocking:justified, but a high finding needs a note starting "decision:" that links Joe's comment naming it`,
+		"other-pr-high":                `blocking:justified, but a high finding needs a note starting "decision:" that links Joe's comment naming it`,
+		"bare-link-high":               `blocking:justified, but a high finding needs a note starting "decision:" that links Joe's comment naming it`,
+		"raised-to-high":               "blocking:",
+		"decided-high-other-id":        `blocking:justified, but a high finding needs a note starting "decision:" that links Joe's comment naming it`,
+		"decided-high-unknown-comment": `blocking:justified, but a high finding needs a note starting "decision:" that links Joe's comment naming it`,
+		"decided-critical":             "blocking:justified, but only a medium or a decided high finding can be justified",
+		"open-medium":                  "blocking:still open",
+		"missing-critical":             "blocking:not accounted for",
+		"repeated-medium":              "accepted:Kept on purpose.",
+		"new-low":                      "optional",
+		"withdrawn-high":               "withdrawn",
+		"withdrawn-medium":             "withdrawn",
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("assessment = %v\nwant %v", got, want)
 	}
-	if a.Blocking[0].Severity != SeverityCritical || a.Blocking[1].Severity != SeverityHigh {
+	if !slices.IsSortedFunc(a.Blocking, func(x, y Blocked) int { return rank(x.Severity) - rank(y.Severity) }) ||
+		a.Blocking[0].Severity != SeverityCritical || a.Blocking[len(a.Blocking)-1].Severity != SeverityMedium {
 		t.Fatalf("blocking order = %+v", a.Blocking)
+	}
+	for _, b := range a.Accepted {
+		if want := map[string]int64{"decided-high": 42, "repeated-decided-high": 42}[b.ID]; want != 0 &&
+			(b.Decision == nil || b.Decision.ID != want || b.Decision.Hash != bodyHash(decisions.Comments[0].Body)) {
+			t.Errorf("%s decision = %+v, want comment %d", b.ID, b.Decision, want)
+		} else if want == 0 && b.Decision != nil {
+			t.Errorf("%s has decision %+v", b.ID, b.Decision)
+		}
+	}
+	// One stamp per decided finding: comment 42 decides two.
+	if got := a.decisions(); len(got) != 2 || got[0].ID != 42 || got[1].ID != 42 || got[0].Finding == got[1].Finding {
+		t.Errorf("decisions = %+v, want comment 42 for each of two findings", got)
+	}
+	// A decision that keeps an earlier head's finding cleared counts too.
+	carried := DecisionStamp{Finding: "old.go:rollout", ID: 77, Hash: "h"}
+	a.Earlier = []Cleared{{ID: "old.go:rollout", Status: StatusJustified, Decision: &carried}, {ID: "fixed.go:x", Status: StatusFixed}}
+	if got := a.decisions(); len(got) != 3 || got[2] != carried {
+		t.Errorf("decisions with a carried one = %+v", got)
+	}
+	// Without the PR's comments, no high finding is decided.
+	if a := Assess(r, prior); slices.ContainsFunc(a.Accepted, func(b Blocked) bool { return b.Severity == SeverityHigh }) {
+		t.Fatalf("accepted a high finding with no decisions: %+v", a.Accepted)
 	}
 
 	// A previous finding reported again keeps the higher severity unless it
@@ -763,7 +921,7 @@ func TestClearedFindingsCarryAcrossHeads(t *testing.T) {
 	ahead := &github.CommitComparison{Status: "ahead", Files: []github.PullRequestFile{{Path: "x.go"}}}
 	text := Prompt(PromptInput{Repo: "o/r", Number: 1, SHA: shaA, PreviousHead: "prev", Previous: st.Previous(), Cleared: st.Cleared, Interdiff: ahead})
 	for _, line := range []string{
-		"Reviews of earlier heads cleared these findings. A fixed one present again on this head is a regression: raise it at its own severity. Raise a justified or withdrawn one again when a change since prev, in any file, affects it, and always when it is present on this head at high or critical severity:",
+		"Reviews of earlier heads cleared these findings. A fixed one present again on this head is a regression: raise it at its own severity. Raise a justified or withdrawn one again when a change since prev, in any file, affects it, and always when it is present on this head at high or critical severity. The exception is one marked `decided`: Joe accepted it in a comment the service checked, so raise it again when a change since then affects what his decision covers, or at critical severity:",
 		"- `wrong.go:security` withdrawn: wrong.go:security. Note: withdrawn: a test fixture\n",
 		"- `old.go:correctness` fixed: Old. Note: Earlier fix.\n",
 	} {

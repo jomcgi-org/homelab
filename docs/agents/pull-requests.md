@@ -60,7 +60,7 @@ holds more than one change.
 
 ## Review findings
 
-- `<finding id>` (<head>): fixed in <sha> | disputed: <reason>.
+- `<finding id>` (<head>): fixed in <sha> | disputed: <reason> | justified: <link to Joe's decision>.
 
 ## Related
 
@@ -77,11 +77,19 @@ Refs HOME-N
 | Review focus | when one part carries the risk | One or two lines that point at the code or decision to check hardest. In a study of 80,000 PRs, stating the feedback you want went with 1.72 times the odds of merging ([arXiv 2602.14611](https://arxiv.org/abs/2602.14611)). |
 | Evidence | always | Each line is a command and its result, with a failure's error inline. Raw output goes in a `<details>` block. List each check or claim you could not verify, and why. A docs-only change says so in one line. |
 | Rollout | deployable changes | What restarts, what data or schema changes, the rollback lever, and the live check after merge. The reviewer rates the risk from these facts. |
-| Review findings | after a round raised findings | One line per finding ID, with the head it was raised on and the answer. The reviewer's PR comment holds the detail. |
+| Review findings | after a round raised findings | One line per finding ID, with the head it was raised on and the answer. The reviewer's PR comment holds the detail. A high finding about state the reviewer cannot read clears with Joe's decision (below). |
 | Related | always | `Refs HOME-N` on its own line when a HOME issue tracks the work, then one line per link. A small explicit request can use its PR as the record (`docs/agents/ship.md`). |
 
 After each review round, read the whole description against the new head.
 Fix every claim that the head no longer supports.
+
+The reviewer cannot read live clusters, secret stores or outside services.
+When a high finding depends only on such state, give the evidence you have
+and ask Joe. His decision is a comment from his account on the PR that
+names the finding ID, the evidence he accepts and the check after rollout
+(`REVIEW.md`, "Clearing a finding without a fix"). A session on his account
+posts it only with the answer Joe gave in that session. Run the check after
+rollout and record its result where the decision says.
 
 ## Links
 

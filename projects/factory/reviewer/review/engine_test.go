@@ -923,7 +923,7 @@ func TestPreviousFindingsCarryToTheNextHead(t *testing.T) {
 	if second.Conclusion != ConclusionFailure || second.Title != "2 blocking findings (1 high, 1 medium)" {
 		t.Fatalf("second = %s: %s", second.Conclusion, second.Title)
 	}
-	for _, want := range []string{"only a medium finding can be justified", "not accounted for", "### Accepted", "The retry is intentional.", "### Withdrawn"} {
+	for _, want := range []string{"a high finding needs a note starting", "not accounted for", "### Accepted", "The retry is intentional.", "### Withdrawn"} {
 		if !strings.Contains(second.Summary, want) {
 			t.Errorf("second summary lacks %q:\n%s", want, second.Summary)
 		}
@@ -956,6 +956,147 @@ func TestPreviousFindingsCarryToTheNextHead(t *testing.T) {
 	if third.Conclusion != ConclusionSuccess || !strings.Contains(third.Summary, "### Fixed since the previous review") {
 		t.Fatalf("third = %s:\n%s", third.Conclusion, third.Summary)
 	}
+}
+
+// TestJoesDecisionJustifiesAHighFinding: a high finding justified with a
+// note that links Joe's comment naming it is accepted, and the next prompt
+// marks it decided until the comment is deleted. The same note on a comment
+// from an untrusted login, from a trusted commenter who is not a human
+// approver, or on Joe's comment naming another finding still blocks.
+func TestJoesDecisionJustifiesAHighFinding(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Bindings[0].TrustedCommenters = []string{"jomcgi", "helper-bot"}
+	addPR7(h)
+	e, ctx, _ := h.start()
+	round := func(sha string, v any) *fakeCheck {
+		t.Helper()
+		if sha != shaA {
+			h.gh.push(7, sha)
+		}
+		h.k.finish(runReview(t, h, e, ctx, 7, sha), kagent.StateCompleted, report(t, v))
+		eventually(t, "the check on "+sha, func() bool { return h.gh.check(sha).Status == "completed" })
+		eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+		return h.gh.check(sha)
+	}
+	first := round(shaA, map[string]any{"summary": "s", "findings": []any{
+		map[string]any{"id": "a.yaml:rollout", "severity": "high", "path": "a.yaml", "title": "Secret unverified"},
+		map[string]any{"id": "b.yaml:rollout", "severity": "high", "path": "b.yaml", "title": "Bucket unverified"},
+		map[string]any{"id": "c.yaml:rollout", "severity": "high", "path": "c.yaml", "title": "Token unverified"},
+		map[string]any{"id": "d.yaml:rollout", "severity": "high", "path": "d.yaml", "title": "Queue unverified"},
+	}})
+	if first.Conclusion != ConclusionFailure {
+		t.Fatalf("first = %+v", first)
+	}
+	h.gh.withLock(func() {
+		h.gh.prs[7].Comments = append(h.gh.prs[7].Comments,
+			github.Comment{ID: 42, Author: "jomcgi", Body: "Decision: accept `a.yaml:rollout`; check delivery after rollout."},
+			github.Comment{ID: 43, Author: "someone", Body: "Decision: accept `b.yaml:rollout`."},
+			github.Comment{ID: 44, Author: "helper-bot", Body: "Decision: accept `d.yaml:rollout`."},
+		)
+	})
+	link := "https://github.com/" + testRepo + "/pull/7#issuecomment-"
+	second := round(strings.Repeat("b", 40), map[string]any{"summary": "s", "findings": []any{}, "previous": []any{
+		map[string]any{"id": "a.yaml:rollout", "status": "justified", "note": "decision: " + link + "42"},
+		map[string]any{"id": "b.yaml:rollout", "status": "justified", "note": "decision: " + link + "43"},
+		map[string]any{"id": "c.yaml:rollout", "status": "justified", "note": "decision: " + link + "42"},
+		map[string]any{"id": "d.yaml:rollout", "status": "justified", "note": "decision: " + link + "44"},
+	}})
+	if second.Conclusion != ConclusionFailure || second.Title != "3 blocking findings (3 high)" {
+		t.Fatalf("second = %s: %s\n%s", second.Conclusion, second.Title, second.Summary)
+	}
+	accepted, _, _ := strings.Cut(second.Summary[strings.Index(second.Summary, "### Accepted"):], "\n### ")
+	if !strings.Contains(accepted, "Secret unverified") || strings.Contains(accepted, "Bucket unverified") ||
+		strings.Contains(accepted, "Token unverified") || strings.Contains(accepted, "Queue unverified") {
+		t.Fatalf("accepted section = %s", accepted)
+	}
+
+	// The next prompt marks the decided finding; once Joe deletes his
+	// comment, it is only justified and is raised again at high.
+	open := map[string]any{"summary": "s", "findings": []any{}, "previous": []any{
+		map[string]any{"id": "b.yaml:rollout", "status": "open"},
+		map[string]any{"id": "c.yaml:rollout", "status": "open"},
+		map[string]any{"id": "d.yaml:rollout", "status": "open"},
+	}}
+	round(strings.Repeat("c", 40), open)
+	if prompt := h.k.sent()[len(h.k.sent())-1].Parts[0].Text; !strings.Contains(prompt, "- `a.yaml:rollout` decided: Secret unverified") {
+		t.Fatalf("the third prompt does not mark the decision:\n%s", prompt)
+	}
+	h.gh.withLock(func() {
+		h.gh.prs[7].Comments = slices.DeleteFunc(h.gh.prs[7].Comments, func(c github.Comment) bool { return c.ID == 42 })
+	})
+	round(strings.Repeat("d", 40), open)
+	if prompt := h.k.sent()[len(h.k.sent())-1].Parts[0].Text; !strings.Contains(prompt, "- `a.yaml:rollout` justified: Secret unverified") {
+		t.Fatalf("the fourth prompt still marks a deleted decision:\n%s", prompt)
+	}
+}
+
+// TestRevokedDecisionWithdrawsAPass: a head passes on Joe's decision, and
+// a later head passes while carrying it. When Joe edits the comment, the
+// next poll fails the later head's check and reviews it again.
+func TestRevokedDecisionWithdrawsAPass(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{
+		map[string]any{"id": "a.yaml:rollout", "severity": "high", "path": "a.yaml", "title": "Secret unverified"},
+	}}))
+	eventually(t, "the first check", func() bool { return h.gh.check(shaA).Conclusion == ConclusionFailure })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	h.gh.withLock(func() {
+		h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 42, Author: "jomcgi", Body: "Decision: accept `a.yaml:rollout` on the Secret evidence; check delivery after rollout."})
+	})
+	shaB := strings.Repeat("b", 40)
+	h.gh.push(7, shaB)
+	h.k.finish(runReview(t, h, e, ctx, 7, shaB), kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{}, "previous": []any{
+		map[string]any{"id": "a.yaml:rollout", "status": "justified", "note": "decision: https://github.com/" + testRepo + "/pull/7#issuecomment-42"},
+	}}))
+	eventually(t, "the decided pass", func() bool { return h.gh.check(shaB).Conclusion == ConclusionSuccess })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	if st, ok := LoadState(h.gh.check(shaB).Text); !ok || len(st.Decisions) != 1 || st.Decisions[0].ID != 42 {
+		t.Fatalf("state decisions = %+v", st.Decisions)
+	}
+	// A later head passes while it carries the decision in its cleared
+	// record, and its State records the decision too.
+	shaC := strings.Repeat("c", 40)
+	h.gh.push(7, shaC)
+	h.k.finish(runReview(t, h, e, ctx, 7, shaC), kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{}}))
+	eventually(t, "the later pass", func() bool { return h.gh.check(shaC).Conclusion == ConclusionSuccess })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	if st, ok := LoadState(h.gh.check(shaC).Text); !ok || len(st.Decisions) != 1 || st.Decisions[0].ID != 42 {
+		t.Fatalf("later state decisions = %+v", st.Decisions)
+	}
+	sent := len(h.k.sent())
+	pass := h.gh.check(shaC).ID
+	h.gh.withLock(func() {
+		for i, c := range h.gh.prs[7].Comments {
+			if c.ID == 42 {
+				h.gh.prs[7].Comments[i].Body = "Revoked: do not accept `a.yaml:rollout`."
+			}
+		}
+	})
+	e.Tick(ctx)
+	// The pass is withdrawn, and a fresh review of the head gets a new check.
+	eventually(t, "the withdrawn pass", func() bool {
+		var c fakeCheck
+		h.gh.withLock(func() {
+			for _, x := range h.gh.checks {
+				if x.ID == pass {
+					c = *x
+				}
+			}
+		})
+		return c.Conclusion == ConclusionFailure && c.Title == "Joe's decision changed"
+	})
+	eventually(t, "a fresh review of the same head", func() bool { return len(h.k.sent()) > sent })
+	// The fresh review reports nothing, but the changed decision restores
+	// its finding.
+	var task string
+	eventually(t, "the fresh review task", func() bool { task = h.taskOn(7, shaC, 1); return task != "" })
+	h.k.finish(task, kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{}}))
+	eventually(t, "the restored finding", func() bool {
+		c := h.gh.check(shaC)
+		return c.Status == "completed" && c.ID != pass && c.Conclusion == ConclusionFailure && strings.Contains(c.Summary, "Joe's decision on this finding was edited or deleted")
+	})
 }
 
 // TestLaterHeadsBlockOnlyOnTheirChanges reviews a second head whose
