@@ -654,6 +654,7 @@ func TestMarkersCannotFormFromWhitespaceOrPaths(t *testing.T) {
 func TestStateStaysUnderGitHubsLimit(t *testing.T) {
 	huge := strings.Repeat("<\"\x01é", 20000)
 	st := State{IssueDigest: strings.Repeat("a", 64), IssuesPending: true, Goal: &GoalCheck{Head: shaA, Digest: strings.Repeat("a", 64)}}
+	st.Semgrep = &SemgrepStamp{Digest: strings.Repeat("d", 64), Verified: true}
 	for n := range maxCriteria {
 		st.Goal.Criteria = append(st.Goal.Criteria, GoalVerdict{Criterion: n + 1, Verdict: goalNotMet})
 	}
@@ -691,6 +692,9 @@ func TestStateStaysUnderGitHubsLimit(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.GoalHistory, st.GoalHistory) || !reflect.DeepEqual(got.GoalClosed, st.GoalClosed) {
 		t.Fatal("state trimming lost criterion identity or conditional resolutions")
+	}
+	if !reflect.DeepEqual(got.Semgrep, st.Semgrep) {
+		t.Fatal("state trimming lost Semgrep evidence")
 	}
 	storedGate, expectedGate := *got.Gate, *g
 	storedGate.Paths, storedGate.Findings = nil, nil

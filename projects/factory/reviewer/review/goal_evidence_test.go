@@ -110,6 +110,8 @@ func TestFollowUpEvidenceDigestAndPrompt(t *testing.T) {
 func TestOwnedCriterionWithdrawsEarlierMediumWithServiceText(t *testing.T) {
 	h, api := issueHarness(t)
 	withComments(h)
+	h.cfg.Semgrep = &Semgrep{AppID: scanApp, CheckName: scanName, Wait: time.Nanosecond}
+	h.gh.addCheck(shaA, scanName, scanApp, "success")
 	api.issue.Description = "## Done when\n- PRIVATE criterion"
 	h.k.goal = goalReply(`{"criteria":[{"criterion":1,"verdict":"not_met"}],"overall":"met"}`)
 	e, ctx, _ := h.start()
@@ -128,6 +130,11 @@ func TestOwnedCriterionWithdrawsEarlierMediumWithServiceText(t *testing.T) {
 	out := published(t, h)
 	if h.gh.check(shaA).Conclusion != ConclusionSuccess || strings.Contains(out, "PRIVATE") || !strings.Contains(out, "owned by HOME-59") {
 		t.Fatalf("owned criterion: %s", out)
+	}
+	st, _ := LoadState(h.gh.check(shaA).Text)
+	if st.Semgrep == nil || !st.Semgrep.Verified || len(st.GoalHistory) != 1 ||
+		len(st.GoalClosed) != 1 || st.GoalClosed[0].ID != "HOME-58:goal:criterion-1" {
+		t.Fatal("completed review lost Semgrep evidence or the conditional goal resolution")
 	}
 	// Closing the owner revokes a pass on the same head, without a push.
 	api.project.Columns[0].StateType = "completed"
