@@ -84,11 +84,27 @@ def test_export_preserves_api_json_and_only_renders_new_photos():
 
 def test_large_exports_copy_only_derivatives_to_public_bucket():
     store = Store()
-    result = export_trips(INDEX, TRIPS, store, lambda *_: WEBP, asset_limit=4)
+    result = export_trips(
+        INDEX, TRIPS, store, lambda *_: WEBP, asset_limit=4, allow_public=True
+    )
     assert result["photoMode"] == "public"
     assert result["photoBase"] == "https://factory-data.jomcgi.dev/trips/photos"
     assert (
         len([key for bucket, key in store.objects if bucket == "factory-public"]) == 5
+    )
+
+
+@pytest.mark.parametrize("limits", [{"asset_limit": 4}, {"byte_limit": 1}])
+def test_large_exports_keep_previous_manifest_until_public_mode_is_enabled(limits):
+    store = Store()
+    store.objects["stars", "trips/export.json"] = b"previous"
+    with pytest.raises(RuntimeError, match="public publication is disabled"):
+        export_trips(INDEX, TRIPS, store, lambda *_: WEBP, **limits)
+    assert store.objects["stars", "trips/export.json"] == b"previous"
+    assert len(store.writes) == 5
+    assert all(
+        bucket == "stars" and key.startswith("trips/photos/")
+        for bucket, key in store.writes
     )
 
 
@@ -151,7 +167,9 @@ def test_daily_export_advances_asof_even_for_unchanged_content():
 
 def test_large_bytes_use_public_bucket_even_below_file_limit():
     store = Store()
-    result = export_trips(INDEX, TRIPS, store, lambda *_: WEBP, byte_limit=1)
+    result = export_trips(
+        INDEX, TRIPS, store, lambda *_: WEBP, byte_limit=1, allow_public=True
+    )
     assert result["photoMode"] == "public"
     assert result["photoBytes"] == 5 * len(WEBP)
     assert result["photoMaxBytes"] == len(WEBP)

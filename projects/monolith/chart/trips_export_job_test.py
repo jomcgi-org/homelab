@@ -41,6 +41,7 @@ def test_trips_export_schedule_storage_and_signer():
     assert container["resources"]["limits"]["memory"] == "1Gi"
     env = {entry["name"]: entry for entry in container["env"]}
     assert env["TRIPS_IMGPROXY_URL"]["value"] == "https://jomcgi.dev/img"
+    assert env["TRIPS_EXPORT_PUBLIC_ENABLED"]["value"] == "false"
     assert (
         env["S3_ACCESS_KEY_ID"]["valueFrom"]["secretKeyRef"]["name"] == "monolith-r2-s3"
     )

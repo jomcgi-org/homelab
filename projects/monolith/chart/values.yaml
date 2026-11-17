@@ -255,6 +255,7 @@ jobs:
       s3: true
       env:
         TRIPS_IMGPROXY_URL: https://jomcgi.dev/img
+        TRIPS_EXPORT_PUBLIC_ENABLED: "false"
       secretEnv:
         IMGPROXY_KEY:
           secretName: trips-export-imgproxy-signing

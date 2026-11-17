@@ -81,6 +81,7 @@ def export_trips(
     now=None,
     asset_limit=PHOTO_ASSET_LIMIT,
     byte_limit=PHOTO_SNAPSHOT_BYTES,
+    allow_public=False,
 ):
     """Synchronous core; injectable S3 and renderer keep boundary tests local."""
     images = set()
@@ -128,6 +129,10 @@ def export_trips(
         else "public"
     )
     if mode == "public":
+        if not allow_public:
+            raise RuntimeError(
+                "trip photos exceed snapshot limits; public publication is disabled"
+            )
         for key in derivatives:
             if not exists(client, PUBLIC_BUCKET, key):
                 # The only permitted source is the validated derivative prefix.
@@ -209,4 +214,11 @@ def run() -> None:
                 )
             return response.content
 
-        export_trips(index, trips, client, render)
+        export_trips(
+            index,
+            trips,
+            client,
+            render,
+            allow_public=os.environ.get("TRIPS_EXPORT_PUBLIC_ENABLED", "false")
+            == "true",
+        )

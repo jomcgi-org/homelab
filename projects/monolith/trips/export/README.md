@@ -10,7 +10,7 @@ Postgres ── API serializers ──► private stars/trips/index.json, <slug>
                            └─► private stars/trips/v/<name>-<sha256>.json
 private monolith-trips originals ── signed hub imgproxy presets
                            └─► private stars/trips/photos/<original-key>/*.webp
-                                     └─ large exports: factory-public/trips/photos/…
+                                     └─ explicit public opt-in: factory-public/trips/photos/…
 all referenced objects complete ──► private stars/trips/export.json
 ```
 
@@ -28,9 +28,14 @@ usable even if some aliases have changed. It also records `asOf`, the daily
 
 `photoMode` is `snapshot` when the five variants total at most 10,000 files
 and 1 GiB, and each file is at most 25 MiB. This reserves half the Workers
-asset limit for pages and other sections. Larger exports use `public` mode:
-the exporter copies the derivatives to `factory-public` and sets `photoBase`
-to `https://factory-data.jomcgi.dev/trips/photos`. Snapshot mode sets
+asset limit for pages and other sections. Larger exports stop before replacing
+the manifest: public publication is disabled by default, and the scheduled job
+sets `TRIPS_EXPORT_PUBLIC_ENABLED` to `false`. The private derivatives remain
+cached for a later run. Enable this flag with the exact value `true` only after
+verifying that `factory-public` exists, the job's R2 identity can write to it,
+and `https://factory-data.jomcgi.dev` serves a published WebP derivative.
+With that opt-in, larger exports copy the derivatives to `factory-public`
+and set `photoBase` to `https://factory-data.jomcgi.dev/trips/photos`. Snapshot mode sets
 `photoBase` to `/data/trips/photos` for the future site consumer. The actual
 photo count and selected mode come from the completed export manifest.
 
