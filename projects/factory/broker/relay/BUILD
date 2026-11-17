@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "relay",
     srcs = [
+        "claude.go",
         "relay.go",
         "tokens.go",
         "usage.go",
@@ -22,6 +23,7 @@ go_library(
 go_test(
     name = "relay_test",
     srcs = [
+        "claude_test.go",
         "relay_test.go",
         "tokens_test.go",
         "usage_test.go",
