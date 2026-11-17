@@ -1,3 +1,4 @@
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 exports_files(["fixture.bzl"])
@@ -28,4 +29,10 @@ py_test(
         "@platforms//os:linux",
     ],
     deps = ["@pip//pytest"],
+)
+
+bzl_library(
+    name = "fixture",
+    srcs = ["fixture.bzl"],
+    visibility = ["//visibility:public"],
 )
