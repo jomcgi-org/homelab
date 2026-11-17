@@ -344,6 +344,29 @@ tests:
               summary: "Codex grant codex-primary is out of quota: a person must reset it or change the account"
               description: 'Coder turns fail until then. The primary window resets at 2026-11-25 00:14:00 +0000 UTC. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
+  # A full window without a reset time says so; it never borrows the reset
+  # of another window.
+  - interval: 1m
+    input_series:
+      - series: 'factory_broker_grant_quota_exhausted{grant="codex-primary"}'
+        values: "1x10"
+      - series: 'factory_broker_grant_quota_used_percent{grant="codex-primary", provider="codex", window="primary"}'
+        values: "100x10"
+      - series: 'factory_broker_grant_quota_used_percent{grant="codex-primary", provider="codex", window="secondary"}'
+        values: "40x10"
+      - series: 'factory_broker_quota_resets_at_seconds{provider="codex", window="secondary"}'
+        values: "1796000000x10"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: FactoryCodexQuotaExhausted
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              grant: codex-primary
+            exp_annotations:
+              summary: "Codex grant codex-primary is out of quota: a person must reset it or change the account"
+              description: 'Coder turns fail until then. The primary window has no reset time. Runbook: projects/factory-cluster/README.md, "Alerts".'
+
   # No quota reading at all (a fresh broker whose usage reads fail) fires
   # after 15 min.
   - interval: 1m
