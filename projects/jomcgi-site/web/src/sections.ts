@@ -80,15 +80,6 @@ export const SECTIONS: readonly Section[] = [
     summary: "Trips, day by day, with photos.",
   },
   {
-    name: "LLM leaderboard",
-    group: "Apps",
-    path: "/llm-leaderboard",
-    legacy: "/app/llm-leaderboard",
-    live: true,
-    summary:
-      "Models doing real tasks in my monorepos, graded by the repo's own tests.",
-  },
-  {
     name: "Grimoire",
     group: "Apps",
     path: "/grimoire",
