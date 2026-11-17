@@ -29,6 +29,10 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory
             app.kubernetes.io/name: factory-itsaplan-secret-init
+        # The broker appends Codex call observations in the connector database.
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-broker
         # The connector (delivery plan step 9).
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory

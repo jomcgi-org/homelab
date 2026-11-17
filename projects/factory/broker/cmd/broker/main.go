@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -21,10 +22,12 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/broker/grant"
 	"github.com/jomcgi/homelab/projects/factory/broker/metrics"
 	"github.com/jomcgi/homelab/projects/factory/broker/relay"
+	"github.com/jomcgi/homelab/projects/factory/broker/usage"
 	sharedmetrics "github.com/jomcgi/homelab/projects/shared/go/tokenbroker/metrics"
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/provider/codexchatgpt"
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/quota"
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/store"
+	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -78,6 +81,16 @@ func run(logger *slog.Logger) error {
 	d, err := build(ctx, cfg, client, quotaStore, m, logger)
 	if err != nil {
 		return err
+	}
+	if dsn := os.Getenv("BROKER_USAGE_DATABASE_URL"); dsn != "" {
+		db, err := sql.Open("postgres", dsn)
+		if err != nil {
+			return errors.New("open token accounting database")
+		}
+		defer db.Close()
+		db.SetMaxOpenConns(8)
+		db.SetMaxIdleConns(2)
+		d.relay.TokenUsage = &usage.Store{DB: db}
 	}
 	go d.verifier.Run(ctx)
 	go d.grants.Run(ctx)

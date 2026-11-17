@@ -367,6 +367,13 @@ spec:
           env:
             - name: BROKER_CONFIG
               value: /etc/factory-broker/config.yaml
+            {{- if .Values.connector.enabled }}
+            - name: BROKER_USAGE_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.connector.database.secretName }}
+                  key: DATABASE_URL
+            {{- end }}
           ports:
             - name: relay
               containerPort: {{ $b.relayPort }}

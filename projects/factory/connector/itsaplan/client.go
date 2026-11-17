@@ -51,7 +51,8 @@ type Run struct {
 	IssueIdentifier string `json:"issueIdentifier"`
 }
 
-// Usage is what the last model call of a turn read and wrote.
+// Usage is the sum of all measured model calls in a run, including retries.
+// InputTokens includes cached input tokens.
 type Usage struct {
 	InputTokens  int64 `json:"inputTokens"`
 	OutputTokens int64 `json:"outputTokens"`

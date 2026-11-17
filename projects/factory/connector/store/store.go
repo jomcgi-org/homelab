@@ -371,6 +371,12 @@ func (s *Store) CountBusyRuns(ctx context.Context, agentKey string, except int64
 
 // SetRunState moves a run to state, recording a reason when it closes.
 func (s *Store) SetRunState(ctx context.Context, q Querier, id int64, state, reason string) error {
+	if state == RunClosed {
+		// Cancellation can close a run without sending an itsaplan result.
+		if _, err := s.RunUsage(ctx, q, id); err != nil {
+			return err
+		}
+	}
 	_, err := q.ExecContext(ctx, `UPDATE run SET state = $2, closed_reason = nullif($3, ''), updated_at = now() WHERE id = $1`,
 		id, state, reason)
 	return err
@@ -1168,7 +1174,10 @@ func (s *Store) MarkAccepted(ctx context.Context, q Querier, id int64, contextID
 	_, err := q.ExecContext(ctx, `
 		UPDATE delivery_attempt SET state = 'accepted', context_id = $2, task_id = $3, error = NULL
 		WHERE id = $1 AND state IN ('sending', 'ambiguous', 'accepted')`, id, contextID, taskID)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.AttributeUsage(ctx, q, id)
 }
 
 // FinishAttempt records an attempt's final state.
