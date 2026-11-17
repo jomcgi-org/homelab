@@ -135,7 +135,6 @@
     ["state changes", isState],
     ["checkpoints", (e) => e.action === "checkpoint"],
   ];
-  const pct = (ms) => (100 * ms) / duration + "%";
   const describe = (e) => {
     const v = e.vars;
     const vm = recording.roles?.[v.vm] ?? v.vm;
@@ -318,7 +317,7 @@
   <div class="topo">
     <svg
       viewBox="0 0 780 370"
-      role="img"
+      role="group"
       aria-label="The runner drives the control plane; the control plane primes and destroys VMs on the brick over gRPC; every move is a trace record"
     >
       <defs
@@ -347,7 +346,6 @@
             class:done={position >= s.to}
             role="button"
             tabindex="0"
-            aria-label={`Jump to scenario ${s.n}, ${s.title}`}
             onclick={() => seekTo(s.from + 1)}
             onkeydown={(event) => {
               if (event.key === "Enter" || event.key === " ") {
@@ -443,20 +441,33 @@
       {#each traceRows as [label, pick], r (label)}
         <div class="trow">
           <span class="label">{label}</span>
-          <span class="track">
-            {#if r === 0}<b class="playhead" style:left={pct(position)}
-              ></b>{/if}
+          <svg
+            class="track"
+            viewBox="0 0 1000 20"
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            {#if r === 0}<rect
+                class="playhead"
+                x={(1000 * position) / duration}
+                y="0"
+                width="2"
+                height="20"
+              />{/if}
             {#each events as e (e.seq)}
               {#if pick(e)}
-                <i
+                <rect
                   class:seen={e.i < seen}
                   class:cur={e.i === seen - 1}
                   class:lit={evidenceActions.has(e.action)}
-                  style:left={pct(e.at)}
-                ></i>
+                  x={(1000 * e.at) / duration}
+                  y="0"
+                  width="4"
+                  height="20"
+                />
               {/if}
             {/each}
-          </span>
+          </svg>
         </div>
       {/each}
     </div>
@@ -503,19 +514,12 @@
     scroll-margin-top: 1rem;
     /* The vivid tier tones the rest of the site charts with: blue for what
        moves, green for done and passing, amber for a destroy under way. */
-    --move: var(--tone-gpu);
-    --done: var(--tone-ram);
-    --warm: var(--replay-warm);
-    --bad: var(--tone-disk);
-    --tint-accent: color-mix(in srgb, var(--move) 16%, var(--sheet));
-    --tint-ok: color-mix(in srgb, var(--done) 18%, var(--sheet));
-    --tint-warm: color-mix(in srgb, var(--warm) 24%, var(--sheet));
-    --label: 8.5rem;
-    margin: 1.2rem -1rem 0;
+
+    margin: 1.2rem 0 0;
     min-width: 0;
-    color: var(--ink);
-    font-family: var(--font-ui);
-    border-top: 1px solid var(--stroke);
+    color: var(--color-text-primary);
+    font-family: var(--font-family-body);
+    border-top: 1px solid var(--color-border-emphasized);
   }
   .cap {
     display: grid;
@@ -523,8 +527,8 @@
     align-items: center;
     gap: 1rem;
     padding: 0.5rem 1rem;
-    border-bottom: 1px solid var(--line);
-    font: 0.7rem var(--font-code);
+    border-bottom: 1px solid var(--color-border);
+    font: 0.7rem var(--font-family-code);
   }
   .cap b {
     font-weight: 600;
@@ -534,11 +538,11 @@
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
-    color: var(--ink-2);
+    color: var(--color-text-secondary);
   }
   .chapter .count {
     margin-left: 0.6rem;
-    color: var(--ink-3);
+    color: var(--color-text-secondary);
   }
   .controls {
     display: flex;
@@ -547,9 +551,9 @@
   }
   button {
     font: inherit;
-    color: var(--ink);
-    background: var(--sheet);
-    border: 1px solid var(--stroke);
+    color: var(--color-text-primary);
+    background: var(--color-background-surface);
+    border: 1px solid var(--color-border-emphasized);
     padding: 0.3rem 0.6rem;
     border-radius: 2px;
     cursor: pointer;
@@ -560,17 +564,17 @@
   button:focus-visible,
   input:focus-visible,
   .sc:focus-visible {
-    outline: 2px solid var(--accent-ink);
+    outline: 2px solid var(--color-text-accent);
     outline-offset: 2px;
   }
   .scrub input {
     width: 9rem;
     margin: 0;
-    accent-color: var(--move);
+    accent-color: var(--color-text-accent);
   }
   .topo {
     padding: 1rem 1rem 0.8rem;
-    border-bottom: 1px solid var(--stroke);
+    border-bottom: 1px solid var(--color-border-emphasized);
     overflow-x: auto;
   }
   /* Capped by viewport height so the drawing, the trace and the rules fit
@@ -582,10 +586,10 @@
     max-height: 46vh;
     height: auto;
     margin: 0 auto;
-    color: var(--ink);
+    color: var(--color-text-primary);
   }
   .pod rect {
-    fill: var(--sheet);
+    fill: var(--color-background-surface);
     stroke: currentColor;
     stroke-width: 1.25;
   }
@@ -594,13 +598,13 @@
     stroke-width: 1.25;
   }
   .pod text {
-    font-family: var(--font-code);
+    font-family: var(--font-family-code);
     font-size: 12px;
     fill: currentColor;
   }
   .pod .sub,
   .pod .row {
-    fill: var(--ink-2);
+    fill: var(--color-text-secondary);
   }
   .pod .t {
     font-weight: 600;
@@ -615,22 +619,22 @@
     stroke-width: 1;
   }
   .edge .lbl {
-    font-family: var(--font-code);
+    font-family: var(--font-family-code);
     font-size: 11px;
-    fill: var(--ink-2);
+    fill: var(--color-text-secondary);
   }
   .sc {
     cursor: pointer;
   }
   .sc text {
-    fill: var(--ink-3);
+    fill: var(--color-text-secondary);
   }
   .sc .id {
     font-weight: 600;
   }
   .sc.on text,
   .sc.done text {
-    fill: var(--ink);
+    fill: var(--color-text-primary);
   }
   .sc rect {
     fill: transparent;
@@ -638,21 +642,21 @@
     transition: fill 200ms ease;
   }
   .sc:hover rect {
-    fill: var(--band);
+    fill: var(--color-background-muted);
   }
   .sc.on rect {
-    fill: var(--tint-accent);
+    fill: var(--color-background-muted);
   }
   .sc line {
-    stroke: var(--line);
+    stroke: var(--color-border);
     stroke-width: 1;
   }
   .sc .ok {
-    fill: var(--done);
+    fill: var(--color-blog-success);
   }
   .slot rect {
-    fill: var(--band);
-    stroke: var(--ink-3);
+    fill: var(--color-background-muted);
+    stroke: var(--color-text-secondary);
     stroke-width: 1;
     stroke-dasharray: 4 3;
     transition:
@@ -662,35 +666,35 @@
   }
   .slot text {
     font-size: 11.5px;
-    fill: var(--ink-3);
+    fill: var(--color-text-secondary);
   }
   .slot .st {
     font-size: 10.5px;
   }
   .slot[data-state] text {
-    fill: var(--ink);
+    fill: var(--color-text-primary);
   }
   .slot[data-state] .st {
-    fill: var(--ink-2);
+    fill: var(--color-text-secondary);
   }
   .slot[data-state="primed"] rect {
-    stroke: var(--ink-2);
+    stroke: var(--color-text-secondary);
     stroke-dasharray: none;
   }
   .slot[data-state="running"] rect {
-    fill: var(--tint-accent);
-    stroke: var(--move);
+    fill: var(--color-background-muted);
+    stroke: var(--color-text-accent);
     stroke-width: 2;
     stroke-dasharray: none;
   }
   .slot[data-state="finished"] rect {
-    fill: var(--tint-ok);
-    stroke: var(--done);
+    fill: var(--color-background-muted);
+    stroke: var(--color-blog-success);
     stroke-dasharray: none;
   }
   .slot[data-state="destroying"] rect {
-    fill: var(--tint-warm);
-    stroke: var(--warm);
+    fill: var(--color-background-muted);
+    stroke: var(--color-blog-warning);
     stroke-width: 2;
     stroke-dasharray: none;
   }
@@ -698,13 +702,13 @@
     fill: transparent;
   }
   .slot[data-state="destroyed"] text {
-    fill: var(--ink-3);
+    fill: var(--color-text-secondary);
   }
   .dots circle {
-    fill: var(--move);
+    fill: var(--color-text-accent);
   }
   .dots circle.small {
-    fill: var(--ink-3);
+    fill: var(--color-text-secondary);
   }
   /* A selected rule: its evidence stays lit, the rest of the drawing steps
      back. */
@@ -714,7 +718,7 @@
     opacity: 0.3;
   }
   .focused .slot.lit rect {
-    stroke: var(--move);
+    stroke: var(--color-text-accent);
     stroke-width: 2;
     stroke-dasharray: none;
   }
@@ -723,19 +727,19 @@
     align-items: baseline;
     gap: 0.5rem;
     padding: 0.45rem 1rem;
-    border-bottom: 1px solid var(--stroke);
-    font: 0.72rem var(--font-code);
+    border-bottom: 1px solid var(--color-border-emphasized);
+    font: 0.72rem var(--font-family-code);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
   .part header small {
     text-transform: none;
     letter-spacing: 0;
-    color: var(--ink-2);
+    color: var(--color-text-secondary);
   }
   .part header .hint {
     margin-left: auto;
-    color: var(--ink-3);
+    color: var(--color-text-secondary);
   }
   .part header .verdict {
     margin-left: auto;
@@ -743,84 +747,66 @@
     letter-spacing: 0;
   }
   .verdict strong[data-verdict="pass"] {
-    color: var(--done);
+    color: var(--color-blog-success);
   }
   .verdict strong[data-verdict="fail"] {
-    color: var(--bad);
+    color: var(--color-blog-warning);
   }
   .trace {
-    border-bottom: 1px solid var(--stroke);
+    border-bottom: 1px solid var(--color-border-emphasized);
   }
   .rows {
     position: relative;
     display: grid;
     gap: 0.3rem;
     padding: 0.7rem 1rem 0.6rem;
-    font: 0.72rem var(--font-code);
+    font: 0.72rem var(--font-family-code);
     cursor: ew-resize;
     touch-action: pan-y;
     user-select: none;
   }
   .trow {
     display: grid;
-    grid-template-columns: var(--label) minmax(0, 1fr);
+    grid-template-columns: 8.5rem minmax(0, 1fr);
     align-items: center;
     gap: 0.5rem;
     height: 1.4rem;
   }
   .trow .label {
-    color: var(--ink-2);
+    color: var(--color-text-secondary);
     white-space: nowrap;
   }
   .trow .track {
+    min-width: 0;
+    width: 100%;
     position: relative;
     display: block;
     height: 1rem;
-    background: var(--band);
+    background: var(--color-background-muted);
   }
-  .trow .track i {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 4px;
-    margin-left: -2px;
-    background: var(--move);
-    opacity: 0.18;
-    transition: opacity 200ms ease;
+  .trow .track rect {
+    fill: var(--color-text-accent);
+    opacity: 0.35;
   }
-  .trow:nth-child(2) .track i {
-    background: var(--ink-2);
-  }
-  .trow .track i.seen {
+  .trow .track rect.seen,
+  .trow .track rect.lit {
     opacity: 1;
   }
-  .trow .track i.seen.cur {
-    background: var(--move);
-  }
-  .focused .trow .track i {
+  .focused .trow .track rect:not(.playhead) {
     opacity: 0.12;
   }
-  .focused .trow .track i.lit {
+  .focused .trow .track rect.lit {
     opacity: 1;
-    background: var(--move);
-    box-shadow: 0 0 0 2px var(--tint-accent);
   }
-  /* The playhead lives in the first track and runs down over the second. */
-  .playhead {
-    position: absolute;
-    top: 0;
-    height: calc(1.4rem + 0.3rem + 1rem);
-    width: 2px;
-    z-index: 1;
-    margin-left: -1px;
-    background: var(--move);
-    pointer-events: none;
+  .trow .track .playhead {
+    fill: var(--color-text-primary);
+    opacity: 1;
   }
   .cells {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 1px;
-    background: var(--line);
+    background: var(--color-border);
   }
   .cell {
     display: grid;
@@ -833,15 +819,15 @@
     border: 0;
     border-radius: 0;
     text-align: left;
-    background: var(--sheet);
+    background: var(--color-background-surface);
     font-size: 0.75rem;
   }
   .cell:hover {
-    background: var(--band);
+    background: var(--color-background-muted);
   }
   .cell[aria-pressed="true"] {
-    background: var(--tint-accent);
-    box-shadow: inset 0 0 0 2px var(--move);
+    background: var(--color-background-muted);
+    box-shadow: inset 0 0 0 2px var(--color-text-accent);
   }
   .cells .mark {
     grid-area: m;
@@ -849,7 +835,7 @@
     box-sizing: border-box;
     width: 1.1rem;
     height: 1.1rem;
-    border: 1.5px dashed var(--ink-3);
+    border: 1.5px dashed var(--color-text-secondary);
     border-radius: 50%;
     transition:
       background-color 240ms ease,
@@ -862,15 +848,15 @@
   }
   .cells .v {
     grid-area: v;
-    font: 0.65rem var(--font-code);
-    color: var(--ink-3);
+    font: 0.65rem var(--font-family-code);
+    color: var(--color-text-secondary);
   }
   .cell[data-verdict="waiting"] .n {
-    color: var(--ink-2);
+    color: var(--color-text-secondary);
   }
   .cell[data-verdict="pass"] .mark {
     border: 0;
-    background: var(--done);
+    background: var(--color-blog-success);
   }
   .cell[data-verdict="pass"] .mark::after {
     content: "";
@@ -879,24 +865,24 @@
     top: 0.17rem;
     width: 0.3rem;
     height: 0.55rem;
-    border: solid var(--sheet);
+    border: solid var(--color-background-surface);
     border-width: 0 2px 2px 0;
     transform: rotate(45deg);
   }
   .cell[data-verdict="pass"] .v {
-    color: var(--done);
+    color: var(--color-blog-success);
   }
   .cell[data-verdict="fail"] .mark {
     border: 0;
-    background: var(--bad);
+    background: var(--color-blog-warning);
   }
   .why {
     margin: 0;
     padding: 0.6rem 1rem;
-    border-top: 1px solid var(--line);
+    border-top: 1px solid var(--color-border);
     font-size: 0.8rem;
     line-height: 1.5;
-    color: var(--ink-2);
+    color: var(--color-text-secondary);
   }
   .sr-only {
     position: absolute;
@@ -906,8 +892,8 @@
     clip-path: inset(50%);
   }
   @media (max-width: 640px) {
-    .replay {
-      --label: 6rem;
+    .trow {
+      grid-template-columns: 6rem minmax(0, 1fr);
     }
     .cap {
       grid-template-columns: 1fr auto;
@@ -930,7 +916,7 @@
     .sc rect,
     .slot rect,
     .cells .mark,
-    .trow .track i {
+    .trow .track rect {
       transition: none;
     }
   }

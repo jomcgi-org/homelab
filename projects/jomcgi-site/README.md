@@ -94,19 +94,21 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
   tokens in `src/palette.css` meet WCAG contrast in light and dark modes.
   Colour contrast on real CSS is checked in a browser after deploy (HOME-174).
 
-## Blog index preview
+## Blog
 
-`web/blog.html` pre-renders the public manifest titles, summaries, dates and
-tags. `web/blog-content.mjs` exposes only those fields to the browser; the
-index applies `?tag=` after hydration and follows browser history. Post
-links use their existing `https://jomcgi.dev/blog/<slug>` URLs so they work
-from `next.jomcgi.dev` while the hub still serves the posts.
+`web/blog-content.mjs` reads the hub's public post manifest and shared
+markdown renderer at build time. It renders the original static figures and
+moves their numeric inline dimensions into a stylesheet. Every post has an
+HTML entry and a page module; `src/blog.test.tsx` checks the manifest, preview
+tags and sections. Add both entries when adding a post.
 
-This is the index slice of HOME-198. Post pages, build-time markdown and
-figures, intent-loaded replays, and the production blog route switch are
-separate follow-ups. Blog stays unlisted as a live section and the edge
-routes stay on the hub until those pages are ready. The index preview is
-available directly at `next.jomcgi.dev/blog` after the dev deploy.
+The index applies `?tag=` in the browser. The replay islands share the hub’s
+public Svelte components and recordings, with palette roles and SVG
+positioning. Each Load button imports its component and recording. Playback,
+scrubbing, the incident graph and the coding trace run locally.
+
+`edge/routes.json` includes the blog and shared asset patterns. The prod
+edge apply job owns these routes; `wrangler.jsonc` lists no prod routes.
 
 ## Build and test
 

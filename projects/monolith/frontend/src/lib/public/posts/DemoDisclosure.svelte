@@ -44,15 +44,15 @@
     padding: 0.25rem 0;
     border: 0;
     background: transparent;
-    color: var(--ink-2);
-    font: 0.7rem var(--font-code);
+    color: var(--color-text-secondary);
+    font: 0.7rem var(--font-family-code);
     cursor: pointer;
   }
   .disclosure-toggle:hover {
-    color: var(--ink);
+    color: var(--color-text-primary);
   }
   .disclosure-toggle:focus-visible {
-    outline: 2px solid var(--tone-gpu);
+    outline: 2px solid var(--color-text-accent);
     outline-offset: 3px;
   }
   svg {

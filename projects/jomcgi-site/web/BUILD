@@ -38,10 +38,13 @@ js_library(
         ":node_modules/@esbuild/linux-x64",
         ":node_modules/@rollup/rollup-linux-x64-gnu",
         ":node_modules/@stylexjs/stylex",
+        ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/marked",
         ":node_modules/react",
         ":node_modules/react-dom",
+        ":node_modules/svelte",
         ":node_modules/vite",
-        "//projects/monolith/frontend:blog_index_manifest",
+        "//projects/monolith/frontend:blog_sources",
     ],
 )
 

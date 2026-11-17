@@ -207,7 +207,7 @@
               >
             {/each}
           </div>
-          {#await Promise.all( [import("$lib/public/posts/QwenReplay.svelte"), import("$lib/public/posts/agent-replay.json")] )}
+          {#await Promise.all( [import("$lib/public/posts/QwenReplay.svelte"), import("$lib/public/posts/agent-replay.json"), import("$lib/public/posts/qwen-replay.json")] )}
             <table class="landing-results">
               <caption>Recorded on the RTX 4090</caption>
               <thead>
@@ -229,7 +229,7 @@
                 {/each}
               </tbody>
             </table>
-          {:then [replay, coding]}
+          {:then [replay, coding, research]}
             {#key demo}
               {#if demo === "coding"}
                 <replay.default
@@ -238,7 +238,7 @@
                   recording={coding.default}
                 />
               {:else}
-                <replay.default landing />
+                <replay.default landing recording={research.default} />
               {/if}
             {/key}
           {:catch}

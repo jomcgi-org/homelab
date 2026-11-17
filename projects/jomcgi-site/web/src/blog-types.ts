@@ -5,3 +5,7 @@ export interface PostSummary {
   date: string;
   tags: string[];
 }
+export interface Post extends PostSummary {
+  html: string;
+  toc: { depth: number; text: string; id: string }[];
+}

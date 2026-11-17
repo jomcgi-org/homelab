@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import posts from "virtual:blog/index";
 import { Shell } from "./Shell";
-import { ORIGIN } from "./sections";
 import { Tags, formatDate } from "./blog-shared";
 import "./blog.css";
 
@@ -67,7 +66,7 @@ export function BlogPage() {
               <article key={post.slug}>
                 <time dateTime={post.date}>{formatDate(post.date)}</time>
                 <h2>
-                  <a href={`${ORIGIN}/blog/${post.slug}`}>{post.title}</a>
+                  <a href={`/blog/${post.slug}`}>{post.title}</a>
                 </h2>
                 <p>{post.summary}</p>
                 <Tags tags={post.tags} />

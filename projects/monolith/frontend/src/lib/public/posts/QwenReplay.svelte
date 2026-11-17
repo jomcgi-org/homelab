@@ -1,29 +1,25 @@
 <script>
-  import { fade } from "svelte/transition";
   import DemoDisclosure from "./DemoDisclosure.svelte";
   import CodeOutput from "./CodeOutput.svelte";
   import DraftTrace from "./DraftTrace.svelte";
   import { decodeSteps, rollingRate } from "./draft-steps.js";
   import IncidentGraph from "./IncidentGraph.svelte";
-  import research from "./qwen-replay.json";
   // `kind` "research" reads a long report and maps it as a graph; "coding" reads
   // a codebase and writes a change, with the per-step draft trace.
-  let { landing = false, recording = research, kind = "research" } = $props();
+  let {
+    landing = false,
+    recording,
+    kind = "research",
+    autoplay = true,
+  } = $props();
+  let element;
   // svelte-ignore state_referenced_locally (A replay is keyed by its recording.)
   const turn = recording.turns[0];
-  let element;
   let position = $state(0);
   let playing = $state(false);
   // Landing pages start with the result; the captured text remains available.
   // svelte-ignore state_referenced_locally (This prop selects the initial state.)
   let outputOpen = $state(!landing);
-  const fadeDuration = () =>
-    typeof Element === "undefined" ||
-    typeof Element.prototype.animate !== "function" ||
-    (typeof matchMedia !== "undefined" &&
-      matchMedia("(prefers-reduced-motion: reduce)").matches)
-      ? 0
-      : 180;
   let answer = $derived(
     turn.events
       .filter((event) => event.at <= position)
@@ -88,6 +84,7 @@
   }
   $effect(() => {
     if (
+      !autoplay ||
       !element ||
       typeof IntersectionObserver === "undefined" ||
       matchMedia("(prefers-reduced-motion: reduce)").matches
@@ -150,7 +147,7 @@
   bind:this={element}
   class="replay"
   class:landing
-  aria-label="Inference on the RTX 4090"
+  aria-label={`Inference on the RTX 4090: ${kind === "coding" ? "Agentic coding" : "Long-context research"}`}
 >
   {#if kind === "coding"}
     <p class="question">
@@ -218,7 +215,6 @@
     {#if phase === "Prefill"}
       <div
         class="input-scan"
-        transition:fade={{ duration: fadeDuration() }}
         aria-label={kind === "coding"
           ? "Source files across the measured prefill interval"
           : "Report pages across the measured prefill interval"}
@@ -236,12 +232,7 @@
         </ol>
       </div>
     {:else}
-      <div
-        class="answer"
-        role="region"
-        aria-label="Recorded answer"
-        transition:fade={{ duration: fadeDuration() }}
-      >
+      <div class="answer" role="region" aria-label={`Recorded ${kind} answer`}>
         {#if kind === "coding"}
           <CodeOutput
             events={turn.events}
@@ -279,8 +270,8 @@
 <style>
   .replay {
     min-width: 0;
-    color: var(--ink);
-    font-family: var(--font-ui);
+    color: var(--color-text-primary);
+    font-family: var(--font-family-body);
   }
   .landing {
     container-type: inline-size;
@@ -342,26 +333,26 @@
   .input-scan {
     align-self: center;
     padding: 1rem;
-    border-left: 3px solid var(--tone-ram);
-    background: color-mix(in srgb, var(--tone-ram) 9%, var(--sheet));
+    border-left: 3px solid var(--color-blog-success);
+    background: var(--color-background-muted);
   }
   .scan-heading {
     display: flex;
     justify-content: space-between;
     gap: 0.5rem;
-    color: var(--tone-ram);
-    font: 0.7rem var(--font-code);
+    color: var(--color-blog-success);
+    font: 0.7rem var(--font-family-code);
     margin-bottom: 0.9rem;
   }
   .scan-section {
     margin: 0 0 0.6rem;
     min-height: 1.4em;
-    color: var(--ink);
-    font: 0.75rem/1.4 var(--font-code);
+    color: var(--color-text-primary);
+    font: 0.75rem/1.4 var(--font-family-code);
   }
   .question a {
     color: inherit;
-    text-decoration-color: var(--tone-ram);
+    text-decoration-color: var(--color-blog-success);
     text-underline-offset: 0.2em;
   }
   .document-pages {
@@ -375,11 +366,11 @@
   .document-pages li {
     width: 1.5rem;
     aspect-ratio: 17 / 22;
-    border: 1px solid var(--tone-ram);
-    background: var(--sheet);
+    border: 1px solid var(--color-blog-success);
+    background: var(--color-background-surface);
   }
   .document-pages li.read {
-    background: var(--tone-ram);
+    background: var(--color-blog-success);
   }
   .answer {
     font-size: 0.9rem;
@@ -391,7 +382,7 @@
     gap: 1rem;
     margin: 0 0 0.8rem;
     padding-block: 0.8rem;
-    border-block: 1px solid var(--line);
+    border-block: 1px solid var(--color-border);
   }
   /* Detail (tokens read or written) sits under the number, so the number and
      its unit never wrap apart. */
@@ -401,22 +392,22 @@
   }
   .measurements .live dt::after {
     content: " ●";
-    color: var(--tone-hot);
+    color: var(--color-text-accent);
   }
   dt {
-    font: 0.65rem var(--font-code);
-    color: var(--ink-2);
+    font: 0.65rem var(--font-family-code);
+    color: var(--color-text-secondary);
   }
   dd {
     margin: 0.35rem 0 0;
-    font: 1.3rem var(--font-code);
-    color: var(--tone-gpu);
+    font: 1.3rem var(--font-family-code);
+    color: var(--color-text-accent);
   }
   .prefill-rate dd {
-    color: var(--tone-ram);
+    color: var(--color-blog-success);
   }
   dd small {
-    color: var(--ink-2);
+    color: var(--color-text-secondary);
     font-size: 0.65rem;
   }
   .controls {
@@ -428,10 +419,10 @@
   .controls button {
     padding: 0.25rem 0;
     min-width: 3.5rem;
-    color: var(--ink-2);
+    color: var(--color-text-secondary);
     background: transparent;
     border: 0;
-    font: 0.7rem var(--font-code);
+    font: 0.7rem var(--font-family-code);
     cursor: pointer;
     text-align: left;
   }
@@ -443,22 +434,22 @@
     display: block;
     width: 100%;
     height: 3px;
-    accent-color: var(--tone-gpu);
+    accent-color: var(--color-text-accent);
   }
   .time {
-    color: var(--ink-2);
-    font: 0.65rem var(--font-code);
+    color: var(--color-text-secondary);
+    font: 0.65rem var(--font-family-code);
   }
   pre {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     max-height: 12rem;
     overflow-y: auto;
-    font: 0.75rem/1.5 var(--font-code);
+    font: 0.75rem/1.5 var(--font-family-code);
   }
   button:focus-visible,
   input:focus-visible {
-    outline: 2px solid var(--accent-ink);
+    outline: 2px solid var(--color-text-accent);
     outline-offset: 3px;
   }
   .sr-only {

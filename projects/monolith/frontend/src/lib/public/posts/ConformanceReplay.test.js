@@ -58,9 +58,11 @@ test("the recording is the checker's own answer at every record", () => {
 test("the axis is step time and arrow keys step between state changes", async () => {
   const view = await render();
   expect(duration()).toBe((stateChanges.length + 1) * 1000);
-  const marks = [...view.querySelectorAll(".trow:first-child .track i")];
+  const marks = [
+    ...view.querySelectorAll(".trow:first-child .track rect:not(.playhead)"),
+  ];
   expect(marks).toHaveLength(stateChanges.length);
-  const lefts = marks.map((m) => parseFloat(m.style.left));
+  const lefts = marks.map((m) => Number(m.getAttribute("x")));
   for (let i = 1; i < lefts.length; i++) {
     expect(lefts[i] - lefts[i - 1]).toBeCloseTo(lefts[1] - lefts[0], 5);
   }
@@ -104,7 +106,7 @@ test("clicking a rule lights its evidence and explains it; clicking again clears
   expect(view.querySelector(".replay").classList.contains("focused")).toBe(
     true,
   );
-  const lit = view.querySelectorAll(".trow .track i.lit");
+  const lit = view.querySelectorAll(".trow .track rect.lit");
   const destroys = recording.events.filter(
     (e) => e.action === "begin_destroy" || e.action === "confirm_destroy",
   );
@@ -117,7 +119,7 @@ test("clicking a rule lights its evidence and explains it; clicking again clears
   rule.click();
   await tick();
   expect(view.querySelector(".why")).toBeNull();
-  expect(view.querySelectorAll(".trow .track i.lit")).toHaveLength(0);
+  expect(view.querySelectorAll(".trow .track rect.lit")).toHaveLength(0);
 });
 
 test("scenario rows jump to their chapter, VM slots follow the run", async () => {
