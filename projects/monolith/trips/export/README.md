@@ -34,18 +34,22 @@ aliases have changed. It also records `asOf`, the daily
 `refreshSeconds`, `images`, `photoCount`, `photoAssetCount`, `photoBytes`,
 `photoMaxBytes`, `photoMode` and `photoBase`.
 
-`photoMode` is `snapshot` when the five variants total at most 10,000 files
-and 1 GiB, and each file is at most 25 MiB. This reserves half the Workers
-asset limit for pages and other sections. Larger exports stop before replacing
-the manifest: public publication is disabled by default, and the scheduled job
-sets `TRIPS_EXPORT_PUBLIC_ENABLED` to `false`. The private derivatives remain
-cached for a later run. Enable this flag with the exact value `true` only after
-verifying that `factory-public` exists, the job's R2 identity can write to it,
-and `https://factory-data.jomcgi.dev` serves a published WebP derivative.
-With that opt-in, larger exports copy the derivatives to `factory-public`
-and set `photoBase` to `https://factory-data.jomcgi.dev/trips/photos`. Snapshot mode sets
-`photoBase` to `/data/trips/photos` for the future site consumer. The actual
-photo count and selected mode come from the completed export manifest.
+`photoMode` says where the site can read the photos. It is `snapshot`, with
+`photoBase` `/data/trips/photos`, when the five variants total at most 10,000
+files and 1 GiB, and each file is at most 25 MiB. This keeps half the Workers
+asset limit for pages and other sections. A larger export still commits its
+private JSON and manifest, with `photoMode` `private` and `photoBase` `null`:
+the derivatives are only in the private `stars` bucket. The live trip has
+4,838 photos (24,190 derivatives), so this is today's mode.
+
+Public copies are off by default, and the scheduled job sets
+`TRIPS_EXPORT_PUBLIC_ENABLED` to `false`. Set it to the exact value `true` only
+after checking that `factory-public` exists, the job's R2 identity can write to
+it, and `https://factory-data.jomcgi.dev` serves a published WebP derivative.
+Then a larger export copies the derivatives to `factory-public`, with
+`photoMode` `public` and `photoBase`
+`https://factory-data.jomcgi.dev/trips/photos`. The photo count and mode come
+from the committed manifest.
 
 The job uses the shared R2 writer and its own imgproxy signing Secret in the
 workflow namespace, sourced from the existing 1Password item. Its Bazel
