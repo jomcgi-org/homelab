@@ -7,12 +7,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
-from django.contrib.auth import SESSION_KEY
 from django.test import Client
 from django.urls import reverse
 
 from authentik.blueprints.v1.importer import Importer
-from authentik.core.models import Application, Group, User
+from authentik.core.models import Application, AuthenticatedSession, Group, User
 from authentik.policies.denied import AccessDeniedResponse
 from authentik.policies.engine import PolicyEngine
 from authentik.sources.oauth.clients.oauth2 import OAuth2Client
@@ -42,6 +41,12 @@ for filename in ("factory-auth.yaml", "factory-kubectl.yaml", "factory-social.ya
         )
     assert importer.validate()[0], filename
     assert importer.apply(), filename
+
+
+def sessions(username):
+    # The authentik_session cookie is not a plain session key, so the test
+    # client cannot read the server session; count signed-in sessions.
+    return AuthenticatedSession.objects.filter(user__username=username).count()
 
 
 def callback(browser, identifier):
@@ -92,7 +97,7 @@ def exercise():
     assert completed["component"] == "xak-flow-redirect"
     assert completed["final_redirect"]
     assert completed["to"] == "/source/oauth/login/discord/"
-    assert SESSION_KEY not in browser.session
+    assert sessions("discord-42") == 0
     user = User.objects.get(username="discord-42")
     assert not user.groups.exists()
 
@@ -100,7 +105,7 @@ def exercise():
     pending = callback(waiting, "42")
     assert isinstance(pending, AccessDeniedResponse)
     assert b"pending a group grant" in pending.content
-    assert SESSION_KEY not in waiting.session
+    assert sessions("discord-42") == 0
     for slug in ("factory-edge", "factory-kubectl"):
         engine = PolicyEngine(Application.objects.get(slug=slug), user)
         assert not engine.build().result.passing
@@ -116,7 +121,7 @@ def exercise():
         assert callback(browser, "42").status_code == 302
         challenge = advance(browser, browser.get(url))
         assert challenge["component"] == "ak-stage-authenticator-totp"
-        assert SESSION_KEY not in browser.session
+        assert sessions("discord-42") == 0
     # The setup device lives in the server session; read its secret from the
     # otpauth:// URL the challenge gives the user's authenticator app.
     query = parse_qs(urlparse(challenge["config_url"]).query)
@@ -128,24 +133,24 @@ def exercise():
     )
     submit_code(browser, url, challenge["component"], device)
     user = User.objects.get(username="discord-42")
-    assert str(browser.session[SESSION_KEY]) == str(user.pk)
+    assert sessions("discord-42") == 1
     user.groups.remove(viewers)
     browser = Client(HTTP_HOST="localhost")
     assert callback(browser, "42").status_code == 302
     url = executor("authentication")
     challenge = advance(browser, browser.get(url))
     assert challenge["component"] == "ak-stage-authenticator-validate"
-    assert SESSION_KEY not in browser.session
+    assert sessions("discord-42") == 1
 
     # TOTP replay protection requires a fresh counter after enrollment.
     sleep(device.step - time() % device.step + 1)
     submit_code(browser, url, challenge["component"], device)
-    assert str(browser.session[SESSION_KEY]) == str(user.pk)
+    assert sessions("discord-42") == 2
 
     browser = Client(HTTP_HOST="localhost")
     assert isinstance(callback(browser, "43"), AccessDeniedResponse)
     assert not User.objects.filter(username="discord-43").exists()
-    assert SESSION_KEY not in browser.session
+    assert sessions("discord-43") == 0
 
 
 exercise()
