@@ -25,7 +25,7 @@ def _applications():
                 )
 
 
-def _bindings_for(app, entries):
+def _binding_entries_for(app, entries):
     for entry in entries:
         if entry["model"] != "authentik_policies.policybinding":
             continue
@@ -37,7 +37,7 @@ def _bindings_for(app, entries):
             and target.tag == "!KeyOf"
             and target.value == app.get("id")
         ):
-            yield fields
+            yield entry, fields
 
 
 def _assert_group_binding(app, bindings):
@@ -51,16 +51,24 @@ def _assert_group_binding(app, bindings):
 
 @pytest.mark.parametrize("app,entries", _applications())
 def test_factory_application_has_group_binding(app, entries):
-    _assert_group_binding(app, _bindings_for(app, entries))
+    bindings = (fields for _, fields in _binding_entries_for(app, entries))
+    _assert_group_binding(app, bindings)
 
 
 @pytest.mark.parametrize("app,entries", _applications())
 def test_removing_group_bindings_denies_application(app, entries):
-    bindings = [
-        fields for fields in _bindings_for(app, entries) if "group" not in fields
+    removed = [
+        entry
+        for entry, fields in _binding_entries_for(app, entries)
+        if "group" in fields
     ]
-    with pytest.raises(AssertionError, match="Missing enabled group binding"):
-        _assert_group_binding(app, bindings)
+    assert removed
+    mutated_entries = [entry for entry in entries if entry not in removed]
+    with pytest.raises(
+        AssertionError,
+        match=f"Missing enabled group binding for {app['identifiers']['slug']}",
+    ):
+        test_factory_application_has_group_binding(app, mutated_entries)
 
 
 @pytest.mark.parametrize(
