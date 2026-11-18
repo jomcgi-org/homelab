@@ -402,9 +402,12 @@ def finalize_claim(
 ) -> bool:
     """Atomically enqueue a claimed occurrence and complete/advance its task.
 
-    ``end`` cancels a recurring task after this occurrence."""
+    ``end`` cancels a recurring task after this occurrence. The task row is
+    locked, so retirement cannot land between this check and the commit: a
+    digest retired after its occurrence was built posts ``DIGEST_ENDED``
+    instead of the digest and ends."""
     now = as_utc(now)
-    task = session.get(ScheduledTask, claim.task_id)
+    task = session.get(ScheduledTask, claim.task_id, with_for_update=True)
     occurrence = session.get(ScheduledTaskOccurrence, claim.occurrence_id)
     if (
         task is None
@@ -414,6 +417,10 @@ def finalize_claim(
         or occurrence.claim_token != claim.claim_token
     ):
         return False
+    payload = json.loads(task.payload_json or "{}")
+    if task.task_kind == "digest" and _retired(payload) and not end:
+        content = DIGEST_ENDED.format(mode=payload.get("mode", "summary"))
+        end = True
     enqueue_message(
         session,
         claim.channel_id,

@@ -45,8 +45,13 @@ async def _start(env):
     bot.is_ready.return_value = False
     bot.user = None
     outbox_drain = AsyncMock()
-    scheduler = AsyncMock()
-    retire = MagicMock(return_value=0)
+    order = []
+
+    async def _scheduler(*_args, **_kwargs):
+        order.append("scheduler")
+
+    scheduler = AsyncMock(side_effect=_scheduler)
+    retire = MagicMock(side_effect=lambda *_: order.append("retire") or 0)
     with (
         patch.dict("os.environ", {"DISCORD_BOT_TOKEN": "test-token", **env}),
         patch("chat.acl.bootstrap_defaults"),
@@ -60,6 +65,7 @@ async def _start(env):
         tasks = await leader_start(app)
         await asyncio.sleep(0)
     scheduler.retire = retire
+    scheduler.order = order
     return bot, tasks, outbox_drain, scheduler
 
 
@@ -86,6 +92,7 @@ async def test_gateway_off_logs_in_over_rest_and_still_drains():
         assert scheduler.await_args.kwargs["digests"] is False
         # Digests are retired before the scheduler starts.
         scheduler.retire.assert_called_once()
+        assert scheduler.order == ["retire", "scheduler"]
         # bot, outbox drain and scheduler; no lock sweep.
         assert len(tasks) == 3
         ready = outbox_drain.await_args.kwargs["ready"]
