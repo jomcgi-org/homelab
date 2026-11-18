@@ -38,6 +38,7 @@ def test_published_pages_are_exactly_the_filtered_manifest():
         "404.html",
         "cv.html",
         "docs.html",
+        "engineering.html",
         "factory/index.html",
         "blog.html",
         "blog/ember-conformance.html",
