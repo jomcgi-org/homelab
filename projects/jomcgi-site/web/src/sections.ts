@@ -118,7 +118,7 @@ export const SECTIONS: readonly Section[] = [
     group: "About",
     path: "/engineering",
     legacy: "/engineering",
-    live: false,
+    live: true,
     summary: "How this site and its cluster are engineered.",
   },
   {

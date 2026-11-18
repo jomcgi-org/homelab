@@ -167,6 +167,7 @@ const STAYS_ON_THE_HUB = [
   "jomcgi.dev/api/trips/trips",
   "jomcgi.dev/slop/factory",
   "jomcgi.dev/app/hikes",
+  "jomcgi.dev/app/trips",
   "jomcgi.dev/app/stars",
   "jomcgi.dev/app/grimoire",
 ];
@@ -193,6 +194,9 @@ test("routed pages are served with and without a query string", () => {
     "/docs/",
     "/docs/sextant",
     "/docs/embervm/architecture",
+    "/engineering",
+    "/engineering/",
+    "/engineering/diagrams",
     "/notes",
     "/ember",
     "/ember/firecracker",
@@ -223,6 +227,29 @@ test("a pattern without a wildcard says why, since a query string bypasses it", 
       `exactBecause names ${p}, which is not an exact pattern`,
     );
   }
+});
+
+test("the shipped manifest applies engineering routes and supports rollback", async () => {
+  const engineering = ["jomcgi.dev/engineering*"];
+  for (const pattern of engineering)
+    assert.ok(ROUTES.patterns.includes(pattern));
+  const zone = fakeZone({ rules: [MONOLITH] });
+  await apply(zone.call, ROUTES, RULES);
+  for (const pattern of engineering) {
+    assert.ok(
+      zone.state.routes.some(
+        (route) => route.pattern === pattern && route.script === SCRIPT,
+      ),
+    );
+  }
+  const retained = ROUTES.patterns.filter(
+    (pattern) => !engineering.includes(pattern),
+  );
+  await apply(zone.call, routesFile(retained), RULES);
+  assert.deepEqual(
+    zone.state.routes.map((route) => route.pattern).sort(),
+    retained.sort(),
+  );
 });
 
 test("the files are valid and import the live Monolith rule completely", () => {

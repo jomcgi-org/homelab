@@ -50,6 +50,7 @@ export default defineConfig({
             }[]
           ).map(({ slug }) => [`docs/${slug}`, page(`docs/${slug}.html`)]),
         ),
+        engineering: page("engineering.html"),
       },
       onwarn(warning, warn) {
         if (warning.code !== "MODULE_LEVEL_DIRECTIVE") warn(warning);

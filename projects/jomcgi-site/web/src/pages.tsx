@@ -9,6 +9,7 @@ import { Post125bOnA4090Page } from "./blog-125b-on-a-4090-page";
 import { LlmLeaderboardPage } from "./llm-leaderboard-page";
 import { DOC_PAGES } from "../docs/_src/pages";
 import { DocsIndexPage } from "./docs-index-page";
+import { EngineeringPage } from "./engineering-page";
 import { CvPage } from "./cv-page";
 import { HomePage } from "./home-page";
 import { NotFoundPage } from "./not-found-page";
@@ -36,4 +37,5 @@ export const PAGES: Record<string, () => React.JSX.Element> = {
   "llm-leaderboard.html": LlmLeaderboardPage,
   "docs.html": DocsIndexPage,
   ...DOC_PAGES,
+  "engineering.html": EngineeringPage,
 };

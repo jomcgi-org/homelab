@@ -37,6 +37,21 @@ js_library(
     visibility = ["//projects/jomcgi-site/web:__pkg__"],
 )
 
+# Copy migration fixtures in their owning package before the site's tests use
+# them. rules_js cannot copy raw source files across package boundaries.
+js_library(
+    name = "engineering_migration_sources",
+    srcs = glob(["src/routes/public/engineering/diagrams/*.svelte"]) + [
+        "package.json",
+        "src/lib/public/fcstory/data/trace.js",
+        "src/lib/public/fcstory/metrics.js",
+        "src/routes/public/engineering/+page.svelte",
+        "src/routes/public/engineering/diagrams/index.js",
+        "src/routes/public/engineering/engineering-data.js",
+    ],
+    visibility = ["//projects/jomcgi-site/web:__pkg__"],
+)
+
 js_library(
     name = "review_fixture_src",
     srcs = [
