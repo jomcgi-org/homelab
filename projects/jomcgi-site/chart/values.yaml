@@ -60,7 +60,6 @@ workloads:
         mountPath: /tmp
         sizeLimit: 512Mi
     network:
-      # The Cloudflare API and the R2 S3 endpoint are the only egress.
       # wrangler's npm update check times out against this policy and does
       # not fail the deploy.
       egress:
@@ -69,6 +68,9 @@ workloads:
           port: 443
         - peer: r2-read
           fqdn: 7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+          port: 443
+        - peer: factory-data
+          fqdn: factory-data.jomcgi.dev
           port: 443
 
   site-check:

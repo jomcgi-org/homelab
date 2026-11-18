@@ -57,3 +57,12 @@ filegroup(
     ),
     visibility = ["//:__pkg__"],
 )
+
+py_test(
+    name = "publisher_test",
+    srcs = [
+        "publisher.py",
+        "publisher_test.py",
+    ],
+    deps = ["@pip//pytest"],
+)

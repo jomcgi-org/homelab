@@ -69,7 +69,7 @@ export function r2Getter(endpoint, credentials, fetchImpl = fetch) {
 }
 
 /** Writes every section's files and latest.json under `out`. Returns the log. */
-export async function snapshot(sources, get, out, now = new Date()) {
+export async function snapshot(sources, get, out, now = new Date(), fetchImpl = fetch) {
   const log = [];
   for (const [section, { bucket, files }] of Object.entries(sources.sections)) {
     // A successful snapshot can contain unchanged source objects. Keep its
@@ -128,6 +128,40 @@ export async function snapshot(sources, get, out, now = new Date()) {
       if (html !== undefined)
         await writeFile(page, stampSummary(html, summary));
     }
+  }
+  for (const [section, url] of Object.entries(sources.httpsManifests ?? {})) {
+    if (new URL(url).protocol !== "https:") throw new Error("HTTPS required");
+    const read = async (location) => {
+      const response = await fetchImpl(location, {
+        redirect: "error",
+        credentials: "omit",
+      });
+      if (!response.ok) throw new Error(`GET ${location}: ${response.status}`);
+      return Buffer.from(await response.arrayBuffer());
+    };
+    const body = await read(url);
+    const manifest = JSON.parse(body);
+    if (manifest.version !== 1) throw new Error("Unsupported manifest version");
+    const paths = new Set([manifest.story]);
+    for (const refs of [manifest.goals, manifest.issues, manifest.sessions]) {
+      if (!refs || typeof refs !== "object" || Array.isArray(refs))
+        throw new Error("Invalid manifest index");
+      for (const path of Object.values(refs)) paths.add(path);
+    }
+    await mkdir(join(out, section, "objects"), { recursive: true });
+    for (const path of paths) {
+      if (
+        typeof path !== "string" ||
+        !/^objects\/[a-f0-9]{64}\.json$/.test(path)
+      )
+        throw new Error("Invalid object path");
+      const object = await read(new URL(path, url).href);
+      if (path !== `objects/${sha256(object)}.json`)
+        throw new Error("Object digest mismatch");
+      await writeFile(join(out, section, path), object);
+    }
+    await writeFile(join(out, section, "manifest.json"), body);
+    log.push(`${section}: copied ${paths.size} objects`);
   }
   return log;
 }

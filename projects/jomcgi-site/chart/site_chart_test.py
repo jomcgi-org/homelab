@@ -147,7 +147,7 @@ def test_release_marker_changes_with_the_chart_and_the_image():
 
 
 @pytest.mark.parametrize("workload", ["jomcgi-site-deploy", "jomcgi-site-refresh"])
-def test_only_egress_is_the_cloudflare_api_and_r2(workload):
+def test_deploy_egress(workload):
     policy = docs(render())[f"CiliumNetworkPolicy/{workload}"]["spec"]
     assert policy["enableDefaultDeny"] == {"ingress": True, "egress": True}
     assert policy.get("ingress", []) == []
@@ -162,6 +162,7 @@ def test_only_egress_is_the_cloudflare_api_and_r2(workload):
             ],
             **https,
         },
+        {"toFQDNs": [{"matchName": "factory-data.jomcgi.dev"}], **https},
     ]
 
 
