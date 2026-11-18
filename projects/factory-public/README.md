@@ -68,6 +68,24 @@ this mirror copies it to R2. The trips export moves its public photos to
 Garage that way (HOME-242, HOME-258). Then no job writes to the R2 bucket
 directly.
 
+## Activation record
+
+On 2026-11-18, before the mirror was turned on, the checks above ran
+read-only with the credentials in the synced Secret
+`factory-public-factory-public-mirror-r2`, over IPv4. No credential was
+printed, and no object was created or deleted.
+
+| Check | Result |
+| --- | --- |
+| 1. Secret fields | `OnePasswordItem` Ready; the Secret has the three fields. |
+| 2. Endpoint | `s3-api-endpoint` equals the account endpoint above. |
+| 2. Token identity | Cloudflare `GET /accounts/<account>/tokens/verify` with the Secret's `token`: active, no expiry, and its id equals `access-key-id`. |
+| 2. Bucket admin | ListBuckets: `AccessDenied`. R2 needs an admin token to list or create buckets. |
+| 2. Write and delete in `factory-public` | A multipart upload started and was aborted (a write that stores no object): allowed. DeleteObject on a key that does not exist: 204 (allowed). |
+| 2. Other buckets (`stars`, `monolith-trips`, `monolith-public`) | ListObjects, the multipart write and DeleteObject: all `AccessDenied`. |
+| 3. Destination listing | ListObjects on `factory-public`: allowed, 0 objects. |
+| 4. One writer | `projects/monolith/chart/values.yaml` sets `TRIPS_EXPORT_PUBLIC_ENABLED: "false"`; R2 has no `trips/` objects. |
+
 ## Live check
 
 After the mirror runs:
