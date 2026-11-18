@@ -3,11 +3,11 @@
 The daily `trips-export` Argo CronWorkflow runs at 03:00 UTC through
 `app/jobs_main.py`. It reads the serializers for `/api/trips/trips` and
 `/api/trips/trip/{slug}` and exports their JSON responses without changes.
-HOME-212 site ingestion, static pages and route activation are separate work.
+Site ingestion, static pages and route activation are HOME-242.
 
 ```text
-Postgres ── API serializers ──► private stars/trips/index.json, <slug>.json
-                           └─► private stars/trips/v/<name>-<sha256>.json
+Postgres ── API serializers ──► private stars/trips/index.json, trip/<slug>.json
+                           └─► private stars/trips/v/index-<sha256>.json, v/trip/<slug>-<sha256>.json
 private monolith-trips originals ── signed hub imgproxy presets
                            └─► private stars/trips/photos/<original-key>/*.webp
                                      └─ explicit public opt-in: factory-public/trips/photos/…
@@ -16,13 +16,16 @@ all referenced objects complete ──► private stars/trips/export.json
 
 Each unique photo has five WebP variants: `thumb`, `gallery`, `preview`,
 `display` and `full`. The exporter uses the existing hub imgproxy presets,
-rejects non-WebP output and EXIF/XMP chunks, and skips variants already in R2.
+rejects non-WebP output, EXIF/XMP chunks and files without a `VP8 ` or `VP8L`
+frame that Pillow can decode, and skips variants already in R2.
 Originals stay in the private `monolith-trips` bucket. Only processed WebP
 objects can be copied to `factory-public`.
 
 `trips/export.json` is the commit point. Consumers read its `files` mapping
-to immutable JSON objects, so a failed export leaves the previous manifest
-usable even if some aliases have changed. It also records `asOf`, the daily
+to immutable JSON objects (`files.index`, and `files.trips` by slug). Trip
+aliases live under `trips/trip/`, so no slug can replace the index or the
+manifest. A failed export leaves the previous manifest usable, even if some
+aliases have changed. It also records `asOf`, the daily
 `refreshSeconds`, `images`, `photoCount`, `photoAssetCount`, `photoBytes`,
 `photoMaxBytes`, `photoMode` and `photoBase`.
 
