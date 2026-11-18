@@ -187,7 +187,7 @@ def test_kube_api_requires_an_authentik_token_from_a_kube_group(docs):
                     "name": "authentik",
                     "issuer": issuer,
                     "audiences": ["factory-kubectl"],
-                    "remoteJWKS": {"uri": issuer + "jwks/"},
+                    "remoteJWKS": {"uri": issuer + "jwks/", "cacheDuration": "300s"},
                 }
             ]
         },
