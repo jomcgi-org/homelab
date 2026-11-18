@@ -151,7 +151,8 @@ are unavailable before closing the administrator session.
 In the pinned release, the source flow manager routes a new identity to
 enrollment and an existing connection to authentication. Enrollment creates the account and saves its provider connection without issuing a session.
 Direct signup returns to the same provider to begin authentication. The validate stage challenges
-an enrolled device and requires TOTP setup when there is no device.
+an enrolled device. A new user without a device sees a pending-access message.
+After a group grant, a user without a device sets up TOTP before receiving a session.
 [Source flow routing](https://github.com/goauthentik/authentik/blob/version/2026.5.6/authentik/core/sources/flow_manager.py#L151-L170)
 and [MFA stage behavior](https://github.com/goauthentik/authentik/blob/version/2026.5.6/authentik/stages/authenticator_validate/stage.py#L259-L291).
 

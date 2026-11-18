@@ -27,20 +27,39 @@ spec:
   egress:
     - toFQDNs:
         - matchName: github.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+          serverNames: ["github.com"]
+    - toFQDNs:
         - matchName: api.github.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+          serverNames: ["api.github.com"]
+    - toFQDNs:
         - matchName: oauth2.googleapis.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+          serverNames: ["oauth2.googleapis.com"]
+    - toFQDNs:
         - matchName: www.googleapis.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+          serverNames: ["www.googleapis.com"]
+    - toFQDNs:
         - matchName: discord.com
       toPorts:
         - ports:
             - port: "443"
               protocol: TCP
-          serverNames:
-            - github.com
-            - api.github.com
-            - oauth2.googleapis.com
-            - www.googleapis.com
-            - discord.com
+          serverNames: ["discord.com"]
     - toEndpoints:
         - matchLabels:
             cnpg.io/cluster: authentik-pg
@@ -66,16 +85,25 @@ spec:
     # OAuthSourceSerializer validates discovery documents and fetches JWKS.
     - toFQDNs:
         - matchName: accounts.google.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+          serverNames: ["accounts.google.com"]
+    - toFQDNs:
         - matchName: www.googleapis.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+          serverNames: ["www.googleapis.com"]
+    - toFQDNs:
         - matchName: token.actions.githubusercontent.com
       toPorts:
         - ports:
             - port: "443"
               protocol: TCP
-          serverNames:
-            - accounts.google.com
-            - www.googleapis.com
-            - token.actions.githubusercontent.com
+          serverNames: ["token.actions.githubusercontent.com"]
     - toEndpoints:
         - matchLabels:
             cnpg.io/cluster: authentik-pg

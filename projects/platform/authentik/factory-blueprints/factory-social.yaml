@@ -95,6 +95,24 @@ entries:
       title: Sign in to the factory
       designation: authentication
       authentication: require_unauthenticated
+      policy_engine_mode: all
+  - model: authentik_policies_expression.expressionpolicy
+    id: social-session-ready
+    identifiers:
+      name: factory-social-session-ready
+    attrs:
+      expression: |
+        from authentik.stages.authenticator import devices_for_user
+        user = request.context["pending_user"]
+        if user.groups.exists() or any(devices_for_user(user)):
+            return True
+        ak_message("Your account is registered. Factory access is pending a group grant.")
+        return False
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf social-authentication
+      policy: !KeyOf social-session-ready
+      order: 10
   - model: authentik_policies.policybinding
     identifiers:
       target: !KeyOf social-authentication

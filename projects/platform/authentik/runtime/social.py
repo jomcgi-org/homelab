@@ -9,7 +9,7 @@ from django.test import Client
 from django.urls import reverse
 
 from authentik.blueprints.v1.importer import Importer
-from authentik.core.models import Application, User
+from authentik.core.models import Application, Group, User
 from authentik.policies.denied import AccessDeniedResponse
 from authentik.policies.engine import PolicyEngine
 from authentik.sources.oauth.clients.oauth2 import OAuth2Client
@@ -75,6 +75,18 @@ def exercise():
     user = User.objects.get(username="discord-42")
     assert not user.groups.exists()
 
+    waiting = Client(HTTP_HOST="localhost")
+    pending = callback(waiting, "42")
+    assert isinstance(pending, AccessDeniedResponse)
+    assert b"pending a group grant" in pending.content
+    assert SESSION_KEY not in waiting.session
+    for slug in ("factory-edge", "factory-kubectl"):
+        engine = PolicyEngine(Application.objects.get(slug=slug), user)
+        assert not engine.build().result.passing
+
+    viewers = Group.objects.get(name="factory-kube-viewers")
+    user.groups.add(viewers)
+
     # Close the first MFA prompt. The next callback must find the original
     # connection, even in a new browser with no flow plan or session.
     url = executor("authentication")
@@ -88,11 +100,7 @@ def exercise():
     submit_code(browser, url, challenge["component"], device)
     user = User.objects.get(username="discord-42")
     assert str(browser.session[SESSION_KEY]) == str(user.pk)
-    assert not user.groups.exists()
-    for slug in ("factory-edge", "factory-kubectl"):
-        engine = PolicyEngine(Application.objects.get(slug=slug), user)
-        assert not engine.build().result.passing
-
+    user.groups.remove(viewers)
     browser = Client(HTTP_HOST="localhost")
     assert callback(browser, "42").status_code == 302
     url = executor("authentication")

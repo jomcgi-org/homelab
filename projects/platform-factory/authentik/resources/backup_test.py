@@ -164,15 +164,19 @@ def test_authentik_external_egress_is_limited_to_provider_https():
         name = policy["metadata"]["name"]
         if name not in expected:
             continue
-        database, external = sorted(
+        database, *external = sorted(
             policy["spec"]["egress"], key=lambda rule: "toFQDNs" in rule
         )
         assert database["toEndpoints"] == [
             {"matchLabels": {"cnpg.io/cluster": "authentik-pg"}}
         ]
-        assert set(external) == {"toFQDNs", "toPorts"}
-        (port_rule,) = external["toPorts"]
-        assert port_rule["ports"] == [{"port": "443", "protocol": "TCP"}]
-        assert set(port_rule["serverNames"]) == expected[name]
-        assert {host["matchName"] for host in external["toFQDNs"]} == expected.pop(name)
+        hosts = set()
+        for rule in external:
+            assert set(rule) == {"toFQDNs", "toPorts"}
+            (peer,) = rule["toFQDNs"]
+            (port_rule,) = rule["toPorts"]
+            assert port_rule["ports"] == [{"port": "443", "protocol": "TCP"}]
+            assert port_rule["serverNames"] == [peer["matchName"]]
+            hosts.add(peer["matchName"])
+        assert hosts == expected.pop(name)
     assert not expected
