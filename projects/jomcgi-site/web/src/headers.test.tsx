@@ -41,7 +41,12 @@ describe("static hosting headers", () => {
       );
   });
   it("sends a CSP without inline or eval exceptions", () => {
-    for (const value of [csp, hikesCsp, policy(rule("/stars"))]) {
+    for (const value of [
+      csp,
+      hikesCsp,
+      policy(rule("/stars")),
+      policy(rule("/assets/maplibre-gl-worker-*")),
+    ]) {
       expect(value).toContain("default-src 'self'");
       expect(value).toContain("frame-ancestors 'none'");
       expect(value).toContain("form-action 'none'");
@@ -61,6 +66,15 @@ describe("static hosting headers", () => {
       expect(rule(path)).toContain(
         "Cache-Control: public, max-age=0, must-revalidate",
       );
+  });
+
+  it("gives MapLibre's worker script the map policy, since a worker takes its CSP from its own response", () => {
+    const worker = rule("/assets/maplibre-gl-worker-*");
+    expect(worker).toContain("! Content-Security-Policy");
+    expect(policy(worker)).toBe(hikesCsp);
+    expect(policy(worker).match(/connect-src ([^;]+)/)?.[1]).toContain(
+      "https://tiles.openfreemap.org",
+    );
   });
 
   it("caches hashed assets forever", () => {
