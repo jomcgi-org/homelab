@@ -1,6 +1,6 @@
 """Publish factory health as static data (HOME-260).
 
-Each run reads the factory cluster's own state and writes health.json to the
+Each run reads two Argo CD Applications and writes health.json to the
 Garage bucket factory-public. The mirror copies it to R2 with a 60-second
 cache, so public readers never call the cluster.
 """
@@ -36,19 +36,11 @@ def recent(timestamp, seconds, now):
 
 
 def cluster(now):
-    nodes = kube("/api/v1/nodes")["items"]
-    ready = bool(nodes) and all(
-        any(
-            c["type"] == "Ready" and c["status"] == "True"
-            for c in node["status"]["conditions"]
-        )
-        for node in nodes
-    )
+    # Argo CD's own Application is Healthy only while its controller, repo
+    # server and API run, and reconciledAt shows it still reconciles.
     status = kube(APPLICATIONS + "argocd")["status"]
-    return (
-        ready
-        and status["health"]["status"] == "Healthy"
-        and recent(status["reconciledAt"], 900, now)
+    return status["health"]["status"] == "Healthy" and recent(
+        status["reconciledAt"], 900, now
     )
 
 

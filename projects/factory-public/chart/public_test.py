@@ -154,9 +154,9 @@ def test_health_publisher_reads_the_cluster_and_writes_only_garage():
         "6443",
         "3900",
     ]
-    # Read-only API access: list nodes, get two named Applications.
-    assert docs["ClusterRole", "factory-public-health-nodes"]["rules"] == [
-        {"apiGroups": [""], "resources": ["nodes"], "verbs": ["list"]}
+    # Read-only API access: get two named Applications, nothing cluster-wide.
+    assert not [
+        kind for kind, _ in docs if kind.startswith("Cluster") and "Role" in kind
     ]
     apps = docs["Role", "factory-public-health-apps"]
     assert apps["metadata"]["namespace"] == "argocd"

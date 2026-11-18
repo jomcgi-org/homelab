@@ -1,27 +1,6 @@
-{{/* Read-only access for the health publisher (HOME-260): list nodes, and
-read the two Argo CD Applications it reports. */}}
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: factory-public-health-nodes
-rules:
-  - apiGroups: [""]
-    resources: ["nodes"]
-    verbs: ["list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: factory-public-health-nodes
-subjects:
-  - kind: ServiceAccount
-    name: health
-    namespace: {{ .Release.Namespace }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: factory-public-health-nodes
----
+{{/* Read-only access for the health publisher (HOME-260): get the two
+Argo CD Applications it reports. deploy/BUILD exempts these two objects from
+the release-namespace rule. */}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

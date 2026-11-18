@@ -41,8 +41,8 @@ The publisher gets write access through its own `buckets:` entry without
 
 The `health` CronJob publishes factory health as static data, so public
 readers never call the cluster ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-260#comment-3909)).
-Every 2 minutes it reads the nodes and two Argo CD Applications
-(`argocd`, `jomcgi-site-prod`) with a read-only ServiceAccount. It then writes
+Every 2 minutes it reads two Argo CD Applications (`argocd`, for the
+cluster, and `jomcgi-site-prod`) with a read-only Role in `argocd`. It then writes
 `health.json` to Garage with its own signed PUT:
 
 ```json
