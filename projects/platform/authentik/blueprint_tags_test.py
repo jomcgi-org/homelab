@@ -293,7 +293,6 @@ def test_factory_edge_and_argocd_callback_hosts():
         "https://factory-argocd.jomcgi.dev/oauth2/callback",
         "https://factory-plan.jomcgi.dev/oauth2/callback",
         "https://factory-grafana.jomcgi.dev/oauth2/callback",
-        "https://factory-public.jomcgi.dev/oauth2/callback",
         "https://factory-agents.jomcgi.dev/oauth2/callback",
     }
     assert all(

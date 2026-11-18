@@ -1,1 +1,2 @@
+{{- $_ := set .Values.workloads.health "args" (list (required "factory health script is missing" (.Files.Get "files/health.py"))) -}}
 {{ include "factory-library.all" . }}

@@ -11,6 +11,7 @@ Argo CD deploys it in namespace `factory-public` through
 ```mermaid
 flowchart LR
   publisher["Publisher (HOME-213)"] -- write --> garage[("Garage factory-public")]
+  health["health CronJob (HOME-260)"] -- "write health.json" --> garage
   garage -- "rclone, every minute" --> r2[("R2 factory-public")]
   r2 --> cdn["factory-data.jomcgi.dev"]
 ```
@@ -35,6 +36,26 @@ Each run syncs every object except `manifest.json` with
 
 The publisher gets write access through its own `buckets:` entry without
 `public:`. Only this chart owns `public:` for this destination.
+
+## Factory health
+
+The `health` CronJob publishes factory health as static data, so public
+readers never call the cluster ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-260#comment-3909)).
+Every 2 minutes it reads the nodes and two Argo CD Applications
+(`argocd`, `jomcgi-site-prod`) with a read-only ServiceAccount. It then writes
+`health.json` to Garage with its own signed PUT:
+
+```json
+{"status": "healthy", "generatedAt": "2026-11-18T22:00:00Z",
+ "components": {"factory-cluster": "healthy", "jomcgi-site": "healthy"}}
+```
+
+A read failure makes that component `unhealthy`. The mirror lists the key
+in `public.mutableKeys`, so `https://factory-data.jomcgi.dev/health.json`
+has `Cache-Control: public, max-age=60` and is at most about 4 minutes old.
+This chart's own claim has `write` access only for this key; every other key
+keeps one writer from another chart. Alerting on the status and age in the
+file is [HOME-415](https://factory-plan.jomcgi.dev/factory/issue/HOME-415).
 
 ## Before the mirror runs
 

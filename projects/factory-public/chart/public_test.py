@@ -1,4 +1,4 @@
-"""The first consumer needs only one bucket entry, including its public mirror."""
+"""The chart owns one bucket entry, its public mirror and the health publisher."""
 
 import os
 from pathlib import Path
@@ -11,8 +11,9 @@ HERE = Path(__file__).resolve().parent
 
 def test_public_consumer():
     config = yaml.safe_load((HERE / "values.yaml").read_text())
-    assert list(config) == ["buckets"]
+    assert list(config) == ["buckets", "workloads"]
     assert len(config["buckets"]) == 1
+    assert config["buckets"][0]["public"]["mutableKeys"] == ["health.json"]
     result = subprocess.run(
         [
             os.environ["HELM_BIN"],
@@ -27,7 +28,8 @@ def test_public_consumer():
         text=True,
     )
     docs = [d for d in yaml.safe_load_all(result.stdout) if d]
-    job = next(d for d in docs if d["kind"] == "CronJob")
+    by_name = {(d["kind"], d["metadata"]["name"]): d for d in docs}
+    job = by_name["CronJob", "factory-public-factory-public-mirror"]
     pod = job["spec"]["jobTemplate"]["spec"]["template"]["spec"]
     assert pod["automountServiceAccountToken"] is False
     assert pod["serviceAccountName"] == job["metadata"]["name"]
@@ -54,7 +56,7 @@ def test_public_consumer():
             "factory-public",
             "factory-public-factory-public-s3",
             "factory-public",
-            "read",
+            "write",
         ),
         (
             "factory-public",
@@ -84,7 +86,9 @@ def test_public_consumer():
         for p in policies
         for v in p["spec"]["validations"]
     )
-    policy = next(d for d in docs if d["kind"] == "CiliumNetworkPolicy")["spec"]
+    policy = by_name["CiliumNetworkPolicy", "factory-public-factory-public-mirror"][
+        "spec"
+    ]
     assert policy["enableDefaultDeny"] == {"ingress": True, "egress": True}
     assert [rule["toPorts"][0]["ports"][0]["port"] for rule in policy["egress"]] == [
         "3900",
@@ -110,3 +114,63 @@ def test_public_consumer():
     assert all(
         entry["jsonPointers"] == ["/data"] for entry in spec["ignoreDifferences"]
     )
+
+
+def render():
+    result = subprocess.run(
+        [
+            os.environ["HELM_BIN"],
+            "template",
+            "factory-public",
+            str(HERE),
+            "--namespace",
+            "factory-public",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return {
+        (d["kind"], d["metadata"]["name"]): d
+        for d in yaml.safe_load_all(result.stdout)
+        if d
+    }
+
+
+def test_health_publisher_reads_the_cluster_and_writes_only_garage():
+    docs = render()
+    job = docs["CronJob", "health"]
+    assert job["spec"]["schedule"] == "*/2 * * * *"
+    pod = job["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    assert pod["serviceAccountName"] == "health"
+    container = pod["containers"][0]
+    assert container["command"] == ["python3", "-B", "-c"]
+    assert container["args"] == [(HERE / "files" / "health.py").read_text()]
+    assert {e["valueFrom"]["secretKeyRef"]["name"] for e in container["env"]} == {
+        "factory-public-factory-public-s3"
+    }
+    egress = docs["CiliumNetworkPolicy", "health"]["spec"]["egress"]
+    assert [rule["toPorts"][0]["ports"][0]["port"] for rule in egress] == [
+        "6443",
+        "3900",
+    ]
+    # Read-only API access: list nodes, get two named Applications.
+    assert docs["ClusterRole", "factory-public-health-nodes"]["rules"] == [
+        {"apiGroups": [""], "resources": ["nodes"], "verbs": ["list"]}
+    ]
+    apps = docs["Role", "factory-public-health-apps"]
+    assert apps["metadata"]["namespace"] == "argocd"
+    assert apps["rules"][0]["verbs"] == ["get"]
+    assert apps["rules"][0]["resourceNames"] == ["argocd", "jomcgi-site-prod"]
+
+
+def test_mirror_gives_health_a_short_cache():
+    job = render()["CronJob", "factory-public-factory-public-mirror"]
+    script = job["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0][
+        "command"
+    ][2]
+    assert "--exclude /health.json" in script
+    assert (
+        'copyto "GARAGE:$GARAGE_BUCKET/health.json" "R2:$R2_BUCKET/health.json" \\\n'
+        '    --ignore-times --header-upload "Cache-Control: public, max-age=60"'
+    ) in script

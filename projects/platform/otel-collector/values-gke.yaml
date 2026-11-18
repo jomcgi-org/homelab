@@ -36,6 +36,9 @@ httpcheck:
   enabled: true
   targets:
     - "https://jomcgi.dev/health"
+    # Static factory health (HOME-260). It answers 200 while published;
+    # HOME-415 alerts on the status inside it.
+    - "https://factory-data.jomcgi.dev/health.json"
     - "https://jomcgi.dev/"
     - endpoint: "https://argocd-server.argocd.svc:443/healthz"
       enabled: true

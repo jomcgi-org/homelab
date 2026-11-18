@@ -285,10 +285,11 @@ false through Git to disable this path; existing backup schedules are unchanged.
   `projects/monolith/factory/ops_health.py`,
   `projects/monolith/factory/health_alerts.py`, chart values `healthAlerts`
 
-## Factory health during hub retirement
+## Factory health
 
-Operators can sign in at `https://factory-public.jomcgi.dev/health` to see
-node and Argo CD readiness, production site deployment health and storyboard
-freshness. The response is private and uncached. The unauthenticated collector
-continues probing the hub while the public factory health decision is pending
-verification. Its trigger still matches that probe.
+`https://factory-data.jomcgi.dev/health.json` holds the factory's composite
+health as static data, refreshed every 2 minutes and cached for 60 s
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-260#comment-3909)). See
+[factory-public](../projects/factory-public/README.md#factory-health). The hub
+collector's httpcheck probes it; alerting on its `status` and `generatedAt` is
+[HOME-415](https://factory-plan.jomcgi.dev/factory/issue/HOME-415).

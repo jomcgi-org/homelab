@@ -529,3 +529,72 @@ def test_mirror_refuses_endpoint_outside_policy_before_running_rclone(chart):
     )
     assert result.returncode == 1
     assert result.stderr.strip() == "R2 endpoint does not match the declared egress"
+
+
+@pytest.mark.parametrize("present,last", [("health.json", "copyto"), ("", "delete")])
+def test_mirror_replaces_mutable_keys_with_a_short_cache(
+    chart, tmp_path, present, last
+):
+    config = bucket_config()
+    config["buckets"][0]["public"]["mutableKeys"] = ["health.json"]
+    container = mirror_container(objects(render(chart, config)))
+    env = {
+        **os.environ,
+        **{var["name"]: var["value"] for var in container["env"] if "value" in var},
+    }
+    env.update(
+        RCLONE_CONFIG_R2_ENDPOINT="https://" + env["R2_HOST"],
+        FAKE_PRESENT=present,
+        FAKE_LOG=str(tmp_path / "calls.jsonl"),
+    )
+    binary = tmp_path / "rclone"
+    binary.write_text(
+        "#!" + shutil.which("python3") + "\n"
+        "import json, os, sys\n"
+        "args = sys.argv[1:]\n"
+        "with open(os.environ['FAKE_LOG'], 'a') as out:\n"
+        "    out.write(json.dumps(args) + '\\n')\n"
+        "if args[3] == 'lsf' and args[-1] == '/' + os.environ['FAKE_PRESENT']:\n"
+        "    print(os.environ['FAKE_PRESENT'])\n"
+    )
+    binary.chmod(0o755)
+    env["PATH"] = str(tmp_path) + os.pathsep + env["PATH"]
+    result = subprocess.run(container["command"], env=env, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    calls = [
+        json.loads(line) for line in Path(env["FAKE_LOG"]).read_text().splitlines()
+    ]
+    assert calls[0][4:8] == [
+        "GARAGE:factory-public",
+        "R2:factory-public",
+        "--exclude",
+        "/manifest.json",
+    ]
+    assert calls[0][8:10] == ["--exclude", "/health.json"]
+    if last == "copyto":
+        assert calls[-1][3:] == [
+            "copyto",
+            "GARAGE:factory-public/health.json",
+            "R2:factory-public/health.json",
+            "--ignore-times",
+            "--header-upload",
+            "Cache-Control: public, max-age=60",
+        ]
+    else:
+        assert calls[-1][3:] == [
+            "delete",
+            "R2:factory-public",
+            "--include",
+            "/health.json",
+        ]
+
+
+@pytest.mark.parametrize(
+    "keys", [["manifest.json"], ["dir/health.json"], ["x.txt"], "health.json"]
+)
+def test_mutable_keys_are_root_json_names(chart, keys):
+    config = bucket_config()
+    config["buckets"][0]["public"]["mutableKeys"] = keys
+    result = render(chart, config)
+    assert result.returncode != 0
+    assert "mutableKeys" in result.stderr

@@ -322,6 +322,11 @@ the destination manifest. Payload deletions use rclone sync's normal deletion.
 Set `public.manifestName: latest.json` for static-page writers. The default is
 `manifest.json` for existing publishers.
 
+`public.mutableKeys` lists other root `*.json` keys that a writer replaces in
+place, for example `[health.json]`. The sync skips them. After the manifest step,
+each one is copied with the same 60-second cache, or removed from R2 when Garage
+lacks it.
+
 The publisher must write immutable objects before replacing its manifest.
 Keep objects referenced by a current or cached manifest until those readers
 expire; the mirror does not provide a transaction across concurrent writes.

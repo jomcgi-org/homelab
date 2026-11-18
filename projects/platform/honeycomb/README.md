@@ -72,23 +72,6 @@ to the live value before running `--apply`. If it reports an `UNMANAGED`
 trigger (for example one of the per-family turn triggers from #6517 that was
 applied by hand), the plan refuses: delete that trigger in the Honeycomb UI.
 
-## Factory health cutover
-
-The factory endpoint currently requires an operator sign-in. Keep the hub
-probe and trigger active. Once a public factory response is authorized and
-deployed, add its URL alongside the hub URL in both collector overlays. Keep
-the hub route deployed while switching the single trigger in place.
-
-In the metrics dataset, group `httpcheck.status` by `http.url` and confirm
-both URLs have recent samples across two five-minute windows. Confirm the
-factory endpoint returns component JSON. Then change the trigger spec URL filter to the factory URL and run the dry run and apply above
-to update trigger `aJgkA4vC2m8` in place. Run the dry run again and confirm
-`NOOP`. In Honeycomb, open that trigger's query and verify its URL filter and
-two completed evaluations after the change. Record the evaluation times on
-HOME-260 before removing the old collector target and route with the hub.
-If verification fails, restore the previous URL filter and reapply while both
-probes are active.
-
 ## Triggers
 
 | File | Dataset | Enabled |

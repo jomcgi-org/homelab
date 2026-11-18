@@ -152,8 +152,3 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
-    - toEndpoints:
-        - matchLabels:
-            app: factory-health
-      toPorts:
-        - ports: [{port: "8080", protocol: TCP}]

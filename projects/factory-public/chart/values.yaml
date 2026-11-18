@@ -1,9 +1,48 @@
 buckets:
   - name: factory-public
-    access: read
+    # The health publisher below writes health.json. Other publishers get
+    # their own buckets: entry without public: (README).
+    access: write
     public:
       # On (HOME-243): the pre-activation checks in the README passed on
       # 2026-11-18. Set true to stop the mirror; R2 keeps what it has.
       suspend: false
       r2Bucket: factory-public
       itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
+      # Replaced in place; the mirror gives it a 60-second cache (HOME-260).
+      mutableKeys: [health.json]
+
+workloads:
+  # Factory health as static data (HOME-260): the public reader never calls
+  # the cluster. templates/buckets.yaml supplies files/health.py as the script.
+  health:
+    kind: CronJob
+    schedule: "*/2 * * * *"
+    backoffLimit: 0
+    kubernetesApi: true
+    image:
+      repository: docker.io/library/python
+      digest: sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
+    command: [python3, -B, -c]
+    resources:
+      requests: {cpu: 10m, memory: 32Mi}
+      limits: {memory: 96Mi}
+    env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef: {name: factory-public-factory-public-s3, key: AWS_ACCESS_KEY_ID}
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef: {name: factory-public-factory-public-s3, key: AWS_SECRET_ACCESS_KEY}
+        - name: AWS_ENDPOINT_URL
+          valueFrom:
+            secretKeyRef: {name: factory-public-factory-public-s3, key: AWS_ENDPOINT_URL}
+        - name: AWS_REGION
+          valueFrom:
+            secretKeyRef: {name: factory-public-factory-public-s3, key: AWS_REGION}
+        - name: BUCKET
+          valueFrom:
+            secretKeyRef: {name: factory-public-factory-public-s3, key: BUCKET}
+    network:
+      egress:
+        - {peer: kube-apiserver, port: 6443}

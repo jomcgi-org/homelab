@@ -1,3 +1,6 @@
+# templates/buckets.yaml passes this script to the health CronJob.
+# gazelle:exclude files/health.py
+
 load("//bazel/helm:defs.bzl", "helm_chart")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
@@ -21,4 +24,11 @@ py_test(
         "PUBLIC_APPLICATION": "$(rootpath //projects/factory-public/deploy:application.yaml)",
     },
     deps = ["@pip//pyyaml"],
+)
+
+py_test(
+    name = "health_test",
+    srcs = ["health_test.py"],
+    data = ["files/health.py"],
+    deps = ["@pip//pytest"],
 )
