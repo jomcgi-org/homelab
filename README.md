@@ -1,86 +1,137 @@
 # Homelab
 
-Personal monorepo. Dev tooling and deployment for my projects.
+Personal monorepo. A software factory writes, reviews, merges and deploys the
+changes. I set the goals and make the decisions it cannot.
+
+## How a change ships
+
+```mermaid
+flowchart LR
+  J[Joe] -- "HOME issue" --> I[itsaplan]
+  I -- "run" --> C[connector]
+  C -- "task" --> K["coder agent<br/>(gVisor workspace)"]
+  K -- "recall and retain lessons" --> H[Hindsight]
+  K -- "branch and PR" --> G[GitHub PR]
+  G --> T["pr-checks<br/>(BuildBuddy)"]
+  G --> R["factory review<br/>(reviewer agent)"]
+  R -- "findings start a revision round" --> C
+  T -- "green" --> Q[merge queue]
+  R -- "green" --> Q
+  Q -- "main" --> P["CI publishes<br/>charts and images"]
+  P -- "ArgoCD sync" --> X[clusters]
+```
+
+| Part | Role | Code |
+| --- | --- | --- |
+| itsaplan | Tracker. Project HOME holds every open task and Joe's decisions | [chart](projects/factory/chart/) |
+| Connector | Relates an issue, its agent session and its PR. Starts revision rounds and enqueues | [connector](projects/factory/connector/) |
+| Coder and reviewer | kagent agents on separate GitHub Apps. Each run gets an isolated gVisor workspace | [architecture](projects/factory/ARCHITECTURE.md) |
+| Credential broker | Relays model calls and mints GitHub tokens. Credentials never enter a workspace | [broker](projects/factory/broker/) |
+| Hindsight | Long-term memory that the coder shares between runs | [hindsight](projects/platform-factory/hindsight/) |
+
+Every PR needs `pr-checks` and `factory review`, whoever wrote it. Joe decides
+changes to the review rules themselves ([REVIEW.md](REVIEW.md)). The rules for
+every change are in [AGENTS.md](AGENTS.md).
+
+## Today and direction
+
+The factory runs on the factory home cluster: three k3s nodes at home. Older
+workloads still run on the GKE hub and move off it.
+
+| Area | Today | Direction | Tracks |
+| --- | --- | --- | --- |
+| Factory and its platform | Factory home cluster | Unchanged | [factory-cluster](projects/factory-cluster/) |
+| Private apps (monolith, Grimoire, MCP gateway) | GKE hub | Factory home cluster. The hub scales to zero | [HOME-128](https://factory-plan.jomcgi.dev/factory/issue/HOME-128), [HOME-262](https://factory-plan.jomcgi.dev/factory/issue/HOME-262) |
+| Public site jomcgi.dev | Hub monolith, moving one section at a time | Static site on Cloudflare with its data on R2 | [HOME-178](https://factory-plan.jomcgi.dev/factory/issue/HOME-178) |
+| Deploy | ArgoCD from Git. Kargo promotes the hub pipelines | Kargo for every app. Verified Freight closes the HOME issue | [HOME-116](https://factory-plan.jomcgi.dev/factory/issue/HOME-116) |
+| Pod-to-pod identity | Cilium network policy | SPIFFE workload identity | [HOME-254](https://factory-plan.jomcgi.dev/factory/issue/HOME-254) |
+| Model choice | One fixed model for each agent | Trial arms compared on production outcomes | [HOME-244](https://factory-plan.jomcgi.dev/factory/issue/HOME-244) |
+
+The tracker links need a sign-in. Each domain's `ARCHITECTURE.md` records its
+current state, its direction and the reasons.
 
 ## Systems
 
-- [**EmberVM**](projects/embervm/): Firecracker microVM orchestrator. An Elixir control plane and a Go node daemon run task, session, serving, stateful, and composite workloads. See its [current architecture](projects/embervm/ARCHITECTURE.md).
-- [**Firecracker components**](projects/firecracker/): guest images and shared host/guest utilities retained by EmberVM after the original fc-invoke daemon was retired.
-- [**Knowledge pipeline**](projects/monolith/knowledge/): remote LLM extraction turns markdown into structured facts, embedded with voyage-4-nano and stored in pgvector. Searchable via MCP tools and a SvelteKit frontend.
-- [**Agent platform**](projects/embervm/ARCHITECTURE.md): AI agents in sandboxed microVM sessions, with the monolith providing the user-facing control plane.
-- [**Discord bot**](projects/monolith/chat/): LLM-powered chat with vision, web search, knowledge graph context, and a per-user trust ledger ([monolith architecture, section 5](projects/monolith/ARCHITECTURE.md)).
-- [**OCI Model Cache**](projects/operators/oci-model-cache/): Kubernetes operator that syncs ML models from HuggingFace to OCI registries. Compiler-enforced state machines.
-- [**Sextant**](projects/sextant/): code generator that turns YAML state-machine specs into type-safe Go for operators. Invalid transitions are compile errors, idempotency keys are forced into transition signatures. Generates the OCI Model Cache machine, drift-checked in CI.
-- [**Design system**](projects/design-system/): the shared `--ds-*` token contract the frontends build against. One namespaced vocabulary, three deliberately distinct themes (neobrutalist, ember, Grimoire) that override it inside their own scope class. Rationale in [the platform architecture](projects/platform/ARCHITECTURE.md#decision-history).
-- [**oom-inference**](projects/oom-inference/): Rust inference engine for mixture-of-experts models bigger than memory. Serves a 125B model from a 24 GB GPU by tiering experts across VRAM, pinned RAM and NVMe. See its [architecture](projects/oom-inference/docs/dev/architecture.md).
-- [**Scotland connector**](projects/scotland-connector/): Go service answering Scottish dark-sky and walk-weather questions over a read-only REST API and an authless MCP endpoint, from in-memory copies of the stargazing and hikes forecasts, at `jomcgi.dev/scotland/mcp`. See its [architecture](projects/scotland-connector/ARCHITECTURE.md).
-- [**Build system**](bazel/): custom Bazel rules for Helm and OCI images. All builds run remotely via BuildBuddy RBE.
+- [**Factory**](projects/factory/): the umbrella chart, connector, broker and reviewer above. Reusable for other repositories through a repository binding.
+- [**Factory home cluster**](projects/factory-cluster/): node bootstrap and ArgoCD root. [platform-factory](projects/platform-factory/) holds one Application for each shared component.
+- [**Monolith**](projects/monolith/): knowledge graph, Discord bot, Grimoire and the private apps, with a [read-only public tier](projects/monolith-public/) and an [agent-facing MCP tier](projects/monolith-agents/).
+- [**Knowledge pipeline**](projects/monolith/knowledge/): LLM extraction turns markdown into structured facts in pgvector, searchable through MCP tools.
+- [**Public site**](projects/jomcgi-site/): static Astryx pages on a Cloudflare Worker. It replaces the monolith's public pages section by section.
+- [**Scotland connector**](projects/scotland-connector/): Go service that answers Scottish dark-sky and walk-weather questions over REST and MCP.
+- [**oom-inference**](projects/oom-inference/): Rust inference engine that serves a 125B mixture-of-experts model from a 24 GB GPU. See its [architecture](projects/oom-inference/docs/dev/architecture.md).
+- [**OCI Model Cache**](projects/operators/oci-model-cache/) and [**Sextant**](projects/sextant/): a Kubernetes operator that syncs HuggingFace models to OCI registries, and the generator that turns its YAML state machine into type-safe Go.
+- [**Design system**](projects/design-system/): the shared `--ds-*` token contract the frontends build against.
+- [**Build system**](bazel/): Bazel rules for Helm and OCI images. Builds run remotely on BuildBuddy.
+- [**EmberVM**](projects/embervm/) and its [Firecracker components](projects/firecracker/): microVM orchestrator, retired on 2026-11-15 ([decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6893155810)). Its removal from the hub is in progress.
 
 ## Applications
 
-Public apps served by the monolith at [jomcgi.dev/app](https://jomcgi.dev/app):
+Public apps at [jomcgi.dev/app](https://jomcgi.dev/app):
 
-- [**Marine tracking**](projects/monolith/frontend/src/routes/public/app/ships/): Real-time AIS vessel tracking with a MapLibre GL frontend.
-- [**Trip tracker**](projects/monolith/frontend/src/routes/public/app/trips/): Reconstruct travel routes from photo EXIF data with elevation profiles.
-- [**Stargazing**](projects/monolith/frontend/src/routes/public/app/stars/): Best stargazing spots in Scotland with cloud-cover and darkness forecasts.
+- [**Marine tracking**](projects/monolith/frontend/src/routes/public/app/ships/): real-time AIS vessel tracking on a MapLibre GL map.
+- [**Trip tracker**](projects/monolith/frontend/src/routes/public/app/trips/): travel routes rebuilt from photo EXIF data, with elevation profiles.
+- [**Stargazing**](projects/monolith/frontend/src/routes/public/app/stars/): stargazing spots in Scotland with cloud-cover and darkness forecasts.
 - [**Hiking routes**](projects/monolith/frontend/src/routes/public/app/hikes/): Scottish route finder with weather-based recommendations.
-- [**Grimoire**](projects/monolith/frontend/src/routes/public/app/grimoire/): Postgres-first D&D campaign manager with a public rules and lore explorer.
-- [**Notes**](projects/monolith/frontend/src/routes/public/app/notes/): Public knowledge graph browsing.
-- [**LLM Leaderboard**](projects/monolith/frontend/src/routes/public/app/llm-leaderboard/): Agentic coding benchmark results across models, from the model-bench harness.
+- [**Grimoire**](projects/monolith/frontend/src/routes/public/app/grimoire/): D&D campaign manager with a public rules and lore explorer.
+- [**Notes**](projects/monolith/frontend/src/routes/public/app/notes/): public knowledge graph browsing.
 
 ## Infrastructure patterns
 
-See [docs/security.md](docs/security.md) for the defense-in-depth model, [projects/monolith/STPA.md](projects/monolith/STPA.md) for the hazard analysis, and [docs/observability.md](docs/observability.md) for automatic instrumentation.
+See [docs/security.md](docs/security.md) for the security model and
+[docs/observability.md](docs/observability.md) for instrumentation.
 
-| Area           | Approach                                                                                   |
-| -------------- | ------------------------------------------------------------------------------------------ |
-| Ingress        | Cloudflare Tunnel only; nothing exposed directly                                           |
-| Untrusted code | Firecracker microVMs (EmberVM), STPA hazard model colocated with the monolith              |
-| Networking     | GKE Dataplane V2 (managed Cilium); network enforcement details in the platform architecture |
-| Observability  | Opt-in OpenTelemetry collector exporting traces and synthetic probes to Honeycomb           |
-| Policy         | Kyverno audits resource requests and memory limits; clones Secrets across namespaces       |
-| Secrets        | 1Password Operator, OnePasswordItem CRDs, nothing in Git                                   |
-| Storage        | GCE persistent disks; Cloudflare R2 for monolith blobs and GCS for EmberVM exports                |
-| Inference      | Monolith chat and generation use external APIs; voyage-4-nano embeddings run on the GKE hub |
-| Images         | apko + rules_apko: amd64, non-root uid 65532                  |
-| CI             | `ci` for validation; BuildBuddy remote execution; image publish on merge               |
-| GitOps         | ArgoCD with colocated `deploy/` dirs; `kubectl` is read-only                               |
+| Area | GKE hub | Factory home cluster |
+| --- | --- | --- |
+| Ingress | Cloudflare Tunnel to Envoy Gateway; Cloudflare Access on private routes | Cloudflare Tunnel to Envoy Gateway; Authentik sign-in on every route |
+| Network | GKE Dataplane V2 | Cilium: default-deny, egress allowlists by domain name, WireGuard |
+| Sandboxing | Firecracker microVMs (EmberVM, in removal) | gVisor workspaces from Agent Substrate |
+| Storage | GCE persistent disks, Cloudflare R2, GCS | Local disks; Garage and CloudNativePG keep three copies |
+| Secrets | 1Password Operator; nothing in Git | 1Password Operator; External Secrets Operator mints short-lived credentials |
+| Observability | OpenTelemetry collector to Honeycomb | The same collector, plus Prometheus, Grafana and Discord alerts |
+| GitOps | ArgoCD and Kargo; `kubectl` is read-only | ArgoCD; Kargo pipelines come next |
+
+Both clusters build amd64, non-root images with apko. `ci` validates locally
+and BuildBuddy runs PR checks remotely.
 
 ## Repo layout
 
 ```
-projects/             # All services, operators, websites, colocated with deploy configs (major dirs shown)
-├── platform/         #   Cluster-critical infrastructure (ArgoCD, Envoy Gateway, OTel collector, etc.)
-├── monolith/         #   Knowledge graph, Discord bot, task management, public apps, frontend
-├── monolith-public/  #   Read-only public replica of the monolith
-├── monolith-agents/  #   Agent-facing MCP tier, pruned and with no cluster RBAC
-├── mcp/              #   Context Forge gateway + MCP servers
-├── inference/        #   Inference configuration and llama.cpp embeddings
-├── oom-inference/    #   MoE inference engine for models bigger than memory (Rust, Cargo)
-├── loom/             #   Default-off Postgres control-plane wiring for weave-hand/loom
-├── operators/        #   Custom Kubernetes operators
-├── sextant/          #   State-machine code generator for operators
-├── embervm/          #   Firecracker microVM orchestrator (Elixir control plane + Go node daemon)
-├── firecracker/      #   Guest images and shared guest utilities used by EmberVM
-├── gke-apps/         #   Active GKE Applications for app workloads
-├── gke-cluster/      #   Hand-maintained ArgoCD root and parent Application for the GKE hub
-├── platform-gke/     #   GKE cluster-critical infrastructure overlays (Tailscale, ArgoCD, Otel, Cloudflare)
-├── factory/          #   Reusable software factory: umbrella chart, connector and credential broker (#7817)
-├── factory-cluster/  #   Factory home cluster: k3s node bootstrap, GitOps handoff and ArgoCD root (#7817)
-├── factory-landing/  #   The factory's private landing page at factory.jomcgi.dev
-├── factory-public/   #   Garage bucket and R2 mirror for public factory data
-├── factory-storyboard/ # Public factory snapshot schema and invented fixtures
-├── jomcgi-site/      #   The public jomcgi.dev site: static Astryx pages on an assets-only Cloudflare Worker
-└── platform-factory/ #   Factory home cluster infrastructure Applications (ArgoCD, 1Password, Cloudflare)
-bazel/                # Build infrastructure (rules, tools, images)
-docs/                 # Cross-domain documentation and runbooks
+projects/               # Services, operators and sites, each with its deploy config (major dirs shown)
+├── factory/            #   Software factory: umbrella chart, connector, broker, reviewer
+├── factory-cluster/    #   Factory home cluster: k3s node bootstrap and ArgoCD root
+├── platform-factory/   #   Factory home cluster Applications (Cilium, Authentik, Garage, Hindsight, Kargo)
+├── factory-landing/    #   Private landing page at factory.jomcgi.dev
+├── factory-public/     #   Garage bucket and R2 mirror for public factory data
+├── factory-storyboard/ #   Public factory snapshot schema and invented fixtures
+├── jomcgi-site/        #   Public jomcgi.dev: static Astryx pages on a Cloudflare Worker
+├── platform/           #   Shared charts (ArgoCD, Envoy Gateway, OTel collector, Renovate)
+├── monolith/           #   Knowledge graph, Discord bot, Grimoire, private and public apps
+├── monolith-public/    #   Read-only public replica of the monolith
+├── monolith-agents/    #   Agent-facing MCP tier, with no cluster RBAC
+├── mcp/                #   Context Forge gateway and MCP servers
+├── scotland-connector/ #   Scottish dark-sky and walk-weather service
+├── inference/          #   Inference configuration and llama.cpp embeddings
+├── oom-inference/      #   Inference engine for models bigger than memory (Rust)
+├── operators/          #   Kubernetes operators
+├── sextant/            #   State-machine code generator for operators
+├── design-system/      #   Shared design tokens
+├── loom/               #   Default-off Postgres control-plane wiring
+├── gke-cluster/        #   GKE hub: ArgoCD root and parent Application
+├── gke-apps/           #   GKE hub: one Application for each workload
+├── platform-gke/       #   GKE hub: infrastructure overlays
+├── embervm/            #   Retired Firecracker microVM orchestrator
+└── firecracker/        #   Guest images and utilities that EmberVM used
+bazel/                  # Build rules, tools and images
+docs/                   # Cross-domain documentation and runbooks
 ```
 
-See [AGENTS.md](AGENTS.md) for the rules every change follows and the [agent reference](docs/agents/reference.md) for commands and the map of where to look next. Each domain's `ARCHITECTURE.md` records its current state, decided direction, and decision history.
+The [agent reference](docs/agents/reference.md) has the commands and a map of
+where to look next.
 
 ## What's next
 
-Active initiatives are tracked in GitHub Issues. Decision rationale lives in each domain's `ARCHITECTURE.md`.
+Open work is in the itsaplan project
+[HOME](https://factory-plan.jomcgi.dev/factory/HOME).
 
 ---
 

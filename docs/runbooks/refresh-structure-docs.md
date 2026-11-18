@@ -35,6 +35,10 @@ his input.
 
 2. **Diff each structural claim against reality.** Work through the README
    section by section and verify against the tree, not memory:
+   - **How a change ships and Today and direction:** does the diagram match
+     the factory's flow in `projects/factory/ARCHITECTURE.md`? Did a Direction
+     row ship, or did its HOME issue close? Move shipped work to the Today
+     column or delete the row.
    - **Systems / Applications lists:** does each linked path still exist and
      still do what the blurb says? `ls` the target. Has a headline system been
      added (a new `projects/*` with its own chart/deploy and a real story) that

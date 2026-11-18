@@ -320,7 +320,9 @@ when its row applies.
 | When | Read |
 |------|------|
 | Working under `projects/monolith/`, `projects/monolith/web/grimoire/` or `projects/embervm/` | that directory's `AGENTS.md` |
-| Factory orchestration, execution or controls | [FACTORY.md](../../projects/monolith/factory/orchestration/FACTORY.md) first; [monolith section 4](../../projects/monolith/ARCHITECTURE.md#4-agents) for ownership, trust, rationale and acceptance |
+| Factory: connector, broker, reviewer, agents, chart | [factory architecture](../../projects/factory/ARCHITECTURE.md); `projects/factory/REVIEW.md` for its review rules |
+| Factory home cluster: nodes, platform Applications, operator steps | [factory-cluster README](../../projects/factory-cluster/README.md) |
+| The earlier hub factory (off: `swarm.factoryEnabled: false`) | [FACTORY.md](../../projects/monolith/factory/orchestration/FACTORY.md); [monolith section 4](../../projects/monolith/ARCHITECTURE.md#4-agents) |
 | A red CI run you need to diagnose | `docs/agents/ci-triage.md` |
 | Opening, readying or enqueuing a PR without GraphQL (cloud session) | `docs/agents/cloud-sessions.md` |
 | Running Go or pytest checks in a cloud session without `ci` | `docs/agents/local-tests.md` |
@@ -340,6 +342,7 @@ when its row applies.
 | Any writing: docs, PRs, commits, comments, tickets, chat, site copy | `docs/writing.md` |
 | Operator changes | `projects/operators/best-practices.md` |
 | How a domain works today | `projects/<domain>/ARCHITECTURE.md`; each `**Why.**` paragraph carries the rationale |
+| Writing or restructuring a README or `ARCHITECTURE.md` | `docs/writing.md` "READMEs and architecture documents" |
 | Build, CI, tooling, hooks, Semgrep | `bazel/ARCHITECTURE.md` |
 | Recording a decision | Joe's decision from an account that is his alone ("Tracker" above), linked from its HOME issue; then a `**Why.**` paragraph in the domain's ARCHITECTURE.md linking it and a Direction row with its HOME issue; no ADRs (#4667) |
 | Filing, delegating or updating work | "Tracker" above |

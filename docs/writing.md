@@ -93,6 +93,44 @@ prose it replaces. Skip it for a one-component change or a version bump.
   source should read well as text.
 - A diagram is a claim like any sentence. It must match the code.
 
+## READMEs and architecture documents
+
+Each file answers one question. Text that answers a different question moves
+to the file that owns it.
+
+| File | Answers | Leaves out |
+| --- | --- | --- |
+| Root `README.md` | What the factory is, how a change ships, where things run today and the direction | Mechanics, versions and model names |
+| `projects/<domain>/ARCHITECTURE.md` | How the domain works now, why, and what is decided next | Operator steps, rollout checklists, PR history |
+| `projects/<name>/README.md` | How to operate it: commands, inputs, recovery steps | Design rationale |
+| HOME issue | Rollout steps, acceptance checks, open questions | |
+
+An `ARCHITECTURE.md` has these parts, in this order:
+
+1. **Summary.** Five sentences or fewer, then one diagram of the components
+   and the main flow. A reader who stops here knows what the domain does.
+2. **Current state.** One section for each component. Write what runs now, in
+   the present tense. Draw each flow, state machine and trust boundary. End a
+   section with a `**Why.**` paragraph that links the decision.
+3. **Direction.** One table: direction, HOME issue, state. Staged-off work is
+   a row here. A row leaves the table when the work ships or its issue closes.
+4. **Decision history.** Links to the decision records.
+
+Keep the file current by replacing text:
+
+- When work ships, rewrite the section and delete the Direction row.
+- Delete a dated status line, a delivery plan or a bootstrap note when its
+  work completes. `git log` and the HOME issue keep the history.
+- Put a pinned version in one table. Do not repeat it in prose.
+- Put upstream findings that shaped the design in a `**Why.**` paragraph or an
+  appendix, after the current state.
+- A section longer than 60 lines needs a diagram or a split. A file longer
+  than 600 lines moves a component into its own file and links it from the
+  summary.
+
+Files written before 2026-11-18 follow these rules when someone rewrites a
+section.
+
 ## Voice
 
 - **No connective glue.** Cut phrases that narrate a structure before
