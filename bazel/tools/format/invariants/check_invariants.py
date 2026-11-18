@@ -1,0 +1,131 @@
+"""Validate scoped invariant records and resolve live tests in the Bazel graph."""
+
+import os
+import re
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+import yaml
+
+TEMPLATE = Path("docs/templates/INVARIANTS.yaml")
+LABEL = re.compile(r"//[\w./+-]*:[\w./+-]+")
+
+
+class InvariantLoader(yaml.SafeLoader):
+    def construct_mapping(self, node, deep=False):
+        mapping = super().construct_mapping(node, deep=deep)
+        if len(mapping) != len(node.value):
+            raise yaml.constructor.ConstructorError(
+                None, None, "duplicate mapping key", node.start_mark
+            )
+        return mapping
+
+
+def validate(documents):
+    ids, live = {}, {}
+    for source, document in documents.items():
+        if source == TEMPLATE:
+            # Validate the example schema without resolving its fictional label.
+            validate_rows(document, source, {}, {})
+        else:
+            validate_rows(document, source, ids, live)
+    return live
+
+
+def validate_rows(document, source, ids, live):
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"invariants"}
+        or not isinstance(document["invariants"], list)
+    ):
+        raise ValueError(f"{source}: expected an invariants list")
+    for i, row in enumerate(document["invariants"], 1):
+        where = f"{source}: row {i}"
+        required = {"id", "statement", "mechanism", "state"}
+        if not isinstance(row, dict) or not required <= row.keys() <= required | {
+            "test"
+        }:
+            raise ValueError(f"{where}: invalid fields")
+        ident = row["id"]
+        if not isinstance(ident, str) or not re.fullmatch(
+            r"[A-Za-z][A-Za-z0-9-]*-[0-9]+", ident
+        ):
+            raise ValueError(f"{where}: invalid id")
+        if ident in ids:
+            raise ValueError(f"{where}: duplicate {ident}, also in {ids[ident]}")
+        ids[ident] = source
+        where = f"{source}: {ident}"
+        if not isinstance(row["statement"], str) or not row["statement"].strip():
+            raise ValueError(f"{where}: expected a statement")
+        state = row["state"]
+        if state not in ("live", "designed", "unproven"):
+            raise ValueError(f"{where}: unknown state {state!r}")
+        paths = row["mechanism"]
+        if not isinstance(paths, list) or not all(
+            isinstance(p, str)
+            and p.strip()
+            and not Path(p).is_absolute()
+            and ".." not in Path(p).parts
+            for p in paths
+        ):
+            raise ValueError(f"{where}: mechanism must list repository paths")
+        if bool(paths) != (state != "designed"):
+            raise ValueError(f"{where}: mechanism must be empty exactly when designed")
+        if state == "live" or "test" in row:
+            label = row.get("test")
+            if not isinstance(label, str) or not LABEL.fullmatch(label):
+                raise ValueError(f"{where}: expected a test label")
+            if state == "live":
+                live.setdefault(label, []).append(where)
+
+
+def eligible_tests(xml):
+    return {
+        rule.attrib["name"]
+        for rule in ET.fromstring(xml).findall("rule")
+        if rule.attrib["class"].endswith("_test")
+        and rule.find("list[@name='tags']/string[@value='manual']") is None
+    }
+
+
+def check():
+    files = subprocess.check_output(
+        [
+            "git",
+            "ls-files",
+            "-coz",
+            "--exclude-standard",
+            "--",
+            "INVARIANTS.yaml",
+            ":(glob)**/INVARIANTS.yaml",
+        ]
+    )
+    documents = {}
+    for name in sorted(set(files.split(b"\0")) - {b""}):
+        path = Path(os.fsdecode(name))
+        if path.exists():
+            try:
+                documents[path] = yaml.load(path.read_text(), Loader=InvariantLoader)
+            except yaml.YAMLError as error:
+                raise ValueError(f"{path}: {error}") from error
+    live = validate(documents)
+    if live:
+        expression = "set(" + " ".join(sorted(live)) + ")"
+        xml = subprocess.check_output(["bazel", "query", "--output=xml", expression])
+        missing = live.keys() - eligible_tests(xml)
+        if missing:
+            raise ValueError(
+                "\n".join(
+                    f"{', '.join(live[label])}: {label} must be a non-manual test"
+                    for label in sorted(missing)
+                )
+            )
+
+
+if __name__ == "__main__":
+    try:
+        check()
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        sys.exit(str(error))
