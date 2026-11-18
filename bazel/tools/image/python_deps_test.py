@@ -14,7 +14,7 @@ import importlib
 import pytest
 
 
-@pytest.mark.parametrize("module_name", ["httpx", "typer", "yaml"])
+@pytest.mark.parametrize("module_name", ["httpx", "typer"])
 def test_dep_importable(module_name: str):
     """Verify that each pip dep declared in python_deps.py is importable at test time."""
     mod = importlib.import_module(module_name)
@@ -36,3 +36,9 @@ def test_typer_app_constructible():
 
     app = typer.Typer()
     assert app is not None
+
+
+def test_yaml_loads_bundle_mapping():
+    import yaml
+
+    assert yaml.safe_load("requires: [README.md]") == {"requires": ["README.md"]}
