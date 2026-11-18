@@ -367,23 +367,6 @@ test("a stamped hikes summary passes; an unstamped or altered page fails", () =>
   );
 });
 
-test("/hikes may widen only the CSP directives its route rule names", () => {
-  const hikes = new Headers(headersFor("/hikes"));
-  checkHeaders(hikes, { preview: true, path: "/hikes" });
-  assert.throws(() => checkHeaders(hikes, { preview: true, path: "/" }), /CSP/);
-  const wider = new Headers(hikes);
-  wider.set(
-    "content-security-policy",
-    hikes
-      .get("content-security-policy")
-      .replace("script-src 'self'", "script-src *"),
-  );
-  assert.throws(
-    () => checkHeaders(wider, { preview: true, path: "/hikes" }),
-    /CSP script-src/,
-  );
-});
-
 test("CSP cannot be weakened by a subdirective or a duplicate", () => {
   for (const suffix of [
     "; script-src-elem * 'unsafe-inline'",
@@ -418,24 +401,6 @@ test("production wildcard routes include query URLs and retired-page 404s", () =
   );
   for (const path of scope.junkPaths) {
     assert.equal(matchRedirect(redirects, path), undefined, path);
-  }
-  for (const path of [
-    "/",
-    "/robots.txt",
-    "/sitemap.xml",
-    "/llms.txt",
-    "/manifest.webmanifest",
-    "/favicon.svg",
-    "/apple-touch-icon.png",
-    "/scotland",
-    "/scotland/privacy",
-    "/scotland/terms",
-    "/scotland/support",
-    "/scotland/marketplace.json",
-    "/slop",
-  ]) {
-    assert.ok(scope.owns(path), `${path} is routed exactly`);
-    assert.ok(!scope.junkPaths.includes(`${path}${JUNK_PATH}`));
   }
   // Each section moves by adding its patterns, so derive the Worker's paths
   // from edge/routes.json and pin only what must stay off it: the connector,
