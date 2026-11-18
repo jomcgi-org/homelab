@@ -315,10 +315,16 @@ def test_factory_explore_sign_in():
     (group,) = (e for e in entries if e["model"] == "authentik_core.group")
     assert group["identifiers"]["name"] == "factory-explorer-users"
     assert group["attrs"]["is_superuser"] == "false"
-    (binding,) = (
-        e for e in entries if e["model"] == "authentik_policies.policybinding"
-    )
-    assert binding["identifiers"]["group"] == group["id"]
+    bindings = {
+        e["identifiers"]["order"]: e["identifiers"]["group"]
+        for e in entries
+        if e["model"] == "authentik_policies.policybinding"
+    }
+    # Admins keep access while the explorer group starts empty.
+    assert bindings == {
+        "0": ["authentik_core.group", ["name", "authentik Admins"]],
+        "10": group["id"],
+    }
     (provider,) = (
         e for e in entries if e["model"] == "authentik_providers_oauth2.oauth2provider"
     )
