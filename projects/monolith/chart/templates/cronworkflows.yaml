@@ -30,6 +30,8 @@ image guard elsewhere.
        renders a CronWorkflow referencing the openrouter secret. */ -}}
 {{- else if and .knowledgePublishFacts (not $.Values.knowledge.publishFacts.enabled) }}
 {{- /* The publication lane is opt-in because it changes public visibility. */ -}}
+{{- else if and .requiresSharedS3 (not $.Values.sharedS3.enabled) }}
+{{- /* A job that cannot run without the shared S3 env is not scheduled. */ -}}
 {{- else }}
 ---
 apiVersion: argoproj.io/v1alpha1

@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 
 
-def test_trips_export_schedule_storage_and_signer():
+def render(*extra):
     chart = Path(__file__).resolve().parent
     result = subprocess.run(
         [
@@ -21,12 +21,24 @@ def test_trips_export_schedule_storage_and_signer():
             "jobs.image.repository=registry.invalid/jobs",
             "--set-string",
             "jobs.image.digest=sha256:test",
+            *extra,
         ],
         capture_output=True,
         text=True,
         check=True,
     )
-    docs = [doc for doc in yaml.safe_load_all(result.stdout) if isinstance(doc, dict)]
+    return [doc for doc in yaml.safe_load_all(result.stdout) if isinstance(doc, dict)]
+
+
+def test_trips_export_is_not_scheduled_without_shared_s3():
+    docs = render("--set", "sharedS3.enabled=false")
+    names = {(doc.get("kind"), doc["metadata"]["name"]) for doc in docs}
+    assert ("CronWorkflow", "trips-export") not in names
+    assert ("OnePasswordItem", "trips-export-imgproxy-signing") not in names
+
+
+def test_trips_export_schedule_storage_and_signer():
+    docs = render()
     job = next(
         doc
         for doc in docs
@@ -45,6 +57,7 @@ def test_trips_export_schedule_storage_and_signer():
     assert (
         env["S3_ACCESS_KEY_ID"]["valueFrom"]["secretKeyRef"]["name"] == "monolith-r2-s3"
     )
+    assert "SEAWEEDFS_S3_ENDPOINT" in env
     secret = env["IMGPROXY_KEY"]["valueFrom"]["secretKeyRef"]["name"]
     item = next(
         doc
