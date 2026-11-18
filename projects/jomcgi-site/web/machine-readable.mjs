@@ -19,46 +19,6 @@ export function robots() {
   return BODY;
 }
 
-// Crawl manifest for the public tier. Paths are the public-facing URLs
-// (PUBLIC_BASE + path), not the gateway-internal /public/* form.
-const PAGES = [
-  { path: "/", priority: "1.0" },
-  { path: "/cv", priority: "0.9" },
-  // The docs index; per-doc URLs are reachable from it (listed once).
-  { path: "/docs", priority: "0.8" },
-  // /blog is deliberately unlisted until the first post is published.
-  { path: "/scotland", priority: "0.7" },
-  { path: "/scotland/privacy", priority: "0.3" },
-  { path: "/scotland/terms", priority: "0.3" },
-  { path: "/scotland/support", priority: "0.3" },
-];
-
-export function sitemap(posts) {
-  const blogPages = posts.length
-    ? [
-        { path: "/blog", priority: "0.8" },
-        ...posts.map(({ slug }) => ({
-          path: `/blog/${slug}`,
-          priority: "0.7",
-        })),
-      ]
-    : [];
-  const urls = [...PAGES, ...blogPages]
-    .map(
-      ({ path, priority }) =>
-        `  <url>\n    <loc>${PUBLIC_BASE}${path}</loc>\n    <priority>${priority}</priority>\n  </url>`,
-    )
-    .join("\n");
-
-  const body = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${urls}
-</urlset>
-`;
-
-  return body;
-}
-
 // /llms.txt (llmstxt.org convention): a markdown digest an LLM can read to
 // understand who this is and what to cite, without scraping every page. Kept
 // terse and factual; the canonical detail lives on the linked pages.

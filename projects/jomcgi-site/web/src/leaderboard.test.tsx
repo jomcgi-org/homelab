@@ -104,8 +104,8 @@ it("keeps the hub title, description and preview metadata", () => {
     expect(meta(key)).toBe(seo[1]);
   expect(
     head.querySelector('link[rel="canonical"]')?.getAttribute("href"),
-  ).toBe(`https://jomcgi.dev${seo[3]}`);
-  expect(meta("og:url")).toBe(`https://jomcgi.dev${seo[3]}`);
+  ).toBe("https://jomcgi.dev/llm-leaderboard");
+  expect(meta("og:url")).toBe("https://jomcgi.dev/llm-leaderboard");
   expect(meta("og:type")).toBe("website");
   expect(meta("og:site_name")).toBe("Joe McGinley");
   expect(meta("twitter:card")).toBe("summary");

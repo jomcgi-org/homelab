@@ -5,9 +5,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { HomePage } from "./home-page";
 import { HOME_KEYS, sectionHref } from "./home-data";
 import { HOME, hrefFor, SECTIONS } from "./sections";
+import { sitemap } from "./sitemap";
+import { PAGES } from "./pages";
 import { Root } from "./root";
 import { hub, latestPosts, posts } from "../site-inputs.mjs";
-import { llms, robots, sitemap } from "../machine-readable.mjs";
+import { llms, robots } from "../machine-readable.mjs";
 
 const portrait = vi.hoisted(() => ({
   create: vi.fn(() => ({ destroy: vi.fn() })),
@@ -108,7 +110,7 @@ describe("build-time machine-readable files", () => {
     );
   });
   it("uses the shared posts in sitemap and LLM digest, omitting retired notes", () => {
-    const xml = sitemap(posts);
+    const xml = sitemap(Object.keys(PAGES));
     const digest = llms(posts);
     for (const post of posts) {
       expect(xml).toContain(`<loc>https://jomcgi.dev/blog/${post.slug}</loc>`);
@@ -120,7 +122,60 @@ describe("build-time machine-readable files", () => {
     expect(digest).not.toContain("/app/notes");
     expect(digest).toContain("Location: Scotland, United Kingdom");
     expect(digest).toContain("https://jomcgi.dev/scotland/mcp");
-    expect(sitemap([])).not.toContain("/blog");
     expect(llms([])).not.toContain("## Blog");
   });
+});
+
+it("lists every live public page and excludes other entries", () => {
+  const xml = sitemap(Object.keys(PAGES));
+  const locations = new Set(
+    Array.from(xml.matchAll(/<loc>(.*?)<\/loc>/g), ([, url]) => url),
+  );
+  for (const section of [HOME, ...SECTIONS]) {
+    expect(
+      locations.has("https://jomcgi.dev" + section.path),
+      section.path,
+    ).toBe(section.live && section.listed !== false);
+  }
+  for (const entry of Object.keys(PAGES)) {
+    const path = ("/" + entry)
+      .replace(/\/index\.html$/, "/")
+      .replace(/\.html$/, "");
+    const section =
+      path === "/"
+        ? HOME
+        : SECTIONS.find((s) => path.split("/")[1] === s.path.slice(1));
+    expect(locations.has("https://jomcgi.dev" + path), entry).toBe(
+      section?.live === true && section.listed !== false,
+    );
+  }
+});
+
+it("keeps page canonicals off redirect sources", () => {
+  const rules = readFileSync("public/_redirects", "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/))
+    .filter(
+      ([source = "", destination, status = "302"]) =>
+        source.startsWith("/") && destination && /^3\d\d!?$/.test(status),
+    );
+  for (const entry of Object.keys(PAGES)) {
+    const doc = new DOMParser().parseFromString(
+      readFileSync(entry, "utf8"),
+      "text/html",
+    );
+    for (const link of doc.querySelectorAll('link[rel="canonical"]')) {
+      const path = new URL(link.getAttribute("href")!, "https://jomcgi.dev")
+        .pathname;
+      for (const [source = ""] of rules) {
+        expect(
+          source.endsWith("*")
+            ? path.startsWith(source.slice(0, -1))
+            : path === source,
+          entry + " canonical " + path,
+        ).toBe(false);
+      }
+    }
+  }
 });

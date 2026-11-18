@@ -10,7 +10,7 @@ import { renderDocsDiagrams } from "./render-diagrams.mjs";
 
 import { personLdScript } from "../../monolith/frontend/src/lib/public/seo.js";
 import { hub, posts } from "./site-inputs.mjs";
-import { robots, sitemap, llms, webmanifest } from "./machine-readable.mjs";
+import { robots, llms, webmanifest } from "./machine-readable.mjs";
 
 await build();
 // Vite's SSR loader returns source asset URLs. Resolve them against the client
@@ -28,7 +28,6 @@ function assetUrls(html) {
 }
 for (const [name, content] of Object.entries({
   "robots.txt": robots(),
-  "sitemap.xml": sitemap(posts),
   "llms.txt": llms(posts),
   "manifest.webmanifest": JSON.stringify(webmanifest()),
 })) {
@@ -60,6 +59,8 @@ try {
     `${JSON.stringify(marketplace, null, 2)}\n`,
   );
   const { PAGES } = await server.ssrLoadModule("/src/pages.tsx");
+  const { sitemap } = await server.ssrLoadModule("/src/sitemap.ts");
+  await writeFile("dist/sitemap.xml", sitemap(Object.keys(PAGES)));
   for (const entry of Object.keys(PAGES)) {
     const file = join("dist", entry);
     const parts = (await readFile(file, "utf8")).split(MARK);

@@ -1,6 +1,5 @@
 import type { HomePost } from "./src/home-data";
 export function robots(): string;
-export function sitemap(posts: HomePost[]): string;
 export function llms(posts: HomePost[]): string;
 export function webmanifest(): {
   name: string;

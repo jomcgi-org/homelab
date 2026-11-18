@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Window } from "happy-dom";
 import { hub, latestPosts, posts } from "./site-inputs.mjs";
-import { robots, sitemap, llms, webmanifest } from "./machine-readable.mjs";
+import { robots, llms, webmanifest } from "./machine-readable.mjs";
 import { PUBLIC_BASE } from "../../monolith/frontend/src/lib/public/seo.js";
 
 export function checkHome(dist) {
@@ -79,6 +79,10 @@ export function checkHome(dist) {
       `/blog/${post.slug}`,
     ]),
   );
+  const sitemap = read("sitemap.xml").toString();
+  for (const path of ["/engineering", "/llm-leaderboard"]) {
+    assert(sitemap.includes(`<loc>${PUBLIC_BASE}${path}</loc>`), path);
+  }
   const portrait = attr(".portrait-still", "src");
   assert.deepEqual(read(portrait.slice(1)), original("static/joe-grey.png"));
   assert.equal(all("canvas").length, 1);
@@ -86,7 +90,6 @@ export function checkHome(dist) {
   assert.equal(find('a[href*="notes"]'), null);
   for (const [file, expected] of Object.entries({
     "robots.txt": robots(),
-    "sitemap.xml": sitemap(posts),
     "llms.txt": llms(posts),
     "manifest.webmanifest": JSON.stringify(webmanifest()),
   }))
