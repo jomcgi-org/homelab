@@ -99,11 +99,3 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
 - **Kept identity.** ServiceAccount `factory/factory-connector` and kagent's
   `serviceAccount.authority` never change: they are the connector's kagent
   principal (findings 6 and 15).
-- **CI definition.** A change to `buildbuddy.yaml`, or to a script it calls
-  that reads a credential or a git remote, is Joe's decision.
-- **Discord bridge.** The bridge is on only with a network rule that limits
-  it to the bot agent's path (HOME-296).
-- **Memory.** Text recalled from memory reaches a prompt only inside a
-  delimited untrusted block.
-- **Generated paths.** Read a `BUILD` file with no generator header in full.
-  Check a vendored chart archive against `Chart.lock`.

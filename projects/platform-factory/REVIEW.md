@@ -35,26 +35,9 @@ boundary: a rule below broken on them is critical.
   and its `Delete=false` annotation.
 - **OIDC redirect URIs are exact**: no wildcards, and none left on a hostname
   that moved.
-- **Public output.** No HTTPRoute is public. Public output leaves only
-  through the jomcgi-site Worker. A new `sources.json` section or
-  `edge/routes.json` pattern is Joe's decision. A publisher of factory data
-  uses a field allowlist and a secret scan.
-- **Application charts.** A workload renders through `factory-library.all`.
-  Each `exceptions:` entry states its reason. High.
-- **Own namespace only.** No template sets a namespace other than the release
-  namespace. No cluster-scoped kind. No Role beyond named resources. No
-  ClusterRole with Secret, workload-create or RBAC-write rights. Critical.
-- **Host access.** No `privileged`, `hostPID`, `hostNetwork` or hostPath
-  outside the named platform namespaces. Critical.
-- **Images.** Every image names a digest. High.
-- **Secret items.** The PR's issue names each new or changed `itemPath` and
-  each `OnePasswordItem` in a new namespace. Two stages never share a
-  credential. High.
-- **Egress credentials.** The origin of an injected credential does not echo
-  headers, host user content or use a wildcard. A new pod in the kagent
-  controller's ingress list verifies the bearer first. Critical.
-- **Renovate.** A `renovate.json` change that widens automerge or shortens
-  the release age is Joe's decision.
+- **No public routes yet.** A route outside sign-in is Joe's decision
+  (#7923). When one exists it serves only mock or fixture data cached by the
+  CDN, with no secrets and no calls into the cluster.
 - **Network policy.** A new workload declares its ingress and egress by peer
   label, port and domain name; the cluster is default-deny. Egress to the
   world or to `0.0.0.0/0` is high.
