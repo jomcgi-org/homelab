@@ -34,6 +34,12 @@ describe("static hosting headers", () => {
       "/app/hikes /hikes 301\n/app/hikes/* /hikes 301",
     );
   });
+  it("lets browsers revalidate the /app/hikes 301, so a rollback reaches the hub", () => {
+    for (const path of ["/app/hikes", "/app/hikes/*"])
+      expect(rule(path)).toContain(
+        "Cache-Control: public, max-age=0, must-revalidate",
+      );
+  });
   it("sends a CSP without inline or eval exceptions", () => {
     for (const value of [csp, hikesCsp]) {
       expect(value).toContain("default-src 'self'");
