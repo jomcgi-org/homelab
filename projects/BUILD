@@ -41,6 +41,14 @@ exports_files(
     visibility = ["//projects/loom/deploy:__pkg__"],
 )
 
+# //bazel/helm/content_rules:coverage_test reads the factory cluster's
+# Applications from this kustomization.
+filegroup(
+    name = "factory_kustomization",
+    srcs = ["platform-factory/kustomization.yaml"],
+    visibility = ["//bazel/helm/content_rules:__pkg__"],
+)
+
 # The factory deployment test follows the root Applications and platform tree.
 filegroup(
     name = "factory_renovate_enrollment_manifests",

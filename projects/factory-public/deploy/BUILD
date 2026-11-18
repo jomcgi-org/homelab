@@ -6,6 +6,7 @@ argocd_app(
     name = "factory-public",
     chart = "projects/factory-public/chart",
     chart_files = "//projects/factory-public/chart:chart",
+    content_rules = True,  # keep
     namespace = "factory-public",
     release_name = "factory-public",
     tags = [

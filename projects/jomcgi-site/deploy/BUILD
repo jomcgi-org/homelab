@@ -4,6 +4,7 @@ argocd_app(
     name = "jomcgi-site-dev",
     chart = "projects/jomcgi-site/chart",
     chart_files = "//projects/jomcgi-site/chart:chart",
+    content_rules = True,  # keep
     # The source chart intentionally refuses to render without a built image.
     # argocd_app's manual source-path renderer cannot resolve generated values.
     generate_manifests = False,  # keep
