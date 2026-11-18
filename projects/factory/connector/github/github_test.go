@@ -156,6 +156,102 @@ func TestUnauthorizedRefreshesTokenOnce(t *testing.T) {
 
 type fixedTokens struct{}
 
+func TestHeadRefChangedAtUsesLatestMatchingActivity(t *testing.T) {
+	when := time.Date(2026, 11, 17, 20, 33, 0, 0, time.UTC)
+	valid := RefActivity{ID: 3, Ref: "refs/heads/factory/test", Type: "push", Before: "old", After: "head", Timestamp: when}
+	for _, tc := range []struct {
+		name   string
+		change func(*RefActivity)
+		ok     bool
+	}{
+		{name: "push", ok: true},
+		{name: "force push", change: func(e *RefActivity) { e.Type = "force_push" }, ok: true},
+		{name: "creation", change: func(e *RefActivity) { e.Type = "branch_creation" }, ok: true},
+		{name: "different head", change: func(e *RefActivity) { e.After = "newer" }},
+		{name: "different ref", change: func(e *RefActivity) { e.Ref = "refs/heads/other" }},
+		{name: "missing timestamp", change: func(e *RefActivity) { e.Timestamp = time.Time{} }},
+		{name: "unchanged head", change: func(e *RefActivity) { e.Before = "head" }},
+		{name: "deletion", change: func(e *RefActivity) { e.Type = "branch_deletion" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event := valid
+			if tc.change != nil {
+				tc.change(&event)
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				q := r.URL.Query()
+				if r.URL.Path != "/repos/example-org/homelab/activity" || q.Get("ref") != valid.Ref || q.Get("direction") != "desc" || q.Get("per_page") != "1" || q.Get("activity_type") != "" {
+					t.Errorf("activity request = %s", r.URL)
+				}
+				_ = json.NewEncoder(w).Encode([]RefActivity{event})
+			}))
+			defer srv.Close()
+			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+			got, err := c.HeadRefChangedAt(context.Background(), "example-org/homelab", "factory/test", "head")
+			if (err == nil) != tc.ok || (tc.ok && !got.Equal(when)) {
+				t.Fatalf("head changed at = %v, error = %v", got, err)
+			}
+		})
+	}
+}
+
+func TestPullRequestReadySinceRequiresCompleteEligibilityHistory(t *testing.T) {
+	opened := time.Date(2026, 11, 18, 8, 0, 0, 0, time.UTC)
+	ready := opened.Add(time.Hour)
+	for _, tc := range []struct {
+		name, event, label            string
+		truncated, draft, changedHead bool
+		want                          time.Time
+	}{
+		{name: "creation", want: opened},
+		{name: "ready from draft", event: "ReadyForReviewEvent", want: ready},
+		{name: "skip removed", event: "UnlabeledEvent", label: "NO-REVIEW", want: ready},
+		{name: "ordinary label removed", event: "UnlabeledEvent", label: "documentation", want: opened},
+		{name: "reopened", event: "ReopenedEvent", want: ready},
+		{name: "base changed", event: "BaseRefChangedEvent", want: ready},
+		{name: "truncated history", truncated: true},
+		{name: "draft again", draft: true},
+		{name: "head changed during read", changedHead: true},
+		{name: "missing label", event: "UnlabeledEvent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Query     string
+					Variables map[string]any
+				}
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				if r.URL.Path != "/graphql" || !strings.Contains(req.Query, "READY_FOR_REVIEW_EVENT") || req.Variables["number"] != float64(7) {
+					t.Errorf("eligibility request = %s, %+v", r.URL, req)
+				}
+				events := []map[string]any{}
+				if tc.event != "" {
+					events = append(events, map[string]any{"__typename": tc.event, "createdAt": ready, "label": map[string]string{"name": tc.label}})
+				}
+				head := "head"
+				if tc.changedHead {
+					head = "newer"
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
+					"createdAt": opened, "headRefOid": head, "baseRefName": "main", "state": "OPEN", "isDraft": tc.draft,
+					"labels":        map[string]any{"nodes": []any{}, "pageInfo": map[string]bool{"hasNextPage": false}},
+					"timelineItems": map[string]any{"nodes": events, "pageInfo": map[string]bool{"hasPreviousPage": tc.truncated}},
+				}}}})
+			}))
+			defer srv.Close()
+			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+			got, err := c.PullRequestReadySince(context.Background(), "example-org/homelab", PullRequest{Number: 7, HeadSHA: "head", BaseRef: "main"}, []string{"no-review"})
+			if tc.want.IsZero() {
+				if err == nil {
+					t.Fatalf("incomplete history dated the wait: %v", got)
+				}
+			} else if err != nil || !got.Equal(tc.want) {
+				t.Fatalf("ready since = %v, error = %v, want %v", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestHeadRefActivityRequiresCreationWithinOneCompletePage(t *testing.T) {
 	activity := func(id int, kind string) RefActivity {
 		e := RefActivity{ID: int64(id), Ref: "refs/heads/session/joe", Type: kind, Before: "before", After: "after"}

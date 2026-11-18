@@ -853,6 +853,36 @@ The PR comment explains the check. Ruleset 9180009 requires the check
 from reviewer App 5758326 alongside `pr-checks`.
 [Required-check decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6882698416)
 
+- **Review order (HOME-220).** Running reviews retain their slots. The poller
+  reattaches in-progress checks before starting new reviews. Within each
+  `enqueueAuthors` priority, heads first observed eligible in an earlier poll
+  go first. Within one poll, GitHub's latest ref activity dates the exact
+  current SHA, bounded by PR creation and the latest readiness, skip-label
+  removal, reopening or base-change event. This recovers eligible waits at
+  startup without counting time spent as a draft or skipped PR. Incomplete
+  history keeps the first observation as the fallback. A later poll cannot
+  overtake that fallback with an older recovered timestamp. Forks keep their
+  observed wait; the reviewer never requests a token for an unbound repository.
+  Git commit dates and PR `UpdatedAt` do not set queue order. Observation is
+  recorded before check and recovery reads, even while slots are full, and
+  kept while history reads retry.
+  Failed reads and metadata updates preserve the wait; a changed head or a
+  successful start resets it. A completed review needing another pass joins
+  at its new observation. PR number breaks equal arrival times.
+  This prevents later updates from repeatedly overtaking an untouched head
+  ([HOME-220](https://factory-plan.jomcgi.dev/factory/issue/HOME-220)).
+  `TestWaitingHeadStartsBeforeUpdatedPRs` holds all three slots across three
+  ticks of later PR updates and pushes, then checks that the oldest waiting
+  head gets the first free slot. It also covers metadata changes on the
+  waiting PR and failed check reads. `TestPrioritizeUsesHeadWaitWithinAuthorPriority`
+  checks the author override. `TestHeadArrivalOrdersSamePollAndSurvivesRestart`
+  checks head arrival order within one poll and after a restart, including a
+  new PR opened from an old branch. `TestEligibilityTransitionStartsANewWaitAcrossRestart`
+  covers draft readiness and skip removal, including during downtime;
+  `TestWaitingForkPrecedesLaterDatedRepositoryHead` covers mixed observed and
+  recovered ages. `TestReattachmentsKeepOrderBeforeWaitingHeads`
+  checks the order of resumed reviews before new starts.
+
 For issue-backed reviews, the service verifies the provenance of decision
 evidence. Only the goal assessment receives private issue text. Its public
 result uses fixed wording. The connector owns feedback to the delivery

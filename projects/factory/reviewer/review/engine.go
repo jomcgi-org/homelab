@@ -41,6 +41,8 @@ type GitHub interface {
 	PullRequestHeads(ctx context.Context, repo string, number int, f github.CheckRunFilter) (*github.HeadHistory, error)
 	PullRequestReviews(ctx context.Context, repo string, number int) ([]github.PullRequestReview, error)
 	HeadRefActivity(ctx context.Context, repo, branch string) ([]github.RefActivity, error)
+	HeadRefChangedAt(ctx context.Context, repo, branch, head string) (time.Time, error)
+	PullRequestReadySince(ctx context.Context, repo string, pr github.PullRequest, skipLabels []string) (time.Time, error)
 	PullRequestCommits(ctx context.Context, repo string, number int, head string) ([]github.PullRequestCommit, error)
 	PullRequestLabelEvents(ctx context.Context, repo string, number int) ([]github.LabelEvent, error)
 	PullRequestCreationBoundary(ctx context.Context, repo string) (time.Time, error)
@@ -210,6 +212,8 @@ type Engine struct {
 	// Only the polling goroutine uses these.
 	groups       map[string]string    // merge group commit: the conclusion of its review check
 	enqueueAfter map[string]time.Time // repo#pr@sha: next enqueue attempt after a failure
+	waiting      map[prKey]*waitingHead
+	waitPoll     uint64
 
 	// Under mu: each binding's last session sweep, and whether one runs.
 	swept    map[string]time.Time
@@ -220,6 +224,16 @@ type Engine struct {
 type headKey struct {
 	binding string
 	sha     string
+}
+
+// waitingHead records the poll that first observed this eligible head. Within
+// that batch, recovered eligible arrival times refine the observation time.
+type waitingHead struct {
+	sha      string
+	since    time.Time
+	dated    bool
+	poll     uint64
+	unlisted int
 }
 
 type heldContext struct {
@@ -349,7 +363,7 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 	return &Engine{
 		cfg: cfg, gh: gh, tasks: tasks, m: m, log: log, rules: rules, epoch: rand.Text(),
 		inflight: map[headKey]*running{}, pendingHolds: map[headKey]*github.CheckRun{}, contexts: map[string]*heldContext{}, recoveries: map[prKey]recovery{},
-		groups: map[string]string{}, enqueueAfter: map[string]time.Time{},
+		groups: map[string]string{}, enqueueAfter: map[string]time.Time{}, waiting: map[prKey]*waitingHead{},
 		heads: map[prKey]string{}, comments: map[prKey]*commentState{}, commentLimits: map[prKey]bool{}, commentReplays: map[prKey]int64{},
 		swept: map[string]time.Time{}, sweeping: map[string]bool{},
 	}
@@ -421,7 +435,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 	e.supersede(b, prs, complete)
 	e.noteHeads(b, prs, complete)
 	e.sweepSessions(ctx, b, prs, complete, bl)
-	prioritize(b, prs)
+	e.noteWaiting(b, prs, complete)
 	counts, labels := readyHeads(b, prs)
 	scan := e.recoveryScan(b, prs)
 
@@ -450,6 +464,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			continue
 		}
 		if b.skipped(&pr) || e.isRunning(headKey{b.Name, pr.HeadSHA}) {
+			delete(e.waiting, prKey{b.Name, pr.Number})
 			continue
 		}
 		run, err := e.reviewCheck(ctx, b, pr.HeadSHA)
@@ -480,6 +495,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			// A cancelled review is no review: the head is current again.
 			start = append(start, candidate{pr, nil})
 		case run.Status != "completed":
+			delete(e.waiting, prKey{b.Name, pr.Number})
 			attach = append(attach, candidate{pr, run})
 		case unread:
 			reviews[pr.Number] = nil // An unconfirmed decision must not let a pass enqueue.
@@ -531,6 +547,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 				}
 				continue
 			}
+			delete(e.waiting, prKey{b.Name, pr.Number})
 			cur, held := e.reconcileGate(ctx, b, pr, cur)
 			// A failed write returns nil; do not refetch the stale pass.
 			reviews[pr.Number] = cur
@@ -540,7 +557,10 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			e.replayComment(ctx, b, pr, reviews[pr.Number])
 		}
 	}
+	e.dateWaiting(ctx, b, start)
+	e.prioritize(b, start)
 	// Reviews already in progress (after a restart) go before new heads.
+	prioritizeResumed(b, attach)
 	waiting := append(attach, start...)
 	for i, c := range waiting {
 		if e.begin(ctx, b, c.pr, c.run) {
@@ -674,15 +694,110 @@ func (e *Engine) rememberHold(key headKey, prev *github.CheckRun, o Outcome) {
 	e.mu.Unlock()
 }
 
-// prioritize orders a listing for the review slots: PRs whose authors the
-// binding enqueues first, then the most recently updated.
-func prioritize(b *Binding, prs []github.PullRequest) {
-	sort.SliceStable(prs, func(i, j int) bool {
-		ei, ej := containsFold(b.EnqueueAuthors, prs[i].Author), containsFold(b.EnqueueAuthors, prs[j].Author)
+// prioritizeResumed keeps the existing order of in-progress checks ahead of
+// new starts. Running workers keep their slots without passing through it.
+func prioritizeResumed(b *Binding, attach []candidate) {
+	sort.SliceStable(attach, func(i, j int) bool {
+		pi, pj := attach[i].pr, attach[j].pr
+		ei, ej := containsFold(b.EnqueueAuthors, pi.Author), containsFold(b.EnqueueAuthors, pj.Author)
 		if ei != ej {
 			return ei
 		}
-		return prs[i].UpdatedAt.After(prs[j].UpdatedAt)
+		return pi.UpdatedAt.After(pj.UpdatedAt)
+	})
+}
+
+// noteWaiting records every eligible head before check/recovery reads, even
+// when all slots are full. Failed reads must not lose a head's place in line.
+func (e *Engine) noteWaiting(b *Binding, prs []github.PullRequest, complete bool) {
+	e.waitPoll++
+	listed := make(map[int]github.PullRequest, len(prs))
+	for _, pr := range prs {
+		listed[pr.Number] = pr
+	}
+	for key, w := range e.waiting {
+		if key.binding != b.Name {
+			continue
+		}
+		pr, ok := listed[key.number]
+		if !ok {
+			// A page shift can omit an open PR from one complete listing.
+			if complete {
+				w.unlisted++
+				if w.unlisted >= closedAfter {
+					delete(e.waiting, key)
+				}
+			}
+			continue
+		}
+		w.unlisted = 0
+		if pr.HeadSHA != w.sha || pr.BaseRef != b.BaseBranch || pr.Draft || b.skipped(&pr) {
+			delete(e.waiting, key)
+		}
+	}
+	now := e.cfg.Now()
+	for _, pr := range prs {
+		if pr.BaseRef != b.BaseBranch || pr.HeadSHA == "" || pr.Draft || b.skipped(&pr) {
+			continue
+		}
+		key := prKey{b.Name, pr.Number}
+		if e.waiting[key] == nil {
+			e.waiting[key] = &waitingHead{sha: pr.HeadSHA, since: now, poll: e.waitPoll}
+		}
+	}
+}
+
+// dateWaiting recovers eligible waits within one observed batch, including at
+// startup. A head first seen in a later poll cannot pass an earlier batch, even
+// when only one head has readable history. Never request credentials for forks.
+func (e *Engine) dateWaiting(ctx context.Context, b *Binding, start []candidate) {
+	for _, c := range start {
+		pr := c.pr
+		w := e.waiting[prKey{b.Name, pr.Number}]
+		// A completed review needing another pass joins at its new observation,
+		// rather than inheriting the age of a head that already had a slot.
+		if w.dated || c.run != nil || pr.HeadRepo != b.repo() || pr.HeadRef == "" {
+			continue
+		}
+		since, err := e.gh.HeadRefChangedAt(ctx, pr.HeadRepo, pr.HeadRef, pr.HeadSHA)
+		if err != nil || since.IsZero() || since.After(w.since) {
+			continue
+		}
+		// Push time alone can predate readiness, removal of a skip label,
+		// reopening or a change of base. Recover those boundaries on restart.
+		ready, err := e.gh.PullRequestReadySince(ctx, b.repo(), pr, b.SkipLabels)
+		if err != nil || ready.IsZero() || ready.After(w.since) {
+			continue
+		}
+		if ready.After(since) {
+			since = ready
+		}
+		if since.Before(w.since) {
+			w.since = since
+		}
+		w.dated = true
+	}
+}
+
+// prioritize orders new starts by observed eligible wait, then recovered age
+// within that batch, under each author priority. UpdatedAt is never an input.
+// Batch order keeps unknown fork ages comparable with readable ref history.
+// PR number breaks equal arrival times.
+func (e *Engine) prioritize(b *Binding, start []candidate) {
+	sort.Slice(start, func(i, j int) bool {
+		pi, pj := start[i].pr, start[j].pr
+		ei, ej := containsFold(b.EnqueueAuthors, pi.Author), containsFold(b.EnqueueAuthors, pj.Author)
+		if ei != ej {
+			return ei
+		}
+		wi, wj := e.waiting[prKey{b.Name, pi.Number}], e.waiting[prKey{b.Name, pj.Number}]
+		if wi.poll != wj.poll {
+			return wi.poll < wj.poll
+		}
+		if !wi.since.Equal(wj.since) {
+			return wi.since.Before(wj.since)
+		}
+		return pi.Number < pj.Number
 	})
 }
 
@@ -1056,6 +1171,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		l.InfoContext(ctx, "re-attaching to an in-progress review", "check_run", run.ID)
 	}
 	e.m.ReviewsStarted.WithLabelValues(b.Name, kind).Inc()
+	delete(e.waiting, prKey{b.Name, pr.Number})
 	e.wg.Add(1)
 	go func() {
 		defer close(r.done)
