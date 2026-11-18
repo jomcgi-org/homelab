@@ -30,5 +30,4 @@ py_test(
     name = "health_test",
     srcs = ["health_test.py"],
     data = ["files/health.py"],
-    deps = ["@pip//pytest"],
 )
