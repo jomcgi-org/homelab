@@ -670,7 +670,10 @@ def test_goal_reasons_reach_the_connector_alone() -> None:
     connector_config = yaml.safe_load(
         _in(docs, "ConfigMap", "factory", "factory-connector")["data"]["config.yaml"]
     )
-    assert connector_config["reviewerGoalURL"] == "http://factory-reviewer.factory.svc:8091"
+    assert (
+        connector_config["reviewerGoalURL"]
+        == "http://factory-reviewer.factory.svc:8091"
+    )
 
     # Without the policies that admit the connector alone, it does not render.
     for override in ("networkPolicy.cilium=false", "connector.enabled=false"):
