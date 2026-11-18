@@ -345,6 +345,10 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 		Parts:     []kagent.Part{{Text: text}},
 		Metadata:  map[string]any{"factory.jomcgi.dev/repository": b.repo(), "factory.jomcgi.dev/pull-request": pr.Number, "factory.jomcgi.dev/head": pr.HeadSHA},
 	}
+	if err := e.recordProvenance(ctx, b, in, &msg, pr.HeadSHA); err != nil {
+		l.WarnContext(ctx, "goal check unavailable", "reason", "run_provenance")
+		return nil
+	}
 	var t *kagent.Task
 	why := "timeout"
 	for deadline := e.cfg.Now().Add(e.cfg.Timeout); ctx.Err() == nil && e.cfg.Now().Before(deadline); e.sleep(ctx, e.cfg.TaskPoll) {

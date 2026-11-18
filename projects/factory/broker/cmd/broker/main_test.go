@@ -141,6 +141,9 @@ func TestReviewerTokenAdmitsOnlyReviewerSubjects(t *testing.T) {
 		{"/github/reviewer-comments?repository=o/r&number=1&page=1", "connector-token", http.StatusForbidden},
 		{"/github/reviewer-comments?repository=o/r&number=1&page=1", "reviewer-token", http.StatusServiceUnavailable},
 		{"/github/connector-token?repository=o/r", "reviewer-token", http.StatusForbidden},
+		{"/runs/reviewer", "connector-token", http.StatusForbidden},
+		{"/runs/reviewer", "actor-token", http.StatusForbidden},
+		{"/runs/reviewer", "reviewer-token", http.StatusMethodNotAllowed},
 		// Both dispatchers can read quota; unrelated subjects remain refused.
 		{"/codex/quota", "reviewer-token", http.StatusOK},
 		{"/codex/quota", "unknown-token", http.StatusUnauthorized},

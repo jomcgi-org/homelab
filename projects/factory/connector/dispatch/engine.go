@@ -23,6 +23,7 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/connector/metrics"
+	"github.com/jomcgi/homelab/projects/factory/connector/provenance"
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
 )
 
@@ -74,6 +75,7 @@ type Agent struct {
 // Binding is a repository binding, the agent keys that may deliver it and
 // its review policy.
 type Binding struct {
+	Runtime *provenance.Runtime
 	store.Binding
 	Agents            []string
 	Review            ReviewPolicy
@@ -1548,13 +1550,17 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 	if err := e.guardAttempt(ctx, a, wi); err != nil {
 		return err
 	}
+	text, err := e.prepareProvenance(ctx, r, wi, b, a)
+	if err != nil {
+		return err
+	}
 	if issued, err := e.st.MarkIssued(ctx, e.w, a, r.Attempt, now); err != nil || !issued {
 		return err
 	}
 	task, err := e.tasks.Send(ctx, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, kagent.Message{
 		MessageID: a.MessageID,
 		ContextID: a.ContextID,
-		Parts:     []kagent.Part{{Text: taskText(r, wi, b, a)}},
+		Parts:     []kagent.Part{{Text: text}},
 		Metadata: map[string]any{
 			"factory.jomcgi.dev/run":        r.ID,
 			"factory.jomcgi.dev/issue":      wi.IssueKey,

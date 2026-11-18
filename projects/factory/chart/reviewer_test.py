@@ -317,6 +317,16 @@ def test_tokens_and_config_paths_match_the_pod() -> None:
             "baseBranch": "main",
             "kagentNamespace": _REVIEW_NS,
             "kagentAgent": "homelab-reviewer",
+            "runtime": {
+                "model": _in(docs, "ModelConfig", _REVIEW_NS, "reviewer")["spec"][
+                    "model"
+                ],
+                "reasoningEffort": "xhigh",
+                "arm": "control",
+                "systemPrompt": _in(docs, "Agent", _REVIEW_NS, "homelab-reviewer")[
+                    "spec"
+                ]["template"]["inline"]["systemPrompt"],
+            },
             "enqueueAuthors": [],
             "humanApprovers": ["jomcgi"],
             "itsaplanProject": "HOME",

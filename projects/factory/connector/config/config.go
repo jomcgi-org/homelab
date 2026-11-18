@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/provenance"
 	"gopkg.in/yaml.v3"
 )
 
@@ -125,6 +126,8 @@ type Binding struct {
 	// HOME routes human-gate issues to joe by default. Other projects opt in;
 	// an explicit empty string disables the integration for a binding.
 	HumanGateAssignee *string `yaml:"humanGateAssignee"`
+
+	Runtime *provenance.Runtime `yaml:"runtime"`
 }
 
 // BuildBuddy is the CI whose invocation logs revision rounds read.
@@ -324,6 +327,9 @@ func Parse(b []byte) (*File, error) {
 	projects := map[string]bool{}
 	for i := range f.Bindings {
 		b := &f.Bindings[i]
+		if err := b.Runtime.Validate(); err != nil {
+			return nil, fmt.Errorf("binding %s: %w", b.Name, err)
+		}
 		for field, v := range map[string]string{
 			"name": b.Name, "owner": b.Owner, "repo": b.Repo, "baseBranch": b.BaseBranch,
 			"itsaplanProject": b.ItsaplanProject, "kagentNamespace": b.KagentNamespace, "kagentAgent": b.KagentAgent,

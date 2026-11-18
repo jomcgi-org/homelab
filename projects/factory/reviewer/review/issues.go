@@ -17,6 +17,7 @@ import (
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
+	"github.com/jomcgi/homelab/projects/factory/connector/provenance"
 )
 
 // Itsaplan deliberately exposes reads only. The service holds this client's
@@ -57,7 +58,8 @@ type IssueContext struct {
 	// Pending are failed reads. The head waits and every poll reads again.
 	Pending []Finding
 
-	digest string // The evidence MAC (sealIssues); never marshaled.
+	taskClass string // Label snapshot for private run provenance.
+	digest    string // The evidence MAC (sealIssues); never marshaled.
 }
 
 // issueDigest is the evidence MAC, or "" for a PR that gets no evidence.
@@ -369,6 +371,12 @@ func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullReq
 				in.unread("status", "The issue's workflow status could not be resolved. Restore the project read; no issue text was supplied.")
 				break
 			}
+			class, err := provenance.TaskClass(goal, p)
+			if err != nil {
+				in.unread("labels", "Issue labels could not be resolved.")
+				break
+			}
+			in.taskClass = class
 			in.Issue = &IssueEvidence{
 				Key: key, Title: boundedIssueText(goal.Title, maxPromptTitle),
 				Description: boundedIssueText(goal.Description, maxIssueText),

@@ -26,6 +26,7 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
+	"github.com/jomcgi/homelab/projects/factory/connector/provenance"
 	"github.com/jomcgi/homelab/projects/factory/reviewer/config"
 	"github.com/jomcgi/homelab/projects/factory/reviewer/metrics"
 )
@@ -84,6 +85,7 @@ type Check struct {
 // Binding is one repository whose PRs into BaseBranch the kagent Agent
 // reviews, with its gates (see config.Binding).
 type Binding struct {
+	Runtime                *provenance.Runtime
 	startupBefore          *time.Time
 	Name                   string
 	Owner                  string
@@ -123,6 +125,7 @@ func containsFold(list []string, s string) bool {
 
 // Config holds the reviewer's settings.
 type Config struct {
+	Runs        RunRecorder
 	Itsaplan    Itsaplan
 	MACSecret   func() (string, error) // The evidence MAC key's input; never log or publish it.
 	Semgrep     *Semgrep
@@ -1802,6 +1805,9 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 			"factory.jomcgi.dev/pull-request": pr.Number,
 			"factory.jomcgi.dev/head":         pr.HeadSHA,
 		},
+	}
+	if err := e.recordProvenance(ctx, b, in, msg, rules.Commit); err != nil {
+		return nil, err
 	}
 	l.InfoContext(ctx, "review task built", "message_id", msg.MessageID, "attempt", attempt,
 		"rules", rules.Paths(), "rules_commit", rules.Commit, "previous_head", in.priorHead, "previous_unknown", in.priorUnknown,

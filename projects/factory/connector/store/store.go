@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
+	"github.com/jomcgi/homelab/projects/factory/connector/provenance"
 	_ "github.com/lib/pq" // registers the postgres driver
 )
 
@@ -208,7 +209,7 @@ const (
 	RunClosed     = "closed"
 )
 
-// Run is the connector's record of one itsaplan run.
+// Run records coder execution or an externally managed reviewer receipt.
 type Run struct {
 	ID              int64
 	AgentKey        string
@@ -227,12 +228,16 @@ type Run struct {
 	LastHeartbeatAt time.Time
 	SeenVisible     bool
 	ClosedReason    string
-	Origin          string // OriginItsaplan or OriginConnector
+	Origin          string // OriginItsaplan, OriginConnector or OriginReviewer
 	StopRequested   bool   // stop or supersession survives a new admission
 	StoppedReason   string
 	HoldReason      string
 	AdmissionStops  int             // stop counter observed on the first claim, never redelivery
 	AdmissionIssue  *itsaplan.Issue // poll-local issue read; its brief persists only with a delivery attempt
+
+	// Historical runs remain unknown; new runs snapshot their first dispatch.
+	Provenance         provenance.Record
+	ProvenanceRequired bool
 }
 
 // Run origins. A connector run is a review round the connector started; it
@@ -240,6 +245,7 @@ type Run struct {
 const (
 	OriginItsaplan  = "itsaplan"
 	OriginConnector = "connector"
+	OriginReviewer  = "reviewer"
 )
 
 // Connector reports whether the connector started the run itself.
@@ -248,14 +254,16 @@ func (r *Run) Connector() bool { return r.Origin == OriginConnector }
 const runCols = `id, agent_key, coalesce(work_item_id, 0), coalesce(issue_id, 0), coalesce(issue_key, ''),
 	trigger, prompt, system_prompt, attempt, state, coalesce(event_attempt, 0), event_offset,
 	coalesce(event_task_id, ''), event_task_base, coalesce(last_heartbeat_at, 'epoch'::timestamptz), seen_visible, coalesce(closed_reason, ''),
-	origin, stopped_reason IS NOT NULL, coalesce(stopped_reason, ''), hold_reason, admission_stops`
+	origin, stopped_reason IS NOT NULL, coalesce(stopped_reason, ''), hold_reason, admission_stops, coalesce(model, ''), coalesce(reasoning_effort, ''),
+	coalesce(arm, ''), coalesce(base_sha, ''), coalesce(prompt_hash, ''), coalesce(task_class, ''), provenance_required`
 
 func scanRun(row interface{ Scan(...any) error }) (*Run, error) {
 	r := &Run{}
 	err := row.Scan(&r.ID, &r.AgentKey, &r.WorkItemID, &r.IssueID, &r.IssueKey, &r.Trigger,
 		&r.Prompt, &r.SystemPrompt, &r.Attempt, &r.State, &r.EventAttempt, &r.EventOffset,
 		&r.EventTaskID, &r.EventTaskBase, &r.LastHeartbeatAt, &r.SeenVisible, &r.ClosedReason, &r.Origin,
-		&r.StopRequested, &r.StoppedReason, &r.HoldReason, &r.AdmissionStops)
+		&r.StopRequested, &r.StoppedReason, &r.HoldReason, &r.AdmissionStops,
+		&r.Provenance.Model, &r.Provenance.ReasoningEffort, &r.Provenance.Arm, &r.Provenance.BaseSHA, &r.Provenance.PromptHash, &r.Provenance.TaskClass, &r.ProvenanceRequired)
 	return r, err
 }
 
@@ -822,6 +830,7 @@ const (
 
 // Attempt is one send to kagent.
 type Attempt struct {
+	RenderedPrompt  string
 	ID              int64
 	RunID           int64
 	Seq             int
@@ -859,7 +868,7 @@ const attemptCols = `id, run_id, seq, run_attempt, work_item_epoch, decision_id,
 	kagent_namespace, kagent_agent, coalesce(context_id, ''), coalesce(task_id, ''), state,
 	coalesce(error_class, ''), coalesce(error, ''), writer_epoch, issues,
 	coalesce(first_sent_at, 'epoch'::timestamptz), coalesce(sent_at, 'epoch'::timestamptz), coalesce(context, ''),
-	event_count, event_at`
+	event_count, event_at, coalesce(rendered_prompt, '')`
 
 func scanAttempt(row interface{ Scan(...any) error }) (*Attempt, error) {
 	a := &Attempt{}
@@ -867,7 +876,7 @@ func scanAttempt(row interface{ Scan(...any) error }) (*Attempt, error) {
 	err := row.Scan(&a.ID, &a.RunID, &a.Seq, &a.RunAttempt, &a.WorkItemEpoch, &a.DecisionID, &a.Kind,
 		&a.MessageID, &a.KagentNamespace, &a.KagentAgent, &a.ContextID, &a.TaskID, &a.State,
 		&a.ErrorClass, &a.Error, &a.WriterEpoch, &a.Issues, &a.FirstSentAt, &a.SentAt, &a.Context,
-		&a.EventCount, &eventAt)
+		&a.EventCount, &eventAt, &a.RenderedPrompt)
 	a.EventAt = eventAt.Time
 	return a, err
 }
