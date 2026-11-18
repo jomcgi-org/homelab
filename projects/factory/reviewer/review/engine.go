@@ -1724,6 +1724,7 @@ func (e *Engine) statefulReview(ctx context.Context, b *Binding, pr int, sha str
 	// older incomplete or blocking one.
 	var inherited *github.CheckRun
 	var merged State
+	sources := map[string]bool{}
 	for i := range runs {
 		r := &runs[i]
 		if r.Name != e.cfg.CheckName || r.AppID != e.cfg.AppID || r.HeadSHA != sha || r.Status != "completed" ||
@@ -1731,9 +1732,10 @@ func (e *Engine) statefulReview(ctx context.Context, b *Binding, pr int, sha str
 			continue
 		}
 		if r.ExternalID != MessageID(b.repo(), pr, sha) {
-			if !inherit {
-				continue
+			if !inherit || sources[r.ExternalID] {
+				continue // Only each source PR's newest review of the commit counts.
 			}
+			sources[r.ExternalID] = true
 			st, ok := LoadState(r.Text)
 			if !ok {
 				return nil, State{}, true, nil
