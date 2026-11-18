@@ -129,10 +129,10 @@ Every application chart on the factory cluster sets `content_rules = True`
 `content_rules/content_rules.py`, which fails on:
 
 - an image without a digest;
-- an object outside the release namespace, or a cluster-scoped kind;
+- an object outside the release namespace, or a kind outside the namespaced registry, CRDs included;
 - `hostNetwork`, `hostPID`, `hostIPC`, a `hostPath` volume or a privileged container;
 - a `NodePort` or `LoadBalancer` Service, or `externalIPs`;
-- a Role that reads every Secret, creates workloads, writes RBAC or uses a wildcard;
+- a Role that reads every Secret, creates workloads, writes RBAC, grants `bind`, `escalate` or `impersonate`, or uses a wildcard;
 - a container below the factory library defaults.
 
 Library-owned objects pass by shape: a Garage claim ConfigMap with its label,

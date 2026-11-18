@@ -73,8 +73,12 @@ WORKLOAD_RESOURCES = {
     "replicasets",
     "jobs",
     "cronjobs",
+    "replicationcontrollers",
 }
 WRITE_VERBS = {"create", "update", "patch", "delete", "deletecollection", "*"}
+# bind and escalate skip RBAC's own privilege checks; impersonate acts as
+# another identity. A Role in an application chart grants none of them.
+ESCALATION_VERBS = {"bind", "escalate", "impersonate"}
 EXCEPTIONS_ANNOTATION = "factory.jomcgi.dev/exceptions"
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
 
@@ -150,6 +154,9 @@ def scoped_policy(doc, namespace):
 
 
 CLAIM_FIELDS = {"namespace", "secretName", "bucket", "access"}
+CLAIM_ACCESS = {"read", "write", "readwrite"}
+DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+BUCKET = re.compile(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]")
 
 
 def garage_claim(doc, namespace):
@@ -163,6 +170,13 @@ def garage_claim(doc, namespace):
     if (meta.get("labels") or {}).get(GARAGE_CLAIM_LABEL) != "true":
         return False
     if set(data) != CLAIM_FIELDS or data.get("namespace") != namespace:
+        return False
+    # The same checks as discover_grants in
+    # projects/platform-factory/garage/resources/garage_init.py: one invalid
+    # claim stops Garage from granting every claim.
+    if not all(DNS_LABEL.fullmatch(str(data[k])) for k in ("namespace", "secretName")):
+        return False
+    if not BUCKET.fullmatch(str(data["bucket"])) or data["access"] not in CLAIM_ACCESS:
         return False
     digest = hashlib.sha256(f"{namespace}/{data['secretName']}".encode()).hexdigest()
     return meta.get("name") == f"garage-claim-{digest}"
@@ -250,6 +264,8 @@ def rule_role(doc, namespace):
             out.append(f"{where} creates workloads")
         if "rbac.authorization.k8s.io" in groups and verbs & WRITE_VERBS:
             out.append(f"{where} writes RBAC")
+        if verbs & ESCALATION_VERBS:
+            out.append(f"{where} grants {sorted(verbs & ESCALATION_VERBS)}")
     return out
 
 
@@ -329,7 +345,9 @@ def check(docs, namespace, exempt=()):
         for rule in RULES:
             if rule is rule_namespace:
                 found = rule(doc, namespace, policies)
-                if found and _key(doc) in exempt:
+                # An exemption covers a namespaced object in another
+                # namespace, never a cluster-scoped or unclassified kind.
+                if found and namespaced(doc) and _key(doc) in exempt:
                     used.add(_key(doc))
                     continue
             else:
