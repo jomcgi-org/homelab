@@ -13,6 +13,14 @@
   Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://tiles.openfreemap.org; font-src 'self'; connect-src 'self' https://data.jomcgi.dev https://tiles.openfreemap.org; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
   Permissions-Policy: camera=(), microphone=(), geolocation=(self)
 
+# The /app/hikes 301 (HOME-178 URL contract) must not stay in a browser's
+# cache: after a rollback the hub serves /app/hikes again.
+/app/hikes
+  Cache-Control: public, max-age=0, must-revalidate
+
+/app/hikes/*
+  Cache-Control: public, max-age=0, must-revalidate
+
 # Vite names these files by content hash, so they never change.
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
