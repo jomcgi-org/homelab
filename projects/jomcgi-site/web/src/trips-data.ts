@@ -45,6 +45,9 @@ export function useTrip(boot: Boot) {
   const [payload, setPayload] = useState<Payload | null>(null);
   const [error, setError] = useState("");
   const [now, setNow] = useState<number | null>(boot.renderedAt);
+  // Pages parse the boot data on each render, so boot.trip is a new object
+  // every time. Depend on a stable value, or each refresh re-runs the effect.
+  const hasTrip = !!boot.trip;
   useEffect(() => {
     if (!boot.asOf) return;
     let active = true;
@@ -53,7 +56,7 @@ export function useTrip(boot: Boot) {
     json<Latest>("/data/trips/latest.json")
       .then(async (value) => {
         if (active) setLatest(value);
-        if (!boot.trip && value.files.index) {
+        if (!hasTrip && value.files.index) {
           const fresh = await json<{ trips: Trip[] }>(value.files.index);
           if (active) setIndex(fresh.trips);
         }
@@ -65,7 +68,7 @@ export function useTrip(boot: Boot) {
       active = false;
       clearInterval(timer);
     };
-  }, [boot.asOf, boot.trip]);
+  }, [boot.asOf, hasTrip]);
   async function load() {
     if (payload) return payload;
     try {
