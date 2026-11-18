@@ -10,5 +10,8 @@ py_test(
         "viewers.yaml",
         "//projects:factory-cluster/nodes/authentication-config.yaml",
     ],
-    deps = ["@pip//pyyaml"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
