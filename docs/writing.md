@@ -120,8 +120,9 @@ README.
 ## Document bundles
 
 A directory's kind decides which documents it needs.
-`docs/templates/bundles.yaml` holds the rules, and CI checks that each file
-exists and has its shape.
+`docs/templates/bundles.yaml` holds the rules. HOME-269 adds the CI check
+that each file exists and has its shape; until it merges, review applies
+the rules.
 
 | Directory | Needs |
 | --- | --- |
@@ -131,7 +132,7 @@ exists and has its shape.
 | Component: a source sub-directory of a service | A row in the service's `ARCHITECTURE.md` component table |
 
 `AGENTS.md`, `REVIEW.md`, `STPA.md` and a component's own `ARCHITECTURE.md`
-are optional. The check validates each one that exists. To change what a
+are optional. The HOME-269 check will validate each one that exists. To change what a
 directory needs, change `bundles.yaml` and this table in one PR.
 
 Keep a file current by replacing text:

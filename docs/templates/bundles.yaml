@@ -1,6 +1,7 @@
 # Document bundles: the documents each kind of directory needs.
-# docs/writing.md "Document bundles" explains the rules. The CI check from
-# HOME-269 reads this file, so a rule changes here and nowhere else.
+# docs/writing.md "Document bundles" explains the rules. HOME-269 adds the CI
+# check that reads this file; it does not run yet. A rule changes here and
+# nowhere else.
 # A directory takes every kind whose `match` fits it.
 
 kinds:
