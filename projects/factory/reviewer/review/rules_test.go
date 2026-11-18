@@ -470,3 +470,14 @@ func TestInvariantFileEditAloneRequiresHuman(t *testing.T) {
 		}
 	}
 }
+
+func TestInvariantFileSizeLimit(t *testing.T) {
+	const header = "invariants: []\n#"
+	data := []byte(header + strings.Repeat("x", (1<<20)-len(header)))
+	if err := ParseMechanisms(invariantFile, data, map[string]bool{}); err != nil {
+		t.Fatalf("1 MiB file: %v", err)
+	}
+	if err := ParseMechanisms(invariantFile, append(data, 'x'), map[string]bool{}); !errors.Is(err, github.ErrTooLarge) {
+		t.Fatalf("1 MiB plus one byte: %v", err)
+	}
+}
