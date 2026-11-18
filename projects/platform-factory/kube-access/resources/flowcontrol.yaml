@@ -1,0 +1,40 @@
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: PriorityLevelConfiguration
+metadata:
+  name: factory-explorers
+spec:
+  type: Limited
+  limited:
+    nominalConcurrencyShares: 5
+    borrowingLimitPercent: 0
+    limitResponse:
+      type: Queue
+      queuing:
+        queues: 16
+        handSize: 4
+        queueLengthLimit: 20
+---
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: FlowSchema
+metadata:
+  name: factory-explorers
+spec:
+  matchingPrecedence: 1000
+  priorityLevelConfiguration:
+    name: factory-explorers
+  distinguisherMethod:
+    type: ByUser
+  rules:
+    - subjects:
+        - kind: Group
+          group:
+            name: explore:explorers
+      resourceRules:
+        - verbs: ["*"]
+          apiGroups: ["*"]
+          resources: ["*"]
+          namespaces: ["*"]
+          clusterScope: true
+      nonResourceRules:
+        - verbs: ["*"]
+          nonResourceURLs: ["*"]

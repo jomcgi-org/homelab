@@ -6,6 +6,7 @@ py_test(
     data = [
         "admins.yaml",
         "explorers.yaml",
+        "flowcontrol.yaml",
         "kustomization.yaml",
         "viewers.yaml",
         "//projects:factory-cluster/nodes/authentication-config.yaml",
