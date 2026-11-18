@@ -46,6 +46,9 @@ type FeedItem struct {
 	Body        string          `json:"body"`
 	EditedAt    json.RawMessage `json:"editedAt"`
 	Payload     struct {
+		From *struct {
+			Value *string `json:"value"`
+		} `json:"from"`
 		To *struct {
 			Value *string `json:"value"`
 		} `json:"to"`
@@ -94,6 +97,39 @@ func (c *Client) IssueTextAuthors(ctx context.Context, issue *Issue) ([]string, 
 	}
 	// The bounded history does not establish the remaining fields' provenance.
 	return []string{authors["title"], authors["description"]}, nil
+}
+
+// VisitDescriptions reads immutable description snapshots, newest first,
+// stopping when visit recognizes the revision it needs.
+func (c *Client) VisitDescriptions(ctx context.Context, id int64, visit func(string) bool) error {
+	q := url.Values{"filter": {"history"}, "order": {"desc"}, "limit": {"100"}}
+	for range 10 {
+		var out feedPage
+		path := "/issues/" + strconv.FormatInt(id, 10) + "/feed?" + q.Encode()
+		if err := c.do(ctx, c.Coordinator, http.MethodGet, path, nil, &out); err != nil {
+			return err
+		}
+		for _, item := range out.Items {
+			if item.IssueID != id || item.Kind != "activity" || item.Action != "description" {
+				continue
+			}
+			if item.Payload.To != nil && item.Payload.To.Value != nil && visit(*item.Payload.To.Value) {
+				return nil
+			}
+			if item.Payload.From != nil && item.Payload.From.Value != nil && visit(*item.Payload.From.Value) {
+				return nil
+			}
+		}
+		if out.NextCursor == nil {
+			break
+		}
+		cursor, err := json.Marshal(out.NextCursor)
+		if err != nil {
+			return err
+		}
+		q.Set("cursor", string(cursor))
+	}
+	return nil
 }
 
 type feedCursor struct {

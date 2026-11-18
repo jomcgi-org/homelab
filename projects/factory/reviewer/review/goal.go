@@ -212,6 +212,41 @@ func issueCriterionIDs(in *IssueContext, key []byte) []string {
 	return ids
 }
 
+// recoverGoalCriteria authenticates historical text against the exact evidence
+// MAC saved by a reviewer that predates criterion IDs.
+func (e *Engine) recoverGoalCriteria(ctx context.Context, in *IssueContext, previous, current *GoalCheck) (*GoalCheck, error) {
+	if previous == nil || previous.Digest == "" || len(previous.CriterionIDs) != 0 ||
+		current == nil || len(current.CriterionIDs) == 0 || len(previous.Criteria) <= len(current.Criteria) {
+		return previous, nil
+	}
+	history, ok := e.cfg.Itsaplan.(interface {
+		VisitDescriptions(context.Context, int64, func(string) bool) error
+	})
+	if !ok || goalKey(in) == "" {
+		return previous, nil
+	}
+	key, err := e.evidenceKey()
+	if err != nil {
+		return nil, err
+	}
+	recovered := *previous
+	snapshot := *in
+	issue := *in.Issue
+	snapshot.Issue = &issue
+	err = history.VisitDescriptions(ctx, in.issueID, func(description string) bool {
+		if len(description) > maxIssueText {
+			return false
+		}
+		issue.Description = description
+		if evidenceDigest(&snapshot, key) != previous.Digest {
+			return false
+		}
+		recovered.CriterionIDs = issueCriterionIDs(&snapshot, key)
+		return true
+	})
+	return &recovered, err
+}
+
 // goalResolved says how a valid answer resolves an earlier goal finding that
 // it does not report again. Removal requires agreement with the issue text.
 func goalResolved(id, key string, g *GoalCheck, previous *GoalCheck) string {

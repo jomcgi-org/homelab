@@ -221,6 +221,30 @@ func TestApplyGoalKeepsEarlierBlockersUntilResolved(t *testing.T) {
 	}
 }
 
+func TestLegacyGoalRecoversOriginalDescription(t *testing.T) {
+	e, _, api, _ := issueSetup()
+	key, err := e.evidenceKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := &IssueContext{Issue: &IssueEvidence{Key: "HOME-58", Description: "Done when:\n1. First\n2. Second"}}
+	legacy := &GoalCheck{Digest: evidenceDigest(issue, key), Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}}}
+	original := issue.Issue.Description
+	issue.Issue.Description = "Done when:\n1. First"
+	current := &GoalCheck{Criteria: []GoalVerdict{{1, goalMet}}, CriterionIDs: issueCriterionIDs(issue, key)}
+	api.descriptions = []string{original + " edited"}
+	for _, want := range []string{"", criterionRemoved} {
+		previous, err := e.recoverGoalCriteria(t.Context(), issue, legacy, current)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := goalResolved("HOME-58:goal:criterion-2", "HOME-58", current, previous); got != want {
+			t.Fatalf("resolution = %q, want %q", got, want)
+		}
+		api.descriptions = append(api.descriptions, original)
+	}
+}
+
 func TestGoalRestatedFromSixteenCriteriaToSeven(t *testing.T) {
 	const key = "HOME-212"
 	issue := &IssueContext{Issue: &IssueEvidence{Key: key, Description: "**Done when:**"}}

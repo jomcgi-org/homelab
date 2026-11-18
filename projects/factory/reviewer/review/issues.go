@@ -48,6 +48,7 @@ type DecisionEvidence struct {
 }
 
 type IssueContext struct {
+	issueID   int64 // Private history lookup; excluded from the evidence digest.
 	Issue     *IssueEvidence
 	Decisions []DecisionEvidence
 	// Findings are evidence failures that another read cannot fix, such as
@@ -92,10 +93,14 @@ func (e *Engine) sealIssues(in *IssueContext) {
 		in.unread("key", "The evidence key could not be read. The service will retry; no issue evidence was supplied.")
 		return
 	}
+	in.digest = evidenceDigest(in, key)
+}
+
+func evidenceDigest(in *IssueContext, key []byte) string {
 	data, _ := json.Marshal(in) // Only strings, booleans and slices.
 	mac := hmac.New(sha256.New, key)
 	mac.Write(data)
-	in.digest = hex.EncodeToString(mac.Sum(nil))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // Include the truncation marker in the byte budget (clip alone adds it).
@@ -369,6 +374,7 @@ func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullReq
 				in.unread("status", "The issue's workflow status could not be resolved. Restore the project read; no issue text was supplied.")
 				break
 			}
+			in.issueID = goal.ID
 			in.Issue = &IssueEvidence{
 				Key: key, Title: boundedIssueText(goal.Title, maxPromptTitle),
 				Description: boundedIssueText(goal.Description, maxIssueText),

@@ -73,6 +73,7 @@ func TestIssueResolution(t *testing.T) {
 }
 
 type issueAPI struct {
+	descriptions                      []string
 	project                           *itsaplan.Project
 	issue                             *itsaplan.Issue
 	author                            string
@@ -80,6 +81,15 @@ type issueAPI struct {
 	comments                          map[int64]*itsaplan.FeedItem
 	fail                              string
 	issueReads, commentReads, lookups int
+}
+
+func (a *issueAPI) VisitDescriptions(_ context.Context, _ int64, visit func(string) bool) error {
+	for _, description := range a.descriptions {
+		if visit(description) {
+			break
+		}
+	}
+	return nil
 }
 
 func (a *issueAPI) GetProject(context.Context, string) (*itsaplan.Project, error) {

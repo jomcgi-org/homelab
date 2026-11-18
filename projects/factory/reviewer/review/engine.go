@@ -1927,7 +1927,11 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		// none of them is ever lowered.
 		applyIssueFindings(r, in.issues)
 		if b.ItsaplanProject != "" {
-			applyGoal(r, prior, b.ItsaplanProject, key, in.goal, in.prior.Goal)
+			previous, err := e.recoverGoalCriteria(ctx, in.issues, in.prior.Goal, in.goal)
+			if err != nil {
+				return result{reason: "The original issue revision could not be read. The service will retry."}
+			}
+			applyGoal(r, prior, b.ItsaplanProject, key, in.goal, previous)
 		}
 		// Joe's decisions come from the trusted comments the prompt showed;
 		// a finding justified by one counts only when its note links it
