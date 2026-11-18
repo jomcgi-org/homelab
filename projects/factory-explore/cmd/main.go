@@ -29,6 +29,7 @@ const (
 )
 
 type verifier struct {
+	jwksURL string
 	sync.Mutex
 	keys             jose.JSONWebKeySet
 	refresh, expires time.Time
@@ -49,7 +50,7 @@ func (v *verifier) subject(raw string) (string, error) {
 	if (len(keys) == 0 || !now.Before(v.expires)) && !now.Before(v.refresh) {
 		v.refresh = now.Add(10 * time.Second)
 		client := http.Client{Timeout: 4 * time.Second}
-		resp, e := client.Get(issuer + "jwks/")
+		resp, e := client.Get(v.jwksURL)
 		if e == nil {
 			defer resp.Body.Close()
 			var set jose.JSONWebKeySet
@@ -217,7 +218,7 @@ func main() {
 			r.Out.Header.Set(key, r.In.Header.Get(key))
 		}
 	}}
-	p := &proxy{users: make(map[string]*window), now: time.Now, subject: new(verifier).subject, upstream: upstream}
+	p := &proxy{users: make(map[string]*window), now: time.Now, subject: (&verifier{jwksURL: issuer + "jwks/"}).subject, upstream: upstream}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
