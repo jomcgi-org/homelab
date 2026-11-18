@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1505,6 +1506,80 @@ func TestLostHistoryCarriesAnOlderLegacySnapshotsBlocker(t *testing.T) {
 	failIf(t, c.Conclusion != ConclusionFailure || !hasID(st.Blocking, older.ID), "the older blocker did not stay open: %s %q %+v", c.Conclusion, c.Title, st.Blocking)
 }
 
+// seedLostHistory seeds provable loss: an expired task whose legacy record
+// clipped an identity, then a later legacy head shaB. It returns shaB.
+func seedLostHistory(t *testing.T, h *harness) string {
+	t.Helper()
+	addPR7(h)
+	clipped := finding(clip(strings.Repeat("a", 200), 80), SeverityHigh)
+	delete(h.k.tasks, seedLegacyReport(t, h, shaA, Report{Summary: "Lossy", Findings: []Finding{clipped}}, State{Blocking: []Finding{clipped}}, ConclusionFailure))
+	shaB := sha40('b')
+	h.gh.push(7, shaB)
+	seedLegacyReport(t, h, shaB, Report{Summary: "No findings", Findings: []Finding{}}, State{Blocking: []Finding{}}, ConclusionSuccess)
+	return shaB
+}
+
+// TestHistoryGapsGetNoApprovalHold: history that cannot be read in full,
+// but is not provably lost, stays incomplete with no HistoryLost hold, so
+// no approval can clear it. Provable loss alone gets the hold.
+func TestHistoryGapsGetNoApprovalHold(t *testing.T) {
+	for _, kind := range []string{"provable loss", "truncated timeline", "foreign check", "undecodable state"} {
+		t.Run(kind, func(t *testing.T) {
+			h := newHarness(t)
+			shaB := seedLostHistory(t, h)
+			switch kind {
+			case "truncated timeline":
+				h.gh.prs[7].TimelineTruncated = true
+			case "foreign check":
+				seedCheck(h, shaA, ConclusionFailure, "").ExternalID = "other"
+			case "undecodable state":
+				seedCheck(h, shaA, ConclusionFailure, markerStart+"state v2 !bad -->")
+				failIf(t, corruptState("no state") || corruptState(legacyText(State{Blocking: []Finding{}})), "valid or absent state read as corrupt")
+			}
+			e := h.engine()
+			run, err := e.reviewCheck(context.Background(), &e.cfg.Bindings[0], shaB)
+			failIf(t, err != nil, "%v", err)
+			got, rec := e.recoverState(context.Background(), &e.cfg.Bindings[0], github.PullRequest{Number: 7, HeadSHA: shaB}, run, mustState(t, run.Text))
+			held := got.Gate != nil && got.Gate.HistoryLost
+			failIf(t, rec != replayLost || !got.Incomplete || held != (kind == "provable loss"), "%s: recovery=%v incomplete=%v hold=%v", kind, rec, got.Incomplete, held)
+		})
+	}
+}
+
+// TestLostHistoryApprovalBeforeTheHoldIsShownDoesNotCount: an approval
+// submitted after the reviewer placed the hold, but before a check showed
+// it, does not dispose of the lost history.
+func TestLostHistoryApprovalBeforeTheHoldIsShownDoesNotCount(t *testing.T) {
+	h := newHarness(t)
+	var clock atomic.Int64
+	clock.Store(time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC).Unix())
+	h.cfg.Now = func() time.Time { return time.Unix(clock.Load(), 0) }
+	shaB := seedLostHistory(t, h)
+	// The label read follows the hold's placement, and comes before its check.
+	h.gh.afterEventsRead = func() {
+		pr := h.gh.prs[7]
+		at := time.Unix(clock.Add(1), 0).UTC()
+		pr.Reviews = append(pr.Reviews, github.PullRequestReview{ID: 700001, NodeID: "REVIEW_700001", Author: "jomcgi", State: "APPROVED", CommitSHA: shaB, SubmittedAt: at})
+		clock.Add(1)
+	}
+	e, ctx, _ := h.start()
+	e.Tick(ctx)
+	checks := h.gh.checksOn(shaB)
+	hold := checks[len(checks)-1]
+	if hold.Status != "completed" {
+		hold = checks[len(checks)-2]
+	}
+	held := mustState(t, hold.Text)
+	failIf(t, hold.Conclusion != ConclusionFailure || !held.Incomplete || held.Gate == nil || !held.Gate.HistoryLost, "an approval before the hold was shown disposed of it: %s %q", hold.Conclusion, hold.Title)
+	var task string
+	eventually(t, "the full review", func() bool { task = h.taskOn(7, shaB, 1); return task != "" })
+	h.k.finish(task, kagent.StateCompleted, report(t, Report{Summary: "Full review", Findings: []Finding{}, Previous: fixedAll(held.Blocking)}))
+	eventually(t, "the full review", func() bool { return h.gh.check(shaB).Status == "completed" })
+	e.Tick(ctx)
+	c := h.gh.check(shaB)
+	failIf(t, c.Conclusion != ConclusionFailure || !mustState(t, c.Text).Incomplete, "the early approval passed later: %s %q", c.Conclusion, c.Title)
+}
+
 func TestMigratedLegacyPassRetainsExplicitHoldAfterRestart(t *testing.T) {
 	h := newHarness(t)
 	addPR7(h)
@@ -1574,10 +1649,10 @@ func TestIncompleteHistoryCarriesKnownFindingsAcrossHeads(t *testing.T) {
 				c := h.gh.check(sha)
 				st, ok := LoadState(c.Text)
 				// A full review accounts for the known findings, but never
-				// clears the missing history. Lost legacy history also holds
-				// the head for Joe's approval.
+				// clears the missing history. A legacy record without a task
+				// reference is a gap, not provable loss: no hold for approval.
 				failIf(t, !ok || !st.Incomplete || c.Conclusion != ConclusionFailure || len(st.Previous()) != max(2-round, 0) ||
-					(st.Gate != nil && st.Gate.HistoryLost) != legacy, "round %d lost recovered findings or cleared missing history: %s %+v", round, c.Conclusion, st)
+					(st.Gate != nil && st.Gate.HistoryLost), "round %d lost recovered findings or cleared missing history: %s %+v", round, c.Conclusion, st)
 				failIf(t, round == 0 && (st.Blocking[0].Severity != SeverityCritical || st.Gate.Findings[0].Severity != SeverityHigh), "recovered findings lost their severities")
 			}
 		})

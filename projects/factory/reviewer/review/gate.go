@@ -71,7 +71,11 @@ type Gate struct {
 	// HistoryLost holds a head whose legacy review history cannot be
 	// replayed. A review cannot account for blockers it never saw, so only
 	// Joe's approval of the head disposes of them (State.Incomplete).
-	HistoryLost   bool   `json:"history_lost,omitempty"`
+	HistoryLost bool `json:"history_lost,omitempty"`
+	// HistoryShown: a published check showed the HistoryLost hold, and
+	// ApprovalAfter is no earlier than that check. Until then no approval
+	// counts for the hold.
+	HistoryShown  bool   `json:"history_shown,omitempty"`
 	RecoveryEpoch string `json:"recovery_epoch,omitempty"`
 	RecoveryPR    int    `json:"recovery_pr,omitempty"`
 	ContextToken  string `json:"context_token,omitempty"`
