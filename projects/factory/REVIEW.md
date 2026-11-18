@@ -102,7 +102,8 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   next poll. History that is lost or cannot be read in full (an expired
   task with a lossy record, a truncated timeline, too many heads, ambiguous,
   foreign or undecodable records) keeps the check blocked and carries every
-  known finding. No review or approval clears it; open a new PR. A review
+  known finding. No review or approval clears it; open a new PR from commits no
+  review has seen (rebased or squashed onto main). A review
   whose state overflowed stays blocked until a replay of its task recovers
   its findings. A later run on a head that keeps no state
   does not hide an earlier run's state. Failed replacement checks retry on

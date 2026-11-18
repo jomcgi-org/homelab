@@ -3709,7 +3709,7 @@ func TestStatelessLaterRunDoesNotHideAnEarlierHeadsFindings(t *testing.T) {
 				seedCheck(h, shaA, ConclusionSuccess, encodeState(State{Blocking: []Finding{}})).ExternalID = MessageID(testRepo, 8, shaA)
 				got := reviewRound(t, h, sha40('b'), Report{Summary: "Nothing", Findings: []Finding{}})
 				st, ok := LoadState(got.Text)
-				failIf(t, !ok || got.Conclusion != ConclusionFailure || !st.Incomplete, "another PR's state stood in for this PR's: %s %+v", got.Conclusion, st)
+				failIf(t, !ok || got.Conclusion != ConclusionFailure || !hasID(st.Blocking, "a.go:nil-deref") || !strings.Contains(lastPrompt(h), "`a.go:nil-deref` high"), "another PR's state hid this PR's finding: %s %+v", got.Conclusion, st.Blocking)
 				return
 			}
 			if kind == "lost state" {

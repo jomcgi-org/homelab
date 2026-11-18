@@ -1700,6 +1700,10 @@ func (e *Engine) statefulReview(ctx context.Context, b *Binding, pr int, sha str
 		return nil, State{}, false, err
 	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].ID > runs[j].ID })
+	// This PR's own newest review wins over any other PR's review of the
+	// commit. Only when this PR never reviewed it does a replacement PR
+	// inherit the newest review of the shared commit.
+	var inherited *github.CheckRun
 	for i := range runs {
 		r := &runs[i]
 		if r.Name != e.cfg.CheckName || r.AppID != e.cfg.AppID || r.HeadSHA != sha || r.Status != "completed" ||
@@ -1707,12 +1711,19 @@ func (e *Engine) statefulReview(ctx context.Context, b *Binding, pr int, sha str
 			continue
 		}
 		if r.ExternalID != MessageID(b.repo(), pr, sha) {
-			// Another PR's review of a shared commit is not this PR's state,
-			// and cannot show what this PR's review held: fail closed.
-			return nil, State{}, true, nil
+			if inherited == nil {
+				inherited = r
+			}
+			continue
 		}
 		if st, ok := LoadState(r.Text); ok {
 			return r, st, false, nil
+		}
+		return nil, State{}, true, nil
+	}
+	if inherited != nil {
+		if st, ok := LoadState(inherited.Text); ok {
+			return inherited, st, false, nil
 		}
 		return nil, State{}, true, nil
 	}
