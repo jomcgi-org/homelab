@@ -177,6 +177,7 @@ The server contacts GitHub, Google and Discord for tokens and profiles.
 The worker needs accounts.google.com and token.actions.githubusercontent.com
 for discovery, plus www.googleapis.com and token.actions.githubusercontent.com
 for signing keys. The namespace policy scopes both lists to TCP 443.
+[Joe accepted the GitHub Actions host](https://factory-plan.jomcgi.dev/factory/issue/HOME-312#comment-4038).
 [Source serializer](https://github.com/goauthentik/authentik/blob/version/2026.5.6/authentik/sources/oauth/api/source.py#L60-L127).
 
 Required PR checks run the flow executor check when the factory Authentik
