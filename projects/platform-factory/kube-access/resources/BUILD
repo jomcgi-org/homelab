@@ -5,7 +5,10 @@ py_test(
     srcs = ["kube_access_test.py"],
     data = [
         "admins.yaml",
+        "explorers.yaml",
+        "kustomization.yaml",
         "viewers.yaml",
+        "//projects:factory-cluster/nodes/authentication-config.yaml",
     ],
     deps = ["@pip//pyyaml"],
 )

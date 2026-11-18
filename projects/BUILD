@@ -71,3 +71,8 @@ filegroup(
     ),
     visibility = ["//projects/monolith:__pkg__"],
 )
+
+exports_files(
+    ["factory-cluster/nodes/authentication-config.yaml"],
+    visibility = ["//projects/platform-factory/kube-access/resources:__pkg__"],
+)
