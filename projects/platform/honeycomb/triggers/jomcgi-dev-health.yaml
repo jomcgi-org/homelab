@@ -5,9 +5,10 @@
 name: jomcgi.dev /health composite unhealthy
 dataset: metrics
 description: >-
-  The OTel collector's httpcheck receiver probes https://factory-public.jomcgi.dev/health
-  every 60s. The route checks factory cluster readiness, the production site
-  deployment and storyboard freshness. Fires when
+  The OTel collector's httpcheck receiver probes https://jomcgi.dev/health
+  every 60s. That route is the composite: it rolls the component SLIs
+  (monolith, EmberVM, database, drainer) into one status code, so a single
+  non-2xx here is the one alert that covers them all. Fires when
   MAX(httpcheck.status) over the non-2xx status classes is 1, sustained across
   two consecutive 5-minute evaluations. The two-cycle requirement is
   deliberate: a cloudflared QUIC/UDP flap causes brief total ingress loss and
@@ -22,7 +23,7 @@ threshold:
   exceeded_limit: 2
 recipients: [kjEJr2qxxxe]
 tags:
-  service: factory
+  service: monolith
   tier: public
 query:
   time_range: 300
@@ -32,7 +33,7 @@ query:
   filters:
     - column: http.url
       op: "="
-      value: https://factory-public.jomcgi.dev/health
+      value: https://jomcgi.dev/health
     - column: http.status_class
       op: "!="
       value: 2xx

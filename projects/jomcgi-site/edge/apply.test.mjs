@@ -472,8 +472,10 @@ test("a live rule with an unknown top-level setting is a difference", () => {
   );
 });
 
-test("with routes off and the desired cache rules present, writes nothing", async () => {
-  const zone = fakeZone({ rules: RULES.rules });
+test("registering prod with routes off on today's zone writes nothing", async () => {
+  // cache-rules.json equals the live entrypoint (LIVE), and routes are off,
+  // so the first prod sync needs no write permission at all.
+  const zone = fakeZone({ rules: LIVE });
   const log = await apply(zone.call, ROUTES, RULES, { serveRoutes: false });
   assert.deepEqual(zone.state.writes, []);
   assert.deepEqual(log, ["no change", "read-back matches the files"]);

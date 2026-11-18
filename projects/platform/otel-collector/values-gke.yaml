@@ -36,7 +36,6 @@ httpcheck:
   enabled: true
   targets:
     - "https://jomcgi.dev/health"
-    - "https://factory-public.jomcgi.dev/health"
     - "https://jomcgi.dev/"
     - endpoint: "https://argocd-server.argocd.svc:443/healthz"
       enabled: true

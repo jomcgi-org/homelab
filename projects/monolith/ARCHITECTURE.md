@@ -2101,10 +2101,12 @@ root error page.
 
 `/healthz` is process liveness. `/api/health` executes a database query and all
 registered module checks concurrently, returns 503 for fatal failures, and
-reports advisory degradation without changing the 200 response. The public factory health endpoint is served by the factory edge at
-`factory-public.jomcgi.dev/health`.
+reports advisory degradation without changing the 200 response. The public
+`/health` route proxies it, hides internal detail strings, lists only failing
+component names, caches only healthy responses, and returns an uncached 503
+when the backend is unhealthy or unreachable.
 (see: /projects/monolith/framework/core.py)
-(see: /projects/platform-factory/edge/chart/templates/health.yaml)
+(see: /projects/monolith/frontend/src/routes/public/health/+server.js)
 
 The public tier checks its database and stars data. The private tier retains the
 Codex session probe for production agent execution. #4338 built an Ember

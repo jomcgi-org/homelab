@@ -39,9 +39,10 @@ httpcheck:
   # against the destination policy and live routing. The former monolith
   # Cilium ingress template was removed in #5816; it never enforced on GKE.
   #
+  # jomcgi.dev/health already reaches the monolith backend through the public
+  # path, so nothing is unmonitored meanwhile.
   targets:
     - "https://jomcgi.dev/health"
-    - "https://factory-public.jomcgi.dev/health"
     - "https://jomcgi.dev/"
 
 # Retired home overlay remains default-off too.

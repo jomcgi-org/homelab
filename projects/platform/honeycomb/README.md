@@ -74,13 +74,14 @@ applied by hand), the plan refuses: delete that trigger in the Honeycomb UI.
 
 ## Factory health cutover
 
-Deploy the factory endpoint and the collector overlays first. Both health URLs
-stay in the probe list and the hub route stays deployed. The existing trigger
-continues evaluating hub samples during this stage.
+The factory endpoint currently requires an operator sign-in. Keep the hub
+probe and trigger active. Once a public factory response is authorized and
+deployed, add its URL alongside the hub URL in both collector overlays. Keep
+the hub route deployed while switching the single trigger in place.
 
 In the metrics dataset, group `httpcheck.status` by `http.url` and confirm
 both URLs have recent samples across two five-minute windows. Confirm the
-factory endpoint returns component JSON. Then run the dry run and apply above
+factory endpoint returns component JSON. Then change the trigger spec URL filter to the factory URL and run the dry run and apply above
 to update trigger `aJgkA4vC2m8` in place. Run the dry run again and confirm
 `NOOP`. In Honeycomb, open that trigger's query and verify its URL filter and
 two completed evaluations after the change. Record the evaluation times on

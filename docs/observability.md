@@ -35,7 +35,7 @@ ships the resulting metrics to Honeycomb:
 
 | Target | Signal |
 | ------ | ------ |
-| `https://factory-public.jomcgi.dev/health` | Factory cluster, site deployment and storyboard freshness |
+| `https://jomcgi.dev/health` | Composite public health |
 | `https://jomcgi.dev/` | Public page reachability |
 | `https://argocd-server.argocd.svc:443/healthz` | Argo CD, in-cluster, with the pinned serving CA from #6542 |
 
@@ -141,7 +141,7 @@ Honeycomb's free plan allows exactly one trigger. It is spent on
 `jomcgi.dev /health composite unhealthy` (`aJgkA4vC2m8`), kept as code in
 [`projects/platform/honeycomb/`](../projects/platform/honeycomb/README.md)
 and applied with its `sync.py`, which refuses to plan more than one trigger.
-It fires when the httpcheck probe of `https://factory-public.jomcgi.dev/health` is non-2xx
+It fires when the httpcheck probe of `https://jomcgi.dev/health` is non-2xx
 for two consecutive 5-minute evaluations and notifies the Discord webhook
 recipient "Discord homelab alerts".
 
@@ -284,3 +284,11 @@ false through Git to disable this path; existing backup schedules are unchanged.
 - Monolith health components and Discord alerts:
   `projects/monolith/factory/ops_health.py`,
   `projects/monolith/factory/health_alerts.py`, chart values `healthAlerts`
+
+## Factory health during hub retirement
+
+Operators can sign in at `https://factory-public.jomcgi.dev/health` to see
+node and Argo CD readiness, production site deployment health and storyboard
+freshness. The response is private and uncached. The unauthenticated collector
+continues probing the hub while the public factory health decision is pending
+verification. Its trigger still matches that probe.

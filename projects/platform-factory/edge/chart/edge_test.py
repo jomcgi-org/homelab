@@ -98,7 +98,6 @@ def test_only_kagent_forwards_the_access_token(docs):
     # ArgoCD, Grafana, itsaplan or the landing page.
     assert set(policies) == {
         "edge-authentik-oidc",
-        "factory-health",
         "authentik-no-gateway-oidc",
         "kagent-authentik-oidc",
         "kube-api-authentik-jwt",
@@ -341,27 +340,22 @@ def test_kagent_hostname_is_owned_and_published():
     ]
 
 
-def test_public_health_route_is_limited_to_get_health(docs):
+def test_health_route_inherits_gateway_sign_in(docs):
     route = docs["HTTPRoute", "factory-health"]["spec"]
     assert route["hostnames"] == ["factory-public.jomcgi.dev"]
     assert route["rules"] == [
         {
             "matches": [
-                {"method": "GET", "path": {"type": "Exact", "value": "/health"}}
+                {"method": "GET", "path": {"type": "Exact", "value": "/health"}},
+                {
+                    "method": "GET",
+                    "path": {"type": "Exact", "value": "/oauth2/callback"},
+                },
             ],
             "backendRefs": [{"name": "factory-health", "port": 8080}],
         }
     ]
-    assert docs["SecurityPolicy", "factory-health"]["spec"] == {
-        "targetRefs": [
-            {
-                "group": "gateway.networking.k8s.io",
-                "kind": "HTTPRoute",
-                "name": "factory-health",
-            }
-        ],
-        "authorization": {"defaultAction": "Allow"},
-    }
+    assert ("SecurityPolicy", "factory-health") not in docs
 
 
 def test_public_snapshot_responses(docs, tmp_path):
@@ -385,9 +379,7 @@ def test_public_snapshot_responses(docs, tmp_path):
             response = conn.getresponse()
             status = "healthy" if healthy else "unhealthy"
             assert response.status == (200 if healthy else 503)
-            assert ("s-maxage=30" if healthy else "no-store") in response.headers[
-                "Cache-Control"
-            ]
+            assert response.headers["Cache-Control"] == "private, no-store"
             assert json.load(response) == {
                 "status": status,
                 "components": {

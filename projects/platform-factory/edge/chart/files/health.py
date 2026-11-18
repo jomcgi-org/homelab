@@ -105,7 +105,7 @@ class Health(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header(
             "Cache-Control",
-            "public, max-age=0, s-maxage=30, must-revalidate" if ok else "no-store",
+            "private, no-store",
         )
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
