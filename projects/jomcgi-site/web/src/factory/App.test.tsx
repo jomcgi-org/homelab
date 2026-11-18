@@ -49,7 +49,11 @@ it.each([
         /Every goal, issue, session and measurement here is made up/,
       ),
     ).toBeDefined();
-    expect(document.title).toBe(`${title} · Factory · jomcgi.dev`);
+    // The snapshot resolves outside act(), so the title effect can run just
+    // after the heading commits.
+    await waitFor(() =>
+      expect(document.title).toBe(`${title} · Factory · jomcgi.dev`),
+    );
     expect(onRecoverableError).not.toHaveBeenCalled();
   },
 );

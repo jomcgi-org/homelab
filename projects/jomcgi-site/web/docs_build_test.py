@@ -42,6 +42,7 @@ def test_published_pages_are_exactly_the_filtered_manifest():
         "blog.html",
         "blog/ember-conformance.html",
         "blog/125b-on-a-4090.html",
+        "llm-leaderboard.html",
         "scotland.html",
         "scotland/privacy.html",
         "scotland/support.html",
