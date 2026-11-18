@@ -9,7 +9,7 @@ import {
   buildSidebar,
   getMeta,
   renderDoc,
-} from "$lib/server/docs.js";
+} from "$lib/server/docs-hub.js";
 import {
   cloudflareCacheHeaders,
   DOCS_CACHE_CONTROL,

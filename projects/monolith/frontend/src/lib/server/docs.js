@@ -1,16 +1,13 @@
-// Hub-specific image signing wraps the same renderer used by the static site.
-import { DOC_KINDS } from "$lib/public/docs/doc-kinds.js";
-import { signedDocsImgUrl } from "./docs-img.js";
-import {
-  renderDoc as renderMarkdown,
-  truncateAtWord,
-  stripInlineMd,
-  stripTags,
+// Docs navigation and metadata share the blog Markdown renderer.
+// docs-hub.js supplies image signing only in the hub runtime.
+import { DOC_KINDS } from "../public/docs/doc-kinds.js";
+import { truncateAtWord, stripInlineMd, stripTags } from "./markdown.js";
+export {
+  buildPathIndex,
+  resolveDocHref,
+  slugifyHeading,
+  renderDoc,
 } from "./markdown.js";
-export { buildPathIndex, resolveDocHref, slugifyHeading } from "./markdown.js";
-export function renderDoc(entry, slugByPath) {
-  return renderMarkdown(entry, slugByPath, signedDocsImgUrl);
-}
 
 // Flat project navigation derived from manifest order. It carries only project
 // and tab metadata, never document bodies, so it is safe to serialise to the

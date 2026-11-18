@@ -86,3 +86,7 @@ bb-out/
 
 # Local fixture-preview build output for the Grimoire web app.
 dist-preview/
+
+# Static docs build inputs and generated per-document entries.
+/projects/jomcgi-site/web/docs-manifest.json
+/projects/jomcgi-site/web/docs/

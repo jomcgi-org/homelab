@@ -1,0 +1,59 @@
+.docs-diagram {
+  max-width: 100%;
+  overflow-x: auto;
+  font-family: var(--font-family-body);
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--color-text-primary);
+}
+.docs-diagram svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.docs-diagram :is(text, tspan) {
+  fill: var(--color-text-primary);
+  stroke: none;
+}
+.docs-diagram :is(rect, circle, ellipse, polygon, path) {
+  fill: var(--color-background-surface);
+  stroke: var(--color-border-emphasized);
+}
+.docs-diagram
+  :is(
+    line,
+    polyline,
+    .flowchart-link,
+    .transition,
+    .messageLine0,
+    .messageLine1
+  ) {
+  fill: none;
+  stroke: var(--color-text-primary);
+}
+.docs-diagram :is(.cluster rect, .note, .labelBox) {
+  fill: var(--color-background-muted);
+  stroke: var(--color-border-emphasized);
+}
+.docs-diagram :is(marker *, .state-start, .state-end) {
+  fill: var(--color-text-primary);
+  stroke: var(--color-text-primary);
+}
+.docs-diagram .state-end + circle {
+  fill: var(--color-background-surface);
+}
+.docs-diagram .messageLine1 {
+  stroke-dasharray: 3 3;
+}
+.docs-diagram .edge-pattern-dashed {
+  stroke-dasharray: 3;
+}
+.docs-diagram .edge-pattern-dotted {
+  stroke-dasharray: 2;
+}
+.docs-diagram .edge-thickness-thick {
+  stroke-width: 3.5;
+}
+.docs-diagram [fill="none"] {
+  fill: none;
+}

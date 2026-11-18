@@ -6,6 +6,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { build, createServer } from "vite";
+import { renderDocsDiagrams } from "./render-diagrams.mjs";
 
 await build();
 
@@ -41,3 +42,5 @@ try {
 } finally {
   await server.close();
 }
+
+await renderDocsDiagrams();
