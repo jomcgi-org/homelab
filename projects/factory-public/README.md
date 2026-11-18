@@ -86,6 +86,11 @@ printed, and no object was created or deleted.
 | 3. Destination listing | ListObjects on `factory-public`: allowed, 0 objects. |
 | 4. One writer | `projects/monolith/chart/values.yaml` sets `TRIPS_EXPORT_PUBLIC_ENABLED: "false"`; R2 has no `trips/` objects. |
 
+No credential the factory may use can read the token's permission policy.
+Joe accepted the checks above as enough evidence of the write scope and
+approved activation with this token
+([decision](https://github.com/jomcgi-org/homelab/pull/8240#issuecomment-6981467603)).
+
 ## Live check
 
 After the mirror runs:
