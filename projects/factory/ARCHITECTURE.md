@@ -917,6 +917,9 @@ For each of the five application hosts, the test completes the OAuth callback,
 sends the resulting session cookies on a fresh request to `/`, and requires the
 operator to receive HTTP 200 from the backend and the applicant to receive
 HTTP 403. The kagent backend must also receive the operator’s bearer token.
+The PR runner's kernel has no key sysctls, so the test skips there; HOME-421
+runs it in CI, and a live check after rollout covers the five hosts
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-291#comment-4159)).
 [Session assertions](../platform-factory/edge/tests/oidc/session.py) ·
 [Route and backend setup](../platform-factory/edge/tests/oidc/run.sh)
 
