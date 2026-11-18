@@ -28,6 +28,7 @@ case "$*" in
     'merge-base origin/main HEAD')
         [[ "${MISSING_BASE:-0}" == 0 ]] || exit 8
         echo frozen-base ;;
+    'ls-files -z -- :(glob)**/INVARIANTS.yaml') printf '%s\0' INVARIANTS.yaml 'a b/INVARIANTS.yaml' ;;
     'ls-files --others --exclude-standard') ;;
     *) echo "unexpected git: $*" >&2; exit 99 ;;
 esac
@@ -55,6 +56,12 @@ EOF
 cat >"$tmp/bin/bazel" <<'EOF'
 #!/usr/bin/env bash
 set -eu
+if [[ "$1" == run ]]; then
+    [[ $# == 6 && "$2" == //projects/factory/reviewer/cmd/check-invariants && "$3" == --config=ci && "$4" == -- ]]
+    [[ "$5" == "$PWD/INVARIANTS.yaml" && "$6" == "$PWD/a b/INVARIANTS.yaml" ]]
+    echo invariants >>"$LOG"
+    exit "${INVARIANT_STATUS:-0}"
+fi
 if [[ "${2:-}" == '//...' ]]; then
     [[ "$*" == 'test //... --config=ci --deleted_packages=bazel/tools/python' ]]
     printf 'full //...\n' >>"$LOG"
@@ -81,7 +88,7 @@ run() {
 }
 export GIT_PR_NUMBER=7455 GIT_BRANCH=factory/test PATTERNS=//p:unit_test WRITE_BACK_ONLY=false
 run 0
-expected=$'git fetch origin main --quiet\ngit merge-base origin/main HEAD\nguard ./bazel/tools/ci/verification_genrule_guard.py .\nguard ./bazel/tools/ci/central_build_ratchet.py frozen-base HEAD\nguard ./bazel/tools/ci/chart_version_guard.py frozen-base HEAD\nguard ./bazel/tools/ci/source_ratchet.py frozen-base HEAD\ngit ls-files --others --exclude-standard\nselector frozen-base HEAD -- --config=ci --deleted_packages=bazel/tools/python\nsubset //p:unit_test\nreached'
+expected=$'git fetch origin main --quiet\ngit merge-base origin/main HEAD\nguard ./bazel/tools/ci/verification_genrule_guard.py .\nguard ./bazel/tools/ci/central_build_ratchet.py frozen-base HEAD\nguard ./bazel/tools/ci/chart_version_guard.py frozen-base HEAD\nguard ./bazel/tools/ci/source_ratchet.py frozen-base HEAD\ngit ls-files -z -- :(glob)**/INVARIANTS.yaml\ninvariants\ngit ls-files --others --exclude-standard\nselector frozen-base HEAD -- --config=ci --deleted_packages=bazel/tools/python\nsubset //p:unit_test\nreached'
 [[ "$(cat "$LOG")" == "$expected" ]]
 echo 'PASS workflow PR frozen base, ordered guards and selective target-pattern file'
 for guard in verification_genrule_guard.py central_build_ratchet.py chart_version_guard.py source_ratchet.py; do
@@ -90,6 +97,8 @@ for guard in verification_genrule_guard.py central_build_ratchet.py chart_versio
 	! grep -qE 'selector|subset|reached' "$LOG"
 done
 echo 'PASS workflow each guard failure stops all subsequent work'
+INVARIANT_STATUS=7 run 7
+[[ "$(tail -n 1 "$LOG")" == invariants ]]
 MISSING_BASE=1 run 8
 ! grep -qE 'guard |selector|reached' "$LOG"
 echo 'PASS workflow missing merge base stops guards and tests'
