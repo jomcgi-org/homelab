@@ -6,9 +6,12 @@ proxy before public routing. Its NetworkPolicy admits only the edge gateway.
 
 Before activating HOME-358:
 
-1. Provision the HOME-355 Authentik provider with issuer
+1. Verify that Authentik has applied the HOME-355 blueprint from
+   `projects/platform/authentik/factory-blueprints/factory-explore.yaml`.
+   Confirm a signed explorer token has issuer
    `https://factory-auth.jomcgi.dev/application/o/factory-explore/`, audience
-   `factory-explore`, RS256 signing, published JWKS and a stable subject.
+   `factory-explore`, and a stable subject. Verify its RS256 signature against
+   the provider's published JWKS.
 2. Install a matching explorer JWT authenticator in
    `projects/factory-cluster/nodes/authentication-config.yaml`. The proxy
    passes the visitor's bearer token to Kubernetes. Map explorer identities
