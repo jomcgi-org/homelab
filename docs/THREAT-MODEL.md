@@ -79,8 +79,29 @@ The factory has no STPA security lens yet.
 
 ### GKE hub
 
-HOME-93 and HOME-89 track the hub model. Until that work lands, these
-surfaces keep their deep models:
+The hub's boundaries are unchanged from the earlier model. HOME-93 and
+HOME-89 track its update.
+
+```mermaid
+graph LR
+    I["Internet<br/>(anonymous)"] --> CFE["Cloudflare edge<br/>tunnel + WAF"]
+    GH["GitHub<br/>PRs, dependencies"] --> CI["CI<br/>BuildBuddy runners,<br/>merge queue"]
+    CFE --> CFD
+    CI -- "publishes charts and images;<br/>ArgoCD pulls" --> K8S
+    subgraph K8S ["Cluster (GKE Dataplane V2, Kyverno, ArgoCD)"]
+        CFD["cloudflared"] --> GW["Envoy Gateway"]
+        GW --> PUB["Public tier<br/>jomcgi.dev, monolith-public"]
+        GW --> PRIV["Private tier<br/>private.jomcgi.dev<br/>Cloudflare Access + authentik"]
+        GW --> MCP["MCP gateway<br/>Context Forge<br/>authentik-issued tokens"]
+        MCP --> MONO["Monolith"]
+        MONO --> EVM["EmberVM<br/>untrusted code in<br/>Firecracker VMs"]
+        PUB --> EVM
+        POLY["Polylane agent<br/>cluster-wide read<br/>get/list, no secrets"]
+    end
+    POLY -- "outbound tunnel;<br/>topology and pod logs" --> PL["Polylane<br/>(third party)"]
+```
+
+These surfaces keep their deep models:
 
 | Surface | Untrusted input | Deep model |
 | --- | --- | --- |
