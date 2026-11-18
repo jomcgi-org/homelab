@@ -317,11 +317,7 @@ const invariantFile = "INVARIANTS.yaml"
 
 type mechanismPaths map[string]bool
 
-func loadMechanisms(ctx context.Context, gh RulesReader, repo, base string) (mechanismPaths, error) {
-	commit, err := gh.BranchHead(ctx, repo, base)
-	if err != nil {
-		return nil, err
-	}
+func loadMechanisms(ctx context.Context, gh RulesReader, repo, commit string) (mechanismPaths, error) {
 	tree, err := gh.Tree(ctx, repo, commit)
 	if err != nil {
 		return nil, err
@@ -338,30 +334,39 @@ func loadMechanisms(ctx context.Context, gh RulesReader, repo, base string) (mec
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", file, err)
 		}
-		var doc struct {
-			Invariants []struct{ Mechanism []string }
+		if err := ParseMechanisms(file, data, paths); err != nil {
+			return nil, err
 		}
-		dec := yaml.NewDecoder(bytes.NewReader(data))
-		if err := dec.Decode(&doc); err != nil {
-			return nil, fmt.Errorf("parse %s: %w", file, err)
-		}
-		if doc.Invariants == nil {
-			return nil, fmt.Errorf("%s requires an invariants list", file)
-		}
-		if err := dec.Decode(new(any)); err != io.EOF {
-			return nil, fmt.Errorf("unexpected trailing YAML in %s", file)
-		}
-		for _, inv := range doc.Invariants {
-			for _, mechanism := range inv.Mechanism {
-				p := strings.TrimSuffix(mechanism, "/")
-				if _, ok := lookupPath(p); !ok {
-					return nil, fmt.Errorf("invalid mechanism path in %s", file)
-				}
-				paths[path.Clean(p)] = true
-			}
-		}
+
 	}
 	return paths, nil
+}
+
+// ParseMechanisms validates one invariant file and collects its repository paths.
+func ParseMechanisms(file string, data []byte, paths map[string]bool) error {
+	var doc struct {
+		Invariants []struct{ Mechanism []string }
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(&doc); err != nil {
+		return fmt.Errorf("parse %s: %w", file, err)
+	}
+	if doc.Invariants == nil {
+		return fmt.Errorf("%s requires an invariants list", file)
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return fmt.Errorf("unexpected trailing YAML in %s", file)
+	}
+	for _, inv := range doc.Invariants {
+		for _, mechanism := range inv.Mechanism {
+			p := strings.TrimSuffix(mechanism, "/")
+			if _, ok := lookupPath(p); !ok {
+				return fmt.Errorf("invalid mechanism path in %s", file)
+			}
+			paths[path.Clean(p)] = true
+		}
+	}
+	return nil
 }
 
 func (m mechanismPaths) covers(p string) bool {

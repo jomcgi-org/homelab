@@ -353,12 +353,11 @@ func TestNewHeadCreatesCheckAndSendsReviewTask(t *testing.T) {
 			t.Errorf("a first review of an ungated PR without comments has %q", unwanted)
 		}
 	}
-	// Rules come from the base branch's head, never the PR head: one tree
-	// read, then only the files that exist.
+	// Invariant discovery and review rules each read the base tree.
 	h.gh.mu.Lock()
 	refs := append([]string(nil), h.gh.contentRefs...)
 	h.gh.mu.Unlock()
-	if want := "tree:base-1,base-1:docs/agents/review.md,base-1:projects/factory/REVIEW.md,base-1:AGENTS.md"; strings.Join(refs, ",") != want {
+	if want := "tree:base-1,tree:base-1,base-1:docs/agents/review.md,base-1:projects/factory/REVIEW.md,base-1:AGENTS.md"; strings.Join(refs, ",") != want {
 		t.Errorf("reads = %v, want %s", refs, want)
 	}
 	if got := testutil.ToFloat64(h.m.ReviewsStarted.WithLabelValues("homelab", "new")); got != 1 {
@@ -2487,6 +2486,27 @@ func TestHumanGateByPathHoldsUntilApprovalOnTheHead(t *testing.T) {
 	}
 	if n, _ := h.k.state(); n != 1 {
 		t.Fatalf("executions = %d; the gate starts no new review", n)
+	}
+}
+
+func TestCompletedPassRechecksChangedInvariantBase(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	h.gh.prs[7].Author = "jomcgi-factory[bot]"
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	eventually(t, "completed review", func() bool {
+		return h.gh.check(shaA).Conclusion == ConclusionSuccess && testutil.ToFloat64(h.m.InFlight) == 0
+	})
+	h.gh.mu.Lock()
+	h.gh.baseHead = "base-2"
+	h.gh.baseFiles["policy/INVARIANTS.yaml"] = "invariants:\n  - mechanism: [projects/old/y.go]"
+	h.gh.mu.Unlock()
+	e.Tick(ctx)
+	c := h.gh.check(shaA)
+	st, _ := LoadState(c.Text)
+	if c.Conclusion != ConclusionFailure || st.InvariantBase != "base-2" || st.Gate == nil || !slices.Contains(st.Gate.Paths, "projects/old/y.go") {
+		t.Fatalf("reconciled check = %s, state = %+v", c.Conclusion, st)
 	}
 }
 
