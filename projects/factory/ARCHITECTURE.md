@@ -1940,6 +1940,13 @@ owner on the private issue.
 [public output decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6931275436),
 [private feedback decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-251#comment-2324)
 
+Goal blockers may clear, by Joe's rule
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-157#comment-3904)). The reviewer withdraws an earlier
+goal finding when the PR names a different issue, or when the issue's
+counted "Done when" list no longer reaches the finding's criterion
+(`goalWithdrawn` in `reviewer/review/goal.go`). The withdrawal note is
+fixed service text that names the issue keys and criterion number only.
+
 The reviewer stores private goal replies on the `factory-reviewer-goal-audit`
 PVC for 14 days from first receipt. After rollback, keep the PVC, the hourly
 cleanup CronJob and its NetworkPolicy. To retire them, wait until the last

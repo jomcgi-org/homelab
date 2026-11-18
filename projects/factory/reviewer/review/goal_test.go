@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -134,10 +135,13 @@ func TestApplyGoalOwnsGoalFindings(t *testing.T) {
 		blocking[b.ID] = b.Severity
 	}
 	// Criterion 3 is reported again as after_rollout and takes its low
-	// severity (HOME-179). HOME-57's blocker stays: a goal check of HOME-58
-	// does not resolve it.
-	if len(blocking) != 2 || blocking["HOME-58:goal:criterion-2"] != SeverityMedium || blocking["HOME-57:goal"] != SeverityHigh {
+	// severity (HOME-179). HOME-57's blocker is withdrawn: the PR now names
+	// HOME-58 (Joe's rule, HOME-327).
+	if len(blocking) != 1 || blocking["HOME-58:goal:criterion-2"] != SeverityMedium {
 		t.Fatalf("blocking = %v", blocking)
+	}
+	if len(a.Withdrawn) != 1 || a.Withdrawn[0].ID != "HOME-57:goal" {
+		t.Fatalf("withdrawn = %+v", a.Withdrawn)
 	}
 	if !slices.ContainsFunc(a.Optional, func(f Finding) bool { return f.ID == "HOME-58:goal:criterion-3" && f.Severity == SeverityLow }) {
 		t.Fatalf("optional = %+v", a.Optional)
@@ -188,12 +192,15 @@ func TestApplyGoalKeepsEarlierBlockersUntilResolved(t *testing.T) {
 			"HOME-58:goal:criterion-2=medium", "HOME-58:goal HOME-58:goal:unavailable",
 		},
 		"no issue":    {"", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}}, all, ""},
-		"other issue": {"HOME-59", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}}, all, ""},
+		"other issue": {"HOME-59", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}}, "", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := &Report{Previous: []Previous{{ID: "HOME-58:goal", Status: StatusFixed, Note: "Model says done"}}}
 			applyGoal(r, prior, "HOME", tc.key, tc.g)
 			a := Assess(r, prior)
+			if tc.key == "HOME-59" && len(a.Withdrawn) != len(prior) {
+				t.Errorf("withdrawn = %+v, want all %d", a.Withdrawn, len(prior))
+			}
 			var blocking, fixed []string
 			for _, b := range a.Blocking {
 				blocking = append(blocking, b.ID+"="+b.Severity)
@@ -626,5 +633,103 @@ func TestEvidenceChangeDuringTheGoalCheckRevokesThePass(t *testing.T) {
 	e.Wait()
 	if goals := goalTexts(h); h.gh.check(shaA).Conclusion != ConclusionSuccess || len(goals) != 2 || !strings.Contains(goals[1], "Changed while") {
 		t.Fatalf("fresh evidence: %s after %d goal checks", h.gh.check(shaA).Conclusion, len(goalTexts(h)))
+	}
+}
+
+func goalVerdicts(n int, v string) []GoalVerdict {
+	out := make([]GoalVerdict, n)
+	for i := range out {
+		out[i] = GoalVerdict{i + 1, v}
+	}
+	return out
+}
+
+// Joe's rule (HOME-157, HOME-318, HOME-327): goal blockers may clear when the
+// trusted issue text drops a criterion or the PR moves to another issue. An
+// uncounted list, a count the answer disagrees with or a missing issue
+// reference keeps them.
+func TestGoalBlockersMayClear(t *testing.T) {
+	var prior []Finding
+	for i := 1; i <= 16; i++ {
+		prior = append(prior, Finding{ID: "HOME-212:goal:criterion-" + strconv.Itoa(i), Severity: SeverityMedium})
+	}
+	run := func(key string, g *GoalCheck) Assessment {
+		r := &Report{}
+		applyGoal(r, prior, "HOME", key, g)
+		return Assess(r, prior)
+	}
+	ids := func(bs []Blocked) []string {
+		var out []string
+		for _, b := range bs {
+			out = append(out, b.ID)
+		}
+		return out
+	}
+	t.Run("sixteen criteria become seven", func(t *testing.T) {
+		a := run("HOME-212", &GoalCheck{Overall: goalUnclear, Criteria: goalVerdicts(7, goalNotMet), Counted: 7})
+		if len(a.Withdrawn) != 9 {
+			t.Fatalf("withdrawn = %v", ids(a.Withdrawn))
+		}
+		for _, w := range a.Withdrawn {
+			n, _ := strconv.Atoi(strings.TrimPrefix(w.ID, "HOME-212:goal:criterion-"))
+			if n < 8 || w.Note != "Withdrawn: criterion "+strconv.Itoa(n)+" was removed from HOME-212." {
+				t.Errorf("withdrawn %s: %q", w.ID, w.Note)
+			}
+		}
+		// Criteria 1 to 7 still exist and the answer reports them again.
+		if got := ids(a.Blocking); len(got) != 8 { // seven criteria and the overall goal
+			t.Fatalf("blocking = %v", got)
+		}
+		out := Render(a, &Report{}, nil, "")
+		if !strings.Contains((out.Output.Summary + out.Output.Text), "criterion 16 was removed from HOME-212") {
+			t.Fatalf("comment does not say why:\n%s", (out.Output.Summary + out.Output.Text))
+		}
+	})
+	t.Run("kept", func(t *testing.T) {
+		for name, tc := range map[string]struct {
+			key string
+			g   *GoalCheck
+		}{
+			"no issue reference":   {"", &GoalCheck{Overall: goalMet, Criteria: goalVerdicts(7, goalMet), Counted: 7}},
+			"no answer":            {"HOME-212", nil},
+			"uncounted list":       {"HOME-212", &GoalCheck{Overall: goalMet, Criteria: goalVerdicts(7, goalMet)}},
+			"answer disagrees":     {"HOME-212", &GoalCheck{Overall: goalMet, Criteria: goalVerdicts(6, goalMet), Counted: 7}},
+			"count above findings": {"HOME-212", &GoalCheck{Overall: goalMet, Criteria: goalVerdicts(16, goalUnclear), Counted: 16}},
+		} {
+			if a := run(tc.key, tc.g); len(a.Withdrawn) != 0 {
+				t.Errorf("%s: withdrawn %v", name, ids(a.Withdrawn))
+			}
+		}
+	})
+	t.Run("PR moves issue", func(t *testing.T) {
+		a := run("HOME-213", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}})
+		if len(a.Withdrawn) != 16 || len(a.Blocking) != 0 {
+			t.Fatalf("withdrawn %d blocking %v", len(a.Withdrawn), ids(a.Blocking))
+		}
+		out := Render(a, &Report{}, nil, "")
+		if !strings.Contains((out.Output.Summary + out.Output.Text), "the PR no longer names HOME-212. It now names HOME-213.") {
+			t.Fatalf("comment does not name the issue change:\n%s", (out.Output.Summary + out.Output.Text))
+		}
+	})
+}
+
+func TestIssueCriteriaCount(t *testing.T) {
+	for desc, want := range map[string]int{
+		"**Done when:**\n1. one\n2. two\n   wrapped\n3. three\n\n**Out of scope:** x": 3,
+		"## Done when\n- [ ] a\n- [x] b":                                              2,
+		"Acceptance criteria:\n* a\n* b\n* c":                                         3,
+		"No list here.":                                                               0,
+		"Done when:\n1. a\n3. not the next number":                                    1,
+		"Done when:\n1. a\n- mixed":                                                   0,
+		"Done when:\n1. a\nDone when:\n1. b":                                          0,
+		"Done when:\n   indented first":                                               0,
+		"Done when:\n1. ":                                                             0,
+	} {
+		if got := issueCriteria(&IssueContext{Issue: &IssueEvidence{Key: "HOME-1", Description: desc}}); got != want {
+			t.Errorf("%q: %d criteria, want %d", desc, got, want)
+		}
+	}
+	if got := issueCriteria(&IssueContext{Issue: &IssueEvidence{Key: "HOME-1", Clipped: true, Description: "Done when:\n1. a"}}); got != 0 {
+		t.Errorf("clipped issue counted %d", got)
 	}
 }
