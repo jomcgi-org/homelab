@@ -53,3 +53,17 @@ it("fails at once for an error without a tile", () => {
     expect(failed).toHaveBeenCalledOnce();
   }
 });
+
+it("judges each view on its own tiles after the camera moves", () => {
+  const map = fakeMap();
+  const failed = vi.fn();
+  watchMapHealth(map, ["stars"], failed);
+  map.fire("data", baseTile);
+  map.fire("idle");
+  expect(failed).not.toHaveBeenCalled();
+  // Pan to an uncached area where every base-map tile fails.
+  map.fire("movestart");
+  map.fire("error", tileError);
+  map.fire("idle");
+  expect(failed).toHaveBeenCalledOnce();
+});

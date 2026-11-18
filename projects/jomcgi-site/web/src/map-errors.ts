@@ -2,7 +2,7 @@
 // camera moves, for example the low-zoom tiles it drops when fitBounds jumps
 // to Scotland. Such an event carries the tile, and the map keeps working. The
 // map has failed when an error carries no tile (the style, a TileJSON source,
-// WebGL), or when it settles after tile errors without one base-map tile.
+// WebGL), or when a view settles after tile errors without one base-map tile.
 interface MapEvents {
   on(type: string, listener: (event: any) => void): unknown;
 }
@@ -12,8 +12,14 @@ export function watchMapHealth(
   overlays: readonly string[],
   onFailure: () => void,
 ): void {
+  // Count per view: tiles loaded for an earlier view say nothing about the
+  // area the camera has moved to.
   let loadedTiles = 0;
   let failedTiles = 0;
+  map.on("movestart", () => {
+    loadedTiles = 0;
+    failedTiles = 0;
+  });
   map.on("error", (event) => {
     if (!event?.tile) onFailure();
     else failedTiles++;
