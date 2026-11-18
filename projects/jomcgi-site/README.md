@@ -256,7 +256,7 @@ CI publishes the dev build after merge. The landing owner must verify the deploy
 before production promotion. Local build and browser results do not establish
 deployed verification. Removing `jomcgi.dev/docs*` rolls docs back to the hub.
 
-### HOME-206 acceptance checks
+## HOME-206 acceptance checks
 
 `:prerendered_test` checks the emitted home, crawler files and copied assets
 through [home-built.mjs](web/home-built.mjs). Seven exact edge routes serve

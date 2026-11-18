@@ -8,18 +8,6 @@ import { neutralTheme } from "@astryxdesign/theme-neutral/built";
 import { mount } from "./mount";
 import { PAGES } from "./pages";
 
-async function expectAccessible(container: HTMLElement) {
-  const results = await axe.run(container, {
-    rules: { "color-contrast": { enabled: false } },
-  });
-  expect(
-    results.violations.map((violation) => ({
-      id: violation.id,
-      nodes: violation.nodes.map((node) => node.target.join(" ")),
-    })),
-  ).toEqual([]);
-}
-
 // Entry scripts call mount(); recording the call shows which page each mounts.
 vi.mock("./mount", () => ({ mount: vi.fn() }));
 
@@ -124,7 +112,7 @@ describe("per-page code", () => {
 
 // Structural accessibility rules on every registered page. happy-dom has no
 // layout, so colour contrast is left to contrast.test.tsx and the browser
-// checks in home-browser.mjs (including interactive home states).
+// checks in browser.test.mjs and home-browser.mjs.
 describe.each(Object.entries(PAGES))("%s", (_entry, Page) => {
   it("has no axe violations", async () => {
     const { container } = render(
@@ -132,6 +120,14 @@ describe.each(Object.entries(PAGES))("%s", (_entry, Page) => {
         <Page />
       </Theme>,
     );
-    await expectAccessible(container);
+    const results = await axe.run(container, {
+      rules: { "color-contrast": { enabled: false } },
+    });
+    expect(
+      results.violations.map((violation) => ({
+        id: violation.id,
+        nodes: violation.nodes.map((node) => node.target.join(" ")),
+      })),
+    ).toEqual([]);
   }, 60_000);
 });

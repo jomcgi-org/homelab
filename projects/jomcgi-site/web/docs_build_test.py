@@ -56,10 +56,14 @@ def test_published_pages_are_exactly_the_filtered_manifest():
         assert f'<h1 id="doc-h">{html.escape(entry["title"], quote=False)}</h1>' in page
         assert '<div id="doc-body" class="docs-prose">' in page
         assert "<!--ssr-->" not in page
-    assert not list(dist.rglob("*manifest*"))
+    assert {str(path.relative_to(dist)) for path in dist.rglob("*manifest*")} == {
+        "manifest.webmanifest",
+        ".vite/manifest.json",
+    }
     # The Scotland catalog is an intentional public artifact from HOME-207.
     assert {str(path.relative_to(dist)) for path in dist.rglob("*.json")} == {
-        "scotland/marketplace.json"
+        "scotland/marketplace.json",
+        ".vite/manifest.json",
     }
     assert not (dist / "docs/_src").exists()
 
