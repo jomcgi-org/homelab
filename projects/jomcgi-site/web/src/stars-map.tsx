@@ -9,7 +9,7 @@ import {
   type ExpressionSpecification,
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
+import { MAP_WORKER_URL } from "./map-worker";
 import { cells, type MapData } from "./stars-geometry";
 import type { Site } from "./stars-model";
 import { watchMapHealth } from "./map-errors";
@@ -36,7 +36,7 @@ export default function StarsMap(
     setFailed(false);
     fitted.current = false;
     try {
-      setWorkerUrl(workerUrl);
+      setWorkerUrl(MAP_WORKER_URL);
       instance = new LibreMap({
         container,
         center: [-4.2, 57],

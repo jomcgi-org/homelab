@@ -1,5 +1,6 @@
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import * as maplibregl from "maplibre-gl";
 import { HikesMap } from "./map";
 import { FIXTURE_WALK } from "./fixtures";
 
@@ -178,5 +179,12 @@ it("reports an error without a tile at once", async () => {
     fake.handlers.get("error")!({ error: new Error("style") }),
   );
   expect(status()).not.toBeNull();
+  view.unmount();
+});
+
+it("loads the MapLibre worker from a URL that skips the old cached response", async () => {
+  const view = render(<HikesMap {...mapProps()} />);
+  await act(async () => fake.handlers.get("load")!());
+  expect(maplibregl.setWorkerUrl).toHaveBeenCalledWith("/assets/worker.js?csp=2");
   view.unmount();
 });

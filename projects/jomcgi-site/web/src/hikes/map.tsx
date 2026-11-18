@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import type { GeoJSONSource } from "maplibre-gl";
-import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
+import { MAP_WORKER_URL } from "../map-worker";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { Walk } from "./data";
 import { effort, effortCeilings } from "./filters";
@@ -31,7 +31,7 @@ export function HikesMap(props: HikesMapProps) {
     let previousPoints = "";
     let previousSelection = "";
     try {
-      maplibregl.setWorkerUrl(workerUrl);
+      maplibregl.setWorkerUrl(MAP_WORKER_URL);
       const instance = new maplibregl.Map({
         container: host.current!,
         center: [-4.2, 57],
