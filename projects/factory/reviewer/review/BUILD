@@ -26,6 +26,7 @@ go_library(
         "//projects/factory/connector/github",
         "//projects/factory/connector/itsaplan",
         "//projects/factory/connector/kagent",
+        "//projects/factory/reviewer/config",
         "//projects/factory/reviewer/metrics",
     ],
 )

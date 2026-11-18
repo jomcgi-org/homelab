@@ -216,6 +216,7 @@ broker:
     itemPath: vaults/k8s-homelab/items/factory-github-app
   # Settings passed to the broker's config file over its defaults
   # (projects/factory/broker/config).
+  # Optional codex overrides include maxConcurrentRequestsPerActor and allowedModels.
   config: {}
   resources:
     requests:

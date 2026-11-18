@@ -1708,6 +1708,11 @@ reuse state, even after a prolonged persistence failure.
   the login and quota codes as credential and quota failures.
 - **Limits.** Request bodies up to 32 MiB read within 2 minutes, at most 64
   requests in flight, and any upstream response silent for 5 minutes is cut.
+  Each verified actor subject can hold up to eight slots by default
+  (`codex.maxConcurrentRequestsPerActor`). Excess requests receive 429
+  `relay_actor_busy` with `Retry-After: 5`. When `codex.allowedModels` is
+  non-empty, both response endpoints require a listed JSON model or return
+  400 `model_not_allowed`. An empty list permits all models.
   The body watchdog starts at response headers for each attempt. Initial
   and retried 401 drains and 429 inspection each read at most 64 KiB within
   `StreamIdleTimeout` (5 minutes by default), even if bytes keep arriving.
@@ -1899,674 +1904,73 @@ page removes its access. The edge's sign-in and route stay unchanged.
 
 ## Merge authority
 
-Decided with Joe on 2026-11-14 as the target state. Writing code, reviewing
-it and merging it are separate identities, and GitHub enforces the review
-rather than the factory's own code.
+The factory author App writes the change, the reviewer App reports a verdict
+on the commit, the connector enqueues the factory PR, and GitHub merges it.
+The rules for authorizing delivery and interpreting a review live in
+[AGENTS.md](../../AGENTS.md#merge-authority) and [REVIEW.md](../../REVIEW.md).
 
-**Status (2026-11-14): the reviewer is live (#7937) on gpt-6.1-terra
-(#7938) and enqueues nothing (#7940). The connector waits for its check
-(`reviewerCheck`, after #7940's connector deployed). Ruleset 9180009 then
-requires `factory review` from App 5758326 beside `pr-checks`
-(Joe's [decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6882698416)).
-Open work: #7920 (connector authorship check), #7921 (third-party Apps),
-#7922 (in-cluster CI and registry) and #7923 (fork PRs and public
-previews).
+```mermaid
+flowchart LR
+  author["Author App (repository write)"] -->|push branch and open PR| pr["PR head and untrusted diff"]
+  pr -->|read only| reviewer["Reviewer App (checks write)"]
+  reviewer -->|factory review| checks["GitHub required checks"]
+  ci["CI"] -->|pr-checks| checks
+  checks -->|head passes| connector["Connector (author App credential)"]
+  connector -->|enqueue factory PR| queue["GitHub merge queue"]
+  queue -->|test merge group| checks
+  checks -->|group passes| queue
+  queue -->|merge| main["main"]
+```
 
-- **Author.** `jomcgi-factory` pushes branches and opens PRs: contents and
-  pull requests write, checks and statuses read, and merge queue write for
-  now. The connector enqueues the factory's PRs with it, because the
-  connector sees their stops; GitHub's required `factory review` check gates
-  them as it gates every PR. The agent's token is contents write on its own
-  repository only. Neither can post the review check.
-- **Reviewer.** A separate App, `jomcgi-factory-review`, with checks write,
-  merge queues write, and contents, pull requests and commit statuses read.
-  `projects/factory/reviewer` posts the `factory review` check run on every
-  head of every open PR into the base branch, whatever its author, and on
-  each merge group commit (success when the queued PR's head passed, since
-  GitHub checks the group again; a passing group whose PR's head stops
-  passing, say for a hold label, gets a failing check on the next poll). It enqueues nothing: the deploy values set
-  `enqueueAuthors: []`. Its first live enqueue, of #7707 on 2026-11-14, got
-  `FORBIDDEN: Resource not accessible by integration`. Its token has merge
-  queues write, but GitHub evidently also wants contents or pull requests
-  write, as the author App holds. Either would let the reviewer push code
-  or approve, so Joe chose the required check as the gate instead. It never
-  posts a PR approval, so it can never count
-  toward an approval or code-owner rule. With `reviewer.commentAuthor` set
-  to its bot login, it also keeps one comment on each PR it reviews, created
-  with the first verdict and edited in place on every head, approval and
-  hold: the verdict, the human gate's reasons, the agent's summary, findings
-  by severity and what the review cleared. The comment mirrors the
-  assessment behind the check and gates nothing. It is written with the
-  broker's comment proxy, which holds the comment token (`issues: write`
-  and `pull_requests: write`), so an App without them loses only the
-  comment; a failed write is logged and counted
-  (`factory_reviewer_comment_writes_total`) and retried on the next poll.
-  It edits only a comment its bot
-  login wrote, and its own comment never reaches the agent.
-  Check runs hold review state; the private audit volume keeps goal replies. The
-  in-progress run names its attempt and kagent task, and a completed one
-  keeps its blocking findings, human gate and kagent session in a hidden
-  block, at most 48,000 characters, for the next head. A compressed comment
-  snapshot shares the check text's 60,000-character budget; oversized
-  snapshots link to the full findings in the check. Gate changes carry the
-  snapshot's findings even if the earlier comment is still queued.
-  After a restart, completed checks replay their snapshots through the
-  comment worker after gate reconciliation. This recovers writes lost when
-  a rollout kills a long comment lookup. Duplicate ready PRs
-  stop model work; duplicate or foreign checks require a fresh review and human approval.
-  Holds survive new commits; complete label history recovers failed writes.
-- **Restarts.** A restart loses only the shared-head observations whose
-  check writes all failed: GitHub keeps label history, and every other hold
-  is in a check run's state. The first poll to see a PR opened before
-  startup (by GitHub's latest all-state PR creation time, so reopened PRs
-  count) looks for that loss. Every head in the PR's timeline is matched
-  against the open PRs into the base and every PR updated since the PR
-  opened, in any state and base; GitHub's commit lookup adds the open PRs
-  that contain its current head. A match holds the PR as a shared head. A
-  truncated timeline, an earlier review the search cannot find, or a
-  listing past its bound holds it as an unconfirmed context until merge. A
-  failed read gives the PR no pass, enqueue or merge group authorization,
-  and the next poll reads again. Newer PRs skip recovery unless their check
-  is foreign. A hold an earlier process placed for its restart alone clears
-  once recovery confirms the context; a hold with any other reason stays as
-  it is. Recovery holds record up to 64 review IDs; a new ID or verified
-  nonce clears them despite clock skew. Nonces also resolve ambiguous
-  timestamps and overflow; author, editor, state, commit and PR must match.
-  Revoking a pass requires a GitHub write.
+The connector opens the PR as `jomcgi-factory[bot]` on the issue branch
+in the bound repository. The independent reviewer polls every open PR
+targeting `main`. It reads the review rules from `main` and treats the
+PR as untrusted input. The review agent reports findings. The service
+computes the verdict and publishes it as `jomcgi-factory-review`.
+The PR comment explains the check. Ruleset 9180009 requires the check
+from reviewer App 5758326 alongside `pr-checks`.
+[Required-check decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6882698416)
 
-  **Why.** Holding every existing PR on each restart made each reviewer
-  deploy into work for Joe: after about eight deploys on 2026-11-15, 18 of
-  the 23 open factory PRs carried the hold and 5 waited on it alone
-  ([HOME-107](https://factory-plan.jomcgi.dev/factory/issue/HOME-107)). The
-  hold guarded a loss that GitHub's PR records can show. A duplicate leaves
-  no record to match when it moved off one of the PR's heads, other than by
-  adding commits to the current head and staying open, before any hold
-  write succeeded and the reviewer restarted.
-- **Chart wiring.** `reviewer.enabled` defaults to false. Enabling it creates
-  one `factory-reviewer` Deployment in `broker.namespace`, with `Recreate`
-  and a kept ServiceAccount. Projected tokens use audiences `factory-broker`
-  and `kagent-invocation`; the pod mounts no App key. The chart pins the
-  reviewer image and supplies the namespace's GHCR pull secret. Its config
-  derives repositories and agents from each binding, uses App ID 5758326,
-  and defaults `enqueueAuthors` and `humanApprovers` to `[jomcgi]`.
-  Other policy and timing defaults come from the service.
-  Each binding gets `<name>-reviewer` using `agents.reviewer` (Codex,
-  broker relay; the chart defaults to `gpt-6-astra` and the deploy values
-  run `gpt-6.2-sol`) in
-  `reviewer.bindings.<name>.namespace`, default `<coding namespace>-review`.
-  The shared binding template creates its ModelConfig with an actor JWT,
-  Harness, WorkerPool, git EgressPolicy and credential-provider RoleBinding.
-  The namespace cannot overlap any coding or review binding: both Apps
-  write `github-git`. The broker admits the review atespaces to its relay,
-  mounts the separate reviewer App's key files from 1Password and writes
-  their read-only git tokens. Network policy permits the reviewer service
-  only to the broker's admin port (8081), kagent A2A (8083), itsaplan's API
-  (3000 when enabled) and `api.github.com:443`, and admits it at each peer.
-  The enable PR follows CI's chart write-back, adding review namespaces to
-  `kagent.rbac.namespaces`. Substrate's policy values include
-  `factory-r-homelab-review`; regenerate its upstream manifests before
-  enabling. The connector's `reviewerCheck` followed the chart that carries
-  #7940's connector, and the required-check ruleset follows that.
-- **Review contract.** The agent reviews the exact head against the root
-  `REVIEW.md` and every `REVIEW.md` on both sides of the diff, with their
-  `Includes:` resolved, and `AGENTS.md` and `docs/agents/reference.md`, all
-  read from main and sent in the prompt. It treats its checkout of the head
-  as data and runs nothing from it. It returns findings only (`summary`,
-  `findings[{id, severity, path, line, title, detail, defer, earlier, cause}]`,
-  `previous[{id, status, note}]`, IDs `<path>:<rule>`), and the service
-  decides: success only when no critical, high or medium finding blocks.
-  Optional `semgrep {appId, checkName, wait}` adds GitHub-only scan evidence;
-  unset is off. The service holds no Semgrep token and calls no Semgrep API.
-  It matches `semgrep-cloud-platform/scan` by name, App ID 4746654 and exact
-  head. Before dispatch it waits for completion, bounded by `wait` (10m).
-  Success and failure both prove a scan. Missing, pending, cancelled,
-  skipped, errored or unreadable evidence adds the service-owned medium
-  `semgrep:unverified`, which the agent cannot waive.
-  The service reads conversation and inline comments from
-  `semgrep-code-jomcgi-org[bot]`, checking App ID wherever GitHub reports it.
-  Other authors never enter this evidence, including comments that quote Semgrep.
-  A separate `writeUntrusted` block of kind `semgrep` carries at most 50
-  comments of 4,000 characters and the omitted count. It includes path, line,
-  original commit and GitHub's explicit outdated flag where available.
-  Check output shares this block and has a 4,000-character bound.
-  Incomplete listings and omitted or truncated comments also fail closed.
-  The agent accounts for each finding against the current head: fixed,
-  false positive with code evidence, or a normal finding at its review severity.
-  Evidence digests bind tasks and saved reviews. Changed evidence, including
-  a late completed scan on the same head, starts another review.
-  An agent finding that collides with `semgrep:unverified` keeps its ID and
-  severity. Service availability state stays separate. Enablement follows CI's chart
-  write-back in a separate PR.
-  An attempt without a usable report (unparseable output, an unknown
-  severity, a failed task other than quota exhaustion, a rejected send or
-  a timeout) is retried on the same head after `retryBackoff` (5m); the
-  third such attempt fails the check. A later head's prompt carries the
-  previous blocking and `human-gate` findings and the interdiff; each comes
-  back `fixed`,
-  `justified` (a medium with a note, or any severity with a note starting
-  `withdrawn`) or `open`, and one left out stays open. One reported again
-  keeps the higher of its two severities unless it is fixed or withdrawn,
-  except a goal finding reported again as `after_rollout` (see the goal
-  check below). A
-  `human-gate` finding not fixed or withdrawn holds the later head too.
-  The check's State also keeps up to 20 findings earlier reviews cleared
-  (fixed, justified or withdrawn, with notes). The prompt lets the agent
-  raise a fixed one again whenever it is present (a regression), and a
-  justified or withdrawn one when a change since the previous head
-  affects it or when it is present at high or critical severity. It asks
-  the agent to check each again when the interdiff is unusable. On a later
-  head each new or reopened finding carries a `cause`: the changed file, and
-  how the change introduced or exposed it. When the head descends from the
-  previous one and GitHub lists the whole interdiff, the service reads each
-  file's hunks from its patch (a file without a patch counts as changed
-  throughout). It lowers a new medium finding to a deferred low one when
-  the finding's line is outside every changed hunk and its cause names no
-  changed file, or when the agent marks it `earlier`
-  ([HOME-107](https://factory-plan.jomcgi.dev/factory/issue/HOME-107),
-  [HOME-250](https://factory-plan.jomcgi.dev/factory/issue/HOME-250)). A
-  caller broken by a changed function keeps its severity through its cause.
-  After a rebase, the service compares the PR's own diff against the base
-  before and after, and counts as changed only the files
-  whose diff changed; any stated cause counts, since the base moved too.
-  The check shows each cause, marks a new high or critical finding without
-  one as an earlier review's miss, and names a reopened finding's earlier
-  status. A finding whose ID an earlier review recorded as fixed keeps its
-  severity (a regression). So does a high or critical finding (REVIEW.md
-  lets those block on earlier-reviewed lines), a finding with no path or no
-  line in a changed file, and a finding under any rule but the root rules
-  `correctness`, `security`, `boundary`, `reachability`, `validation`,
-  `rollout` and `goal`: scoped rules set their own severity, and the
-  review-process rules are not about earlier-reviewed code. Each blocking
-  finding is a defect, missing evidence (`unverified`, `unreviewed`, an
-  `unclear` goal verdict, unverified issue evidence) or a hold (the human
-  gate, `semgrep:unverified`, an unread issue, an unavailable goal check),
-  and the check says what each kind asks for. A reattached
-  review waits while it cannot read the interdiff. When GitHub no longer has
-  the earlier head, it reviews the whole change again in a new attempt.
-  **Why.** Each head gets a fresh kagent session that read the whole diff
-  again and found new problems in code the earlier review had covered; 18
-  PRs used all three review rounds with blocking findings left.
-  When the earlier review cannot be found within the search bounds, the
-  prompt and the check say so and the head is reviewed in full. A diff over
-  budget (2500 lines or 150 files, generated files excluded by their new
-  path) fails with "split this PR" and sends no task. Its summary ends with
-  the service's `split-only` marker, so the connector counts that round
-  against `maxSplitRounds`; the conclusion is unchanged. The prompt carries the
-  PR's commit messages in a delimited `commits` block: those since the earlier
-  reviewed head while it is still in the PR's history, else all of them, the
-  newest 20 within 16,000 characters and 4,000 per message, read from
-  `GET /pulls/{n}/commits` at the head. The agent weighs a "Review response"
-  in them as the author's claim and checks the evidence it cites before it
-  counts a finding justified or withdrawn. A failed read is named in the
-  prompt and the review goes ahead. The prompt also carries the
-  PR's text and file names from any author, quoted inside delimited
-  untrusted blocks (`REVIEW.md` "What the agent sees"). Each delimiter names
-  the head and a 128-bit digest of its block's text: holding its own closer
-  would take a SHA-256 preimage search, so even a look-alike delimiter the
-  sanitizer misses cannot close a block in practice.
-  The reviewer's agent has no GitHub API access, so the service reads the
-  evidence a description cites: up to eight `#N` or same-repository PR links,
-  in order. For each pull request it reports only fixed classes: state,
-  merge time and commit, whether the timeline shows a merge queue entry and
-  who last added it, who last enabled auto-merge (the timeline event, which
-  outlives the merge), logins that match GitHub's login syntax (others become
-  `(unrecognized login)`), the head commit's author account and signature
-  state, and the review check and the binding's required checks on the head,
-  each matched by name and creating App or status creator. Titles, bodies
-  and branch names are never read. The list sits in its own delimited
-  `cited` block. A number that names an issue or nothing reads as "not a
-  pull request" (`pullRequest(number:)` needs no issues permission), and a
-  failed read marks that PR unread instead of holding the review.
-- **Issue evidence (HOME-58).** The service reads issue and decision
-  evidence only for PRs by `jomcgi-factory[bot]` or a `humanApprovers`
-  login; any other PR gets none. For the
-  factory App it resolves the connector's branch; PR text cannot override
-  it. Other PRs use the first `Refs HOME-N` in the body, then commit
-  messages in PR order, read once per head.
-  The code-review prompt gets no issue or decision text. It reviews the
-  diff, title and description as on a PR with no issue, and the
-  description stands in for the goal.
-  v1.10.0 exposes creators through the creation activity's user ID, matched
-  to the project's account metadata. Only member accounts in
-  `trustedItsaplanAuthors` (default `joe`, `joesessions`) carry authority;
-  `factoryadmin`, agent accounts and claims in text do not. Creation
-  events contain no original text, and issue edits are not restricted to
-  the creator. Current title and description carry authority only when
-  both match their latest immutable text-change snapshots, also written by
-  trusted members. History reads stop at ten pages; absent or mismatched
-  snapshots leave the text untrusted. This includes newly created issues
-  with no text-change snapshots: authority then requires an unedited
-  trusted decision comment.
-  Comments must have an explicit null `editedAt`: edits retain the original
-  author and do not identify the editor. Workflow status remains untrusted
-  metadata.
-  These defaults implement
-  [HOME-58](https://factory-plan.jomcgi.dev/factory/issue/HOME-58); Joe's
-  sessions account is provisioned by HOME-59 as `joesessions` (itsaplan's
-  human username validator excludes hyphens).
-  Per evidence snapshot the service fetches one issue body (16,000 bytes,
-  title 300) and at most ten references from both sides of the diff. Linked
-  comments are cut to 4,000 bytes; other issue links use untrusted search
-  metadata without importing another description. Bare issue authorship
-  never proves an unseen decision. Comment reads search at most
-  ten feed pages because upstream has no individual comment GET. The whole
-  evidence read has a 30-second deadline. A
-  failure that no read can fix (an issue over its text bound, a reference
-  to no issue, a diff past the link or patch bound) is a medium `unverified`
-  finding in the completed review, which the author or Joe resolves. Its
-  text is the service's own, with the issue key at most. A read
-  error holds the check with the failed reads named and the gate-only
-  marker, so the connector starts no revision round for it. No failed read
-  supplies a pass. The agent receives no itsaplan key.
-  Running and completed checks record the evidence digest, an HMAC-SHA256
-  under a key derived (HKDF) from the reviewer's itsaplan key. The check is
-  public, so an unkeyed hash would confirm a guess at private text. The service
-  re-reads evidence before accepting a report and on every completed-check
-  poll before enqueue or merge-group authorization. Changes or read failures
-  revoke the old review, retain its findings and human holds, and schedule a
-  fresh review of the same head once reads succeed. Waiting reads release
-  review slots and retry on the next poll without dispatching model work or
-  requiring a new push. The digest and pending state survive restarts and
-  human-gate reconciliation; a legacy pass without a digest needs review.
-  A merge group's pass lasts until the first poll after an evidence change
-  (30 seconds by default). GitHub can merge the group in that gap, as it
-  can after a hold label lands on the PR. Joe accepted this window.
-  **Why.** The `factory review` check is public and itsaplan is private.
-  Joe chose trusted authors on 2026-11-16
-  ([decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6930546469),
-  [record](https://factory-plan.jomcgi.dev/factory/issue/HOME-58#comment-1047)).
-  He then chose that no model output that has seen private issue text may
-  reach public output
-  ([decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6931275436)):
-  the code review sees none, and the goal check below is the evidence's
-  one consumer.
-- **Goal check (HOME-58).** A second model call checks the PR against its
-  issue, apart from the code review. It runs after the code review gives a
-  usable report, and only when a trusted author's PR names an issue that
-  resolves with its full text. Its task opens a fresh session of the
-  review agent with message ID `<check external ID>/goal/<prompt HMAC>`,
-  so a restart finds the same task. No review resumes that session. The
-  service deletes it after saving the full reply to the private audit volume.
-  The prompt holds the issue
-  and its status, the linked decisions with their provenance, and the file
-  list and patches (at most 60,000 bytes). It holds no PR title,
-  description or comment, so only the head and the evidence digest decide
-  the answer. Trusted text is quoted. Other text sits in delimited
-  untrusted blocks, with each of its lines quoted. The answer is one JSON
-  block: a verdict for each acceptance criterion by number, and an overall
-  verdict for the stated problem. The verdicts are `met`, `not_met`,
-  `after_rollout` (only a rollout or live use can show it) and `unclear`.
-  When the issue plans later enablement, implemented criteria behind that
-  switch are `after_rollout`. The overall verdict follows the same rule.
-  Missing implementation is still `not_met`. Only the issue or a trusted
-  decision establishes staging; a claim in the diff cannot defer a criterion.
-  Any other field or value, no overall verdict, numbers other than 1 to N
-  once each, more than 50 criteria or a second value voids the answer. The
-  service uses only those fields for findings, and posts only its own text:
+For issue-backed reviews, the service verifies the provenance of decision
+evidence. Only the goal assessment receives private issue text. Its public
+result uses fixed wording. The connector owns feedback to the delivery
+owner on the private issue.
+[Evidence decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6930546469),
+[issue record](https://factory-plan.jomcgi.dev/factory/issue/HOME-58#comment-1047),
+[public output decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6931275436),
+[private feedback decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-251#comment-2324)
 
-  | Answer                      | Finding ID                | Title                                         | Severity |
-  | --------------------------- | ------------------------- | --------------------------------------------- | -------- |
-  | overall `not_met`           | `HOME-N:goal`             | HOME-N: stated problem not addressed          | high     |
-  | overall `unclear`           | `HOME-N:goal`             | HOME-N: stated problem unverified             | medium   |
-  | overall `after_rollout`     | `HOME-N:goal`             | HOME-N: stated problem to check after rollout | low      |
-  | criterion K `not_met`       | `HOME-N:goal:criterion-K` | HOME-N criterion K: not met                   | medium   |
-  | criterion K `unclear`       | `HOME-N:goal:criterion-K` | HOME-N criterion K: unverified                | medium   |
-  | criterion K `after_rollout` | `HOME-N:goal:criterion-K` | HOME-N criterion K: to check after rollout    | low      |
-  | void, failed or timed out   | `HOME-N:goal:unavailable` | HOME-N: goal check unavailable                | medium   |
+The reviewer stores private goal replies on the `factory-reviewer-goal-audit`
+PVC for 14 days from first receipt. After rollback, keep the PVC, the hourly
+cleanup CronJob and its NetworkPolicy. To retire them, wait until the last
+audit write is at least 14 days old, then confirm that a cleanup run has
+completed successfully before deleting all three resources.
 
-  The delivery owner checks each `after_rollout` verdict after rollout. The
-  goal check owns these IDs: the service drops the code review's findings
-  and accounts under them. An earlier goal finding stays open at its
-  earlier severity until a valid answer on the same issue resolves it. One
-  reported again as `after_rollout` takes that verdict's low severity: like
-  `met`, it says the diff makes the change it needs, and the delivery owner
-  checks the rest after rollout (HOME-179). Other verdicts keep the earlier
-  severity, so an `unclear` answer cannot lower a high `not_met` to a medium
-  that a note can justify. The agent cannot mark a finding as a goal
-  verdict, so its own findings keep the rule.
-  `met` resolves its criterion or the stated problem, and any valid answer
-  resolves `unavailable`. An answer that omits criterion K, or a goal check
-  of another issue that the PR names now, leaves the finding open. Only the
-  issue text or a linked trusted decision moves a criterion to another
-  issue. HOME-157 adds service-verified follow-ups, removed criteria and
-  issue switches. If the code review has no blockers apart from the human
-  gate, any `not_met` gets one confirmation call (HOME-158). That call opens
-  a fresh session with the same evidence and a request to check planned
-  staging. It receives neither the first reply nor the code review's prose.
-  It must judge every criterion from the initial answer; an omitted criterion
-  makes the confirmation unavailable.
-  A valid confirmation supplies the verdict only for the initial `not_met`
-  ones, including a confirmed `not_met`; it cannot turn a `met` into a
-  `not_met`.
-  A failed confirmation produces the medium `unavailable` finding; it cannot
-  publish the first answer's high. Existing blockers and human holds still apply.
-  The check's State caches the final answer for its head and evidence digest.
-  A fresh review of that evidence reuses it; unavailable answers are not cached.
-  A later head on the same evidence digest starts from the previous head's
-  answer: the prompt carries its verdicts, its private reply from the audit
-  volume (quoted, at most 8,000 bytes) and the files changed since, and asks
-  the model to keep each verdict unless a change affects it. An `unclear`
-  answer keeps the previous head's `met` or `after_rollout`, since it shows
-  no failure; a `not_met` stands. The prompt says that CI shows whether a
-  test passes: a criterion that asks for a test is `met` when the diff adds
-  it with a build target CI runs.
+The connector sends actionable findings to the coder for revision. When
+only human approval is outstanding, it waits. The reviewer checks Joe's
+approval against the current head and applies the authorship waiver as
+specified in [REVIEW.md](../../REVIEW.md#joe-decides).
+[Human gate decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6878730211),
+[gate scope](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6884458635),
+[authorship decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6891640540),
+[waiver scope](https://github.com/jomcgi-org/homelab/issues/8049)
 
-  ```mermaid
-  flowchart LR
-    G[Goal reply] --> A[Private audit volume]
-    A --> P[Parse numbers and verdicts]
-    P -->|initial not_met and no code blockers| C[Fresh confirmation session]
-    C --> A
-    P -->|final verdict| S[Service wording]
-    S --> H[Public GitHub check and comment]
-    R[Kept hourly retention job] -->|remove expired records| A
-  ```
+The connector checks for holds before enqueue. Other authors can request
+auto-merge on their own PRs. The reviewer checks the queued head again
+when reporting on the merge group. If the head loses its passing verdict,
+the reviewer fails the group on its next poll and the queue drops it.
+The organization-admin bypass covers Joe's emergency access and the chart
+version write-back.
 
-  **Private audit (HOME-158).** PVC `factory-reviewer-goal-audit` provides
-  1 GiB on the default storage class. Only the reviewer and its cleanup job mount it.
-  JSON files under `/var/lib/factory-reviewer/goal-audit` keep each full final
-  reply, including its rationale and malformed answers. Each record names
-  the repository, PR, head, issue key, evidence HMAC, message, task, session,
-  task state, receipt time and phase (`initial` or `confirmation`).
-  The filename hashes the message and task IDs. Retries keep the first record
-  and timestamp; a replacement task gets its own record.
-  The service syncs the file and directory before deleting the session or
-  accepting the verdict. A failed audit write leaves the session intact and
-  gives a medium `unavailable` finding. Storage errors log only fixed text.
-  The directory has mode `0700`; files have mode `0600`.
+## Direction
 
-  Retention is 14 days from first receipt. The service prunes at startup and
-  hourly. CronJob `factory-reviewer-goal-audit` also prunes hourly with the
-  packaged reviewer image and `--prune-goal-audit`. That mode needs only the
-  volume; it reads no service configuration or credentials and makes no network calls.
-  Its kept NetworkPolicy admits no ingress or egress. The job prefers the
-  reviewer's node for RWO disks, but can run without a reviewer Pod.
-  Expired temporary writes are removed; fresh writes are left for the active writer.
-  Concurrent pruners tolerate files that the other process already removed.
-
-  The PVC, CronJob and its NetworkPolicy have `Prune=false,Delete=false`
-  and Helm's `keep` annotation. A rollback to a chart without audit support
-  preserves unexpired replies and the independent retention job with its pinned image.
-  Deletion can lag expiry by one hour while the cluster runs. After downtime,
-  the next job prunes expired files; the reviewer also prunes before starting.
-  Keep these resources after rollback. Decommission them only after the last
-  audit write is 14 days old and a cleanup job completes successfully.
-  The chart configures no backup or public read endpoint.
-
-  **Goal reasons for the delivery owner (HOME-251).** With
-  `reviewer.goalReasons.enabled` (off by default), the reviewer serves
-  `GET /v1/goal-reasons?repository=&pullRequest=&head=` on its own port
-  (8091), apart from `/metrics`. It answers with the newest reply for that
-  head, without its JSON answer and clipped to 4,000 bytes, with the issue
-  key, evidence digest and phase, or 404. Its Service exposes only that port,
-  and the reviewer's CiliumNetworkPolicy admits only the connector to it. The
-  chart refuses to render it without the connector, itsaplan and Cilium
-  policies. When a review round acts on the reviewer App's check with a goal
-  finding of the work item's issue, the connector checks the writer epoch,
-  records the read in `delivery_read`, and reads that head's reasons. Reasons
-  for another issue, a 404 or a failed read leave them out, and the round
-  starts on the check's fixed text. Otherwise the round prompt quotes them,
-  line by line, in an `untrusted_goal_reasons` block, and the outbox posts
-  them once per head on the issue as the connector's agent account. Both
-  copies replace `@` with `＠`, so no text mentions a member or starts an
-  agent, and drop any tag that could close the block. No reason reaches a
-  GitHub check, PR comment or log.
-  **Why.** Fixed public wording left coders guessing which part of a
-  criterion failed. Joe chose the issue as the record and the connector as
-  the only writer
-  ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-251#comment-2324)):
-  itsaplan 1.10.0 gates comments on `work_items` edit, so a reviewer write
-  token would also let it edit and delegate issues.
-
-  Operators with private Pod access can find a PR's records with:
-
-  ```sh
-  kubectl -n factory exec deploy/factory-reviewer -- sh -c \
-    'grep -l "\"pull_request\":8122," /var/lib/factory-reviewer/goal-audit/*.json'
-  ```
-
-  Read the matching files in a private operator console. Never copy replies
-  to GitHub, service logs or public artifacts. Review agents receive no mount.
-  **Why.** Joe chose structured verdicts on 2026-11-16
-  ([decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6931275436)): fixed wording from enum values cannot carry
-  issue text, whatever the model writes. HOME-158 adds a private audit after
-  the staged Semgrep implementation in #8122 received a false `not_met`.
-
-- **Human gate.** Joe decided the gate on 2026-11-14 (#7817,
-  [decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6878730211))
-  and narrowed it the same day to what could weaken the gate itself
-  ([decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6884458635)):
-  under the first scope almost every factory PR needed his bypass, which
-  skips CI and the review. A PR touching `REVIEW.md`, `**/REVIEW.md`,
-  `.github/CODEOWNERS`, `projects/factory/reviewer/config/**`, the
-  reviewer's `review/report.go`, `review/gate.go`, `review/rules.go` or
-  `review/issues.go`, or
-  `projects/factory/broker/config/**`, or labelled `human` or
-  `needs-human`, gets a
-  `human-gate` high finding from the service; the agent reports the rest of
-  `REVIEW.md` "Joe decides" under the same rule, matched by any rule segment
-  of the ID that starts `human-gate`, at any severity. Factory-authored PRs
-  require `jomcgi` to approve that exact head. Joe's
-  [authorship decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6891640540),
-  recorded by `jomcgi` on 2026-11-15 and scoped in
-  [#8049](https://github.com/jomcgi-org/homelab/issues/8049),
-  also permits a PR from a `humanApprovers` account with its head in the base
-  repository, when every push since the head ref's latest creation is by
-  those accounts and the newest push matches the head. The reviewer reads
-  `/repos/{owner}/{repo}/activity?ref=refs/heads/<branch>` on every poll,
-  requires complete history through creation within 100 events, and grants
-  no waiver on a read error or SHA mismatch. It names this approval by
-  authorship in the check output and never stores it as an approval.
-  Git commit authors such as `ci-format-bot` do not identify push actors.
-  Renovate is excluded by `renovate/` head branches or any PR commit with
-  its git author email, read from base `renovate.json` `gitAuthor` when set;
-  `renovate@whitesourcesoftware.com` and the maintenance workflow's
-  `renovate[bot]@users.noreply.github.com` are always excluded. A separate
-  non-admin Renovate identity remains follow-up work. The waiver checks
-  GitHub account provenance, which Joe's decision also accepted for other
-  traffic on his account. GitHub activity carries no evidence of session
-  supervision. His recorded condition was "agents can automerge if I ask
-  them to". Sessions Joe guides land gated changes only when he asked in
-  that session. Hold labels, shared-head, foreign-check and restart-recovery
-  holds still require an
-  APPROVED review. Other findings still block. A hold is logged once as `human gate`
-  and marked so the connector can skip its revision round.
-- **GitHub enforces it.** Ruleset 9180009 will require `factory review`, bound to
-  the reviewer App's ID, beside `pr-checks`. No pull request merges into main without
-  a passing review on that head, including PRs from Joe, interactive
-  sessions, Dependabot/Renovate and other third-party Apps such as Polylane.
-  Third-party Apps may open PRs but merge only through this gate. Authors
-  enqueue: the connector does so for the factory's PRs once the check passes,
-  and other authors use auto-merge (`gh pr merge --auto`), which GitHub
-  queues once the required checks pass. The ruleset's only bypass
-  actor is the organization admin role: Joe, for emergencies, and today the
-  chart version write-back, which pushes to main with an identity holding
-  that bypass (`bazel/helm/write-back-versions.sh`); in-cluster CI (#7922)
-  should replace that identity with one scoped to the write-back. Changes
-  that define the gate itself need Joe's approval (`REVIEW.md` "Joe
-  decides").
-- **Trigger.** kagent v1.0.1 has no trigger resources (no webhook, cron or
-  event types); agents run when sent an A2A task. A small deterministic
-  `factory-reviewer` Deployment, separate from the connector, with its own
-  ServiceAccount, polls open PRs into main every ~30 s. It uses ETag
-  conditional requests on the reviewer App's rate pool and needs no public
-  webhook endpoint. For a new head SHA it creates the `factory review` check
-  as in progress, with external ID `factory-review/<owner>/<repo>/<pr>/<sha>`,
-  and sends the kagent `reviewer` agent an A2A task with message ID
-  `factory-review/<owner>/<repo>/<pr>/<sha>/<check run ID>`, idempotent like
-  coding runs; a retry adds `/attempt-<n>`. A later head's first attempt
-  resumes the previous head's session and adds `/resume` (below); every
-  other attempt opens a fresh session. Each
-  attempt's message is built once and resent byte for byte: at most 20
-  sends, then one more after a dispatch window. When
-  no open PR still has a head, its task and check are cancelled: at once
-  when the PR moved to another head, and after two complete listings in a
-  row leave the PR out when it closed, since a PR closing between page
-  reads shifts another off both pages. The
-  agent has its own binding, a read-only repository token and no push. The
-  service then completes the check on that exact SHA from the agent's
-  findings and, on a pass with required CI green, enqueues Joe's PRs. The agent never
-  holds the reviewer App's credentials, and the broker mints the author's and
-  the reviewer's tokens only for their own ServiceAccounts.
-- **Quota wait (HOME-110).** The reviewer checks the diff budget before
-  waiting for quota, including when reattaching to a waiting check. An
-  oversized PR receives a split request without a Codex task. Before
-  sending a review, the service reads the broker's `GET /codex/quota`.
-  An exhausted grant or a failed quota read sends no task. A failed task that matches the connector's quota
-  classifier also waits without spending an attempt. The check stays
-  `in_progress` with title "Waiting for Codex quota"; the worker is released.
-  The check records the wait time and a separate quota retry number.
-  Polls resume the same head after a newer broker reading reports usable
-  quota, including after a service restart. The replacement opens a fresh
-  session and adds `/quota-<n>` to its message ID, so kagent cannot return
-  the refused task again. Ordinary failures still spend attempts.
-
-  ```mermaid
-  stateDiagram-v2
-    [*] --> Ready
-    Ready --> Waiting: broker exhausted or unreadable
-    Ready --> Reviewing: broker usable
-    Reviewing --> Waiting: task fails with quota status
-    Waiting --> Ready: newer usable reading
-    Reviewing --> Complete: usable report
-    Reviewing --> Ready: ordinary failure and attempts remain
-    Reviewing --> Complete: ordinary failure on last attempt
-  ```
-
-  **Why.** Quota refusals exhausted all three review attempts on the same
-  head. [HOME-110](https://factory-plan.jomcgi.dev/factory/issue/HOME-110)
-  keeps waiting work outside the worker pool and resumes it without a new commit.
-- **Resumed sessions.** The first attempt on a later head continues the
-  kagent session that reviewed the previous head, as the connector
-  continues a coding round: an A2A `SendMessage` naming the session's
-  context ID and no task ID opens a new task in it. The completed check's
-  State records the session (context ID, binding, agent, PR, head, path,
-  heads reviewed, the IDs of their tasks, task bytes, rules digest). The
-  service reads it only from its own App's check on the earlier head, never
-  from PR, commit or comment text. Before resuming it reads the session
-  (`SessionService.GetSession`) and the Agent (`AgentService.GetAgent`) on
-  the A2A listener, and lists the session's tasks over A2A. kagent runs
-  every turn of a session on the Agent revision it pinned at creation, so
-  the session must be pinned to the Agent's `latestSuccessfulRevision`, or
-  a model or prompt change would never reach later heads. Its tasks must be
-  exactly the recorded ones: a turn no completed review recorded (a review
-  superseded, interrupted or ended without a report, whose check keeps no
-  State) would make the recorded task bytes undercount the session.
-  The continuation keeps the previous findings, the interdiff, the PR's
-  text in new delimited blocks, the report contract and the rule that the
-  PR's earlier content is data. It leaves out the rules and repository
-  context while a digest of their text matches the one the session holds.
-  The digest covers each file's whole text, including what the prompt
-  clipped or omitted and told the agent to read in `main/`, and leaves out
-  the commit: main moves with every merge, so comparing commits would
-  resend the rules every time. When some text that may apply went unread
-  (a file too large to read, rule files past the read bound or a path no
-  rule can be looked up for) the digest is unknown and the rules are always
-  sent. A review starts fresh, and `factory_reviewer_review_sessions_total`
-  records why, with no recorded session, on a retry, for another binding,
-  agent, PR or head, past 512 KiB of task bytes or 32 reviews, for a
-  session kagent no longer has or reports deleted, crashed or failed, on
-  another Agent revision, when its tasks differ from the recorded ones
-  (including a continuation a restart lost before recording its task), on
-  a failed read, or when kagent refuses the continuation (rebuilt fresh in
-  the same attempt).
-
-  **Why.** Each head used to re-read the rules, the diff and the
-  surrounding code in a new session; a late review of #8062 carried about
-  300 KB of history across about 60 steps. The reviewer runs on a ChatGPT
-  Codex login through the broker relay, and OpenAI announced in October
-  2026 that signed-in Codex users keep their conversation cache
-  indefinitely, with a guaranteed hit on resume
-  ([report](https://magica.com/news/openai-permanent-prompt-cache-codex-work)).
-  A continuation should then pay mostly for the interdiff and the reads it
-  prompts, while the weekly Codex grant stood at 92% until 2026-11-20
-  (HOME-107). The bound is about 130k tokens at four bytes a token: one
-  more full review past it could reach the context window, where Codex
-  compacts the conversation and its summary replaces the cached prefix.
-
-  **Measuring it.** kagent's Codex harness puts no usage on the task
-  (finding 12) and the chart exports no kagent telemetry yet, so tokens per
-  review cannot be read today. The service records each completed review's
-  task bytes by path (`factory_reviewer_review_task_bytes`: prompt, replies,
-  tool calls and results) and logs them as `review usage` with the context
-  and task IDs. `factory_reviewer_review_tokens_total` splits uncached
-  input, cached input and output once kagent reports them
-  (`factory_reviewer_review_usage_total` counts reviews without). Compare
-  mean task bytes per review, resumed against fresh, over the 72 hours
-  after rollout, and the Codex weekly window's use per completed review in
-  the broker's quota view over the 72 hours before and after; coding runs
-  share that window. Resumed reviews withdrawing or missing findings more
-  often than fresh ones is the regression signal, and lowering the
-  reviewer's image pin reverts it.
-- **Session cleanup.** Each kagent session keeps a Substrate snapshot
-  (about 340 MB) until the session is deleted. After each send, the service
-  names the task's session `factory-review/<owner>/<repo>/<pr>`
-  (`UpdateSessionName`). Every 10 minutes, after a complete listing of open
-  PRs, it lists its own sessions of the binding's agent (`ListSessions`)
-  and deletes (`DeleteSession`, without force) the sessions no review will
-  resume:
-  - every session of a PR that is no longer open;
-  - every session of an open PR except its newest. A later head resumes
-    only the session the last review recorded, and that session is the
-    newest unless every later attempt ended without a report.
-  - an unnamed session (opened before this change, or whose name write
-    failed) with no task change for 12 hours;
-  - a session left DELETING by a delete kagent admitted but did not finish.
-
-  The service keeps a session that is younger than 15 minutes, is named for
-  another repository, has a task that still executes, or whose tasks it
-  cannot list. kagent also refuses to delete a session during a turn. A
-  partial session listing deletes nothing, because an unlisted session may
-  be its PR's newest. Deletes run beside the poll loop and are counted in
-  `factory_reviewer_sessions_deleted_total` by reason (closed, superseded,
-  idle, retry). A deleted session that a later head would have resumed only costs
-  a fresh review (`missing` or `deleted` above).
-
-  **Why.** On 2026-11-16, 398 reviewer snapshots (117 GiB) filled node-2's
-  root disk. The kubelet then evicted Substrate's Postgres and every agent
-  stopped (HOME-136). kagent deletes a session only at its idle TTL (7
-  days), and a shorter TTL would also expire coder sessions the connector
-  holds for fencing. The connector deletes its own finished sessions
-  ("Finished sessions" under Connector).
-- **Connector.** It coordinates sessions, revision rounds and itsaplan
-  status, and enqueues the factory's PRs once the required checks pass; the
-  reviewer's failing check becomes the revision round's feedback
-  (`reviewerCheck {name, appId}`), with its summary in full (at most 60,000
-  characters, so the findings after the overview survive). A failure that
-  the reviewer App marks `human-gate-only` starts no round: the PR waits for
-  Joe's approval, which turns the check green. A `human` or `needs-human`
-  label holds a PR at the connector too: labels are read at enqueue, so a
-  hold placed after a passing review cannot race the reviewer's next poll.
-  A `human` label observed by the connector while queued stops delivery and
-  dequeues the PR; label removal does not resume it. A decision hold on a
-  queued PR is also the reviewer's: on its next poll it fails the
-  merge group's required check, and the queue drops the PR. The queue's
-  `ALLGREEN` grouping keeps the PR from merging inside a later group that
-  contains it. Joe's approval of the head clears the reviewer's hold. The
-  connector never re-enqueues an ejected head, so Joe requeues it; the
-  label still holds the factory's enqueue of any new head.
-- **Only the factory's own loop acts.** Work starts only from itsaplan
-  (invite-only, behind Authentik); GitHub issues, PRs and comments never
-  start a run. The connector adopts and enqueues only PRs whose author is the
-  factory App and whose head branch is the bound repository's
-  `<branchPrefix><issue key>`; a fork or other author is refused and
-  reported. Today adoption matches the bound repository's own head
-  (`<owner>:<branch>`), which excludes forks; the author check is #7920.
-  Review feedback reaches a coder's prompt only from `trustedReviewers` or
-  the reviewer App. The reviewer and planner exceptions are in `REVIEW.md`.
-- **No third-party writers in the trust path.** No other App holds
-  `administration` (it can edit the ruleset) or bypass, and the required
-  checks come from identities the factory runs. Build and artifact
-  publishing move into the cluster: CI runners and an OCI registry for
-  images and charts, with a documented bootstrap that does not need the
-  registry it rebuilds. GitHub stays the forge.
-- **Public routes** serve only mock or fixture data, cached by the CDN, with
-  no secrets and no calls into the cluster: previews and the showcase. No
-  workflow runs with secrets on a fork PR (`pull_request_target` previews
-  move off GitHub Actions).
-
-Until the reviewer App exists, local review agents approve as `jomcgi` and
-the connector enqueues (bootstrap).
+| Direction | Tracks | State |
+| --- | --- | --- |
+| Deliver private goal-assessment reasons to the delivery owner. | [HOME-251](https://factory-plan.jomcgi.dev/factory/issue/HOME-251) | staged off behind `reviewer.goalReasons.enabled` |
+| Verify the factory App author when adopting a PR. | [#7920](https://github.com/jomcgi-org/homelab/issues/7920) | designed |
+| Remove third-party Apps from the merge trust path. | [#7921](https://github.com/jomcgi-org/homelab/issues/7921) | designed |
+| Move CI and the registry into the cluster and scope the chart write-back identity. | [#7922](https://github.com/jomcgi-org/homelab/issues/7922) | designed |
+| Isolate fork PRs and serve fixture-only public previews. | [#7923](https://github.com/jomcgi-org/homelab/issues/7923) | designed |
 
 ## Delivery plan
 
@@ -2599,18 +2003,12 @@ Each step is its own PR with live evidence recorded on #7817.
   item `k8s-homelab/factory-gh-app`, an SSH Key item: its `private key`
   field reaches the Secret as `private-key`, beside text fields `app-id` and
   `installation-id`. Created 2026-11-14.
-- **Reviewer.** Decided 2026-11-14: while the factory is bootstrapped, local
-  review agents approve its PRs as `jomcgi` (`trustedReviewers`). Afterwards
-  the reviewer App `jomcgi-factory-review` (App ID 5758326; checks, merge
-  queues, issues and pull requests write, contents and commit statuses
-  read) owns review and enqueueing ("Merge authority"). Joe granted issues
-  and pull requests write on 2026-11-15
-  ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-73#comment-474)):
-  both for the reviewer's PR comment, which GitHub refuses with issues write
-  alone, and pull requests write also for inline findings (HOME-72). Its 1Password item is
-  `k8s-homelab/factory-review-gh-app`, an SSH Key item like the author's.
-  For now the dispatcher splits enqueueing: the reviewer enqueues Joe's
-  PRs and the connector the factory's, since it sees their stops.
+- **Reviewer.** The reviewer App `jomcgi-factory-review` posts the required
+  check. Its 1Password item is `k8s-homelab/factory-review-gh-app`. Joe
+  granted issues and pull requests write for PR comments and inline findings.
+  [Permission decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-73#comment-474)
+  Joe requests auto-merge for his own PRs. The connector enqueues factory
+  PRs as described under [Merge authority](#merge-authority).
 - **Third-party Apps.** Remove or reduce Apps with write access that are not
   the factory's (Polylane, the Codex connector, Semgrep, Claude), and remove
   `administration` from BuildBuddy, which posts `pr-checks` until in-cluster

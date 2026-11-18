@@ -26,6 +26,7 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
+	"github.com/jomcgi/homelab/projects/factory/reviewer/config"
 	"github.com/jomcgi/homelab/projects/factory/reviewer/metrics"
 )
 
@@ -1691,12 +1692,22 @@ func (e *Engine) decisionsChanged(ctx context.Context, b *Binding, pr github.Pul
 	return !joeDecisions(b, pr, comments).Hold(st.Decisions), false
 }
 
+func machineComment(body string) bool {
+	body = strings.TrimSpace(body)
+	for _, marker := range config.DefaultMachineCommentMarkers {
+		if strings.HasPrefix(body, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // joeDecisions are the trusted comments by a human approver: Joe's, not
 // those of every login whose comments reach the prompt.
 func joeDecisions(b *Binding, pr github.PullRequest, comments []github.Comment) Decisions {
 	d := Decisions{Repo: b.repo(), Number: pr.Number}
 	for _, c := range comments {
-		if containsFold(b.HumanApprovers, c.Author) {
+		if containsFold(b.HumanApprovers, c.Author) && !machineComment(c.Body) {
 			d.Comments = append(d.Comments, c)
 		}
 	}
@@ -1719,6 +1730,8 @@ func (e *Engine) trustedComments(ctx context.Context, b *Binding, pr github.Pull
 	}
 	for _, c := range comments {
 		switch {
+		case machineComment(c.Body):
+			dropped++
 		case strings.TrimSpace(c.Body) == "", e.ownComment(c), e.cfg.Semgrep != nil && strings.EqualFold(c.Author, semgrepAuthor):
 		case containsFold(b.TrustedCommenters, c.Author):
 			out = append(out, c)

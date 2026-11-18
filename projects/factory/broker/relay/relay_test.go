@@ -3,6 +3,7 @@ package relay
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/provider/codexchatgpt"
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/quota"
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/store"
+	"github.com/klauspost/compress/zstd"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -931,5 +933,99 @@ func TestRelayStreamOutlivesServerReadTimeout(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(h.metrics.RelayRequests.WithLabelValues("ok", "2xx")); got != 1 {
 		t.Fatalf("relay ok metric = %v", got)
+	}
+}
+
+func TestActorCapacity(t *testing.T) {
+	h := newHarness(t, true)
+	h.handler.MaxConcurrentPerActor = 1
+	gate := make(chan struct{})
+	defer close(gate)
+	h.backend.set(func(b *backend) { b.respond = func(w http.ResponseWriter, r *http.Request) { sse(w, gate) } })
+	first := h.post("/v1/responses", h.actorJWT())
+	defer first.Body.Close()
+	busy := h.post("/v1/responses", h.actorJWT())
+	if busy.StatusCode != 429 || busy.Header.Get("Retry-After") != "5" || factoryError(t, busy)["factory_error"] != "relay_actor_busy" {
+		t.Fatal("missing actor refusal")
+	}
+	if got := testutil.ToFloat64(h.metrics.RelayRequests.WithLabelValues("actor_busy", "4xx")); got != 1 {
+		t.Fatalf("actor refusals = %v", got)
+	}
+	other := h.signer.Sign(t, fakes.ActorClaims(h.idp.URL, audience, "factory-homelab", "session-2", time.Now()))
+	if resp := h.post("/v1/responses", other); resp.StatusCode != 200 {
+		t.Fatalf("other actor status = %d", resp.StatusCode)
+	}
+}
+
+func TestModelAllowlist(t *testing.T) {
+	h := newHarness(t, true)
+	h.handler.AllowedModels = []string{"gpt-5"}
+	for _, path := range []string{"/v1/responses", "/v1/responses/compact"} {
+		for _, body := range []string{`{"model":"other"}`, `{}`, `{"model":5}`} {
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+h.actorJWT())
+			w := httptest.NewRecorder()
+			h.handler.ServeHTTP(w, req)
+			if w.Code != 400 || factoryError(t, w.Result())["factory_error"] != "model_not_allowed" {
+				t.Fatalf("%s %s: %d", path, body, w.Code)
+			}
+		}
+		if resp := h.post(path, h.actorJWT()); resp.StatusCode != 200 {
+			t.Fatalf("%s: %d", path, resp.StatusCode)
+		}
+	}
+	if h.backend.count() != 2 {
+		t.Fatalf("backend calls = %d", h.backend.count())
+	}
+}
+
+func TestCompressedModelAllowlist(t *testing.T) {
+	h := newHarness(t, true)
+	h.handler.AllowedModels = []string{"gpt-5"}
+	h.handler.MaxRequestBytes = 4096
+	encoder, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer encoder.Close()
+	for _, enc := range []string{"gzip", "zstd"} {
+		for _, path := range []string{"/v1/responses", "/v1/responses/compact"} {
+			for _, tc := range []struct {
+				model   string
+				padding int
+				status  int
+			}{{"gpt-5", 0, 200}, {"other", 0, 400}, {"gpt-5", 8192, 413}} {
+				raw := []byte(fmt.Sprintf(`{"model":%q,"padding":%q}`, tc.model, strings.Repeat("x", tc.padding)))
+				var body []byte
+				if enc == "gzip" {
+					var buf bytes.Buffer
+					writer := gzip.NewWriter(&buf)
+					if _, err := writer.Write(raw); err != nil {
+						t.Fatal(err)
+					}
+					if err := writer.Close(); err != nil {
+						t.Fatal(err)
+					}
+					body = buf.Bytes()
+				} else {
+					body = encoder.EncodeAll(raw, nil)
+				}
+				req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+				req.Header.Set("Authorization", "Bearer "+h.actorJWT())
+				req.Header.Set("Content-Encoding", enc)
+				w := httptest.NewRecorder()
+				h.handler.ServeHTTP(w, req)
+				if w.Code != tc.status {
+					t.Fatalf("%s %s model %q padding %d: got %d want %d", enc, path, tc.model, tc.padding, w.Code, tc.status)
+				}
+				if w.Code == 200 {
+					h.backend.set(func(b *backend) {
+						if !bytes.Equal(body, b.lastBody) || b.lastReq.Header.Get("Content-Encoding") != enc {
+							t.Error("compressed request changed upstream")
+						}
+					})
+				}
+			}
+		}
 	}
 }

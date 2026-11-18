@@ -5,12 +5,34 @@
 load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_image_layer", "js_library", "js_test")
 
 js_library(
+    name = "hikes_freshness",
+    srcs = [
+        "hikes-freshness.d.mts",
+        "hikes-freshness.mjs",
+    ],
+    visibility = ["//projects/jomcgi-site/web:__pkg__"],
+)
+
+js_library(
     name = "stars_summary",
     srcs = [
         "stars-summary.d.mts",
         "stars-summary.mjs",
     ],
     visibility = ["//projects/jomcgi-site/web:__pkg__"],
+)
+
+js_library(
+    name = "hikes_page_src",
+    srcs = [
+        "hikes-page.mjs",
+        "snapshot.mjs",
+    ],
+    visibility = ["//projects/jomcgi-site/web:__pkg__"],
+    deps = [
+        ":hikes_freshness",
+        ":stars_summary",
+    ],
 )
 
 js_library(
@@ -27,8 +49,10 @@ js_binary(
     name = "snapshot",
     data = [
         "fence.mjs",
+        "hikes-page.mjs",
         "snapshot.mjs",
         "sources.json",
+        ":hikes_freshness",
         ":stars_summary",
     ],
     entry_point = "main.mjs",
@@ -49,6 +73,17 @@ js_test(
         ":stars_summary",
     ],
     entry_point = "snapshot.test.mjs",
+)
+
+js_test(
+    name = "hikes_page_test",
+    data = [
+        "hikes-page.mjs",
+        "snapshot.mjs",
+        ":hikes_freshness",
+        ":stars_summary",
+    ],
+    entry_point = "hikes-page.test.mjs",
 )
 
 js_test(

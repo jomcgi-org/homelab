@@ -420,7 +420,22 @@
         },
         "config": {
           "description": "Broker config file keys over the chart's (projects/factory/broker/config).",
-          "type": "object"
+          "type": "object",
+          "properties": {
+            "codex": {
+              "type": "object",
+              "properties": {
+                "maxConcurrentRequestsPerActor": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "allowedModels": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              }
+            }
+          }
         },
         "resources": {
           "type": "object"

@@ -40,6 +40,7 @@ def test_published_pages_are_exactly_the_filtered_manifest():
         "docs.html",
         "engineering.html",
         "factory/index.html",
+        "hikes.html",
         "blog.html",
         "blog/ember-conformance.html",
         "blog/125b-on-a-4090.html",

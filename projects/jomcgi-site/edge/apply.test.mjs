@@ -167,7 +167,6 @@ const STAYS_ON_THE_HUB = [
   "jomcgi.dev/functions/og-image",
   "jomcgi.dev/api/trips/trips",
   "jomcgi.dev/slop/factory",
-  "jomcgi.dev/app/hikes",
   "jomcgi.dev/app/trips",
   "jomcgi.dev/app/stars",
   "jomcgi.dev/app/grimoire",
@@ -198,6 +197,11 @@ test("routed pages are served with and without a query string", () => {
     "/engineering",
     "/engineering/",
     "/engineering/diagrams",
+    "/hikes",
+    "/app/hikes",
+    "/app/hikes/walk/uuid",
+    "/data/hikes/latest.json",
+    "/data/hikes/v/walks-012345abcdef.json",
     "/notes",
     "/app/frank",
     "/ember",
@@ -573,7 +577,7 @@ test("home and machine-readable routes are exact and leave unmigrated paths on t
     assert.ok(!served(`jomcgi.dev/${path}?ref=x`));
   }
   for (const path of [
-    "/app/hikes",
+    "/app/trips",
     "/slop/factory",
     "/scotland/mcp",
     "/api/home/observability/stats",

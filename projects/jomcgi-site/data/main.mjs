@@ -11,6 +11,7 @@
 import { readFileSync } from "node:fs";
 import { classify, liveMessage, releaseMessage } from "./fence.mjs";
 import { r2Getter, snapshot } from "./snapshot.mjs";
+import { publishHikesSummary } from "./hikes-page.mjs";
 
 const need = (name) => {
   const value = process.env[name];
@@ -44,3 +45,4 @@ const get = r2Getter(sources.endpoint, {
   secretAccessKey: need("R2_SECRET_ACCESS_KEY"),
 });
 for (const line of await snapshot(sources, get, out)) console.log(line);
+await publishHikesSummary(out);

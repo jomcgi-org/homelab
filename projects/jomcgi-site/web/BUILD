@@ -79,6 +79,7 @@ js_library(
         ":node_modules/@sparticuz/chromium",
         ":node_modules/@stylexjs/stylex",
         ":node_modules/@sveltejs/vite-plugin-svelte",
+        ":node_modules/maplibre-gl",
         ":node_modules/marked",
         ":node_modules/mermaid",
         ":node_modules/puppeteer-core",
@@ -87,6 +88,7 @@ js_library(
         ":node_modules/svelte",
         ":node_modules/vite",
         "//projects/factory-storyboard:web_schema",
+        "//projects/jomcgi-site/data:hikes_freshness",
         "//projects/monolith/frontend:blog_sources",
         "//projects/monolith/frontend:leaderboard_sources",
         "//projects/monolith/frontend:public_site_inputs",
@@ -199,6 +201,18 @@ js_test(
         "//projects/jomcgi-site/edge:migration_routes",
     ],
     entry_point = "scotland-built.test.mjs",
+)
+
+js_test(
+    name = "hikes_built_test",
+    args = ["$(rootpath :build)"],
+    data = [
+        "budget.mjs",
+        ":build",
+        ":node_modules/happy-dom",
+        "//projects/jomcgi-site/data:hikes_page_src",
+    ],
+    entry_point = "hikes-built.test.mjs",
 )
 
 # Check the built leaderboard and its deferred snapshot/code boundary.

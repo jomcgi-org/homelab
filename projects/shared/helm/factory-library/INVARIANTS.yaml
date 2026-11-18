@@ -35,6 +35,10 @@ invariants:
   test: //projects/shared/helm/factory-library:library_test
   state: live
 - id: LIB-6
-  statement: Every application workload on the factory cluster renders through the library.
-  mechanism: []
-  state: designed
+  statement: Every application chart on the factory cluster renders containers that meet the library defaults.
+  mechanism:
+  - bazel/helm/content_rules/content_rules.py
+  - bazel/helm/content_rules/BUILD
+  - bazel/helm/helm-template-test.sh
+  test: //bazel/helm/content_rules:content_rules_test
+  state: live

@@ -78,7 +78,9 @@ type Codex struct {
 	// sent.
 	ReasoningEffort string `json:"reasoningEffort"`
 	// MaxRequestBytes bounds a buffered relay request body.
-	MaxRequestBytes int64 `json:"maxRequestBytes"`
+	MaxRequestBytes               int64    `json:"maxRequestBytes"`
+	MaxConcurrentRequestsPerActor int      `json:"maxConcurrentRequestsPerActor"`
+	AllowedModels                 []string `json:"allowedModels"`
 	// MaxConcurrentRequests caps relay requests in flight.
 	MaxConcurrentRequests int `json:"maxConcurrentRequests"`
 	// StreamIdleTimeout ends an upstream response silent for this long.
@@ -161,10 +163,11 @@ func Defaults() Config {
 			RefreshCheckInterval: Duration{10 * time.Minute},
 			// Codex sends the whole conversation each turn; images are
 			// inlined as base64.
-			MaxRequestBytes:       32 << 20,
-			MaxConcurrentRequests: 64,
-			StreamIdleTimeout:     Duration{5 * time.Minute},
-			RequestReadTimeout:    Duration{2 * time.Minute},
+			MaxRequestBytes:               32 << 20,
+			MaxConcurrentRequestsPerActor: 8,
+			MaxConcurrentRequests:         64,
+			StreamIdleTimeout:             Duration{5 * time.Minute},
+			RequestReadTimeout:            Duration{2 * time.Minute},
 		},
 		ActorJWT: ActorJWT{
 			Issuer:             "https://idp.ate-system.svc",
@@ -326,6 +329,9 @@ func (c Config) Validate() error {
 	case "", "minimal", "low", "medium", "high", "xhigh", "max", "ultra":
 	default:
 		errs = append(errs, fmt.Errorf("codex.reasoningEffort %q is not a reasoning effort", c.Codex.ReasoningEffort))
+	}
+	if c.Codex.MaxConcurrentRequestsPerActor <= 0 {
+		errs = append(errs, errors.New("codex.maxConcurrentRequestsPerActor must be positive"))
 	}
 	if c.Codex.MaxRequestBytes <= 0 || c.Codex.MaxConcurrentRequests <= 0 {
 		errs = append(errs, errors.New("codex.maxRequestBytes and codex.maxConcurrentRequests must be positive"))
