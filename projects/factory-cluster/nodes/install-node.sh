@@ -40,6 +40,15 @@ if command -v tailscale >/dev/null && systemctl is-active --quiet tailscaled; th
 fi
 sysctl --system >/dev/null
 
+# Host firewall: only nodes, pods and the tailnet reach host ports.
+install -D -m 0644 "${HERE}/factory-firewall.nft" /etc/factory/firewall.nft
+install -m 0644 "${HERE}/factory-firewall.service" /etc/systemd/system/factory-firewall.service
+systemctl daemon-reload
+systemctl enable --quiet factory-firewall
+systemctl restart factory-firewall
+# rpcbind serves NFS, which no node uses.
+systemctl disable --now --quiet rpcbind.socket rpcbind.service 2>/dev/null || true
+
 # zram swap replaces the disk swap file (zram-generator.conf).
 if ! dpkg -s systemd-zram-generator >/dev/null 2>&1; then
 	apt-get update -qq
