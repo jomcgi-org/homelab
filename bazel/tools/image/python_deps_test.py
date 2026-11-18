@@ -1,7 +1,7 @@
 """Tests for python_deps.py — the shim binary that packages pip deps into the tools image.
 
 python_deps.py has no functions of its own; it is a shim that imports the
-pip packages that must be present in the tools image (httpx, typer, yaml) so that
+pip packages that must be present in the tools image (httpx, typer) so that
 py_image_layer can discover and package their transitive dependency trees.
 
 These tests verify that those imports are actually resolvable at test time,
@@ -36,9 +36,3 @@ def test_typer_app_constructible():
 
     app = typer.Typer()
     assert app is not None
-
-
-def test_yaml_loads_bundle_mapping():
-    import yaml
-
-    assert yaml.safe_load("requires: [README.md]") == {"requires": ["README.md"]}

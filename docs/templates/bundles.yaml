@@ -1,44 +1,105 @@
-# Each matching directory takes every applicable kind. Paths are repository-relative.
-kinds:
-  project:
-    glob: projects/*
-    requires:
-      - file: README.md
-  service:
-    extends: project
-    has_directory: chart
-    requires:
-      - file_or_link: ARCHITECTURE.md
-        link_from: README.md
-        other_target: projects/*/ARCHITECTURE.md
-  collection:
-    paths: [projects/platform, projects/platform-factory, projects/platform-gke, projects/gke-apps]
-    requires:
-      - children_named_in: README.md
-  component:
-    child_of: service
-    exclude: [chart, deploy, tests, testdata, dev]
-    # A source directory contains at least one tracked source file at any depth.
-    source_suffixes: [.go, .py, .rs, .ts, .tsx, .js, .jsx, .svelte, .sh, .c, .cc, .cpp, .swift, .kt]
-    requires:
-      - table_row_in: ../ARCHITECTURE.md
-        column: Component
-    optional:
-      - file: ARCHITECTURE.md
-        linked_from: ../ARCHITECTURE.md
-
-scope: projects
-# Apply the name allowlist to uppercase Markdown filenames, including nested files.
-name_pattern: '(?=.*[A-Z])[^a-z]+\.md'
-allowed_names: [README.md, ARCHITECTURE.md, AGENTS.md, REVIEW.md, STPA.md, INVARIANTS.yaml]
-format:
-  ARCHITECTURE.md:
-    opening_fence: mermaid
-    heading: Direction
-    table_columns: [Untrusted input, Credentials held]
-    max_lines: 600
-    forbidden_prefixes: ["Status (", "**Status ("]
-  README.md:
-    link_if_present: ARCHITECTURE.md
-templates:
-  docs/templates/ARCHITECTURE.md: ARCHITECTURE.md
+{
+  "kinds": {
+    "project": {
+      "glob": "projects/*",
+      "requires": [
+        {
+          "file": "README.md"
+        }
+      ]
+    },
+    "service": {
+      "extends": "project",
+      "has_directory": "chart",
+      "requires": [
+        {
+          "file_or_link": "ARCHITECTURE.md",
+          "link_from": "README.md",
+          "other_target": "projects/*/ARCHITECTURE.md"
+        }
+      ]
+    },
+    "collection": {
+      "paths": [
+        "projects/platform",
+        "projects/platform-factory",
+        "projects/platform-gke",
+        "projects/gke-apps"
+      ],
+      "requires": [
+        {
+          "children_named_in": "README.md"
+        }
+      ]
+    },
+    "component": {
+      "child_of": "service",
+      "exclude": [
+        "chart",
+        "deploy",
+        "tests",
+        "testdata",
+        "dev"
+      ],
+      "source_suffixes": [
+        ".go",
+        ".py",
+        ".rs",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".svelte",
+        ".sh",
+        ".c",
+        ".cc",
+        ".cpp",
+        ".swift",
+        ".kt"
+      ],
+      "requires": [
+        {
+          "table_row_in": "../ARCHITECTURE.md",
+          "column": "Component"
+        }
+      ],
+      "optional": [
+        {
+          "file": "ARCHITECTURE.md",
+          "linked_from": "../ARCHITECTURE.md"
+        }
+      ]
+    }
+  },
+  "scope": "projects",
+  "name_pattern": "(?=.*[A-Z])[^a-z]+\\.md",
+  "allowed_names": [
+    "README.md",
+    "ARCHITECTURE.md",
+    "AGENTS.md",
+    "REVIEW.md",
+    "STPA.md",
+    "INVARIANTS.yaml"
+  ],
+  "format": {
+    "ARCHITECTURE.md": {
+      "opening_fence": "mermaid",
+      "heading": "Direction",
+      "table_columns": [
+        "Untrusted input",
+        "Credentials held"
+      ],
+      "max_lines": 600,
+      "forbidden_prefixes": [
+        "Status (",
+        "**Status ("
+      ]
+    },
+    "README.md": {
+      "link_if_present": "ARCHITECTURE.md"
+    }
+  },
+  "templates": {
+    "docs/templates/ARCHITECTURE.md": "ARCHITECTURE.md"
+  }
+}

@@ -1,13 +1,12 @@
 """Validate tracked project documents against docs/templates/bundles.yaml."""
 
+import json
 import os
 import posixpath
 import re
 import subprocess
 from collections import defaultdict
 from pathlib import Path, PurePosixPath
-
-import yaml
 
 
 def markdown(text):
@@ -218,7 +217,7 @@ def report(errors, exemptions):
 def main():
     if workspace := os.environ.get("BUILD_WORKSPACE_DIRECTORY"):
         os.chdir(workspace)
-    config = yaml.safe_load(Path("docs/templates/bundles.yaml").read_text())
+    config = json.loads(Path("docs/templates/bundles.yaml").read_text())
     paths = (
         subprocess.check_output(["git", "ls-files", "-co", "--exclude-standard", "-z"])
         .decode()

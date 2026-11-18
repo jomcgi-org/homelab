@@ -209,7 +209,6 @@ py_venv_binary(
     deps = [
         # keep
         "@pip//httpx",  # keep
-        "@pip//pyyaml",  # keep
         "@pip//typer",  # keep
     ],
 )
@@ -324,7 +323,6 @@ py_test(
     deps = [
         "@pip//httpx",
         "@pip//pytest",
-        "@pip//pyyaml",
         "@pip//typer",
     ],
 )

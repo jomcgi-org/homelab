@@ -1,11 +1,15 @@
+import json
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path, PurePosixPath as P
 
 import pytest
-import yaml
 
 from check_bundles import validate, report, shape
 
-RULES = yaml.safe_load(Path("docs/templates/bundles.yaml").read_text())
+RULES = json.loads(Path("docs/templates/bundles.yaml").read_text())
 ARCH = P("projects/api/ARCHITECTURE.md")
 README = ARCH.with_name("README.md")
 GOOD = "```mermaid\ngraph LR\n```\n## Direction\n| Component | Untrusted input | Credentials held |\n| --- | --- | --- |\n| worker | none | none |"
@@ -98,3 +102,68 @@ def test_architecture_template():
     template = P("docs/templates/ARCHITECTURE.md")
     errors = validate(RULES, {template}, {template: Path(template).read_text()})
     assert not errors
+
+
+def test_lint_with_preexisting_tools_cache(tmp_path):
+    checkout = tmp_path / "repo"
+    checkout.mkdir()
+    checker = Path("bazel/tools/format/document_bundles/check_bundles.py")
+    for source in (checker, Path("docs/templates/bundles.yaml")):
+        dest = checkout / source
+        dest.parent.mkdir(parents=True)
+        shutil.copyfile(source, dest)
+    (checkout / checker.parent / "exemptions.txt").touch()
+    project = checkout / "projects/sample"
+    project.mkdir(parents=True)
+    (project / "main.py").touch()
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    subprocess.run(["git", "add", "."], cwd=checkout, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=test@example.org",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        cwd=checkout,
+        check=True,
+    )
+    cache = tmp_path / "cache"
+    python = cache / "homelab-tools/usr/bin/python3"
+    python.parent.mkdir(parents=True)
+    python.write_text('#!/bin/sh\nexec "$FIXTURE_PYTHON" -IS "$@"\n')
+    python.chmod(0o755)
+    env = dict(
+        os.environ,
+        XDG_CACHE_HOME=str(cache),
+        CI_BASE_REF="HEAD",
+        FIXTURE_PYTHON=sys.executable,
+        CI_REQUIRE_COMPLETE="",
+    )
+    command = ["bash", str(Path("bazel/tools/ci/ci").resolve()), "lint"]
+    missing = subprocess.run(
+        command, cwd=checkout, env=env, capture_output=True, text=True
+    )
+    assert missing.returncode != 0
+    assert "projects/sample/README.md: missing required file" in missing.stdout
+    (project / "README.md").touch()
+    subprocess.run(["git", "add", "."], cwd=checkout, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=test@example.org",
+            "commit",
+            "-qm",
+            "document project",
+        ],
+        cwd=checkout,
+        check=True,
+    )
+    subprocess.run(command, cwd=checkout, env=env, check=True)

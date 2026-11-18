@@ -36,11 +36,8 @@ if [[ -z "$ROOT" ]]; then
 fi
 cd "$ROOT"
 
-tools_root="${XDG_CACHE_HOME:-$HOME/.cache}/homelab-tools"
-bundle_python=python3
-if [[ -d "$tools_root/usr/bin" ]]; then
-	bundle_python="$tools_root/bazel/tools/image/python_deps.runfiles/_main/bazel/tools/image/.python_deps/bin/python3"
-	export PATH="$tools_root/usr/bin:$PATH"
+if [[ -d "${XDG_CACHE_HOME:-$HOME/.cache}/homelab-tools/usr/bin" ]]; then
+	export PATH="${XDG_CACHE_HOME:-$HOME/.cache}/homelab-tools/usr/bin:$PATH"
 fi
 
 BASE_REF="${CI_BASE_REF:-origin/main}"
@@ -120,7 +117,7 @@ cmd_lint() {
 			}
 		done
 	fi
-	"$bundle_python" bazel/tools/format/document_bundles/check_bundles.py || return 1
+	python3 bazel/tools/format/document_bundles/check_bundles.py || return 1
 	local -a files=()
 	local f
 	while IFS= read -r f; do

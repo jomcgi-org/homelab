@@ -98,7 +98,8 @@ prose it replaces. Skip it for a one-component change or a version bump.
 The CI Format stage and `ci lint` run the
 [document bundle check](../bazel/tools/format/document_bundles/check_bundles.py).
 It reads [the bundle rules](templates/bundles.yaml) and reports the path and
-missing document or required part.
+missing document or required part. Keep the rules in the JSON subset of YAML
+so the check runs with the Python standard library on every workstation.
 
 Each file type answers one question. Text that answers a different question
 moves to the file that owns it. To create a file, copy its template or
