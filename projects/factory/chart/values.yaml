@@ -216,10 +216,8 @@ broker:
     itemPath: vaults/k8s-homelab/items/factory-github-app
   # Settings passed to the broker's config file over its defaults
   # (projects/factory/broker/config).
-  config:
-    codex:
-      maxConcurrentRequestsPerActor: 8
-      allowedModels: []
+  # Optional codex overrides include maxConcurrentRequestsPerActor and allowedModels.
+  config: {}
   resources:
     requests:
       cpu: 50m
