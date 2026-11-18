@@ -577,7 +577,7 @@ test("home and machine-readable routes are exact and leave unmigrated paths on t
     assert.ok(!served(`jomcgi.dev/${path}?ref=x`));
   }
   for (const path of [
-    "/app/hikes",
+    "/app/trips",
     "/slop/factory",
     "/scotland/mcp",
     "/api/home/observability/stats",
