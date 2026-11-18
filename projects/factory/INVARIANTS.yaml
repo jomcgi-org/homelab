@@ -1,0 +1,69 @@
+# Invariants: rules that must always hold in this directory.
+# docs/templates/INVARIANTS.yaml describes the fields. IDs are permanent:
+# never reuse or renumber one. docs/THREAT-MODEL.md cites them.
+invariants:
+- id: FACT-1
+  statement: A sandbox holds placeholders, never a provider or GitHub credential.
+  mechanism:
+  - projects/factory/chart/templates/_binding.tpl
+  state: unproven
+- id: FACT-2
+  statement: A worker pod has no ServiceAccount token.
+  mechanism:
+  - projects/factory/chart/templates/_binding.tpl
+  state: unproven
+- id: FACT-3
+  statement: A minted GitHub token names one repository and the exact permissions asked.
+  mechanism:
+  - projects/factory/broker/github/app.go
+  test: //projects/factory/broker/github:github_test
+  state: live
+- id: FACT-4
+  statement: The reviewer agent's git token is read-only, and the author and reviewer Apps differ.
+  mechanism:
+  - projects/factory/broker/config/config.go
+  test: //projects/factory/broker/config:config_test
+  state: live
+- id: FACT-5
+  statement: The relay serves only a verified actor JWT from an allowed namespace.
+  mechanism:
+  - projects/factory/broker/actorjwt/verifier.go
+  test: //projects/factory/broker/actorjwt:actorjwt_test
+  state: live
+- id: FACT-6
+  statement: The broker's token and admin port admits only the connector, the reviewer and Prometheus.
+  mechanism:
+  - projects/factory/chart/templates/network-policy.yaml
+  state: unproven
+- id: FACT-7
+  statement: The broker writes only its grant Secret and github-git Secrets.
+  mechanism:
+  - projects/factory/chart/templates/broker-admission.yaml
+  state: unproven
+- id: FACT-8
+  statement: No pod runs as the broker operator ServiceAccount.
+  mechanism:
+  - projects/factory/chart/templates/broker-admission.yaml
+  state: unproven
+- id: FACT-9
+  statement: The reviewer reads rules and context documents from the base commit.
+  mechanism:
+  - projects/factory/reviewer/review/rules.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live
+- id: FACT-10
+  statement: An error, a timeout or an unparseable answer gives no pass, no enqueue and no token.
+  mechanism:
+  - projects/factory/reviewer/review/engine.go
+  - projects/factory/connector/dispatch/delivery.go
+  state: unproven
+- id: FACT-11
+  statement: A pass and an approval count only for the head commit they name.
+  mechanism:
+  - projects/factory/reviewer/review/gate.go
+  - projects/factory/connector/dispatch/delivery.go
+  state: unproven
+- id: FACT-12
+  statement: Each actor has its own relay concurrency and spend limit.
+  mechanism: []
+  state: designed

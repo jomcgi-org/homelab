@@ -1,0 +1,23 @@
+# Invariants: rules that must always hold in this directory.
+# Copy this file to the directory that owns the rules. A file covers its
+# directory and every sub-directory. IDs are permanent: never reuse or
+# renumber one. docs/THREAT-MODEL.md cites them.
+#
+# Fields:
+#   id         Permanent ID: a prefix for the directory and a number.
+#   statement  One sentence that is true while the invariant holds.
+#   mechanism  Repository paths that enforce it. Empty while it is designed.
+#   test       Bazel label of the test that proves it. Required for live.
+#   state      live      the mechanism exists and the test runs in required CI
+#              unproven  the mechanism exists and no test proves it
+#              designed  the mechanism is not built
+#
+# Do not put an open security finding here: this file is public. Use the
+# private record that docs/THREAT-MODEL.md names.
+invariants:
+  - id: EXAMPLE-1
+    statement: A pod sends and receives nothing unless a network policy names the peer.
+    mechanism:
+      - projects/example/resources/network-policy.yaml
+    test: //projects/example:network_policy_test
+    state: live

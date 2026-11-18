@@ -41,6 +41,7 @@ optional:
   - file: AGENTS.md
   - file: REVIEW.md
   - file: STPA.md
+  - file: INVARIANTS.yaml
   - file: ARCHITECTURE.md # in a component; the parent's summary links it
     requires:
       - linked_from: ../ARCHITECTURE.md

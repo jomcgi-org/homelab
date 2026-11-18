@@ -110,6 +110,7 @@ type that owns the question, or ask Joe for a new row here.
 | `docs/runbooks/<name>.md` | How to do one named procedure | `docs/runbooks/README.md` |
 | Scoped `AGENTS.md` | Which rules an agent follows in this directory | Root `AGENTS.md` |
 | `REVIEW.md` | Which rules a review enforces. Joe decides changes | Root `REVIEW.md` "Joe decides" |
+| `INVARIANTS.yaml` | Which rules must always hold in this directory, what enforces each and which test proves it | `docs/templates/INVARIANTS.yaml` |
 | HOME issue | Rollout steps, acceptance checks, open questions | `docs/agents/reference.md` "Ticket shape" |
 | PR description | What changes and its evidence | `docs/agents/pull-requests.md` |
 
@@ -131,9 +132,10 @@ the rules.
 | Collection: one sub-directory for each Application, such as `projects/platform-factory/` | A README that names each sub-directory. No file in each one |
 | Component: a source sub-directory of a service | A row in the service's `ARCHITECTURE.md` component table |
 
-`AGENTS.md`, `REVIEW.md`, `STPA.md` and a component's own `ARCHITECTURE.md`
-are optional. The HOME-269 check will validate each one that exists. To change what a
-directory needs, change `bundles.yaml` and this table in one PR.
+`AGENTS.md`, `REVIEW.md`, `STPA.md`, `INVARIANTS.yaml` and a component's own
+`ARCHITECTURE.md` are optional. The HOME-269 check will validate each one
+that exists. To change what a directory needs, change `bundles.yaml` and this
+table in one PR.
 
 Keep a file current by replacing text:
 

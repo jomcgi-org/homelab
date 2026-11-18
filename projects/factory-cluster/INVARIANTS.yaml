@@ -1,0 +1,27 @@
+# Invariants: rules that must always hold in this directory.
+# docs/templates/INVARIANTS.yaml describes the fields. IDs are permanent:
+# never reuse or renumber one. docs/THREAT-MODEL.md cites them.
+invariants:
+- id: CLUS-1
+  statement: Kubernetes Secrets are encrypted at rest.
+  mechanism:
+  - projects/factory-cluster/nodes/k3s-config.yaml
+  state: unproven
+- id: CLUS-2
+  statement: The API server and kubelet refuse anonymous requests.
+  mechanism:
+  - projects/factory-cluster/nodes/k3s-config.yaml
+  state: unproven
+- id: CLUS-3
+  statement: Nodes hold no ghcr.io credential and the image mirror does not serve ghcr.io.
+  mechanism:
+  - projects/factory-cluster/nodes/registries.yaml
+  state: unproven
+- id: CLUS-4
+  statement: The API server writes an audit log.
+  mechanism: []
+  state: designed
+- id: CLUS-5
+  statement: A copy of each backup exists outside the cluster.
+  mechanism: []
+  state: designed

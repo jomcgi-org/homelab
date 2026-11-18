@@ -1,0 +1,62 @@
+# Invariants: rules that must always hold in this directory.
+# docs/templates/INVARIANTS.yaml describes the fields. IDs are permanent:
+# never reuse or renumber one. docs/THREAT-MODEL.md cites them.
+invariants:
+- id: PLAT-1
+  statement: A pod sends and receives nothing unless a network policy names the peer.
+  mechanism:
+  - projects/platform-factory/network-policy/resources/baseline.yaml
+  state: unproven
+- id: PLAT-2
+  statement: Every route on the edge Gateway signs in through Authentik.
+  mechanism:
+  - projects/platform-factory/edge/chart
+  test: //projects/platform-factory/edge/chart:edge_test
+  state: live
+- id: PLAT-3
+  statement: Only named namespaces attach routes, each to its exact hostnames.
+  mechanism:
+  - projects/platform-factory/edge-admission/resources/policies.yaml
+  state: unproven
+- id: PLAT-4
+  statement: No Service exposes a pod on a node address.
+  mechanism: []
+  state: designed
+- id: PLAT-5
+  statement: Only ArgoCD creates a pod that runs as kagent-controller.
+  mechanism:
+  - projects/platform-factory/substrate/resources/kagent-identity-guard.yaml
+  state: unproven
+- id: PLAT-6
+  statement: An agent worker reaches only the Substrate egress gateway and DNS.
+  mechanism:
+  - projects/platform-factory/substrate/resources/network-policy.yaml
+  state: unproven
+- id: PLAT-7
+  statement: 1Password Connect, ArgoCD redis and the repo-server accept requests only from their own controllers.
+  mechanism:
+  - projects/platform-factory/network-policy/resources/onepassword.yaml
+  - projects/platform-factory/network-policy/resources/argocd.yaml
+  state: unproven
+- id: PLAT-8
+  statement: A bucket claim is granted only to an authorized namespace.
+  mechanism:
+  - projects/platform-factory/garage/resources/claim-admission.yaml
+  state: unproven
+- id: PLAT-9
+  statement: A consumer gets only short-lived derived credentials.
+  mechanism:
+  - projects/platform-factory/external-secrets/chart/templates/policies.yaml
+  state: designed
+- id: PLAT-10
+  statement: Application namespaces enforce PodSecurity restricted.
+  mechanism: []
+  state: designed
+- id: PLAT-11
+  statement: Every pod image names a digest.
+  mechanism: []
+  state: designed
+- id: PLAT-12
+  statement: Each application namespace has a ResourceQuota and a LimitRange.
+  mechanism: []
+  state: designed
