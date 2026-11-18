@@ -10,7 +10,11 @@
 {{- if and $w.concurrencyPolicy (not (has $w.concurrencyPolicy (list "Allow" "Forbid" "Replace"))) -}}{{- fail "factory-library: invalid concurrencyPolicy" -}}{{- end -}}
 {{- if and (hasKey $w "hook") (ne ($w.kind | default "Deployment") "Job") -}}{{- fail (printf "factory-library: workload %s: hook is only for Jobs" .name) -}}{{- end -}}
 {{- if and (hasKey $w "hook") (not (has $w.hook (list "Sync" "PostSync"))) -}}{{- fail (printf "factory-library: workload %s: hook must be Sync or PostSync" .name) -}}{{- end -}}
-{{- include "factory-library.keys" (dict "path" (printf "workload %s" .name) "value" $w "allowed" (list "kind" "image" "containerName" "replicas" "schedule" "concurrencyPolicy" "backoffLimit" "hook" "kubernetesApi" "resources" "command" "args" "env" "ports" "readinessProbe" "livenessProbe" "startupProbe" "writablePaths" "service" "network")) -}}
+{{- if hasKey $w "hookWave" -}}
+{{- if not $w.hook -}}{{- fail "factory-library: hookWave requires a Job hook" -}}{{- end -}}
+{{- if not (regexMatch "^-?[0-9]+$" (toString $w.hookWave)) -}}{{- fail "factory-library: hookWave must be an integer" -}}{{- end -}}
+{{- end -}}
+{{- include "factory-library.keys" (dict "path" (printf "workload %s" .name) "value" $w "allowed" (list "kind" "image" "containerName" "replicas" "schedule" "concurrencyPolicy" "backoffLimit" "hook" "hookWave" "kubernetesApi" "resources" "command" "args" "env" "ports" "readinessProbe" "livenessProbe" "startupProbe" "writablePaths" "service" "network")) -}}
 {{- $resources := $w.resources | default dict -}}
 {{- $requests := $resources.requests | default dict -}}
 {{- $limits := $resources.limits | default dict -}}
@@ -116,6 +120,9 @@ metadata:
   annotations:
     argocd.argoproj.io/hook: {{ .workload.hook }}
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    {{- if hasKey .workload "hookWave" }}
+    argocd.argoproj.io/sync-wave: {{ .workload.hookWave | quote }}
+    {{- end }}
     {{- $exceptions := list }}
     {{- range .root.Values.exceptions }}
     {{- if eq .workload $.name }}

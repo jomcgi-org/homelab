@@ -6,7 +6,10 @@ load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_image_layer", "js_library
 js_library(
     name = "migration_routes",
     srcs = ["routes.json"],
-    visibility = ["//projects/jomcgi-site/web:__pkg__"],
+    visibility = [
+        "//projects/jomcgi-site/check:__pkg__",
+        "//projects/jomcgi-site/web:__pkg__",
+    ],
 )
 
 js_binary(

@@ -9,6 +9,11 @@ with EDGE_SERVE_ROUTES from edge.serveRoutes.
 {{- if not (has .Values.stage (list "dev" "prod")) }}
 {{- fail "stage must be dev or prod" }}
 {{- end }}
+{{- /* Only the edge Job deletes the Worker's routes. Without it, routes from an
+earlier sync could stay live while site-check is off (routes off below). */}}
+{{- if and (eq .Values.stage "prod") (not .Values.edge.enabled) }}
+{{- fail "the prod stage needs edge.enabled: only the edge Job removes the Worker's routes" }}
+{{- end }}
 {{- if not (kindIs "bool" .Values.edge.serveRoutes) }}
 {{- fail "edge.serveRoutes must be true or false" }}
 {{- end }}
@@ -32,6 +37,16 @@ with EDGE_SERVE_ROUTES from edge.serveRoutes.
 {{- $_ := set $refresh "env" (concat $base $release (list (dict "name" "MODE" "value" "refresh"))) }}
 {{- $_ := set .Values.workloads "jomcgi-site-refresh" $refresh }}
 {{- end }}
+{{- $check := index .Values.workloads "site-check" }}
+{{- if $check.args }}
+{{- fail "the site-check stage argument comes from .Values.stage; do not set args" }}
+{{- end }}
+{{- if $check.network.egress }}
+{{- fail "site-check egress comes from .Values.stage; do not set egress" }}
+{{- end }}
+{{- $_ := set $check "args" (list .Values.stage) }}
+{{- $host := ternary "next.jomcgi.dev" "jomcgi.dev" (eq .Values.stage "dev") }}
+{{- $_ := set $check.network "egress" (list (dict "peer" "stage-site" "fqdn" $host "port" 443)) }}
 {{- if .Values.edge.enabled }}
 {{- if ne .Values.stage "prod" }}
 {{- fail "edge.enabled is for the prod stage only: zone config is not per stage" }}
@@ -40,5 +55,10 @@ with EDGE_SERVE_ROUTES from edge.serveRoutes.
 {{- $env := append $edge.env (dict "name" "EDGE_SERVE_ROUTES" "value" (toString .Values.edge.serveRoutes)) }}
 {{- $_ := set $edge "env" $env }}
 {{- $_ := set .Values.workloads "jomcgi-site-edge" $edge }}
+{{- end }}
+{{- /* With routes off, the edge Job deletes every route and reads the zone back,
+so the hub serves prod; it cannot match this release. */}}
+{{- if and (eq .Values.stage "prod") (not .Values.edge.serveRoutes) }}
+{{- $_ := unset .Values.workloads "site-check" }}
 {{- end }}
 {{ include "factory-library.all" . }}
