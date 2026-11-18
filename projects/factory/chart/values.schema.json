@@ -418,6 +418,35 @@
             }
           }
         },
+        "claude": {
+          "description": "Default-off OAuth relay, restricted to allowlisted Claude Code actors.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "itemPath", "modelAllowlist"],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "itemPath": {
+              "type": "string",
+              "pattern": "^vaults/[^/]+/items/[^/]+$"
+            },
+            "modelAllowlist": {
+              "type": "object",
+              "additionalProperties": false,
+              "patternProperties": {
+                "^actor/[^/*?\\s]+/[^/*?\\s]+$": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[^*?\\s]+$"
+                  }
+                }
+              }
+            }
+          }
+        },
         "config": {
           "description": "Broker config file keys over the chart's (projects/factory/broker/config).",
           "type": "object",

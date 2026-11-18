@@ -63,6 +63,12 @@ and metrics. Provider and GitHub credentials exist only in this pod.
 {{- $_ := set $config.tokenReview "reviewerSubjects" (list (include "factory.reviewerSubject" .)) }}
 {{- end }}
 {{- $config = mustMergeOverwrite $config (deepCopy $b.config) }}
+{{- if $b.claude.enabled }}
+{{- $_ := set $config "claude" (dict
+  "enabled" true
+  "tokenFile" "/etc/factory-claude-cvp/token"
+  "modelAllowlist" $b.claude.modelAllowlist) }}
+{{- end }}
 {{- $configYAML := toYaml $config }}
 # The broker's namespace, shared with the connector. Kept: it holds the Codex
 # grant, the only copy of a rotating refresh token.
@@ -196,6 +202,21 @@ metadata:
     argocd.argoproj.io/sync-wave: "-2"
 spec:
   itemPath: {{ $b.githubApp.itemPath | quote }}
+{{- end }}
+{{- if $b.claude.enabled }}
+---
+# The Claude Code OAuth token, never injectable into an actor.
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: factory-claude-cvp
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  itemPath: {{ $b.claude.itemPath | quote }}
 {{- end }}
 {{- if .Values.reviewer.enabled }}
 ---
@@ -403,6 +424,11 @@ spec:
             - name: substrate-servicedns
               mountPath: /run/substrate-servicedns
               readOnly: true
+            {{- if $b.claude.enabled }}
+            - name: claude-cvp
+              mountPath: /etc/factory-claude-cvp
+              readOnly: true
+            {{- end }}
             {{- if $github }}
             - name: github-app
               mountPath: /etc/factory-github-app
@@ -414,6 +440,14 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
+        {{- if $b.claude.enabled }}
+        - name: claude-cvp
+          secret:
+            secretName: factory-claude-cvp
+            items:
+              - key: token
+                path: token
+        {{- end }}
         - name: config
           configMap:
             name: {{ $name }}

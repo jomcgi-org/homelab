@@ -12,6 +12,12 @@ instead of silently rendering nothing.
 {{- if .Values.providers }}
 {{- fail "providers are not implemented in this chart version; agents use the broker's relay" }}
 {{- end }}
+{{- if and .Values.broker.claude.enabled (not .Values.broker.enabled) }}
+{{- fail "broker.claude.enabled requires broker.enabled" }}
+{{- end }}
+{{- if hasKey .Values.broker.config "claude" }}
+{{- fail "configure the Claude relay through broker.claude, not broker.config.claude" }}
+{{- end }}
 {{- with .Values.broker.operatorServiceAccount }}
 {{- if or (has . (list "default" (include "factory.brokerName" $) (include "factory.connectorName" $) (include "factory.reviewerName" $))) (hasPrefix "factory-itsaplan" .) }}
 {{- fail (printf "broker.operatorServiceAccount %s is a ServiceAccount the chart's Pods use; name a separate one" .) }}

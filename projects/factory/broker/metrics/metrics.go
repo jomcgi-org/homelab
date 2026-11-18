@@ -31,6 +31,8 @@ type Metrics struct {
 	RefreshOutcomes *prometheus.CounterVec
 	// RelayRequests counts relay responses by outcome and HTTP status class.
 	RelayRequests *prometheus.CounterVec
+	// ClaudeRelayRequests counts Claude Code relay responses separately.
+	ClaudeRelayRequests *prometheus.CounterVec
 	// ActorRejections counts actor JWT rejections by reason.
 	ActorRejections *prometheus.CounterVec
 	// GitHubMints counts installation token mints by kind, binding and
@@ -59,6 +61,9 @@ func New() *Metrics {
 		RelayRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: Prefix + "_relay_requests_total", Help: "Codex relay requests by outcome and response status class.",
 		}, []string{"outcome", "code"}),
+		ClaudeRelayRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: Prefix + "_claude_relay_requests_total", Help: "Claude relay requests by outcome and response status class.",
+		}, []string{"outcome", "code"}),
 		ActorRejections: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: Prefix + "_actor_jwt_rejections_total", Help: "Rejected actor JWTs by reason.",
 		}, []string{"reason"}),
@@ -81,7 +86,7 @@ func New() *Metrics {
 
 func (m *Metrics) Register(r prometheus.Registerer) {
 	m.Refresh.Register(r)
-	r.MustRegister(m.GrantState, m.GrantExpiry, m.RefreshOutcomes, m.RelayRequests, m.ActorRejections, m.GitHubMints, m.UsageRefresh, m.TokenAccounting)
+	r.MustRegister(m.GrantState, m.GrantExpiry, m.RefreshOutcomes, m.RelayRequests, m.ClaudeRelayRequests, m.ActorRejections, m.GitHubMints, m.UsageRefresh, m.TokenAccounting)
 }
 
 // SetGrantState marks state as the grant's only current state.

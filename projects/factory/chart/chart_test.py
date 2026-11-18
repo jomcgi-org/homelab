@@ -477,6 +477,104 @@ def test_github_app_is_optional() -> None:
     assert config["github"]["privateKeyFile"] == "/etc/factory-github-app/private-key"
 
 
+@pytest.mark.parametrize("binding", [False, True])
+def test_claude_relay_is_absent_by_default(binding: bool) -> None:
+    docs = _render(["broker.enabled=true"], binding=binding)
+    rendered = yaml.safe_dump(docs)
+    assert "factory-claude-cvp" not in rendered
+    assert "api.anthropic.com" not in rendered
+    config = yaml.safe_load(
+        _in(docs, "ConfigMap", "factory", "factory-broker")["data"]["config.yaml"]
+    )
+    assert "claude" not in config
+
+
+def test_claude_token_is_mounted_only_in_broker() -> None:
+    docs = _render(
+        [
+            "broker.claude.enabled=true",
+            "broker.claude.modelAllowlist.actor/factory-r-homelab/audit={claude-test-model}",
+        ]
+    )
+    item = _in(docs, "OnePasswordItem", "factory", "factory-claude-cvp")
+    assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-claude-cvp"
+    assert "substrate.ate.dev/injectable" not in item["metadata"]["labels"]
+    config = yaml.safe_load(
+        _in(docs, "ConfigMap", "factory", "factory-broker")["data"]["config.yaml"]
+    )
+    assert config["claude"] == {
+        "enabled": True,
+        "tokenFile": "/etc/factory-claude-cvp/token",
+        "modelAllowlist": {"actor/factory-r-homelab/audit": ["claude-test-model"]},
+    }
+    for d in docs:
+        if d["kind"] != "Deployment":
+            continue
+        pod = d["spec"]["template"]["spec"]
+        volumes = {
+            v["name"]: v
+            for v in pod.get("volumes", [])
+            if v.get("secret", {}).get("secretName") == "factory-claude-cvp"
+        }
+        if d["metadata"]["name"] != "factory-broker":
+            assert not volumes
+            continue
+        assert volumes == {
+            "claude-cvp": {
+                "name": "claude-cvp",
+                "secret": {
+                    "secretName": "factory-claude-cvp",
+                    "items": [{"key": "token", "path": "token"}],
+                },
+            }
+        }
+        assert {
+            "name": "claude-cvp",
+            "mountPath": "/etc/factory-claude-cvp",
+            "readOnly": True,
+        } in pod["containers"][0]["volumeMounts"]
+    # No egress credential binding or sandbox definition can inject this token.
+    for d in docs:
+        if d["kind"] in (
+            "Agent",
+            "AgentTemplate",
+            "SandboxTemplate",
+            "ModelConfig",
+            "EgressPolicy",
+        ):
+            assert "factory-claude-cvp" not in yaml.safe_dump(d)
+    policy = _in(docs, "CiliumNetworkPolicy", "factory", "factory-broker")["spec"]
+    anthropic = [
+        rule
+        for rule in policy["egress"]
+        if {"matchName": "api.anthropic.com"} in rule.get("toFQDNs", [])
+    ]
+    assert len(anthropic) == 1
+    assert anthropic[0]["toPorts"] == [{"ports": [{"port": "443", "protocol": "TCP"}]}]
+
+
+def test_claude_enabled_without_allowlist_denies_every_actor() -> None:
+    docs = _render(["broker.enabled=true", "broker.claude.enabled=true"], binding=False)
+    config = yaml.safe_load(
+        _in(docs, "ConfigMap", "factory", "factory-broker")["data"]["config.yaml"]
+    )
+    assert config["claude"]["modelAllowlist"] == {}
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        ["broker.claude.enabled=true"],
+        ["broker.config.claude.enabled=true"],
+        ["broker.claude.modelAllowlist.actor/ns/*={claude}"],
+        ["broker.claude.modelAllowlist.actor/ns/name={*}"],
+    ],
+)
+def test_claude_invalid_configuration_fails_render(overrides: list[str]) -> None:
+    with pytest.raises(RuntimeError):
+        _render(overrides, binding=False)
+
+
 def test_broker_state_is_kept_and_pre_created() -> None:
     docs = _render()
     for kind, name in (

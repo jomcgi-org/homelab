@@ -43,6 +43,7 @@ type Config struct {
 	AdminListenAddr string `json:"adminListenAddr"`
 
 	Codex       Codex       `json:"codex"`
+	Claude      Claude      `json:"claude"`
 	ActorJWT    ActorJWT    `json:"actorJwt"`
 	TokenReview TokenReview `json:"tokenReview"`
 	GitHub      GitHub      `json:"github"`
@@ -87,6 +88,17 @@ type Codex struct {
 	StreamIdleTimeout Duration `json:"streamIdleTimeout"`
 	// RequestReadTimeout bounds reading a whole request, body included.
 	RequestReadTimeout Duration `json:"requestReadTimeout"`
+}
+
+// Claude configures the optional subscription relay for Claude Code clients.
+// Provider credentials are read only from the broker's mounted Secret.
+type Claude struct {
+	Enabled               bool                `json:"enabled"`
+	TokenFile             string              `json:"tokenFile"`
+	ModelAllowlist        map[string][]string `json:"modelAllowlist"`
+	MaxRequestBytes       int64               `json:"maxRequestBytes"`
+	MaxConcurrentRequests int                 `json:"maxConcurrentRequests"`
+	StreamIdleTimeout     Duration            `json:"streamIdleTimeout"`
 }
 
 type ActorJWT struct {
@@ -168,6 +180,10 @@ func Defaults() Config {
 			MaxConcurrentRequests:         64,
 			StreamIdleTimeout:             Duration{5 * time.Minute},
 			RequestReadTimeout:            Duration{2 * time.Minute},
+		},
+		Claude: Claude{
+			MaxRequestBytes: 32 << 20, MaxConcurrentRequests: 64,
+			StreamIdleTimeout: Duration{5 * time.Minute},
 		},
 		ActorJWT: ActorJWT{
 			Issuer:             "https://idp.ate-system.svc",
@@ -335,6 +351,28 @@ func (c Config) Validate() error {
 	}
 	if c.Codex.MaxRequestBytes <= 0 || c.Codex.MaxConcurrentRequests <= 0 {
 		errs = append(errs, errors.New("codex.maxRequestBytes and codex.maxConcurrentRequests must be positive"))
+	}
+	if c.Claude.Enabled {
+		if c.Claude.TokenFile == "" {
+			errs = append(errs, errors.New("claude.tokenFile is required when enabled"))
+		}
+		if c.ActorJWT.Audience != "factory-broker" {
+			errs = append(errs, errors.New("claude requires actorJwt.audience factory-broker"))
+		}
+		if c.Claude.MaxRequestBytes <= 0 || c.Claude.MaxConcurrentRequests <= 0 || c.Claude.StreamIdleTimeout.Duration <= 0 {
+			errs = append(errs, errors.New("claude request limits and streamIdleTimeout must be positive"))
+		}
+		for subject, models := range c.Claude.ModelAllowlist {
+			parts := strings.Split(subject, "/")
+			if len(parts) != 3 || parts[0] != "actor" || parts[1] == "" || parts[2] == "" || strings.ContainsAny(subject, "*? \t\r\n") {
+				errs = append(errs, errors.New("claude.modelAllowlist keys must be exact actor/<atespace>/<actorName> subjects"))
+			}
+			for _, model := range models {
+				if model == "" || strings.ContainsAny(model, "*? \t\r\n") {
+					errs = append(errs, errors.New("claude.modelAllowlist models must be exact nonempty model IDs"))
+				}
+			}
+		}
 	}
 	// Installation tokens live one hour; reminting less often than that
 	// leaves agents with expired credentials.
