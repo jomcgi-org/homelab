@@ -208,6 +208,7 @@ The only path in from the internet:
 | factory-plan.jomcgi.dev | `factory/factory-itsaplan` (`/backend` to the api, `/` to the web app) | Envoy OIDC (client `factory-edge`), then itsaplan's OIDC (client `factory-itsaplan`, invite-only) or its break-glass admin; both admit only `authentik Admins` |
 | factory-grafana.jomcgi.dev | `grafana/grafana` | Envoy OIDC (client `factory-edge`), then Grafana's OIDC (client `factory-grafana`); both admit only `authentik Admins` |
 | factory-agents.jomcgi.dev | `edge/kagent` to `kagent/kagent-ui:8080` | Envoy OIDC (client `factory-edge`), only `authentik Admins`; access token forwarded to kagent |
+| factory-kube.jomcgi.dev | `edge/kube-api` to `default/kubernetes:443` | No browser sign-in: Envoy checks the bearer ID token from client `factory-kubectl` for group `authentik Admins` or `factory-kube-viewers`, then the API server checks it again and RBAC applies (see "kubectl through Authentik") |
 
 Envoy's OIDC session lasts as long as the access token, ten minutes, with no
 refresh. Envoy then sends the browser back to Authentik, which checks the
@@ -245,7 +246,8 @@ namespace and no per-Gateway EnvoyProxy; EnvoyProxy, SecurityPolicy,
 EnvoyPatchPolicy, EnvoyExtensionPolicy, ClientTrafficPolicy and Backend
 objects live only in `edge`; any route with a parent in `cfgate-system` must
 be an HTTPRoute in `edge` whose only backend is `edge-proxy`, with no filters;
-only `edge` may route factory-auth.jomcgi.dev or factory-agents.jomcgi.dev;
+only `edge` may route factory-auth.jomcgi.dev, factory-agents.jomcgi.dev or
+factory-kube.jomcgi.dev;
 routes in `factory` may name only factory-plan.jomcgi.dev, routes in `grafana` only
 factory-grafana.jomcgi.dev, routes in `argocd` only
 factory-argocd.jomcgi.dev and routes in `factory-landing` only
@@ -319,7 +321,86 @@ update those names. CloudNativePG generates `authentik-pg-app`. Copy the
 existing `authentik-secrets` to 1Password as part of #7952; database recovery
 needs the original secret key and OIDC client secrets.
 
+### kubectl through Authentik
+
+kubectl reaches the API server at https://factory-kube.jomcgi.dev with an
+Authentik ID token. The token comes from the public client `factory-kubectl`
+(`projects/platform/authentik/factory-blueprints/factory-kubectl.yaml`)
+through kubelogin, with PKCE and no client secret.
+
+```
+kubectl + kubelogin ── ID token ──▶ Cloudflare ── tunnel ──▶ Envoy edge
+                                                               │ checks issuer, audience and
+                                                               │ groups (kube-api-route.yaml)
+                                                               ▼
+                                         API server: authentication-config.yaml
+                                         user authentik:<username>
+                                         groups authentik:<group>
+                                                               ▼
+                                         RBAC: projects/platform-factory/kube-access/
+```
+
+| Authentik group | Access |
+| --- | --- |
+| `authentik Admins` | `cluster-admin` |
+| `factory-kube-viewers` | Reads workloads, events and pod logs in the namespaces that `kube-access/resources/viewers.yaml` lists. No Secrets, ConfigMaps, exec, port-forward or writes. Lists namespaces and nodes |
+
+To give a person read-only access, add their account to
+`factory-kube-viewers` in the Authentik admin interface (through the
+port-forward in "Authentik first run"). Do not list members in the
+repository, because it is public. To remove access, remove them from the
+group. Their current token stops working at the edge and the API server
+within ten minutes, when kubelogin refreshes it.
+
+Each person's kubeconfig:
+
+```yaml
+apiVersion: v1
+kind: Config
+clusters:
+  - name: factory
+    cluster:
+      server: https://factory-kube.jomcgi.dev
+users:
+  - name: factory-authentik
+    user:
+      exec:
+        apiVersion: client.authentication.k8s.io/v1
+        command: kubectl
+        args:
+          - oidc-login
+          - get-token
+          - --oidc-issuer-url=https://factory-auth.jomcgi.dev/application/o/factory-kubectl/
+          - --oidc-client-id=factory-kubectl
+          - --oidc-extra-scope=email
+          - --oidc-extra-scope=profile
+          - --oidc-extra-scope=offline_access
+contexts:
+  - name: factory
+    context:
+      cluster: factory
+      user: factory-authentik
+current-context: factory
+```
+
+Install kubelogin first (`kubectl krew install oidc-login`, or
+`brew install kubelogin`). The first command opens a browser at
+factory-auth.jomcgi.dev. Cloudflare's certificate is publicly trusted, so the
+kubeconfig carries no CA.
+
+The API server reads `nodes/authentication-config.yaml` from
+`/etc/rancher/k3s/authentication-config.yaml`, and reloads it while it runs.
+Adding or removing its `kube-apiserver-arg` in `nodes/k3s-config.yaml` needs
+a k3s restart: rerun step 2 of "Bootstrap and rebuild". The API server
+fetches Authentik's keys from factory-auth.jomcgi.dev, through Cloudflare. A
+watch or `logs -f` with no traffic for about 100 seconds ends at Cloudflare;
+run it again.
+
 ### Break-glass
+
+When Authentik or the edge is down, kubectl through factory-kube.jomcgi.dev
+stops working. The client certificate in `~/.kube/factory.yaml` does not
+depend on either, and it works on the LAN only.
 
 ArgoCD's local `admin` account is disabled. With the cluster kubeconfig,
 use kubectl directly, or the ArgoCD CLI without its API server:

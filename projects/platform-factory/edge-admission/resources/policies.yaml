@@ -220,6 +220,13 @@ spec:
         !has(object.spec.hostnames) ||
         !object.spec.hostnames.exists(h, h == 'factory-agents.jomcgi.dev')
       message: Only the edge namespace may route factory-agents.jomcgi.dev.
+    # Its route replaces the gateway sign-in with a bearer check and reaches
+    # the Kubernetes API.
+    - expression: >-
+        request.namespace == 'edge' ||
+        !has(object.spec.hostnames) ||
+        !object.spec.hostnames.exists(h, h == 'factory-kube.jomcgi.dev')
+      message: Only the edge namespace may route factory-kube.jomcgi.dev.
     # itsaplan's namespace routes its own hostname and nothing else, so a
     # route there cannot take over another application's host.
     - expression: >-

@@ -45,6 +45,9 @@ kube-apiserver-arg:
   # clients. Kubernetes 1.37 enables both features by default (GA) but serves
   # beta API versions only when asked.
   - "runtime-config=certificates.k8s.io/v1beta1=true"
+  # Authentik ID tokens for kubectl at factory-kube.jomcgi.dev
+  # (authentication-config.yaml, installed beside this file).
+  - "authentication-config=/etc/rancher/k3s/authentication-config.yaml"
 
 kubelet-arg:
   - "system-reserved=cpu=500m,memory=1Gi"

@@ -77,6 +77,18 @@ authentik:
     # Written by the authentik secret-init Job (projects/platform-factory/authentik/resources/).
     clientSecretName: edge-oidc-client
 
+# kubectl at factory-kube.jomcgi.dev (templates/kube-api-route.yaml).
+kubeAPI:
+  hostname: factory-kube.jomcgi.dev
+  # The public client in projects/platform/authentik/factory-blueprints/factory-kubectl.yaml.
+  applicationSlug: factory-kubectl
+  clientID: factory-kubectl
+  # Envoy forwards only tokens whose groups claim names one of these. RBAC in
+  # projects/platform-factory/kube-access/ decides what each group may do.
+  groups:
+    - authentik Admins
+    - factory-kube-viewers
+
 proxy:
   # Name of the Service Envoy Gateway creates for the proxy. The tunnel route
   # and the edge-admission policy name it.

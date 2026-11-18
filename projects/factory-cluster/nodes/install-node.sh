@@ -77,6 +77,7 @@ fi
 install -d -m 0755 /etc/rancher/k3s /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d
 install -m 0600 "${HERE}/k3s-config.yaml" /etc/rancher/k3s/config.yaml
 install -m 0644 "${HERE}/registries.yaml" /etc/rancher/k3s/registries.yaml
+install -m 0644 "${HERE}/authentication-config.yaml" /etc/rancher/k3s/authentication-config.yaml
 # A drop-in, not a config-v3.toml.tmpl, so k3s's generated config stays whole.
 rm -f /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.tmpl
 install -m 0644 "${HERE}/containerd-runsc.toml" \

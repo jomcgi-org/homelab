@@ -21,6 +21,7 @@ resources:
   - ./cert-manager # Certificates from self-signed Issuers: Kargo's webhook certificate
   - ./kargo # Promotion controller for everything else here (HOME-116); no pipelines yet
   - ./edge # Envoy Gateway: every published route signs in through Authentik
+  - ./kube-access # RBAC for kubectl through Authentik at factory-kube.jomcgi.dev
   - ./authentik # Identity provider at factory-auth.jomcgi.dev
   - ./garage # S3 object store, three-way replicated; workload buckets and WAL archives
   - ./kagent-postgres # kagent's CNPG Cluster and the Secrets the factory chart reads

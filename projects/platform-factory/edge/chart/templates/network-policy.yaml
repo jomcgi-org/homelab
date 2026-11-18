@@ -135,6 +135,13 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
+    # The Kubernetes API behind factory-kube.jomcgi.dev: the kubernetes
+    # Service's endpoints are the API server port on each node.
+    - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     # kagent's UI proxies authenticated API calls to its controller.
     - toEndpoints:
         - matchLabels:
