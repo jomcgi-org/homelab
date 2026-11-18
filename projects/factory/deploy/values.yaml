@@ -47,9 +47,9 @@ kagent:
   controller:
     metrics:
       enabled: true
-    # kagent v1.0.1 built from jomcgi-org/kagent commit 9fd64db555fa
+    # kagent v1.0.1 built from jomcgi-org/kagent commit e3d14ee3dd62
     # (branch jomcgi/codex-6.2, build run
-    # https://github.com/jomcgi-org/kagent/actions/runs/44194091798). Commit
+    # https://github.com/jomcgi-org/kagent/actions/runs/44250376557). Commit
     # 2c2fc329a8d8 sets PinnedCodexVersion and the harness Dockerfile to Codex
     # 0.169.1, the first stable Codex whose bundled catalogue has
     # gpt-6.2-astra and gpt-6.2-sol (agents.*.model below). Upstream kagent
@@ -59,13 +59,14 @@ kagent:
     # kagent release ships the bump. Revert the images and the models
     # together: the packaged images' Codex 0.161.0 gives a 6.2 coder no
     # apply_patch.
-    # Commit 9fd64db555fa adds kagent-dev/kagent#3653: SuspendActor gets its
-    # own 2 min deadline (substrate.snapshotTimeout) in place of the 30 s
-    # call deadline, whose timeout wedges the session (kagent#3311/#3312).
+    # Commit 9fd64db555fa adds kagent-dev/kagent#3653, and the build run
+    # tests it: SuspendActor gets its own 2 min deadline
+    # (substrate.snapshotTimeout) in place of the 30 s call deadline, whose
+    # timeout wedges the session (kagent#3311/#3312).
     image:
       registry: ghcr.io
       repository: jomcgi-org/kagent/controller
-      tag: 1.0.1-jomcgi.9fd64db555fa@sha256:51c7727b074efda73e69efa57537de45ba917439b5311695ac7c39c9fa842251
+      tag: 1.0.1-jomcgi.e3d14ee3dd62@sha256:f7fb26c1a1158df556e1b0f861903c9b5d7b383e61278b32abb04534adcc931c
   # The UI peaked at 4Mi over two days (2026-11-16) against the chart's
   # 256Mi request.
   ui:
@@ -79,8 +80,8 @@ kagent:
     # 0.169.1 in place of 0.161.0. The controller starts only when `release`
     # equals its own version, so it names the fork build, not 1.0.1.
     harnessImages:
-      release: 1.0.1-jomcgi.2c2fc329a8d8
-      codex: ghcr.io/jomcgi-org/kagent/codex-harness@sha256:f1b2f7a4834394ae9170b13e4d135201e754f791312ca1990a530221ec57d9d1
+      release: 1.0.1-jomcgi.e3d14ee3dd62
+      codex: ghcr.io/jomcgi-org/kagent/codex-harness@sha256:51d92a9c9b5e819325e89491a80678539fc60dc7713a6e4e4b150ff9adc0a3cb
     runtimeDefaults:
       cpu: "4"
       memory: 8Gi
