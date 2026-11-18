@@ -792,3 +792,20 @@ use_repo(
 # EmberVM conformance runner image also layers both for S6 (issue #6415).
 tla = use_extension("//bazel/tla:repositories.bzl", "tla")
 use_repo(tla, "temurin21_jre_linux_amd64", "tla2tools")
+
+# Keep the browser-only patches and upstream dependency versions scoped to kubectl.
+kubectl_deps = use_extension("@gazelle//:extensions.bzl", "go_deps", isolate = True)
+kubectl_deps.from_file(go_mod = "//projects/factory-explore/kubectl-wasm:go.mod")
+kubectl_deps.module_override(
+    patch_strip = 1,
+    patches = ["//projects/factory-explore/kubectl-wasm:term.patch"],
+    path = "github.com/moby/term",
+)
+kubectl_deps.module_override(
+    patch_strip = 1,
+    patches = ["//projects/factory-explore/kubectl-wasm:kubectl.patch"],
+    path = "k8s.io/kubectl",
+)
+use_repo(kubectl_deps, wasm_cli = "io_k8s_cli_runtime", wasm_client = "io_k8s_client_go", wasm_cobra = "com_github_spf13_cobra", wasm_kubectl = "io_k8s_kubectl", wasm_repo_config = "bazel_gazelle_go_repository_config")
+
+use_repo(go_sdk, wasm_go_sdk = "main___download_0_linux_amd64")

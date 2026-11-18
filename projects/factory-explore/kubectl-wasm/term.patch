@@ -1,0 +1,93 @@
+diff --git a/term_js.go b/term_js.go
+new file mode 100644
+index 0000000..141d359
+--- /dev/null
++++ b/term_js.go
+@@ -0,0 +1,46 @@
++package term
++
++import (
++	"errors"
++	"io"
++	"os"
++)
++
++type terminalState struct{}
++
++var errNoTerminal = errors.New("browser streams have no terminal")
++
++func stdStreams() (io.ReadCloser, io.Writer, io.Writer) { return os.Stdin, os.Stdout, os.Stderr }
++func getFdInfo(interface{}) (uintptr, bool)             { return 0, false }
++func isTerminal(uintptr) bool                           { return false }
++func getWinsize(fd uintptr) (*Winsize, error) {
++	return nil, errNoTerminal
++}
++
++func setWinsize(fd uintptr, ws *Winsize) error {
++	return errNoTerminal
++}
++
++func restoreTerminal(fd uintptr, state *State) error {
++	return errNoTerminal
++}
++
++func saveState(fd uintptr) (*State, error) {
++	return nil, errNoTerminal
++}
++
++func disableEcho(fd uintptr, state *State) error {
++	return errNoTerminal
++}
++
++func setRawTerminal(fd uintptr) (*State, error) {
++	return nil, errNoTerminal
++}
++
++func setRawTerminalOutput(uintptr) (*State, error) {
++	return nil, errNoTerminal
++}
++
++func makeRaw(fd uintptr) (*State, error) {
++	return nil, errNoTerminal
++}
+diff --git a/term_unix.go b/term_unix.go
+index 579ce55..f564532 100644
+--- a/term_unix.go
++++ b/term_unix.go
+@@ -1,4 +1,5 @@
+-//go:build !windows
++//go:build !windows && !js
++// +build !js
+ // +build !windows
+ 
+ package term
+diff --git a/termios_nonbsd.go b/termios_nonbsd.go
+index 88b7b21..49d204e 100644
+--- a/termios_nonbsd.go
++++ b/termios_nonbsd.go
+@@ -1,4 +1,5 @@
+-//go:build !darwin && !freebsd && !netbsd && !openbsd && !windows
++//go:build !darwin && !freebsd && !netbsd && !openbsd && !windows && !js
++// +build !js
+ // +build !darwin,!freebsd,!netbsd,!openbsd,!windows
+ 
+ package term
+diff --git a/termios_unix.go b/termios_unix.go
+index 60c8237..c3871cf 100644
+--- a/termios_unix.go
++++ b/termios_unix.go
+@@ -1,4 +1,5 @@
+-//go:build !windows
++//go:build !windows && !js
++// +build !js
+ // +build !windows
+ 
+ package term
+--- a/BUILD.bazel
++++ b/BUILD.bazel
+@@ -8,4 +8,5 @@
+         "proxy.go",
+         "term.go",
++        "term_js.go",
+         "term_unix.go",
+         "term_windows.go",
