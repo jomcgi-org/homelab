@@ -178,7 +178,7 @@ def test_security_alerts_preserve_explicit_lockstep_groups():
     )
     assert config["vulnerabilityAlerts"]["enabled"] is True
     assert config["vulnerabilityAlerts"]["schedule"] == ["at any time"]
-    assert config["vulnerabilityAlerts"]["minimumReleaseAge"] is None
+    assert config["vulnerabilityAlerts"]["minimumReleaseAge"] == "1 day"
     assert config["vulnerabilityAlerts"]["prCreation"] == "immediate"
 
 
@@ -221,6 +221,10 @@ def _python_update_config(config, name, *, security=False):
     return effective
 
 
+def _minimum_age_days(config):
+    return {"1 day": 1, "3 days": 3}[config["minimumReleaseAge"]]
+
+
 def _selected_python_release(config, name, current, releases, *, first_fixed=None):
     """Replay the relevant Renovate 44.14.10 lookup stages for PEP 440 fixtures.
 
@@ -257,10 +261,8 @@ def _selected_python_release(config, name, current, releases, *, first_fixed=Non
         else:
             assert effective["vulnerabilityFixStrategy"] == "highest"
     assert effective["internalChecksFilter"] == "strict"
-    minimum_age = effective["minimumReleaseAge"]
-    if minimum_age:
-        assert minimum_age == "3 days"
-        candidates = [(version, age) for version, age in candidates if age >= 3]
+    minimum_days = _minimum_age_days(effective)
+    candidates = [(version, age) for version, age in candidates if age >= minimum_days]
     # None means only pending releases remain: Renovate marks the update
     # pendingChecks and does not propose it (see the branch test below).
     return str(candidates[-1][0]) if candidates else None
@@ -298,8 +300,10 @@ def test_next_opentelemetry_beta_minor_is_selected_with_stable_sdk(name):
 
 
 @pytest.mark.parametrize("family", ["opentelemetry", "pydantic"])
-@pytest.mark.parametrize("peer_age", [1, 7])
-def test_security_updates_exempt_only_the_vulnerable_member(family, peer_age):
+@pytest.mark.parametrize("peer_age", [0, 1, 7])
+def test_security_updates_shorten_the_wait_for_only_the_vulnerable_member(
+    family, peer_age
+):
     config = json.loads((ROOT / "renovate.json").read_text())
     # Synthetic publisher-matched release sets: the first patch fixes the
     # advisory, but a newer release requires a newer exact peer version.
@@ -325,9 +329,8 @@ def test_security_updates_exempt_only_the_vulnerable_member(family, peer_age):
             )
             effective = _python_update_config(config, name, security=name == vulnerable)
             if name == vulnerable:
-                # The highest fix is exempt from the release age.
-                assert effective["minimumReleaseAge"] is None
-                assert selected == latest
+                assert effective["minimumReleaseAge"] == "1 day"
+                assert selected == (latest if peer_age >= 1 else fixed)
             else:
                 # Aged peers match that fix. A pending peer keeps its newest
                 # aged release until the first scan after the cooldown.
@@ -423,6 +426,8 @@ def test_lockstep_branch_schedule_and_limits_with_unaffected_first_member(
         ((7, None), None, (True, False)),
         ((3, 3), None, (True, True)),
         ((1, 1), None, (False, False)),
+        ((0, 7), 0, (False, True)),
+        ((None, 7), 0, (False, True)),
         ((1, 7), 0, (True, True)),
         ((7, 1), 1, (True, True)),
         ((1, 1), 0, (True, False)),
@@ -455,8 +460,7 @@ def test_lockstep_prs_exclude_pending_releases_and_use_the_merge_queue(
     # branch when every member is pending. No PR carries a pending release.
     pending = [
         upgrade["internalChecksFilter"] == "strict"
-        and upgrade["minimumReleaseAge"] is not None
-        and (age is None or age < 3)
+        and (age is None or age < _minimum_age_days(upgrade))
         for upgrade, age in zip(upgrades, ages)
     ]
     assert tuple(not p and not all(pending) for p in pending) == proposed

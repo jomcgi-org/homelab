@@ -72,7 +72,7 @@ exception is retained for Bazel lock maintenance.
 
 Ordinary PR creation defaults to before 06:00 Monday in America/Vancouver,
 with five concurrent PRs, two per hour and a three-day release age. Security
-alerts retain their immediate exception. Dependabot security updates remain
+alerts can open on any scan once a fix is one day old. Dependabot security updates remain
 enabled.
 See [coverage and holds](COVERAGE.md) for exclusions and generated files.
 
@@ -97,8 +97,8 @@ also keep the default manual merge policy. Existing compatibility holds
 still disable auto-merge and require dashboard approval.
 
 The OpenTelemetry and Pydantic/core groups use the same auto-merge path
-through the merge queue. A security alert exempts only the vulnerable
-package from the release age. A peer released less than three days earlier
+through the merge queue. A security alert shortens the release age to one day for
+the vulnerable package. A peer released less than three days earlier
 keeps its current version; Renovate adds it to the group on the first scan
 after it ages.
 
