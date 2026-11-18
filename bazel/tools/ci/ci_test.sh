@@ -959,9 +959,12 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 	cp "${CI%/*}/ratchets.sh" "$LOCAL_AFFECTED_TEST" "$workflow_root/bazel/tools/ci/"
 	printf '#!/usr/bin/env bash\necho //fixture:test\n' >"$workflow_root/bazel/tools/ci/affected-targets.sh"
 	chmod +x "$workflow_root/bazel/tools/ci/affected-targets.sh"
-	for failed_guard in none verification_genrule_guard central_build_ratchet chart_version_guard source_ratchet test_source_reachability; do
-		# Failure injection applies to the qualifying path only.
-		[[ "$scenario" == qualifying || "$failed_guard" == none ]] || continue
+	for failed_guard in none check_bundles verification_genrule_guard central_build_ratchet chart_version_guard source_ratchet test_source_reachability; do
+		case "$failed_guard" in
+		none) ;;
+		check_bundles) [[ "$scenario" == pr-main ]] || continue ;;
+		*) [[ "$scenario" == qualifying ]] || continue ;;
+		esac
 		export TRACE="$workflow_root/trace-$failed_guard"
 		rc=0
 		set +e
@@ -1012,6 +1015,15 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 		) >"$workflow_root/output-$failed_guard" 2>&1
 		rc=$?
 		set -e
+		if [[ "$failed_guard" == check_bundles ]]; then
+			if [[ "$rc" -ne 0 ]] && grep -qxF 'python3 ./bazel/tools/format/document_bundles/check_bundles.py' "$TRACE" &&
+				! grep -q '/check_doc_links.py' "$TRACE"; then
+				pass "workflow_pr_fails_document_bundle_check"
+			else
+				fail "workflow_pr_fails_document_bundle_check" "Format must stop when the bundle checker fails"
+			fi
+			continue
+		fi
 		if [[ "$failed_guard" != none ]]; then
 			if [[ "$rc" -ne 0 ]] && grep -qE "^python3 .*/$failed_guard\\.py( |$)" "$TRACE" &&
 				! grep -q '^bazel test\|^tool ' "$TRACE" && grep -q '^cleanup$' "$TRACE"; then

@@ -95,8 +95,8 @@ prose it replaces. Skip it for a one-component change or a version bump.
 
 ## Document types
 
-The CI Format stage and `ci lint` run the
-[document bundle check](../bazel/tools/format/document_bundles/check_bundles.py).
+The Format stage of `pr-checks` and local `ci lint` both run
+[`check_bundles.py`](../bazel/tools/format/document_bundles/check_bundles.py).
 It reads [the bundle rules](templates/bundles.yaml) and reports the path and
 missing document or required part. Keep the rules in the JSON subset of YAML
 so the check runs with the Python standard library on every workstation.
