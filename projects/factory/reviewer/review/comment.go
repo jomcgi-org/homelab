@@ -281,6 +281,9 @@ func gateItems(g *Gate) []string {
 	if g.SharedHead {
 		out = append(out, "shares its commit with another ready PR")
 	}
+	if g.HistoryLost {
+		out = append(out, "earlier review history lost; approval accepts its unaccounted blockers")
+	}
 	if g.RecoveryEpoch != "" {
 		out = append(out, "context to confirm after a reviewer restart")
 	}
