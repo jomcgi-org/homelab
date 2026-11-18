@@ -16,9 +16,7 @@ go_library(
 
 go_test(
     name = "reaper_test",
-    srcs = [
-        "reaper_test.go",
-    ],
+    srcs = ["reaper_test.go"],
     data = ["@postgres_test//:postgres"],
     embed = [":reaper"],
     deps = [
