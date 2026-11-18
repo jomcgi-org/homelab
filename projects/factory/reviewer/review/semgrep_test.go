@@ -264,36 +264,20 @@ func TestSemgrepStampSurvivesStateTrimming(t *testing.T) {
 func TestSemgrepOverflowRecoveryAcrossRestart(t *testing.T) {
 	h := semgrepHarness(t)
 	h.gh.addCheck(shaA, scanName, scanApp, "success")
-	e, ctx, stop := h.start()
 	id := strings.Repeat("x", maxState)
-	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted,
-		report(t, Report{Summary: "Blocker", Findings: []Finding{finding(id, SeverityHigh)}}))
-	e.Wait()
-	st, ok := LoadState(h.gh.check(shaA).Text)
-	if !ok || !st.Incomplete || st.Semgrep == nil || !st.Semgrep.Verified {
-		t.Fatal("overflow lost the evidence stamp")
-	}
-	stop()
-	next := strings.Repeat("b", 40)
-	h.gh.push(7, next)
-	e, ctx, stop = h.start()
-	h.k.finish(runReview(t, h, e, ctx, 7, next), kagent.StateCompleted,
-		report(t, Report{Summary: "Fixed", Findings: []Finding{}, Previous: []Previous{{ID: id, Status: StatusFixed}}}))
-	e.Wait()
-	stop()
-	e, ctx, _ = h.start()
+	st, ok := LoadState(reviewRound(t, h, shaA, Report{Summary: "Blocker", Findings: []Finding{finding(id, SeverityHigh)}}).Text)
+	failIf(t, !ok || !st.Incomplete || st.Semgrep == nil || !st.Semgrep.Verified, "overflow lost the evidence stamp")
+	next := sha40('b')
+	reviewRound(t, h, next, Report{Summary: "Fixed", Findings: []Finding{}, Previous: []Previous{{ID: id, Status: StatusFixed}}})
+	e, ctx, _ := h.start()
 	e.Tick(ctx)
 	c := h.gh.check(next)
 	st, ok = LoadState(c.Text)
-	if !ok || st.Incomplete || len(st.Blocking) != 0 || st.Semgrep == nil || st.Semgrep.Verified || c.Conclusion != ConclusionFailure {
-		t.Fatal("resolving the original blocker cleared the new head's missing scan")
-	}
+	failIf(t, !ok || st.Incomplete || len(st.Blocking) != 0 || st.Semgrep == nil || st.Semgrep.Verified || c.Conclusion != ConclusionFailure, "resolving the original blocker cleared the new head's missing scan")
 	h.gh.addCheck(next, scanName, scanApp, "success")
 	h.k.finish(runReview(t, h, e, ctx, 7, next), kagent.StateCompleted, report(t, passing))
 	e.Wait()
-	if h.gh.check(next).Conclusion != ConclusionSuccess {
-		t.Fatal("complete accounting and reviewed scan did not restore the pass")
-	}
+	failIf(t, h.gh.check(next).Conclusion != ConclusionSuccess, "complete accounting and reviewed scan did not restore the pass")
 }
 
 func TestSemgrepWithdrawsPassWhileReviewSlotsAreFull(t *testing.T) {

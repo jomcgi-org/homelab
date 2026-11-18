@@ -73,19 +73,7 @@ func TestParseReportRejectsAnythingElse(t *testing.T) {
 }
 
 func TestParseReportRejectsInvalidAndDuplicateIdentities(t *testing.T) {
-	for _, id := range []string{" x", "x ", "x\ny", "x\x01y", "x\ufffdy", "x  y", markerStart + "x -->"} {
-		t.Run(fmt.Sprintf("invalid %q", id), func(t *testing.T) {
-			for _, r := range []Report{
-				{Summary: "s", Findings: []Finding{finding(id, SeverityHigh)}},
-				{Summary: "s", Findings: []Finding{}, Previous: []Previous{{ID: id, Status: StatusFixed}}},
-			} {
-				if _, err := ParseReport(report(t, r)); err == nil {
-					t.Fatal("invalid identity accepted")
-				}
-			}
-		})
-	}
-	for name, r := range map[string]Report{
+	cases := map[string]Report{
 		"findings": {Summary: "s", Findings: []Finding{finding("same", SeverityLow), finding("same", SeverityCritical)}},
 		"derived": {Summary: "s", Findings: []Finding{
 			{Severity: SeverityHigh, Title: "Same!"}, {Severity: SeverityHigh, Title: "Same!"},
@@ -94,11 +82,15 @@ func TestParseReportRejectsInvalidAndDuplicateIdentities(t *testing.T) {
 			{ID: "same", Status: StatusFixed}, {ID: "same", Status: StatusOpen},
 		}},
 		"empty previous": {Summary: "s", Findings: []Finding{}, Previous: []Previous{{Status: StatusFixed}}},
-	} {
+	}
+	for _, id := range []string{" x", "x ", "x\ny", "x\x01y", "x\ufffdy", "x  y", markerStart + "x -->"} {
+		cases[fmt.Sprintf("invalid finding %q", id)] = Report{Summary: "s", Findings: []Finding{finding(id, SeverityHigh)}}
+		cases[fmt.Sprintf("invalid previous %q", id)] = Report{Summary: "s", Findings: []Finding{}, Previous: []Previous{{ID: id, Status: StatusFixed}}}
+	}
+	for name, r := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := ParseReport(report(t, r)); err == nil {
-				t.Fatal("ambiguous identities accepted")
-			}
+			_, err := ParseReport(report(t, r))
+			failIf(t, err == nil, "invalid or ambiguous identities accepted")
 		})
 	}
 }
@@ -114,21 +106,15 @@ func TestDerivedIDsKeepDistinctIdentities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(r.Findings[0].ID, "a.go:"+prefix+"first:") || !strings.HasPrefix(r.Findings[1].ID, "a.go:"+prefix+"second:") {
-		t.Fatal("derived identities lost their distinct suffixes")
-	}
+	failIf(t, !strings.HasPrefix(r.Findings[0].ID, "a.go:"+prefix+"first:") || !strings.HasPrefix(r.Findings[1].ID, "a.go:"+prefix+"second:"), "derived identities lost their distinct suffixes")
 	seen := map[string]bool{}
 	for _, f := range r.Findings {
-		if seen[f.ID] {
-			t.Fatal("distinct findings acquired the same identity")
-		}
+		failIf(t, seen[f.ID], "distinct findings acquired the same identity")
 		seen[f.ID] = true
 		id := f.ID
 		f.ID = ""
 		again, err := ParseReport(report(t, Report{Summary: "s", Findings: []Finding{f}}))
-		if err != nil || again.Findings[0].ID != id {
-			t.Fatal("derived identity changed on a later review")
-		}
+		failIf(t, err != nil || again.Findings[0].ID != id, "derived identity changed on a later review")
 	}
 }
 
@@ -753,9 +739,7 @@ func TestStateStaysUnderGitHubsLimit(t *testing.T) {
 		}
 	}
 	for i, f := range got.Gate.Findings {
-		if f.ID != st.Gate.Findings[i].ID || f.Severity != SeverityHigh {
-			t.Fatalf("gate finding %d lost its identity or severity", i)
-		}
+		failIf(t, f.ID != st.Gate.Findings[i].ID || f.Severity != SeverityHigh, "gate finding %d lost its identity or severity", i)
 	}
 	// A small state is stored whole.
 	small := State{Blocking: []Finding{{ID: "a.go:x", Severity: SeverityMedium, Path: "a.go", Title: "T", Detail: "D <b>"}}}
@@ -798,36 +782,25 @@ func TestPersistedBlockersSurvivePartialResolution(t *testing.T) {
 			}
 			first := Render(Assess(r, nil), r, nil, "footer")
 			st, ok := LoadState(first.Output.Text)
-			if !ok || st.Incomplete || len(st.Blocking) != count || first.Conclusion != ConclusionFailure {
-				t.Fatalf("persisted %d of %d blockers, incomplete=%v", len(st.Blocking), count, st.Incomplete)
-			}
+			failIf(t, !ok || st.Incomplete || len(st.Blocking) != count || first.Conclusion != ConclusionFailure, "persisted %d of %d blockers, incomplete=%v", len(st.Blocking), count, st.Incomplete)
 			next := &Report{Summary: "s"}
 			for i, f := range st.Blocking {
-				if f.ID != r.Findings[i].ID || f.Severity != r.Findings[i].Severity {
-					t.Fatalf("finding %d lost identity or severity", i)
-				}
+				failIf(t, f.ID != r.Findings[i].ID || f.Severity != r.Findings[i].Severity, "finding %d lost identity or severity", i)
 				if i < count-1 {
 					next.Previous = append(next.Previous, Previous{ID: f.ID, Status: StatusFixed})
 				}
 			}
 			last := r.Findings[count-1]
 			a := Assess(next, st.Previous())
-			if a.Conclusion != ConclusionFailure || len(a.Blocking) != 1 || a.Blocking[0].ID != last.ID || len(a.Fixed) != count-1 {
-				t.Fatalf("partial resolution = %s, %d blockers, %d fixed", a.Conclusion, len(a.Blocking), len(a.Fixed))
-			}
+			failIf(t, a.Conclusion != ConclusionFailure || len(a.Blocking) != 1 || a.Blocking[0].ID != last.ID || len(a.Fixed) != count-1, "partial resolution = %s, %d blockers, %d fixed", a.Conclusion, len(a.Blocking), len(a.Fixed))
 			st, ok = LoadState(Render(a, next, nil, "footer").Output.Text)
-			if !ok || st.Incomplete {
-				t.Fatal("partial resolution lost the remaining state")
-			}
+			failIf(t, !ok || st.Incomplete, "partial resolution lost the remaining state")
 			for status, note := range map[string]string{StatusFixed: "fixed", StatusJustified: "withdrawn: test proves the finding was mistaken"} {
-				lastReport := &Report{Previous: []Previous{{ID: last.ID, Status: status, Note: note}}}
-				if a := Assess(lastReport, st.Previous()); a.Conclusion != ConclusionSuccess {
-					t.Fatalf("trusted resolution %s failed", status)
-				}
+				a := Assess(&Report{Previous: []Previous{{ID: last.ID, Status: status, Note: note}}}, st.Previous())
+				failIf(t, a.Conclusion != ConclusionSuccess, "trusted resolution %s failed", status)
 			}
-			if a := Assess(&Report{Previous: []Previous{{ID: last.ID, Status: StatusJustified, Note: "Trust me"}}}, st.Previous()); a.Conclusion != ConclusionFailure {
-				t.Fatal("a high finding cleared without a fix or withdrawal")
-			}
+			a = Assess(&Report{Previous: []Previous{{ID: last.ID, Status: StatusJustified, Note: "Trust me"}}}, st.Previous())
+			failIf(t, a.Conclusion != ConclusionFailure, "a high finding cleared without a fix or withdrawal")
 		})
 	}
 }
@@ -868,14 +841,10 @@ func TestSameSecondApprovalNeedsNewIdentityAfterACompleteSnapshot(t *testing.T) 
 func TestAttemptSnapshotDoesNotBecomeAnEmptyCompletedReport(t *testing.T) {
 	attempt := State{Gate: &Gate{Paths: []string{strings.Repeat("p", maxState)}}}
 	st, ok := LoadState(encodeState(attempt))
-	if !ok || st.Incomplete || st.Blocking != nil {
-		t.Fatal("shortening an attempt snapshot made it replace the prior findings")
-	}
+	failIf(t, !ok || st.Incomplete || st.Blocking != nil, "shortening an attempt snapshot made it replace the prior findings")
 	completed := stateOf(Assess(&Report{}, nil), nil, nil)
 	st, ok = LoadState(encodeState(completed))
-	if !ok || st.Incomplete || st.Blocking == nil {
-		t.Fatal("a completed empty report lost its checkpoint")
-	}
+	failIf(t, !ok || st.Incomplete || st.Blocking == nil, "a completed empty report lost its checkpoint")
 }
 
 func TestEvidenceBindingParticipatesInStateOverflowDecision(t *testing.T) {
@@ -895,9 +864,7 @@ func TestEvidenceBindingParticipatesInStateOverflowDecision(t *testing.T) {
 		}
 	}
 	gate.Findings[0].ID = strings.Repeat("x", low) + ":human-gate"
-	if Render(a, r, gate, "footer").Conclusion != ConclusionSuccess {
-		t.Fatal("fixture overflows before the evidence binding")
-	}
+	failIf(t, Render(a, r, gate, "footer").Conclusion != ConclusionSuccess, "fixture overflows before the evidence binding")
 	for _, evidence := range []string{"issue", "goal", "semgrep", "decision"} {
 		t.Run(evidence, func(t *testing.T) {
 			state := stateOf(a, r, gate)
@@ -914,14 +881,9 @@ func TestEvidenceBindingParticipatesInStateOverflowDecision(t *testing.T) {
 			}
 			o := render(a, r, gate, "footer", &state)
 			st, ok := LoadState(o.Output.Text)
-			if !ok || !st.Incomplete || o.Conclusion != ConclusionFailure || strings.Contains(o.Output.Summary, gateOnlyMarker) {
-				t.Fatal("adding service evidence published an incomplete pass")
-			}
-			if st.IssueDigest != state.IssueDigest || st.GoalKey != state.GoalKey ||
-				!reflect.DeepEqual(st.Goal, state.Goal) || !reflect.DeepEqual(st.Semgrep, state.Semgrep) ||
-				!reflect.DeepEqual(st.Decisions, state.Decisions) {
-				t.Fatal("overflow marker lost service recovery evidence")
-			}
+			failIf(t, !ok || !st.Incomplete || o.Conclusion != ConclusionFailure || strings.Contains(o.Output.Summary, gateOnlyMarker), "adding service evidence published an incomplete pass")
+			failIf(t, st.IssueDigest != state.IssueDigest || st.GoalKey != state.GoalKey || !reflect.DeepEqual(st.Goal, state.Goal) ||
+				!reflect.DeepEqual(st.Semgrep, state.Semgrep) || !reflect.DeepEqual(st.Decisions, state.Decisions), "overflow marker lost service recovery evidence")
 		})
 	}
 }
@@ -942,12 +904,8 @@ func TestStateOverflowFailsClosedEvenWithGateApproval(t *testing.T) {
 			}
 			o := Render(a, r, gate, "footer")
 			st, ok := LoadState(o.Output.Text)
-			if !ok || !st.Incomplete || len(o.Output.Text) > maxState || o.Conclusion != ConclusionFailure || strings.Contains(o.Output.Summary, gateOnlyMarker) {
-				t.Fatalf("overflow passed or failed to persist its marker: %s, state=%+v", o.Conclusion, st)
-			}
-			if !strings.Contains(o.Output.Summary, "cannot clear missing history") {
-				t.Fatal("overflow recovery is not explained")
-			}
+			failIf(t, !ok || !st.Incomplete || len(o.Output.Text) > maxState || o.Conclusion != ConclusionFailure || strings.Contains(o.Output.Summary, gateOnlyMarker), "overflow passed or failed to persist its marker: %s, state=%+v", o.Conclusion, st)
+			failIf(t, !strings.Contains(o.Output.Summary, "cannot clear missing history"), "overflow recovery is not explained")
 		})
 	}
 }
@@ -1000,14 +958,9 @@ func TestLegacySnapshotRequiresEveryIdentity(t *testing.T) {
 				st.Blocking = []Finding{finding("a.go:correctness", SeverityHigh)}
 				st.Gate = &Gate{Findings: []Finding{finding("AGENTS.md:human-gate", SeverityHigh)}}
 			case "40 blockers":
-				for i := range 40 {
-					st.Blocking = append(st.Blocking, finding(fmt.Sprintf("a.go:%d", i), SeverityHigh))
-				}
+				st.Blocking = numbered(40, "a.go:%d")
 			case "20 gates":
-				st.Gate = &Gate{}
-				for i := range 20 {
-					st.Gate.Findings = append(st.Gate.Findings, finding(fmt.Sprintf("a.go:human-gate:%d", i), SeverityHigh))
-				}
+				st.Gate = &Gate{Findings: numbered(20, "a.go:human-gate:%d")}
 			case "clipped ID":
 				st.Blocking = []Finding{finding(clip(strings.Repeat("a", 200), 80), SeverityHigh)}
 			case "duplicate ID":
@@ -1019,11 +972,8 @@ func TestLegacySnapshotRequiresEveryIdentity(t *testing.T) {
 			case "attempt":
 				st.Blocking = nil
 			}
-			text := strings.Replace(encodeState(st), "state v2", "state v1", 1)
-			_, ok := legacySnapshot(text)
-			if ok != (kind == "empty" || kind == "known findings") {
-				t.Fatalf("legacy completeness = %v", ok)
-			}
+			_, ok := legacySnapshot(legacyText(st))
+			failIf(t, ok != (kind == "empty" || kind == "known findings"), "legacy completeness = %v", ok)
 		})
 	}
 }
@@ -1033,17 +983,14 @@ func TestLegacyReplayRejectsDerivedIdentityCollisions(t *testing.T) {
 		{Path: "a.go", Title: "A!", Severity: SeverityHigh},
 		{Path: "a.go", Title: "A?", Severity: SeverityHigh},
 	}})
-	if _, err := ParseReport(reply); err != nil {
-		t.Fatal(err) // New reports use distinct hash-suffixed identities.
-	}
-	if _, err := parseReport(reply, true); err == nil {
-		t.Fatal("ambiguous legacy identities allowed recovery")
-	}
+	_, err := ParseReport(reply) // New reports use distinct hash-suffixed identities.
+	_, legacyErr := parseReport(reply, true)
+	failIf(t, err != nil || legacyErr == nil, "new report: %v; legacy recovery of ambiguous identities: %v", err, legacyErr)
 }
 
 func TestLegacyAndInvalidStateIsIncomplete(t *testing.T) {
 	for name, text := range map[string]string{
-		"legacy":           strings.Replace(encodeState(State{Blocking: []Finding{finding("a", SeverityHigh)}}), "state v2", "state v1", 1),
+		"legacy":           legacyText(State{Blocking: []Finding{finding("a", SeverityHigh)}}),
 		"duplicate":        encodeState(State{Blocking: []Finding{finding("a", SeverityHigh), finding("a", SeverityMedium)}}),
 		"gate duplicate":   encodeState(State{Gate: &Gate{Findings: []Finding{finding("a:human-gate", SeverityHigh), finding("a:human-gate", SeverityHigh)}}}),
 		"invalid ID":       encodeState(State{Blocking: []Finding{finding("a\nb", SeverityHigh)}}),
@@ -1055,9 +1002,8 @@ func TestLegacyAndInvalidStateIsIncomplete(t *testing.T) {
 		"unknown version":  markerStart + "state v3 e30=" + stateSuffix,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if st, ok := LoadState(text); !ok || !st.Incomplete {
-				t.Fatal("untrustworthy state treated as complete")
-			}
+			st, ok := LoadState(text)
+			failIf(t, !ok || !st.Incomplete, "untrustworthy state treated as complete")
 		})
 	}
 }
@@ -1071,16 +1017,12 @@ func TestIncompleteStateKeepsRecoverableIdentitiesAndSeverities(t *testing.T) {
 		Gate: &Gate{Labels: []string{"human"}, Findings: []Finding{finding("a:human-gate", SeverityHigh)}},
 	}
 	got, ok := LoadState(encodeState(st))
-	if !ok || !got.Incomplete || len(got.Blocking) != 2 || got.Blocking[0].ID != "same" || got.Blocking[0].Severity != SeverityCritical ||
-		got.Blocking[1].ID != "known" || got.Gate == nil || len(got.Gate.Findings) != 1 || got.Gate.Findings[0].ID != "a:human-gate" {
-		t.Fatalf("recoverable findings were lost: %+v", got)
-	}
+	failIf(t, !ok || !got.Incomplete || len(got.Blocking) != 2 || got.Blocking[0].ID != "same" || got.Blocking[0].Severity != SeverityCritical ||
+		got.Blocking[1].ID != "known" || got.Gate == nil || len(got.Gate.Findings) != 1 || got.Gate.Findings[0].ID != "a:human-gate", "recoverable findings were lost: %+v", got)
 	// A later reader must keep both the known findings and the missing-history
 	// flag, even after malformed or duplicate records have been removed.
 	again, ok := LoadState(encodeState(got))
-	if !ok || !again.Incomplete || fmt.Sprint(again.Previous()) != fmt.Sprint(got.Previous()) || !slices.Contains(again.Gate.Labels, "human") {
-		t.Fatal("re-encoding incomplete state lost findings, holds or the incomplete flag")
-	}
+	failIf(t, !ok || !again.Incomplete || fmt.Sprint(again.Previous()) != fmt.Sprint(got.Previous()) || !slices.Contains(again.Gate.Labels, "human"), "re-encoding incomplete state lost findings, holds or the incomplete flag")
 }
 
 func TestGateFindingsAreSetApartBeforeTheLowCap(t *testing.T) {
@@ -1118,9 +1060,7 @@ func TestAssessKeepsPreviousGateFindings(t *testing.T) {
 	var gated []string
 	for _, f := range a.Gated {
 		gated = append(gated, f.ID)
-		if f.ID == "d:human-gate#again" && f.Severity != SeverityHigh {
-			t.Fatal("a repeated model gate lost its original severity")
-		}
+		failIf(t, f.ID == "d:human-gate#again" && f.Severity != SeverityHigh, "a repeated model gate lost its original severity")
 	}
 	if want := "d:human-gate#again,AGENTS.md:human-gate,c:human-gate#justified"; strings.Join(gated, ",") != want {
 		t.Fatalf("gated = %v, want %s", gated, want)
@@ -1354,9 +1294,7 @@ func TestStateTrimsTheClearedRecordFirst(t *testing.T) {
 	if raw, _ := json.Marshal(st); len(raw)*4/3 <= maxState {
 		t.Fatalf("the fixture fits whole (%d bytes)", len(raw))
 	}
-	if rawStateLen(State{Blocking: st.Blocking, Cleared: bareCleared(st.Cleared)}) > maxState {
-		t.Fatal("the fixture cannot fit after removing cleared descriptions")
-	}
+	failIf(t, rawStateLen(State{Blocking: st.Blocking, Cleared: bareCleared(st.Cleared)}) > maxState, "the fixture cannot fit after removing cleared descriptions")
 	got, ok := LoadState(encodeState(st))
 	if !ok || got.Incomplete || !reflect.DeepEqual(got.Blocking, st.Blocking) || len(got.Cleared) != maxCleared {
 		t.Fatalf("state = %v, %d blocking, %d cleared", ok, len(got.Blocking), len(got.Cleared))
@@ -1374,9 +1312,7 @@ func TestStateTrimsTheClearedRecordFirst(t *testing.T) {
 		t.Fatalf("state = %d blocking, %d cleared, partial %v", len(got.Blocking), len(got.Cleared), got.ClearedPartial)
 	}
 	for i, f := range got.Blocking {
-		if f.ID != st.Blocking[i].ID || f.Severity != st.Blocking[i].Severity {
-			t.Fatalf("blocking identity or severity changed: %+v", f)
-		}
+		failIf(t, f.ID != st.Blocking[i].ID || f.Severity != st.Blocking[i].Severity, "blocking identity or severity changed: %+v", f)
 	}
 
 	// Blocking findings that fit alone stay whole when only the cleared IDs
