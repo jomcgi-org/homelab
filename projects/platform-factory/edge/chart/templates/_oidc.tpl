@@ -43,6 +43,8 @@ jwt:
         - {{ .Values.authentik.oidc.clientID }}
       remoteJWKS:
         uri: {{ printf "%sjwks/" $issuer }}
+        # The CRD default; stated so the live policy matches the render.
+        cacheDuration: 300s
       extractFrom:
         cookies:
           - factory-edge-id-token

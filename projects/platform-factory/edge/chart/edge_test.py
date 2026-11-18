@@ -70,7 +70,7 @@ def test_edge_guards(docs):
             "name": "authentik",
             "issuer": issuer,
             "audiences": [policy["oidc"]["clientID"]],
-            "remoteJWKS": {"uri": issuer + "jwks/"},
+            "remoteJWKS": {"uri": issuer + "jwks/", "cacheDuration": "300s"},
             "extractFrom": {"cookies": [cookie]},
         }
     ]

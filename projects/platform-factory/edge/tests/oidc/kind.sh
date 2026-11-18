@@ -9,5 +9,19 @@ curl -fsSL https://dl.k8s.io/release/v1.34.0/bin/linux/amd64/kubectl -o "$tmp/ku
 curl -fsSL https://get.helm.sh/helm-v3.18.6-linux-amd64.tar.gz | tar -xz -C "$tmp" --strip-components=1 linux-amd64/helm
 chmod +x "$tmp/kind" "$tmp/kubectl"
 trap 'kind delete cluster --name edge-oidc; rm -rf "$tmp"' EXIT
-kind create cluster --name edge-oidc
+echo "runner cgroup filesystem: $(stat -fc %T /sys/fs/cgroup)"
+# The PR runner may still use cgroup v1, which kubelet 1.34 refuses unless
+# failCgroupV1 is false.
+cat >"$tmp/kind.yaml" <<'YAML'
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+kubeadmConfigPatches:
+  - |
+    kind: KubeletConfiguration
+    failCgroupV1: false
+YAML
+if ! kind create cluster --name edge-oidc --config "$tmp/kind.yaml" --retain; then
+  docker exec edge-oidc-control-plane journalctl -u kubelet --no-pager | tail -n 40 || true
+  exit 1
+fi
 bash run.sh
