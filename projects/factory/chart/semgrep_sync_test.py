@@ -6,9 +6,10 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-sync = runpy.run_path(
+module = runpy.run_path(
     os.getenv("SYNC_SCRIPT", Path(__file__).parent / "files/semgrep_sync.py")
-)["sync"]
+)
+sync = module["sync"]
 
 
 def row(number, **values):
@@ -115,3 +116,51 @@ def test_failure_on_last_product_writes_nothing():
             "org",
             lambda *args: pytest.fail("INTSEC accessed before snapshot completed"),
         )
+
+
+def test_linked_finding_does_not_stop_later_findings():
+    from urllib.error import HTTPError
+
+    board = Board()
+    # Issue 1 is human-created in the fake feed, so the findings start at 2.
+    board.issues.append({"id": 1, "description": "", "labelIds": []})
+    data = {"sast": [row(1), row(2)], "sca": [], "secrets": []}
+
+    def get(path):
+        product = parse_qs(urlsplit(path).query).get("issue_type", ["secrets"])[0]
+        return {"findings": data[product]}
+
+    sync(get, "org", board)
+    real = Board.__call__
+
+    def linked(self, path, method="GET", body=None):
+        if method == "PATCH" and body.get("finding") == "sast/1":
+            raise HTTPError(path, 409, "Finding has a parent or subtasks", {}, None)
+        return real(self, path, method, body)
+
+    Board.__call__ = linked
+    try:
+        for r in data["sast"]:
+            r["status"] = "fixed"
+        with pytest.raises(module["DeferredFindings"]) as raised:
+            sync(get, "org", board)
+    finally:
+        Board.__call__ = real
+    assert raised.value.keys == ["sast/1"]
+    assert board.issues[1]["title"] == "Semgrep sast/1"
+    assert board.issues[2]["columnId"] == 2
+
+
+def test_finding_data_has_no_literal_mention():
+    board = Board()
+    board.issues.append({"id": 1, "description": "", "labelIds": []})
+    data = {"sast": [row(1, rule_name="@joe rule")], "sca": [], "secrets": []}
+
+    def get(path):
+        product = parse_qs(urlsplit(path).query).get("issue_type", ["secrets"])[0]
+        return {"findings": data[product]}
+
+    sync(get, "org", board)
+    description = board.issues[1]["description"]
+    assert "@" not in description
+    assert "\\u0040joe rule" in description
