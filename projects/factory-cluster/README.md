@@ -1105,7 +1105,7 @@ in its security settings.
 
 ## Connector
 
-The connector (`projects/factory/ARCHITECTURE.md`, "Connector") runs as
+The connector ([architecture](../factory/connector/ARCHITECTURE.md)) runs as
 `factory/factory-connector` once the deploy values set `connector.enabled`.
 Until itsaplan's bootstrap has written the agents' keys it reports ready and
 logs `waiting for itsaplan API keys`. Turning it on also

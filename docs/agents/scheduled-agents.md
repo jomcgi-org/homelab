@@ -150,7 +150,7 @@ does not make recalled material authoritative.
 | Event trigger | A deterministic, authenticated collector coalesces events into the next cron window. Immediate event execution requires a separate adapter with the same admission, cooldown and quota checks. |
 | Check or rehearsal | A deterministic runner in an isolated fixture environment creates an artifact. Publishing a GitHub check requires a separate service identity; these proposals add no required merge check. |
 | Live policy/state | Read-only exports of rulesets, App permission metadata, queue state, selected connector/kagent state and deployment evidence, with completeness markers. No administrative write token in a planner. |
-| Model budget | Run-level token ledger, cancellation/deadline enforcement, model compatibility probe, and admission against the actual factory account's quota window. itsaplan's usage field is last-call context, not cumulative consumption ([architecture](../../projects/factory/ARCHITECTURE.md#connector)). |
+| Model budget | Run-level token ledger, cancellation/deadline enforcement, model compatibility probe, and admission against the actual factory account's quota window. itsaplan's usage field is last-call context, not cumulative consumption ([architecture](../../projects/factory/connector/ARCHITECTURE.md)). |
 
 ## Ranked portfolio
 
