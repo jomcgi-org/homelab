@@ -1,46 +1,82 @@
 # Homelab Threat Model
 
-_Reviewed against commit 3d874faa3._
+_Reviewed against commit 395eb4e5f._
 
-Open security findings across everything the cluster hosts, ranked.
-The live list is the
-[`security-finding` label](https://github.com/jomcgi-org/homelab/issues?q=label%3Asecurity-finding+is%3Aopen);
-[security.md](security.md#findings-and-threat-model)
-records why this page exists, and the
-[maintenance runbook](runbooks/threat-model-maintenance.md) is the
-procedure for updating it. A project's deep model is the security lens in
-that project's STPA.md.
+The structure of the threat model for both clusters: what is worth
+protecting, who attacks it, and where untrusted input crosses a boundary.
+The factory home cluster comes first. The GKE hub rows are marked.
+[security.md](security.md#findings-and-threat-model) records why this page
+has this shape, and the
+[maintenance runbook](runbooks/threat-model-maintenance.md) is the procedure
+for changing it. A project's deep model is the security lens in that
+project's `STPA.md`.
 
 ## Assets
 
 | Asset | Where it lives |
 | --- | --- |
-| Credentials held for workloads | 1Password Operator; the EmberVM egress sidecar holds the model-provider and git tokens it injects |
-| Personal data: knowledge graph, notes, calendar, chat history | Postgres, behind the monolith (the personal API and agent platform) |
-| Tenant state: a memory snapshot is the full process state of a workload | EmberVM's object store |
-| Compute and the host: every node, `/dev/kvm` | The cluster |
-| Public-site integrity: jomcgi.dev says what Joe published | The public tier |
+| Merge authority on `main` | The GitHub ruleset, the reviewer App's `factory review` check, Joe's approval |
+| Deploy authority | ArgoCD on the factory home cluster. What merges is what runs |
+| Provider and GitHub credentials | The credential broker; 1Password through the 1Password Operator |
+| Agent memory and tracker text | Hindsight and itsaplan. Private: they must not reach the public repository or site |
+| Cluster state and backups | etcd, three Postgres clusters, Garage |
+| Public-site integrity: jomcgi.dev says what Joe published | The jomcgi-site Worker |
+| Hub: personal data (knowledge graph, notes, calendar, chat history) | Postgres, behind the monolith |
+| Hub: credentials held for workloads | 1Password Operator; the EmberVM egress sidecar |
+| Hub: tenant state and compute | EmberVM's object store; the hub nodes |
+
+## Attacker positions
+
+| # | Position | What it controls |
+| --- | --- | --- |
+| 1 | Anonymous internet | Requests to every published hostname |
+| 2 | Author of untrusted content | A fork PR, an issue or comment, a Discord message, a web page or CI log that an agent reads |
+| 3 | A prompt-injected or misbehaving agent | Everything inside one sandbox |
+| 4 | A compromised upstream | An image, chart, module or action that the repository uses |
+| 5 | One merged commit | Any file on `main`, and so what ArgoCD deploys |
+| 6 | A compromised application pod | That pod's network position, identity and data |
+| 7 | A device on the home LAN, or a compromised operator session on node-1 | The node network; the operator's credentials |
 
 ## Trust boundaries
 
 ```mermaid
-graph LR
-    I["Internet<br/>(anonymous)"] --> CFE["Cloudflare edge<br/>tunnel + WAF"]
-    GH["GitHub<br/>PRs, dependencies"] --> CI["CI<br/>BuildBuddy runners,<br/>merge queue"]
-    CFE --> CFD
-    CI -- "publishes charts and images;<br/>ArgoCD pulls" --> K8S
-    subgraph K8S ["Cluster (GKE Dataplane V2, Kyverno, ArgoCD)"]
-        CFD["cloudflared"] --> GW["Envoy Gateway"]
-        GW --> PUB["Public tier<br/>jomcgi.dev, monolith-public"]
-        GW --> PRIV["Private tier<br/>private.jomcgi.dev<br/>Cloudflare Access + authentik"]
-        GW --> MCP["MCP gateway<br/>Context Forge<br/>authentik-issued tokens"]
-        MCP --> MONO["Monolith"]
-        MONO --> EVM["EmberVM<br/>untrusted code in<br/>Firecracker VMs"]
-        PUB --> EVM
-        POLY["Polylane agent<br/>cluster-wide read<br/>get/list, no secrets"]
-    end
-    POLY -- "outbound tunnel;<br/>topology and pod logs" --> PL["Polylane<br/>(third party)"]
+flowchart LR
+  NET["internet (1)"] -- "Cloudflare Tunnel" --> EDGE["edge Gateway<br/>Authentik sign-in"]
+  EDGE --> APPS["routed apps"]
+  GH["GitHub: PRs, CI (2, 4)"] -- "ruleset, merge queue" --> MAIN["main (5)"]
+  REV["reviewer service<br/>and read-only agent"] -- "factory review check" --> GH
+  MAIN -- "ArgoCD sync" --> APPS
+  TRK["tracker text (2)"] --> CON["connector"]
+  CON -- "task" --> SBX["agent sandbox (3)"]
+  SBX -- "placeholders only" --> EGW["egress gateway"]
+  EGW -- "injects credentials" --> BRK["broker, GitHub, registries"]
+  APPS --> DATA["Postgres, Garage, Hindsight (6)"]
+  APPS -- "static output" --> WRK["jomcgi-site Worker"]
+  N1["node-1: workstation and node (7)"] --> DATA
 ```
+
+Numbers in the diagram are attacker positions. A control ID names an
+invariant, a statement that is always true and the mechanism that enforces
+it. HOME-301 tracks the invariant files; until they merge, the list is in
+that issue.
+
+| Boundary | Untrusted input | Controls | Deep model |
+| --- | --- | --- | --- |
+| Cloudflare Tunnel to the edge Gateway to routed apps | Anyone on the internet | PLAT-2, PLAT-3 | None yet |
+| GitHub to `main` to ArgoCD | PRs, dependencies, CI logs | ROOT-1, FACT-4, FACT-9, FACT-10, FACT-11 | None yet |
+| Tracker to connector to agent sandbox | Issue text, repository content, pages an agent reads | FACT-1, FACT-2, PLAT-5, PLAT-6 | None yet |
+| Sandbox to egress gateway to broker, GitHub and registries | A prompt-injected agent | FACT-3, FACT-5, FACT-6, FACT-7, FACT-8 | None yet |
+| Reviewer service and its read-only agent | The PR under review | FACT-4, FACT-9, FACT-10 | None yet |
+| Shared data plane: Postgres, Garage, Hindsight | A compromised application pod; recalled memory text | PLAT-1, PLAT-7, PLAT-8, LIB-1 to LIB-5 | None yet |
+| node-1 as workstation and node | A home LAN device; an operator session | CLUS-1, CLUS-2, CLUS-3 | None yet |
+| jomcgi-site Worker as the public output path | Data that the factory publishes | Review rules in `projects/platform-factory/REVIEW.md` | None yet |
+
+The factory has no STPA security lens yet.
+
+### GKE hub
+
+HOME-93 and HOME-89 track the hub model. Until that work lands, these
+surfaces keep their deep models:
 
 | Surface | Untrusted input | Deep model |
 | --- | --- | --- |
@@ -48,63 +84,9 @@ graph LR
 | Private tier | Signed-in humans, service tokens, GitHub webhooks (HMAC-gated) | [monolith STPA, security lens](../projects/monolith/STPA.md) |
 | MCP gateway | Agents, including prompt-injected ones | [monolith STPA, security lens](../projects/monolith/STPA.md) |
 | EmberVM | Untrusted code, by design | [embervm STPA, security lens](../projects/embervm/STPA.md) |
-| Supply chain and CI | PRs, dependencies, base images | None yet |
 | Polylane agent | None inbound; it reads the cluster and sends out | None yet |
 | Cluster baseline | Everything above sits on it | [security.md](security.md) |
 
 ## Open findings
 
-Ranked by what an attacker gets. Each issue holds the detail.
-
-1. **A Firecracker escape is not contained in production**
-   ([#5255](https://github.com/jomcgi-org/homelab/issues/5255)).
-   The jailer is built: each VM monitor runs chrooted as its own uid in
-   its own cgroup and PID namespace, and a brick that cannot contain
-   guests refuses to start. It is armed per stage, embervm-dev first and
-   production after a dev soak
-   ([#6965](https://github.com/jomcgi-org/homelab/issues/6965)); until
-   then the monitor runs as root in a privileged pod, and an escape hands
-   over the node and the fleet's storage credential.
-   Tenants share bricks and Kubernetes nodes by design, and CPU side
-   channels between co-resident guests are an accepted risk: nothing pins
-   a guest to cores or isolates SMT siblings. Whether the Spot brick
-   nodes run SMT is set in gcloud, not in git, and is unverified.
-2. **Any valid token reaches every MCP tool**
-   ([#4569](https://github.com/jomcgi-org/homelab/issues/4569)).
-   The monolith verifies who is calling; no tool then checks whether
-   that caller should reach it. Finding 1 of the
-   [monolith STPA security lens](../projects/monolith/STPA.md).
-3. **A compromised public-tier pod can reach every in-cluster endpoint**
-   ([#5276](https://github.com/jomcgi-org/homelab/issues/5276)).
-   The destination-scoped Cilium egress template was removed by #5816. It
-   never enforced on the GKE hub, which exposes no Cilium policy CRD. No
-   egress policy renders for the public tier there; replacement enforcement
-   remains tracked in #5276.
-4. **The private monolith pod has no egress policy at all**
-   ([#5277](https://github.com/jomcgi-org/homelab/issues/5277)).
-   The pod holding every backend secret can send anywhere the node
-   can reach.
-5. **One storage credential can delete any tenant's artifacts**
-   ([#4691](https://github.com/jomcgi-org/homelab/issues/4691)).
-   Encryption stops reads of tenant state; shared base images stay
-   plaintext, and deletes and overwrites are open to every holder of
-   the shared credential.
-6. **The egress allowlist is shared across every EmberVM workload**
-   ([#5320](https://github.com/jomcgi-org/homelab/issues/5320)).
-   A destination added for one workload is reachable, with injected
-   credentials, from every egress-enabled workload.
-7. **The public docs guard is a fixed marker list, not redaction**
-   ([#5275](https://github.com/jomcgi-org/homelab/issues/5275)).
-   `check_public_content` fails CI on known internal markers; an
-   internal identifier that matches no marker still publishes
-   verbatim.
-8. **Production promotion has no functional check**
-   ([#4745](https://github.com/jomcgi-org/homelab/issues/4745)).
-   Promotion waits for rollout health and a short soak, and only
-   EmberVM runs a conformance test first. A change that deploys
-   cleanly but misbehaves promotes.
-9. **The auth domain has no delegated workload identity**
-   ([#4940](https://github.com/jomcgi-org/homelab/issues/4940)).
-   The design umbrella behind finding 2: authentik issues standing
-   identity, while monolith-side attenuation, a broker, and delegated
-   delivery remain gated proposals with no selected implementation.
+Findings are recorded privately. Fix work is in the itsaplan project HOME.

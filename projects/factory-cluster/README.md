@@ -114,8 +114,9 @@ lost with the cluster or with the node holding their volume. The Substrate
 CRDs, namespaces and snapshot volume are marked `Delete=false`, so deleting
 or renaming the ArgoCD Application does not remove them.
 
-etcd snapshots are encrypted with the cluster token on each server
-(`/var/lib/rancher/k3s/server/token`); keeping a copy off the nodes is part of
+Kubernetes Secrets are encrypted at rest (`secrets-encryption: true` in
+`nodes/k3s-config.yaml`). etcd snapshots are encrypted with the cluster token
+on each server (`/var/lib/rancher/k3s/server/token`); keeping a copy off the nodes is part of
 the backup and restore work below.
 
 ## Operator inputs

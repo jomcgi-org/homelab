@@ -333,7 +333,7 @@ when its row applies.
 | Refreshing a system's STPA model | `docs/agents/stpa.md` |
 | Queueing or triaging drain-lane (`qwen-drain`) jobs | `docs/agents/drain-queue.md` |
 | Cutting BuildBuddy cache traffic | `docs/agents/buildbuddy-usage.md` |
-| Security-sensitive change | `docs/security.md`; `docs/THREAT-MODEL.md` for open findings |
+| Security-sensitive change | `docs/security.md`; `docs/THREAT-MODEL.md` for assets, attacker positions and trust boundaries |
 | Public tier: jomcgi.dev, monolith-public, `public_reader` data | `docs/runbooks/public-tier-checklist.md` |
 | ArgoCD OutOfSync, stuck rollout, "is my change live?" | `docs/runbooks/argocd-outofsync.md` |
 | Adding a service | "New service" in Gotchas above, `projects/platform/ARCHITECTURE.md` section 4, `projects/gke-apps/kustomization.yaml` (the live workload list) |

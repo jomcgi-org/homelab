@@ -1,6 +1,6 @@
 # Threat model maintenance
 
-The aggregate index is [docs/THREAT-MODEL.md](../THREAT-MODEL.md);
+The model's structure is [docs/THREAT-MODEL.md](../THREAT-MODEL.md);
 [docs/security.md](../security.md#findings-and-threat-model) carries the
 rationale. This runbook is the procedure.
 Issue [#5294](https://github.com/jomcgi-org/homelab/issues/5294) moved
@@ -9,34 +9,38 @@ prose models the original decision called for; no architecture update is needed.
 
 ## Add a finding
 
-1. File the issue with the label:
+Findings stay out of the public repository
+([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-230#comment-2061)).
 
-   ```bash
-   gh issue create --label security-finding --title "<area>: <claim>"
-   ```
-
-   The body states what exists, what an attacker gets, and what done
-   means.
-2. Update the domain's security lens: copy `projects/<domain>/stpa/*.json`
+1. Record the finding in the private security project. State what exists,
+   what an attacker gets and what done means.
+2. File the fix in HOME in neutral words. Add a comment that names the
+   private record.
+3. Update the domain's security lens: copy `projects/<domain>/stpa/*.json`
    into a fresh `$STPA_TMP`, add or update the UCA, unsafe-feedback, or
-   hazard row there (`status` and `issue` on every security row; a tracked
-   unsafe state with no single attacking action goes on the hazard row),
-   then run BLOCK A and BLOCK B from `docs/agents/stpa.md`. The blocks only read
-   fragments from `$STPA_TMP` or `origin/main`, so an edit left in the
-   working tree is never picked up. Never hand-edit `STPA.md`.
-3. Re-rank `docs/THREAT-MODEL.md`: bold claim, issue link, one plain
-   sentence. Update the "Reviewed against commit" line.
+   hazard row there (`status` and the HOME issue on every security row; a
+   tracked unsafe state with no single attacking action goes on the hazard
+   row), then run BLOCK A and BLOCK B from `docs/agents/stpa.md`. The blocks
+   only read fragments from `$STPA_TMP` or `origin/main`, so an edit left in
+   the working tree is never picked up. Never hand-edit `STPA.md`.
+4. Update `docs/THREAT-MODEL.md` only when an asset, a boundary or a control
+   changes. Update its "Reviewed against commit" line.
+
+In the repository, state the rule and its enforcement. Do not state that a
+control is absent in words that name a usable path.
 
 ## Close a finding
 
-Close the issue. Remove the index entry, and move the security lens row's
-status label in the same PR as the fix when there is one.
+Close the HOME ticket and the private record. Move the security lens row's
+status. Add the invariant row, or change it to `live`, in the PR that builds
+the enforcement.
 
 ## Verify before writing
 
 Both stale-claim bugs on 2026-08-24 came from trusting issue titles and
 session memory over the code.
 
+- A control named in a doc is not evidence; read the deployed object.
 - Trace every claim to the code or live config. A control's status label
   (enforced prod / enforced dev / shipped off / designed / none) means
   you followed the flag to its consumer, not that a values file declares
