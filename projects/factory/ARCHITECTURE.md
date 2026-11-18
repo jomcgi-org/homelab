@@ -6,10 +6,13 @@ The factory turns delegated itsaplan issues into reviewed GitHub pull requests f
 flowchart LR
   plan["itsaplan (issue text)"] -->|delegated run| connector["Connector (agent keys)"]
   connector -->|dispatch| kagent["kagent coding session"]
-  kagent -->|model and Git requests via egress gateway| broker["Broker (OAuth grant and author App key)"]
+  kagent -->|model and Git requests via egress gateway| broker["Broker (OAuth grant and both App private keys)"]
   broker -->|repository access| github["GitHub (untrusted PR content)"]
   connector -->|open PR and enqueue| github
-  github -->|diff and head SHA| reviewer["Reviewer (separate App key)"]
+  github -->|diff and head SHA| reviewer["Reviewer (scoped installation token)"]
+  broker -->|scoped reviewer token| reviewer
+  reviewer -->|request PR comment| broker
+  broker -->|post with separate comment token| github
   reviewer -->|review task| reviewAgent["kagent review session"]
   reviewer -->|head-bound check| github
   connector -->|report outcome| plan
@@ -26,8 +29,8 @@ Paths are relative to `projects/factory/`.
 | kagent | Owns agents and sessions | `chart/Chart.yaml`, `deploy/values.yaml` | Charts 1.0.1, controller fork e3d14ee3dd62 | Tasks and session messages | Controller ServiceAccount |
 | Agent Substrate | Isolates actors and injects credentials at egress | `../platform-factory/substrate/` | Fork charts 1.0.1 | Workspace traffic | Actor identity and credentials scoped by policy |
 | Codex CLI | Edits and checks the bound repository | `deploy/values.yaml`, `toolchain/` | 0.169.1 | Task and checkout | Gateway placeholders |
-| Broker | Relays model calls and mints repository credentials | `broker/` | Built from this repo | Actor requests | Codex OAuth grant and author App key |
-| Reviewer | Publishes the independent required check | `reviewer/` | Built from this repo | PR content and review replies | Reviewer App key |
+| Broker | Relays model calls and mints repository credentials | `broker/` | Built from this repo | Actor requests | Codex OAuth grant and both App private keys |
+| Reviewer | Publishes the independent required check | `reviewer/` | Built from this repo | PR content and review replies | Projected ServiceAccount token and scoped reviewer installation token |
 | GitHub | Owns PRs, checks and the merge queue | External service | Hosted | Branches and PRs | GitHub App installations |
 | Hindsight | Stores reusable coding lessons | `../platform-factory/hindsight/` | 1.2.1 | Recalled and retained text | Database and model credentials |
 | Discord bridge | Routes mentions to Bosun | `discord/` | Built from this repo | Discord messages | Bot token and Discord memory access |
@@ -59,11 +62,30 @@ Agents rediscover the same failing checks and conventions on each run; a
 recalled lesson costs a few hundred tokens.
 
 **Why.** On a 494-fact factory test set, Voyage 4 Large had the best
-nDCG@10 (0.781) of ten models, against 0.522 for a stand-in for the image's
-local `bge-small-en-v1.5`. Its 1,024 dimensions fit pgvector's index limit
+nDCG@10 (0.781) of ten models, against 0.522 for a stand-in for the local embedding model. Its 1,024 dimensions fit pgvector's index limit
 ([HOME-176](https://factory-plan.jomcgi.dev/factory/issue/HOME-176)). Joe
 chose one OpenRouter key for both instances
 ([HOME-130 comment 1439](https://factory-plan.jomcgi.dev/factory/issue/HOME-130#comment-1439)).
+
+**Rollback.** Two levers, by what failed:
+
+- **The decision model.** Revert the commits of #8147 (HOME-182). Recall
+  returns to the image's `hs-rerank-1` cross-encoder, and consolidation,
+  reflect and page refresh to the LLM. Nothing stored changes.
+- **OpenRouter as a whole.** Revert #8147's commits first, then #8144's
+  (HOME-176). Together they remove every OpenRouter setting, the preflight
+  and their tests, so nothing references the OpenRouter Secret. While no rows
+  hold vectors, the reverts are enough. After the first retain, re-embed
+  first; no API pod has to run:
+
+  1. `kubectl apply -f projects/platform-factory/hindsight/recovery/reembed-local.yaml`
+     re-embeds every row with the local model. ArgoCD never applies this Job.
+  2. Merge the reverts.
+  3. In the running pod, run `hindsight-admin reembed --all-schemas --finish`.
+
+`projects/platform-factory/hindsight/rollback_test.py` runs these steps in the
+deployed image without network, from 1,024-dimensional vectors, and
+`keys_test` pins the recovery Job to its settings.
 
 ## Discord bot
 
@@ -75,7 +97,13 @@ The API and worker share the factory database. Attachments go to Garage. Humans 
 
 ## Credential broker
 
-The broker holds the Codex grant and GitHub author App key. It authenticates actor requests and scopes GitHub installation tokens to the bound repository. The connector authenticates to the broker with a projected ServiceAccount token. The separate reviewer App signs the required check.
+The broker mounts the author and reviewer App private keys and holds the Codex grant. It authenticates actor requests and scopes GitHub installation tokens to the bound repository. The connector authenticates to the broker with a projected ServiceAccount token. The reviewer uses its scoped installation token to publish checks. It sends PR comment requests to the broker, which posts them with a separate token kept inside the broker.
+
+<a id="inputs-from-joe"></a>
+
+### Factory App Secret layout
+
+The author App uses the 1Password SSH Key item `k8s-homelab/factory-gh-app`. Its `private key` field maps to the Kubernetes Secret key `private-key`. The text fields `app-id` and `installation-id` keep their names.
 
 ## Identities
 
@@ -210,6 +238,9 @@ version write-back.
 
 ## Findings that shape the design
 
+These upstream constraints explain the delivery and access controls above.
+
+- kagent relies on its Substrate fork for the Kubernetes Secret provider and egress gateway.
 - The Substrate gateway replaces credentials in outgoing headers. The broker supplies the account header and authorization that Codex model calls require.
 - Each kagent session belongs to one Agent. The connector records the session with the run so it can route revisions to the coder.
 - An agent comment does not start another itsaplan run. The connector can report progress on the issue without dispatching new work.
@@ -219,6 +250,9 @@ version write-back.
 - The connector renews itsaplan's run lease during execution. It correlates the run with a kagent A2A task and session in its own store.
 - A task-opening message belongs to one session. Recovery must distinguish a lost response from a task that never started. The [connector lifecycle](connector/ARCHITECTURE.md#run-lifecycle) describes the recovery checks.
 - Model usage comes from individual calls. The factory aggregates usage for a delivery in its [accounting model](token-usage.md).
+- Coordinator credentials can read the itsaplan run queue by run ID. The coding agent key alone cannot look up an individual run.
+- kagent can recover a crashed session from its durable snapshot. When the underlying actor has been replaced, the connector needs a new session.
+- Session ownership separates callers, but an authenticated caller can invoke any Agent watched by the controller. The edge restricts who can authenticate.
 
 ## Direction
 
