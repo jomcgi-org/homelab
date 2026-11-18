@@ -1,67 +1,19 @@
 # Factory home cluster
 
-The home Kubernetes cluster that hosts the replacement software factory
-([#7817](https://github.com/jomcgi-org/homelab/issues/7817)). It is being
-built before any workload moves from the GKE hub. This directory holds its node
-bootstrap and its ArgoCD root; `projects/platform-factory/` holds one
-Application per shared component.
+For the request path, storage layout and planned changes, see the [cluster architecture](ARCHITECTURE.md).
 
-Status (2026-11-13): nodes rebuilt as three k3s servers on Cilium; 1Password
-Connect and ArgoCD run and sync `factory-root`. ArgoCD is published at
-factory-argocd.jomcgi.dev behind Authentik (factory-auth.jomcgi.dev).
+## Operator inputs
 
-## Nodes
+Before bootstrap, provide the following inputs.
 
-Recorded 2026-11-13, before the reset.
-
-| Node | LAN address (DHCP) | CPU | Memory | Disks | Notes |
-| --- | --- | --- | --- | --- | --- |
-| node-1 | 192.168.4.80 (`enp1s0`) | 12 x86_64, VT-x | 16 GiB | 256 GB KIOXIA NVMe (OS + data) | Tailscale; operator workstation |
-| node-2 | 192.168.4.81 (`enp2s0`) | 12 x86_64, VT-x | 16 GiB | 256 GB KIOXIA NVMe; 112 GB Hitachi HDD `sda` (NTFS, unused) | |
-| node-3 | 192.168.4.76 (`enp2s0`) | 12 x86_64, VT-x | 16 GiB | 256 GB SK hynix NVMe | |
-
-All three run Ubuntu 24.04.3 with kernel 6.8.0-138 and have `/dev/kvm`. The
-retired home k3s was crash-looping without etcd quorum. Its join address was
-192.168.1.161, and the LAN is now 192.168.4.0/22. `nodes/reset-node.sh` removed it in place:
-k3s, `/var/lib/{rancher,longhorn,kubelet,embervm}` and the EmberVM scratch
-loop mount. The OS, SSH and Tailscale stayed.
-node-2's `sda` was not touched. node-1's host `cloudflared` (bastion.jomcgi.dev
-SSH) is disabled; Tailscale replaces it.
-
-The addresses are DHCP leases and embedded etcd records peer IPs, so the
-router must reserve these three leases.
-
-## Cluster
-
-| Choice | Value | Why |
-| --- | --- | --- |
-| Distribution | k3s `v1.37.2+k3s1`, three servers, embedded etcd | In-place on the existing Ubuntu installs; tolerates one node loss. Agent Substrate needs Kubernetes 1.37+ |
-| Certificates API | `certificates.k8s.io/v1beta1` served | Substrate's podcertificate controller uses the v1beta1 ClusterTrustBundle and PodCertificateRequest clients |
-| Sandboxing | gVisor `release-20261102.0` (`runsc`), RuntimeClass `gvisor` | The same release Substrate's SandboxConfig pins. Substrate stages its own runsc inside worker pods; the RuntimeClass serves other sandboxed pods |
-| Agent Substrate | kagent-dev fork `1.0.1` (commit `7ce6f43`): its Helm charts rendered into Git, images pinned by digest; gVisor class only. The version is set in `substrate/render-upstream.sh` and `bootstrap-substrate.sh` | The fork release line kagent v1.0.1 uses (it builds against fork v1.0.0); it adds the Kubernetes-Secret credential provider and the agentgateway egress gateway kagent injects credentials through. Its gVisor SandboxConfig defaults to `v7`, release 20261102.0, the release the nodes run ([Agent Substrate](#agent-substrate)) |
-| Node sysctls | proxy ARP/NDP, larger neighbour table, inotify; swappiness 150 for zram | Substrate's gVisor networking and sandbox density (`nodes/99-factory.conf`) |
-| Swap | zram at the size of RAM (zstd), no disk swap; kubelet `LimitedSwap` | The nodes run out of memory before CPU. Pod memory compressed 3.1-4.5:1 when measured, and a Burstable pod may swap about its memory request, so a coincident burst swaps instead of being OOM-killed. Disk swap would share the NVMe with etcd (`nodes/zram-generator.conf`, `nodes/kubelet-swap.conf`, HOME-142) |
-| k3s garbage collection | `GOGC=50` | The k3s process keeps 0.3-0.5 GiB of live heap and by default grows to twice that; collecting at 1.5 times spends idle CPU to leave memory for pods (`nodes/k3s-gogc.conf`) |
-| Network | Cilium 1.20.4: kube-proxy replacement, WireGuard pod encryption, Hubble | Cluster-wide default-deny and egress allowlists by domain name; Hubble shows what was dropped. Cilium lists Kubernetes 1.33 to 1.36 as tested, so 1.37 was validated here with `cilium connectivity test` before default-deny; rerunning it now needs a temporary policy exempting the `cilium-test-*` namespaces |
-| Storage | local-path (k3s default) volumes; services replicate across nodes themselves | No replicated block storage: Garage and CloudNativePG each keep three copies on the three nodes' local disks ([Object storage](#object-storage), [Postgres](#postgres)) |
-| Object storage | Garage v2.5.0, three nodes, replication factor 3, S3 at `garage.garage.svc:3900` | Workload S3 (CNPG WAL archives, itsaplan, evidence, Substrate snapshots) with plain S3 and three copies on three disks; Joe's decision on #7817. No versioning or Object Lock, so it is not a backup target |
-| Images | embedded Spegel mirror for docker.io, quay.io, registry.k8s.io, cr.agentgateway.dev and ECR Public; not ghcr.io | Public images outside ghcr.io cross the home uplink once. Spegel serves a cached image to any pod without pull credentials and mirrors whole registry hosts, so ghcr.io, which holds this repository's private images, is pulled from GHCR on each node (Joe's decision on #7817, 2026-11-14) |
-| Cilium devices | `enp+` (the wired NICs) | Auto-detection also took `tailscale0` on node-1, set every pod there to its 1280 MTU and silently dropped full-size QUIC replies from the Cloudflare edge; it also served KPR services on the tailnet |
-| Tailscale (node-1) | netfilter mode off; `src_valid_mark=0` | With Tailscale managing iptables it sets `src_valid_mark=1`, and the kernel then drops every pod packet Cilium redirects to its DNS or L7 proxy, which breaks `toFQDNs` policies |
-| Host firewall | nftables table `inet factory_fw`, input default drop; rpcbind off | Node IPs reach WireGuard and a fixed list of mTLS or SSH ports on the NIC, not metrics; pods and decrypted WireGuard traffic arrive on Cilium interfaces; the tailnet reaches node-1. Other LAN hosts reached etcd, the apiserver, kubelet, Spegel and Cilium metrics before. A separate table leaves the k3s and Cilium rules alone (`nodes/factory-firewall.nft`) |
-| Ingress | Cloudflare Tunnel managed by cfgate (Gateway API) | No inbound ports; the tunnel, its routes and DNS records are Kubernetes resources. cfgate replaced StringKe/cloudflare-operator, whose last release (v0.51.0) watches Gateway API `v1alpha2` UDPRoute, which current Gateway API no longer serves |
-| Edge | Envoy Gateway 1.8.3 in `edge`, the tunnel's only origin | One proxy where sign-in is enforced for every published route; the hub runs the same release |
-| Human sign-in | Authentik 2026.5.6: OIDC at the edge Gateway for every route, and each application's own OIDC where it has one; no Cloudflare Access | One identity layer, as #7817 specifies. A gateway-wide policy means a new route cannot forget sign-in |
-| Admission policy | ValidatingAdmissionPolicy (`projects/platform-factory/edge-admission/`) | Keeps Gateways, routes, the edge label and Envoy's proxy and auth objects inside `edge`. The API server evaluates it in every namespace; Kyverno skips kube-system, kube-public, kube-node-lease and its own namespace |
-| Promotion | Kargo 1.11.1 (`projects/platform-factory/kargo/`), with cert-manager v1.21.1 issuing its webhook certificate from a self-signed Issuer; no pipelines yet | One way to deploy everything except what Kargo runs on: Cilium, 1Password Connect, ArgoCD, cert-manager and Kargo stay on ArgoCD from Git. Verified Freight becomes the signal a HOME issue closes on, and promoting the last verified Freight is the rollback (HOME-116, HOME-77, HOME-78). The UI, API server and GitHub webhook receiver are off until a pipeline needs them |
-| Postgres | CloudNativePG operator 1.30 (chart 0.29.0, as on the hub) | Authentik's `authentik-pg`, kagent's `kagent-pg` and the factory's `factory-db` are configured for three instances each, one per node |
-| Backups | All three CNPG clusters: continuous WAL archiving and daily base backups to Garage, 14 days kept (in-tree barman-cloud) | Garage shares the cluster's failure domain. Off-site copies (R2 or GCS) are deferred; Authentik's rollout and backup acceptance checks are listed under Postgres |
-| Secrets | 1Password Connect + operator, `k8s-homelab` vault; Authentik's secret key and OIDC client secrets are generated in the cluster | Recovery needs the existing `authentik-secrets`. Copying it to 1Password remains on #7952 |
-| etcd snapshots | every 6 hours, 20 kept, on each node's disk | Off-node copies come later |
-| Observability | The hub's otel-collector chart (`values-factory.yaml`) shipping to Honeycomb's `homelab` environment, tagged `k8s.cluster.name=factory` and `deployment.environment=factory` | One telemetry stack and one ingest key for both clusters. A DaemonSet reads each node's kubelet, `/proc`, Cilium agent (:9962) and Hubble (:9965) metrics and its warning-and-above pod logs (redacted; `authentik` and `ate-system` excluded); one Deployment watches Warning events and scrapes the API servers and Cilium operators. Every source is allowlisted and scraped every 120s to stay inside the shared event budget |
-| Metrics view | Prometheus v3.15.1 (one replica, 7 days or 4 GB on a local-path volume) with kube-state-metrics v2.20.0, Alertmanager v0.34.2 posting to Discord, and Grafana 13.3.1 at factory-grafana.jomcgi.dev; plain manifests, images pinned by digest | The operators' dashboards #7817 names, next to Honeycomb rather than replacing it. No operator or chart: one scrape file names every target, and its RBAC, egress and each target's ingress are written out by hand ([Metrics view](#metrics-view)). Alerts reach Discord without the hub ([Alerts](#alerts)) |
-
-Traefik and ServiceLB are disabled.
+1. **1Password Connect server** `factory` with read access to the `k8s-homelab`
+   vault. Its credentials file and an access token are the inputs to
+   `bootstrap-gitops.sh`. They are credentials for the secret broker itself, so
+   they cannot come from the broker.
+2. **1Password item** `k8s-homelab/factory-cloudflare-api-token`, with a field
+   `CLOUDFLARE_API_TOKEN` holding a Cloudflare API token that has:
+   Account: Cloudflare Tunnel:Edit; Zone `jomcgi.dev`: DNS:Edit and Zone:Read.
+3. **DHCP reservations** for node-1 (192.168.4.80), node-2 (192.168.4.81) and node-3 (192.168.4.76).
 
 ## Bootstrap and rebuild
 
@@ -131,34 +83,9 @@ or renaming the ArgoCD Application does not remove them.
 Kubernetes Secrets are encrypted at rest (`secrets-encryption: true` in
 `nodes/k3s-config.yaml`). etcd snapshots are encrypted with the cluster token
 on each server (`/var/lib/rancher/k3s/server/token`); keeping a copy off the nodes is part of
-the backup and restore work below.
-
-## Operator inputs
-
-These are the only things set up outside Git, plus the reason for each:
-
-1. **1Password Connect server** `factory` with read access to the `k8s-homelab`
-   vault. Its credentials file and an access token are the inputs to
-   `bootstrap-gitops.sh`. They are credentials for the secret broker itself, so
-   they cannot come from the broker.
-2. **1Password item** `k8s-homelab/factory-cloudflare-api-token`, with a field
-   `CLOUDFLARE_API_TOKEN` holding a Cloudflare API token that has:
-   Account: Cloudflare Tunnel:Edit; Zone `jomcgi.dev`: DNS:Edit and Zone:Read.
-3. **DHCP reservations** for the three node addresses above.
+the [backup plan](ARCHITECTURE.md#direction).
 
 ## Network policy
-
-Every pod-network pod is default-deny in both directions
-(`projects/platform-factory/network-policy/resources/baseline.yaml`);
-host-network pods (the Cilium agent, Envoy and operator) and the hosts
-themselves are outside it. The only
-flow the baseline allows is DNS to CoreDNS, through Cilium's DNS proxy so that
-egress rules can name domains. Each namespace then has one file allowing
-exactly its own traffic, with internet egress listed by domain name. A
-namespace created by an Application rather than bootstrap keeps its policy in
-that Application (cfgate, cloudnative-pg, edge and authentik do), so
-the policy lands with the namespace. A component with no policy can reach
-nothing, so a new component needs one in the same change that deploys it.
 
 Ordering matters inside an Application. A pod that starts before its policy
 exists is dropped until the policy lands; for a Job that can mean failing
@@ -181,121 +108,19 @@ That shows one node; run it against each agent pod for the whole cluster.
 
 ## Dependency updates
 
-The `renovate` Application deploys a suspended Kubernetes CronJob in its own
-namespace, using the shared platform chart and `values-factory.yaml`. It
-uses the existing `k8s-homelab/renovate-github` item and a Cilium egress
-allowlist for GitHub and dependency registries. Joe verifies the credential
-before the first run. See [Renovate operations](../platform/renovate/README.md)
-for the manual-run command and the required `pr-checks` and `factory review`
-gate. Major updates stay manual.
+Follow [Renovate operations](../platform/renovate/README.md) for the current
+credential, the manual run and the required checks.
 
 ## factory.jomcgi.dev
 
-The private entry point is a static Astryx landing page
-(`projects/factory-landing/`). It links to itsaplan, kagent, Grafana, ArgoCD
-and GitHub, including open factory PRs. The page makes no API calls and holds
-no credentials.
-
-The only path in from the internet:
-
-1. Cloudflare terminates TLS and sends the request down the `factory`
-   CloudflareTunnel (`projects/platform-factory/factory-edge/`).
-2. The tunnel's `cloudflare-tunnel` Gateway accepts routes only from the
-   namespace named `edge` that also carries `factory.jomcgi.dev/edge=true`. Its
-   one route, `edge/tunnel` (`projects/platform-factory/edge-tunnel/`), sends
-   every published hostname to the Envoy proxy Service `edge/edge-proxy`. The
-   route's `factory.jomcgi.dev/publish=true` annotation makes cfgate create
-   the DNS records.
-3. Envoy Gateway's `edge` Gateway (`projects/platform-factory/edge/`) signs
-   every request in through Authentik with a gateway-wide OIDC
-   SecurityPolicy, then routes it. Routes attach only from the namespaces
-   listed in the chart's `routeNamespaces` (`edge`, `argocd`, `factory`,
-   `grafana`, `factory-landing`),
-   matched by name.
-4. The application can run its own Authentik login too; ArgoCD does.
-
-| Hostname | Route | Sign-in |
-| --- | --- | --- |
-| factory.jomcgi.dev | `factory-landing/factory-landing` | Envoy OIDC (client `factory-edge`), only `authentik Admins` |
-| factory-argocd.jomcgi.dev | `argocd/argocd-server` | Envoy OIDC (client `factory-edge`), then ArgoCD's OIDC (client `factory-argocd`); both admit only `authentik Admins` |
-| factory-auth.jomcgi.dev | `edge/authentik` | Authentik itself, with MFA required |
-| factory-plan.jomcgi.dev | `factory/factory-itsaplan` (`/backend` to the api, `/` to the web app) | Envoy OIDC (client `factory-edge`), then itsaplan's OIDC (client `factory-itsaplan`, invite-only) or its break-glass admin; both admit only `authentik Admins` |
-| factory-grafana.jomcgi.dev | `grafana/grafana` | Envoy OIDC (client `factory-edge`), then Grafana's OIDC (client `factory-grafana`); both admit only `authentik Admins` |
-| factory-agents.jomcgi.dev | `edge/kagent` to `kagent/kagent-ui:8080` | Envoy OIDC (client `factory-edge`), only `authentik Admins`; access token forwarded to kagent |
-| factory-kube.jomcgi.dev | `edge/kube-api` to `default/kubernetes:443` | No browser sign-in: Envoy checks the bearer ID token from client `factory-kubectl` for group `authentik Admins` or `factory-kube-viewers`, then the API server checks it again and RBAC applies (see "kubectl through Authentik") |
-
-Envoy's OIDC session lasts as long as the access token, ten minutes, with no
-refresh. Envoy then sends the browser back to Authentik, which checks the
-group binding again, so removing someone from `authentik Admins` ends their
-access within ten minutes. The cookies are `SameSite=Lax`.
-
-kagent's route and SecurityPolicy live in `edge`, where admission permits
-policies and their namespace-local targets. The policy replaces the gateway
-policy with the same OIDC settings plus `forwardAccessToken: true`. The
-gateway policy does not forward the token to ArgoCD, Grafana, itsaplan or
-the landing page. The edge chart also owns a ReferenceGrant in `kagent`,
-permitting only HTTPRoutes from `edge` to reference the `kagent-ui` Service.
-Cilium permits the edge proxy to reach the UI on 8080; the UI proxies API
-calls to the controller on 8083.
-The controller's bearer paths remain the edge, UI, connector,
-`atenet-egress` and the controller itself (factory architecture finding 5).
-A raw UI port-forward has no edge token and returns `Unauthenticated` for
-API calls. Sessions remain scoped to the signed-in user's kagent principal.
-
-Authentik's own route is the one exemption from sign-in:
-a route-level SecurityPolicy replaces it there, since the gateway policy
-redirects to Authentik. From the internet that route serves the flow pages,
-static files, the OAuth2 endpoints under `/application/o/` and three API
-prefixes the flow interface needs (`/api/v3/flows/executor/`,
-`/api/v3/root/config/`, `/api/v3/core/brands/current/`). The rest of
-`/api/v3/`, the admin and user interfaces (`/if/admin/`, `/if/user/`) and the
-initial-setup flow answer 403. Authentik sees the client address from
-Cloudflare's `CF-Connecting-IP`, which the route copies into
-`X-Forwarded-For`.
-
-The policies in `projects/platform-factory/edge-admission/` enforce the rest,
-in every namespace: only `edge` may carry the edge label; the only
-GatewayClasses are `edge` and `cfgate`, each with one Gateway in its own
-namespace and no per-Gateway EnvoyProxy; EnvoyProxy, SecurityPolicy,
-EnvoyPatchPolicy, EnvoyExtensionPolicy, ClientTrafficPolicy and Backend
-objects live only in `edge`; any route with a parent in `cfgate-system` must
-be an HTTPRoute in `edge` whose only backend is `edge-proxy`, with no filters;
-only `edge` may route factory-auth.jomcgi.dev, factory-agents.jomcgi.dev or
-factory-kube.jomcgi.dev;
-routes in `factory` may name only factory-plan.jomcgi.dev, routes in `grafana` only
-factory-grafana.jomcgi.dev, routes in `argocd` only
-factory-argocd.jomcgi.dev and routes in `factory-landing` only
-factory.jomcgi.dev; and CloudflareDNS and
-CloudflareTunnel objects live only in `cfgate-system`. Envoy Gateway runs each
-proxy in its Gateway's namespace, so no other Gateway's proxy could run
-under the edge proxy's namespace and network identity.
-
-If `edge/edge-oidc-client` is missing or empty, the gateway-wide policy is
-invalid and Envoy answers every route with 500. Going from invalid back to
-valid is not safe: on the trial cluster one request in that switch reached
-ArgoCD without OIDC, because Envoy took the new route before the new
-listener. So the Secret is created by the edge chart with a placeholder
-value, before the policy, and the edge Application syncs with
-`ApplyOutOfSyncOnly` and ignores its data, so a sync never resets the real
-value. Changing the value (valid to valid) showed no gap.
-
-Envoy Gateway also adds the OAuth2 filter to the listener only while at least
-one route uses the gateway policy, so the first route after none would open
-the same gap. A permanent route in `edge`
-(`factory.jomcgi.dev/oauth2-sentinel`, 404 once signed in) keeps that count
-above zero.
-
-The proxy's egress to factory-auth.jomcgi.dev (the OIDC token endpoint) and
-argocd-server's (discovery and keys) name a hostname that resolves to
-Cloudflare's anycast addresses, so the rule admits any site Cloudflare serves
-on those addresses.
+Keep the edge OIDC Secret populated throughout a rollout and retain the permanent sentinel route while changing application routes.
 
 To publish another hostname, change these together in one PR: the hostname
 list in `projects/platform-factory/edge-tunnel/resources/route.yaml`, the
 `factory-edge` provider's `redirect_uris` in
 `projects/platform/authentik/factory-blueprints/factory-auth.yaml`, the app's
 HTTPRoute on `edge/edge` and its namespace in `routeNamespaces`, its hostname
-ownership rule in `edge-admission`, and the network policies above. A route
+ownership rule in `edge-admission`, and the proxy egress and backend ingress policies. A route
 that needs the access token uses the shared OIDC template in a policy in
 `edge`, with a ReferenceGrant in the backend namespace. Token forwarding
 stays off the gateway-wide policy.
@@ -325,34 +150,7 @@ second factor; choose TOTP. A WebAuthn key enrolled over the port-forward is
 bound to `localhost` and fails on factory-auth.jomcgi.dev. The admin and user
 interfaces are reachable only through the port-forward.
 
-`authentik-secret-init` (`projects/platform-factory/authentik/resources/`)
-fills `AUTHENTIK_SECRET_KEY` and the OIDC client secrets into
-`authentik/authentik-secrets` once, and copies the client secrets to
-`edge/edge-oidc-client`, `argocd/argocd-authentik-oidc`,
-`factory/factory-itsaplan-oidc` and `grafana/grafana-oidc`. ArgoCD creates
-those Secrets empty and ignores their data, so the Job can only read and
-update those names. CloudNativePG generates `authentik-pg-app`. Copy the
-existing `authentik-secrets` to 1Password as part of #7952; database recovery
-needs the original secret key and OIDC client secrets.
-
 ### kubectl through Authentik
-
-kubectl reaches the API server at https://factory-kube.jomcgi.dev with an
-Authentik ID token. The token comes from the public client `factory-kubectl`
-(`projects/platform/authentik/factory-blueprints/factory-kubectl.yaml`)
-through kubelogin, with PKCE and no client secret.
-
-```
-kubectl + kubelogin ── ID token ──▶ Cloudflare ── tunnel ──▶ Envoy edge
-                                                               │ checks issuer, audience and
-                                                               │ groups (kube-api-route.yaml)
-                                                               ▼
-                                         API server: authentication-config.yaml
-                                         user authentik:<username>
-                                         groups authentik:<group>
-                                                               ▼
-                                         RBAC: projects/platform-factory/kube-access/
-```
 
 | Authentik group | Access |
 | --- | --- |
@@ -430,113 +228,27 @@ KUBECONFIG=~/.kube/factory.yaml argocd app list --core
 
 ## Object storage
 
-Garage (`projects/platform-factory/garage/`) runs as a three-pod StatefulSet,
-one pod per node by required anti-affinity, each with local-path volumes for
-metadata (1 GiB) and data. Replication factor 3 with `consistent` mode: reads
-and writes need two of the three nodes, so it tolerates one node down. Each
-node's zone is its pod name; the layout gives each 50 GB of capacity, which
-balances data but is not enforced (local-path has no quotas). The manifests
-are written by hand because the upstream Helm chart is published only in
-Garage's Git repository and generates its RPC secret with Helm's `lookup` and
-`randHex`.
-
-Nodes find each other with Garage's Kubernetes discovery: each publishes a
-`GarageNode` (CRD in `resources/crd.yaml`) with its pod IP when it starts, so
-a restart with a new IP reconnects. `garage-init` (`resources/garage_init.py`)
-does the rest, idempotently:
-
-- **Secrets.** Before the StatefulSet, it fills `garage/garage-secrets` with
-  the RPC secret and admin token, once. They exist only in the cluster; the
-  Secret carries `Prune=false,Delete=false`.
-- **Layout.** After every sync (PostSync Job) and every 10 minutes
-  (CronJob), it
-  applies the first layout once all three nodes are connected. Later runs
-  need only two nodes up, so a node down for maintenance does not fail them.
-  It never changes an existing layout: a node that comes back with a new ID
-  (a lost metadata volume) is logged as a warning, and replacing it is an
-  operator step (`garage layout assign`/`remove` from a Garage pod).
-- **Buckets and keys.** It creates the buckets listed below. Each consuming
-  namespace declares an empty Secret and a Role letting `garage/garage-init` get and update only
-  that name; garage-init generates a key into the Secret
-  (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL`,
-  `AWS_REGION`, `BUCKET`, ready for `envFrom`), imports it into Garage if
-  Garage lacks it, and grants read and write on that one bucket. The Secret
-  is the source of truth, so a rebuilt Garage gets the same keys back. A
-  consumer whose Secret appears after the last sync is served by the next
-  scheduled run. Each grant is handled on its own: one failing grant is logged
-  and fails the run without stopping the others. A Secret whose key ID
-  exists in Garage with a different secret is reported, never overwritten
-  on either side; delete the Garage key (`garage key delete`) to have the
-  Secret's credentials imported, or empty the Secret's data to get a new key.
-
-| Bucket | Key Secret | Consumer |
-| --- | --- | --- |
-| `kagent-pg-backups` | `kagent-pg/kagent-pg-s3` | `kagent-pg` WAL archive and base backups |
-| `factory-db-backups` | `factory-db/factory-db-s3` | `factory-db` WAL archive and base backups |
-| `authentik-pg-backups` | `authentik/authentik-pg-s3` | Authentik WAL archive and base backups |
-| `factory-itsaplan` | `factory/factory-itsaplan-s3` | itsaplan (step 6) |
-| `factory-evidence` | `factory/factory-evidence-s3` | the connector's transcripts and CI logs (step 9) |
-| `ate-snapshots` | none yet | Agent Substrate, when its snapshots move off rustfs |
-
-`projects/platform-factory/factory-buckets/` holds the `factory` namespace's
-key Secrets, the backup key in `authentik`, and itsaplan's OIDC client secret,
-which Authentik's secret-init fills. The S3 API admits only the workloads
-holding a key: `kagent-pg`, `factory-db` and Authentik's instances, itsaplan's
-api and worker, and the connector (`app.kubernetes.io/name=factory-connector` in
-`factory`); Substrate is added with its grant. RPC (3901) admits only Garage pods
-and the admin API (3903) only garage-init. A consumer also needs its own
-egress rule to `app.kubernetes.io/name=garage` in `garage` on 3900. Traffic is plain HTTP
-inside the cluster; Cilium's WireGuard encrypts it between nodes.
-
-The Application, the StatefulSet's PVCs (retention policy `Retain`) and the
-key Secrets carry `Prune=false,Delete=false`, so removing the Application
-leaves the data and keys. Check health with:
+Check Garage membership and provisioning.
 
 ```bash
 KUBECONFIG=~/.kube/factory.yaml kubectl -n garage exec garage-0 -- /garage -c /etc/garage/garage.toml status
 KUBECONFIG=~/.kube/factory.yaml kubectl -n garage logs job/garage-bootstrap
 ```
 
+If the log reports a key that exists in Garage with a different secret,
+garage-init leaves both sides as they are. Delete the Garage key
+(`garage key delete`), then run provisioning again so that Garage imports
+the Kubernetes Secret's credentials. To get a new key instead, empty the
+Secret's data.
+
 ## Postgres
 
-CloudNativePG 1.30 runs every database. `kagent-pg`
-(`projects/platform-factory/kagent-postgres/`, namespace `kagent-pg`) is
-kagent's: three instances,
-one per node by required anti-affinity, each 256 MiB requested with a 1 GiB
-limit. Three fit: the nodes have about 11 GiB free each, and idle instances
-use under 100 MiB. Losing the primary promotes a replica in seconds; the
-failover trial on #7817 kept every row.
-
-It is a separate Application rather than part of the factory chart
-(`postgres.mode: existing`), so the database's lifecycle and the chart's are
-independent: a chart rollback or reinstall never touches the data, and the
-Cluster, its logins and the Application carry `Prune=false,Delete=false`.
-`kagent-pg-setup`, a PostSync Job, generates the two login passwords once
-into `kagent-pg-logins`, writes the connection-string Secrets the chart reads
-(`kagent-postgres-owner`, `kagent-postgres-readwrite`) into `kagent`, and
-runs kagent v1.0.1's own setup script (`setup.sql`, copied unchanged) as the
-superuser to create `kagent_owner`, `kagent_readwrite`, their login users
-and schema `kagent`. Only the kagent controller, the setup Job, peers and the
-operator reach the instances. kagent reads the connection strings only at
-start, so restart its controller (through ArgoCD) after they change.
-
-Those two Secrets and the Role letting the setup Job update them come from a
-second Application, `kagent-postgres-secrets` (`kagent/`), whose destination
-is `kagent` with `CreateNamespace`. `kagent-postgres` itself touches only
-`kagent-pg`, so on a fresh cluster neither Application fails because the
-other's namespace is not there yet (the root's waves do not wait for an
-Application to be healthy). The setup Job waits up to 15 minutes for the two
-Secrets to appear. If they are recreated later, they stay empty until the
-next `kagent-postgres` sync refills them.
-
-The Cluster has its own namespace because the kagent controller can read
-every Secret in `kagent` and authenticates callers by unverified JWTs
-(`projects/factory/ARCHITECTURE.md`, finding 5). The superuser password, the
-login passwords' source and the Garage key (which can delete backups: Garage
-has no versioning or Object Lock) stay in `kagent-pg`; only the two
-connection strings cross into `kagent`. Superuser access stays enabled
-because the setup Job reruns `setup.sql` after every sync; within its
-namespace only that Job and the operator can use it.
+If `kagent-postgres-owner` or `kagent-postgres-readwrite` in the `kagent`
+namespace is recreated, it stays empty until you sync the `kagent-postgres`
+Application in ArgoCD: its PostSync Job `kagent-pg-setup` writes both
+connection strings again. After either connection string changes, use ArgoCD
+to restart the kagent controller Deployment. The controller reads both
+Secrets at startup. Admission policy denies a direct `kubectl rollout restart`.
 
 A CloudNativePG instance that starts before its Garage key exists caches
 the missing credentials and archives nothing until it restarts, so
@@ -551,15 +263,6 @@ KUBECONFIG=~/.kube/factory.yaml kubectl -n argocd patch app kagent-postgres --ty
   -p '{"operation":{"initiatedBy":{"username":"operator"},"sync":{"syncOptions":["CreateNamespace=true","ServerSideApply=true","RespectIgnoreDifferences=true"]}}}'
 ```
 
-Backups use the in-tree barman-cloud integration: continuous WAL archiving
-and a daily base backup (02:30 UTC, 14 days kept) to `kagent-pg-backups` in
-Garage. It has been deprecated for several releases and CloudNativePG 1.31
-removes it; the barman-cloud plugin would also need cert-manager, which the
-cluster does not run. The operator upgrade to 1.31 must move this to the
-plugin first. Garage is on the same three nodes, so these backups protect
-against losing a node, a volume or a bad change, not against losing the
-cluster.
-
 Each incarnation of the Cluster archives under its own `serverName`
 (`kagent-pg-v1`) in the bucket. A Cluster created with `initdb` refuses to
 archive into a prefix that already holds WALs ("expected empty archive"),
@@ -569,15 +272,7 @@ restore it from the old prefix (`bootstrap.recovery` with an
 bump `serverName` to the next version in `resources/cluster.yaml`. The old
 prefix ages out only by hand.
 
-Authentik's `authentik/authentik-pg` is configured for three instances with
-required hostname anti-affinity, continuous WAL archiving and a daily base
-backup at 03:00 UTC. Garage keeps 14 days of recovery points in
-`authentik-pg-backups`, under `serverName: authentik-pg-v1`. Its scoped key
-stays in `authentik/authentik-pg-s3`, filled by garage-init through the
-factory-buckets Application. `authentik-pg-wait-for-key` holds the Cluster
-back until all three credential fields exist; retry the Authentik sync if its
-30-minute deadline expires. The Cluster carries `Prune=false,Delete=false`,
-preserving its PVCs when the Application is pruned or deleted.
+Retry the Authentik sync if `authentik-pg-wait-for-key` exceeds its 30-minute deadline. Check that garage-init filled all three fields in `authentik/authentik-pg-s3`.
 
 After rollout, confirm three healthy instances, `ContinuousArchiving=True`
 and a completed base backup in Garage. Recovery also needs the existing
@@ -585,112 +280,21 @@ and a completed base backup in Garage. Recovery also needs the existing
 secrets. Their 1Password copies and an isolated restore drill remain on
 [#7952](https://github.com/jomcgi-org/homelab/issues/7952). The same archive
 incarnation rule and migration to the barman-cloud plugin before CNPG 1.31
-apply to Authentik and `factory-db` (the itsaplan and connector databases,
-below).
+apply to Authentik and `factory-db`.
+
+### factory-db
+
+Run `python3 -m pytest -q projects/platform-factory/factory-db/provisioning_test.py`
+to check provisioning. The test runs the initializer against the declared Secret
+placeholders and RBAC grants, checking that adding the reviewer preserves existing
+passwords and connection strings. It also covers reruns, delayed Secret creation,
+database ownership and ingress scope. PR CI runs the same test through
+`//projects/platform-factory/factory-db:provisioning_test`. Live ArgoCD health and
+Secret key presence are checked after deployment.
 
 ## Agent Substrate
 
-The combination in use is Kubernetes `v1.37.2+k3s1`, Agent Substrate `1.0.1`
-from the [kagent-dev fork](https://github.com/kagent-dev/substrate) and gVisor
-`release-20261102.0`. This is the fork release line kagent v1.0.1 uses (it
-builds against fork v1.0.0), not upstream agent-substrate/substrate. Substrate needs Kubernetes 1.37 or later with
-`certificates.k8s.io/v1beta1` served. Its atelet downloads the gVisor release
-named in the `gvisor-default` SandboxConfig (version `v7`, sha256-pinned) and
-runs it inside each worker pod; the nodes' own runsc is not used by Substrate.
-
-The fork publishes four Helm charts: `substrate-crds`, `substrate-podcert`,
-`substrate-atelet` and `substrate`. They take one image tag for every
-component, and ArgoCD here has no post-render step, so a Helm source could not
-pin images by digest. The charts are rendered into Git instead:
-
-- `projects/platform-factory/substrate/render-upstream.sh` pulls each chart
-  at its version, checks its OCI digest, renders it with `values/` into
-  `resources/upstream/`, and pins every image to its digest. It also copies
-  the fork's bundled PostgreSQL and role script, which the charts leave out.
-  To upgrade, rerun it and review the diff. Each version bump restarts
-  postgres, because the role script's header changes the hash of its
-  ConfigMap.
-- `values/` holds the settings kagent needs. Both charts get the preview
-  gates `PerTemplateSnapshotLocation` and `GoldenEgressPolicy`. The router's
-  ingress allowlist and the API's bootstrap owners name
-  `spiffe://cluster.local/ns/kagent/sa/kagent-controller`. The `k8s.io`
-  credential provider grants the `kagent` atespace only those Secrets in the
-  `kagent` namespace labelled `substrate.ate.dev/injectable=true`. atelet is
-  its own release.
-- `resources/` adds what the charts don't cover: S3 snapshots in an
-  in-cluster rustfs (`snapshot-store.yaml`, bucket `ate-snapshots`, until
-  Garage replaces it), the PostgreSQL connection-string Secrets (no
-  passwords, since both logins use pod certificates), the role setup in a
-  postStart hook, ate-api-server's authentication config and Cilium
-  allowlists. OpenTelemetry push is off; Prometheus `/metrics` stays on.
-  It deletes the chart's ClusterRoleBinding that lets the credential provider
-  read every Secret in the cluster, and adds the `kagent-controller-*`
-  ValidatingAdmissionPolicies (`kagent-identity-guard.yaml`, below).
-- `bootstrap-substrate.sh` creates the generated Secrets with the fork's
-  `kubectl-ate`: the podcertificate signer CAs, the actor identity CA and JWT
-  keys, the egress MITM CA (`egress-mitm-ca-pool`, published to actors as the
-  `egress-mitm.ate.dev` trust bundle) and the snapshot store's key. They
-  exist only in the cluster, and the fork uses the same names and formats as
-  upstream. The CAs expire on 2027-11-13, a year after creation. Substrate 1.0
-  has no CA rotation command, so rotation is tracked in
-  [#7831](https://github.com/jomcgi-org/homelab/issues/7831).
-
-Control plane: `ate-system` (ate-api-server, ate-controller, ate-idp-server,
-atenet-router and atenet-egress on agentgateway, k8s-credential-provider, the
-atelet DaemonSet, postgres and rustfs) and `podcertificate-controller-system`.
-WorkerPools may live in any namespace labelled
-`factory.jomcgi.dev/substrate-workers=true` (the factory chart labels each
-repository binding namespace). The `substrate-workers` cluster-wide policy lets
-pods in those namespaces reach only the egress gateway. atelet reaches workers
-over a unix socket on the node. ate-controller limits their ingress to
-atenet-router. The gateway reaches ate-api-server and the credential
-provider. The credential provider reaches only the Kubernetes API, and only
-the gateway can reach it. Actors have no other egress until a destination is
-allowed in `network-policy.yaml`.
-
-kagent's installation (step 5 of `projects/factory/ARCHITECTURE.md`) must:
-
-- create the `kagent` namespace labelled `ate.dev/api-access=true`, since
-  Substrate's API admits only namespaces with that label;
-- run the controller as ServiceAccount `kagent-controller`, synced by ArgoCD,
-  and give it Cilium egress to `api.ate-system.svc:443` and the router;
-- bind ClusterRole `k8s-credential-provider-secret-reader` to
-  `ate-system/k8s-credential-provider` with a RoleBinding in `kagent`, the
-  only namespace whose Secrets the provider can then read;
-- label each Secret meant for injection `substrate.ate.dev/injectable=true`.
-
-Substrate trusts `kagent/kagent-controller` before kagent exists, so the
-`kagent-controller-*` ValidatingAdmissionPolicies stop anyone else from
-claiming it. In namespace `kagent` they deny creating or updating
-ServiceAccount `kagent-controller`, and Pods, Deployments and ReplicaSets that
-run as it. Only ArgoCD's application controller is exempt, plus three
-`kube-system` controllers acting for ArgoCD's Deployment: deployment-controller
-and replicaset-controller create its ReplicaSets and Pods, and
-generic-garbage-collector clears their finalizers when ArgoCD deletes it. An
-admin's `kubectl rollout restart` of that Deployment is therefore denied by
-design; restart it through ArgoCD. The policies don't cover `pods/exec` or
-`pods/ephemeralcontainers`, so those must stay admin-only in `kagent`.
-
-These broad grants are acceptable while only admins hold kubeconfigs. Revisit
-them before actors get internet egress or agents get cluster credentials:
-
-- Upstream's atenet-egress ingress policy and the router's egress still
-  select any pod labelled `ate.dev/worker-pool`, in any namespace, so anyone
-  who can create pods can claim the label and reach the gateway, though not as
-  an actor. `substrate-workers` itself now also requires the namespace label
-  `factory.jomcgi.dev/substrate-workers=true`, which only cluster admins and
-  ArgoCD can set.
-- The shared `ate-system/ate-client` ServiceAccount is ate-api-server's
-  bootstrap owner (`--authz-bootstrap-owners`, ate-setup's default), so
-  anyone who can mint its token owns every atespace. `kubectl ate` uses it
-  unless given `--token-file`.
-- `kagent/kagent-controller` is a global owner too and may reach every actor
-  through the router, so anything running as it controls all of Substrate.
-  The admission policy above limits who can run as it.
-- The `kagent` atespace may inject every labelled Secret in `kagent`, so a
-  Secret labelled there is available to every kagent agent.
-
-Verify an install:
+To upgrade Substrate, rerun `projects/platform-factory/substrate/render-upstream.sh` and review the rendered diff. Verify the installation:
 
 ```bash
 export KUBECONFIG=~/.kube/factory.yaml
@@ -725,21 +329,6 @@ actor, the template, the atespace, the WorkerPool and the namespace.
 
 ## Observability
 
-`projects/platform-factory/otel-collector/` deploys
-`projects/platform/otel-collector` with `values.yaml` and
-`values-factory.yaml`, plus its network policy. There is no trace gateway: nothing
-on the cluster emits traces yet.
-
-Everything goes to the Honeycomb environment `homelab`, the hub's, with the
-hub's `honeycomb-ingest` key. The environment routes by its own rules, not by
-the chart's dataset names:
-
-| Data | Honeycomb dataset | Filter |
-| --- | --- | --- |
-| Node, pod, host, Cilium, Hubble and API server metrics | `metrics` (the environment's metrics dataset, shared with the hub) | `k8s.cluster.name = factory` |
-| Pod logs, warning and above | one dataset per `service.name` (for example `coredns`), shared with the hub when names match | `k8s.cluster.name = factory` |
-| Kubernetes Warning events | `k8s-events` | `k8s.cluster.name = factory` |
-
 Useful starting points in the `metrics` dataset, all filtered on
 `k8s.cluster.name = factory`:
 
@@ -761,40 +350,7 @@ For logs, run an environment-wide query filtered on
 out of a pod's reach, so etcd health comes from the API servers' readiness
 checks instead.
 
-What is left out or reduced before export:
-
-- Logs from `authentik` and `ate-system` are not collected at all: sign-in
-  details and agent session tokens do not leave the cluster. Every other line
-  has bearer tokens, Authorization values and `password=`/`token=`/`secret=`
-  style values masked, ANSI colour stripped, and identical repeats within a
-  minute collapsed into one record with `log_count`. Nothing caps log volume
-  outright; a noisy component needs its own fix or an exclusion.
-- A repeating Warning event is sent when it first appears and when its count
-  reaches 2, 4, 8, 16, 32, 64 and then every hundredth repeat.
-
-The Cilium agent's metrics (:9962) and Hubble's (:9965) listen on every host
-interface, `tailscale0` included, so any tailnet device that can reach node-1
-can read them. They carry flow counts and drop reasons, not payloads.
-
-The cluster agent is one replica with the `Recreate` strategy, so a rollout
-never runs two Event watchers. That is not a guarantee: if a node is
-partitioned, a replacement can start while the old pod still runs, and both
-ship each Event until the old one stops.
-
 ## Metrics view
-
-Prometheus (`projects/platform-factory/prometheus/`) and Grafana
-(`projects/platform-factory/grafana/`) are the operators' dashboards. They
-sit next to the Honeycomb pipeline above, which keeps shipping the same
-baseline; neither depends on the other.
-
-Prometheus is one StatefulSet replica scraping every 30 s, with seven days or
-4 GB of data (whichever comes first) on an 8 GiB local-path volume. It
-prefers a node other than node-1, the operator's workstation, and its volume
-pins it to the node it first lands on. The data is disposable: deleting the
-StatefulSet or the Application deletes the volume. It uses about 30,000 series
-and under 400 MiB at first (limit 1.5 GiB). kube-state-metrics lists only the kinds in its
-`--resources`, never Secrets or ConfigMaps.
 
 `resources/prometheus.yml` names every target, and a new one needs three
 changes: a job there, an egress rule in `resources/network-policy.yaml`, and
@@ -802,45 +358,11 @@ an ingress rule at the target in `resources/scrape-ingress.yaml`. Those
 ingress rules are CiliumClusterwideNetworkPolicies so they sync whether or
 not the target's namespace exists yet, and leave with Prometheus.
 
-| Job | Target | Notes |
-| --- | --- | --- |
-| `kubelet`, `kubelet-resource`, `kubelet-cadvisor` | each node's kubelet, :10250 | Node and pod CPU and memory, the root filesystem, host NIC and pod network bytes, CFS throttling; most series are dropped at scrape. Verified against the cluster CA; RBAC grants `nodes/metrics`, not `nodes/proxy` |
-| `cilium-agent`, `hubble`, `cilium-operator` | :9962, :9965, :9963 on the host network | Drop reasons and flow counts by namespace |
-| `kube-state-metrics` | `prometheus/kube-state-metrics:8080` | Node conditions, pod phases, restarts, rollouts |
-| `kagent-controller` | `kagent` controller :8443 | controller-runtime's secure metrics: a TokenReview and a SubjectAccessReview for `GET /metrics` (ClusterRole `prometheus`); self-signed certificate. Enabled in `projects/factory/deploy/values.yaml` |
-| `factory-broker` | broker admin port :8081 | Every other path there needs a reviewed admin or connector token |
-| `factory-connector` | :9090 | |
-| `cnpg` | every instance in `kagent-pg`, `factory-db` and `authentik`, :9187 | |
-| `garage` | admin API :3903 | `/metrics` needs no token (no `metrics_token` is set); every other admin path needs the admin token |
-
-Grafana is one replica whose data directory is an emptyDir: the Prometheus
-datasource and the dashboards come from Git, users are created at sign-in, and
-a restart forgets sessions and preferences. Its dashboards, in the Factory
-folder, are `resources/dashboards/*.json`:
-
-- **Cluster and nodes**: node CPU, memory, disk and network, object health,
-  restarts and scrape health.
-- **Cilium drops**: policy drops by source and destination namespace, all
-  drop reasons, flow verdicts and DNS response codes.
-- **CloudNativePG**: roles, replication lag, WAL archiving, base backup age,
-  the recovery window, size and load for each cluster.
-- **Factory delivery**: the broker's Codex grant state, token refreshes,
-  relay outcomes and GitHub mints; the connector's claims, kagent sends,
-  results, blocks, retries and errors; and deliveries as pull requests,
-  review events and merge queue outcomes. A counter appears once it is first
-  incremented, so a quiet factory leaves some panels empty.
-
 Edit a dashboard by changing its JSON; Grafana rejects saves from the UI. Each
 ConfigMap's name carries its content hash, so a change rolls the pod.
 
-Grafana's own OIDC client is `factory-grafana`
-(`projects/platform/authentik/factory-blueprints/factory-grafana.yaml`). Its
-secret reaches `grafana/grafana-oidc` from `authentik-secret-init`, and the
-pod waits in ContainerCreating until it has. Grafana reads it only at start,
-so restart the Deployment after the value changes. Anyone signing in outside
-`authentik Admins` is refused rather than given a default role. Grafana's
-egress is Prometheus and factory-auth.jomcgi.dev only, so it makes no calls to
-grafana.com.
+After the OIDC client secret in `grafana/grafana-oidc` changes, restart the
+Grafana Deployment to load the new value. Grafana reads it at startup.
 
 The break-glass admin's password is generated at each start into memory:
 
@@ -1041,71 +563,6 @@ result row in the PR. The drill passes with a fresh session, elapsed time at
 most five minutes and `had_hold = false`. If the deadline passes with no row,
 record that outcome before using the manual recovery procedure.
 
-## Not yet done
-
-These come from the #7817 step 1 checklist:
-
-- Durable Agent Substrate state: its PostgreSQL and snapshot store are on
-  local-path volumes on one node each, with no backup.
-- Actor internet egress and the credential broker. The credential provider
-  runs, but grants only the `kagent` namespace.
-- Off-site backup and restore: etcd snapshots with a copy of the cluster
-  token, Garage's buckets and the CNPG archives, to R2 or GCS. Garage and
-  `kagent-pg` replicate across the nodes but share the cluster's failure
-  domain.
-- Substrate's PostgreSQL and snapshots onto the replicated stores: its
-  snapshots to Garage's `ate-snapshots` (grant `ate-system` a key), its
-  database to CloudNativePG.
-- Moving `kagent-pg`, `factory-db` and Authentik backups to the barman-cloud
-  plugin before upgrading CloudNativePG to 1.31, which removes the in-tree
-  integration. cert-manager, which the plugin needs, now runs.
-- Kargo pipelines (HOME-116): the first Warehouse, stage branch, verification
-  and rollback, then each application moved onto Kargo one at a time.
-- Agent Substrate CA rotation before 2027-11-13
-  ([#7831](https://github.com/jomcgi-org/homelab/issues/7831)).
-- Verify Authentik's three instances, WAL archiving and a completed Garage
-  base backup after rollout. Copy the existing `authentik-secrets` to
-  1Password and run an isolated restore drill (#7952).
-- Spreading the cloudflared replicas across nodes: cfgate v0.2.0-alpha.11's
-  CloudflareTunnel has no topologySpreadConstraints or affinity field, so
-  placement is the scheduler's default spreading.
-- More alerts: a stuck connector run (HOME-141), CNPG archiving and backup
-  age, and a heartbeat that shows the alert path itself works.
-- Metrics that outlive the cluster: Prometheus keeps seven days on one
-  node's disk, so a lost node or rebuild starts it empty.
-
-### factory-db
-
-`factory-db` (`projects/platform-factory/factory-db/`, namespace
-`factory-db`) holds itsaplan's database, the connector's (`factory_connector`,
-which the connector migrates at startup), the reviewer's (`factory_reviewer`)
-and Hindsight's (`factory_hindsight`, with `vector` and `pg_trgm`).
-The reviewer does not read its connection Secret yet. `factory-db` mirrors `kagent-pg`:
-three instances, the same sizing, WAL and daily base backups (02:45 UTC, 14 days)
-to `factory-db-backups`, and `factory-db-init` (wave -1) holding the Cluster
-back until garage-init fills its key. Unlike `kagent-pg` it has no superuser
-login and no setup script: its roles are managed roles whose passwords come
-from `factory-db-itsaplan-login`, `factory-db-connector-login`,
-`factory-db-reviewer-login` and `factory-db-hindsight-login`, generated once by
-`factory-db-init`. The connector, reviewer and Hindsight databases are
-`Database` objects with reclaim policy `retain`.
-The PostSync `factory-db-setup` Job writes each database's `DATABASE_URL` into
-its client's namespace: `factory` (`factory-itsaplan-db`,
-`factory-connector-db`, `factory-reviewer-db`) and `hindsight`
-(`hindsight-db`). Those Secrets and the Role for them come from the client's
-Application (`factory-db-secrets` in `factory/`, `hindsight`), as for
-`kagent-postgres-secrets`. `smartShutdownTimeout` is 15 s, so a deleted
-primary fails over in about 20 s although itsaplan holds its connections
-open.
-
-Run `python3 -m pytest -q projects/platform-factory/factory-db/provisioning_test.py`
-to check provisioning. The test runs the initializer against the declared Secret
-placeholders and RBAC grants, checking that adding the reviewer preserves existing
-passwords and connection strings. It also covers reruns, delayed Secret creation,
-database ownership and ingress scope. PR CI runs the same test through
-`//projects/platform-factory/factory-db:provisioning_test`. Live ArgoCD health and
-Secret key presence are checked after deployment.
-
 ## itsaplan
 
 itsaplan (`projects/factory/ARCHITECTURE.md`, "itsaplan") serves
@@ -1119,11 +576,6 @@ so the UI does not work over a port-forward; the api does, for scripts.
 KUBECONFIG=~/.kube/factory.yaml kubectl -n factory get secret factory-itsaplan-admin \
   -o jsonpath='{.data.password}' | base64 -d
 ```
-
-The generated `BETTER_AUTH_SECRET` and `APP_ENCRYPTION_KEY`
-(`factory/factory-itsaplan`) move to 1Password item
-`k8s-homelab/factory-itsaplan` once Postgres has off-site backups, as
-Authentik's secret key does.
 
 If those keys are lost while the database has accounts, settings or stored
 secrets, `factory-itsaplan-secret-init` fails the sync with `REFUSING to
@@ -1161,12 +613,6 @@ image's psql before it writes anything. Recover in this order:
    mail, Google, SCIM and bot settings, workspace SCIM tokens, Git
    connections, integration credentials and agent invocation secrets. An
    annotation secret-init finds when no keys are missing is removed unused.
-
-The public route answers 404 for the agent-facing api: `/backend/mcp`, the
-run and chat feeds' `claim`, and their per-run `heartbeat`, `events` and
-`result`. Agents and the connector use the api's Service inside the cluster.
-God mode stays public, behind both sign-ins, because the web app calls it for
-the instance admin.
 
 ## Codex login
 
@@ -1219,19 +665,7 @@ KUBECONFIG=~/.kube/factory.yaml kubectl -n factory exec deploy/factory-connector
 
 ## Reviewer
 
-The chart stages `factory-reviewer` disabled. After CI publishes the chart
-and writes its version back, a separate deploy-values PR sets
-`reviewer.enabled: true` and adds `factory-r-homelab-review` to
-`kagent.rbac.namespaces`, keeping the existing namespaces. Substrate's
-`credentialProvider.namespacePolicies` values already list that namespace;
-a custom `reviewer.bindings.homelab.namespace` needs its own policy entry.
-Regenerate Substrate's checked-in manifests with
-`projects/platform-factory/substrate/render-upstream.sh` and sync that
-policy before enabling the reviewer.
-The broker must be enabled and kagent's ServiceAccount authority must be
-set; keep its existing value.
-
-Before enabling, install App `jomcgi-factory-review` (5758326) on the bound
+Include the binding namespace in kagent RBAC and in Substrate’s credential provider policies. Render and sync a changed Substrate policy before enabling the reviewer. Install App `jomcgi-factory-review` (5758326) on the bound
 repository and populate `k8s-homelab/factory-review-gh-app` with `app-id`,
 `installation-id` and `private-key`. Its PR comment
 (`reviewer.commentAuthor`) needs the App's Issues read and write permission,
