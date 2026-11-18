@@ -114,9 +114,11 @@ groups:
       # them. The broker exports one reading time per provider; the newest
       # across broker pods counts, so a terminating pod does not fire this.
       # No series at all (no committed reading, or no broker scraped) is 0.
+      # Both branches carry provider="codex", so a stale reading that then
+      # disappears keeps one alert and one 15 min timer.
       - alert: FactoryCodexQuotaReadingStale
         expr: >-
-          (time() - max(factory_broker_quota_observed_at_seconds{provider="codex"}) > 7200)
+          (time() - max by (provider) (factory_broker_quota_observed_at_seconds{provider="codex"}) > 7200)
           or (absent(factory_broker_quota_observed_at_seconds{provider="codex"}) * 0)
         for: 15m
         labels:
