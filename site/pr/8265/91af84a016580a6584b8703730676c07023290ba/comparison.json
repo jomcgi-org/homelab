@@ -1,5 +1,5 @@
 {
-  "head": "21c3b0e44e1c3155abc3b9691783b1319a53c840",
+  "head": "91af84a016580a6584b8703730676c07023290ba",
   "baseline": "69d1a7046a983201c8b16216aa3592b05fc18653",
   "baseline_kind": "git merge-base",
   "rows": [
@@ -125,7 +125,7 @@
       "after": "captures/blog/after-390x844-complete.png",
       "before": "captures/blog/before-390x844-complete.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 2472
@@ -695,7 +695,7 @@
       "after": "captures/factory/after-overview-live-1440x1000-light-100pct-opening.png",
       "before": "captures/factory/before-overview-live-1440x1000-light-100pct-opening.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 1440,
         "height": 1000
@@ -1322,7 +1322,7 @@
       "after": "captures/trips/after-day-1440-light-map-controls.png",
       "before": "captures/trips/before-day-1440-light-map-controls.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 1440,
         "height": 1029
