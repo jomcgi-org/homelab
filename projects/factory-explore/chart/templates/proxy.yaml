@@ -64,6 +64,9 @@ spec:
         - ports:
             - { port: "8080", protocol: TCP }
             - { port: "9090", protocol: TCP }
+  # DNS to CoreDNS is allowed for every pod by the cluster-wide policy in
+  # projects/platform-factory/network-policy/resources/baseline.yaml
+  # (decision: https://factory-plan.jomcgi.dev/factory/issue/HOME-356#comment-3946).
   egress:
     - toEntities: [kube-apiserver]
       toPorts:

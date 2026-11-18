@@ -4,6 +4,7 @@ argocd_app(
     name = "factory-explore",
     chart = "projects/factory-explore/chart",
     chart_files = "//projects/factory-explore/chart:chart",
+    content_rules = True,  # keep
     # The source chart intentionally refuses to render without a built image.
     # argocd_app's manual source-path renderer cannot resolve generated values.
     generate_manifests = False,  # keep
