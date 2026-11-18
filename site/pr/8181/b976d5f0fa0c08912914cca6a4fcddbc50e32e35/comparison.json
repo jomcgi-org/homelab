@@ -1,6 +1,6 @@
 {
-  "head": "6431704869f03685253823cd9bd5de364dc4fa65",
-  "baseline": "79106a7d17aedf68a96c17065f58cd44b90a8e2e",
+  "head": "b976d5f0fa0c08912914cca6a4fcddbc50e32e35",
+  "baseline": "60dbf8c26190ce4af6f558fc264a4d4d87b038e6",
   "baseline_kind": "git merge-base",
   "rows": [
     {
@@ -125,7 +125,7 @@
       "after": "captures/blog/after-390x844-complete.png",
       "before": "captures/blog/before-390x844-complete.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 2472
@@ -695,7 +695,7 @@
       "after": "captures/factory/after-overview-live-1440x1000-light-100pct-opening.png",
       "before": "captures/factory/before-overview-live-1440x1000-light-100pct-opening.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 1440,
         "height": 1000
@@ -980,7 +980,7 @@
       "after": "captures/review/after-gaps-audit-390-dark.png",
       "before": "captures/review/before-gaps-audit-390-dark.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1056,7 +1056,7 @@
       "after": "captures/review/after-gaps-pending-390-dark.png",
       "before": "captures/review/before-gaps-pending-390-dark.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1075,7 +1075,7 @@
       "after": "captures/review/after-gaps-pending-390-light.png",
       "before": "captures/review/before-gaps-pending-390-light.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1208,7 +1208,7 @@
       "after": "captures/review/after-notes-pending-390-dark.png",
       "before": "captures/review/before-notes-pending-390-dark.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1000
