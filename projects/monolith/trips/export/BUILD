@@ -36,6 +36,7 @@ py_library(
         "@pip//boto3",
         "@pip//fastapi",
         "@pip//httpx",
+        "@pip//pillow",
         "@pip//sqlmodel",
     ],
 )
@@ -47,6 +48,7 @@ py_test(
     deps = [
         ":export",
         "@pip//boto3",
+        "@pip//pillow",
         "@pip//pytest",
     ],
 )

@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import io
 import json
 import logging
 import os
@@ -44,20 +45,37 @@ def signed_path(key: str, preset: str, secret: str, salt: str) -> str:
 
 
 def validate_webp(body: bytes) -> None:
-    """Fail closed on an original, malformed output, or retained metadata."""
+    """Fail closed on an original, malformed output, retained metadata, or a
+    file with no decodable image frame."""
     if body[:4] != b"RIFF" or body[8:12] != b"WEBP":
         raise ValueError("imgproxy did not return WebP")
     if int.from_bytes(body[4:8], "little") + 8 != len(body):
         raise ValueError("truncated WebP")
+    tags = []
     offset = 12
     while offset < len(body):
         tag = body[offset : offset + 4]
         if tag in (b"EXIF", b"XMP "):
             raise ValueError("imgproxy retained photo metadata")
+        tags.append(tag)
         size = int.from_bytes(body[offset + 4 : offset + 8], "little")
         offset += 8 + size + size % 2
     if offset != len(body):
         raise ValueError("invalid WebP chunks")
+    if not {b"VP8 ", b"VP8L"} & set(tags):
+        raise ValueError("WebP has no image frame")
+    from PIL import Image
+
+    # Decode the frame, so a container with a broken bitstream is not stored.
+    try:
+        with Image.open(io.BytesIO(body)) as image:
+            image.load()
+            if image.format != "WEBP" or not all(image.size):
+                raise ValueError("WebP has no image frame")
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError("WebP image frame does not decode") from exc
 
 
 def exists(client, bucket: str, key: str) -> bool:
@@ -90,7 +108,7 @@ def export_trips(
             images.add(row["default_image"])
     for payload in trips:
         trip = payload["trip"]
-        if trip["slug"] == "index" or not SLUG.fullmatch(trip["slug"]):
+        if not SLUG.fullmatch(trip["slug"]):
             raise ValueError("invalid trip slug")
         if trip.get("default_image"):
             images.add(trip["default_image"])
@@ -156,22 +174,26 @@ def export_trips(
         "images": sorted(images),
         "files": {},
     }
-    for name, payload in [("index", index)] + [(p["trip"]["slug"], p) for p in trips]:
+
+    def publish(name, payload):
+        """Write the immutable copy and its alias; return the immutable key."""
         body = encoded(payload)
         immutable = f"trips/v/{name}-{hashlib.sha256(body).hexdigest()}.json"
-        client.put_object(
-            Bucket=PRIVATE_BUCKET,
-            Key=immutable,
-            Body=body,
-            ContentType="application/json",
-        )
-        client.put_object(
-            Bucket=PRIVATE_BUCKET,
-            Key=f"trips/{name}.json",
-            Body=body,
-            ContentType="application/json",
-        )
-        manifest["files"][name] = immutable
+        for key in (immutable, f"trips/{name}.json"):
+            client.put_object(
+                Bucket=PRIVATE_BUCKET,
+                Key=key,
+                Body=body,
+                ContentType="application/json",
+            )
+        return immutable
+
+    # Trips live under trips/trip/, so no slug can name the index or the
+    # manifest (trips/export.json).
+    manifest["files"]["index"] = publish("index", index)
+    manifest["files"]["trips"] = {
+        p["trip"]["slug"]: publish(f"trip/{p['trip']['slug']}", p) for p in trips
+    }
     client.put_object(
         Bucket=PRIVATE_BUCKET,
         Key="trips/export.json",

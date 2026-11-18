@@ -1,22 +1,41 @@
 """Publication boundary: no originals/metadata, resumable renders, atomic manifest."""
 
 import hashlib
+import io
 import json
 from datetime import datetime, timezone
 
 import pytest
 from botocore.exceptions import ClientError
+from PIL import Image
 
-from trips.export import export_trips, signed_path, validate_webp
+from trips.export import (
+    WORKERS_ASSET_BYTES,
+    export_trips,
+    signed_path,
+    validate_webp,
+)
 
 KEY = "img_" + "a" * 12 + ".jpg"
-WEBP = (
-    b"RIFF"
-    + (14).to_bytes(4, "little")
-    + b"WEBPVP8 "
-    + (2).to_bytes(4, "little")
-    + b"xx"
-)
+
+
+def webp(lossless=False):
+    """A real WebP with one decodable frame and no metadata."""
+    out = io.BytesIO()
+    Image.new("RGB", (4, 3), (40, 90, 160)).save(out, "WEBP", lossless=lossless)
+    return out.getvalue()
+
+
+def riff(*chunks):
+    """A WebP container around raw (tag, payload) chunks."""
+    body = b"WEBP" + b"".join(
+        tag + len(data).to_bytes(4, "little") + data + b"\0" * (len(data) % 2)
+        for tag, data in chunks
+    )
+    return b"RIFF" + len(body).to_bytes(4, "little") + body
+
+
+WEBP = webp()
 INDEX = {
     "count": 1,
     "trips": [{"slug": "2025-trip", "title": "Trip", "default_image": KEY}],
@@ -35,14 +54,16 @@ TRIPS = [
 
 
 class Store:
-    def __init__(self):
+    def __init__(self, sizes=None):
         self.objects = {}
         self.writes = []
+        # Reported sizes by key, so a test can model a file too large to build.
+        self.sizes = sizes or {}
 
     def head_object(self, Bucket, Key):
         if (Bucket, Key) not in self.objects:
             raise ClientError({"Error": {"Code": "404"}}, "HeadObject")
-        return {"ContentLength": len(self.objects[Bucket, Key])}
+        return {"ContentLength": self.sizes.get(Key, len(self.objects[Bucket, Key]))}
 
     def put_object(self, Bucket, Key, Body, **kwargs):
         self.objects[Bucket, Key] = Body
@@ -71,8 +92,11 @@ def test_export_preserves_api_json_and_only_renders_new_photos():
     assert first["photoMode"] == "snapshot"
     assert len(rendered) == 5
     assert json.loads(store.objects["stars", "trips/index.json"]) == INDEX
-    assert json.loads(store.objects["stars", "trips/2025-trip.json"]) == TRIPS[0]
-    for name, key in first["files"].items():
+    assert json.loads(store.objects["stars", "trips/trip/2025-trip.json"]) == TRIPS[0]
+    files = [first["files"]["index"], *first["files"]["trips"].values()]
+    assert set(first["files"]["trips"]) == {"2025-trip"}
+    for key in files:
+        assert key.startswith("trips/v/")
         assert key.endswith(
             hashlib.sha256(store.objects["stars", key]).hexdigest() + ".json"
         )
@@ -125,12 +149,59 @@ def test_metadata_is_rejected(tag):
         validate_webp(body)
 
 
+@pytest.mark.parametrize("lossless", [False, True])
+def test_real_lossy_and_lossless_webp_pass(lossless):
+    validate_webp(webp(lossless))
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        riff((b"ALPH", b"\x00" * 4)),  # no image chunk at all
+        riff((b"VP8 ", b"xx")),  # an image chunk that cannot hold a frame
+        riff((b"VP8L", b"\x2f" + b"\x00" * 4)),  # a lossless header with no data
+    ],
+)
+def test_webp_without_a_decodable_frame_is_rejected(body):
+    with pytest.raises(ValueError):
+        validate_webp(body)
+
+
+def test_incomplete_render_leaves_previous_committed_manifest():
+    store = Store()
+    store.objects["stars", "trips/export.json"] = b"previous"
+    with pytest.raises(ValueError):
+        export_trips(INDEX, TRIPS, store, lambda *_: riff((b"VP8 ", b"xx")))
+    assert store.objects["stars", "trips/export.json"] == b"previous"
+    assert not store.writes
+
+
+@pytest.mark.parametrize("slug", ["export", "index"])
+def test_no_trip_slug_can_replace_the_manifest_or_index(slug):
+    store = Store()
+    trip = {"slug": slug, "title": "Trip", "default_image": KEY, "highlights": []}
+    payload = {"trip": trip, "points": []}
+    index = {"count": 1, "trips": [{"slug": slug, "default_image": KEY}]}
+    result = export_trips(index, [payload], store, lambda *_: WEBP)
+    manifest = json.loads(store.objects["stars", "trips/export.json"])
+    assert manifest["files"] == result["files"]
+    assert json.loads(store.objects["stars", "trips/index.json"]) == index
+    assert json.loads(store.objects["stars", f"trips/trip/{slug}.json"]) == payload
+    assert result["files"]["trips"][slug].startswith(f"trips/v/trip/{slug}-")
+
+
 @pytest.mark.parametrize(
     "key", ["../original.jpg", "img_a.jpg", "https://example.org/x.jpg"]
 )
 def test_signer_cannot_request_other_sources(key):
     with pytest.raises(ValueError):
         signed_path(key, "full", "00", "01")
+
+
+@pytest.mark.parametrize("preset", ["original", "raw", "", "full/../x"])
+def test_signer_rejects_unsupported_presets(preset):
+    with pytest.raises(ValueError):
+        signed_path(KEY, preset, "00", "01")
 
 
 def test_signer_matches_hub_hmac_format():
@@ -173,3 +244,27 @@ def test_large_bytes_use_public_bucket_even_below_file_limit():
     assert result["photoMode"] == "public"
     assert result["photoBytes"] == 5 * len(WEBP)
     assert result["photoMaxBytes"] == len(WEBP)
+
+
+def test_one_file_over_the_workers_asset_limit_needs_public_mode():
+    assert WORKERS_ASSET_BYTES == 25 * 1024**2
+    big = f"trips/photos/{KEY}/full.webp"
+    store = Store(sizes={big: WORKERS_ASSET_BYTES + 1})
+    store.objects["stars", "trips/export.json"] = b"previous"
+    with pytest.raises(RuntimeError, match="public publication is disabled"):
+        export_trips(INDEX, TRIPS, store, lambda *_: WEBP)
+    assert store.objects["stars", "trips/export.json"] == b"previous"
+
+    result = export_trips(INDEX, TRIPS, store, lambda *_: WEBP, allow_public=True)
+    assert result["photoMode"] == "public"
+    assert result["photoMaxBytes"] == WORKERS_ASSET_BYTES + 1
+
+
+def test_a_file_at_the_workers_asset_limit_stays_in_the_snapshot():
+    big = f"trips/photos/{KEY}/full.webp"
+    store = Store(sizes={big: WORKERS_ASSET_BYTES})
+    result = export_trips(
+        INDEX, TRIPS, store, lambda *_: WEBP, byte_limit=2 * WORKERS_ASSET_BYTES
+    )
+    assert result["photoMode"] == "snapshot"
+    assert result["photoBase"] == "/data/trips/photos"
