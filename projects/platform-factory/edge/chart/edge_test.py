@@ -98,6 +98,7 @@ def test_only_kagent_forwards_the_access_token(docs):
     # ArgoCD, Grafana, itsaplan or the landing page.
     assert set(policies) == {
         "edge-authentik-oidc",
+        "factory-health",
         "authentik-no-gateway-oidc",
         "kagent-authentik-oidc",
         "kube-api-authentik-jwt",
@@ -338,3 +339,26 @@ def test_kagent_hostname_is_owned_and_published():
             ],
         }
     ]
+
+
+def test_public_health_route_is_limited_to_get_health(docs):
+    route = docs["HTTPRoute", "factory-health"]["spec"]
+    assert route["hostnames"] == ["factory-public.jomcgi.dev"]
+    assert route["rules"] == [
+        {
+            "matches": [
+                {"method": "GET", "path": {"type": "Exact", "value": "/health"}}
+            ],
+            "backendRefs": [{"name": "factory-health", "port": 8080}],
+        }
+    ]
+    assert docs["SecurityPolicy", "factory-health"]["spec"] == {
+        "targetRefs": [
+            {
+                "group": "gateway.networking.k8s.io",
+                "kind": "HTTPRoute",
+                "name": "factory-health",
+            }
+        ],
+        "authorization": {"defaultAction": "Allow"},
+    }

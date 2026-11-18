@@ -432,7 +432,7 @@ def test_prod_legacy_probe_targets_are_unchanged():
     config = _collector_config(_render_overlay("values-prod"))
 
     assert config["receivers"]["http_check"]["targets"] == [
-        {"endpoint": "https://jomcgi.dev/health", "method": "GET"},
+        {"endpoint": "https://factory-public.jomcgi.dev/health", "method": "GET"},
         {"endpoint": "https://jomcgi.dev/", "method": "GET"},
     ]
     assert config["service"]["pipelines"]["metrics"]["receivers"] == [
@@ -463,7 +463,7 @@ def test_gke_renders_live_argocd_target_with_pinned_ca():
 
     assert receiver["collection_interval"] == "60s"
     assert receiver["targets"] == [
-        {"endpoint": "https://jomcgi.dev/health", "method": "GET"},
+        {"endpoint": "https://factory-public.jomcgi.dev/health", "method": "GET"},
         {"endpoint": "https://jomcgi.dev/", "method": "GET"},
         {
             "endpoint": "https://argocd-server.argocd.svc:443/healthz",
@@ -664,16 +664,16 @@ def test_loom_is_default_off_in_every_overlay(values_name):
         ),
         (
             "values-prod",
-            "d36ecc6c0724118964642b3059176805d1508aa67f228ae434a1cef9db482b6b",
+            "3dd654324d3a3fe54e1add85a097e46861a4ff5b54e7b81fa66eacdfdf692b81",
         ),
         (
             "values-gke",
-            "e52f89f65f14a99b445b2c14437d474c3392755a6cbbccd215943d4ef7561258",
+            "748da921ec7537fb0aeb9c767a3edff3d991a4fc61c9ec5d358ce9dee2b59eb6",
         ),
     ],
 )
 def test_loom_default_off_preserves_collector_config(values_name, expected_sha256):
-    # Literal fingerprints from main before Loom monitoring was added.
+    # Fingerprints of the default-off overlays, including their public health target.
     docs = _render_overlay(values_name)
     config = next(
         d["data"]["collector.yaml"]
@@ -693,7 +693,7 @@ def test_gke_loom_monitoring_has_scoped_rbac_and_hardened_job():
     )
     config = _collector_config(docs)
     assert config["receivers"]["http_check"]["targets"] == [
-        {"endpoint": "https://jomcgi.dev/health", "method": "GET"},
+        {"endpoint": "https://factory-public.jomcgi.dev/health", "method": "GET"},
         {"endpoint": "https://jomcgi.dev/", "method": "GET"},
         {
             "endpoint": "https://argocd-server.argocd.svc:443/healthz",

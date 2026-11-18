@@ -1,0 +1,151 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: factory-health
+data:
+  health.py: |
+{{ .Files.Get "files/health.py" | indent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: factory-health
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: factory-health-nodes
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: factory-health-nodes
+subjects:
+  - kind: ServiceAccount
+    name: factory-health
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: factory-health-nodes
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: argocd
+  name: factory-health-apps
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    resourceNames: ["argocd", "jomcgi-site-prod"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  namespace: argocd
+  name: factory-health-apps
+subjects:
+  - kind: ServiceAccount
+    name: factory-health
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: factory-health-apps
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: factory-health
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: factory-health}
+  template:
+    metadata:
+      labels: {app: factory-health}
+      annotations:
+        checksum/script: {{ .Files.Get "files/health.py" | sha256sum }}
+    spec:
+      serviceAccountName: factory-health
+      containers:
+        - name: health
+          image: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
+          command: ["python3", "-B", "/app/health.py"]
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 96Mi}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+            seccompProfile: {type: RuntimeDefault}
+          volumeMounts:
+            - {name: script, mountPath: /app, readOnly: true}
+      volumes:
+        - name: script
+          configMap: {name: factory-health}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: factory-health
+spec:
+  selector: {app: factory-health}
+  ports:
+    - port: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: factory-health
+spec:
+  parentRefs:
+    - name: edge
+  hostnames: [factory-public.jomcgi.dev]
+  rules:
+    - matches:
+        - method: GET
+          path: {type: Exact, value: /health}
+      backendRefs:
+        - name: factory-health
+          port: 8080
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: factory-health
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: factory-health
+  authorization: {defaultAction: Allow}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: factory-health
+spec:
+  endpointSelector:
+    matchLabels: {app: factory-health}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            gateway.envoyproxy.io/owning-gateway-name: edge
+      toPorts:
+        - ports: [{port: "8080", protocol: TCP}]
+  egress:
+    - toEntities: [kube-apiserver]
+    - toFQDNs:
+        - matchName: jomcgi.dev
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]

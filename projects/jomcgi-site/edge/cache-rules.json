@@ -16,6 +16,21 @@
         }
       },
       "enabled": true
+    },
+    {
+      "description": "Factory public health",
+      "expression": "(http.host eq \"factory-public.jomcgi.dev\" and http.request.uri.path eq \"/health\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": true,
+        "edge_ttl": {
+          "mode": "bypass_by_default"
+        },
+        "serve_stale": {
+          "disable_stale_while_updating": true
+        }
+      },
+      "enabled": true
     }
   ]
 }
