@@ -1616,7 +1616,12 @@ func (e *Engine) gather(ctx context.Context, b *Binding, pr github.PullRequest, 
 	if unknown != "" {
 		l.WarnContext(ctx, "previous review state is incomplete; retaining the hold and asking for a full review", "reason", unknown)
 	}
-	gate := humanGate(b, changedPaths(files), pr.Labels)
+	mechanisms, err := loadMechanisms(ctx, e.gh, b.repo(), b.BaseBranch)
+	if err != nil {
+		e.ghError(ctx, l, b, "invariants", err)
+		return nil, err
+	}
+	gate := humanGate(b, changedPaths(files), pr.Labels, mechanisms)
 	if prior.Gate.held() {
 		if gate == nil {
 			gate = &Gate{ObservedLabels: gateLabels(b, pr.Labels)}

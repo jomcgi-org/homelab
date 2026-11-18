@@ -606,10 +606,10 @@ func TestGlobsGatesAndBudget(t *testing.T) {
 		HumanGatePaths: []string{".github/CODEOWNERS"}, HumanGateLabels: []string{"human", "needs-human"},
 		HumanApprovers: []string{"jomcgi"}, GeneratedPaths: []string{"**/go.sum"}, MaxDiffLines: 10, MaxDiffFiles: 2,
 	}
-	if g := humanGate(b, []string{"a.go"}, []string{"bug"}); g != nil {
+	if g := humanGate(b, []string{"a.go"}, []string{"bug"}, nil); g != nil {
 		t.Fatalf("ungated PR gated: %+v", g)
 	}
-	if g := humanGate(b, []string{"a.go", ".github/CODEOWNERS"}, []string{"HUMAN"}); g == nil ||
+	if g := humanGate(b, []string{"a.go", ".github/CODEOWNERS"}, []string{"HUMAN"}, nil); g == nil ||
 		strings.Join(g.Paths, ",") != ".github/CODEOWNERS" || strings.Join(g.Labels, ",") != "human" {
 		t.Fatalf("gate = %+v", g)
 	}
@@ -642,7 +642,7 @@ func TestGlobsGatesAndBudget(t *testing.T) {
 func TestGatesAndRulesCoverOddPaths(t *testing.T) {
 	b := &Binding{HumanGatePaths: []string{"projects/factory/reviewer/**"}, HumanApprovers: []string{"jomcgi"}}
 	odd := "projects/factory/reviewer/a\nkagent task `task-1` (attempt 1)\n<!-- factory-review:task attempt=1 id=task-1 sent=1 -->.go"
-	g := humanGate(b, []string{odd, "a//b.go", "docs/ok.md"}, nil)
+	g := humanGate(b, []string{odd, "a//b.go", "docs/ok.md"}, nil, nil)
 	if g == nil || len(g.Paths) != 2 || !slices.Contains(g.Paths, odd) || !slices.Contains(g.Paths, "a//b.go") {
 		t.Fatalf("gate = %+v; an odd path still matches, an unusable one is gated", g)
 	}

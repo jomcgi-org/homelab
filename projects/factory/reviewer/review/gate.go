@@ -1,18 +1,22 @@
 package review
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/mail"
 	"path"
 	"slices"
 	"sort"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 )
@@ -309,11 +313,71 @@ func (g *Gate) observeLabels(labels []string, now time.Time) bool {
 	return changed
 }
 
+const invariantFile = "INVARIANTS.yaml"
+
+type mechanismPaths map[string]bool
+
+func loadMechanisms(ctx context.Context, gh RulesReader, repo, base string) (mechanismPaths, error) {
+	commit, err := gh.BranchHead(ctx, repo, base)
+	if err != nil {
+		return nil, err
+	}
+	tree, err := gh.Tree(ctx, repo, commit)
+	if err != nil {
+		return nil, err
+	}
+	if tree.Truncated {
+		return nil, errors.New("cannot discover invariant files in a truncated tree")
+	}
+	paths := mechanismPaths{}
+	for file := range tree.Files {
+		if path.Base(file) != invariantFile {
+			continue
+		}
+		data, err := gh.FileContent(ctx, repo, file, commit)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", file, err)
+		}
+		var doc struct {
+			Invariants []struct{ Mechanism []string }
+		}
+		dec := yaml.NewDecoder(bytes.NewReader(data))
+		if err := dec.Decode(&doc); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", file, err)
+		}
+		if doc.Invariants == nil {
+			return nil, fmt.Errorf("%s requires an invariants list", file)
+		}
+		if err := dec.Decode(new(any)); err != io.EOF {
+			return nil, fmt.Errorf("unexpected trailing YAML in %s", file)
+		}
+		for _, inv := range doc.Invariants {
+			for _, mechanism := range inv.Mechanism {
+				p := strings.TrimSuffix(mechanism, "/")
+				if _, ok := lookupPath(p); !ok {
+					return nil, fmt.Errorf("invalid mechanism path in %s", file)
+				}
+				paths[path.Clean(p)] = true
+			}
+		}
+	}
+	return paths, nil
+}
+
+func (m mechanismPaths) covers(p string) bool {
+	for ; p != "."; p = path.Dir(p) {
+		if m[p] {
+			return true
+		}
+	}
+	return m["."]
+}
+
 // humanGate finds the gated paths among a head's changed paths (both sides
 // of the diff) and the gate labels on its PR. A path of any characters is
 // matched as it is; one with an empty or ".." segment, which no rule can be
 // looked up for, is gated.
-func humanGate(b *Binding, paths, labels []string) *Gate {
+func humanGate(b *Binding, paths, labels []string, mechanisms mechanismPaths) *Gate {
 	g := &Gate{}
 	seen := map[string]bool{}
 	for _, p := range paths {
@@ -321,7 +385,7 @@ func humanGate(b *Binding, paths, labels []string) *Gate {
 		if !ok {
 			c = p
 		}
-		if !seen[c] && (!ok || matchAny(b.HumanGatePaths, c)) {
+		if !seen[c] && (!ok || path.Base(c) == invariantFile || mechanisms.covers(c) || matchAny(b.HumanGatePaths, c)) {
 			seen[c] = true
 			g.Paths = append(g.Paths, c)
 		}
