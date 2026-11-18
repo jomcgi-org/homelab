@@ -27,16 +27,13 @@ control is absent in words that name a usable path.
 
 ## Close a finding
 
-Close the HOME ticket and the private record. In the PR that builds the
-enforcement:
-
-1. Add the invariant row, or change it to `live`.
-2. Update the domain's security lens with the verified control: copy
-   `projects/<domain>/stpa/*.json` into a fresh `$STPA_TMP`, add or update
-   the row there (`status` and the HOME issue on every security row), then
-   run BLOCK A and BLOCK B from `docs/agents/stpa.md`. The blocks only read
-   fragments from `$STPA_TMP` or `origin/main`, so an edit left in the
-   working tree is never picked up. Never hand-edit `STPA.md`.
+1. Merge the PR that builds the enforcement. That PR adds the invariant row,
+   or changes it to `live`.
+2. Verify the control on the deployed object.
+3. Close the HOME ticket and the private record.
+4. Then update the domain's security lens with the verified control. Follow
+   `docs/agents/stpa.md`: BLOCK B opens its own PR from `origin/main`, so run
+   it only after step 2. Never hand-edit `STPA.md`.
 
 ## Verify before writing
 

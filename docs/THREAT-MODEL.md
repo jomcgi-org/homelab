@@ -1,6 +1,6 @@
 # Homelab Threat Model
 
-_Reviewed against commit 395eb4e5f._
+_Reviewed against commit 9c42d9c92._
 
 This page holds the structure of the threat model for both clusters: what
 is worth protecting, who attacks it, and where untrusted input crosses a
@@ -58,20 +58,21 @@ flowchart LR
   N1["node-1: workstation and node (7)"] --> DATA
 ```
 
-Numbers in the diagram are attacker positions. A control ID names an
-invariant, a statement that is always true and the mechanism that enforces
-it. HOME-301 tracks the invariant files; until they merge, the list is in
-that issue.
+Numbers in the diagram are attacker positions. The Controls column names
+the file that enforces each control. Paths are under `projects/platform-factory/`
+(PF), `projects/factory/` (F), `projects/factory-cluster/` (FC) and
+`projects/shared/helm/factory-library/` (LIB). HOME-301 gives each control a
+stable invariant ID.
 
 | Boundary | Untrusted input | Controls | Deep model |
 | --- | --- | --- | --- |
-| Cloudflare Tunnel to the edge Gateway to routed apps | Anyone on the internet | PLAT-2, PLAT-3 | None yet |
-| GitHub to `main` to ArgoCD | PRs, dependencies, CI logs | ROOT-1, FACT-4, FACT-9, FACT-10, FACT-11 | None yet |
-| Tracker to connector to agent sandbox | Issue text, repository content, pages an agent reads | FACT-1, FACT-2, PLAT-5, PLAT-6 | None yet |
-| Sandbox to egress gateway to broker and GitHub | A prompt-injected agent | FACT-3, FACT-5, FACT-6, FACT-7, FACT-8 | None yet |
-| Reviewer service and its read-only agent | The PR under review | FACT-4, FACT-9, FACT-10 | None yet |
-| Shared data plane: Postgres, Garage, Hindsight | A compromised application pod; recalled memory text | PLAT-1, PLAT-7, PLAT-8, LIB-1 to LIB-5 | None yet |
-| node-1 as workstation and node | A home LAN device; an operator session | CLUS-1, CLUS-2, CLUS-3 | None yet |
+| Cloudflare Tunnel to the edge Gateway to routed apps | Anyone on the internet | Gateway-wide Authentik sign-in (PF `edge/chart`); only named namespaces attach routes (PF `edge-admission/resources/policies.yaml`) | None yet |
+| GitHub to `main` to ArgoCD | PRs, dependencies, CI logs | Required `pr-checks` and `factory review`; a pass counts only for its head (F `reviewer/review/gate.go`); errors give no pass (F `reviewer/review/engine.go`); CI alone raises pins (`bazel/tools/ci/chart_version_guard.py`) | None yet |
+| Tracker to connector to agent sandbox | Issue text, repository content, pages an agent reads | A sandbox holds placeholders and no ServiceAccount token (F `chart/templates/_binding.tpl`); a worker reaches only the egress gateway and DNS (PF `substrate/resources/network-policy.yaml`) | None yet |
+| Sandbox to egress gateway to broker and GitHub | A prompt-injected agent | A token names one repository and its permissions (F `broker/github/app.go`); the relay verifies the actor JWT (F `broker/actorjwt/verifier.go`); broker network policy and admission (F `chart/templates/network-policy.yaml`, `broker-admission.yaml`) | None yet |
+| Reviewer service and its read-only agent | The PR under review | Rules come from the base commit (F `reviewer/review/rules.go`); the reviewer token is read-only and its App differs from the author's (F `broker/config/config.go`) | None yet |
+| Shared data plane: Postgres, Garage, Hindsight | A compromised application pod; recalled memory text | Default-deny network policy (PF `network-policy/resources/baseline.yaml`); bucket claims by authorized namespace (PF `garage/resources/claim-admission.yaml`); library workload defaults (LIB `chart/templates/_workloads.tpl`) | None yet |
+| node-1 as workstation and node | A home LAN device; an operator session | Secrets encrypted at rest (FC `nodes/k3s-config.yaml`); nodes hold no `ghcr.io` credential (FC `nodes/registries.yaml`) | None yet |
 | jomcgi-site Worker as the public output path | Data that the factory publishes | The `data/sources.json` list of published objects ([jomcgi-site README](../projects/jomcgi-site/README.md)); `public_content.py` in the CI Format stage | None yet |
 
 The factory has no STPA security lens yet.
