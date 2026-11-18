@@ -65,7 +65,7 @@ const FIXTURE_WALKS = JSON.stringify({
 });
 
 // Exercise the built release, including the production hub/Worker boundary.
-export async function serveRelease(dist, stage) {
+export async function serveRelease(dist, stage, { contrast = false } = {}) {
   const scope = scopeFor(stage);
   const rules = redirectRules(dist);
   // Like run.sh: copy the release, then snapshot its data into the copy, which
@@ -121,6 +121,14 @@ export async function serveRelease(dist, stage) {
             ".css": "text/css",
             ".json": "application/json",
           }[extname(file)] ?? "application/octet-stream";
+        if (contrast && extname(file) === ".css") {
+          body = Buffer.concat([
+            body,
+            Buffer.from(
+              "\n* { color: lightgray !important; background: white !important; }",
+            ),
+          ]);
+        }
       } catch {
         body = readFileSync(join(dataRoot, "404.html"));
         type = "text/html";

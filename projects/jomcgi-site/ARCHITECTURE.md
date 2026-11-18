@@ -63,10 +63,13 @@ browser files and profiles. It runs as uid 65532 with a read-only root, no
 service account token and no deploy credentials. The browser uses Playwright's
 container launch defaults; pod isolation and network policy bound its access.
 
-`check/deployed.test.mjs` audits built dev and prod pages with both tiers.
-Testing the packaged image under the Job's restrictions remains a separate
-HOME-181 follow-up. PR #8160 defers that Docker harness to fit the review
-budget; its implementation is preserved at commit `9c5de89a6`.
+`//projects/jomcgi-site:image_smoke_test` loads this exact image into Docker
+on the CI runner. It invokes the Job's launcher with `--self-test`, as uid
+65532 with a read-only root, dropped capabilities and only `/tmp` writable.
+The network is disabled; fixtures listen on loopback inside the container.
+The test audits the built dev and prod pages and rejects a rendered CSS
+contrast violation. Its log records the image ID, command and browser results.
+An unavailable engine or failed browser launch fails the test.
 
 The Job has no retries and exits after 180 seconds. Argo CD keeps a failed
 hook for diagnosis and replaces it on the next sync. Its only application
