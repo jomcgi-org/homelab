@@ -447,6 +447,9 @@ func issuesPending(run *github.CheckRun) bool {
 // wait, so the connector starts none.
 func (e *Engine) holdIssues(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, st State, pending []Finding) *github.CheckRun {
 	st.IssuesPending = true
+	// The hold replaces the summary that holds a legacy report's task
+	// reference. Keep the reference in the state, so recovery can replay it.
+	st.TaskID = e.sourceTask(b, run, st)
 	why := "The issue evidence changed after the review read it."
 	if len(pending) > 0 {
 		why = "Issue evidence could not be read:"
