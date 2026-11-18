@@ -10105,3 +10105,12 @@ py_test(
         "@pip//pytest",
     ],
 )
+
+filegroup(
+    name = "stpa_model",
+    srcs = [
+        "STPA.md",
+        "//projects/monolith/stpa:fragments",
+    ],
+    visibility = ["//:__pkg__"],
+)

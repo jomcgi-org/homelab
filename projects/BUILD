@@ -84,3 +84,9 @@ exports_files(
     ["factory-cluster/nodes/authentication-config.yaml"],
     visibility = ["//projects/platform-factory/kube-access/resources:__pkg__"],
 )
+
+filegroup(
+    name = "stpa_model",
+    srcs = ["embervm/STPA.md"] + glob(["embervm/stpa/*.json"]),
+    visibility = ["//:__pkg__"],
+)
