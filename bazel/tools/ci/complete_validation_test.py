@@ -89,7 +89,7 @@ def test_nonzero_buildifier_refuses_complete_validation(checkout):
 def test_missing_required_tool_stops_before_formatting(checkout):
     _, _, tools, env = checkout
     (tools / "buildifier").unlink()
-    for tool in ("bash", "git", "sed", "sort", "tr"):
+    for tool in ("bash", "git", "python3", "sed", "sort", "tr"):
         (tools / tool).symlink_to(shutil.which(tool))
     env["PATH"] = str(tools)
     result = invoke(checkout, "lint")
