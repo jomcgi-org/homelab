@@ -273,14 +273,16 @@ func TestGoalRestatedFromSixteenCriteriaToSeven(t *testing.T) {
 	for n := 1; n <= 16; n++ {
 		earlier.Criteria = append(earlier.Criteria, GoalVerdict{n, goalNotMet})
 		issue.Issue.Description += fmt.Sprintf("\n%d. Requirement %d", n, n)
-		if n == 7 {
-			current.CriterionIDs = issueCriterionIDs(issue, []byte("test"))
-		}
 		if n <= 7 {
 			current.Criteria = append(current.Criteria, GoalVerdict{n, goalMet})
 		}
 	}
 	earlier.CriterionIDs = issueCriterionIDs(issue, []byte("test"))
+	issue.Issue.Description = "**Done when:**"
+	for n := 1; n <= 7; n++ {
+		issue.Issue.Description += fmt.Sprintf("\n%d. Requirement %d", n, 8-n)
+	}
+	current.CriterionIDs = issueCriterionIDs(issue, []byte("test"))
 	prior := goalFindings(key, &earlier)
 	r := &Report{}
 	previous := make(map[string]*GoalCheck)

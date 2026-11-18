@@ -312,7 +312,7 @@ func goalResolved(id, key string, g *GoalCheck, previous *GoalCheck) string {
 	if previous != nil && len(g.CriterionIDs) > 0 && len(g.CriterionIDs) == len(g.Criteria) &&
 		len(previous.CriterionIDs) == len(previous.Criteria) &&
 		n > len(g.Criteria) && n <= len(previous.Criteria) && rest == ":criterion-"+strconv.Itoa(n) &&
-		slices.Equal(previous.CriterionIDs[:len(g.Criteria)], g.CriterionIDs) &&
+		retainsKnownCriteria(previous.CriterionIDs, g.CriterionIDs) &&
 		!slices.Contains(g.CriterionIDs, previous.CriterionIDs[n-1]) {
 		return criterionRemoved
 	}
@@ -322,6 +322,23 @@ func goalResolved(id, key string, g *GoalCheck, previous *GoalCheck) string {
 		}
 	}
 	return ""
+}
+
+// A restatement can reorder the surviving requirements. Match their identities
+// before treating an absent requirement as removed. A rewritten requirement
+// has an unknown identity and leaves the old finding open.
+func retainsKnownCriteria(previous, current []string) bool {
+	remaining := make(map[string]int, len(previous))
+	for _, id := range previous {
+		remaining[id]++
+	}
+	for _, id := range current {
+		if remaining[id] == 0 {
+			return false
+		}
+		remaining[id]--
+	}
+	return true
 }
 
 // goalKey is the issue a goal check judges the PR against, or "" when none
