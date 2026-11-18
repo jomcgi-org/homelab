@@ -201,9 +201,7 @@ headers, and checks that all six exact routes have files in the build output.
 After building the pages, run `pnpm test` from `check/` for both verification
 tiers and their failure cases. On Linux with glibc, the tests use the bundled
 headless shell. `SITE_CHECK_BROWSER` can name a local Chromium executable.
-Run `ci test -- //projects/jomcgi-site/...` for Bazel checks. The
-`image_smoke_test` target runs the release image under the Job's restrictions
-and writes its image ID, command and browser results to the test log.
+Run `ci test -- //projects/jomcgi-site/...` for Bazel checks.
 
 `/docs` uses `web:docs_manifest`, with the hub's `repo_docs_srcs`, generator
 and public-content guard. `web:docs_pages` renders the filtered entries with
