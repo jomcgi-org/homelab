@@ -92,10 +92,10 @@ test(
                     'console.error("app failed near https://static.cloudflareinsights.com/beacon.min.js/x")',
                   // Chromium's wording, then a different failure.
                   "beacon-console-prefix":
-                    'console.error("Loading the script \'https://static.cloudflareinsights.com/beacon.min.js/x\' violates the following Content Security Policy directive: \\"script-src \'self\'\\". The action has been blocked. And the app crashed.")',
+                    "console.error(\"Loading the script 'https://static.cloudflareinsights.com/beacon.min.js/x' violates the following Content Security Policy directive: \\\"script-src 'self'\\\". The action has been blocked. And the app crashed.\")",
                   // The exact diagnostic, but from app code.
                   "beacon-console-exact":
-                    'console.error("Loading the script \'https://static.cloudflareinsights.com/beacon.min.js/x\' violates the following Content Security Policy directive: \\"script-src \'self\'\\". The action has been blocked.")',
+                    "console.error(\"Loading the script 'https://static.cloudflareinsights.com/beacon.min.js/x' violates the following Content Security Policy directive: \\\"script-src 'self'\\\". The action has been blocked.\")",
                 }[mode] ?? "";
               respond(res, script, "text/javascript");
             } else {
@@ -108,7 +108,9 @@ test(
                 "third-party-script":
                   '<script defer src="https://static.cloudflareinsights.com/other.js"></script>',
               }[mode];
-              const body = tag ? html.replace("</body>", `${tag}</body>`) : html;
+              const body = tag
+                ? html.replace("</body>", `${tag}</body>`)
+                : html;
               const extra =
                 mode === "report-only"
                   ? {
@@ -188,7 +190,9 @@ test("a staged section leaves the list when the snapshot publishes it", () => {
 test("only the exact Cloudflare beacon is treated as edge-injected", () => {
   const beacon = "https://static.cloudflareinsights.com/beacon.min.js/v8c78";
   assert.ok(isEdgeBeacon(beacon));
-  assert.ok(isEdgeBeacon("https://static.cloudflareinsights.com/beacon.min.js"));
+  assert.ok(
+    isEdgeBeacon("https://static.cloudflareinsights.com/beacon.min.js"),
+  );
   for (const other of [
     "https://static.cloudflareinsights.com/other.js",
     "https://static.cloudflareinsights.com.evil.invalid/beacon.min.js",
