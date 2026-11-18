@@ -30,17 +30,6 @@
   ],
   "hazards": [
     {
-      "key": "firecracker-no-jailer",
-      "view": "physical",
-      "statement": "The staged Firecracker jailer isolates each VM in a chroot, with leased credentials, a cgroup leaf and a PID namespace. When enabled, startup and launch checks enforce containment.",
-      "losses": [
-        "L.host-compromise"
-      ],
-      "maturity": "built",
-      "status": "shipped-off",
-      "issue": "#5255"
-    },
-    {
       "key": "identity-hijack",
       "view": "physical",
       "statement": "Brick registration binds the reported pod UID and node to the projected token claims.",

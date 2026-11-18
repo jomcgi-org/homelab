@@ -219,7 +219,6 @@ flowchart TD
 
 | ID | View | Hazard (unsafe state) | → Losses | Maturity | Status | Issue |
 |----|----|----|----|----|----|----|
-| `firecracker-no-jailer` | physical | The staged Firecracker jailer isolates each VM in a chroot, with leased credentials, a cgroup leaf and a PID namespace. When enabled, startup and launch checks enforce containment. | L.host-compromise | built | shipped-off | #5255 |
 | `identity-hijack` | physical | Brick registration binds the reported pod UID and node to the projected token claims. | L.credential-theft, L.host-compromise | built | enforced-prod |  |
 
 ### Unsafe control actions

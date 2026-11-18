@@ -553,9 +553,8 @@ flowchart TD
 | `docs-publish.unauthorized-source` | logical | `docs-manifest-gen` → `public-frontend`: allowlisted document content published to public site | unauthorized-source | The public manifest generator checks content from allowlisted paths before publication. | medium | unredacted-public-doc | enforced-prod | #5275 | projects/monolith/knowledge/tools/gen_docs_manifest.py:128 |
 
 <details>
-<summary><b>Not UCAs</b>: 7 examined and rejected</summary>
+<summary><b>Not UCAs</b>: 6 examined and rejected</summary>
 
-- **Anonymous tools/list returns the full MCP catalogue**: Catalogue disclosure only: on_call_tool denies every untagged call, and filtering the anonymous list would blank Context Forge's cached catalogue (projects/monolith/core/mcp_policy.py:104)
 - **Authentik and Kubernetes control-plane compromise**: Assumed not to hold
 - **Cluster layers below the monolith**: Ingress tunnel, CNI policy, admission control, secret operator are owned by docs/security.md
 - **Cluster-wide capacity exhaustion outside modeled admission and budget gates**: Not analyzed here
