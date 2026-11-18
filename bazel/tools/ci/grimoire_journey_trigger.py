@@ -165,7 +165,16 @@ def main(argv: list[str]) -> int:
     try:
         base = argv[1]
         changed = changed_paths(
-            _git("diff", "--name-only", "-z", base, "HEAD", "--", LOCKFILE, *TRIGGER_PATHS)
+            _git(
+                "diff",
+                "--name-only",
+                "-z",
+                base,
+                "HEAD",
+                "--",
+                LOCKFILE,
+                *TRIGGER_PATHS,
+            )
         )
         run, reason = decide(
             changed,
