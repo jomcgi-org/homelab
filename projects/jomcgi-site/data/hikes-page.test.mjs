@@ -76,11 +76,14 @@ test("deploy snapshot fills the no-JS summary, escapes facts and omits prose/hou
   html = await render("2026-11-17T13:30:00Z");
   assert.match(
     html,
-    /Stale site snapshot · published data retained \(at publication\)/,
+    /Stale site snapshot · published data retained \(at publication; stale since <time datetime="2026-11-17T13:30:00.000Z">/,
   );
   assert.doesNotMatch(html, /Stale forecast/);
   html = await render("2026-11-17T18:30:00Z");
-  assert.match(html, /Stale forecast · retained weather windows/);
+  assert.match(
+    html,
+    /Stale forecast · retained weather windows \(at publication; stale since <time datetime="2026-11-17T18:30:00.000Z">/,
+  );
   assert.match(html, /Ben &lt;script/);
   await writeFile(file, "missing slot");
   await assert.rejects(render(fetched), /must have one published summary slot/);
