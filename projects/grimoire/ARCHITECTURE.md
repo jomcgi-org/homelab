@@ -168,31 +168,41 @@ Prove the cold-source case during rehearsal: restore the dump and object copies 
 
 Treat every dump, object manifest, private object copy and restore log as restricted migration material. Scope the transfer identity to private storage. Copyrighted text, scans and book-derived entities, adventures, summaries and embeddings stay outside the public sink throughout rehearsal, cutover and retention.
 
-## Follow-up HOME issue drafts
+## Follow-up HOME issues
 
-File under HOME-178 in dependency order. Each slice has the following Done when criteria.
+The slices are filed under [HOME-178](https://factory-plan.jomcgi.dev/factory/issue/HOME-178) in dependency order. Each slice has the following Done when criteria.
 
 ### Provision factory data and private runtime
+
+Tracked in [HOME-394](https://factory-plan.jomcgi.dev/factory/issue/HOME-394).
 
 1. Factory can restore a rehearsal dump with identity relationships, pgvector indexes and matching private object checksums.
 2. API and worker service accounts reach only required stores and inference endpoints, and a backup restores successfully.
 
 ### Move gated corpus and images
 
+Tracked in [HOME-395](https://factory-plan.jomcgi.dev/factory/issue/HOME-395).
+
 1. Every gated page and API above resolves existing book, entity and adventure IDs including chunk permalinks.
 2. Missing or expired admission denies direct content and image reads. Authorized images render with hub imgproxy disabled.
 
 ### Move campaign, operator and account tools
+
+Tracked in [HOME-396](https://factory-plan.jomcgi.dev/factory/issue/HOME-396).
 
 1. Test operator, GM, player and nonmember flows through OIDC, invitations, sheets, initiative, handouts, dice, journal, sessions and transcripts.
 2. Route inventory leak tests pass and private retrieval respects grants. Workers resume from restored state.
 
 ### Publish static landing and replay
 
+Tracked in [HOME-397](https://factory-plan.jomcgi.dev/factory/issue/HOME-397).
+
 1. Reviewed original assets and an approved transcript reach public R2 through HOME-137. Audit the complete artifact manifest for restricted material.
 2. Playback loads on intent and completes with the live API offline. Legacy public chat writes and shared snapshot links are retired.
 
 ### Cut over and remove hub code
+
+Tracked in [HOME-398](https://factory-plan.jomcgi.dev/factory/issue/HOME-398).
 
 1. Complete the frozen final transfer, verify integrity and exercise rollback before moving traffic. Confirm legacy deep links and access boundaries on production hosts.
 2. Verify factory ingestion, campaign writes and static playback with zero active hub Grimoire jobs and no traffic reaching its retired handlers. Verify unrelated hub routes still serve traffic. Retain hub state and backups through rollback acceptance.
