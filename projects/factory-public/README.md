@@ -48,8 +48,21 @@ result on HOME-243, never with credential values:
    the token can read and write objects only in R2 bucket `factory-public`.
 3. An authenticated listing shows that R2 bucket `factory-public` holds
    nothing that must be kept.
+4. The mirror is the only writer to R2 bucket `factory-public`. Every key
+   has one writer, and here that writer is the mirror. Another job that
+   writes to the R2 bucket directly loses its objects at the next sync. The
+   trips export (`projects/monolith/trips/export`) writes `trips/photos/`
+   to R2 `factory-public` directly when `TRIPS_EXPORT_PUBLIC_ENABLED` is
+   `true`. Check that `projects/monolith/chart/values.yaml` sets it to
+   `false`, and keep it `false` while the mirror runs.
 
 Then set `public.suspend: false` in a PR.
+
+**End state.** Every public object reaches R2 through Garage: a job writes
+to the Garage bucket `factory-public` through its own `buckets:` entry, and
+this mirror copies it to R2. The trips export moves its public photos to
+Garage that way (HOME-242, HOME-258). Then no job writes to the R2 bucket
+directly.
 
 ## Live check
 
