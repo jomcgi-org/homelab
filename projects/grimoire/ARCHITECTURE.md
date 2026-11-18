@@ -160,6 +160,14 @@ Take the final consistent dump and copy the object delta, including deletions. R
 
 Before the first factory write, rollback by restoring the scoped routes and callbacks, reopening the hub handlers and resuming their schedules. After writes begin, first freeze and drain factory, reconcile changed rows and objects back to the hub and verify integrity before redirecting traffic and reopening hub writes.
 
+### Hub retirement with state retained (HOME-128)
+
+The Grimoire route switch can finish while unrelated hub routes still have traffic. Once the last shared Monolith consumer has cut over, HOME-128 scales the hub application deployments to **zero replicas** and leaves their schedules suspended. Record the previous replica counts, release revision, database backup reference and private object manifest before scaling down. Keep the source Postgres cluster and its PVCs, the private object store and the verified dump independently of the application release. Removing Grimoire code must not cascade to those resources.
+
+Prove the cold-source case during rehearsal: restore the dump and object copies with the source application offline, then exercise factory reader images, private campaign writes and retrieval. At hub retirement repeat those probes with zero ready hub application pods. Record the checksums and restore evidence with HOME-128. If rollback needs the hub after scale-down, restore its recorded release and replicas behind closed routes before applying the reconciliation procedure above.
+
+Treat every dump, object manifest, private object copy and restore log as restricted migration material. Scope the transfer identity to private storage. Copyrighted text, scans and book-derived entities, adventures, summaries and embeddings stay outside the public sink throughout rehearsal, cutover and retention.
+
 ## Follow-up HOME issue drafts
 
 File under HOME-178 in dependency order. Each slice has the following Done when criteria.
