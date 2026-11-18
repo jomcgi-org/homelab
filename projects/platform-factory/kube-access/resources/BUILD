@@ -7,8 +7,5 @@ py_test(
         "admins.yaml",
         "viewers.yaml",
     ],
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
+    deps = ["@pip//pyyaml"],
 )
