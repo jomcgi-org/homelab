@@ -64,9 +64,20 @@ test("deploy snapshot fills the no-JS summary, escapes facts and omits prose/hou
     html,
     /<script|licensed prose|1794902400|Zero duration|Unsafe URL|unavailable|Stale/,
   );
+  assert.match(
+    html,
+    /Site refreshes every 30 minutes \(at publication; stale after <time datetime="2026-11-17T13:30:00.000Z">/,
+  );
+  assert.match(
+    html,
+    /Forecast refreshes every 2 hours \(at publication; stale after <time datetime="2026-11-17T18:30:00.000Z">/,
+  );
   assert.doesNotMatch(await render("2026-11-17T13:29:59.999Z"), /Stale/);
   html = await render("2026-11-17T13:30:00Z");
-  assert.match(html, /Stale site snapshot · published data retained/);
+  assert.match(
+    html,
+    /Stale site snapshot · published data retained \(at publication\)/,
+  );
   assert.doesNotMatch(html, /Stale forecast/);
   html = await render("2026-11-17T18:30:00Z");
   assert.match(html, /Stale forecast · retained weather windows/);

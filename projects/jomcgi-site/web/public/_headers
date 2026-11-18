@@ -1,8 +1,16 @@
 # Response headers for every file this Worker serves (Workers static assets).
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://tiles.openfreemap.org; font-src 'self'; connect-src 'self' https://data.jomcgi.dev https://tiles.openfreemap.org; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://data.jomcgi.dev; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+
+# Only the hikes map needs the tile host, MapLibre's blob worker and the
+# reader's location. Detach the site policy, then set the wider one.
+/hikes
+  ! Content-Security-Policy
+  ! Permissions-Policy
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://tiles.openfreemap.org; font-src 'self'; connect-src 'self' https://data.jomcgi.dev https://tiles.openfreemap.org; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
   Permissions-Policy: camera=(), microphone=(), geolocation=(self)
 
 # Vite names these files by content hash, so they never change.
