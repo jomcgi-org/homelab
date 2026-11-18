@@ -69,12 +69,14 @@ export function r2Getter(endpoint, credentials, fetchImpl = fetch) {
 }
 
 /** Writes every section's files and latest.json under `out`. Returns the log. */
-export async function snapshot(sources, get, out) {
+export async function snapshot(sources, get, out, now = new Date()) {
   const log = [];
   for (const [section, { bucket, files }] of Object.entries(sources.sections)) {
+    // A successful snapshot can contain unchanged source objects. Keep its
+    // publication cadence separate from the age of those objects.
     const index = {
       asOf: null,
-      generatedAt: new Date().toISOString(),
+      generatedAt: now.toISOString(),
       files: {},
       sources: {},
     };

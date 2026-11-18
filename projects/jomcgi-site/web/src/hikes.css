@@ -1,0 +1,184 @@
+.hikes-page {
+  display: grid;
+  gap: 1rem;
+}
+.hikes-page > * {
+  min-width: 0;
+}
+.hikes-page a {
+  color: var(--color-text-accent);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+.hikes-page button,
+.hikes-page input,
+.hikes-page select {
+  min-height: 44px;
+  max-width: 100%;
+  padding: 0.5rem 0.75rem;
+  font: inherit;
+  color: var(--color-text-primary);
+  background: var(--color-background-surface);
+  border: 1px solid var(--color-border-emphasized);
+}
+.hikes-page button,
+.hikes-page summary {
+  cursor: pointer;
+}
+.hikes-page button:hover,
+.hikes-page button[aria-pressed="true"] {
+  background: var(--color-background-muted);
+  font-weight: 700;
+}
+.hikes-page :focus-visible {
+  outline: 2px solid var(--focus-outline-color);
+  outline-offset: 2px;
+}
+.hikes-page summary {
+  min-height: 44px;
+  padding-block: 0.5rem;
+}
+.hikes-controls,
+.hikes-limits {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.75rem;
+  margin-block: 1rem;
+}
+.hikes-controls label {
+  display: grid;
+  gap: 0.25rem;
+}
+.hikes-limits input {
+  width: 9rem;
+}
+.hikes-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+.hikes-card {
+  border: 1px solid var(--color-border-emphasized);
+  padding: 1rem;
+  margin-block: 1rem;
+}
+.hikes-card header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.hikes-card h2 {
+  margin: 0;
+}
+.hikes-table {
+  overflow-x: auto;
+  margin-block: 1rem;
+}
+.hikes-table table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.hikes-table caption {
+  text-align: left;
+  font-weight: 600;
+  padding-block: 0.5rem;
+}
+.hikes-table th,
+.hikes-table td {
+  text-align: left;
+  padding: 0.4rem;
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+.hikes-results {
+  list-style: none;
+  padding: 0;
+  max-height: 28rem;
+  overflow-y: auto;
+}
+.hikes-results li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-block: 0.5rem;
+}
+.hikes-results span,
+.hikes-credits {
+  color: var(--color-text-secondary);
+}
+.hikes-map {
+  position: relative;
+  height: clamp(24rem, 65vh, 48rem);
+  margin-top: 1rem;
+  background: var(--color-background-body);
+}
+.hikes-map-tone {
+  display: none;
+}
+.hikes-tone-5 {
+  color: var(--color-background-body);
+}
+.hikes-tone-6 {
+  color: var(--color-text-secondary);
+}
+.hikes-tone-7 {
+  color: var(--color-background-muted);
+}
+.hikes-tone-8 {
+  color: var(--color-border);
+}
+.hikes-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.hikes-legend > span {
+  display: flex;
+  width: 8rem;
+  height: 0.75rem;
+  border: 1px solid var(--color-border-emphasized);
+}
+.hikes-legend > span > span {
+  flex: 1;
+}
+.hikes-effort-0 {
+  background: var(--hikes-effort-0);
+}
+.hikes-effort-1 {
+  background: var(--hikes-effort-1);
+}
+.hikes-effort-2 {
+  background: var(--hikes-effort-2);
+}
+.hikes-effort-3 {
+  background: var(--hikes-effort-3);
+}
+.hikes-effort-4 {
+  background: var(--hikes-effort-4);
+}
+.hikes-map .maplibregl-ctrl-group,
+.hikes-map .maplibregl-ctrl-attrib {
+  color: var(--color-text-primary);
+  background: var(--color-background-surface);
+}
+.hikes-map .maplibregl-ctrl-attrib a {
+  color: var(--color-text-accent);
+}
+.hikes-map .maplibregl-ctrl-group button {
+  width: 44px;
+  height: 44px;
+}
+.hikes-map .maplibregl-ctrl-icon {
+  background-image: none;
+}
+.hikes-map .maplibregl-ctrl-zoom-in .maplibregl-ctrl-icon::before {
+  content: "+";
+  font-size: 1.5rem;
+}
+.hikes-map .maplibregl-ctrl-zoom-out .maplibregl-ctrl-icon::before {
+  content: "−";
+  font-size: 1.5rem;
+}

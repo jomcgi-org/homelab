@@ -2,3 +2,5 @@
 /factory/* /factory/ 200
 /app/llm-leaderboard /llm-leaderboard 301
 /app/llm-leaderboard/* /llm-leaderboard 301
+/app/hikes /hikes 301
+/app/hikes/* /hikes 301
