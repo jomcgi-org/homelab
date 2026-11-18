@@ -4,6 +4,7 @@ go_library(
     name = "connector_lib",
     srcs = [
         "main.go",
+        "reaper.go",
         "recovery.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/cmd/connector",
@@ -23,6 +24,12 @@ go_library(
         "@com_github_prometheus_client_golang//prometheus",
         "@com_github_prometheus_client_golang//prometheus/collectors",
         "@com_github_prometheus_client_golang//prometheus/promhttp",
+        "@io_k8s_apimachinery//pkg/api/errors",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1",
+        "@io_k8s_apimachinery//pkg/types",
+        "@io_k8s_client_go//kubernetes/typed/core/v1",
+        "@io_k8s_client_go//rest",
+        "@org_golang_google_protobuf//encoding/protowire",
     ],
 )
 
@@ -34,7 +41,10 @@ go_binary(
 
 go_test(
     name = "connector_test",
-    srcs = ["recovery_test.go"],
+    srcs = [
+        "reaper_test.go",
+        "recovery_test.go",
+    ],
     embed = [":connector_lib"],
     deps = ["//projects/factory/connector/store"],
 )

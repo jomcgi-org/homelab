@@ -2025,3 +2025,14 @@ Each step is its own PR with live evidence recorded on #7817.
 
 Everything except live Codex runs, agent pushes and required review can be
 built and trialled before these arrive.
+
+### Worker reaper
+
+The reaper reads Substrate's actor assignments from atepg and records the worker
+namespace, pod UID and session against the connector attempt. Every 15 seconds it
+checks the Kubernetes API for that UID. Disappearance fences the attempt and
+lets the connector take its engineering retry in a fresh session. API errors
+leave the attempt open. The reaper can also delete a worker whose actor has
+remained SUSPENDING for five minutes, using the assigned UID as a delete
+precondition. The connector retains ownership of session recovery calls.
+[Joe's scoped reaper decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-320#comment-2891).

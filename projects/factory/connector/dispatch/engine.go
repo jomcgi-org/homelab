@@ -1765,6 +1765,36 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 		// Reassignment fenced this run's attempt; its cancellation reports it.
 		return nil
 	}
+	if a.State == store.AttemptAccepted || a.State == store.AttemptAmbiguous {
+		var gone bool
+		err := e.st.DB.QueryRowContext(ctx, `SELECT EXISTS (
+			SELECT 1 FROM worker_fence WHERE attempt_id = $1 AND session_id = $2 AND gone_at IS NOT NULL)`,
+			a.ID, a.ContextID).Scan(&gone)
+		if err != nil {
+			return err
+		}
+		if gone {
+			err := e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
+				if _, err := tx.ExecContext(ctx, `UPDATE work_item SET session_id = NULL, updated_at = now()
+					WHERE id = $1 AND session_id = $2`, wi.ID, a.ContextID); err != nil {
+					return err
+				}
+				return e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, ClassAbandoned, "worker pod gone")
+			})
+			if err != nil || e.sessions == nil {
+				return err
+			}
+			if err := e.guard(ctx); err != nil {
+				return err
+			}
+			recoveryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			if _, err := e.sessions.RevertSession(recoveryCtx, a.ContextID); err != nil {
+				e.log.WarnContext(ctx, "revert after worker disappearance", "session", a.ContextID, "error", err)
+			}
+			return nil
+		}
+	}
 	if a.State == store.AttemptFailed && a.ErrorClass == ClassAbandoned {
 		// The liveness lease ended the turn; retry within the budget.
 		return e.engineeringFailure(ctx, r, wi, a, a.Error)

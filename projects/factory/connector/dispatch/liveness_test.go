@@ -352,3 +352,20 @@ func TestHungKagentFreesEverySlotWithinTheBound(t *testing.T) {
 		t.Fatalf("run 1 heartbeats = %d while kagent hung", beats)
 	}
 }
+
+func TestGoneWorkerRetriesBusyTurnWithinFiveMinutes(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	a := v.latest(1)
+	v.kg.tool(a.TaskID, "ci-1", kagent.PartToolCall)
+	_, err := v.st.DB.Exec(`INSERT INTO worker_fence(attempt_id,session_id,namespace,pod,uid,gone_at)
+		VALUES ($1,$2,'factory-r-homelab','homelab-codex-a','original',now())`, a.ID, a.ContextID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.tickUntil(30*time.Second, 9, func() bool {
+		next := v.latest(1)
+		return next.ID != a.ID && next.State == store.AttemptAccepted && next.ContextID != a.ContextID
+	})
+}

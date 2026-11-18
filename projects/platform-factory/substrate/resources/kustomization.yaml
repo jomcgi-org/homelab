@@ -221,3 +221,20 @@ patches:
       - op: replace
         path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
         value: 20Gi
+  - target:
+      kind: Deployment
+      name: podcertificate-controller
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --postgres-client=factory/factory-reaper=factory_reaper
+  - target:
+      kind: ConfigMap
+      name: postgres-config
+    patch: |-
+      - op: replace
+        path: /data/pg_hba.conf
+        value: |
+          local all all trust
+          hostssl all postgres all reject
+          hostssl atepg substrate_owner_user,substrate_readwrite_user,factory_reaper all cert

@@ -888,7 +888,7 @@ on node-1, Claude scratch under `/tmp/claude-1000`. Ask before you delete a
 directory that a running session uses.
 
 **KagentSuspendTimedOut.** kagent v1.0.1 keeps the Actor SUSPENDING, refuses
-every turn and delete for the session, and holds its worker slot. To free
+every turn and delete for the session, and holds its worker slot. The reaper checks every 15 seconds and deletes the assigned worker after five minutes in SUSPENDING. If the same claim persists after that deadline, inspect the reaper logs and pod assignment. Use the following fallback to free
 every locked session:
 
 ```bash

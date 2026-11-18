@@ -356,3 +356,22 @@ spec:
         - ports:
             - port: "8443"
               protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: postgres-reaper
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: postgres
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-reaper
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
