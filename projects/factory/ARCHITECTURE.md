@@ -1935,6 +1935,10 @@ owner on the private issue.
 [public output decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6931275436),
 [private feedback decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-251#comment-2324)
 
+When the reviewer identifies a replacement issue, it withdraws the previous
+issue’s goal findings and names both issues in the review comment. An omitted
+criterion or a missing issue reference leaves its earlier blocker open.
+
 The reviewer stores private goal replies on the `factory-reviewer-goal-audit`
 PVC for 14 days from first receipt. After rollback, keep the PVC, the hourly
 cleanup CronJob and its NetworkPolicy. To retire them, wait until the last
