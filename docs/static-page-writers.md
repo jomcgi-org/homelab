@@ -10,12 +10,17 @@ See the [factory library bucket example](../projects/shared/helm/factory-library
 Hash the exact bytes of each payload and include the digest in its object key,
 for example `stars/sites-<sha256>.json`. Upload every payload with
 `Cache-Control: public, max-age=31536000, immutable`. After every upload
-succeeds, replace the section's small `latest.json` with the keys for that
-complete generation and `Cache-Control: public, max-age=60`. Failed runs
-leave the previous manifest usable. Retain objects referenced by cached
-manifests. Verify the manifest, referenced bytes and headers at the public R2
-destination before switching readers. The mirror runs asynchronously, so
-Garage upload order alone cannot establish public visibility order.
+succeeds, write the bucketx27s root `manifest.json` last with the keys for that
+complete generation and `Cache-Control: public, max-age=60`. Give each
+independent writer its own bucket so publishers cannot overwrite each otherx27s index.
+
+The [mirror template](../projects/shared/helm/factory-library/chart/templates/_mirror.tpl)
+excludes exactly `/manifest.json` from the immutable payload transfer and
+copies it after that transfer succeeds. Readers fetch this root index from R2
+and resolve its keys against the same bucket root. Retain payloads referenced
+by cached manifests. If a referenced object is temporarily unavailable, retry
+and keep serving the last complete snapshot. Verify the bytes and both cache
+policies at the public endpoint before switching readers.
 
 ## Hub inventory and port issue drafts (HOME-258)
 
