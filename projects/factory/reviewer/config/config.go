@@ -132,6 +132,7 @@ var (
 		"projects/factory/broker/config/**",
 	}
 	DefaultHumanGateLabels        = []string{"human", "needs-human"}
+	DefaultMachineCommentMarkers  = []string{"<!-- helm-manifest-diff -->"}
 	DefaultHumanApprovers         = []string{"jomcgi"}
 	DefaultTrustedItsaplanAuthors = []string{"joe", "joesessions"}
 	DefaultContextDocs            = []string{"AGENTS.md", "docs/agents/reference.md"}
