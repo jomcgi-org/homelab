@@ -62,7 +62,7 @@ def test_edge_guards(docs):
     assert policy["oidc"]["refreshToken"] is False
     assert not policy["oidc"].get("forwardAccessToken", False)
     assert "forwardIDToken" not in policy["oidc"]
-    assert policy["oidc"]["disableTokenEncryption"] is True
+    assert policy["oidc"].get("disableTokenEncryption", False) is False
     cookie = policy["oidc"]["cookieNames"]["idToken"]
     issuer = policy["oidc"]["provider"]["issuer"]
     assert policy["jwt"]["providers"] == [

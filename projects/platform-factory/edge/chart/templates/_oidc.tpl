@@ -20,8 +20,7 @@ scopes:
 redirectURL: "https://%REQ(:authority)%/oauth2/callback"
 # Envoy's default /logout would shadow an application's own path.
 logoutPath: /oauth2/logout
-# Let the JWT verifier read the signed ID token from the session cookie.
-disableTokenEncryption: true
+# OAuth2 decrypts the session cookie before the JWT filter reads it.
 cookieNames:
   idToken: factory-edge-id-token
 cookieConfig:
