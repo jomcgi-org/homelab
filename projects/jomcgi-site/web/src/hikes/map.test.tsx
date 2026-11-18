@@ -164,7 +164,9 @@ it("reports an error without a tile at once", async () => {
   const view = render(<HikesMap {...mapProps()} />);
   await act(async () => fake.handlers.get("load")!());
   const status = () => view.queryByText(/The map could not load completely/);
-  await act(async () => fake.handlers.get("error")!({ error: new Error("style") }));
+  await act(async () =>
+    fake.handlers.get("error")!({ error: new Error("style") }),
+  );
   expect(status()).not.toBeNull();
   view.unmount();
 });
