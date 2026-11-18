@@ -2,6 +2,13 @@ version: 1
 metadata:
   name: factory - explorer sign-in
 entries:
+  - model: authentik_core.group
+    id: explorer-users
+    identifiers:
+      name: factory-explorer-users
+    attrs:
+      is_superuser: false
+
   - model: authentik_providers_oauth2.oauth2provider
     id: explore-provider
     identifiers:
@@ -47,3 +54,13 @@ entries:
       name: Factory explorer
       provider: !KeyOf explore-provider
       policy_engine_mode: any
+
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf explore-app
+      group: !KeyOf explorer-users
+      order: 0
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30
