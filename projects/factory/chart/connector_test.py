@@ -709,3 +709,6 @@ def test_landing_status_access() -> None:
             }
         ],
     }
+    for resource in (status_service, status_policy):
+        options = resource["metadata"]["annotations"]["argocd.argoproj.io/sync-options"]
+        assert "Prune=false" in options.split(",")
