@@ -1962,7 +1962,8 @@ blocks the check until a replay of its task recovers the findings. Lost or
 unreadable history (an expired task with a lossy record, a truncated
 timeline, too many heads, an ambiguous, foreign or undecodable record)
 keeps the check blocked and carries every known finding. No review or
-approval clears it; open a new PR (#8009).
+approval clears it; open a new PR from commits no review has seen, such
+as a rebase or squash onto main (#8009).
 
 The connector checks for holds before enqueue. Other authors can request
 auto-merge on their own PRs. The reviewer checks the queued head again
