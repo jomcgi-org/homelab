@@ -157,7 +157,8 @@ test("the exact Scotland and slop exceptions leave queries and descendants on th
 
 // Paths that other services or the hub still own on jomcgi.dev.
 const STAYS_ON_THE_HUB = [
-  // The hub home page polls this until the home page moves (HOME-215, HOME-206).
+  // The hub home answers query-string root URLs (the "/" route is exact) and
+  // polls this, so Notes retires with the catch-all route (HOME-261).
   "jomcgi.dev/app/notes/stats",
   "jomcgi.dev/scotland/mcp",
   "jomcgi.dev/scotland/v1/walks",
@@ -198,6 +199,7 @@ test("routed pages are served with and without a query string", () => {
     "/engineering/",
     "/engineering/diagrams",
     "/notes",
+    "/app/frank",
     "/ember",
     "/ember/firecracker",
     "/app/firecracker",

@@ -129,7 +129,6 @@ jobs:
               --route /app/llm-leaderboard \
               --route /app/notes \
               --route /app/grimoire \
-              --route /app/frank \
               --route /app/firecracker \
               --route /ember/firecracker \
               --route /scotland/privacy \
