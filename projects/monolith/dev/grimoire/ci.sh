@@ -6,6 +6,11 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 evidence_dir="${GRIMOIRE_EVIDENCE_DIR:-/tmp/grimoire-ci-evidence}"
 mkdir -p "$evidence_dir"
+# An opted-in run must never leave an earlier run's stability summary behind:
+# clear it before setup, so an early failure cannot show old passes.
+if [[ "${GRIMOIRE_CHECK_STABILITY:-0}" == 1 ]]; then
+	rm -rf "$evidence_dir/stability" "$evidence_dir/stability.log"
+fi
 ci_environment="$(mktemp -d /tmp/grimoire-ci-python-XXXXXX)"
 trap 'rm -rf "$ci_environment"' EXIT
 
