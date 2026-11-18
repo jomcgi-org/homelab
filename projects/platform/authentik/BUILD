@@ -188,6 +188,9 @@ py_test(
     ],
 )
 
+# py_test is the //bazel/tools/pytest:defs.bzl macro (pytest_main = True), so
+# pytest collects every test in the file
+# (decision: https://factory-plan.jomcgi.dev/factory/issue/HOME-351#comment-3948).
 py_test(
     name = "factory_group_binding_test",
     srcs = ["factory_group_binding_test.py"],
