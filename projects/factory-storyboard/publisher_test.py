@@ -60,3 +60,43 @@ def test_real_gitleaks_hit_withholds_entire_turn(monkeypatch):
     assert public_turn(turn, [])["withheld"] is False
     turn["diff"] = "ghp_" + "6rQ0cV2qN5mHt8ZkFx9AbR3WgY4DuL7PjE1s"
     assert public_turn(turn, []) == dict(header, withheld=True)
+
+
+def test_shared_task_read_checks_session_and_completion():
+    from io import BytesIO
+    import pytest
+    from session_history import completed_task
+
+    task = {
+        "id": "task",
+        "contextId": "session",
+        "status": {"state": "TASK_STATE_COMPLETED"},
+    }
+    opener = Mock()
+
+    def respond(request, timeout):
+        assert request.get_header("Authorization") == "Bearer visitor"
+        assert request.get_header("X-share-token") == "per-session"
+        assert json.loads(request.data)["method"] == "GetTask"
+        return BytesIO(
+            json.dumps({"jsonrpc": "2.0", "id": "task", "result": task}).encode()
+        )
+
+    opener.open.side_effect = respond
+
+    def read():
+        return completed_task(
+            "https://gateway/agents/ns/coder",
+            "session",
+            "task",
+            "visitor",
+            "per-session",
+            opener=opener,
+        )
+
+    assert read() == task
+    task["status"]["state"] = "TASK_STATE_WORKING"
+    assert read() is None
+    task["contextId"] = "another-session"
+    with pytest.raises(ValueError, match="different task or session"):
+        read()

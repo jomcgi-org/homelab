@@ -66,6 +66,7 @@ py_test(
     srcs = [
         "publisher.py",
         "publisher_test.py",
+        "session_history.py",
     ],
     data = ["@gitleaks_linux_amd64//:gitleaks"],
     env = {"GITLEAKS_BIN": "$(rootpath @gitleaks_linux_amd64//:gitleaks)"},
