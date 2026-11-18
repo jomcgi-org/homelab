@@ -25,10 +25,8 @@ py_library(
 
 py_venv_binary(
     name = "content_rules",
-    srcs = ["content_rules.py"],
     main = "content_rules.py",
     visibility = ["//:__subpackages__"],
-    deps = ["@pip//pyyaml"],
 )
 
 py_test(
