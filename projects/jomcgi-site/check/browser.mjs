@@ -132,10 +132,7 @@ export async function checkPage(
       // Chromium attributes its CSP diagnostic to the document; the site's own
       // scripts are external files (the CSP forbids inline script), so an app
       // console call that copies the text reports its script URL instead.
-      if (
-        isEdgeBeaconConsole(message.text()) &&
-        message.location().url === url
-      )
+      if (isEdgeBeaconConsole(message.text()) && message.location().url === url)
         return;
       // Chromium reports the deliberately missing document as a console error.
       // Suppress only that exact network message; every app error still fails.
