@@ -151,20 +151,15 @@ def export_trips(
             photo_max_bytes = max(photo_max_bytes, size)
             derivatives.append(key)
 
-    mode = (
-        "snapshot"
-        if (
-            len(derivatives) <= asset_limit
-            and photo_bytes <= byte_limit
-            and photo_max_bytes <= WORKERS_ASSET_BYTES
-        )
-        else "public"
+    fits = (
+        len(derivatives) <= asset_limit
+        and photo_bytes <= byte_limit
+        and photo_max_bytes <= WORKERS_ASSET_BYTES
     )
+    # Over the site's snapshot limits the private export still commits; only
+    # where the site can read the photos depends on the public opt-in.
+    mode = "snapshot" if fits else "public" if allow_public else "private"
     if mode == "public":
-        if not allow_public:
-            raise RuntimeError(
-                "trip photos exceed snapshot limits; public publication is disabled"
-            )
         for key in derivatives:
             if not exists(client, PUBLIC_BUCKET, key):
                 # The only permitted source is the validated derivative prefix.
@@ -182,9 +177,11 @@ def export_trips(
         "photoMode": mode,
         "photoBytes": photo_bytes,
         "photoMaxBytes": photo_max_bytes,
-        "photoBase": "/data/trips/photos"
-        if mode == "snapshot"
-        else f"{PUBLIC_BASE}/trips/photos",
+        "photoBase": {
+            "snapshot": "/data/trips/photos",
+            "public": f"{PUBLIC_BASE}/trips/photos",
+            "private": None,
+        }[mode],
         "images": sorted(images),
         "files": {},
     }

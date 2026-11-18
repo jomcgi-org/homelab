@@ -120,17 +120,19 @@ def test_large_exports_copy_only_derivatives_to_public_bucket():
 
 
 @pytest.mark.parametrize("limits", [{"asset_limit": 4}, {"byte_limit": 1}])
-def test_large_exports_keep_previous_manifest_until_public_mode_is_enabled(limits):
+def test_oversized_private_export_commits_without_public_copies(limits):
+    # The live trip has 4,838 photos (24,190 derivatives), over the snapshot
+    # limit; the private export must still commit for the site to read.
     store = Store()
     store.objects["stars", "trips/export.json"] = b"previous"
-    with pytest.raises(RuntimeError, match="public publication is disabled"):
-        export_trips(INDEX, TRIPS, store, lambda *_: WEBP, **limits)
-    assert store.objects["stars", "trips/export.json"] == b"previous"
-    assert len(store.writes) == 5
-    assert all(
-        bucket == "stars" and key.startswith("trips/photos/")
-        for bucket, key in store.writes
-    )
+    result = export_trips(INDEX, TRIPS, store, lambda *_: WEBP, **limits)
+    assert result["photoMode"] == "private"
+    assert result["photoBase"] is None
+    manifest = json.loads(store.objects["stars", "trips/export.json"])
+    assert manifest == result
+    assert store.writes[-1] == ("stars", "trips/export.json")
+    assert json.loads(store.objects["stars", "trips/index.json"]) == INDEX
+    assert all(bucket == "stars" for bucket, key in store.objects)
 
 
 def test_failed_render_leaves_previous_committed_manifest():
@@ -265,14 +267,13 @@ def test_large_bytes_use_public_bucket_even_below_file_limit():
     assert result["photoMaxBytes"] == len(WEBP)
 
 
-def test_one_file_over_the_workers_asset_limit_needs_public_mode():
+def test_one_file_over_the_workers_asset_limit_leaves_the_snapshot():
     assert WORKERS_ASSET_BYTES == 25 * 1024**2
     big = f"trips/photos/{KEY}/full.webp"
     store = Store(sizes={big: WORKERS_ASSET_BYTES + 1})
-    store.objects["stars", "trips/export.json"] = b"previous"
-    with pytest.raises(RuntimeError, match="public publication is disabled"):
-        export_trips(INDEX, TRIPS, store, lambda *_: WEBP)
-    assert store.objects["stars", "trips/export.json"] == b"previous"
+    result = export_trips(INDEX, TRIPS, store, lambda *_: WEBP)
+    assert result["photoMode"] == "private"
+    assert not [key for bucket, key in store.objects if bucket == "factory-public"]
 
     result = export_trips(INDEX, TRIPS, store, lambda *_: WEBP, allow_public=True)
     assert result["photoMode"] == "public"
