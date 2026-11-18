@@ -49,7 +49,8 @@ func actorFixture(uid string, state uint64, updated time.Time) []byte {
 	worker = append(worker, field(3, []byte("homelab-codex-worker"))...)
 	worker = append(worker, field(4, []byte(uid))...)
 	status := append(number(1, state), field(2, worker)...)
-	metadata := field(6, number(1, uint64(updated.Unix())))
+	metadata := append(field(3, []byte("actor-incarnation")), number(4, 19)...)
+	metadata = append(metadata, field(6, number(1, uint64(updated.Unix())))...)
 	return append(field(1, metadata), field(5, status)...)
 }
 
@@ -154,7 +155,7 @@ func TestScanWorkerDisappearance(t *testing.T) {
 			t.Fatal(err)
 		}
 		var gone bool
-		if err = db.QueryRow("SELECT gone_at IS NOT NULL FROM worker_fence WHERE session_id='held' AND uid='original'").Scan(&gone); err != nil || gone == replacement {
+		if err = db.QueryRow("SELECT gone_at IS NOT NULL AND actor_uid='actor-incarnation' AND actor_version=19 FROM worker_fence WHERE session_id='held' AND uid='original'").Scan(&gone); err != nil || gone == replacement {
 			t.Fatalf("replacement=%t gone=%t err=%v", replacement, gone, err)
 		}
 	}

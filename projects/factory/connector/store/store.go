@@ -1272,6 +1272,15 @@ func (s *Store) RequestCancellation(ctx context.Context, q Querier, attemptID, r
 	return err
 }
 
+// WorkerGone identifies revision-bearing evidence for this exact attempt and session.
+func (s *Store) WorkerGone(ctx context.Context, a *Attempt) (bool, error) {
+	var gone bool
+	err := s.DB.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM worker_fence
+		WHERE attempt_id=$1 AND session_id=$2 AND gone_at IS NOT NULL
+		AND actor_uid <> '' AND actor_version > 0)`, a.ID, a.ContextID).Scan(&gone)
+	return gone, err
+}
+
 // RequestQuietCancel records a pending quota_stall or lease_expired
 // cancellation decided on the task at eventCount; a pending one already
 // recorded is kept.

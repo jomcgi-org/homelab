@@ -359,13 +359,28 @@ func TestGoneWorkerRetriesBusyTurnWithinFiveMinutes(t *testing.T) {
 	v.tick(v.e)
 	a := v.latest(1)
 	v.kg.tool(a.TaskID, "ci-1", kagent.PartToolCall)
-	_, err := v.st.DB.Exec(`INSERT INTO worker_fence(attempt_id,session_id,namespace,pod,uid,gone_at)
-		VALUES ($1,$2,'factory-r-homelab','homelab-codex-a','original',now())`, a.ID, a.ContextID)
+	_, err := v.st.DB.Exec(`INSERT INTO worker_fence(attempt_id,session_id,namespace,pod,uid,gone_at,actor_uid,actor_version)
+		VALUES ($1,$2,'factory-r-homelab','homelab-codex-a','original',now(),'actor',19)`, a.ID, a.ContextID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A replacement is still running after the observed revision. Evidence
+	// alone cannot authorize a second send while its session refuses deletion.
+	v.kg.forceErr = errors.New("session still running")
+	v.clk.Advance(30 * time.Second)
+	v.tick(v.e)
+	if requests, _, _, confirmed, ok := v.forced(a.ContextID); !ok || requests != 1 || confirmed {
+		t.Fatal("expected a pending journaled fence for the original session")
+	}
+	if !v.latest(1).Open() || v.latest(1).ID != a.ID {
+		t.Fatal("abandoned before authoritative session fence")
+	}
+	v.kg.forceErr = nil
 	v.tickUntil(30*time.Second, 9, func() bool {
 		next := v.latest(1)
 		return next.ID != a.ID && next.State == store.AttemptAccepted && next.ContextID != a.ContextID
 	})
+	if _, _, _, confirmed, _ := v.forced(a.ContextID); !confirmed {
+		t.Fatal("retry started before session deletion was confirmed")
+	}
 }

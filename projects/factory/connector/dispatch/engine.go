@@ -1766,20 +1766,13 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 		return nil
 	}
 	if a.State == store.AttemptAccepted || a.State == store.AttemptAmbiguous {
-		var gone bool
-		err := e.st.DB.QueryRowContext(ctx, `SELECT EXISTS (
-			SELECT 1 FROM worker_fence WHERE attempt_id = $1 AND session_id = $2 AND gone_at IS NOT NULL)`,
-			a.ID, a.ContextID).Scan(&gone)
+		gone, err := e.st.WorkerGone(ctx, a)
 		if err != nil {
 			return err
 		}
 		if gone {
 			return e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
-				if _, err := tx.ExecContext(ctx, `UPDATE work_item SET session_id = NULL, updated_at = now()
-					WHERE id = $1 AND session_id = $2`, wi.ID, a.ContextID); err != nil {
-					return err
-				}
-				return e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, ClassAbandoned, "worker pod gone")
+				return e.st.RequestQuietCancel(ctx, tx, a.ID, r.ID, store.CancelLeaseExpired, a.EventCount)
 			})
 		}
 	}
@@ -2154,6 +2147,18 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 	ctx, err = e.guardCaller(ctx, wi, a)
 	if err != nil {
 		return e.recoverHeld(ctx, r, wi, a, "caller ownership unproven")
+	}
+	// Pod loss expires the lease immediately. Delete the exact session before
+	// releasing the attempt: this fences even a worker assigned after the
+	// reaper's last observed actor version. The deletion journal survives restart.
+	if e.sessions != nil && a.ContextID != "" {
+		gone, err := e.st.WorkerGone(ctx, a)
+		if err != nil {
+			return err
+		}
+		if gone {
+			return e.forceDelete(ctx, c, r, wi, a)
+		}
 	}
 	// kagent has not confirmed the cancellation in time: deleting the
 	// session with force ends the turn, and settles a lifecycle hold too.

@@ -166,7 +166,12 @@ func (r reaper) scan(ctx context.Context) error {
 			if assigned != p && !(state == 5 && assigned == (placement{})) {
 				continue
 			}
-			_, err = r.journal.ExecContext(ctx, `UPDATE worker_fence SET gone_at=now() WHERE attempt_id=$1 AND uid=$2 AND gone_at IS NULL`, id, p.uid)
+			metadata := bytesField(latest, 1)
+			actorUID, version := string(bytesField(metadata, 3)), int64(intField(metadata, 4))
+			if actorUID == "" || version <= 0 {
+				continue
+			}
+			_, err = r.journal.ExecContext(ctx, `UPDATE worker_fence SET gone_at=now(), actor_uid=$3, actor_version=$4 WHERE attempt_id=$1 AND uid=$2 AND gone_at IS NULL`, id, p.uid, actorUID, version)
 		}
 		if err != nil {
 			errs = append(errs, err)
