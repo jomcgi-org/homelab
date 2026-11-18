@@ -152,8 +152,7 @@ func goalFindings(key string, g *GoalCheck) []Finding {
 // findings for the issue key, if any. An earlier goal finding for the named issue stays open
 // until a valid answer resolves it (goalResolved); Assess keeps its earlier
 // severity.
-func applyGoal(r *Report, prior []Finding, project string, in *IssueContext, g *GoalCheck) {
-	key := goalKey(in)
+func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck) {
 	ns := regexp.MustCompile(`^` + regexp.QuoteMeta(project) + `-[1-9][0-9]*:goal(:|$)`)
 	r.Findings = slices.DeleteFunc(r.Findings, func(f Finding) bool { return ns.MatchString(f.ID) })
 	r.Previous = slices.DeleteFunc(r.Previous, func(p Previous) bool { return ns.MatchString(p.ID) })
@@ -168,12 +167,9 @@ func applyGoal(r *Report, prior []Finding, project string, in *IssueContext, g *
 		}
 		account := Previous{ID: p.ID, Status: StatusOpen, Note: "No valid goal check answer resolves it."}
 		issue, _, _ := strings.Cut(p.ID, ":")
-		if in != nil && in.NamedIssue != nil && issue != *in.NamedIssue {
+		if key != "" && issue != key {
 			account.Status = StatusJustified
-			account.Note = "Withdrawn: the PR no longer names " + issue + "."
-			if *in.NamedIssue != "" {
-				account.Note += " It now names " + *in.NamedIssue + "."
-			}
+			account.Note = "Withdrawn: the PR no longer names " + issue + ". It now names " + key + "."
 		} else if note := goalResolved(p.ID, key, g); note != "" {
 			account.Status, account.Note = StatusFixed, note
 		}

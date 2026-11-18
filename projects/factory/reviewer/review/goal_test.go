@@ -127,7 +127,7 @@ func TestApplyGoalOwnsGoalFindings(t *testing.T) {
 			{ID: "x.go:goal", Status: StatusJustified, Note: "Owned by HOME-60"},
 		},
 	}
-	applyGoal(r, prior, "HOME", &IssueContext{Issue: &IssueEvidence{Key: "HOME-58"}}, &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}, {3, goalLive}}})
+	applyGoal(r, prior, "HOME", "HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}, {3, goalLive}}})
 	a := Assess(r, prior)
 	blocking := map[string]string{}
 	for _, b := range a.Blocking {
@@ -187,18 +187,15 @@ func TestApplyGoalKeepsEarlierBlockersUntilResolved(t *testing.T) {
 			"HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}},
 			"HOME-58:goal:criterion-2=medium", "HOME-58:goal HOME-58:goal:unavailable",
 		},
-		"no issue":    {"", nil, "", ""},
+		"no issue":    {"", nil, all, ""},
 		"other issue": {"HOME-59", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}}, "", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := &Report{Previous: []Previous{{ID: "HOME-58:goal", Status: StatusFixed, Note: "Model says done"}}}
-			applyGoal(r, prior, "HOME", &IssueContext{NamedIssue: &tc.key, Issue: &IssueEvidence{Key: tc.key}}, tc.g)
+			applyGoal(r, prior, "HOME", tc.key, tc.g)
 			a := Assess(r, prior)
-			if tc.key != "HOME-58" {
-				note := "the PR no longer names HOME-58."
-				if tc.key != "" {
-					note += " It now names " + tc.key + "."
-				}
+			if tc.key == "HOME-59" {
+				note := "the PR no longer names HOME-58. It now names HOME-59."
 				if got := strings.Count(sinceSection(a), note); got != len(prior) {
 					t.Errorf("got %d withdrawal notes, want %d: %s", got, len(prior), sinceSection(a))
 				}
