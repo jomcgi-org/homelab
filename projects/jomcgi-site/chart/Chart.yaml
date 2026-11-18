@@ -2,7 +2,7 @@ apiVersion: v2
 name: jomcgi-site
 description: Deploys the static jomcgi.dev site to Cloudflare as an assets-only Worker
 type: application
-version: 0.30.33
+version: 0.31.2
 appVersion: "1.0.0"
 dependencies:
   - name: factory-library
