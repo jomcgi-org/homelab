@@ -29,7 +29,10 @@ py_test(
 py_test(
     name = "complete_validation_test",
     srcs = ["complete_validation_test.py"],
-    data = ["ci"],
+    data = [
+        "ci",
+        "//bazel/tools/format/invariants:check_invariants.py",
+    ],
     target_compatible_with = ["@platforms//os:linux"],
     deps = ["@pip//pytest"],
 )
