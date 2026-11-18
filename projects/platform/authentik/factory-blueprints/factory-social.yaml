@@ -51,12 +51,37 @@ entries:
     id: social-login
     identifiers:
       name: factory-social-login
+  - model: authentik_policies_expression.expressionpolicy
+    id: enrollment-return
+    identifiers:
+      name: factory-social-enrollment-return
+    attrs:
+      expression: |
+        # A direct signup would end at the user interface, which the factory
+        # edge blocks. Continue through the same provider after the native
+        # PostSourceStage has saved its connection. Preserve application next URLs.
+        plan = request.context["flow_plan"]
+        if plan.context.get("redirect") == "authentik_core:if-user":
+            slug = plan.context["source"].slug
+            plan.context["redirect"] = f"/source/oauth/login/{slug}/"
+        return True
   - model: authentik_flows.flowstagebinding
+    id: enrollment-write-binding
     identifiers:
       target: !KeyOf social-enrollment
       stage: !KeyOf social-write
       order: 10
+    attrs:
+      evaluate_on_plan: true
+      re_evaluate_policies: false
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf enrollment-write-binding
+      policy: !KeyOf enrollment-return
+      order: 0
+  # Remove the previous enrollment binding on already-reconciled installations.
   - model: authentik_flows.flowstagebinding
+    state: absent
     identifiers:
       target: !KeyOf social-enrollment
       stage: !KeyOf social-login
@@ -84,6 +109,7 @@ entries:
       configuration_stages:
         - !Find [authentik_stages_authenticator_totp.authenticatortotpstage, [name, default-authenticator-totp-setup]]
   - model: authentik_flows.flowstagebinding
+    state: absent
     identifiers:
       target: !KeyOf social-enrollment
       stage: !KeyOf validate

@@ -91,6 +91,7 @@ def test_factory_social_flows_and_application_grants():
         entry["identifiers"]
         for entry in social
         if entry["model"].endswith(".flowstagebinding")
+        and entry.get("state") != "absent"
     ]
 
     def stages(flow):
@@ -103,11 +104,7 @@ def test_factory_social_flows_and_application_grants():
     for slug in ("github", "google", "discord"):
         source = by_id[slug]
         assert source["user_matching_mode"] == "identifier"
-        assert stages(source["enrollment_flow"]) == [
-            "social-write",
-            "validate",
-            "social-login",
-        ]
+        assert stages(source["enrollment_flow"]) == ["social-write"]
         assert stages(source["authentication_flow"]) == ["validate", "social-login"]
     assert by_id["validate"]["not_configured_action"] == "configure"
     assert by_id["social-write"]["create_users_group"] == "null"

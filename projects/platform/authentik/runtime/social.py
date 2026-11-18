@@ -67,10 +67,23 @@ def submit_code(browser, url, component, device):
 def exercise():
     browser = Client(HTTP_HOST="localhost")
     assert callback(browser, "42").status_code == 302
-    url = executor("enrollment")
-    challenge = advance(browser, browser.get(url))
-    assert challenge["component"] == "ak-stage-authenticator-totp"
+    completed = advance(browser, browser.get(executor("enrollment")))
+    assert completed["component"] == "xak-flow-redirect"
+    assert completed["final_redirect"]
+    assert completed["to"] == "/source/oauth/login/discord/"
     assert SESSION_KEY not in browser.session
+    user = User.objects.get(username="discord-42")
+    assert not user.groups.exists()
+
+    # Close the first MFA prompt. The next callback must find the original
+    # connection, even in a new browser with no flow plan or session.
+    url = executor("authentication")
+    for _ in range(2):
+        browser = Client(HTTP_HOST="localhost")
+        assert callback(browser, "42").status_code == 302
+        challenge = advance(browser, browser.get(url))
+        assert challenge["component"] == "ak-stage-authenticator-totp"
+        assert SESSION_KEY not in browser.session
     device = browser.session["totp_device"]
     submit_code(browser, url, challenge["component"], device)
     user = User.objects.get(username="discord-42")

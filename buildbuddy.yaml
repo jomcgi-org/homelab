@@ -95,6 +95,17 @@ actions:
           # Shared ordered guards stop at the first failure.
           ./bazel/tools/ci/ratchets.sh "$base_ref" HEAD
 
+          # Exercise the source flow in the pinned image on the Docker runner.
+          # For main pushes origin/main is already HEAD.
+          social_base="$base_ref"
+          if [ "$ON_MAIN" = true ]; then social_base=HEAD~1; fi
+          if ! git diff --quiet "$social_base" HEAD -- projects/platform/authentik/factory-blueprints projects/platform/authentik/runtime projects/platform/authentik/values-factory.yaml; then
+            factory_values="$PWD/projects/platform/authentik/values-factory.yaml"
+            FACTORY_TEST_IMAGE=$(bazel run --config=ci @multitool//tools/yq -- -r '.authentik.global.image | .repository + ":" + .tag + "@" + .digest' "$factory_values")
+            export FACTORY_TEST_IMAGE
+            projects/platform/authentik/runtime/check.sh
+          fi
+
           commit_format_drift() {
             format_commit_subject="$1"
             shift

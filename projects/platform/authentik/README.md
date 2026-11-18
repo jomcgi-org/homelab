@@ -149,8 +149,8 @@ are unavailable before closing the administrator session.
 ### Factory social sign-in validation
 
 In the pinned release, the source flow manager routes a new identity to
-enrollment and an existing connection to authentication. Both factory flows
-validate the pending user's devices before login. The validate stage challenges
+enrollment and an existing connection to authentication. Enrollment creates the account and saves its provider connection without issuing a session.
+Direct signup returns to the same provider to begin authentication. The validate stage challenges
 an enrolled device and requires TOTP setup when there is no device.
 [Source flow routing](https://github.com/goauthentik/authentik/blob/version/2026.5.6/authentik/core/sources/flow_manager.py#L151-L170)
 and [MFA stage behavior](https://github.com/goauthentik/authentik/blob/version/2026.5.6/authentik/stages/authenticator_validate/stage.py#L259-L291).
@@ -167,26 +167,10 @@ for discovery, plus www.googleapis.com and token.actions.githubusercontent.com
 for signing keys. The namespace policy scopes both lists to TCP 443.
 [Source serializer](https://github.com/goauthentik/authentik/blob/version/2026.5.6/authentik/sources/oauth/api/source.py#L60-L127).
 
-Run the flow executor check on a Docker host with Compose and yq. From
-`projects/platform/authentik/runtime`, the following starts a disposable
-database and the image pinned by the factory overlay. It runs a Discord
-callback with synthetic provider responses, completes first-time setup and
-repeat sign-in, and checks duplicate enrollment and both application grants.
+Required PR checks run the flow executor check when the factory Authentik
+blueprints, values or runtime fixture change. To run it locally with Docker
+Compose and yq, use the following command from the repository root.
 
 ```bash
-(
-  set -eu
-  export FACTORY_TEST_IMAGE
-  FACTORY_TEST_IMAGE=$(yq -r '.authentik.global.image | .repository + ":" + .tag + "@" + .digest' ../values-factory.yaml)
-  export COMPOSE_PROJECT_NAME="factory-social-test-$$"
-  trap 'docker compose down -v' EXIT
-  docker compose up -d
-  for attempt in {1..60}; do
-    if docker compose exec -T authentik ak shell -c 'from authentik.flows.models import Flow; assert Flow.objects.filter(slug="default-source-authentication").exists()'; then
-      break
-    fi
-    sleep 5
-  done
-  docker compose exec -T authentik ak shell -c 'import runpy; runpy.run_path("/fixture/runtime/social.py")'
-)
+projects/platform/authentik/runtime/check.sh
 ```
