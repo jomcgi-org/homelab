@@ -517,6 +517,9 @@ run_guard_case() {
 	local output="$TMP/$name.out" got_status=0
 	local guard_log="$TMP/$name.guards" base_log="$TMP/$name.base"
 	local bb_log="$TMP/$name.bb.log"
+	if [[ "${8:-}" != ratchet ]]; then
+		expected_guards="./bazel/tools/format/invariants/check_invariants.py${expected_guards:+$'\n'$expected_guards}"
+	fi
 	local -a command_args=()
 	[[ -z "${8:-}" ]] || command_args+=("$8")
 	: >"$guard_log"
@@ -542,7 +545,9 @@ run_guard_case() {
 	else
 		fail "$name guard arguments and order" "expected [$expected_guards], got [$(<"$guard_log")]"
 	fi
-	if [[ "$(grep -cxF "merge-base ${base_ref:-origin/main} HEAD" "$base_log" || true)" == 1 ]]; then
+	local expected_base_calls=1
+	[[ "$failed_guard" != check_invariants.py ]] || expected_base_calls=0
+	if [[ "$(grep -cxF "merge-base ${base_ref:-origin/main} HEAD" "$base_log" || true)" == "$expected_base_calls" ]]; then
 		pass "$name merge base"
 	else
 		fail "$name merge base" "expected one ratchet resolution for ${base_ref:-origin/main}: $(<"$base_log")"
@@ -559,6 +564,8 @@ run_guard_case() {
 		fail "$name remote prevented" "bb must not run after a guard error or with SKIP_REMOTE=1"
 	fi
 }
+
+run_guard_case invariant_failure "" 0 check_invariants.py 0 1 ""
 
 guard_calls=""
 for guard in verification_genrule_guard.py central_build_ratchet.py chart_version_guard.py source_ratchet.py; do
