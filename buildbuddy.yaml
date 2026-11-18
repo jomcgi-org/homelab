@@ -176,6 +176,10 @@ actions:
           # ---- 1b. tracked Python test reachability -----------------------
           python3 ./bazel/tools/ci/test_source_reachability.py
 
+          if ! git diff --quiet "$base_ref" HEAD -- projects/platform-factory/edge; then
+            bash projects/platform-factory/edge/tests/oidc/kind.sh
+          fi
+
           # ---- 2. tests ---------------------------------------------------
           if [ "$WRITE_BACK_ONLY" = true ]; then
             : # The publishing run already exercised this source tree.
