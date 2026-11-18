@@ -94,6 +94,10 @@ spec:
           ports:
             - name: metrics
               containerPort: {{ $c.metricsPort }}
+            {{- if include "factory.goalReasons" . }}
+            - name: goal-reasons
+              containerPort: {{ $c.goalReasons.port }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz
@@ -161,4 +165,23 @@ spec:
                   audience: factory-broker
                   expirationSeconds: 3600
                   path: token
+{{- if include "factory.goalReasons" . }}
+---
+# The goal reasons listener; reviewer-network-policy.yaml admits only the
+# connector, and /metrics stays unexposed.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "factory.reviewerSelector" . | nindent 4 }}
+  ports:
+    - name: goal-reasons
+      port: {{ $c.goalReasons.port }}
+      targetPort: goal-reasons
+{{- end }}
 {{- end }}

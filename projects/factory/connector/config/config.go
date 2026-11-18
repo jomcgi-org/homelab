@@ -48,6 +48,10 @@ type File struct {
 	// BuildBuddy, when set, names a failed CI status's targets and tests in
 	// revision prompts.
 	BuildBuddy *BuildBuddy `yaml:"buildbuddy"`
+	// ReviewerGoalURL, when set, is the reviewer's internal goal reasons
+	// listener (http://<service>.<namespace>.svc:<port>): review rounds after
+	// a goal finding read the goal check's reasons from it (HOME-251).
+	ReviewerGoalURL string `yaml:"reviewerGoalURL"`
 }
 
 // Links are URL templates for PR bodies and Done comments; see dispatch.Links.
@@ -291,6 +295,13 @@ func Parse(b []byte) (*File, error) {
 	if f.BuildBuddy != nil {
 		if err := f.BuildBuddy.validate(); err != nil {
 			return nil, err
+		}
+	}
+	if f.ReviewerGoalURL != "" {
+		u, err := url.Parse(f.ReviewerGoalURL)
+		if err != nil || u.Scheme != "http" || u.Host == "" || !strings.HasSuffix(u.Hostname(), ".svc") ||
+			(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.User != nil {
+			return nil, fmt.Errorf("config: reviewerGoalURL must be a plain in-cluster http://<service>.<namespace>.svc:<port> URL")
 		}
 	}
 	if f.Coordinator.Key == "" || f.Coordinator.APIKeyFile == "" {

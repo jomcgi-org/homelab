@@ -639,6 +639,14 @@ reviewer:
   ruleIds: []
   # /healthz and /metrics; no scraper ingress is granted.
   metricsPort: 9090
+  # The goal check's private reasons for a head, served on their own port
+  # to the connector alone (HOME-251). The connector posts them on the issue
+  # and quotes them in the next revision round. Needs connector.enabled,
+  # itsaplan.enabled and networkPolicy.cilium, whose policies admit only the
+  # connector. Off by default; deploy values enable it after chart write-back.
+  goalReasons:
+    enabled: false
+    port: 8091
   resources:
     requests:
       cpu: 20m

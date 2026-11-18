@@ -70,6 +70,9 @@ system:serviceaccount:{{ .Values.broker.namespace }}:{{ include "factory.reviewe
 {{- with $c.commentAuthor }}
 {{- $_ := set $config "commentAuthor" . }}
 {{- end }}
+{{- if include "factory.goalReasons" . }}
+{{- $_ := set $config "goalReasonsAddr" (printf ":%d" (int $c.goalReasons.port)) }}
+{{- end }}
 {{- with $c.semgrep }}
 {{- $_ := set $config "semgrep" . }}
 {{- end }}

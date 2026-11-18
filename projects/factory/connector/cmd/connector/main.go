@@ -220,6 +220,10 @@ func run(log *slog.Logger) error {
 			HTTP: &http.Client{Timeout: 30 * time.Second},
 		}
 	}
+	var goalReasons dispatch.GoalReasonsSource
+	if u := cfg.File.ReviewerGoalURL; u != "" {
+		goalReasons = &dispatch.GoalReasonsClient{BaseURL: u, HTTP: &http.Client{Timeout: 10 * time.Second}}
+	}
 	eng := dispatch.New(dispatch.Config{
 		// Native Codex artifact text reaches itsaplan run events (#8017). The
 		// rollback target is chart 0.29.10, which resumes admitted journals
@@ -245,6 +249,7 @@ func run(log *slog.Logger) error {
 		ForceDelete:     time.Duration(cfg.File.Intervals.ForceDelete),
 		Links:           dispatch.Links(cfg.File.Links),
 		CILogs:          ciLogs,
+		GoalReasons:     goalReasons,
 	}, st, its, a2a, sessions, gh, m, log)
 	notifier, err := notify.New(notify.Config{
 		URL: cfg.NotifyURL, TokenURL: cfg.NotifyTokenURL, AppPasswordFile: cfg.NotifyPasswordFile,

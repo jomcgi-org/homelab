@@ -734,6 +734,9 @@ type candidate struct {
 
 	// ciURL is a CI status's link, used only to find its invocation.
 	ciURL string
+	// goal marks the reviewer's own check holding a goal finding of the
+	// work item's issue: its round carries the goal check's reasons.
+	goal bool
 }
 
 // reviewEvents records the PR's events that ask for changes, once each by
@@ -795,6 +798,7 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 			text: fmt.Sprintf("Check %q concluded %s (%s): %s\n\n%s", c.Name, c.Conclusion, c.URL, c.Title,
 				clip(c.Summary, maxCheckFeedback)),
 			split: reviewerSplit(p, c),
+			goal:  reviewerGoal(p, c, wi.IssueKey),
 		})
 	}
 	for _, st := range statuses {
@@ -874,6 +878,7 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 		}
 	}
 	var prompt string
+	var goals []*GoalReasons
 	if len(acting) > 0 && !limited {
 		// The issue must still want delivery before a round starts.
 		reason, err := e.issueStopped(ctx, wi, b)
@@ -884,6 +889,16 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 			return false, e.stopWork(ctx, wi, reason)
 		}
 		for _, c := range acting {
+			if c.goal {
+				g, err := e.goalReasons(ctx, b, wi, pr, c.ev.CommitSHA)
+				if err != nil {
+					return false, err
+				}
+				if g != nil {
+					c.text += goalReasonsPrompt(g)
+					goals = append(goals, g)
+				}
+			}
 			if c.ciURL == "" {
 				continue
 			}
@@ -926,6 +941,11 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 			}
 			for _, c := range acting {
 				c.ev.RoundRunID = round.ID
+			}
+			for _, g := range goals {
+				if err := e.enqueueGoalReasons(ctx, tx, wi, pr, round, g); err != nil {
+					return err
+				}
 			}
 		}
 		if limited {
@@ -1441,6 +1461,13 @@ func hasHumanLabel(labels []string) bool {
 func reviewerSplit(p *ReviewPolicy, c github.CheckRun) bool {
 	r := p.ReviewerCheck
 	return r != nil && r.AppID != 0 && c.Name == r.Name && c.AppID == r.AppID && strings.Contains(c.Summary, splitOnlyMarker)
+}
+
+// reviewerGoal reports the reviewer App's own check run with a goal
+// finding of issue key in its summary.
+func reviewerGoal(p *ReviewPolicy, c github.CheckRun, key string) bool {
+	r := p.ReviewerCheck
+	return r != nil && r.AppID != 0 && c.Name == r.Name && c.AppID == r.AppID && goalFinding(c.Summary, key)
 }
 
 func reviewerHumanHold(p *ReviewPolicy, head string, checks []github.CheckRun) bool {

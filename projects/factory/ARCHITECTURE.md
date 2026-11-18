@@ -2264,6 +2264,32 @@ previews).
   Keep these resources after rollback. Decommission them only after the last
   audit write is 14 days old and a cleanup job completes successfully.
   The chart configures no backup or public read endpoint.
+
+  **Goal reasons for the delivery owner (HOME-251).** With
+  `reviewer.goalReasons.enabled` (off by default), the reviewer serves
+  `GET /v1/goal-reasons?repository=&pullRequest=&head=` on its own port
+  (8091), apart from `/metrics`. It answers with the newest reply for that
+  head, without its JSON answer and clipped to 4,000 bytes, with the issue
+  key, evidence digest and phase, or 404. Its Service exposes only that port,
+  and the reviewer's CiliumNetworkPolicy admits only the connector to it. The
+  chart refuses to render it without the connector, itsaplan and Cilium
+  policies. When a review round acts on the reviewer App's check with a goal
+  finding of the work item's issue, the connector checks the writer epoch,
+  records the read in `delivery_read`, and reads that head's reasons. Reasons
+  for another issue, a 404 or a failed read leave them out, and the round
+  starts on the check's fixed text. Otherwise the round prompt quotes them,
+  line by line, in an `untrusted_goal_reasons` block, and the outbox posts
+  them once per head on the issue as the connector's agent account. Both
+  copies replace `@` with `＠`, so no text mentions a member or starts an
+  agent, and drop any tag that could close the block. No reason reaches a
+  GitHub check, PR comment or log.
+  **Why.** Fixed public wording left coders guessing which part of a
+  criterion failed. Joe chose the issue as the record and the connector as
+  the only writer
+  ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-251#comment-2324)):
+  itsaplan 1.10.0 gates comments on `work_items` edit, so a reviewer write
+  token would also let it edit and delegate issues.
+
   Operators with private Pod access can find a PR's records with:
 
   ```sh

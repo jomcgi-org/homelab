@@ -35,6 +35,10 @@ type Config struct {
 	ItsaplanURL     string `yaml:"itsaplanURL"`
 	ItsaplanKeyFile string `yaml:"itsaplanKeyFile"`
 	MetricsAddr     string `yaml:"metricsAddr"`
+	// GoalReasonsAddr serves the goal check's private reasons to the
+	// connector (review.GoalReasonsPath); empty serves nothing. Only a
+	// network policy that admits the connector alone may expose it.
+	GoalReasonsAddr string `yaml:"goalReasonsAddr"`
 	// CheckName is the check run posted on every head; AppID is the reviewer
 	// GitHub App's ID, which only that App's check runs carry.
 	CheckName string `yaml:"checkName"`

@@ -1,4 +1,5 @@
 {{- if and .Values.reviewer.enabled .Values.networkPolicy.cilium }}
+{{- /* With reviewer.goalReasons, the connector alone reaches that port (HOME-251). */}}
 # No inbound connections yet: metrics use a port-forward, and kubelet health
 # probes are host traffic. DNS is allowed by the cluster's default policy.
 apiVersion: cilium.io/v2
@@ -14,6 +15,17 @@ spec:
   endpointSelector:
     matchLabels:
       {{- include "factory.reviewerSelector" . | nindent 6 }}
+  {{- if include "factory.goalReasons" . }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.networkPolicy.connector.namespace }}
+            {{- toYaml .Values.networkPolicy.connector.matchLabels | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.reviewer.goalReasons.port | quote }}
+              protocol: TCP
+  {{- end }}
   egress:
     - toEndpoints:
         - matchLabels:

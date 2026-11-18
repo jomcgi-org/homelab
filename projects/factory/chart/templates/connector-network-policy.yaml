@@ -69,6 +69,17 @@ spec:
             - port: "443"
               protocol: TCP
     {{- end }}
+    {{- if include "factory.goalReasons" . }}
+    # The reviewer's goal reasons, for revision rounds (HOME-251).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.broker.namespace }}
+            {{- include "factory.reviewerSelector" . | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.reviewer.goalReasons.port | quote }}
+              protocol: TCP
+    {{- end }}
     {{- if ($c.buildbuddy | default dict).enabled }}
     # Failed invocations' logs, for revision prompts.
     - toFQDNs:
