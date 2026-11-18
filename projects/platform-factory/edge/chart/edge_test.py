@@ -297,6 +297,12 @@ def test_kagent_hostname_is_owned_and_published():
         if doc["kind"] == "ValidatingAdmissionPolicy"
     }
     validations = policies["factory-edge-routes"]["spec"]["validations"]
+    assert {
+        "expression": "request.namespace in ['edge', 'factory-landing'] || "
+        "!has(object.spec.hostnames) || "
+        "!object.spec.hostnames.exists(h, h == 'factory.jomcgi.dev')",
+        "message": "Only edge and factory-landing may route factory.jomcgi.dev.",
+    } in validations
     for host in ("factory-agents.jomcgi.dev", "factory-kube.jomcgi.dev"):
         assert {
             "expression": "request.namespace == 'edge' || "

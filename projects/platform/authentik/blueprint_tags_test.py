@@ -290,6 +290,7 @@ def test_factory_edge_and_argocd_callback_hosts():
     edge_urls = {uri["url"] for uri in providers["edge-provider"]["redirect_uris"]}
     assert edge_urls == {
         "https://factory.jomcgi.dev/oauth2/callback",
+        "https://factory.jomcgi.dev/admin/codex/oauth2/callback",
         "https://factory-argocd.jomcgi.dev/oauth2/callback",
         "https://factory-plan.jomcgi.dev/oauth2/callback",
         "https://factory-grafana.jomcgi.dev/oauth2/callback",

@@ -276,7 +276,6 @@ tests:
               severity: critical
               grant: codex-primary
             exp_annotations:
-              login_url: https://factory.jomcgi.dev/admin/codex/
               summary: "Codex grant codex-primary is out of quota: a person must reset it or change the account"
               description: 'Coder turns fail until then. The primary window resets at 2026-11-25 00:14:00 +0000 UTC. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
@@ -298,7 +297,6 @@ tests:
               severity: critical
               grant: codex-primary
             exp_annotations:
-              login_url: https://factory.jomcgi.dev/admin/codex/
               summary: "Codex grant codex-primary is login_required: a person must log in again"
               description: 'The broker cannot relay Codex turns with this grant. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
@@ -323,7 +321,6 @@ tests:
               severity: critical
               grant: codex-primary
             exp_annotations:
-              login_url: https://factory.jomcgi.dev/admin/codex/
               summary: "Codex grant codex-primary is error: a person must log in again"
               description: 'The broker cannot relay Codex turns with this grant. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
@@ -344,7 +341,6 @@ tests:
               severity: critical
               grant: codex-primary
             exp_annotations:
-              login_url: https://factory.jomcgi.dev/admin/codex/
               summary: "Codex grant codex-primary is out of quota: a person must reset it or change the account"
               description: 'Coder turns fail until then. The primary window resets at 2026-11-25 00:14:00 +0000 UTC. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
@@ -368,7 +364,6 @@ tests:
               severity: critical
               grant: codex-primary
             exp_annotations:
-              login_url: https://factory.jomcgi.dev/admin/codex/
               summary: "Codex grant codex-primary is out of quota: a person must reset it or change the account"
               description: 'Coder turns fail until then. The primary window has no reset time. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
