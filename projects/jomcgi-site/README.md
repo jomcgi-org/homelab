@@ -271,12 +271,12 @@ assets. The seven exact edge routes activate them on promotion.
 | 8 | Interactive parts hydrate. Large data or heavy code loads on intent through a dynamic import. Each route stays under the 150 KiB JavaScript budget. | [home-browser.mjs](web/home-browser.mjs) holds the built entry while checking static content, then proves hydration retains the original DOM. It checks the clock, focus readouts, saved scheme, actual portrait network requests and canvas startup on keyboard/pointer intent, plus reduced motion. [budget.mjs](web/budget.mjs) measures every built entry for `:budget_test`. |
 | 9 | No inline styles, colour literals or named colours outside `palette.css`. No axe violations. | [contrast.test.tsx](web/src/contrast.test.tsx) checks source colours and tokens. [home-browser.mjs](web/home-browser.mjs) runs full axe, including colour contrast and visible labels, against the built CSS in both schemes, at desktop and portrait/landscape phone sizes. It rejects inline/injected styles after interaction. |
 
-Run `pnpm test`, `pnpm build`, `pnpm budget` and `node prerendered.mjs dist`
-from `web/`. Then run `pnpm test:browser` with `PLAYWRIGHT_MODULE` pointing to
-Playwright's `index.mjs` (tested with 1.63.0) and optionally `CHROMIUM_PATH`
-pointing to a browser executable. This check serves `dist/` locally with
-the production CSP. It is a local acceptance command; CI still runs the
-per-page happy-dom axe, source palette, hydration, artifact and budget tests.
+CI runs `home-browser.mjs` as `//projects/jomcgi-site/web:home_browser_test`,
+in the Chromium from `@sparticuz/chromium`, against the `:build` output. It
+serves that output with the production CSP. Locally, run `pnpm build` and then
+`pnpm test:browser` from `web/`; set `SITE_CHROMIUM_EXECUTABLE` to use another
+Chromium. CI also runs the per-page happy-dom axe, source palette, hydration,
+artifact and budget tests (`:test`, `:prerendered_test`, `:budget_test`).
 
 ## Deploy
 

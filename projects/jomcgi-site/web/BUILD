@@ -150,6 +150,26 @@ js_test(
     entry_point = "prerendered.mjs",
 )
 
+# Hydration, lazy portrait loading, interaction and axe with real CSS colour
+# contrast on the built home page, in Chromium (HOME-206).
+js_test(
+    name = "home_browser_test",
+    size = "medium",
+    args = ["$(rootpath :build)"],
+    data = [
+        ":build",
+        ":node_modules/@sparticuz/chromium",
+        ":node_modules/axe-core",
+        ":node_modules/playwright",
+        ":src",
+    ],
+    entry_point = "home-browser.mjs",
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+)
+
 js_test(
     name = "marketplace_test",
     args = ["$(rootpath :build)"],

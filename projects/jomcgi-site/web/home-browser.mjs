@@ -1,23 +1,24 @@
 // Exercise the production bundle, CSS and portrait in Chromium (HOME-206:8/9).
-// Supply PLAYWRIGHT_MODULE (tested with 1.63.0); CHROMIUM_PATH is optional.
+// Usage: node home-browser.mjs <dist>. CI runs it as :home_browser_test with
+// @sparticuz/chromium; SITE_CHROMIUM_EXECUTABLE selects another Chromium.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { preview } from "vite";
 import axe from "axe-core";
+import { chromium } from "playwright";
 import { latestPosts, posts } from "./site-inputs.mjs";
 
-const { chromium } = await import(
-  process.env.PLAYWRIGHT_MODULE || "playwright"
-);
-const root = fileURLToPath(new URL("./", import.meta.url));
-const read = (file) => readFileSync(`${root}/dist/${file}`, "utf8");
+const dist = resolve(process.argv[2] ?? "dist");
+const read = (file) => readFileSync(join(dist, file), "utf8");
 const manifest = JSON.parse(read(".vite/manifest.json"));
 const entry = manifest["index.html"].file;
 const engine = manifest["src/home-portrait.js"].file;
 const server = await preview({
   configFile: false,
-  root,
+  build: { outDir: dist },
   preview: {
     host: "127.0.0.1",
     port: 0,
@@ -30,6 +31,32 @@ const server = await preview({
 });
 const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
 let browser;
+const scratch = mkdtempSync(join(tmpdir(), "home-browser-"));
+// Unpacks the Chromium build from @sparticuz/chromium and its libraries into
+// a scratch directory, as leaderboard-browser.mjs does.
+async function chromiumPath() {
+  if (process.env.SITE_CHROMIUM_EXECUTABLE)
+    return process.env.SITE_CHROMIUM_EXECUTABLE;
+  process.env.TMPDIR = scratch;
+  const { default: chrome, inflate } = await import("@sparticuz/chromium");
+  const require = createRequire(import.meta.url);
+  const bin = join(dirname(require.resolve("@sparticuz/chromium")), "../bin");
+  await inflate(join(bin, "al2023.tar.br"));
+  const executablePath = await chrome.executablePath();
+  const xml = (path) => path.replaceAll("&", "&amp;").replaceAll("<", "&lt;");
+  process.env.FONTCONFIG_FILE = join(scratch, "fonts.conf");
+  writeFileSync(
+    process.env.FONTCONFIG_FILE,
+    `<fontconfig><dir>${xml(join(scratch, "fonts"))}</dir><cachedir>${xml(join(scratch, "cache"))}</cachedir></fontconfig>`,
+  );
+  process.env.LD_LIBRARY_PATH = [
+    join(scratch, "al2023/lib"),
+    process.env.LD_LIBRARY_PATH,
+  ]
+    .filter(Boolean)
+    .join(":");
+  return executablePath;
+}
 async function accessible(page, label) {
   const violations = await page.evaluate(async () => {
     await document.fonts.ready;
@@ -62,7 +89,7 @@ async function accessible(page, label) {
 }
 try {
   browser = await chromium.launch({
-    executablePath: process.env.CHROMIUM_PATH,
+    executablePath: await chromiumPath(),
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
   });
   for (const [width, height, intent] of [
@@ -184,4 +211,5 @@ try {
 } finally {
   await browser?.close();
   await new Promise((resolve) => server.httpServer.close(resolve));
+  rmSync(scratch, { recursive: true, force: true });
 }
