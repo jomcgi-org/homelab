@@ -1932,7 +1932,7 @@ heads:
 			if !slices.ContainsFunc(prior.Previous(), high) && !slices.ContainsFunc(report.Findings, high) {
 				continue
 			}
-			stamp := decisions.decided(p.Note, p.ID)
+			stamp := decisions.decided(p.Note, p.ID, SeverityHigh)
 			if stamp != nil && !slices.ContainsFunc(r.stored.Decisions, func(old DecisionStamp) bool {
 				identity := old.Finding == p.ID || r.legacy && old.Finding == clip(p.ID, maxTitle)
 				return identity && old.ID == stamp.ID && old.Hash == stamp.Hash
