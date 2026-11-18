@@ -129,3 +129,16 @@ groups:
             The quota alerts cannot fire on an old reading. Runbook:
             projects/factory-cluster/README.md, "Alerts".
 
+
+  - name: intsec-sync
+    rules:
+      - alert: SemgrepSyncFailed
+        expr: |
+          kube_job_failed{job_name=~"intsec-sync-[0-9]+",condition="true"} == 1
+          and on (namespace, job_name)
+          (kube_job_status_start_time == on (namespace) group_left
+            max by (namespace) (kube_job_status_start_time{job_name=~"intsec-sync-[0-9]+"}))
+        labels:
+          severity: warning
+        annotations:
+          summary: "The latest Semgrep to INTSEC sync failed"

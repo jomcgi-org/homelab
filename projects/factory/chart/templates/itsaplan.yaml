@@ -32,6 +32,9 @@ Secrets (factory-buckets, factory-db-secrets) create it either way.
 {{- range $k, $v := $i.env }}
 {{- $_ := set $env $k (toString $v) }}
 {{- end }}
+{{- if .Values.semgrepSync.enabled }}
+{{- $_ := set $env "FACTORY_INTSEC_SYNC" "true" }}
+{{- end }}
 {{- $checksum := toJson $env | sha256sum }}
 {{- $adapter := dict }}
 {{- $mounts := dict

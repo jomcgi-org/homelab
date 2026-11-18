@@ -867,6 +867,7 @@ def test_invalid_wiring_fails_closed(override: str, message: str) -> None:
 def test_semgrep_is_opt_in_github_only_config() -> None:
     assert "semgrep" not in _config(_render(), "factory-reviewer")
     overrides = [
+        "semgrepSync.enabled=false",
         "reviewer.semgrep.appId=4746654",
         "reviewer.semgrep.checkName=semgrep-cloud-platform/scan",
         "reviewer.semgrep.wait=2m",

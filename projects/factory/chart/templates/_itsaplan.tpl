@@ -26,12 +26,18 @@ http://{{ include "factory.itsaplanName" . }}-api.{{ .Values.itsaplan.namespace 
 {{- define "factory.itsaplanAgents" -}}
 {{- $agents := .Values.itsaplan.bootstrap.agents | default list -}}
 {{- range $agents -}}
+{{- if eq (lower .username) "intsec-sync" -}}
+{{- fail "intsec-sync is reserved for Semgrep" -}}
+{{- end -}}
 {{- if eq (lower .username) "factory-reviewer" -}}
 {{- fail "factory-reviewer is reserved for the chart's read-only reviewer identity" -}}
 {{- end -}}
 {{- end -}}
 {{- if .Values.reviewer.enabled -}}
 {{- $agents = append $agents (dict "username" "factory-reviewer" "name" "Factory reviewer" "triggerOnAssign" false "triggerOnMention" false) -}}
+{{- end -}}
+{{- if .Values.semgrepSync.enabled -}}
+{{- $agents = append $agents (dict "username" "intsec-sync" "name" "INTSEC sync") -}}
 {{- end -}}
 {{- toJson $agents -}}
 {{- end -}}

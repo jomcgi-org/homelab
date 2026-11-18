@@ -9,11 +9,17 @@ import {
   projectColumn,
 } from "@repo/db";
 import { and, eq, sql } from "drizzle-orm";
-import { app, authedApi, createProject } from "./__tests__/helpers/app";
+import {
+  app,
+  apiKeyApi,
+  authedApi,
+  createProject,
+} from "./__tests__/helpers/app";
 import { signUpTestUser } from "./__tests__/helpers/auth";
-import { createAgent } from "./__tests__/helpers/agents";
+import { createAgent, setAgentProjectRole } from "./__tests__/helpers/agents";
 import { resetDb } from "./__tests__/helpers/db";
 import { factoryRoutes } from "./factory";
+import { setSubtaskAutomationSettings } from "./modules/projects/service";
 
 app.use(factoryRoutes);
 beforeEach(resetDb);
@@ -226,4 +232,114 @@ test("WIP refusal rolls back; capacity returning starts once with the same key",
   expect(recovered.receipts).toHaveLength(1);
   expect(recovered.issue.columnId).toBe(f.todo.id);
   expect(recovered.issue.delegateUserId).toBe(f.coder.agent.userId);
+});
+
+test("the sync key can restore and update only its own INTSEC finding", async () => {
+  const owner = authedApi((await signUpTestUser()).cookie);
+  const projectKey = "INTSEC";
+  const project = await createProject(owner, {
+    key: projectKey,
+    name: "Security",
+  });
+  expect(project.status).toBe(201);
+  const setup = owner.projects({ projectKey });
+  const { columns } = (await setup.get()).data!;
+  const label = (await setup.labels.post({ name: "semgrep" })).data!;
+  const agent = (
+    await createAgent(owner, projectKey, {
+      username: "intsec-sync",
+      name: "INTSEC sync",
+      kind: "external",
+    })
+  ).data!;
+  const role = await owner.teams({ teamId: project.data!.teamId }).roles.post({
+    name: "INTSEC sync",
+    permissions: { work_items: { read: true, create: true } },
+  });
+  expect(role.status).toBe(201);
+  expect(
+    (
+      await setAgentProjectRole(
+        owner,
+        projectKey,
+        agent.agent.userId,
+        role.data!.id,
+      )
+    ).status,
+  ).toBe(204);
+  const sync = apiKeyApi(agent.apiKey!);
+  const finding = "sast/97";
+  const description = `Semgrep finding ID: ${finding}\n\nOriginal`;
+  const fields = {
+    title: "Finding",
+    description,
+    columnId: columns.find((c) => c.stateType === "backlog")!.id,
+    labelIds: [label.id],
+  };
+  const own = await sync.projects({ projectKey }).issues.post(fields);
+  const human = await setup.issues.post(fields);
+  expect([own.status, human.status]).toEqual([201, 201]);
+  const archivedAt = new Date();
+  for (const id of [own.data!.id, human.data!.id])
+    await db.update(issue).set({ archivedAt }).where(eq(issue.id, id));
+
+  const payload = {
+    finding,
+    restore: true,
+    title: "Updated",
+    description: description + " updated",
+    columnId: columns.find((c) => c.stateType === "completed")!.id,
+  };
+  const send = (id: number) =>
+    app.handle(
+      new Request(`http://localhost/issues/${id}/factory-semgrep`, {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": agent.apiKey!,
+        },
+        body: JSON.stringify(payload),
+      }),
+    );
+  expect(
+    (
+      await sync
+        .issues({ issueId: human.data!.id })
+        .patch({ title: "Direct edit" })
+    ).status,
+  ).toBe(403);
+  const before = await effects(human.data!.id);
+  expect((await send(human.data!.id)).status).toBe(403);
+  expect(await effects(human.data!.id)).toEqual(before);
+  // With subtask automation on, closing a finding linked to a human-owned
+  // parent would move that parent. The route refuses any linked finding.
+  await setSubtaskAutomationSettings(project.data!.id, {
+    completeParent: true,
+    closeSubtasks: true,
+  });
+  const parent = await setup.issues.post({ ...fields, title: "Human parent" });
+  expect(parent.status).toBe(201);
+  await db
+    .update(issue)
+    .set({ parentId: parent.data!.id })
+    .where(eq(issue.id, own.data!.id));
+  const parentBefore = await effects(parent.data!.id);
+  expect((await send(own.data!.id)).status).toBe(409);
+  expect(await effects(parent.data!.id)).toEqual(parentBefore);
+  await db
+    .update(issue)
+    .set({ parentId: null })
+    .where(eq(issue.id, own.data!.id));
+  await setSubtaskAutomationSettings(project.data!.id, {
+    completeParent: false,
+    closeSubtasks: false,
+  });
+
+  expect((await send(own.data!.id)).status).toBe(200);
+  expect((await effects(own.data!.id)).issue).toMatchObject({
+    archivedAt: null,
+    title: payload.title,
+    description: payload.description,
+    columnId: payload.columnId,
+  });
 });

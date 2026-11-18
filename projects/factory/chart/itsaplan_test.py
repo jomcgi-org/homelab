@@ -452,6 +452,36 @@ def test_reviewer_bootstrap_is_read_only_before_key_publication(bootstrap, monke
     assert len(published) == 3  # publish() checks every repaired boundary
 
 
+def test_sync_bootstrap_grants_only_read_and_create_in_intsec(bootstrap, monkeypatch):
+    api = ReviewerBootstrapAPI()
+    original_call = api.call
+
+    def call(method, path, body=None):
+        if path == "/projects/INTSEC":
+            return {"project": {"id": 4, "teamId": 1}, "labels": [{"name": "semgrep"}]}
+        if path == "/projects/INTSEC/members":
+            assert method == "POST" and body["roleId"] == api.role["id"]
+            api.agent["projects"] = [{"id": 4}]
+            return
+        return original_call(method, path, body)
+
+    bootstrap.CONFIG["agents"] = [{"username": "intsec-sync", "name": "INTSEC sync"}]
+    monkeypatch.setattr(api, "call", call)
+    published = []
+    monkeypatch.setattr(
+        bootstrap, "write_secret", lambda name, data: published.append(data)
+    )
+    bootstrap.ensure_agents(api, 1, 3)
+    assert published[0]["projectKey"] == "INTSEC"
+    assert api.agent["projects"] == [{"id": 4}]
+    assert {
+        (r, a)
+        for r, actions in api.role["permissions"].items()
+        for a, allowed in actions.items()
+        if allowed
+    } == {("work_items", "read"), ("work_items", "create")}
+
+
 def test_reviewer_bootstrap_does_not_publish_when_role_fails(bootstrap, monkeypatch):
     api = ReviewerBootstrapAPI()
     api.fail_role = True
