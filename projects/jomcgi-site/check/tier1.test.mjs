@@ -426,7 +426,8 @@ test("production wildcard routes include query URLs and retired-page 404s", () =
     "/scotland?ref=test",
     "/slop?ref=test",
     JUNK_PATH,
-    "/data/stars/latest.json",
+    // A /data path that no section routes stays on the hub.
+    "/data/__site-check-unrouted/latest.json",
   ]) {
     assert.equal(scope.owns(path), false, `${path} still belongs to the hub`);
   }
