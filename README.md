@@ -68,7 +68,7 @@ current state, its direction and the reasons.
 
 Public apps at [jomcgi.dev/app](https://jomcgi.dev/app):
 
-- [**Marine tracking**](projects/monolith/frontend/src/routes/public/app/ships/): real-time AIS vessel tracking on a MapLibre GL map.
+- [**Marine tracking**](projects/monolith/frontend/src/routes/public/app/ships/): real-time AIS vessel tracking on a MapLibre GL map. See the [factory migration plan](projects/ships/ARCHITECTURE.md).
 - [**Trip tracker**](projects/monolith/frontend/src/routes/public/app/trips/): travel routes rebuilt from photo EXIF data, with elevation profiles.
 - [**Stargazing**](projects/monolith/frontend/src/routes/public/app/stars/): stargazing spots in Scotland with cloud-cover and darkness forecasts.
 - [**Hiking routes**](projects/monolith/frontend/src/routes/public/app/hikes/): Scottish route finder with weather-based recommendations.
