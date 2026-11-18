@@ -28,7 +28,7 @@ The [deploy source list](../projects/jomcgi-site/data/sources.json) names the
 current Stars and Hikes keys. The [hub chart](../projects/monolith/chart/values.yaml)
 defines the schedules below (UTC). Each port must compare CPU-seconds and
 peak resident memory against the Python job on the same inputs. Each port is
-filed under [HOME-178](https://factory-plan.jomcgi.dev/factory/issue/HOME-178) with the Done when criteria below.
+filed under [HOME-178](https://factory-plan.jomcgi.dev/factory/issue/HOME-178) with the Done when criteria below and its Go rationale ([record](https://factory-plan.jomcgi.dev/factory/issue/HOME-258#comment-4197)).
 
 ### Port Stars forecast publication to the factory cluster
 
