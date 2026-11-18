@@ -50,6 +50,7 @@ logs:
   #   authentik: the identity provider logs sign-in details and its database
   #     logs failed authentications;
   #   ate-system: Agent Substrate carries agent session traffic and tokens.
+  #   Agent workers and memory services can log task and conversation text.
   # Lines from the rest pass through transform/redact before export.
   namespaces:
     - "*"
@@ -57,6 +58,12 @@ logs:
     - otel-collector
     - authentik
     - ate-system
+    - hindsight
+    - hindsight-discord
+    - factory-r-homelab
+    - factory-r-homelab-review
+    - factory-discord-agent
+    - factory-discord
   # Kyverno logs coloured zerolog console lines; sanitize makes them parse.
   sanitize: true
   redact: true

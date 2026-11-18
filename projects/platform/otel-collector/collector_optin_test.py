@@ -1430,11 +1430,19 @@ def test_factory_node_agent_pipelines():
 
     kubelet = config["receivers"]["kubelet_stats/node"]
     assert kubelet["metric_groups"] == ["node", "pod"]
-    # Its own namespace (export errors), the identity provider and the agent
-    # substrate are never collected.
     assert config["receivers"]["file_log"]["exclude"] == [
         f"/var/log/pods/{ns}_*/*/*.log"
-        for ns in ("otel-collector", "authentik", "ate-system")
+        for ns in (
+            "otel-collector",
+            "authentik",
+            "ate-system",
+            "hindsight",
+            "hindsight-discord",
+            "factory-r-homelab",
+            "factory-r-homelab-review",
+            "factory-discord-agent",
+            "factory-discord",
+        )
     ]
     # Sanitize before parsing; redact and dedup after filtering and before
     # anything is enriched or exported.
