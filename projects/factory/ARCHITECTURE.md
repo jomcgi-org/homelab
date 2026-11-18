@@ -1,21 +1,22 @@
 # Factory architecture
 
-The factory turns delegated itsaplan issues into reviewed GitHub pull requests for repositories bound to the factory home cluster. The connector claims the work and starts a kagent coding session in an isolated workspace. The reviewer checks the proposed change independently, and GitHub enforces the required checks before merge.
+The factory runs on the home cluster and delivers reviewed changes for maintainers who delegate repository work in itsaplan.
+The connector dispatches the work to a kagent coding session and opens the pull request.
+The broker supplies credentials, the independent reviewer reports its verdict, and GitHub enforces the checks before merge.
 
 ```mermaid
 flowchart LR
-  plan["itsaplan (issue text)"] -->|delegated run| connector["Connector (agent keys)"]
-  connector -->|dispatch| kagent["kagent coding session"]
-  kagent -->|model and Git requests via egress gateway| broker["Broker (OAuth grant and both App private keys)"]
-  broker -->|repository access| github["GitHub (untrusted PR content)"]
-  connector -->|open PR and enqueue| github
-  github -->|diff and head SHA| reviewer["Reviewer (scoped installation token)"]
-  broker -->|scoped reviewer token| reviewer
-  reviewer -->|request PR comment| broker
+  itsaplan["itsaplan · untrusted issue text"] -->|delegated run| connector["connector · agent keys"]
+  connector -->|coding task| kagent["kagent · isolated sessions"]
+  kagent -->|actor requests via egress gateway| broker["broker · OAuth grant and both App keys"]
+  connector -->|open PR and enqueue| github["GitHub · untrusted diff"]
+  github -->|PR head| reviewer["reviewer · scoped token"]
+  reviewer -->|review task| kagent
+  broker -->|scoped token| reviewer
+  reviewer -->|PR comment request| broker
   broker -->|post with separate comment token| github
-  reviewer -->|review task| reviewAgent["kagent review session"]
   reviewer -->|head-bound check| github
-  connector -->|report outcome| plan
+  connector -->|run result| itsaplan
 ```
 
 | Component | Role | Code | Pin | Untrusted input | Credentials held |
@@ -38,7 +39,7 @@ See the [connector architecture](connector/ARCHITECTURE.md) for the [run lifecyc
 
 ## Current state
 
-The homelab installation uses [these deployment values](deploy/values.yaml). Component paths above are relative to `projects/factory/`.
+Component paths are relative to `projects/factory/`. The sections from [Umbrella chart](#umbrella-chart) through [Merge authority](#merge-authority) describe the homelab installation configured in [deploy/values.yaml](deploy/values.yaml). The [upstream findings](#findings-that-shape-the-design) follow those sections.
 
 ### Umbrella chart
 
@@ -194,7 +195,7 @@ Bosun answers mentions in the configured Discord servers. The bridge scopes memo
 
 ### itsaplan
 
-Humans sign in through the edge and itsaplan's invite-only OIDC application. The connector uses separate identities to claim coding work and coordinate issue updates.
+The connector uses separate identities to claim coding work and coordinate issue updates.
 
 - **Data.** PostgreSQL is the CNPG Cluster `factory-db` in its own namespace
   (`projects/platform-factory/factory-db`): three instances, WAL and daily
@@ -208,6 +209,20 @@ Humans sign in through the edge and itsaplan's invite-only OIDC application. The
   pre-migration `pg_dump` is skipped (`SKIP_PRE_MIGRATION_BACKUP=1`): the dump
   would live in an `emptyDir`, and WAL archiving already restores to any point
   before a migration.
+
+- **Human sign-in.** itsaplan's own OIDC client `factory-itsaplan` in
+  Authentik (blueprint `factory-blueprints/factory-itsaplan.yaml`), bound to
+  `authentik Admins`. Authentik's secret-init generates its client secret and
+  copies it into `factory/factory-itsaplan-oidc`, which `factory-buckets`
+  declares so it exists before the chart enables itsaplan. Registration is
+  invite-only, so a person is invited by an admin before their first OIDC
+  sign-in.
+- **Public api surface.** The route answers 404 for MCP and for the runner
+  feeds (`claim`, `heartbeat`, `events`, `result` of runs and chats), so
+  claiming and reporting runs happens only inside the cluster. An agent key
+  still authenticates on the api's other routes through the public origin,
+  for anyone past the edge's sign-in (`authentik Admins`). God mode stays,
+  since the web app calls it for the instance admin.
 
 ### Credential broker
 
@@ -478,21 +493,21 @@ version write-back.
 
 The [connector](#connector) and [merge authority](#merge-authority) depend on these upstream contracts.
 
-- kagent relies on its Substrate fork for the Kubernetes Secret provider and egress gateway.
-- The Substrate gateway replaces credentials in outgoing headers. The broker supplies the account header and authorization that Codex model calls require.
-- The homelab coding binding uses the broker’s ChatGPT subscription. The broker keeps the OAuth grant outside the actors.
-- kagent exposes task dispatch and polling over A2A. The connector uses the session service for recovery.
-- Each kagent session belongs to one Agent. The connector records the session with the run so it can route revisions to the coder.
-- An agent comment does not start another itsaplan run. The connector can report progress on the issue without dispatching new work.
-- kagent trusted-proxy authentication relies on the edge to validate human access tokens. The connector authenticates separately through Kubernetes TokenReview.
-- The chart renders itsaplan Secrets separately from the application workloads so that secret-init can generate missing values and preserve existing ones.
-- A Kubernetes ServiceAccount principal includes its UID. Replacing the connector account changes its kagent identity even if its name stays the same.
-- The connector renews itsaplan's run lease during execution. It correlates the run with a kagent A2A task and session in its own store.
-- A task-opening message belongs to one session. Recovery must distinguish a lost response from a task that never started. The [connector lifecycle](connector/ARCHITECTURE.md#run-lifecycle) describes the recovery checks.
-- Model usage comes from individual calls. The factory aggregates usage for a delivery in its [accounting model](token-usage.md).
-- Coordinator credentials can read the itsaplan run queue by run ID. The coding agent key alone cannot look up an individual run.
-- kagent can recover a crashed session from its durable snapshot. When the underlying actor has been replaced, the connector needs a new session.
-- Authenticated humans and ServiceAccounts can invoke any Agent the controller watches. Session ownership separates their sessions. An authenticated actor is confined to its own session.
+1. kagent relies on its Substrate fork for the Kubernetes Secret provider and egress gateway.
+2. The Substrate gateway replaces credentials in outgoing headers. The broker supplies the account header and authorization that Codex model calls require.
+3. The homelab coding binding uses the broker’s ChatGPT subscription. The broker keeps the OAuth grant outside the actors.
+4. The chart renders itsaplan Secrets separately from the application workloads so that secret-init can generate missing values and preserve existing ones.
+5. kagent trusted-proxy authentication relies on the edge to validate human access tokens. The connector authenticates separately through Kubernetes TokenReview.
+6. A Kubernetes ServiceAccount principal includes its UID. Replacing the connector account changes its kagent identity even if its name stays the same.
+7. The connector renews itsaplan's run lease during execution. It correlates the run with a kagent A2A task and session in its own store.
+8. kagent exposes task dispatch and polling over A2A. The connector uses the session service for recovery.
+9. A task-opening message belongs to one session. Recovery must distinguish a lost response from a task that never started. The [connector lifecycle](connector/ARCHITECTURE.md#run-lifecycle) describes the recovery checks.
+10. Each kagent session belongs to one Agent. The connector records the session with the run so it can route revisions to the coder.
+11. Coordinator credentials can read the itsaplan run queue by run ID. The coding agent key alone cannot look up an individual run.
+12. Model usage comes from individual calls. The factory aggregates usage for a delivery in its [accounting model](token-usage.md).
+13. An agent comment does not start another itsaplan run. The connector can report progress on the issue without dispatching new work.
+14. kagent can recover a crashed session from its durable snapshot. When the underlying actor has been replaced, the connector needs a new session.
+15. Authenticated humans and ServiceAccounts can invoke any Agent the controller watches. Session ownership separates their sessions. An authenticated actor is confined to its own session.
 
 ## Direction
 
