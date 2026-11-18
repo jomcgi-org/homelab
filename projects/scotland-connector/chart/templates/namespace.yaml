@@ -1,6 +1,7 @@
 # The connector takes unauthenticated internet traffic, so it gets its own
 # namespace: restricted Pod Security, its own NetworkPolicy, and nothing else
 # running beside it.
+{{- if .Values.createNamespace }}
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -11,3 +12,4 @@ metadata:
     pod-security.kubernetes.io/enforce-version: latest
     pod-security.kubernetes.io/warn: {{ .Values.podSecurity }}
     pod-security.kubernetes.io/audit: {{ .Values.podSecurity }}
+{{- end }}

@@ -1,0 +1,11 @@
+createNamespace: false
+config:
+  publicBaseURL: https://scotland-mcp.jomcgi.dev
+route:
+  enabled: false
+networkPolicy:
+  gateway:
+    namespace: edge
+    podLabels:
+      gateway.envoyproxy.io/owning-gateway-name: edge
+      gateway.envoyproxy.io/owning-gateway-namespace: edge

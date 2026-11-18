@@ -80,6 +80,10 @@ adminPort: 9090
 # Pod Security Admission level for the namespace. The pod needs nothing beyond
 # "restricted".
 podSecurity: restricted
+# Render the Namespace with the Pod Security labels above. The factory
+# cluster turns this off: its content rules allow only namespaced kinds, and
+# the Application sets the same labels through managedNamespaceMetadata.
+createNamespace: true
 
 config:
   # Repository-only delivery, pending #7256 operational acceptance.

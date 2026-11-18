@@ -288,3 +288,34 @@ def test_rate_limit_rules_cannot_mix_units() -> None:
     # when its rules use different units; the template must refuse that.
     with pytest.raises(RuntimeError, match="must equal route.rateLimit.unit"):
         _render(["route.enabled=true", "route.assistantBucket.unit=Second"])
+
+
+def test_factory_routes_preserve_the_exercised_gateway_policies():
+    resources = _CHART_DIR.parent / "factory" / "resources"
+    docs = list(yaml.safe_load_all((resources / "route.yaml").read_text()))
+    reference = _render(["route.enabled=true"])
+    # The public route replaces gateway OIDC with the hub's origin policy.
+    policy = _one(docs, "SecurityPolicy")
+    assert policy["metadata"]["namespace"] == "edge"
+    assert policy["spec"] == _one(reference, "SecurityPolicy")["spec"]
+    tunnel = yaml.safe_load(
+        (
+            _CHART_DIR.parents[1] / "platform-factory/edge-tunnel/resources/route.yaml"
+        ).read_text()
+    )
+    assert "scotland-mcp.jomcgi.dev" in tunnel["spec"]["hostnames"]
+    assert (
+        _one(docs, "BackendTrafficPolicy")["spec"]
+        == _one(reference, "BackendTrafficPolicy")["spec"]
+    )
+    route = _one(docs, "HTTPRoute")
+    assert route["metadata"]["namespace"] == "edge"
+    assert route["spec"]["hostnames"] == ["scotland-mcp.jomcgi.dev"]
+    assert _rules(route) == [("PathPrefix", "/v1", None), ("Exact", "/mcp", None)]
+    for rule in route["spec"]["rules"]:
+        (backend,) = rule["backendRefs"]
+        assert (backend["namespace"], backend["name"], backend["port"]) == (
+            "scotland-connector",
+            "scotland-connector",
+            80,
+        )

@@ -1,12 +1,36 @@
 # Scotland connector architecture
 
-A public, read-only, free API and MCP endpoint for planning and checking
-Scottish trips: which walks fit the weather and where the night sky will be
-dark and clear, each with a go, marginal, no or unknown verdict.
-Tracking issue: #7240. Deployed on the hub through Kargo
-(`projects/gke-apps/scotland-connector/`, pipeline `scotland-connector` in
-`projects/platform/kargo/values.yaml`), served publicly at
-`https://jomcgi.dev/scotland/mcp` and `https://jomcgi.dev/scotland/v1/...`.
+## Hosting decision (HOME-259)
+
+The proposed public endpoint is `https://scotland-mcp.jomcgi.dev`. The shorter
+`mcp.jomcgi.dev/mcp` already serves authenticated Context Forge clients.
+Use the factory cluster with the existing stateless Go binary and R2 reader.
+
+A Worker could serve cached REST responses near the caller, but a cold isolate
+would need to fetch and decode forecast and climatology data before ranking
+sites and walks for a new plan or check. The grid fixture below has a 29 MB
+capped sites object. Replacing it with readers active peaked at 175 MiB RSS in
+Go. A Worker port needs a smaller indexed representation or regional shards
+to avoid repeating this load across isolates. Light computes bounded solar and
+lunar crossings per request and optionally joins nearby forecast samples.
+Aurora combines geometry with a separate snapshot capped at 16 MiB. Neither
+tool can be implemented by returning a single cached R2 object.
+
+Factory adds a tunnel round trip on cache misses. Its pods load snapshots
+before readiness and conditionally refresh in the background. The representative
+warm plans below took 0.9–5 ms and a ten-item check took 2 ms, excluding network
+latency. No end-to-end Worker latency has been measured. At low traffic there
+is no query that warrants moving these datasets into Postgres.
+
+The factory route is public, with no sign-in, as Joe decided
+([HOME-259 #comment-3908](https://factory-plan.jomcgi.dev/factory/issue/HOME-259#comment-3908)).
+Its route-level SecurityPolicy replaces the gateway OIDC policy with the hub's
+origin rules, and native Envoy rate limits match the hub's. The factory tunnel
+publishes scotland-mcp.jomcgi.dev. The cutover is staged
+([HOME-259 #comment-3953](https://factory-plan.jomcgi.dev/factory/issue/HOME-259#comment-3953)):
+the hub keeps serving `jomcgi.dev/scotland/mcp` and `/scotland/v1/*` until
+HOME-393 points the plugin and marketplace at the new hostname, makes the hub
+URLs answer with a 404 or a pointer, and scales the hub to zero.
 
 ## Shape
 
