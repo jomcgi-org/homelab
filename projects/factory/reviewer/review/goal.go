@@ -52,10 +52,12 @@ type goalAnswer struct {
 // GoalCheck is a validated answer for one head and evidence digest. It holds
 // only numbers and enum values, so the public State can keep it as a cache.
 type GoalCheck struct {
-	Head     string        `json:"head"`
-	Digest   string        `json:"digest"`
-	Criteria []GoalVerdict `json:"criteria"`
-	Overall  string        `json:"overall,omitempty"`
+	// CriterionIDs are keyed digests of the numbered requirements in issue order.
+	CriterionIDs []string      `json:"criterion_ids,omitempty"`
+	Head         string        `json:"head"`
+	Digest       string        `json:"digest"`
+	Criteria     []GoalVerdict `json:"criteria"`
+	Overall      string        `json:"overall,omitempty"`
 }
 
 // errGoalAnswer is the one error a reply gets; it names no reply value.
@@ -152,7 +154,7 @@ func goalFindings(key string, g *GoalCheck) []Finding {
 // findings for the issue key, if any. An earlier goal finding stays open
 // until a valid answer resolves it (goalResolved); Assess keeps its earlier
 // severity.
-func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck, issueCount int) {
+func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck, previous *GoalCheck) {
 	ns := regexp.MustCompile(`^` + regexp.QuoteMeta(project) + `-[1-9][0-9]*:goal(:|$)`)
 	r.Findings = slices.DeleteFunc(r.Findings, func(f Finding) bool { return ns.MatchString(f.ID) })
 	r.Previous = slices.DeleteFunc(r.Previous, func(p Previous) bool { return ns.MatchString(p.ID) })
@@ -166,7 +168,7 @@ func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck, is
 			continue
 		}
 		account := Previous{ID: p.ID, Status: StatusOpen, Note: "No valid goal check answer resolves it."}
-		if note := goalResolved(p.ID, key, g, issueCount); note != "" {
+		if note := goalResolved(p.ID, key, g, previous); note != "" {
 			account.Status, account.Note = StatusFixed, note
 		}
 		r.Previous = append(r.Previous, account)
@@ -175,41 +177,44 @@ func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck, is
 
 const criterionRemoved = "criterion removed from the issue"
 
-// issueCriterionCount recognizes an explicit, consecutively numbered acceptance
+// issueCriterionIDs recognizes an explicit, consecutively numbered acceptance
 // list at the end of the issue. Ambiguous text cannot establish removal.
-func issueCriterionCount(in *IssueContext) int {
+func issueCriterionIDs(in *IssueContext, key []byte) []string {
 	if goalKey(in) == "" {
-		return -1
+		return nil
 	}
-	count := -1
+	var ids []string
+	inList := false
 	for line := range strings.SplitSeq(in.Issue.Description, "\n") {
 		line = strings.TrimSpace(line)
 		heading := strings.ToLower(strings.Trim(line, "#* :"))
 		if heading == "done when" || heading == "acceptance criteria" {
-			if count >= 0 {
-				return -1
+			if inList {
+				return nil
 			}
-			count = 0
+			inList = true
 			continue
 		}
-		if count < 0 || line == "" {
+		if !inList || line == "" {
 			continue
 		}
 		number, item, ok := strings.Cut(line, ". ")
-		if !ok || number != strconv.Itoa(count+1) || strings.TrimSpace(item) == "" {
-			return -1
+		if !ok || number != strconv.Itoa(len(ids)+1) || strings.TrimSpace(item) == "" {
+			return nil
 		}
-		count++
+		if len(ids) >= maxCriteria {
+			return nil
+		}
+		mac := hmac.New(sha256.New, key)
+		fmt.Fprintf(mac, "criterion\x00%s\x00%s", in.Issue.Key, strings.TrimSpace(item))
+		ids = append(ids, hex.EncodeToString(mac.Sum(nil)[:16]))
 	}
-	if count == 0 {
-		return -1
-	}
-	return count
+	return ids
 }
 
 // goalResolved says how a valid answer resolves an earlier goal finding that
 // it does not report again. Removal requires agreement with the issue text.
-func goalResolved(id, key string, g *GoalCheck, issueCount int) string {
+func goalResolved(id, key string, g *GoalCheck, previous *GoalCheck) string {
 	if g == nil || key == "" {
 		return ""
 	}
@@ -227,7 +232,11 @@ func goalResolved(id, key string, g *GoalCheck, issueCount int) string {
 	if !strings.HasPrefix(rest, ":criterion-") || err != nil {
 		return "The goal check answered."
 	}
-	if issueCount == len(g.Criteria) && n > issueCount && rest == ":criterion-"+strconv.Itoa(n) {
+	if previous != nil && len(g.CriterionIDs) > 0 && len(g.CriterionIDs) == len(g.Criteria) &&
+		len(previous.CriterionIDs) == len(previous.Criteria) &&
+		n > len(g.Criteria) && n <= len(previous.Criteria) && rest == ":criterion-"+strconv.Itoa(n) &&
+		slices.Equal(previous.CriterionIDs[:len(g.Criteria)], g.CriterionIDs) &&
+		!slices.Contains(g.CriterionIDs, previous.CriterionIDs[n-1]) {
 		return criterionRemoved
 	}
 	for _, c := range g.Criteria {
@@ -423,7 +432,7 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 			break
 		}
 		l.InfoContext(ctx, "goal check answered", "task", t.ID, "criteria", len(a.Criteria))
-		return &GoalCheck{Head: pr.HeadSHA, Digest: issueDigest(in.issues), Criteria: a.Criteria, Overall: a.Overall}
+		return &GoalCheck{CriterionIDs: issueCriterionIDs(in.issues, key), Head: pr.HeadSHA, Digest: issueDigest(in.issues), Criteria: a.Criteria, Overall: a.Overall}
 	}
 	if ctx.Err() != nil {
 		why = "stopped" // A restart sends the same message and finds the task.
@@ -533,7 +542,7 @@ func GoalPrompt(repo string, pr github.PullRequest, files []github.PullRequestFi
 	}
 
 	b.WriteString("## Answer\n\n" +
-		"Number the issue's acceptance criteria 1, 2, 3 and on, in the order the issue lists them, and judge each one:\n\n" +
+		"Number the issue's acceptance criteria 1, 2, 3 and on, in the order the issue lists them, and judge each one. For an explicitly numbered acceptance list, return one verdict per numbered item, covering every requirement in that item:\n\n" +
 		"- \"met\": the diff meets it, or a quoted trusted decision above moves it to another issue.\n" +
 		"- \"not_met\": the diff does not meet it.\n" +
 		"- \"after_rollout\": only a rollout or live use can show it, and the diff makes the change it needs.\n" +

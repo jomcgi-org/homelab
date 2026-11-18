@@ -127,7 +127,7 @@ func TestApplyGoalOwnsGoalFindings(t *testing.T) {
 			{ID: "x.go:goal", Status: StatusJustified, Note: "Owned by HOME-60"},
 		},
 	}
-	applyGoal(r, prior, "HOME", "HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}, {3, goalLive}}}, 3)
+	applyGoal(r, prior, "HOME", "HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}, {3, goalLive}}}, nil)
 	a := Assess(r, prior)
 	blocking := map[string]string{}
 	for _, b := range a.Blocking {
@@ -192,7 +192,13 @@ func TestApplyGoalKeepsEarlierBlockersUntilResolved(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := &Report{Previous: []Previous{{ID: "HOME-58:goal", Status: StatusFixed, Note: "Model says done"}}}
-			applyGoal(r, prior, "HOME", tc.key, tc.g, issueCriterionCount(&IssueContext{Issue: &IssueEvidence{Key: tc.key, Description: "Done when:\n1. First criterion\n2. Second criterion"}}))
+			issue := &IssueContext{Issue: &IssueEvidence{Key: tc.key, Description: "Done when:\n1. Verify A and B."}}
+			ids := issueCriterionIDs(issue, []byte("test"))
+			if tc.g != nil {
+				tc.g.CriterionIDs = ids
+			}
+			previous := &GoalCheck{CriterionIDs: ids, Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}}}
+			applyGoal(r, prior, "HOME", tc.key, tc.g, previous)
 			a := Assess(r, prior)
 			var blocking, fixed []string
 			for _, b := range a.Blocking {
@@ -222,14 +228,18 @@ func TestGoalRestatedFromSixteenCriteriaToSeven(t *testing.T) {
 	earlier.Overall, current.Overall = goalMet, goalMet
 	for n := 1; n <= 16; n++ {
 		earlier.Criteria = append(earlier.Criteria, GoalVerdict{n, goalNotMet})
+		issue.Issue.Description += fmt.Sprintf("\n%d. Requirement %d", n, n)
+		if n == 7 {
+			current.CriterionIDs = issueCriterionIDs(issue, []byte("test"))
+		}
 		if n <= 7 {
-			issue.Issue.Description += fmt.Sprintf("\n%d. Requirement %d", n, n)
 			current.Criteria = append(current.Criteria, GoalVerdict{n, goalMet})
 		}
 	}
+	earlier.CriterionIDs = issueCriterionIDs(issue, []byte("test"))
 	prior := goalFindings(key, &earlier)
 	r := &Report{}
-	applyGoal(r, prior, "HOME", key, &current, issueCriterionCount(issue))
+	applyGoal(r, prior, "HOME", key, &current, &earlier)
 	a := Assess(r, prior)
 	if len(a.Fixed) != 16 || len(a.Blocking) != 0 {
 		t.Fatalf("assessment = %+v", a)
