@@ -11,6 +11,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # entry in projects/platform-factory/kustomization.yaml except the factory.
 # Each sets content_rules = True on its argocd_app, which creates the marker.
 APPLICATIONS = [
+    "factory-explore",
     "factory-landing",
     "factory-public",
     "jomcgi-site",
