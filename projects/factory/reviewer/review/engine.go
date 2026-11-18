@@ -531,12 +531,9 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 				}
 				continue
 			}
-			cur, held, restart := e.reconcileGate(ctx, b, pr, cur)
+			cur, held := e.reconcileGate(ctx, b, pr, cur)
 			// A failed write returns nil; do not refetch the stale pass.
 			reviews[pr.Number] = cur
-			if restart {
-				start = append(start, candidate{pr, cur})
-			}
 			if !held && cur != nil && cur.Conclusion == ConclusionSuccess {
 				reviews[pr.Number] = e.maybeEnqueue(ctx, b, pr, cur)
 			}
@@ -1307,8 +1304,8 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				if st, ok := LoadState(run.Text); ok {
 					in.goal = st.Goal // goalCheck reuses it for the same evidence.
 					if st.Incomplete {
-						// Lost legacy history keeps the state incomplete
-						// and adds its human hold (lostHistory).
+						// A complete replay restores the state; otherwise
+						// it stays incomplete and keeps the check blocked.
 						st, _ = e.recoverState(ctx, b, pr, run, st)
 					}
 					if st.Incomplete || st.Blocking != nil || (st.Gate != nil && len(st.Gate.Findings) > 0) {
@@ -1333,11 +1330,6 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 							in.gate.ApprovalAfter, in.gate.ApprovalSnapshot, in.gate.ApprovalNonce = st.Gate.ApprovalAfter, st.Gate.ApprovalSnapshot, st.Gate.ApprovalNonce
 						}
 						in.gate.LabelHistory = st.Gate.LabelHistory
-						// Same head: keep the hold until it is disposed of,
-						// so a new review does not move its approval fence.
-						in.gate.HistoryLost = in.gate.HistoryLost || st.Gate.HistoryLost
-						// A shown hold stays shown: any later fence is later still.
-						in.gate.HistoryShown = st.Gate.HistoryShown
 						sameSnapshot = true
 					}
 				}
@@ -1630,11 +1622,6 @@ func (e *Engine) gather(ctx context.Context, b *Binding, pr github.PullRequest, 
 			gate = &Gate{ObservedLabels: gateLabels(b, pr.Labels)}
 		}
 		gate.inherit(prior.Gate)
-		if prior.Incomplete && prior.Gate.HistoryLost {
-			// Lost history is not disposed of yet: hold this head for it too.
-			gate.HistoryLost = true
-			gate.resetApproval(e.cfg.Now())
-		}
 	}
 	return &inputs{
 		issues: e.issueContext(ctx, b, pr, files),
@@ -1687,14 +1674,12 @@ func (e *Engine) previousStateFrom(ctx context.Context, b *Binding, pr github.Pu
 		}
 		if st.Incomplete {
 			recovered, rec := e.recoverState(ctx, b, pr, run, st)
-			switch {
-			case rec == replayDone:
+			if rec == replayDone {
 				return recovered, h.SHA, "", nil
-			case rec == replayLost && recovered.Gate != nil && recovered.Gate.HistoryLost:
-				return recovered, h.SHA, "the earlier review history is lost; known findings carry forward, and only Joe's approval of this head accepts any blockers they miss", nil
 			}
-			// A failed read keeps the state incomplete; a later poll retries.
-			return st, h.SHA, "the earlier review state is incomplete; known findings still require accounting and missing history keeps the check blocked", nil
+			// A gap or a failed read keeps the state incomplete; a later
+			// poll retries the read.
+			return recovered, h.SHA, "the earlier review state is incomplete; known findings still require accounting and missing history keeps the check blocked", nil
 		}
 		return st, h.SHA, "", nil
 	}
@@ -1777,9 +1762,9 @@ const (
 	// replayUnread: a GitHub or kagent read failed. The evidence can
 	// still exist, so the caller keeps the state incomplete and retries.
 	replayUnread replay = iota
-	// replayLost: the history is gone (an expired task without a lossless
-	// snapshot) or provably lossy. A retry cannot recover it.
-	replayLost
+	// replayGap: the history cannot be replayed (gap). A retry cannot
+	// recover it.
+	replayGap
 	replayDone
 )
 
@@ -1787,32 +1772,15 @@ const (
 // the beginning of a complete PR timeline. It never infers resolution from a
 // passing conclusion. Lossless legacy snapshots can reconstruct findings
 // from expired tasks, but cannot prove their resolution. A failed read
-// leaves the caller blocked until a later poll. Bounds, gaps, ambiguous
-// identities and invalid reports are unresolvable gaps: they leave it
-// blocked with no hold that an approval can clear (gap). Only provable loss,
-// an expired task whose legacy record is lossy, adds the HistoryLost human
-// hold (lost, lostHistory).
+// leaves the caller blocked until a later poll. Bounds, ambiguous
+// identities, invalid reports and lost history (an expired task whose legacy
+// record is lossy) are gaps: the state stays incomplete and blocked, and no
+// approval clears it. A new PR is the way out.
 func (e *Engine) recoverState(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, saved State) (State, replay) {
-	var known []Finding // Every readable earlier finding, for lostHistory.
-	legacy := saved.LegacyTask || (saved.Gate != nil && saved.Gate.HistoryLost)
+	var known []Finding        // Every readable earlier finding, for gap.
 	overflow := saved.Overflow // Any earlier overflowed checkpoint on the walk.
 	unread := func() (State, replay) { return saved, replayUnread }
-	gap := func() (State, replay) {
-		saved.Overflow = saved.Overflow || overflow
-		if saved.Gate != nil && saved.Gate.HistoryLost {
-			g := *saved.Gate // A gap is not provable loss: no approval clears it.
-			g.HistoryLost, g.HistoryShown = false, false
-			saved.Gate = &g
-		}
-		return saved, replayLost
-	}
-	lost := func() (State, replay) {
-		saved.Overflow = saved.Overflow || overflow
-		if !legacy {
-			return saved, replayLost
-		}
-		return e.lostHistory(saved, known), replayLost
-	}
+	gap := func() (State, replay) { return carryKnown(saved, known, overflow), replayGap }
 	hist, err := e.gh.PullRequestHeads(ctx, b.repo(), pr.Number, github.CheckRunFilter{Name: e.cfg.CheckName, AppID: e.cfg.AppID})
 	if err != nil {
 		return unread()
@@ -1824,7 +1792,6 @@ func (e *Engine) recoverState(ctx context.Context, b *Binding, pr github.PullReq
 		legacy   bool
 		stored   State
 		snapshot bool
-		expired  bool
 	}
 	var reports []originalReport
 	seenHeads, seenTasks := map[string]bool{}, map[string]int{}
@@ -1886,7 +1853,6 @@ heads:
 				break heads
 			}
 			known = append(known, st.Previous()...)
-			legacy = legacy || st.LegacyTask
 			overflow = overflow || st.Overflow
 			needsReport = needsReport || ok
 			taskID := e.sourceTask(b, &old, st)
@@ -1925,7 +1891,7 @@ heads:
 			}
 			_, snapshot := legacySnapshot(old.Text)
 			seenTasks[taskID] = len(reports)
-			reports = append(reports, originalReport{id: old.ID, head: old.HeadSHA, reply: reply, legacy: st.LegacyTask, stored: st, snapshot: snapshot, expired: errors.Is(err, kagent.ErrTaskNotFound)})
+			reports = append(reports, originalReport{id: old.ID, head: old.HeadSHA, reply: reply, legacy: st.LegacyTask, stored: st, snapshot: snapshot})
 		}
 		if needsReport && !foundReport {
 			return gap()
@@ -1949,19 +1915,15 @@ heads:
 	var currentIssues *IssueContext
 	readIssues := false
 	var decisions Decisions
-	readDecisions, expired := false, false
+	readDecisions := false
 	goalIDs := regexp.MustCompile(`^` + regexp.QuoteMeta(b.ItsaplanProject) + `-[1-9][0-9]*:goal(:|$)`)
 	for _, r := range reports {
 		var report *Report
 		if r.reply == "" {
-			if !r.snapshot && !r.expired {
-				return gap() // A task that exists but has no reply is not lost.
-			}
 			if !r.snapshot {
-				// Provable loss: the task expired and its legacy record is
-				// lossy. Later reports still face every gap check first.
-				expired = true
-				continue
+				// A task without a reply, or an expired task whose legacy
+				// record is lossy, cannot be replayed.
+				return gap()
 			}
 			// A snapshot can recover identities, but absence is not evidence
 			// of a fix or acceptance. A later report must account for them.
@@ -2066,9 +2028,6 @@ heads:
 		a.Earlier, a.EarlierPartial = decisions.Revalidate(prior.Cleared), true // Recovery cannot certify the complete cleared record.
 		prior = stateOf(a, report, &Gate{Findings: a.Gated})
 	}
-	if expired {
-		return lost()
-	}
 	// Keep the current gate's approval baseline and sticky service holds.
 	// Its model findings come from the complete replay, never the lossy list.
 	gate := &Gate{}
@@ -2079,7 +2038,6 @@ heads:
 	if prior.Gate != nil {
 		gate.Findings = prior.Gate.Findings
 	}
-	gate.HistoryLost = false // The complete replay accounts for every finding.
 	prior.Gate, prior.TaskID, prior.LegacyTask = gate, saved.TaskID, saved.LegacyTask
 	prior.IssueDigest, prior.IssuesPending = saved.IssueDigest, saved.IssuesPending
 	prior.Goal, prior.GoalKey = saved.Goal, saved.GoalKey
@@ -2092,46 +2050,50 @@ heads:
 	return prior, replayDone
 }
 
-// lostHistory is the state of a head whose legacy review history cannot be
-// replayed. It stays incomplete: no review can show that a blocker it never
-// saw is resolved. It carries every readable earlier finding, from older
-// legacy snapshots too, unless a later report on this head already had them
-// as its prior (saved is no legacy report). The HistoryLost hold makes
-// Joe's approval of the head, after the hold appears, the authorized
-// disposal of the blockers it cannot account for (reconcileGateState).
-func (e *Engine) lostHistory(saved State, known []Finding) State {
+// carryKnown is the state of a head whose review history has a gap. It
+// stays incomplete: no review can show that a blocker it never saw is
+// resolved. It carries every readable earlier finding, from older legacy
+// snapshots too, unless a later report on this head already had them as its
+// prior (saved is no legacy report).
+func carryKnown(saved State, known []Finding, overflow bool) State {
 	st := saved
 	st.Incomplete = true
+	st.Overflow = st.Overflow || overflow
+	if !saved.LegacyTask {
+		return st
+	}
 	gate := &Gate{}
 	if saved.Gate != nil {
 		*gate = *saved.Gate
 	}
-	if saved.LegacyTask {
-		gate.Findings = slices.Clone(gate.Findings)
-		st.Blocking = slices.Clone(st.Blocking)
-		if st.Blocking == nil {
-			st.Blocking = []Finding{}
+	gate.Findings = slices.Clone(gate.Findings)
+	st.Blocking = slices.Clone(st.Blocking)
+	if st.Blocking == nil {
+		st.Blocking = []Finding{}
+	}
+	for _, f := range known {
+		list := &st.Blocking
+		if isGate(f) {
+			list = &gate.Findings
 		}
-		for _, f := range known {
-			list := &st.Blocking
-			if isGate(f) {
-				list = &gate.Findings
-			}
-			if i := slices.IndexFunc(*list, func(o Finding) bool { return o.ID == f.ID }); i < 0 {
-				*list = append(*list, f)
-			} else if rank(f.Severity) < rank((*list)[i].Severity) {
-				(*list)[i] = f
-			}
+		if i := slices.IndexFunc(*list, func(o Finding) bool { return o.ID == f.ID }); i < 0 {
+			*list = append(*list, f)
+		} else if rank(f.Severity) < rank((*list)[i].Severity) {
+			(*list)[i] = f
 		}
 	}
-	if !gate.HistoryLost {
-		// An approval from before the hold did not accept the lost blockers.
-		// gateCheck fences approvals again when it publishes the hold.
-		gate.HistoryLost, gate.HistoryShown = true, false
-		gate.resetApproval(e.cfg.Now())
+	if gate.Needed() || saved.Gate != nil {
+		st.Gate = gate
 	}
-	st.Gate = gate
 	return st
+}
+
+// gateFindings counts a gate's human-gate findings.
+func gateFindings(g *Gate) int {
+	if g == nil {
+		return 0
+	}
+	return len(g.Findings)
 }
 
 func (e *Engine) sourceTask(b *Binding, run *github.CheckRun, st State) string {
@@ -2592,16 +2554,8 @@ func (e *Engine) notifyGate(ctx context.Context, b *Binding, l *slog.Logger, by 
 }
 
 // reconcileGate revalidates completed human gates and persists changes.
-// It returns the current check (nil on write failure), whether to defer
-// enqueue, and whether the head needs a full review, so that the findings
-// of a head whose legacy history is lost show beside its hold.
-func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (*github.CheckRun, bool, bool) {
-	restart := false
-	cur, held := e.reconcileGateState(ctx, b, pr, run, &restart)
-	return cur, held, cur != nil && restart
-}
-
-func (e *Engine) reconcileGateState(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, restart *bool) (*github.CheckRun, bool) {
+// It returns the current check (nil on write failure) and whether to defer enqueue.
+func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (*github.CheckRun, bool) {
 	st, ok := LoadState(run.Text)
 	if st.Semgrep != nil && (st.Semgrep.NoReport || !st.Semgrep.Verified) {
 		return run, true
@@ -2624,16 +2578,16 @@ func (e *Engine) reconcileGateState(ctx context.Context, b *Binding, pr github.P
 			return nil, true
 		}
 	}
-	recovered, gone, lost, holdChanged := false, false, false, false
+	recovered, carried := false, false
 	if st.Incomplete {
-		wasLost := st.Gate != nil && st.Gate.HistoryLost
+		before := st
 		var rec replay
 		st, rec = e.recoverState(ctx, b, pr, run, st)
 		recovered = rec == replayDone
 		// replayUnread keeps the state incomplete; the next poll retries.
-		gone = rec == replayLost
-		lost = gone && st.Gate != nil && st.Gate.HistoryLost
-		holdChanged = gone && lost != wasLost // A gap also drops a shown hold.
+		// A gap keeps it incomplete for good; persist the findings it carries.
+		carried = rec == replayGap && (st.Overflow != before.Overflow || len(st.Blocking) != len(before.Blocking) ||
+			gateFindings(st.Gate) != gateFindings(before.Gate))
 	}
 	if recovered && st.IssuesPending {
 		return e.holdIssues(ctx, b, pr, run, st, nil), true
@@ -2645,7 +2599,7 @@ func (e *Engine) reconcileGateState(ctx context.Context, b *Binding, pr github.P
 	}
 	gate, recovery := e.recoveryGate(b, pr, gate)
 	priorNonce := gate.ApprovalNonce
-	changed := gate.observeLabels(labels, e.cfg.Now()) || recovery || recovered || holdChanged
+	changed := gate.observeLabels(labels, e.cfg.Now()) || recovery || recovered || carried
 	events, err := e.gh.PullRequestLabelEvents(ctx, b.repo(), pr.Number)
 	if err != nil {
 		e.ghError(ctx, e.prLog(b, pr), b, "label_events", err)
@@ -2665,31 +2619,8 @@ func (e *Engine) reconcileGateState(ctx context.Context, b *Binding, pr github.P
 	changed = gate.observeLabelEvents(b, events) || changed
 	gate, retained := e.retainGate(b, pr, gate, priorNonce != gate.ApprovalNonce)
 	changed = changed || retained
-	if st.Incomplete && lost {
-		// Lost legacy history is a human hold. Joe's approval of this head,
-		// after the hold appeared, is the authorized disposal: it accepts the
-		// blockers no review can account for, and ends the incomplete state.
-		// A full review never does. Until then, review the head once in
-		// full, so its findings show beside the hold. An overflowed
-		// checkpoint dropped that review's own findings: the approval did
-		// not accept them, so it stays incomplete until a replay.
-		// Only an approval after a published check showed the hold counts.
-		approver := ""
-		if gate.HistoryShown {
-			before := gate.ApprovalSnapshot
-			approver, _ = e.approval(ctx, b, pr, gate)
-			changed = changed || before != gate.ApprovalSnapshot
-		} else {
-			changed = true // gateCheck publishes the hold and fences approvals.
-		}
-		if approver != "" && !st.Overflow {
-			st.Incomplete, changed = false, true
-		}
-	}
 	if st.Incomplete {
-		// An unreplayable legacy report: show this head's findings in a
-		// full review. It still cannot clear the incomplete state.
-		*restart = gone && st.LegacyTask
+		// No approval or review clears an incomplete state.
 		gate.Approver, gate.Authorship = "", ""
 		st.Gate = gate
 		if changed || run.Conclusion != ConclusionFailure {
@@ -2764,11 +2695,6 @@ func (e *Engine) reconcileGateState(ctx context.Context, b *Binding, pr github.P
 // human gate; the earlier run keeps the review's findings.
 func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullRequest, prev *github.CheckRun, st State, conclusion, title, summary string, u *CommentUpdate, l *slog.Logger) *github.CheckRun {
 	now := e.cfg.Now().UTC()
-	if st.Gate != nil && st.Gate.HistoryLost && !st.Gate.HistoryShown {
-		// This check shows the hold: approvals count from its completion.
-		st.Gate.resetApproval(now)
-		st.Gate.HistoryShown = true
-	}
 	st.TaskID = e.sourceTask(b, prev, st)
 	text := encodeState(st)
 	if saved, _ := LoadState(text); saved.Incomplete {
@@ -2929,7 +2855,7 @@ func (e *Engine) maybeEnqueue(ctx context.Context, b *Binding, pr github.PullReq
 		return nil
 	case !slices.Equal(gateLabels(b, pr.Labels), gateLabels(b, q.Labels)):
 		pr.Labels = q.Labels
-		current, _, _ = e.reconcileGate(ctx, b, pr, run)
+		current, _ = e.reconcileGate(ctx, b, pr, run)
 		return // Persist the latest holds before enqueue or group authorization.
 	case q.MergeQueueState != "":
 		e.m.Enqueues.WithLabelValues(b.Name, "already_queued").Inc()

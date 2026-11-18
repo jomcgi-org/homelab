@@ -1956,16 +1956,13 @@ specified in [REVIEW.md](../../REVIEW.md#joe-decides).
 [waiver scope](https://github.com/jomcgi-org/homelab/issues/8049)
 
 The saved review state keeps every blocking and model gate finding with
-its full ID and severity, and shortens descriptive text first. State that
-does not fit, or earlier history that cannot be recovered, blocks the
-check until a complete review accounts for every known finding. A failed
-history read blocks and retries on the next poll. Provably lost legacy
-history (an expired task with a lossy record) adds a human hold: a full
-review shows its findings but cannot clear it. Only Joe's approval of the
-head, submitted after a check shows the hold, accepts the unaccounted
-blockers. Other gaps (a truncated timeline, too many heads, an ambiguous,
-foreign or undecodable record) get no hold, so no approval clears them
-([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-28#comment-3772), #8009).
+its full ID and severity, and shortens descriptive text first. A failed
+history read blocks and retries on the next poll. State that overflowed
+blocks the check until a replay of its task recovers the findings. Lost or
+unreadable history (an expired task with a lossy record, a truncated
+timeline, too many heads, an ambiguous, foreign or undecodable record)
+keeps the check blocked and carries every known finding. No review or
+approval clears it; open a new PR (#8009).
 
 The connector checks for holds before enqueue. Other authors can request
 auto-merge on their own PRs. The reviewer checks the queued head again

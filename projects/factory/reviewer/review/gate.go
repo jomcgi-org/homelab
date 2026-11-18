@@ -67,15 +67,7 @@ type Gate struct {
 	Labels   []string  `json:"labels,omitempty"`
 	Findings []Finding `json:"findings,omitempty"`
 	// SharedHead makes a recorded duplicate itself a sticky human hold.
-	SharedHead bool `json:"shared_head,omitempty"`
-	// HistoryLost holds a head whose legacy review history cannot be
-	// replayed. A review cannot account for blockers it never saw, so only
-	// Joe's approval of the head disposes of them (State.Incomplete).
-	HistoryLost bool `json:"history_lost,omitempty"`
-	// HistoryShown: a published check showed the HistoryLost hold, and
-	// ApprovalAfter is no earlier than that check. Until then no approval
-	// counts for the hold.
-	HistoryShown  bool   `json:"history_shown,omitempty"`
+	SharedHead    bool   `json:"shared_head,omitempty"`
 	RecoveryEpoch string `json:"recovery_epoch,omitempty"`
 	RecoveryPR    int    `json:"recovery_pr,omitempty"`
 	ContextToken  string `json:"context_token,omitempty"`
@@ -169,7 +161,7 @@ func (g *Gate) approved() bool { return g.Approver != "" || g.Authorship != "" }
 
 // reviewRequired holds cannot be cleared by authorship, even on Joe's PRs.
 func (g *Gate) reviewRequired() bool {
-	return g.SharedHead || g.HistoryLost || g.RecoveryEpoch != "" || len(g.Labels) > 0 || !g.ApprovalAfter.IsZero()
+	return g.SharedHead || g.RecoveryEpoch != "" || len(g.Labels) > 0 || !g.ApprovalAfter.IsZero()
 }
 
 const (
@@ -270,12 +262,12 @@ func approvalByPushes(b *Binding, pr github.PullRequest, events []github.RefActi
 // recoveryOnly reports a gate held only because a restart left its PR's
 // context unconfirmed.
 func (g *Gate) recoveryOnly() bool {
-	return g != nil && g.RecoveryEpoch != "" && !g.SharedHead && !g.HistoryLost && len(g.Paths)+len(g.Labels)+len(g.Findings) == 0
+	return g != nil && g.RecoveryEpoch != "" && !g.SharedHead && len(g.Paths)+len(g.Labels)+len(g.Findings) == 0
 }
 
 // held reports whether the service itself holds the head, by path or label.
 func (g *Gate) held() bool {
-	return g != nil && (g.SharedHead || g.HistoryLost || g.RecoveryEpoch != "" || len(g.Paths)+len(g.Labels) > 0)
+	return g != nil && (g.SharedHead || g.RecoveryEpoch != "" || len(g.Paths)+len(g.Labels) > 0)
 }
 
 // inherit carries service holds, never a cached old-head approver.
@@ -416,9 +408,6 @@ func gateFinding(b *Binding, g *Gate) Finding {
 	}
 	if g.SharedHead {
 		why = append(why, "shared its head with another ready PR")
-	}
-	if g.HistoryLost {
-		why = append(why, "lost its earlier review history, so blockers from earlier reviews can be unaccounted for, and that approval accepts those unaccounted blockers")
 	}
 	if len(g.Paths) > 0 {
 		quoted := make([]string, len(g.Paths))
