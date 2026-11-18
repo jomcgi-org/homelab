@@ -1708,6 +1708,11 @@ reuse state, even after a prolonged persistence failure.
   the login and quota codes as credential and quota failures.
 - **Limits.** Request bodies up to 32 MiB read within 2 minutes, at most 64
   requests in flight, and any upstream response silent for 5 minutes is cut.
+  Each verified actor subject can hold up to eight slots by default
+  (`codex.maxConcurrentRequestsPerActor`). Excess requests receive 429
+  `relay_actor_busy` with `Retry-After: 5`. When `codex.allowedModels` is
+  non-empty, both response endpoints require a listed JSON model or return
+  400 `model_not_allowed`. An empty list permits all models.
   The body watchdog starts at response headers for each attempt. Initial
   and retried 401 drains and 429 inspection each read at most 64 KiB within
   `StreamIdleTimeout` (5 minutes by default), even if bytes keep arriving.

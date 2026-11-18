@@ -933,3 +933,46 @@ func TestRelayStreamOutlivesServerReadTimeout(t *testing.T) {
 		t.Fatalf("relay ok metric = %v", got)
 	}
 }
+
+func TestActorCapacity(t *testing.T) {
+	h := newHarness(t, true)
+	h.handler.MaxConcurrentPerActor = 1
+	gate := make(chan struct{})
+	defer close(gate)
+	h.backend.set(func(b *backend) { b.respond = func(w http.ResponseWriter, r *http.Request) { sse(w, gate) } })
+	first := h.post("/v1/responses", h.actorJWT())
+	defer first.Body.Close()
+	busy := h.post("/v1/responses", h.actorJWT())
+	if busy.StatusCode != 429 || busy.Header.Get("Retry-After") != "5" || factoryError(t, busy)["factory_error"] != "relay_actor_busy" {
+		t.Fatal("missing actor refusal")
+	}
+	if got := testutil.ToFloat64(h.metrics.RelayRequests.WithLabelValues("actor_busy", "4xx")); got != 1 {
+		t.Fatalf("actor refusals = %v", got)
+	}
+	other := h.signer.Sign(t, fakes.ActorClaims(h.idp.URL, audience, "factory-homelab", "session-2", time.Now()))
+	if resp := h.post("/v1/responses", other); resp.StatusCode != 200 {
+		t.Fatalf("other actor status = %d", resp.StatusCode)
+	}
+}
+
+func TestModelAllowlist(t *testing.T) {
+	h := newHarness(t, true)
+	h.handler.AllowedModels = []string{"gpt-5"}
+	for _, path := range []string{"/v1/responses", "/v1/responses/compact"} {
+		for _, body := range []string{`{"model":"other"}`, `{}`, `{"model":5}`} {
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+h.actorJWT())
+			w := httptest.NewRecorder()
+			h.handler.ServeHTTP(w, req)
+			if w.Code != 400 || factoryError(t, w.Result())["factory_error"] != "model_not_allowed" {
+				t.Fatalf("%s %s: %d", path, body, w.Code)
+			}
+		}
+		if resp := h.post(path, h.actorJWT()); resp.StatusCode != 200 {
+			t.Fatalf("%s: %d", path, resp.StatusCode)
+		}
+	}
+	if h.backend.count() != 2 {
+		t.Fatalf("backend calls = %d", h.backend.count())
+	}
+}

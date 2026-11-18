@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -78,7 +79,9 @@ type Relay struct {
 	// or 429 body, even if bytes keep arriving.
 	StreamIdleTimeout time.Duration
 	// MaxConcurrent caps requests in flight to the backend.
-	MaxConcurrent int
+	MaxConcurrent         int
+	MaxConcurrentPerActor int
+	AllowedModels         []string
 	// ReasoningEffort, when set, replaces reasoning.effort in every
 	// /responses request (withEffort).
 	ReasoningEffort string
@@ -87,10 +90,12 @@ type Relay struct {
 	QuotaProbeInterval time.Duration
 	Now                func() time.Time
 
-	initOnce  sync.Once
-	slots     chan struct{}
-	quotaRec  *quotaRecorder
-	lastProbe atomic.Int64 // unix nanoseconds of the last probe let through
+	actorMu      sync.Mutex
+	activeActors map[string]int
+	initOnce     sync.Once
+	slots        chan struct{}
+	quotaRec     *quotaRecorder
+	lastProbe    atomic.Int64 // unix nanoseconds of the last probe let through
 }
 
 func (rl *Relay) init() {
@@ -99,11 +104,34 @@ func (rl *Relay) init() {
 		if n <= 0 {
 			n = DefaultMaxConcurrent
 		}
+		rl.activeActors = make(map[string]int)
+		if rl.MaxConcurrentPerActor <= 0 {
+			rl.MaxConcurrentPerActor = 8
+		}
 		rl.slots = make(chan struct{}, n)
 		if rl.Quota != nil {
 			rl.quotaRec = newQuotaRecorder(rl.Quota, rl.Tokens.Grant(), rl.Logger)
 		}
 	})
+}
+
+func (rl *Relay) acquireActor(subject string) bool {
+	rl.actorMu.Lock()
+	defer rl.actorMu.Unlock()
+	if rl.activeActors[subject] >= rl.MaxConcurrentPerActor {
+		return false
+	}
+	rl.activeActors[subject]++
+	return true
+}
+
+func (rl *Relay) releaseActor(subject string) {
+	rl.actorMu.Lock()
+	defer rl.actorMu.Unlock()
+	rl.activeActors[subject]--
+	if rl.activeActors[subject] == 0 {
+		delete(rl.activeActors, subject)
+	}
 }
 
 // route is one relayed endpoint, named by its path under the base URL.
@@ -198,6 +226,11 @@ func (rl *Relay) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 	if until, blocked := rl.quotaBlock(rl.now()); blocked {
 		return writeQuota(w, until)
 	}
+	if !rl.acquireActor(identity.Subject) {
+		w.Header().Set("Retry-After", "5")
+		return writeError(w, http.StatusTooManyRequests, "relay_actor_busy", "actor_busy", nil)
+	}
+	defer rl.releaseActor(identity.Subject)
 	select {
 	case rl.slots <- struct{}{}:
 		defer func() { <-rl.slots }()
@@ -218,6 +251,13 @@ func (rl *Relay) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 				return outcome{"client_canceled", 499}
 			}
 			return writeError(w, http.StatusBadRequest, "bad_request", "bad_request", nil)
+		}
+	}
+	if rt.method == http.MethodPost && len(rl.AllowedModels) > 0 {
+		var fields map[string]json.RawMessage
+		var model string
+		if json.Unmarshal(body, &fields) != nil || json.Unmarshal(fields["model"], &model) != nil || model == "" || !slices.Contains(rl.AllowedModels, model) {
+			return writeError(w, http.StatusBadRequest, "model_not_allowed", "model_not_allowed", nil)
 		}
 	}
 	if rt.suffix == "responses" {
