@@ -149,10 +149,11 @@ func goalFindings(key string, g *GoalCheck) []Finding {
 // applyGoal makes goal findings the service's own, as applyIssueFindings
 // does for evidence failures. It drops each finding and account the code
 // review gave under the project's goal IDs and adds the goal check's
-// findings for the issue key, if any. An earlier goal finding stays open
+// findings for the issue key, if any. An earlier goal finding for the named issue stays open
 // until a valid answer resolves it (goalResolved); Assess keeps its earlier
 // severity.
-func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck) {
+func applyGoal(r *Report, prior []Finding, project string, in *IssueContext, g *GoalCheck) {
+	key := goalKey(in)
 	ns := regexp.MustCompile(`^` + regexp.QuoteMeta(project) + `-[1-9][0-9]*:goal(:|$)`)
 	r.Findings = slices.DeleteFunc(r.Findings, func(f Finding) bool { return ns.MatchString(f.ID) })
 	r.Previous = slices.DeleteFunc(r.Previous, func(p Previous) bool { return ns.MatchString(p.ID) })
@@ -166,7 +167,14 @@ func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck) {
 			continue
 		}
 		account := Previous{ID: p.ID, Status: StatusOpen, Note: "No valid goal check answer resolves it."}
-		if note := goalResolved(p.ID, key, g); note != "" {
+		issue, _, _ := strings.Cut(p.ID, ":")
+		if in != nil && in.NamedIssue != nil && issue != *in.NamedIssue {
+			account.Status = StatusJustified
+			account.Note = "Withdrawn: the PR no longer names " + issue + "."
+			if *in.NamedIssue != "" {
+				account.Note += " It now names " + *in.NamedIssue + "."
+			}
+		} else if note := goalResolved(p.ID, key, g); note != "" {
 			account.Status, account.Note = StatusFixed, note
 		}
 		r.Previous = append(r.Previous, account)

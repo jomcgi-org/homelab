@@ -48,8 +48,10 @@ type DecisionEvidence struct {
 }
 
 type IssueContext struct {
-	Issue     *IssueEvidence
-	Decisions []DecisionEvidence
+	// NamedIssue is nil until reference resolution succeeds, and empty when the PR names no issue.
+	NamedIssue *string `json:",omitempty"`
+	Issue      *IssueEvidence
+	Decisions  []DecisionEvidence
 	// Findings are evidence failures that another read cannot fix, such as
 	// text over its bound or a reference to no issue. The review goes ahead
 	// and reports each one, so the author sees what to change.
@@ -315,6 +317,7 @@ func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullReq
 		in.unread("issue", "The PR's commits could not be read to find its issue reference. The service will retry; no issue evidence was supplied.")
 		return in
 	}
+	in.NamedIssue = &key
 	refs, incomplete := decisionRefs(b, files)
 	if incomplete {
 		in.unverified("bounds", "The diff's decision links could not all be checked within the patch or ten-link bound. Supply a complete smaller diff; unchecked links grant no authority.")
