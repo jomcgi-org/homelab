@@ -321,7 +321,7 @@ when its row applies.
 |------|------|
 | Working under `projects/monolith/`, `projects/monolith/web/grimoire/` or `projects/embervm/` | that directory's `AGENTS.md` |
 | Factory: connector, broker, reviewer, agents, chart | [factory architecture](../../projects/factory/ARCHITECTURE.md); `projects/factory/REVIEW.md` for its review rules |
-| Factory home cluster: nodes, platform Applications, operator steps | [factory-cluster README](../../projects/factory-cluster/README.md) |
+| Factory home cluster: nodes, platform Applications, operator steps | [architecture](../../projects/factory-cluster/ARCHITECTURE.md) and [operator steps](../../projects/factory-cluster/README.md) |
 | The earlier hub factory (off: `swarm.factoryEnabled: false`) | [FACTORY.md](../../projects/monolith/factory/orchestration/FACTORY.md); [monolith section 4](../../projects/monolith/ARCHITECTURE.md#4-agents) |
 | A red CI run you need to diagnose | `docs/agents/ci-triage.md` |
 | Opening, readying or enqueuing a PR without GraphQL (cloud session) | `docs/agents/cloud-sessions.md` |
