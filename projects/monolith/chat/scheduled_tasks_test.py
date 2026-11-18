@@ -385,11 +385,13 @@ def test_cron_semantics_use_standard_dom_dow_or_and_utc():
 
 
 @pytest.mark.asyncio
-async def test_digest_without_gateway_posts_a_final_notice_and_ends(engine):
+async def test_gateway_off_ends_every_digest_at_once(engine):
     # Joe, 2026-11-18 (#8189): hub digests end with the hub bot. With the
-    # gateway off, a due digest posts one final notice and is cancelled; a
-    # reminder still fires, and nothing more posts later.
-    digest_id, _ = _insert_due(engine, kind="digest")
+    # gateway off, every active digest ends on the first pass, due or not,
+    # each with one final notice; a reminder still fires. If the gateway comes
+    # back, no digest is left to run against the incomplete store.
+    digest_id, _ = _insert_due(engine, kind="digest")  # due 12:15
+    later_id, _ = _insert_due(engine, kind="digest", cron="0 18 * * *")  # not due
     reminder_id, _ = _insert_due(engine)
     build = AsyncMock()
     delivered = await drain_once(
@@ -399,53 +401,55 @@ async def test_digest_without_gateway_posts_a_final_notice_and_ends(engine):
         digest_builder=build,
         digests=False,
     )
-    assert delivered == 2
+    assert delivered == 1  # the reminder; the notices are not occurrences
     build.assert_not_awaited()
     with Session(engine) as session:
         contents = sorted(row.content for row in session.query(DiscordOutbox).all())
-        assert contents == sorted(
-            [DIGEST_ENDED.format(mode="summary"), "⏰ <@456> reminder: stand up"]
-        )
+        notice = DIGEST_ENDED.format(mode="summary")
+        assert contents == sorted([notice, notice, "⏰ <@456> reminder: stand up"])
         assert session.get(ScheduledTask, digest_id).status == "cancelled"
+        assert session.get(ScheduledTask, later_id).status == "cancelled"
         assert session.get(ScheduledTask, reminder_id).status == "completed"
-    later = await drain_once(
-        engine,
-        now=datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc),
-        claimant="leader-a",
-        digests=False,
-    )
-    assert later == 0
+    # Nothing more posts, with the gateway still off or back on.
+    for digests in (False, True):
+        assert (
+            await drain_once(
+                engine,
+                now=datetime(2026, 9, 13, 18, 1, tzinfo=timezone.utc),
+                claimant="leader-a",
+                digest_builder=build,
+                digests=digests,
+            )
+            == 0
+        )
+    build.assert_not_awaited()
+    with Session(engine) as session:
+        assert session.query(DiscordOutbox).count() == 3
 
 
 @pytest.mark.asyncio
-async def test_digest_claimed_by_an_old_leader_ends_after_its_lease(engine):
-    # A digest the old leader claimed and never finished is reclaimed once its
-    # lease expires, like any task, and then ends with the notice.
+async def test_digest_claimed_by_an_old_leader_ends_and_its_finalize_is_refused(
+    engine,
+):
+    # The old leader claimed a digest and had not finished it. The gateway-off
+    # pass ends it at once, live lease or not, and the old leader's late
+    # finalize finds the task no longer claimed and posts nothing.
     digest_id, _ = _insert_due(engine, kind="digest")
     with Session(engine) as session:
         claimed_at = datetime(2026, 9, 12, 12, 16, tzinfo=timezone.utc)
-        assert len(claim_due(session, claimed_at, "old")) == 1
+        (claim,) = claim_due(session, claimed_at, "old")
         session.commit()
-    assert (
-        await drain_once(
-            engine,
-            now=datetime(2026, 9, 12, 12, 17, tzinfo=timezone.utc),
-            claimant="leader-b",
-            digests=False,
-        )
-        == 0
-    )
-    assert (
-        await drain_once(
-            engine,
-            now=datetime(2026, 9, 12, 12, 22, tzinfo=timezone.utc),
-            claimant="leader-b",
-            digests=False,
-        )
-        == 1
+    await drain_once(
+        engine,
+        now=datetime(2026, 9, 12, 12, 17, tzinfo=timezone.utc),
+        claimant="leader-b",
+        digests=False,
     )
     with Session(engine) as session:
         assert session.get(ScheduledTask, digest_id).status == "cancelled"
-        assert session.query(DiscordOutbox).one().content == DIGEST_ENDED.format(
-            mode="summary"
-        )
+        late = datetime(2026, 9, 12, 12, 18, tzinfo=timezone.utc)
+        assert not finalize_claim(session, claim, "stale digest", late)
+        session.commit()
+        assert [r.content for r in session.query(DiscordOutbox).all()] == [
+            DIGEST_ENDED.format(mode="summary")
+        ]
