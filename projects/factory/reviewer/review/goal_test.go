@@ -690,14 +690,25 @@ func TestGoalBlockersMayClear(t *testing.T) {
 			key string
 			g   *GoalCheck
 		}{
-			"no issue reference":   {"", &GoalCheck{Overall: goalMet, Criteria: goalVerdicts(7, goalMet), Counted: 7}},
+			"no issue reference":   {"", &GoalCheck{Overall: goalNotMet, Criteria: goalVerdicts(7, goalNotMet), Counted: 7}},
 			"no answer":            {"HOME-212", nil},
-			"uncounted list":       {"HOME-212", &GoalCheck{Overall: goalMet, Criteria: goalVerdicts(7, goalMet)}},
-			"answer disagrees":     {"HOME-212", &GoalCheck{Overall: goalMet, Criteria: goalVerdicts(6, goalMet), Counted: 7}},
-			"count above findings": {"HOME-212", &GoalCheck{Overall: goalMet, Criteria: goalVerdicts(16, goalUnclear), Counted: 16}},
+			"uncounted list":       {"HOME-212", &GoalCheck{Overall: goalNotMet, Criteria: goalVerdicts(7, goalNotMet)}},
+			"answer disagrees":     {"HOME-212", &GoalCheck{Overall: goalNotMet, Criteria: goalVerdicts(6, goalNotMet), Counted: 7}},
+			"count above findings": {"HOME-212", &GoalCheck{Overall: goalNotMet, Criteria: goalVerdicts(16, goalUnclear), Counted: 16}},
 		} {
-			if a := run(tc.key, tc.g); len(a.Withdrawn) != 0 {
-				t.Errorf("%s: withdrawn %v", name, ids(a.Withdrawn))
+			a := run(tc.key, tc.g)
+			if len(a.Withdrawn) != 0 || len(a.Fixed) != 0 {
+				t.Errorf("%s: withdrawn %v fixed %+v", name, ids(a.Withdrawn), a.Fixed)
+			}
+			// Every earlier criterion blocker stays open.
+			open := 0
+			for _, b := range a.Blocking {
+				if strings.HasPrefix(b.ID, "HOME-212:goal:criterion-") {
+					open++
+				}
+			}
+			if open != 16 {
+				t.Errorf("%s: %d of 16 criterion blockers open: %v", name, open, ids(a.Blocking))
 			}
 		}
 	})
@@ -719,17 +730,23 @@ func TestIssueCriteriaCount(t *testing.T) {
 		"## Done when\n- [ ] a\n- [x] b":                                              2,
 		"Acceptance criteria:\n* a\n* b\n* c":                                         3,
 		"No list here.":                                                               0,
-		"Done when:\n1. a\n3. not the next number":                                    1,
+		"Done when:\n1. a\n3. not the next number":                                    0,
+		"Done when:\n1. a\n2. b\n\nOut of scope:\n- c":                                0,
+		"Done when:\n1. a\n2. b\n\nOut of scope: c":                                   2,
 		"Done when:\n1. a\n- mixed":                                                   0,
 		"Done when:\n1. a\nDone when:\n1. b":                                          0,
 		"Done when:\n   indented first":                                               0,
 		"Done when:\n1. ":                                                             0,
 	} {
-		if got := issueCriteria(&IssueContext{Issue: &IssueEvidence{Key: "HOME-1", Description: desc}}); got != want {
+		if got := issueCriteria(&IssueContext{Issue: &IssueEvidence{Key: "HOME-1", Trusted: true, Description: desc}}); got != want {
 			t.Errorf("%q: %d criteria, want %d", desc, got, want)
 		}
 	}
-	if got := issueCriteria(&IssueContext{Issue: &IssueEvidence{Key: "HOME-1", Clipped: true, Description: "Done when:\n1. a"}}); got != 0 {
+	if got := issueCriteria(&IssueContext{Issue: &IssueEvidence{Key: "HOME-1", Trusted: true, Clipped: true, Description: "Done when:\n1. a"}}); got != 0 {
 		t.Errorf("clipped issue counted %d", got)
+	}
+	// An untrusted edit must not shorten the list and withdraw a blocker.
+	if got := issueCriteria(&IssueContext{Issue: &IssueEvidence{Key: "HOME-1", Description: "Done when:\n1. a"}}); got != 0 {
+		t.Errorf("untrusted issue text counted %d", got)
 	}
 }

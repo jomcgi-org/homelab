@@ -49,10 +49,13 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   When the PR names a different issue, the old issue's goal findings are
   withdrawn, and the note names both issues. When the trusted issue text
   drops a criterion, its finding is withdrawn: the service counts the items
-  of the issue's one "Done when" or "Acceptance criteria" list, and the
-  valid answer must number the same count. A restated criterion gets a
-  fresh verdict under the same ID. A missing issue reference, an uncounted
-  list or a count the answer disagrees with keeps the findings open. The
+  of the issue's one "Done when" or "Acceptance criteria" list, only when
+  the issue text has a trusted author and editor, and the valid answer
+  must number the same count. A numbering gap or any other ambiguity
+  counts nothing. A restated criterion gets a fresh verdict under the same
+  ID. A missing issue reference, an uncounted list or a count the answer
+  disagrees with withdraws nothing; a finding then clears only when a
+  valid answer marks it met. The
   goal answer has no follow-up field, so no follow-up issue key reaches the
   public check. The goal check's reasons stay private: only the connector
   reads them from the reviewer's internal listener, posts them on the issue
