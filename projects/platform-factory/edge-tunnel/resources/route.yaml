@@ -28,6 +28,7 @@ spec:
     - factory-plan.jomcgi.dev
     - factory-grafana.jomcgi.dev
     - factory-agents.jomcgi.dev
+    - factory-kube.jomcgi.dev
   # matches and weight are the schema defaults, stated so ArgoCD's diff owns
   # them.
   rules:

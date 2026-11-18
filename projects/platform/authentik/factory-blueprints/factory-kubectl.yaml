@@ -1,0 +1,113 @@
+version: 1
+metadata:
+  name: factory - kubectl sign-in
+  labels:
+    blueprints.goauthentik.io/description: |
+      kubectl for the factory home cluster at factory-kube.jomcgi.dev. A public
+      client signs people in with kubelogin; the Envoy edge and the API server
+      both check its ID token. authentik Admins get cluster-admin, and
+      factory-kube-viewers get read-only access to the namespaces RBAC names
+      (projects/platform-factory/kube-access/).
+entries:
+  # ── 1. Read-only kubectl users ───────────────────────────────────────────
+  # Members are added in the admin interface, not here: the repository is
+  # public and membership names people. RBAC binds the group by name
+  # (authentik:factory-kube-viewers), so renaming it removes their access.
+  - model: authentik_core.group
+    id: kube-viewers
+    identifiers:
+      name: factory-kube-viewers
+    attrs:
+      is_superuser: false
+
+  # ── 2. kubelogin's client ────────────────────────────────────────────────
+  # A public client with PKCE: kubelogin runs on each person's machine and can
+  # hold no secret. Its redirect is kubelogin's loopback listener.
+  #
+  # kubectl sends the ID token. The API server takes the username from
+  # preferred_username and the groups from groups
+  # (projects/factory-cluster/nodes/authentication-config.yaml); authentik's
+  # email scope always reports email_verified false, so email cannot be the
+  # username.
+  - model: authentik_providers_oauth2.oauth2provider
+    id: kubectl-provider
+    identifiers:
+      name: factory-kubectl
+    attrs:
+      client_type: public
+      client_id: factory-kubectl
+      # Removal from a group reaches the edge and the API server when the
+      # current ID token expires: kubelogin then refreshes it and the new
+      # token carries the current groups.
+      access_token_validity: minutes=10
+      refresh_token_validity: days=7
+      include_claims_in_id_token: true
+      grant_types:
+        - authorization_code
+        - refresh_token
+      signing_key:
+        !Find [
+          authentik_crypto.certificatekeypair,
+          [name, authentik Self-signed Certificate],
+        ]
+      redirect_uris:
+        - matching_mode: strict
+          url: http://localhost:8000
+        - matching_mode: strict
+          url: http://localhost:18000
+      authorization_flow:
+        !Find [
+          authentik_flows.flow,
+          [slug, default-provider-authorization-implicit-consent],
+        ]
+      invalidation_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      property_mappings:
+        - !Find [
+            authentik_providers_oauth2.scopemapping,
+            [managed, goauthentik.io/providers/oauth2/scope-openid],
+          ]
+        - !Find [
+            authentik_providers_oauth2.scopemapping,
+            [managed, goauthentik.io/providers/oauth2/scope-email],
+          ]
+        - !Find [
+            authentik_providers_oauth2.scopemapping,
+            [managed, goauthentik.io/providers/oauth2/scope-profile],
+          ]
+        - !Find [
+            authentik_providers_oauth2.scopemapping,
+            [managed, goauthentik.io/providers/oauth2/scope-offline_access],
+          ]
+
+  # The issuer is https://factory-auth.jomcgi.dev/application/o/factory-kubectl/.
+  - model: authentik_core.application
+    id: kubectl-app
+    identifiers:
+      slug: factory-kubectl
+    attrs:
+      name: Factory kubectl
+      provider: !KeyOf kubectl-provider
+      policy_engine_mode: any
+      meta_description: kubectl for the factory home cluster.
+
+  # ── 3. Who may sign in ───────────────────────────────────────────────────
+  # Without a binding every authenticated account may authorize.
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf kubectl-app
+      group: !Find [authentik_core.group, [name, authentik Admins]]
+      order: 0
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf kubectl-app
+      group: !KeyOf kube-viewers
+      order: 10
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30

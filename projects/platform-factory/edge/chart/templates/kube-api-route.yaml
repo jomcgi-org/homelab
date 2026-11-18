@@ -1,0 +1,108 @@
+{{- /*
+kubectl at factory-kube.jomcgi.dev. kubectl cannot follow the gateway's OIDC
+browser redirect, so this route's policy replaces it with a bearer check:
+Envoy admits only an Authentik ID token from the factory-kubectl client whose
+groups claim names one of kubeAPI.groups. The API server then checks the same
+token again (projects/factory-cluster/nodes/authentication-config.yaml) and
+RBAC decides what it may do (projects/platform-factory/kube-access/). A request
+without such a token never reaches the API server.
+
+The route forwards the Authorization header unchanged. Envoy speaks TLS to the
+API server and checks its certificate against the cluster CA.
+*/}}
+{{- $issuer := printf "https://%s/application/o/%s/" .Values.authentik.hostname .Values.kubeAPI.applicationSlug }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: kube-api
+  namespace: {{ .Release.Namespace }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+  hostnames:
+    - {{ .Values.kubeAPI.hostname }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      # Watches, logs -f, exec and port-forward hold the request open.
+      timeouts:
+        request: "0s"
+        backendRequest: "0s"
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: kubernetes
+          namespace: default
+          port: 443
+          weight: 1
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: kube-api-authentik-jwt
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: kube-api
+  jwt:
+    providers:
+      - name: authentik
+        issuer: {{ $issuer }}
+        audiences:
+          - {{ .Values.kubeAPI.clientID }}
+        remoteJWKS:
+          uri: {{ printf "%sjwks/" $issuer }}
+  authorization:
+    defaultAction: Deny
+    rules:
+      - name: kube-groups
+        action: Allow
+        principal:
+          jwt:
+            provider: authentik
+            claims:
+              - name: groups
+                valueType: StringArray
+                values:
+                  {{- toYaml .Values.kubeAPI.groups | nindent 18 }}
+---
+# Keep the grant with the route, so both reconcile in the edge Application.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: edge-kube-api
+  namespace: default
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: {{ .Release.Namespace }}
+  to:
+    - group: ""
+      kind: Service
+      name: kubernetes
+---
+# The API server serves only TLS. Its certificate names kubernetes.default.svc
+# and chains to the cluster CA that kube-root-ca.crt carries in every namespace.
+apiVersion: gateway.networking.k8s.io/v1
+kind: BackendTLSPolicy
+metadata:
+  name: edge-kube-api
+  namespace: default
+spec:
+  targetRefs:
+    - group: ""
+      kind: Service
+      name: kubernetes
+  validation:
+    caCertificateRefs:
+      - group: ""
+        kind: ConfigMap
+        name: kube-root-ca.crt
+    hostname: kubernetes.default.svc

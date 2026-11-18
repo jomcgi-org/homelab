@@ -1,4 +1,7 @@
-"""Every application signs in; only kagent receives the edge access token."""
+"""Every application signs in; only kagent receives the edge access token.
+
+kubectl's route is the one bearer route: Envoy checks an Authentik ID token
+there instead of running the browser sign-in."""
 
 import os
 from pathlib import Path
@@ -97,6 +100,7 @@ def test_only_kagent_forwards_the_access_token(docs):
         "edge-authentik-oidc",
         "authentik-no-gateway-oidc",
         "kagent-authentik-oidc",
+        "kube-api-authentik-jwt",
     }
     assert {p["metadata"]["namespace"] for p in policies.values()} == {"edge"}
     gateway = policies["edge-authentik-oidc"]["spec"]
@@ -165,6 +169,86 @@ def test_edge_may_reference_only_the_kagent_ui(docs):
     }
 
 
+def test_kube_api_requires_an_authentik_token_from_a_kube_group(docs):
+    issuer = "https://factory-auth.jomcgi.dev/application/o/factory-kubectl/"
+    policy = docs["SecurityPolicy", "kube-api-authentik-jwt"]
+    assert policy["metadata"]["namespace"] == "edge"
+    assert policy["spec"] == {
+        "targetRefs": [
+            {
+                "group": "gateway.networking.k8s.io",
+                "kind": "HTTPRoute",
+                "name": "kube-api",
+            }
+        ],
+        "jwt": {
+            "providers": [
+                {
+                    "name": "authentik",
+                    "issuer": issuer,
+                    "audiences": ["factory-kubectl"],
+                    "remoteJWKS": {"uri": issuer + "jwks/"},
+                }
+            ]
+        },
+        "authorization": {
+            "defaultAction": "Deny",
+            "rules": [
+                {
+                    "name": "kube-groups",
+                    "action": "Allow",
+                    "principal": {
+                        "jwt": {
+                            "provider": "authentik",
+                            "claims": [
+                                {
+                                    "name": "groups",
+                                    "valueType": "StringArray",
+                                    "values": [
+                                        "authentik Admins",
+                                        "factory-kube-viewers",
+                                    ],
+                                }
+                            ],
+                        }
+                    },
+                }
+            ],
+        },
+    }
+    route = docs["HTTPRoute", "kube-api"]
+    assert route["metadata"]["namespace"] == "edge"
+    assert route["spec"]["hostnames"] == ["factory-kube.jomcgi.dev"]
+    (rule,) = route["spec"]["rules"]
+    assert "filters" not in rule
+    assert rule["backendRefs"] == [
+        {
+            "group": "",
+            "kind": "Service",
+            "name": "kubernetes",
+            "namespace": "default",
+            "port": 443,
+            "weight": 1,
+        }
+    ]
+    grant = docs["ReferenceGrant", "edge-kube-api"]
+    assert grant["metadata"]["namespace"] == "default"
+    assert grant["spec"]["from"] == [
+        {"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "namespace": "edge"}
+    ]
+    assert grant["spec"]["to"] == [
+        {"group": "", "kind": "Service", "name": "kubernetes"}
+    ]
+    tls = docs["BackendTLSPolicy", "edge-kube-api"]
+    assert tls["metadata"]["namespace"] == "default"
+    assert tls["spec"]["validation"] == {
+        "caCertificateRefs": [
+            {"group": "", "kind": "ConfigMap", "name": "kube-root-ca.crt"}
+        ],
+        "hostname": "kubernetes.default.svc",
+    }
+
+
 def test_proxy_reaches_only_the_kagent_ui(docs):
     egress = docs["CiliumNetworkPolicy", "proxy"]["spec"]["egress"]
     kagent = [
@@ -190,6 +274,13 @@ def test_proxy_reaches_only_the_kagent_ui(docs):
             "toPorts": [{"ports": [{"port": "8080", "protocol": "TCP"}]}],
         }
     ]
+    apiserver = [rule for rule in egress if "toEntities" in rule]
+    assert apiserver == [
+        {
+            "toEntities": ["kube-apiserver"],
+            "toPorts": [{"ports": [{"port": "6443", "protocol": "TCP"}]}],
+        }
+    ]
 
 
 def test_kagent_hostname_is_owned_and_published():
@@ -206,12 +297,13 @@ def test_kagent_hostname_is_owned_and_published():
         if doc["kind"] == "ValidatingAdmissionPolicy"
     }
     validations = policies["factory-edge-routes"]["spec"]["validations"]
-    assert {
-        "expression": "request.namespace == 'edge' || "
-        "!has(object.spec.hostnames) || "
-        "!object.spec.hostnames.exists(h, h == 'factory-agents.jomcgi.dev')",
-        "message": "Only the edge namespace may route factory-agents.jomcgi.dev.",
-    } in validations
+    for host in ("factory-agents.jomcgi.dev", "factory-kube.jomcgi.dev"):
+        assert {
+            "expression": "request.namespace == 'edge' || "
+            "!has(object.spec.hostnames) || "
+            f"!object.spec.hostnames.exists(h, h == '{host}')",
+            "message": f"Only the edge namespace may route {host}.",
+        } in validations
     assert (
         policies["factory-edge-envoy-resources"]["spec"]["validations"][0]["expression"]
         == "request.namespace == 'edge'"
@@ -229,7 +321,9 @@ def test_kagent_hostname_is_owned_and_published():
     )
     route = yaml.safe_load(tunnel.read_text())
     assert route["metadata"]["namespace"] == "edge"
-    assert "factory-agents.jomcgi.dev" in route["spec"]["hostnames"]
+    assert {"factory-agents.jomcgi.dev", "factory-kube.jomcgi.dev"} <= set(
+        route["spec"]["hostnames"]
+    )
     assert route["spec"]["rules"] == [
         {
             "matches": [{"path": {"type": "PathPrefix", "value": "/"}}],
