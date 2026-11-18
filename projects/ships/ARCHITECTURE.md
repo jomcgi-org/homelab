@@ -1,6 +1,6 @@
 # Ships on the factory cluster
 
-HOME-256 follows the HOME-178 decision of 2026-11-18. Keep the Pacific Northwest subscription and the MapLibre page at `jomcgi.dev/app/ships` as a section of the Astryx site. Its only runtime dependency will be reads of precomputed objects. A separate application origin would add routing and break existing shared map links without isolating any server workload.
+HOME-256 follows [Joe's decision of 2026-11-18](https://factory-plan.jomcgi.dev/factory/issue/HOME-178#comment-2358): Ships moves factory-native, and its data leaves the cluster through the cluster to R2 sink. A live app may get its own subdomain. This plan keeps the Pacific Northwest subscription and the MapLibre page at `jomcgi.dev/app/ships` as a section of the Astryx site. Its only runtime dependency will be reads of precomputed objects. A separate application origin would add routing and break existing shared map links without isolating any server workload.
 
 ## Ingest and capacity
 
@@ -8,13 +8,22 @@ Run one Go process on factory. A typed WebSocket decoder and bounded channels le
 
 Keep PostgreSQL. Track history and all-time heat need durable state across reconnects, deployments and partition expiry. Port the hub's deduplication, latest-position and vessel metadata upserts. Keep daily position partitions for seven days. Bank each expired day's distinct vessel counts by cell and drop its partition in one transaction. Import historical heat separately from live partitions and reconcile their UTC day boundary before enabling retention. The hub implementation defines the parity target. [Ingest and serving code](../monolith/ships/)
 
-HOME-256 reports a roughly 2.9 MB snapshot every 120 seconds. That measures page payload. Hub input messages/s, retained rows, ingest CPU and memory remain unmeasured here. Start the Go pod's shadow run with requests of 250m CPU and 256 MiB and limits of 1 CPU and 512 MiB. These are trial allocations for the Go process alone.
+HOME-256 reports a roughly 2.9 MB snapshot every 120 seconds. That measures page payload.
+
+Hub resource use, measured in Honeycomb (`metrics` dataset, hub containers) for the 24 hours to 2026-11-18 22:36 UTC:
+
+| Hub container | CPU p50 / p95 / peak (cores) | Working set p95 / peak |
+| --- | --- | --- |
+| monolith `backend` (ingest shares it with other modules) | 0.26 / 0.61 / 0.98 | 544 MiB / 626 MiB |
+| monolith `postgres` (all monolith databases) | 0.33 / 1.04 / 1.46 | 897 MiB / 956 MiB |
+
+These are shared-container totals, so they bound the ingest cost from above. The hub emits no ingest telemetry, and the message rate and retained rows need hub database access. [HOME-409](https://factory-plan.jomcgi.dev/factory/issue/HOME-409) measures them before it sets production budgets ([HOME-256 criterion 1 moved there under Joe's rule](https://factory-plan.jomcgi.dev/factory/issue/HOME-157#comment-3904)). Start the Go pod's shadow run with requests of 250m CPU and 256 MiB and limits of 1 CPU and 512 MiB. These are trial allocations for the Go process alone.
 
 Collect a 24-hour hub baseline before sizing production. Count received WebSocket frames per minute before parsing and report median and peak messages/s. At the same UTC boundary count rows in ships.positions and record total partition and index bytes. Sample container CPU usage rate and working-set bytes each minute, recording p95 and peak. The hub container shares other modules, so profile the ingest task and compare a replay of the same traffic in an isolated process. Record window, source, shared-container totals and isolated measurements alongside the final requests. Size database storage for the observed seven-day footprint, indexes, WAL and a partition rollover. Verify memory, write lag and CPU headroom while heat and export run concurrently.
 
 ## Publication contract
 
-Permission to redistribute raw AISStream positions as downloadable public files is unresolved. No verified terms grant for public position files is on record. An inquiry in AISStream’s issue tracker asks specifically about public redistribution. Another reports that the usual terms URLs returned 404. Both are requests from users of the service. Neither supplies a license. [Redistribution inquiry](https://github.com/aisstream/issues/issues/223) · [Terms lookup report](https://github.com/aisstream/issues/issues/299)
+AISStream.io publishes no terms of service or data license (checked 2026-11-18). Its site links only a [privacy policy](https://aisstream.io/privacypolicy), which says nothing about redistribution. Its [documentation](https://aisstream.io/documentation#limits) sets only operational limits, and tells apps to serve clients through their own server with only the data each client needs. So no published grant covers public position files. An inquiry in AISStream’s issue tracker asks specifically about public redistribution. Another reports that the usual terms URLs returned 404. Both are requests from users of the service. Neither supplies a license. [Redistribution inquiry](https://github.com/aisstream/issues/issues/223) · [Terms lookup report](https://github.com/aisstream/issues/issues/299)
 
 Keep all three products in private Garage storage until the applicable terms or written permission covers the intended redistribution. Serve private data only to authorized readers through an authenticated endpoint with private, no-store caching. Keep the public static page in an unavailable state in that mode. Do not assume aggregation or delay grants redistribution rights. [AISStream](https://aisstream.io/)
 
@@ -30,9 +39,13 @@ Public rollout requires a change to the HOME-137 mirror. Its [upload template](.
 
 Replace each key with a complete object and include a generation timestamp. Publish changed tracks before the snapshot, retry failed copies with the same body, and propagate expiry of tracks that age out even when no new reports arrive. Verify headers and ETags at the public edge. Keep bucket listing disabled. The browser fetches the snapshot on load and revalidates every two minutes, fetches heat on entering heat mode and one track on marker selection. Preserve map state and display the last successful timestamp on a failed refresh. A missing track leaves the selected vessel visible. Allow reads from the site origin if the mirror uses a separate hostname.
 
-## Follow-up HOME issue drafts
+## Follow-up HOME issues
+
+The slices are filed under [HOME-178](https://factory-plan.jomcgi.dev/factory/issue/HOME-178) in dependency order.
 
 ### Factory AIS ingester
+
+Tracked in [HOME-409](https://factory-plan.jomcgi.dev/factory/issue/HOME-409).
 
 Done when
 
@@ -42,6 +55,8 @@ Done when
 
 ### Garage sink and R2 mirror
 
+Tracked in [HOME-410](https://factory-plan.jomcgi.dev/factory/issue/HOME-410).
+
 Done when
 
 1. Record the dated terms permalink and redistribution grant or implement the private delivery path. Verify anonymous access matches that decision for every product.
@@ -49,6 +64,8 @@ Done when
 3. Interrupt a copy and verify readers retain complete objects and the mirror catches up after recovery.
 
 ### Ships page
+
+Tracked in [HOME-411](https://factory-plan.jomcgi.dev/factory/issue/HOME-411).
 
 Done when
 
@@ -58,6 +75,8 @@ Done when
 
 ### Cutover
 
+Tracked in [HOME-412](https://factory-plan.jomcgi.dev/factory/issue/HOME-412).
+
 Done when
 
 1. Compare a day of hub and factory output including vessel coverage, track chronology, banked heat and freshness. Resolve discrepancies before switching.
@@ -65,6 +84,8 @@ Done when
 3. Observe one retention rollover and mirror recovery on factory and record route ownership for HOME-261.
 
 ### Hub code removal
+
+Tracked in [HOME-413](https://factory-plan.jomcgi.dev/factory/issue/HOME-413).
 
 Done when
 
