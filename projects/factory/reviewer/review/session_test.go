@@ -700,22 +700,17 @@ func TestSessionStateRoundTrips(t *testing.T) {
 		t.Fatalf("withSession = %+v", st.Session)
 	}
 	incomplete := encodeState(State{Incomplete: true})
-	if got := withSession(incomplete, ref); got != incomplete {
-		t.Fatal("incomplete history acquired a resumable session")
-	}
+	failIf(t, withSession(incomplete, ref) != incomplete, "incomplete history acquired a resumable session")
 	// Optional session metadata must not displace a complete blocker list.
 	nearLimit := encodeState(State{Blocking: []Finding{finding(strings.Repeat("x", maxState*3/4-400), SeverityHigh)}})
-	if st, ok := LoadState(nearLimit); !ok || st.Incomplete {
-		t.Fatal("the complete fixture does not fit")
-	}
+	st, ok = LoadState(nearLimit)
+	failIf(t, !ok || st.Incomplete, "the complete fixture does not fit")
 	full := *ref
 	full.Tasks = nil
 	for i := range maxSessionReviews {
 		full.Tasks = append(full.Tasks, fmt.Sprintf("%036d", i))
 	}
-	if got := withSession(nearLimit, &full); got != nearLimit {
-		t.Fatal("session metadata displaced the original findings")
-	}
+	failIf(t, withSession(nearLimit, &full) != nearLimit, "session metadata displaced the original findings")
 }
 
 // TestGateCheckKeepsTheSession posts a human-gate check over a reviewed

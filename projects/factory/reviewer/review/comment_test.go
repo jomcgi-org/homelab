@@ -1099,21 +1099,14 @@ func TestCommentHoldsIncompleteReviewState(t *testing.T) {
 			})
 			c := h.gh.check(shaA)
 			st, ok := LoadState(c.Text)
-			if !ok || !st.Incomplete || c.Conclusion != ConclusionFailure {
-				t.Fatal("the comment and persisted failure disagree")
-			}
-			if body := onlyComment(t, h, 7).Body; strings.Contains(body, "### ✅ Approved") || strings.Contains(body, "### 🙋 Waiting for a human approval") {
-				t.Fatal("the comment presents incomplete history as clearable by approval")
-			}
-			if strings.Contains(c.Summary, authorshipPrefix) || strings.Contains(onlyComment(t, h, 7).Body, authorshipPrefix) {
-				t.Fatal("authorship replaced the incomplete-history warning")
-			}
+			failIf(t, !ok || !st.Incomplete || c.Conclusion != ConclusionFailure, "the comment and persisted failure disagree")
+			body := onlyComment(t, h, 7).Body
+			failIf(t, strings.Contains(body, "### ✅ Approved") || strings.Contains(body, "### 🙋 Waiting for a human approval"), "the comment presents incomplete history as clearable by approval")
+			failIf(t, strings.Contains(c.Summary, authorshipPrefix) || strings.Contains(body, authorshipPrefix), "authorship replaced the incomplete-history warning")
 			if strings.HasPrefix(kind, "authorship ") {
 				eventually(t, "free review slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
 				h.engine().Tick(ctx)
-				if h.gh.check(shaA).Conclusion != ConclusionFailure || !commentHas(h, 7, "### ⏸️ On hold", "cannot clear missing history") {
-					t.Fatal("authorship cleared incomplete history after restart")
-				}
+				failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure || !commentHas(h, 7, "### ⏸️ On hold", "cannot clear missing history"), "authorship cleared incomplete history after restart")
 			}
 		})
 	}
