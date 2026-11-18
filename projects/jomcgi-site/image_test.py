@@ -221,3 +221,30 @@ def test_packaged_browser_under_postsync_restrictions():
                 timeout=15,
                 check=False,
             )
+
+
+def test_image_has_the_sqlite_library_that_chromium_nss_loads():
+    # Chromium initialises NSS on its first HTTPS page, and NSS loads
+    # libsqlite3.so.0. Without it the browser aborts (FATAL nss_util.cc,
+    # nss_error=-5925) at the first real navigation. The self-test above
+    # browses a local HTTP fixture, so it would not catch the missing library.
+    with docker_engine() as (docker, env):
+        image_id, _ = image_config(Path(os.environ["SITE_CHECK_IMAGE"]))
+        run([os.path.abspath(os.environ["SITE_CHECK_LOADER"])], env=env, timeout=180)
+        output = run(
+            [
+                docker,
+                "run",
+                "--rm",
+                "--pull=never",
+                "--network=none",
+                "--entrypoint",
+                "/bin/sh",
+                image_id,
+                "-c",
+                "ls /usr/lib/libsqlite3.so.0",
+            ],
+            env=env,
+            timeout=60,
+        )
+        assert "libsqlite3.so.0" in output
