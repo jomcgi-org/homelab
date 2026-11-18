@@ -45,11 +45,12 @@ inline style elements or attributes, so no inline hashes or
 
 ## Transferring connector status ownership (HOME-363)
 
-The landing deploy Kustomization holds the deployed Application at 0.17.59,
-which still renders both resources. CI can publish the new landing chart and
-update application.yaml in the same writeback as the factory chart. The
-Kustomization overrides that pin until adoption is verified. Automated landing
-sync is paused so self-heal cannot reclaim the resources during the handoff.
+Both Applications automatically sync the chart pins from CI writeback.
+During the transfer, factory-landing has automated pruning disabled. If it
+syncs first, the live Service and ingress grant survive removal from its
+desired manifests. The factory sync adopts both in place. If factory syncs
+first, the new landing chart relinquishes the objects when its pin advances.
+Avoid a manual pruning sync during the handoff.
 
 After software-factory syncs the new factory chart, inspect the live objects:
 
@@ -60,10 +61,9 @@ kubectl -n factory get service/factory-connector-status \
 
 On **both** objects, verify that the Argo CD tracking ID names software-factory
 and that the sync options include Prune=false. Verify the signed-in landing page
-loads /api/status. Once CI has written the new landing chart pin to application.yaml,
-remove the temporary targetRevision patch in deploy/kustomization.yaml and
-restore automated sync in deploy/application.yaml in the same follow-up.
-Verify /api/status again after factory-landing reconciles.
+loads /api/status. After both Applications reconcile at their new pins and the checks
+pass, restore `automated.prune: true` in the landing Application so Argo CD
+can resume cleaning up obsolete landing resources.
 
 For rollback, pause software-factory auto-sync first. Restore and sync the
 previous landing chart that renders both objects. Verify factory-landing owns

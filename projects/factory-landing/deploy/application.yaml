@@ -20,9 +20,8 @@ spec:
     namespace: factory-landing
   syncPolicy:
     automated:
-      # HOME-363: hold the outgoing owner until software-factory adopts both objects.
-      enabled: false
-      prune: true
+      # HOME-363: retain the live Service and policy until software-factory adopts them.
+      prune: false
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
