@@ -77,8 +77,15 @@ Go can stream uploads through a hash into bounded temporary storage and parse
 metadata without keeping a Python bytes object per upload. Expect lower peak
 memory under concurrency and less CPU spent copying upload buffers.
 
+The daily `trips-export` Argo CronWorkflow runs at 03:00 UTC. It reads the
+private trip state through the API serializers, writes WebP photo derivatives
+through the hub imgproxy presets, and commits `stars/trips/export.json` last
+([export README](../projects/monolith/trips/export/README.md)). HOME-401 also
+moves this job: it switches the export's readers to the factory output and
+retires the hub schedule.
+
 Done when
 
 1. Preserve gateway authentication, request and response fields, validation and retry-safe upserts. Replay duplicate and invalid uploads against the factory endpoint.
 2. Keep originals private. Publish only approved public points and photo derivatives through the mirrored claim and verify the Trips reader resolves a complete generation.
-3. Measure CPU per image and peak memory at equal upload concurrency. Migrate existing points and images, verify parity, then switch the ingest route and retire the hub handler.
+3. Measure CPU per image and peak memory at equal upload concurrency. Migrate existing points and images, verify parity, then switch the ingest route and retire the hub handler, the export's readers and the hub `trips-export` schedule.
