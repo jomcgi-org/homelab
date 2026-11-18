@@ -1,12 +1,12 @@
-# Publication metadata for chart-version write-back, in the monolith-public
-# pattern. This file deploys nothing; the hub deploys
-# projects/gke-apps/scotland-connector/application.yaml, whose pin is a floor
-# that Kargo promotes past.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: scotland-connector
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: '4'
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
 spec:
   project: default
   sources:
@@ -17,9 +17,11 @@ spec:
         releaseName: scotland-connector
         valueFiles:
           - $values/projects/scotland-connector/deploy/values.yaml
+          - $values/projects/scotland-connector/factory/values.yaml
     - repoURL: https://github.com/jomcgi-org/homelab.git
       targetRevision: HEAD
       ref: values
+      path: projects/scotland-connector/factory/resources
   destination:
     server: https://kubernetes.default.svc
     namespace: scotland-connector
@@ -29,9 +31,17 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      - RespectIgnoreDifferences=true
     retry:
       limit: 5
       backoff:
         duration: 5s
         factor: 2
         maxDuration: 3m
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: scotland-connector
+      namespace: scotland-connector
+      jsonPointers:
+        - /spec/replicas

@@ -1,0 +1,16 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: snapshot-reader
+  namespace: scotland-connector
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: scotland-connector
+  egress:
+    - toFQDNs:
+        - matchName: 7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+      toPorts:
+        - ports:
+            - port: '443'
+              protocol: TCP

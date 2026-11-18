@@ -39,6 +39,7 @@ py_test(
         "//projects/monolith-public/chart:chart_values",
         "//projects/platform/cloudflare-gateway:gateway_test_inputs",
         "//projects/scotland-connector/deploy:deploy_values",
+        "//projects/scotland-connector/factory:resources/route.yaml",
         "@multitool//tools/helm",
     ] + glob(["templates/**/*"]),
     env = {
