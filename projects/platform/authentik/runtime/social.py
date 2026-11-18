@@ -26,7 +26,13 @@ for filename in ("factory-auth.yaml", "factory-kubectl.yaml", "factory-social.ya
             (path / provider).mkdir(exist_ok=True)
             for key in ("client-id", "client-secret"):
                 if provider == "discord" and key == "client-secret":
-                    assert not importer.validate()[0]
+                    # 2026.5.6 can raise while it logs an unresolved entry,
+                    # instead of returning False. Either way it is not valid.
+                    try:
+                        pending_valid = importer.validate()[0]
+                    except Exception:
+                        pending_valid = False
+                    assert not pending_valid
                 (path / provider / key).write_text("fixture")
         importer = Importer.from_string(
             (Path("/fixture/factory-blueprints") / filename).read_text()
