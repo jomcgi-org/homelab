@@ -266,9 +266,6 @@ finding still blocks as before.
   its bypass list. Models, deploy values, the reviewer's prompt and agent,
   and connector and broker code outside the permission config get normal
   review ([decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6884458635)).
-- A change to `buildbuddy.yaml`, or to a script it calls that reads a
-  credential or a git remote. A change to `renovate.json` that widens
-  automerge or shortens the release age.
 - A change to `AGENTS.md` "Merge authority" or "Boundaries", or text that
   records a permission or decision of Joe's without a link to where Joe made
   it.
