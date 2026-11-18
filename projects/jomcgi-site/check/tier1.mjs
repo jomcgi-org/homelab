@@ -6,6 +6,7 @@ import { parse } from "parse5";
 import { Agent } from "undici";
 import { BUDGET_BYTES, htmlPages, initialScripts } from "../web/budget.mjs";
 import { scopeFor } from "./scope.mjs";
+import { headersFor, releaseHeaderRules } from "./headers.mjs";
 import {
   SUMMARY_END,
   SUMMARY_START,
@@ -71,47 +72,59 @@ export function internalLinks(html, base) {
     .filter((url) => url.origin === new URL(base).origin);
 }
 
-// Routes whose web/public/_headers rule detaches the site CSP and sets a
-// wider one. Each entry lists only the directives that differ; keep it in
-// step with _headers so any other change still fails the check.
-const routeCsp = {
-  "/hikes": {
-    "img-src": "'self' data: https://tiles.openfreemap.org",
-    "connect-src":
-      "'self' https://data.jomcgi.dev https://tiles.openfreemap.org",
-    "worker-src": "'self' blob:",
-  },
-};
-
-export function checkHeaders(headers, { preview, asset = false, path }) {
-  // Compare directive values, allowing differences in whitespace and ordering.
-  const directives = (headers.get("content-security-policy") ?? "")
+const parseCsp = (value, label) => {
+  const directives = (value ?? "")
     .split(";")
     .filter((part) => part.trim())
     .map((part) => part.trim().split(/\s+/))
     .map(([name, ...values]) => [name, values.sort().join(" ")]);
   const csp = new Map(directives);
-  assert.equal(csp.size, directives.length, "duplicate CSP directives");
-  const expected = {
-    "default-src": "'self'",
-    "script-src": "'self'",
-    "style-src": "'self'",
-    "img-src": "'self' data:",
-    "font-src": "'self'",
-    "connect-src": "'self' https://data.jomcgi.dev",
-    "frame-ancestors": "'none'",
-    "base-uri": "'none'",
-    "form-action": "'none'",
-    "object-src": "'none'",
-    ...routeCsp[path],
-  };
-  for (const [directive, value] of Object.entries(expected)) {
+  assert.equal(csp.size, directives.length, `duplicate CSP directives${label}`);
+  return csp;
+};
+
+// Every page's policy must keep these, whatever its _headers rule sets.
+const CSP_FLOOR = {
+  "default-src": "'self'",
+  "script-src": "'self'",
+  "frame-ancestors": "'none'",
+  "base-uri": "'none'",
+  "form-action": "'none'",
+  "object-src": "'none'",
+};
+
+const bundledRules = releaseHeaderRules();
+
+export function checkHeaders(
+  headers,
+  { preview, asset = false, path = "/", rules = bundledRules },
+) {
+  // The expected headers are the release's _headers rules for this path.
+  // Compare directive values, allowing differences in whitespace and order.
+  const want = headersFor(rules, path, preview);
+  const expected = parseCsp(want["content-security-policy"], " in _headers");
+  const csp = parseCsp(headers.get("content-security-policy"), "");
+  for (const [directive, value] of Object.entries(CSP_FLOOR)) {
+    assert.equal(expected.get(directive), value, `_headers CSP ${directive}`);
+  }
+  for (const value of expected.values()) {
+    assert.doesNotMatch(value, /'unsafe-|(^| )\*( |$)/, "_headers CSP");
+  }
+  for (const [directive, value] of expected) {
     assert.equal(csp.get(directive), value, `CSP ${directive}`);
   }
   for (const directive of csp.keys()) {
     assert.ok(
-      directive in expected || ["report-uri", "report-to"].includes(directive),
+      expected.has(directive) ||
+        ["report-uri", "report-to"].includes(directive),
       `unexpected CSP ${directive}`,
+    );
+  }
+  if (want["permissions-policy"]) {
+    assert.equal(
+      headers.get("permissions-policy"),
+      want["permissions-policy"],
+      `${path}: Permissions-Policy`,
     );
   }
   assert.equal(headers.get("x-content-type-options"), "nosniff");
@@ -271,6 +284,7 @@ export async function tier1({
   get,
   scope = scopeFor("dev"),
 }) {
+  const rules = releaseHeaderRules(dist);
   const files = htmlPages(dist);
   assert.ok(files.includes("index.html"), "missing homepage");
   assert.ok(files.includes("404.html"), "missing 404 page");
@@ -291,7 +305,7 @@ export async function tier1({
     const response = await get(page.path);
     assert.equal(response.status, page.status, `${page.path}: HTTP status`);
     assert.match(response.headers.get("content-type") ?? "", /text\/html/i);
-    checkHeaders(response.headers, { preview, path: page.path });
+    checkHeaders(response.headers, { preview, path: page.path, rules });
     checkReleasePage(
       response.body,
       readFileSync(join(dist, page.file)),
@@ -324,7 +338,7 @@ export async function tier1({
     assert.ok(scope.owns(path), `asset not routed to this Worker: ${path}`);
     const response = await get(path);
     assert.equal(response.status, 200, `asset ${path}`);
-    checkHeaders(response.headers, { preview, asset: true });
+    checkHeaders(response.headers, { preview, asset: true, path, rules });
     assert.deepEqual(
       response.body,
       readFileSync(join(dist, path)),

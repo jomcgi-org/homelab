@@ -4,54 +4,16 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import { headersFor as rulesFor, parseHeaders } from "./headers.mjs";
 
 const headerFile = readFileSync(
   new URL("../web/public/_headers", import.meta.url),
   "utf8",
 );
-// Apply only the rules that match this request. Flattening the file would
-// put the catalog cache policy on hashed assets and slop's robots on all pages.
-const headerRules = [];
-for (const line of headerFile.split("\n")) {
-  if (!line.trim() || line.trimStart().startsWith("#")) continue;
-  if (!line.startsWith(" ")) {
-    const expression = line
-      .split(/(\*|:[a-zA-Z]\w*)/)
-      .map((token) =>
-        token === "*"
-          ? ".*"
-          : token.startsWith(":")
-            ? "[^/]+"
-            : token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-      )
-      .join("");
-    headerRules.push({
-      host: line.startsWith("https://"),
-      match: new RegExp(`^${expression}$`),
-      detach: [],
-      headers: {},
-    });
-  } else if (line.trimStart().startsWith("!")) {
-    // "! Name" detaches a header an earlier matching rule set.
-    const [, name] = line.match(/^\s+!\s*([\w-]+)\s*$/);
-    headerRules.at(-1).detach.push(name.toLowerCase());
-  } else {
-    const [, name, value] = line.match(/^\s+([\w-]+): (.+)$/);
-    headerRules.at(-1).headers[name.toLowerCase()] = value;
-  }
-}
+const headerRules = parseHeaders(headerFile);
 
 export function headersFor(path, preview = true) {
-  const origin = preview ? "https://next.jomcgi.dev" : "https://jomcgi.dev";
-  const url = new URL(path, origin);
-  const headers = {};
-  for (const rule of headerRules) {
-    const target = rule.host ? `${url.origin}${url.pathname}` : url.pathname;
-    if (!rule.match.test(target)) continue;
-    for (const name of rule.detach) delete headers[name];
-    Object.assign(headers, rule.headers);
-  }
-  return headers;
+  return rulesFor(headerRules, path, preview);
 }
 
 export const headers = headersFor("/");
