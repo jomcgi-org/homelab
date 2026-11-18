@@ -49,19 +49,9 @@ side effect checks it first. The epoch check runs on the lock's own
 connection, so a lost session also fails it. kagent guarantees one non-quiescent task per
 session and one execution per actor, which keeps one writer per worktree.
 
-**Data**, in its own database: repository bindings, work items (issue,
-binding, branch `factory/<KEY>`, kagent session and generation, state,
-review rounds), runs (itsaplan's, and the connector's own review rounds),
-delivery attempts (unique per run and sequence number, A2A message ID,
-kagent task, error class, evidence URI, and the itsaplan attempt as
-`run_attempt`, since engineering retries add sends within one itsaplan
-attempt), pull requests (head SHA, merge-queue
-state), review events (unique GitHub node ID, commit SHA, disposition),
-cancellations and an outbox. Full transcripts and CI logs go to the
-`factory-evidence` bucket. Migrations are timestamped SQL files, named like
-the monolith's, embedded in the binary and applied at startup under an
-advisory lock. Database tests start PostgreSQL 16 from `@postgres_test`, as
-the monolith's pytest plugin does.
+Postgres stores work items, runs, attempts, review events, cancellations and
+the delivery outbox. Each work item maps an issue to its binding, work branch,
+session and PR. Each attempt records its message ID before dispatch.
 
 ## Deferred starts
 
@@ -153,21 +143,23 @@ acknowledgment. That platform fencing gap is tracked separately from send
 reconciliation. The liveness lease relies on kagent's force delete of the
 Actor and accepts this gap (HOME-141).
 
-Before the first send, the work item keeps an immutable caller witness:
-projected token issuer, ServiceAccount UID, the controller's configured
-authority, and the A2A and gRPC endpoints. Each observation/action sequence
-pins one projected token for both protocols and checks that witness before
-sending, cancelling or relying on session absence. Token rotation preserves
-the witness; a recreated ServiceAccount, changed authority or changed
-endpoint holds the original attempt without spending a retry. Legacy rows
-without a witness need positive ownership from a readable session whose
-creator matches the current principal; an unknown first send must first be
-found by its exact message ID. A new unsent retry cannot establish ownership
-for older work that may still execute: all uncertain historical sends must
-also have readable ownership and quiescent tasks. Missing legacy evidence stays held
-until the original identity or positive ownership can be restored. Tokens
-are never persisted in the witness. The controller authority and kept
-ServiceAccount remain immutable operational requirements.
+Before sending, the connector pins the caller’s token issuer, ServiceAccount
+UID, controller authority and endpoints. A changed identity holds the attempt.
+Legacy attempts need positive evidence of ownership and quiescence.
+
+## Credential refusal retries
+
+The connector rereads its itsaplan key on each call. After HTTP 401 or 403,
+claims, heartbeats and events retry next pass. Outbox results, comments and
+Done moves back off for up to 12 attempts (about 27 minutes). The issue read
+before a Done move waits until it succeeds.
+
+Run-state reads track continuous refusals in memory per attempt. After 30
+minutes the connector closes a dispatched run whose attempt itsaplan still
+refuses. Admission and authoritative issue reads for initial sessions,
+new-session revisions and fenced recovery keep retrying beyond that limit.
+Issue reads before PR updates, rounds and enqueue, and stale-run lookups,
+hold no slot and retry until the key works.
 
 ## Run transcripts
 
@@ -220,8 +212,9 @@ sequenceDiagram
     opt Agent makes a revision
         K->>G: Push revised work branch
     end
+    C->>K: Poll revision task
     K-->>C: Task result
-    C->>G: Poll revised head for checks and review
+    C->>G: Poll current head for checks and review
 ```
 
 **Review.** Poll owned PRs every 60 s (no public webhook): GraphQL for the
@@ -410,7 +403,12 @@ concurrency slot remain occupied, including an unsent continuation whose
 previous session is uncertain. The liveness lease settles a held turn by
 deleting its session with force; an operator's attestation outranks it.
 
-An operator with the connector's database access can inspect and recover it:
+Inspect the hold for the caller, target, historical attempts, fingerprint and
+earliest confirmation time. Before confirming, fence every possible copy,
+including executions under historical principals that are no longer visible.
+Quiesce retired and in-flight dispatchers, keep them fenced and wait out the
+dispatch window. Confirmation records the operator’s attestation that every
+copy is fenced. Use `--action cancel` to close the target without a replacement.
 
 ```sh
 connector recovery inspect HL-123
