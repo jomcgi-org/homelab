@@ -212,4 +212,6 @@ def test_gate_skips_only_on_one_successful_skip_line():
     assert _gate_runs_matrix("skip (no Grimoire input changed)\n", 1)
     assert _gate_runs_matrix("skip (a)\nrun (b)\n", 0)
     assert _gate_runs_matrix("skipped\n", 0)
+    assert _gate_runs_matrix("skip (\n", 0)
+    assert _gate_runs_matrix("skip (incomplete\n", 0)
     assert _gate_runs_matrix("", 0)

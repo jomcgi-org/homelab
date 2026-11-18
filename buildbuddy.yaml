@@ -291,7 +291,7 @@ actions:
           echo "Grimoire journeys: $grimoire_journeys"
           case "$grimoire_journeys" in
             *$'\n'*) projects/monolith/dev/grimoire/ci-runner.sh ;;
-            "skip ("*) ;;
+            "skip ("*")") ;;
             *) projects/monolith/dev/grimoire/ci-runner.sh ;;
           esac
 
