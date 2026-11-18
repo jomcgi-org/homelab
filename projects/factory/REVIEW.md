@@ -44,7 +44,10 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   earlier goal finding stays open until a valid answer on the same issue
   resolves it or the reviewer identifies a different goal issue for the PR.
   On an issue switch the service withdraws the old findings and names both
-  issues in the comment. A missing issue reference leaves the blockers open. The goal check's reasons stay private: only the connector
+  issues in the comment
+  ([HOME-327 decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-327#comment-3235)).
+  A missing issue reference leaves the blockers open.
+  The goal check's reasons stay private: only the connector
   reads them from the reviewer's internal listener, posts them on the issue
   and quotes them in the coder's round as untrusted data, with no `@`
   mention and never on GitHub
