@@ -3776,6 +3776,50 @@ func TestReplacementPRInheritsSharedCommitReviewsFailClosed(t *testing.T) {
 	}
 }
 
+// TestInheritanceKeepsReadableFindingsBesideAnUnreadableSource: one source
+// PR's review of a shared commit has no readable state. In either order, the
+// readable source's blocker is kept and the inherited state is incomplete.
+func TestInheritanceKeepsReadableFindingsBesideAnUnreadableSource(t *testing.T) {
+	for _, unreadableFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unreadable first=%v", unreadableFirst), func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			seed := []func(){
+				func() {
+					seedCheck(h, shaA, ConclusionFailure, encodeState(State{Blocking: []Finding{finding("a.go:nil-deref", SeverityHigh)}})).ExternalID = MessageID(testRepo, 9, shaA)
+				},
+				func() { seedCheck(h, shaA, ConclusionFailure, "").ExternalID = MessageID(testRepo, 8, shaA) },
+			}
+			if unreadableFirst {
+				seed[0], seed[1] = seed[1], seed[0]
+			}
+			seed[0]()
+			seed[1]()
+			got := reviewRound(t, h, sha40('c'), Report{Summary: "Nothing", Findings: []Finding{}})
+			st, ok := LoadState(got.Text)
+			failIf(t, !ok || got.Conclusion != ConclusionFailure || !st.Incomplete || !hasID(st.Blocking, "a.go:nil-deref"), "an unreadable source discarded readable findings: %s %+v", got.Conclusion, st)
+		})
+	}
+}
+
+// TestRecoveryTreatsAStatelessReviewAsAGap: a completed review of ours that
+// kept no state hides its own findings, so recovery past it is a gap.
+func TestRecoveryTreatsAStatelessReviewAsAGap(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	reviewRound(t, h, shaA, Report{Summary: "One blocker", Findings: []Finding{finding("a.go:nil-deref", SeverityHigh)}})
+	seedCheck(h, shaA, ConclusionFailure, "") // A newer review of ours whose state was lost.
+	shaB := sha40('b')
+	reviewRound(t, h, shaB, Report{Summary: "Overflow", Findings: numbered(100, "a.go:correctness:"+strings.Repeat("shared", 80)+":%d")})
+	e := h.engine()
+	run, err := e.reviewCheck(context.Background(), &e.cfg.Bindings[0], shaB)
+	failIf(t, err != nil, "%v", err)
+	st, _ := LoadState(run.Text)
+	failIf(t, !st.Incomplete, "the review did not overflow")
+	got, rec := e.recoverState(context.Background(), &e.cfg.Bindings[0], github.PullRequest{Number: 7, HeadSHA: shaB}, run, st)
+	failIf(t, rec == replayDone || !got.Incomplete, "recovery skipped a stateless review: recovery=%v incomplete=%v", rec == replayDone, got.Incomplete)
+}
+
 // TestChangedIssueEvidenceKeepsTheLegacyTaskReference: the evidence hold
 // replaces a legacy check's summary, which holds its only task reference.
 // The reference stays in the state, so a full original report is replayed.
