@@ -1890,7 +1890,7 @@ page removes its access. The edge's sign-in and route stay unchanged.
 | Who | How |
 | --- | --- |
 | Humans to itsaplan | Edge OIDC, then itsaplan's own OIDC client `factory-itsaplan` in Authentik; invite-only registration; a break-glass admin with a generated password |
-| Humans to kagent | Edge OIDC with the access token forwarded; kagent in trusted-proxy mode. Sign-in alone grants nothing: the Authentik application binding admits only the operators group, the edge checks sign-in (HOME-291 adds a group check at the edge), and kagent session ownership limits each user to their own sessions |
+| Humans to kagent | Edge OIDC with the access token forwarded; kagent in trusted-proxy mode. Sign-in alone grants nothing. The Authentik application binding admits only the `authentik Admins` group, and the edge checks sign-in (HOME-291 adds a group check at the edge). kagent session ownership limits each user to their own sessions |
 | Connector to kagent | Projected ServiceAccount token (audience `kagent-invocation`) of the kept ServiceAccount `factory/factory-connector`, reviewed by kagent with TokenReview; principal `kubernetes:<authority>` and the ServiceAccount UID (finding 15) |
 | Connector to itsaplan | A coordinator external agent for comments, human-gate issues, run lookups and moving merged issues to Done (`work_items` create, read and edit, `ai_agents read` in each bound project); the coding agent's key claims runs |
 | Connector and agents to GitHub | Broker-minted App tokens, one repository per binding. The connector fetches its token with a projected ServiceAccount token (audience `factory-broker`, subject in the broker's `connectorSubjects`) and caches it until 15 minutes before expiry; a GitHub 401 refetches once |
@@ -2381,7 +2381,7 @@ previews).
   queues once the required checks pass. The ruleset's only bypass
   actor is the organization admin role: Joe, for emergencies, and today the
   chart version write-back, which pushes to main with an identity holding
-  that bypass (`bazel/helm/write-back-versions.sh`, HOME-76); in-cluster CI (#7922)
+  that bypass (`bazel/helm/write-back-versions.sh`); in-cluster CI (#7922)
   should replace that identity with one scoped to the write-back. Changes
   that define the gate itself need Joe's approval (`REVIEW.md` "Joe
   decides").

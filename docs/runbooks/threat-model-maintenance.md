@@ -16,13 +16,9 @@ Findings stay out of the public repository
    what an attacker gets and what done means.
 2. File the fix in HOME in neutral words. Add a comment that names the
    private record.
-3. Update the domain's security lens: copy `projects/<domain>/stpa/*.json`
-   into a fresh `$STPA_TMP`, add or update the UCA, unsafe-feedback, or
-   hazard row there (`status` and the HOME issue on every security row; a
-   tracked unsafe state with no single attacking action goes on the hazard
-   row), then run BLOCK A and BLOCK B from `docs/agents/stpa.md`. The blocks
-   only read fragments from `$STPA_TMP` or `origin/main`, so an edit left in
-   the working tree is never picked up. Never hand-edit `STPA.md`.
+3. Keep the finding's detail, status and unsafe state in the private record.
+   Do not add a security lens row for an open finding: the lens and the
+   rendered `STPA.md` are public.
 4. Update `docs/THREAT-MODEL.md` only when an asset, a boundary or a control
    changes. Update its "Reviewed against commit" line.
 
@@ -31,9 +27,16 @@ control is absent in words that name a usable path.
 
 ## Close a finding
 
-Close the HOME ticket and the private record. Move the security lens row's
-status. Add the invariant row, or change it to `live`, in the PR that builds
-the enforcement.
+Close the HOME ticket and the private record. In the PR that builds the
+enforcement:
+
+1. Add the invariant row, or change it to `live`.
+2. Update the domain's security lens with the verified control: copy
+   `projects/<domain>/stpa/*.json` into a fresh `$STPA_TMP`, add or update
+   the row there (`status` and the HOME issue on every security row), then
+   run BLOCK A and BLOCK B from `docs/agents/stpa.md`. The blocks only read
+   fragments from `$STPA_TMP` or `origin/main`, so an edit left in the
+   working tree is never picked up. Never hand-edit `STPA.md`.
 
 ## Verify before writing
 
@@ -55,7 +58,8 @@ Follow `docs/agents/stpa.md` with the `security` lens for that system. It consum
 committed `stpa/structure.json`, produces `stpa/security.json`, and renders
 the lens into `STPA.md`. Every security row requires `status`, which must be
 one of `enforced-prod`, `enforced-dev`, `shipped-off`, `designed`, or `none`.
-Add `issue` wherever the row is tracked. Include trust boundaries and
+Add `issue` wherever the row is tracked. A new row describes a verified
+control; an open finding stays in the private record ("Add a finding"). Include trust boundaries and
 exclusions only when they map to the lens scope, losses, or hazards.
 
 ## Model review before sharing
