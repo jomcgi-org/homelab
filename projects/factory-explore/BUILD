@@ -7,6 +7,9 @@ go_image(
 
 filegroup(
     name = "repo_docs",
-    srcs = ["README.md"],
+    srcs = [
+        "README.md",
+        "REVIEW.md",
+    ],
     visibility = ["//:__pkg__"],
 )
