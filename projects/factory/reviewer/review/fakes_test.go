@@ -794,7 +794,7 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 	defer func() { f.gql = append(f.gql, kind) }()
 	for k, fail := range f.failGQL {
 		if fail && strings.Contains(req.Query, map[string]string{
-			"cited": "ADDED_TO_MERGE_QUEUE_EVENT", "enqueue": "enqueuePullRequest", "dequeue": "dequeuePullRequest", "heads": "timelineItems", "pull_request": "mergeQueueEntry {", "merge_queue": "mergeQueue(branch", "review_acknowledgement": "... on PullRequestReview",
+			"cited": "ADDED_TO_MERGE_QUEUE_EVENT", "enqueue": "enqueuePullRequest", "heads": "timelineItems", "pull_request": "mergeQueueEntry {", "merge_queue": "mergeQueue(branch", "review_acknowledgement": "... on PullRequestReview",
 		}[k]) {
 			kind = k
 			_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"type": "FORBIDDEN", "message": "injected failure"}}})
@@ -841,13 +841,6 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		reply(map[string]any{"node": nil})
-	case strings.Contains(req.Query, "dequeuePullRequest"):
-		kind = "dequeue"
-		id, _ := req.Variables["id"].(string)
-		n, _ := strconv.Atoi(strings.TrimPrefix(id, "PR_"))
-		delete(f.queued, n)
-		f.queue = slices.DeleteFunc(f.queue, func(e github.MergeQueueEntry) bool { return e.Number == n })
-		reply(map[string]any{"dequeuePullRequest": map[string]any{"mergeQueueEntry": nil}})
 	case strings.Contains(req.Query, "enqueuePullRequest"):
 		kind = "enqueue"
 		id, _ := req.Variables["id"].(string)

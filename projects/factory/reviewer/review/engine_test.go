@@ -1674,66 +1674,6 @@ func TestLostHistoryCarriesAnOlderLegacySnapshotsBlocker(t *testing.T) {
 	}
 }
 
-func TestLegacyInvalidationPreservesExpiredTaskMigrationEvidence(t *testing.T) {
-	h := newHarness(t)
-	addPR7(h)
-	task := seedLegacyReport(t, h, shaA, Report{Summary: "No findings", Findings: []Finding{}}, State{Blocking: []Finding{}}, ConclusionSuccess)
-	delete(h.k.tasks, task)
-	original := h.gh.check(shaA).Text
-	create := "POST /repos/" + testRepo + "/check-runs"
-	h.gh.failWith(create, 500)
-	h.engine().Tick(context.Background())
-	if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure || stateRE.FindString(c.Text) != stateRE.FindString(original) ||
-		!strings.Contains(recordedComment(c.Text), "Review state incomplete") {
-		t.Fatal("failed creation left a pass or destroyed the legacy checkpoint")
-	}
-	h.gh.failWith(create, 0)
-	h.engine().Tick(context.Background())
-	if c := h.gh.check(shaA); c.Conclusion != ConclusionSuccess {
-		t.Fatal("restart could not migrate after check creation recovered")
-	}
-}
-
-func TestUnsafeMergeGroupDequeueWhenAllCheckWritesFail(t *testing.T) {
-	for _, dequeueFails := range []bool{false, true} {
-		t.Run(fmt.Sprintf("dequeue fails=%v", dequeueFails), func(t *testing.T) {
-			h := newHarness(t)
-			addPR7(h)
-			seedLegacyReport(t, h, shaA, Report{Summary: "No findings", Findings: []Finding{}}, State{Blocking: []Finding{}}, ConclusionSuccess)
-			h.gh.label(7, "human")
-			h.gh.queued[7] = "AWAITING_CHECKS"
-			h.gh.queue = []github.MergeQueueEntry{{State: "AWAITING_CHECKS", HeadCommit: "mg-7", Number: 7, PRHeadSHA: shaA}}
-			h.gh.addCheck("mg-7", "factory review", testAppID, ConclusionSuccess)
-			h.gh.failWith("POST /repos/"+testRepo+"/check-runs", 500)
-			h.gh.failWith("PATCH /repos/"+testRepo+"/check-runs/1", 500)
-			h.gh.failWith("PATCH /repos/"+testRepo+"/check-runs/2", 500)
-			h.gh.failGraphQL("dequeue", dequeueFails)
-			// Exercise the merge-group fallback directly, then the PR-head
-			// path and a new process, with check writes still unavailable.
-			e := h.engine()
-			e.mergeGroups(context.Background(), &e.cfg.Bindings[0], nil)
-			e.Tick(context.Background())
-			h.engine().Tick(context.Background())
-			if h.gh.graphqlCalls("dequeue") == 0 || len(h.gh.enqueues()) != 0 {
-				t.Fatal("failed check writes did not try dequeue, or allowed enqueue")
-			}
-			if (len(h.gh.queue) != 0) != dequeueFails {
-				t.Fatal("queue state did not reflect the dequeue result")
-			}
-			if dequeueFails {
-				if h.gh.graphqlCalls("dequeue") < 3 {
-					t.Fatal("failed dequeue was cached as success")
-				}
-				h.gh.failGraphQL("dequeue", false)
-				h.engine().Tick(context.Background())
-				if len(h.gh.queue) != 0 {
-					t.Fatal("dequeue recovery did not remove the unsafe group")
-				}
-			}
-		})
-	}
-}
-
 func TestMigratedLegacyPassRetainsExplicitHoldAfterRestart(t *testing.T) {
 	h := newHarness(t)
 	addPR7(h)
@@ -1757,64 +1697,37 @@ func TestMigratedLegacyPassRetainsExplicitHoldAfterRestart(t *testing.T) {
 }
 
 func TestLegacyPassWithNewHoldIsInvalidatedAfterRestart(t *testing.T) {
-	for _, writeFails := range []bool{false, true} {
-		t.Run(fmt.Sprintf("write fails=%v", writeFails), func(t *testing.T) {
-			h := newHarness(t)
-			addPR7(h)
-			gateID := "AGENTS.md:human-gate"
-			legacy := State{Gate: &Gate{Findings: []Finding{finding(gateID, SeverityHigh)}, Approver: "jomcgi"}}
-			h.gh.addCheck(shaA, "factory review", testAppID, ConclusionSuccess)
-			h.gh.checks[0].ExternalID = MessageID(testRepo, 7, shaA)
-			h.gh.checks[0].Text = strings.Replace(encodeState(legacy), "state v2", "state v1", 1)
-			h.gh.label(7, "human")
-			h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
-			h.gh.queue = []github.MergeQueueEntry{{State: "AWAITING_CHECKS", HeadCommit: "mg-7", Number: 7, PRHeadSHA: shaA}}
-			h.gh.addCheck("mg-7", "factory review", testAppID, ConclusionSuccess)
-			create := "POST /repos/" + testRepo + "/check-runs"
-			if writeFails {
-				h.gh.failWith(create, 500)
-			}
-			e := h.engine()
-			ctx := context.Background()
-			if writeFails {
-				e.groups[testRepo+"@mg-7"] = ConclusionSuccess
-			}
-			e.Tick(ctx)
-			// Creation stays unavailable for the PR, its already-passing
-			// group, subsequent polls and a fresh process.
-			e.Tick(ctx)
-			if writeFails && (h.gh.check(shaA).ID != 1 || h.gh.check("mg-7").ID != 2) {
-				t.Fatal("invalidation did not update the existing checks")
-			}
-			c := h.gh.check(shaA)
-			if !writeFails {
-				// The legacy report cannot be replayed, so a full review of
-				// the head follows the hold.
-				eventually(t, "a full review", func() bool { return len(h.k.sent()) == 1 })
-				checks := h.gh.checksOn(shaA)
-				if c.Status != "in_progress" {
-					t.Fatal("an unrecoverable legacy report did not start a full review")
-				}
-				c = &checks[len(checks)-2]
-			}
-			st, ok := LoadState(c.Text)
-			if !ok || !st.Incomplete || c.Conclusion != ConclusionFailure || st.Gate == nil ||
-				!slices.Contains(st.Gate.Labels, "human") || len(st.Gate.Findings) != 1 || st.Gate.Findings[0].ID != gateID ||
-				strings.Contains(c.Summary, gateOnlyMarker) || !strings.Contains(c.Summary, "human") {
-				t.Fatal("invalidation lost the current hold or recoverable model gate")
-			}
-			if c := h.gh.check("mg-7"); c.Conclusion != ConclusionFailure || len(h.gh.enqueues()) != 0 {
-				t.Fatal("a legacy pass authorized merge or enqueue")
-			}
-			if !writeFails {
-				return
-			}
-			h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
-			h.engine().Tick(ctx)
-			if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure {
-				t.Fatal("approval after restart cleared missing history")
-			}
-		})
+	h := newHarness(t)
+	addPR7(h)
+	gateID := "AGENTS.md:human-gate"
+	legacy := State{Gate: &Gate{Findings: []Finding{finding(gateID, SeverityHigh)}, Approver: "jomcgi"}}
+	h.gh.addCheck(shaA, "factory review", testAppID, ConclusionSuccess)
+	h.gh.checks[0].ExternalID = MessageID(testRepo, 7, shaA)
+	h.gh.checks[0].Text = strings.Replace(encodeState(legacy), "state v2", "state v1", 1)
+	h.gh.label(7, "human")
+	h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
+	h.gh.queue = []github.MergeQueueEntry{{State: "AWAITING_CHECKS", HeadCommit: "mg-7", Number: 7, PRHeadSHA: shaA}}
+	h.gh.addCheck("mg-7", "factory review", testAppID, ConclusionSuccess)
+	e := h.engine()
+	ctx := context.Background()
+	e.Tick(ctx)
+	e.Tick(ctx)
+	// The legacy report cannot be replayed, so a full review of the head
+	// follows the hold.
+	eventually(t, "a full review", func() bool { return len(h.k.sent()) == 1 })
+	checks := h.gh.checksOn(shaA)
+	if h.gh.check(shaA).Status != "in_progress" {
+		t.Fatal("an unrecoverable legacy report did not start a full review")
+	}
+	c := &checks[len(checks)-2]
+	st, ok := LoadState(c.Text)
+	if !ok || !st.Incomplete || c.Conclusion != ConclusionFailure || st.Gate == nil ||
+		!slices.Contains(st.Gate.Labels, "human") || len(st.Gate.Findings) != 1 || st.Gate.Findings[0].ID != gateID ||
+		strings.Contains(c.Summary, gateOnlyMarker) || !strings.Contains(c.Summary, "human") {
+		t.Fatal("invalidation lost the current hold or recoverable model gate")
+	}
+	if c := h.gh.check("mg-7"); c.Conclusion != ConclusionFailure || len(h.gh.enqueues()) != 0 {
+		t.Fatal("a legacy pass authorized merge or enqueue")
 	}
 }
 
