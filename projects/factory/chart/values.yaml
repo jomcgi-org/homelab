@@ -169,9 +169,11 @@ clusterDomain: cluster.local
 # broker"). It relays the Codex harness's model calls with its own ChatGPT
 # grant, and mints GitHub App tokens per repository binding once the App
 # exists. Provider credentials exist only in its pod.
+# Top-level so a rollback to 0.64.4 accepts and ignores this switch.
+# Enable after the forwarding scope, broker and Authentik callback deploy.
+codexAdminRouteEnabled: false
+
 broker:
-  # Enable after the forwarding scope, broker and Authentik callback deploy.
-  browserRouteEnabled: false
   # A login that can only call the connector's accounting append functions.
   # Provisioned by factory-db; never use the connector owner's Secret here.
   accounting:
