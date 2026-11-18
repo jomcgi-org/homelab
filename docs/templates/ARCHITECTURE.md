@@ -8,21 +8,33 @@ Limits: 600 lines for the file, 60 lines for a section without a diagram.
 
 <Five sentences or fewer. What the domain does, for whom, and where it runs.>
 
+<!--
+The diagram marks each trust boundary: where untrusted input enters, and
+which component holds a credential.
+-->
+
 ```mermaid
 flowchart LR
-  A[caller] -- "verb or protocol" --> B[component]
-  B -- "verb or protocol" --> C[store]
+  U["caller (untrusted)"] -- "verb or protocol" --> B[component]
+  subgraph T ["trusted: holds <credential>"]
+    B -- "verb or protocol" --> C[store]
+  end
 ```
 
-| Component | Role | Code | Pin |
-| --- | --- | --- | --- |
-| <name> | <one line> | `<path>` | <version, stated only here> |
+| Component | Role | Code | Pin | Untrusted input | Credentials held |
+| --- | --- | --- | --- | --- | --- |
+| <name> | <one line> | `<path>` | <version, stated only here> | <who can send it text or code, or "none"> | <which credentials, or "none"> |
 
 ## <Component or flow>
 
 <!-- One section for each component. Present tense: what runs now. -->
 
 <What it does. Draw each flow, state machine and trust boundary.>
+
+<!--
+A sentence that names a security control gives its state: live, staged off
+or designed. "Live" means you saw it deployed.
+-->
 
 **Why.** <The reason, the option rejected, and a link to the decision.>
 
@@ -33,7 +45,7 @@ closes.
 
 | Direction | Tracks | State |
 | --- | --- | --- |
-| <outcome> | HOME-N | <planned, or staged off behind `<flag>`> |
+| <outcome> | HOME-N | <`staged off` behind `<flag>`, or `designed`> |
 
 ## Decision history
 
