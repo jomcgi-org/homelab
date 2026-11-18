@@ -10,6 +10,7 @@
     "jomcgi.dev/robots.txt",
     "jomcgi.dev/sitemap.xml",
     "jomcgi.dev/app/firecracker*",
+    "jomcgi.dev/app/frank*",
     "jomcgi.dev/app/llm-leaderboard*",
     "jomcgi.dev/artifact*",
     "jomcgi.dev/assets/*",
