@@ -18,7 +18,10 @@ py_library(
 py_test(
     name = "check_bundles_test",
     srcs = ["check_bundles_test.py"],
-    data = ["//:docs/templates/bundles.yaml"],
+    data = [
+        "//:docs/templates/ARCHITECTURE.md",
+        "//:docs/templates/bundles.yaml",
+    ],
     deps = [
         ":check_bundles_lib",
         "@pip//pytest",

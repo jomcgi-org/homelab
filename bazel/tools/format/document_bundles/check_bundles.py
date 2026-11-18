@@ -50,14 +50,34 @@ def tables(lines):
 
 
 def links(path, lines):
-    result = set()
-    for target in re.findall(
-        r"(?<!!)\[[^\]]*\]\(<?([^\s)>#]+)(?:#[^\s)>]*)?>?\)", "\n".join(lines)
-    ):
-        result.add(
-            PurePosixPath(posixpath.normpath(posixpath.join(path.parent, target)))
+    definitions = {}
+    prose = []
+    for line in lines:
+        definition = re.fullmatch(
+            r' {0,3}\[([^\]]+)\]:\s*(?:<([^>]+)>|(\S+))(?:\s+["\'(].*)?\s*', line
         )
-    return result
+        if definition:
+            label, angled, bare = definition.groups()
+            definitions.setdefault(" ".join(label.split()).casefold(), angled or bare)
+        else:
+            prose.append(line)
+    text = "\n".join(prose)
+    destinations = []
+    for match in re.finditer(
+        r"(!?)\[([^\]]+)\](?:\(<?([^\s)>]+)>?\)|\[([^\]]*)\])?", text
+    ):
+        image, label, inline, reference = match.groups()
+        if image:
+            continue
+        key = " ".join((reference or label).split()).casefold()
+        target = inline or definitions.get(key)
+        if target:
+            destinations.append(target.split("#", 1)[0])
+    return {
+        PurePosixPath(posixpath.normpath(path.parent / target))
+        for target in destinations
+        if target
+    }
 
 
 def shape(path, text, rules, files):

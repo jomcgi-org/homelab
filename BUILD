@@ -157,6 +157,9 @@ filegroup(
 )
 
 exports_files(
-    ["docs/templates/bundles.yaml"],
+    [
+        "docs/templates/ARCHITECTURE.md",
+        "docs/templates/bundles.yaml",
+    ],
     visibility = ["//bazel/tools/format/document_bundles:__pkg__"],
 )

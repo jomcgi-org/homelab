@@ -75,3 +75,26 @@ def test_collection_and_exemptions():
     assert list(report(validate(RULES, files, {path: "gateway"}), {path})) == [
         f"{path}: remove stale exemption"
     ]
+
+
+@pytest.mark.parametrize(
+    ("usage", "passes"),
+    [
+        ("[Architecture][Design]", True),
+        ("[design][]", True),
+        ("[design]", True),
+        ("[design](elsewhere.md)", False),
+        ("![design][]", False),
+        ("unused definition", False),
+    ],
+)
+def test_reference_links(usage, passes):
+    text = usage + '\n\n[design]: <./ARCHITECTURE.md#direction> "Service design"'
+    errors = list(shape(README, text, RULES["format"][README.name], {ARCH}))
+    assert (not errors) == passes
+
+
+def test_architecture_template():
+    template = P("docs/templates/ARCHITECTURE.md")
+    errors = validate(RULES, {template}, {template: Path(template).read_text()})
+    assert not errors

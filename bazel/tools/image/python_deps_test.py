@@ -1,7 +1,7 @@
 """Tests for python_deps.py — the shim binary that packages pip deps into the tools image.
 
 python_deps.py has no functions of its own; it is a shim that imports the
-pip packages that must be present in the tools image (httpx, typer) so that
+pip packages that must be present in the tools image (httpx, typer, yaml) so that
 py_image_layer can discover and package their transitive dependency trees.
 
 These tests verify that those imports are actually resolvable at test time,
@@ -14,7 +14,7 @@ import importlib
 import pytest
 
 
-@pytest.mark.parametrize("module_name", ["httpx", "typer"])
+@pytest.mark.parametrize("module_name", ["httpx", "typer", "yaml"])
 def test_dep_importable(module_name: str):
     """Verify that each pip dep declared in python_deps.py is importable at test time."""
     mod = importlib.import_module(module_name)

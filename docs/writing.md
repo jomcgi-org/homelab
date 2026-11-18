@@ -95,8 +95,12 @@ prose it replaces. Skip it for a one-component change or a version bump.
 
 ## Document types
 
-The `check_bundles.py` check in the CI Format stage and `ci lint` enforces
-`docs/templates/bundles.yaml`. Each file type answers one question. Text that answers a different question
+The CI Format stage and `ci lint` run the
+[document bundle check](../bazel/tools/format/document_bundles/check_bundles.py).
+It reads [the bundle rules](templates/bundles.yaml) and reports the path and
+missing document or required part.
+
+Each file type answers one question. Text that answers a different question
 moves to the file that owns it. To create a file, copy its template or
 follow its procedure. Do not invent a new file type: add a section to the
 type that owns the question, or ask Joe for a new row here.
