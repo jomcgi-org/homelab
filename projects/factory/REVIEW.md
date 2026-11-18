@@ -15,7 +15,7 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
 - **Connector state.** Every new external call checks the writer epoch
   first, records its attempt before sending and is idempotent by message ID.
   A new itsaplan or GitHub read on the dispatch path treats 401 and 403 as
-  retryable within the bounds in `ARCHITECTURE.md` "Connector".
+  retryable within the bounds in the [connector architecture](connector/ARCHITECTURE.md).
 - **Stops stand.** A new write that advances a work item (a round start, an
   enqueue, Done) checks the stop state first.
 - **What the agent sees.** A send that opens a session carries the issue
