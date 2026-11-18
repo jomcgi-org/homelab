@@ -125,7 +125,9 @@ def lockfile_decision(base: str, head: str) -> tuple[bool, str]:
     return False, "lockfile adds entries only; watched importers unchanged"
 
 
-def decide(changed: list[str], base_lock: str | None, head_lock: str | None) -> tuple[bool, str]:
+def decide(
+    changed: list[str], base_lock: str | None, head_lock: str | None
+) -> tuple[bool, str]:
     for path in changed:
         if path != LOCKFILE and path.startswith(TRIGGER_PATHS):
             return True, f"{path} changed"
@@ -152,7 +154,9 @@ def _show(ref: str) -> str | None:
 def main(argv: list[str]) -> int:
     try:
         base = argv[1]
-        changed = _git("diff", "--name-only", base, "HEAD", "--", LOCKFILE, *TRIGGER_PATHS).split()
+        changed = _git(
+            "diff", "--name-only", base, "HEAD", "--", LOCKFILE, *TRIGGER_PATHS
+        ).split()
         run, reason = decide(
             changed,
             _show(base) if LOCKFILE in changed else None,
