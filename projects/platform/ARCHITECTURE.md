@@ -29,7 +29,7 @@ flowchart LR
 
 On each cluster, the bootstrap parent watches a directory containing the root Application. A change to the root can therefore sync even if its previous configuration pointed at the wrong tree. The hub root selects two inventories, one for shared controllers and one for workloads. EmberVM is retired, but its Applications are still listed during removal. [Hub root](../gke-cluster/kustomization.yaml) · [Platform inventory](../platform-gke/kustomization.yaml) · [Workload inventory](../gke-apps/kustomization.yaml) · [Retirement decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6893155810)
 
-The factory root selects the platform-factory tree, which also includes workload Applications such as the factory, Hindsight and the operator landing page. Node bootstrap, ingress routes, pins and recovery procedures live with that cluster. [Factory root](../factory-cluster/kustomization.yaml) · [Application inventory](../platform-factory/kustomization.yaml) · [Factory cluster guide](../factory-cluster/README.md)
+On the factory home cluster, the root reconciles the [platform-factory inventory](../platform-factory/kustomization.yaml), including the [software-factory Application](../factory/deploy/application.yaml) that deploys kagent and itsaplan. Hindsight and the operator landing page run alongside them. Node bootstrap, ingress routes, pins and recovery procedures live with that cluster. [Factory root](../factory-cluster/kustomization.yaml) · [Factory cluster guide](../factory-cluster/README.md)
 
 ## 2. Ingress and traffic on the hub and factory home cluster
 
@@ -73,9 +73,11 @@ Argo Workflows executes the hub monolith's scheduled jobs. The hub Renovate and 
 
 ## Direction
 
+The [repository direction table](../../README.md#today-and-direction) records the deployment and identity decisions for these HOME issues.
+
 | Direction | Tracks | State |
 | --- | --- | --- |
-| Extend Kargo promotion to factory applications and feed verified Freight back to the tracker | [HOME-116](https://factory-plan.jomcgi.dev/factory/issue/HOME-116) | Designed |
+| Extend Kargo promotion to factory applications and close the corresponding HOME issue on verified Freight. Bootstrap controllers stay on ArgoCD | [HOME-116](https://factory-plan.jomcgi.dev/factory/issue/HOME-116) | Designed |
 | Give factory workloads SPIFFE identities for pod-to-pod authentication | [HOME-254](https://factory-plan.jomcgi.dev/factory/issue/HOME-254) | Designed |
 
 ## Decision history
@@ -84,9 +86,9 @@ Earlier platform decisions, including the choice of hub node pools and promotion
 
 | Decision | Date | Record |
 | --- | --- | --- |
-| Retire the former home Longhorn installation that provided replicated block storage | 2026-10-10 | [Home configuration retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
-| Retire KEDA on the former home cluster. It had no ScaledObjects or ScaledJobs | 2026-10-10 | [Home configuration retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
-| Retire the GPU operator that managed the driver on the former home's RTX 4090 node | 2026-10-10 | [Home configuration retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
-| Retire the former home's node-traffic-shaper. Cilium’s tcx attachment processed ingress before the CAKE filter could shape it | 2026-10-10 | [Home configuration retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
-| Retire the former home Cilium chart that replaced Linkerd and provided policy enforcement, WireGuard encryption and Hubble flow logs | 2026-10-10 | [Home configuration retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
+| Retire the former home Longhorn installation that provided replicated block storage | 2026-10-10 | [Former longhorn configuration](https://github.com/jomcgi-org/homelab/tree/b8582e5d2b9858c8b4e86d4fabdf8e4ddff894ae/projects/platform/longhorn) · [Retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
+| Retire KEDA on the former home cluster. It had no ScaledObjects or ScaledJobs | 2026-10-10 | [Former keda configuration](https://github.com/jomcgi-org/homelab/tree/b8582e5d2b9858c8b4e86d4fabdf8e4ddff894ae/projects/platform/keda) · [Retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
+| Retire the GPU operator that managed the driver on the former home's RTX 4090 node | 2026-10-10 | [Former nvidia-gpu-operator configuration](https://github.com/jomcgi-org/homelab/tree/b8582e5d2b9858c8b4e86d4fabdf8e4ddff894ae/projects/platform/nvidia-gpu-operator) · [Retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
+| Retire the former home's node-traffic-shaper. Cilium’s tcx attachment processed ingress before the CAKE filter could shape it | 2026-10-10 | [Former node-traffic-shaper configuration](https://github.com/jomcgi-org/homelab/tree/b8582e5d2b9858c8b4e86d4fabdf8e4ddff894ae/projects/platform/node-traffic-shaper) · [Retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
+| Retire the former home Cilium chart that replaced Linkerd and provided policy enforcement, WireGuard encryption and Hubble flow logs | 2026-10-10 | [Former cilium configuration](https://github.com/jomcgi-org/homelab/tree/b8582e5d2b9858c8b4e86d4fabdf8e4ddff894ae/projects/platform/cilium) · [Retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
 | Bootstrap the factory on the rebuilt home nodes with its own GitOps root | 2026-11-13 | [Factory cluster decision](https://github.com/jomcgi-org/homelab/issues/7817) |
