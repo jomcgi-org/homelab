@@ -207,10 +207,10 @@ export async function checkPage(
   }
 }
 
-// Each check opens its own browser context, so a few run side by side in one
-// browser. Four keeps the Job well inside its memory limit and its deadline
-// as sections add pages.
-export const TIER2_CONCURRENCY = 4;
+// Each check opens its own browser context, so two run side by side in one
+// browser. Four crashed a renderer inside the Job's 1536 MiB limit (axe on the
+// heavier pages); two keeps memory in bounds and each stage near 2 minutes.
+export const TIER2_CONCURRENCY = 2;
 
 export async function tier2(pages, concurrency = TIER2_CONCURRENCY) {
   const browser = await launchBrowser();
