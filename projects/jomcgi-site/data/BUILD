@@ -41,6 +41,7 @@ js_library(
 js_library(
     name = "snapshot_inputs",
     srcs = [
+        "hikes-page.mjs",
         "snapshot.mjs",
         "sources.json",
     ],
@@ -48,7 +49,10 @@ js_library(
         "//projects/jomcgi-site/check:__pkg__",
         "//projects/jomcgi-site/web:__pkg__",
     ],
-    deps = [":stars_summary"],
+    deps = [
+        ":hikes_freshness",
+        ":stars_summary",
+    ],
 )
 
 js_binary(

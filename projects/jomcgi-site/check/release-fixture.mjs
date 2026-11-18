@@ -12,6 +12,7 @@ import { extname, join } from "node:path";
 import { compressed, serve } from "./fixture.mjs";
 import { scopeFor } from "./scope.mjs";
 import { snapshot } from "../data/snapshot.mjs";
+import { publishHikesSummary } from "../data/hikes-page.mjs";
 
 const sources = JSON.parse(
   readFileSync(new URL("../data/sources.json", import.meta.url)),
@@ -45,6 +46,24 @@ export function matchRedirect(rules, path) {
   );
 }
 
+// One walk in the real snapshot format, so the hikes summary publishes.
+const FIXTURE_WALKS = JSON.stringify({
+  schema_version: 2,
+  fetched_at: "2020-11-17T12:00:00Z",
+  walks: [
+    {
+      id: "ben",
+      name: "Ben Vorlich from Ardlui",
+      url: "https://www.walkhighlands.co.uk/lochlomond/ben-vorlich-ardlui.shtml",
+      duration_h: 5.5,
+      forecast_fetched_at: "2020-11-17T12:00:00Z",
+      distance_km: 11,
+      ascent_m: 920,
+      hours: [],
+    },
+  ],
+});
+
 // Exercise the built release, including the production hub/Worker boundary.
 export async function serveRelease(dist, stage, { contrast = false } = {}) {
   const scope = scopeFor(stage);
@@ -63,12 +82,14 @@ export async function serveRelease(dist, stage, { contrast = false } = {}) {
     // Use the real snapshot format with fixed R2 objects, without credentials.
     await snapshot(
       sources,
-      async () => ({
-        body: Buffer.from("{}"),
+      async (bucket, key) => ({
+        body: Buffer.from(key === "walks.json" ? FIXTURE_WALKS : "{}"),
         lastModified: "Tue, 17 Nov 2020 12:00:00 GMT",
       }),
       join(dataRoot, "data"),
     );
+    // Like data/main.mjs: stamp the hikes summary after the snapshot.
+    await publishHikesSummary(join(dataRoot, "data"));
     const server = await serve((req, res) => {
       const url = new URL(req.url, "http://fixture");
       let path = url.pathname;
