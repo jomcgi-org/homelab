@@ -278,6 +278,19 @@ def eventually(check, timeout=5.0):
             time.sleep(0.2)
 
 
+def wait_for_held_write(page, routes):
+    """Wait for interception, which can follow Playwright's request event."""
+
+    def captured():
+        # Sync Playwright dispatches route callbacks while an API call pumps
+        # its event loop. A Python-only predicate would leave the route queued.
+        page.evaluate("() => {}")
+        assert routes, "The write has not reached its route handler"
+
+    eventually(captured)
+    assert len(routes) == 1, f"Expected one pending write, observed {len(routes)}"
+
+
 def composer(page):
     return page.get_by_role("region", name="Message").get_by_role("textbox").first
 

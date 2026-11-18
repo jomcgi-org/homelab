@@ -17,6 +17,19 @@ py_test(
     srcs = [
         "rehearsal_report.py",
         "rehearsal_report_test.py",
+        "run.py",
+    ],
+    data = ["budgets.json"],
+    imports = ["."],
+    deps = ["@pip//pytest"],
+)
+
+py_test(
+    name = "stability_test",
+    srcs = [
+        "rehearsal_report.py",
+        "stability.py",
+        "stability_test.py",
     ],
     data = ["budgets.json"],
     imports = ["."],

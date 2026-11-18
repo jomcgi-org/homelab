@@ -71,6 +71,63 @@ fresh databases, linking the `<scenario>/<width>` reports. Any missing report,
 failed check, console error or missed budget fails it. `--viewport 390` puts
 all seats at that width; without it, the DM is on desktop.
 
+The matrix log includes each failed check's name and first error line, prefixed
+with its scenario and width. The JSON and Markdown artifacts keep the full
+error. An incomplete check inventory does not hide the original assertion.
+
+The acceptance criteria for [HOME-223](https://factory-plan.jomcgi.dev/factory/issue/HOME-223)
+are recorded here so a reviewer can assess the repair without access to the
+private tracker. The goal is that the journey matrix fails only when Grimoire
+behaviour breaks. The reported failures were the 390px session on unrelated
+[PR #8175](https://github.com/jomcgi-org/homelab/pull/8175) and
+[PR #8165](https://github.com/jomcgi-org/homelab/pull/8165):
+
+| Required check | Reported failure | Synchronization corrected |
+| --- | --- | --- |
+| Concurrent sheet edits merge without loss and stale saves are rejected | Expected INT 20; observed 18 | [Keep interception through the rejected save's history refresh](rehearse_sheet_conflicts.py), until the editor shows INT 20 and retains the local DEX edit. |
+| Repeated Enter while campaign creation is pending creates exactly one campaign | The new campaign article was absent | [Keep interception and count writes through the lobby refresh](rehearse_submission.py), until the new article appears and the backend contains exactly one campaign. |
+| Repeated Enter while a dice roll is pending creates exactly one roll | The roll did not appear in the feed ("Pending keyboard roll") | [Keep interception and count writes until the roll is in the feed and the backend](rehearse_submission.py), the same wait as the campaign check. |
+
+The checks above run in every session journey: the two cold-start sessions
+(`cold-start-1/`, `cold-start-2/`) and the matrix sessions. So the same waits
+also fix the random "cold-start run 1" failures.
+
+Twenty consecutive phone sessions do not fit in one `pr-checks` job: a run
+with that gate disconnected after 70 minutes (BuildBuddy invocation
+`7cb04327-7803-4242-90a1-2bea146f8d22`). HOME-369 gathers that evidence with an
+on-demand run instead. `ci.sh` runs `stability.py` when
+`GRIMOIRE_CHECK_STABILITY=1`, with the same Python environment, pinned browser
+and built bundle as the matrix. Each launch runs all 53 session checks with a
+fresh database. The first failure stops the streak; no attempt is retried. To
+run it locally:
+
+```bash
+GRIMOIRE_CHECK_STABILITY=1 GRIMOIRE_EVIDENCE_DIR=/tmp/grimoire-ci-evidence \
+  projects/monolith/dev/grimoire/ci.sh
+```
+
+`stability/report.json` records every attempt and its child report. It passes
+only with twenty complete, passing sessions from the current clean source SHA
+and Playwright's bundled Chromium version. Missing reports, skipped checks,
+stale evidence, another browser, console errors and missed budgets fail it.
+`stability.log` prints the streak and each failure's first error line.
+
+`stability/report.md` records the same source SHA, browser versions and every
+attempt in a portable summary. It names both HOME-223 checks and distinguishes
+incomplete runs, failed attempts and twenty passes. `ci.sh` also prints this
+summary in the job log and `stability.log`. Each row identifies its child
+report; those reports remain necessary to verify the complete check inventory.
+
+Pending keyboard writes wait for the intercepted request and its successful
+response, then assert the created object in the UI and backend while counting
+duplicate writes. The request event can precede its route callback, so the
+rehearsal also waits for the captured route. Sheet edits bring the editing tab
+forward, commit the number on blur, and wait for the save response and clean
+editor state before the next edit. A fixed delay or an earlier “Draft saved”
+toast cannot mark completion. Both checks keep their interceptors installed
+until the resulting UI refresh completes: removing the last route immediately
+after fulfilling the write can race its follow-up read.
+
 There are 53 required session checks and nine invitation checks. New journeys
 cover feedback, sheet edits across tabs and conflicts, reassignment,
 disadvantage, fact disputes, shared pins, read-aloud, first-read Retry, pending

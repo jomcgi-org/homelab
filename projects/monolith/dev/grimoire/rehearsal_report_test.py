@@ -12,6 +12,7 @@ from rehearsal_report import (
     expect_network_diagnostic,
     finish_report,
     new_report,
+    print_failure_summary,
     record_console,
 )
 
@@ -220,7 +221,106 @@ def test_aggregate_rejects_missing_matrix_cell_even_when_all_children_pass(tmp_p
     assert len(aggregate["failed_checks"]) == 3
 
 
-@pytest.mark.parametrize("payload", [{"passed": True, "checks": []}, []])
+def test_matrix_logs_original_assertions_even_when_checks_did_not_complete(
+    tmp_path, monkeypatch, capsys
+):
+    import run
+
+    budgets = json.loads(Path(__file__).with_name("budgets.json").read_text())
+    failed_names = [
+        "Concurrent sheet edits merge without loss and stale saves are rejected",
+        "Repeated Enter while campaign creation is pending creates exactly one campaign",
+    ]
+    # Drive the same --all entry point as ci.sh, replacing only its child
+    # processes. A failing child still lets the other three cells run.
+    launched = []
+
+    class Child:
+        def __init__(self, command, **kwargs):
+            width = int(command[command.index("--viewport") + 1])
+            mode = "join-links" if "--join-links" in command else "session"
+            directory = Path(command[command.index("--output") + 1])
+            report = new_report(mode, width)
+            report["checks"] = list(budgets[mode])
+            report["passed"] = (mode, width) != ("session", 390)
+            self.status = 0 if report["passed"] else 1
+            if self.status:
+                for name, error in zip(
+                    failed_names,
+                    (
+                        "Locator expected to have Value '20'",
+                        "Locator expected to be visible",
+                    ),
+                ):
+                    report["checks"].remove(name)
+                    report["failed_checks"].append(
+                        {
+                            "check": name,
+                            "observed": f"\n{error}\nCall log:\n  more detail",
+                        }
+                    )
+            (directory / "report.json").write_text(json.dumps(report))
+            launched.append((mode, width))
+
+        def wait(self, timeout):
+            return self.status
+
+    (tmp_path / "initdb").touch()
+    (tmp_path / "index.html").touch()
+    monkeypatch.setenv("GRIMOIRE_PG_BIN", str(tmp_path))
+    monkeypatch.setenv("GRIMOIRE_WEB_DIR", str(tmp_path))
+    monkeypatch.setattr(run.subprocess, "Popen", Child)
+    output = tmp_path / "evidence"
+    monkeypatch.setattr(
+        run.sys, "argv", ["run.py", "--rehearse", "--all", "--output", str(output)]
+    )
+    with pytest.raises(SystemExit, match="Grimoire journey matrix failed"):
+        run.main()
+    log = capsys.readouterr().out
+    assert len(launched) == 4
+    assert (
+        f"FAIL session at 390px: {failed_names[0]}: Locator expected to have Value '20'"
+        in log
+    )
+    assert (
+        f"FAIL session at 390px: {failed_names[1]}: Locator expected to be visible"
+        in log
+    )
+    assert "Required journey inventory is incomplete" in log
+    assert "more detail" not in log
+    artifact = json.loads((output / "report.json").read_text())
+    assert artifact["passed"] is False
+    assert "more detail" in artifact["failed_checks"][0]["observed"]
+
+
+def test_failure_summary_includes_non_assertion_gate_failures(capsys):
+    report = new_report("session", 390)
+    report.update(
+        errors=["Unhandled page error\nstack"],
+        console_errors=["Unexpected console error\nstack"],
+        capture_errors=["Could not save trace\nstack"],
+        failure="Journey stopped\nstack",
+        request_budget_seconds=2,
+        slow_requests=[{"method": "GET", "url": "/lobby", "seconds": 3}],
+    )
+    print_failure_summary(report)
+    assert capsys.readouterr().out.splitlines() == [
+        "FAIL Page error: Unhandled page error",
+        "FAIL Console error: Unexpected console error",
+        "FAIL Evidence capture: Could not save trace",
+        "FAIL Request budget: GET /lobby: 3.000s exceeds 2.000s",
+        "FAIL Journey exception: Journey stopped",
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"passed": True, "checks": []},
+        {"passed": False, "checks": [], "failed_checks": [{}]},
+        [],
+    ],
+)
 def test_aggregate_rejects_incomplete_or_nonobject_child_report(tmp_path, payload):
     cells = []
     for mode in ("session", "join-links"):
