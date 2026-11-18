@@ -20,7 +20,8 @@ func TestProvenanceMigrationLeavesHistoricalRunsNull(t *testing.T) {
 	_, err := st.DB.Exec(`DROP FUNCTION public.record_reviewer_run(text,text,text,text,text,text,text,text,text);
  ALTER TABLE run DROP COLUMN model,DROP COLUMN reasoning_effort,DROP COLUMN arm,DROP COLUMN base_sha,
  DROP COLUMN prompt_hash,DROP COLUMN task_class,DROP COLUMN reviewer_message_id,DROP COLUMN guidance_system_prompt,DROP COLUMN provenance_required;
- ALTER TABLE delivery_attempt DROP COLUMN rendered_prompt;
+ ALTER TABLE delivery_attempt DROP COLUMN rendered_prompt,DROP COLUMN model,DROP COLUMN reasoning_effort,
+ DROP COLUMN arm,DROP COLUMN base_sha,DROP COLUMN prompt_hash,DROP COLUMN task_class,DROP COLUMN guidance_system_prompt,DROP COLUMN execution_possible;
  DELETE FROM schema_migrations WHERE version='20261118070000_run_provenance'`)
 	if err != nil {
 		t.Fatal(err)

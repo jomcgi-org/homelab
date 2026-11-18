@@ -1551,6 +1551,12 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 		return err
 	}
 	text, err := e.prepareProvenance(ctx, r, wi, b, a)
+	if errors.Is(err, errLegacyRuntime) {
+		return e.recoverHeld(ctx, r, wi, a, recoveryLifecycle)
+	}
+	if errors.Is(err, errRuntimeChanged) {
+		return e.replaceRuntimeAttempt(ctx, r, wi, b, a)
+	}
 	if err != nil {
 		return err
 	}

@@ -18,15 +18,34 @@ type branchReader interface {
 	BranchHead(context.Context, string, string) (string, error)
 }
 
+var (
+	errLegacyRuntime  = errors.New("legacy session requires fenced replacement for verified provenance")
+	errRuntimeChanged = errors.New("unaccepted attempt runtime changed")
+)
+
 func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.WorkItem, b *Binding, a *store.Attempt) (string, error) {
-	if a.RenderedPrompt != "" {
-		return a.RenderedPrompt, nil
-	}
 	text := taskText(r, wi, b, a)
 	// Runtime is mandatory in production config. Old admitted runs retain NULL
 	// provenance; isolated engine fixtures may omit the runtime dependency.
 	if !r.ProvenanceRequired || b.Runtime == nil {
 		return text, nil
+	}
+	runtime := *b.Runtime
+	var err error
+	if a.ContextID != "" {
+		runtime, err = e.st.SessionRuntime(ctx, a.KagentNamespace, a.ContextID, runtime)
+		if errors.Is(err, sql.ErrNoRows) {
+			err = e.verifyLegacyRuntime(ctx, r, wi, a)
+		}
+		if err != nil {
+			return "", err
+		}
+	}
+	if a.RenderedPrompt != "" {
+		if provenance.New(runtime, a.Provenance.BaseSHA, a.RenderedPrompt, a.Provenance.TaskClass) != a.Provenance {
+			return "", errRuntimeChanged
+		}
+		return a.RenderedPrompt, nil
 	}
 	gh, ok := e.gh.(branchReader)
 	if !ok {
@@ -73,16 +92,6 @@ func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.
 	if err != nil {
 		return "", err
 	}
-	runtime := *b.Runtime
-	if a.ContextID != "" {
-		runtime, err = e.st.SessionRuntime(ctx, a.KagentNamespace, a.ContextID, runtime)
-		if errors.Is(err, sql.ErrNoRows) {
-			err = e.verifyLegacyRuntime(ctx, r, wi, a)
-		}
-		if err != nil {
-			return "", err
-		}
-	}
 	text += fmt.Sprintf("\nWorktree starting commit: %s\nStart the worktree at this exact commit before editing. Preserve the assigned work branch name and any uncommitted work.\n", base)
 	p := provenance.New(runtime, base, text, class)
 	if err := e.st.RecordProvenance(ctx, e.w, a, p, runtime.SystemPrompt, text); err != nil {
@@ -115,7 +124,29 @@ func (e *Engine) verifyLegacyRuntime(ctx context.Context, r *store.Run, wi *stor
 		return err
 	}
 	if session == nil || revision == "" || session.PreparedRevision != revision {
-		return errors.New("legacy session uses an unrecorded Agent revision; a fresh session is required")
+		return errLegacyRuntime
 	}
 	return nil
+}
+
+// A ready attempt has never been accepted. Retire its immutable receipt and
+// allocate a new message when runtime inputs change. AttemptTx fences stops,
+// cancellation, reassignment and writer takeover; ambiguous calls never enter.
+func (e *Engine) replaceRuntimeAttempt(ctx context.Context, r *store.Run, wi *store.WorkItem, b *Binding, a *store.Attempt) error {
+	if a.State != store.AttemptSending {
+		return store.ErrAttemptChanged
+	}
+	var next *store.Attempt
+	err := e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
+		if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, "runtime_changed", errRuntimeChanged.Error()); err != nil {
+			return err
+		}
+		var err error
+		next, err = e.record(ctx, tx, r, wi, a.Kind, fmt.Sprintf("runtime-after-%d", a.ID), a.Context)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	return e.issue(ctx, r, wi, b, next)
 }

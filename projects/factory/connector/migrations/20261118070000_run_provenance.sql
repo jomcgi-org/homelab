@@ -1,5 +1,5 @@
 -- HOME-245: unknown historical inputs remain NULL. Dispatch snapshots inputs
--- before the first send; transport redelivery cannot replace that snapshot.
+-- before each send. Once execution is possible, the run snapshot is immutable.
 ALTER TABLE run
     ADD COLUMN provenance_required boolean NOT NULL DEFAULT false,
     ADD COLUMN guidance_system_prompt text,
@@ -11,7 +11,22 @@ ALTER TABLE run
     ADD COLUMN task_class text,
     ADD COLUMN reviewer_message_id text UNIQUE;
 ALTER TABLE run ALTER COLUMN provenance_required SET DEFAULT true;
-ALTER TABLE delivery_attempt ADD COLUMN rendered_prompt text;
+ALTER TABLE delivery_attempt
+    ADD COLUMN rendered_prompt text,
+    ADD COLUMN guidance_system_prompt text,
+    ADD COLUMN model text,
+    ADD COLUMN reasoning_effort text,
+    ADD COLUMN arm text,
+    ADD COLUMN base_sha text,
+    ADD COLUMN prompt_hash text,
+    ADD COLUMN task_class text;
+ALTER TABLE delivery_attempt DROP CONSTRAINT delivery_attempt_error_class_check;
+ALTER TABLE delivery_attempt ADD CONSTRAINT delivery_attempt_error_class_check
+    CHECK (error_class IN ('engineering', 'credential', 'quota', 'canceled', 'abandoned', 'bounded_output', 'runtime_changed'));
+-- Historical sends might have executed. New attempts become possible before
+-- Send, and only a definitive refusal can clear that witness.
+ALTER TABLE delivery_attempt ADD COLUMN execution_possible boolean NOT NULL DEFAULT true;
+ALTER TABLE delivery_attempt ALTER COLUMN execution_possible SET DEFAULT false;
 
 ALTER TABLE run DROP CONSTRAINT run_origin_check;
 ALTER TABLE run ADD CONSTRAINT run_origin_check

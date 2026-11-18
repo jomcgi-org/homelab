@@ -830,6 +830,7 @@ const (
 
 // Attempt is one send to kagent.
 type Attempt struct {
+	Provenance      provenance.Record
 	RenderedPrompt  string
 	ID              int64
 	RunID           int64
@@ -868,7 +869,9 @@ const attemptCols = `id, run_id, seq, run_attempt, work_item_epoch, decision_id,
 	kagent_namespace, kagent_agent, coalesce(context_id, ''), coalesce(task_id, ''), state,
 	coalesce(error_class, ''), coalesce(error, ''), writer_epoch, issues,
 	coalesce(first_sent_at, 'epoch'::timestamptz), coalesce(sent_at, 'epoch'::timestamptz), coalesce(context, ''),
-	event_count, event_at, coalesce(rendered_prompt, '')`
+	event_count, event_at, coalesce(rendered_prompt, ''),
+	coalesce(model, ''), coalesce(reasoning_effort, ''), coalesce(arm, ''),
+	coalesce(base_sha, ''), coalesce(prompt_hash, ''), coalesce(task_class, '')`
 
 func scanAttempt(row interface{ Scan(...any) error }) (*Attempt, error) {
 	a := &Attempt{}
@@ -876,7 +879,9 @@ func scanAttempt(row interface{ Scan(...any) error }) (*Attempt, error) {
 	err := row.Scan(&a.ID, &a.RunID, &a.Seq, &a.RunAttempt, &a.WorkItemEpoch, &a.DecisionID, &a.Kind,
 		&a.MessageID, &a.KagentNamespace, &a.KagentAgent, &a.ContextID, &a.TaskID, &a.State,
 		&a.ErrorClass, &a.Error, &a.WriterEpoch, &a.Issues, &a.FirstSentAt, &a.SentAt, &a.Context,
-		&a.EventCount, &eventAt, &a.RenderedPrompt)
+		&a.EventCount, &eventAt, &a.RenderedPrompt,
+		&a.Provenance.Model, &a.Provenance.ReasoningEffort, &a.Provenance.Arm,
+		&a.Provenance.BaseSHA, &a.Provenance.PromptHash, &a.Provenance.TaskClass)
 	a.EventAt = eventAt.Time
 	return a, err
 }
@@ -1131,7 +1136,7 @@ func (s *Store) MarkIssued(ctx context.Context, w *Writer, a *Attempt, expectedR
 			}
 		}
 		res, err := tx.ExecContext(ctx, `
-			UPDATE delivery_attempt a SET state = 'ambiguous', sent_at = $2,
+			UPDATE delivery_attempt a SET state = 'ambiguous', execution_possible = true, sent_at = $2,
 				first_sent_at = coalesce(first_sent_at, $2), issues = issues + 1
 			FROM run r JOIN work_item w ON w.id = r.work_item_id
 			WHERE a.id = $1 AND a.state = 'sending' AND r.id = a.run_id
@@ -1161,7 +1166,7 @@ func (s *Store) MarkIssued(ctx context.Context, w *Writer, a *Attempt, expectedR
 // A crash before this write leaves ambiguity and therefore cannot resend.
 func (s *Store) MarkNotAccepted(ctx context.Context, a *Attempt) error {
 	_, err := s.DB.ExecContext(ctx, `
-		UPDATE delivery_attempt SET state = 'sending'
+		UPDATE delivery_attempt SET state = 'sending', execution_possible = false
 		WHERE id = $1 AND state = 'ambiguous'`, a.ID)
 	if err == nil {
 		a.State = AttemptSending

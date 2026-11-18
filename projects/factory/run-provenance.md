@@ -20,9 +20,11 @@ flowchart LR
 The chart renders each dispatch runtime from the Agent model and system prompt
 and the broker effort setting. The arm is `control`; this change does not route
 experiments. A coder continuation retains the model, arm and system prompt
-recorded for its session. The broker applies the current effort to every call. A session without an
-earlier snapshot can use current settings only if kagent confirms its pinned
-revision is still current; otherwise dispatch waits for a fresh session.
+recorded for its session. The broker applies the current effort to every call.
+A session without an earlier snapshot can use current settings only if kagent
+confirms its pinned revision is still current. Otherwise the connector records
+a recovery hold. The existing operator fencing attestation permits a fresh
+session with verified provenance; no retry guesses the old model.
 
 For a new coder branch, `base_sha` is the resolved base branch commit. For an
 existing work branch, including rework, it is the resolved work branch commit.
@@ -34,9 +36,13 @@ that their read-only checkout inspects.
 `prompt_hash` is lowercase SHA-256 of the rendered Agent system prompt, one NUL
 byte, and the exact rendered task text. It includes issue context and revision
 feedback, so it identifies the complete input, not just a template filename.
-The coder attempt stores its rendered text for identical resends after a
-connector restart. Run columns describe the first dispatch; engineering retries
-remain delivery attempts of that run. Rework has a separate run and snapshot.
+Each coder attempt stores its rendered text and six provenance values. Resends
+after a connector restart check the runtime again. A changed runtime retires a
+definitively unaccepted attempt and records a new message and receipt. The old
+attempt remains readable. An ambiguous send is reconciled without replacement.
+Run columns describe the first execution: only a run whose attempts were all
+definitively unaccepted can replace its proposed snapshot. Engineering retries
+retain their own attempt receipts. Rework has a separate run and snapshot.
 
 `task_class` is a sorted JSON array of the issue label names, or `unclassified`
 when there are no labels or no linked issue. Multiple labels remain distinct.
@@ -55,6 +61,10 @@ ServiceAccount and checks the repository binding. Its existing accounting role
 can call only the append function, with no direct table or sequence access.
 The message ID deduplicates retries. Conflicting provenance for the same ID
 fails instead of replacing the earlier record.
+Goal checks recover an existing task by its stable prompt MAC and retain that
+task's original receipt. A new task's message ID also includes a MAC of all
+receipt inputs, so label edits and runtime changes cannot collide with an older
+receipt that has no recoverable task.
 
 ## Rollout verification
 

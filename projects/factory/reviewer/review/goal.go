@@ -345,11 +345,35 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 		Parts:     []kagent.Part{{Text: text}},
 		Metadata:  map[string]any{"factory.jomcgi.dev/repository": b.repo(), "factory.jomcgi.dev/pull-request": pr.Number, "factory.jomcgi.dev/head": pr.HeadSHA},
 	}
-	if err := e.recordProvenance(ctx, b, in, &msg, pr.HeadSHA); err != nil {
-		l.WarnContext(ctx, "goal check unavailable", "reason", "run_provenance")
-		return nil
-	}
 	var t *kagent.Task
+	if e.cfg.Runs != nil {
+		var originalID string
+		t, originalID, err = e.existingGoalTask(ctx, b, msg.MessageID)
+		if err != nil {
+			l.WarnContext(ctx, "goal check unavailable", "reason", "task_lookup")
+			return nil
+		}
+		if t != nil {
+			msg.MessageID = originalID
+		} else {
+			record, err := reviewProvenance(b, in, &msg, pr.HeadSHA)
+			if err != nil {
+				l.WarnContext(ctx, "goal check unavailable", "reason", "run_provenance")
+				return nil
+			}
+			// Include every immutable receipt field. Use a MAC because task
+			// class and prompt hashes derive from private issue evidence.
+			data, _ := json.Marshal(record)
+			mac.Reset()
+			mac.Write(data)
+			msg.MessageID += "/inputs/" + hex.EncodeToString(mac.Sum(nil)[:16])
+			record.MessageID = msg.MessageID
+			if err := e.cfg.Runs.RecordReview(ctx, record); err != nil {
+				l.WarnContext(ctx, "goal check unavailable", "reason", "run_provenance")
+				return nil
+			}
+		}
+	}
 	why := "timeout"
 	for deadline := e.cfg.Now().Add(e.cfg.Timeout); ctx.Err() == nil && e.cfg.Now().Before(deadline); e.sleep(ctx, e.cfg.TaskPoll) {
 		var err error
