@@ -865,6 +865,16 @@ The webhook URL comes from 1Password item `factory-alerts-discord` in vault
 `k8s-homelab`, field `webhook-url`. To create it, in the Discord channel open
 Edit Channel, Integrations, Webhooks, New Webhook, and copy the URL. If the
 item is missing, Alertmanager starts but logs a failed send for each alert.
+After a relay release, verify the pull in the factory namespace. The ready pod
+should report the release tag from the Deployment and a resolved image ID.
+
+```bash
+export KUBECONFIG=~/.kube/factory.yaml
+kubectl -n prometheus rollout status deployment/alert-relay
+kubectl -n prometheus get pod -l app.kubernetes.io/name=alert-relay \
+  -o custom-columns='POD:.metadata.name,IMAGE:.spec.containers[0].image,IMAGE_ID:.status.containerStatuses[0].imageID,READY:.status.containerStatuses[0].ready'
+```
+
 To test the path:
 
 ```bash

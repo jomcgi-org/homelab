@@ -22,6 +22,8 @@ apko_image(
     arm64 = False,
     config = "apko.yaml",
     contents = "@factory_alert_relay_lock//:contents",
+    # Bump with the Kustomize Deployment when releasing a changed relay.
+    release_tags = ["v2"],
     repository = "ghcr.io/jomcgi/homelab/projects/factory/alert-relay",
     tars = [
         ":alert_relay_tar_amd64",

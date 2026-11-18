@@ -41,7 +41,9 @@ func TestDelivery(t *testing.T) {
 				fmt.Fprintf(w, `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"job":"api"},"values":[[%d,"1"],[%d,"2"]]}]}}`, start, end)
 			}))
 			defer prom.Close()
+			var paths []string
 			discord := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.URL.Path)
 				if err := r.ParseMultipartForm(1 << 20); err != nil {
 					t.Error(err)
 					return
@@ -51,9 +53,9 @@ func TestDelivery(t *testing.T) {
 					t.Error(err)
 					return
 				}
-				want := embed{Title: "🔴 Queue stalled", Description: "Restart worker\n[Runbook](https://example.org/runbook)\nStarted <t:100:R>", Color: 0xe74c3c}
+				want := embed{Title: "🔴 Quota exhausted", Description: "Reset the grant\nPrimary resets at 14:30 UTC. Weekly resets Friday.\n[Runbook](https://example.org/runbook)\nStarted <t:100:R>", Color: 0xe74c3c}
 				if tc.status == "resolved" {
-					want = embed{Title: "🟢 Queue stalled · resolved after 2m0s", Color: 0x57f287}
+					want = embed{Title: "🟢 Quota exhausted · resolved after 2m0s", Color: 0x57f287}
 				}
 				if tc.graph {
 					want.Image = map[string]string{"url": "attachment://graph.png"}
@@ -76,10 +78,23 @@ func TestDelivery(t *testing.T) {
 				}
 			}))
 			defer discord.Close()
-			a := alert{Status: tc.status, StartsAt: time.Unix(100, 0), EndsAt: time.Unix(220, 0), Labels: map[string]string{"severity": "critical"}, Annotations: map[string]string{"summary": "Queue stalled", "action": "Restart worker", "runbook": "https://example.org/runbook", "graph": "up"}}
-			r := relay{http.DefaultClient, prom.URL, discord.URL}
+			a := alert{Status: tc.status, StartsAt: time.Unix(100, 0), EndsAt: time.Unix(220, 0), Labels: map[string]string{"severity": "critical"}, Annotations: map[string]string{"summary": "Quota exhausted", "action": "Reset the grant", "description": "Primary resets at 14:30 UTC. Weekly resets Friday.", "runbook": "https://example.org/runbook", "graph": "up"}}
+			file := t.TempDir() + "/webhook-url"
+			r := relay{http.DefaultClient, prom.URL, file}
+			if err := os.WriteFile(file, []byte(discord.URL+"/old"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			if err := r.deliver(context.Background(), a); err != nil {
 				t.Fatal(err)
+			}
+			if err := os.WriteFile(file, []byte(discord.URL+"/new"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.deliver(context.Background(), a); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(paths, []string{"/old", "/new"}) {
+				t.Fatalf("webhook paths = %v", paths)
 			}
 			if queried != (tc.status == "firing") {
 				t.Error("unexpected query count")

@@ -65,7 +65,12 @@ func message(a alert, graph bool) embed {
 		budget -= linkLen + 1
 	}
 	if v := a.Annotations["action"]; v != "" {
-		lines = append(lines, clip(v, budget))
+		action := clip(v, budget)
+		lines = append(lines, action)
+		budget -= len(utf16.Encode([]rune(action))) + 1
+	}
+	if detail := a.Annotations["description"]; detail != "" && budget > 0 {
+		lines = append(lines, clip(detail, budget))
 	}
 	if includeLink {
 		lines = append(lines, runbook)
@@ -79,8 +84,8 @@ func message(a alert, graph bool) embed {
 }
 
 type relay struct {
-	client              *http.Client
-	prometheus, discord string
+	client                  *http.Client
+	prometheus, webhookFile string
 }
 
 func (r relay) deliver(ctx context.Context, a alert) error {
@@ -114,7 +119,11 @@ func (r relay) deliver(ctx context.Context, a alert) error {
 	if err = w.Close(); err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", r.discord, &body)
+	webhook, err := os.ReadFile(r.webhookFile)
+	if err != nil {
+		return errors.New("cannot read Discord webhook file")
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimSpace(string(webhook)), &body)
 	if err != nil {
 		return errors.New("invalid Discord URL")
 	}
@@ -160,11 +169,7 @@ func main() {
 	prom := flag.String("prometheus-url", "http://prometheus:9090", "Prometheus base URL")
 	file := flag.String("discord-webhook-file", "/etc/alertmanager/discord/webhook-url", "Discord webhook URL file")
 	flag.Parse()
-	b, err := os.ReadFile(*file)
-	if err != nil {
-		log.Fatal(err)
-	}
-	r := relay{&http.Client{Timeout: 15 * time.Second}, *prom, strings.TrimSpace(string(b))}
+	r := relay{&http.Client{Timeout: 15 * time.Second}, *prom, *file}
 	server := http.Server{Addr: *addr, Handler: r, ReadHeaderTimeout: 5 * time.Second}
 	log.Fatal(server.ListenAndServe())
 }
