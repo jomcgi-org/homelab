@@ -281,7 +281,11 @@ try {
       await button("Load interactive map").click();
       await page.locator("canvas.maplibregl-canvas").waitFor();
       await check("map");
-      assert.ok(requests.some((url) => /maplibre-gl-worker/.test(url)));
+      assert.ok(
+        requests.some((url) =>
+          /\/assets\/maplibre-gl-worker-csp2-[\w-]+\.js$/.test(url),
+        ),
+      );
       assert.ok(
         requests.includes("https://tiles.openfreemap.org/styles/liberty"),
       );

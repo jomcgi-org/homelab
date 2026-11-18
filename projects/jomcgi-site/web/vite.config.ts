@@ -20,6 +20,18 @@ export default defineConfig({
   plugins: [blogContent(), svelte(), factoryFixtures()],
   esbuild: { jsx: "automatic" },
   optimizeDeps: { esbuildOptions: { target: "es2022" } },
+  worker: {
+    rollupOptions: {
+      output: {
+        // The CSP travels with the immutable worker response. Rotate its URL
+        // when the policy changes, even when the worker bytes are identical.
+        entryFileNames: ({ name }) =>
+          name === "maplibre-gl-worker"
+            ? "assets/[name]-csp2-[hash].js"
+            : "assets/[name]-[hash].js",
+      },
+    },
+  },
   build: {
     outDir: "dist",
     manifest: true,
