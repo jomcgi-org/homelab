@@ -16,3 +16,15 @@ sh_test(
         "@promtool_3_15_1_linux_amd64//:binary",
     ],
 )
+
+filegroup(
+    name = "kustomize_base",
+    srcs = glob(
+        [
+            "*.yaml",
+            "*.yml",
+        ],
+        exclude = ["rules_test.yml"],
+    ),
+    visibility = ["//projects/platform-factory/prometheus/stack:__pkg__"],
+)
