@@ -1893,6 +1893,8 @@ Grafana. The kagent HTTPRoute has its own SecurityPolicy because it also forward
 the access token. Both policies verify the ID token against the factory-edge
 issuer and audience and allow the request only when the token’s `groups` array
 contains `authentik Admins`, the group bound to the Authentik application.
+That group is the operators group the edge requires
+([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-291#comment-3907)).
 A signed-in user whose token lacks that membership receives HTTP 403 at Envoy.
 
 The HOME-291 integration test installs the production HTTPRoutes in kind with
