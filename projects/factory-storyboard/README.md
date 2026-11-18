@@ -110,25 +110,18 @@ publisher yet. [HOME-414](https://factory-plan.jomcgi.dev/factory/issue/HOME-414
 adds the source reads, the statistics, the 5-minute workload, its bucket entry
 and the site source entry
 ([split under Joe's rule](https://factory-plan.jomcgi.dev/factory/issue/HOME-157#comment-3904)).
-Its third Done when criterion holds the rollout checks: after rollout,
-`https://factory-data.jomcgi.dev/manifest.json` is at most 7 minutes old, and
-`https://next.jomcgi.dev/data/factory/manifest.json` names objects that
-answer 200. The check above verifies both.
+Its third Done when criterion holds the rollout checks
+([record](https://factory-plan.jomcgi.dev/factory/issue/HOME-414#comment-4162)):
+after rollout, `https://factory-data.jomcgi.dev/manifest.json` is at most 7
+minutes old, and `https://next.jomcgi.dev/data/factory/manifest.json` names
+objects that answer 200. The check above verifies both.
 
 ### Rollback of the database read access
 
-Reverting this change leaves the applied view, its grant and the login role
-in PostgreSQL. To remove the access, run this as the database owner on
-`factory_connector`:
-
-```sql
-REVOKE SELECT ON public.storyboard_delivery FROM factory_storyboard;
-REVOKE USAGE ON SCHEMA public FROM factory_storyboard;
-DROP VIEW IF EXISTS public.storyboard_delivery;
-ALTER ROLE factory_storyboard NOLOGIN;
-```
-
-Then set the `factory_storyboard` role to `ensure: absent` in
-`projects/platform-factory/factory-db/resources/cluster.yaml`. The
-`factory-db-storyboard-login` Secret has prune and delete protection, so
-delete it by hand after the role is gone.
+To stop the storyboard reading the connector database, set `login: false`
+for `factory_storyboard` in
+`projects/platform-factory/factory-db/resources/cluster.yaml`. CloudNativePG
+applies managed-role changes, so no manual SQL is needed. The
+`storyboard_delivery` view and its grant stay, so a later redeploy works
+without a new migration. To remove the grant as well, add a forward
+migration that revokes it.
