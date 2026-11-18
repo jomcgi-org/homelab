@@ -1,0 +1,12 @@
+[
+  {
+    "path": "/data/stars/latest.json",
+    "timestampField": "generatedAt",
+    "maxAgeSeconds": 3600
+  },
+  {
+    "path": "/data/hikes/latest.json",
+    "timestampField": "generatedAt",
+    "maxAgeSeconds": 3600
+  }
+]

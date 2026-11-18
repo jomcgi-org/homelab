@@ -2,6 +2,7 @@
 packages:
   - projects/design-system
   - projects/factory-landing/web
+  - projects/jomcgi-site/check
   - projects/jomcgi-site/web
   - projects/jomcgi-site/wrangler
   - projects/monolith/frontend

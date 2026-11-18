@@ -321,6 +321,35 @@ def test_job_hook_runs_every_sync(chart, hook):
     }
 
 
+@pytest.mark.parametrize("wave", [-1, 0, 1])
+def test_job_hooks_can_wait_for_an_earlier_wave(chart, wave):
+    config = values()
+    config["workloads"]["app"].update(
+        {"kind": "Job", "hook": "PostSync", "hookWave": wave}
+    )
+    job = objects(render(chart, config))["Job/app"]
+    assert job["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == str(wave)
+
+
+@pytest.mark.parametrize("wave", [0.5, "first"])
+def test_hook_wave_requires_an_integer(chart, wave):
+    config = values()
+    config["workloads"]["app"].update(
+        {"kind": "Job", "hook": "PostSync", "hookWave": wave}
+    )
+    result = render(chart, config)
+    assert result.returncode != 0
+    assert "hookWave must be an integer" in result.stderr
+
+
+def test_hook_wave_requires_a_hook(chart):
+    config = values()
+    config["workloads"]["app"].update({"kind": "Job", "hookWave": 1})
+    result = render(chart, config)
+    assert result.returncode != 0
+    assert "hookWave requires a Job hook" in result.stderr
+
+
 def test_job_without_hook_is_a_plain_resource(chart):
     config = values()
     config["workloads"]["app"]["kind"] = "Job"

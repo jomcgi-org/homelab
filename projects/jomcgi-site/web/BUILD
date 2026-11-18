@@ -38,6 +38,24 @@ js_run_binary(
 )
 
 js_library(
+    name = "headers",
+    srcs = ["public/_headers"],
+    visibility = ["//projects/jomcgi-site/check:__pkg__"],
+)
+
+js_library(
+    name = "redirects",
+    srcs = ["public/_redirects"],
+    visibility = ["//projects/jomcgi-site/check:__pkg__"],
+)
+
+js_library(
+    name = "budget_lib",
+    srcs = ["budget.mjs"],
+    visibility = ["//projects/jomcgi-site/check:__pkg__"],
+)
+
+js_library(
     name = "src",
     # Every HTML file, so the page-registry test sees each one in the sandbox.
     srcs = glob(
@@ -108,7 +126,10 @@ js_run_binary(
     chdir = package_name(),
     out_dirs = ["dist"],
     tool = ":build_site",
-    visibility = ["//projects/jomcgi-site:__pkg__"],
+    visibility = [
+        "//projects/jomcgi-site:__pkg__",
+        "//projects/jomcgi-site/check:__pkg__",
+    ],
 )
 
 build_test(
