@@ -5,3 +5,4 @@ resources:
   - admins.yaml
   - viewers.yaml
   - explorers.yaml
+  - flowcontrol.yaml

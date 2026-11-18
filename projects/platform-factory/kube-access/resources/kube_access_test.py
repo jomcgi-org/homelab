@@ -135,11 +135,51 @@ def test_authentication_config():
             },
             "claimMappings": {
                 "username": {"claim": "preferred_username", "prefix": "explore:"},
-                "groups": {"expression": "['explore:explorers']"},
+                "groups": {"expression": f"['{EXPLORERS}']"},
                 "uid": {"claim": "sub"},
             },
             "claimValidationRules": [
                 {"expression": "double(claims.exp) - double(claims.iat) <= 600.0"}
             ],
         },
+    ]
+
+
+def test_explorer_priority_level_limits_concurrency():
+    (level,) = by_kind("PriorityLevelConfiguration")
+    assert level["apiVersion"] == "flowcontrol.apiserver.k8s.io/v1"
+    assert level["metadata"]["name"] == "factory-explorers"
+    assert level["spec"]["type"] == "Limited"
+    assert level["spec"]["limited"] == {
+        "nominalConcurrencyShares": 5,
+        "borrowingLimitPercent": 0,
+        "limitResponse": {
+            "type": "Queue",
+            "queuing": {"queues": 16, "handSize": 4, "queueLengthLimit": 20},
+        },
+    }
+
+
+def test_all_explorer_requests_use_the_explorer_priority_level():
+    (schema,) = by_kind("FlowSchema")
+    assert schema["apiVersion"] == "flowcontrol.apiserver.k8s.io/v1"
+    assert schema["metadata"]["name"] == "factory-explorers"
+    spec = schema["spec"]
+    assert spec["priorityLevelConfiguration"] == {"name": "factory-explorers"}
+    assert spec["matchingPrecedence"] == 1000
+    assert spec["distinguisherMethod"] == {"type": "ByUser"}
+    assert spec["rules"] == [
+        {
+            "subjects": [{"kind": "Group", "group": {"name": EXPLORERS}}],
+            "resourceRules": [
+                {
+                    "verbs": ["*"],
+                    "apiGroups": ["*"],
+                    "resources": ["*"],
+                    "namespaces": ["*"],
+                    "clusterScope": True,
+                }
+            ],
+            "nonResourceRules": [{"verbs": ["*"], "nonResourceURLs": ["*"]}],
+        }
     ]
