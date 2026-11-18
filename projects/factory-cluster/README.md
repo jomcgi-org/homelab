@@ -236,6 +236,11 @@ KUBECONFIG=~/.kube/factory.yaml kubectl -n garage logs job/garage-bootstrap
 
 ## Postgres
 
+After the connection string in either `kagent-postgres-owner` or
+`kagent-postgres-readwrite` changes in the `kagent` namespace, use ArgoCD
+to restart the kagent controller Deployment. The controller reads both
+Secrets at startup. Admission policy denies a direct `kubectl rollout restart`.
+
 A CloudNativePG instance that starts before its Garage key exists caches
 the missing credentials and archives nothing until it restarts, so
 `kagent-pg-wait-for-key` (wave -1) holds the Cluster back until garage-init
@@ -346,6 +351,9 @@ not the target's namespace exists yet, and leave with Prometheus.
 
 Edit a dashboard by changing its JSON; Grafana rejects saves from the UI. Each
 ConfigMap's name carries its content hash, so a change rolls the pod.
+
+After the OIDC client secret in `grafana/grafana-oidc` changes, restart the
+Grafana Deployment to load the new value. Grafana reads it at startup.
 
 The break-glass admin's password is generated at each start into memory:
 
