@@ -270,12 +270,16 @@ func issueFinding(id, detail string) Finding {
 
 // unverified records a failure the author or the issue must fix.
 func (in *IssueContext) unverified(id, detail string) {
-	in.Findings = append(in.Findings, issueFinding(id, detail))
+	f := issueFinding(id, detail)
+	f.Kind = KindEvidence
+	in.Findings = append(in.Findings, f)
 }
 
-// unread records a failed read, which the service retries.
+// unread records a failed read, which the service retries: a hold.
 func (in *IssueContext) unread(id, detail string) {
-	in.Pending = append(in.Pending, issueFinding(id, detail))
+	f := issueFinding(id, detail)
+	f.Kind = KindHold
+	in.Pending = append(in.Pending, f)
 }
 
 // Current service failures cannot be waived by a model's claimed fix or

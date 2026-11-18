@@ -985,7 +985,7 @@ func TestClearedFindingsCarryAcrossHeads(t *testing.T) {
 		t.Fatalf("cleared = %+v, want %+v", st.Cleared, want)
 	}
 	ahead := &github.CommitComparison{Status: "ahead", Files: []github.PullRequestFile{{Path: "x.go"}}}
-	text := Prompt(PromptInput{Repo: "o/r", Number: 1, SHA: shaA, PreviousHead: "prev", Previous: st.Previous(), Cleared: st.Cleared, Interdiff: ahead})
+	text := Prompt(PromptInput{Repo: "o/r", Number: 1, SHA: shaA, PreviousHead: "prev", Previous: st.Previous(), Cleared: st.Cleared, Interdiff: ahead, Scope: LaterScope("prev", ahead)})
 	for _, line := range []string{
 		"Reviews of earlier heads cleared these findings. A fixed one present again on this head is a regression: raise it at its own severity. Raise a justified or withdrawn one again when a change since prev, in any file, affects it, and always when it is present on this head at high or critical severity. The exception is one marked `decided`: Joe accepted it in a comment the service checked, so raise it again when a change since then affects what his decision covers, or at critical severity:",
 		"- `wrong.go:security` withdrawn: wrong.go:security. Note: withdrawn: a test fixture\n",
@@ -998,7 +998,7 @@ func TestClearedFindingsCarryAcrossHeads(t *testing.T) {
 
 	// Without an interdiff the service trusts, nothing shows they stay cleared.
 	for _, d := range []*github.CommitComparison{nil, {Status: "diverged"}, {Status: "ahead", Truncated: true}} {
-		text := Prompt(PromptInput{Repo: "o/r", Number: 1, SHA: shaA, PreviousHead: "prev", Previous: st.Previous(), Cleared: st.Cleared, Interdiff: d})
+		text := Prompt(PromptInput{Repo: "o/r", Number: 1, SHA: shaA, PreviousHead: "prev", Previous: st.Previous(), Cleared: st.Cleared, Interdiff: d, Scope: LaterScope("prev", d)})
 		if !strings.Contains(text, "cannot show that they stay cleared, so check each again") || strings.Contains(text, "is a regression") {
 			t.Errorf("interdiff %+v: prompt does not ask to recheck cleared findings", d)
 		}

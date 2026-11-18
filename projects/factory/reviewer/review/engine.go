@@ -1210,6 +1210,9 @@ type inputs struct {
 	// when GitHub no longer has priorHead.
 	since    *github.CommitComparison
 	compared bool
+	// scope is the later-review scope (laterScope), once scoped is set.
+	scope  *Scope
+	scoped bool
 	// plan is the session plan of the last message this process built.
 	plan sessionPlan
 	// comments are the trusted comments that message put in the prompt;
@@ -1751,6 +1754,13 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 	if err != nil {
 		return nil, err
 	}
+	scope, err := e.laterScope(ctx, b, pr, in, l)
+	if err != nil {
+		return nil, err
+	}
+	if !in.prior.ClearedComplete() {
+		scope = nil // A fixed finding missing from the record could be lowered.
+	}
 	commits := e.commitMessages(ctx, b, pr, in.priorHead, l)
 	plan := sessionPlan{rules: rulesDigest(rules)}
 	plan.resume, plan.reason = e.resumable(ctx, b, pr, in, attempt, refused, l)
@@ -1760,7 +1770,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 	text := Prompt(PromptInput{
 		Repo: repo, Number: pr.Number, URL: pr.URL, Base: b.BaseBranch, SHA: pr.HeadSHA,
 		Title: pr.Title, Body: pr.Body, Author: pr.Author, Files: in.files, Rules: rules,
-		Previous: in.prior.Previous(), Cleared: joeDecisions(b, pr, comments).Revalidate(in.prior.Cleared), PreviousHead: in.priorHead, Interdiff: interdiff, PreviousUnknown: in.priorUnknown,
+		Previous: in.prior.Previous(), Cleared: joeDecisions(b, pr, comments).Revalidate(in.prior.Cleared), PreviousHead: in.priorHead, Interdiff: interdiff, Scope: scope, PreviousUnknown: in.priorUnknown,
 		Resumed: plan.resume != nil, RulesHeld: plan.resume != nil && plan.rules != "" && plan.resume.Rules == plan.rules,
 		Comments: comments, DroppedComments: dropped, Cited: cited, Commits: &commits, Gate: in.gate, Attempt: attempt,
 		CheckName: e.cfg.CheckName, Semgrep: in.semgrep,
@@ -1802,6 +1812,35 @@ func (e *Engine) interdiff(ctx context.Context, b *Binding, pr github.PullReques
 	}
 	in.since, in.compared = d, true
 	return d, nil
+}
+
+// laterScope is the scope a later head's new findings are held to, read
+// once per review: the hunks changed since the previous reviewed head, or
+// after a rebase the files whose own diff changed (RebasedScope). It is nil
+// for a first review, a missing or truncated interdiff, or a rebase whose
+// earlier diff the service cannot read; the whole change is then reviewed
+// again at full severity.
+func (e *Engine) laterScope(ctx context.Context, b *Binding, pr github.PullRequest, in *inputs, l *slog.Logger) (*Scope, error) {
+	if in.scoped {
+		return in.scope, nil
+	}
+	d, err := e.interdiff(ctx, b, pr, in, l)
+	if err != nil {
+		return nil, err
+	}
+	s := LaterScope(in.priorHead, d)
+	if s == nil && d != nil && d.Status == "diverged" && in.priorHead != "" {
+		before, err := e.gh.CompareCommits(ctx, b.repo(), b.BaseBranch, in.priorHead)
+		switch {
+		case err != nil && !errors.Is(err, github.ErrNotFound):
+			e.ghError(ctx, l, b, "compare", err)
+			return nil, err
+		case err == nil && before != nil:
+			s = RebasedScope(in.priorHead, before.Files, in.files, !before.Truncated && len(in.files) < github.MaxFilePages*100)
+		}
+	}
+	in.scope, in.scoped = s, true
+	return s, nil
 }
 
 // recordProgress writes the attempt, and its task once sent, on the
@@ -1872,12 +1911,14 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			in.goal = e.goalCheck(ctx, b, pr, in, r, l)
 		}
 		prior := in.prior.Previous()
-		since, err := e.interdiff(ctx, b, pr, in, l)
-		if err != nil {
+		if _, err := e.interdiff(ctx, b, pr, in, l); err != nil {
 			// review reads the interdiff before outcome; never assess without it.
 			return result{reason: "the reviewer could not read the changes since the previous review: " + oneLine(err.Error(), maxTitle) + "."}
 		}
-		scope := LaterScope(in.priorHead, since)
+		scope, err := e.laterScope(ctx, b, pr, in, l)
+		if err != nil {
+			return result{reason: "the reviewer could not read the changes since the previous review: " + oneLine(err.Error(), maxTitle) + "."}
+		}
 		if !in.prior.ClearedComplete() {
 			scope = nil // A fixed finding missing from the record could be lowered.
 		}
@@ -1907,6 +1948,7 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		decisions.Carried = in.prior.Decisions
 		a := AssessDecided(r, prior, decisions)
 		a.Earlier, a.EarlierPartial = decisions.Revalidate(in.prior.Cleared), !in.prior.ClearedComplete()
+		a.Later = in.priorHead != "" && in.priorHead != pr.HeadSHA
 		for _, f := range a.Deferred {
 			if f.Lowered != "" {
 				l.InfoContext(ctx, "lowered a new finding outside the interdiff", "id", f.ID, "severity", f.Lowered)

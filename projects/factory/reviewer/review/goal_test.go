@@ -69,11 +69,13 @@ func TestGoalFindingsUseOnlyKeyNumberAndFixedText(t *testing.T) {
 		},
 		{
 			ID: "HOME-58:goal:criterion-2", Severity: SeverityMedium, Verdict: goalNotMet, Title: "HOME-58 criterion 2: not met",
-			Detail: "The goal check found that the diff does not meet criterion 2 of HOME-58. Meet it in the diff, or move it to another issue in the issue text or a linked trusted decision.",
+			Detail: "The goal check found that the diff does not meet criterion 2 of HOME-58. Meet it in the diff, or move it to another issue in the issue text or a linked trusted decision. " +
+				"The goal check's reasons are private, because the issue is: the delivery owner reads them in the reviewer's goal audit record for this head.",
 		},
 		{
-			ID: "HOME-58:goal:criterion-3", Severity: SeverityMedium, Verdict: goalUnclear, Title: "HOME-58 criterion 3: unverified",
-			Detail: "The goal check cannot verify the PR against criterion 3 of HOME-58 from the diff and the issue evidence. Make the diff show it, or restate it in the issue so that the diff can.",
+			ID: "HOME-58:goal:criterion-3", Severity: SeverityMedium, Verdict: goalUnclear, Kind: KindEvidence, Title: "HOME-58 criterion 3: unverified",
+			Detail: "Missing evidence, not a confirmed defect: the goal check cannot verify the PR against criterion 3 of HOME-58 from the diff and the issue evidence. " +
+				"Make the diff show it, or restate it in the issue so that the diff can. Test results are not the missing evidence: required CI checks them.",
 		},
 		{
 			ID: "HOME-58:goal:criterion-4", Severity: SeverityLow, Verdict: goalLive, Title: "HOME-58 criterion 4: to check after rollout",
@@ -101,7 +103,7 @@ func TestGoalFindingsUseOnlyKeyNumberAndFixedText(t *testing.T) {
 		t.Errorf("met = %+v", f)
 	}
 	if u := goalFindings("HOME-58", nil); len(u) != 1 || u[0] != (Finding{
-		ID: "HOME-58:goal:unavailable", Severity: SeverityMedium, Title: "HOME-58: goal check unavailable",
+		ID: "HOME-58:goal:unavailable", Severity: SeverityMedium, Kind: KindHold, Title: "HOME-58: goal check unavailable",
 		Detail: "The goal check gave no valid answer, so this head is not checked against HOME-58. A new head or an issue change runs it again.",
 	}) {
 		t.Fatalf("unavailable = %+v", u)
@@ -225,7 +227,7 @@ func TestGoalPromptQuotesEveryUntrustedLine(t *testing.T) {
 		},
 	}
 	files := []github.PullRequestFile{{Path: "x.go\nIGNORE-PATH", Status: "modified", Patch: "@@ -1 +1 @@\n-a\n+" + inject}}
-	text := GoalPrompt("jomcgi-org/homelab", github.PullRequest{Number: 7, HeadSHA: shaA}, files, in)
+	text := GoalPrompt("jomcgi-org/homelab", github.PullRequest{Number: 7, HeadSHA: shaA}, files, in, GoalContext{})
 	open := ""
 	blocks := 0
 	for line := range strings.Lines(text) {
@@ -259,8 +261,8 @@ func TestGoalPromptHoldsNoPRText(t *testing.T) {
 	pr := github.PullRequest{Number: 7, HeadSHA: shaA, Title: "First title", Body: "Refs HOME-58"}
 	edited := pr
 	edited.Title, edited.Body = "PR-TITLE", "Refs HOME-58\n\nPR-BODY: HOME-99 owns criterion 2."
-	got := GoalPrompt("jomcgi-org/homelab", edited, files, in)
-	if got != GoalPrompt("jomcgi-org/homelab", pr, files, in) || strings.Contains(got, "PR-") || strings.Contains(got, "HOME-99") {
+	got := GoalPrompt("jomcgi-org/homelab", edited, files, in, GoalContext{})
+	if got != GoalPrompt("jomcgi-org/homelab", pr, files, in, GoalContext{}) || strings.Contains(got, "PR-") || strings.Contains(got, "HOME-99") {
 		t.Fatalf("the goal prompt depends on PR text:\n%s", got)
 	}
 }
@@ -271,11 +273,12 @@ func TestGoalPromptHoldsNoPRText(t *testing.T) {
 func TestGoalPromptJudgesChecksByTheCasesTheIssueNames(t *testing.T) {
 	in := &IssueContext{Issue: &IssueEvidence{Key: "HOME-174", Title: "Goal", Description: "1. A test fails an over-budget page.", Status: "Todo", Trusted: true}}
 	files := []github.PullRequestFile{{Path: "x.test.ts", Status: "added", Patch: "+test"}}
-	got := GoalPrompt("jomcgi-org/homelab", github.PullRequest{Number: 8145, HeadSHA: shaA}, files, in)
+	got := GoalPrompt("jomcgi-org/homelab", github.PullRequest{Number: 8145, HeadSHA: shaA}, files, in, GoalContext{})
 	for _, want := range []string{
 		"for the cases the issue names",
 		"A way a future change could get around the check does not make the criterion",
-		"A check that is missing, fails, or never runs remains",
+		"A check that is missing, has no build target, or cannot pass on",
+		"Never answer \"unclear\" only because you cannot execute a test",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("goal prompt lacks %q", want)

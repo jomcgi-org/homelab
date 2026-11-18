@@ -149,7 +149,7 @@ func enforceSemgrep(a *Assessment, evidence *SemgrepEvidence) {
 		return
 	}
 	a.Blocking = append(a.Blocking, Blocked{Finding: Finding{
-		ID: semgrepUnverified, Severity: SeverityMedium,
+		ID: semgrepUnverified, Severity: SeverityMedium, Kind: KindHold,
 		Title:  "Semgrep evidence for this head is unverified",
 		Detail: evidence.Unavailable + ". A completed Semgrep scan and readable comments are required; the service reviews this head again when the evidence changes.",
 	}})

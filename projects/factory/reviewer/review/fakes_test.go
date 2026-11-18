@@ -95,8 +95,10 @@ type fakeGitHub struct {
 	baseHead string
 	// baseFiles are the base branch's files at baseHead.
 	baseFiles map[string]string
-	queue     []github.MergeQueueEntry
-	queued    map[int]string // PR number -> merge queue state
+	// compares override the compare answer for "base...head".
+	compares map[string]map[string]any
+	queue    []github.MergeQueueEntry
+	queued   map[int]string // PR number -> merge queue state
 	// queueHead overrides the head the GraphQL PR read reports.
 	queueHead map[int]string
 	// cited answers the cited-PR read by number with a PullRequest's
@@ -587,6 +589,10 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/compare/"):
 		base, head, _ := strings.Cut(strings.TrimPrefix(path, "/compare/"), "...")
+		if c, ok := f.compares[base+"..."+head]; ok {
+			f.get(w, r, c)
+			return
+		}
 		var pr *fakePR
 		for _, p := range f.prs {
 			if p.Head == head {

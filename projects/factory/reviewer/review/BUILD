@@ -37,6 +37,7 @@ go_test(
         "cleanup_test.go",
         "comment_test.go",
         "commits_test.go",
+        "convergence_test.go",
         "engine_test.go",
         "fakes_test.go",
         "goal_test.go",

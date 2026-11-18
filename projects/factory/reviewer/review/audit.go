@@ -40,6 +40,49 @@ type GoalAudit interface {
 	Save(GoalAuditRecord) error
 }
 
+// GoalHistory finds an earlier goal check's private reply, so the next
+// head's goal check starts from its reasons. The reply stays on the private
+// side: only another goal check prompt receives it.
+type GoalHistory interface {
+	// Reply is the newest saved reply for the PR's head that judged issue
+	// on the evidence digest, or false.
+	Reply(repo string, pr int, head, issue, digest string) (string, bool)
+}
+
+// maxHistoryReply bounds an earlier reply in the next goal prompt.
+const maxHistoryReply = 8000
+
+// Reply implements GoalHistory. A read error finds nothing: the goal check
+// then judges the head without the earlier reasons.
+func (s *FileGoalAudit) Reply(repo string, pr int, head, issue, digest string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return "", false
+	}
+	var best GoalAuditRecord
+	found := false
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(s.dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var r GoalAuditRecord
+		if json.Unmarshal(b, &r) != nil || r.Repository != repo || r.PullRequest != pr || r.Head != head ||
+			r.Issue != issue || r.Digest != digest || strings.TrimSpace(r.Reply) == "" {
+			continue
+		}
+		if !found || r.CreatedAt.After(best.CreatedAt) {
+			best, found = r, true
+		}
+	}
+	return best.Reply, found
+}
+
 // FileGoalAudit stores replies on the reviewer's private persistent volume.
 // One service instance owns the directory. Files are atomic, synced writes;
 // message and task IDs make retries idempotent without extending retention.
