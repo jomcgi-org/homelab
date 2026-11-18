@@ -45,20 +45,25 @@ inline style elements or attributes, so no inline hashes or
 
 ## Transferring connector status ownership (HOME-363)
 
-Before either chart pin advances, protect the two live objects from automated
-pruning during independent Application syncs. Run on the factory cluster:
+The first release keeps both manifests and their reviewed content-rule exemptions
+in the landing chart. The landing Application holds automated sync during the
+transfer so self-heal cannot reclaim the objects. A batched pin writeback can
+advance either chart first because this landing release still renders both.
+
+After software-factory syncs the new factory chart, inspect the live objects:
 
 ```sh
-kubectl -n factory annotate --overwrite service/factory-connector-status \
-  ciliumnetworkpolicy/factory-landing-status argocd.argoproj.io/sync-options=Prune=false
+kubectl -n factory get service/factory-connector-status \
+  ciliumnetworkpolicy/factory-landing-status -o yaml
 ```
 
-Pause auto-sync on factory-landing through its Git-managed Application and
-wait for any running sync to finish before applying the annotation. Sync
-software-factory at the chart version that renders both objects. Verify both
-live objects have the software-factory tracking ID and the Prune=false
-annotation. Then advance the landing pin to the chart without these objects,
-restore its automated sync, and verify the signed-in page can load /api/status.
+On **both** objects, verify that the Argo CD tracking ID names software-factory
+and that the sync options include Prune=false. Verify the signed-in landing page
+loads /api/status. Only then merge a follow-up removing the landing templates,
+their values and exemptions, and moving their test assertions out of the landing
+chart. Keep landing auto-sync paused through that release's pin writeback.
+Once its pin references the chart without the objects, sync factory-landing,
+restore automated sync and verify /api/status again.
 
 For rollback, pause software-factory auto-sync first. Restore and sync the
 previous landing chart that renders both objects. Verify factory-landing owns
