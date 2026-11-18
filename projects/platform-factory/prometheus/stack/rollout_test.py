@@ -66,3 +66,18 @@ def test_receiver_cutover(tmp_path):
     )
     assert relay["spec"]["template"]["spec"]["containers"][0]["readinessProbe"]
     assert sync_wave(relay) < sync_wave(deployment(desired, "alertmanager"))
+
+
+def test_alert_links_open_grafana_explore(tmp_path):
+    source = Path(__file__).absolute().parent
+    base = shutil.copytree(source.parent / "resources", tmp_path / "resources")
+    docs = render(os.environ["KUSTOMIZE_BIN"], "build", base)
+    prometheus = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "StatefulSet" and doc["metadata"]["name"] == "prometheus"
+    )
+    pod = prometheus["spec"]["template"]["spec"]
+    args = pod["containers"][0]["args"]
+    assert "--web.external-url=https://factory-grafana.jomcgi.dev/explore" in args
+    assert "--web.route-prefix=/" in args
