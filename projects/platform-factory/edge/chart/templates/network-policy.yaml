@@ -83,6 +83,14 @@ spec:
     # Route backends.
     - toEndpoints:
         - matchLabels:
+            k8s:io.kubernetes.pod.namespace: scotland-connector
+            app.kubernetes.io/name: scotland-connector
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
             k8s:io.kubernetes.pod.namespace: authentik
             app.kubernetes.io/name: authentik
             app.kubernetes.io/component: server

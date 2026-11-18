@@ -36,4 +36,5 @@ resources:
   - ../factory-explore/deploy
   - ../factory-landing/deploy # Static operator tools at factory.jomcgi.dev
   - ../jomcgi-site/deploy # jomcgi.dev site: dev-stage deploy Job for next.jomcgi.dev (HOME-174)
+  - ../scotland-connector/deploy
   - ./edge-tunnel # Publishes the edge hostnames; deployed last, removed first

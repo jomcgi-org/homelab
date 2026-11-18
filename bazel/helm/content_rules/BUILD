@@ -15,6 +15,7 @@ APPLICATIONS = [
     "factory-landing",
     "factory-public",
     "jomcgi-site",
+    "scotland-connector",
 ]
 
 py_library(

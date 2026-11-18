@@ -14,6 +14,12 @@ helm_chart(
     ],
 )
 
+filegroup(
+    name = "image_values",
+    srcs = [":chart.images_values"],
+    visibility = ["//projects/scotland-connector/deploy:__pkg__"],
+)
+
 # Kept here, not generated from deploy/application.yaml, because gazelle
 # resets chart visibility otherwise (the monolith-public pattern).
 argocd_app(
@@ -37,8 +43,10 @@ py_test(
         "Chart.yaml",
         "values.yaml",
         "//projects/monolith-public/chart:chart_values",
+        "//projects/platform-factory/edge-tunnel/resources:route.yaml",
         "//projects/platform/cloudflare-gateway:gateway_test_inputs",
         "//projects/scotland-connector/deploy:deploy_values",
+        "//projects/scotland-connector/factory:resources/route.yaml",
         "@multitool//tools/helm",
     ] + glob(["templates/**/*"]),
     env = {
