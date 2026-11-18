@@ -14,7 +14,15 @@ helm install edge "$chart"/charts/gateway-helm-*.tgz -n edge --skip-crds --wait 
 	--set config.envoyGateway.provider.kubernetes.deploy.type=GatewayNamespace
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+cleanup() {
+	local result=$?
+	if ((result != 0)); then
+		kubectl get gateways,httproutes,securitypolicies,pods -A -o wide || true
+		if [[ -f "$tmp/forward.log" ]]; then cat "$tmp/forward.log"; fi
+	fi
+	rm -rf "$tmp"
+}
+trap cleanup EXIT
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=issuer.edge.svc.cluster.local' \
 	-addext 'subjectAltName=DNS:issuer.edge.svc.cluster.local' -keyout "$tmp/key.pem" -out "$tmp/ca.pem" 2>/dev/null
 kubectl -n edge create configmap issuer-ca --from-file="$tmp/ca.pem"
@@ -42,13 +50,35 @@ templates=()
 for template in gateway security-policy kagent-route oidc-client-secret oidc-sentinel; do
 	templates+=(-s "templates/$template.yaml")
 done
-helm template edge "$chart" -n edge --set authentik.hostname=issuer.edge.svc.cluster.local "${templates[@]}" | kubectl apply -f -
-kubectl -n edge patch envoyproxy edge --type merge -p '{"spec":{"provider":{"kubernetes":{"envoyDeployment":{"pod":{"volumes":[{"name":"ca","configMap":{"name":"issuer-ca"}}]},"container":{"volumeMounts":[{"name":"ca","mountPath":"/etc/ssl/certs/ca-certificates.crt","subPath":"ca.pem"}]}}}}}}'
+# Install the test CA in the initial proxy revision. A later patch can roll
+# the pod out from under the service port-forward during the session tests.
+helm template edge "$chart" -n edge --set authentik.hostname=issuer.edge.svc.cluster.local "${templates[@]}" >"$tmp/edge.yaml"
+cat >"$tmp/kustomization.yaml" <<'YAML'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - edge.yaml
+patches:
+  - target:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: edge
+    patch: |-
+      - op: add
+        path: /spec/provider/kubernetes/envoyDeployment/pod/volumes
+        value:
+          - name: ca
+            configMap:
+              name: issuer-ca
+      - op: add
+        path: /spec/provider/kubernetes/envoyDeployment/container/volumeMounts
+        value:
+          - name: ca
+            mountPath: /etc/ssl/certs/ca-certificates.crt
+            subPath: ca.pem
+YAML
+kubectl apply -k "$tmp"
 kubectl -n edge wait gateway/edge --for=condition=Programmed --timeout=180s
 kubectl -n edge rollout status deployment -l gateway.envoyproxy.io/owning-gateway-name=edge
 kubectl -n edge port-forward svc/edge-proxy 18080:80 >"$tmp/forward.log" 2>&1 &
-for ((i = 0; i < 60; i++)); do
-	if [[ $(curl -s -o /dev/null -w '%{http_code}' -H 'Host: factory.jomcgi.dev' http://localhost:18080/oauth2-sentinel) == 302 ]]; then break; fi
-	sleep 1
-done
 python3 session.py

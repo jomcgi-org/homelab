@@ -3,6 +3,7 @@
 from http.client import HTTPConnection
 from http.cookies import SimpleCookie
 import json
+import time
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 
@@ -30,8 +31,21 @@ def session(host, subject):
         return response.status, response.getheader("Location"), body
 
     path = "/"
-    status, redirect, _ = get(path)
-    assert status == 302, (host, status)
+    # Routes reach the data plane asynchronously. Retry only the unsigned
+    # first request; callback, authorization and upstream assertions run once.
+    deadline = time.monotonic() + 60
+    while True:
+        try:
+            status, redirect, _ = get(path)
+        except (ConnectionError, TimeoutError):
+            if time.monotonic() >= deadline:
+                raise
+        else:
+            if status == 302:
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError((host, "expected sign-in redirect", status))
+        time.sleep(1)
     auth = urlsplit(redirect)
     assert auth.hostname == "issuer.edge.svc.cluster.local"
     query = parse_qs(auth.query)
