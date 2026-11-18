@@ -23,14 +23,17 @@ boundary: a rule below broken on them is critical.
     only HTTPRoutes from `edge`. The API server checks the token again
     ([Joe's decision](https://github.com/jomcgi-org/homelab/pull/8237#issuecomment-6975000416)).
 
-  The deployed policy set is pinned by the edge chart tests. The Codex
-  policy is reserved for a follow-up after the broker listener, ingress
+  In `projects/platform-factory/edge/chart/edge_test.py`,
+  `test_only_kagent_forwards_the_access_token` pins the deployed edge
+  policies, and `test_kube_api_requires_an_authentik_token_from_a_kube_group`
+  pins the kube-api bearer policy, route, grant and TLS check.
+
+  The Codex policy is reserved for a follow-up after the broker listener, ingress
   policy and exact Authentik callback are deployed. Its redirect URL must
   be `https://factory.jomcgi.dev/admin/codex/oauth2/callback` so the same
   policy handles sign-in and callback. Couple route enablement to the broker
   chart pin so rollback also withdraws the route. Publish the alert links
-  after verifying a fresh browser login. #8222 adds the kube-api policy
-  and its bearer, route, grant and TLS checks.
+  after verifying a fresh browser login.
   The `oidc-sentinel` route stays.
   Authentik's admin, user, API and initial-setup paths keep answering 403
   publicly.
