@@ -449,4 +449,3 @@ async def test_digest_claimed_by_an_old_leader_ends_after_its_lease(engine):
         assert session.query(DiscordOutbox).one().content == DIGEST_ENDED.format(
             mode="summary"
         )
-
