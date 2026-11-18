@@ -459,10 +459,14 @@ def test_private_bucket_and_custom_schedule(chart):
         ("manifest.json\n", "copyto", ["sync", "lsf", "copyto"]),
     ],
 )
+@pytest.mark.parametrize("name", ["manifest.json", "latest.json"])
 def test_mirror_orders_writes_and_propagates_failures(
-    chart, tmp_path, manifest, fail, expected
+    chart, tmp_path, manifest, fail, expected, name
 ):
-    docs = objects(render(chart, bucket_config()))
+    config = bucket_config()
+    if name == "latest.json":
+        config["buckets"][0]["public"]["manifestName"] = name
+    docs = objects(render(chart, config))
     container = mirror_container(docs)
     env = {
         **os.environ,
@@ -470,7 +474,7 @@ def test_mirror_orders_writes_and_propagates_failures(
     }
     env.update(
         RCLONE_CONFIG_R2_ENDPOINT="https://" + env["R2_HOST"],
-        FAKE_MANIFEST=manifest,
+        FAKE_MANIFEST=manifest.replace("manifest.json", name),
         FAKE_FAIL=fail,
         FAKE_LOG=str(tmp_path / "calls.jsonl"),
     )
@@ -500,20 +504,20 @@ def test_mirror_orders_writes_and_propagates_failures(
         "GARAGE:factory-public",
         "R2:factory-public",
         "--exclude",
-        "/manifest.json",
+        f"/{name}",
         "--header-upload",
         "Cache-Control: public, max-age=31536000, immutable",
     ]
     if expected[-1] == "copyto":
         assert calls[-1][4:] == [
-            "GARAGE:factory-public/manifest.json",
-            "R2:factory-public/manifest.json",
+            f"GARAGE:factory-public/{name}",
+            f"R2:factory-public/{name}",
             "--ignore-times",
             "--header-upload",
             "Cache-Control: public, max-age=60",
         ]
     if expected[-1] == "delete":
-        assert calls[-1][4:] == ["R2:factory-public", "--include", "/manifest.json"]
+        assert calls[-1][4:] == ["R2:factory-public", "--include", f"/{name}"]
 
 
 def test_mirror_refuses_endpoint_outside_policy_before_running_rclone(chart):
