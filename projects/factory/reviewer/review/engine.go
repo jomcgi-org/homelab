@@ -1927,7 +1927,7 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		// none of them is ever lowered.
 		applyIssueFindings(r, in.issues)
 		if b.ItsaplanProject != "" {
-			applyGoal(r, prior, b.ItsaplanProject, key, in.goal)
+			applyGoal(r, prior, b.ItsaplanProject, key, in.goal, issueCriterionCount(in.issues))
 		}
 		// Joe's decisions come from the trusted comments the prompt showed;
 		// a finding justified by one counts only when its note links it

@@ -127,7 +127,7 @@ func TestApplyGoalOwnsGoalFindings(t *testing.T) {
 			{ID: "x.go:goal", Status: StatusJustified, Note: "Owned by HOME-60"},
 		},
 	}
-	applyGoal(r, prior, "HOME", "HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}, {3, goalLive}}})
+	applyGoal(r, prior, "HOME", "HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}, {3, goalLive}}}, 3)
 	a := Assess(r, prior)
 	blocking := map[string]string{}
 	for _, b := range a.Blocking {
@@ -179,20 +179,20 @@ func TestApplyGoalKeepsEarlierBlockersUntilResolved(t *testing.T) {
 			"HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalMet}}},
 			"", "HOME-58:goal HOME-58:goal:criterion-2 HOME-58:goal:unavailable",
 		},
-		"criterion omitted": {
+		"unchanged issue with omitted verdict": {
 			"HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}}},
-			"", "HOME-58:goal HOME-58:goal:criterion-2 HOME-58:goal:unavailable",
+			"HOME-58:goal:criterion-2=medium", "HOME-58:goal HOME-58:goal:unavailable",
 		},
 		"no criteria": {
 			"HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}},
-			"", "HOME-58:goal HOME-58:goal:criterion-2 HOME-58:goal:unavailable",
+			"HOME-58:goal:criterion-2=medium", "HOME-58:goal HOME-58:goal:unavailable",
 		},
 		"no issue":    {"", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}}, all, ""},
 		"other issue": {"HOME-59", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}}, all, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := &Report{Previous: []Previous{{ID: "HOME-58:goal", Status: StatusFixed, Note: "Model says done"}}}
-			applyGoal(r, prior, "HOME", tc.key, tc.g)
+			applyGoal(r, prior, "HOME", tc.key, tc.g, issueCriterionCount(&IssueContext{Issue: &IssueEvidence{Key: tc.key, Description: "Done when:\n1. First criterion\n2. Second criterion"}}))
 			a := Assess(r, prior)
 			var blocking, fixed []string
 			for _, b := range a.Blocking {
@@ -217,17 +217,19 @@ func TestApplyGoalKeepsEarlierBlockersUntilResolved(t *testing.T) {
 
 func TestGoalRestatedFromSixteenCriteriaToSeven(t *testing.T) {
 	const key = "HOME-212"
+	issue := &IssueContext{Issue: &IssueEvidence{Key: key, Description: "**Done when:**"}}
 	var earlier, current GoalCheck
 	earlier.Overall, current.Overall = goalMet, goalMet
 	for n := 1; n <= 16; n++ {
 		earlier.Criteria = append(earlier.Criteria, GoalVerdict{n, goalNotMet})
 		if n <= 7 {
+			issue.Issue.Description += fmt.Sprintf("\n%d. Requirement %d", n, n)
 			current.Criteria = append(current.Criteria, GoalVerdict{n, goalMet})
 		}
 	}
 	prior := goalFindings(key, &earlier)
 	r := &Report{}
-	applyGoal(r, prior, "HOME", key, &current)
+	applyGoal(r, prior, "HOME", key, &current, issueCriterionCount(issue))
 	a := Assess(r, prior)
 	if len(a.Fixed) != 16 || len(a.Blocking) != 0 {
 		t.Fatalf("assessment = %+v", a)

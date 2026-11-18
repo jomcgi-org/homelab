@@ -152,7 +152,7 @@ func goalFindings(key string, g *GoalCheck) []Finding {
 // findings for the issue key, if any. An earlier goal finding stays open
 // until a valid answer resolves it (goalResolved); Assess keeps its earlier
 // severity.
-func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck) {
+func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck, issueCount int) {
 	ns := regexp.MustCompile(`^` + regexp.QuoteMeta(project) + `-[1-9][0-9]*:goal(:|$)`)
 	r.Findings = slices.DeleteFunc(r.Findings, func(f Finding) bool { return ns.MatchString(f.ID) })
 	r.Previous = slices.DeleteFunc(r.Previous, func(p Previous) bool { return ns.MatchString(p.ID) })
@@ -166,7 +166,7 @@ func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck) {
 			continue
 		}
 		account := Previous{ID: p.ID, Status: StatusOpen, Note: "No valid goal check answer resolves it."}
-		if note := goalResolved(p.ID, key, g); note != "" {
+		if note := goalResolved(p.ID, key, g, issueCount); note != "" {
 			account.Status, account.Note = StatusFixed, note
 		}
 		r.Previous = append(r.Previous, account)
@@ -175,10 +175,41 @@ func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck) {
 
 const criterionRemoved = "criterion removed from the issue"
 
+// issueCriterionCount recognizes an explicit, consecutively numbered acceptance
+// list at the end of the issue. Ambiguous text cannot establish removal.
+func issueCriterionCount(in *IssueContext) int {
+	if goalKey(in) == "" {
+		return -1
+	}
+	count := -1
+	for line := range strings.SplitSeq(in.Issue.Description, "\n") {
+		line = strings.TrimSpace(line)
+		heading := strings.ToLower(strings.Trim(line, "#* :"))
+		if heading == "done when" || heading == "acceptance criteria" {
+			if count >= 0 {
+				return -1
+			}
+			count = 0
+			continue
+		}
+		if count < 0 || line == "" {
+			continue
+		}
+		number, item, ok := strings.Cut(line, ". ")
+		if !ok || number != strconv.Itoa(count+1) || strings.TrimSpace(item) == "" {
+			return -1
+		}
+		count++
+	}
+	if count == 0 {
+		return -1
+	}
+	return count
+}
+
 // goalResolved says how a valid answer resolves an earlier goal finding that
-// it does not report again. ParseGoal requires criteria numbered 1 to N,
-// so a higher number from the same issue identifies a removed criterion.
-func goalResolved(id, key string, g *GoalCheck) string {
+// it does not report again. Removal requires agreement with the issue text.
+func goalResolved(id, key string, g *GoalCheck, issueCount int) string {
 	if g == nil || key == "" {
 		return ""
 	}
@@ -196,7 +227,7 @@ func goalResolved(id, key string, g *GoalCheck) string {
 	if !strings.HasPrefix(rest, ":criterion-") || err != nil {
 		return "The goal check answered."
 	}
-	if n > len(g.Criteria) && rest == ":criterion-"+strconv.Itoa(n) {
+	if issueCount == len(g.Criteria) && n > issueCount && rest == ":criterion-"+strconv.Itoa(n) {
 		return criterionRemoved
 	}
 	for _, c := range g.Criteria {
