@@ -42,9 +42,14 @@ table inet factory_fw {
 		# Tailscale's own UDP is outbound-first, so conntrack admits replies.
 		iifname "tailscale0" accept
 
-		# Address and path discovery.
-		icmp type { echo-request, destination-unreachable, time-exceeded } accept
-		icmpv6 type { echo-request, destination-unreachable, packet-too-big, time-exceeded, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
+		# ICMP errors for live connections (unreachable, packet too big,
+		# time exceeded) arrive as ct related above. Only nodes may ping.
+		# IPv6 neighbour discovery and router advertisements must come
+		# from the link itself: hop limit 255, as RFC 4861 requires.
+		ip saddr @nodes icmp type echo-request accept
+		iifname "enp*" ip6 hoplimit 255 icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } accept
+		iifname "enp*" ip6 saddr fe80::/10 ip6 hoplimit 255 icmpv6 type nd-router-advert accept
+
 		# DHCPv4 replies from the LAN router, the nodes' only DHCP server.
 		# IPv6 addresses come from router advertisements, not DHCPv6.
 		iifname "enp*" ip saddr 192.168.4.1 udp sport 67 udp dport 68 accept
