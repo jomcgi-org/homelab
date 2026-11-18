@@ -443,3 +443,20 @@ func TestSafeStripsRunsInOnePass(t *testing.T) {
 		t.Fatalf("safe took %v on a 600 KB run; it must be linear", d)
 	}
 }
+
+func TestInvariantGateFromBase(t *testing.T) {
+	gh := &baseRules{head: "base-commit", files: map[string]string{"policy/INVARIANTS.yaml": "invariants:\n  - mechanism: [a.go, src/]"}}
+	m, err := loadMechanisms(context.Background(), gh, testRepo, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := []github.PullRequestFile{{Path: "elsewhere", PreviousPath: "a.go"}, {Path: "src/sub/x"}, {Path: "src2/y"}, {Path: "new/INVARIANTS.yaml"}, {Path: "policy/INVARIANTS.yaml"}}
+	gate := humanGate(&Binding{}, changedPaths(files), nil, m)
+	if gate == nil || strings.Join(gate.Paths, ",") != "a.go,new/INVARIANTS.yaml,policy/INVARIANTS.yaml,src/sub/x" {
+		t.Fatalf("gate = %+v", gate)
+	}
+	gh.files["policy/INVARIANTS.yaml"] = "invariants: ["
+	if _, err := loadMechanisms(context.Background(), gh, testRepo, "main"); err == nil {
+		t.Fatal("accepted malformed invariants")
+	}
+}

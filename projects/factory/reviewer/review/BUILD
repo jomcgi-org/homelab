@@ -28,6 +28,7 @@ go_library(
         "//projects/factory/connector/kagent",
         "//projects/factory/reviewer/config",
         "//projects/factory/reviewer/metrics",
+        "@in_gopkg_yaml_v3//:yaml_v3",
     ],
 )
 
