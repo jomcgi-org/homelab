@@ -367,6 +367,25 @@ tests:
               summary: "Codex grant codex-primary is out of quota: a person must reset it or change the account"
               description: 'Coder turns fail until then. The primary window has no reset time. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
+  # A reading that goes stale and then disappears keeps one alert: it fires
+  # 15 min after the reading turned stale, not 15 min after it disappeared.
+  - interval: 1m
+    input_series:
+      - series: 'factory_broker_quota_observed_at_seconds{provider="codex"}'
+        values: "0x130"
+      - series: 'up{job="factory-broker"}'
+        values: "1x200"
+    alert_rule_test:
+      - eval_time: 145m
+        alertname: FactoryCodexQuotaReadingStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              provider: codex
+            exp_annotations:
+              summary: "The broker has no Codex quota reading"
+              description: 'The quota alerts cannot fire on an old reading. Runbook: projects/factory-cluster/README.md, "Alerts".'
+
   # No quota reading at all (a fresh broker whose usage reads fail) fires
   # after 15 min.
   - interval: 1m
@@ -402,6 +421,7 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
+              provider: codex
             exp_annotations:
               summary: "The broker has not read the Codex quota for 2h 20m 0s"
               description: 'The quota alerts cannot fire on an old reading. Runbook: projects/factory-cluster/README.md, "Alerts".'
