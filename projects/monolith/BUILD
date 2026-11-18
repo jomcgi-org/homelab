@@ -10105,3 +10105,9 @@ py_test(
         "@pip//pytest",
     ],
 )
+
+filegroup(
+    name = "stpa_model",
+    srcs = ["STPA.md"] + glob(["stpa/*.json"]),
+    visibility = ["//:__pkg__"],
+)

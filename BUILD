@@ -95,6 +95,8 @@ sh_test(
     ],
     data = [
         "docs/agents/stpa.md",
+        "//projects:stpa_model",
+        "//projects/monolith:stpa_model",
         "@jq_toolchains//:resolved_toolchain",
     ],
 )
