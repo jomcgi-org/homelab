@@ -142,7 +142,7 @@ it("recenters only on selection changes, preserving a reader's pan and zoom on c
   expect(fake.easeTo).toHaveBeenCalledOnce();
 });
 
-it("keeps the map for a single failed or cancelled tile and reports other errors", async () => {
+it("keeps the map for a single failed or cancelled tile until it settles with no base map", async () => {
   const view = render(<HikesMap {...mapProps()} />);
   await act(async () => fake.handlers.get("load")!());
   const status = () => view.queryByText(/The map could not load completely/);
@@ -154,9 +154,17 @@ it("keeps the map for a single failed or cancelled tile and reports other errors
     }),
   );
   expect(status()).toBeNull();
-  await act(async () =>
-    fake.handlers.get("error")!({ error: new Error("style") }),
-  );
+  // Settling with tile errors and no base-map tile is a failed map.
+  await act(async () => fake.handlers.get("idle")!());
+  expect(status()).not.toBeNull();
+  view.unmount();
+});
+
+it("reports an error without a tile at once", async () => {
+  const view = render(<HikesMap {...mapProps()} />);
+  await act(async () => fake.handlers.get("load")!());
+  const status = () => view.queryByText(/The map could not load completely/);
+  await act(async () => fake.handlers.get("error")!({ error: new Error("style") }));
   expect(status()).not.toBeNull();
   view.unmount();
 });

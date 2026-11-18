@@ -7,7 +7,7 @@ import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { Walk } from "./data";
 import { effort, effortCeilings } from "./filters";
-import { isMapFailure } from "../map-errors";
+import { watchMapHealth } from "../map-errors";
 
 export interface HikesMapProps {
   walks: Walk[];
@@ -64,9 +64,7 @@ export function HikesMap(props: HikesMapProps) {
         if (feature?.properties.id)
           live.current.onSelect(feature.properties.id);
       });
-      instance.on("error", (event) => {
-        if (isMapFailure(event)) setFailed(true);
-      });
+      watchMapHealth(instance, ["walks"], () => setFailed(true));
       instance.on("load", () => {
         instance.addSource("walks", {
           type: "geojson",
