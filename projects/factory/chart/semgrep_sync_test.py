@@ -34,6 +34,8 @@ class Board:
             assert path == "/projects/INTSEC/issues"
             self.issues.append({**body, "id": len(self.issues) + 1})
         elif method == "PATCH":
+            assert path.endswith("/factory-semgrep")
+            assert "finding" in body
             self.issues[int(path.split("/")[2]) - 1].update(body)
         elif path == "/me":
             return {

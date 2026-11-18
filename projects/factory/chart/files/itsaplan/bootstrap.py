@@ -598,7 +598,7 @@ def ensure_agents(session, team_id, project_id):
             if not any(label["name"] == "semgrep" for label in setup["labels"]):
                 session.call("POST", "/projects/INTSEC/labels", {"name": "semgrep"})
             role_id = ensure_scoped_role(
-                session, team_id, "INTSEC sync", ("read", "create", "edit")
+                session, team_id, "INTSEC sync", ("read", "create")
             )
         elif reviewer:
             role_id = ensure_scoped_role(

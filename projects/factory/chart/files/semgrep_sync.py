@@ -134,17 +134,18 @@ def reconcile(findings, plan):
         if issue.get("archivedAt"):
             if closed:
                 continue
-            # itsaplan restores archived subtasks recursively with their parent.
-            details = plan(f"/issues/{issue['id']}")
-            if any(task["archived"] for task in details["subtasks"]):
-                raise ValueError("restoring this finding would also restore a subtask")
-            plan(f"/issues/{issue['id']}/restore", "POST")
         terminal = columns[issue["columnId"]] in ("completed", "canceled")
         if closed != terminal:
             desired["columnId"] = done if closed else backlog
         changes = {k: v for k, v in desired.items() if issue[k] != v}
+        if issue.get("archivedAt"):
+            changes["restore"] = True
         if changes:
-            plan(f"/issues/{issue['id']}", "PATCH", changes)
+            plan(
+                f"/issues/{issue['id']}/factory-semgrep",
+                "PATCH",
+                {"finding": key, **changes},
+            )
 
 
 def sync(get, deployment, plan):

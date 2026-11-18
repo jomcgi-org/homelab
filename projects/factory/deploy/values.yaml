@@ -274,6 +274,3 @@ discord:
       guildLimit: {count: 60, window: 1h}
       globalLimit: {count: 300, window: 24h}
       queueDepth: 3
-
-semgrepSync:
-  enabled: true
