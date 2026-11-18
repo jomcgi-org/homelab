@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -12,6 +13,8 @@ import (
 type CheckRunFilter struct {
 	Name  string
 	AppID int64
+	// All includes older runs for recovery. A truncated result is an error.
+	All bool
 }
 
 type restCheckRun struct {
@@ -46,10 +49,13 @@ func (r restCheckRun) run() CheckRun {
 	return c
 }
 
-// ListCheckRuns lists the latest check run per name on a commit, the first
-// 100, optionally only those with one name or from one GitHub App.
+// ListCheckRuns lists the first 100 matching runs on a commit. All requests
+// include older runs and fail if the response omits any matching history.
 func (c *Client) ListCheckRuns(ctx context.Context, repo, sha string, f CheckRunFilter) ([]CheckRun, error) {
 	q := url.Values{"filter": {"latest"}, "per_page": {"100"}}
+	if f.All {
+		q.Set("filter", "all")
+	}
 	if f.Name != "" {
 		q.Set("check_name", f.Name)
 	}
@@ -57,11 +63,15 @@ func (c *Client) ListCheckRuns(ctx context.Context, repo, sha string, f CheckRun
 		q.Set("app_id", strconv.FormatInt(f.AppID, 10))
 	}
 	var out struct {
-		CheckRuns []restCheckRun `json:"check_runs"`
+		TotalCount int            `json:"total_count"`
+		CheckRuns  []restCheckRun `json:"check_runs"`
 	}
 	path := repoPath(repo) + "/commits/" + url.PathEscape(sha) + "/check-runs?" + q.Encode()
 	if err := c.do(ctx, repo, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
+	}
+	if f.All && out.TotalCount != len(out.CheckRuns) {
+		return nil, fmt.Errorf("github: check history is incomplete")
 	}
 	runs := make([]CheckRun, 0, len(out.CheckRuns))
 	for _, r := range out.CheckRuns {

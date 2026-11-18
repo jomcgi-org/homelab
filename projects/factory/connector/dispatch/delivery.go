@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1291,6 +1292,9 @@ func succeeded(c Check, head string, checks []github.CheckRun, statuses []github
 	if c.AppID != 0 {
 		for _, r := range checks {
 			if r.Name == c.Name && r.AppID == c.AppID && r.HeadSHA == head && r.Status == "completed" && r.Conclusion == "success" {
+				if r.Name == "factory review" && !completeFactoryReview(r.Text) {
+					continue
+				}
 				return true
 			}
 		}
@@ -1303,6 +1307,33 @@ func succeeded(c Check, head string, checks []github.CheckRun, statuses []github
 		}
 	}
 	return false
+}
+
+// A legacy pass can remain published when the reviewer cannot write its
+// invalidation. Require the factory reviewer's complete v2 checkpoint at
+// the consumer too; other configured check protocols remain independent.
+func completeFactoryReview(text string) bool {
+	const marker = "<!-- factory-review:state "
+	if strings.Count(text, marker) != 1 {
+		return false
+	}
+	_, state, _ := strings.Cut(text, marker+"v2 ")
+	encoded, _, ok := strings.Cut(state, " -->")
+	if !ok {
+		return false
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	var st struct {
+		Blocking      []json.RawMessage `json:"blocking"`
+		Incomplete    bool              `json:"incomplete"`
+		IssuesPending bool              `json:"issuesPending"`
+		Semgrep       *struct {
+			Verified bool `json:"verified"`
+			NoReport bool `json:"no_report"`
+		} `json:"semgrep"`
+	}
+	return err == nil && json.Unmarshal(data, &st) == nil && st.Blocking != nil && len(st.Blocking) == 0 &&
+		!st.Incomplete && !st.IssuesPending && (st.Semgrep == nil || st.Semgrep.Verified && !st.Semgrep.NoReport)
 }
 
 // ejected records the confirmed ejection and starts a bounded revision in

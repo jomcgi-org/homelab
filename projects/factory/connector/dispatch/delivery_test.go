@@ -2,6 +2,7 @@ package dispatch_test
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
@@ -980,6 +981,51 @@ func TestEnqueueOnlyAtCurrentHeadWithEverythingGreen(t *testing.T) {
 	v.poll()
 	if n := len(v.gh.Enqueues()); n != 1 {
 		t.Fatalf("enqueues = %d, want one while queued", n)
+	}
+}
+
+func TestFactoryReviewRequiresCompleteStateBeforeEnqueue(t *testing.T) {
+	for _, state := range []string{
+		"", "v1 " + base64.StdEncoding.EncodeToString([]byte(`{"blocking":[]}`)),
+		"v2 " + base64.StdEncoding.EncodeToString([]byte(`{"blocking":[],"incomplete":true}`)),
+		"v2 " + base64.StdEncoding.EncodeToString([]byte(`{"blocking":[],"issuesPending":true}`)),
+		"v2 " + base64.StdEncoding.EncodeToString([]byte(`{"blocking":[],"semgrep":{"verified":false}}`)),
+		"v2 " + base64.StdEncoding.EncodeToString([]byte(`{"blocking":[],"semgrep":{"verified":true,"no_report":true}}`)),
+		"v2 " + base64.StdEncoding.EncodeToString([]byte(`{"blocking":null}`)),
+		"v2 " + base64.StdEncoding.EncodeToString([]byte(`{"blocking":[{"id":"lost","severity":"high"}]}`)),
+		"v2 malformed",
+	} {
+		t.Run(state, func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.cfg.Bindings[0].Review.ReviewerCheck.Name = "factory review"
+			v.e.Release()
+			v.e = v.engine("connector-a")
+			v.delivered()
+			v.gh.check("sha-1", "test", 100, "success")
+			v.gh.check("sha-1", "factory review", 200, "success")
+			setState := func(state string) {
+				v.gh.mu.Lock()
+				defer v.gh.mu.Unlock()
+				for i := range v.gh.checks["sha-1"] {
+					if v.gh.checks["sha-1"][i].Name == "factory review" {
+						v.gh.checks["sha-1"][i].Text = "<!-- factory-review:state " + state + " -->"
+					}
+				}
+			}
+			setState(state)
+			v.poll()
+			v.e.Release()
+			v.e = v.engine("connector-b")
+			v.poll()
+			if len(v.gh.Enqueues()) != 0 {
+				t.Fatal("connector trusted an unsafe published pass across restart")
+			}
+			setState("v2 " + base64.StdEncoding.EncodeToString([]byte(`{"blocking":[],"semgrep":{"verified":true}}`)))
+			v.poll()
+			if len(v.gh.Enqueues()) != 1 {
+				t.Fatal("complete migrated review could not authorize enqueue")
+			}
+		})
 	}
 }
 

@@ -146,8 +146,21 @@ func TestAuthorshipWaiverIsRecomputedAndRevoked(t *testing.T) {
 			eventually(t, "the comment to explain the authorship waiver", func() bool {
 				return commentHas(h, 7, "### ✅ Approved", "Human gate cleared by authorship", "Joe's approval by authorship", "Rename x")
 			})
-			before := h.gh.countCalls("GET /repos/" + testRepo + "/activity")
+			h.gh.withLock(func() {
+				h.gh.queue = []github.MergeQueueEntry{{State: "AWAITING_CHECKS", HeadCommit: "mg-7", Number: 7, PRHeadSHA: shaA}}
+			})
 			e.Tick(ctx)
+			if c := h.gh.check("mg-7"); c == nil || c.Conclusion != ConclusionSuccess {
+				t.Fatal("current authorship evidence did not authorize the merge group")
+			}
+			// Authorship is not in the stored state: a fresh process must
+			// verify it before keeping the already-passing group usable.
+			before := h.gh.countCalls("GET /repos/" + testRepo + "/activity")
+			e = h.engine()
+			e.Tick(ctx)
+			if h.gh.check("mg-7").Conclusion != ConclusionSuccess {
+				t.Fatal("restart lost the current authorship waiver")
+			}
 			if h.gh.countCalls("GET /repos/"+testRepo+"/activity") <= before {
 				t.Fatal("poll reused approval")
 			}
@@ -155,6 +168,9 @@ func TestAuthorshipWaiverIsRecomputedAndRevoked(t *testing.T) {
 			e.Tick(ctx)
 			if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure || strings.Contains(c.Summary, "Joe's approval by authorship") {
 				t.Fatalf("waiver survived revocation: %s %s", c.Conclusion, c.Summary)
+			}
+			if c := h.gh.check("mg-7"); c == nil || c.Conclusion != ConclusionFailure {
+				t.Fatal("the merge group retained a revoked authorship waiver")
 			}
 			eventually(t, "the comment to revoke the waiver and retain findings", func() bool {
 				return commentHas(h, 7, "### 🙋 Waiting for a human approval", "Rename x") && !strings.Contains(onlyComment(t, h, 7).Body, authorshipPrefix)
@@ -877,6 +893,850 @@ func TestRefusedAnnotationsStillCompleteTheCheck(t *testing.T) {
 	}
 }
 
+func TestEveryFindingSurvivesRestartAndPartialResolution(t *testing.T) {
+	for name, tc := range map[string]struct {
+		count int
+		gate  bool
+	}{
+		"41 blockers":    {count: 41},
+		"21 model gates": {count: 21, gate: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			var original []Finding
+			for i := range tc.count {
+				id := fmt.Sprintf("a.go:correctness:%s:%d", strings.Repeat("shared", 60), i)
+				if tc.gate {
+					id += ":human-gate"
+				}
+				f := finding(id, Severities[i%3])
+				f.Title, f.Detail = "A blocker", strings.Repeat("large detail ", 1000)
+				original = append(original, f)
+			}
+			// Each round has a fresh service and client cache. Only GitHub's
+			// check output can carry findings across these restarts.
+			round := func(sha string, r Report) *fakeCheck {
+				t.Helper()
+				if sha != shaA {
+					h.gh.push(7, sha)
+				}
+				e, ctx, stop := h.start()
+				defer stop()
+				h.k.finish(runReview(t, h, e, ctx, 7, sha), kagent.StateCompleted, report(t, r))
+				eventually(t, "completed review", func() bool { return h.gh.check(sha).Status == "completed" })
+				return h.gh.check(sha)
+			}
+			wantFirst := ConclusionFailure
+			if tc.gate {
+				h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
+				wantFirst = ConclusionSuccess
+			}
+			first := round(shaA, Report{Summary: "s", Findings: original})
+			st, ok := LoadState(first.Text)
+			if !ok || st.Incomplete || len(st.Previous()) != tc.count || first.Conclusion != wantFirst {
+				t.Fatalf("first review = %s, stored %d findings", first.Conclusion, len(st.Previous()))
+			}
+			next := Report{Summary: "s", Findings: []Finding{}}
+			for _, f := range original[:tc.count-1] {
+				next.Previous = append(next.Previous, Previous{ID: f.ID, Status: StatusFixed})
+			}
+			second := round(strings.Repeat("b", 40), next)
+			st, ok = LoadState(second.Text)
+			left := st.Previous()
+			last := original[tc.count-1]
+			if !ok || st.Incomplete || second.Conclusion != ConclusionFailure || len(left) != 1 || left[0].ID != last.ID || left[0].Severity != last.Severity {
+				t.Fatalf("partial resolution = %s, %d findings remain", second.Conclusion, len(left))
+			}
+			prompt := h.k.sent()[len(h.k.sent())-1].Parts[0].Text
+			for _, f := range original {
+				if !strings.Contains(prompt, "`"+f.ID+"` "+f.Severity) {
+					t.Fatal("the prompt lost an original identity or severity")
+				}
+			}
+			third := round(strings.Repeat("c", 40), Report{Summary: "s", Findings: []Finding{}, Previous: []Previous{{ID: last.ID, Status: StatusFixed}}})
+			if third.Conclusion != ConclusionSuccess {
+				t.Fatalf("all findings fixed: %s", third.Conclusion)
+			}
+		})
+	}
+}
+
+func TestGateApprovalCannotPostAnIncompletePassingState(t *testing.T) {
+	h := newHarness(t)
+	withComments(h)
+	addPR7(h)
+	gate := &Gate{Findings: []Finding{{ID: strings.Repeat("x", maxState*3/4) + ":human-gate", Severity: SeverityHigh}}}
+	st := State{Gate: gate}
+	// Fill the state to its limit, before the approval adds more bytes.
+	for {
+		if saved, _ := LoadState(encodeState(st)); !saved.Incomplete {
+			break
+		}
+		gate.Findings[0].ID = gate.Findings[0].ID[1:]
+	}
+	h.gh.addCheck(shaA, "factory review", testAppID, ConclusionFailure)
+	h.gh.checks[0].ExternalID = MessageID(testRepo, 7, shaA)
+	h.gh.checks[0].Text = encodeState(st)
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
+	e := h.engine()
+	e.Tick(context.Background())
+	c := h.gh.check(shaA)
+	saved, ok := LoadState(c.Text)
+	if !ok || !saved.Incomplete || c.Conclusion != ConclusionFailure || strings.Contains(c.Summary, gateOnlyMarker) {
+		t.Fatal("gate reconciliation passed despite incomplete saved state")
+	}
+	eventually(t, "incomplete-state comment", func() bool {
+		return commentHas(h, 7, "### ⏸️ On hold", "Review state incomplete", "cannot clear missing history")
+	})
+}
+
+func TestOverflowRecoveryRequiresEveryOriginalFindingAfterRestart(t *testing.T) {
+	for _, gated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("gate=%v", gated), func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			var original []Finding
+			for i := range 100 {
+				id := fmt.Sprintf("a.go:correctness:%s:%d", strings.Repeat("shared", 80), i)
+				if gated {
+					id += ":human-gate"
+				}
+				original = append(original, finding(id, SeverityHigh))
+			}
+			round := func(sha string, r Report) *fakeCheck {
+				t.Helper()
+				if sha != shaA {
+					h.gh.push(7, sha)
+				}
+				e, ctx, stop := h.start()
+				h.k.finish(runReview(t, h, e, ctx, 7, sha), kagent.StateCompleted, report(t, r))
+				eventually(t, "completed review", func() bool { return h.gh.check(sha).Status == "completed" })
+				stop()
+				return h.gh.check(sha)
+			}
+			first := round(shaA, Report{Summary: "Original blockers", Findings: original})
+			st, ok := LoadState(first.Text)
+			if !ok || !st.Incomplete || st.TaskID == "" || len(first.Text) > maxState || first.Conclusion != ConclusionFailure {
+				t.Fatal("overflow lost its recovery reference or passed")
+			}
+			h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
+			h.engine().Tick(context.Background())
+			if h.gh.check(shaA).Conclusion != ConclusionFailure {
+				t.Fatal("approval passed a state that still cannot fit")
+			}
+			second := round(strings.Repeat("b", 40), Report{Summary: "No new findings", Findings: []Finding{}})
+			if second.Conclusion != ConclusionFailure {
+				t.Fatal("an empty full review erased the overflowed findings")
+			}
+			var fixed []Previous
+			for _, f := range original[:len(original)-1] {
+				fixed = append(fixed, Previous{ID: f.ID, Status: StatusFixed})
+			}
+			third := round(strings.Repeat("c", 40), Report{Summary: "Fixed all but one", Findings: []Finding{}, Previous: fixed})
+			st, ok = LoadState(third.Text)
+			last := original[len(original)-1]
+			if !ok || st.Incomplete || len(st.Previous()) != 1 || st.Previous()[0].ID != last.ID || third.Conclusion != ConclusionFailure {
+				t.Fatal("recovery failed to retain exactly the unresolved original identity")
+			}
+			fourth := round(strings.Repeat("d", 40), Report{Summary: "Fixed the last finding", Findings: []Finding{}, Previous: []Previous{{ID: last.ID, Status: StatusFixed}}})
+			st, ok = LoadState(fourth.Text)
+			if !ok || st.Incomplete || len(st.Previous()) != 0 || fourth.Conclusion != ConclusionSuccess {
+				t.Fatal("complete accounting did not recover delivery after restart")
+			}
+		})
+	}
+}
+
+// seedLegacyReport represents a completed review from before v2, including
+// its original task and the service footer needed to find it after restart.
+func seedLegacyReport(t *testing.T, h *harness, sha string, r Report, st State, conclusion string) string {
+	t.Helper()
+	e := h.engine()
+	b := &e.cfg.Bindings[0]
+	task, err := h.k.Send(context.Background(), b.Agent, kagent.Message{
+		MessageID: "legacy/" + sha, Parts: []kagent.Part{{Text: "Legacy review"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.k.finish(task.ID, kagent.StateCompleted, report(t, r))
+	h.gh.addCheck(sha, "factory review", testAppID, conclusion)
+	c := h.gh.checks[len(h.gh.checks)-1]
+	c.ExternalID = MessageID(testRepo, 7, sha)
+	c.Text = strings.Replace(encodeState(st), "state v2", "state v1", 1)
+	c.Summary = e.footer(b, github.PullRequest{HeadSHA: sha}, task.ID)
+	return task.ID
+}
+
+func TestLegacyMigrationReplaysLostIdentitiesAcrossHeads(t *testing.T) {
+	for _, kind := range []string{"41 blockers", "long IDs", "21 model gates"} {
+		t.Run(kind, func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			var original []Finding
+			count := 41
+			if kind == "long IDs" {
+				count = 2
+			} else if kind == "21 model gates" {
+				count = 21
+			}
+			for i := range count {
+				id := fmt.Sprintf("a.go:correctness:%d", i)
+				if kind == "long IDs" {
+					id = strings.Repeat("shared-prefix", 40) + id
+				} else if kind == "21 model gates" {
+					id += ":human-gate"
+				}
+				f := finding(id, SeverityHigh)
+				f.Detail = strings.Repeat("large descriptive text ", 200)
+				original = append(original, f)
+			}
+			stored := append([]Finding(nil), original[:count-1]...)
+			if kind == "long IDs" {
+				stored = append([]Finding(nil), original...)
+				for i := range stored {
+					stored[i].ID = clip(stored[i].ID, 300)
+				}
+			}
+			st := State{Blocking: stored}
+			if kind == "21 model gates" {
+				st = State{Blocking: []Finding{}, Gate: &Gate{Findings: stored, Approver: "jomcgi"}}
+			}
+			seedLegacyReport(t, h, shaA, Report{Summary: "Original review", Findings: original}, st, ConclusionFailure)
+			var fixed []Previous
+			seen := map[string]bool{}
+			for _, f := range stored {
+				if !seen[f.ID] {
+					fixed = append(fixed, Previous{ID: f.ID, Status: StatusFixed})
+					seen[f.ID] = true
+				}
+			}
+			shaB := strings.Repeat("b", 40)
+			h.gh.push(7, shaB)
+			seedLegacyReport(t, h, shaB, Report{Summary: "Cleared the stored list", Findings: []Finding{}, Previous: fixed}, State{Blocking: []Finding{}}, ConclusionSuccess)
+			e := h.engine()
+			e.Tick(context.Background())
+			c := h.gh.check(shaB)
+			recovered, ok := LoadState(c.Text)
+			want := 1
+			if kind == "long IDs" {
+				want = 2 // Resolving the clipped alias cleared neither original.
+			}
+			if !ok || recovered.Incomplete || len(recovered.Previous()) != want || c.Conclusion != ConclusionFailure {
+				t.Fatalf("legacy pass lost unresolved originals: %+v", recovered)
+			}
+			fixed = nil
+			for _, f := range recovered.Previous() {
+				if f.Severity != SeverityHigh || !slices.ContainsFunc(original, func(o Finding) bool { return o.ID == f.ID }) {
+					t.Fatal("replay changed an original identity or severity")
+				}
+				fixed = append(fixed, Previous{ID: f.ID, Status: StatusFixed})
+			}
+			shaC := strings.Repeat("c", 40)
+			h.gh.push(7, shaC)
+			e, ctx, stop := h.start()
+			defer stop()
+			h.k.finish(runReview(t, h, e, ctx, 7, shaC), kagent.StateCompleted, report(t, Report{Summary: "Fixed every original", Findings: []Finding{}, Previous: fixed}))
+			eventually(t, "recovered delivery", func() bool { return h.gh.check(shaC).Status == "completed" })
+			if h.gh.check(shaC).Conclusion != ConclusionSuccess {
+				t.Fatal("accounted original findings still prevented delivery")
+			}
+		})
+	}
+}
+
+func TestLegacyRecoveryRetainsAndRefreshesServiceIssueFindings(t *testing.T) {
+	for _, clipped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy cap omitted issue finding=%v", clipped), func(t *testing.T) {
+			h, api := issueHarness(t)
+			api.fail = "missing"
+			e := h.engine()
+			pr := github.PullRequest{Number: 7, HeadSHA: shaA, Author: "jomcgi", Body: "Refs HOME-58"}
+			issues := e.issueContext(context.Background(), &e.cfg.Bindings[0], pr, nil)
+			if len(issues.Findings) != 1 {
+				t.Fatal("fixture must have one service issue finding")
+			}
+			code := []Finding{}
+			var fixed []Previous
+			if clipped {
+				for i := range 40 {
+					f := finding(fmt.Sprintf("code:%d", i), SeverityHigh)
+					code = append(code, f)
+					fixed = append(fixed, Previous{ID: f.ID, Status: StatusFixed})
+				}
+			}
+			stored := State{Blocking: append([]Finding{}, code...), IssueDigest: issueDigest(issues)}
+			if !clipped {
+				stored.Blocking = append(stored.Blocking, issues.Findings...)
+			}
+			// Legacy state could omit a service finding after 40 code findings.
+			// The original model report never contained the service finding.
+			seedLegacyReport(t, h, shaA, Report{Summary: "Original report", Findings: code}, stored, ConclusionFailure)
+			e, ctx, stop := h.start()
+			e.Tick(ctx)
+			e.Wait()
+			c := h.gh.check(shaA)
+			st, ok := LoadState(c.Text)
+			if !ok || st.Incomplete || !st.IssuesPending || st.IssueDigest != stored.IssueDigest ||
+				len(st.Blocking) != len(stored.Blocking) || c.Conclusion != ConclusionFailure {
+				t.Fatalf("recovery did not retain findings and require evidence refresh: %+v", st)
+			}
+			stop()
+			e, ctx, _ = h.start()
+			task := runReview(t, h, e, ctx, 7, shaA)
+			h.k.finish(task, kagent.StateCompleted, report(t, Report{Summary: "Code fixed", Findings: []Finding{}, Previous: fixed}))
+			e.Wait()
+			c = h.gh.check(shaA)
+			st, ok = LoadState(c.Text)
+			if !ok || st.Incomplete || st.IssuesPending || len(st.Blocking) != 1 ||
+				st.Blocking[0].ID != issues.Findings[0].ID || c.Conclusion != ConclusionFailure {
+				t.Fatal("fresh model review cleared unresolved service evidence")
+			}
+			api.fail = ""
+			next := strings.Repeat("b", 40)
+			h.gh.push(7, next)
+			task = runReview(t, h, e, ctx, 7, next)
+			h.k.finish(task, kagent.StateCompleted, report(t, Report{
+				Summary: "Evidence fixed", Findings: []Finding{},
+				Previous: []Previous{{ID: issues.Findings[0].ID, Status: StatusFixed}},
+			}))
+			e.Wait()
+			if h.gh.check(next).Conclusion != ConclusionSuccess {
+				t.Fatal("current evidence and complete accounting did not recover delivery")
+			}
+		})
+	}
+}
+
+func TestGoalHistorySurvivesLegacyCapsAndOverflowAcrossRestart(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy=%v", legacy), func(t *testing.T) {
+			h, api := issueHarness(t)
+			answer := func(count int, verdict string) goalAnswer {
+				a := goalAnswer{Overall: verdict, Criteria: []GoalVerdict{}}
+				for n := range count {
+					a.Criteria = append(a.Criteria, GoalVerdict{n + 1, verdict})
+				}
+				return a
+			}
+			setGoal := func(a goalAnswer) {
+				data, err := json.Marshal(a)
+				if err != nil {
+					t.Fatal(err)
+				}
+				h.k.goal = goalReply(string(data))
+			}
+			initial := answer(maxCriteria, goalNotMet)
+			setGoal(initial)
+			huge := finding(strings.Repeat("x", maxState), SeverityHigh)
+			round := func(head string, findings []Finding, previous []Previous) *fakeCheck {
+				t.Helper()
+				if head != shaA {
+					h.gh.push(7, head)
+				}
+				e, ctx, stop := h.start()
+				h.k.finish(runReview(t, h, e, ctx, 7, head), kagent.StateCompleted,
+					report(t, Report{Summary: "Code review", Findings: findings, Previous: previous}))
+				e.Wait()
+				stop()
+				return h.gh.check(head)
+			}
+			if legacy {
+				e := h.engine()
+				pr := github.PullRequest{Number: 7, HeadSHA: shaA, Author: "jomcgi", Body: "Refs HOME-58"}
+				issues := e.issueContext(context.Background(), &e.cfg.Bindings[0], pr, nil)
+				goal := &GoalCheck{Head: shaA, Digest: issueDigest(issues), Criteria: initial.Criteria, Overall: initial.Overall}
+				// A v1 check kept the goal answer, but no issue key and only
+				// the first 40 of its 51 service-generated blockers.
+				st := State{Blocking: goalFindings("HOME-58", goal)[:40], Goal: goal, IssueDigest: issueDigest(issues)}
+				seedLegacyReport(t, h, shaA, Report{Summary: "No code findings", Findings: []Finding{}}, st, ConclusionFailure)
+				saved, _ := LoadState(h.gh.check(shaA).Text)
+				original := api.issue.Description
+				api.issue.Description = "Different evidence cannot identify an omitted legacy goal"
+				if _, ok := e.recoverState(context.Background(), &e.cfg.Bindings[0], pr, &github.CheckRun{HeadSHA: shaA}, saved); ok {
+					t.Fatal("a clipped goal snapshot migrated without its original issue binding")
+				}
+				api.issue.Description = original
+			} else {
+				first := round(shaA, []Finding{huge}, nil)
+				st, ok := LoadState(first.Text)
+				if !ok || !st.Incomplete || st.GoalKey != "HOME-58" || st.Goal == nil || len(st.Goal.Criteria) != maxCriteria {
+					t.Fatal("overflow lost the separate goal answer or its issue")
+				}
+			}
+			last := fmt.Sprintf("HOME-58:goal:criterion-%d", maxCriteria)
+			fixed := []Previous{{ID: last, Status: StatusFixed}}
+			if !legacy {
+				fixed = append(fixed, Previous{ID: huge.ID, Status: StatusFixed})
+			}
+			// The code task claims every remaining blocker fixed. Omitting
+			// the last criterion from the separate goal answer cannot fix it.
+			setGoal(answer(maxCriteria-1, goalMet))
+			second := round(strings.Repeat("b", 40), []Finding{}, fixed)
+			assertLast := func(c *fakeCheck) {
+				t.Helper()
+				st, ok := LoadState(c.Text)
+				if !ok || st.Incomplete || len(st.Blocking) != 1 || st.Blocking[0].ID != last ||
+					st.Blocking[0].Severity != SeverityMedium || c.Conclusion != ConclusionFailure {
+					t.Fatalf("recovery lost the unresolved goal criterion: %+v", st)
+				}
+			}
+			assertLast(second)
+			api.issue.Identifier = "HOME-59"
+			h.gh.withLock(func() { h.gh.prs[7].Body = "Refs HOME-59" })
+			setGoal(answer(maxCriteria, goalMet))
+			assertLast(round(strings.Repeat("c", 40), []Finding{}, fixed))
+			api.issue.Identifier = "HOME-58"
+			h.gh.withLock(func() { h.gh.prs[7].Body = "Refs HOME-58" })
+			if round(strings.Repeat("d", 40), []Finding{}, fixed).Conclusion != ConclusionSuccess {
+				t.Fatal("a valid goal answer resolving every original criterion did not recover delivery")
+			}
+		})
+	}
+}
+
+func TestLegacyEmptyPassMigrationAndMissingEvidence(t *testing.T) {
+	for _, missing := range []string{"", "task", "timeline", "check history", "foreign PR", "gate replacement", "prior failed attempt"} {
+		t.Run(missing, func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			task := seedLegacyReport(t, h, shaA, Report{Summary: "No findings", Findings: []Finding{}}, State{Blocking: []Finding{}}, ConclusionSuccess)
+			switch missing {
+			case "task":
+				delete(h.k.tasks, task)
+			case "timeline":
+				h.gh.prs[7].TimelineTruncated = true
+			case "check history":
+				for range 100 {
+					h.gh.addCheck(shaA, "factory review", testAppID, ConclusionFailure)
+					h.gh.checks[len(h.gh.checks)-1].ExternalID = MessageID(testRepo, 7, shaA)
+					h.gh.checks[len(h.gh.checks)-1].Text = h.gh.checks[0].Text
+				}
+			case "foreign PR":
+				h.gh.checks[0].ExternalID = MessageID(testRepo, 8, shaA)
+			case "prior failed attempt":
+				h.gh.prs[7].Heads = []string{"older", shaA}
+				h.gh.addCheck("older", "factory review", testAppID, ConclusionFailure)
+				h.gh.checks[1].ExternalID = MessageID(testRepo, 7, "older")
+				h.gh.checks[1].Title = "No review report"
+				h.gh.checks[1].Text = strings.Replace(encodeState(State{}), "state v2", "state v1", 1)
+			case "gate replacement":
+				// The latest legacy run has no footer; the original report is
+				// still available on an older check on the same commit.
+				h.gh.addCheck(shaA, "factory review", testAppID, ConclusionSuccess)
+				h.gh.checks[1].ExternalID = MessageID(testRepo, 7, shaA)
+				h.gh.checks[1].Text = h.gh.checks[0].Text
+			}
+			e := h.engine()
+			run, err := e.reviewCheck(context.Background(), &e.cfg.Bindings[0], shaA)
+			if err != nil {
+				t.Fatal(err)
+			}
+			st, _ := LoadState(run.Text)
+			got, ok := e.recoverState(context.Background(), &e.cfg.Bindings[0], github.PullRequest{Number: 7, HeadSHA: shaA}, run, st)
+			canRecover := missing == "" || missing == "task" || missing == "gate replacement" || missing == "prior failed attempt"
+			if ok != canRecover || got.Incomplete == canRecover {
+				t.Fatalf("recovery=%v, incomplete=%v", ok, got.Incomplete)
+			}
+			if !canRecover {
+				return
+			}
+			e.Tick(context.Background())
+			h.engine().Tick(context.Background())
+			c := h.gh.check(shaA)
+			st, ok = LoadState(c.Text)
+			if !ok || st.Incomplete || c.Conclusion != ConclusionSuccess {
+				t.Fatal("a verified empty legacy report could not migrate across restart")
+			}
+		})
+	}
+}
+
+func TestExpiredLegacyTasksRetainFindingsUntilAFreshReportAccountsForThem(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	blocker, gate := finding("a.go:correctness", SeverityCritical), finding("AGENTS.md:human-gate", SeverityHigh)
+	task := seedLegacyReport(t, h, shaA, Report{Summary: "Findings", Findings: []Finding{blocker, gate}},
+		State{Blocking: []Finding{blocker}, Gate: &Gate{Findings: []Finding{gate}}}, ConclusionFailure)
+	delete(h.k.tasks, task)
+	shaB, shaC := strings.Repeat("b", 40), strings.Repeat("c", 40)
+	h.gh.push(7, shaB)
+	task = seedLegacyReport(t, h, shaB, Report{Summary: "Earlier findings absent", Findings: []Finding{}}, State{Blocking: []Finding{}}, ConclusionSuccess)
+	delete(h.k.tasks, task)
+	for range 2 {
+		h.engine().Tick(context.Background())
+		c := h.gh.check(shaB)
+		st, ok := LoadState(c.Text)
+		if !ok || st.Incomplete || len(st.Previous()) != 2 || c.Conclusion != ConclusionFailure {
+			t.Fatalf("expired tasks lost known findings or prevented migration: %+v", st)
+		}
+	}
+	h.gh.push(7, shaC)
+	e, ctx, stop := h.start()
+	defer stop()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaC), kagent.StateCompleted, report(t, Report{
+		Summary: "Accounted for both prior findings", Findings: []Finding{}, Previous: []Previous{
+			{ID: blocker.ID, Status: StatusFixed}, {ID: gate.ID, Status: StatusFixed},
+		},
+	}))
+	eventually(t, "recovered delivery", func() bool { return h.gh.check(shaC).Status == "completed" })
+	if c := h.gh.check(shaC); c.Conclusion != ConclusionSuccess {
+		t.Fatal("expired tasks permanently blocked complete accounting on a new head")
+	}
+}
+
+func TestDecisionRecoveryKeepsFindingIdentitiesAcrossRestart(t *testing.T) {
+	for _, mode := range []string{"legacy", "expired", "overflow"} {
+		t.Run(mode, func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			prefix := strings.Repeat("x", 400)
+			if mode == "expired" {
+				prefix = "short" // Lossless v1 snapshots cannot have clipped IDs.
+			}
+			ids := []string{prefix + ":first", prefix + ":second"}
+			original := []Finding{finding(ids[0], SeverityHigh), finding(ids[1], SeverityHigh)}
+			comment := github.Comment{ID: 42, Author: "jomcgi", Body: "Decision: accept `" + ids[0] + "` and `" + ids[1] + "`; verify delivery after rollout."}
+			h.gh.prs[7].Comments = []github.Comment{comment}
+			previous := []Previous{}
+			for _, id := range ids {
+				previous = append(previous, Previous{ID: id, Status: StatusJustified, Note: "decision: https://github.com/" + testRepo + "/pull/7#issuecomment-42"})
+			}
+			initial := State{Blocking: slices.Clone(original)}
+			if mode == "legacy" {
+				for i := range initial.Blocking {
+					initial.Blocking[i].ID = clip(initial.Blocking[i].ID, maxTitle)
+				}
+			}
+			firstTask := seedLegacyReport(t, h, shaA, Report{Summary: "Original findings", Findings: original}, initial, ConclusionFailure)
+			if mode == "overflow" {
+				initial.TaskID = firstTask
+				h.gh.checks[0].Text = encodeState(initial)
+			}
+			accepted := Report{Summary: "Joe accepted the evidence", Findings: []Finding{}, Previous: previous}
+			huge := finding(strings.Repeat("y", maxState), SeverityHigh)
+			if mode == "overflow" {
+				accepted.Findings = []Finding{huge}
+			}
+			a := AssessDecided(&accepted, original, Decisions{Repo: testRepo, Number: 7, Comments: []github.Comment{comment}})
+			state := stateOf(a, &accepted, nil)
+			if mode == "legacy" {
+				for i := range state.Decisions {
+					state.Decisions[i].Finding = clip(state.Decisions[i].Finding, maxTitle)
+				}
+			}
+			shaB := strings.Repeat("b", 40)
+			h.gh.push(7, shaB)
+			secondTask := seedLegacyReport(t, h, shaB, accepted, state, a.Conclusion)
+			if mode == "overflow" {
+				state.TaskID = secondTask
+				h.gh.checks[len(h.gh.checks)-1].Text = encodeState(state)
+				previous = append(previous, Previous{ID: huge.ID, Status: StatusFixed})
+			}
+			if mode == "expired" {
+				delete(h.k.tasks, firstTask)
+				delete(h.k.tasks, secondTask)
+			}
+			// Even an edit that still names both IDs must revoke the old
+			// report's acceptance. Replay cannot judge the changed decision.
+			h.gh.prs[7].Comments[0].Body = "Revoked: " + comment.Body
+			e := h.engine()
+			saved, _ := LoadState(h.gh.check(shaB).Text)
+			recovered, ok := e.recoverState(context.Background(), &e.cfg.Bindings[0],
+				github.PullRequest{Number: 7, HeadSHA: shaB}, &github.CheckRun{HeadSHA: shaB}, saved)
+			if !ok || recovered.Incomplete {
+				t.Fatal("complete history could not recover with a revoked decision")
+			}
+			for _, id := range ids {
+				if !slices.ContainsFunc(recovered.Blocking, func(f Finding) bool { return f.ID == id && f.Severity == SeverityHigh }) {
+					t.Fatal("historical reply accepted an edited decision")
+				}
+			}
+			h.gh.prs[7].Comments[0] = comment
+			round := func(head string, previous []Previous) *fakeCheck {
+				t.Helper()
+				h.gh.push(7, head)
+				e, ctx, stop := h.start()
+				h.k.finish(runReview(t, h, e, ctx, 7, head), kagent.StateCompleted,
+					report(t, Report{Summary: "Next review", Findings: []Finding{}, Previous: previous}))
+				e.Wait()
+				stop()
+				return h.gh.check(head)
+			}
+			c := round(strings.Repeat("c", 40), previous)
+			st, ok := LoadState(c.Text)
+			if !ok || st.Incomplete || c.Conclusion != ConclusionSuccess || len(st.Decisions) != 2 {
+				t.Fatalf("recovery lost accepted decisions: %+v", st)
+			}
+			for _, id := range ids {
+				if !slices.ContainsFunc(st.Decisions, func(d DecisionStamp) bool { return d.Finding == id }) {
+					t.Fatal("recovery clipped a decision's finding identity")
+				}
+			}
+			h.gh.withLock(func() { h.gh.prs[7].Comments = nil })
+			c = round(strings.Repeat("d", 40), nil)
+			st, ok = LoadState(c.Text)
+			if !ok || st.Incomplete || len(st.Blocking) != 2 || c.Conclusion != ConclusionFailure {
+				t.Fatal("deleted decision failed to restore both original blockers")
+			}
+			c = round(strings.Repeat("e", 40), []Previous{{ID: ids[0], Status: StatusFixed}})
+			st, ok = LoadState(c.Text)
+			if !ok || st.Incomplete || len(st.Blocking) != 1 || st.Blocking[0].ID != ids[1] || st.Blocking[0].Severity != SeverityHigh || c.Conclusion != ConclusionFailure {
+				t.Fatal("resolving one original identity cleared the other")
+			}
+			if round(strings.Repeat("f", 40), []Previous{{ID: ids[1], Status: StatusFixed}}).Conclusion != ConclusionSuccess {
+				t.Fatal("resolving every original identity did not restore success")
+			}
+		})
+	}
+}
+
+func TestLegacyMigrationPreservesDerivedIDsAcrossReports(t *testing.T) {
+	for _, title := range []string{"Already fixed", strings.Repeat("long title ", 30)} {
+		t.Run(title, func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			original := Finding{ID: "  ", Path: "a.go", Title: title, Severity: SeverityHigh}
+			stored := original
+			stored.ID = clip("a.go:"+strings.Trim(slugJunk.ReplaceAllString(strings.ToLower(strings.TrimSpace(title)), "-"), "-"), 120)
+			task := seedLegacyReport(t, h, shaA, Report{Summary: "No explicit ID", Findings: []Finding{original}}, State{Blocking: []Finding{stored}}, ConclusionFailure)
+			if len(title) > 120 {
+				// An invalidation may have overwritten the original v1 run.
+				// The task's identity scheme must survive that v2 encoding.
+				st, _ := LoadState(h.gh.checks[0].Text)
+				st.TaskID = task
+				h.gh.checks[0].Text = encodeState(st)
+			}
+			shaB := strings.Repeat("b", 40)
+			h.gh.push(7, shaB)
+			seedLegacyReport(t, h, shaB, Report{Summary: "Fixed", Findings: []Finding{}, Previous: []Previous{{ID: stored.ID, Status: StatusFixed}}}, State{Blocking: []Finding{}}, ConclusionSuccess)
+			for range 2 {
+				h.engine().Tick(context.Background())
+				c := h.gh.check(shaB)
+				st, ok := LoadState(c.Text)
+				if !ok || st.Incomplete || len(st.Previous()) != 0 || c.Conclusion != ConclusionSuccess {
+					t.Fatal("legacy replay changed the derived ID before resolving it")
+				}
+			}
+		})
+	}
+}
+
+func TestExpiredLossyLegacyHistoryCannotMigrateFromALaterEmptyPass(t *testing.T) {
+	for _, kind := range []string{"40 blockers", "20 gates", "clipped identity", "clipped decision"} {
+		t.Run(kind, func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			st := State{Blocking: []Finding{}}
+			switch kind {
+			case "40 blockers":
+				for i := range 40 {
+					st.Blocking = append(st.Blocking, finding(fmt.Sprintf("a.go:%d", i), SeverityHigh))
+				}
+			case "20 gates":
+				st.Gate = &Gate{}
+				for i := range 20 {
+					st.Gate.Findings = append(st.Gate.Findings, finding(fmt.Sprintf("a.go:human-gate:%d", i), SeverityHigh))
+				}
+			case "clipped identity":
+				st.Blocking = []Finding{finding(clip(strings.Repeat("a", 200), 80), SeverityHigh)}
+			case "clipped decision":
+				st.Decisions = []DecisionStamp{{Finding: clip(strings.Repeat("a", 400), maxTitle), ID: 42, Hash: bodyHash("Decision")}}
+			}
+			task := seedLegacyReport(t, h, shaA, Report{Summary: "Unavailable original", Findings: st.Previous()}, st, ConclusionFailure)
+			delete(h.k.tasks, task)
+			shaB := strings.Repeat("b", 40)
+			h.gh.push(7, shaB)
+			seedLegacyReport(t, h, shaB, Report{Summary: "No findings", Findings: []Finding{}}, State{Blocking: []Finding{}}, ConclusionSuccess)
+			for range 2 {
+				h.engine().Tick(context.Background())
+				c := h.gh.check(shaB)
+				st, ok := LoadState(c.Text)
+				if !ok || !st.Incomplete || c.Conclusion != ConclusionFailure {
+					t.Fatal("an empty later report certified potentially missing findings")
+				}
+			}
+		})
+	}
+}
+
+func TestLegacyInvalidationPreservesExpiredTaskMigrationEvidence(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	task := seedLegacyReport(t, h, shaA, Report{Summary: "No findings", Findings: []Finding{}}, State{Blocking: []Finding{}}, ConclusionSuccess)
+	delete(h.k.tasks, task)
+	original := h.gh.check(shaA).Text
+	create := "POST /repos/" + testRepo + "/check-runs"
+	h.gh.failWith(create, 500)
+	h.engine().Tick(context.Background())
+	if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure || stateRE.FindString(c.Text) != stateRE.FindString(original) ||
+		!strings.Contains(recordedComment(c.Text), "Review state incomplete") {
+		t.Fatal("failed creation left a pass or destroyed the legacy checkpoint")
+	}
+	h.gh.failWith(create, 0)
+	h.engine().Tick(context.Background())
+	if c := h.gh.check(shaA); c.Conclusion != ConclusionSuccess {
+		t.Fatal("restart could not migrate after check creation recovered")
+	}
+}
+
+func TestUnsafeMergeGroupDequeueWhenAllCheckWritesFail(t *testing.T) {
+	for _, dequeueFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dequeue fails=%v", dequeueFails), func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			seedLegacyReport(t, h, shaA, Report{Summary: "No findings", Findings: []Finding{}}, State{Blocking: []Finding{}}, ConclusionSuccess)
+			h.gh.label(7, "human")
+			h.gh.queued[7] = "AWAITING_CHECKS"
+			h.gh.queue = []github.MergeQueueEntry{{State: "AWAITING_CHECKS", HeadCommit: "mg-7", Number: 7, PRHeadSHA: shaA}}
+			h.gh.addCheck("mg-7", "factory review", testAppID, ConclusionSuccess)
+			h.gh.failWith("POST /repos/"+testRepo+"/check-runs", 500)
+			h.gh.failWith("PATCH /repos/"+testRepo+"/check-runs/1", 500)
+			h.gh.failWith("PATCH /repos/"+testRepo+"/check-runs/2", 500)
+			h.gh.failGraphQL("dequeue", dequeueFails)
+			// Exercise the merge-group fallback directly, then the PR-head
+			// path and a new process, with check writes still unavailable.
+			e := h.engine()
+			e.mergeGroups(context.Background(), &e.cfg.Bindings[0], nil)
+			e.Tick(context.Background())
+			h.engine().Tick(context.Background())
+			if h.gh.graphqlCalls("dequeue") == 0 || len(h.gh.enqueues()) != 0 {
+				t.Fatal("failed check writes did not try dequeue, or allowed enqueue")
+			}
+			if (len(h.gh.queue) != 0) != dequeueFails {
+				t.Fatal("queue state did not reflect the dequeue result")
+			}
+			if dequeueFails {
+				if h.gh.graphqlCalls("dequeue") < 3 {
+					t.Fatal("failed dequeue was cached as success")
+				}
+				h.gh.failGraphQL("dequeue", false)
+				h.engine().Tick(context.Background())
+				if len(h.gh.queue) != 0 {
+					t.Fatal("dequeue recovery did not remove the unsafe group")
+				}
+			}
+		})
+	}
+}
+
+func TestMigratedLegacyPassRetainsExplicitHoldAfterRestart(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	seedLegacyReport(t, h, shaA, Report{Summary: "No findings", Findings: []Finding{}}, State{Blocking: []Finding{}}, ConclusionSuccess)
+	h.gh.label(7, "human")
+	h.startupRecovery = true
+	for range 2 {
+		e := h.engine()
+		e.Tick(context.Background())
+		c := h.gh.check(shaA)
+		st, ok := LoadState(c.Text)
+		if !ok || st.Incomplete || c.Conclusion != ConclusionFailure || !strings.Contains(c.Summary, gateOnlyMarker) {
+			t.Fatal("migration lost history or bypassed an explicit hold")
+		}
+	}
+	h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
+	h.engine().Tick(context.Background())
+	if h.gh.check(shaA).Conclusion != ConclusionSuccess {
+		t.Fatal("a new exact-head approval could not clear the recovered empty review")
+	}
+}
+
+func TestLegacyPassWithNewHoldIsInvalidatedAfterRestart(t *testing.T) {
+	for _, writeFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("write fails=%v", writeFails), func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			gateID := "AGENTS.md:human-gate"
+			legacy := State{Gate: &Gate{Findings: []Finding{finding(gateID, SeverityHigh)}, Approver: "jomcgi"}}
+			h.gh.addCheck(shaA, "factory review", testAppID, ConclusionSuccess)
+			h.gh.checks[0].ExternalID = MessageID(testRepo, 7, shaA)
+			h.gh.checks[0].Text = strings.Replace(encodeState(legacy), "state v2", "state v1", 1)
+			h.gh.label(7, "human")
+			h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
+			h.gh.queue = []github.MergeQueueEntry{{State: "AWAITING_CHECKS", HeadCommit: "mg-7", Number: 7, PRHeadSHA: shaA}}
+			h.gh.addCheck("mg-7", "factory review", testAppID, ConclusionSuccess)
+			create := "POST /repos/" + testRepo + "/check-runs"
+			if writeFails {
+				h.gh.failWith(create, 500)
+			}
+			e := h.engine()
+			ctx := context.Background()
+			if writeFails {
+				e.groups[testRepo+"@mg-7"] = ConclusionSuccess
+			}
+			e.Tick(ctx)
+			// Creation stays unavailable for the PR, its already-passing
+			// group, subsequent polls and a fresh process.
+			e.Tick(ctx)
+			if writeFails && (h.gh.check(shaA).ID != 1 || h.gh.check("mg-7").ID != 2) {
+				t.Fatal("invalidation did not update the existing checks")
+			}
+			c := h.gh.check(shaA)
+			st, ok := LoadState(c.Text)
+			if !ok || !st.Incomplete || c.Conclusion != ConclusionFailure || st.Gate == nil ||
+				!slices.Contains(st.Gate.Labels, "human") || len(st.Gate.Findings) != 1 || st.Gate.Findings[0].ID != gateID ||
+				strings.Contains(c.Summary, gateOnlyMarker) || !strings.Contains(c.Summary, "human") {
+				t.Fatal("invalidation lost the current hold or recoverable model gate")
+			}
+			if c := h.gh.check("mg-7"); c.Conclusion != ConclusionFailure || len(h.gh.enqueues()) != 0 {
+				t.Fatal("a legacy pass authorized merge or enqueue")
+			}
+			h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
+			h.engine().Tick(ctx)
+			if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure {
+				t.Fatal("approval after restart cleared missing history")
+			}
+		})
+	}
+}
+
+func TestIncompleteHistoryCarriesKnownFindingsAcrossHeads(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy=%v", legacy), func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			blocker, gate := finding("a.go:correctness", SeverityCritical), finding("AGENTS.md:human-gate", SeverityHigh)
+			st := State{Blocking: []Finding{blocker}, Gate: &Gate{Findings: []Finding{gate}}, Incomplete: !legacy}
+			h.gh.addCheck(shaA, "factory review", testAppID, ConclusionFailure)
+			h.gh.checks[0].Text = encodeState(st)
+			if legacy {
+				h.gh.checks[0].Text = strings.Replace(h.gh.checks[0].Text, "state v2", "state v1", 1)
+			}
+			for round, previous := range [][]Previous{
+				nil,
+				{{ID: blocker.ID, Status: StatusFixed}},
+				{{ID: gate.ID, Status: StatusFixed}},
+				nil,
+			} {
+				sha := fmt.Sprintf("%040x", round+11)
+				h.gh.push(7, sha)
+				e, ctx, stop := h.start()
+				task := runReview(t, h, e, ctx, 7, sha)
+				prompt := h.k.sent()[len(h.k.sent())-1].Parts[0].Text
+				if !strings.Contains(prompt, "Missing history keeps the check blocked") || strings.Contains(prompt, "raised no blocking findings") {
+					t.Fatal("missing history was presented as a complete earlier review")
+				}
+				if round == 0 && (!strings.Contains(prompt, "`"+blocker.ID+"` critical") || !strings.Contains(prompt, "`"+gate.ID+"` high")) {
+					t.Fatal("recovered findings were not sent for accounting")
+				}
+				h.k.finish(task, kagent.StateCompleted, report(t, Report{Summary: "Full review", Findings: []Finding{}, Previous: previous}))
+				eventually(t, "completed review", func() bool { return h.gh.check(sha).Status == "completed" })
+				stop()
+				c := h.gh.check(sha)
+				st, ok := LoadState(c.Text)
+				if !ok || !st.Incomplete || c.Conclusion != ConclusionFailure || len(st.Previous()) != max(2-round, 0) {
+					t.Fatalf("round %d lost recovered findings or cleared missing history: %+v", round, st)
+				}
+				if round == 0 && (st.Blocking[0].Severity != SeverityCritical || st.Gate.Findings[0].Severity != SeverityHigh) {
+					t.Fatal("recovered findings lost their severities")
+				}
+			}
+		})
+	}
+}
+
 // TestPreviousFindingsCarryToTheNextHead runs three rounds. A justified
 // medium is accepted, a justified high and an unaccounted medium still
 // block, and fixing both passes.
@@ -1362,7 +2222,8 @@ func TestStoredFindingsSurviveTheCheckRun(t *testing.T) {
 	h := newHarness(t)
 	addPR7(h)
 	e, ctx, _ := h.start()
-	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{
+	taskID := runReview(t, h, e, ctx, 7, shaA)
+	h.k.finish(taskID, kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{
 		map[string]any{"id": "a.go#m1", "severity": "medium", "path": "a.go", "title": "M1", "detail": "Detail."},
 		map[string]any{"id": "a.go#l1", "severity": "low", "title": "L1"},
 	}}))
@@ -1370,6 +2231,10 @@ func TestStoredFindingsSurviveTheCheckRun(t *testing.T) {
 	st, ok := LoadState(h.gh.check(shaA).Text)
 	session := st.Session // session_test.go covers the session reference.
 	st.Session = nil
+	if st.TaskID != taskID {
+		t.Fatalf("stored task = %q, want %q", st.TaskID, taskID)
+	}
+	st.TaskID = "" // Assert the finding payload independently of its source.
 	b, _ := json.Marshal(st)
 	if !ok || session == nil || string(b) != `{"blocking":[{"id":"a.go#m1","severity":"medium","path":"a.go","title":"M1","detail":"Detail."}]}` {
 		t.Fatalf("stored = %s, %v, session %+v", b, ok, session)
@@ -2944,21 +3809,21 @@ func TestGatePathFailsClosed(t *testing.T) {
 	})
 }
 
-// TestUnknownPreviousReviewAsksForAFullReview gives the PR a timeline
+// TestUnknownPreviousReviewRemainsBlockedAfterAFullReview gives the PR a timeline
 // longer than the reviewer reads and no reviewed head within it: the prompt
 // and the check say so, instead of treating the head as a first review.
-func TestUnknownPreviousReviewAsksForAFullReview(t *testing.T) {
+func TestUnknownPreviousReviewRemainsBlockedAfterAFullReview(t *testing.T) {
 	h := newHarness(t)
 	addPR7(h)
 	h.gh.prs[7].TimelineTruncated = true
 	e, ctx, _ := h.start()
 	task := runReview(t, h, e, ctx, 7, shaA)
-	if p := h.k.sent()[0].Parts[0].Text; !strings.Contains(p, "could not find the review of an earlier head of this PR") {
+	if p := h.k.sent()[0].Parts[0].Text; !strings.Contains(p, "could not recover the complete review of an earlier head of this PR") {
 		t.Fatalf("prompt:\n%s", p)
 	}
 	h.k.finish(task, kagent.StateCompleted, report(t, passing))
-	eventually(t, "the check to pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
-	if c := h.gh.check(shaA); !strings.Contains(c.Summary, "could not be found") {
+	eventually(t, "the completed check", func() bool { return h.gh.check(shaA).Status == "completed" })
+	if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure || !strings.Contains(c.Summary, "could not be recovered") {
 		t.Fatalf("summary = %s", c.Summary)
 	}
 }

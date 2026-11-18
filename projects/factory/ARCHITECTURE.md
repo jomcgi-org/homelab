@@ -1955,6 +1955,12 @@ specified in [REVIEW.md](../../REVIEW.md#joe-decides).
 [authorship decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6891640540),
 [waiver scope](https://github.com/jomcgi-org/homelab/issues/8049)
 
+The saved review state keeps every blocking and model gate finding with
+its full ID and severity, and shortens descriptive text first. State that
+does not fit, or earlier history that cannot be recovered, blocks the
+check until a complete review accounts for every known finding. The
+connector does not enqueue an incomplete pass (#8009).
+
 The connector checks for holds before enqueue. Other authors can request
 auto-merge on their own PRs. The reviewer checks the queued head again
 when reporting on the merge group. If the head loses its passing verdict,

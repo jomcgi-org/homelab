@@ -645,6 +645,7 @@ func TestResumableRefusesOtherOwnersAndHeads(t *testing.T) {
 		{"a malformed context", func(r *SessionRef, _ *inputs) { r.ContextID = "ctx 1\n" }, 1, reasonForeign},
 		{"the same head", func(_ *SessionRef, in *inputs) { in.priorHead = sessionShaB }, 1, reasonNone},
 		{"no previous head", func(_ *SessionRef, in *inputs) { in.priorHead = "" }, 1, reasonNone},
+		{"incomplete history", func(_ *SessionRef, in *inputs) { in.prior.Incomplete = true }, 1, reasonNone},
 		{"a retry", func(*SessionRef, *inputs) {}, 2, reasonRetry},
 		{"the size bound", func(r *SessionRef, _ *inputs) { r.Bytes = maxSessionBytes }, 1, reasonSize},
 		{"the review bound", func(r *SessionRef, _ *inputs) { r.Reviews, r.Tasks = len(many), many }, 1, reasonSize},
@@ -678,7 +679,7 @@ func TestSessionStateRoundTrips(t *testing.T) {
 		t.Fatalf("round trip = %+v, %v", st.Session, ok)
 	}
 	var many []Finding
-	for i := range maxStored {
+	for i := range 41 {
 		many = append(many, Finding{
 			ID: fmt.Sprintf("f%d.go:x", i), Severity: "high", Path: strings.Repeat("p", maxStoredPath),
 			Title: strings.Repeat("t", maxTitle), Detail: strings.Repeat("d", maxStoredDetail),
@@ -697,6 +698,23 @@ func TestSessionStateRoundTrips(t *testing.T) {
 	}
 	if st, _ := LoadState(withSession(encodeState(State{Blocking: []Finding{}}), ref)); !reflect.DeepEqual(st.Session, ref) {
 		t.Fatalf("withSession = %+v", st.Session)
+	}
+	incomplete := encodeState(State{Incomplete: true})
+	if got := withSession(incomplete, ref); got != incomplete {
+		t.Fatal("incomplete history acquired a resumable session")
+	}
+	// Optional session metadata must not displace a complete blocker list.
+	nearLimit := encodeState(State{Blocking: []Finding{finding(strings.Repeat("x", maxState*3/4-400), SeverityHigh)}})
+	if st, ok := LoadState(nearLimit); !ok || st.Incomplete {
+		t.Fatal("the complete fixture does not fit")
+	}
+	full := *ref
+	full.Tasks = nil
+	for i := range maxSessionReviews {
+		full.Tasks = append(full.Tasks, fmt.Sprintf("%036d", i))
+	}
+	if got := withSession(nearLimit, &full); got != nearLimit {
+		t.Fatal("session metadata displaced the original findings")
 	}
 }
 
