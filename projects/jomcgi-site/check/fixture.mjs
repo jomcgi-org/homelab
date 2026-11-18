@@ -28,9 +28,17 @@ for (const line of headerFile.split("\n")) {
     headerRules.push({
       host: line.startsWith("https://"),
       match: new RegExp(`^${expression}$`),
+      detach: [],
       headers: {},
     });
   } else {
+    // `! Name` detaches a header that an earlier matching rule set, as the
+    // Workers asset server does (for example the /hikes map policy).
+    const detach = line.match(/^\s+!\s*([\w-]+)\s*$/);
+    if (detach) {
+      headerRules.at(-1).detach.push(detach[1].toLowerCase());
+      continue;
+    }
     const [, name, value] = line.match(/^\s+([\w-]+): (.+)$/);
     headerRules.at(-1).headers[name.toLowerCase()] = value;
   }
@@ -39,14 +47,14 @@ for (const line of headerFile.split("\n")) {
 export function headersFor(path, preview = true) {
   const origin = preview ? "https://next.jomcgi.dev" : "https://jomcgi.dev";
   const url = new URL(path, origin);
-  return Object.assign(
-    {},
-    ...headerRules
-      .filter(({ host, match }) =>
-        match.test(host ? `${url.origin}${url.pathname}` : url.pathname),
-      )
-      .map((rule) => rule.headers),
-  );
+  const applied = {};
+  for (const rule of headerRules) {
+    if (!rule.match.test(rule.host ? `${url.origin}${url.pathname}` : url.pathname))
+      continue;
+    for (const name of rule.detach) delete applied[name];
+    Object.assign(applied, rule.headers);
+  }
+  return applied;
 }
 
 export const headers = headersFor("/");
