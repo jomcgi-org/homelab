@@ -37,6 +37,7 @@ echo ""
 RENDERED="${TEST_TMPDIR:-$(mktemp -d)}/rendered.yaml"
 if ! "$HELM" template "$RELEASE_NAME" "$CHART_PATH" \
 	--namespace "$NAMESPACE" \
+	--include-crds \
 	"${VALUES_ARGS[@]}" \
 	>"$RENDERED"; then
 	echo ""

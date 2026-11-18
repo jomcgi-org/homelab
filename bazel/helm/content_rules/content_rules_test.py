@@ -336,7 +336,7 @@ def claim(labels, namespace=NS, secret="bucket", name=None):
         "data": {
             "namespace": namespace,
             "secretName": secret,
-            "bucket": "b",
+            "bucket": "app-data",
             "access": "read",
         },
     }
@@ -426,3 +426,68 @@ def test_exemption_allows_the_named_object_only():
 def test_unused_exemption_fails():
     problems = check([deployment()], NS, ["Service/factory/gone"])
     assert any("matches no object" in p for p in problems), problems
+
+
+def test_crd_fails():
+    crd = {
+        "apiVersion": "apiextensions.k8s.io/v1",
+        "kind": "CustomResourceDefinition",
+        "metadata": {"name": "things.example.com"},
+    }
+    assert any("cluster-scoped" in p for p in check([crd], NS))
+
+
+def test_exemption_never_covers_a_cluster_scoped_kind():
+    role = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "ClusterRole",
+        "metadata": {"name": "r"},
+    }
+    problems = check([role], NS, ["ClusterRole//r"])
+    assert any("cluster-scoped" in p for p in problems), problems
+
+
+@pytest.mark.parametrize("access", ["admin", ""])
+def test_garage_claim_with_unsupported_access_fails(access):
+    doc = claim(LABEL)
+    doc["data"]["access"] = access
+    assert any("not the release namespace" in p for p in check([doc], NS))
+
+
+def test_garage_claim_with_invalid_bucket_fails():
+    doc = claim(LABEL)
+    doc["data"]["bucket"] = "B"
+    assert any("not the release namespace" in p for p in check([doc], NS))
+
+
+@pytest.mark.parametrize("verb", ["bind", "escalate", "impersonate"])
+def test_escalation_verbs_fail(verb):
+    role = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "Role",
+        "metadata": {"name": "r"},
+        "rules": [
+            {
+                "apiGroups": ["rbac.authorization.k8s.io"],
+                "resources": ["roles"],
+                "verbs": [verb],
+            }
+        ],
+    }
+    assert any(verb in p for p in check([role], NS))
+
+
+def test_replicationcontroller_create_fails():
+    role = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "Role",
+        "metadata": {"name": "r"},
+        "rules": [
+            {
+                "apiGroups": [""],
+                "resources": ["replicationcontrollers"],
+                "verbs": ["create"],
+            }
+        ],
+    }
+    assert any("creates workloads" in p for p in check([role], NS))
