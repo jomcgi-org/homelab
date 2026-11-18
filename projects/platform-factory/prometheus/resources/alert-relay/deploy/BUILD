@@ -1,4 +1,4 @@
-load("//bazel/helm:defs.bzl", "argocd_app")
+load("//bazel/helm:defs.bzl", "argocd_app", "helm_admissibility_render")
 
 argocd_app(
     name = "alert-relay",
@@ -17,4 +17,13 @@ argocd_app(
         "//projects/platform-factory/prometheus/resources/alert-relay/chart:values.yaml",
         "//projects/platform-factory/prometheus/resources/alert-relay/chart:image_values",
     ],  # keep
+)
+
+helm_admissibility_render(
+    name = "render_manifests",
+    chart = "projects/platform-factory/prometheus/resources/alert-relay/chart",
+    chart_files = "//projects/platform-factory/prometheus/resources/alert-relay/chart:chart",
+    namespace = "prometheus",
+    release_name = "alert-relay",
+    values_files = ["//projects/platform-factory/prometheus/resources/alert-relay/chart:image_values"],
 )
