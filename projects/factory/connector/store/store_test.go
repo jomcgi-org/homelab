@@ -485,3 +485,39 @@ func TestSuccessorCanFinishInheritedTaskAfterRedelivery(t *testing.T) {
 		return f.st.FinishTurn(f.ctx, tx, f.work.ID, f.target.ID)
 	}))
 }
+
+func TestStoryboardDeliveryPrivileges(t *testing.T) {
+	st := open(t)
+	_, err := st.DB.Exec(`
+		INSERT INTO repo_binding (name, owner, repo, base_branch, itsaplan_project,
+			kagent_namespace, kagent_agent, branch_prefix, max_engineering_retries)
+		VALUES ('homelab', 'org', 'homelab', 'main', 'HOME', 'factory', 'coder', 'factory/', 2);
+		INSERT INTO work_item (binding_name, issue_id, issue_key, branch, agent_key,
+			kagent_namespace, kagent_agent)
+		VALUES ('homelab', 213, 'HOME-213', 'factory/HOME-213', 'coder', 'factory', 'coder')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := pgtest.AsRole(t, st.DB, "factory_storyboard")
+	var project, issue string
+	if err := reader.QueryRow(`SELECT itsaplan_project, issue_key FROM public.storyboard_delivery
+		WHERE issue_id = 213`).Scan(&project, &issue); err != nil {
+		t.Fatal(err)
+	}
+	if project != "HOME" || issue != "HOME-213" {
+		t.Fatalf("unexpected projection: %q %q", project, issue)
+	}
+	for _, query := range []string{
+		"SELECT prompt FROM public.run",
+		"SELECT state FROM public.task_transcript",
+		"SELECT * FROM public.work_item",
+		"UPDATE public.work_item SET review_rounds = 1 WHERE issue_id = 213",
+		"DELETE FROM public.run",
+	} {
+		_, err := reader.Exec(query)
+		var state interface{ SQLState() string }
+		if !errors.As(err, &state) || state.SQLState() != "42501" {
+			t.Errorf("%s: got %v, want insufficient_privilege (42501)", query, err)
+		}
+	}
+}

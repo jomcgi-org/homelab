@@ -99,3 +99,14 @@ HOME-213 publishes snapshots under the site's `/data/factory/` path. The site's
 stay outside that rewrite. The site keeps `style-src 'self'` and
 `frame-ancestors 'none'`. HOME-225 activates the production edge routes after
 data publication. This package has no image, chart, route or Worker deployment.
+
+After rollout, run `node projects/factory-storyboard/verify-rollout.mjs` with
+Node 22.18 or later. It checks the mirror's seven-minute freshness limit and
+reads every immutable object referenced by the preview site's manifest.
+
+HOME-213 delivers the publisher primitives (`publisher.py`), the read-only
+database role and the site's HTTPS manifest source. Nothing schedules the
+publisher yet. [HOME-414](https://factory-plan.jomcgi.dev/factory/issue/HOME-414)
+adds the 5-minute workload, its bucket entry and the site source entry, then
+runs the rollout check above
+([split under Joe's rule](https://factory-plan.jomcgi.dev/factory/issue/HOME-157#comment-3904)).

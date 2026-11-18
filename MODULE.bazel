@@ -71,6 +71,13 @@ multiarch_http_file = use_repo_rule("//bazel/tools/http:multiarch_http_file.bzl"
 # factory cluster's Kubernetes minor; CI executors are Linux amd64. Checksums
 # come from controller-tools/envtest-releases.yaml and the ESO chart index.
 http_archive(
+    name = "gitleaks_linux_amd64",
+    build_file_content = 'exports_files(["gitleaks"])',
+    sha256 = "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c",
+    urls = ["https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz"],
+)
+
+http_archive(
     name = "envtest_1_37_0_linux_amd64",
     build_file_content = """
 exports_files(["etcd", "kube-apiserver", "kubectl"], visibility = ["//visibility:public"])
