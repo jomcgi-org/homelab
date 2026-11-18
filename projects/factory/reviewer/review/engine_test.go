@@ -3697,13 +3697,21 @@ func TestMachineCommentCannotDecideFinding(t *testing.T) {
 // that head, but it keeps no state. The previous-state lookup walks back to
 // the run that does, so an empty report on the next head cannot pass.
 func TestStatelessLaterRunDoesNotHideAnEarlierHeadsFindings(t *testing.T) {
-	for _, kind := range []string{"No review report", "Review cancelled", "lost state"} {
+	for _, kind := range []string{"No review report", "Review cancelled", "lost state", "foreign PR"} {
 		t.Run(kind, func(t *testing.T) {
 			h := newHarness(t)
 			addPR7(h)
 			reviewRound(t, h, shaA, report(t, map[string]any{"summary": "s", "findings": []any{
 				map[string]any{"id": "a.go:nil-deref", "severity": "high", "path": "a.go", "title": "H1"},
 			}}))
+			if kind == "foreign PR" {
+				// Another PR's newer, complete, empty review of the shared commit.
+				seedCheck(h, shaA, ConclusionSuccess, encodeState(State{Blocking: []Finding{}})).ExternalID = MessageID(testRepo, 8, shaA)
+				got := reviewRound(t, h, sha40('b'), Report{Summary: "Nothing", Findings: []Finding{}})
+				st, ok := LoadState(got.Text)
+				failIf(t, !ok || got.Conclusion != ConclusionFailure || !hasID(st.Blocking, "a.go:nil-deref"), "another PR's state hid this PR's finding: %s %+v", got.Conclusion, st.Blocking)
+				return
+			}
 			if kind == "lost state" {
 				// A completed run with no readable state, behind the stateless one.
 				seedCheck(h, shaA, ConclusionFailure, "")
