@@ -79,13 +79,6 @@ entries:
       target: !KeyOf enrollment-write-binding
       policy: !KeyOf enrollment-return
       order: 0
-  # Remove the previous enrollment binding on already-reconciled installations.
-  - model: authentik_flows.flowstagebinding
-    state: absent
-    identifiers:
-      target: !KeyOf social-enrollment
-      stage: !KeyOf social-login
-      order: 20
   - model: authentik_flows.flow
     id: social-authentication
     identifiers:
@@ -126,12 +119,6 @@ entries:
       not_configured_action: configure
       configuration_stages:
         - !Find [authentik_stages_authenticator_totp.authenticatortotpstage, [name, default-authenticator-totp-setup]]
-  - model: authentik_flows.flowstagebinding
-    state: absent
-    identifiers:
-      target: !KeyOf social-enrollment
-      stage: !KeyOf validate
-      order: 15
   - model: authentik_flows.flowstagebinding
     identifiers:
       target: !KeyOf social-authentication
