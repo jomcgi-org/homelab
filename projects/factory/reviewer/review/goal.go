@@ -247,10 +247,12 @@ func countedCriteria(g *GoalCheck) bool {
 // "Acceptance criteria" list.
 // Items are "1." numbered lines in sequence, or top-level "-" or "*" bullets
 // (task boxes allowed), one style per list; indented lines continue an item
-// and a top-level line of another kind ends the list.
-// Anything ambiguous returns 0, which withdraws nothing.
+// and a top-level line that is no item ends the list. Only trusted issue
+// text counts: an untrusted edit must not shorten the list. Anything
+// ambiguous returns 0, which withdraws nothing: a numbering gap, mixed item
+// styles, a second list heading, or an item-like line after the list ended.
 func issueCriteria(in *IssueContext) int {
-	if goalKey(in) == "" {
+	if goalKey(in) == "" || !in.Issue.Trusted {
 		return 0
 	}
 	items := 0
@@ -266,7 +268,7 @@ func issueCriteria(in *IssueContext) int {
 			state = 1
 			continue
 		}
-		if state != 1 || line == "" {
+		if state == 0 || line == "" {
 			continue
 		}
 		if raw != strings.TrimLeft(raw, " \t") {
@@ -276,7 +278,10 @@ func issueCriteria(in *IssueContext) int {
 			continue
 		}
 		var text, kind string
-		if number, rest, ok := strings.Cut(line, ". "); ok && number == strconv.Itoa(items+1) {
+		if number, rest, ok := strings.Cut(line, ". "); ok && number != "" && strings.Trim(number, "0123456789") == "" {
+			if number != strconv.Itoa(items+1) {
+				return 0 // A gap or repeat: the count would be partial.
+			}
 			text, kind = rest, "number"
 		} else if rest, ok := strings.CutPrefix(line, "- "); ok {
 			text, kind = rest, "bullet"
@@ -287,6 +292,9 @@ func issueCriteria(in *IssueContext) int {
 			continue
 		} else {
 			return 0
+		}
+		if state == 2 {
+			return 0 // An item after the list ended is ambiguous.
 		}
 		if style != "" && style != kind {
 			return 0
