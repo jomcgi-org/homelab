@@ -106,7 +106,7 @@ type that owns the question, or ask Joe for a new row here.
 | `projects/<domain>/ARCHITECTURE.md` | How the domain works now, why, and what is decided next | `docs/templates/ARCHITECTURE.md` |
 | `projects/<name>/README.md` | How to run and operate it, with its quickstart | `docs/templates/README.md` |
 | `projects/<domain>/STPA.md` | Which hazards exist and what controls them, with the domain's security lens | `docs/agents/stpa.md` |
-| `docs/THREAT-MODEL.md` | Which security findings are open across the repository | `docs/runbooks/threat-model-maintenance.md` |
+| `docs/THREAT-MODEL.md` | Which assets, trust boundaries and controls the repository has | `docs/runbooks/threat-model-maintenance.md` |
 | `docs/runbooks/<name>.md` | How to do one named procedure | `docs/runbooks/README.md` |
 | Scoped `AGENTS.md` | Which rules an agent follows in this directory | Root `AGENTS.md` |
 | `REVIEW.md` | Which rules a review enforces. Joe decides changes | Root `REVIEW.md` "Joe decides" |
@@ -140,6 +140,9 @@ Keep a file current by replacing text:
 - Delete a dated status line, a delivery plan or a bootstrap note when its
   work completes. `git log` and the HOME issue keep the history.
 - Put a pinned version in one table. Do not repeat it in prose.
+- Give the state of each security control you name: `live`, `staged off` or
+  `designed`. Write `live` only for a control you saw deployed. The Direction
+  table uses `staged off` and `designed` in its state column.
 - Put upstream findings that shaped the design in a `**Why.**` paragraph or an
   appendix, after the current state.
 - An `ARCHITECTURE.md` section longer than 60 lines needs a diagram or a

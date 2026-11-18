@@ -44,7 +44,9 @@ optional:
     requires:
       - linked_from: ../ARCHITECTURE.md
 
-# No other document type. An upper-case *.md name outside this list fails.
+# No other document type. An upper-case *.md name under projects/ that is
+# outside this list fails. The check does not read docs/, which holds the one
+# threat model (docs/THREAT-MODEL.md).
 allowed_names:
   - README.md
   - ARCHITECTURE.md
@@ -56,6 +58,7 @@ format:
   ARCHITECTURE.md:
     - a mermaid block before the first "## " heading
     - a "## Direction" heading
+    - a component table with the columns "Untrusted input" and "Credentials held"
     - 600 lines or fewer
     - no line that starts with "Status (" or "**Status ("
   README.md:

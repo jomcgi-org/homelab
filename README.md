@@ -86,7 +86,7 @@ See [docs/security.md](docs/security.md) for the security model and
 | Network | GKE Dataplane V2 | Cilium: default-deny, egress allowlists by domain name, WireGuard |
 | Sandboxing | Firecracker microVMs (EmberVM, in removal) | gVisor workspaces from Agent Substrate |
 | Storage | GCE persistent disks, Cloudflare R2, GCS | Local disks; Garage and CloudNativePG keep three copies |
-| Secrets | 1Password Operator; nothing in Git | 1Password Operator; External Secrets Operator mints short-lived credentials |
+| Secrets | 1Password Operator; nothing in Git | 1Password Operator; nothing in Git |
 | Observability | OpenTelemetry collector to Honeycomb | The same collector, plus Prometheus, Grafana and Discord alerts |
 | GitOps | ArgoCD and Kargo; `kubectl` is read-only | ArgoCD; Kargo pipelines come next |
 
