@@ -23,12 +23,14 @@ flowchart LR
 
 ## Run lifecycle
 
+A delegated run enters through `HandleClaim`. When its coding turn ends, the connector tracks the resulting PR on the work item through review, queueing and merge. [Dispatch](dispatch/engine.go) · [PR delivery](dispatch/delivery.go)
+
 ```mermaid
 stateDiagram-v2
     [*] --> Delegated
     Delegated --> Waiting: claim
     Waiting --> Coding: dependencies and slot available
-    Coding --> Review: pushed branch and PR
+    Coding --> Review: turn finishes and connector finds or opens PR
     Review --> Coding: revision round
     Review --> Queued: gate opens for current head
     Queued --> Coding: queue ejection within round limit
@@ -199,6 +201,8 @@ the grant. The broker records measured usage by actor and the connector
 attributes it to the run. See [token accounting](../token-usage.md).
 
 ## Review rounds
+
+For a trusted change request on the current head, `startReviewRound` records the round and `dispatchReviewRound` sends the revision to kagent. [Round implementation](dispatch/delivery.go)
 
 ```mermaid
 sequenceDiagram
