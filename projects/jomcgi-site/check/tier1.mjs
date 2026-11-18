@@ -71,7 +71,19 @@ export function internalLinks(html, base) {
     .filter((url) => url.origin === new URL(base).origin);
 }
 
-export function checkHeaders(headers, { preview, asset = false }) {
+// Routes whose web/public/_headers rule detaches the site CSP and sets a
+// wider one. Each entry lists only the directives that differ; keep it in
+// step with _headers so any other change still fails the check.
+const routeCsp = {
+  "/hikes": {
+    "img-src": "'self' data: https://tiles.openfreemap.org",
+    "connect-src":
+      "'self' https://data.jomcgi.dev https://tiles.openfreemap.org",
+    "worker-src": "'self' blob:",
+  },
+};
+
+export function checkHeaders(headers, { preview, asset = false, path }) {
   // Compare directive values, allowing differences in whitespace and ordering.
   const directives = (headers.get("content-security-policy") ?? "")
     .split(";")
@@ -91,6 +103,7 @@ export function checkHeaders(headers, { preview, asset = false }) {
     "base-uri": "'none'",
     "form-action": "'none'",
     "object-src": "'none'",
+    ...routeCsp[path],
   };
   for (const [directive, value] of Object.entries(expected)) {
     assert.equal(csp.get(directive), value, `CSP ${directive}`);
@@ -278,7 +291,7 @@ export async function tier1({
     const response = await get(page.path);
     assert.equal(response.status, page.status, `${page.path}: HTTP status`);
     assert.match(response.headers.get("content-type") ?? "", /text\/html/i);
-    checkHeaders(response.headers, { preview });
+    checkHeaders(response.headers, { preview, path: page.path });
     checkReleasePage(
       response.body,
       readFileSync(join(dist, page.file)),
