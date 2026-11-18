@@ -3748,6 +3748,31 @@ func TestForeignCheckpointOnALaterCommitDoesNotHideOwnHistory(t *testing.T) {
 	failIf(t, !ok || got.Conclusion != ConclusionFailure || !hasID(st.Blocking, "a.go:nil-deref"), "a foreign checkpoint hid this PR's earlier blocker: %s %+v", got.Conclusion, st.Blocking)
 }
 
+// TestReplacementPRInheritsSharedCommitReviewsFailClosed: a PR with no
+// review of its own inherits the reviews of a shared commit. A newer clean
+// review must not hide an older blocking one, and on a truncated timeline
+// (its own review may be out of sight) nothing is inherited.
+func TestReplacementPRInheritsSharedCommitReviewsFailClosed(t *testing.T) {
+	for _, truncated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("truncated=%v", truncated), func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			h.gh.prs[7].TimelineTruncated = truncated
+			blocking := State{Blocking: []Finding{finding("a.go:nil-deref", SeverityHigh)}}
+			seedCheck(h, shaA, ConclusionFailure, encodeState(blocking)).ExternalID = MessageID(testRepo, 9, shaA)
+			seedCheck(h, shaA, ConclusionSuccess, encodeState(State{Blocking: []Finding{}})).ExternalID = MessageID(testRepo, 8, shaA)
+			got := reviewRound(t, h, sha40('c'), Report{Summary: "Nothing", Findings: []Finding{}})
+			st, ok := LoadState(got.Text)
+			failIf(t, !ok || got.Conclusion != ConclusionFailure, "an empty review passed on inherited history: %s", got.Conclusion)
+			if truncated {
+				failIf(t, !st.Incomplete, "a truncated timeline inherited a foreign review")
+			} else {
+				failIf(t, !hasID(st.Blocking, "a.go:nil-deref"), "a newer clean review hid an older blocking one: %+v", st.Blocking)
+			}
+		})
+	}
+}
+
 // TestChangedIssueEvidenceKeepsTheLegacyTaskReference: the evidence hold
 // replaces a legacy check's summary, which holds its only task reference.
 // The reference stays in the state, so a full original report is replayed.
