@@ -1,4 +1,4 @@
-package main
+package reaper
 
 import (
 	"context"
@@ -95,7 +95,7 @@ func TestScanDeletesOnlyCurrentSuspendingRevision(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := (reaper{db, db, client}).scan(context.Background()); err != nil {
+		if err := Scan(context.Background(), db, db, client); err != nil {
 			t.Fatal(err)
 		}
 		if scenario != "stalled" && len(requests) != 0 {
@@ -149,7 +149,7 @@ func TestScanWorkerDisappearance(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = (reaper{db, db, client}).scan(context.Background())
+		err = Scan(context.Background(), db, db, client)
 		server.Close()
 		if err != nil {
 			t.Fatal(err)
