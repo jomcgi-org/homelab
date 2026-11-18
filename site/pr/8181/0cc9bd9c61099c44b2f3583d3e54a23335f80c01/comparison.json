@@ -1,6 +1,6 @@
 {
-  "head": "710834cb528260cc584d27f3a2339a481c6f99c4",
-  "baseline": "b455b27f78f0c6b3aa68b2a465d49d093f74c5bc",
+  "head": "0cc9bd9c61099c44b2f3583d3e54a23335f80c01",
+  "baseline": "79106a7d17aedf68a96c17065f58cd44b90a8e2e",
   "baseline_kind": "git merge-base",
   "rows": [
     {
@@ -125,7 +125,7 @@
       "after": "captures/blog/after-390x844-complete.png",
       "before": "captures/blog/before-390x844-complete.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 2472
@@ -638,7 +638,7 @@
       "after": "captures/factory/after-overview-live-1440x1000-dark-100pct-full.png",
       "before": "captures/factory/before-overview-live-1440x1000-dark-100pct-full.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 1440,
         "height": 1024
@@ -695,7 +695,7 @@
       "after": "captures/factory/after-overview-live-1440x1000-light-100pct-opening.png",
       "before": "captures/factory/before-overview-live-1440x1000-light-100pct-opening.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 1440,
         "height": 1000
@@ -1056,7 +1056,7 @@
       "after": "captures/review/after-gaps-pending-390-dark.png",
       "before": "captures/review/before-gaps-pending-390-dark.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1075,7 +1075,7 @@
       "after": "captures/review/after-gaps-pending-390-light.png",
       "before": "captures/review/before-gaps-pending-390-light.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1208,7 +1208,7 @@
       "after": "captures/review/after-notes-pending-390-dark.png",
       "before": "captures/review/before-notes-pending-390-dark.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1873,7 +1873,7 @@
       "after": "captures/stars/after-historical-dark-390.png",
       "before": "captures/stars/before-historical-dark-390.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1457
