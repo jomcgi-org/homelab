@@ -52,7 +52,6 @@ type GitHub interface {
 	Statuses(ctx context.Context, repo, sha string) ([]github.Status, error)
 	PullRequestQueue(ctx context.Context, repo string, number int) (*github.PullRequestQueue, error)
 	EnqueuePullRequest(ctx context.Context, repo, nodeID, headSHA string) (string, error)
-	DequeuePullRequest(ctx context.Context, repo, nodeID string) error
 	MergeQueueEntries(ctx context.Context, repo, branch string) ([]github.MergeQueueEntry, error)
 	CitedPullRequest(ctx context.Context, repo string, number int) (*github.CitedPullRequest, error)
 	RulesReader
@@ -2731,29 +2730,7 @@ func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullReques
 	})
 	if err != nil {
 		e.ghError(ctx, l, b, "create_check", err)
-		if conclusion != ConclusionFailure {
-			return nil
-		}
-		// A rejected replacement must not leave the old pass usable by
-		// GitHub or consumers that only inspect its conclusion.
-		output := &github.CheckRunOutput{Title: title, Summary: summary, Text: text}
-		if _, lossless := legacySnapshot(prev.Text); lossless && st.Incomplete {
-			// Keep the legacy state and source-task footer as migration
-			// evidence, but persist the hold snapshot for comment retries.
-			output = &github.CheckRunOutput{
-				Title: title, Summary: prev.Summary,
-				Text: recordComment(prev.Text, prev.Text, pr.HeadSHA, u),
-			}
-		}
-		run, err = e.gh.UpdateCheckRun(ctx, b.repo(), prev.ID, github.CheckRunWrite{
-			Status: "completed", Conclusion: ConclusionFailure, CompletedAt: &now,
-			Output: output,
-		})
-		if err != nil {
-			e.ghError(ctx, l, b, "update_check", err)
-			e.dequeueUnsafe(ctx, b, pr.Number, pr.HeadSHA)
-			return nil
-		}
+		return nil
 	}
 	e.m.ReviewsCompleted.WithLabelValues(b.Name, conclusion).Inc()
 	approver := ""
@@ -3037,49 +3014,12 @@ func (e *Engine) mergeGroups(ctx context.Context, b *Binding, reviews map[int]*g
 		})
 		if err != nil {
 			e.ghError(ctx, l, b, "create_check", err)
-			if conclusion != ConclusionFailure || posted != ConclusionSuccess {
-				continue
-			}
-			// Read the existing run even when its conclusion was cached on a
-			// previous tick. Check creation can fail while updates still work.
-			existing, readErr := e.reviewCheck(ctx, b, en.HeadCommit)
-			if readErr != nil || existing == nil {
-				e.dequeueUnsafe(ctx, b, en.Number, en.PRHeadSHA)
-				continue
-			}
-			if _, err = e.gh.UpdateCheckRun(ctx, repo, existing.ID, github.CheckRunWrite{
-				Status: "completed", Conclusion: ConclusionFailure, CompletedAt: &now, Output: &o,
-			}); err != nil {
-				e.ghError(ctx, l, b, "update_check", err)
-				e.dequeueUnsafe(ctx, b, en.Number, en.PRHeadSHA)
-				continue
-			}
+			continue
 		}
 		e.groups[key] = conclusion
 		e.m.MergeGroupChecks.WithLabelValues(b.Name, conclusion).Inc()
 		l.InfoContext(ctx, "merge group check posted", "conclusion", conclusion)
 	}
-}
-
-// dequeueUnsafe uses the queue mutation when the check-write endpoint is
-// unavailable. Never cache success on failure: the next poll and restart
-// retry. A total GitHub write outage cannot revoke an existing external pass.
-func (e *Engine) dequeueUnsafe(ctx context.Context, b *Binding, number int, head string) {
-	l := e.log.With("binding", b.Name, "repo", b.repo(), "pr", number, "sha", head)
-	q, err := e.gh.PullRequestQueue(ctx, b.repo(), number)
-	if err != nil {
-		e.ghError(ctx, l, b, "pull_request", err)
-		return
-	}
-	if q.HeadSHA != head || q.NodeID == "" || q.MergeQueueState == "" {
-		return
-	}
-	if err := e.gh.DequeuePullRequest(ctx, b.repo(), q.NodeID); err != nil {
-		e.ghError(ctx, l, b, "dequeue", err)
-		l.ErrorContext(ctx, "unsafe passing checks could not be revoked or dequeued; external merge remains possible")
-		return
-	}
-	l.WarnContext(ctx, "removed unsafe head from merge queue after check writes failed")
 }
 
 func (e *Engine) ghError(ctx context.Context, l *slog.Logger, b *Binding, call string, err error) {
