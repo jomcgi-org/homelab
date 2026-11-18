@@ -90,6 +90,20 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   error, a timeout or an unparseable answer produces no pass, no enqueue and
   no token. An enqueue names the reviewed head (`expectedHeadOid`) and the
   bound base branch. Critical.
+- **Complete review state.** A saved review keeps every blocking and model
+  gate finding's full ID and severity. Missing history blocks across later
+  heads and restarts; a new report or approval alone cannot clear it.
+  Recovery replays original reports from a complete checkpoint or a complete
+  history, preserving the identity scheme of each original report. If a
+  legacy task expired, a record below both storage caps with distinct,
+  unshortened IDs can recover findings. Such records cannot prove resolutions:
+  later reports must explicitly account for every recovered finding. Any
+  ambiguous or missing record keeps recovery blocked. The connector also
+  rejects incomplete factory review passes. Rejected replacement checks
+  attempt both updates and dequeue of unsafe queued heads; failed dequeue
+  remains retryable. A total GitHub write outage cannot revoke a published
+  pass; rollout must drain the queue before replacing legacy checks (#8009).
+  Critical.
 - **Models.** A change to the model or Codex release of an agent that edits
   code shows that the model is in that release's bundled catalogue
   (`codex-rs/models-manager/models.json`), or the agent loses `apply_patch`

@@ -201,7 +201,7 @@ func TestSemgrepAgentIDCollisionKeepsTheAgentFinding(t *testing.T) {
 			e.Wait()
 			c := h.gh.check(shaA)
 			st, ok := LoadState(c.Text)
-			if !ok || c.Conclusion != ConclusionFailure || len(st.Previous()) != 1 || st.Previous()[0].ID != semgrepUnverified || st.Previous()[0].Severity != SeverityCritical {
+			if !ok || st.Incomplete || c.Conclusion != ConclusionFailure || len(st.Previous()) != 1 || st.Previous()[0].ID != semgrepUnverified || st.Previous()[0].Severity != SeverityCritical {
 				t.Fatalf("critical collision disappeared: %+v, %s", st, c.Summary)
 			}
 			if !scanned && !strings.Contains(c.Summary, "Semgrep evidence for this head is unverified") {
@@ -246,11 +246,11 @@ func TestSemgrepStampSurvivesStateTrimming(t *testing.T) {
 		IssueDigest: strings.Repeat("b", 64), IssuesPending: true,
 		Goal: &GoalCheck{Head: shaA, Digest: strings.Repeat("b", 64), Overall: goalMet, Criteria: []GoalVerdict{{1, goalNotMet}}},
 	}
-	for i := range maxStored {
+	for i := range 41 {
 		st.Blocking = append(st.Blocking, Finding{ID: fmt.Sprint(i), Severity: SeverityHigh, Title: strings.Repeat("x", 1000), Detail: strings.Repeat("x", 4000)})
 	}
 	loaded, ok := LoadState(encodeState(st))
-	if !ok || loaded.Semgrep == nil || *loaded.Semgrep != *st.Semgrep {
+	if !ok || loaded.Incomplete || len(loaded.Blocking) != 41 || loaded.Semgrep == nil || *loaded.Semgrep != *st.Semgrep {
 		t.Fatal("state trimming lost Semgrep gate")
 	}
 	if loaded.IssueDigest != st.IssueDigest || !loaded.IssuesPending {
@@ -258,6 +258,41 @@ func TestSemgrepStampSurvivesStateTrimming(t *testing.T) {
 	}
 	if !reflect.DeepEqual(loaded.Goal, st.Goal) {
 		t.Fatal("state trimming lost the goal verdict")
+	}
+}
+
+func TestSemgrepOverflowRecoveryAcrossRestart(t *testing.T) {
+	h := semgrepHarness(t)
+	h.gh.addCheck(shaA, scanName, scanApp, "success")
+	e, ctx, stop := h.start()
+	id := strings.Repeat("x", maxState)
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted,
+		report(t, Report{Summary: "Blocker", Findings: []Finding{finding(id, SeverityHigh)}}))
+	e.Wait()
+	st, ok := LoadState(h.gh.check(shaA).Text)
+	if !ok || !st.Incomplete || st.Semgrep == nil || !st.Semgrep.Verified {
+		t.Fatal("overflow lost the evidence stamp")
+	}
+	stop()
+	next := strings.Repeat("b", 40)
+	h.gh.push(7, next)
+	e, ctx, stop = h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, next), kagent.StateCompleted,
+		report(t, Report{Summary: "Fixed", Findings: []Finding{}, Previous: []Previous{{ID: id, Status: StatusFixed}}}))
+	e.Wait()
+	stop()
+	e, ctx, _ = h.start()
+	e.Tick(ctx)
+	c := h.gh.check(next)
+	st, ok = LoadState(c.Text)
+	if !ok || st.Incomplete || len(st.Blocking) != 0 || st.Semgrep == nil || st.Semgrep.Verified || c.Conclusion != ConclusionFailure {
+		t.Fatal("resolving the original blocker cleared the new head's missing scan")
+	}
+	h.gh.addCheck(next, scanName, scanApp, "success")
+	h.k.finish(runReview(t, h, e, ctx, 7, next), kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	if h.gh.check(next).Conclusion != ConclusionSuccess {
+		t.Fatal("complete accounting and reviewed scan did not restore the pass")
 	}
 }
 

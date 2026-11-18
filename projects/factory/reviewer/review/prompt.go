@@ -62,8 +62,8 @@ type PromptInput struct {
 	// hunks changed since PreviousHead, or after a rebase the files whose
 	// own diff changed (RebasedScope). Nil reviews the whole change again.
 	Scope *Scope
-	// PreviousUnknown says why the review of an earlier head could not be
-	// found when one may exist.
+	// PreviousUnknown says why complete earlier review state could not be
+	// recovered. Known findings still require accounting.
 	PreviousUnknown string
 	// Resumed sends the review into the kagent session that reviewed
 	// PreviousHead. RulesHeld says the rules and repository context sent
@@ -205,17 +205,20 @@ func Prompt(in PromptInput) string {
 			"the rules reserve for Joe as `human-gate`.\n\n")
 	}
 
-	if in.PreviousHead == "" && in.PreviousUnknown != "" {
+	if in.PreviousUnknown != "" {
 		b.WriteString("## Previous review\n\n")
-		fmt.Fprintf(&b, "The reviewer service could not find the review of an earlier head of this PR (%s), so earlier blocking "+
+		fmt.Fprintf(&b, "The reviewer service could not recover the complete review of an earlier head of this PR (%s), so earlier blocking "+
 			"findings may exist that this prompt cannot list. Review the whole change as a first review and report every "+
-			"blocking finding again.\n\n", in.PreviousUnknown)
+			"blocking finding again. Account for every known finding listed below. Missing history keeps the check blocked "+
+			"even if your report clears all known findings.\n\n", in.PreviousUnknown)
 	}
 	if in.PreviousHead != "" {
-		b.WriteString("## Previous review\n\n")
-		if len(in.Previous) == 0 {
+		if in.PreviousUnknown == "" {
+			b.WriteString("## Previous review\n\n")
+		}
+		if len(in.Previous) == 0 && in.PreviousUnknown == "" {
 			fmt.Fprintf(&b, "The review of the earlier head %s raised no blocking findings.\n", in.PreviousHead)
-		} else {
+		} else if len(in.Previous) > 0 {
 			fmt.Fprintf(&b, "The review of the earlier head %s raised these blocking findings. Account for every one in \"previous\": "+
 				"\"fixed\" when the failure it describes no longer occurs, whichever fix was chosen; \"justified\" with a note when it "+
 				"is a medium finding the author has good reason to keep; \"justified\" with a note starting \"decision:\" and the "+
@@ -232,7 +235,7 @@ func Prompt(in PromptInput) string {
 			}
 		}
 		for _, f := range in.Previous {
-			fmt.Fprintf(&b, "- `%s` %s", oneLine(f.ID, maxTitle), f.Severity)
+			fmt.Fprintf(&b, "- `%s` %s", f.ID, f.Severity)
 			if p := cleanPath(f.Path); p != "" {
 				if f.Line > 0 {
 					fmt.Fprintf(&b, " %s:%d", p, f.Line)
@@ -272,6 +275,8 @@ func Prompt(in PromptInput) string {
 			b.WriteString("\n")
 		}
 		switch d := in.Interdiff; {
+		case in.PreviousUnknown != "":
+			// Full review and accounting for recovered findings are required above.
 		case d == nil:
 			fmt.Fprintf(&b, "GitHub no longer has %s, so there is no interdiff: review the whole change again.\n\n", in.PreviousHead)
 		case d.Status != "ahead" && in.Scope != nil:

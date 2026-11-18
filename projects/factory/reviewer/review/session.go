@@ -128,7 +128,7 @@ func agentName(a kagent.AgentRef) string { return a.Namespace + "/" + a.Name }
 func (e *Engine) resumable(ctx context.Context, b *Binding, pr github.PullRequest, in *inputs, attempt int, refused bool, l *slog.Logger) (*SessionRef, string) {
 	ref := in.prior.Session
 	switch {
-	case ref == nil || in.priorHead == "" || in.priorHead == pr.HeadSHA:
+	case ref == nil || in.priorHead == "" || in.priorHead == pr.HeadSHA || in.prior.Incomplete:
 		return nil, reasonNone
 	case attempt > 1:
 		return nil, reasonRetry
@@ -305,11 +305,15 @@ func sessionAfter(b *Binding, pr github.PullRequest, in *inputs, t *kagent.Task)
 // withSession records ref in the State a completed check run's text holds.
 func withSession(text string, ref *SessionRef) string {
 	st, ok := LoadState(text)
-	if !ok || ref == nil {
+	if !ok || ref == nil || st.Incomplete {
 		return text
 	}
 	st.Session = ref
-	return encodeState(st)
+	updated := encodeState(st)
+	if saved, _ := LoadState(updated); saved.Incomplete {
+		return text // Optional session reuse cannot displace complete findings.
+	}
+	return updated
 }
 
 // taskBytes is the text and data kagent keeps on a task: its prompt,

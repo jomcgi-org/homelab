@@ -1069,6 +1069,56 @@ func TestCommentWaitsForTheHumanGateThenApproves(t *testing.T) {
 	}
 }
 
+func TestCommentHoldsIncompleteReviewState(t *testing.T) {
+	for _, kind := range []string{"missing history", "overflow", "approved gate overflow", "authorship missing history", "authorship overflow"} {
+		t.Run(kind, func(t *testing.T) {
+			h := newHarness(t)
+			withComments(h)
+			if strings.HasPrefix(kind, "authorship ") {
+				h.gh.addPR(authoredPR())
+			} else {
+				addPR7(h)
+			}
+			r := Report{Summary: "Reviewed this head", Findings: []Finding{}}
+			if strings.Contains(kind, "missing history") {
+				h.gh.prs[7].TimelineTruncated = true
+			} else {
+				id := strings.Repeat("x", maxState)
+				if kind == "approved gate overflow" || kind == "authorship overflow" {
+					id += ":human-gate"
+				}
+				if kind == "approved gate overflow" {
+					h.gh.review(7, "jomcgi", "APPROVED", shaA, "")
+				}
+				r.Findings = []Finding{{ID: id, Severity: SeverityHigh, Title: "An unresolved finding"}}
+			}
+			e, ctx, _ := h.start()
+			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, r))
+			eventually(t, "the incomplete-state comment", func() bool {
+				return commentHas(h, 7, "### ⏸️ On hold", "Review state incomplete", "cannot clear missing history")
+			})
+			c := h.gh.check(shaA)
+			st, ok := LoadState(c.Text)
+			if !ok || !st.Incomplete || c.Conclusion != ConclusionFailure {
+				t.Fatal("the comment and persisted failure disagree")
+			}
+			if body := onlyComment(t, h, 7).Body; strings.Contains(body, "### ✅ Approved") || strings.Contains(body, "### 🙋 Waiting for a human approval") {
+				t.Fatal("the comment presents incomplete history as clearable by approval")
+			}
+			if strings.Contains(c.Summary, authorshipPrefix) || strings.Contains(onlyComment(t, h, 7).Body, authorshipPrefix) {
+				t.Fatal("authorship replaced the incomplete-history warning")
+			}
+			if strings.HasPrefix(kind, "authorship ") {
+				eventually(t, "free review slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+				h.engine().Tick(ctx)
+				if h.gh.check(shaA).Conclusion != ConclusionFailure || !commentHas(h, 7, "### ⏸️ On hold", "cannot clear missing history") {
+					t.Fatal("authorship cleared incomplete history after restart")
+				}
+			}
+		})
+	}
+}
+
 // A token without issues write fails only the comment: the review completes
 // and the failure is counted and logged.
 func TestCommentFailureLeavesTheCheckRun(t *testing.T) {

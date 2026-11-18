@@ -52,6 +52,7 @@ type GitHub interface {
 	Statuses(ctx context.Context, repo, sha string) ([]github.Status, error)
 	PullRequestQueue(ctx context.Context, repo string, number int) (*github.PullRequestQueue, error)
 	EnqueuePullRequest(ctx context.Context, repo, nodeID, headSHA string) (string, error)
+	DequeuePullRequest(ctx context.Context, repo, nodeID string) error
 	MergeQueueEntries(ctx context.Context, repo, branch string) ([]github.MergeQueueEntry, error)
 	CitedPullRequest(ctx context.Context, repo string, number int) (*github.CitedPullRequest, error)
 	RulesReader
@@ -1205,7 +1206,7 @@ type inputs struct {
 	gate      *Gate
 	prior     State
 	priorHead string
-	// priorUnknown says why an earlier head's review could not be found.
+	// priorUnknown says why complete earlier review state could not be recovered.
 	priorUnknown string
 	// since is what changed since priorHead, once compared is set; nil
 	// when GitHub no longer has priorHead.
@@ -1302,9 +1303,15 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				sameSnapshot := false
 				if st, ok := LoadState(run.Text); ok {
 					in.goal = st.Goal // goalCheck reuses it for the same evidence.
-					if st.Blocking != nil || (st.Gate != nil && len(st.Gate.Findings) > 0) {
+					if st.Incomplete {
+						st, _ = e.recoverState(ctx, b, pr, run, st)
+					}
+					if st.Incomplete || st.Blocking != nil || (st.Gate != nil && len(st.Gate.Findings) > 0) {
 						// previousState skips the same head; retain its report too.
 						in.prior, in.priorHead, in.priorUnknown = st, pr.HeadSHA, ""
+						if st.Incomplete {
+							in.priorUnknown = "the same head's complete review history could not be recovered"
+						}
 					}
 					if st.Gate != nil {
 						if in.gate == nil {
@@ -1527,7 +1534,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				e.recordProgress(ctx, b, run, in.gate, rec, "Waiting for the changes since the previous review.", l)
 				return // Reattach the completed task once the interdiff is readable.
 			}
-			if !built && since == nil && in.priorHead != "" && in.priorHead != currentPR.HeadSHA {
+			if !built && since == nil && in.priorHead != "" && in.priorHead != currentPR.HeadSHA && !in.prior.Incomplete {
 				// A task prompted in another process may have had an
 				// interdiff GitHub no longer has; its reply may hold
 				// lowered late findings, so review the whole change again.
@@ -1555,9 +1562,6 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 					e.holdIssues(ctx, b, currentPR, run, st, fresh.Pending)
 					return
 				}
-				st, _ := LoadState(res.o.Output.Text)
-				st.IssueDigest, st.Goal = rec.Issues, in.goal
-				res.o.Output.Text = encodeState(st)
 			}
 			if e.finish(ctx, b, currentPR, run, res.o, l) {
 				e.observe(ctx, b, res.r, res.a, l)
@@ -1608,7 +1612,7 @@ func (e *Engine) gather(ctx context.Context, b *Binding, pr github.PullRequest, 
 		return nil, err
 	}
 	if unknown != "" {
-		l.WarnContext(ctx, "the previous review could not be found; asking for a full review", "reason", unknown)
+		l.WarnContext(ctx, "previous review state is incomplete; retaining the hold and asking for a full review", "reason", unknown)
 	}
 	gate := humanGate(b, changedPaths(files), pr.Labels)
 	if prior.Gate.held() {
@@ -1653,22 +1657,28 @@ func (e *Engine) previousStateFrom(ctx context.Context, b *Binding, pr github.Pu
 		}
 		seen[h.SHA] = true
 		if looked == maxPreviousLookups {
-			return State{}, "", fmt.Sprintf("more than %d earlier heads carry a review check", maxPreviousLookups), nil
+			return State{Incomplete: true}, "", fmt.Sprintf("more than %d earlier heads carry a review check", maxPreviousLookups), nil
 		}
 		looked++
 		run, err := e.reviewCheck(ctx, b, h.SHA)
 		if err != nil {
 			return State{}, "", "", err
 		}
-		if run == nil || run.Status != "completed" {
+		if run == nil || run.Status != "completed" || run.Title == "No review report" || run.Title == "Split this PR" {
 			continue
 		}
 		if st, ok := LoadState(run.Text); ok {
+			if st.Incomplete {
+				if recovered, ok := e.recoverState(ctx, b, pr, run, st); ok {
+					return recovered, h.SHA, "", nil
+				}
+				return st, h.SHA, "the earlier review state is incomplete; known findings still require accounting and missing history keeps the check blocked", nil
+			}
 			return st, h.SHA, "", nil
 		}
 	}
 	if hist.Truncated {
-		return State{}, "", "its timeline has more commit and push events than the reviewer reads", nil
+		return State{Incomplete: true}, "", "its timeline has more commit and push events than the reviewer reads", nil
 	}
 	return State{}, "", "", nil
 }
@@ -1712,6 +1722,274 @@ func joeDecisions(b *Binding, pr github.PullRequest, comments []github.Comment) 
 		}
 	}
 	return d
+}
+
+// recoverState replays original reports back to a complete v2 checkpoint or
+// the beginning of a complete PR timeline. It never infers resolution from a
+// passing conclusion. Lossless legacy snapshots can reconstruct findings
+// from expired tasks, but cannot prove their resolution. Bounds, gaps,
+// ambiguous identities and invalid reports leave the caller blocked.
+func (e *Engine) recoverState(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, saved State) (State, bool) {
+	hist, err := e.gh.PullRequestHeads(ctx, b.repo(), pr.Number, github.CheckRunFilter{Name: e.cfg.CheckName, AppID: e.cfg.AppID})
+	if err != nil {
+		return saved, false
+	}
+	type originalReport struct {
+		id       int64
+		head     string
+		reply    string
+		legacy   bool
+		stored   State
+		snapshot bool
+	}
+	var reports []originalReport
+	seenHeads, seenTasks := map[string]bool{}, map[string]int{}
+	prior := State{Blocking: []Finding{}}
+	started, anchored := false, false
+	lastHead := ""
+	looked := 0
+heads:
+	for i := len(hist.Heads) - 1; i >= 0; i-- {
+		h := hist.Heads[i]
+		if h.SHA == run.HeadSHA {
+			started = true
+		}
+		if !started || (!h.Checked && h.SHA != run.HeadSHA) {
+			continue
+		}
+		if seenHeads[h.SHA] {
+			if h.SHA != lastHead {
+				return saved, false // A return to an earlier head has ambiguous ancestry.
+			}
+			continue
+		}
+		lastHead = h.SHA
+		seenHeads[h.SHA] = true
+		looked++
+		if looked > maxPreviousLookups {
+			return saved, false
+		}
+		runs, err := e.gh.ListCheckRuns(ctx, b.repo(), h.SHA, github.CheckRunFilter{Name: e.cfg.CheckName, AppID: e.cfg.AppID, All: true})
+		if err != nil {
+			return saved, false
+		}
+		if len(runs) == 0 {
+			return saved, false // A checked timeline head cannot disappear.
+		}
+		sort.Slice(runs, func(i, j int) bool { return runs[i].ID > runs[j].ID })
+		needsReport, foundReport := false, false
+		for _, old := range runs {
+			if old.Name != e.cfg.CheckName || old.AppID != e.cfg.AppID || old.HeadSHA != h.SHA || old.Status != "completed" {
+				continue
+			}
+			if old.ExternalID != MessageID(b.repo(), pr.Number, h.SHA) {
+				return saved, false
+			}
+			if old.Title == "No review report" || old.Title == "Split this PR" {
+				continue // These service outcomes contain no new model report.
+			}
+			st, ok := LoadState(old.Text)
+			if !ok || (!st.Incomplete && st.Blocking == nil) {
+				continue // No completed report, only attempt/gate bookkeeping.
+			}
+			if ok && !st.Incomplete && st.Blocking != nil {
+				prior, anchored = st, true
+				break heads
+			}
+			needsReport = needsReport || ok
+			taskID := e.sourceTask(b, &old, st)
+			if taskID == "" {
+				continue // A gate-only replacement can refer to an older report.
+			}
+			foundReport = true
+			if index, seen := seenTasks[taskID]; seen {
+				// A gate replacement references its original report. Its later
+				// check ID must not reorder that report after another head.
+				if old.ID < reports[index].id {
+					reports[index].id = old.ID
+					reports[index].head = old.HeadSHA
+					reports[index].stored = st
+					_, reports[index].snapshot = legacySnapshot(old.Text)
+				}
+				reports[index].legacy = reports[index].legacy || st.LegacyTask
+				continue
+			}
+			if len(taskID) > 200 || len(reports) >= maxPreviousLookups {
+				return saved, false
+			}
+			task, err := e.tasks.GetTask(ctx, b.Agent, taskID)
+			reply := ""
+			if err == nil && task != nil && task.ID == taskID && (task.Status.State == kagent.StateCompleted || task.Status.State == kagent.StateInputRequired) {
+				reply = ReplyText(task)
+			}
+			_, snapshot := legacySnapshot(old.Text)
+			seenTasks[taskID] = len(reports)
+			reports = append(reports, originalReport{id: old.ID, head: old.HeadSHA, reply: reply, legacy: st.LegacyTask, stored: st, snapshot: snapshot})
+		}
+		if needsReport && !foundReport {
+			return saved, false
+		}
+	}
+	if !started || len(reports) == 0 || (!anchored && hist.Truncated) {
+		return saved, false
+	}
+	sort.Slice(reports, func(i, j int) bool { return reports[i].id < reports[j].id })
+	var currentIssues *IssueContext
+	readIssues := false
+	var decisions Decisions
+	readDecisions := false
+	goalIDs := regexp.MustCompile(`^` + regexp.QuoteMeta(b.ItsaplanProject) + `-[1-9][0-9]*:goal(:|$)`)
+	for _, r := range reports {
+		var report *Report
+		if r.reply == "" {
+			if !r.snapshot {
+				return saved, false
+			}
+			// A snapshot can recover identities, but absence is not evidence
+			// of a fix or acceptance. A later report must account for them.
+			report = &Report{Findings: r.stored.Previous()}
+		} else {
+			var err error
+			report, err = parseReport(r.reply, r.legacy)
+			if err != nil {
+				return saved, false
+			}
+			// Task replies never contain the service's issue evidence. Keep
+			// known service findings, including when the model claims a fix.
+			issues := &IssueContext{}
+			for _, f := range r.stored.Blocking {
+				if strings.HasPrefix(f.ID, "itsaplan:unverified:") {
+					issues.Findings = append(issues.Findings, f)
+				}
+			}
+			applyIssueFindings(report, issues)
+		}
+		if b.ItsaplanProject != "" {
+			key, goal := r.stored.GoalKey, r.stored.Goal
+			if goal != nil && (goal.Head != r.head || goal.Digest != r.stored.IssueDigest) {
+				return saved, false
+			}
+			if key == "" && r.stored.IssueDigest != "" && !r.snapshot {
+				// Legacy answers did not store their issue key. A lossless
+				// snapshot can carry its known goals; a clipped one needs the
+				// exact evidence digest to reconstruct any omitted identities.
+				if !readIssues {
+					readIssues = true
+					if files, err := e.gh.PullRequestFiles(ctx, b.repo(), pr.Number); err == nil {
+						currentIssues = e.issueContext(ctx, b, pr, files)
+					}
+				}
+				if currentIssues == nil || len(currentIssues.Pending) > 0 || issueDigest(currentIssues) != r.stored.IssueDigest {
+					return saved, false
+				}
+				key = goalKey(currentIssues)
+			}
+			if key != "" && issueNumber(key, b.ItsaplanProject) == 0 {
+				return saved, false
+			}
+			// The code review cannot clear goal findings, including during
+			// replay. Only a bound goal answer can resolve them. Re-add known
+			// service findings when an older snapshot has no bound answer.
+			applyGoal(report, prior.Previous(), b.ItsaplanProject, key, goal)
+			known := &IssueContext{}
+			for _, f := range r.stored.Blocking {
+				if goalIDs.MatchString(f.ID) {
+					known.Findings = append(known.Findings, f)
+				}
+			}
+			applyIssueFindings(report, known)
+		}
+		// Revalidate accepted highs during replay too. Expired-task snapshots
+		// retain their decision stamps; original replies reconstruct them
+		// under the full finding IDs, including formerly clipped v1 stamps.
+		carried := slices.Clone(prior.Decisions)
+		if r.reply == "" {
+			for _, d := range r.stored.Decisions {
+				if !slices.Contains(carried, d) {
+					carried = append(carried, d)
+				}
+			}
+		}
+		needsDecisions := len(carried) > 0 || slices.ContainsFunc(report.Previous, func(p Previous) bool {
+			return strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.Note)), "decision:")
+		})
+		if needsDecisions && !readDecisions {
+			comments, _, err := e.trustedComments(ctx, b, pr)
+			if err != nil {
+				return saved, false
+			}
+			decisions, readDecisions = joeDecisions(b, pr, comments), true
+		}
+		decisions.Carried = carried
+		// A historical account cannot accept the edited text of a comment.
+		// Match the saved hash as well as the current author and link. v1
+		// stamped a clipped ID; the original report supplies its full ID.
+		for i, p := range report.Previous {
+			if p.Status != StatusJustified || withdrawn(p.Note) {
+				continue
+			}
+			high := func(f Finding) bool { return f.ID == p.ID && f.Severity == SeverityHigh }
+			if !slices.ContainsFunc(prior.Previous(), high) && !slices.ContainsFunc(report.Findings, high) {
+				continue
+			}
+			stamp := decisions.decided(p.Note, p.ID)
+			if stamp != nil && !slices.ContainsFunc(r.stored.Decisions, func(old DecisionStamp) bool {
+				identity := old.Finding == p.ID || r.legacy && old.Finding == clip(p.ID, maxTitle)
+				return identity && old.ID == stamp.ID && old.Hash == stamp.Hash
+			}) {
+				report.Previous[i].Status = StatusOpen
+			}
+		}
+		a := AssessDecided(report, prior.Previous(), decisions)
+		a.Earlier, a.EarlierPartial = decisions.Revalidate(prior.Cleared), true // Recovery cannot certify the complete cleared record.
+		prior = stateOf(a, report, &Gate{Findings: a.Gated})
+	}
+	// Keep the current gate's approval baseline and sticky service holds.
+	// Its model findings come from the complete replay, never the lossy list.
+	gate := &Gate{}
+	if saved.Gate != nil {
+		*gate = *saved.Gate
+	}
+	gate.Findings = nil
+	if prior.Gate != nil {
+		gate.Findings = prior.Gate.Findings
+	}
+	prior.Gate, prior.TaskID, prior.LegacyTask = gate, saved.TaskID, saved.LegacyTask
+	prior.IssueDigest, prior.IssuesPending = saved.IssueDigest, saved.IssuesPending
+	prior.Goal, prior.GoalKey = saved.Goal, saved.GoalKey
+	prior.Semgrep = saved.Semgrep
+	if b.ItsaplanProject != "" && issueReader(b, pr) {
+		// Replay cannot reconstruct service findings omitted by legacy caps
+		// or overflow. Recheck current evidence in a fresh review before pass.
+		prior.IssuesPending = true
+	}
+	return prior, true
+}
+
+func (e *Engine) sourceTask(b *Binding, run *github.CheckRun, st State) string {
+	if st.TaskID != "" {
+		return st.TaskID
+	}
+	if original, ok := LoadState(run.Text); ok && original.TaskID != "" {
+		return original.TaskID
+	}
+	if st.Incomplete && !st.LegacyTask {
+		return "" // A v2 overflow without its task reference cannot be replayed.
+	}
+	// Legacy checks have no structured reference. Only the service footer
+	// at the end (optionally followed by enqueue history) supplies one.
+	prefix := fmt.Sprintf("Reviewed %s by the kagent agent `%s/%s` as task `", short(run.HeadSHA), b.Agent.Namespace, b.Agent.Name)
+	if at := strings.LastIndex(run.Summary, prefix); at >= 0 {
+		id, _, _ := strings.Cut(run.Summary[at+len(prefix):], "`")
+		footer := e.footer(b, github.PullRequest{HeadSHA: run.HeadSHA}, id)
+		if tail, ok := strings.CutPrefix(run.Summary[at:], footer); ok {
+			tail = strings.TrimSpace(tail)
+			if tail == "" || strings.HasPrefix(tail, enqueuedMarker) {
+				return id
+			}
+		}
+	}
+	return ""
 }
 
 // trustedComments are the PR's review bodies and comments from trusted
@@ -1815,6 +2093,10 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 // review: nil for a first review, a same-head review, or a head GitHub no
 // longer has.
 func (e *Engine) interdiff(ctx context.Context, b *Binding, pr github.PullRequest, in *inputs, l *slog.Logger) (*github.CommitComparison, error) {
+	if in.prior.Incomplete {
+		in.since, in.compared = nil, true
+		return nil, nil
+	}
 	if in.compared || in.priorHead == "" || in.priorHead == pr.HeadSHA {
 		return in.since, nil
 	}
@@ -1932,7 +2214,7 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		if err != nil {
 			return result{reason: "the reviewer could not read the changes since the previous review: " + oneLine(err.Error(), maxTitle) + "."}
 		}
-		if !in.prior.ClearedComplete() {
+		if in.prior.Incomplete || !in.prior.ClearedComplete() {
 			scope = nil // A fixed finding missing from the record could be lowered.
 		}
 		r = scope.Lower(r, prior, in.prior.Cleared)
@@ -1967,15 +2249,19 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 				l.InfoContext(ctx, "lowered a new finding outside the interdiff", "id", f.ID, "severity", f.Lowered)
 			}
 		}
+		a.Incomplete = in.prior.Incomplete
+		a.TaskID = task.ID
+		// Include the binding before Render decides whether the complete
+		// state fits. The task's recorded digest was checked against this input.
+		a.IssueDigest, a.Goal = issueDigest(in.issues), in.goal
+		a.GoalKey = key
 		gate := &Gate{ObservedLabels: []string{}}
 		if in.gate != nil {
 			*gate = *in.gate
 		}
 		gate.observeLabels(gateLabels(b, pr.Labels), e.cfg.Now())
 		for _, f := range a.Gated {
-			if len(gate.Findings) < maxGatePaths {
-				gate.Findings = append(gate.Findings, storable(f))
-			}
+			gate.Findings = append(gate.Findings, storable(f))
 		}
 		if !gate.Needed() {
 			gate = nil
@@ -2014,20 +2300,20 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			enforceSemgrep(&a, in.semgrep)
 		}
 		a.Conclusion = ConclusionSuccess
-		if len(a.Blocking) > 0 {
+		if len(a.Blocking) > 0 || a.Incomplete {
 			a.Conclusion = ConclusionFailure
 		}
-		o := Render(a, r, gate, footer)
-		if semgrepState != nil {
-			o.Output.Text = encodeState(*semgrepState)
-		}
+		o := render(a, r, gate, footer, semgrepState)
 		session := sessionAfter(b, pr, in, task)
 		o.Output.Text = withSession(o.Output.Text, session)
+		if stored, _ := LoadState(o.Output.Text); stored.Incomplete {
+			a.Incomplete = true
+		}
 		o.Comment = reviewComment(a, r, b, gate)
 		if in.priorUnknown != "" {
 			// Render left maxPreface for this note, so the summary's tail
 			// (the human-hold marker and footer) survives.
-			o.Output.Summary = clip(fmt.Sprintf("The review of an earlier head could not be found (%s), so this head was reviewed in full.\n\n",
+			o.Output.Summary = clip(fmt.Sprintf("The complete review state of an earlier head could not be recovered (%s). This head was reviewed in full; known unresolved findings still carry forward.\n\n",
 				clip(in.priorUnknown, maxPreface-200)), maxPreface) + o.Output.Summary
 		}
 		return result{o: o, r: r, a: &a, session: session}
@@ -2147,6 +2433,28 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 	if !ok && run.Conclusion != ConclusionSuccess {
 		return run, false
 	}
+	st.Incomplete = st.Incomplete || !ok
+	if st.Incomplete && run.Conclusion == ConclusionSuccess {
+		// Revoke the unsafe pass before potentially slow history/task reads.
+		// Keep current labels even if recovery cannot finish this poll.
+		if st.Gate == nil {
+			st.Gate = &Gate{}
+		}
+		st.Gate.observeLabels(gateLabels(b, pr.Labels), e.cfg.Now())
+		st.Gate.Approver = ""
+		run = e.gateCheck(ctx, b, pr, run, st, ConclusionFailure,
+			"Review state incomplete", incompleteStateMessage, nil, e.prLog(b, pr))
+		if run == nil {
+			return nil, true
+		}
+	}
+	recovered := false
+	if st.Incomplete {
+		st, recovered = e.recoverState(ctx, b, pr, run, st)
+	}
+	if recovered && st.IssuesPending {
+		return e.holdIssues(ctx, b, pr, run, st, nil), true
+	}
 	labels := gateLabels(b, pr.Labels)
 	gate := &Gate{}
 	if st.Gate != nil {
@@ -2154,7 +2462,7 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 	}
 	gate, recovery := e.recoveryGate(b, pr, gate)
 	priorNonce := gate.ApprovalNonce
-	changed := gate.observeLabels(labels, e.cfg.Now()) || recovery
+	changed := gate.observeLabels(labels, e.cfg.Now()) || recovery || recovered
 	events, err := e.gh.PullRequestLabelEvents(ctx, b.repo(), pr.Number)
 	if err != nil {
 		e.ghError(ctx, e.prLog(b, pr), b, "label_events", err)
@@ -2174,12 +2482,23 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 	changed = gate.observeLabelEvents(b, events) || changed
 	gate, retained := e.retainGate(b, pr, gate, priorNonce != gate.ApprovalNonce)
 	changed = changed || retained
+	if st.Incomplete {
+		gate.Approver, gate.Authorship = "", ""
+		st.Gate = gate
+		if changed || run.Conclusion != ConclusionFailure {
+			return e.gateCheck(ctx, b, pr, run, st, ConclusionFailure,
+				"Unresolved review findings", "The earlier review still blocks this head.",
+				&CommentUpdate{Verdict: VerdictChanges, Headline: "Unresolved review findings", Gate: gate}, e.prLog(b, pr)), true
+		}
+		return run, true
+	}
 	if !gate.Needed() {
 		// Complete label history ends a wait for it; a confirmed context
 		// ends a hold an earlier process placed only for its restart.
 		history := strings.Contains(run.Summary, labelHistoryMarker)
-		if !history && (!recovery || run.Conclusion == ConclusionSuccess) {
-			return run, false
+		if !recovered && !history && (!recovery || run.Conclusion == ConclusionSuccess) &&
+			!(len(st.Blocking) > 0 && run.Conclusion != ConclusionFailure) {
+			return run, len(st.Blocking) > 0
 		}
 		title, why := "Hold history checked", "The complete label history contains no human hold."
 		if !history {
@@ -2238,20 +2557,53 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 // human gate; the earlier run keeps the review's findings.
 func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullRequest, prev *github.CheckRun, st State, conclusion, title, summary string, u *CommentUpdate, l *slog.Logger) *github.CheckRun {
 	now := e.cfg.Now().UTC()
+	st.TaskID = e.sourceTask(b, prev, st)
+	text := encodeState(st)
+	if saved, _ := LoadState(text); saved.Incomplete {
+		conclusion, title, summary = ConclusionFailure, "Review state incomplete", incompleteStateMessage
+		u = &CommentUpdate{Verdict: VerdictHold, Headline: title, Note: incompleteStateMessage, Gate: st.Gate}
+		if st.Gate.held() {
+			f := gateFinding(b, st.Gate)
+			summary += "\n\n" + f.Title + ". " + f.Detail
+		}
+	}
 	summary += fmt.Sprintf("\n\nThe review's findings are on the earlier `%s` check run", e.cfg.CheckName)
 	if prev.URL != "" {
 		summary += " (" + prev.URL + ")"
 	}
 	summary += "."
 	summary = keepEnqueueHistory(summary, prev)
+	text = recordComment(text, prev.Text, pr.HeadSHA, u)
 	run, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
 		Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
 		Status: "completed", Conclusion: conclusion, StartedAt: &now, CompletedAt: &now,
-		Output: &github.CheckRunOutput{Title: title, Summary: summary, Text: recordComment(encodeState(st), prev.Text, pr.HeadSHA, u)},
+		Output: &github.CheckRunOutput{Title: title, Summary: summary, Text: text},
 	})
 	if err != nil {
 		e.ghError(ctx, l, b, "create_check", err)
-		return nil
+		if conclusion != ConclusionFailure {
+			return nil
+		}
+		// A rejected replacement must not leave the old pass usable by
+		// GitHub or consumers that only inspect its conclusion.
+		output := &github.CheckRunOutput{Title: title, Summary: summary, Text: text}
+		if _, lossless := legacySnapshot(prev.Text); lossless && st.Incomplete {
+			// Keep the legacy state and source-task footer as migration
+			// evidence, but persist the hold snapshot for comment retries.
+			output = &github.CheckRunOutput{
+				Title: title, Summary: prev.Summary,
+				Text: recordComment(prev.Text, prev.Text, pr.HeadSHA, u),
+			}
+		}
+		run, err = e.gh.UpdateCheckRun(ctx, b.repo(), prev.ID, github.CheckRunWrite{
+			Status: "completed", Conclusion: ConclusionFailure, CompletedAt: &now,
+			Output: output,
+		})
+		if err != nil {
+			e.ghError(ctx, l, b, "update_check", err)
+			e.dequeueUnsafe(ctx, b, pr.Number, pr.HeadSHA)
+			return nil
+		}
 	}
 	e.m.ReviewsCompleted.WithLabelValues(b.Name, conclusion).Inc()
 	approver := ""
@@ -2336,6 +2688,18 @@ func enqueueKey(b *Binding, pr github.PullRequest) string {
 	return fmt.Sprintf("%s#%d@%s", b.repo(), pr.Number, pr.HeadSHA)
 }
 
+// reviewPassed requires complete persisted evidence as well as a successful
+// conclusion. Callers use only this poll's reconciled check: reconcileGate
+// revalidates approval, including authorship evidence that is never persisted.
+func reviewPassed(run *github.CheckRun) bool {
+	if run == nil || run.Status != "completed" || run.Conclusion != ConclusionSuccess {
+		return false
+	}
+	st, ok := LoadState(run.Text)
+	return ok && !st.Incomplete && !st.IssuesPending && len(st.Blocking) == 0 &&
+		(st.Semgrep == nil || st.Semgrep.Verified && !st.Semgrep.NoReport)
+}
+
 func keepEnqueueHistory(summary string, prev *github.CheckRun) string {
 	if prev != nil && strings.Contains(prev.Summary, enqueuedMarker) && !strings.Contains(summary, enqueuedMarker) {
 		summary += "\n\n" + enqueuedMarker + "This head was already in the merge queue."
@@ -2351,7 +2715,7 @@ func keepEnqueueHistory(summary string, prev *github.CheckRun) string {
 // enqueued again; a new push starts over.
 func (e *Engine) maybeEnqueue(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (current *github.CheckRun) {
 	current = run
-	if strings.Contains(run.Summary, enqueuedMarker) || !containsFold(b.EnqueueAuthors, pr.Author) {
+	if !reviewPassed(run) || strings.Contains(run.Summary, enqueuedMarker) || !containsFold(b.EnqueueAuthors, pr.Author) {
 		return
 	}
 	key := enqueueKey(b, pr)
@@ -2494,7 +2858,7 @@ func (e *Engine) mergeGroups(ctx context.Context, b *Binding, reviews map[int]*g
 			}
 		}
 		review := reviews[en.Number] // Only this poll can authorize the queued head.
-		passed := review != nil && review.HeadSHA == en.PRHeadSHA && review.Status == "completed" && review.Conclusion == ConclusionSuccess
+		passed := reviewPassed(review) && review.HeadSHA == en.PRHeadSHA
 		o := github.CheckRunOutput{
 			Title:   "Reviewed in the queued PR",
 			Summary: fmt.Sprintf("This merge group commit adds PR #%d, whose head %s passed `%s`.", en.Number, short(en.PRHeadSHA), e.cfg.CheckName),
@@ -2523,12 +2887,49 @@ func (e *Engine) mergeGroups(ctx context.Context, b *Binding, reviews map[int]*g
 		})
 		if err != nil {
 			e.ghError(ctx, l, b, "create_check", err)
-			continue
+			if conclusion != ConclusionFailure || posted != ConclusionSuccess {
+				continue
+			}
+			// Read the existing run even when its conclusion was cached on a
+			// previous tick. Check creation can fail while updates still work.
+			existing, readErr := e.reviewCheck(ctx, b, en.HeadCommit)
+			if readErr != nil || existing == nil {
+				e.dequeueUnsafe(ctx, b, en.Number, en.PRHeadSHA)
+				continue
+			}
+			if _, err = e.gh.UpdateCheckRun(ctx, repo, existing.ID, github.CheckRunWrite{
+				Status: "completed", Conclusion: ConclusionFailure, CompletedAt: &now, Output: &o,
+			}); err != nil {
+				e.ghError(ctx, l, b, "update_check", err)
+				e.dequeueUnsafe(ctx, b, en.Number, en.PRHeadSHA)
+				continue
+			}
 		}
 		e.groups[key] = conclusion
 		e.m.MergeGroupChecks.WithLabelValues(b.Name, conclusion).Inc()
 		l.InfoContext(ctx, "merge group check posted", "conclusion", conclusion)
 	}
+}
+
+// dequeueUnsafe uses the queue mutation when the check-write endpoint is
+// unavailable. Never cache success on failure: the next poll and restart
+// retry. A total GitHub write outage cannot revoke an existing external pass.
+func (e *Engine) dequeueUnsafe(ctx context.Context, b *Binding, number int, head string) {
+	l := e.log.With("binding", b.Name, "repo", b.repo(), "pr", number, "sha", head)
+	q, err := e.gh.PullRequestQueue(ctx, b.repo(), number)
+	if err != nil {
+		e.ghError(ctx, l, b, "pull_request", err)
+		return
+	}
+	if q.HeadSHA != head || q.NodeID == "" || q.MergeQueueState == "" {
+		return
+	}
+	if err := e.gh.DequeuePullRequest(ctx, b.repo(), q.NodeID); err != nil {
+		e.ghError(ctx, l, b, "dequeue", err)
+		l.ErrorContext(ctx, "unsafe passing checks could not be revoked or dequeued; external merge remains possible")
+		return
+	}
+	l.WarnContext(ctx, "removed unsafe head from merge queue after check writes failed")
 }
 
 func (e *Engine) ghError(ctx context.Context, l *slog.Logger, b *Binding, call string, err error) {

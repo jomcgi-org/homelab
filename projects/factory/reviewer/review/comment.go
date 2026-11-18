@@ -206,6 +206,8 @@ func reviewComment(a Assessment, r *Report, b *Binding, gate *Gate) *CommentUpda
 	u := &CommentUpdate{Verdict: VerdictApproved, Gate: gate}
 	gated := slices.ContainsFunc(a.Blocking, func(b Blocked) bool { return isGate(b.Finding) })
 	switch {
+	case a.Incomplete:
+		u.Verdict, u.Headline, u.Note = VerdictHold, "Review state incomplete", incompleteStateMessage
 	case len(a.Blocking) == 0 && gate != nil && gate.Authorship != "":
 		u.Headline = "Human gate cleared by authorship"
 	case len(a.Blocking) == 0 && a.Approver != "":
@@ -225,10 +227,10 @@ func reviewComment(a Assessment, r *Report, b *Binding, gate *Gate) *CommentUpda
 	if n := len(a.Optional) + len(a.Deferred) + a.DroppedLow; n > 0 {
 		u.Headline += fmt.Sprintf(" · %d optional", n)
 	}
-	if gated && gate != nil && gate.ApprovalNonce != "" {
+	if !a.Incomplete && gated && gate != nil && gate.ApprovalNonce != "" {
 		u.Note = acknowledgeNote(gate)
 	}
-	if gate != nil && gate.Authorship != "" {
+	if !a.Incomplete && gate != nil && gate.Authorship != "" {
 		u.Note = gate.Authorship
 	}
 	body := findingsSection(a, r)

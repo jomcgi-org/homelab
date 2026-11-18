@@ -202,10 +202,17 @@ var kindActions = map[string]string{
 // No block, a block in another language, invalid JSON, a report without a
 // summary or a findings list, an unknown severity or a finding without a
 // title or detail is an error, never a pass. A missing ID is derived from
-// the path and title; an unknown previous status counts as open. An error
-// names a fixed class and never a value from the reply, since the check
-// publishes it.
+// the path and title; invalid or duplicate IDs are errors. An unknown
+// previous status counts as open.
+// Errors name fixed classes, never reply values, since checks publish them.
 func ParseReport(reply string) (*Report, error) {
+	return parseReport(reply, false)
+}
+
+// Historical reports must use the identity the service gave them at the
+// time. New reports always use collision-resistant derivation. Ambiguous
+// legacy identities still fail the duplicate validation below.
+func parseReport(reply string, legacy bool) (*Report, error) {
 	if len(reply) > maxReply {
 		reply = reply[len(reply)-maxReply:]
 	}
@@ -234,6 +241,7 @@ func ParseReport(reply string) (*Report, error) {
 	if strings.TrimSpace(r.Summary) == "" {
 		return nil, errors.New("the report has no summary")
 	}
+	ids := map[string]bool{}
 	for i := range r.Findings {
 		f := &r.Findings[i]
 		f.Severity = strings.ToLower(strings.TrimSpace(f.Severity))
@@ -247,15 +255,32 @@ func ParseReport(reply string) (*Report, error) {
 		if f.Title == "" {
 			return nil, fmt.Errorf("finding %d has no title or detail", i+1)
 		}
-		f.ID = strings.TrimSpace(f.ID)
+		if legacy {
+			f.ID = strings.TrimSpace(f.ID)
+		}
 		if f.ID == "" {
 			f.ID = derivedID(f)
+			if legacy {
+				slug := strings.Trim(slugJunk.ReplaceAllString(strings.ToLower(f.Title), "-"), "-")
+				f.ID = clip(strings.ToLower(f.Path)+":"+slug, 120)
+			}
 		}
 		f.Cause, f.Kind = strings.TrimSpace(f.Cause), ""
+		if !validID(f.ID) || ids[f.ID] {
+			return nil, fmt.Errorf("finding %d has an invalid or duplicate ID", i+1)
+		}
+		ids[f.ID] = true
 	}
+	ids = map[string]bool{}
 	for i := range r.Previous {
 		p := &r.Previous[i]
-		p.ID = strings.TrimSpace(p.ID)
+		if legacy {
+			p.ID = strings.TrimSpace(p.ID)
+		}
+		if !validID(p.ID) || ids[p.ID] {
+			return nil, fmt.Errorf("previous finding %d has an invalid or duplicate ID", i+1)
+		}
+		ids[p.ID] = true
 		p.Status = strings.ToLower(strings.TrimSpace(p.Status))
 		if p.Status != StatusFixed && p.Status != StatusJustified {
 			p.Status = StatusOpen
@@ -268,7 +293,16 @@ var slugJunk = regexp.MustCompile(`[^a-z0-9]+`)
 
 func derivedID(f *Finding) string {
 	slug := strings.Trim(slugJunk.ReplaceAllString(strings.ToLower(f.Title), "-"), "-")
-	return clip(strings.ToLower(f.Path)+":"+slug, 120)
+	// The slug is readable but lossy (case, punctuation and Unicode). Hash
+	// the original pair so distinct missing IDs do not acquire one identity.
+	b, _ := json.Marshal([2]string{f.Path, f.Title})
+	return fmt.Sprintf("%s:%s:%x", strings.ToLower(f.Path), slug, sha256.Sum256(b))
+}
+
+// validID rejects identities that cannot be displayed verbatim as one line.
+// Never repair or shorten an ID: that could alias a different finding.
+func validID(id string) bool {
+	return id != "" && utf8.ValidString(id) && id == storeText(id, len(id))
 }
 
 // Blocked is a finding that blocks the check, or a justified medium that no
@@ -291,6 +325,17 @@ type Blocked struct {
 // previous round's blocking findings.
 type Assessment struct {
 	Conclusion string
+	// Incomplete carries missing prior history independently of the model's
+	// account of the findings that could be recovered.
+	Incomplete bool
+	// TaskID retains the original report for bounded history recovery.
+	TaskID string
+	// IssueDigest binds the assessment to the service's evidence snapshot.
+	IssueDigest string
+	// Goal keeps the validated goal answer in the same bounded state.
+	Goal *GoalCheck
+	// GoalKey identifies the issue even when its goal answer is unavailable.
+	GoalKey string
 	// Gated are the agent's human-gate findings, at any severity; they block
 	// or clear with the head's human gate and never count as low.
 	Gated    []Finding
@@ -386,7 +431,7 @@ func (d Decisions) decided(note, id, severity string) *DecisionStamp {
 		}
 		for _, c := range d.Comments {
 			if c.ID == cid && namesID(c.Body, id) {
-				return &DecisionStamp{Finding: clip(id, maxTitle), ID: cid, Hash: bodyHash(c.Body), Severity: severity}
+				return &DecisionStamp{Finding: id, ID: cid, Hash: bodyHash(c.Body), Severity: severity}
 			}
 		}
 	}
@@ -553,16 +598,16 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 	current := map[string]bool{}
 	low := 0
 	for _, f := range r.Findings {
+		if p, was := priorByID[f.ID]; was && f.Verdict != goalLive && !cleared(f.ID) && rank(p.Severity) < rank(f.Severity) {
+			reason[f.ID] = fmt.Sprintf("reported again as %s; it keeps its earlier severity", f.Severity)
+			f.Severity = p.Severity
+		}
 		if isGate(f) {
 			current[f.ID] = true
 			a.Gated = append(a.Gated, f)
 			continue
 		}
 		current[f.ID] = true
-		if p, was := priorByID[f.ID]; was && f.Verdict != goalLive && !cleared(f.ID) && rank(p.Severity) < rank(f.Severity) {
-			reason[f.ID] = fmt.Sprintf("reported again as %s; it keeps its earlier severity", f.Severity)
-			f.Severity = p.Severity
-		}
 		if sev, ok := revoked[f.ID]; ok && rank(f.Severity) > rank(sev) {
 			reason[f.ID] = fmt.Sprintf("reported again as %s after Joe's decision changed; it stays %s", f.Severity, sev)
 			f.Severity, f.Lowered = sev, ""
@@ -919,7 +964,6 @@ const (
 	maxTitle        = 300
 	maxDetail       = 1500
 	maxMessage      = 4000
-	maxStored       = 40
 	maxStoredDetail = 500
 	maxStoredPath   = 300
 	// maxState bounds the encoded State, well under GitHub's limit.
@@ -938,11 +982,13 @@ const (
 	gateOnlyMarker      = markerStart + "human-gate-only -->"
 	duplicateHeadMarker = markerStart + "duplicate-head -->"
 	labelHistoryMarker  = markerStart + "label-history-unavailable -->"
-	statePrefix         = markerStart + "state v1 "
+	statePrefix         = markerStart + "state v2 "
 	stateSuffix         = " -->"
 )
 
-var stateRE = regexp.MustCompile(`<!-- factory-review:state v1 ([A-Za-z0-9+/=]*) -->`)
+const incompleteStateMessage = "The complete prior review state is unavailable. Known findings still require accounting, and this check stays blocked. A full review or human-gate approval cannot clear missing history. Recovery requires complete history with original reports or verifiably lossless legacy records."
+
+var stateRE = regexp.MustCompile(`<!-- factory-review:state v([12]) ([A-Za-z0-9+/=]*) -->`)
 
 // State keeps a running review's label snapshot, then its blocking
 // findings and human gate on the completed check. The next round must
@@ -970,6 +1016,16 @@ type State struct {
 	IssuesPending bool   `json:"issuesPending,omitempty"`
 	// Goal caches the goal check for this head and IssueDigest's evidence.
 	Goal *GoalCheck `json:"goal,omitempty"`
+	// GoalKey lets recovery account for goal findings without private text.
+	GoalKey string `json:"goalKey,omitempty"`
+
+	// Incomplete survives later heads and restarts. Neither a new report nor
+	// human-gate reconciliation can establish that missing findings cleared.
+	Incomplete bool   `json:"incomplete,omitempty"`
+	TaskID     string `json:"task_id,omitempty"`
+	// LegacyTask preserves the report's ID derivation if a gate update
+	// replaces its original v1 check during migration.
+	LegacyTask bool `json:"legacy_task,omitempty"`
 }
 
 // ClearedComplete reports whether the cleared record still holds every
@@ -1019,7 +1075,19 @@ func (st State) Previous() []Finding {
 // deferred ones; annotations mark this round's findings; the text carries
 // the State for the next round in a hidden block.
 func Render(a Assessment, r *Report, gate *Gate, footer string) Outcome {
+	return render(a, r, gate, footer, nil)
+}
+
+// render checks the final persisted state before publishing a verdict. A
+// separate state keeps service evidence out of the agent's finding namespace.
+func render(a Assessment, r *Report, gate *Gate, footer string, state *State) Outcome {
+	if state == nil {
+		st := stateOf(a, r, gate)
+		state = &st
+	}
 	o := Outcome{Conclusion: a.Conclusion}
+	o.Output.Text = encodeState(*state)
+	stored, _ := LoadState(o.Output.Text)
 	optional := len(a.Optional) + len(a.Deferred) + a.DroppedLow
 	if n := len(a.Blocking); n > 0 {
 		counts := map[string]int{}
@@ -1039,20 +1107,27 @@ func Render(a Assessment, r *Report, gate *Gate, footer string) Outcome {
 			o.Output.Title += fmt.Sprintf(", %d optional", optional)
 		}
 	}
+	if stored.Incomplete {
+		o.Conclusion = ConclusionFailure
+		o.Output.Title = "Review state incomplete"
+	}
 
 	// The summary is the overview, the blocking findings, the other sections
 	// and a tail of the human-hold marker and the footer. The connector reads
 	// the marker and the findings, so the tail is never clipped and the
 	// blocking findings get the space before the other sections.
 	tail := footer
-	if gate != nil && gate.Authorship != "" {
+	if !stored.Incomplete && gate != nil && gate.Authorship != "" {
 		tail = gate.Authorship + "\n\n" + tail
 	}
-	if len(a.Blocking) > 0 && !slices.ContainsFunc(a.Blocking, func(b Blocked) bool { return !isGate(b.Finding) }) {
+	if !stored.Incomplete && len(a.Blocking) > 0 && !slices.ContainsFunc(a.Blocking, func(b Blocked) bool { return !isGate(b.Finding) }) {
 		tail = gateOnlyMarker + footer
 	}
 	budget := maxSummary - maxPreface - len(tail)
 	var out strings.Builder
+	if stored.Incomplete {
+		out.WriteString(incompleteStateMessage + "\n\n")
+	}
 	if sum := strings.TrimSpace(untrusted(r.Summary)); sum != "" {
 		out.WriteString(clip(sum, maxAgentSummary))
 		out.WriteString("\n\n")
@@ -1168,7 +1243,6 @@ func Render(a Assessment, r *Report, gate *Gate, footer string) Outcome {
 		add(f)
 	}
 	o.Output.Annotations = anns
-	o.Output.Text = encodeState(stateOf(a, r, gate))
 	return o
 }
 
@@ -1184,9 +1258,9 @@ func loweredNote(f Finding) string {
 // a person clears it, so no round carries it.
 func stateOf(a Assessment, r *Report, gate *Gate) State {
 	cleared, partial := clearedOf(a, r)
-	st := State{Blocking: []Finding{}, Cleared: cleared, ClearedPartial: partial || a.EarlierPartial, Gate: gate, Decisions: a.decisions()}
+	st := State{Blocking: []Finding{}, Cleared: cleared, ClearedPartial: partial || a.EarlierPartial, Gate: gate, Decisions: a.decisions(), Incomplete: a.Incomplete, TaskID: a.TaskID, IssueDigest: a.IssueDigest, Goal: a.Goal, GoalKey: a.GoalKey}
 	for _, b := range a.Blocking {
-		if isGate(b.Finding) || len(st.Blocking) == maxStored {
+		if isGate(b.Finding) {
 			continue
 		}
 		st.Blocking = append(st.Blocking, storable(b.Finding))
@@ -1214,7 +1288,7 @@ func clearedOf(a Assessment, r *Report) ([]Cleared, bool) {
 	var out []Cleared
 	partial := false
 	add := func(f Finding, status, note string, decision *DecisionStamp) {
-		id := storeText(f.ID, maxTitle)
+		id := f.ID
 		if isGate(f) || skip[f.ID] || skip[id] {
 			return
 		}
@@ -1240,10 +1314,10 @@ func clearedOf(a Assessment, r *Report) ([]Cleared, bool) {
 	return out, partial
 }
 
-// storable bounds a finding for the hidden State: every field is one line
-// of printable text, clipped.
+// storable bounds descriptive text for the hidden State. Identity and
+// severity survive unchanged.
 func storable(f Finding) Finding {
-	f.ID, f.Title = storeText(f.ID, maxTitle), storeText(f.Title, maxTitle)
+	f.Title = storeText(f.Title, maxTitle)
 	f.Path = storeText(f.Path, maxStoredPath)
 	f.Detail = storeText(f.Detail, maxStoredDetail)
 	f.Cause = storeText(f.Cause, maxStoredDetail)
@@ -1375,9 +1449,10 @@ func writeFindingN(s *strings.Builder, f Finding, detail int) {
 
 // encodeState hides a State in one HTML comment that GitHub does not
 // render; base64 keeps the JSON from closing it. Past maxState it shortens
-// the cleared record to IDs and statuses, then drops it, and never drops
-// the blocking findings or the gate: their titles and details go first,
-// then paths, until only IDs and severities are left.
+// the cleared record first, marking it partial if entries are dropped,
+// titles and details first, then paths, until only IDs and severities are
+// left. If the complete state still cannot fit, it records an explicit
+// incomplete marker that holds this and later heads closed.
 func encodeState(st State) string {
 	enc := func(st State) string {
 		var b strings.Builder
@@ -1399,8 +1474,8 @@ func encodeState(st State) string {
 		st.Cleared, st.ClearedPartial = nil, true // Drop the record whole before any blocking text.
 		out = enc(st)
 	}
-	for _, lim := range []struct{ text, detail, path, id int }{
-		{120, 120, maxStoredPath, maxTitle}, {0, 0, 120, 120}, {0, 0, 0, 80},
+	for _, lim := range []struct{ text, detail, path int }{
+		{120, 120, maxStoredPath}, {0, 0, 120}, {0, 0, 0},
 	} {
 		if len(out) <= maxState {
 			break
@@ -1412,10 +1487,13 @@ func encodeState(st State) string {
 			return clip(s, n)
 		}
 		shrink := func(fs []Finding) []Finding {
+			if fs == nil {
+				return nil // An attempt snapshot is not a completed empty report.
+			}
 			out := make([]Finding, len(fs))
 			for i, f := range fs {
 				f.Title, f.Detail, f.Cause = cut(f.Title, lim.text), cut(f.Detail, lim.detail), cut(f.Cause, lim.detail)
-				f.Path, f.ID = cut(f.Path, lim.path), clip(f.ID, lim.id)
+				f.Path = cut(f.Path, lim.path)
 				if f.Path == "" {
 					f.Line = 0
 				}
@@ -1423,11 +1501,9 @@ func encodeState(st State) string {
 			}
 			return out
 		}
-		// Without the cleared record, so it says the record is partial.
-		small := State{
-			Blocking: shrink(st.Blocking), ClearedPartial: st.ClearedPartial || len(st.Cleared) > 0, Session: st.Session, Decisions: st.Decisions,
-			IssueDigest: st.IssueDigest, IssuesPending: st.IssuesPending, Goal: st.Goal, Semgrep: st.Semgrep,
-		}
+		small := st
+		small.Blocking = shrink(st.Blocking)
+		small.Cleared, small.ClearedPartial = nil, st.ClearedPartial || len(st.Cleared) > 0
 		if g := st.Gate; g != nil {
 			gate := *g // Keep approval freshness and label observations through trimming.
 			gate.Paths, gate.Findings = nil, shrink(g.Findings)
@@ -1438,20 +1514,115 @@ func encodeState(st State) string {
 		}
 		out = enc(small)
 	}
+	if len(out) > maxState {
+		// The task reference is service-owned and bounded. Keep it so a later
+		// head can reconstruct every identity from the original report.
+		if len(st.TaskID) > 200 {
+			st.TaskID = ""
+		}
+		// A code-review task cannot reconstruct the separate goal answer.
+		// Its bounded numbers/verdicts and public issue key must survive too.
+		out = enc(State{
+			Incomplete: true, TaskID: st.TaskID, LegacyTask: st.LegacyTask,
+			IssueDigest: st.IssueDigest, IssuesPending: st.IssuesPending, Goal: st.Goal, GoalKey: st.GoalKey, Semgrep: st.Semgrep,
+			Decisions: st.Decisions,
+		})
+		if len(out) > maxState {
+			// Malformed metadata is not a recoverable task checkpoint.
+			return enc(State{Incomplete: true})
+		}
+		return out
+	}
 	return out
 }
 
 // LoadState reads the State a completed review kept in its check run text.
 // ok is false when the text holds none, as for a review that ended without
-// a report.
+// a report. Legacy or invalid state is explicitly incomplete: v1 may have
+// silently dropped blockers or clipped identities. Recoverable findings
+// still carry forward; only replaying complete original history can clear
+// the incomplete flag.
 func LoadState(text string) (st State, ok bool) {
 	m := stateRE.FindStringSubmatch(text)
 	if m == nil {
+		if strings.Contains(text, markerStart+"state ") {
+			return State{Incomplete: true}, true
+		}
 		return State{}, false
 	}
-	b, err := base64.StdEncoding.DecodeString(m[1])
-	if err != nil || json.Unmarshal(b, &st) != nil {
+	b, err := base64.StdEncoding.DecodeString(m[2])
+	var probe struct {
+		Blocking json.RawMessage `json:"blocking"`
+	}
+	if err != nil || json.Unmarshal(b, &st) != nil ||
+		json.Unmarshal(b, &probe) != nil || probe.Blocking == nil {
+		return State{Incomplete: true}, true
+	}
+	st.Incomplete = st.Incomplete || m[1] != "2"
+	st.LegacyTask = st.LegacyTask || m[1] == "1"
+	ids := map[string]int{}
+	var recovered []Finding
+	for _, f := range st.Previous() {
+		if !validID(f.ID) || rank(f.Severity) == len(Severities) || (!isGate(f) && !blocks(f.Severity)) {
+			st.Incomplete = true
+			continue
+		}
+		if i, duplicate := ids[f.ID]; duplicate {
+			st.Incomplete = true
+			if rank(f.Severity) < rank(recovered[i].Severity) {
+				recovered[i] = f
+			}
+			continue
+		}
+		ids[f.ID] = len(recovered)
+		recovered = append(recovered, f)
+	}
+	if st.Blocking != nil {
+		st.Blocking = []Finding{}
+	}
+	if st.Gate != nil {
+		st.Gate.Findings = nil
+	}
+	for _, f := range recovered {
+		if isGate(f) {
+			if st.Gate == nil {
+				st.Gate = &Gate{}
+			}
+			st.Gate.Findings = append(st.Gate.Findings, f)
+		} else {
+			st.Blocking = append(st.Blocking, f)
+		}
+	}
+	return st, true
+}
+
+// legacySnapshot certifies only records below both v1 count caps, with
+// distinct, unshortened identities. It does not certify their ancestry or
+// any resolutions: recovery visits every prior record and carries findings
+// absent from a later snapshot until a report explicitly accounts for them.
+func legacySnapshot(text string) (State, bool) {
+	m := stateRE.FindStringSubmatch(text)
+	if m == nil || m[1] != "1" {
 		return State{}, false
+	}
+	b, err := base64.StdEncoding.DecodeString(m[2])
+	var st State
+	if err != nil || json.Unmarshal(b, &st) != nil || st.Incomplete || st.Blocking == nil || len(st.Blocking) >= 40 ||
+		(st.Gate != nil && len(st.Gate.Findings) >= 20) {
+		return State{}, false
+	}
+	seen := map[string]bool{}
+	for _, d := range st.Decisions {
+		if !validID(d.Finding) || strings.HasSuffix(d.Finding, "…") {
+			return State{}, false // A revoked decision must restore its full finding ID.
+		}
+	}
+	for _, f := range st.Previous() {
+		if !validID(f.ID) || strings.HasSuffix(f.ID, "…") || seen[f.ID] || rank(f.Severity) == len(Severities) ||
+			(!isGate(f) && !blocks(f.Severity)) {
+			return State{}, false
+		}
+		seen[f.ID] = true
 	}
 	return st, true
 }

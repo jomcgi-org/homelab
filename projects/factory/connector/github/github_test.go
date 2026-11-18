@@ -606,6 +606,28 @@ func TestETagCacheEvictsTheLeastRecentlyUsed(t *testing.T) {
 	}
 }
 
+func TestAllCheckRunsRejectsTruncatedHistory(t *testing.T) {
+	for _, total := range []int{1, 2} {
+		t.Run(fmt.Sprint(total), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("filter") != "all" || r.URL.Query().Get("app_id") != "5758326" {
+					t.Error("recovery did not request all runs from the reviewer App")
+				}
+				fmt.Fprintf(w, `{"total_count":%d,"check_runs":[{"id":42,"name":"factory review","head_sha":"sha-1","app":{"id":5758326}}]}`, total)
+			}))
+			defer server.Close()
+			c := &Client{BaseURL: server.URL, Tokens: fixedTokens{}}
+			runs, err := c.ListCheckRuns(context.Background(), "example-org/homelab", "sha-1", CheckRunFilter{Name: "factory review", AppID: 5758326, All: true})
+			if total == 1 && (err != nil || len(runs) != 1) {
+				t.Fatalf("complete history: %v", err)
+			}
+			if total == 2 && (err == nil || len(runs) != 0) {
+				t.Fatal("truncated history was accepted")
+			}
+		})
+	}
+}
+
 func TestCheckRunsFilterCreateAndUpdate(t *testing.T) {
 	var mu sync.Mutex
 	var seen []string

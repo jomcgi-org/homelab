@@ -448,6 +448,9 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			key := fmt.Sprintf("%s/%d", c.Name, c.AppID)
+			if q.Get("filter") == "all" {
+				key = strconv.FormatInt(c.ID, 10)
+			}
 			if l := latest[key]; l == nil || c.ID > l.ID {
 				latest[key] = c
 			}
@@ -461,7 +464,11 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for _, c := range ids {
 			runs = append(runs, checkJSON(c))
 		}
-		f.get(w, r, map[string]any{"total_count": len(runs), "check_runs": runs})
+		total := len(runs)
+		if q.Get("filter") == "all" && total > 100 {
+			runs = runs[:100]
+		}
+		f.get(w, r, map[string]any{"total_count": total, "check_runs": runs})
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/commits/") && strings.HasSuffix(path, "/statuses"):
 		sha := strings.TrimSuffix(strings.TrimPrefix(path, "/commits/"), "/statuses")
 		out := f.statuses[sha]
@@ -787,7 +794,7 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 	defer func() { f.gql = append(f.gql, kind) }()
 	for k, fail := range f.failGQL {
 		if fail && strings.Contains(req.Query, map[string]string{
-			"cited": "ADDED_TO_MERGE_QUEUE_EVENT", "enqueue": "enqueuePullRequest", "heads": "timelineItems", "pull_request": "mergeQueueEntry {", "merge_queue": "mergeQueue(branch", "review_acknowledgement": "... on PullRequestReview",
+			"cited": "ADDED_TO_MERGE_QUEUE_EVENT", "enqueue": "enqueuePullRequest", "dequeue": "dequeuePullRequest", "heads": "timelineItems", "pull_request": "mergeQueueEntry {", "merge_queue": "mergeQueue(branch", "review_acknowledgement": "... on PullRequestReview",
 		}[k]) {
 			kind = k
 			_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"type": "FORBIDDEN", "message": "injected failure"}}})
@@ -834,6 +841,13 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		reply(map[string]any{"node": nil})
+	case strings.Contains(req.Query, "dequeuePullRequest"):
+		kind = "dequeue"
+		id, _ := req.Variables["id"].(string)
+		n, _ := strconv.Atoi(strings.TrimPrefix(id, "PR_"))
+		delete(f.queued, n)
+		f.queue = slices.DeleteFunc(f.queue, func(e github.MergeQueueEntry) bool { return e.Number == n })
+		reply(map[string]any{"dequeuePullRequest": map[string]any{"mergeQueueEntry": nil}})
 	case strings.Contains(req.Query, "enqueuePullRequest"):
 		kind = "enqueue"
 		id, _ := req.Variables["id"].(string)
@@ -940,6 +954,7 @@ type fakeKagent struct {
 	gone       map[string]bool   // context IDs whose sessions were deleted
 	sends      []kagent.Message
 	executions int
+	nextTaskID int // Expired tasks must never have their IDs reused.
 	cancels    []string
 	// cancelErr fails cancellations, leaving the task running.
 	cancelErr error
@@ -1028,7 +1043,8 @@ func (k *fakeKagent) send(agent kagent.AgentRef, msg kagent.Message) (*kagent.Ta
 	if id, ok := k.initial[msg.MessageID]; ok {
 		return copyTask(&k.tasks[id].task), nil
 	}
-	id := fmt.Sprintf("task-%d", len(k.tasks)+1)
+	k.nextTaskID++
+	id := fmt.Sprintf("task-%d", k.nextTaskID)
 	m := msg
 	m.Role, m.TaskID = "ROLE_USER", id
 	if m.ContextID == "" {
@@ -1119,7 +1135,8 @@ func (k *fakeKagent) open(contextID string) string {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	agent, _ := k.session(contextID)
-	id := fmt.Sprintf("task-%d", len(k.tasks)+1)
+	k.nextTaskID++
+	id := fmt.Sprintf("task-%d", k.nextTaskID)
 	k.tasks[id] = &fakeTask{agent: agent, task: kagent.Task{ID: id, ContextID: contextID, Status: kagent.TaskStatus{State: kagent.StateCanceled}}}
 	return id
 }
