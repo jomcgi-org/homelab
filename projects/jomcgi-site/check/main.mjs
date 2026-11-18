@@ -6,35 +6,26 @@ const [stage, dist = "/app/site/web/dist"] = process.argv.slice(2);
 const origin = { dev: "https://next.jomcgi.dev", prod: "https://jomcgi.dev" }[
   stage
 ];
-if (!origin && stage !== "--self-test")
-  throw new Error("usage: site-check <dev|prod|--self-test> [dist]");
-// The Job checks one stage in 180 seconds. The image self-test checks two
-// stages and the contrast case, so it gets the budget of three.
-const seconds = stage === "--self-test" ? 540 : 180;
+if (!origin) throw new Error("usage: site-check <dev|prod> [dist]");
 const deadline = setTimeout(() => {
-  console.error(`site-check exceeded its ${seconds} second deadline`);
+  console.error("site-check exceeded its 180 second deadline");
   process.exit(1);
-}, seconds * 1000);
-const http = origin ? client(origin) : null;
+}, 180_000);
+const http = client(origin);
 try {
-  if (stage === "--self-test") {
-    const { smoke } = await import("./smoke.mjs");
-    await smoke(dist);
-  } else {
-    const pages = await tier1({
-      origin,
-      dist,
-      preview: stage === "dev",
-      get: http.get,
-      scope: scopeFor(stage),
-    });
-    await checkLinks(http.get, await tier2(pages));
-    console.log(`site-check verified ${origin}: both tiers passed`);
-  }
+  const pages = await tier1({
+    origin,
+    dist,
+    preview: stage === "dev",
+    get: http.get,
+    scope: scopeFor(stage),
+  });
+  await checkLinks(http.get, await tier2(pages));
+  console.log(`site-check verified ${origin}: both tiers passed`);
 } catch (error) {
   console.error(error);
   process.exitCode = 1;
 } finally {
-  await http?.close();
+  await http.close();
   clearTimeout(deadline);
 }

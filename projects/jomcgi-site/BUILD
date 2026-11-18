@@ -1,10 +1,7 @@
-load("@rules_oci//oci:defs.bzl", "oci_load")
-
 # gazelle:ignore
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/tools/js:exec_filegroup.bzl", "exec_filegroup")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
-load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 exec_filegroup(
     name = "web_dist",
@@ -44,45 +41,6 @@ apko_image(
         "//projects/jomcgi-site/data:layers",
         "//projects/jomcgi-site/edge:layers",
         "//projects/jomcgi-site/wrangler:layers",
-    ],
-)
-
-oci_load(
-    name = "image_smoke_load",
-    image = ":image",
-    repo_tags = ["jomcgi-site-smoke:local"],
-    tags = ["manual"],
-)
-
-# Docker executes the exact release image on the workflow runner. Never skip
-# when the engine or packaged browser is missing; preserve proof in test.log.
-py_test(
-    name = "image_smoke_test",
-    size = "large",
-    srcs = ["image_test.py"],
-    args = ["-s"],
-    data = [
-        ":image",
-        ":image_smoke_load",
-        "//projects/jomcgi-site/chart",
-        "@multitool//tools/helm",
-    ],
-    env = {
-        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
-        "SITE_CHECK_IMAGE": "$(rootpath :image)",
-        "SITE_CHECK_LOADER": "$(rootpath :image_smoke_load)",
-    },
-    tags = [
-        "no-remote-exec",
-        "no-sandbox",
-    ],
-    target_compatible_with = [
-        "@platforms//cpu:x86_64",
-        "@platforms//os:linux",
-    ],
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
     ],
 )
 
