@@ -90,6 +90,7 @@ Top-level projects/ directories:
 - firecracker
 - gke-apps
 - gke-cluster
+- grimoire
 - inference
 - jomcgi-site
 - loom
