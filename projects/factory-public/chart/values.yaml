@@ -2,7 +2,8 @@ buckets:
   - name: factory-public
     access: read
     public:
-      # Enable only after recording the dedicated R2 bucket and item checks.
-      suspend: true
+      # On (HOME-243): the pre-activation checks in the README passed on
+      # 2026-11-18. Set true to stop the mirror; R2 keeps what it has.
+      suspend: false
       r2Bucket: factory-public
       itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror

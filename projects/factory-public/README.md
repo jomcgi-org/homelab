@@ -38,14 +38,17 @@ The publisher gets write access through its own `buckets:` entry without
 
 ## Before the mirror runs
 
-The CronJob ships with `public.suspend: true`. `rclone sync` deletes from R2
-every object that Garage does not have, so check these first and record the
-result on HOME-243, never with credential values:
+The mirror runs (`public.suspend: false`) since these checks passed on
+2026-11-18 (HOME-243). `rclone sync` deletes from R2 every object that Garage
+does not have, so check them again before the mirror runs after a stop or a
+change of bucket or token. Record the result without credential values:
 
 1. The 1Password operator syncs the item into the Secret with the three fields.
 2. The endpoint is
    `https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com`, and
    the token can read and write objects only in R2 bucket `factory-public`.
+   The token accepts only IPv4 clients from the home network: a request over
+   IPv6 gets `AccessDenied`, even on `factory-public`.
 3. An authenticated listing shows that R2 bucket `factory-public` holds
    nothing that must be kept.
 4. The mirror is the only writer to R2 bucket `factory-public`. Every key
@@ -56,7 +59,8 @@ result on HOME-243, never with credential values:
    `true`. Check that `projects/monolith/chart/values.yaml` sets it to
    `false`, and keep it `false` while the mirror runs.
 
-Then set `public.suspend: false` in a PR.
+Then set `public.suspend: false` in a PR. To stop the mirror, set it to
+`true`: R2 keeps what it has.
 
 **End state.** Every public object reaches R2 through Garage: a job writes
 to the Garage bucket `factory-public` through its own `buckets:` entry, and

@@ -33,7 +33,7 @@ def test_public_consumer():
     assert pod["serviceAccountName"] == job["metadata"]["name"]
     assert job["spec"]["schedule"] == "* * * * *"
     assert job["spec"]["concurrencyPolicy"] == "Forbid"
-    assert job["spec"]["suspend"] is True
+    assert job["spec"]["suspend"] is False
     item = next(d for d in docs if d["kind"] == "OnePasswordItem")
     assert item["spec"]["itemPath"] == (
         "vaults/k8s-homelab/items/factory-r2-public-mirror"
