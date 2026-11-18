@@ -3733,6 +3733,21 @@ func TestStatelessLaterRunDoesNotHideAnEarlierHeadsFindings(t *testing.T) {
 	}
 }
 
+// TestForeignCheckpointOnALaterCommitDoesNotHideOwnHistory: another PR's
+// complete, empty checkpoint on a later shared commit must not stop the
+// walk before this PR's own older review, whose blocker stays open.
+func TestForeignCheckpointOnALaterCommitDoesNotHideOwnHistory(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	reviewRound(t, h, shaA, Report{Summary: "One blocker", Findings: []Finding{finding("a.go:nil-deref", SeverityHigh)}})
+	shaB := sha40('b')
+	h.gh.push(7, shaB)
+	seedCheck(h, shaB, ConclusionSuccess, encodeState(State{Blocking: []Finding{}})).ExternalID = MessageID(testRepo, 8, shaB)
+	got := reviewRound(t, h, sha40('c'), Report{Summary: "Nothing", Findings: []Finding{}})
+	st, ok := LoadState(got.Text)
+	failIf(t, !ok || got.Conclusion != ConclusionFailure || !hasID(st.Blocking, "a.go:nil-deref"), "a foreign checkpoint hid this PR's earlier blocker: %s %+v", got.Conclusion, st.Blocking)
+}
+
 // TestChangedIssueEvidenceKeepsTheLegacyTaskReference: the evidence hold
 // replaces a legacy check's summary, which holds its only task reference.
 // The reference stays in the state, so a full original report is replayed.

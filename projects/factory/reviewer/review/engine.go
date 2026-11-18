@@ -1650,6 +1650,23 @@ func (e *Engine) previousState(ctx context.Context, b *Binding, pr github.PullRe
 }
 
 func (e *Engine) previousStateFrom(ctx context.Context, b *Binding, pr github.PullRequest, hist *github.HeadHistory) (st State, head, unknown string, err error) {
+	// This PR's own reviews decide. Only a PR that has none on any earlier
+	// head (a replacement PR) inherits the reviews of its shared commits,
+	// so another PR's checkpoint never stops the walk before this PR's own
+	// older history.
+	for _, inherit := range []bool{false, true} {
+		st, head, unknown, found, err := e.previousStateWalk(ctx, b, pr, hist, inherit)
+		if err != nil || found {
+			return st, head, unknown, err
+		}
+	}
+	if hist.Truncated {
+		return State{Incomplete: true}, "", "its timeline has more commit and push events than the reviewer reads", nil
+	}
+	return State{}, "", "", nil
+}
+
+func (e *Engine) previousStateWalk(ctx context.Context, b *Binding, pr github.PullRequest, hist *github.HeadHistory, inherit bool) (st State, head, unknown string, found bool, err error) {
 	seen := map[string]bool{pr.HeadSHA: true}
 	looked := 0
 	for i := len(hist.Heads) - 1; i >= 0; i-- {
@@ -1659,50 +1676,47 @@ func (e *Engine) previousStateFrom(ctx context.Context, b *Binding, pr github.Pu
 		}
 		seen[h.SHA] = true
 		if looked == maxPreviousLookups {
-			return State{Incomplete: true}, "", fmt.Sprintf("more than %d earlier heads carry a review check", maxPreviousLookups), nil
+			return State{Incomplete: true}, "", fmt.Sprintf("more than %d earlier heads carry a review check", maxPreviousLookups), true, nil
 		}
 		looked++
-		run, st, lost, err := e.statefulReview(ctx, b, pr.Number, h.SHA)
+		run, st, lost, err := e.statefulReview(ctx, b, pr.Number, h.SHA, inherit)
 		if err != nil {
-			return State{}, "", "", err
+			return State{}, "", "", true, err
 		}
 		if run == nil {
 			if lost {
-				return State{Incomplete: true}, "", "a review check of an earlier head keeps no readable review state", nil
+				return State{Incomplete: true}, "", "a review check of an earlier head keeps no readable review state", true, nil
 			}
 			continue
 		}
 		if st.Incomplete {
 			recovered, rec := e.recoverState(ctx, b, pr, run, st)
 			if rec == replayDone {
-				return recovered, h.SHA, "", nil
+				return recovered, h.SHA, "", true, nil
 			}
 			// A gap or a failed read keeps the state incomplete; a later
 			// poll retries the read.
-			return recovered, h.SHA, "the earlier review state is incomplete; known findings still require accounting and missing history keeps the check blocked", nil
+			return recovered, h.SHA, "the earlier review state is incomplete; known findings still require accounting and missing history keeps the check blocked", true, nil
 		}
-		return st, h.SHA, "", nil
+		return st, h.SHA, "", true, nil
 	}
-	if hist.Truncated {
-		return State{Incomplete: true}, "", "its timeline has more commit and push events than the reviewer reads", nil
-	}
-	return State{}, "", "", nil
+	return State{}, "", "", false, nil
 }
 
 // statefulReview is the newest completed review check on sha that keeps
 // review state. A later run that keeps none (a review that ended without a
 // report, a split request, a cancelled attempt) does not hide it. lost says
 // a newer completed run that is none of these keeps no readable state.
-func (e *Engine) statefulReview(ctx context.Context, b *Binding, pr int, sha string) (run *github.CheckRun, st State, lost bool, err error) {
+func (e *Engine) statefulReview(ctx context.Context, b *Binding, pr int, sha string, inherit bool) (run *github.CheckRun, st State, lost bool, err error) {
 	runs, err := e.gh.ListCheckRuns(ctx, b.repo(), sha, github.CheckRunFilter{Name: e.cfg.CheckName, AppID: e.cfg.AppID, All: true})
 	if err != nil {
 		e.ghError(ctx, e.log.With("binding", b.Name, "repo", b.repo(), "sha", sha), b, "check_runs", err)
 		return nil, State{}, false, err
 	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].ID > runs[j].ID })
-	// This PR's own newest review wins over any other PR's review of the
-	// commit. Only when this PR never reviewed it does a replacement PR
-	// inherit the newest review of the shared commit.
+	// This PR's own newest review is its state for the commit. With inherit
+	// (a PR with no review of its own), the newest review of the shared
+	// commit is.
 	var inherited *github.CheckRun
 	for i := range runs {
 		r := &runs[i]
@@ -1711,7 +1725,7 @@ func (e *Engine) statefulReview(ctx context.Context, b *Binding, pr int, sha str
 			continue
 		}
 		if r.ExternalID != MessageID(b.repo(), pr, sha) {
-			if inherited == nil {
+			if inherit && inherited == nil {
 				inherited = r
 			}
 			continue
