@@ -62,6 +62,39 @@ def test_edge_guards(docs):
     assert policy["oidc"]["refreshToken"] is False
     assert not policy["oidc"].get("forwardAccessToken", False)
     assert "forwardIDToken" not in policy["oidc"]
+    assert policy["oidc"].get("disableTokenEncryption", False) is False
+    cookie = policy["oidc"]["cookieNames"]["idToken"]
+    issuer = policy["oidc"]["provider"]["issuer"]
+    assert policy["jwt"]["providers"] == [
+        {
+            "name": "authentik",
+            "issuer": issuer,
+            "audiences": [policy["oidc"]["clientID"]],
+            "remoteJWKS": {"uri": issuer + "jwks/", "cacheDuration": "300s"},
+            "extractFrom": {"cookies": [cookie]},
+        }
+    ]
+    assert policy["authorization"] == {
+        "defaultAction": "Deny",
+        "rules": [
+            {
+                "name": "allow-operators",
+                "action": "Allow",
+                "principal": {
+                    "jwt": {
+                        "provider": "authentik",
+                        "claims": [
+                            {
+                                "name": "groups",
+                                "valueType": "StringArray",
+                                "values": ["authentik Admins"],
+                            }
+                        ],
+                    }
+                },
+            }
+        ],
+    }
     sentinel = docs["HTTPRoute", "oidc-sentinel"]["spec"]
     assert sentinel["hostnames"] == ["factory.jomcgi.dev"]
     assert sentinel["rules"][0]["matches"][0]["path"]["value"] == "/oauth2-sentinel"
@@ -112,6 +145,8 @@ def test_only_kagent_forwards_the_access_token(docs):
                 "name": "kagent",
             }
         ],
+        "jwt": gateway["jwt"],
+        "authorization": gateway["authorization"],
         "oidc": {**gateway["oidc"], "forwardAccessToken": True},
     }
     assert policies["authentik-no-gateway-oidc"]["spec"] == {

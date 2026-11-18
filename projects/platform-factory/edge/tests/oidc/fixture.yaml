@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fixture
+spec:
+  selector:
+    matchLabels:
+      app: fixture
+  template:
+    metadata:
+      labels:
+        app: fixture
+    spec:
+      containers:
+        - name: python
+          image: python:3.12-bookworm
+          command: ["python", "/test/issuer.py"]
+          volumeMounts:
+            - name: test
+              mountPath: /test
+              readOnly: true
+      volumes:
+        - name: test
+          secret:
+            secretName: fixture

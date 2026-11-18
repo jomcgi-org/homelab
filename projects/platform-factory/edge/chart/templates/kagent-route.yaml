@@ -46,6 +46,7 @@ spec:
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
       name: kagent
+  {{- include "edge.operatorAuthorization" . | nindent 2 }}
   oidc:
     {{- include "edge.oidc" . | nindent 4 }}
     forwardAccessToken: true
