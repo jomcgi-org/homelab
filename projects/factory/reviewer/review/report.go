@@ -1102,7 +1102,18 @@ func Render(a Assessment, r *Report, gate *Gate, footer string) Outcome {
 	}
 	if len(a.Fixed) > 0 {
 		s.WriteString("### Fixed since the previous review\n\n")
+		removed := map[string]bool{}
+		if r != nil {
+			for _, p := range r.Previous {
+				if p.Status == StatusFixed && p.Note == criterionRemoved {
+					removed[p.ID] = true
+				}
+			}
+		}
 		for _, f := range a.Fixed {
+			if removed[f.ID] {
+				f.Title = criterionRemoved
+			}
 			fmt.Fprintf(&s, "- `%s`: %s\n", oneLine(f.ID, maxTitle), oneLine(f.Title, maxTitle))
 		}
 		s.WriteString("\n")

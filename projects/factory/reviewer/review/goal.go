@@ -173,11 +173,11 @@ func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck) {
 	}
 }
 
+const criterionRemoved = "criterion removed from the issue"
+
 // goalResolved says how a valid answer resolves an earlier goal finding that
-// it does not report again, or "" when nothing does. Only a verdict on the
-// same issue resolves it: an answer that omits a criterion, or a goal check
-// of another issue the PR names now, is no evidence that the failure was
-// fixed.
+// it does not report again. ParseGoal requires criteria numbered 1 to N,
+// so a higher number from the same issue identifies a removed criterion.
 func goalResolved(id, key string, g *GoalCheck) string {
 	if g == nil || key == "" {
 		return ""
@@ -195,6 +195,9 @@ func goalResolved(id, key string, g *GoalCheck) string {
 	n, err := strconv.Atoi(strings.TrimPrefix(rest, ":criterion-"))
 	if !strings.HasPrefix(rest, ":criterion-") || err != nil {
 		return "The goal check answered."
+	}
+	if n > len(g.Criteria) && rest == ":criterion-"+strconv.Itoa(n) {
+		return criterionRemoved
 	}
 	for _, c := range g.Criteria {
 		if c.Criterion == n && c.Verdict == goalMet {

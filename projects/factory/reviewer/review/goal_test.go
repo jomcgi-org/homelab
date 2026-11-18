@@ -181,11 +181,11 @@ func TestApplyGoalKeepsEarlierBlockersUntilResolved(t *testing.T) {
 		},
 		"criterion omitted": {
 			"HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}}},
-			"HOME-58:goal:criterion-2=medium", "HOME-58:goal HOME-58:goal:unavailable",
+			"", "HOME-58:goal HOME-58:goal:criterion-2 HOME-58:goal:unavailable",
 		},
 		"no criteria": {
 			"HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}},
-			"HOME-58:goal:criterion-2=medium", "HOME-58:goal HOME-58:goal:unavailable",
+			"", "HOME-58:goal HOME-58:goal:criterion-2 HOME-58:goal:unavailable",
 		},
 		"no issue":    {"", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}}, all, ""},
 		"other issue": {"HOME-59", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}}, all, ""},
@@ -212,6 +212,32 @@ func TestApplyGoalKeepsEarlierBlockersUntilResolved(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestGoalRestatedFromSixteenCriteriaToSeven(t *testing.T) {
+	const key = "HOME-212"
+	var earlier, current GoalCheck
+	earlier.Overall, current.Overall = goalMet, goalMet
+	for n := 1; n <= 16; n++ {
+		earlier.Criteria = append(earlier.Criteria, GoalVerdict{n, goalNotMet})
+		if n <= 7 {
+			current.Criteria = append(current.Criteria, GoalVerdict{n, goalMet})
+		}
+	}
+	prior := goalFindings(key, &earlier)
+	r := &Report{}
+	applyGoal(r, prior, "HOME", key, &current)
+	a := Assess(r, prior)
+	if len(a.Fixed) != 16 || len(a.Blocking) != 0 {
+		t.Fatalf("assessment = %+v", a)
+	}
+	summary := Render(a, r, nil, "").Output.Summary
+	for n := 8; n <= 16; n++ {
+		line := fmt.Sprintf("- `HOME-212:goal:criterion-%d`: criterion removed from the issue", n)
+		if !strings.Contains(summary, line) {
+			t.Errorf("missing %q in %s", line, summary)
+		}
 	}
 }
 
