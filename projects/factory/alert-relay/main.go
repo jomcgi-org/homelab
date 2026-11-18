@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 type alert struct {
@@ -28,27 +29,48 @@ type embed struct {
 	Image       map[string]string `json:"image,omitempty"`
 }
 
+// clip fits text into a Discord field without splitting a surrogate pair.
+func clip(text string, budget int) string {
+	for i, r := range text {
+		budget -= utf16.RuneLen(r)
+		if budget < 0 {
+			return text[:i]
+		}
+	}
+	return text
+}
+
 func message(a alert, graph bool) embed {
 	summary := a.Annotations["summary"]
 	if summary == "" {
 		summary = a.Labels["alertname"]
 	}
 	if a.Status == "resolved" {
-		return embed{Title: fmt.Sprintf("🟢 %s · resolved after %s", summary, a.EndsAt.Sub(a.StartsAt).Round(time.Second)), Color: 0x57f287}
+		suffix := fmt.Sprintf(" · resolved after %s", a.EndsAt.Sub(a.StartsAt).Round(time.Second))
+		return embed{Title: clip("🟢 "+summary, 256-len([]rune(suffix))) + suffix, Color: 0x57f287}
 	}
 	e := embed{Title: "🟠 " + summary, Color: 0xf39c12}
 	if a.Labels["severity"] == "critical" {
 		e.Title = "🔴 " + summary
 		e.Color = 0xe74c3c
 	}
+	e.Title = clip(e.Title, 256)
+	started := fmt.Sprintf("Started <t:%d:R>", a.StartsAt.Unix())
+	budget := 4096 - len(started) - 1
 	var lines []string
+	runbook := "[Runbook](" + a.Annotations["runbook"] + ")"
+	linkLen := len(utf16.Encode([]rune(runbook)))
+	includeLink := a.Annotations["runbook"] != "" && linkLen < budget
+	if includeLink {
+		budget -= linkLen + 1
+	}
 	if v := a.Annotations["action"]; v != "" {
-		lines = append(lines, v)
+		lines = append(lines, clip(v, budget))
 	}
-	if v := a.Annotations["runbook"]; v != "" {
-		lines = append(lines, "[Runbook]("+v+")")
+	if includeLink {
+		lines = append(lines, runbook)
 	}
-	lines = append(lines, fmt.Sprintf("Started <t:%d:R>", a.StartsAt.Unix()))
+	lines = append(lines, started)
 	e.Description = strings.Join(lines, "\n")
 	if graph {
 		e.Image = map[string]string{"url": "attachment://graph.png"}

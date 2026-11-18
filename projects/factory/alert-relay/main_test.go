@@ -11,8 +11,10 @@ import (
 	"os"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 )
 
 func TestDelivery(t *testing.T) {
@@ -87,7 +89,7 @@ func TestDelivery(t *testing.T) {
 }
 
 func TestGraphGolden(t *testing.T) {
-	got, err := render([]series{{"job=worker", []sample{{0, 2}, {9000, 5}, {21600, 3}}}, {"job=api", []sample{{0, 1}, {21600, 2}}}}, 0, 9000, 4)
+	got, err := render([]series{{"job=worker", []sample{{0, 2}, {60, 3}, {9000, 5}, {21600, 3}}}, {"job=api", []sample{{0, 1}, {21600, 2}}}}, 0, 9000, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,5 +109,23 @@ func TestGraphGolden(t *testing.T) {
 	b, err := png.Decode(bytes.NewReader(got))
 	if err != nil || !reflect.DeepEqual(a, b) {
 		t.Fatal("graph differs from golden")
+	}
+}
+
+func TestEmbedLimits(t *testing.T) {
+	long := strings.Repeat("🔥", 4097)
+	a := alert{Annotations: map[string]string{"summary": long, "action": long, "runbook": "https://example.org"}}
+	for _, status := range []string{"firing", "resolved"} {
+		a.Status = status
+		e := message(a, false)
+		if len(utf16.Encode([]rune(e.Title))) > 256 || len(utf16.Encode([]rune(e.Description))) > 4096 {
+			t.Fatal("embed exceeds Discord limits")
+		}
+		if status == "resolved" && !strings.HasSuffix(e.Title, "resolved after 0s") {
+			t.Fatal("lost duration")
+		}
+		if status == "firing" && !strings.Contains(e.Description, "[Runbook](https://example.org)\nStarted <t:") {
+			t.Fatal("lost alert context")
+		}
 	}
 }

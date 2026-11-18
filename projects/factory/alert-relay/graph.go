@@ -26,6 +26,8 @@ import (
 //go:embed ascii.bin
 var glyphs []byte
 
+const queryStepSeconds = 60
+
 type (
 	sample struct{ t, v float64 }
 	series struct {
@@ -38,7 +40,7 @@ func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 
 func (r relay) graph(ctx context.Context, a alert, end time.Time) ([]byte, error) {
 	start := end.Add(-6 * time.Hour).Unix()
-	q := url.Values{"query": {a.Annotations["graph"]}, "start": {strconv.FormatInt(start, 10)}, "end": {strconv.FormatInt(end.Unix(), 10)}, "step": {"60"}}
+	q := url.Values{"query": {a.Annotations["graph"]}, "start": {strconv.FormatInt(start, 10)}, "end": {strconv.FormatInt(end.Unix(), 10)}, "step": {strconv.Itoa(queryStepSeconds)}}
 	req, err := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(r.prometheus, "/")+"/api/v1/query_range?"+q.Encode(), nil)
 	if err != nil {
 		return nil, err
@@ -176,7 +178,10 @@ func render(lines []series, start, marker int64, threshold float64) ([]byte, err
 	for i, s := range lines {
 		c := palette[i%len(palette)]
 		for j, p := range s.points {
-			prev := s.points[max(0, j-1)]
+			prev := p
+			if j > 0 && p.t-s.points[j-1].t <= queryStepSeconds {
+				prev = s.points[j-1]
+			}
 			line(img, x(prev.t), y(prev.v), x(p.t), y(p.v), c)
 		}
 		line(img, left, 246+16*i, left+18, 246+16*i, c)
