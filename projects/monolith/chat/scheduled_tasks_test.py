@@ -449,9 +449,7 @@ async def test_old_leaders_finalize_after_retirement_posts_the_final_notice(engi
     with Session(engine) as session:
         (claim,) = claim_due(session, _at(12, 12, 16), "old")
         session.commit()
-    await drain_once(
-        engine, now=_at(12, 12, 17), claimant="leader-b", digests=False
-    )
+    await drain_once(engine, now=_at(12, 12, 17), claimant="leader-b", digests=False)
     with Session(engine) as session:
         built = "📋 digest built before the switch"
         assert finalize_claim(session, claim, built, _at(12, 12, 18))
