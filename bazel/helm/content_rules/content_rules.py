@@ -12,36 +12,58 @@ deploy/BUILD lists it with a reason (content_rules_exceptions). An exemption
 that matches no object fails, so the list only shrinks.
 """
 
+import hashlib
 import json
+import re
 import sys
 
 import yaml
 
-# Kinds that have no namespace. An application chart owns none of them.
-CLUSTER_SCOPED = {
-    "APIService",
-    "CertificateSigningRequest",
-    "CiliumClusterwideNetworkPolicy",
-    "ClusterIssuer",
-    "ClusterRole",
-    "ClusterRoleBinding",
-    "CSIDriver",
-    "CustomResourceDefinition",
-    "IngressClass",
-    "MutatingAdmissionPolicy",
-    "MutatingAdmissionPolicyBinding",
-    "MutatingWebhookConfiguration",
-    "Namespace",
-    "Node",
-    "PersistentVolume",
-    "PriorityClass",
-    "RuntimeClass",
-    "StorageClass",
-    "ValidatingAdmissionPolicy",
-    "ValidatingAdmissionPolicyBinding",
-    "ValidatingWebhookConfiguration",
-    "GatewayClass",
+# Namespaced kinds an application chart may render, by API group. Every
+# other kind fails as unclassified: it is cluster-scoped or not yet reviewed.
+# Add a kind here only after checking that the API server namespaces it.
+NAMESPACED = {
+    "": {
+        "ConfigMap",
+        "Endpoints",
+        "LimitRange",
+        "PersistentVolumeClaim",
+        "Pod",
+        "ResourceQuota",
+        "Secret",
+        "Service",
+        "ServiceAccount",
+    },
+    "apps": {"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"},
+    "batch": {"Job", "CronJob"},
+    "autoscaling": {"HorizontalPodAutoscaler"},
+    "policy": {"PodDisruptionBudget"},
+    "networking.k8s.io": {"NetworkPolicy", "Ingress"},
+    "rbac.authorization.k8s.io": {"Role", "RoleBinding"},
+    "cilium.io": {"CiliumNetworkPolicy"},
+    "gateway.networking.k8s.io": {"HTTPRoute", "GRPCRoute", "ReferenceGrant"},
+    "gateway.envoyproxy.io": {
+        "BackendTrafficPolicy",
+        "HTTPRouteFilter",
+        "SecurityPolicy",
+    },
+    "external-secrets.io": {"ExternalSecret", "SecretStore"},
+    "generators.external-secrets.io": {"GithubAccessToken"},
+    "onepassword.com": {"OnePasswordItem"},
+    "cert-manager.io": {"Certificate", "Issuer"},
+    "monitoring.coreos.com": {"PodMonitor", "PrometheusRule", "ServiceMonitor"},
+    "postgresql.cnpg.io": {"Cluster", "ScheduledBackup"},
 }
+
+
+def api_group(doc):
+    version = str(doc.get("apiVersion") or "")
+    return version.split("/", 1)[0] if "/" in version else ""
+
+
+def namespaced(doc):
+    return doc.get("kind") in NAMESPACED.get(api_group(doc), set())
+
 
 WORKLOAD_RESOURCES = {
     "pods",
@@ -54,6 +76,7 @@ WORKLOAD_RESOURCES = {
 }
 WRITE_VERBS = {"create", "update", "patch", "delete", "deletecollection", "*"}
 EXCEPTIONS_ANNOTATION = "factory.jomcgi.dev/exceptions"
+DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
 
 
 def _name(doc):
@@ -95,7 +118,7 @@ def rule_digest(doc, namespace):
     return [
         f"{_name(doc)}: container {c.get('name')} image {c.get('image')} names no digest"
         for c in containers(pod)
-        if "@sha256:" not in str(c.get("image", ""))
+        if not DIGEST.search(str(c.get("image", "")))
     ]
 
 
@@ -113,28 +136,51 @@ def scoped_policy(doc, namespace):
     """A library admission policy that matches only the release namespace.
 
     An admission policy can only refuse a request, so one confined to the
-    app's own namespace cannot reach another workload.
+    app's own namespace cannot reach another workload. The library names it
+    `<release namespace>-...`, so it cannot replace a platform policy.
     """
     if doc.get("kind") != ADMISSION_POLICY:
+        return False
+    name = str((doc.get("metadata") or {}).get("name") or "")
+    if not name.startswith(f"{namespace}-"):
         return False
     want = f"request.namespace == {json.dumps(namespace)}"
     conditions = (doc.get("spec") or {}).get("matchConditions") or []
     return any(c.get("expression", "").strip() == want for c in conditions)
 
 
+CLAIM_FIELDS = {"namespace", "secretName", "bucket", "access"}
+
+
+def garage_claim(doc, namespace):
+    """A library bucket claim for this release, as _buckets.tpl renders it.
+
+    Garage grants the bucket to data.namespace, so the claim must name the
+    release namespace and carry the library's deterministic name.
+    """
+    meta = doc.get("metadata") or {}
+    data = doc.get("data") or {}
+    if (meta.get("labels") or {}).get(GARAGE_CLAIM_LABEL) != "true":
+        return False
+    if set(data) != CLAIM_FIELDS or data.get("namespace") != namespace:
+        return False
+    digest = hashlib.sha256(f"{namespace}/{data['secretName']}".encode()).hexdigest()
+    return meta.get("name") == f"garage-claim-{digest}"
+
+
 def library_owned(doc, namespace, policies):
     """Objects the factory library places outside the release namespace."""
     kind = doc.get("kind")
     meta = doc.get("metadata") or {}
-    labels = meta.get("labels") or {}
     if kind == "ConfigMap" and meta.get("namespace") == "garage":
-        return labels.get(GARAGE_CLAIM_LABEL) == "true"
+        return api_group(doc) == "" and garage_claim(doc, namespace)
     if kind == ADMISSION_POLICY:
         return scoped_policy(doc, namespace)
     if kind == ADMISSION_BINDING:
         spec = doc.get("spec") or {}
         return (
             spec.get("policyName") in policies
+            and meta.get("name") == spec.get("policyName")
             and not spec.get("paramRef")
             and not spec.get("matchResources")
         )
@@ -144,9 +190,11 @@ def library_owned(doc, namespace, policies):
 def rule_namespace(doc, namespace, policies=frozenset()):
     if library_owned(doc, namespace, policies):
         return []
-    kind = doc.get("kind")
-    if kind in CLUSTER_SCOPED:
-        return [f"{_name(doc)}: cluster-scoped kind in an application chart"]
+    if not namespaced(doc):
+        return [
+            f"{_name(doc)}: {doc.get('apiVersion')} {doc.get('kind')} is cluster-scoped "
+            "or unclassified; an application chart renders only namespaced kinds"
+        ]
     ns = (doc.get("metadata") or {}).get("namespace")
     if ns is not None and ns != namespace:
         return [
@@ -194,7 +242,7 @@ def rule_role(doc, namespace):
         resources = set(r.get("resources") or [])
         verbs = set(r.get("verbs") or [])
         where = f"{_name(doc)}: rule {i}"
-        if "*" in resources or "*" in groups:
+        if "*" in resources or "*" in groups or "*" in verbs:
             out.append(f"{where} uses a wildcard")
         if "secrets" in resources and not r.get("resourceNames"):
             out.append(f"{where} reaches every Secret; name them in resourceNames")
@@ -231,8 +279,11 @@ def rule_library_defaults(doc, namespace):
             out.append(f"{where} does not set runAsNonRoot")
         if sc.get("allowPrivilegeEscalation") is not False:
             out.append(f"{where} allows privilege escalation")
-        if "ALL" not in ((sc.get("capabilities") or {}).get("drop") or []):
+        caps = sc.get("capabilities") or {}
+        if "ALL" not in (caps.get("drop") or []):
             out.append(f"{where} does not drop all capabilities")
+        if caps.get("add"):
+            out.append(f"{where} adds capabilities {caps['add']}")
         seccomp = (sc.get("seccompProfile") or psc.get("seccompProfile") or {}).get(
             "type"
         )
