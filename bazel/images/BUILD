@@ -41,6 +41,7 @@ multirun(
         "//projects/factory-landing/chart:chart.push",
         "//projects/factory-landing:image.push",
         "//projects/factory-public/chart:chart.push",
+        "//projects/factory/alert-relay/image:image.push",
         "//projects/factory/broker/image:image.push",
         "//projects/factory/chart:chart.push",
         "//projects/factory/connector/image:image.push",
