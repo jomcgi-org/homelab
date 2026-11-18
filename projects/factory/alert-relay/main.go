@@ -10,6 +10,7 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ type alert struct {
 
 type embed struct {
 	Title       string            `json:"title"`
+	URL         string            `json:"url,omitempty"`
 	Description string            `json:"description,omitempty"`
 	Color       int               `json:"color"`
 	Image       map[string]string `json:"image,omitempty"`
@@ -40,6 +42,34 @@ func clip(text string, budget int) string {
 	return text
 }
 
+// exploreURL uses the datasource UID provisioned in platform-factory/grafana.
+func exploreURL(expr string) string {
+	if expr == "" {
+		return ""
+	}
+	pane := map[string]any{
+		"datasource": "prometheus",
+		"queries": []map[string]any{{
+			"refId":      "A",
+			"datasource": map[string]string{"type": "prometheus", "uid": "prometheus"},
+			"expr":       expr,
+			"range":      true,
+		}},
+		"range": map[string]string{"from": "now-6h", "to": "now"},
+	}
+	panes, err := json.Marshal(map[string]any{"ale": pane})
+	if err != nil {
+		return ""
+	}
+	link := "https://factory-grafana.jomcgi.dev/explore?" + url.Values{
+		"orgId": {"1"}, "schemaVersion": {"1"}, "panes": {string(panes)},
+	}.Encode()
+	if len(link) > 2048 {
+		return ""
+	}
+	return link
+}
+
 func message(a alert, graph bool) embed {
 	summary := a.Annotations["summary"]
 	if summary == "" {
@@ -49,7 +79,7 @@ func message(a alert, graph bool) embed {
 		suffix := fmt.Sprintf(" · resolved after %s", a.EndsAt.Sub(a.StartsAt).Round(time.Second))
 		return embed{Title: clip("🟢 "+summary, 256-len([]rune(suffix))) + suffix, Color: 0x57f287}
 	}
-	e := embed{Title: "🟠 " + summary, Color: 0xf39c12}
+	e := embed{Title: "🟠 " + summary, URL: exploreURL(a.Annotations["graph"]), Color: 0xf39c12}
 	if a.Labels["severity"] == "critical" {
 		e.Title = "🔴 " + summary
 		e.Color = 0xe74c3c

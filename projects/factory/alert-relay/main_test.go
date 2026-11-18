@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"reflect"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 )
 
 func TestDelivery(t *testing.T) {
+	const graphExpr = `max(factory_broker_grant_quota_exhausted{grant="codex+ops&review"})`
 	for _, tc := range []struct {
 		name, status string
 		fail, graph  bool
@@ -31,7 +33,7 @@ func TestDelivery(t *testing.T) {
 				q := r.URL.Query()
 				start, _ := strconv.Atoi(q.Get("start"))
 				end, _ := strconv.Atoi(q.Get("end"))
-				if r.URL.Path != "/api/v1/query_range" || q.Get("query") != "up" || end-start != 21600 {
+				if r.URL.Path != "/api/v1/query_range" || q.Get("query") != graphExpr || end-start != 21600 {
 					t.Error("wrong query", q)
 				}
 				if tc.fail {
@@ -57,6 +59,24 @@ func TestDelivery(t *testing.T) {
 				if tc.status == "resolved" {
 					want = embed{Title: "🟢 Quota exhausted · resolved after 2m0s", Color: 0x57f287}
 				}
+				if tc.status == "firing" && len(p.Embeds) == 1 {
+					want.URL = p.Embeds[0].URL
+					link, err := url.Parse(want.URL)
+					if err != nil || link.Scheme != "https" || link.Host != "factory-grafana.jomcgi.dev" || link.Path != "/explore" || link.Query().Get("schemaVersion") != "1" {
+						t.Fatalf("invalid Explore link: %q", want.URL)
+					}
+					var panes map[string]struct {
+						Datasource string
+						Queries    []struct{ Expr string }
+					}
+					if err := json.Unmarshal([]byte(link.Query().Get("panes")), &panes); err != nil {
+						t.Fatal(err)
+					}
+					pane := panes["ale"]
+					if pane.Datasource != "prometheus" || len(pane.Queries) != 1 || pane.Queries[0].Expr != graphExpr {
+						t.Fatalf("unexpected Explore query: %+v", pane)
+					}
+				}
 				if tc.graph {
 					want.Image = map[string]string{"url": "attachment://graph.png"}
 				}
@@ -78,7 +98,7 @@ func TestDelivery(t *testing.T) {
 				}
 			}))
 			defer discord.Close()
-			a := alert{Status: tc.status, StartsAt: time.Unix(100, 0), EndsAt: time.Unix(220, 0), Labels: map[string]string{"severity": "critical"}, Annotations: map[string]string{"summary": "Quota exhausted", "action": "Reset the grant", "description": "Primary resets at 14:30 UTC. Weekly resets Friday.", "runbook": "https://example.org/runbook", "graph": "up"}}
+			a := alert{Status: tc.status, StartsAt: time.Unix(100, 0), EndsAt: time.Unix(220, 0), Labels: map[string]string{"severity": "critical"}, Annotations: map[string]string{"summary": "Quota exhausted", "action": "Reset the grant", "description": "Primary resets at 14:30 UTC. Weekly resets Friday.", "runbook": "https://example.org/runbook", "graph": graphExpr}}
 			file := t.TempDir() + "/webhook-url"
 			r := relay{http.DefaultClient, prom.URL, file}
 			if err := os.WriteFile(file, []byte(discord.URL+"/old"), 0o600); err != nil {
