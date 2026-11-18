@@ -14,7 +14,7 @@ import tempfile
 import time
 from pathlib import Path
 from urllib.request import urlopen
-from rehearsal_report import MATRIX, aggregate_reports
+from rehearsal_report import MATRIX, aggregate_reports, print_failure_summary
 
 ROOT = Path(__file__).resolve().parents[4]
 WEB = ROOT / "projects/monolith/web/grimoire"
@@ -145,6 +145,7 @@ def main():
             )
             (output / "report.md").write_text("\n".join(lines) + "\n")
             if not report["passed"]:
+                print_failure_summary(report)
                 raise SystemExit("Grimoire journey matrix failed; inspect report.json")
         return
     for port in (PORT, 55477):

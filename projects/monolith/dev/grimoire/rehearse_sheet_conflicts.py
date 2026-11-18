@@ -13,7 +13,16 @@ CHECKS = (
 
 
 def rehearse_sheet_conflicts(pages, output, report, width):
-    from rehearse import API, LOBBY, ORIGIN, fetch_loopback_route, read, shot, toast
+    from rehearse import (
+        API,
+        LOBBY,
+        ORIGIN,
+        fetch_loopback_route,
+        read,
+        shot,
+        toast,
+        wait_for_held_write,
+    )
 
     dm, a, b = (pages[role] for role in ("dm", "a", "b"))
     campaign = next(
@@ -43,11 +52,13 @@ def rehearse_sheet_conflicts(pages, output, report, width):
         return read(a, history_path).json()["versions"][0]
 
     def number(page, name, value):
+        page.bring_to_front()
         control = editor(page).get_by_role("spinbutton", name=name, exact=True)
         control.fill(str(value))
         # NumberInput commits a finished number on blur. The submission case
         # below deliberately leaves one number focused to test raw input too.
         control.press("Tab")
+        expect(control).not_to_be_focused()
         expect(control).to_have_value(str(value), timeout=1000)
 
     def value(page, name, expected):
@@ -56,8 +67,24 @@ def rehearse_sheet_conflicts(pages, output, report, width):
         ).to_have_value(str(expected), timeout=6000)
 
     def save(page):
-        editor(page).get_by_role("button", name="Save draft", exact=True).click()
+        page.bring_to_front()
+        button = editor(page).get_by_role("button", name="Save draft", exact=True)
+        # A repeated toast can outlive the write it described. Wait for this
+        # PATCH and the editor's refetch before starting the next edit.
+        with page.expect_response(
+            lambda response: (
+                response.request.method == "PATCH"
+                and response.url.startswith(f"{API}{history_path}/")
+            ),
+            timeout=5000,
+        ) as saved:
+            button.click()
+        assert saved.value.ok, f"Save draft returned {saved.value.status}"
         toast(page, "Draft saved.")
+        expect(button).to_be_enabled()
+        expect(
+            editor(page).get_by_role("button", name="Submit to DM", exact=True)
+        ).to_be_enabled()
 
     def run(index, action):
         started = time.monotonic()
@@ -117,9 +144,13 @@ def rehearse_sheet_conflicts(pages, output, report, width):
 
         a.route(patch_url, hold)
         try:
-            editor(a).get_by_role("button", name="Save draft", exact=True).click()
-            a.wait_for_timeout(150)
-            assert len(held) == 1
+            a.bring_to_front()
+            with a.expect_request(
+                lambda request: request.method == "PATCH" and request.url == patch_url,
+                timeout=5000,
+            ):
+                editor(a).get_by_role("button", name="Save draft", exact=True).click()
+            wait_for_held_write(a, held)
             assert (
                 held[0].request.post_data_json["expected_updated_at"]
                 == stale_base["updated_at"]
@@ -136,18 +167,21 @@ def rehearse_sheet_conflicts(pages, output, report, width):
                 "This sheet changed since you opened it. Review the latest version before saving."
             )
             held.pop().fulfill(response=response)
+            # The rejected write starts an asynchronous history refresh. Keep
+            # routing stable until that refresh reaches the editor; removing
+            # the last route here can race the browser's follow-up GET.
+            toast(
+                a,
+                "This sheet changed since you opened it. Review the latest version before saving.",
+            )
+            assert latest() == remote, "The stale PATCH changed the winning version"
+            a.bring_to_front()
+            value(a, "DEX", 19)
+            value(a, "INT", 20)
         finally:
             for route in held:
                 route.abort()
             a.unroute(patch_url, hold)
-        toast(
-            a,
-            "This sheet changed since you opened it. Review the latest version before saving.",
-        )
-        assert latest() == remote, "The stale PATCH changed the winning version"
-        a.bring_to_front()
-        value(a, "DEX", 19)
-        value(a, "INT", 20)
         shot(a, output / "sheet-stale-save-preserved.png")
         save(a)
         assert latest()["sheet"]["ability_scores"]["dexterity"] == 19

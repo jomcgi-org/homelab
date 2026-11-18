@@ -1,5 +1,7 @@
 """Pending keyboard writes and private reply recovery against the local API."""
 
+from fnmatch import fnmatch
+
 from playwright.sync_api import expect
 from rehearsal_report import expect_network_diagnostic
 
@@ -25,6 +27,7 @@ def rehearse_submission(pages, output, report, width):
         send_button,
         shot,
         toast,
+        wait_for_held_write,
     )
     from rehearse_join_links import observe_page
 
@@ -52,40 +55,69 @@ def rehearse_submission(pages, output, report, width):
                     report.setdefault("capture_errors", []).append(str(capture_error))
             report["checks"].ready()
 
-    def twice(page, locator, pattern):
+    def twice(page, locator, pattern, settled):
         held = []
+        writes = []
+        released = False
 
         def hold(route):
             if route.request.method == "POST":
                 route.request.rehearsal_injected = True
-                held.append(route)
+                writes.append(route.request)
+                if released:
+                    route.continue_()
+                else:
+                    held.append(route)
             else:
                 route.continue_()
 
         page.route(pattern, hold)
         try:
+            page.bring_to_front()
+            with page.expect_request(
+                lambda request: (
+                    request.method == "POST" and fnmatch(request.url, pattern)
+                ),
+                timeout=5000,
+            ):
+                locator.press("Enter")
+            wait_for_held_write(page, held)
             locator.press("Enter")
-            locator.press("Enter")
-            # Let both native keyboard handlers and their request dispatch run
-            # while the first real write has not received a response.
-            page.wait_for_timeout(150)
             assert len(held) == 1, f"Repeated Enter sent {len(held)} pending requests"
+            response = fetch_loopback_route(held[0])
+            assert response.ok, f"Pending write returned {response.status}"
+            released = True
+            with page.expect_response(
+                lambda reply: reply.request == writes[0], timeout=5000
+            ):
+                held.pop().fulfill(response=response)
+            # Keep counting writes until the created object is visible and
+            # persisted. A dispatch delay must not hide a duplicate submission.
+            settled()
+            assert len(writes) == 1, f"Repeated Enter sent {len(writes)} requests"
         finally:
             for route in held:
-                route.fulfill(response=fetch_loopback_route(route))
+                route.abort()
             page.unroute(pattern, hold)
 
     def campaign():
+        dm.bring_to_front()
         dm.goto(LOBBY)
         name = f"Pending keyboard campaign {width}"
         field = dm.get_by_role("textbox", name="Campaign name", exact=True)
         field.fill(name)
-        twice(dm, field, "**/api/grimoire/campaigns")
-        expect(dm.get_by_role("article", name=name, exact=True)).to_be_visible()
-        assert (
-            sum(row["name"] == name for row in read(dm, "/lobby").json()["campaigns"])
-            == 1
-        )
+
+        def created():
+            expect(dm.get_by_role("article", name=name, exact=True)).to_be_visible()
+            assert (
+                sum(
+                    row["name"] == name
+                    for row in read(dm, "/lobby").json()["campaigns"]
+                )
+                == 1
+            )
+
+        twice(dm, field, "**/api/grimoire/campaigns", created)
         shot(dm, output / "pending-campaign-created-once.png")
 
     run(0, campaign)
@@ -98,19 +130,26 @@ def rehearse_submission(pages, output, report, width):
         expect(a.get_by_role("button", name="Roll dice", exact=True)).to_be_visible(
             timeout=6000
         )
+        a.bring_to_front()
         a.get_by_role("button", name="Roll dice", exact=True).click()
         tray = a.get_by_role("dialog", name="Roll dice", exact=True)
         label = f"Pending keyboard roll {width}"
         tray.get_by_role("textbox", name="Roll label", exact=True).fill(label)
         formula = tray.get_by_role("textbox", name="Dice formula", exact=True)
         formula.fill("d20+3")
-        twice(a, formula, "**/api/grimoire/campaigns/*/sessions/*/rolls")
-        a.keyboard.press("Escape")
-        expect(feed(a).get_by_text(label, exact=False)).to_be_visible()
-        assert (
-            sum((row.get("body") or {}).get("label") == label for row in events_of(a))
-            == 1
-        )
+
+        def rolled():
+            a.keyboard.press("Escape")
+            expect(feed(a).get_by_text(label, exact=False)).to_be_visible()
+            assert (
+                sum(
+                    (row.get("body") or {}).get("label") == label
+                    for row in events_of(a)
+                )
+                == 1
+            )
+
+        twice(a, formula, "**/api/grimoire/campaigns/*/sessions/*/rolls", rolled)
         shot(a, output / "pending-roll-created-once.png")
 
     run(1, roll)

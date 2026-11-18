@@ -43,6 +43,17 @@ grep -c '^App shell ready' "$evidence_dir/run.log" >"$evidence_dir/startup.log" 
 	--rehearse --all --output "$evidence_dir/all" \
 	2>&1 | tee "$evidence_dir/all.log" || failed=1
 
+# On demand only (GRIMOIRE_CHECK_STABILITY=1, HOME-369): twenty phone sessions
+# in this same pinned environment, each with all 53 checks and a fresh database.
+# pr-checks does not set it; twenty sessions do not fit in one job.
+if [[ "${GRIMOIRE_CHECK_STABILITY:-0}" == 1 ]]; then
+	"$ci_environment/venv/bin/python" projects/monolith/dev/grimoire/stability.py \
+		--output "$evidence_dir/stability" \
+		2>&1 | tee "$evidence_dir/stability.log" || failed=1
+	cat "$evidence_dir/stability/report.md" |
+		tee -a "$evidence_dir/stability.log" || failed=1
+fi
+
 # Public sheet evidence uses invented responses only. Reuse the same pinned
 # browser environment and artifact upload, without changing workflow permissions
 # or any production publish step. Build from this exact checkout before capture.

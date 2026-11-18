@@ -218,6 +218,43 @@ def finish_report(report):
     report["finalized"] = True
 
 
+def report_failures(report):
+    """Keep the reason for every failed gate, including unfinished journeys."""
+    failures = list(report.get("failed_checks", []))
+    for field, label in (
+        ("errors", "Page error"),
+        ("console_errors", "Console error"),
+        ("capture_errors", "Evidence capture"),
+    ):
+        failures.extend(
+            {"check": label, "observed": error} for error in report.get(field, [])
+        )
+    for request in report.get("slow_requests", []):
+        failures.append(
+            {
+                "check": f"Request budget: {request['method']} {request['url']}",
+                "observed": f"{request['seconds']:.3f}s exceeds {report['request_budget_seconds']:.3f}s",
+            }
+        )
+    if report.get("failure"):
+        failures.append({"check": "Journey exception", "observed": report["failure"]})
+    return failures
+
+
+def print_failure_summary(report):
+    """Print compact diagnostics where CI readers can see them without artifacts."""
+    for row in report_failures(report):
+        first_line = next(
+            (
+                line.strip()
+                for line in str(row["observed"]).splitlines()
+                if line.strip()
+            ),
+            "No error detail recorded",
+        )
+        print(f"FAIL {row['check']}: {first_line}", flush=True)
+
+
 def aggregate_reports(cells):
     required = json.loads(Path(__file__).with_name("budgets.json").read_text())
     result = {
@@ -241,6 +278,13 @@ def aggregate_reports(cells):
                 raise ValueError("Report belongs to another matrix cell")
             if key not in MATRIX:
                 raise ValueError("Unexpected matrix cell")
+            # A failed journey is absent from checks. Preserve its actual error
+            # before rejecting an incomplete inventory, or that rejection hides
+            # the very assertion the reader needs to diagnose.
+            failures = report_failures(child)
+            result["failed_checks"].extend(
+                row | {"check": f"{label}: {row['check']}"} for row in failures
+            )
             checks = child.get("checks", [])
             if (
                 not isinstance(checks, list)
@@ -275,14 +319,14 @@ def aggregate_reports(cells):
                 }
             )
             result["unavailable"].extend(child.get("unavailable", []))
-            if failed:
+            if failed and not failures:
                 result["failed_checks"].append(
                     {
                         "check": label,
                         "observed": f"Child failed (exit {cell['exit_code']}); inspect {path}",
                     }
                 )
-        except (OSError, ValueError, TypeError) as error:
+        except (OSError, ValueError, TypeError, KeyError) as error:
             result["matrix"].append(cell | {"passed": False, "report": str(path)})
             result["failed_checks"].append(
                 {"check": label, "observed": f"Report missing or invalid: {error}"}
