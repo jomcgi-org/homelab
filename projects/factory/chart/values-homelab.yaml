@@ -272,3 +272,9 @@ discord:
       guildLimit: {count: 60, window: 1h}
       globalLimit: {count: 300, window: 24h}
       queueDepth: 3
+  # History import (HOME-164): full channel history of each server marked
+  # history above, one document per channel-day. A run retains at most
+  # maxDocuments (the chart default, 500); the next runId continues.
+  import:
+    enabled: true
+    runId: "1"

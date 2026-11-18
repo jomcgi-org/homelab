@@ -78,6 +78,8 @@ def _helm(
         "discord.agent.enabled=false",
         "--set",
         "discord.bridge.enabled=false",
+        "--set",
+        "discord.import.enabled=false",
     ]
     if enable:
         args += [
