@@ -5,11 +5,27 @@ Rules for anything deployed to the factory cluster, on top of the root
 boundary: a rule below broken on them is critical.
 
 - **Every route signs in.** Each HTTPRoute attaches to the `edge` Gateway
-  under its gateway-wide Authentik OIDC policy. The only two route-level
-  SecurityPolicies are Authentik's own route and `kagent-authentik-oidc`,
-  which carries the shared `edge.oidc` settings plus `forwardAccessToken: true`.
+  under its gateway-wide Authentik OIDC policy or one of the route-level
+  SecurityPolicies below. There are only three:
+  - Authentik's own route.
+  - `kagent-authentik-oidc`, which carries the shared `edge.oidc` settings
+    plus `forwardAccessToken: true`.
+  - `kube-api-authentik-jwt` on the `kube-api` route
+    (factory-kube.jomcgi.dev). kubectl cannot follow the browser redirect,
+    so this policy checks a bearer token instead: one JWT provider with the
+    issuer, audience and `/jwks/` of the Authentik client `factory-kubectl`
+    on factory-auth.jomcgi.dev, and `authorization.defaultAction: Deny` with
+    one allow rule on the `groups` claim. The route has no filters. Its only
+    backend is `default/kubernetes:443`, with a BackendTLSPolicy that checks
+    the certificate against `kube-root-ca.crt`, and its ReferenceGrant admits
+    only HTTPRoutes from `edge`. The API server checks the token again
+    ([Joe's decision](https://github.com/jomcgi-org/homelab/pull/8236#issuecomment-6974854609)).
+
   `test_only_kagent_forwards_the_access_token` in
-  `projects/platform-factory/edge/chart/edge_test.py` pins this set.
+  `projects/platform-factory/edge/chart/edge_test.py` pins this set of
+  policies. Until the `kube-api` route lands (#8222), the set it pins has
+  only the first two. #8222 adds the third to that set and adds a test that
+  pins the bearer policy, route, grant and TLS check.
   The `oidc-sentinel` route stays.
   Authentik's admin, user, API and initial-setup paths keep answering 403
   publicly.
