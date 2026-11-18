@@ -283,11 +283,15 @@ actions:
 
           # Browser evidence runs after Bazel, since pnpm materializes node_modules.
           # A lockfile change runs it only when it can change what the monolith
-          # resolves (HOME-223); only an explicit "skip" skips.
-          grimoire_journeys="$(python3 ./bazel/tools/ci/grimoire_journey_trigger.py "$base_ref" || echo "run (trigger check failed)")"
+          # resolves (HOME-368). Only a successful check whose whole output is
+          # one "skip (...)" line skips; a failure or any other output runs it.
+          if ! grimoire_journeys="$(python3 ./bazel/tools/ci/grimoire_journey_trigger.py "$base_ref")"; then
+            grimoire_journeys="run (trigger check failed)"
+          fi
           echo "Grimoire journeys: $grimoire_journeys"
           case "$grimoire_journeys" in
-            skip*) ;;
+            *$'\n'*) projects/monolith/dev/grimoire/ci-runner.sh ;;
+            "skip ("*) ;;
             *) projects/monolith/dev/grimoire/ci-runner.sh ;;
           esac
 

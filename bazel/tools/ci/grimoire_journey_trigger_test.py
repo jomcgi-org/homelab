@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import pathlib
+import subprocess
+import tempfile
+
 import grimoire_journey_trigger as trigger
 
 BASE = """\
@@ -157,3 +162,54 @@ def test_link_resolution_follows_relative_paths():
         "projects/monolith/frontend",
         "projects/design-system",
     }
+
+
+def test_unusual_path_names_still_trigger():
+    raw = "projects/monolith/web/grimoire/caf\u00e9.ts\0pnpm-lock.yaml\0"
+    changed = trigger.changed_paths(raw)
+    assert changed == ["projects/monolith/web/grimoire/caf\u00e9.ts", "pnpm-lock.yaml"]
+    run, reason = trigger.decide(changed, BASE, BASE)
+    assert run and "caf\u00e9.ts" in reason
+
+
+def _buildbuddy() -> str:
+    for root in (os.environ.get("RUNFILES_DIR"), os.environ.get("TEST_SRCDIR")):
+        if root and (pathlib.Path(root) / "_main/buildbuddy.yaml").exists():
+            return (pathlib.Path(root) / "_main/buildbuddy.yaml").read_text()
+    return (pathlib.Path(__file__).resolve().parents[3] / "buildbuddy.yaml").read_text()
+
+
+def _gate() -> str:
+    lines = _buildbuddy().splitlines()
+    start = next(i for i, l in enumerate(lines) if "if ! grimoire_journeys=" in l)
+    end = next(i for i in range(start, len(lines)) if lines[i].strip() == "esac")
+    return "\n".join(l.strip() for l in lines[start : end + 1])
+
+
+def _gate_runs_matrix(output: str, code: int) -> bool:
+    with tempfile.TemporaryDirectory() as root:
+        work = pathlib.Path(root)
+        (work / "bazel/tools/ci").mkdir(parents=True)
+        (work / "bazel/tools/ci/grimoire_journey_trigger.py").write_text(
+            f"import sys\nsys.stdout.write({output!r})\nsys.exit({code})\n"
+        )
+        runner = work / "projects/monolith/dev/grimoire/ci-runner.sh"
+        runner.parent.mkdir(parents=True)
+        runner.write_text("#!/usr/bin/env bash\ntouch ran\n")
+        runner.chmod(0o755)
+        subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", f"base_ref=origin/main\n{_gate()}"],
+            cwd=work,
+            check=True,
+            capture_output=True,
+        )
+        return (work / "ran").exists()
+
+
+def test_gate_skips_only_on_one_successful_skip_line():
+    assert not _gate_runs_matrix("skip (no Grimoire input changed)\n", 0)
+    assert _gate_runs_matrix("run (pnpm-lock.yaml changed)\n", 0)
+    assert _gate_runs_matrix("skip (no Grimoire input changed)\n", 1)
+    assert _gate_runs_matrix("skip (a)\nrun (b)\n", 0)
+    assert _gate_runs_matrix("skipped\n", 0)
+    assert _gate_runs_matrix("", 0)
