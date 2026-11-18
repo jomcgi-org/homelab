@@ -155,3 +155,8 @@ filegroup(
     ],
     visibility = ["//projects/monolith:__pkg__"],
 )
+
+exports_files(
+    ["docs/templates/bundles.yaml"],
+    visibility = ["//bazel/tools/format/document_bundles:__pkg__"],
+)

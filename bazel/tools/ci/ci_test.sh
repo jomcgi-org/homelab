@@ -537,6 +537,9 @@ run_guard_case() {
 	else
 		fail "$name status" "expected $want_status, got $got_status: $(tr '\n' ' ' <"$output")"
 	fi
+	if [[ ${#command_args[@]} -eq 0 ]]; then
+		expected_guards="bazel/tools/format/document_bundles/check_bundles.py${expected_guards:+$'\n'$expected_guards}"
+	fi
 	if [[ "$(<"$guard_log")" == "$expected_guards" ]]; then
 		pass "$name guard arguments and order"
 	else

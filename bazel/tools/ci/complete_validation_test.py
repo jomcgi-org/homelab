@@ -21,6 +21,9 @@ def checkout(tmp_path):
     helper = root / "bazel/tools/ci/ci"
     helper.parent.mkdir(parents=True)
     shutil.copyfile(Path(__file__).with_name("ci"), helper)
+    checker = root / "bazel/tools/format/document_bundles/check_bundles.py"
+    checker.parent.mkdir(parents=True)
+    checker.write_text("pass\n")
     (root / "a.py").write_text("x = 1\n")
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(["git", "commit", "-qm", "base"], cwd=root, check=True)
