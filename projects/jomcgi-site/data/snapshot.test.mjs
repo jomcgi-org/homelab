@@ -68,11 +68,13 @@ test("publishes a small summary and stamps HTML with the upstream forecast times
     html.match(/id="stars-summary-data">([\s\S]*?)<\/script>/)[1],
   );
   assert.deepEqual(embedded, summary);
-  await writeFile(page, "<main>broken build</main>");
-  await assert.rejects(
-    snapshot(sources, async () => ({ body }), out),
-    /missing its summary markers/,
-  );
+  for (const broken of ["<main>broken build</main>", ""]) {
+    await writeFile(page, broken);
+    await assert.rejects(
+      snapshot(sources, async () => ({ body }), out),
+      /missing its summary markers/,
+    );
+  }
 });
 
 test("sources name the stars and hikes objects on the account's R2 endpoint", () => {

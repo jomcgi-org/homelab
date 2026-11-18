@@ -122,7 +122,9 @@ export async function snapshot(sources, get, out) {
       } catch (error) {
         if (error.code !== "ENOENT") throw error;
       }
-      if (html) await writeFile(page, stampSummary(html, summary));
+      // An empty page is still a page: it must have the markers too.
+      if (html !== undefined)
+        await writeFile(page, stampSummary(html, summary));
     }
   }
   return log;
