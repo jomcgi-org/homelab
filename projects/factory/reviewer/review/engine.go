@@ -509,7 +509,8 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			// Withdraw a stale pass even when all review slots are occupied.
 			if run.Conclusion == ConclusionSuccess {
 				st, _ := LoadState(run.Text)
-				st.Semgrep = nil // A new review stays required if the scan changes back.
+				st.Semgrep = nil                     // A new review stays required if the scan changes back.
+				st.TaskID = e.sourceTask(b, run, st) // The new summary drops a legacy task reference.
 				updated, err := e.gh.UpdateCheckRun(ctx, repo, run.ID, github.CheckRunWrite{
 					Status: "completed", Conclusion: ConclusionFailure,
 					Output: &github.CheckRunOutput{Title: "Semgrep evidence changed", Summary: "Semgrep evidence changed on this head. A new review is required before it can pass.", Text: encodeState(st)},
@@ -531,9 +532,12 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 				}
 				continue
 			}
-			cur, held := e.reconcileGate(ctx, b, pr, cur)
+			cur, held, restart := e.reconcileGate(ctx, b, pr, cur)
 			// A failed write returns nil; do not refetch the stale pass.
 			reviews[pr.Number] = cur
+			if restart {
+				start = append(start, candidate{pr, cur})
+			}
 			if !held && cur != nil && cur.Conclusion == ConclusionSuccess {
 				reviews[pr.Number] = e.maybeEnqueue(ctx, b, pr, cur)
 			}
@@ -1304,7 +1308,10 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				if st, ok := LoadState(run.Text); ok {
 					in.goal = st.Goal // goalCheck reuses it for the same evidence.
 					if st.Incomplete {
-						st, _ = e.recoverState(ctx, b, pr, run, st)
+						recovered := false
+						if st, recovered = e.recoverState(ctx, b, pr, run, st); !recovered && st.LegacyTask {
+							st = restartLegacy(st)
+						}
 					}
 					if st.Incomplete || st.Blocking != nil || (st.Gate != nil && len(st.Gate.Findings) > 0) {
 						// previousState skips the same head; retain its report too.
@@ -1660,27 +1667,68 @@ func (e *Engine) previousStateFrom(ctx context.Context, b *Binding, pr github.Pu
 			return State{Incomplete: true}, "", fmt.Sprintf("more than %d earlier heads carry a review check", maxPreviousLookups), nil
 		}
 		looked++
-		run, err := e.reviewCheck(ctx, b, h.SHA)
+		run, st, lost, err := e.statefulReview(ctx, b, h.SHA)
 		if err != nil {
 			return State{}, "", "", err
 		}
-		if run == nil || run.Status != "completed" || run.Title == "No review report" || run.Title == "Split this PR" {
+		if run == nil {
+			if lost {
+				return State{Incomplete: true}, "", "a review check of an earlier head keeps no readable review state", nil
+			}
 			continue
 		}
-		if st, ok := LoadState(run.Text); ok {
-			if st.Incomplete {
-				if recovered, ok := e.recoverState(ctx, b, pr, run, st); ok {
-					return recovered, h.SHA, "", nil
-				}
-				return st, h.SHA, "the earlier review state is incomplete; known findings still require accounting and missing history keeps the check blocked", nil
+		if st.Incomplete {
+			if recovered, ok := e.recoverState(ctx, b, pr, run, st); ok {
+				return recovered, h.SHA, "", nil
 			}
-			return st, h.SHA, "", nil
+			if st.LegacyTask {
+				return restartLegacy(st), h.SHA, "", nil
+			}
+			return st, h.SHA, "the earlier review state is incomplete; known findings still require accounting and missing history keeps the check blocked", nil
 		}
+		return st, h.SHA, "", nil
 	}
 	if hist.Truncated {
 		return State{Incomplete: true}, "", "its timeline has more commit and push events than the reviewer reads", nil
 	}
 	return State{}, "", "", nil
+}
+
+// statefulReview is the newest completed review check on sha that keeps
+// review state. A later run that keeps none (a review that ended without a
+// report, a split request, a cancelled attempt) does not hide it. lost says
+// a newer completed run that is none of these keeps no readable state.
+func (e *Engine) statefulReview(ctx context.Context, b *Binding, sha string) (run *github.CheckRun, st State, lost bool, err error) {
+	runs, err := e.gh.ListCheckRuns(ctx, b.repo(), sha, github.CheckRunFilter{Name: e.cfg.CheckName, AppID: e.cfg.AppID, All: true})
+	if err != nil {
+		e.ghError(ctx, e.log.With("binding", b.Name, "repo", b.repo(), "sha", sha), b, "check_runs", err)
+		return nil, State{}, false, err
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].ID > runs[j].ID })
+	for i := range runs {
+		r := &runs[i]
+		if r.Name != e.cfg.CheckName || r.AppID != e.cfg.AppID || r.HeadSHA != sha || r.Status != "completed" ||
+			r.Title == "No review report" || r.Title == "Split this PR" || r.Conclusion == ConclusionCancelled {
+			continue
+		}
+		if st, ok := LoadState(r.Text); ok {
+			return r, st, false, nil
+		}
+		return nil, State{}, true, nil
+	}
+	return nil, State{}, false, nil
+}
+
+// restartLegacy is the prior state for a full review when a legacy report
+// cannot be replayed (its task expired, or its snapshot is lossy). The known
+// findings still need an account and the gate keeps its holds. The full
+// review derives the other findings again from the code, so the head is not
+// held without end.
+func restartLegacy(st State) State {
+	return State{
+		Blocking: st.Blocking, Gate: st.Gate, Decisions: st.Decisions,
+		Cleared: st.Cleared, ClearedPartial: true, // No later-head scope lowering.
+	}
 }
 
 // decisionsChanged re-checks the decisions of Joe's that a completed run's
@@ -2424,8 +2472,16 @@ func (e *Engine) notifyGate(ctx context.Context, b *Binding, l *slog.Logger, by 
 }
 
 // reconcileGate revalidates completed human gates and persists changes.
-// It returns the current check (nil on write failure) and whether to defer enqueue.
-func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (*github.CheckRun, bool) {
+// It returns the current check (nil on write failure), whether to defer
+// enqueue, and whether the head needs a full review because its legacy
+// report cannot be replayed.
+func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (*github.CheckRun, bool, bool) {
+	restart := false
+	cur, held := e.reconcileGateState(ctx, b, pr, run, &restart)
+	return cur, held, cur != nil && restart
+}
+
+func (e *Engine) reconcileGateState(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, restart *bool) (*github.CheckRun, bool) {
 	st, ok := LoadState(run.Text)
 	if st.Semgrep != nil && (st.Semgrep.NoReport || !st.Semgrep.Verified) {
 		return run, true
@@ -2483,6 +2539,9 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 	gate, retained := e.retainGate(b, pr, gate, priorNonce != gate.ApprovalNonce)
 	changed = changed || retained
 	if st.Incomplete {
+		// A legacy report that cannot be replayed is not a hold without end:
+		// the caller reviews the head in full again.
+		*restart = st.LegacyTask
 		gate.Approver, gate.Authorship = "", ""
 		st.Gate = gate
 		if changed || run.Conclusion != ConclusionFailure {
@@ -2739,7 +2798,7 @@ func (e *Engine) maybeEnqueue(ctx context.Context, b *Binding, pr github.PullReq
 		return nil
 	case !slices.Equal(gateLabels(b, pr.Labels), gateLabels(b, q.Labels)):
 		pr.Labels = q.Labels
-		current, _ = e.reconcileGate(ctx, b, pr, run)
+		current, _, _ = e.reconcileGate(ctx, b, pr, run)
 		return // Persist the latest holds before enqueue or group authorization.
 	case q.MergeQueueState != "":
 		e.m.Enqueues.WithLabelValues(b.Name, "already_queued").Inc()

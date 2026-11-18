@@ -1958,7 +1958,8 @@ specified in [REVIEW.md](../../REVIEW.md#joe-decides).
 The saved review state keeps every blocking and model gate finding with
 its full ID and severity, and shortens descriptive text first. State that
 does not fit, or earlier history that cannot be recovered, blocks the
-check until a complete review accounts for every known finding. The
+check until a complete review accounts for every known finding. A legacy
+report that cannot be replayed starts that full review on the same head. The
 connector does not enqueue an incomplete pass (#8009).
 
 The connector checks for holds before enqueue. Other authors can request
