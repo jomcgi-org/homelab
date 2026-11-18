@@ -626,7 +626,7 @@ func TestResumableRefusesOtherOwnersAndHeads(t *testing.T) {
 	e := h.engine()
 	b := &e.cfg.Bindings[0]
 	pr := github.PullRequest{Number: 7, HeadSHA: sessionShaB}
-	good := SessionRef{ContextID: "ctx-1", Binding: "homelab", Agent: "factory-review/reviewer", PR: 7, Head: shaA, Reviews: 1, Bytes: 10, Tasks: []string{"task-1"}}
+	good := SessionRef{FilteredComments: true, ContextID: "ctx-1", Binding: "homelab", Agent: "factory-review/reviewer", PR: 7, Head: shaA, Reviews: 1, Bytes: 10, Tasks: []string{"task-1"}}
 	many := make([]string, maxSessionReviews)
 	for i := range many {
 		many[i] = fmt.Sprintf("task-%d", i+1)
@@ -637,6 +637,7 @@ func TestResumableRefusesOtherOwnersAndHeads(t *testing.T) {
 		attempt    int
 		wantReason string
 	}{
+		{"before the CI comment filter", func(r *SessionRef, _ *inputs) { r.FilteredComments = false }, 1, reasonCommentFilter},
 		{"another binding", func(r *SessionRef, _ *inputs) { r.Binding = "other" }, 1, reasonForeign},
 		{"another agent", func(r *SessionRef, _ *inputs) { r.Agent = "factory-r-homelab/coder" }, 1, reasonForeign},
 		{"another PR", func(r *SessionRef, _ *inputs) { r.PR = 8 }, 1, reasonForeign},
