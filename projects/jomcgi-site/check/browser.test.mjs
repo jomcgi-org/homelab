@@ -69,6 +69,7 @@ test(
         "beacon-in-query",
         "beacon-console",
         "beacon-console-prefix",
+        "beacon-console-exact",
       ]) {
         await t.test(mode, async () => {
           const server = await serve((req, res) => {
@@ -92,6 +93,9 @@ test(
                   // Chromium's wording, then a different failure.
                   "beacon-console-prefix":
                     'console.error("Loading the script \'https://static.cloudflareinsights.com/beacon.min.js/x\' violates the following Content Security Policy directive: \\"script-src \'self\'\\". The action has been blocked. And the app crashed.")',
+                  // The exact diagnostic, but from app code.
+                  "beacon-console-exact":
+                    'console.error("Loading the script \'https://static.cloudflareinsights.com/beacon.min.js/x\' violates the following Content Security Policy directive: \\"script-src \'self\'\\". The action has been blocked.")',
                 }[mode] ?? "";
               respond(res, script, "text/javascript");
             } else {
@@ -140,6 +144,7 @@ test(
               "beacon-in-query": /CSP: connect-src|off-origin request/,
               "beacon-console": /console: app failed near/,
               "beacon-console-prefix": /console: .*And the app crashed/,
+              "beacon-console-exact": /console: Loading the script/,
             }[mode];
             if (expected) await assert.rejects(run(), expected);
             else assert.deepEqual(await run(), [`${server.origin}/`]);
