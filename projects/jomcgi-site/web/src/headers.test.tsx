@@ -12,7 +12,7 @@ const hikes = rule("/hikes");
 const hikesCsp = policy(hikes);
 
 describe("static hosting headers", () => {
-  it("gives only /hikes the map host, blob workers and geolocation", () => {
+  it("gives the hikes map tile access, workers and geolocation", () => {
     expect(csp).not.toMatch(/openfreemap|blob:/);
     expect(rule("/*")).toContain("geolocation=()");
     expect(hikes).toContain(
@@ -34,6 +34,20 @@ describe("static hosting headers", () => {
       "/app/hikes /hikes 301\n/app/hikes/* /hikes 301",
     );
   });
+  it.each(["/trips", "/trips/*"])(
+    "allows Trips photos and maps on %s",
+    (path) => {
+      const trips = policy(rule(path));
+      expect(rule(path)).toContain("! Content-Security-Policy");
+      expect(trips.match(/img-src ([^;]+)/)?.[1]).toContain(
+        "https://factory-data.jomcgi.dev",
+      );
+      expect(trips.match(/connect-src ([^;]+)/)?.[1]).toContain(
+        "https://tiles.openfreemap.org",
+      );
+      expect(trips).toContain("worker-src 'self' blob:");
+    },
+  );
   it("lets browsers revalidate the /app/hikes 301, so a rollback reaches the hub", () => {
     for (const path of ["/app/hikes", "/app/hikes/*"])
       expect(rule(path)).toContain(

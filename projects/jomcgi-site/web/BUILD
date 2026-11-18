@@ -390,3 +390,14 @@ py_test(
     ],
     deps = ["@pip//pytest"],
 )
+
+js_test(
+    name = "trips_built_test",
+    args = ["$(rootpath :build)"],
+    data = [
+        "budget.mjs",
+        ":build",
+        "//projects/jomcgi-site/data:trip_snapshot",
+    ],
+    entry_point = "trips-built.test.mjs",
+)

@@ -1,0 +1,83 @@
+.trip-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
+  gap: 1.5rem;
+  list-style: none;
+  padding: 0;
+}
+.trip-grid img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 3 / 2;
+  object-fit: cover;
+}
+.trip-grid button {
+  padding: 0;
+  width: 100%;
+}
+.trip-grid a {
+  display: block;
+}
+.trip-days {
+  display: grid;
+  gap: 1rem;
+}
+.trip-days li span {
+  display: block;
+  color: var(--color-text-secondary);
+}
+.trip-freshness,
+.trip-credit {
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+}
+.trip-controls {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-block: 1rem;
+}
+.trip-elevation svg {
+  display: block;
+  width: 100%;
+  max-height: 10rem;
+}
+.trip-elevation polyline {
+  fill: none;
+  stroke: var(--color-accent);
+  stroke-width: 2;
+}
+.trip-map {
+  color: var(--color-accent);
+  height: 65vh;
+  min-height: 20rem;
+}
+.trip-map-pending {
+  height: 0;
+  overflow: hidden;
+}
+.trip-lightbox {
+  max-width: 95vw;
+  max-height: 95vh;
+  background: var(--color-background-surface);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border-emphasized);
+}
+.trip-lightbox::backdrop {
+  background: var(--color-background-muted);
+}
+.trip-lightbox img,
+.trip-day-photo {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 65vh;
+  object-fit: contain;
+}
+.trip-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2rem;
+}

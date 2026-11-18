@@ -35,6 +35,7 @@ js_library(
     deps = [
         ":hikes_freshness",
         ":stars_summary",
+        ":trip_snapshot",
         "//projects/factory-storyboard:web_schema",
     ],
 )
@@ -53,6 +54,7 @@ js_library(
     deps = [
         ":hikes_freshness",
         ":stars_summary",
+        ":trip_snapshot",
         "//projects/factory-storyboard:web_schema",
     ],
 )
@@ -64,6 +66,7 @@ js_binary(
         "hikes-page.mjs",
         "snapshot.mjs",
         "sources.json",
+        "trips.mjs",
         ":hikes_freshness",
         ":stars_summary",
         "//projects/factory-storyboard:web_schema",
@@ -83,6 +86,7 @@ js_test(
     data = [
         "snapshot.mjs",
         "sources.json",
+        "trips.mjs",
         ":stars_summary",
         "//projects/factory-storyboard:web_schema",
     ],
@@ -96,6 +100,7 @@ js_test(
         "snapshot.mjs",
         ":hikes_freshness",
         ":stars_summary",
+        ":trip_snapshot",
         "//projects/factory-storyboard:web_schema",
     ],
     entry_point = "hikes-page.test.mjs",
@@ -105,4 +110,10 @@ js_test(
     name = "fence_test",
     data = ["fence.mjs"],
     entry_point = "fence.test.mjs",
+)
+
+js_library(
+    name = "trip_snapshot",
+    srcs = ["trips.mjs"],
+    visibility = ["//projects/jomcgi-site/web:__pkg__"],
 )

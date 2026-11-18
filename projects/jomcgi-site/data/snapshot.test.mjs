@@ -135,8 +135,14 @@ test("writes content-named files and a latest.json index per section", async () 
     return { body: Buffer.from(body), lastModified };
   };
   const out = await mkdtemp(join(tmpdir(), "snapshot-"));
+  const sources = {
+    sections: {
+      stars: SOURCES.sections.stars,
+      hikes: SOURCES.sections.hikes,
+    },
+  };
   const log = await snapshot(
-    { sections: SOURCES.sections },
+    sources,
     get,
     out,
     new Date("2026-11-17T16:30:00Z"),
@@ -168,7 +174,7 @@ test("writes content-named files and a latest.json index per section", async () 
   assert.deepEqual((await readdir(join(out, "hikes", "v"))).length, 1);
   // A successful site refresh advances its own clock, even when the forecast
   // producer has not published another object. Keep the source age and hash.
-  await snapshot(SOURCES, get, out, new Date("2026-11-17T17:00:00Z"));
+  await snapshot(sources, get, out, new Date("2026-11-17T17:00:00Z"));
   const refreshed = JSON.parse(
     await readFile(join(out, "hikes", "latest.json"), "utf8"),
   );

@@ -65,6 +65,10 @@ export default defineConfig({
             }[]
           ).map(({ slug }) => [`docs/${slug}`, page(`docs/${slug}.html`)]),
         ),
+        trips: page("trips.html"),
+        trip: page("trip.html"),
+        "trip-day": page("trip-day.html"),
+        "trip-timeline": page("trip-timeline.html"),
         engineering: page("engineering.html"),
         hikes: page("hikes.html"),
         stars: page("stars.html"),

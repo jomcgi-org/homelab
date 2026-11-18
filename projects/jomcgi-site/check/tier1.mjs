@@ -5,6 +5,7 @@ import { gzipSync } from "node:zlib";
 import { parse } from "parse5";
 import { Agent } from "undici";
 import { BUDGET_BYTES, htmlPages, initialScripts } from "../web/budget.mjs";
+import { tripPages } from "../data/trips.mjs";
 import { scopeFor } from "./scope.mjs";
 import { headersFor, releaseHeaderRules } from "./headers.mjs";
 import {
@@ -320,7 +321,38 @@ export async function tier1({
   const files = htmlPages(dist);
   assert.ok(files.includes("index.html"), "missing homepage");
   assert.ok(files.includes("404.html"), "missing 404 page");
+  const templates = new Set([
+    "trips.html",
+    "trip.html",
+    "trip-day.html",
+    "trip-timeline.html",
+  ]);
+  const expectedTrips = new Map();
+  if (files.includes("trips.html") && scope.owns("/trips")) {
+    const readJson = async (url) => {
+      const response = await get(url);
+      assert.equal(response.status, 200, url);
+      return JSON.parse(response.body);
+    };
+    const latest = await readJson("/data/trips/latest.json");
+    const readPayload = (url) => {
+      assert.match(url, /^\/data\/trips\/v\/[a-f0-9]{64}\.json$/);
+      return readJson(url);
+    };
+    const index = await readPayload(latest.files.index);
+    const trips = [];
+    for (const { slug } of index.trips)
+      trips.push(await readPayload(latest.files.trips[slug]));
+    for await (const { path, html } of tripPages(dist, {
+      latest,
+      index,
+      trips,
+    })) {
+      expectedTrips.set(path, Buffer.from(html));
+    }
+  }
   const pages = files
+    .filter((file) => !templates.has(file))
     .filter((file) => file !== "404.html")
     .map((file) => ({
       file,
@@ -328,6 +360,8 @@ export async function tier1({
       status: 200,
     }))
     .filter(({ path }) => scope.owns(path));
+  for (const path of expectedTrips.keys())
+    pages.push({ path, status: 200, file: path.slice(1) + ".html" });
   assert.ok(pages.length, "no release pages are routed to this Worker");
   pages.push(
     ...scope.junkPaths.map((path) => ({ file: "404.html", path, status: 404 })),
@@ -340,7 +374,7 @@ export async function tier1({
     checkHeaders(response.headers, { preview, path: page.path, rules });
     checkReleasePage(
       response.body,
-      readFileSync(join(dist, page.file)),
+      expectedTrips.get(page.path) ?? readFileSync(join(dist, page.file)),
       page.path,
     );
     const html = response.body.toString();
