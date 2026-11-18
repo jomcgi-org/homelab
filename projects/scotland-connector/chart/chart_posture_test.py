@@ -294,7 +294,16 @@ def test_factory_routes_preserve_the_exercised_gateway_policies():
     resources = _CHART_DIR.parent / "factory" / "resources"
     docs = list(yaml.safe_load_all((resources / "route.yaml").read_text()))
     reference = _render(["route.enabled=true"])
-    assert all(doc["kind"] != "SecurityPolicy" for doc in docs)
+    # The public route replaces gateway OIDC with the hub's origin policy.
+    policy = _one(docs, "SecurityPolicy")
+    assert policy["metadata"]["namespace"] == "edge"
+    assert policy["spec"] == _one(reference, "SecurityPolicy")["spec"]
+    tunnel = yaml.safe_load(
+        (
+            _CHART_DIR.parents[1] / "platform-factory/edge-tunnel/resources/route.yaml"
+        ).read_text()
+    )
+    assert "scotland-mcp.jomcgi.dev" in tunnel["spec"]["hostnames"]
     assert (
         _one(docs, "BackendTrafficPolicy")["spec"]
         == _one(reference, "BackendTrafficPolicy")["spec"]

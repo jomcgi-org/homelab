@@ -92,3 +92,37 @@ spec:
           namespace: scotland-connector
       timeouts:
         request: 10s
+---
+# A public route (Joe's decisions:
+# https://factory-plan.jomcgi.dev/factory/issue/HOME-259#comment-3908 and
+# https://factory-plan.jomcgi.dev/factory/issue/HOME-259#comment-3953).
+# This route-level policy replaces the gateway-wide OIDC policy. It matches
+# the hub's origin policy: Cloudflare Workers can set CF-Connecting-IP, so
+# their subrequests are refused rather than trusted as a client identity.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: scotland-connector-public
+  namespace: edge
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: scotland-connector
+  authorization:
+    defaultAction: Allow
+    rules:
+      - name: deny-same-zone-workers
+        action: Deny
+        principal:
+          headers:
+            - name: CF-Worker
+              values:
+                - "jomcgi.dev"
+      - name: deny-cross-zone-workers
+        action: Deny
+        principal:
+          headers:
+            - name: "CF-Connecting-IP"
+              values:
+                - "2a06:98c0:3600::103"

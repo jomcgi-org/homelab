@@ -6,7 +6,7 @@ boundary: a rule below broken on them is critical.
 
 - **Every route signs in.** Each HTTPRoute attaches to the `edge` Gateway
   under its gateway-wide Authentik OIDC policy or one of the route-level
-  SecurityPolicies below. There are only three:
+  SecurityPolicies below. There are only four:
   - Authentik's own route.
   - `kagent-authentik-oidc`, which carries the shared `edge.oidc` settings
     plus `forwardAccessToken: true`.
@@ -20,9 +20,15 @@ boundary: a rule below broken on them is critical.
     the certificate against `kube-root-ca.crt`, and its ReferenceGrant admits
     only HTTPRoutes from `edge`. The API server checks the token again
     ([Joe's decision](https://github.com/jomcgi-org/homelab/pull/8237#issuecomment-6975000416)).
+  - `scotland-connector-public` on the `scotland-connector` route
+    (scotland-mcp.jomcgi.dev), the one public route. It has no sign-in:
+    `authorization.defaultAction: Allow` with the hub's two deny rules for
+    Cloudflare Worker subrequests. The route keeps the hub's rate limits.
+    `chart_posture_test.py` in `projects/scotland-connector/chart` pins both
+    ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-259#comment-3908)).
 
   In `projects/platform-factory/edge/chart/edge_test.py`,
-  `test_only_kagent_forwards_the_access_token` pins this set of policies,
+  `test_only_kagent_forwards_the_access_token` pins the edge chart policies,
   and `test_kube_api_requires_an_authentik_token_from_a_kube_group` pins the
   bearer policy, route, grant and TLS check.
   The `oidc-sentinel` route stays.
@@ -34,9 +40,12 @@ boundary: a rule below broken on them is critical.
   and its `Delete=false` annotation.
 - **OIDC redirect URIs are exact**: no wildcards, and none left on a hostname
   that moved.
-- **No public routes yet.** A route outside sign-in is Joe's decision
-  (#7923). When one exists it serves only mock or fixture data cached by the
-  CDN, with no secrets and no calls into the cluster.
+- **Public routes are Joe's decision** (#7923). The only one is the Scotland
+  connector at scotland-mcp.jomcgi.dev, which serves public forecast and
+  astronomy data from the cluster with no secrets in its responses
+  ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-259#comment-3908)).
+  Any other public route serves only mock or fixture data cached by the CDN,
+  with no secrets and no calls into the cluster.
 - **Network policy.** A new workload declares its ingress and egress by peer
   label, port and domain name; the cluster is default-deny. Egress to the
   world or to `0.0.0.0/0` is high.

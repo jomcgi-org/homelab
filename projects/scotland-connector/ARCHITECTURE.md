@@ -22,12 +22,15 @@ warm plans below took 0.9–5 ms and a ten-item check took 2 ms, excluding netwo
 latency. No end-to-end Worker latency has been measured. At low traffic there
 is no query that warrants moving these datasets into Postgres.
 
-The staged factory route inherits gateway OIDC and uses native Envoy rate
-limits. The factory tunnel does not publish its hostname. The hub continues
-serving MCP POSTs and the REST API at their existing URLs. Publishing live
-R2 data without sign-in needs a decision from Joe covering the factory edge
-rule in `projects/platform-factory/REVIEW.md`. Before cutover, verify public
-rate-limit parity and a method-preserving transition for installed clients.
+The factory route is public, with no sign-in, as Joe decided
+([HOME-259 #comment-3908](https://factory-plan.jomcgi.dev/factory/issue/HOME-259#comment-3908)).
+Its route-level SecurityPolicy replaces the gateway OIDC policy with the hub's
+origin rules, and native Envoy rate limits match the hub's. The factory tunnel
+publishes scotland-mcp.jomcgi.dev. The cutover is staged
+([HOME-259 #comment-3953](https://factory-plan.jomcgi.dev/factory/issue/HOME-259#comment-3953)):
+the hub keeps serving `jomcgi.dev/scotland/mcp` and `/scotland/v1/*` until
+HOME-393 points the plugin and marketplace at the new hostname, makes the hub
+URLs answer with a 404 or a pointer, and scales the hub to zero.
 
 ## Shape
 
