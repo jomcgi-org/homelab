@@ -20,7 +20,14 @@ go_binary(
 
 go_test(
     name = "cmd_test",
-    srcs = ["main_test.go"],
+    srcs = [
+        "main_test.go",
+        "verifier_test.go",
+    ],
     embed = [":cmd_lib"],
-    deps = ["@org_golang_x_time//rate"],
+    deps = [
+        "@com_github_go_jose_go_jose_v4//:go-jose",
+        "@com_github_go_jose_go_jose_v4//jwt",
+        "@org_golang_x_time//rate",
+    ],
 )
