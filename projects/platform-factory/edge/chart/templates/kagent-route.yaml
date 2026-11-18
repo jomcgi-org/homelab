@@ -1,7 +1,7 @@
 {{- /*
 kagent trusts the bearer token forwarded by the edge (factory/ARCHITECTURE.md,
 finding 5). Its route-level policy replaces the gateway policy, so it must
-retain every OIDC setting. Only this route forwards the access token.
+retain every OIDC setting.
 
 SecurityPolicies and their targets must share a namespace, and admission
 allows policies only in edge. The ReferenceGrant below permits access to the

@@ -550,7 +550,14 @@ def test_broker_policy() -> None:
                         ns: "factory",
                         "app.kubernetes.io/name": "factory-connector",
                     }
-                }
+                },
+                {
+                    "matchLabels": {
+                        ns: "edge",
+                        "gateway.envoyproxy.io/owning-gateway-name": "edge",
+                        "gateway.envoyproxy.io/owning-gateway-namespace": "edge",
+                    }
+                },
             ],
             "toPorts": [{"ports": [{"port": "8081", "protocol": "TCP"}]}],
         },
@@ -571,6 +578,7 @@ def test_broker_policy() -> None:
         },
         {
             "toFQDNs": [
+                {"matchName": "factory-auth.jomcgi.dev"},
                 {"matchName": "auth.openai.com"},
                 {"matchName": "chatgpt.com"},
                 {"matchName": "api.github.com"},

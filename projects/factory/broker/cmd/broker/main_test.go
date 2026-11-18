@@ -14,6 +14,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/jomcgi/homelab/projects/factory/broker/actorjwt"
 
 	"github.com/jomcgi/homelab/projects/factory/broker/config"
 	"github.com/jomcgi/homelab/projects/factory/broker/internal/fakes"
@@ -199,5 +202,32 @@ func TestCommentMinterHoldsOnlyCommentPermissions(t *testing.T) {
 	d, err = build(context.Background(), cfg, fake.NewSimpleClientset(), quota.NewStore(), metrics.New(), slog.Default())
 	if err != nil || d.commentMinter != nil {
 		t.Fatalf("comment minter without permissions = %+v, %v", d.commentMinter, err)
+	}
+}
+
+func TestBrowserAdmin(t *testing.T) {
+	d, cfg := testDeps(t)
+	idp := fakes.NewIdP(t)
+	key := fakes.NewRSASigner(t, "admin")
+	idp.Publish(key)
+	var err error
+	d.adminVerifier, err = actorjwt.New(actorjwt.Options{Issuer: idp.URL, Audience: "factory-edge", HTTPClient: idp.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := d.adminHandler(cfg, http.NotFoundHandler())
+	for _, tc := range []struct {
+		method, path string
+		status       int
+	}{
+		{"GET", "/admin/codex/", 200}, {"GET", "/admin/codex/login", 200}, {"POST", "/admin/codex/login", 403}, {"GET", "/v1/models", 404},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		req.Header.Set("Authorization", "Bearer "+key.Sign(t, map[string]any{"iss": idp.URL, "aud": "factory-edge", "exp": time.Now().Add(time.Minute).Unix(), "groups": []string{"authentik Admins"}, "sub": "operator"}))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != tc.status {
+			t.Errorf("%s %s = %d, want %d", tc.method, tc.path, rec.Code, tc.status)
+		}
 	}
 }

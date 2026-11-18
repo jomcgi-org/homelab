@@ -6,10 +6,12 @@ boundary: a rule below broken on them is critical.
 
 - **Every route signs in.** Each HTTPRoute attaches to the `edge` Gateway
   under its gateway-wide Authentik OIDC policy or one of the route-level
-  SecurityPolicies below. There are only three:
+  SecurityPolicies below. There are only four:
   - Authentik's own route.
   - `kagent-authentik-oidc`, which carries the shared `edge.oidc` settings
     plus `forwardAccessToken: true`.
+  - `codex-admin-authentik-oidc`, which forwards the access token with the
+    shared `edge.oidc` settings on the broker’s `/admin/codex` route.
   - `kube-api-authentik-jwt` on the `kube-api` route
     (factory-kube.jomcgi.dev). kubectl cannot follow the browser redirect,
     so this policy checks a bearer token instead: one JWT provider with the
@@ -21,10 +23,11 @@ boundary: a rule below broken on them is critical.
     only HTTPRoutes from `edge`. The API server checks the token again
     ([Joe's decision](https://github.com/jomcgi-org/homelab/pull/8237#issuecomment-6975000416)).
 
-  In `projects/platform-factory/edge/chart/edge_test.py`,
-  `test_only_kagent_forwards_the_access_token` pins this set of policies,
-  and `test_kube_api_requires_an_authentik_token_from_a_kube_group` pins the
-  bearer policy, route, grant and TLS check.
+  `test_forwarded_access_tokens` in
+  `projects/platform-factory/edge/chart/edge_test.py` pins this set of
+  policies. Until the `kube-api` route lands (#8222), the set it pins has
+  only the first three. #8222 adds the fourth to that set and adds a test that
+  pins the bearer policy, route, grant and TLS check.
   The `oidc-sentinel` route stays.
   Authentik's admin, user, API and initial-setup paths keep answering 403
   publicly.

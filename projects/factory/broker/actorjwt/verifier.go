@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -290,6 +291,7 @@ type substrateClaims struct {
 }
 
 type claims struct {
+	Groups         []string         `json:"groups"`
 	Issuer         string           `json:"iss"`
 	Subject        string           `json:"sub"`
 	Audience       json.RawMessage  `json:"aud"`
@@ -302,51 +304,9 @@ type claims struct {
 // Verify checks the token's signature, issuer, audience, lifetime and actor
 // subject. Worker-for-actor tokens share the signing keys and are rejected.
 func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
-	if len(raw) == 0 || len(raw) > maxTokenBytes {
-		return Identity{}, reject(ReasonMalformed)
-	}
-	parts := strings.Split(raw, ".")
-	if len(parts) != 3 {
-		return Identity{}, reject(ReasonMalformed)
-	}
-	var h header
-	if err := decodeSegment(parts[0], &h); err != nil {
-		return Identity{}, reject(ReasonMalformed)
-	}
-	if h.Alg != "ES256" && h.Alg != "RS256" {
-		return Identity{}, reject(ReasonAlgorithm)
-	}
-	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		return Identity{}, reject(ReasonMalformed)
-	}
-	key, err := v.key(ctx, h.Kid)
+	c, err := v.verifiedClaims(ctx, raw, clockSkew)
 	if err != nil {
 		return Identity{}, err
-	}
-	if key.alg != h.Alg {
-		return Identity{}, reject(ReasonAlgorithm)
-	}
-	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
-	if !verifySignature(key, digest[:], sig) {
-		return Identity{}, reject(ReasonSignature)
-	}
-	var c claims
-	if err := decodeSegment(parts[1], &c); err != nil {
-		return Identity{}, reject(ReasonMalformed)
-	}
-	if c.Issuer != v.opts.Issuer {
-		return Identity{}, reject(ReasonIssuer)
-	}
-	if !audienceContains(c.Audience, v.opts.Audience) {
-		return Identity{}, reject(ReasonAudience)
-	}
-	now := v.opts.Now()
-	if c.Expiry == nil || !now.Before(unix(*c.Expiry).Add(clockSkew)) {
-		return Identity{}, reject(ReasonExpired)
-	}
-	if c.NotBefore != nil && now.Add(clockSkew).Before(unix(*c.NotBefore)) {
-		return Identity{}, reject(ReasonNotYetValid)
 	}
 	if len(c.WorkerForActor) != 0 || c.Actor == nil || c.Actor.Atespace == "" || c.Actor.ActorName == "" ||
 		c.Subject != "actor/"+c.Actor.Atespace+"/"+c.Actor.ActorName {
@@ -452,4 +412,65 @@ func (k jsonKey) parse() (publicKey, error) {
 		return publicKey{alg: "RS256", key: pub}, nil
 	}
 	return publicKey{}, fmt.Errorf("unsupported key type %q", k.Kty)
+}
+
+func (v *Verifier) AdminSubject(ctx context.Context, raw string) (string, error) {
+	c, err := v.verifiedClaims(ctx, raw, 0)
+	if err != nil {
+		return "", err
+	}
+	if c.Subject == "" || !slices.Contains(c.Groups, "authentik Admins") {
+		return "", reject(ReasonSubject)
+	}
+	return c.Subject, nil
+}
+
+func (v *Verifier) verifiedClaims(ctx context.Context, raw string, skew time.Duration) (claims, error) {
+	if len(raw) == 0 || len(raw) > maxTokenBytes {
+		return claims{}, reject(ReasonMalformed)
+	}
+	parts := strings.Split(raw, ".")
+	if len(parts) != 3 {
+		return claims{}, reject(ReasonMalformed)
+	}
+	var h header
+	if err := decodeSegment(parts[0], &h); err != nil {
+		return claims{}, reject(ReasonMalformed)
+	}
+	if h.Alg != "ES256" && h.Alg != "RS256" {
+		return claims{}, reject(ReasonAlgorithm)
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return claims{}, reject(ReasonMalformed)
+	}
+	key, err := v.key(ctx, h.Kid)
+	if err != nil {
+		return claims{}, err
+	}
+	if key.alg != h.Alg {
+		return claims{}, reject(ReasonAlgorithm)
+	}
+	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+	if !verifySignature(key, digest[:], sig) {
+		return claims{}, reject(ReasonSignature)
+	}
+	var c claims
+	if err := decodeSegment(parts[1], &c); err != nil {
+		return claims{}, reject(ReasonMalformed)
+	}
+	if c.Issuer != v.opts.Issuer {
+		return claims{}, reject(ReasonIssuer)
+	}
+	if !audienceContains(c.Audience, v.opts.Audience) {
+		return claims{}, reject(ReasonAudience)
+	}
+	now := v.opts.Now()
+	if c.Expiry == nil || !now.Before(unix(*c.Expiry).Add(skew)) {
+		return claims{}, reject(ReasonExpired)
+	}
+	if c.NotBefore != nil && now.Add(skew).Before(unix(*c.NotBefore)) {
+		return claims{}, reject(ReasonNotYetValid)
+	}
+	return c, nil
 }

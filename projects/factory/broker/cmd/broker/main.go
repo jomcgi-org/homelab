@@ -92,6 +92,7 @@ func run(logger *slog.Logger) error {
 		db.SetMaxIdleConns(2)
 		d.relay.TokenUsage = &usage.Store{DB: db}
 	}
+	go d.adminVerifier.Run(ctx)
 	go d.verifier.Run(ctx)
 	go d.grants.Run(ctx)
 	go d.usage.Run(ctx)
@@ -146,9 +147,10 @@ func run(logger *slog.Logger) error {
 }
 
 type deps struct {
-	verifier *actorjwt.Verifier
-	grants   *grant.Manager
-	relay    *relay.Relay
+	adminVerifier *actorjwt.Verifier
+	verifier      *actorjwt.Verifier
+	grants        *grant.Manager
+	relay         *relay.Relay
 	// usage keeps the grant's quota reading current between relayed calls.
 	usage  *relay.UsageRefresher
 	minter *github.Minter
@@ -171,6 +173,10 @@ func build(ctx context.Context, cfg config.Config, client kubernetes.Interface, 
 	if err != nil {
 		return nil, err
 	}
+	adminVerifier, err := actorjwt.New(actorjwt.Options{Issuer: "https://factory-auth.jomcgi.dev/application/o/factory-edge/", Audience: "factory-edge"})
+	if err != nil {
+		return nil, err
+	}
 	grants := grant.New(grant.Options{
 		Grant: cfg.Codex.Grant, Client: client, Namespace: cfg.Namespace, SecretPrefix: cfg.Codex.SecretPrefix,
 		Adapter:             &codexchatgpt.Adapter{Issuer: cfg.Codex.AuthIssuer, HTTPClient: &http.Client{Timeout: 30 * time.Second}},
@@ -180,8 +186,9 @@ func build(ctx context.Context, cfg config.Config, client kubernetes.Interface, 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = 2 * time.Minute
 	d := &deps{
-		verifier: verifier,
-		grants:   grants,
+		verifier:      verifier,
+		adminVerifier: adminVerifier,
+		grants:        grants,
 		relay: &relay.Relay{
 			Verifier: verifier, Tokens: grants, Upstream: cfg.Codex.UpstreamURL,
 			// No overall timeout: responses stream for as long as a turn runs.
@@ -265,7 +272,25 @@ func (d *deps) adminMux(cfg config.Config, metricsHandler http.Handler) *http.Se
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
 	mux.Handle("GET /metrics", metricsHandler)
-	mux.Handle("/admin/", d.reviewer.Require(cfg.TokenReview.AdminSubjects, d.grants.AdminHandler()))
+	admin := d.grants.AdminHandler()
+	breakGlass := d.reviewer.Require(cfg.TokenReview.AdminSubjects, admin)
+	mux.Handle("/admin/", breakGlass)
+	browser := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if token, ok := auth.BearerToken(r); ok && d.adminVerifier != nil {
+			if subject, err := d.adminVerifier.AdminSubject(r.Context(), token); err == nil {
+				if r.Method == "POST" && r.Header.Get("X-Codex-Login") != "start" {
+					http.Error(w, "forbidden", 403)
+					return
+				}
+				admin.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), subject)))
+				return
+			}
+		}
+		breakGlass.ServeHTTP(w, r)
+	})
+	mux.Handle("/admin/codex/{$}", browser)
+	mux.Handle("/admin/codex/login", browser)
 	connector := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)

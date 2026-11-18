@@ -91,6 +91,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          login_url: https://factory.jomcgi.dev/admin/codex/
           summary: "Codex grant {{ $labels.grant }} is out of quota: a person must reset it or change the account"
           # For each window the grant has used up: its reset, or that it has
           # none (never another window's). A grant refused with no window at
@@ -106,6 +107,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          login_url: https://factory.jomcgi.dev/admin/codex/
           summary: "Codex grant {{ $labels.grant }} is {{ range query (printf `max by (state) (factory_broker_codex_grant_state{grant=%q,state!=\"ready\"}) == 1` $labels.grant) }}{{ .Labels.state }}{{ end }}: a person must log in again"
           description: >-
             The broker cannot relay Codex turns with this grant. Runbook:

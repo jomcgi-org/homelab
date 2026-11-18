@@ -1,0 +1,54 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: codex-admin
+  namespace: {{ .Release.Namespace }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+  hostnames:
+    - factory.jomcgi.dev
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /admin/codex
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: factory-broker
+          namespace: factory
+          port: 8081
+          weight: 1
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: codex-admin-authentik-oidc
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: codex-admin
+  oidc:
+    {{- include "edge.oidc" . | nindent 4 }}
+    forwardAccessToken: true
+---
+# Keep the grant with the route, so both reconcile in the edge Application.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: edge-factory-broker
+  namespace: factory
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: {{ .Release.Namespace }}
+  to:
+    - group: ""
+      kind: Service
+      name: factory-broker
