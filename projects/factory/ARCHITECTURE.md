@@ -2031,8 +2031,9 @@ built and trialled before these arrive.
 The reaper reads Substrate's actor assignments from atepg and records the worker
 namespace, pod UID and session against the connector attempt. Every 15 seconds it
 checks the Kubernetes API for that UID. On disappearance the reaper records the actor UID and
-version. The connector expires that attempt's lease immediately and journals a
-force deletion of its session. Only confirmation that the session is deleted
+version. The connector expires that attempt's lease immediately and checks the
+task's outcome. A completed turn proceeds to result delivery. For a running
+turn, the connector journals a force deletion of its session. Only confirmation that the session is deleted
 or absent releases the attempt for a fresh-session retry. That fence covers a
 replacement worker assigned after the observed revision. API errors
 leave the attempt open. The reaper can also delete a worker whose actor has

@@ -1272,12 +1272,15 @@ func (s *Store) RequestCancellation(ctx context.Context, q Querier, attemptID, r
 	return err
 }
 
-// WorkerGone identifies revision-bearing evidence for this exact attempt and session.
+// WorkerGone reports evidence still actionable for this attempt. A confirmed
+// lease cancellation may leave a terminal task open for progress to deliver.
 func (s *Store) WorkerGone(ctx context.Context, a *Attempt) (bool, error) {
 	var gone bool
 	err := s.DB.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM worker_fence
 		WHERE attempt_id=$1 AND session_id=$2 AND gone_at IS NOT NULL
-		AND actor_uid <> '' AND actor_version > 0)`, a.ID, a.ContextID).Scan(&gone)
+		AND actor_uid <> '' AND actor_version > 0
+		AND NOT EXISTS (SELECT 1 FROM cancellation c WHERE c.delivery_attempt_id=$1
+			AND c.reason='lease_expired' AND c.state='confirmed'))`, a.ID, a.ContextID).Scan(&gone)
 	return gone, err
 }
 

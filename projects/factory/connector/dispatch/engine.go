@@ -2148,18 +2148,6 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 	if err != nil {
 		return e.recoverHeld(ctx, r, wi, a, "caller ownership unproven")
 	}
-	// Pod loss expires the lease immediately. Delete the exact session before
-	// releasing the attempt: this fences even a worker assigned after the
-	// reaper's last observed actor version. The deletion journal survives restart.
-	if e.sessions != nil && a.ContextID != "" {
-		gone, err := e.st.WorkerGone(ctx, a)
-		if err != nil {
-			return err
-		}
-		if gone {
-			return e.forceDelete(ctx, c, r, wi, a)
-		}
-	}
 	// kagent has not confirmed the cancellation in time: deleting the
 	// session with force ends the turn, and settles a lifecycle hold too.
 	escalate, err := e.escalating(ctx, c, a)
@@ -2185,6 +2173,13 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 		// all-state listing covers the original caller's sessions, including
 		// a first send whose session the work item has not recorded yet.
 		t, err := e.taskWithMessage(ctx, ref, a.ContextID, a.MessageID)
+		if err != nil && escalate {
+			// A failed lookup can hide a completed send. Retry reconciliation
+			// before using worker-loss evidence to delete this session.
+			if gone, checkErr := e.st.WorkerGone(ctx, a); gone || checkErr != nil {
+				return errors.Join(err, checkErr)
+			}
+		}
 		switch {
 		case err == nil && t == nil && e.cfg.Now().Sub(a.SentAt) < notStartedWithin:
 			// A complete scan finds no task with the message after the

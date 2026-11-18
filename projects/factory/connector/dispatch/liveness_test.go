@@ -359,11 +359,7 @@ func TestGoneWorkerRetriesBusyTurnWithinFiveMinutes(t *testing.T) {
 	v.tick(v.e)
 	a := v.latest(1)
 	v.kg.tool(a.TaskID, "ci-1", kagent.PartToolCall)
-	_, err := v.st.DB.Exec(`INSERT INTO worker_fence(attempt_id,session_id,namespace,pod,uid,gone_at,actor_uid,actor_version)
-		VALUES ($1,$2,'factory-r-homelab','homelab-codex-a','original',now(),'actor',19)`, a.ID, a.ContextID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	v.recordWorkerLoss(a)
 	// A replacement is still running after the observed revision. Evidence
 	// alone cannot authorize a second send while its session refuses deletion.
 	v.kg.forceErr = errors.New("session still running")
@@ -382,5 +378,29 @@ func TestGoneWorkerRetriesBusyTurnWithinFiveMinutes(t *testing.T) {
 	})
 	if _, _, _, confirmed, _ := v.forced(a.ContextID); !confirmed {
 		t.Fatal("retry started before session deletion was confirmed")
+	}
+}
+
+func (v *env) recordWorkerLoss(a *store.Attempt) {
+	v.t.Helper()
+	_, err := v.st.DB.Exec(`INSERT INTO worker_fence(attempt_id,session_id,namespace,pod,uid,gone_at,actor_uid,actor_version)
+		VALUES ($1,$2,'factory-r-homelab','homelab-codex-a','original',now(),'actor',19)`, a.ID, a.ContextID)
+	if err != nil {
+		v.t.Fatal(err)
+	}
+}
+
+func TestCompletedTurnSurvivesWorkerLoss(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	a := v.latest(1)
+	v.kg.finish(a.TaskID, kagent.StateCompleted, "Pushed the fix.", nil)
+	v.recordWorkerLoss(a)
+	v.tickUntil(5*time.Second, 4, func() bool { return len(v.its.Run(1).results) > 0 })
+	got := v.its.Run(1).results
+	if len(got) != 1 || got[0].Status != "success" || got[0].Output != "Pushed the fix." ||
+		v.latest(1).ID != a.ID || len(v.kg.Forced()) != 0 || v.work(101).EngineeringRetries != 0 {
+		t.Fatalf("worker loss discarded the completed turn: results=%+v forced=%v", got, v.kg.Forced())
 	}
 }
