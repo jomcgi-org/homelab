@@ -34,6 +34,22 @@ async function test() {
     /Client Version: v1\.37\.2\b/,
   );
 
+  const help = (await run("get", "--help")).stdout;
+  for (const flag of [
+    "certificate-authority",
+    "client-certificate",
+    "client-key",
+    "insecure-skip-tls-verify",
+    "tls-server-name",
+  ]) {
+    assert.ok(!help.includes("--" + flag));
+  }
+  const browserError = { stderr: /use a browser-trusted endpoint/ };
+  await assert.rejects(
+    run("--certificate-authority", "missing.pem", "get", "pods"),
+    browserError,
+  );
+
   const listPath = "/api/v1/namespaces/default/pods";
   const responses = {
     "/api": { kind: "APIVersions", apiVersion: "v1", versions: ["v1"] },
@@ -82,6 +98,40 @@ async function test() {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
+    const dir = fs.mkdtempSync(
+      path.join(
+        process.env.TEST_TMPDIR || require("node:os").tmpdir(),
+        "kubeconfig-",
+      ),
+    );
+    try {
+      const config = path.join(dir, "config");
+      fs.writeFileSync(
+        config,
+        JSON.stringify({
+          apiVersion: "v1",
+          kind: "Config",
+          "current-context": "test",
+          contexts: [{ name: "test", context: { cluster: "test" } }],
+          clusters: [
+            {
+              name: "test",
+              cluster: {
+                server: `https://127.0.0.1:${server.address().port}`,
+                "certificate-authority-data": "Y2E=",
+              },
+            },
+          ],
+        }),
+      );
+      await assert.rejects(
+        run("--kubeconfig", config, "get", "pods"),
+        browserError,
+      );
+      assert.equal(requests.length, 0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
     const { stdout } = await run(
       "--server",
       `http://127.0.0.1:${server.address().port}`,

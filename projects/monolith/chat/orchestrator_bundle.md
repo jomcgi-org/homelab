@@ -84,6 +84,7 @@ Top-level projects/ directories:
 - embervm
 - factory
 - factory-cluster
+- factory-explore
 - factory-landing
 - factory-public
 - factory-storyboard

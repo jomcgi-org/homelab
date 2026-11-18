@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"os"
 
@@ -19,6 +20,53 @@ import (
 	"k8s.io/kubectl/pkg/cmd/version"
 )
 
+var browserTLSError = errors.New("custom TLS settings are unsupported in browser kubectl; use a browser-trusted endpoint")
+
+func configureBrowserTLS(root *cobra.Command, flags *genericclioptions.ConfigFlags) {
+	tlsFlags := []string{"certificate-authority", "client-certificate", "client-key", "insecure-skip-tls-verify", "tls-server-name"}
+	for _, name := range tlsFlags {
+		root.PersistentFlags().Lookup(name).Hidden = true
+	}
+	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		for _, name := range tlsFlags {
+			if cmd.Flags().Changed(name) {
+				return browserTLSError
+			}
+		}
+		if cmd.Name() == "version" {
+			if clientOnly, _ := cmd.Flags().GetBool("client"); clientOnly {
+				return nil
+			}
+		}
+		// Inspect only the selected cluster and user before client-go tries
+		// to open referenced certificate files on the browser filesystem.
+		config, err := flags.ToRawKubeConfigLoader().RawConfig()
+		if err != nil {
+			return err
+		}
+		contextName := config.CurrentContext
+		if *flags.Context != "" {
+			contextName = *flags.Context
+		}
+		clusterName, userName := *flags.ClusterName, *flags.AuthInfoName
+		if ctx := config.Contexts[contextName]; ctx != nil {
+			if clusterName == "" {
+				clusterName = ctx.Cluster
+			}
+			if userName == "" {
+				userName = ctx.AuthInfo
+			}
+		}
+		if c := config.Clusters[clusterName]; c != nil && (c.InsecureSkipTLSVerify || c.TLSServerName != "" || c.CertificateAuthority != "" || len(c.CertificateAuthorityData) > 0) {
+			return browserTLSError
+		}
+		if u := config.AuthInfos[userName]; u != nil && (u.ClientCertificate != "" || len(u.ClientCertificateData) > 0 || u.ClientKey != "" || len(u.ClientKeyData) > 0) {
+			return browserTLSError
+		}
+		return nil
+	}
+}
+
 func main() {
 	streams := genericiooptions.IOStreams{In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr}
 	root := &cobra.Command{Use: "kubectl"}
@@ -29,6 +77,7 @@ func main() {
 		return c
 	}
 	flags.AddFlags(root.PersistentFlags())
+	configureBrowserTLS(root, flags)
 	f := cmdutil.NewFactory(flags)
 	authCmd := &cobra.Command{Use: "auth", Short: "Inspect authorization"}
 	authCmd.AddCommand(auth.NewCmdCanI(f, streams), auth.NewCmdWhoAmI(f, streams))
