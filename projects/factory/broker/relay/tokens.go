@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"regexp"
 	"strings"
 	"time"
 
@@ -126,6 +125,10 @@ func (o *tokenObserver) write(p []byte) {
 		if o.lineBytes == 0 || o.lineBytes == 1 && o.lastByte == '\r' {
 			if !o.overflow {
 				o.parse(o.data, true)
+			} else {
+				// An oversized event still counts, named by its event: field.
+				o.events++
+				o.lastType = eventName(o.event)
 			}
 			o.data, o.event, o.overflow = nil, "", false
 		} else if !o.overflow {
@@ -233,19 +236,35 @@ func (rl *Relay) observeTokens(ctx context.Context, id actorjwt.Identity) *token
 	}}
 }
 
-// eventName keeps an SSE event type for the missing-usage log only when it
-// has the shape of a Responses event name, so the log never carries text
-// from the body.
-var eventNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_.]{0,63}$`)
+// responseEvents are the Responses API stream event types the missing-usage
+// log may name. Any other value, which the body controls, logs as "other",
+// so the log never carries provider text or credentials.
+var responseEvents = map[string]bool{
+	"error": true, "response.created": true, "response.in_progress": true, "response.queued": true,
+	"response.completed": true, "response.incomplete": true, "response.failed": true,
+	"response.output_item.added": true, "response.output_item.done": true,
+	"response.content_part.added": true, "response.content_part.done": true,
+	"response.output_text.delta": true, "response.output_text.done": true,
+	"response.output_text.annotation.added": true,
+	"response.refusal.delta":                true, "response.refusal.done": true,
+	"response.function_call_arguments.delta": true, "response.function_call_arguments.done": true,
+	"response.custom_tool_call_input.delta": true, "response.custom_tool_call_input.done": true,
+	"response.reasoning_summary_part.added": true, "response.reasoning_summary_part.done": true,
+	"response.reasoning_summary_text.delta": true, "response.reasoning_summary_text.done": true,
+	"response.reasoning_text.delta": true, "response.reasoning_text.done": true,
+	"response.web_search_call.in_progress": true, "response.web_search_call.searching": true,
+	"response.web_search_call.completed": true,
+}
 
 func eventName(s string) string {
-	if eventNamePattern.MatchString(s) {
-		return s
-	}
-	if s == "" {
+	switch {
+	case s == "":
 		return ""
+	case responseEvents[s]:
+		return s
+	default:
+		return "other"
 	}
-	return "other"
 }
 
 func isSSE(contentType string) bool {

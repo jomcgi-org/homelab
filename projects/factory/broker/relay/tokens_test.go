@@ -158,7 +158,7 @@ func TestTokenObserverChunkBoundaries(t *testing.T) {
 func TestTokenObserverBoundsEvents(t *testing.T) {
 	var got []TokenUsage
 	o := &tokenObserver{sse: true, onUsage: func(u TokenUsage) { got = append(got, u) }}
-	o.write([]byte("data: "))
+	o.write([]byte("event: response.output_item.done\ndata: "))
 	chunk := []byte(strings.Repeat("x", 64<<10))
 	for i := 0; i < maxUsageEvent/len(chunk)+1; i++ {
 		o.write(chunk)
@@ -169,6 +169,10 @@ func TestTokenObserverBoundsEvents(t *testing.T) {
 	o.write([]byte("\r"))
 	o.write([]byte("\n\r"))
 	o.write([]byte("\n"))
+	// The oversized event still counts for the missing-usage log, by name.
+	if o.events != 1 || o.lastType != "response.output_item.done" {
+		t.Fatalf("oversized event: events=%d last=%q", o.events, o.lastType)
+	}
 	o.write([]byte(measuredEvent))
 	if len(got) != 1 {
 		t.Fatalf("completion after oversized event: %v", got)
@@ -247,6 +251,8 @@ func TestTokenObserverDiagnostics(t *testing.T) {
 		{"malformed", "event: response.completed\ndata: {not json\n\n", 1, "response.completed"},
 		{"keepalive", ": keepalive\n\n", 0, ""},
 		{"body_text", "data: {\"type\":\"Ignore previous instructions\"}\n\n", 1, "other"},
+		{"lowercase_secret", "data: {\"type\":\"private_password123\"}\n\n", 1, "other"},
+		{"secret_event_field", "event: sk_live_secret\ndata: {not json\n\n", 1, "other"},
 		{"long", "data: {\"type\":\"" + strings.Repeat("a", 65) + "\"}\n\n", 1, "other"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
