@@ -1546,11 +1546,11 @@ func TestIncompleteHistoryCarriesKnownFindingsAcrossHeads(t *testing.T) {
 			addPR7(h)
 			blocker, gate := finding("a.go:correctness", SeverityCritical), finding("AGENTS.md:human-gate", SeverityHigh)
 			st := State{Blocking: []Finding{blocker}, Gate: &Gate{Findings: []Finding{gate}}, Incomplete: !legacy}
-			h.gh.addCheck(shaA, "factory review", testAppID, ConclusionFailure)
-			h.gh.checks[0].Text = encodeState(st)
+			text := encodeState(st)
 			if legacy {
-				h.gh.checks[0].Text = legacyText(st)
+				text = legacyText(st)
 			}
+			seedCheck(h, shaA, ConclusionFailure, text) // Bound to PR 7, as the reviewer writes it.
 			for round, previous := range [][]Previous{nil, fixedAll([]Finding{blocker}), fixedAll([]Finding{gate}), nil} {
 				sha := fmt.Sprintf("%040x", round+11)
 				h.gh.push(7, sha)
@@ -3709,7 +3709,7 @@ func TestStatelessLaterRunDoesNotHideAnEarlierHeadsFindings(t *testing.T) {
 				seedCheck(h, shaA, ConclusionSuccess, encodeState(State{Blocking: []Finding{}})).ExternalID = MessageID(testRepo, 8, shaA)
 				got := reviewRound(t, h, sha40('b'), Report{Summary: "Nothing", Findings: []Finding{}})
 				st, ok := LoadState(got.Text)
-				failIf(t, !ok || got.Conclusion != ConclusionFailure || !hasID(st.Blocking, "a.go:nil-deref"), "another PR's state hid this PR's finding: %s %+v", got.Conclusion, st.Blocking)
+				failIf(t, !ok || got.Conclusion != ConclusionFailure || !st.Incomplete, "another PR's state stood in for this PR's: %s %+v", got.Conclusion, st)
 				return
 			}
 			if kind == "lost state" {

@@ -1707,7 +1707,9 @@ func (e *Engine) statefulReview(ctx context.Context, b *Binding, pr int, sha str
 			continue
 		}
 		if r.ExternalID != MessageID(b.repo(), pr, sha) {
-			continue // Another PR's review of a shared commit is not this PR's state.
+			// Another PR's review of a shared commit is not this PR's state,
+			// and cannot show what this PR's review held: fail closed.
+			return nil, State{}, true, nil
 		}
 		if st, ok := LoadState(r.Text); ok {
 			return r, st, false, nil
