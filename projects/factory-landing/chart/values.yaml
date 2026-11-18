@@ -2,6 +2,14 @@ image:
   repository: ghcr.io/jomcgi/homelab/projects/factory-landing
   digest: "" # CI supplies the content digest when packaging the chart.
 hostname: factory.jomcgi.dev
+# templates/connector-status.yaml: the status Service and its ingress grant.
+connector:
+  namespace: factory
+  matchLabels:
+    app.kubernetes.io/name: factory-connector
+    app.kubernetes.io/instance: factory
+  statusPort: 8082
+
 workloads:
   factory-landing:
     containerName: web
