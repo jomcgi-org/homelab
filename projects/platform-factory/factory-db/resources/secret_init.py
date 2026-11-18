@@ -59,9 +59,18 @@ LOGINS = [
         "factory",
         "factory-broker-accounting-db",
     ),
+    (
+        "factory-db-storyboard-login",
+        "factory_storyboard",
+        "factory",
+        "factory-storyboard-db",
+    ),
 ]
-# The accounting login owns no database.
-DATABASES = {"factory_broker_accounting": "factory_connector"}
+# These logins share the connector database and own no database.
+DATABASES = {
+    "factory_broker_accounting": "factory_connector",
+    "factory_storyboard": "factory_connector",
+}
 
 
 def call(method, path, body=None):

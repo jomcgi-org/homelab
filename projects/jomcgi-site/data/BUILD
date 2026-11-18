@@ -35,6 +35,7 @@ js_library(
     deps = [
         ":hikes_freshness",
         ":stars_summary",
+        "//projects/factory-storyboard:web_schema",
     ],
 )
 
@@ -52,6 +53,7 @@ js_library(
     deps = [
         ":hikes_freshness",
         ":stars_summary",
+        "//projects/factory-storyboard:web_schema",
     ],
 )
 
@@ -64,6 +66,7 @@ js_binary(
         "sources.json",
         ":hikes_freshness",
         ":stars_summary",
+        "//projects/factory-storyboard:web_schema",
     ],
     entry_point = "main.mjs",
 )
@@ -81,6 +84,7 @@ js_test(
         "snapshot.mjs",
         "sources.json",
         ":stars_summary",
+        "//projects/factory-storyboard:web_schema",
     ],
     entry_point = "snapshot.test.mjs",
 )
@@ -92,6 +96,7 @@ js_test(
         "snapshot.mjs",
         ":hikes_freshness",
         ":stars_summary",
+        "//projects/factory-storyboard:web_schema",
     ],
     entry_point = "hikes-page.test.mjs",
 )

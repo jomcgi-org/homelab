@@ -136,7 +136,7 @@ test("writes content-named files and a latest.json index per section", async () 
   };
   const out = await mkdtemp(join(tmpdir(), "snapshot-"));
   const log = await snapshot(
-    SOURCES,
+    { sections: SOURCES.sections },
     get,
     out,
     new Date("2026-11-17T16:30:00Z"),
@@ -210,4 +210,62 @@ test("r2Getter signs each request and returns the body and Last-Modified", async
   assert.equal(lastModified, "Tue, 17 Nov 2026 15:07:03 GMT");
   assert.equal(seen[0][0], `${SOURCES.endpoint}/stars/sites.json`);
   assert.match(seen[0][1], /^AWS4-HMAC-SHA256 Credential=a\//);
+});
+
+test("public manifest copies verified objects and fails on a missing object", async () => {
+  const url = "https://factory-data.jomcgi.dev/manifest.json";
+  const sources = { sections: {}, httpsManifests: { factory: url } };
+  const object = '{"kind":"story"}';
+  const path = `objects/${createHash("sha256").update(object).digest("hex")}.json`;
+  const manifest = JSON.stringify({
+    generatedAt: "2026-11-18T09:00:00Z",
+    version: 1,
+    story: path,
+    goals: {},
+    issues: {},
+    sessions: {},
+  });
+  const out = await mkdtemp(join(tmpdir(), "snapshot-"));
+  let missing = false;
+  const fetchImpl = async (location, options) => {
+    assert.equal(options.credentials, "omit");
+    if (location === url) return new Response(manifest);
+    assert.equal(location, new URL(path, url).href);
+    return new Response(object, { status: missing ? 404 : 200 });
+  };
+  await snapshot(sources, null, out, undefined, fetchImpl);
+  assert.equal(await readFile(join(out, "factory", path), "utf8"), object);
+  assert.equal(
+    await readFile(join(out, "factory", "manifest.json"), "utf8"),
+    manifest,
+  );
+  missing = true;
+  await assert.rejects(
+    snapshot(sources, null, out, undefined, fetchImpl),
+    /404/,
+  );
+});
+
+test("rejects a manifest without generatedAt before reading any object", async () => {
+  const url = "https://factory-data.jomcgi.dev/manifest.json";
+  const manifest = {
+    version: 1,
+    story: `objects/${"a".repeat(64)}.json`,
+    goals: {},
+    issues: {},
+    sessions: {},
+  };
+  await assert.rejects(
+    snapshot(
+      { sections: {}, httpsManifests: { factory: url } },
+      null,
+      await mkdtemp(join(tmpdir(), "snapshot-")),
+      undefined,
+      async (location) => {
+        assert.equal(location, url);
+        return Response.json(manifest);
+      },
+    ),
+    /Invalid storyboard manifest/,
+  );
 });

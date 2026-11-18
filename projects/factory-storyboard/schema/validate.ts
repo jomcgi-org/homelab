@@ -1,4 +1,4 @@
-import contract from "./v1/snapshot.schema.json";
+import contract from "./v1/snapshot.schema.json" with { type: "json" };
 import type { Documents } from "./types";
 
 // Interpret the deliberately small draft-07 subset used by this contract.
