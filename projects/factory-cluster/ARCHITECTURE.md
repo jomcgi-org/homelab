@@ -7,16 +7,18 @@ flowchart LR
   Browser["Operator browser (untrusted)"] -->|HTTPS| CF["Cloudflare TLS termination"]
   subgraph Cluster["Factory home cluster"]
     Tunnel["cloudflared (tunnel credential)"]
+    Origin["edge/edge-proxy Service :80"]
     Proxy["Envoy Gateway data plane (OIDC client secret)"]
     Auth["Authentik"]
     Service["factory-landing Service"]
     Pod["factory-landing pod"]
   end
   CF -->|factory tunnel| Tunnel
-  Tunnel -->|"HTTP to edge/edge-proxy:80"| Proxy
+  Tunnel -->|"edge/tunnel HTTPRoute"| Origin
+  Origin --> Proxy
   Browser -.->|sign in when redirected| Auth
   Proxy -.->|exchange authorization code| Auth
-  Proxy -->|"authorized request via HTTPRoute on edge/edge"| Service
+  Proxy -->|"factory-landing HTTPRoute on edge/edge"| Service
   Service -->|HTTP 8080| Pod
 ```
 
