@@ -20,6 +20,10 @@ scopes:
 redirectURL: "https://%REQ(:authority)%/oauth2/callback"
 # Envoy's default /logout would shadow an application's own path.
 logoutPath: /oauth2/logout
+# Let the JWT verifier read the signed ID token from the session cookie.
+disableTokenEncryption: true
+cookieNames:
+  idToken: factory-edge-id-token
 cookieConfig:
   sameSite: Lax
 # No refresh: when the access token expires (10 minutes, set on the
@@ -28,4 +32,32 @@ cookieConfig:
 # ends their edge access within that window; an active Authentik session
 # makes the round trip invisible to everyone else.
 refreshToken: false
+{{- end -}}
+
+{{- define "edge.operatorAuthorization" -}}
+{{- $issuer := printf "https://%s/application/o/%s/" .Values.authentik.hostname .Values.authentik.oidc.applicationSlug -}}
+jwt:
+  providers:
+    - name: authentik
+      issuer: {{ $issuer }}
+      audiences:
+        - {{ .Values.authentik.oidc.clientID }}
+      remoteJWKS:
+        uri: {{ printf "%sjwks/" $issuer }}
+      extractFrom:
+        cookies:
+          - factory-edge-id-token
+authorization:
+  defaultAction: Deny
+  rules:
+    - name: allow-operators
+      action: Allow
+      principal:
+        jwt:
+          provider: authentik
+          claims:
+            - name: groups
+              valueType: StringArray
+              values:
+                - authentik Admins
 {{- end -}}
