@@ -29,6 +29,14 @@ spec:
     automated:
       prune: true
       selfHeal: true
+    # The chart's Namespace is off here (factory/values.yaml), so Argo CD
+    # creates the namespace with the same restricted Pod Security labels.
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/enforce-version: latest
+        pod-security.kubernetes.io/warn: restricted
+        pod-security.kubernetes.io/audit: restricted
     syncOptions:
       - CreateNamespace=true
       - RespectIgnoreDifferences=true

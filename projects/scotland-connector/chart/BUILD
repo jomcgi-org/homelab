@@ -14,6 +14,12 @@ helm_chart(
     ],
 )
 
+filegroup(
+    name = "image_values",
+    srcs = [":chart.images_values"],
+    visibility = ["//projects/scotland-connector/deploy:__pkg__"],
+)
+
 # Kept here, not generated from deploy/application.yaml, because gazelle
 # resets chart visibility otherwise (the monolith-public pattern).
 argocd_app(
