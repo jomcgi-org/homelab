@@ -670,3 +670,10 @@ reviewer:
 
 # Model providers beyond the broker's relay.
 providers: {}
+
+# Off until HOME-392 turns it on and checks the first live run
+# (decision: https://factory-plan.jomcgi.dev/factory/issue/HOME-329#comment-3951).
+semgrepSync:
+  enabled: false
+  # Set the slug when the token can read multiple Semgrep deployments.
+  deployment: ""

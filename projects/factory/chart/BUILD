@@ -226,3 +226,11 @@ py_test(
         "@pip//pyyaml",
     ],
 )
+
+py_test(
+    name = "semgrep_sync_test",
+    srcs = ["semgrep_sync_test.py"],
+    data = ["files/semgrep_sync.py"],
+    env = {"SYNC_SCRIPT": "$(rootpath files/semgrep_sync.py)"},
+    deps = ["@pip//pytest"],
+)

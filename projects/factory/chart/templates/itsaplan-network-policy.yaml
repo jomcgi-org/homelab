@@ -40,6 +40,10 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ $np.connector.namespace }}
             {{- toYaml $np.connector.matchLabels | nindent 12 }}
+        {{- if .Values.semgrepSync.enabled }}
+        - matchLabels:
+            app.kubernetes.io/name: intsec-sync
+        {{- end }}
         {{- if .Values.reviewer.enabled }}
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ .Values.broker.namespace }}

@@ -143,6 +143,7 @@ def test_upstream_factory_contracts(tmp_path):
             env = {
                 **os.environ,
                 "NODE_ENV": "test",
+                "FACTORY_INTSEC_SYNC": "true",
                 "SKIP_PRE_MIGRATION_BACKUP": "1",
                 "DATABASE_URL": f"postgres://test@127.0.0.1:{port}/postgres",
                 "APP_URL": "http://localhost:3001",

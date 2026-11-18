@@ -422,28 +422,27 @@ def key_works(key, user_id=None):
     )
 
 
-def ensure_reviewer_role(session, team_id):
+def ensure_scoped_role(session, team_id, role_name, actions):
     """A dedicated role, never the default role that coding agents inherit.
 
-    Normalize against the live catalog, explicitly denying every other action
-    (including extension resources and column moves through work_items edit).
+    Normalize against the live catalog, including extension resources.
     """
     catalog = session.call("GET", "/permission-catalog")
     permissions = {
         resource["key"]: {
-            action: resource["key"] == "work_items" and action == "read"
+            action: resource["key"] == "work_items" and action in actions
             for action in catalog["actions"]
         }
         for resource in catalog["resources"]
     }
     base = f"/teams/{team_id}/roles"
     roles = session.call("GET", base + "/options")
-    matching = [r for r in roles if r["name"] == "Factory reviewer"]
+    matching = [r for r in roles if r["name"] == role_name]
     if len(matching) > 1 or any(r["system"] for r in matching):
-        raise SystemExit("Factory reviewer must be one team-owned role")
+        raise SystemExit(f"{role_name} must be one team-owned role")
     if not matching:
         return session.call(
-            "POST", base, {"name": "Factory reviewer", "permissions": permissions}
+            "POST", base, {"name": role_name, "permissions": permissions}
         )["id"]
     role = matching[0]
     if role["permissions"] != permissions:
@@ -451,8 +450,8 @@ def ensure_reviewer_role(session, team_id):
     return role["id"]
 
 
-def ensure_reviewer_access(session, team_id, project_id, agent, role_id):
-    """Remove other project grants, then assign read-only before publishing a key."""
+def ensure_scoped_access(session, team_id, project_id, agent, role_id, project_key):
+    """Remove other project grants, then assign the scoped role before publishing a key."""
     projects = [p["id"] for p in agent["projects"]]
     if any(p != project_id for p in projects):
         session.call(
@@ -460,22 +459,22 @@ def ensure_reviewer_access(session, team_id, project_id, agent, role_id):
             f"/teams/{team_id}/ai-agents/{agent['id']}/projects",
             {"projectIds": [project_id] if project_id in projects else []},
         )
-    project = urllib.parse.quote(CONFIG["project"]["key"], safe="")
+    project = urllib.parse.quote(project_key, safe="")
     base = f"/projects/{project}/members"
     want = {"role": "member", "roleId": role_id}
     if project_id not in projects:
-        # New reviewer agents start with no projects: they never acquire the
+        # New restricted agents start with no projects: they never acquire the
         # default role's writes, even briefly, while bootstrap runs.
         session.call("POST", base, {"userId": agent["userId"], **want})
     else:
         page = session.call(
-            "GET", base + "?kind=agent&search=factory-reviewer&pageSize=100"
+            "GET", base + f"?kind=agent&search={agent['username']}&pageSize=100"
         )
         member = next(
             (m for m in page["items"] if m["userId"] == agent["userId"]), None
         )
         if member is None:
-            raise SystemExit("reviewer membership could not be verified")
+            raise SystemExit("scoped membership could not be verified")
         if any(member[k] != v for k, v in want.items()):
             user = urllib.parse.quote(agent["userId"], safe="")
             session.call("PATCH", f"{base}/{user}", want)
@@ -587,7 +586,24 @@ def ensure_agents(session, team_id, project_id):
     for want in CONFIG["agents"]:
         username = want["username"]
         reviewer = username == "factory-reviewer"
-        role_id = ensure_reviewer_role(session, team_id) if reviewer else None
+        sync = username == "intsec-sync"
+        restricted = reviewer or sync
+        target_key = "INTSEC" if sync else CONFIG["project"]["key"]
+        target_id = project_id
+        if sync:
+            setup = session.call("GET", "/projects/INTSEC")
+            target_id = setup["project"]["id"]
+            if setup["project"]["teamId"] != team_id:
+                raise SystemExit("INTSEC belongs to another team")
+            if not any(label["name"] == "semgrep" for label in setup["labels"]):
+                session.call("POST", "/projects/INTSEC/labels", {"name": "semgrep"})
+            role_id = ensure_scoped_role(
+                session, team_id, "INTSEC sync", ("read", "create")
+            )
+        elif reviewer:
+            role_id = ensure_scoped_role(
+                session, team_id, "Factory reviewer", ("read",)
+            )
         name = os.environ["AGENT_SECRET_PREFIX"] + username
         settings = {
             "name": want["name"],
@@ -597,7 +613,7 @@ def ensure_agents(session, team_id, project_id):
             "runnerScope": "team",
             "chatEnabled": False,
         }
-        if reviewer:
+        if restricted:
             settings.update(
                 triggerOnAssign=False, triggerOnMention=False, fieldTriggers=[]
             )
@@ -611,20 +627,20 @@ def ensure_agents(session, team_id, project_id):
                     **settings,
                     "username": username,
                     "kind": "external",
-                    "projectIds": [] if reviewer else [project_id],
+                    "projectIds": [] if restricted else [project_id],
                 },
             )
             agent, key = created["agent"], created["apiKey"]
             print(f"created agent {username} ({agent['id']})")
         else:
-            if reviewer and agent["kind"] != "external":
-                raise SystemExit("factory-reviewer must be an external agent")
+            if restricted and agent["kind"] != "external":
+                raise SystemExit(f"{username} must be an external agent")
             projects = [p["id"] for p in agent["projects"]]
             drift = {k: v for k, v in settings.items() if agent.get(k, v) != v}
             if drift:
                 agent = session.call("PATCH", f"{base}/{agent['id']}", drift)
                 print(f"updated agent {username}: {', '.join(drift)}")
-            if not reviewer and project_id not in projects:
+            if not restricted and project_id not in projects:
                 agent = session.call(
                     "PUT",
                     f"{base}/{agent['id']}/projects",
@@ -632,21 +648,23 @@ def ensure_agents(session, team_id, project_id):
                 )
                 print(f"attached agent {username} to the project")
             stored = secret_data(k8s("GET", name)).get("apiKey")
-            if stored and key_works(stored, agent["userId"] if reviewer else None):
+            if stored and key_works(stored, agent["userId"] if restricted else None):
                 key = stored
             else:
                 rotated = session.call("POST", f"{base}/{agent['id']}/regenerate-key")
                 key = rotated["apiKey"]
                 print(f"rotated {username}'s key: its Secret held none that works")
-        if reviewer:
-            ensure_reviewer_access(session, team_id, project_id, agent, role_id)
+        if restricted:
+            ensure_scoped_access(
+                session, team_id, target_id, agent, role_id, target_key
+            )
         write_secret(
             name,
             {
                 "apiKey": key,
                 "agentId": str(agent["id"]),
                 "teamId": str(team_id),
-                "projectKey": CONFIG["project"]["key"],
+                "projectKey": target_key,
                 "url": API,
             },
         )

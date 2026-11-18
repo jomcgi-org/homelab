@@ -12,6 +12,7 @@ import {
   getIssue,
   getIssueProjectId,
   updateIssue,
+  restoreIssue,
 } from "./modules/issues/service";
 import { createComment } from "./modules/issues/activity";
 import { getAssignTriggerAgent } from "./modules/agents/core/service";
@@ -176,6 +177,76 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
         projectId: t.Integer({ minimum: 1 }),
         startDate: t.String({ format: "date" }),
         delegateUserId: t.String({ minLength: 1 }),
+      }),
+    },
+  )
+  .patch(
+    "/issues/:issueId/factory-semgrep",
+    async ({ params, body, user, projectId }) => {
+      if (process.env.FACTORY_INTSEC_SYNC !== "true")
+        throw new HttpError(404, "Sync disabled");
+      const id = params.issueId;
+      const actor = user!.id;
+      const marker = `Semgrep finding ID: ${body.finding}\n`;
+      return factoryTransaction(async () => {
+        const owned = await db.execute(sql`
+          select i.id from issue i
+          join project p on p.id = i.project_id
+          join ai_agent a on a.team_id = p.team_id and a.username = 'intsec-sync'
+          join issue_activity h on h.issue_id = i.id and h.kind = 'activity' and h.action = 'created'
+          join issue_label il on il.issue_id = i.id
+          join label l on l.id = il.label_id and l.project_id = p.id
+          where i.id = ${id} and p.id = ${projectId} and p.key = 'INTSEC'
+            and a.user_id = ${actor} and h.actor_user_id = a.user_id
+            and l.name = 'semgrep' and starts_with(i.description, ${marker})
+          for update of i, il, l
+        `);
+        if (!owned.length)
+          throw new HttpError(403, "Finding is not owned by sync");
+        if (
+          body.description !== undefined &&
+          !body.description.startsWith(marker)
+        )
+          throw conflict("Finding identity changed");
+        if (body.columnId !== undefined) {
+          const column = await db.execute(sql`
+            select id from project_column where id = ${body.columnId}
+            and project_id = ${projectId} and state_type in ('backlog','completed') for share
+          `);
+          if (!column.length) throw conflict("Invalid finding destination");
+          // A column move can run the project's subtask automations, which
+          // move the parent or subtasks without this route's ownership check.
+          // So a finding linked to another issue is never moved here.
+          const related = await db.execute(sql`
+            select 1 from issue
+            where (id = ${id} and parent_id is not null) or parent_id = ${id}
+            limit 1
+          `);
+          if (related.length)
+            throw conflict("Finding has a parent or subtasks");
+        }
+        // Upstream's single-row service leaves archived subtasks untouched.
+        if (body.restore) await restoreIssue(id, actor);
+        const patch = {
+          ...(body.title !== undefined && { title: body.title }),
+          ...(body.description !== undefined && {
+            description: body.description,
+          }),
+          ...(body.columnId !== undefined && { columnId: body.columnId }),
+        };
+        if (Object.keys(patch).length) await updateIssue(id, patch, actor);
+        return { ok: true };
+      });
+    },
+    {
+      workItem: "create",
+      params: t.Object({ issueId: t.Numeric({ minimum: 1 }) }),
+      body: t.Object({
+        finding: t.String({ pattern: "^(sast|sca|secrets)/[0-9]+$" }),
+        title: t.Optional(t.String()),
+        description: t.Optional(t.String()),
+        columnId: t.Optional(t.Integer()),
+        restore: t.Optional(t.Boolean()),
       }),
     },
   );

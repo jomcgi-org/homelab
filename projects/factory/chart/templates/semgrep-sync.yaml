@@ -1,0 +1,87 @@
+{{- if and .Values.itsaplan.enabled .Values.semgrepSync.enabled }}
+{{- $ns := .Values.itsaplan.namespace }}
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: semgrep
+  namespace: {{ $ns }}
+spec:
+  itemPath: vaults/k8s-homelab/items/semgrep
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: intsec-sync
+  namespace: {{ $ns }}
+data:
+  sync.py: |
+    {{- .Files.Get "files/semgrep_sync.py" | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: intsec-sync
+  namespace: {{ $ns }}
+spec:
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 1800
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: intsec-sync
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            {{- include "factory.itsaplanPodSecurity" . | nindent 12 }}
+          containers:
+            - name: sync
+              image: {{ .Values.itsaplan.images.jobs }}
+              command: ["python", "/scripts/sync.py"]
+              securityContext:
+                {{- include "factory.itsaplanContainerSecurity" . | nindent 16 }}
+              resources:
+                {{- toYaml .Values.itsaplan.resources.jobs | nindent 16 }}
+              env:
+                - name: DEPLOYMENT
+                  value: {{ .Values.semgrepSync.deployment | quote }}
+                - name: PLAN_URL
+                  value: {{ include "factory.itsaplanInternalURL" . }}
+                - name: PLAN_KEY
+                  valueFrom:
+                    secretKeyRef: {name: factory-itsaplan-agent-intsec-sync, key: apiKey}
+                - name: SEMGREP_KEY
+                  valueFrom:
+                    secretKeyRef: {name: semgrep, key: API_KEY}
+              volumeMounts:
+                - {name: scripts, mountPath: /scripts, readOnly: true}
+          volumes:
+            - name: scripts
+              configMap: {name: intsec-sync}
+{{- if .Values.networkPolicy.cilium }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: intsec-sync
+  namespace: {{ $ns }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: intsec-sync
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            {{- include "factory.itsaplanSelector" (dict "root" . "component" "api") | nindent 12 }}
+      toPorts:
+        - ports: [{port: "3000", protocol: TCP}]
+    - toFQDNs:
+        - matchName: semgrep.dev
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
+{{- end }}
+{{- end }}
