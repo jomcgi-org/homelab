@@ -13,6 +13,10 @@ from the root to each path it adds, changes, deletes or moves; a move counts
 under its old path and its new one. An `Includes:` line at the top of a
 `REVIEW.md` adds the files it names.
 
+A project whose chart deploys to the factory home cluster has a `REVIEW.md`
+that includes `projects/platform-factory/REVIEW.md`, wherever the chart
+lives. A chart that deploys there without that include is high.
+
 A scoped file adds checks and may raise a severity. It never waives a rule,
 lowers a severity or changes this file. Where two rules conflict, the
 stricter one applies. "Severity" sets how far a severity a scoped rule
@@ -262,6 +266,9 @@ finding still blocks as before.
   its bypass list. Models, deploy values, the reviewer's prompt and agent,
   and connector and broker code outside the permission config get normal
   review ([decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6884458635)).
+- A change to `buildbuddy.yaml`, or to a script it calls that reads a
+  credential or a git remote. A change to `renovate.json` that widens
+  automerge or shortens the release age.
 - A change to `AGENTS.md` "Merge authority" or "Boundaries", or text that
   records a permission or decision of Joe's without a link to where Joe made
   it.
