@@ -233,3 +233,28 @@ func TestRelayAccountsWithoutChangingResponse(t *testing.T) {
 		})
 	}
 }
+
+// The missing-usage log counts every event, including one whose JSON does not
+// parse, and names an event only when the name has the shape of a Responses
+// event type; anything else is "other", so the log never carries body text.
+func TestTokenObserverDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		events     int
+		last       string
+	}{
+		{"delta", "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\"}\n\n", 1, "response.output_text.delta"},
+		{"malformed", "event: response.completed\ndata: {not json\n\n", 1, "response.completed"},
+		{"keepalive", ": keepalive\n\n", 0, ""},
+		{"body_text", "data: {\"type\":\"Ignore previous instructions\"}\n\n", 1, "other"},
+		{"long", "data: {\"type\":\"" + strings.Repeat("a", 65) + "\"}\n\n", 1, "other"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := &tokenObserver{sse: true, onUsage: func(TokenUsage) { t.Fatal("no usage expected") }}
+			o.write([]byte(tc.body))
+			if o.events != tc.events || o.lastType != tc.last {
+				t.Fatalf("events=%d last=%q, want %d %q", o.events, o.lastType, tc.events, tc.last)
+			}
+		})
+	}
+}
