@@ -3759,6 +3759,8 @@ func TestReplacementPRInheritsSharedCommitReviewsFailClosed(t *testing.T) {
 			addPR7(h)
 			h.gh.prs[7].TimelineTruncated = truncated
 			blocking := State{Blocking: []Finding{finding("a.go:nil-deref", SeverityHigh)}}
+			// PR 9's superseded legacy review, then its newer complete one.
+			seedCheck(h, shaA, ConclusionFailure, legacyText(State{Blocking: []Finding{finding("old.go:gone", SeverityCritical)}})).ExternalID = MessageID(testRepo, 9, shaA)
 			seedCheck(h, shaA, ConclusionFailure, encodeState(blocking)).ExternalID = MessageID(testRepo, 9, shaA)
 			seedCheck(h, shaA, ConclusionSuccess, encodeState(State{Blocking: []Finding{}})).ExternalID = MessageID(testRepo, 8, shaA)
 			got := reviewRound(t, h, sha40('c'), Report{Summary: "Nothing", Findings: []Finding{}})
@@ -3768,6 +3770,7 @@ func TestReplacementPRInheritsSharedCommitReviewsFailClosed(t *testing.T) {
 				failIf(t, !st.Incomplete, "a truncated timeline inherited a foreign review")
 			} else {
 				failIf(t, !hasID(st.Blocking, "a.go:nil-deref"), "a newer clean review hid an older blocking one: %+v", st.Blocking)
+				failIf(t, st.Incomplete || hasID(st.Blocking, "old.go:gone"), "a superseded review of the same source PR was inherited: %+v", st)
 			}
 		})
 	}
