@@ -104,15 +104,6 @@
         "L.unauthorized-access"
       ],
       "maturity": "built"
-    },
-    {
-      "key": "stale-sandbox-result",
-      "view": "logical",
-      "statement": "Sandbox callers require results corresponding to the submitted inputs.",
-      "losses": [
-        "L.silent-incorrectness"
-      ],
-      "maturity": "built"
     }
   ],
   "ucas": [

@@ -42,7 +42,7 @@ session memory over the code.
 
 - A control named in a doc is not evidence; read the deployed object.
 - Trace every claim to the code or live config. A control's status label
-  (enforced prod / enforced dev / shipped off / designed / none) means
+  (enforced prod / enforced dev / shipped off) means
   you followed the flag to its consumer, not that a values file declares
   it.
 - Grep `projects/<domain>/stpa/security.json` before
@@ -53,8 +53,8 @@ session memory over the code.
 
 Follow `docs/agents/stpa.md` with the `security` lens for that system. It consumes
 committed `stpa/structure.json`, produces `stpa/security.json`, and renders
-the lens into `STPA.md`. Every security row requires `status`, which must be
-one of `enforced-prod`, `enforced-dev`, `shipped-off`, `designed`, or `none`.
+the lens into `STPA.md`. UCAs and unsafe-feedback rows require `status`. Hazards may
+omit it. Each status is `enforced-prod`, `enforced-dev`, or `shipped-off`.
 Add `issue` wherever the row is tracked. A new row describes a verified
 control; an open finding stays in the private record ("Add a finding"). Include trust boundaries and
 exclusions only when they map to the lens scope, losses, or hazards.

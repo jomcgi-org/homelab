@@ -526,7 +526,6 @@ flowchart TD
 | `public-write-admission-bypass` | physical | The internet-adjacent public tier can write outside the intended chat_public path, or bypasses Turnstile, per-session limits, and the cluster-wide inference cap | L.integrity-loss, L.capacity-exhaustion | built |  |  |
 | `sandbox-credential-egress` | logical | The operators gate controls access to scratch-database execution. | L.secret-exposure, L.unauthorized-access | built |  |  |
 | `secret-in-wrong-tier` | physical | A private secret or a K8s token is delivered to the public or frontend tier | L.secret-exposure | built |  |  |
-| `stale-sandbox-result` | logical | Sandbox callers require results corresponding to the submitted inputs. | L.silent-incorrectness | built |  |  |
 | `unredacted-public-doc` | logical | Published documents must stay within the public content boundary. | L.secret-exposure | built |  |  |
 | `unrestricted-tool-visibility` | logical | GroupPolicyMiddleware restricts monolith MCP tool calls to operators. | L.unauthorized-access | built | enforced-prod | #4569 |
 
