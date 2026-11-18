@@ -8,7 +8,7 @@ change. Labels: **[V]** verified in upstream source, docs or live state;
 
 <a id="connector"></a>
 
-See the [connector architecture](connector/ARCHITECTURE.md) for the run lifecycle, review rounds and liveness lease.
+See the [connector architecture](connector/ARCHITECTURE.md) for the [run lifecycle](connector/ARCHITECTURE.md#run-lifecycle), [revision rounds](connector/ARCHITECTURE.md#review-rounds) and [liveness lease](connector/ARCHITECTURE.md#liveness-lease).
 
 ## Components and ownership
 
