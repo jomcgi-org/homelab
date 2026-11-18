@@ -8,9 +8,9 @@ const origin = { dev: "https://next.jomcgi.dev", prod: "https://jomcgi.dev" }[
 ];
 if (!origin && stage !== "--self-test")
   throw new Error("usage: site-check <dev|prod|--self-test> [dist]");
-// The Job checks one stage in 180 seconds. The image self-test checks two
+// The Job checks one stage in 300 seconds. The image self-test checks two
 // stages and the contrast case, so it gets the budget of three.
-const seconds = stage === "--self-test" ? 540 : 180;
+const seconds = stage === "--self-test" ? 540 : 300;
 const deadline = setTimeout(() => {
   console.error(`site-check exceeded its ${seconds} second deadline`);
   process.exit(1);

@@ -207,20 +207,33 @@ export async function checkPage(
   }
 }
 
-export async function tier2(pages) {
+// Each check opens its own browser context, so a few run side by side in one
+// browser. Four keeps the Job well inside its memory limit and its deadline
+// as sections add pages.
+export const TIER2_CONCURRENCY = 4;
+
+export async function tier2(pages, concurrency = TIER2_CONCURRENCY) {
   const browser = await launchBrowser();
+  const checks = pages.flatMap((page) =>
+    ["light", "dark"].flatMap((colorScheme) =>
+      [390, 1280].map((width) => ({ ...page, colorScheme, width })),
+    ),
+  );
   const links = [];
-  try {
-    for (const page of pages) {
-      for (const colorScheme of ["light", "dark"]) {
-        for (const width of [390, 1280]) {
-          links.push(
-            ...(await checkPage(browser, { ...page, colorScheme, width })),
-          );
-          console.log(`tier 2 ${page.path}: ${colorScheme}, ${width}px passed`);
-        }
-      }
+  let next = 0;
+  const worker = async () => {
+    while (next < checks.length) {
+      const check = checks[next++];
+      links.push(...(await checkPage(browser, check)));
+      console.log(
+        `tier 2 ${check.path}: ${check.colorScheme}, ${check.width}px passed`,
+      );
     }
+  };
+  try {
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, checks.length) }, worker),
+    );
   } finally {
     await browser.close();
   }
