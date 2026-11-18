@@ -73,6 +73,8 @@ spec:
         checksum/script: {{ .Files.Get "files/health.py" | sha256sum }}
     spec:
       serviceAccountName: factory-health
+      automountServiceAccountToken: false
+      securityContext: {fsGroup: 65532}
       containers:
         - name: health
           image: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
@@ -89,7 +91,34 @@ spec:
             seccompProfile: {type: RuntimeDefault}
           volumeMounts:
             - {name: script, mountPath: /app, readOnly: true}
+            - {name: snapshots, mountPath: /snapshots, readOnly: true}
+        - name: collector
+          image: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
+          command: ["python3", "-B", "/app/health.py", "collect"]
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 96Mi}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+            seccompProfile: {type: RuntimeDefault}
+          volumeMounts:
+            - {name: script, mountPath: /app, readOnly: true}
+            - {name: snapshots, mountPath: /snapshots}
+            - {name: api, mountPath: /var/run/secrets/kubernetes.io/serviceaccount, readOnly: true}
       volumes:
+        - name: snapshots
+          emptyDir: {medium: Memory, sizeLimit: 1Mi}
+        - name: api
+          projected:
+            sources:
+              - serviceAccountToken: {path: token}
+              - configMap:
+                  name: kube-root-ca.crt
+                  items: [{key: ca.crt, path: ca.crt}]
         - name: script
           configMap: {name: factory-health}
 ---

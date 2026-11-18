@@ -1,6 +1,7 @@
 """Serve only public component states. Poll independently of incoming traffic."""
 
 import json
+import sys
 import ssl
 import threading
 import time
@@ -67,7 +68,7 @@ def storyboard():
 
 
 checks = {"factory-cluster": cluster, "jomcgi-site": worker, "storyboard": storyboard}
-samples = {}
+SNAPSHOTS = Path("/snapshots")
 
 
 def poll(name, check):
@@ -76,7 +77,9 @@ def poll(name, check):
             healthy = bool(check())
         except Exception:
             healthy = False
-        samples[name] = (healthy, time.monotonic())
+        pending = SNAPSHOTS / (name + ".tmp")
+        pending.write_text(json.dumps([healthy, time.monotonic()]))
+        pending.replace(SNAPSHOTS / name)
         time.sleep(20)
 
 
@@ -87,7 +90,10 @@ class Health(BaseHTTPRequestHandler):
             return
         components = {}
         for name in checks:
-            ok, observed = samples.get(name, (False, 0))
+            try:
+                ok, observed = json.loads((SNAPSHOTS / name).read_text())
+            except (OSError, ValueError):
+                ok, observed = False, 0
             components[name] = (
                 "healthy" if ok and time.monotonic() - observed < 45 else "unhealthy"
             )
@@ -106,7 +112,9 @@ class Health(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" and sys.argv[1:] == ["collect"]:
     for name, check in checks.items():
         threading.Thread(target=poll, args=(name, check), daemon=True).start()
+    threading.Event().wait()
+elif __name__ == "__main__":
     HTTPServer(("", 8080), Health).serve_forever()

@@ -35,6 +35,7 @@ httpcheck:
   # and metrics export with it). Turning caMount.enabled off is not guarded.
   enabled: true
   targets:
+    - "https://jomcgi.dev/health"
     - "https://factory-public.jomcgi.dev/health"
     - "https://jomcgi.dev/"
     - endpoint: "https://argocd-server.argocd.svc:443/healthz"

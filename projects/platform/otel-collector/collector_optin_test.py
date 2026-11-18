@@ -432,6 +432,7 @@ def test_prod_legacy_probe_targets_are_unchanged():
     config = _collector_config(_render_overlay("values-prod"))
 
     assert config["receivers"]["http_check"]["targets"] == [
+        {"endpoint": "https://jomcgi.dev/health", "method": "GET"},
         {"endpoint": "https://factory-public.jomcgi.dev/health", "method": "GET"},
         {"endpoint": "https://jomcgi.dev/", "method": "GET"},
     ]
@@ -463,6 +464,7 @@ def test_gke_renders_live_argocd_target_with_pinned_ca():
 
     assert receiver["collection_interval"] == "60s"
     assert receiver["targets"] == [
+        {"endpoint": "https://jomcgi.dev/health", "method": "GET"},
         {"endpoint": "https://factory-public.jomcgi.dev/health", "method": "GET"},
         {"endpoint": "https://jomcgi.dev/", "method": "GET"},
         {
@@ -664,11 +666,11 @@ def test_loom_is_default_off_in_every_overlay(values_name):
         ),
         (
             "values-prod",
-            "3dd654324d3a3fe54e1add85a097e46861a4ff5b54e7b81fa66eacdfdf692b81",
+            "232fb51fcf8dec1b67df5d27afcbe7887c5d2d68fa647aaad7ff1c4e4b9531cc",
         ),
         (
             "values-gke",
-            "748da921ec7537fb0aeb9c767a3edff3d991a4fc61c9ec5d358ce9dee2b59eb6",
+            "0c1e7bc0980f757ead92178fe33bd9254f0a6846254be36f851fefa6978779e9",
         ),
     ],
 )
@@ -693,6 +695,7 @@ def test_gke_loom_monitoring_has_scoped_rbac_and_hardened_job():
     )
     config = _collector_config(docs)
     assert config["receivers"]["http_check"]["targets"] == [
+        {"endpoint": "https://jomcgi.dev/health", "method": "GET"},
         {"endpoint": "https://factory-public.jomcgi.dev/health", "method": "GET"},
         {"endpoint": "https://jomcgi.dev/", "method": "GET"},
         {

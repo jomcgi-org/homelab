@@ -40,6 +40,7 @@ httpcheck:
   # Cilium ingress template was removed in #5816; it never enforced on GKE.
   #
   targets:
+    - "https://jomcgi.dev/health"
     - "https://factory-public.jomcgi.dev/health"
     - "https://jomcgi.dev/"
 
