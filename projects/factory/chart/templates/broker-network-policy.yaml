@@ -74,6 +74,9 @@ spec:
         - matchName: auth.openai.com
         - matchName: chatgpt.com
         - matchName: api.github.com
+        {{- if $b.claude.enabled }}
+        - matchName: api.anthropic.com
+        {{- end }}
       toPorts:
         - ports:
             - port: "443"

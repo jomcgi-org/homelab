@@ -108,3 +108,38 @@ func TestLoadRejects(t *testing.T) {
 		t.Fatalf("missing namespace error = %v", err)
 	}
 }
+
+func TestClaudeConfigDefaultsAndValidation(t *testing.T) {
+	defaults := Defaults()
+	if defaults.Claude.Enabled || len(defaults.Claude.ModelAllowlist) != 0 || defaults.Claude.TokenFile != "" {
+		t.Fatal("Claude must default to disabled without credentials or allowed actors")
+	}
+	base := "namespace: factory\nclaude:\n  enabled: true\n  tokenFile: /broker-only/token\n"
+	valid := base + "  modelAllowlist:\n    actor/factory-intsec/audit: [claude-test-model]\n"
+	cfg, err := Load(write(t, "claude.yaml", valid), func(string) string { return "" })
+	if err != nil || !cfg.Claude.Enabled || len(cfg.Claude.ModelAllowlist["actor/factory-intsec/audit"]) != 1 {
+		t.Fatalf("Claude config not loaded: %v", err)
+	}
+	// Enabled with no allowlist is valid, but grants no access.
+	if _, err := Load(write(t, "deny.yaml", base), func(string) string { return "" }); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"no token file":     "namespace: factory\nclaude: {enabled: true}\n",
+		"wrong audience":    base + "actorJwt: {audience: other}\n",
+		"wildcard actor":    base + "  modelAllowlist: {'actor/factory-intsec/*': [claude]}\n",
+		"short subject":     base + "  modelAllowlist: {audit: [claude]}\n",
+		"wildcard model":    base + "  modelAllowlist: {'actor/factory-intsec/audit': ['*']}\n",
+		"empty model":       base + "  modelAllowlist: {'actor/factory-intsec/audit': ['']}\n",
+		"body limit":        base + "  maxRequestBytes: 0\n",
+		"concurrency":       base + "  maxConcurrentRequests: 0\n",
+		"idle":              base + "  streamIdleTimeout: 0s\n",
+		"inline credential": base + "  token: secret\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(write(t, "bad.yaml", body), func(string) string { return "" }); err == nil {
+				t.Fatal("accepted invalid Claude config")
+			}
+		})
+	}
+}
