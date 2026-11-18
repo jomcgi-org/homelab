@@ -44,15 +44,61 @@ See the [connector architecture](connector/ARCHITECTURE.md) for the [run lifecyc
 
 Argo CD installs the factory chart with the homelab binding in `deploy/values.yaml`. The chart renders itsaplan, the broker, connector and reviewer, plus kagent resources for each repository binding. Substrate, Authentik, the edge gateway, Postgres and Garage run as separate installations.
 
+**Repository bindings.** kagent runs an Agent's actors in the atespace
+named after its namespace, so the binding namespace is also the atespace that
+Substrate's credential provider grants. A Harness needs a Substrate
+WorkerPool in its own namespace, so each binding has one. Its replicas
+are the agent's concurrency, with one actor per worker. kagent sets
+one CPU and memory limit for every runtime (`config.runtimeDefaults`), so
+each agent's resource limits must equal it, and the chart refuses others. A
+worker's capacity is its pod memory limit less a 64Mi reserve, and each actor
+books its limit plus the gVisor sentry, so worker pods get 1Gi more memory
+than their actor.
+Substrate's egress gateway admits actors to the broker's relay and to
+`github.com`. Its credential provider reads a binding namespace only through
+the chart's RoleBinding and the namespace's `namespacePolicies` entry.
+
+**Ordering.** kagent CRDs are vendored in `crds/`; a PreSync/pre-upgrade
+Job server-side-applies them so upgrades update CRDs. Waves: namespaces,
+ServiceAccounts, 1Password items and the database (-2); secret-init and a
+database-ready gate (-1); kagent, itsaplan api, broker (0); itsaplan web and
+worker, connector (1); kagent CRs and the itsaplan bootstrap Job (2).
+
 ## Sandbox checks
 
 The homelab coding binding supplies the local check tools and their download policy. Its prompt directs the coder to run `toolchain/bootstrap.sh` after cloning and source the generated environment in each shell. Remote tests run in PR CI.
 
 **Why.** The Alpine harness needs musl-compatible tools for local checks. The binding installs them without giving the workspace a BuildBuddy credential. [Sandbox toolchain decision](https://github.com/jomcgi-org/homelab/issues/7916)
 
+Helm, crane, buildifier, gofumpt, shfmt and shellcheck use the Linux amd64
+URLs and SHA-256 hashes in `bazel/tools/tools.lock.json`. Ruff's musl wheel
+uses that lock's version. pnpm, prettier, the Svelte plugin and Svelte use
+`package.json` versions, installed without lifecycle scripts. PyPI and npm
+verify their distribution integrity; their transitive dependency selection
+is resolved at bootstrap, outside the Bazel dependency graph. Setup checks
+the executables before publishing an environment file and caches them by
+the bootstrap, installer and repository version inputs. A missing executable
+repairs the cache; a failed download never publishes a new environment.
+
+The download allowlist is `dl-cdn.alpinelinux.org`, `get.helm.sh`,
+`release-assets.githubusercontent.com`, `registry.npmjs.org`, `pypi.org` and
+`files.pythonhosted.org`. GitHub release requests use the binding's existing
+`github-git` origin. The new origins have no credential injection, and no
+BuildBuddy origin or key is configured.
+
+Agents can run `ci lint`, `ci regen`, `ci ratchet`, `helm template` and scoped
+`python3 -m pytest` checks. PR CI owns BUILD generation and remote tests;
+these local checks do not establish a passing `ci test` or full `ci` run.
+
 ## Memory
 
-The coding agent recalls lessons before planning and retains reusable lessons in Hindsight's homelab bank. The egress gateway supplies the MCP credential. The review binding has no access to that bank.
+`repositories[].memory` binds one coding binding's Agent to Hindsight
+(`projects/platform-factory/hindsight`) as RemoteMCPServer `memory`, limited
+to `recall` and `retain`, and adds `chart/files/memory-prompt.txt` to its
+prompt: recall before planning, retain lessons with their issue, PR or commit
+and whether CI confirmed them. Review bindings do not inherit it. The
+`homelab` coding binding uses bank `homelab`
+([HOME-185](https://factory-plan.jomcgi.dev/factory/issue/HOME-185)).
 
 **Why.** Joe made memory high priority on 2026-11-16 to cut tokens per
 delivered issue, with Claude Haiku as Hindsight's LLM so that memory writes
@@ -66,6 +112,8 @@ nDCG@10 (0.781) of ten models, against 0.522 for a stand-in for the local embedd
 ([HOME-176](https://factory-plan.jomcgi.dev/factory/issue/HOME-176)). Joe
 chose one OpenRouter key for both instances
 ([HOME-130 comment 1439](https://factory-plan.jomcgi.dev/factory/issue/HOME-130#comment-1439)).
+
+### Memory recovery
 
 **Rollback.** Two levers, by what failed:
 
@@ -87,6 +135,38 @@ chose one OpenRouter key for both instances
 deployed image without network, from 1,024-dimensional vectors, and
 `keys_test` pins the recovery Job to its settings.
 
+### Bank configuration
+
+Every new bank starts from
+`projects/platform-factory/hindsight/resources/bank-template.json`, which the
+Deployment passes as `HINDSIGHT_API_DEFAULT_BANK_TEMPLATE`
+([HOME-183](https://factory-plan.jomcgi.dev/factory/issue/HOME-183)). Its
+retain mission keeps reusable lessons, incidents, decisions and pointers with
+their issue, PR or commit, and drops chatter, logs and credentials. Two label
+groups have `tag: true`, so extraction tags each fact. `app:<path>` names the
+one project the fact is mainly about: a directory under `projects/`,
+`projects/platform/`, `projects/platform-gke/` or `projects/platform-factory/`,
+or one of those three groups' own roots. `kind:` is `lesson`, `incident`,
+`decision` or `reference`. Consolidation builds observations per `app:*`
+tag. Hindsight puts every tag a scope glob matches into one scope, so `app`
+takes one value: a fact about two projects would otherwise reach neither
+project's observations. A fact with no `app` tag consolidates over its own
+tags. Recall can filter on both tags. Hindsight
+applies the template only when it creates a bank. So the
+`hindsight-bank-template` PostSync Job runs after every sync: it creates bank
+`homelab` when it is missing, imports the template into it, and reads the
+config back, failing when a setting differs. An import changes the bank's
+config, never its memories, so a template change in git reaches the bank on
+the next sync. `POST .../import?dry_run=true` validates a manifest without
+changing anything. A new project needs a new `app` value.
+
+Discord memory has a separate process, database and REST tenant key under
+[`hindsight-discord`](../platform-factory/hindsight-discord/README.md)
+([HOME-163](https://factory-plan.jomcgi.dev/factory/issue/HOME-163)). It calls
+DeepSeek through the dedicated OpenRouter credential. Its manifests disable
+MCP and admit only namespace `factory-discord`. The linked runbook records
+the boundary and rollout checks; the bridge remains HOME-162.
+
 ## Discord bot
 
 Bosun answers mentions in the configured Discord servers. The bridge scopes memory to the guild and channel and passes messages to a separate kagent agent. The agent uses a dedicated model credential and has no coding tools. [Isolation decision](https://github.com/jomcgi-org/homelab/pull/8188#issuecomment-6960669519)
@@ -97,6 +177,22 @@ The API and worker share the factory database. Attachments go to Garage. Humans 
 
 ## Credential broker
 
+`projects/factory/broker`, one replica with `Recreate`. It reuses the Codex
+OAuth code in `projects/shared/go/tokenbroker`, with the grant Secret prefix
+(`factory-broker-grant-`), metric prefix (`factory_broker_`) and refresh
+window configured per consumer; EmberVM keeps its defaults. No Lease: grant
+writes are newer-only and a `refresh_token_reused` answer rereads the Secret
+and retries once, using a newer durable grant when available. Repeated reuse
+stops further provider calls for that token and exposes `refresh_blocked` in
+the grant state metric and admin responses. Valid cached access tokens remain
+usable. The operator can await a pending writer or complete a new device login
+if the replacement was lost. Storage reads cannot distinguish a lost rotation
+from a successful rotation whose writes keep failing, so elapsed time never
+promotes this state to `login_required`. Relay failures remain recoverable 503s
+without causing the connector to persist a credential block. A newer stored
+grant with a different refresh token or a completed device login clears the
+reuse state, even after a prolonged persistence failure.
+
 The broker mounts the author and reviewer App private keys and holds the Codex grant. It authenticates actor requests and scopes GitHub installation tokens to the bound repository. The connector authenticates to the broker with a projected ServiceAccount token. The reviewer uses its scoped installation token to publish checks. It sends PR comment requests to the broker, which posts them with a separate token kept inside the broker.
 
 <a id="inputs-from-joe"></a>
@@ -104,6 +200,78 @@ The broker mounts the author and reviewer App private keys and holds the Codex g
 ### Factory App Secret layout
 
 The author App uses the 1Password SSH Key item `k8s-homelab/factory-gh-app`. Its `private key` field maps to the Kubernetes Secret key `private-key`. The text fields `app-id` and `installation-id` keep their names.
+
+### Relay limits and grant refresh
+
+- **Limits.** Request bodies up to 32 MiB read within 2 minutes, at most 64
+  requests in flight, and any upstream response silent for 5 minutes is cut.
+  Each verified actor subject can hold up to eight slots by default
+  (`codex.maxConcurrentRequestsPerActor`). Excess requests receive 429
+  `relay_actor_busy` with `Retry-After: 5`. When `codex.allowedModels` is
+  non-empty, both response endpoints require a listed JSON model or return
+  400 `model_not_allowed`. An empty list permits all models.
+  The body watchdog starts at response headers for each attempt. Initial
+  and retried 401 drains and 429 inspection each read at most 64 KiB within
+  `StreamIdleTimeout` (5 minutes by default), even if bytes keep arriving.
+  A timed-out 401 drain still permits the one token refresh and retry;
+  two stalled 401 bodies spend at most twice that limit reading bodies,
+  plus the separately bounded refresh and response-header waits. A stalled
+  429 returns `codex_upstream_unreachable` (502) unless quota exhaustion is
+  already known. Other responses reset the idle deadline as bytes arrive,
+  so active SSE has no overall time limit. Actor cancellation aborts body
+  reads immediately; completion or failure releases the concurrency slot.
+  Quota observations are committed off the request path, latest only.
+- **Quota reading.** A reading comes from relayed `x-codex-*` headers or
+  from `GET chatgpt.com/backend-api/wham/usage`. It expires 30 minutes after
+  it arrives, or at its first window reset if that is sooner. Every minute
+  the broker checks the stored reading and reads the usage endpoint once it
+  has expired, so relayed traffic defers the read. A failed read keeps the
+  old reading and retries after 5 minutes; one read runs at a time.
+- **Refresh.** One grant, `codex-primary`, from the broker's own device
+  login: `POST /admin/codex/login` returns the user code, `GET` reports
+  state, `POST /admin/codex/refresh` forces a refresh. These require a
+  projected ServiceAccount token (audience `factory-broker`) whose TokenReview
+  username is in `tokenReview.adminSubjects`. `broker.operatorServiceAccount`
+  creates a ServiceAccount for operators and adds it there; they mint a
+  short-lived token for it, and a ValidatingAdmissionPolicy keeps any Pod
+  from running as it. The grant refreshes when under
+  24 h from expiry or 7 days old, single-flight, written to the Secret
+  before use, checked every 10 minutes without traffic. When a refresh fails
+  but the stored access token is still valid, the relay keeps serving it and
+  the grant state metric reports the failure. The chart pre-creates the
+  empty grant Secret: the store only updates it, so a missing Secret is a
+  deployment fault (state `missing`, 503) that a login cannot fix. ActorJWT
+  leaves no relay key to rotate.
+  Once a device code has been exchanged, installing the login waits for any
+  active refresh and retries persistence five times with a 10 s deadline per
+  attempt. Cancellation of the device flow does not cancel these writes.
+  Exhaustion reports `persistence_pending`; POST the login endpoint again to
+  save the retained bundle without exchanging the code again. This recovery
+  state is in memory and does not survive a broker restart.
+
+### Network and Kubernetes permissions
+
+- **Listeners.** The relay port admits only Substrate's egress gateway; a
+  second port serves the admin endpoints, connector tokens, the connector's
+  quota read and metrics, and
+  admits the connector and, when enabled, the reviewer, so no actor can reach
+  them. Operators use a port-forward. Cilium L7 rules could split one port instead, but Hubble
+  would then record each relayed request's actor JWT.
+- **RBAC** the chart grants the broker: `create` on `tokenreviews`; in its
+  own namespace `get`/`update` on the grant Secret and the quota ConfigMap
+  by `resourceNames`; in each binding namespace `create` on Secrets (RBAC
+  cannot restrict `create` by name) and `get`/`update` on `github-git` by
+  `resourceNames`. A ValidatingAdmissionPolicy closes the `create` gap: the
+  broker's ServiceAccount may write only its grant Secret and Opaque
+  `github-git` Secrets in binding namespaces, so it cannot mint a
+  ServiceAccount token. Its image, like every first-party image, is private
+  on GHCR; the chart syncs `k8s-homelab/ghcr-read-permissions` into the
+  factory namespace as a pull secret.
+- **Metrics** (`factory_broker_*`): grant state and expiry, refresh checks
+  and the shared refresh counters, relay requests by outcome and status
+  class, actor JWT rejections by reason, GitHub mints by kind, binding and
+  outcome, usage endpoint reads by outcome, and the shared quota gauges.
+  Labels come only from fixed sets or configuration.
 
 ## Identities
 
@@ -117,6 +285,19 @@ a connector memory cache cannot.
 ### Factory front page
 
 The landing page reads the connector’s cached status snapshot. It shows work that needs Joe, active work and recent merges. A failed refresh makes the snapshot unavailable.
+
+A GraphQL query reads at most 25 PRs (75 connections, one
+[point](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#predicting-the-point-value-of-a-query)),
+at most four per refresh with one auth retry each: at most 960 of the
+5,000 points per hour. An over-budget refresh fails closed. The snapshot
+refreshes every 30 seconds (20-second deadline, eight concurrent reads, at
+most 100 live items and ten merges) and expires after 30 seconds. A truncated
+listing, excess live work, a failed refresh or a stopped poller clears it, and
+`/status` returns 503. Each failed refresh logs `status refresh failed` with
+its stage (`needs_you`, `work_items`, `github_budget`, `github`, `titles` or
+`other`) and a timeout flag, but no upstream error text. Visitors trigger no
+upstream reads; the credential-free landing server proxies only this snapshot,
+with a two-second timeout.
 
 **Why.** The connector already has the store and coordinator read access. The
 landing chart owns the status-only Service and Cilium grant, so removing the
@@ -252,7 +433,7 @@ These upstream constraints explain the delivery and access controls above.
 - Model usage comes from individual calls. The factory aggregates usage for a delivery in its [accounting model](token-usage.md).
 - Coordinator credentials can read the itsaplan run queue by run ID. The coding agent key alone cannot look up an individual run.
 - kagent can recover a crashed session from its durable snapshot. When the underlying actor has been replaced, the connector needs a new session.
-- Session ownership separates callers, but an authenticated caller can invoke any Agent watched by the controller. The edge restricts who can authenticate.
+- Authenticated humans and ServiceAccounts can invoke any Agent the controller watches. Session ownership separates their sessions. An authenticated actor is confined to its own session.
 
 ## Direction
 
@@ -263,6 +444,7 @@ These upstream constraints explain the delivery and access controls above.
 | Remove third-party Apps from the merge trust path. | [#7921](https://github.com/jomcgi-org/homelab/issues/7921) | designed |
 | Move CI and the registry into the cluster and scope the chart write-back identity. | [#7922](https://github.com/jomcgi-org/homelab/issues/7922) | designed |
 | Isolate fork PRs and serve fixture-only public previews. | [#7923](https://github.com/jomcgi-org/homelab/issues/7923) | designed |
+| Enable remote sandbox tests once the runner can authenticate. | HOME-133 | designed |
 | Activate the scoped Discord notification sink. | [#7935](https://github.com/jomcgi-org/homelab/issues/7935), consumers HOME-4, HOME-6 and HOME-10 | staged off behind `connector.notify.enabled` |
 | Switch the Application to values bundled with the published chart. | [#7909](https://github.com/jomcgi-org/homelab/issues/7909) | designed |
 | Store itsaplan application and recovery secrets in 1Password. | [Factory foundation](https://github.com/jomcgi-org/homelab/issues/7817) | designed, after off-site database backups |
