@@ -2,9 +2,10 @@
 
 _Reviewed against commit 395eb4e5f._
 
-The structure of the threat model for both clusters: what is worth
-protecting, who attacks it, and where untrusted input crosses a boundary.
-The factory home cluster comes first. The GKE hub rows are marked.
+This page holds the structure of the threat model for both clusters: what
+is worth protecting, who attacks it, and where untrusted input crosses a
+boundary. The factory home cluster comes first. The GKE hub rows are marked.
+`HOME-N` names an issue in itsaplan, the private tracker.
 [security.md](security.md#findings-and-threat-model) records why this page
 has this shape, and the
 [maintenance runbook](runbooks/threat-model-maintenance.md) is the procedure
@@ -17,6 +18,7 @@ project's `STPA.md`.
 | --- | --- |
 | Merge authority on `main` | The GitHub ruleset, the reviewer App's `factory review` check, Joe's approval |
 | Deploy authority | ArgoCD on the factory home cluster. What merges is what runs |
+| Hub: deploy authority | ArgoCD and Kargo on the GKE hub |
 | Provider and GitHub credentials | The credential broker; 1Password through the 1Password Operator |
 | Agent memory and tracker text | Hindsight and itsaplan. Private: they must not reach the public repository or site |
 | Cluster state and backups | etcd, three Postgres clusters, Garage |
@@ -42,15 +44,16 @@ project's `STPA.md`.
 ```mermaid
 flowchart LR
   NET["internet (1)"] -- "Cloudflare Tunnel" --> EDGE["edge Gateway<br/>Authentik sign-in"]
-  EDGE --> APPS["routed apps"]
+  EDGE --> APPS["routed apps (6)"]
   GH["GitHub: PRs, CI (2, 4)"] -- "ruleset, merge queue" --> MAIN["main (5)"]
   REV["reviewer service<br/>and read-only agent"] -- "factory review check" --> GH
   MAIN -- "ArgoCD sync" --> APPS
   TRK["tracker text (2)"] --> CON["connector"]
   CON -- "task" --> SBX["agent sandbox (3)"]
   SBX -- "placeholders only" --> EGW["egress gateway"]
-  EGW -- "injects credentials" --> BRK["broker, GitHub, registries"]
-  APPS --> DATA["Postgres, Garage, Hindsight (6)"]
+  EGW -- "injects credentials" --> BRK["broker and GitHub"]
+  APPS --> DATA["Postgres, Garage, Hindsight"]
+  DATA -- "recalled memory" --> SBX
   APPS -- "static output" --> WRK["jomcgi-site Worker"]
   N1["node-1: workstation and node (7)"] --> DATA
 ```
@@ -65,11 +68,11 @@ that issue.
 | Cloudflare Tunnel to the edge Gateway to routed apps | Anyone on the internet | PLAT-2, PLAT-3 | None yet |
 | GitHub to `main` to ArgoCD | PRs, dependencies, CI logs | ROOT-1, FACT-4, FACT-9, FACT-10, FACT-11 | None yet |
 | Tracker to connector to agent sandbox | Issue text, repository content, pages an agent reads | FACT-1, FACT-2, PLAT-5, PLAT-6 | None yet |
-| Sandbox to egress gateway to broker, GitHub and registries | A prompt-injected agent | FACT-3, FACT-5, FACT-6, FACT-7, FACT-8 | None yet |
+| Sandbox to egress gateway to broker and GitHub | A prompt-injected agent | FACT-3, FACT-5, FACT-6, FACT-7, FACT-8 | None yet |
 | Reviewer service and its read-only agent | The PR under review | FACT-4, FACT-9, FACT-10 | None yet |
 | Shared data plane: Postgres, Garage, Hindsight | A compromised application pod; recalled memory text | PLAT-1, PLAT-7, PLAT-8, LIB-1 to LIB-5 | None yet |
 | node-1 as workstation and node | A home LAN device; an operator session | CLUS-1, CLUS-2, CLUS-3 | None yet |
-| jomcgi-site Worker as the public output path | Data that the factory publishes | Review rules in `projects/platform-factory/REVIEW.md` | None yet |
+| jomcgi-site Worker as the public output path | Data that the factory publishes | The `data/sources.json` list of published objects ([jomcgi-site README](../projects/jomcgi-site/README.md)); `public_content.py` in the CI Format stage | None yet |
 
 The factory has no STPA security lens yet.
 

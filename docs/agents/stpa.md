@@ -105,6 +105,10 @@ Commit, push and open the PR only through BLOCK B, never by hand.
 
 ## Remediation work goes to itsaplan
 
+For the security lens, `docs/runbooks/threat-model-maintenance.md` "Add a
+finding" comes first: an open security finding gets a private record and a
+HOME issue in neutral words, and no new public row.
+
 File unmitigated UCAs / unsafe-feedback findings as HOME issues (the source of
 truth for outstanding work), titled `<system>: <finding> (STPA <key>)`, with
 `broken safeguard` or `missing safeguard` and, for the security lens,
