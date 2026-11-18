@@ -5,8 +5,6 @@ import { join } from "node:path";
 // rule first detaches its `! Name` headers, then sets its own. Site-check
 // derives each path's expected headers from the same file, so a section with
 // its own policy (for example the /hikes map) needs no change here.
-// Apply only the rules that match this request. Flattening the file would
-// put the catalog cache policy on hashed assets and slop's robots on all pages.
 export function parseHeaders(text) {
   const rules = [];
   for (const line of text.split("\n")) {
@@ -29,8 +27,6 @@ export function parseHeaders(text) {
         headers: {},
       });
     } else {
-      // `! Name` detaches a header that an earlier matching rule set, as the
-      // Workers asset server does (for example the /hikes map policy).
       const detach = line.match(/^\s+!\s*([\w-]+)\s*$/);
       if (detach) {
         rules.at(-1).detach.push(detach[1].toLowerCase());
