@@ -63,6 +63,17 @@ describe("static hosting headers", () => {
       );
   });
 
+  it("adds tile connections only to the MapLibre worker asset policy", () => {
+    const worker = rule("/assets/maplibre-gl-worker-*.js");
+    expect(worker).toContain("! Content-Security-Policy");
+    const connect = "connect-src 'self' https://data.jomcgi.dev";
+    expect(csp).toContain(connect + ";");
+    expect(policy(worker)).toBe(
+      csp.replace(connect, connect + " https://tiles.openfreemap.org"),
+    );
+    expect(rule("/assets/*")).not.toContain("Content-Security-Policy");
+  });
+
   it("caches hashed assets forever", () => {
     expect(headers).toMatch(
       /\/assets\/\*\n\s+Cache-Control: public, max-age=31536000, immutable/,
