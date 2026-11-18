@@ -705,29 +705,6 @@ def _apply_intent_core(
 # --- admin surface (MCP) --------------------------------------------------------
 
 
-def locked_out_user_ids(
-    session: Session, guild_id: str, now: datetime | None = None
-) -> set[str]:
-    """User IDs whose messages the live gate suppresses in this guild now.
-
-    Read-only, for paths that read Discord history instead of the gated
-    store (scheduled digests). The same rule as ``observe_message``: live mode,
-    decayed score below the threshold, and never the owner.
-    """
-    if _mode() != "live":
-        return set()
-    now = now or datetime.now(timezone.utc)
-    threshold = _threshold()
-    owner = _owner_id()
-    rows = session.exec(select(UserTrust).where(UserTrust.guild_id == guild_id)).all()
-    return {
-        row.user_id
-        for row in rows
-        if row.user_id != owner
-        and _decayed(row.score, row.score_updated_at, now) < threshold
-    }
-
-
 def trust_status(guild_id: str = "") -> dict:
     """Ledger snapshot for the MCP surface: every tracked user with their
     effective (decay-applied) score, lockout state, and recent event mix."""

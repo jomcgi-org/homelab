@@ -115,13 +115,9 @@ async def leader_start(app: FastAPI) -> list[asyncio.Task]:
     # shutdown alongside the bot and outbox drain.
     from chat.scheduled_tasks import run_scheduler
 
-    # Digests read each channel's history from Discord over REST, so they stay
-    # current with or without the gateway, and across a switch between them.
-    from chat.scheduled_tasks import rest_digest_builder
-
-    scheduler_task = asyncio.create_task(
-        run_scheduler(get_engine(), digest_builder=rest_digest_builder(bot, _ready))
-    )
+    # Without the gateway nothing new reaches chat.messages, so digests end
+    # (Joe, 2026-11-18, #8189); reminders keep running.
+    scheduler_task = asyncio.create_task(run_scheduler(get_engine(), digests=gateway))
     scheduler_task.add_done_callback(log_task_exception)
     register_leader_tasks(app, [scheduler_task])
     tasks.append(scheduler_task)
