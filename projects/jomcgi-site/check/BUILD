@@ -78,6 +78,8 @@ js_test(
 js_test(
     name = "deployed_test",
     size = "medium",
+    # Two stages, each with the Job's 300-second budget.
+    timeout = "long",
     data = [
         "fixture.mjs",
         ":src",

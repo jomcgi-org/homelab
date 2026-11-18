@@ -8,13 +8,13 @@ import { scopeFor } from "./scope.mjs";
 
 test(
   "both tiers verify dev and the routed production pages",
-  // Exercise two Jobs in sequence, each with the deployed 180-second budget.
-  { timeout: 360_000 },
+  // Exercise two Jobs in sequence, each with the deployed 300-second budget.
+  { timeout: 600_000 },
   async (t) => {
     isolateBrowserCache(t);
     const dist = resolve(process.env.SITE_CHECK_DIST ?? "../web/dist");
     for (const stage of ["dev", "prod"]) {
-      await t.test(stage, { timeout: 180_000 }, async () => {
+      await t.test(stage, { timeout: 300_000 }, async () => {
         const server = await serveRelease(dist, stage);
         const http = client(server.origin);
         try {
