@@ -1935,6 +1935,12 @@ owner on the private issue.
 [public output decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6931275436),
 [private feedback decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-251#comment-2324)
 
+The reviewer stores private goal replies on the `factory-reviewer-goal-audit`
+PVC for 14 days from first receipt. After rollback, keep the PVC, the hourly
+cleanup CronJob and its NetworkPolicy. To retire them, wait until the last
+audit write is at least 14 days old, then confirm that a cleanup run has
+completed successfully before deleting all three resources.
+
 The connector sends actionable findings to the coder for revision. When
 only human approval is outstanding, it waits. The reviewer checks Joe's
 approval against the current head and applies the authorship waiver as
@@ -1992,18 +1998,12 @@ Each step is its own PR with live evidence recorded on #7817.
   item `k8s-homelab/factory-gh-app`, an SSH Key item: its `private key`
   field reaches the Secret as `private-key`, beside text fields `app-id` and
   `installation-id`. Created 2026-11-14.
-- **Reviewer.** Decided 2026-11-14: while the factory is bootstrapped, local
-  review agents approve its PRs as `jomcgi` (`trustedReviewers`). Afterwards
-  the reviewer App `jomcgi-factory-review` (App ID 5758326; checks, merge
-  queues, issues and pull requests write, contents and commit statuses
-  read) owns review and enqueueing ("Merge authority"). Joe granted issues
-  and pull requests write on 2026-11-15
-  ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-73#comment-474)):
-  both for the reviewer's PR comment, which GitHub refuses with issues write
-  alone, and pull requests write also for inline findings (HOME-72). Its 1Password item is
-  `k8s-homelab/factory-review-gh-app`, an SSH Key item like the author's.
-  For now the dispatcher splits enqueueing: the reviewer enqueues Joe's
-  PRs and the connector the factory's, since it sees their stops.
+- **Reviewer.** The reviewer App `jomcgi-factory-review` posts the required
+  check. Its 1Password item is `k8s-homelab/factory-review-gh-app`. Joe
+  granted issues and pull requests write for PR comments and inline findings.
+  [Permission decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-73#comment-474)
+  Joe requests auto-merge for his own PRs. The connector enqueues factory
+  PRs as described under [Merge authority](#merge-authority).
 - **Third-party Apps.** Remove or reduce Apps with write access that are not
   the factory's (Polylane, the Codex connector, Semgrep, Claude), and remove
   `administration` from BuildBuddy, which posts `pr-checks` until in-cluster
