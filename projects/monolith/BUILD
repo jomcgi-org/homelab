@@ -10108,6 +10108,9 @@ py_test(
 
 filegroup(
     name = "stpa_model",
-    srcs = ["STPA.md"] + glob(["stpa/*.json"]),
+    srcs = [
+        "STPA.md",
+        "//projects/monolith/stpa:fragments",
+    ],
     visibility = ["//:__pkg__"],
 )
