@@ -13,28 +13,60 @@ import {
   summaryHtml,
 } from "../data/stars-summary.mjs";
 
-// The deploy snapshot stamps a live summary between these markers (stars.html,
-// HOME-333). Outside them a page must equal this release. Inside, it must be
-// exactly what summaryHtml renders from the summary data it embeds.
-export function checkReleasePage(deployed, release, path) {
+const HIKES_START = "<!--hikes-summary:start-->";
+const HIKES_END = "<!--hikes-summary:end-->";
+
+// Outside a stamped slot, a deployed page must equal this release.
+function splitSlot(deployed, release, path, start, end) {
   const differs = `${path}: deployed page differs from this release`;
-  const start = release.indexOf(SUMMARY_START);
-  const end = release.indexOf(SUMMARY_END);
-  if (start < 0 || end < start) {
-    assert.deepEqual(deployed, release, differs);
-    return;
-  }
-  const head = release.subarray(0, start);
-  const tail = release.subarray(end + SUMMARY_END.length);
+  const from = release.indexOf(start);
+  const to = release.indexOf(end);
+  if (from < 0 || to < from) return null;
+  const head = release.subarray(0, from);
+  const tail = release.subarray(to + end.length);
   assert.ok(
     deployed.length >= head.length + tail.length &&
       head.equals(deployed.subarray(0, head.length)) &&
       tail.equals(deployed.subarray(deployed.length - tail.length)),
     differs,
   );
-  const stamped = deployed
+  return deployed
     .subarray(head.length, deployed.length - tail.length)
     .toString();
+}
+
+// The deploy snapshot stamps a live summary between markers: the stars
+// summary (stars.html, HOME-333) and the hikes summary (hikes.html,
+// publishHikesSummary). The stars summary must be exactly what summaryHtml
+// renders from the data it embeds. The hikes summary depends on the publish
+// time, so it must be one well-formed slot with the published walk count.
+export function checkReleasePage(deployed, release, path) {
+  const hikes = splitSlot(deployed, release, path, HIKES_START, HIKES_END);
+  if (hikes !== null) {
+    assert.ok(
+      hikes.startsWith(`${HIKES_START}<p>Data as of `) &&
+        hikes.endsWith(HIKES_END) &&
+        hikes.indexOf(HIKES_START, 1) < 0 &&
+        /<p>\d+ Scottish walks in the published forecast\./.test(hikes),
+      `${path}: hikes summary is not a published summary`,
+    );
+    return;
+  }
+  const stamped = splitSlot(
+    deployed,
+    release,
+    path,
+    SUMMARY_START,
+    SUMMARY_END,
+  );
+  if (stamped === null) {
+    assert.deepEqual(
+      deployed,
+      release,
+      `${path}: deployed page differs from this release`,
+    );
+    return;
+  }
   const data =
     /<script type="application\/json" id="stars-summary-data">(.*?)<\/script>/s.exec(
       stamped,
