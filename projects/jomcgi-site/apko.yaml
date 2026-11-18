@@ -13,6 +13,9 @@ contents:
     - ca-certificates-bundle
     - libgcc
     - libstdc++
+    # Chromium (site-check) initialises NSS for its first HTTPS page, and
+    # NSS needs libsqlite3.so.0.
+    - sqlite-libs
 
 archs:
   - x86_64
