@@ -28,7 +28,7 @@
     "commitHourlyLimit": 0,
     "labels": ["dependencies", "security"],
     "schedule": ["at any time"],
-    "minimumReleaseAge": null,
+    "minimumReleaseAge": "1 day",
     "prCreation": "immediate"
   },
   "enabledManagers": [
@@ -216,6 +216,17 @@
       "automerge": true,
       "platformAutomerge": true,
       "automergeType": "pr"
+    },
+    {
+      "description": "Require review for platform and cluster updates.",
+      "matchFileNames": [
+        "projects/platform*/**",
+        "projects/factory-cluster/**",
+        "MODULE.bazel",
+        ".github/**",
+        "buildbuddy.yaml"
+      ],
+      "automerge": false
     },
     {
       "description": "Keep major upgrades separate and require manual merge.",
