@@ -1254,7 +1254,7 @@ func TestGoalHistorySurvivesLegacyCapsAndOverflowAcrossRestart(t *testing.T) {
 				saved, _ := LoadState(h.gh.check(shaA).Text)
 				original := api.issue.Description
 				api.issue.Description = "Different evidence cannot identify an omitted legacy goal"
-				if _, ok := e.recoverState(context.Background(), &e.cfg.Bindings[0], pr, &github.CheckRun{HeadSHA: shaA}, saved); ok {
+				if _, rec := e.recoverState(context.Background(), &e.cfg.Bindings[0], pr, &github.CheckRun{HeadSHA: shaA}, saved); rec == replayDone {
 					t.Fatal("a clipped goal snapshot migrated without its original issue binding")
 				}
 				api.issue.Description = original
@@ -1334,7 +1334,8 @@ func TestLegacyEmptyPassMigrationAndMissingEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			st, _ := LoadState(run.Text)
-			got, ok := e.recoverState(context.Background(), &e.cfg.Bindings[0], github.PullRequest{Number: 7, HeadSHA: shaA}, run, st)
+			got, rec := e.recoverState(context.Background(), &e.cfg.Bindings[0], github.PullRequest{Number: 7, HeadSHA: shaA}, run, st)
+			ok := rec == replayDone
 			canRecover := missing == "" || missing == "task" || missing == "gate replacement" || missing == "prior failed attempt"
 			if ok != canRecover || got.Incomplete == canRecover {
 				t.Fatalf("recovery=%v, incomplete=%v", ok, got.Incomplete)
@@ -1443,9 +1444,9 @@ func TestDecisionRecoveryKeepsFindingIdentitiesAcrossRestart(t *testing.T) {
 			h.gh.prs[7].Comments[0].Body = "Revoked: " + comment.Body
 			e := h.engine()
 			saved, _ := LoadState(h.gh.check(shaB).Text)
-			recovered, ok := e.recoverState(context.Background(), &e.cfg.Bindings[0],
+			recovered, rec := e.recoverState(context.Background(), &e.cfg.Bindings[0],
 				github.PullRequest{Number: 7, HeadSHA: shaB}, &github.CheckRun{HeadSHA: shaB}, saved)
-			if !ok || recovered.Incomplete {
+			if rec != replayDone || recovered.Incomplete {
 				t.Fatal("complete history could not recover with a revoked decision")
 			}
 			for _, id := range ids {
@@ -1523,10 +1524,11 @@ func TestLegacyMigrationPreservesDerivedIDsAcrossReports(t *testing.T) {
 	}
 }
 
-// TestExpiredLossyLegacyHistoryFallsBackToAFullReview: a legacy report that
-// cannot be replayed never passes as it is, and never holds the head
-// without end. The head is reviewed in full again; that review decides.
-func TestExpiredLossyLegacyHistoryFallsBackToAFullReview(t *testing.T) {
+// TestLostLegacyHistoryHoldsForJoesApproval: a legacy report that cannot be
+// replayed (expired task, lossy snapshot) never passes as it is, and a full
+// review cannot clear it either. Only Joe's approval of the head, after the
+// hold appeared, accepts the blockers no review can account for.
+func TestLostLegacyHistoryHoldsForJoesApproval(t *testing.T) {
 	for _, kind := range []string{"40 blockers", "20 gates", "clipped identity", "clipped decision"} {
 		t.Run(kind, func(t *testing.T) {
 			h := newHarness(t)
@@ -1552,21 +1554,123 @@ func TestExpiredLossyLegacyHistoryFallsBackToAFullReview(t *testing.T) {
 			shaB := strings.Repeat("b", 40)
 			h.gh.push(7, shaB)
 			seedLegacyReport(t, h, shaB, Report{Summary: "No findings", Findings: []Finding{}}, State{Blocking: []Finding{}}, ConclusionSuccess)
+			// An approval from before the hold does not accept lost blockers.
+			h.gh.review(7, "jomcgi", "APPROVED", shaB, "")
 			e, ctx, _ := h.start()
 			task = runReview(t, h, e, ctx, 7, shaB)
 			checks := h.gh.checksOn(shaB)
-			if hold := checks[len(checks)-2]; hold.Conclusion != ConclusionFailure {
-				t.Fatal("an empty legacy report certified potentially missing findings")
-			} else if st, ok := LoadState(hold.Text); !ok || !st.Incomplete {
-				t.Fatal("the hold did not record the missing history")
+			hold := checks[len(checks)-2]
+			held, ok := LoadState(hold.Text)
+			if hold.Conclusion != ConclusionFailure || !ok || !held.Incomplete || held.Gate == nil || !held.Gate.HistoryLost {
+				t.Fatalf("lost history was not held: %s %q", hold.Conclusion, hold.Title)
 			}
-			h.k.finish(task, kagent.StateCompleted, report(t, Report{Summary: "Full review", Findings: []Finding{}}))
+			if !strings.Contains(hold.Summary, "lost its earlier review history") || !strings.Contains(hold.Summary, "accepts those unaccounted blockers") {
+				t.Fatalf("the hold does not say what an approval accepts: %s", hold.Summary)
+			}
+			for _, f := range st.Previous() {
+				if !slices.ContainsFunc(held.Previous(), func(k Finding) bool { return k.ID == f.ID }) {
+					t.Fatalf("the older snapshot's finding %s was not carried", f.ID)
+				}
+			}
+			// The full review fixes every finding it was shown; it still
+			// cannot account for what the lost history may have held.
+			var fixed []Previous
+			for _, f := range held.Blocking {
+				fixed = append(fixed, Previous{ID: f.ID, Status: StatusFixed})
+			}
+			h.k.finish(task, kagent.StateCompleted, report(t, Report{Summary: "Full review", Findings: []Finding{}, Previous: fixed}))
 			eventually(t, "the full review", func() bool { return h.gh.check(shaB).Status == "completed" })
+			e.Tick(ctx)
 			c := h.gh.check(shaB)
+			if st, ok := LoadState(c.Text); !ok || !st.Incomplete || c.Conclusion != ConclusionFailure || st.Gate == nil || !st.Gate.HistoryLost {
+				t.Fatalf("an empty full review cleared lost history: %s %q", c.Conclusion, c.Title)
+			}
+			if len(h.gh.enqueues()) != 0 {
+				t.Fatal("lost history was enqueued")
+			}
+			h.gh.review(7, "jomcgi", "APPROVED", shaB, "")
+			e.Tick(ctx)
+			c = h.gh.check(shaB)
 			if st, ok := LoadState(c.Text); !ok || st.Incomplete || c.Conclusion != ConclusionSuccess {
-				t.Fatalf("the full review did not decide the head: %s %q", c.Conclusion, c.Title)
+				t.Fatalf("Joe's approval did not dispose of the lost history: %s %q", c.Conclusion, c.Title)
+			}
+			// The disposal holds while the approval does.
+			e.Tick(ctx)
+			if c := h.gh.check(shaB); c.Conclusion != ConclusionSuccess {
+				t.Fatalf("the disposal did not persist: %s %q", c.Conclusion, c.Title)
 			}
 		})
+	}
+}
+
+// TestFailedHistoryReadRetriesWithoutFallback: a failed GitHub read is not
+// lost history. The gate stays closed and keeps the state incomplete, with
+// no hold for Joe and no full review. The next poll replays the report.
+func TestFailedHistoryReadRetriesWithoutFallback(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	var original []Finding
+	for i := range 41 {
+		original = append(original, finding(fmt.Sprintf("a.go:correctness:%d", i), SeverityHigh))
+	}
+	// The legacy state kept 40 of 41 findings; the live task holds all 41.
+	seedLegacyReport(t, h, shaA, Report{Summary: "Original review", Findings: original}, State{Blocking: original[:40]}, ConclusionSuccess)
+	sent := len(h.k.sent())
+	h.gh.failGraphQL("heads", true)
+	e := h.engine()
+	e.Tick(context.Background())
+	c := h.gh.check(shaA)
+	st, ok := LoadState(c.Text)
+	if c.Conclusion != ConclusionFailure || !ok || !st.Incomplete || (st.Gate != nil && st.Gate.HistoryLost) || len(h.k.sent()) != sent {
+		t.Fatalf("a failed read fell back: %s %q", c.Conclusion, c.Title)
+	}
+	h.gh.failGraphQL("heads", false)
+	e.Tick(context.Background())
+	st = mustState(t, h.gh.check(shaA).Text)
+	if st.Incomplete || (st.Gate != nil && st.Gate.HistoryLost) || len(h.k.sent()) != sent {
+		t.Fatalf("the retry did not replay the report: %+v", st)
+	}
+	for _, f := range original {
+		if !slices.ContainsFunc(st.Blocking, func(b Finding) bool { return b.ID == f.ID }) {
+			t.Fatalf("replay lost %s", f.ID)
+		}
+	}
+	if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure {
+		t.Fatal("replayed blockers passed")
+	}
+}
+
+// TestLostHistoryCarriesAnOlderLegacySnapshotsBlocker: when the newest
+// legacy snapshot lacks a blocker an older one has, and the history cannot
+// be replayed, the older blocker stays open. An empty full review and the
+// hold's approval do not resolve it.
+func TestLostHistoryCarriesAnOlderLegacySnapshotsBlocker(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	older := finding("a.go:correctness:older", SeverityCritical)
+	task := seedLegacyReport(t, h, shaA, Report{Summary: "Older", Findings: []Finding{older}}, State{Blocking: []Finding{older}}, ConclusionFailure)
+	delete(h.k.tasks, task)
+	shaB := strings.Repeat("b", 40)
+	h.gh.push(7, shaB)
+	// The newest snapshot is lossy (a clipped identity), so the older
+	// snapshot cannot be replayed through it.
+	clipped := finding(clip(strings.Repeat("n", 200), 80), SeverityHigh)
+	task = seedLegacyReport(t, h, shaB, Report{Summary: "Newest", Findings: []Finding{clipped}}, State{Blocking: []Finding{clipped}}, ConclusionFailure)
+	delete(h.k.tasks, task)
+	e, ctx, _ := h.start()
+	review := runReview(t, h, e, ctx, 7, shaB)
+	prompt := h.k.sent()[len(h.k.sent())-1].Parts[0].Text
+	if !strings.Contains(prompt, "`"+older.ID+"` critical") {
+		t.Fatal("the older snapshot's blocker was not sent for accounting")
+	}
+	h.k.finish(review, kagent.StateCompleted, report(t, Report{Summary: "Nothing", Findings: []Finding{}}))
+	eventually(t, "the full review", func() bool { return h.gh.check(shaB).Status == "completed" })
+	h.gh.review(7, "jomcgi", "APPROVED", shaB, "")
+	e.Tick(ctx)
+	c := h.gh.check(shaB)
+	st := mustState(t, c.Text)
+	if c.Conclusion != ConclusionFailure || !slices.ContainsFunc(st.Blocking, func(f Finding) bool { return f.ID == older.ID }) {
+		t.Fatalf("the older blocker did not stay open: %s %q %+v", c.Conclusion, c.Title, st.Blocking)
 	}
 }
 
@@ -1737,7 +1841,7 @@ func TestIncompleteHistoryCarriesKnownFindingsAcrossHeads(t *testing.T) {
 				e, ctx, stop := h.start()
 				task := runReview(t, h, e, ctx, 7, sha)
 				prompt := h.k.sent()[len(h.k.sent())-1].Parts[0].Text
-				if !legacy && (!strings.Contains(prompt, "Missing history keeps the check blocked") || strings.Contains(prompt, "raised no blocking findings")) {
+				if !strings.Contains(prompt, "Missing history keeps the check blocked") || strings.Contains(prompt, "raised no blocking findings") {
 					t.Fatal("missing history was presented as a complete earlier review")
 				}
 				if round == 0 && (!strings.Contains(prompt, "`"+blocker.ID+"` critical") || !strings.Contains(prompt, "`"+gate.ID+"` high")) {
@@ -1748,10 +1852,11 @@ func TestIncompleteHistoryCarriesKnownFindingsAcrossHeads(t *testing.T) {
 				stop()
 				c := h.gh.check(sha)
 				st, ok := LoadState(c.Text)
-				// A legacy report without a task falls back to a full review:
-				// known findings still need an account, then the head passes.
-				held := !legacy || round < 2
-				if !ok || st.Incomplete == legacy || (c.Conclusion == ConclusionFailure) != held || len(st.Previous()) != max(2-round, 0) {
+				// A full review accounts for the known findings, but never
+				// clears the missing history. Lost legacy history also holds
+				// the head for Joe's approval.
+				if !ok || !st.Incomplete || c.Conclusion != ConclusionFailure || len(st.Previous()) != max(2-round, 0) ||
+					(st.Gate != nil && st.Gate.HistoryLost) != legacy {
 					t.Fatalf("round %d lost recovered findings or cleared missing history: %s %+v", round, c.Conclusion, st)
 				}
 				if round == 0 && (st.Blocking[0].Severity != SeverityCritical || st.Gate.Findings[0].Severity != SeverityHigh) {

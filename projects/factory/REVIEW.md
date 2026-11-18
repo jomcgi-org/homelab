@@ -98,10 +98,15 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   legacy task expired, a record below both storage caps with distinct,
   unshortened IDs can recover findings. Such records cannot prove resolutions:
   later reports must explicitly account for every recovered finding. A
-  legacy report that cannot be replayed starts a full review of the head; it
-  carries the known findings and decides the check. Other ambiguous or
-  missing records keep recovery blocked. A later run on a head that keeps no
-  state does not hide an earlier run's state. The connector also
+  failed GitHub or kagent read keeps the check blocked and retries on the
+  next poll; it never counts as lost history. When legacy history is lost
+  (expired task, lossy record), the head stays blocked with a human hold. A
+  full review shows its findings, and carries every finding of each readable
+  legacy record, but cannot clear the hold. Only Joe's approval of that head
+  after the hold appears accepts the blockers no review can account for.
+  Other ambiguous or missing records keep recovery blocked. A later run on a
+  head that keeps no state does not hide an earlier run's state. The
+  connector also
   rejects incomplete factory review passes. Rejected replacement checks
   attempt both updates and dequeue of unsafe queued heads; failed dequeue
   remains retryable. A total GitHub write outage cannot revoke a published

@@ -986,7 +986,7 @@ const (
 	stateSuffix         = " -->"
 )
 
-const incompleteStateMessage = "The complete prior review state is unavailable. Known findings still require accounting, and this check stays blocked. A full review or human-gate approval cannot clear missing history. Recovery requires complete history with original reports or verifiably lossless legacy records."
+const incompleteStateMessage = "The complete prior review state is unavailable. Known findings still require accounting, and this check stays blocked. A full review cannot clear missing history. Recovery requires complete history with original reports or verifiably lossless legacy records. Only when legacy history is lost does an approval the hold asks for dispose of it."
 
 var stateRE = regexp.MustCompile(`<!-- factory-review:state v([12]) ([A-Za-z0-9+/=]*) -->`)
 
