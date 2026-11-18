@@ -21,11 +21,10 @@ boundary: a rule below broken on them is critical.
     only HTTPRoutes from `edge`. The API server checks the token again
     ([Joe's decision](https://github.com/jomcgi-org/homelab/pull/8237#issuecomment-6975000416)).
 
-  `test_only_kagent_forwards_the_access_token` in
-  `projects/platform-factory/edge/chart/edge_test.py` pins this set of
-  policies. Until the `kube-api` route lands (#8222), the set it pins has
-  only the first two. #8222 adds the third to that set and adds a test that
-  pins the bearer policy, route, grant and TLS check.
+  In `projects/platform-factory/edge/chart/edge_test.py`,
+  `test_only_kagent_forwards_the_access_token` pins this set of policies,
+  and `test_kube_api_requires_an_authentik_token_from_a_kube_group` pins the
+  bearer policy, route, grant and TLS check.
   The `oidc-sentinel` route stays.
   Authentik's admin, user, API and initial-setup paths keep answering 403
   publicly.
