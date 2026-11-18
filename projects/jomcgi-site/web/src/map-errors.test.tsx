@@ -1,19 +1,55 @@
-import { expect, it } from "vitest";
-import { isMapFailure } from "./map-errors";
+import { expect, it, vi } from "vitest";
+import { watchMapHealth } from "./map-errors";
 
-it("treats a single failed or cancelled tile as non-fatal", () => {
-  const error = new Error("AJAXError: Failed to fetch (0)");
-  expect(isMapFailure({ error, sourceId: "openmaptiles", tile: {} })).toBe(
-    false,
-  );
-  expect(isMapFailure({ error, tile: {} })).toBe(false);
+function fakeMap() {
+  const listeners = new Map<string, ((event: unknown) => void)[]>();
+  return {
+    on(type: string, listener: (event: unknown) => void) {
+      listeners.set(type, [...(listeners.get(type) ?? []), listener]);
+    },
+    fire(type: string, event: unknown = {}) {
+      for (const listener of listeners.get(type) ?? []) listener(event);
+    },
+  };
+}
+const tileError = {
+  error: new Error("AJAXError: Failed to fetch (0)"),
+  sourceId: "openmaptiles",
+  tile: {},
+};
+const baseTile = { dataType: "source", sourceId: "openmaptiles", tile: {} };
+
+it("keeps the map when some tiles fail and base-map tiles load", () => {
+  const map = fakeMap();
+  const failed = vi.fn();
+  watchMapHealth(map, ["stars"], failed);
+  map.fire("error", tileError);
+  map.fire("data", baseTile);
+  map.fire("idle");
+  expect(failed).not.toHaveBeenCalled();
 });
 
-it("treats a source error without a tile, style and WebGL errors as a failed map", () => {
-  // A failed TileJSON request names the source but no tile.
-  expect(
-    isMapFailure({ error: new Error("TileJSON"), sourceId: "openmaptiles" }),
-  ).toBe(true);
-  expect(isMapFailure({ error: new Error("style") })).toBe(true);
-  expect(isMapFailure({})).toBe(true);
+it("fails when the map settles after tile errors with no base-map tile", () => {
+  const map = fakeMap();
+  const failed = vi.fn();
+  watchMapHealth(map, ["stars"], failed);
+  map.fire("error", tileError);
+  // Overlay tiles alone do not count as a base map.
+  map.fire("data", { ...baseTile, sourceId: "stars" });
+  map.fire("idle");
+  expect(failed).toHaveBeenCalledOnce();
+});
+
+it("fails at once for an error without a tile", () => {
+  for (const event of [
+    { error: new Error("TileJSON"), sourceId: "openmaptiles" },
+    { error: new Error("style") },
+    {},
+  ]) {
+    const map = fakeMap();
+    const failed = vi.fn();
+    watchMapHealth(map, ["stars"], failed);
+    map.fire("error", event);
+    expect(failed).toHaveBeenCalledOnce();
+  }
 });
