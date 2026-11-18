@@ -111,3 +111,24 @@ path without breaking authentication for everyone.
 authentik ships no CRDs. Declarative configuration is done with blueprints,
 mounted through `blueprints.configMaps` or `blueprints.secrets` and applied by
 the worker, which is the GitOps path for adding providers and applications.
+
+### Roll back factory explorer sign-in
+
+1. Revert the addition of `factory-blueprints/factory-explore.yaml` and sync
+   the factory Authentik release. Confirm that `factory-explore.yaml` is gone
+   from the `authentik-mcp-blueprints` ConfigMap and the worker's mounted
+   blueprints. This prevents the worker from recreating objects during cleanup.
+2. In the admin interface at `https://factory-auth.jomcgi.dev/if/admin/`,
+   open **Applications → Applications** and delete **Factory explorer** (slug
+   `factory-explore`). Under **Applications → Providers**, delete the OAuth2
+   provider with client ID `factory-explore` if it is still present. Refresh
+   both lists and confirm both entries are gone.
+3. In a browser signed in to factory Authentik, open this authorization request:
+
+   ```text
+   https://factory-auth.jomcgi.dev/application/o/authorize/?client_id=factory-explore&response_type=code&scope=openid&redirect_uri=https%3A%2F%2Ffactory-explore.jomcgi.dev%2Foidc%2Fcallback&state=rollback-check&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256
+   ```
+
+   Confirm Authentik rejects the unknown client and issues no callback with an
+   authorization code. A login prompt or network failure is inconclusive.
+   Previously issued ID tokens can remain valid until their 10-minute expiry.
