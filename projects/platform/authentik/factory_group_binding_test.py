@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -12,32 +13,61 @@ class BlueprintLoader(yaml.SafeLoader):
 BlueprintLoader.add_multi_constructor("!", lambda loader, tag, node: node)
 
 
-def test_factory_applications_have_group_bindings():
+def _applications():
     paths = sorted((Path(__file__).parent / "factory-blueprints").glob("*.yaml"))
     assert paths, "No factory blueprints discovered"
-    missing = []
     for path in paths:
         entries = yaml.load(path.read_text(), Loader=BlueprintLoader)["entries"]
-        bound = set()
-        for entry in entries:
-            if entry["model"] != "authentik_policies.policybinding":
-                continue
-            fields = {**entry.get("identifiers", {}), **entry.get("attrs", {})}
-            target = fields.get("target")
-            if (
-                entry.get("state", "present") == "present"
-                and fields.get("enabled", True) is True
-                and fields.get("group")
-                and isinstance(target, yaml.ScalarNode)
-                and target.tag == "!KeyOf"
-            ):
-                bound.add(target.value)
+        for app in entries:
+            if app["model"] == "authentik_core.application":
+                yield pytest.param(
+                    app, entries, id=f"{path.name}-{app['identifiers']['slug']}"
+                )
 
-        for entry in entries:
-            if (
-                entry["model"] == "authentik_core.application"
-                and entry.get("id") not in bound
-            ):
-                missing.append(f"{path.name}: {entry['identifiers']['slug']}")
 
-    assert not missing, "Missing enabled group binding for " + ", ".join(missing)
+def _bindings_for(app, entries):
+    for entry in entries:
+        if entry["model"] != "authentik_policies.policybinding":
+            continue
+        fields = {**entry.get("identifiers", {}), **entry.get("attrs", {})}
+        target = fields.get("target")
+        if (
+            entry.get("state", "present") == "present"
+            and isinstance(target, yaml.ScalarNode)
+            and target.tag == "!KeyOf"
+            and target.value == app.get("id")
+        ):
+            yield fields
+
+
+def _assert_group_binding(app, bindings):
+    assert any(
+        fields.get("group")
+        and fields.get("enabled", True) is True
+        and fields.get("negate", False) is False
+        for fields in bindings
+    ), f"Missing enabled group binding for {app['identifiers']['slug']}"
+
+
+@pytest.mark.parametrize("app,entries", _applications())
+def test_factory_application_has_group_binding(app, entries):
+    _assert_group_binding(app, _bindings_for(app, entries))
+
+
+@pytest.mark.parametrize("app,entries", _applications())
+def test_removing_group_bindings_denies_application(app, entries):
+    bindings = [
+        fields for fields in _bindings_for(app, entries) if "group" not in fields
+    ]
+    with pytest.raises(AssertionError, match="Missing enabled group binding"):
+        _assert_group_binding(app, bindings)
+
+
+@pytest.mark.parametrize(
+    "fields", [{"negate": True}, {"enabled": False}, {"policy": "p"}, {"user": "u"}]
+)
+def test_rejects_ineffective_bindings(fields):
+    if "negate" in fields or "enabled" in fields:
+        fields = {**fields, "group": "operators"}
+    with pytest.raises(AssertionError, match="Missing enabled group binding"):
+        _assert_group_binding({"identifiers": {"slug": "example"}}, [fields])
