@@ -1,0 +1,3 @@
+image:
+  repository: ghcr.io/jomcgi/homelab/projects/factory-explore
+  digest: "" # CI supplies the content digest when packaging the chart.

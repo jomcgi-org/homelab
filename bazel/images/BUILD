@@ -38,6 +38,8 @@ multirun(
         "//projects/embervm/scratch-prep:image.push",
         "//projects/embervm/tokenbroker/image:image.push",
         "//projects/embervm/xds/image:image.push",
+        "//projects/factory-explore/chart:chart.push",
+        "//projects/factory-explore:image.push",
         "//projects/factory-landing/chart:chart.push",
         "//projects/factory-landing:image.push",
         "//projects/factory-public/chart:chart.push",
@@ -87,6 +89,7 @@ multirun(
     name = "push_charts",
     commands = [
         "//projects/embervm/chart:chart.push",
+        "//projects/factory-explore/chart:chart.push",
         "//projects/factory-landing/chart:chart.push",
         "//projects/factory-public/chart:chart.push",
         "//projects/factory/chart:chart.push",
