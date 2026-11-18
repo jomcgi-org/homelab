@@ -342,7 +342,7 @@ when its row applies.
 | Any writing: docs, PRs, commits, comments, tickets, chat, site copy | `docs/writing.md` |
 | Operator changes | `projects/operators/best-practices.md` |
 | How a domain works today | `projects/<domain>/ARCHITECTURE.md`; each `**Why.**` paragraph carries the rationale |
-| Writing or restructuring a README or `ARCHITECTURE.md` | `docs/writing.md` "READMEs and architecture documents" |
+| Creating or restructuring a README, `ARCHITECTURE.md` or other document | `docs/writing.md` "Document types"; templates in `docs/templates/` |
 | Build, CI, tooling, hooks, Semgrep | `bazel/ARCHITECTURE.md` |
 | Recording a decision | Joe's decision from an account that is his alone ("Tracker" above), linked from its HOME issue; then a `**Why.**` paragraph in the domain's ARCHITECTURE.md linking it and a Direction row with its HOME issue; no ADRs (#4667) |
 | Filing, delegating or updating work | "Tracker" above |
