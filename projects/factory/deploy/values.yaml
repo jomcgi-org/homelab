@@ -47,11 +47,18 @@ kagent:
   controller:
     metrics:
       enabled: true
-    # kagent v1.0.1 built from jomcgi-org/kagent branch jomcgi/codex-6.2:
-    # the controller writes the Codex version each actor must run
-    # (PinnedCodexVersion, strict), so it moves with the harness image below.
-    # Upstream PR to follow; return to the packaged images when a kagent
-    # release ships the bump. Revert: delete this and harnessImages.
+    # kagent v1.0.1 built from jomcgi-org/kagent commit 2c2fc329a8d8
+    # (branch jomcgi/codex-6.2, build run
+    # https://github.com/jomcgi-org/kagent/actions/runs/44189845362). That
+    # commit sets PinnedCodexVersion and the harness Dockerfile to Codex
+    # 0.169.1, the first stable Codex whose bundled catalogue has
+    # gpt-6.2-astra and gpt-6.2-sol (agents.*.model below). Upstream kagent
+    # v1.0.1 pins 0.161.0, which has neither. The controller writes that pin
+    # into each actor's config (strict), so it moves with the harness image
+    # below. Upstream PR to follow; return to the packaged images when a
+    # kagent release ships the bump. Revert the images and the models
+    # together: the packaged images' Codex 0.161.0 gives a 6.2 coder no
+    # apply_patch.
     image:
       registry: ghcr.io
       repository: jomcgi-org/kagent/controller
