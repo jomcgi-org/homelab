@@ -3,10 +3,12 @@
 # never reuse or renumber one. docs/THREAT-MODEL.md cites them.
 invariants:
 - id: ROOT-1
-  statement: CI alone raises chart versions and deployment pins.
+  statement: A PR cannot change a published chart's version or raise its deployment pin; CI alone writes
+    them.
   mechanism:
   - bazel/tools/ci/chart_version_guard.py
-  state: unproven
+  test: //bazel/tools/ci:chart_version_guard_test
+  state: live
 - id: ROOT-2
   statement: No secret value is in git.
   mechanism: []
