@@ -1,6 +1,7 @@
 """Each content rule passes a good manifest and fails a bad one (HOME-350)."""
 
 import copy
+import hashlib
 import json
 
 import pytest
@@ -128,6 +129,7 @@ def test_cronjob_pod_is_checked():
         ),
         (
             {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
                 "kind": "Role",
                 "metadata": {"name": "r"},
                 "rules": [
@@ -138,6 +140,7 @@ def test_cronjob_pod_is_checked():
         ),
         (
             {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
                 "kind": "Role",
                 "metadata": {"name": "r"},
                 "rules": [
@@ -148,6 +151,7 @@ def test_cronjob_pod_is_checked():
         ),
         (
             {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
                 "kind": "Role",
                 "metadata": {"name": "r"},
                 "rules": [
@@ -162,6 +166,7 @@ def test_cronjob_pod_is_checked():
         ),
         (
             {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
                 "kind": "Role",
                 "metadata": {"name": "r"},
                 "rules": [{"apiGroups": [""], "resources": ["*"], "verbs": ["get"]}],
@@ -233,6 +238,7 @@ def test_bad_manifest_fails(doc, expect):
 
 def test_named_secret_read_passes():
     role = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
         "kind": "Role",
         "metadata": {"name": "r", "namespace": NS},
         "rules": [
@@ -301,7 +307,7 @@ def test_empty_and_kindless_documents_are_skipped():
 def policy(expression=f'request.namespace == "{NS}"'):
     return {
         "kind": "ValidatingAdmissionPolicy",
-        "metadata": {"name": "guard"},
+        "metadata": {"name": f"{NS}-guard"},
         "spec": {"matchConditions": [{"name": "ns", "expression": expression}]},
     }
 
@@ -309,15 +315,30 @@ def policy(expression=f'request.namespace == "{NS}"'):
 def binding(**spec):
     return {
         "kind": "ValidatingAdmissionPolicyBinding",
-        "metadata": {"name": "guard"},
-        "spec": {"policyName": "guard", "validationActions": ["Deny"], **spec},
+        "metadata": {"name": f"{NS}-guard"},
+        "spec": {"policyName": f"{NS}-guard", "validationActions": ["Deny"], **spec},
     }
 
 
-def claim(labels):
+LABEL = {"factory.jomcgi.dev/garage-claim": "true"}
+
+
+def claim(labels, namespace=NS, secret="bucket", name=None):
+    digest = hashlib.sha256(f"{namespace}/{secret}".encode()).hexdigest()
     return {
+        "apiVersion": "v1",
         "kind": "ConfigMap",
-        "metadata": {"name": "garage-claim-x", "namespace": "garage", "labels": labels},
+        "metadata": {
+            "name": name or f"garage-claim-{digest}",
+            "namespace": "garage",
+            "labels": labels,
+        },
+        "data": {
+            "namespace": namespace,
+            "secretName": secret,
+            "bucket": "b",
+            "access": "read",
+        },
     }
 
 
@@ -336,7 +357,57 @@ def test_binding_that_widens_its_match_fails():
 
 
 def test_labelled_garage_claim_passes():
-    assert check([claim({"factory.jomcgi.dev/garage-claim": "true"})], NS) == []
+    assert check([claim(LABEL)], NS) == []
+
+
+def test_garage_claim_for_another_namespace_fails():
+    assert any(
+        "not the release namespace" in p
+        for p in check([claim(LABEL, namespace="other")], NS)
+    )
+
+
+def test_garage_claim_with_wrong_name_fails():
+    assert any(
+        "not the release namespace" in p
+        for p in check([claim(LABEL, name="garage-claim-x")], NS)
+    )
+
+
+def test_policy_with_a_platform_name_fails():
+    doc = policy()
+    doc["metadata"]["name"] = "garage-claim-authorizations"
+    assert any("cluster-scoped" in p for p in check([doc], NS))
+
+
+def test_unclassified_kind_fails():
+    doc = {
+        "apiVersion": "storage.k8s.io/v1",
+        "kind": "VolumeAttachment",
+        "metadata": {"name": "v"},
+    }
+    assert any("unclassified" in p for p in check([doc], NS))
+
+
+def test_wildcard_verb_fails():
+    role = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "Role",
+        "metadata": {"name": "r"},
+        "rules": [{"apiGroups": [""], "resources": ["configmaps"], "verbs": ["*"]}],
+    }
+    assert any("wildcard" in p for p in check([role], NS))
+
+
+def test_empty_digest_fails():
+    doc = deployment({"containers": [container(image="ghcr.io/x@sha256:")]})
+    assert any("names no digest" in p for p in check([doc], NS))
+
+
+def test_added_capability_fails():
+    s = sc(capabilities={"drop": ["ALL"], "add": ["NET_ADMIN"]})
+    doc = deployment({"containers": [container(securityContext=s)]})
+    assert any("adds capabilities" in p for p in check([doc], NS))
 
 
 def test_unlabelled_garage_configmap_fails():
