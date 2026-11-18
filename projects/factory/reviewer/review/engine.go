@@ -172,6 +172,8 @@ type Config struct {
 	// GoalAudit persists private goal replies before their sessions are deleted.
 	// Without it a goal check is unavailable.
 	GoalAudit GoalAudit
+	// GoalTasks recovers only the goal's own dispatch across restarts.
+	GoalTasks GoalTasks
 }
 
 // Engine runs the reviewer.

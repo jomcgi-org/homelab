@@ -21,6 +21,9 @@ func auditRecords(t *testing.T, s *FileGoalAudit) []GoalAuditRecord {
 	}
 	var records []GoalAuditRecord
 	for _, file := range files {
+		if strings.HasPrefix(filepath.Base(file), "goal-") {
+			continue
+		}
 		b, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)
@@ -143,6 +146,70 @@ func TestGoalAuditKeepsReplacementTaskReply(t *testing.T) {
 	}
 	if records := auditRecords(t, s); len(records) != 2 || records[0].Reply == records[1].Reply {
 		t.Fatal("a replacement task's reply must not be lost to deduplication")
+	}
+}
+
+func TestGoalTaskIndexSurvivesRestartAndExpires(t *testing.T) {
+	dir := t.TempDir()
+	s, err := OpenGoalAudit(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	r := GoalTask{Key: "../../goal", MessageID: "original-message", CreatedAt: now}
+	if err := s.SaveGoalTask(r); err != nil {
+		t.Fatal(err)
+	}
+	// A restart between Send and recording the response must keep the ID.
+	s, err = OpenGoalAudit(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.LoadGoalTask(r.Key)
+	if err != nil || got == nil || *got != r {
+		t.Fatal("lost message index across restart", err)
+	}
+	r.TaskID = "own-task"
+	if err := s.SaveGoalTask(r); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.LoadGoalTask(r.Key)
+	if err != nil || got == nil || *got != r {
+		t.Fatal("lost task index", err)
+	}
+	info, err := os.Stat(s.goalTaskName(r.Key))
+	if err != nil || info.Mode().Perm() != 0o600 || !info.ModTime().Equal(now) {
+		t.Fatal("task index must be private and keep its first dispatch time", err)
+	}
+	if err := s.Prune(now.Add(goalAuditRetention - time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.LoadGoalTask(r.Key); err != nil || got == nil {
+		t.Fatal("task index expired early", err)
+	}
+	if err := s.Prune(now.Add(goalAuditRetention)); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.LoadGoalTask(r.Key); err != nil || got != nil {
+		t.Fatal("expired task index retained", err)
+	}
+	if err := s.DeleteGoalTask(r.Key); err != nil {
+		t.Fatal("deleting an absent index must be idempotent", err)
+	}
+}
+
+func TestGoalTaskIndexCorruptionIsNotAbsence(t *testing.T) {
+	s, err := OpenGoalAudit(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, data := range []string{`{`, `{}`, `{"key":"another-goal","message_id":"message"}`} {
+		if err := os.WriteFile(s.goalTaskName("goal"), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.LoadGoalTask("goal"); err == nil {
+			t.Fatal("corrupt index must prevent a new dispatch")
+		}
 	}
 }
 

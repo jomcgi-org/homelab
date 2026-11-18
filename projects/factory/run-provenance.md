@@ -61,10 +61,24 @@ ServiceAccount and checks the repository binding. Its existing accounting role
 can call only the append function, with no direct table or sequence access.
 The message ID deduplicates retries. Conflicting provenance for the same ID
 fails instead of replacing the earlier record.
-Goal checks recover an existing task by its stable prompt MAC and retain that
-task's original receipt. A new task's message ID also includes a MAC of all
-receipt inputs, so label edits and runtime changes cannot collide with an older
-receipt that has no recoverable task.
+Goal checks persist a lookup from the stable prompt MAC to their message ID
+before sending, then to the returned task ID. The lookup uses the reviewer's
+private audit volume and expires after 14 days. Recovery reads only that task;
+if the send response was lost, it reconciles the same message ID. An unrelated
+task's history cannot block the goal check. The original receipt stays fixed
+across label edits and runtime rollouts. A new task's message ID also includes
+a MAC of all receipt inputs, so changed inputs cannot collide with an older
+receipt that has no recoverable task. The lookup is removed after the reply is
+saved and before the session is deleted.
+
+## Implementation evidence
+
+| Requirement | Write path and regression coverage |
+| --- | --- |
+| Six values for coder and rework dispatch | `dispatch.prepareProvenance` and `store.RecordProvenance` write the run and attempt before `MarkIssued`; `TestCoderAndReworkRunProvenance` exercises dispatch. |
+| Six values for reviewer dispatch | `review.recordProvenance` and `goalCall` require the broker receipt before sending; `TestReviewerMessageRecordsProvenanceBeforeDispatch` and `TestGoalReviewRequiresProvenanceBeforeSending` cover both task types. |
+| Historical nulls and new database columns | `20261118070000_run_provenance.sql` adds nullable fields without a backfill; `TestProvenanceMigrationLeavesHistoricalRunsNull` applies the migration to an existing row. |
+| Immutable reviewer receipts | The migration's `record_reviewer_run` function writes all six values; `TestReviewerProvenanceIsAppendOnlyAndIdempotent` reads them back and rejects conflicting input. |
 
 ## Rollout verification
 

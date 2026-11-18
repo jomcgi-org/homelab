@@ -1301,6 +1301,7 @@ func newHarness(t *testing.T) *harness {
 		sessions: &fakeSessions{k: k, set: map[string]*kagent.Session{}, errs: map[string]error{}},
 		cfg: Config{
 			GoalAudit: audit,
+			GoalTasks: audit,
 			CheckName: "factory review", AppID: testAppID, Concurrency: 2,
 			TaskPoll: 2 * time.Millisecond, Reissue: 2 * time.Millisecond, Timeout: 10 * time.Second,
 			RetryBackoff: 2 * time.Millisecond, MaxSends: 3, DispatchWindow: 5 * time.Millisecond,
