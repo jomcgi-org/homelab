@@ -99,14 +99,16 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   unshortened IDs can recover findings. Such records cannot prove resolutions:
   later reports must explicitly account for every recovered finding. A
   failed GitHub or kagent read keeps the check blocked and retries on the
-  next poll; it never counts as lost history. When legacy history is lost
-  (expired task, lossy record), the head stays blocked with a human hold. A
-  full review shows its findings, and carries every finding of each readable
-  legacy record, but cannot clear the hold. Only Joe's approval of that head
-  after the hold appears accepts the blockers no review can account for. It
-  never accepts the findings of a review whose state overflowed; only a
-  replay of that review's task recovers them. Other ambiguous or missing
-  records keep recovery blocked. A later run on a head that keeps no state
+  next poll; it never counts as lost history. When legacy history is
+  provably lost (an expired task with a lossy record), the head stays
+  blocked with a human hold. A full review shows its findings, and carries
+  every finding of each readable legacy record, but cannot clear the hold.
+  Only Joe's approval of that head, submitted after a check shows the hold,
+  accepts the blockers no review can account for. It never accepts the
+  findings of a review whose state overflowed; only a replay of that
+  review's task recovers them. Other gaps (a truncated timeline, too many
+  heads, ambiguous, foreign or undecodable records) keep recovery blocked
+  with no hold, so no approval clears them. A later run on a head that keeps no state
   does not hide an earlier run's state. Failed replacement checks retry on
   the next poll. A GitHub check-write outage can leave old PR-head and
   merge-group passes usable; rollout must drain the queue before replacing

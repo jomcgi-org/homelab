@@ -1569,21 +1569,15 @@ func encodeState(st State) string {
 // still carry forward; only replaying complete original history can clear
 // the incomplete flag.
 func LoadState(text string) (st State, ok bool) {
-	m := stateRE.FindStringSubmatch(text)
-	if m == nil {
-		if strings.Contains(text, markerStart+"state ") {
-			return State{Incomplete: true}, true
-		}
-		return State{}, false
-	}
-	b, err := base64.StdEncoding.DecodeString(m[2])
-	var probe struct {
-		Blocking json.RawMessage `json:"blocking"`
-	}
-	if err != nil || json.Unmarshal(b, &st) != nil ||
-		json.Unmarshal(b, &probe) != nil || probe.Blocking == nil {
+	if corruptState(text) {
 		return State{Incomplete: true}, true
 	}
+	m := stateRE.FindStringSubmatch(text)
+	if m == nil {
+		return State{}, false
+	}
+	b, _ := base64.StdEncoding.DecodeString(m[2])
+	_ = json.Unmarshal(b, &st)
 	st.Incomplete = st.Incomplete || m[1] != "2"
 	st.LegacyTask = st.LegacyTask || m[1] == "1"
 	ids := map[string]int{}
@@ -1620,6 +1614,21 @@ func LoadState(text string) (st State, ok bool) {
 		}
 	}
 	return st, true
+}
+
+// corruptState reports a review-state block that does not decode, as
+// opposed to text that keeps no review state.
+func corruptState(text string) bool {
+	m := stateRE.FindStringSubmatch(text)
+	if m == nil {
+		return strings.Contains(text, markerStart+"state ")
+	}
+	b, err := base64.StdEncoding.DecodeString(m[2])
+	var st State
+	var probe struct {
+		Blocking json.RawMessage `json:"blocking"`
+	}
+	return err != nil || json.Unmarshal(b, &st) != nil || json.Unmarshal(b, &probe) != nil || probe.Blocking == nil
 }
 
 // legacySnapshot certifies only records below both v1 count caps, with

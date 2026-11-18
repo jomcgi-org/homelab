@@ -123,6 +123,7 @@ type fakeGitHub struct {
 	// It runs once under mu, before the caller's subsequent open-PR listing.
 	afterQueueRead   func()
 	afterReviewsRead func()
+	afterEventsRead  func() // Runs once under mu, after a label event read.
 	// fail answers "METHOD /path" with a status code; failGQL fails a
 	// GraphQL call by kind.
 	fail          map[string]int
@@ -536,6 +537,10 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			out = append(out, map[string]any{"id": event.ID, "event": "labeled", "label": map[string]string{"name": event.Label}, "created_at": event.CreatedAt})
 		}
 		f.get(w, r, page(out, q))
+		if hook := f.afterEventsRead; hook != nil {
+			f.afterEventsRead = nil
+			hook()
+		}
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/issues/comments/"):
 		id, _ := strconv.ParseInt(strings.TrimPrefix(path, "/issues/comments/"), 10, 64)
 		for _, pr := range f.prs {
