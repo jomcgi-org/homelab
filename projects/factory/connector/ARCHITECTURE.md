@@ -134,7 +134,6 @@ create another actor. Its NodeGone deletion path can also hide an actor
 whose machine has not physically stopped, so even a complete empty listing
 does not prove the original execution ceased.
 
-Reconciliation never resends the original message or replaces its context.
 The liveness lease closes an unknown send only on kagent's evidence: a
 complete scan within its bound, or a deleted session. A positively observed original task
 continues through the existing completion and lifecycle handling. That does
@@ -147,7 +146,8 @@ Actor and accepts this gap (HOME-141).
 
 Before sending, the connector pins the caller’s token issuer, ServiceAccount
 UID, controller authority and endpoints. A changed identity holds the attempt.
-Legacy attempts need positive evidence of ownership and quiescence.
+Legacy attempts, and every uncertain historical send, need positive evidence
+of ownership and quiescence before a new retry can establish ownership.
 
 ## Credential refusal retries
 
@@ -320,16 +320,20 @@ the agent's reply showed the read was idempotent. Commit messages are already
 public, so this channel publishes nothing new
 ([HOME-107](https://factory-plan.jomcgi.dev/factory/issue/HOME-107)).
 
-The prompt quotes verified names inside an untrusted evidence block, with
-at most 20 targets and 30 tests. A merge-queue ejection uses the same path
+**CI failures by name** (staged off behind `connector.buildbuddy`). A failed
+required status linked to `https://<host>/invocation/<uuid>` makes the
+connector page BuildBuddy's GetLog API; each page is untrusted output. Only
+names that exist at the PR's `baseRefOid` on `main` pass. The prompt quotes
+verified names inside an untrusted evidence block, with at most 20 targets
+and 30 tests. A merge-queue ejection uses the same path
 and PR base, never the synthetic commit. Missing base evidence adds only
 `base_read`; GitHub credential refusals use the dispatch retry path.
 `factory_connector_ci_log_reads_total` counts invocation outcomes.
 
 **Why.** HOME-15 and HOME-18 could see only a link and "Failed in 43s".
 PR #8038 added names, but code under test could print a forged label.
-[HOME-49](https://factory-plan.jomcgi.dev/factory/issue/HOME-49) requires
-base-tree membership as well as syntax checks.
+[HOME-49](https://factory-plan.jomcgi.dev/factory/issue/HOME-49) requires base-tree membership as well as syntax checks.
+Only the connector mounts the read-only 1Password key `k8s-homelab/buildbuddy`.
 
 ## Human approval
 
@@ -392,10 +396,6 @@ resume a stopped item (a round start, enqueue, ejection, merge) are
 guarded, so a stop that races them stands; an enqueue that lost the race
 is dequeued. The stop is announced on the issue. A new itsaplan run on the
 issue resumes delivery; a closed PR must be reopened by a person first.
-
-So a person cancels a round by moving the issue to a canceled column (or
-another project), by closing the PR, or with `connector cancel`; it
-reaches kagent within a heartbeat interval.
 
 A missing accepted task or a session observed crashed, deleting, deleted,
 missing, or unrecoverable enters an explicit fencing hold. The connector does
@@ -590,7 +590,8 @@ rarely worth a day of it.
 
 | Direction | Tracks | State |
 | --- | --- | --- |
-| Fence old executions independently during recovery | HOME-38 | Designed |
+| Fence old executions independently during recovery | HOME-38 | designed |
+| Name failed CI targets and tests in round prompts | HOME-125 | `staged off` behind `connector.buildbuddy` |
 
 ## Decision history
 
