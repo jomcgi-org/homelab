@@ -10,6 +10,7 @@ from botocore.exceptions import ClientError
 from PIL import Image
 
 from trips.export import (
+    SLUG_KEY_MAX,
     WORKERS_ASSET_BYTES,
     export_trips,
     signed_path,
@@ -314,3 +315,29 @@ def test_slug_keys_never_collide():
 def test_a_trip_without_a_usable_slug_is_rejected(slug):
     with pytest.raises(ValueError, match="slug"):
         slug_key(slug)
+
+
+def test_a_long_slug_gets_a_bounded_key():
+    # 120 CJK characters are 1,080 bytes percent-encoded, over R2's limit.
+    long_slug = "旅" * 120
+    store = Store()
+    trip = {"slug": long_slug, "title": "Trip", "default_image": KEY, "highlights": []}
+    payload = {"trip": trip, "points": []}
+    index = {"count": 1, "trips": [{"slug": long_slug, "default_image": KEY}]}
+    result = export_trips(index, [payload], store, lambda *_: WEBP)
+    part = slug_key(long_slug)
+    assert part == "~" + hashlib.sha256(long_slug.encode()).hexdigest()
+    assert json.loads(store.objects["stars", f"trips/trip/{part}.json"]) == payload
+    assert set(result["files"]["trips"]) == {long_slug}
+    assert max(len(key.encode()) for _, key in store.objects) < 1024
+
+
+def test_bounded_keys_never_meet_encoded_keys():
+    edge = "a" * SLUG_KEY_MAX
+    assert slug_key(edge) == edge
+    assert (
+        slug_key(edge + "a") == "~" + hashlib.sha256((edge + "a").encode()).hexdigest()
+    )
+    assert slug_key("a" * 201) != slug_key("a" * 202)
+    # An encoded slug never has "~", so it cannot equal a "~"-led digest key.
+    assert all("~" not in slug_key(s) for s in ["~", "a~b", "~" * 66, "x" * 200])

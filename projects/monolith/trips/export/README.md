@@ -28,8 +28,10 @@ objects can be copied to `factory-public`.
 to immutable JSON objects (`files.index`, and `files.trips` by slug). Trip
 aliases live under `trips/trip/`, so no slug can replace the index or the
 manifest. The key part is the slug percent-encoded (with `.` and `~` too),
-so every slug the API accepts exports, and no two slugs share a key; the
-JSON and `files.trips` keep the original slug. A failed export leaves the previous manifest usable, even if some
+so every slug the API accepts exports, and no two slugs share a key. An
+encoding over 200 characters becomes `~` and the slug's SHA-256, which keeps
+every key far below R2's 1,024-byte limit. The JSON and `files.trips` keep
+the original slug. A failed export leaves the previous manifest usable, even if some
 aliases have changed. It also records `asOf`, the daily
 `refreshSeconds`, `images`, `photoCount`, `photoAssetCount`, `photoBytes`,
 `photoMaxBytes`, `photoMode` and `photoBase`.

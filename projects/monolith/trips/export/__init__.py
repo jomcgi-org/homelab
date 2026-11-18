@@ -36,16 +36,26 @@ def encoded(value) -> bytes:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
 
 
+# Longest encoded slug used as is. The longest key is then about 290 bytes,
+# well under R2's 1,024-byte limit.
+SLUG_KEY_MAX = 200
+
+
 def slug_key(slug) -> str:
     """One R2 key component per slug, with no two slugs on the same key.
 
     Percent-encoding maps each character to itself (A-Z, a-z, 0-9, "_", "-")
     or to a "%"-led byte sequence, so it is injective; "." and "~" are
-    encoded too, so no component is "." or "..". The JSON keeps the slug.
+    encoded too, so no component is "." or "..". An encoding longer than
+    SLUG_KEY_MAX becomes "~" and the slug's SHA-256; no encoding has a "~",
+    so the two forms never meet. The JSON keeps the slug.
     """
     if not isinstance(slug, str) or not slug:
         raise ValueError("invalid trip slug")
-    return quote(slug, safe="").replace(".", "%2E").replace("~", "%7E")
+    key = quote(slug, safe="").replace(".", "%2E").replace("~", "%7E")
+    if len(key) > SLUG_KEY_MAX:
+        return "~" + hashlib.sha256(slug.encode()).hexdigest()
+    return key
 
 
 def signed_path(key: str, preset: str, secret: str, salt: str) -> str:
