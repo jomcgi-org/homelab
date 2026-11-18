@@ -96,6 +96,24 @@ stay manual and carry `major-upgrade`. Replacement, bump and rollback updates
 also keep the default manual merge policy. Existing compatibility holds
 still disable auto-merge and require dashboard approval.
 
+Updates in `projects/platform*/**`, `projects/factory-cluster/**`, `MODULE.bazel`,
+`.github/**` and `buildbuddy.yaml` require manual merge. GitHub retains
+auto-merge requests that Renovate made under the previous policy. Immediately
+before rollout and again after the first scan under the new policy, list open
+PRs with native auto-merge enabled and inspect their authors and changed paths:
+
+```bash
+repo=jomcgi-org/homelab
+gh api --paginate "repos/$repo/pulls?state=open&per_page=100" \
+  --jq '.[] | select(.auto_merge != null) | [.number, .user.login] | @tsv'
+# For each listed Renovate PR, set pr to its number.
+gh api --paginate "repos/$repo/pulls/$pr/files?per_page=100" --jq '.[].filename'
+```
+
+For each Renovate PR touching a protected path, run
+`gh pr merge "$pr" --repo "$repo" --disable-auto`. Repeat the audit and record
+the result on the rollout issue before relying on manual merge.
+
 The OpenTelemetry and Pydantic/core groups use the same auto-merge path
 through the merge queue. A security alert shortens the release age to one day for
 the vulnerable package. A peer released less than three days earlier
@@ -181,6 +199,12 @@ schedule through #8041 or its replacement. Suspending the CronJob stops future
 scheduled Jobs; it does not stop a running Job or cancel an armed PR.
 
 ## Repository checks
+
+From the repository root, validate `renovate.json` with the deployed version:
+
+```bash
+pnpm --package=renovate@44.14.10 dlx renovate-config-validator --no-global renovate.json
+```
 
 `ci` is the local validation entry point. CI runs the Bazel targets
 `//projects/platform/renovate:dependency_policy_test`,
