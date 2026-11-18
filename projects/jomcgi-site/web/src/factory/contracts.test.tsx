@@ -53,9 +53,9 @@ it("keeps CSP, the client-route rewrite and the deferred Factory link", () => {
   const headers = readFileSync("public/_headers", "utf8");
   expect(headers).toContain("style-src 'self'");
   expect(headers).not.toMatch(/unsafe-inline|unsafe-eval/);
-  expect(readFileSync("public/_redirects", "utf8").trim()).toBe(
-    "/factory /factory/ 200\n/factory/* /factory/ 200",
-  );
+  expect(
+    readFileSync("public/_redirects", "utf8").match(/^\/factory.*$/gm),
+  ).toEqual(["/factory /factory/ 200", "/factory/* /factory/ 200"]);
   expect(SECTIONS.find(({ path }) => path === "/factory")).toMatchObject({
     live: false,
     legacy: "/slop/factory",

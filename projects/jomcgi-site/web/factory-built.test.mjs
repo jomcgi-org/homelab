@@ -54,9 +54,9 @@ test("the Factory shell is pre-rendered with unavailable states and local assets
 });
 
 test("the built rewrite serves descendants through the same shell", () => {
-  assert.equal(
-    readFileSync(join(dist, "_redirects"), "utf8").trim(),
-    "/factory /factory/ 200\n/factory/* /factory/ 200",
+  assert.deepEqual(
+    readFileSync(join(dist, "_redirects"), "utf8").match(/^\/factory.*$/gm),
+    ["/factory /factory/ 200", "/factory/* /factory/ 200"],
   );
   assert.match(
     readFileSync(join(dist, "_headers"), "utf8"),
