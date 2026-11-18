@@ -1414,6 +1414,20 @@ func TestLostHistoryApprovalKeepsAnOverflowedReviewsBlockers(t *testing.T) {
 		c := h.gh.check(shaB)
 		failIf(t, c.Conclusion != ConclusionFailure || !mustState(t, c.Text).Incomplete || len(h.gh.enqueues()) != 0, "approval of lost history passed an overflowed review: %s %q", c.Conclusion, c.Title)
 	}
+	// A later head inherits the overflow: its smaller report fits, but the
+	// overflowed findings were never recovered, so approval cannot pass it.
+	shaC := sha40('c')
+	h.gh.push(7, shaC)
+	task = runReview(t, h, e, ctx, 7, shaC)
+	h.k.finish(task, kagent.StateCompleted, report(t, Report{Summary: "Small review", Findings: []Finding{}}))
+	eventually(t, "the later review", func() bool { return h.gh.check(shaC).Status == "completed" })
+	h.gh.review(7, "jomcgi", "APPROVED", shaC, "")
+	for _, eng := range []*Engine{e, h.engine()} {
+		eng.Tick(ctx)
+		c := h.gh.check(shaC)
+		st := mustState(t, c.Text)
+		failIf(t, c.Conclusion != ConclusionFailure || !st.Incomplete || !st.Overflow || len(h.gh.enqueues()) != 0, "a later head dropped the overflow: %s %q %+v", c.Conclusion, c.Title, st)
+	}
 }
 
 // TestFailedHistoryReadRetriesWithoutFallback: a failed GitHub read is not

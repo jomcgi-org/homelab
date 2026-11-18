@@ -1792,8 +1792,10 @@ const (
 func (e *Engine) recoverState(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, saved State) (State, replay) {
 	var known []Finding // Every readable earlier finding, for lostHistory.
 	legacy := saved.LegacyTask || (saved.Gate != nil && saved.Gate.HistoryLost)
+	overflow := saved.Overflow // Any earlier overflowed checkpoint on the walk.
 	unread := func() (State, replay) { return saved, replayUnread }
 	lost := func() (State, replay) {
+		saved.Overflow = saved.Overflow || overflow
 		if !legacy {
 			return saved, replayLost
 		}
@@ -1867,6 +1869,7 @@ heads:
 			}
 			known = append(known, st.Previous()...)
 			legacy = legacy || st.LegacyTask
+			overflow = overflow || st.Overflow
 			needsReport = needsReport || ok
 			taskID := e.sourceTask(b, &old, st)
 			if taskID == "" {
@@ -2369,7 +2372,7 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 				l.InfoContext(ctx, "lowered a new finding outside the interdiff", "id", f.ID, "severity", f.Lowered)
 			}
 		}
-		a.Incomplete = in.prior.Incomplete
+		a.Incomplete, a.Overflow = in.prior.Incomplete, in.prior.Overflow
 		a.TaskID = task.ID
 		// Include the binding before Render decides whether the complete
 		// state fits. The task's recorded digest was checked against this input.

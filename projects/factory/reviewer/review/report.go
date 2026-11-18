@@ -328,6 +328,10 @@ type Assessment struct {
 	// Incomplete carries missing prior history independently of the model's
 	// account of the findings that could be recovered.
 	Incomplete bool
+	// Overflow carries an earlier review's overflowed checkpoint: its own
+	// findings were dropped, so no approval may end Incomplete until a
+	// replay restores them.
+	Overflow bool
 	// TaskID retains the original report for bounded history recovery.
 	TaskID string
 	// IssueDigest binds the assessment to the service's evidence snapshot.
@@ -1262,7 +1266,7 @@ func loweredNote(f Finding) string {
 // a person clears it, so no round carries it.
 func stateOf(a Assessment, r *Report, gate *Gate) State {
 	cleared, partial := clearedOf(a, r)
-	st := State{Blocking: []Finding{}, Cleared: cleared, ClearedPartial: partial || a.EarlierPartial, Gate: gate, Decisions: a.decisions(), Incomplete: a.Incomplete, TaskID: a.TaskID, IssueDigest: a.IssueDigest, Goal: a.Goal, GoalKey: a.GoalKey}
+	st := State{Blocking: []Finding{}, Cleared: cleared, ClearedPartial: partial || a.EarlierPartial, Gate: gate, Decisions: a.decisions(), Incomplete: a.Incomplete, Overflow: a.Overflow, TaskID: a.TaskID, IssueDigest: a.IssueDigest, Goal: a.Goal, GoalKey: a.GoalKey}
 	for _, b := range a.Blocking {
 		if isGate(b.Finding) {
 			continue
