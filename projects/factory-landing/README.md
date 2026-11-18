@@ -42,3 +42,27 @@ the neutral theme's `/built` export and imports its `theme.css` into the Vite st
 `csp.test.tsx` regression test checks that rendering this page creates no
 inline style elements or attributes, so no inline hashes or
 `'unsafe-inline'` exception is needed.
+
+## Transferring connector status ownership (HOME-363)
+
+Before either chart pin advances, protect the two live objects from automated
+pruning during independent Application syncs. Run on the factory cluster:
+
+```sh
+kubectl -n factory annotate --overwrite service/factory-connector-status \
+  ciliumnetworkpolicy/factory-landing-status argocd.argoproj.io/sync-options=Prune=false
+```
+
+Pause auto-sync on factory-landing through its Git-managed Application and
+wait for any running sync to finish before applying the annotation. Sync
+software-factory at the chart version that renders both objects. Verify both
+live objects have the software-factory tracking ID and the Prune=false
+annotation. Then advance the landing pin to the chart without these objects,
+restore its automated sync, and verify the signed-in page can load /api/status.
+
+For rollback, pause software-factory auto-sync first. Restore and sync the
+previous landing chart that renders both objects. Verify factory-landing owns
+both live objects before restoring the previous factory pin and resuming its
+sync. If the factory pin is lowered first, the live Prune=false annotations
+keep the Service and ingress grant available while the landing chart resumes
+ownership. Check /api/status again after both Applications reconcile.

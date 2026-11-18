@@ -4,6 +4,8 @@ kind: Service
 metadata:
   name: factory-connector-status
   namespace: {{ .Values.broker.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   selector:
     {{- include "factory.connectorSelector" . | nindent 4 }}
@@ -19,6 +21,8 @@ kind: CiliumNetworkPolicy
 metadata:
   name: factory-landing-status
   namespace: {{ .Values.broker.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   endpointSelector:
     matchLabels:
