@@ -17,7 +17,8 @@ def apko_image(
         visibility = ["//bazel/images:__pkg__"],
         tars = None,
         multiarch_tars = None,
-        arm64 = True):
+        arm64 = True,
+        release_tags = []):
     """Create a multi-platform apko OCI image, optionally with additional tar layers.
 
     Args:
@@ -27,6 +28,7 @@ def apko_image(
                 config does not declare, but ignores one it declares and nobody
                 builds. So `arm64 = False` does NOT require editing archs, and
                 most callers here leave aarch64 in place.
+        release_tags: Additional release tags for standalone manifests.
         arm64: Whether to build the aarch64 variant. Defaults to True, but every
                caller in this repo now passes False: all four cluster nodes are
                amd64, no chart carries a kubernetes.io/arch selector, and the
@@ -207,18 +209,13 @@ def apko_image(
     push_image = name
     use_oci_push = True
 
-    # One tag per push: the timestamped build tag, which is also what helm
-    # values read via `head -1`. A second branch-name tag used to be applied
-    # under --define=CI=true; its only documented consumer was ArgoCD Image
-    # Updater filtering, and this cluster has no Image Updater. Charts deploy by
-    # repository@digest (bazel/helm/images.bzl), so a tag is never the deployed
-    # reference.
+    # The manifest and Helm values read the stamped tag from the first line.
     expand_template(
         name = name + "_stamped_tags",
         out = name + "_stamped.tags.txt",
         template = [
             "{STABLE_IMAGE_TAG}",  # Timestamp: YYYY.MM.DD.HH.MM.SS-shortsha
-        ],
+        ] + release_tags,
         stamp_substitutions = {
             "{STABLE_IMAGE_TAG}": "{{STABLE_IMAGE_TAG}}",
         },

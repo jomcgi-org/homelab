@@ -1,3 +1,14 @@
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+type: kubernetes.io/dockerconfigjson
+metadata:
+  name: ghcr-imagepull-secret
+  namespace: prometheus
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  itemPath: vaults/k8s-homelab/items/ghcr-read-permissions
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -30,6 +41,8 @@ spec:
       labels:
         app.kubernetes.io/name: alert-relay
     spec:
+      imagePullSecrets:
+        - name: ghcr-imagepull-secret
       nodeSelector:
         kubernetes.io/arch: amd64
       automountServiceAccountToken: false
@@ -52,7 +65,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: alert-relay
-          image: ghcr.io/jomcgi/homelab/projects/factory/alert-relay:2026.11.18.11.08.02-2fa7bbef6
+          image: ghcr.io/jomcgi/homelab/projects/factory/alert-relay:v2
           ports:
             - name: http
               containerPort: 8080
