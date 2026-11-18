@@ -1654,14 +1654,18 @@ func (e *Engine) previousStateFrom(ctx context.Context, b *Binding, pr github.Pu
 	// head (a replacement PR) inherits the reviews of its shared commits,
 	// so another PR's checkpoint never stops the walk before this PR's own
 	// older history.
+	truncated := func() (State, string, string, error) {
+		return State{Incomplete: true}, "", "its timeline has more commit and push events than the reviewer reads", nil
+	}
 	for _, inherit := range []bool{false, true} {
+		if inherit && hist.Truncated {
+			// This PR's own review may lie beyond the visible timeline.
+			return truncated()
+		}
 		st, head, unknown, found, err := e.previousStateWalk(ctx, b, pr, hist, inherit)
 		if err != nil || found {
 			return st, head, unknown, err
 		}
-	}
-	if hist.Truncated {
-		return State{Incomplete: true}, "", "its timeline has more commit and push events than the reviewer reads", nil
 	}
 	return State{}, "", "", nil
 }
@@ -1715,9 +1719,11 @@ func (e *Engine) statefulReview(ctx context.Context, b *Binding, pr int, sha str
 	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].ID > runs[j].ID })
 	// This PR's own newest review is its state for the commit. With inherit
-	// (a PR with no review of its own), the newest review of the shared
-	// commit is.
+	// (a PR with no review of its own), every other review of the shared
+	// commit is merged fail-closed: a newer clean review must not hide an
+	// older incomplete or blocking one.
 	var inherited *github.CheckRun
+	var merged State
 	for i := range runs {
 		r := &runs[i]
 		if r.Name != e.cfg.CheckName || r.AppID != e.cfg.AppID || r.HeadSHA != sha || r.Status != "completed" ||
@@ -1725,8 +1731,31 @@ func (e *Engine) statefulReview(ctx context.Context, b *Binding, pr int, sha str
 			continue
 		}
 		if r.ExternalID != MessageID(b.repo(), pr, sha) {
-			if inherit && inherited == nil {
-				inherited = r
+			if !inherit {
+				continue
+			}
+			st, ok := LoadState(r.Text)
+			if !ok {
+				return nil, State{}, true, nil
+			}
+			if inherited == nil {
+				inherited, merged = r, st
+				merged.Blocking = slices.Clone(st.Blocking)
+				if merged.Gate != nil {
+					g := *merged.Gate
+					g.Findings = slices.Clone(g.Findings)
+					merged.Gate = &g
+				}
+				continue
+			}
+			merged.Incomplete = merged.Incomplete || st.Incomplete
+			merged.Overflow = merged.Overflow || st.Overflow
+			merged.Blocking = mergeFindings(merged.Blocking, st.Blocking)
+			if st.Gate != nil {
+				if merged.Gate == nil {
+					merged.Gate = &Gate{}
+				}
+				merged.Gate.Findings = mergeFindings(merged.Gate.Findings, st.Gate.Findings)
 			}
 			continue
 		}
@@ -1736,12 +1765,22 @@ func (e *Engine) statefulReview(ctx context.Context, b *Binding, pr int, sha str
 		return nil, State{}, true, nil
 	}
 	if inherited != nil {
-		if st, ok := LoadState(inherited.Text); ok {
-			return inherited, st, false, nil
-		}
-		return nil, State{}, true, nil
+		return inherited, merged, false, nil
 	}
 	return nil, State{}, false, nil
+}
+
+// mergeFindings adds each finding of more to list, keeping the higher
+// severity of a shared ID.
+func mergeFindings(list, more []Finding) []Finding {
+	for _, f := range more {
+		if i := slices.IndexFunc(list, func(o Finding) bool { return o.ID == f.ID }); i < 0 {
+			list = append(list, f)
+		} else if rank(f.Severity) < rank(list[i].Severity) {
+			list[i] = f
+		}
+	}
+	return list
 }
 
 // decisionsChanged re-checks the decisions of Joe's that a completed run's
