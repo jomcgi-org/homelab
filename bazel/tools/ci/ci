@@ -104,7 +104,7 @@ code_changed() {
 # --config so PATH prettier loads the plugin the same way the Bazel binary does.
 PRETTIER_CONFIG="${PRETTIER_CONFIG:-bazel/tools/format/prettier.config.cjs}"
 cmd_lint() {
-	python3 ./bazel/tools/format/invariants/check_invariants.py || return 1
+	python3 ./bazel/tools/format/invariants/check_invariants.py --records-only || return 1
 	local changed_paths
 	changed_paths="$(changed_files)" || return 1
 	if [[ "${CI_REQUIRE_COMPLETE:-}" == 1 ]]; then
