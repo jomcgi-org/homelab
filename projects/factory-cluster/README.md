@@ -855,8 +855,9 @@ KUBECONFIG=~/.kube/factory.yaml kubectl -n prometheus port-forward svc/prometheu
 ### Alerts
 
 Prometheus evaluates `resources/rules.yml` and sends firing alerts to one
-Alertmanager (`resources/alertmanager.yaml`), which posts them to the homelab
-Discord channel through a webhook. The path uses nothing in the hub, so an
+Alertmanager (`resources/alertmanager.yaml`), which forwards them to alert-relay. The relay queries Prometheus for a graph
+and posts it to the homelab Discord channel. AlertRelayDown goes directly
+from Alertmanager to Discord. The path uses nothing in the hub, so an
 alert arrives while the hub is down. Alertmanager keeps silences in an
 emptyDir: a restart forgets them.
 
@@ -869,7 +870,7 @@ To test the path:
 ```bash
 KUBECONFIG=~/.kube/factory.yaml kubectl -n prometheus port-forward svc/alertmanager 9093:9093 &
 curl -s -X POST -H 'Content-Type: application/json' http://localhost:9093/api/v2/alerts \
-  -d '[{"labels":{"alertname":"AlertPathTest"},"annotations":{"summary":"test"}}]'
+  -d '[{"labels":{"alertname":"AlertPathTest"},"annotations":{"summary":"Test relay availability (minimum 1 replica)","graph":"up{job=\"prometheus\"}","threshold":"1","action":"Verify the attached graph.","runbook":"https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#alertrelaydown"}}]'
 ```
 
 | Alert | Fires when |
@@ -880,29 +881,45 @@ curl -s -X POST -H 'Content-Type: application/json' http://localhost:9093/api/v2
 | `FactoryCodexQuotaExhausted` | A Codex grant is out of quota for 5 min. Coder and review turns fail until a person resets the plan or changes the account. The message gives, for each window the grant has used up, its reset time or that it has none; when no window reads 100%, every window's reset |
 | `FactoryCodexGrantNotReady` | A Codex grant is in a state other than `ready` (`login_required`, `refresh_blocked`, `error` or `missing`) for 10 min, also across a move between those states. The message names the current state |
 | `FactoryCodexQuotaReadingStale` | The broker's newest Codex quota reading is more than 2 h old, or there is no reading at all, for 15 min, so the quota alerts could not fire |
+| `AlertRelayDown` | No ready relay replica for 5 min |
 
-**FactoryCodexQuotaLow, FactoryCodexQuotaExhausted.** Read the grant's usage
+#### AlertRelayDown
+
+Inspect the alert-relay Deployment and pod events in the prometheus namespace.
+Restore one ready replica and post the test alert above to verify delivery.
+
+#### FactoryCodexQuotaLow, FactoryCodexQuotaExhausted
+
+Read the grant's usage
 on the broker's metrics: `factory_broker_grant_quota_used_percent` and
 `factory_broker_quota_resets_at_seconds` (Prometheus, port-forward
 `svc/prometheus` 9090). A person resets the plan or logs the broker in to
 another account (`projects/factory/broker`, device login). Coder turns that
 hung on HTTP 429 may need `connector cancel` afterwards.
 
-**FactoryCodexGrantNotReady.** Log the broker in again with its device login
+#### FactoryCodexGrantNotReady
+
+Log the broker in again with its device login
 (`projects/factory/broker`). `refresh_blocked` means a refresh token was
 reused; see the broker's logs first.
 
-**FactoryCodexQuotaReadingStale.** Check the broker's usage reads
+#### FactoryCodexQuotaReadingStale
+
+Check the broker's usage reads
 (`factory_broker_codex_usage_refresh_total` by outcome) and its logs.
 
-**NodeDiskFilling.** Find the largest directories with
+#### NodeDiskFilling
+
+Find the largest directories with
 `ssh node-N 'sudo du -xh --max-depth=3 / | sort -h | tail -20'`. The usual
 users are local-path volumes under `/var/lib/rancher/k3s/storage` (rustfs
 snapshots, Garage, the databases), images (`sudo k3s crictl rmi --prune`) and,
 on node-1, Claude scratch under `/tmp/claude-1000`. Ask before you delete a
 directory that a running session uses.
 
-**KagentSuspendTimedOut.** kagent v1.0.1 keeps the Actor SUSPENDING, refuses
+#### KagentSuspendTimedOut
+
+kagent v1.0.1 keeps the Actor SUSPENDING, refuses
 every turn and delete for the session, and holds its worker slot. To free
 every locked session:
 

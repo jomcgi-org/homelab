@@ -102,6 +102,8 @@ spec:
             - --storage.tsdb.path=/prometheus
             - --storage.tsdb.retention.time=7d
             - --storage.tsdb.retention.size=4GB
+            - --web.external-url=https://factory-grafana.jomcgi.dev/explore
+            - --web.route-prefix=/
             - --web.listen-address=:9090
             # Remote write, admin and lifecycle endpoints stay off.
           ports:
