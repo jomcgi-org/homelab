@@ -134,3 +134,55 @@ the worker, which is the GitOps path for adding providers and applications.
    Confirm Authentik rejects the unknown client and issues no callback with an
    authorization code. A login prompt or network failure is inconclusive.
    Previously issued ID tokens can remain valid until their 10-minute expiry.
+
+The factory worker reads the social client keys from optional Secret volumes
+when it applies the social blueprint. The server and worker can start while
+1Password reconciles the items. If a field is missing or blank, Authentik
+rejects the social blueprint transaction. Hourly blueprint discovery retries
+an initial failed import after Kubernetes projects the keys. After rotating
+credentials on an already applied blueprint, reapply **Factory social sign-in**
+in Authentik to load the new values.
+
+### Factory social sign-in rollback
+
+Revert the factory social configuration and wait for the worker to reconcile
+the reverted ConfigMap. Using a local administrator account through the admin
+port-forward, edit **Flows and Stages → Stages → default-authentication-identification**.
+Remove GitHub, Google and Discord from Sources and save. Under **Directory →
+Federation and Social login**, disable each of the three sources. Keeping the
+disabled source records preserves existing account connections. Check that
+the local sign-in page offers password login and the three source redirects
+are unavailable before closing the administrator session.
+
+### Factory social sign-in validation
+
+In the pinned release, the source flow manager routes a new identity to
+enrollment and an existing connection to authentication. Enrollment creates the account and saves its provider connection without issuing a session.
+Direct signup returns to the same provider to begin authentication. The validate stage challenges
+an enrolled device. A new user without a device sees a pending-access message.
+After a group grant, a user without a device sets up TOTP before receiving a session.
+The validate stage keeps `not_configured_action: configure`, so social sign-in
+keeps the second factor.
+[Joe's MFA decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-312#comment-3910).
+[Source flow routing](https://github.com/goauthentik/authentik/blob/version/2026.5.6/authentik/core/sources/flow_manager.py#L151-L170)
+and [MFA stage behavior](https://github.com/goauthentik/authentik/blob/version/2026.5.6/authentik/stages/authenticator_validate/stage.py#L259-L291).
+
+The factory_resources_test target checks the rendered stage order, executes
+the GitHub mapping and duplicate-email gate, and checks the application grants.
+A new external user receives no group. The edge application requires
+`authentik Admins`. The kubectl application requires that group or the viewers
+group before the client can obtain a token.
+
+The server contacts GitHub, Google and Discord for tokens and profiles.
+The worker needs accounts.google.com and token.actions.githubusercontent.com
+for discovery, plus www.googleapis.com and token.actions.githubusercontent.com
+for signing keys. The namespace policy scopes both lists to TCP 443.
+[Source serializer](https://github.com/goauthentik/authentik/blob/version/2026.5.6/authentik/sources/oauth/api/source.py#L60-L127).
+
+Required PR checks run the flow executor check when the factory Authentik
+blueprints, values or runtime fixture change. To run it locally with Docker
+Compose and yq, use the following command from the repository root.
+
+```bash
+projects/platform/authentik/runtime/check.sh
+```

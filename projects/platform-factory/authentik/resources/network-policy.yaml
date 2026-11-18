@@ -1,6 +1,5 @@
 # The authentik namespace's allowlist under the cluster-wide default-deny
-# (projects/platform-factory/network-policy/). Authentik makes no outbound
-# calls (values-factory.yaml turns them off), so its pods reach only Postgres.
+# (projects/platform-factory/network-policy/).
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -26,6 +25,41 @@ spec:
             - port: "9000"
               protocol: TCP
   egress:
+    - toFQDNs:
+        - matchName: github.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+          serverNames: ["github.com"]
+    - toFQDNs:
+        - matchName: api.github.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+          serverNames: ["api.github.com"]
+    - toFQDNs:
+        - matchName: oauth2.googleapis.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+          serverNames: ["oauth2.googleapis.com"]
+    - toFQDNs:
+        - matchName: www.googleapis.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+          serverNames: ["www.googleapis.com"]
+    - toFQDNs:
+        - matchName: discord.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+          serverNames: ["discord.com"]
     - toEndpoints:
         - matchLabels:
             cnpg.io/cluster: authentik-pg
@@ -48,6 +82,28 @@ spec:
       app.kubernetes.io/name: authentik
       app.kubernetes.io/component: worker
   egress:
+    # OAuthSourceSerializer validates discovery documents and fetches JWKS.
+    - toFQDNs:
+        - matchName: accounts.google.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+          serverNames: ["accounts.google.com"]
+    - toFQDNs:
+        - matchName: www.googleapis.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+          serverNames: ["www.googleapis.com"]
+    - toFQDNs:
+        - matchName: token.actions.githubusercontent.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+          serverNames: ["token.actions.githubusercontent.com"]
     - toEndpoints:
         - matchLabels:
             cnpg.io/cluster: authentik-pg

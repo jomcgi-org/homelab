@@ -908,7 +908,7 @@ awk '
     capture { exit }
 ' "$BUILD_BUDDY" >"$workflow_body"
 real_git=$(command -v git)
-for scenario in qualifying chart-only app-only multi-project mixed ordinary handmade formatter pr-main queue feature missing-branch missing-default missing-parent diff-failure partial-diff empty rename-in rename-out nested newline space; do
+for scenario in qualifying chart-only app-only multi-project mixed ordinary handmade formatter pr-main social-pr queue feature missing-branch missing-default missing-parent diff-failure partial-diff empty rename-in rename-out nested newline space; do
 	workflow_root="$TMP/workflow-$scenario"
 	mkdir -p "$workflow_root"
 	"$real_git" -C "$workflow_root" init -q -b fixture
@@ -927,6 +927,10 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 	"$real_git" -C "$workflow_root" commit -qm 'chore(charts): publish initial'
 	"$real_git" -C "$workflow_root" update-ref refs/remotes/origin/main HEAD
 	case "$scenario" in
+	social-pr)
+		mkdir -p "$workflow_root/projects/platform/authentik/factory-blueprints"
+		printf 'version: 1\n' >"$workflow_root/projects/platform/authentik/factory-blueprints/factory-social.yaml"
+		;;
 	app-only) printf 'targetRevision: 1.0.1\n' >"$workflow_root/projects/service/deploy/application.yaml" ;;
 	empty | missing-parent) ;;
 	rename-in) "$real_git" -C "$workflow_root" mv -f source.py projects/service/chart/Chart.yaml ;;
@@ -957,7 +961,7 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 	fi
 	# Relative workflow tools record their invocation without running build or
 	# publish code. No network, credentials or real snapshot cleanup is used.
-	for tool in bazel/images/generate-push-all.sh bazel/helm/ci-diff-manifests.sh bazel/images/push/push-changed.sh bazel/helm/write-back-versions.sh bazel/images/validate-generate-scripts.sh bazel/tools/format/check-migration-ordering.sh bazel/tools/git/check-commit-msg-ascii.sh bazel/tools/hooks/validate-hooks-executable.sh projects/monolith/dev/grimoire/ci-runner.sh; do
+	for tool in bazel/images/generate-push-all.sh bazel/helm/ci-diff-manifests.sh bazel/images/push/push-changed.sh bazel/helm/write-back-versions.sh bazel/images/validate-generate-scripts.sh bazel/tools/format/check-migration-ordering.sh bazel/tools/git/check-commit-msg-ascii.sh bazel/tools/hooks/validate-hooks-executable.sh projects/monolith/dev/grimoire/ci-runner.sh projects/platform/authentik/runtime/check.sh; do
 		mkdir -p "$workflow_root/${tool%/*}"
 		printf '#!/usr/bin/env bash\nprintf "tool %%s\\n" "$0" >> "$TRACE"\n' >"$workflow_root/$tool"
 		chmod +x "$workflow_root/$tool"
@@ -989,6 +993,7 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 			export GIT_BRANCH=main GIT_REPO_DEFAULT_BRANCH=main GIT_PR_NUMBER=0 GHCR_TOKEN=fixture
 			case "$scenario" in
 			pr-main) GIT_PR_NUMBER=7 ;;
+			social-pr) GIT_PR_NUMBER=7 GIT_BRANCH=factory/social ;;
 			queue) GIT_BRANCH=gh-readonly-queue/main/pr-7 ;;
 			feature) GIT_BRANCH=feature ;;
 			missing-branch) unset GIT_BRANCH ;;
@@ -1063,6 +1068,16 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 			grep -q "/$guard.py" "$TRACE" || fail "workflow_${scenario}_$guard" 'head guard was skipped'
 		done
 		grep -q '^cleanup$' "$TRACE" || fail "workflow_${scenario}_cleanup" 'snapshot hygiene was skipped'
+		case "$scenario" in
+		social-pr | missing-parent | diff-failure | partial-diff)
+			grep -q 'tool .*authentik/runtime/check.sh' "$TRACE" || fail "workflow_${scenario}_social" 'social flow check was skipped'
+			;;
+		*)
+			if grep -q 'tool .*authentik/runtime/check.sh' "$TRACE"; then
+				fail "workflow_${scenario}_social" 'unrelated change ran social flow check'
+			fi
+			;;
+		esac
 		case "$scenario" in
 		ordinary | handmade | formatter)
 			grep -q 'write-back-versions.sh' "$TRACE" || fail "workflow_${scenario}_publish" 'normal main publication was skipped'
