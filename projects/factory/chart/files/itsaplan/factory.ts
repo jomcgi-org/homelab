@@ -222,7 +222,8 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
             where (id = ${id} and parent_id is not null) or parent_id = ${id}
             limit 1
           `);
-          if (related.length) throw conflict("Finding has a parent or subtasks");
+          if (related.length)
+            throw conflict("Finding has a parent or subtasks");
         }
         // Upstream's single-row service leaves archived subtasks untouched.
         if (body.restore) await restoreIssue(id, actor);
