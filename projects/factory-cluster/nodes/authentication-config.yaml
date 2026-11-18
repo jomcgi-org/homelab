@@ -4,6 +4,9 @@
 # Installed to /etc/rancher/k3s/authentication-config.yaml by install-node.sh
 # and named by kube-apiserver-arg in k3s-config.yaml. The API server reloads
 # this file while it runs; adding or removing the flag needs a k3s restart.
+# After merge, rerun bootstrap-nodes.sh from node-1. install-node.sh installs
+# this file and forces a k3s restart on each server. The bootstrap waits for
+# the server to become Ready before continuing to the next.
 #
 # The token comes from the factory-kubectl client
 # (projects/platform/authentik/factory-blueprints/factory-kubectl.yaml) through
