@@ -35,6 +35,7 @@ js_library(
     deps = [
         ":hikes_freshness",
         ":stars_summary",
+        "//projects/factory-storyboard:web_schema",
     ],
 )
 
@@ -95,6 +96,7 @@ js_test(
         "snapshot.mjs",
         ":hikes_freshness",
         ":stars_summary",
+        "//projects/factory-storyboard:web_schema",
     ],
     entry_point = "hikes-page.test.mjs",
 )
