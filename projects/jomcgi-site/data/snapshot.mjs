@@ -6,8 +6,10 @@
 // origin, so pages need no CORS and requests cost nothing.
 // main.mjs runs it; this module only exports, so tests import it safely.
 import { createHash, createHmac } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+
+import { makeSummary, stampSummary } from "./stars-summary.mjs";
 
 const sha256 = (data) => createHash("sha256").update(data).digest("hex");
 const hmac = (key, data) => createHmac("sha256", key).update(data).digest();
@@ -70,10 +72,18 @@ export function r2Getter(endpoint, credentials, fetchImpl = fetch) {
 export async function snapshot(sources, get, out) {
   const log = [];
   for (const [section, { bucket, files }] of Object.entries(sources.sections)) {
-    const index = { asOf: null, files: {}, sources: {} };
+    const index = {
+      asOf: null,
+      generatedAt: new Date().toISOString(),
+      files: {},
+      sources: {},
+    };
+    let starsSites;
     await mkdir(join(out, section, "v"), { recursive: true });
     for (const [name, key] of Object.entries(files)) {
       const { body, lastModified } = await get(bucket, key);
+      if (section === "stars" && name === "sites")
+        starsSites = JSON.parse(body);
       const file = `${name}-${sha256(body).slice(0, 12)}.json`;
       await writeFile(join(out, section, "v", file), body);
       const modified = lastModified
@@ -87,10 +97,33 @@ export async function snapshot(sources, get, out) {
         `${section}/${name}: ${bucket}/${key} -> v/${file} (${body.length} bytes)`,
       );
     }
+    // A tiny content-named summary lets an idle page refresh without reading
+    // the full forecast or loading the map. Stamp this same object into HTML.
+    const summary = starsSites
+      ? makeSummary(starsSites, Date.now(), index.generatedAt)
+      : null;
+    if (summary) {
+      const body = Buffer.from(JSON.stringify(summary));
+      const file = `summary-${sha256(body).slice(0, 12)}.json`;
+      await writeFile(join(out, section, "v", file), body);
+      index.files.summary = `/data/${section}/v/${file}`;
+    }
     await writeFile(
       join(out, section, "latest.json"),
       `${JSON.stringify(index, null, 2)}\n`,
     );
+    if (summary) {
+      // Every refresh updates the no-JS page along with its data. An isolated
+      // snapshot may have no page; a deployed page must have the build markers.
+      const page = join(out, "..", "stars.html");
+      let html;
+      try {
+        html = await readFile(page, "utf8");
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      if (html) await writeFile(page, stampSummary(html, summary));
+    }
   }
   return log;
 }

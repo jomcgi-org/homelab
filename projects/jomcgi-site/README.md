@@ -67,7 +67,10 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
 - **Data.** A section that shows changing data reads
   `/data/<section>/latest.json` on the site's own origin, then the
   content-named files it lists (`/data/<section>/v/<name>-<sha256:12>.json`).
-  `data/sources.json` names each section's source objects in R2.
+  `data/sources.json` names each section's source objects in R2. Each
+  `latest.json` also has `generatedAt`, the snapshot time. For `stars`, the
+  snapshot writes a six-site summary (`files.summary`) and stamps it into
+  `stars.html` when that page exists (`data/stars-summary.mjs`, HOME-333).
   `run.sh` copies the site to `/tmp`, runs the snapshot (`data/`) to fill
   `web/dist/data`, then deploys the copy. The Sync-hook Job runs it on every
   sync and the `jomcgi-site-refresh` CronJob every 30 minutes, so data is at

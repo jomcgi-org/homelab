@@ -1,7 +1,7 @@
 // Tests for snapshot.mjs. Run: node snapshot.test.mjs
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
@@ -11,6 +11,69 @@ import { r2Getter, signGet, snapshot } from "./snapshot.mjs";
 const SOURCES = JSON.parse(
   readFileSync(new URL("./sources.json", import.meta.url), "utf8"),
 );
+
+test("publishes a small summary and stamps HTML with the upstream forecast timestamp", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stars-page-"));
+  const out = join(root, "data");
+  await mkdir(out);
+  const page = join(root, "stars.html");
+  await writeFile(
+    page,
+    "<main><!--stars-summary-->old<!--/stars-summary--></main>",
+  );
+  const body = Buffer.from(
+    JSON.stringify({
+      count: 8,
+      fetched_at: "2026-11-17T12:00:00Z",
+      sites: Array.from({ length: 8 }, (_, i) => ({
+        name: `Site <${i}>`,
+        lat: 55,
+        lon: -4,
+        clear_dark_hours: i + 1,
+        best_hours: [{ secretInlineMarker: "full-data-stays-out-of-html" }],
+      })),
+    }),
+  );
+  const sources = {
+    sections: { stars: { bucket: "stars", files: { sites: "sites.json" } } },
+  };
+  await snapshot(
+    sources,
+    async () => ({ body, lastModified: "Tue, 17 Nov 2026 15:07:03 GMT" }),
+    out,
+  );
+  const html = await readFile(page, "utf8");
+  assert.match(html, /8 dark-sky sites/);
+  assert.match(html, /2026-11-17T12:00:00.000Z/);
+  assert.equal((html.match(/<li>/g) ?? []).length, 6);
+  assert.match(html, /Site &lt;0&gt;/);
+  assert.doesNotMatch(html, /full-data-stays-out-of-html|Site &lt;6&gt;/);
+  const latest = JSON.parse(
+    await readFile(join(out, "stars/latest.json"), "utf8"),
+  );
+  assert.equal(latest.asOf, "2026-11-17T15:07:03.000Z");
+  assert.match(
+    latest.files.summary,
+    /^\/data\/stars\/v\/summary-[a-f0-9]{12}\.json$/,
+  );
+  const summaryBody = await readFile(join(root, latest.files.summary), "utf8");
+  const summary = JSON.parse(summaryBody);
+  assert.equal(summary.asOf, "2026-11-17T12:00:00.000Z");
+  assert.equal(summary.snapshotAsOf, latest.generatedAt);
+  assert.ok(Number.isFinite(Date.parse(latest.generatedAt)));
+  assert.equal(summary.rows.length, 6);
+  assert.ok(summaryBody.length < 2048);
+  assert.doesNotMatch(summaryBody, /full-data-stays-out-of-html/);
+  const embedded = JSON.parse(
+    html.match(/id="stars-summary-data">([\s\S]*?)<\/script>/)[1],
+  );
+  assert.deepEqual(embedded, summary);
+  await writeFile(page, "<main>broken build</main>");
+  await assert.rejects(
+    snapshot(sources, async () => ({ body }), out),
+    /missing its summary markers/,
+  );
+});
 
 test("sources name the stars and hikes objects on the account's R2 endpoint", () => {
   assert.match(
