@@ -13,9 +13,9 @@ from the root to each path it adds, changes, deletes or moves; a move counts
 under its old path and its new one. An `Includes:` line at the top of a
 `REVIEW.md` adds the files it names.
 
-A project whose chart deploys to the factory home cluster has a `REVIEW.md`
-that includes `projects/platform-factory/REVIEW.md`, wherever the chart
-lives. A chart that deploys there without that include is high.
+A project outside `projects/platform-factory/` whose chart deploys to the
+factory home cluster has a `REVIEW.md` that includes
+`projects/platform-factory/REVIEW.md`, so the platform rules reach it.
 
 A scoped file adds checks and may raise a severity. It never waives a rule,
 lowers a severity or changes this file. Where two rules conflict, the
