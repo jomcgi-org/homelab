@@ -83,6 +83,7 @@ index 60c8237..c3871cf 100644
  // +build !windows
  
  package term
+diff --git a/BUILD.bazel b/BUILD.bazel
 --- a/BUILD.bazel
 +++ b/BUILD.bazel
 @@ -8,4 +8,5 @@

@@ -129,6 +129,7 @@ index 0000000..40ec818
 +
 +// Browser files have no Unix permission mask.
 +func Umask(int) (int, error) { return 0, nil }
+diff --git a/pkg/util/BUILD.bazel b/pkg/util/BUILD.bazel
 --- a/pkg/util/BUILD.bazel
 +++ b/pkg/util/BUILD.bazel
 @@ -8,4 +8,5 @@
@@ -137,6 +138,7 @@ index 0000000..40ec818
 +        "umask_js.go",
          "umask_windows.go",
          "util.go",
+diff --git a/pkg/util/term/BUILD.bazel b/pkg/util/term/BUILD.bazel
 --- a/pkg/util/term/BUILD.bazel
 +++ b/pkg/util/term/BUILD.bazel
 @@ -6,4 +6,5 @@
@@ -145,6 +147,7 @@ index 0000000..40ec818
 +        "resizeevents_js.go",
          "resizeevents_windows.go",
          "term.go",
+diff --git a/pkg/cmd/BUILD.bazel b/pkg/cmd/BUILD.bazel
 --- a/pkg/cmd/BUILD.bazel
 +++ b/pkg/cmd/BUILD.bazel
 @@ -6,4 +6,6 @@
@@ -154,6 +157,7 @@ index 0000000..40ec818
 +        "exec_native.go",
          "plugin.go",
          "profiling.go",
+diff --git a/pkg/util/interrupt/BUILD.bazel b/pkg/util/interrupt/BUILD.bazel
 --- a/pkg/util/interrupt/BUILD.bazel
 +++ b/pkg/util/interrupt/BUILD.bazel
 @@ -3,5 +3,9 @@
