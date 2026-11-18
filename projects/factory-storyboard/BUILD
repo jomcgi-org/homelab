@@ -68,6 +68,6 @@ py_test(
         "publisher_test.py",
     ],
     data = ["@gitleaks_linux_amd64//:gitleaks"],
-    env = {"GITLEAKS_BIN": "$(location @gitleaks_linux_amd64//:gitleaks)"},
+    env = {"GITLEAKS_BIN": "$(rootpath @gitleaks_linux_amd64//:gitleaks)"},
     deps = ["@pip//pytest"],
 )

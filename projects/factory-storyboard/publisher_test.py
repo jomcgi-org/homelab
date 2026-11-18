@@ -50,7 +50,10 @@ def test_real_gitleaks_hit_withholds_entire_turn(monkeypatch):
     binary = os.environ.get("GITLEAKS_BIN")
     if binary:
         monkeypatch.setenv(
-            "PATH", str(Path(binary).resolve().parent) + os.pathsep + os.environ["PATH"]
+            "PATH",
+            str(Path(binary).resolve(strict=True).parent)
+            + os.pathsep
+            + os.environ["PATH"],
         )
     header = dict(number=1, at="2026-11-18T09:00:00Z", role="assistant")
     turn = dict(header, completed=True, text="sample output", toolCalls=[], diff="")
