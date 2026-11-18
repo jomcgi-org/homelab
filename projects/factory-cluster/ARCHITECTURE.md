@@ -1,18 +1,25 @@
 # Factory home cluster architecture
 
-Three k3s servers host the software factory and its operator tools. ArgoCD reconciles the platform from Git. A private request to the landing page at `factory.jomcgi.dev` follows this path.
+Three k3s servers host the software factory and its operator tools. ArgoCD reconciles the platform from Git. Cloudflare carries incoming requests through the factory tunnel to Envoy Gateway. For the operator landing page, Envoy requires an Authentik session before forwarding the request to a pod.
 
 ```mermaid
 flowchart LR
-  Browser["Operator browser"] -->|HTTPS| CF[Cloudflare]
-  CF -->|factory tunnel| Tunnel[cloudflared]
-  subgraph Cluster["Factory cluster"]
-    Tunnel --> Envoy["edge/edge-proxy"]
-    Envoy <-->|OIDC| Auth["Authentik"]
-    Envoy -->|HTTPRoute| Service["factory-landing Service"]
-    Service --> Pod["landing page pod"]
+  Browser["Operator browser (untrusted)"] -->|HTTPS| CF["Cloudflare TLS termination"]
+  subgraph Cluster["Factory home cluster"]
+    Tunnel["cloudflared (tunnel credential)"]
+    Proxy["Envoy proxy (OIDC client secret)"]
+    Auth["Authentik"]
+    Service["factory-landing Service"]
+    Pod["factory-landing pod"]
   end
+  CF -->|factory tunnel| Tunnel
+  Tunnel -->|"HTTP to edge/edge-proxy:80"| Proxy
+  Proxy <-->|OIDC| Auth
+  Proxy -->|"factory.jomcgi.dev route, port 8080"| Service
+  Service --> Pod
 ```
+
+The [tunnel route](../platform-factory/edge-tunnel/resources/route.yaml) selects the proxy Service. The [landing page route](../factory-landing/chart/templates/httproute.yaml) attaches to the edge Gateway and selects the application Service.
 
 | Component | Role | Code | Pin source | Untrusted input | Credentials held |
 | --- | --- | --- | --- | --- | --- |
