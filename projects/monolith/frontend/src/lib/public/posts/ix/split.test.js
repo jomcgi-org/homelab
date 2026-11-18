@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { buildPathIndex, renderDoc } from "$lib/server/docs.js";
+import { buildPathIndex, renderDoc } from "$lib/server/docs-hub.js";
 import { splitFigures } from "./split.js";
 
 const render = (content) =>

@@ -376,6 +376,8 @@ describe("token contrast", () => {
       "inset",
       "repeating-linear-gradient(",
       ")",
+      "overline",
+      "line-through",
     ]);
     const sheets = stylesheets("src").filter(
       (path) => path !== join("src", "palette.css"),

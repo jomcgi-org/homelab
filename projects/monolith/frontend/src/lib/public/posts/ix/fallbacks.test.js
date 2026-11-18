@@ -3,7 +3,7 @@
 // the table's numbers from the figure's data module and looks for them there.
 import { expect, test } from "vitest";
 import manifest from "../posts-manifest.json";
-import { buildPathIndex, renderDoc } from "$lib/server/docs.js";
+import { buildPathIndex, renderDoc } from "$lib/server/docs-hub.js";
 import { splitFigures } from "./split.js";
 import { expertPaths } from "./data.js";
 import { weights } from "./data-fit.js";

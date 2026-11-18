@@ -260,7 +260,10 @@ filegroup(
         "//projects/scotland-connector/internal/httpapi:repo_docs",
         "//projects/scotland-connector/plugin:repo_docs",
     ],
-    visibility = ["//projects/monolith/frontend:__pkg__"],
+    visibility = [
+        "//projects/jomcgi-site/web:__pkg__",
+        "//projects/monolith/frontend:__pkg__",
+    ],
 )
 
 # Stdlib-only, so it runs on the executor's python3 like the other script
@@ -283,7 +286,10 @@ exports_files(
         "knowledge/tools/prettier_json.py",
         "knowledge/tools/public_content.py",
     ],
-    visibility = ["//projects/monolith/frontend:__pkg__"],
+    visibility = [
+        "//projects/jomcgi-site/web:__pkg__",
+        "//projects/monolith/frontend:__pkg__",
+    ],
 )
 
 # The manifest ships as its OWN image layer rather than as `data` on the

@@ -7,7 +7,7 @@ import {
   renderDoc,
   resolveDocHref,
   slugifyHeading,
-} from "./docs.js";
+} from "./docs-hub.js";
 
 const MANIFEST = [
   {

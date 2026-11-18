@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import manifest from "./posts-manifest.json";
-import { buildPathIndex, renderDoc } from "$lib/server/docs.js";
+import { buildPathIndex, renderDoc } from "$lib/server/docs-hub.js";
 import { figures } from "./ix/index.js";
 import { splitFigures } from "./ix/split.js";
 

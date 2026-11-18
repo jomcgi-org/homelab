@@ -6,8 +6,36 @@ load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@npm//:defs.bzl", "npm_link_all_packages")
 load("@npm//projects/jomcgi-site/web:typescript/package_json.bzl", typescript_bin = "bin")
 load("@npm//projects/jomcgi-site/web:vitest/package_json.bzl", vitest_bin = "bin")
+load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 npm_link_all_packages(name = "node_modules")
+
+# The same candidates, generator and content guard as the hub /docs route.
+genrule(
+    name = "docs_manifest",
+    srcs = ["//projects/monolith:repo_docs_srcs"],
+    outs = ["docs-manifest.json"],
+    cmd = "python3 $(execpath //projects/monolith:knowledge/tools/gen_docs_manifest.py) --out $@ $(SRCS)",
+    tools = [
+        "//projects/monolith:knowledge/tools/gen_docs_manifest.py",
+        "//projects/monolith:knowledge/tools/prettier_json.py",
+        "//projects/monolith:knowledge/tools/public_content.py",
+    ],
+)
+
+js_binary(
+    name = "prepare_docs",
+    data = ["//projects/monolith/frontend:docs_renderer"],
+    entry_point = "prepare-docs.mjs",
+)
+
+js_run_binary(
+    name = "docs_pages",
+    srcs = [":docs_manifest"],
+    chdir = package_name(),
+    out_dirs = ["docs"],
+    tool = ":prepare_docs",
+)
 
 js_library(
     name = "src",
@@ -20,6 +48,7 @@ js_library(
         ],
         exclude = [
             "dist/**",
+            "docs/**",
             "node_modules/**",
             "src/**/*.test.tsx",
             "src/factory/test-fixtures.ts",
@@ -28,20 +57,27 @@ js_library(
     ) + [
         "blog-content.d.mts",
         "blog-content.mjs",
+        "browser.mjs",
         "build.mjs",
         "factory-fixtures.ts",
         "package.json",
+        "render-diagrams.mjs",
         "tsconfig.json",
         "vite.config.ts",
+        ":docs_manifest",
+        ":docs_pages",
     ],
     deps = [
         ":node_modules/@astryxdesign/core",
         ":node_modules/@astryxdesign/theme-neutral",
         ":node_modules/@esbuild/linux-x64",
         ":node_modules/@rollup/rollup-linux-x64-gnu",
+        ":node_modules/@sparticuz/chromium",
         ":node_modules/@stylexjs/stylex",
         ":node_modules/@sveltejs/vite-plugin-svelte",
         ":node_modules/marked",
+        ":node_modules/mermaid",
+        ":node_modules/puppeteer-core",
         ":node_modules/react",
         ":node_modules/react-dom",
         ":node_modules/svelte",
@@ -173,6 +209,36 @@ js_test(
     ],
 )
 
+# Published content/metadata parity, complete filtered search and route ownership.
+js_test(
+    name = "docs_contract_test",
+    chdir = package_name(),
+    data = [
+        ":build",
+        ":docs_manifest",
+        ":docs_pages",
+        ":node_modules/happy-dom",
+        "//projects/jomcgi-site/edge:migration_routes",
+        "//projects/monolith/frontend:docs_renderer",
+    ],
+    entry_point = "docs-built.test.mjs",
+)
+
+# The actual published pages, including generated diagrams, under the hosting
+# CSP in light/dark and desktop/mobile. Chromium is pinned and runs offline.
+js_test(
+    name = "browser_test",
+    size = "large",
+    chdir = package_name(),
+    data = [
+        "budget.mjs",
+        ":build",
+        ":node_modules/axe-core",
+        ":src",
+    ],
+    entry_point = "browser.test.mjs",
+)
+
 js_library(
     name = "test_src",
     srcs = glob(["src/**/*.test.tsx"]) + [
@@ -212,4 +278,20 @@ typescript_bin.tsc_test(
     chdir = package_name(),
     data = [":test_src"],
     include_transitive_types = True,
+)
+
+# Compare the built site with the generator, including excluded inputs and
+# content-guard failures. Full manifest/source files never enter dist.
+py_test(
+    name = "docs_build_test",
+    srcs = ["docs_build_test.py"],
+    data = [
+        ":build",
+        ":docs_manifest",
+        "//projects/monolith:knowledge/tools/gen_docs_manifest.py",
+        "//projects/monolith:knowledge/tools/prettier_json.py",
+        "//projects/monolith:knowledge/tools/public_content.py",
+        "//projects/monolith:repo_docs_srcs",
+    ],
+    deps = ["@pip//pytest"],
 )

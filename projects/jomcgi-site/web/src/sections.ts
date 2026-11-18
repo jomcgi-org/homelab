@@ -35,7 +35,7 @@ export const SECTIONS: readonly Section[] = [
     group: "Writing",
     path: "/docs",
     legacy: "/docs",
-    live: false,
+    live: true,
     summary: "How the pieces fit together.",
   },
   {

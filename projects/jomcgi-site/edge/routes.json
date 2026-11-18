@@ -8,6 +8,7 @@
     "jomcgi.dev/assets/*",
     "jomcgi.dev/blog*",
     "jomcgi.dev/cv*",
+    "jomcgi.dev/docs*",
     "jomcgi.dev/ember*",
     "jomcgi.dev/llm-leaderboard*",
     "jomcgi.dev/notes*",

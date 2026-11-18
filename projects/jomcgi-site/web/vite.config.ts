@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
@@ -41,6 +42,14 @@ export default defineConfig({
           ]),
         ),
         "llm-leaderboard": page("llm-leaderboard.html"),
+        docs: page("docs.html"),
+        ...Object.fromEntries(
+          (
+            JSON.parse(readFileSync("docs-manifest.json", "utf8")) as {
+              slug: string;
+            }[]
+          ).map(({ slug }) => [`docs/${slug}`, page(`docs/${slug}.html`)]),
+        ),
       },
       onwarn(warning, warn) {
         if (warning.code !== "MODULE_LEVEL_DIRECTIVE") warn(warning);

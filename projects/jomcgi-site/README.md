@@ -190,6 +190,72 @@ with the hub sources, runs structural axe checks, checks linked assets and
 headers, and checks that all six exact routes have files in the build output.
 Bazel runs the same checks: `bb remote test //projects/jomcgi-site/...`.
 
+`/docs` uses `web:docs_manifest`, with the hub's `repo_docs_srcs`, generator
+and public-content guard. `web:docs_pages` renders the filtered entries with
+the shared markdown renderer and generates each document's HTML entry and
+page module. `src/pages.tsx` registers them for pre-rendering and axe tests.
+The browser hydrates the document HTML already in the page; it does not
+download the body again. The same filtered manifest supplies a static full-text
+search index. A dynamic import loads it only when a reader focuses the search
+box or types. Ctrl/Cmd+K focuses search; Enter opens the first result, and
+arrow keys move between results. No search request reaches the hub.
+
+Mermaid diagrams are rendered to SVG during the build with pinned Chromium,
+Puppeteer and Mermaid packages. The temporary renderer and browser stay out
+of `dist`. The SVGs use `src/docs-diagrams.css` and the checked light/dark
+palette, with no inline styles. Each diagram has a name from its section heading
+and a text equivalent describing its nodes, groups, connections, message order
+or state transitions. SVG title/description references expose these to screen
+readers. Separate disclosures offer the equivalent as a text list and retain
+the original source. The build reads Mermaid's parsed graph, so descriptions
+stay current when generated STPA docs change. Unsupported diagram semantics
+fail the build unless the author supplies Mermaid `accDescr` text.
+Wide code and tables accept keyboard focus so readers can scroll them.
+
+The local pnpm commands generate these inputs first. Install the workspace
+dependencies, including `monolith-frontend` for the shared renderer's `marked`
+dependency. After `pnpm build`, run
+`python3 -m pytest -q projects/jomcgi-site/web/docs_build_test.py` from the
+repository root to check published-page coverage and the public-content
+boundary. Bazel runs this with the repository's pytest runner as
+`web:docs_build_test`. Generated manifests and
+page sources stay out of version control and the published assets.
+
+From `web/`, `node docs-built.test.mjs` (`web:docs_contract_test`) compares each
+published document's complete body and metadata to the shared hub renderer. It also checks
+the overview's metadata, full-text index coverage and Worker routing for every
+manifest URL with and without a query string. It checks the exact description
+values in the emitted HTML.
+
+After building, `node browser.test.mjs` (`web:browser_test`) checks every HTML
+entry at mobile and desktop widths in both colour modes, under the published
+CSP. It runs axe including contrast on pages and open search results, checks
+hydration, static diagrams and their computed accessibility names/descriptions,
+and search loading on intent
+with keyboard navigation. The Sextant generation flow and
+state transitions must have meaningful text equivalents without JavaScript. The
+browser uses only local assets. Linux builds use the pinned browser and native
+libraries, with fontconfig pointing at the actual `TMPDIR` extraction path;
+set `CHROMIUM_PATH` to use an installed browser on another platform.
+
+## HOME-199 acceptance
+
+PR #8165 moves the complete docs section to the static site. Docs and blog use
+the shared Markdown renderer in `monolith/frontend/src/lib/server/markdown.js`;
+docs navigation and metadata stay in `docs.js`, with a small hub adapter for
+signed image URLs. Rendering, static search and route activation ship together.
+
+| Criterion | Implementation and executable evidence |
+| --- | --- |
+| 1: Same public sources and filter; every entry has a page and excluded content stays private. | `web/BUILD:docs_manifest` consumes `//projects/monolith:repo_docs_srcs` with the shared generator and `public_content.py`. `web:docs_pages` generates HTML entries and page modules. `src/pages.tsx` registers them; `build.mjs` pre-renders them. `docs_build_test.py::test_published_pages_are_exactly_the_filtered_manifest` compares the manifest to the generator and the full set of published HTML paths. The excluded-candidate and content-guard tests exercise the publication boundary. `web:docs_build_test` uses the repository's pytest runner. `docs-built.test.mjs` compares the complete published bodies with the shared hub renderer. |
+| 2: Sidebar, tabs, static search, budget, axe and contrast. | `src/docs.test.tsx` checks the manifest routes' navigation and search matching; `src/docs-search.test.tsx` checks loading on intent and Enter selection. `docs-built.test.mjs` checks that every filtered document is in the full-text index and that no other document is indexed. `browser.test.mjs` checks every published route in light/dark and mobile/desktop under the production CSP, including axe contrast, diagram accessibility and real keyboard search navigation. `budget.mjs` checks each HTML entry against 150 KiB gzipped initial JavaScript; `src/contrast.test.tsx` checks palette tokens and forbidden styles. |
+| 3: Live metadata and production routing. | `docs-built.test.mjs` checks each emitted page's title, exact description, canonical, Open Graph and Twitter tags against the shared hub metadata, including the overview. Docs is live in `src/sections.ts`; `edge/routes.json` uses `jomcgi.dev/docs*` to cover the overview, nested documents and query strings under the current routing contract. `docs-built.test.mjs` checks routing for every manifest URL; `edge/apply.test.mjs` checks the boundary with hub-owned paths. |
+
+CI publishes the dev build after merge. The landing owner must verify the deployed
+`next.jomcgi.dev/docs` overview, all manifest URLs, keyboard search and diagrams
+before production promotion. Local build and browser results do not establish
+deployed verification. Removing `jomcgi.dev/docs*` rolls docs back to the hub.
+
 ## Deploy
 
 CI publishes the image and chart on merge. A sync of the stage's Application

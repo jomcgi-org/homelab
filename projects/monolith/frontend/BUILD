@@ -7,6 +7,19 @@ load("@npm//projects/monolith/frontend:vite/package_json.bzl", vite_bin = "bin")
 load("@npm//projects/monolith/frontend:vitest/package_json.bzl", vitest_bin = "bin")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
+# Pure docs rendering shared by the hub and the static site at build time.
+js_library(
+    name = "docs_renderer",
+    srcs = [
+        "package.json",
+        "src/lib/public/docs/doc-kinds.js",
+        "src/lib/server/docs.js",
+        "src/lib/server/markdown.js",
+    ],
+    visibility = ["//projects/jomcgi-site/web:__pkg__"],
+    deps = [":node_modules/marked"],
+)
+
 npm_link_all_packages(name = "node_modules")
 
 # Original content for HOME-207 parity tests, never a production-site dep.

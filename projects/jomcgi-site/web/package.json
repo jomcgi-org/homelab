@@ -8,7 +8,11 @@
     "test": "vitest run",
     "test:browser": "node leaderboard-browser.mjs dist",
     "typecheck": "tsc --noEmit",
-    "budget": "node budget.mjs dist factory/index.html"
+    "budget": "node budget.mjs dist factory/index.html",
+    "predev": "node prepare-local.mjs",
+    "prebuild": "node prepare-local.mjs",
+    "pretest": "node prepare-local.mjs",
+    "pretypecheck": "node prepare-local.mjs"
   },
   "dependencies": {
     "@astryxdesign/core": "0.7.11",
@@ -28,7 +32,9 @@
     "@types/react-dom": "19.3.0",
     "axe-core": "4.14.0",
     "happy-dom": "21.0.4",
+    "mermaid": "11.17.0",
     "playwright": "1.62.1",
+    "puppeteer-core": "25.0.4",
     "typescript": "6.0.2",
     "vite": "6.4.5",
     "vitest": "4.1.11",

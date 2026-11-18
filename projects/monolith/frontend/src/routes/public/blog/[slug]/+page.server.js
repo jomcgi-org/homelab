@@ -6,7 +6,7 @@ import {
 } from "$lib/cache-headers.js";
 // Server-only imports: the manifest and markdown renderer do not reach the client.
 import manifest from "$lib/public/posts/posts-manifest.json";
-import { buildPathIndex, renderDoc } from "$lib/server/docs.js";
+import { buildPathIndex, renderDoc } from "$lib/server/docs-hub.js";
 
 const bySlug = new Map(manifest.map((entry) => [entry.slug, entry]));
 const emptyPathIndex = buildPathIndex([]);
