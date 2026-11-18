@@ -344,6 +344,23 @@ test("preview requires noindex; production can be indexed", () => {
   );
 });
 
+test("/hikes may widen only the CSP directives its route rule names", () => {
+  const hikes = new Headers(headersFor("/hikes"));
+  checkHeaders(hikes, { preview: true, path: "/hikes" });
+  assert.throws(() => checkHeaders(hikes, { preview: true, path: "/" }), /CSP/);
+  const wider = new Headers(hikes);
+  wider.set(
+    "content-security-policy",
+    hikes
+      .get("content-security-policy")
+      .replace("script-src 'self'", "script-src *"),
+  );
+  assert.throws(
+    () => checkHeaders(wider, { preview: true, path: "/hikes" }),
+    /CSP script-src/,
+  );
+});
+
 test("CSP cannot be weakened by a subdirective or a duplicate", () => {
   for (const suffix of [
     "; script-src-elem * 'unsafe-inline'",
