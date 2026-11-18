@@ -1,0 +1,3 @@
+image:
+  repository: ghcr.io/jomcgi/homelab/projects/factory/alert-relay
+  digest: "" # Supplied by the image build during packaging.

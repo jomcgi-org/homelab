@@ -11,7 +11,6 @@ resources:
   - kube-state-metrics.yaml
   - prometheus.yaml
   - alertmanager.yaml
-  - alert-relay.yaml
 
 configMapGenerator:
   - name: prometheus-config

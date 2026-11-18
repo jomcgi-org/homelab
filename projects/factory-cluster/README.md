@@ -865,8 +865,10 @@ The webhook URL comes from 1Password item `factory-alerts-discord` in vault
 `k8s-homelab`, field `webhook-url`. To create it, in the Discord channel open
 Edit Channel, Integrations, Webhooks, New Webhook, and copy the URL. If the
 item is missing, Alertmanager starts but logs a failed send for each alert.
-After a relay release, verify the pull in the factory namespace. The ready pod
-should report the release tag from the Deployment and a resolved image ID.
+Main publishes the relay image, packages its digest in the alert-relay OCI chart,
+and writes the published chart version to the Argo CD Application. After rollout,
+check the ready pod in the factory namespace. Compare its image ID with the
+manifest digest in the published chart's image reference.
 
 ```bash
 export KUBECONFIG=~/.kube/factory.yaml
