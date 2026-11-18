@@ -33,16 +33,25 @@ echo "  Namespace: $NAMESPACE"
 echo "  Values:  $*"
 echo ""
 
-# Run helm template and discard output - we only care about exit code
-# Errors will be printed to stderr
-if "$HELM" template "$RELEASE_NAME" "$CHART_PATH" \
+# Render to a file. Errors are printed to stderr.
+RENDERED="${TEST_TMPDIR:-$(mktemp -d)}/rendered.yaml"
+if ! "$HELM" template "$RELEASE_NAME" "$CHART_PATH" \
 	--namespace "$NAMESPACE" \
 	"${VALUES_ARGS[@]}" \
-	>/dev/null; then
-	echo "PASSED: Chart renders successfully"
-	exit 0
-else
+	>"$RENDERED"; then
 	echo ""
 	echo "FAILED: Chart rendering produced errors"
 	exit 1
+fi
+echo "PASSED: Chart renders successfully"
+
+# CONTENT_RULES is set by helm_template_test(content_rules = True).
+if [[ -n "${CONTENT_RULES:-}" ]]; then
+	# Each exemption is one Kind/namespace/name word.
+	read -r -a EXEMPT <<<"${CONTENT_RULES_EXCEPTIONS:-}"
+	if ! "$CONTENT_RULES" "$NAMESPACE" ${EXEMPT[@]+"${EXEMPT[@]}"} <"$RENDERED"; then
+		echo "FAILED: the render breaks a factory-cluster content rule (bazel/helm/content_rules)"
+		exit 1
+	fi
+	echo "PASSED: the render meets the factory-cluster content rules"
 fi

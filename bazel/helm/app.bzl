@@ -11,7 +11,9 @@ def argocd_app(
         values_files = [],
         generate_manifests = True,
         tags = [],
-        target_suffix = ""):
+        target_suffix = "",
+        content_rules = False,
+        content_rules_exceptions = {}):
     """Declares an ArgoCD application overlay with template testing and manifest rendering.
 
     This macro replaces the genrule + helm_template_test pattern that Gazelle
@@ -29,6 +31,10 @@ def argocd_app(
         generate_manifests: If True, create render_manifests genrule (default: True)
         tags: Additional tags for the template test
         target_suffix: Suffix for template and manifest targets sharing a package
+        content_rules: If True, the template test also runs the factory-cluster
+            content rules (//bazel/helm/content_rules) over the render
+        content_rules_exceptions: Dict from "Kind/namespace/name" to the reason
+            that object may leave the release namespace. Review owns each entry
     """
     if release_name == None:
         release_name = name
@@ -43,8 +49,20 @@ def argocd_app(
         release_name = release_name,
         namespace = namespace,
         values_files = values_files,
+        content_rules = content_rules,
+        content_rules_exceptions = content_rules_exceptions.keys(),
         tags = tags + ["helm", "template"],
     )
+
+    if content_rules:
+        # //bazel/helm/content_rules:coverage_test depends on this marker for
+        # each application chart it lists, so a listed chart must opt in.
+        native.genrule(
+            name = "content_rules_opt_in" + target_suffix,
+            outs = ["content_rules_opt_in" + target_suffix + ".txt"],
+            cmd = "echo {} > $@".format(release_name),
+            visibility = ["//bazel/helm/content_rules:__pkg__"],
+        )
 
     if generate_manifests:
         # Build the helm template command matching what generate.go produces
