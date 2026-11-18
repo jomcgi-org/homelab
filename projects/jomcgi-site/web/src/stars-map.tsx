@@ -12,6 +12,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import { cells, type MapData } from "./stars-geometry";
 import type { Site } from "./stars-model";
+import { isMapFailure } from "./map-errors";
 
 export default function StarsMap(
   props: MapData & { onSelect: (id: Site["id"] | null) => void },
@@ -108,7 +109,9 @@ export default function StarsMap(
       const feature = event.features?.[0];
       if (feature) onSelect.current(feature.properties.id as Site["id"]);
     });
-    instance.on("error", () => setFailed(true));
+    instance.on("error", (event) => {
+      if (isMapFailure(event)) setFailed(true);
+    });
     const recolor = () => {
       if (instance.getLayer("stars-cells"))
         instance.setPaintProperty("stars-cells", "fill-color", ramp());

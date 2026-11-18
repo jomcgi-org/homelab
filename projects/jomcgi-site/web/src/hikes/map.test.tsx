@@ -141,3 +141,20 @@ it("recenters only on selection changes, preserving a reader's pan and zoom on c
   view.rerender(<HikesMap {...props} selectedId={second.id} />);
   expect(fake.easeTo).toHaveBeenCalledOnce();
 });
+
+it("keeps the map for a single failed or cancelled tile and reports other errors", async () => {
+  const view = render(<HikesMap {...mapProps()} />);
+  await act(async () => fake.handlers.get("load")!());
+  const status = () => view.queryByText(/The map could not load completely/);
+  await act(async () =>
+    fake.handlers.get("error")!({
+      error: new Error("AJAXError: Failed to fetch (0)"),
+      sourceId: "openmaptiles",
+      tile: {},
+    }),
+  );
+  expect(status()).toBeNull();
+  await act(async () => fake.handlers.get("error")!({ error: new Error("style") }));
+  expect(status()).not.toBeNull();
+  view.unmount();
+});
