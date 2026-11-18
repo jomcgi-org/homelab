@@ -1,0 +1,156 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { readFileSync } from "node:fs";
+import {
+  checkPage,
+  launchBrowser,
+  PENDING_DATA,
+  pendingData,
+  tier2,
+} from "./browser.mjs";
+import { css, html, isolateBrowserCache, respond, serve } from "./fixture.mjs";
+
+test(
+  "tier 2 fails a rendered stylesheet colour-contrast violation",
+  { timeout: 120_000 },
+  async (t) => {
+    isolateBrowserCache(t);
+    let stylesheet = css;
+    const server = await serve((req, res) => {
+      if (req.url === "/assets/style.css") {
+        respond(res, stylesheet, "text/css");
+      } else if (req.url === "/assets/app.js") {
+        respond(res, "", "text/javascript");
+      } else {
+        respond(res, html);
+      }
+    });
+    try {
+      const url = `${server.origin}/`;
+      // This runs the same tier-2 entry point as site-check: both colour
+      // modes and viewport sizes must pass before changing the stylesheet.
+      assert.deepEqual(await tier2([{ url, path: "/" }]), Array(4).fill(url));
+      stylesheet += " p { color: lightgray; }";
+      await assert.rejects(tier2([{ url, path: "/" }]), (error) => {
+        // Require the contrast rule itself, with no incidental console,
+        // HTTP or CSP failures that could make this a false positive.
+        assert.equal(error.actual?.length, 1);
+        assert.match(error.actual[0], /^axe color-contrast: p:/);
+        console.log(`Expected tier-2 rejection: ${error.actual[0]}`);
+        return true;
+      });
+    } finally {
+      await server.close();
+    }
+  },
+);
+
+test(
+  "real browser catches rendered CSS contrast, console errors and enforced/report-only CSP",
+  { timeout: 120_000 },
+  async (t) => {
+    isolateBrowserCache(t);
+    const browser = await launchBrowser();
+    try {
+      for (const mode of [
+        "pass",
+        "contrast",
+        "console",
+        "exception",
+        "csp",
+        "report-only",
+        "404",
+        "off-origin",
+      ]) {
+        await t.test(mode, async () => {
+          const server = await serve((req, res) => {
+            if (req.url === "/assets/style.css") {
+              respond(res, css, "text/css");
+            } else if (req.url === "/assets/app.js") {
+              const script =
+                {
+                  // A colour keyword in JS is invisible to static CSS scans.
+                  contrast:
+                    'document.querySelector("p").style.color = "lightgray";',
+                  console: 'console.error("fixture console error")',
+                  exception: 'throw new Error("fixture exception")',
+                  "off-origin": 'fetch("https://outside.invalid/forbidden")',
+                }[mode] ?? "";
+              respond(res, script, "text/javascript");
+            } else {
+              const body = ["csp", "report-only"].includes(mode)
+                ? html.replace(
+                    "</body>",
+                    '<script>console.log("inline")</script></body>',
+                  )
+                : html;
+              const extra =
+                mode === "report-only"
+                  ? {
+                      "content-security-policy":
+                        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'",
+                      "content-security-policy-report-only":
+                        "script-src 'self'; report-uri /report",
+                    }
+                  : {};
+              respond(
+                res,
+                body,
+                "text/html",
+                extra,
+                mode === "404" ? 404 : 200,
+              );
+            }
+          });
+          try {
+            const run = () =>
+              checkPage(browser, {
+                url: `${server.origin}/`,
+                status: mode === "404" ? 404 : 200,
+              });
+            const expected = {
+              contrast: /axe color-contrast/,
+              console: /fixture console error/,
+              exception: /fixture exception/,
+              csp: /CSP: script-src-elem/,
+              "report-only": /CSP: script-src-elem/,
+              "off-origin": /CSP: connect-src|off-origin request/,
+            }[mode];
+            if (expected) await assert.rejects(run(), expected);
+            else assert.deepEqual(await run(), [`${server.origin}/`]);
+          } finally {
+            await server.close();
+          }
+        });
+      }
+    } finally {
+      await browser.close();
+    }
+  },
+);
+
+test("only data of a staged section may answer 404", () => {
+  const at = (path) => pendingData(`https://next.jomcgi.dev${path}`);
+  assert.equal(at("/data/factory/manifest.json"), true);
+  assert.equal(at("/data/stars/latest.json"), false);
+  // A misspelled section is not staged, so its 404 still fails the page.
+  assert.equal(at("/data/star/latest.json"), false);
+  assert.equal(at("/data/factory-x/manifest.json"), false);
+  assert.equal(at("/data/latest.json"), false);
+  assert.equal(at("/assets/app.js"), false);
+  assert.equal(at("/factory/"), false);
+});
+
+test("a staged section leaves the list when the snapshot publishes it", () => {
+  // Remove the section from PENDING_DATA in browser.mjs when its source is
+  // added to data/sources.json (for /factory: HOME-213).
+  const sources = JSON.parse(
+    readFileSync(new URL("../data/sources.json", import.meta.url), "utf8"),
+  );
+  for (const section of PENDING_DATA) {
+    assert.ok(
+      !(section in sources.sections),
+      `${section} is published; remove it from PENDING_DATA`,
+    );
+  }
+});

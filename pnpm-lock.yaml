@@ -115,6 +115,24 @@ importers:
         specifier: '>=4.1.11 <5'
         version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@22.19.7)(happy-dom@21.0.4(patch_hash=8828327337fcb7e7ae0ec3d5184c2fd0f188852f611c461caf93fb490f2726e3))(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0))
 
+  projects/jomcgi-site/check:
+    dependencies:
+      '@sparticuz/chromium':
+        specifier: 153.0.0
+        version: 153.0.0(bare-buffer@3.7.2)
+      axe-core:
+        specifier: 4.14.0
+        version: 4.14.0
+      parse5:
+        specifier: 8.0.0
+        version: 8.0.0
+      playwright-core:
+        specifier: 1.65.1
+        version: 1.65.1
+      undici:
+        specifier: 7.30.1
+        version: 7.30.1
+
   projects/jomcgi-site/web:
     dependencies:
       '@astryxdesign/core':
@@ -1865,6 +1883,10 @@ packages:
   end-of-stream@1.4.5:
     resolution: {integrity: sha512-ooEGc6HP26xXq/N+GCGOT0JKCLDGrq2bQUZrQ7gyrJiZANJ/8YDTxTpQBXGMn+WbIQXNVpyWymm7KYVICQnyOg==}
 
+  entities@6.0.1:
+    resolution: {integrity: sha512-aN97NXWF6AWBTahfVOIrB/NShkzi5H7F9r1s9mD3cDj4Ko5f2qhhVoYMibXF7GlLveb/D2ioWay8lxI97Ven3g==}
+    engines: {node: '>=0.12'}
+
   entities@7.0.1:
     resolution: {integrity: sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA==}
     engines: {node: '>=0.12'}
@@ -2285,6 +2307,9 @@ packages:
   package-manager-detector@1.8.0:
     resolution: {integrity: sha512-yQA4H19AmPEoMUeavPMDIe1higySl/gH/yaQrkT/s07Qp+7pp2hYz30N3z2l5BkjVkF9Ow6o0wjJamm2y7Sn0A==}
 
+  parse5@8.0.0:
+    resolution: {integrity: sha512-9m4m5GSgXjL4AjumKzq1Fgfp3Z8rsvjRNbnkVwfu2ImRqE5D0LnY2QfDen18FSY9C573YU5XxSapdHZTZ2WolA==}
+
   path-data-parser@0.1.0:
     resolution: {integrity: sha512-NOnmBpt5Y2RWbuv0LMzsayp3lVylAHLPUTut412ZA3l+C4uw4ZVkQbjShYCQ8TCpUMdPapr4YjUqLYD6v68j+w==}
 
@@ -2326,6 +2351,11 @@ packages:
 
   playwright-core@1.62.1:
     resolution: {integrity: sha512-wPYSwEBJY9GHraISXqyqtx0na0LpO3XEX7jNDhntbex7tzUS7kLnZsOlFruFJB4Hi/rhDMjXGqHewDZ68nYZVw==}
+    engines: {node: '>=20'}
+    hasBin: true
+
+  playwright-core@1.65.1:
+    resolution: {integrity: sha512-hqPpz7blSMPxWVdoeE1yiBSzXsKiVOd2k+kjCvmUywD2GPO2Dd9HfcWnq9NN0GHbNZDFgZ9JfBFr+X5/BLo0qw==}
     engines: {node: '>=20'}
     hasBin: true
 
@@ -4258,6 +4288,8 @@ snapshots:
     dependencies:
       once: 1.4.0
 
+  entities@6.0.1: {}
+
   entities@7.0.1: {}
 
   error-stack-parser-es@1.0.5: {}
@@ -4664,6 +4696,10 @@ snapshots:
 
   package-manager-detector@1.8.0: {}
 
+  parse5@8.0.0:
+    dependencies:
+      entities: 6.0.1
+
   path-data-parser@0.1.0: {}
 
   path-exists@3.0.0: {}
@@ -4691,6 +4727,8 @@ snapshots:
       find-up: 3.0.0
 
   playwright-core@1.62.1: {}
+
+  playwright-core@1.65.1: {}
 
   playwright@1.62.1:
     dependencies:
