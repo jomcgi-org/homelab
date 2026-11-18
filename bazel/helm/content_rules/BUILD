@@ -45,6 +45,7 @@ py_test(
     srcs = ["coverage_test.py"],
     data = [
         "//projects:factory_kustomization",
+        "//projects/jomcgi-site/deploy:content_rules_opt_in_prod",
     ] + ["//projects/{}/deploy:content_rules_opt_in".format(a) for a in APPLICATIONS],
     env = {
         "APPLICATIONS": " ".join(APPLICATIONS),

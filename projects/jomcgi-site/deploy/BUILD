@@ -19,3 +19,27 @@ argocd_app(
         "//projects/jomcgi-site/chart:image_values",
     ],  # keep
 )
+
+genrule(
+    name = "prod_values",
+    srcs = ["application-prod.yaml"],
+    outs = ["values-prod.yaml"],
+    cmd = "$(location @multitool//tools/yq) -e '.spec.source.helm.valuesObject' $< > $@",
+    tools = ["@multitool//tools/yq"],
+)
+
+# keep
+argocd_app(
+    name = "jomcgi-site-prod",
+    chart = "projects/jomcgi-site/chart",
+    chart_files = "//projects/jomcgi-site/chart:chart",
+    content_rules = True,
+    generate_manifests = False,
+    namespace = "jomcgi-site-prod",
+    target_suffix = "_prod",
+    values_files = [
+        "//projects/jomcgi-site/chart:values.yaml",
+        "//projects/jomcgi-site/chart:image_values",
+        ":prod_values",
+    ],
+)
