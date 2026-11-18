@@ -1,5 +1,6 @@
 """Hermetic coverage for durable scheduled task claims and advancement."""
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from threading import Barrier
@@ -384,72 +385,79 @@ def test_cron_semantics_use_standard_dom_dow_or_and_utc():
     )
 
 
+def _at(day, hour, minute):
+    return datetime(2026, 9, day, hour, minute, tzinfo=timezone.utc)
+
+
 @pytest.mark.asyncio
-async def test_gateway_off_ends_every_digest_at_once(engine):
-    # Joe, 2026-11-18 (#8189): hub digests end with the hub bot. With the
-    # gateway off, every active digest ends on the first pass, due or not,
-    # each with one final notice; a reminder still fires. If the gateway comes
-    # back, no digest is left to run against the incomplete store.
-    digest_id, _ = _insert_due(engine, kind="digest")  # due 12:15
-    later_id, _ = _insert_due(engine, kind="digest", cron="0 18 * * *")  # not due
+async def test_gateway_off_retires_digests_and_each_run_posts_its_final_notice(
+    engine,
+):
+    # Joe, 2026-11-18 (#8189): hub digests end with the hub bot; each digest's
+    # next run posts one final notice and the task is cancelled. Retirement is
+    # recorded at once, so a digest whose run comes after the gateway is back
+    # still ends instead of summarising the incomplete store.
+    soon_id, _ = _insert_due(engine, kind="digest")  # */15: due 12:15
+    later_id, _ = _insert_due(engine, kind="digest", cron="0 18 * * *")
     reminder_id, _ = _insert_due(engine)
     build = AsyncMock()
+    notice = DIGEST_ENDED.format(mode="summary")
     delivered = await drain_once(
         engine,
-        now=datetime(2026, 9, 12, 12, 16, tzinfo=timezone.utc),
+        now=_at(12, 12, 16),
         claimant="leader-a",
         digest_builder=build,
         digests=False,
     )
-    assert delivered == 1  # the reminder; the notices are not occurrences
-    build.assert_not_awaited()
+    assert delivered == 2  # the due digest's final notice and the reminder
     with Session(engine) as session:
-        contents = sorted(row.content for row in session.query(DiscordOutbox).all())
-        notice = DIGEST_ENDED.format(mode="summary")
-        assert contents == sorted([notice, notice, "⏰ <@456> reminder: stand up"])
-        assert session.get(ScheduledTask, digest_id).status == "cancelled"
-        assert session.get(ScheduledTask, later_id).status == "cancelled"
+        assert session.get(ScheduledTask, soon_id).status == "cancelled"
+        later = session.get(ScheduledTask, later_id)
+        assert later.status == "pending"  # its notice waits for its own run
+        assert json.loads(later.payload_json)["retired_at"]
         assert session.get(ScheduledTask, reminder_id).status == "completed"
-    # Nothing more posts, with the gateway still off or back on.
-    for digests in (False, True):
+    # The gateway is back on at 18:01: the retired digest still only ends.
+    for day, posted in ((12, 1), (13, 0)):
         assert (
             await drain_once(
-                engine,
-                now=datetime(2026, 9, 13, 18, 1, tzinfo=timezone.utc),
-                claimant="leader-a",
-                digest_builder=build,
-                digests=digests,
+                engine, now=_at(day, 18, 1), claimant="leader-a", digest_builder=build
             )
-            == 0
+            == posted
         )
     build.assert_not_awaited()
     with Session(engine) as session:
-        assert session.query(DiscordOutbox).count() == 3
+        assert session.get(ScheduledTask, later_id).status == "cancelled"
+        contents = sorted(row.content for row in session.query(DiscordOutbox).all())
+        assert contents == sorted([notice, notice, "⏰ <@456> reminder: stand up"])
+        kinds = {row.kind for row in session.query(DiscordOutbox).all()}
+        assert kinds == {"scheduled_task"}  # guarded sends, with occurrences
 
 
 @pytest.mark.asyncio
-async def test_digest_claimed_by_an_old_leader_ends_and_its_finalize_is_refused(
-    engine,
-):
-    # The old leader claimed a digest and had not finished it. The gateway-off
-    # pass ends it at once, live lease or not, and the old leader's late
-    # finalize finds the task no longer claimed and posts nothing.
+async def test_retirement_survives_an_old_leaders_finalize(engine):
+    # The old leader claimed a digest before the gateway went off. Retirement
+    # does not touch its claim, and its late finalize does not undo the
+    # marker: the digest's next run ends it.
     digest_id, _ = _insert_due(engine, kind="digest")
     with Session(engine) as session:
-        claimed_at = datetime(2026, 9, 12, 12, 16, tzinfo=timezone.utc)
-        (claim,) = claim_due(session, claimed_at, "old")
+        (claim,) = claim_due(session, _at(12, 12, 16), "old")
         session.commit()
     await drain_once(
-        engine,
-        now=datetime(2026, 9, 12, 12, 17, tzinfo=timezone.utc),
-        claimant="leader-b",
-        digests=False,
+        engine, now=_at(12, 12, 17), claimant="leader-b", digests=False
     )
     with Session(engine) as session:
-        assert session.get(ScheduledTask, digest_id).status == "cancelled"
-        late = datetime(2026, 9, 12, 12, 18, tzinfo=timezone.utc)
-        assert not finalize_claim(session, claim, "stale digest", late)
+        built = "📋 digest built before the switch"
+        assert finalize_claim(session, claim, built, _at(12, 12, 18))
         session.commit()
-        assert [r.content for r in session.query(DiscordOutbox).all()] == [
-            DIGEST_ENDED.format(mode="summary")
+    with Session(engine) as session:
+        task = session.get(ScheduledTask, digest_id)
+        assert task.status == "pending"
+        assert json.loads(task.payload_json)["retired_at"]
+    assert await drain_once(engine, now=_at(12, 12, 31), claimant="leader-b") == 1
+    with Session(engine) as session:
+        assert session.get(ScheduledTask, digest_id).status == "cancelled"
+        rows = session.query(DiscordOutbox).order_by(DiscordOutbox.id)
+        assert [r.content for r in rows] == [
+            "📋 digest built before the switch",
+            DIGEST_ENDED.format(mode="summary"),
         ]
