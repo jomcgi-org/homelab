@@ -8,9 +8,12 @@ js_library(
     name = "src",
     srcs = [
         "browser.mjs",
+        "fixture.mjs",
         "freshness.json",
         "headers.mjs",
+        "release-fixture.mjs",
         "scope.mjs",
+        "smoke.mjs",
         "tier1.mjs",
     ],
     deps = [
@@ -43,7 +46,6 @@ js_test(
     name = "tier1_test",
     data = [
         "fixture.mjs",
-        "release-fixture.mjs",
         ":src",
         "//projects/jomcgi-site/web:headers",
         "//projects/jomcgi-site/web:redirects",
@@ -78,7 +80,6 @@ js_test(
     size = "medium",
     data = [
         "fixture.mjs",
-        "release-fixture.mjs",
         ":src",
         "//projects/jomcgi-site/web:build",
         "//projects/jomcgi-site/web:headers",
