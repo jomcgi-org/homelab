@@ -50,9 +50,9 @@ export async function publishHikesSummary(out, now = new Date()) {
   const time = (at) =>
     at ? `<time datetime="${escape(at)}">${escape(at)}</time>` : "unknown time";
   // Without JavaScript the text stays as published, so say so and give the
-  // time it goes stale. Hydration replaces it with the live status.
+  // time it goes (or went) stale. Hydration replaces it with the live status.
   const published = (text, at, ms) =>
-    `${text} (at publication${at && !text.startsWith("Stale") ? `; stale after ${time(new Date(Date.parse(at) + ms).toISOString())}` : ""})`;
+    `${text} (at publication${at ? `; stale ${text.startsWith("Stale") ? "since" : "after"} ${time(new Date(Date.parse(at) + ms).toISOString())}` : ""})`;
   const status = (at) =>
     `<span data-forecast-freshness data-fetched-at="${escape(at ?? "")}" data-latest-fetched-at="${escape(latest ?? "")}">${published(forecastStatus(at, latest, now.getTime()), at, STALE_MS)}</span>`;
   const summary =
