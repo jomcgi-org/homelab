@@ -6,6 +6,7 @@ go_library(
         "app_comments.go",
         "broker_comments.go",
         "broker_quota.go",
+        "broker_runs.go",
         "checks.go",
         "client.go",
         "etag.go",
@@ -16,6 +17,7 @@ go_library(
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/github",
     visibility = ["//visibility:public"],
+    deps = ["//projects/factory/connector/provenance"],
 )
 
 go_test(

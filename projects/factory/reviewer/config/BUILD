@@ -5,7 +5,10 @@ go_library(
     srcs = ["config.go"],
     importpath = "github.com/jomcgi/homelab/projects/factory/reviewer/config",
     visibility = ["//visibility:public"],
-    deps = ["@in_gopkg_yaml_v3//:yaml_v3"],
+    deps = [
+        "//projects/factory/connector/provenance",
+        "@in_gopkg_yaml_v3//:yaml_v3",
+    ],
 )
 
 go_test(

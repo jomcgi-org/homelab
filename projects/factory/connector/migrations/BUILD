@@ -35,6 +35,7 @@ go_library(
         "20261117030000_deferred_stops.sql",
         "20261117160000_codex_usage.sql",
         "20261117190000_accounting_identity.sql",
+        "20261118070000_run_provenance.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],
