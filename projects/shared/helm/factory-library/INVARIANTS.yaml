@@ -1,0 +1,38 @@
+# Invariants: rules that must always hold in this directory.
+# docs/templates/INVARIANTS.yaml describes the fields. IDs are permanent:
+# never reuse or renumber one. docs/THREAT-MODEL.md cites them.
+invariants:
+- id: LIB-1
+  statement: A library workload runs as non-root, drops all capabilities and uses the default seccomp
+    profile.
+  mechanism:
+  - projects/shared/helm/factory-library/chart/templates/_workloads.tpl
+  test: //projects/shared/helm/factory-library:library_test
+  state: live
+- id: LIB-2
+  statement: The library refuses an image without a digest.
+  mechanism:
+  - projects/shared/helm/factory-library/chart/templates/_helpers.tpl
+  test: //projects/shared/helm/factory-library:library_test
+  state: live
+- id: LIB-3
+  statement: 'A workload gets no ServiceAccount token unless it sets kubernetesApi: true.'
+  mechanism:
+  - projects/shared/helm/factory-library/chart/templates/_workloads.tpl
+  test: //projects/shared/helm/factory-library:library_test
+  state: live
+- id: LIB-4
+  statement: A render fails without resource requests and a memory limit.
+  mechanism:
+  - projects/shared/helm/factory-library/chart/templates/_workloads.tpl
+  state: unproven
+- id: LIB-5
+  statement: Every relaxed default shows in the annotation factory.jomcgi.dev/exceptions.
+  mechanism:
+  - projects/shared/helm/factory-library/chart/templates/_workloads.tpl
+  - projects/shared/helm/factory-library/chart/templates/_helpers.tpl
+  state: unproven
+- id: LIB-6
+  statement: Every application workload on the factory cluster renders through the library.
+  mechanism: []
+  state: designed

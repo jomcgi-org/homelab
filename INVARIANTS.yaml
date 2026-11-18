@@ -1,0 +1,17 @@
+# Invariants: rules that must always hold in this directory.
+# docs/templates/INVARIANTS.yaml describes the fields. IDs are permanent:
+# never reuse or renumber one. docs/THREAT-MODEL.md cites them.
+invariants:
+- id: ROOT-1
+  statement: CI alone raises chart versions and deployment pins.
+  mechanism:
+  - bazel/tools/ci/chart_version_guard.py
+  state: unproven
+- id: ROOT-2
+  statement: No secret value is in git.
+  mechanism: []
+  state: designed
+- id: ROOT-3
+  statement: Every third-party GitHub Action is pinned by commit SHA.
+  mechanism: []
+  state: designed

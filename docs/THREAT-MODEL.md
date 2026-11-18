@@ -61,8 +61,8 @@ flowchart LR
 Numbers in the diagram are attacker positions. The Controls column names
 the file that enforces each control. Paths are under `projects/platform-factory/`
 (PF), `projects/factory/` (F), `projects/factory-cluster/` (FC) and
-`projects/shared/helm/factory-library/` (LIB). HOME-301 gives each control a
-stable invariant ID.
+`projects/shared/helm/factory-library/` (LIB). The `INVARIANTS.yaml` in each of
+these directories gives each control a permanent ID.
 
 | Boundary | Untrusted input | Controls | Deep model |
 | --- | --- | --- | --- |
