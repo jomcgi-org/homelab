@@ -26,8 +26,35 @@ type RefActivity struct {
 	Actor struct {
 		Login string `json:"login"`
 	} `json:"actor"`
-	Before string `json:"before"`
-	After  string `json:"after"`
+	Before    string    `json:"before"`
+	After     string    `json:"after"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+// HeadRefChangedAt returns GitHub's time for the latest change to this head.
+// Unlike git commit dates, repository activity records when the ref changed.
+// Check the exact ref and SHA so a push racing the PR listing cannot date a
+// different head. Older branch history is not needed for queue ordering.
+func (c *Client) HeadRefChangedAt(ctx context.Context, repo, branch, head string) (time.Time, error) {
+	ref := "refs/heads/" + branch
+	q := url.Values{"ref": {ref}, "direction": {"desc"}, "per_page": {"1"}, "page": {"1"}}
+	var events []RefActivity
+	if err := c.doUncached(ctx, repo, http.MethodGet, repoPath(repo)+"/activity?"+q.Encode(), nil, &events); err != nil {
+		return time.Time{}, err
+	}
+	if len(events) != 1 {
+		return time.Time{}, errors.New("github: missing latest ref activity")
+	}
+	event := events[0]
+	if event.ID <= 0 || event.Ref != ref || head == "" || event.After != head || event.Before == event.After || event.Timestamp.IsZero() {
+		return time.Time{}, errors.New("github: latest ref activity does not date the expected head")
+	}
+	switch event.Type {
+	case "push", "force_push", "branch_creation", "pr_merge", "merge_queue_merge":
+		return event.Timestamp, nil
+	default:
+		return time.Time{}, errors.New("github: latest ref activity is not a head change")
+	}
 }
 
 // HeadRefActivity reads at most 100 events through the ref's latest creation.

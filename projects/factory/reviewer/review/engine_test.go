@@ -802,10 +802,12 @@ func TestWaitingHeadStartsBeforeUpdatedPRs(t *testing.T) {
 		name          string
 		updateWaiting bool
 		failCheckRead bool
+		failActivity  bool
 	}{
 		{name: "quiet head"},
 		{name: "metadata changes keep the same wait", updateWaiting: true},
 		{name: "check read failure keeps the same wait", failCheckRead: true},
+		{name: "activity read failure keeps the observed wait", failActivity: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -828,7 +830,14 @@ func TestWaitingHeadStartsBeforeUpdatedPRs(t *testing.T) {
 			eventually(t, "three occupied slots", func() bool { return len(h.k.sent()) == 3 })
 			advance()
 			waiting := strings.Repeat("b", 40)
-			h.gh.addPR(&fakePR{Number: 20, Head: waiting, Updated: h.cfg.Now()})
+			h.gh.addPR(&fakePR{Number: 20, Head: waiting, HeadRepo: testRepo, HeadRef: "factory/waiting", Updated: h.cfg.Now()})
+			if tc.failActivity {
+				h.gh.failWith("GET /repos/"+testRepo+"/activity", 502)
+			} else {
+				h.gh.withLock(func() {
+					h.gh.prs[20].Activity = []github.RefActivity{{ID: 20, Ref: "refs/heads/factory/waiting", Type: "push", Before: "previous", After: waiting, Timestamp: h.cfg.Now()}}
+				})
+			}
 			checkRead := "GET /repos/" + testRepo + "/commits/" + waiting + "/check-runs"
 			if tc.failCheckRead {
 				h.gh.failWith(checkRead, 502)
@@ -877,6 +886,62 @@ func TestWaitingHeadStartsBeforeUpdatedPRs(t *testing.T) {
 	}
 }
 
+// Heads already waiting when the process starts must not tie by PR number.
+// Ref activity preserves their arrival order across polls and process restarts.
+func TestHeadArrivalOrdersSamePollAndSurvivesRestart(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restart=%t", restart), func(t *testing.T) {
+			h := newHarness(t)
+			h.cfg.Concurrency = 1
+			h.cfg.Timeout = time.Hour
+			h.cfg.Bindings[0].EnqueueAuthors = nil
+			addPR7(h)
+			e, ctx, stop := h.start()
+			running := runReview(t, h, e, ctx, 7, shaA)
+			now := time.Now().UTC().Truncate(time.Second)
+			for _, tc := range []struct {
+				number         int
+				pushed, opened time.Duration
+			}{
+				{1, time.Minute, time.Hour},
+				{20, 30 * time.Minute, time.Hour},
+				// An old branch opened as a new PR has only just joined.
+				{30, 2 * time.Hour, 30 * time.Second},
+			} {
+				sha, ref := fmt.Sprintf("%040d", tc.number), fmt.Sprintf("factory/pr-%d", tc.number)
+				h.gh.addPR(&fakePR{
+					Number: tc.number, Head: sha, HeadRepo: testRepo, HeadRef: ref,
+					Created: now.Add(-tc.opened), Updated: now.Add(-tc.pushed),
+					Activity: []github.RefActivity{{ID: int64(tc.number), Ref: "refs/heads/" + ref, Type: "push", Before: "previous", After: sha, Timestamp: now.Add(-tc.pushed)}},
+				})
+			}
+			e.Tick(ctx)
+			if restart {
+				eventually(t, "the running task recorded for reattachment", func() bool {
+					return RecordedTask(h.gh.check(shaA).Summary).ID == running
+				})
+				stop()
+				e, ctx, _ = h.start()
+			}
+			for range 3 {
+				h.gh.withLock(func() { h.gh.prs[1].Updated = time.Now() })
+				e.Tick(ctx)
+				if h.gh.checkCount() != 1 || len(h.k.sent()) != 1 {
+					t.Fatal("waiting heads overtook the running or resumed review")
+				}
+			}
+			for _, number := range []int{20, 1, 30} {
+				h.k.finish(running, kagent.StateCompleted, report(t, passing))
+				eventually(t, "a free slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+				e.Tick(ctx)
+				sha := fmt.Sprintf("%040d", number)
+				eventually(t, "the oldest head arrival", func() bool { return h.taskOn(number, sha, 1) != "" })
+				running = h.taskOn(number, sha, 1)
+			}
+		})
+	}
+}
+
 func TestNewHeadResetsReviewWait(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.Concurrency = 1
@@ -885,11 +950,21 @@ func TestNewHeadResetsReviewWait(t *testing.T) {
 	e, ctx, _ := h.start()
 	running := runReview(t, h, e, ctx, 7, shaA)
 	oldHead, newHead, waiting := strings.Repeat("b", 40), strings.Repeat("c", 40), strings.Repeat("d", 40)
-	h.gh.addPR(&fakePR{Number: 1, Head: oldHead})
+	now := time.Now().UTC().Truncate(time.Second)
+	h.gh.addPR(&fakePR{
+		Number: 1, Head: oldHead, HeadRepo: testRepo, HeadRef: "factory/busy", Created: now.Add(-time.Hour),
+		Activity: []github.RefActivity{{ID: 1, Ref: "refs/heads/factory/busy", Type: "push", Before: "previous", After: oldHead, Timestamp: now.Add(-3 * time.Minute)}},
+	})
 	e.Tick(ctx)
-	h.gh.addPR(&fakePR{Number: 20, Head: waiting})
+	h.gh.addPR(&fakePR{
+		Number: 20, Head: waiting, HeadRepo: testRepo, HeadRef: "factory/waiting", Created: now.Add(-time.Hour),
+		Activity: []github.RefActivity{{ID: 20, Ref: "refs/heads/factory/waiting", Type: "push", Before: "previous", After: waiting, Timestamp: now.Add(-2 * time.Minute)}},
+	})
 	e.Tick(ctx)
 	h.gh.push(1, newHead)
+	h.gh.withLock(func() {
+		h.gh.prs[1].Activity = []github.RefActivity{{ID: 2, Ref: "refs/heads/factory/busy", Type: "force_push", Before: oldHead, After: newHead, Timestamp: now.Add(-time.Minute)}}
+	})
 	e.Tick(ctx)
 
 	h.k.finish(running, kagent.StateCompleted, report(t, passing))

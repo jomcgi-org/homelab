@@ -1928,18 +1928,25 @@ from reviewer App 5758326 alongside `pr-checks`.
 
 - **Review order (HOME-220).** Running reviews retain their slots. The poller
   reattaches in-progress checks before starting new reviews. Within each
-  `enqueueAuthors` priority, new starts use the time this process first saw
-  the eligible current head, oldest first. It records all heads before check
-  and recovery reads, even while slots are full. Failed reads and metadata updates preserve
-  that wait; a changed head or a successful start resets it. PR number breaks ties within
-  one poll. Waiting times are in memory and begin again after a restart.
+  `enqueueAuthors` priority, new starts use the current head's arrival time,
+  oldest first. GitHub's latest ref activity dates the exact current SHA;
+  the wait starts no earlier than PR creation. This recovers waits from before
+  startup and orders heads first seen in the same poll. Git commit dates and
+  PR `UpdatedAt` do not set this order. If ref activity is unavailable, the
+  first observation is the fallback. It is recorded before check and recovery
+  reads, even while slots are full, and kept while activity reads retry.
+  Failed reads and metadata updates preserve the wait; a changed head or a
+  successful start resets it. A completed review needing another pass joins
+  at its new observation. PR number breaks equal arrival times.
   This prevents later updates from repeatedly overtaking an untouched head
   ([HOME-220](https://factory-plan.jomcgi.dev/factory/issue/HOME-220)).
   `TestWaitingHeadStartsBeforeUpdatedPRs` holds all three slots across three
   ticks of later PR updates and pushes, then checks that the oldest waiting
   head gets the first free slot. It also covers metadata changes on the
   waiting PR and failed check reads. `TestPrioritizeUsesHeadWaitWithinAuthorPriority`
-  checks the author override; `TestReattachmentsKeepOrderBeforeWaitingHeads`
+  checks the author override. `TestHeadArrivalOrdersSamePollAndSurvivesRestart`
+  checks head arrival order within one poll and after a restart, including a
+  new PR opened from an old branch. `TestReattachmentsKeepOrderBeforeWaitingHeads`
   checks the order of resumed reviews before new starts.
 
 For issue-backed reviews, the service verifies the provenance of decision

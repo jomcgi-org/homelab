@@ -156,6 +156,45 @@ func TestUnauthorizedRefreshesTokenOnce(t *testing.T) {
 
 type fixedTokens struct{}
 
+func TestHeadRefChangedAtUsesLatestMatchingActivity(t *testing.T) {
+	when := time.Date(2026, 11, 17, 20, 33, 0, 0, time.UTC)
+	valid := RefActivity{ID: 3, Ref: "refs/heads/factory/test", Type: "push", Before: "old", After: "head", Timestamp: when}
+	for _, tc := range []struct {
+		name   string
+		change func(*RefActivity)
+		ok     bool
+	}{
+		{name: "push", ok: true},
+		{name: "force push", change: func(e *RefActivity) { e.Type = "force_push" }, ok: true},
+		{name: "creation", change: func(e *RefActivity) { e.Type = "branch_creation" }, ok: true},
+		{name: "different head", change: func(e *RefActivity) { e.After = "newer" }},
+		{name: "different ref", change: func(e *RefActivity) { e.Ref = "refs/heads/other" }},
+		{name: "missing timestamp", change: func(e *RefActivity) { e.Timestamp = time.Time{} }},
+		{name: "unchanged head", change: func(e *RefActivity) { e.Before = "head" }},
+		{name: "deletion", change: func(e *RefActivity) { e.Type = "branch_deletion" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event := valid
+			if tc.change != nil {
+				tc.change(&event)
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				q := r.URL.Query()
+				if r.URL.Path != "/repos/example-org/homelab/activity" || q.Get("ref") != valid.Ref || q.Get("direction") != "desc" || q.Get("per_page") != "1" || q.Get("activity_type") != "" {
+					t.Errorf("activity request = %s", r.URL)
+				}
+				_ = json.NewEncoder(w).Encode([]RefActivity{event})
+			}))
+			defer srv.Close()
+			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+			got, err := c.HeadRefChangedAt(context.Background(), "example-org/homelab", "factory/test", "head")
+			if (err == nil) != tc.ok || (tc.ok && !got.Equal(when)) {
+				t.Fatalf("head changed at = %v, error = %v", got, err)
+			}
+		})
+	}
+}
+
 func TestHeadRefActivityRequiresCreationWithinOneCompletePage(t *testing.T) {
 	activity := func(id int, kind string) RefActivity {
 		e := RefActivity{ID: int64(id), Ref: "refs/heads/session/joe", Type: kind, Before: "before", After: "after"}

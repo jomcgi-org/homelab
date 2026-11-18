@@ -366,7 +366,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && path == "/activity":
 		for _, pr := range f.prs {
 			if "refs/heads/"+pr.HeadRef == q.Get("ref") {
-				f.get(w, r, pr.Activity)
+				f.get(w, r, page(pr.Activity, q))
 				return
 			}
 		}

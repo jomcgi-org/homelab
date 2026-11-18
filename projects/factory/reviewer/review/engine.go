@@ -40,6 +40,7 @@ type GitHub interface {
 	PullRequestHeads(ctx context.Context, repo string, number int, f github.CheckRunFilter) (*github.HeadHistory, error)
 	PullRequestReviews(ctx context.Context, repo string, number int) ([]github.PullRequestReview, error)
 	HeadRefActivity(ctx context.Context, repo, branch string) ([]github.RefActivity, error)
+	HeadRefChangedAt(ctx context.Context, repo, branch, head string) (time.Time, error)
 	PullRequestCommits(ctx context.Context, repo string, number int, head string) ([]github.PullRequestCommit, error)
 	PullRequestLabelEvents(ctx context.Context, repo string, number int) ([]github.LabelEvent, error)
 	PullRequestCreationBoundary(ctx context.Context, repo string) (time.Time, error)
@@ -222,11 +223,12 @@ type headKey struct {
 	sha     string
 }
 
-// waitingHead records when this process first observed an eligible current
-// head. Metadata updates and failed check reads cannot change its queue age.
+// waitingHead caches the current head's arrival time. Until GitHub's ref
+// activity can date it, use its first observation by this process.
 type waitingHead struct {
 	sha      string
 	since    time.Time
+	dated    bool
 	unlisted int
 }
 
@@ -550,6 +552,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			e.replayComment(ctx, b, pr, reviews[pr.Number])
 		}
 	}
+	e.dateWaiting(ctx, b, start)
 	e.prioritize(b, start)
 	// Reviews already in progress (after a restart) go before new heads.
 	prioritizeResumed(b, attach)
@@ -738,9 +741,36 @@ func (e *Engine) noteWaiting(b *Binding, prs []github.PullRequest, complete bool
 	}
 }
 
+// dateWaiting recovers waits that began before this process or between polls.
+// Read once per head after a successful response. An unavailable activity feed
+// (for example on a fork) must neither stop reviews nor reset the observed wait.
+func (e *Engine) dateWaiting(ctx context.Context, b *Binding, start []candidate) {
+	for _, c := range start {
+		pr := c.pr
+		w := e.waiting[prKey{b.Name, pr.Number}]
+		// A completed review needing another pass joins at its new observation,
+		// rather than inheriting the age of a head that already had a slot.
+		if w.dated || c.run != nil || pr.HeadRepo == "" || pr.HeadRef == "" {
+			continue
+		}
+		since, err := e.gh.HeadRefChangedAt(ctx, pr.HeadRepo, pr.HeadRef, pr.HeadSHA)
+		if err != nil || since.IsZero() || since.After(w.since) {
+			continue
+		}
+		// A branch may have existed long before its PR was opened.
+		if pr.CreatedAt.After(since) {
+			since = pr.CreatedAt
+		}
+		if since.Before(w.since) {
+			w.since = since
+		}
+		w.dated = true
+	}
+}
+
 // prioritize orders new starts by the current head's wait within each author
 // priority. UpdatedAt is never an input: comments and labels cannot put a
-// later head ahead of a waiting one. PR number breaks ties within one poll.
+// later head ahead of a waiting one. PR number breaks equal arrival times.
 func (e *Engine) prioritize(b *Binding, start []candidate) {
 	sort.Slice(start, func(i, j int) bool {
 		pi, pj := start[i].pr, start[j].pr
