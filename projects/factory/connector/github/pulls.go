@@ -26,8 +26,134 @@ type RefActivity struct {
 	Actor struct {
 		Login string `json:"login"`
 	} `json:"actor"`
-	Before string `json:"before"`
-	After  string `json:"after"`
+	Before    string    `json:"before"`
+	After     string    `json:"after"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+// HeadRefChangedAt returns GitHub's time for the latest change to this head.
+// Unlike git commit dates, repository activity records when the ref changed.
+// Check the exact ref and SHA so a push racing the PR listing cannot date a
+// different head. Older branch history is not needed for queue ordering.
+func (c *Client) HeadRefChangedAt(ctx context.Context, repo, branch, head string) (time.Time, error) {
+	ref := "refs/heads/" + branch
+	q := url.Values{"ref": {ref}, "direction": {"desc"}, "per_page": {"1"}, "page": {"1"}}
+	var events []RefActivity
+	if err := c.doUncached(ctx, repo, http.MethodGet, repoPath(repo)+"/activity?"+q.Encode(), nil, &events); err != nil {
+		return time.Time{}, err
+	}
+	if len(events) != 1 {
+		return time.Time{}, errors.New("github: missing latest ref activity")
+	}
+	event := events[0]
+	if event.ID <= 0 || event.Ref != ref || head == "" || event.After != head || event.Before == event.After || event.Timestamp.IsZero() {
+		return time.Time{}, errors.New("github: latest ref activity does not date the expected head")
+	}
+	switch event.Type {
+	case "push", "force_push", "branch_creation", "pr_merge", "merge_queue_merge":
+		return event.Timestamp, nil
+	default:
+		return time.Time{}, errors.New("github: latest ref activity is not a head change")
+	}
+}
+
+const pullRequestReadySinceQuery = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      createdAt headRefOid baseRefName isDraft state
+      labels(first: 100) { pageInfo { hasNextPage } nodes { name } }
+      timelineItems(last: 100, itemTypes: [READY_FOR_REVIEW_EVENT, UNLABELED_EVENT, REOPENED_EVENT, BASE_REF_CHANGED_EVENT]) {
+        pageInfo { hasPreviousPage }
+        nodes {
+          __typename
+          ... on ReadyForReviewEvent { createdAt }
+          ... on UnlabeledEvent { createdAt label { name } }
+          ... on ReopenedEvent { createdAt }
+          ... on BaseRefChangedEvent { createdAt }
+        }
+      }
+    }
+  }
+}`
+
+// PullRequestReadySince bounds a recovered queue age by the last transition
+// into eligibility. It reads the base repository even for fork PRs. Missing or
+// truncated history cannot justify backdating the caller's observed wait.
+func (c *Client) PullRequestReadySince(ctx context.Context, repo string, pr PullRequest, skipLabels []string) (time.Time, error) {
+	owner, name, _ := strings.Cut(repo, "/")
+	var out struct {
+		Repository struct {
+			PullRequest *struct {
+				CreatedAt   time.Time `json:"createdAt"`
+				HeadRefOid  string    `json:"headRefOid"`
+				BaseRefName string    `json:"baseRefName"`
+				IsDraft     bool      `json:"isDraft"`
+				State       string    `json:"state"`
+				Labels      struct {
+					PageInfo struct {
+						HasNextPage bool `json:"hasNextPage"`
+					} `json:"pageInfo"`
+					Nodes []struct {
+						Name string `json:"name"`
+					} `json:"nodes"`
+				} `json:"labels"`
+				TimelineItems struct {
+					PageInfo struct {
+						HasPreviousPage bool `json:"hasPreviousPage"`
+					} `json:"pageInfo"`
+					Nodes []struct {
+						Type      string    `json:"__typename"`
+						CreatedAt time.Time `json:"createdAt"`
+						Label     *struct {
+							Name string `json:"name"`
+						} `json:"label"`
+					} `json:"nodes"`
+				} `json:"timelineItems"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	}
+	if err := c.graphql(ctx, repo, pullRequestReadySinceQuery, map[string]any{"owner": owner, "name": name, "number": pr.Number}, &out); err != nil {
+		return time.Time{}, err
+	}
+	p := out.Repository.PullRequest
+	if p == nil || p.CreatedAt.IsZero() || p.HeadRefOid != pr.HeadSHA || p.BaseRefName != pr.BaseRef || p.IsDraft || p.State != "OPEN" || p.Labels.Nodes == nil || p.Labels.PageInfo.HasNextPage || p.TimelineItems.Nodes == nil || p.TimelineItems.PageInfo.HasPreviousPage {
+		return time.Time{}, errors.New("github: incomplete or changed PR eligibility")
+	}
+	skipped := func(label string) bool {
+		for _, skip := range skipLabels {
+			if strings.EqualFold(label, skip) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, label := range p.Labels.Nodes {
+		if skipped(label.Name) {
+			return time.Time{}, errors.New("github: PR is skipped")
+		}
+	}
+	since := p.CreatedAt
+	for _, event := range p.TimelineItems.Nodes {
+		if event.CreatedAt.IsZero() {
+			return time.Time{}, errors.New("github: missing eligibility event time")
+		}
+		switch event.Type {
+		case "ReadyForReviewEvent", "ReopenedEvent", "BaseRefChangedEvent":
+		case "UnlabeledEvent":
+			if event.Label == nil || event.Label.Name == "" {
+				return time.Time{}, errors.New("github: missing removed label")
+			}
+			if !skipped(event.Label.Name) {
+				continue
+			}
+		default:
+			return time.Time{}, errors.New("github: unexpected eligibility event")
+		}
+		if event.CreatedAt.After(since) {
+			since = event.CreatedAt
+		}
+	}
+	return since, nil
 }
 
 // HeadRefActivity reads at most 100 events through the ref's latest creation.
