@@ -31,6 +31,8 @@ On each cluster, the bootstrap parent watches a directory containing the root Ap
 
 On the factory home cluster, the root reconciles the [platform-factory inventory](../platform-factory/kustomization.yaml), including the [software-factory Application](../factory/deploy/application.yaml) that deploys kagent and itsaplan. Hindsight and the operator landing page run alongside them. Node bootstrap, ingress routes, pins and recovery procedures live with that cluster. [Factory root](../factory-cluster/kustomization.yaml) · [Factory cluster guide](../factory-cluster/README.md)
 
+See the [factory cluster architecture](../factory-cluster/ARCHITECTURE.md) for the Cloudflare-to-pod request path and the layout of etcd, Garage and database backups.
+
 ## 2. Ingress and traffic on the hub and factory home cluster
 
 On the hub, two cloudflared connectors forward traffic to Envoy Gateway. HTTPRoutes select the service by hostname and path. Public routes admit anonymous requests. Trusted routes use Cloudflare Access or a route-specific Authentik policy. [Hub gateway values](cloudflare-gateway/values-gke.yaml)
