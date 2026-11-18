@@ -220,13 +220,13 @@ flowchart TD
 | ID | View | Hazard (unsafe state) | → Losses | Maturity | Status | Issue |
 |----|----|----|----|----|----|----|
 | `firecracker-no-jailer` | physical | The staged Firecracker jailer isolates each VM in a chroot, with leased credentials, a cgroup leaf and a PID namespace. When enabled, startup and launch checks enforce containment. | L.host-compromise | built | shipped-off | #5255 |
-| `identity-hijack` | physical | an actor holding the shared noded ServiceAccount token can re-register an existing brick's (node, pod_uid) at an address it controls and become the dial-home source the control plane treats as authoritative for that brick | L.credential-theft, L.host-compromise | built | enforced-prod |  |
+| `identity-hijack` | physical | Brick registration binds the reported pod UID and node to the projected token claims. | L.credential-theft, L.host-compromise | built | enforced-prod |  |
 
 ### Unsafe control actions
 
 | ID | View | Control action | Guideword | Unsafe condition | Severity | → Hazards | Status | Issue | Evidence |
 |----|----|----|----|----|----|----|----|----|----|
-| `control-plane.grpc_command.providing` | physical | `control-plane.grpc_command` | providing | an attacker on the cluster network calls noded's gRPC surface (BuildBase, Assign, Destroy, RestoreArtifact) directly from anywhere on the pod network without a legitimate identity | high | identity-hijack | enforced-prod | #4693 | projects/embervm/noded/cmd/auth.go:49-75 |
+| `control-plane.grpc_command.providing` | physical | `control-plane.grpc_command` | providing | Noded authenticates unary and streaming gRPC commands with a bearer token. | high | identity-hijack | enforced-prod | #4693 | projects/embervm/noded/cmd/auth.go:49-75 |
 
 ### Unsafe feedback
 
@@ -234,7 +234,7 @@ flowchart TD
 
 | ID | View | Channel | Guideword | Unsafe condition | Severity | → Hazards | Status | Issue | Evidence |
 |----|----|----|----|----|----|----|----|----|----|
-| `dial-home.unauthorized-source` | physical | `noded` → `control-plane`: dial-home registration {node, pod_uid, address, boot_id} + NodeStatus | unauthorized-source | an attacker re-registers an existing (node, pod_uid) at a different address using the shared ServiceAccount every brick already holds, attempting to become the dial-home source the control plane treats as authoritative for that brick; the register route now refuses a body whose pod_uid or node does not match the bound projected token's own claims, a token with no pod binding, or an unset noded SA | high | identity-hijack | enforced-prod |  | projects/embervm/control/lib/embervm/router.ex:909-913 |
+| `dial-home.unauthorized-source` | physical | `noded` → `control-plane`: dial-home registration {node, pod_uid, address, boot_id} + NodeStatus | unauthorized-source | The register route requires the configured noded ServiceAccount and matches the reported pod UID and node to its pod-bound token. | high | identity-hijack | enforced-prod |  | projects/embervm/control/lib/embervm/router.ex:909-913 |
 
 <details>
 <summary><b>Not UCAs</b>: 1 examined and rejected</summary>

@@ -520,12 +520,12 @@ flowchart TD
 
 | ID | View | Hazard (unsafe state) | → Losses | Maturity | Status | Issue |
 |----|----|----|----|----|----|----|
-| `over-broad-public-grant` | physical | public_reader is granted on a schema or view that includes non-public rows | L.unauthorized-access, L.secret-exposure | built |  |  |
+| `over-broad-public-grant` | physical | The public_reader role reads public datasets and the public view of knowledge notes. | L.unauthorized-access, L.secret-exposure | built |  |  |
 | `private-capture-retained` | physical | The operators gate controls capture of private-tier screenshots stored in SeaweedFS. | L.unauthorized-access | built |  |  |
-| `public-route-exposes-private-path` | physical | The public HTTPRoute forwards an internal or unfiltered path to a served handler | L.unauthorized-access | built |  |  |
-| `public-write-admission-bypass` | physical | The internet-adjacent public tier can write outside the intended chat_public path, or bypasses Turnstile, per-session limits, and the cluster-wide inference cap | L.integrity-loss, L.capacity-exhaustion | built |  |  |
+| `public-route-exposes-private-path` | physical | Public routes serve public frontend paths and assets. | L.unauthorized-access | built |  |  |
+| `public-write-admission-bypass` | physical | Public writes are confined to chat_public and its admission and inference budgets. | L.integrity-loss, L.capacity-exhaustion | built |  |  |
 | `sandbox-credential-egress` | logical | The operators gate controls access to scratch-database execution. | L.secret-exposure, L.unauthorized-access | built |  |  |
-| `secret-in-wrong-tier` | physical | A private secret or a K8s token is delivered to the public or frontend tier | L.secret-exposure | built |  |  |
+| `secret-in-wrong-tier` | physical | Each tier receives only the credentials required by its role. | L.secret-exposure | built |  |  |
 | `unredacted-public-doc` | logical | Published documents must stay within the public content boundary. | L.secret-exposure | built |  |  |
 | `unrestricted-tool-visibility` | logical | GroupPolicyMiddleware restricts monolith MCP tool calls to operators. | L.unauthorized-access | built | enforced-prod | #4569 |
 
@@ -533,15 +533,15 @@ flowchart TD
 
 | ID | View | Control action | Guideword | Unsafe condition | Severity | → Hazards | Status | Issue | Evidence |
 |----|----|----|----|----|----|----|----|----|----|
-| `chatpublic.write.providing` | physical | `chatpublic.write` | providing | Anonymous attacker bypasses Turnstile, per-session limits, or the cluster-wide inference cap to write outside chat_public or exhaust shared GPU | high | public-write-admission-bypass | enforced-prod |  | projects/monolith-public/chart/values.yaml:146 |
+| `chatpublic.write.providing` | physical | `chatpublic.write` | providing | Public chat admission requires Turnstile verification and enforces session limits and a cluster-wide inference cap. | high | public-write-admission-bypass | enforced-prod |  | projects/monolith-public/chart/values.yaml:146 |
 | `docs.publish.providing` | logical | `docs.publish` | providing | The public manifest generator checks allowlisted content for internal identifiers before publication. | medium | unredacted-public-doc | enforced-prod | #5275 | projects/monolith/knowledge/tools/gen_docs_manifest.py:128 |
-| `grant.public-reader.providing` | physical | `grant.public-reader` | providing | A schema-wide grant or a missing visibility filter serves a private row through a public route, disclosing private knowledge-graph content directly | high | over-broad-public-grant | enforced-prod |  | projects/monolith/chart/migrations/20260617000000_public_reader_role.sql:24 |
+| `grant.public-reader.providing` | physical | `grant.public-reader` | providing | Database grants scope public_reader to public tables and visibility-filtered views. | high | over-broad-public-grant | enforced-prod |  | projects/monolith/chart/migrations/20260617000000_public_reader_role.sql:24 |
 | `k8s.mutate.providing` | physical | `k8s.mutate` | providing | GroupPolicyMiddleware gates ArgoCD sync and Kargo promotion calls on operators group membership. | high | unrestricted-tool-visibility | enforced-prod |  | projects/monolith/cluster/mcp.py:173, projects/monolith/cluster/mcp.py:258, projects/monolith/core/mcp_policy.py:75 |
-| `mcp.agent-session.providing` | logical | `mcp.agent-session` | providing | A caller outside the operators group starts or drives a full agent session, inheriting every tool that session can reach and compounding every other unentitled-tool row | high | unrestricted-tool-visibility | enforced-prod | #4569 | projects/monolith/factory/execution/mcp.py:1580 |
-| `mcp.chat-pardon.providing` | logical | `mcp.chat-pardon` | providing | A caller outside the operators group calls monolith_chat_trust_pardon, resetting any locked-out user's score and flipping their labels, undoing the ledger's containment of an active red-team session from a different trust boundary | high | unrestricted-tool-visibility | enforced-prod | #4569 | projects/monolith/agent/mcp.py:380 |
-| `route.public.providing` | physical | `route.public` | providing | Attacker reaches a private or internal path via the public HTTPRoute or the SSR proxy, reading private data or invoking an internal handler | high | public-route-exposes-private-path | enforced-prod |  | projects/monolith-public/chart/templates/httproute-public.yaml:13 |
+| `mcp.agent-session.providing` | logical | `mcp.agent-session` | providing | Starting or driving an agent session through MCP requires operators group membership. | high | unrestricted-tool-visibility | enforced-prod | #4569 | projects/monolith/factory/execution/mcp.py:1580 |
+| `mcp.chat-pardon.providing` | logical | `mcp.chat-pardon` | providing | Pardoning a chat user through MCP requires operators group membership. | high | unrestricted-tool-visibility | enforced-prod | #4569 | projects/monolith/agent/mcp.py:380 |
+| `route.public.providing` | physical | `route.public` | providing | The gateway routes page and API-facing browser traffic to the public frontend. | high | public-route-exposes-private-path | enforced-prod |  | projects/monolith-public/chart/templates/httproute-public.yaml:13 |
 | `sandbox.run.providing` | logical | `sandbox.run` | providing | Running sandbox code with scratch-database access requires operators group membership. | medium | unrestricted-tool-visibility, sandbox-credential-egress | enforced-prod | #4569 | projects/monolith/sandbox/mcp.py:15 |
-| `secret.deliver-public.providing` | physical | `secret.deliver-public` | providing | A private credential, Kubernetes API-capable token, or Turnstile secret is wired into the public frontend or public backend beyond its explicitly constrained use | high | secret-in-wrong-tier | enforced-prod |  | projects/monolith/public_turnstile_secret_isolation_test.py:76 |
+| `secret.deliver-public.providing` | physical | `secret.deliver-public` | providing | The public backend holds the Turnstile secret for verification. The frontend receives the public site key. | high | secret-in-wrong-tier | enforced-prod |  | projects/monolith/public_turnstile_secret_isolation_test.py:76 |
 | `shotter.capture.providing` | logical | `shotter.capture` | providing | Private-tier screenshots require an authorized operators-group caller. | high | unrestricted-tool-visibility, private-capture-retained | enforced-prod | #4569 | projects/monolith/shotter/mcp.py:123 |
 
 ### Unsafe feedback

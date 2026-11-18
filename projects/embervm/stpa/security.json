@@ -43,7 +43,7 @@
     {
       "key": "identity-hijack",
       "view": "physical",
-      "statement": "an actor holding the shared noded ServiceAccount token can re-register an existing brick's (node, pod_uid) at an address it controls and become the dial-home source the control plane treats as authoritative for that brick",
+      "statement": "Brick registration binds the reported pod UID and node to the projected token claims.",
       "losses": [
         "L.credential-theft",
         "L.host-compromise"
@@ -58,7 +58,7 @@
       "view": "physical",
       "control_action": "control-plane.grpc_command",
       "guideword": "providing",
-      "condition": "an attacker on the cluster network calls noded's gRPC surface (BuildBase, Assign, Destroy, RestoreArtifact) directly from anywhere on the pod network without a legitimate identity",
+      "condition": "Noded authenticates unary and streaming gRPC commands with a bearer token.",
       "severity": "high",
       "hazards": [
         "identity-hijack"
@@ -76,7 +76,7 @@
       "to": "control-plane",
       "signal": "dial-home registration {node, pod_uid, address, boot_id} + NodeStatus",
       "guideword": "unauthorized-source",
-      "condition": "an attacker re-registers an existing (node, pod_uid) at a different address using the shared ServiceAccount every brick already holds, attempting to become the dial-home source the control plane treats as authoritative for that brick; the register route now refuses a body whose pod_uid or node does not match the bound projected token's own claims, a token with no pod binding, or an unset noded SA",
+      "condition": "The register route requires the configured noded ServiceAccount and matches the reported pod UID and node to its pod-bound token.",
       "severity": "high",
       "hazards": [
         "identity-hijack"

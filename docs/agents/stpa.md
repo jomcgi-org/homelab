@@ -28,7 +28,10 @@ Per-lens analyses answer different safety questions:
 - **security**: deliberate attack. "Who can forge/withhold/replay a control action,
   and what does it get an adversary?" Same control structure, attacks on purpose.
   Publish only intended design boundaries and enforced or staged-off controls.
-  Every UCA and unsafe-feedback row records the control's status.
+  Use `enforced-prod`, `enforced-dev`, or `shipped-off` on each UCA and
+  unsafe-feedback row. When removing a security hazard, remove its key from
+  each reference in that lens. Keep a UCA with its remaining hazards and
+  remove it when its last hazard is removed.
 - **governance**: data-processing safety. "Does data cross visibility boundaries,
   stay retained too long, process without basis, lose provenance?" Feedback and
   data channels matter more than control arrows. Same rejection bar.
