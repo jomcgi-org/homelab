@@ -99,10 +99,10 @@ A system may model only one view; omit ones you cannot ground; do not invent.
 
 ## Report back
 
-The PR URL and its result line, the deltas as added, changed or removed hazards
-and constraints by semantic key, and an explicit note if this lens surfaced a
-hazard the change does not yet mitigate: that is the finding most worth
-escalating. When a refresh changes nothing, say so and leave the files alone.
+Report the PR URL, result line, and published hazard and constraint changes
+by semantic key. For the security lens, report open findings through the
+private process in “Add a finding.” For other lenses, flag each hazard the
+change still needs to mitigate. When a refresh changes nothing, say so and leave the files alone.
 Commit, push and open the PR only through BLOCK B, never by hand.
 
 ## Remediation work goes to itsaplan

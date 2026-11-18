@@ -20,3 +20,19 @@ for section in hazards ucas unsafe_feedback; do
 		}
 	done
 done
+
+# A hazard retained by another lens cannot satisfy a security UCA reference.
+model='{
+  "structure":{"control_actions":[{"key":"action"}]},
+  "lenses":[
+    {"lens":"logic","hazards":[{"key":"retired"}]},
+    {"lens":"security","hazards":[{"key":"retained"}],"ucas":[{
+      "key":"action.providing","control_action":"action","guideword":"providing",
+      "status":"enforced-prod","hazards":["retained","retired"]
+    }]}
+  ]
+}'
+result=$("$jq_bin" -r "$validator" <<<"$model")
+[[ $result == "VALIDATION_ERROR: security: action.providing references unknown hazard retired" ]]
+pruned=$("$jq_bin" '.lenses[1].ucas[0].hazards -= ["retired"]' <<<"$model")
+[[ $("$jq_bin" -r "$validator" <<<"$pruned") == "VALIDATION_OK" ]]

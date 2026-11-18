@@ -71,7 +71,7 @@
     {
       "key": "public-route-exposes-private-path",
       "view": "physical",
-      "statement": "Public routes serve public frontend paths and assets.",
+      "statement": "Each public HTTPRoute sends its path to the designated public service.",
       "losses": [
         "L.unauthorized-access"
       ],
@@ -112,13 +112,13 @@
       "view": "physical",
       "control_action": "route.public",
       "guideword": "providing",
-      "condition": "The gateway routes page and API-facing browser traffic to the public frontend.",
+      "condition": "The page route sends pages and client assets to the frontend. A separate HTTPRoute sends /functions/<name> directly to the invocation backend, which resolves only public functions.",
       "severity": "high",
       "hazards": [
         "public-route-exposes-private-path"
       ],
       "status": "enforced-prod",
-      "evidence": "projects/monolith-public/chart/templates/httproute-public.yaml:13"
+      "evidence": "projects/monolith-public/chart/templates/httproute-public.yaml:41, projects/monolith-public/chart/templates/httproute-public.yaml:112"
     },
     {
       "key": "chatpublic.write.providing",
