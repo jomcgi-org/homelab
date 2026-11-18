@@ -82,9 +82,7 @@ def _site_adds_playwright(text: str) -> str:
 
 
 def test_site_only_lockfile_addition_is_skipped():
-    run, reason = trigger.decide(
-        ["pnpm-lock.yaml"], BASE, _site_adds_playwright(BASE)
-    )
+    run, reason = trigger.decide(["pnpm-lock.yaml"], BASE, _site_adds_playwright(BASE))
     assert not run, reason
 
 
@@ -133,9 +131,7 @@ def test_override_change_runs():
 
 
 def test_grimoire_path_change_runs():
-    run, reason = trigger.decide(
-        ["projects/monolith/grimoire/sheets.py"], None, None
-    )
+    run, reason = trigger.decide(["projects/monolith/grimoire/sheets.py"], None, None)
     assert run and "projects/monolith/grimoire/sheets.py" in reason
 
 
@@ -161,4 +157,3 @@ def test_link_resolution_follows_relative_paths():
         "projects/monolith/frontend",
         "projects/design-system",
     }
-
