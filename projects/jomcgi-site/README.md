@@ -19,16 +19,17 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
 
 ## Layout
 
-| Path             | What                                                                                                                          |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `web/`           | The Astryx app: one HTML entry per page, the nav and section list in `src/sections.ts`, hosting headers in `public/_headers`. |
-| `wrangler.jsonc` | The Worker, its assets and the dev host. Prod lists no routes.                                                                |
-| `data/`          | The data snapshot: `sources.json` and the tool that copies them into the site before each deploy (HOME-209).                  |
-| `edge/`          | The prod Worker's routes and the zone's cache rules, and `apply`, which makes Cloudflare match them (HOME-192).               |
-| `wrangler/`      | The pinned `wrangler` CLI, packaged as image layers by rules_js.                                                              |
-| `apko.yaml`      | The deploy image: bash and busybox for the rules_js launcher, CA roots, and Node's C++ runtime.                               |
-| `chart/`         | The deploy Job (factory Helm library), its 1Password items and its only egress, `api.cloudflare.com:443`.                     |
-| `deploy/`        | The stages' Argo CD Applications: `application.yaml` (dev) and `application-prod.yaml` (prod).                                |
+| Path | What |
+| --- | --- |
+| `web/` | The Astryx app: one HTML entry per page, the nav and section list in `src/sections.ts`, hosting headers in `public/_headers`. |
+| `wrangler.jsonc` | The Worker, its assets and the dev host. Prod lists no routes. |
+| `data/` | The data snapshot: `sources.json` and the tool that copies them into the site before each deploy (HOME-209). |
+| `edge/` | The prod Worker's routes and the zone's cache rules, and `apply`, which makes Cloudflare match them (HOME-192). |
+| `wrangler/` | The pinned `wrangler` CLI, packaged as image layers by rules_js. |
+| `check/` | The two verification tiers, bundled browser and regression tests (HOME-181). |
+| `apko.yaml` | The deploy image: bash and busybox for the rules_js launcher, CA roots, and Node's C++ runtime. |
+| `chart/` | The Sync deploy Job and PostSync verification Job, with separate network policies and credentials. |
+| `deploy/` | The stages' Argo CD Applications: `application.yaml` (dev) and `application-prod.yaml` (prod). |
 
 ## Contracts
 
@@ -57,7 +58,8 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
   rules are independent halves: a blocked half changes nothing, the other half
   still applies, and then the edge Job fails and names what it skipped. Only
   the prod stage runs the edge Job (`edge.enabled`), because zone config is
-  not per stage.
+  not per stage. The chart refuses prod without it, because only the edge Job
+  deletes the Worker's routes.
 - **Pre-render.** `build.mjs` runs the Vite build, then renders each page
   with React at build time into its HTML entry, in place of `<!--ssr-->`.
   A page reads fully, with its preview tags, before any script runs, and the
@@ -67,10 +69,13 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
 - **Data.** A section that shows changing data reads
   `/data/<section>/latest.json` on the site's own origin, then the
   content-named files it lists (`/data/<section>/v/<name>-<sha256:12>.json`).
-  `data/sources.json` names each section's source objects in R2. Each
-  `latest.json` also has `generatedAt`, the snapshot time. For `stars`, the
+  `data/sources.json` names each section's source objects in R2. Each index
+  records snapshot time as `generatedAt` and source modification time as
+  `asOf`; site-check rejects a snapshot older than one hour. For `stars`, the
   snapshot writes a six-site summary (`files.summary`) and stamps it into
   `stars.html` when that page exists (`data/stars-summary.mjs`, HOME-333).
+  Site-check compares that page outside the summary markers and checks the
+  stamped summary on its own.
   `run.sh` copies the site to `/tmp`, runs the snapshot (`data/`) to fill
   `web/dist/data`, then deploys the copy. The Sync-hook Job runs it on every
   sync and the `jomcgi-site-refresh` CronJob every 30 minutes, so data is at
@@ -95,7 +100,8 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
   a unit test proves it fails an over-budget page.
 - **Accessibility.** Pages have no axe violations in happy-dom, and the colour
   tokens in `src/palette.css` meet WCAG contrast in light and dark modes.
-  Colour contrast on real CSS is checked in a browser after deploy (HOME-174).
+  The PostSync check runs axe with colour contrast enabled in a real browser,
+  with the deployed CSS and CSP, in both colour modes (HOME-181).
 
 ## Blog
 
@@ -191,7 +197,13 @@ file with the hub handler byte for byte. The Scotland build check reads the
 emitted HTML with scripts disabled and compares its content and metadata
 with the hub sources, runs structural axe checks, checks linked assets and
 headers, and checks that all six exact routes have files in the build output.
-Bazel runs the same checks: `bb remote test //projects/jomcgi-site/...`.
+
+After building the pages, run `pnpm test` from `check/` for both verification
+tiers and their failure cases. On Linux with glibc, the tests use the bundled
+headless shell. `SITE_CHECK_BROWSER` can name a local Chromium executable.
+Run `ci test -- //projects/jomcgi-site/...` for Bazel checks. The
+`image_smoke_test` target runs the release image under the Job's restrictions
+and writes its image ID, command and browser results to the test log.
 
 `/docs` uses `web:docs_manifest`, with the hub's `repo_docs_srcs`, generator
 and public-content guard. `web:docs_pages` renders the filtered entries with
@@ -283,8 +295,12 @@ runs the deploy Job as an Argo CD Sync hook. Argo CD does not diff hooks, so
 the `jomcgi-site-release` ConfigMap carries the chart version, the image
 digest, the stage and the edge switches (`edge`, `serveRoutes`). Each new
 chart or image, a change to a Job alone, and a change to `edge.serveRoutes`
-alone make the Application OutOfSync and sync it again. A failed deploy is a
-failed sync.
+alone make the Application OutOfSync and sync it again. The PostSync
+`site-check` Job then verifies `next.jomcgi.dev` in dev. In prod, it follows
+the edge Job and verifies the Worker's routes on `jomcgi.dev` only while
+`edge.serveRoutes` is on. With routes off, the hub serves those paths and
+the check is omitted. Any Job's failure fails the sync. See
+[the verification contract](ARCHITECTURE.md) for coverage and data freshness.
 
 Both Applications are listed through `deploy/kustomization.yaml`, which
 `projects/platform-factory/kustomization.yaml` includes. CI write-back moves

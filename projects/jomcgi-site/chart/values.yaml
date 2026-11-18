@@ -71,6 +71,34 @@ workloads:
           fqdn: 7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
           port: 443
 
+  site-check:
+    kind: Job
+    hook: PostSync
+    # The prod edge Job must finish updating routes before the browser checks.
+    hookWave: 1
+    backoffLimit: 0
+    command:
+      - /app/projects/jomcgi-site/check/site-check
+    # The template derives the argument and egress host from stage.
+    args: []
+    env:
+      - name: HOME
+        value: /tmp
+      - name: TMPDIR
+        value: /tmp
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 1536Mi
+    writablePaths:
+      - name: tmp
+        mountPath: /tmp
+        sizeLimit: 1Gi
+    network:
+      egress: []
+
 # The refresh CronJob runs the deploy Job's command on a schedule, so section
 # data reaches the site within this interval of changing in R2 (HOME-209).
 refresh:
@@ -79,8 +107,8 @@ refresh:
 
 # The edge apply Job (HOME-192) makes zone jomcgi.dev's Workers routes and
 # cache rules match edge/routes.json and edge/cache-rules.json, after the
-# deploy Job. Zone config is not per stage, so only prod turns it on, and the
-# chart refuses it in any other stage.
+# deploy Job. Zone config is not per stage, so the chart refuses it in any
+# other stage. Prod must turn it on: only this Job deletes the Worker's routes.
 edge:
   enabled: false
   # false: the edge Job deletes every route of Worker jomcgi-site, so all

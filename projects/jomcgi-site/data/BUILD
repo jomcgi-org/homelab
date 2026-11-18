@@ -19,7 +19,10 @@ js_library(
         "stars-summary.d.mts",
         "stars-summary.mjs",
     ],
-    visibility = ["//projects/jomcgi-site/web:__pkg__"],
+    visibility = [
+        "//projects/jomcgi-site/check:__pkg__",
+        "//projects/jomcgi-site/web:__pkg__",
+    ],
 )
 
 js_library(
@@ -41,7 +44,10 @@ js_library(
         "snapshot.mjs",
         "sources.json",
     ],
-    visibility = ["//projects/jomcgi-site/web:__pkg__"],
+    visibility = [
+        "//projects/jomcgi-site/check:__pkg__",
+        "//projects/jomcgi-site/web:__pkg__",
+    ],
     deps = [":stars_summary"],
 )
 

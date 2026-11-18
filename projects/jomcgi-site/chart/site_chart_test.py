@@ -223,6 +223,86 @@ def test_dev_has_no_edge_job():
     assert not any(name.endswith("jomcgi-site-edge") for name in rendered)
 
 
+def test_site_check_is_a_restricted_postsync_hook_with_no_deploy_credentials():
+    rendered = docs(render())
+    job = rendered["Job/site-check"]
+    assert job["metadata"]["annotations"] == {
+        "argocd.argoproj.io/hook": "PostSync",
+        "argocd.argoproj.io/hook-delete-policy": "BeforeHookCreation,HookSucceeded",
+        "argocd.argoproj.io/sync-wave": "1",
+    }
+    assert job["spec"]["backoffLimit"] == 0
+    pod = job["spec"]["template"]["spec"]
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["restartPolicy"] == "Never"
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    container = pod["containers"][0]
+    assert container["image"].endswith(f"@{DIGEST}")
+    assert container["command"] == ["/app/projects/jomcgi-site/check/site-check"]
+    assert container["args"] == ["dev"]
+    assert container["env"] == [
+        {"name": "HOME", "value": "/tmp"},
+        {"name": "TMPDIR", "value": "/tmp"},
+    ]
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    policy = rendered["CiliumNetworkPolicy/site-check"]["spec"]
+    assert policy["endpointSelector"]["matchLabels"] == {
+        "app.kubernetes.io/name": "site-check"
+    }
+    assert policy["enableDefaultDeny"] == {"ingress": True, "egress": True}
+    assert policy.get("ingress", []) == []
+    assert policy["egress"] == [
+        {
+            "toFQDNs": [{"matchName": "next.jomcgi.dev"}],
+            "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
+        }
+    ]
+
+
+def test_prod_checks_its_own_host():
+    rendered = docs(render(*PROD, "--set", "edge.serveRoutes=true"))
+    assert rendered["Job/site-check"]["spec"]["template"]["spec"]["containers"][0][
+        "args"
+    ] == ["prod"]
+    assert rendered["CiliumNetworkPolicy/site-check"]["spec"]["egress"][0][
+        "toFQDNs"
+    ] == [{"matchName": "jomcgi.dev"}]
+    edge = rendered["Job/jomcgi-site-edge"]["metadata"]["annotations"]
+    check = rendered["Job/site-check"]["metadata"]["annotations"]
+    assert edge["argocd.argoproj.io/hook"] == check["argocd.argoproj.io/hook"]
+    assert int(check["argocd.argoproj.io/sync-wave"]) > int(
+        edge.get("argocd.argoproj.io/sync-wave", "0")
+    )
+
+
+def test_prod_with_routes_off_does_not_audit_hub_pages():
+    rendered = docs(render(*PROD))
+    assert not any(name.endswith("/site-check") for name in rendered)
+    assert "Job/jomcgi-site-deploy" in rendered
+    # The edge Job still runs, so it deletes every route before the hub serves prod.
+    edge = rendered["Job/jomcgi-site-edge"]["spec"]["template"]["spec"]["containers"][0]
+    assert {"name": "EDGE_SERVE_ROUTES", "value": "false"} in edge["env"]
+
+
+@pytest.mark.parametrize("serve_routes", ["true", "false"])
+def test_prod_never_skips_both_the_edge_job_and_site_check(serve_routes):
+    # Routes from an earlier sync can be live, so prod without the edge Job,
+    # which alone deletes them, is refused rather than left unchecked.
+    result = render(
+        "--set", f"stage=prod,edge.enabled=false,edge.serveRoutes={serve_routes}"
+    )
+    assert result.returncode != 0
+    assert "the prod stage needs edge.enabled" in result.stderr
+
+
+@pytest.mark.parametrize("serve_routes", ["true", "false"])
+def test_dev_check_does_not_depend_on_prod_routes(serve_routes):
+    rendered = docs(render("--set", f"edge.serveRoutes={serve_routes}"))
+    assert rendered["Job/site-check"]["spec"]["template"]["spec"]["containers"][0][
+        "args"
+    ] == ["dev"]
+
+
 @pytest.mark.parametrize(
     "extra, error",
     [
@@ -235,6 +315,17 @@ def test_dev_has_no_edge_job():
         (
             ["--set", "workloads.jomcgi-site-deploy.env[0].name=MODE"],
             "MODE comes from the chart",
+        ),
+        (
+            ["--set", "workloads.site-check.args[0]=prod"],
+            "site-check stage argument comes from .Values.stage",
+        ),
+        (
+            [
+                "--set-json",
+                'workloads.site-check.network.egress=[{"peer":"stage-site","fqdn":"other.example","port":443}]',
+            ],
+            "site-check egress comes from .Values.stage",
         ),
         (
             [*PROD, "--set-string", "edge.serveRoutes=yes"],
