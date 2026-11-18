@@ -2036,3 +2036,15 @@ leave the attempt open. The reaper can also delete a worker whose actor has
 remained SUSPENDING for five minutes, using the assigned UID as a delete
 precondition. The connector retains ownership of session recovery calls.
 [Joe's scoped reaper decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-320#comment-2891).
+
+The deployment pins Substrate v1.0.1 at `7ce6f439`. Its certificate controller
+parses the repeatable `--postgres-client` flag and appends the extra identity
+to the existing PostgreSQL clients. [Flag and startup wiring](https://github.com/kagent-dev/substrate/blob/7ce6f439239c568285f6d897aaa4afd47752c775/cmd/podcertcontroller/main.go#L89-L105),
+[signer client list](https://github.com/kagent-dev/substrate/blob/7ce6f439239c568285f6d897aaa4afd47752c775/cmd/podcertcontroller/internal/postgressigner/postgressigner.go#L88-L97).
+
+The reaper decodes Actor metadata and status from this release. Suspend writes
+SUSPENDING through UpdateActor, and the store stamps each update with its time.
+Five minutes since the latest mutation therefore gives a lower bound on time
+spent in that state. [Wire schema](https://github.com/kagent-dev/substrate/blob/7ce6f439239c568285f6d897aaa4afd47752c775/api/ateapi/v1/ateapi.proto#L412-L1015),
+[suspend transition](https://github.com/kagent-dev/substrate/blob/7ce6f439239c568285f6d897aaa4afd47752c775/cmd/ateapi/internal/controlapi/workflow_suspend.go#L182-L191),
+[update timestamp](https://github.com/kagent-dev/substrate/blob/7ce6f439239c568285f6d897aaa4afd47752c775/cmd/ateapi/internal/store/atepg/atepg.go#L438-L450).

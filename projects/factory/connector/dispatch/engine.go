@@ -1774,25 +1774,13 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 			return err
 		}
 		if gone {
-			err := e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
+			return e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
 				if _, err := tx.ExecContext(ctx, `UPDATE work_item SET session_id = NULL, updated_at = now()
 					WHERE id = $1 AND session_id = $2`, wi.ID, a.ContextID); err != nil {
 					return err
 				}
 				return e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, ClassAbandoned, "worker pod gone")
 			})
-			if err != nil || e.sessions == nil {
-				return err
-			}
-			if err := e.guard(ctx); err != nil {
-				return err
-			}
-			recoveryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
-			if _, err := e.sessions.RevertSession(recoveryCtx, a.ContextID); err != nil {
-				e.log.WarnContext(ctx, "revert after worker disappearance", "session", a.ContextID, "error", err)
-			}
-			return nil
 		}
 	}
 	if a.State == store.AttemptFailed && a.ErrorClass == ClassAbandoned {

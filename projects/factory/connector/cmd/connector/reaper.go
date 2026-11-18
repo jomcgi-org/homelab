@@ -73,6 +73,26 @@ type reaper struct {
 }
 
 func (r reaper) scan(ctx context.Context) error {
+	// Capture eligible attempt identities before opening the actor snapshot.
+	// A continuation accepted during a scan needs a new placement observation.
+	attempts, err := r.journal.QueryContext(ctx, `SELECT id,context_id FROM delivery_attempt
+		WHERE context_id IS NOT NULL AND state IN ('accepted','ambiguous')`)
+	if err != nil {
+		return err
+	}
+	currentAttempts := make(map[string][]int64)
+	defer attempts.Close()
+	for attempts.Next() {
+		var id int64
+		var session string
+		if err := attempts.Scan(&id, &session); err != nil {
+			return err
+		}
+		currentAttempts[session] = append(currentAttempts[session], id)
+	}
+	if err := attempts.Err(); err != nil {
+		return err
+	}
 	rows, err := r.actors.QueryContext(ctx, `SELECT name,proto FROM public.reaper_actors()`)
 	if err != nil {
 		return err
@@ -90,13 +110,16 @@ func (r reaper) scan(ctx context.Context) error {
 			continue
 		}
 		session := strings.TrimPrefix(name, "session-")
-		_, err := r.journal.ExecContext(ctx, `INSERT INTO worker_fence(attempt_id,session_id,namespace,pod,uid)
-    SELECT id,context_id,$2,$3,$4 FROM delivery_attempt WHERE context_id=$1 AND state IN ('accepted','ambiguous')
+		for _, id := range currentAttempts[session] {
+			_, err := r.journal.ExecContext(ctx, `INSERT INTO worker_fence(attempt_id,session_id,namespace,pod,uid)
+    SELECT id,context_id,$2,$3,$4 FROM delivery_attempt WHERE id=$5 AND context_id=$1 AND state IN ('accepted','ambiguous')
     ON CONFLICT(attempt_id) DO UPDATE SET namespace=excluded.namespace,pod=excluded.pod,uid=excluded.uid
-    WHERE worker_fence.gone_at IS NULL AND worker_fence.uid<>excluded.uid`, session, p.namespace, p.pod, p.uid)
-		if err != nil {
-			errs = append(errs, err)
+    WHERE worker_fence.gone_at IS NULL AND worker_fence.uid<>excluded.uid`, session, p.namespace, p.pod, p.uid, id)
+			if err != nil {
+				errs = append(errs, err)
+			}
 		}
+
 		if suspendExpired(p, state, updated, time.Now()) {
 			// Re-read the row immediately before acting. Both the state and the
 			// assignment must still be the revision that exceeded the deadline.
@@ -114,19 +137,35 @@ func (r reaper) scan(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	evidence, err := r.journal.QueryContext(ctx, `SELECT f.attempt_id,f.namespace,f.pod,f.uid FROM worker_fence f JOIN delivery_attempt a ON a.id=f.attempt_id WHERE f.gone_at IS NULL AND a.state IN ('accepted','ambiguous')`)
+	evidence, err := r.journal.QueryContext(ctx, `SELECT f.attempt_id,f.session_id,f.namespace,f.pod,f.uid FROM worker_fence f JOIN delivery_attempt a ON a.id=f.attempt_id WHERE f.gone_at IS NULL AND a.state IN ('accepted','ambiguous')`)
 	if err != nil {
 		return err
 	}
 	defer evidence.Close()
 	for evidence.Next() {
 		var id int64
+		var session string
 		var p placement
-		if err := evidence.Scan(&id, &p.namespace, &p.pod, &p.uid); err != nil {
+		if err := evidence.Scan(&id, &session, &p.namespace, &p.pod, &p.uid); err != nil {
 			return err
 		}
 		pod, err := r.pods.Pods(p.namespace).Get(ctx, p.pod, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) || (err == nil && string(pod.UID) != p.uid) {
+			// The journal may outlive a worker assignment. A live replacement or
+			// a clean suspension supersedes the old pod's disappearance.
+			var latest []byte
+			err = r.actors.QueryRowContext(ctx, `SELECT proto FROM public.reaper_actors() WHERE name=$1`, "session-"+session).Scan(&latest)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			assigned, state, _ := actorPlacement(latest)
+			if assigned != p && !(state == 5 && assigned == (placement{})) {
+				continue
+			}
 			_, err = r.journal.ExecContext(ctx, `UPDATE worker_fence SET gone_at=now() WHERE attempt_id=$1 AND uid=$2 AND gone_at IS NULL`, id, p.uid)
 		}
 		if err != nil {

@@ -45,6 +45,14 @@ go_test(
         "reaper_test.go",
         "recovery_test.go",
     ],
+    data = ["@postgres_test//:postgres"],
     embed = [":connector_lib"],
-    deps = ["//projects/factory/connector/store"],
+    deps = [
+        "//projects/factory/connector/internal/pgtest",
+        "//projects/factory/connector/store",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_client_go//kubernetes/typed/core/v1:core",
+        "@io_k8s_client_go//rest",
+        "@org_golang_google_protobuf//encoding/protowire",
+    ],
 )
