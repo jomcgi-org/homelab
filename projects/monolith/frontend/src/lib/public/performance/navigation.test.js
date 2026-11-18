@@ -95,7 +95,7 @@ describe("document observation clocks", () => {
 });
 
 describe("bounded anonymous edge probes", () => {
-  it("accepts only the audited thirteen unique paths and at most twenty reads each", () => {
+  it("accepts only the audited nine unique paths and at most twenty reads each", () => {
     expect(() => validateProbeEndpoints(PROBE_ENDPOINTS, 20)).not.toThrow();
     for (const paths of [
       [],
@@ -111,10 +111,10 @@ describe("bounded anonymous edge probes", () => {
 
   it("keeps the endpoint unchanged and creates independent query keys", () => {
     const first = new URL(
-      probeUrl("https://jomcgi.dev", "/app/stars/map", "run-one", 1),
+      probeUrl("https://jomcgi.dev", "/app/ships/heat", "run-one", 1),
     );
     expect(first.origin).toBe("https://jomcgi.dev");
-    expect(first.pathname).toBe("/app/stars/map");
+    expect(first.pathname).toBe("/app/ships/heat");
     expect([...first.searchParams]).toEqual([
       ["__public_perf_probe", "run-one-1"],
     ]);

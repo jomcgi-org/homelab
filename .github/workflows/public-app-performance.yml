@@ -123,7 +123,6 @@ jobs:
               --origin https://jomcgi.dev "${probe_flags[@]}" "${page_flags[@]}" \
               --route /app/hikes \
               --route /app/ships \
-              --route /app/stars \
               --route /app/trips \
               --route /scotland \
               --route /app/llm-leaderboard \
@@ -139,24 +138,17 @@ jobs:
               --route /app/trips/2025-liard-hot-springs/day/1 \
               --content-selector '/app/hikes::.map-snapshot .snapshot-row' \
               --content-selector '/app/ships::.map-snapshot .snapshot-row' \
-              --content-selector '/app/stars::.map-snapshot .snapshot-row' \
               --content-selector '/app/notes::.graph-overview li' \
               --content-selector '/app/trips/2025-liard-hot-springs::.dateline' \
               --content-selector '/app/trips/2025-liard-hot-springs/day/1::.photo img' \
               --interaction '/app/hikes::button.filter-toggle' \
               --interaction '/app/ships::[aria-label="Map mode"] button:has-text("Heat")' \
-              --interaction '/app/stars::[aria-label="Map mode"] button:has-text("Historical")' \
-              --interaction-ready-url '/app/stars::/app/stars/history-map' \
               --interaction '/app/trips/2025-liard-hot-springs/day/1::button[aria-label="Next photo"]' \
               --endpoint /app/hikes/__data.json \
               --endpoint /app/hikes/walk/7fc20756-89c2-5280-9be9-3ddb3db01e44 \
               --endpoint /app/ships/__data.json \
               --endpoint /app/ships/track/369514002 \
-              --endpoint /app/stars/__data.json \
               --endpoint /app/trips/__data.json \
-              --endpoint /app/stars/map \
-              --endpoint /app/stars/history-map \
-              --endpoint /app/stars/history \
               --endpoint /app/ships/heat \
               --endpoint /app/notes/graph \
               --endpoint /app/notes/stats \
@@ -164,19 +156,6 @@ jobs:
               --runs 3 --samples 20 --settle-ms 15000 \
               --output "$PERFORMANCE_OUTPUT" \
             | tee "$PERFORMANCE_OUTPUT/measurement.log"
-      - name: Diagnose the ready Stars Historical interaction separately
-        if: ${{ always() && steps.browser-fixtures.outcome == 'success' }}
-        timeout-minutes: 5
-        run: |
-          page_flags=()
-          if [[ "$FRESH_PAGE_CACHE" == "true" ]]; then
-            page_flags+=(--page-cache-key "$PAGE_CACHE_KEY")
-          fi
-          timeout --signal=TERM --kill-after=15s 270s \
-            node projects/monolith/frontend/scripts/public-app-performance-stars.mjs \
-              "${page_flags[@]}" \
-              --playwright-module "$PLAYWRIGHT_PREFIX/node_modules/playwright/index.mjs" \
-              --output "$PERFORMANCE_OUTPUT/stars-diagnostic"
       - name: Summarize completed observations
         if: always()
         run: |
@@ -187,7 +166,7 @@ jobs:
             echo
             echo 'Three cold-browser loads per route; observed CDN state, no purge. INP remains unavailable; explicit clicks report lab Event Timing after the load cutoff. Missing content milestones remain unavailable. Worker pages do not certify the full mobile throttling profile.'
             if [[ "$FRESH_PAGE_CACHE" == "true" ]]; then
-              echo 'Page cohort: stable key' "$PAGE_CACHE_KEY"'. Repeated across runs and Stars diagnosis; actual edge states and served assets must be checked. Do not pool with canonical observations or infer an isolated causal speedup.'
+              echo 'Page cohort: stable key' "$PAGE_CACHE_KEY"'. Repeated across runs; actual edge states and served assets must be checked. Do not pool with canonical observations or infer an isolated causal speedup.'
             else
               echo 'Page cohort: canonical URLs.'
             fi

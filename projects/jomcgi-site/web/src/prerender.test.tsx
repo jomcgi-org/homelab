@@ -42,9 +42,12 @@ describe.each(Object.entries(PAGES))("%s", (entry, Page) => {
         { onRecoverableError: (error) => errors.push(error) },
       );
     });
-    expect(errors).toEqual([]);
-    await act(async () => root.unmount());
-    container.remove();
+    try {
+      expect(errors).toEqual([]);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
   });
 });
 

@@ -27,6 +27,9 @@
   --lb-provider-6: light-dark(#008300, #21a521);
   --lb-provider-7: light-dark(#4a3aa7, #9085e9);
   --lb-provider-8: light-dark(#c43939, #e66767);
+  --color-stars-low: light-dark(#155e75, #67e8f9);
+  --color-stars-mid: light-dark(#854d0e, #fde047);
+  --color-stars-high: light-dark(#9f1239, #fda4af);
   --font-family-body: "Avenir Next", "Segoe UI", system-ui, sans-serif;
   --font-family-heading:
     "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;

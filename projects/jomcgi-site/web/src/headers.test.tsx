@@ -41,12 +41,26 @@ describe("static hosting headers", () => {
       );
   });
   it("sends a CSP without inline or eval exceptions", () => {
-    for (const value of [csp, hikesCsp]) {
+    for (const value of [csp, hikesCsp, policy(rule("/stars"))]) {
       expect(value).toContain("default-src 'self'");
       expect(value).toContain("frame-ancestors 'none'");
       expect(value).toContain("form-action 'none'");
       expect(value).not.toMatch(/unsafe-inline|unsafe-eval/);
     }
+  });
+
+  it("gives /stars the hikes map policy, no geolocation, a revalidated 301", () => {
+    const stars = rule("/stars");
+    expect(stars).toContain("! Content-Security-Policy");
+    expect(policy(stars)).toBe(hikesCsp);
+    expect(stars).not.toContain("Permissions-Policy");
+    expect(readFileSync("public/_redirects", "utf8")).toContain(
+      "/app/stars /stars 301\n/app/stars/* /stars 301",
+    );
+    for (const path of ["/app/stars", "/app/stars/*"])
+      expect(rule(path)).toContain(
+        "Cache-Control: public, max-age=0, must-revalidate",
+      );
   });
 
   it("caches hashed assets forever", () => {

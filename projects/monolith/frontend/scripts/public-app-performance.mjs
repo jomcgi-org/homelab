@@ -91,7 +91,6 @@ const pageCache = pageCohort(values["page-cache-key"]);
 const routes = values.route ?? [
   "/app/hikes",
   "/app/ships",
-  "/app/stars",
   "/app/trips",
   "/scotland",
   "/app/llm-leaderboard",

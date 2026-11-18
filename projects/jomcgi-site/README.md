@@ -271,6 +271,22 @@ CI publishes the dev build after merge. The landing owner must verify the deploy
 before production promotion. Local build and browser results do not establish
 deployed verification. Removing `jomcgi.dev/docs*` rolls docs back to the hub.
 
+## Stars (HOME-210)
+
+`/stars` serves `web/stars.html` with the hub page's title and description.
+`/app/stars` and its old probe subroutes redirect there with 301. The page,
+the redirects and `/data/stars/*` move together in `edge/routes.json`. Only
+the `/stars` rule in `_headers` allows the base map and blob workers
+([header check](validation/stars-headers.md)).
+
+Forecast `asOf` is `fetched_at`. History `asOf` is the `lastModified` of
+`history-map.json` in `latest.json` `sources`, read again at each refresh.
+Both are stale after nine hours, three 3-hourly `stars-refresh` runs. Site
+`generatedAt` is stale after 90 minutes. `data/stars-summary.mjs` writes the
+six-site summary that `stars.html` shows before scripts run. Forecast,
+history, MapLibre and its style load on intent. `web:stars_browser_test` runs
+the compiled page in Chromium under the `/stars` policy, with full axe.
+
 ## HOME-206 acceptance checks
 
 `:prerendered_test` checks the emitted home, crawler files and copied assets
@@ -286,7 +302,7 @@ them after promotion.
 
 CI runs `home-browser.mjs` as `:home_browser_test`: Chromium from
 `@sparticuz/chromium` loads the `:build` output with the production CSP.
-In `web/`, run `pnpm build`, then `pnpm test:browser` for home and leaderboard.
+In `web/`, run `pnpm build`, then `pnpm test:browser` for home, leaderboard and stars.
 
 ## Deploy
 

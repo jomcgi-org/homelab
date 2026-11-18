@@ -50,6 +50,7 @@ def test_published_pages_are_exactly_the_filtered_manifest():
         "scotland/support.html",
         "scotland/terms.html",
         "slop.html",
+        "stars.html",
         *(f"docs/{entry['slug']}.html" for entry in manifest),
     }
     for entry in manifest:

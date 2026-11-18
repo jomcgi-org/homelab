@@ -168,7 +168,6 @@ const STAYS_ON_THE_HUB = [
   "jomcgi.dev/api/trips/trips",
   "jomcgi.dev/slop/factory",
   "jomcgi.dev/app/trips",
-  "jomcgi.dev/app/stars",
   "jomcgi.dev/app/grimoire",
 ];
 
@@ -202,6 +201,14 @@ test("routed pages are served with and without a query string", () => {
     "/app/hikes/walk/uuid",
     "/data/hikes/latest.json",
     "/data/hikes/v/walks-012345abcdef.json",
+    "/stars",
+    "/stars/",
+    "/data/stars/latest.json",
+    "/data/stars/v/sites-abcdef123456.json",
+    "/app/stars",
+    "/app/stars/map",
+    "/app/stars/history",
+    "/app/stars/history-map",
     "/notes",
     "/app/frank",
     "/ember",
