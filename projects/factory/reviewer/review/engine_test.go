@@ -1430,6 +1430,25 @@ func TestLostHistoryApprovalKeepsAnOverflowedReviewsBlockers(t *testing.T) {
 	}
 }
 
+// TestTasklessCheckpointIsNotCoveredByAnotherReport: an incomplete
+// checkpoint with no task reference cannot be replayed. Another report on
+// the same head must not stand in for the findings it dropped.
+func TestTasklessCheckpointIsNotCoveredByAnotherReport(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	// An overflowed review keeps its task, so it alone could be replayed.
+	first := reviewRound(t, h, shaA, Report{Summary: "Overflow", Findings: numbered(100, "a.go:correctness:"+strings.Repeat("shared", 80)+":%d")})
+	failIf(t, !mustState(t, first.Text).Incomplete || mustState(t, first.Text).TaskID == "", "the first review did not overflow with its task")
+	// A later checkpoint on the head dropped its findings and its task.
+	seedCheck(h, shaA, ConclusionFailure, encodeState(State{Incomplete: true, Overflow: true}))
+	e := h.engine()
+	run, err := e.reviewCheck(context.Background(), &e.cfg.Bindings[0], shaA)
+	failIf(t, err != nil, "%v", err)
+	st, _ := LoadState(run.Text)
+	got, rec := e.recoverState(context.Background(), &e.cfg.Bindings[0], github.PullRequest{Number: 7, HeadSHA: shaA}, run, st)
+	failIf(t, rec == replayDone || !got.Incomplete, "another report replaced a taskless checkpoint: recovery=%v incomplete=%v", rec == replayDone, got.Incomplete)
+}
+
 // TestFailedHistoryReadRetriesWithoutFallback: a failed GitHub read is not
 // lost history. The gate stays closed and keeps the state incomplete, with
 // no hold for Joe and no full review. The next poll replays the report.

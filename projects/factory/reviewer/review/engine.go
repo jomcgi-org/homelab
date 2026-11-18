@@ -1849,6 +1849,8 @@ heads:
 		}
 		sort.Slice(runs, func(i, j int) bool { return runs[i].ID > runs[j].ID })
 		needsReport, foundReport := false, false
+		var orphans []Finding
+		firstReport := len(reports)
 		for _, old := range runs {
 			if old.Name != e.cfg.CheckName || old.AppID != e.cfg.AppID || old.HeadSHA != h.SHA || old.Status != "completed" {
 				continue
@@ -1873,7 +1875,13 @@ heads:
 			needsReport = needsReport || ok
 			taskID := e.sourceTask(b, &old, st)
 			if taskID == "" {
-				continue // A gate-only replacement can refer to an older report.
+				if st.Overflow || !st.LegacyTask {
+					return lost() // Its dropped findings have no report to replay.
+				}
+				// A legacy gate replacement can refer to an older report on
+				// this head. That report must cover every finding it keeps.
+				orphans = append(orphans, st.Previous()...)
+				continue
 			}
 			foundReport = true
 			if index, seen := seenTasks[taskID]; seen {
@@ -1905,6 +1913,17 @@ heads:
 		}
 		if needsReport && !foundReport {
 			return lost()
+		}
+		covered := map[string]bool{}
+		for _, r := range reports[firstReport:] {
+			for _, f := range r.stored.Previous() {
+				covered[f.ID] = true
+			}
+		}
+		for _, f := range orphans {
+			if !covered[f.ID] {
+				return lost() // No report on this head can account for it.
+			}
 		}
 	}
 	if !started || len(reports) == 0 || (!anchored && hist.Truncated) {
