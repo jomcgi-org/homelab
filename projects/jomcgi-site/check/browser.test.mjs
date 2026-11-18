@@ -3,6 +3,9 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import {
   checkPage,
+  isEdgeBeacon,
+  isEdgeBeaconConsole,
+  isEdgeBeaconCsp,
   launchBrowser,
   PENDING_DATA,
   pendingData,
@@ -63,6 +66,8 @@ test(
         "off-origin",
         "edge-beacon",
         "third-party-script",
+        "beacon-in-query",
+        "beacon-console",
       ]) {
         await t.test(mode, async () => {
           const server = await serve((req, res) => {
@@ -77,6 +82,12 @@ test(
                   console: 'console.error("fixture console error")',
                   exception: 'throw new Error("fixture exception")',
                   "off-origin": 'fetch("https://outside.invalid/forbidden")',
+                  // The beacon URL inside another URL or an app message must
+                  // not hide a real failure.
+                  "beacon-in-query":
+                    'fetch("https://outside.invalid/preview?url=https://static.cloudflareinsights.com/beacon.min.js")',
+                  "beacon-console":
+                    'console.error("app failed near https://static.cloudflareinsights.com/beacon.min.js/x")',
                 }[mode] ?? "";
               respond(res, script, "text/javascript");
             } else {
@@ -122,6 +133,8 @@ test(
               "report-only": /CSP: script-src-elem/,
               "off-origin": /CSP: connect-src|off-origin request/,
               "third-party-script": /CSP: script-src-elem|off-origin request/,
+              "beacon-in-query": /CSP: connect-src|off-origin request/,
+              "beacon-console": /console: app failed near/,
             }[mode];
             if (expected) await assert.rejects(run(), expected);
             else assert.deepEqual(await run(), [`${server.origin}/`]);
@@ -160,4 +173,29 @@ test("a staged section leaves the list when the snapshot publishes it", () => {
       `${section} is published; remove it from PENDING_DATA`,
     );
   }
+});
+
+test("only the exact Cloudflare beacon is treated as edge-injected", () => {
+  const beacon = "https://static.cloudflareinsights.com/beacon.min.js/v8c78";
+  assert.ok(isEdgeBeacon(beacon));
+  assert.ok(isEdgeBeacon("https://static.cloudflareinsights.com/beacon.min.js"));
+  for (const other of [
+    "https://static.cloudflareinsights.com/other.js",
+    "https://static.cloudflareinsights.com.evil.invalid/beacon.min.js",
+    `https://outside.invalid/preview?url=${beacon}`,
+    "not a url",
+  ])
+    assert.equal(isEdgeBeacon(other), false, other);
+  assert.ok(
+    isEdgeBeaconConsole(
+      `Loading the script '${beacon}' violates the following Content Security Policy directive: "script-src 'self'". The action has been blocked.`,
+    ),
+  );
+  assert.equal(isEdgeBeaconConsole(`app failed near ${beacon}`), false);
+  assert.ok(isEdgeBeaconCsp(`script-src-elem: ${beacon}`));
+  assert.equal(isEdgeBeaconCsp(`connect-src: ${beacon}`), false);
+  assert.equal(
+    isEdgeBeaconCsp("script-src-elem: https://outside.invalid/x.js"),
+    false,
+  );
 });
