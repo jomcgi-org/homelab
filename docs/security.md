@@ -488,12 +488,11 @@ security/005).
 
 ## Findings and threat model
 
-[`docs/THREAT-MODEL.md`](THREAT-MODEL.md) is the one ranked index of open
-security findings across every hosted surface: assets, trust boundaries,
-and the top of the list with a sentence of context each. The live list is
-the `security-finding` GitHub label; closing the issue is how a finding
-leaves the list, and the index is re-ranked by hand when the label query
-changes shape. Depth lives in each project's STPA security lens
+[`docs/THREAT-MODEL.md`](THREAT-MODEL.md) holds the structure of the threat
+model for both clusters: assets, attacker positions, trust boundaries and
+the controls on each boundary. It lists no open findings. A finding is
+recorded in a private security project, and its fix is a HOME ticket in
+neutral words. Depth lives in each project's STPA security lens
 (`projects/<domain>/stpa/security.json`, rendered into `STPA.md`), where
 every security row carries a `status` (`enforced-prod`, `enforced-dev`,
 `shipped-off`, `designed`, `none`) and an `issue`. The procedure for adding,
@@ -502,17 +501,15 @@ closing and reviewing a finding is
 
 (see: `docs/THREAT-MODEL.md`, `docs/runbooks/threat-model-maintenance.md`, `projects/*/stpa/security.json`)
 
-**Why.** The first per-domain threat model went stale within two days of
-merging, and residuals for every other surface were scattered across
-unlabelled issues with no page to read (ADR security/007). A hand-maintained
-rollup that restated each domain's findings was rejected because it doubles
-the staleness surface; a generated rollup was deferred until the
-hand-maintained index has demonstrably gone stale twice. The public-repo
-cost of ranking open weaknesses in one place was accepted because the
-issues are already public, the index carries blast radius rather than
-exploit steps, and a private list would contradict issues being the source
-of truth. Per-domain prose models were superseded by the STPA security lens
-(#5294), which keeps findings as extracted rows rather than narrative.
+**Why.** Joe decided on 2026-11-17 that findings do not reach the public
+repository
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-230#comment-2061)).
+The earlier ranked index accepted the public cost because public GitHub
+issues were the source of truth for each finding. Those issues moved to
+itsaplan on 2026-11-15, so that reason ended. The first per-domain threat
+model went stale within two days of merging (ADR security/007), and the STPA
+security lens replaced per-domain prose models (#5294): it keeps each
+project's analysis as extracted rows.
 
 ## Static checks and review gates
 
