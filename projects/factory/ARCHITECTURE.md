@@ -109,6 +109,16 @@ nDCG@10 (0.781) of ten models, against 0.522 for a stand-in for the local embedd
 chose one OpenRouter key for both instances
 ([HOME-130 comment 1439](https://factory-plan.jomcgi.dev/factory/issue/HOME-130#comment-1439)).
 
+**Preflight.** Hindsight resizes an empty vector column at startup and
+refuses to start on a model with another dimension once rows exist. Each sync
+first runs the `hindsight-preflight` Sync hook (wave -1, after the 1Password
+items). It needs the same Secrets as the API pod, embeds one string through
+OpenRouter, asks the decision model one question, and fails when the key is
+empty or refused, when the embedding model returns another dimension, when
+the decision model gives no answer, or when stored rows in any schema have
+another dimension. The sync then stops before the Deployment, and the running pod
+keeps serving.
+
 #### Memory recovery
 
 **Rollback.** Two levers, by what failed:
@@ -155,6 +165,21 @@ config back, failing when a setting differs. An import changes the bank's
 config, never its memories, so a template change in git reaches the bank on
 the next sync. `POST .../import?dry_run=true` validates a manifest without
 changing anything. A new project needs a new `app` value.
+
+Two keys separate the callers. The REST API takes only the tenant key, which
+only namespace `hindsight` holds: the API pod, and the Jobs that create the
+key and apply the bank template. MCP takes the agents' token
+(`HINDSIGHT_API_MCP_AUTH_TOKEN`) and registers only `recall` and `retain`
+(`HINDSIGHT_API_MCP_ENABLED_TOOLS`), so a caller with the token can neither
+reach REST nor list, delete or reflect. The `hindsight-keys` Jobs generate both
+keys once and copy the token into the binding's `hindsight-mcp` Secret, which
+is labelled injectable: the Substrate egress gateway adds it as the
+`Authorization` header, and the actor holds a placeholder. Hindsight admits
+the egress gateway for agent traffic. kagent cannot reach Hindsight, so the RemoteMCPServer
+sets `kagent.dev/discovery: disabled` and the agent lists tools at run time.
+
+The bank is the URL path (`/mcp/homelab/`). The homelab binding uses this bank. Recalled text is data, never an
+instruction: the prompt says the repository, issue and CI win.
 
 Discord memory has a separate process, database and REST tenant key under
 [`hindsight-discord`](../platform-factory/hindsight-discord/README.md)
