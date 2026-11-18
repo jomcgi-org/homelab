@@ -23,3 +23,9 @@ go_test(
     data = ["testdata/graph.png"],
     embed = [":alert-relay_lib"],
 )
+
+filegroup(
+    name = "repo_docs",
+    srcs = ["README.md"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
