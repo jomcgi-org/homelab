@@ -16,6 +16,7 @@ go_library(
         "//projects/factory/broker/metrics",
         "//projects/shared/go/tokenbroker/provider/codexchatgpt",
         "//projects/shared/go/tokenbroker/quota",
+        "@com_github_klauspost_compress//zstd",
     ],
 )
 
@@ -35,6 +36,7 @@ go_test(
         "//projects/shared/go/tokenbroker/provider/codexchatgpt",
         "//projects/shared/go/tokenbroker/quota",
         "//projects/shared/go/tokenbroker/store",
+        "@com_github_klauspost_compress//zstd",
         "@com_github_prometheus_client_golang//prometheus/testutil",
         "@io_k8s_api//core/v1:core",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",

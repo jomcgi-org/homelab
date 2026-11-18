@@ -6,6 +6,7 @@ package relay
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 
 	"github.com/jomcgi/homelab/projects/factory/broker/actorjwt"
 	"github.com/jomcgi/homelab/projects/factory/broker/auth"
@@ -254,9 +257,13 @@ func (rl *Relay) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 		}
 	}
 	if rt.method == http.MethodPost && len(rl.AllowedModels) > 0 {
+		decoded, err := modelBody(body, strings.Join(r.Header.Values("Content-Encoding"), ","), rl.maxRequestBytes())
+		if errors.Is(err, errDecodedTooLarge) || errors.Is(err, zstd.ErrWindowSizeExceeded) || errors.Is(err, zstd.ErrDecoderSizeExceeded) {
+			return writeError(w, http.StatusRequestEntityTooLarge, ErrRequestTooLarge, "bad_request", nil)
+		}
 		var fields map[string]json.RawMessage
 		var model string
-		if json.Unmarshal(body, &fields) != nil || json.Unmarshal(fields["model"], &model) != nil || model == "" || !slices.Contains(rl.AllowedModels, model) {
+		if err != nil || json.Unmarshal(decoded, &fields) != nil || json.Unmarshal(fields["model"], &model) != nil || model == "" || !slices.Contains(rl.AllowedModels, model) {
 			return writeError(w, http.StatusBadRequest, "model_not_allowed", "model_not_allowed", nil)
 		}
 	}
@@ -370,6 +377,45 @@ func (rl *Relay) streamIdleTimeout() time.Duration {
 		return rl.StreamIdleTimeout
 	}
 	return DefaultStreamIdleTimeout
+}
+
+var errDecodedTooLarge = errors.New("decoded request exceeds size limit")
+
+// modelBody decodes a copy for inspection. The upstream receives the wire body.
+func modelBody(body []byte, encoding string, limit int64) ([]byte, error) {
+	var reader io.Reader
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "", "identity":
+		return body, nil
+	case "gzip":
+		decoder, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		defer decoder.Close()
+		reader = decoder
+	case "zstd":
+		decoder, err := zstd.NewReader(bytes.NewReader(body), zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(uint64(max(limit, 1024))), zstd.WithDecodeBuffersBelow(0))
+		if err != nil {
+			return nil, err
+		}
+		defer decoder.Close()
+		reader = decoder
+	default:
+		return nil, errors.New("unsupported content encoding")
+	}
+	decoded, err := io.ReadAll(io.LimitReader(reader, limit))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(decoded)) == limit {
+		if n, err := io.CopyN(io.Discard, reader, 1); n != 0 {
+			return nil, errDecodedTooLarge
+		} else if err != io.EOF {
+			return nil, err
+		}
+	}
+	return decoded, nil
 }
 
 // withEffort sets reasoning.effort to ReasoningEffort in a /responses
