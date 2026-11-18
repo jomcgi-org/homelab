@@ -120,12 +120,16 @@ async def leader_start(app: FastAPI) -> list[asyncio.Task]:
     if not gateway:
         from chat.scheduled_tasks import retire_digests_with_engine
 
-        try:
-            await asyncio.to_thread(retire_digests_with_engine, get_engine())
-        except Exception:
-            logger.exception(
-                "scheduled digests not retired at start; the scheduler retries"
-            )
+        # A few tries before the scheduler starts. If the database still
+        # fails, the scheduler retires first on every pass and claims nothing
+        # until that succeeds, so no digest runs unretired here.
+        for attempt in range(3):
+            try:
+                await asyncio.to_thread(retire_digests_with_engine, get_engine())
+                break
+            except Exception:
+                logger.exception("scheduled digests not retired (try %d)", attempt + 1)
+                await asyncio.sleep(2)
     scheduler_task = asyncio.create_task(run_scheduler(get_engine(), digests=gateway))
     scheduler_task.add_done_callback(log_task_exception)
     register_leader_tasks(app, [scheduler_task])

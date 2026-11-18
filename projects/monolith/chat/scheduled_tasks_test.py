@@ -429,15 +429,22 @@ async def test_gateway_off_retires_digests_and_each_run_posts_its_final_notice(
         assert session.get(ScheduledTask, later_id).status == "cancelled"
         contents = sorted(row.content for row in session.query(DiscordOutbox).all())
         assert contents == sorted([notice, notice, "⏰ <@456> reminder: stand up"])
-        kinds = {row.kind for row in session.query(DiscordOutbox).all()}
-        assert kinds == {"scheduled_task"}  # guarded sends, with occurrences
+        rows = session.query(DiscordOutbox).all()
+        # Guarded scheduled sends, each with its occurrence audit row.
+        assert {row.kind for row in rows} == {"scheduled_task"}
+        for row in rows:
+            occurrence = session.get(
+                ScheduledTaskOccurrence, json.loads(row.payload_json)["occurrence_id"]
+            )
+            assert occurrence.status == "enqueued"
+            assert occurrence.outbox_id == row.id
 
 
 @pytest.mark.asyncio
-async def test_retirement_survives_an_old_leaders_finalize(engine):
-    # The old leader claimed a digest before the gateway went off. Retirement
-    # does not touch its claim, and its late finalize does not undo the
-    # marker: the digest's next run ends it.
+async def test_old_leaders_finalize_after_retirement_posts_the_final_notice(engine):
+    # The old leader claimed and built a digest before the gateway went off,
+    # and finalizes after retirement. Under the task row lock it finds the
+    # marker, so it posts the final notice instead of the digest and ends.
     digest_id, _ = _insert_due(engine, kind="digest")
     with Session(engine) as session:
         (claim,) = claim_due(session, _at(12, 12, 16), "old")
@@ -450,14 +457,7 @@ async def test_retirement_survives_an_old_leaders_finalize(engine):
         assert finalize_claim(session, claim, built, _at(12, 12, 18))
         session.commit()
     with Session(engine) as session:
-        task = session.get(ScheduledTask, digest_id)
-        assert task.status == "pending"
-        assert json.loads(task.payload_json)["retired_at"]
-    assert await drain_once(engine, now=_at(12, 12, 31), claimant="leader-b") == 1
-    with Session(engine) as session:
         assert session.get(ScheduledTask, digest_id).status == "cancelled"
-        rows = session.query(DiscordOutbox).order_by(DiscordOutbox.id)
-        assert [r.content for r in rows] == [
-            "📋 digest built before the switch",
-            DIGEST_ENDED.format(mode="summary"),
-        ]
+        rows = session.query(DiscordOutbox).all()
+        assert [r.content for r in rows] == [DIGEST_ENDED.format(mode="summary")]
+    assert await drain_once(engine, now=_at(13, 12, 31), claimant="leader-b") == 0
