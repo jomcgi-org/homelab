@@ -253,6 +253,8 @@ jobs:
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 21600
       s3: true
+      # It needs SEAWEEDFS_S3_ENDPOINT, so it is not scheduled without shared S3.
+      requiresSharedS3: true
       env:
         TRIPS_IMGPROXY_URL: https://jomcgi.dev/img
         TRIPS_EXPORT_PUBLIC_ENABLED: "false"
