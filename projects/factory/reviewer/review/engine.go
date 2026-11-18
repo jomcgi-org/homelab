@@ -2621,11 +2621,13 @@ func (e *Engine) reconcileGateState(ctx context.Context, b *Binding, pr github.P
 		// after the hold appeared, is the authorized disposal: it accepts the
 		// blockers no review can account for, and ends the incomplete state.
 		// A full review never does. Until then, review the head once in
-		// full, so its findings show beside the hold.
+		// full, so its findings show beside the hold. An overflowed
+		// checkpoint dropped that review's own findings: the approval did
+		// not accept them, so it stays incomplete until a replay.
 		before := gate.ApprovalSnapshot
 		approver, _ := e.approval(ctx, b, pr, gate)
 		changed = changed || before != gate.ApprovalSnapshot
-		if approver != "" {
+		if approver != "" && !st.Overflow {
 			st.Incomplete, changed = false, true
 		} else {
 			*restart = st.LegacyTask

@@ -1026,6 +1026,10 @@ type State struct {
 	// LegacyTask preserves the report's ID derivation if a gate update
 	// replaces its original v1 check during migration.
 	LegacyTask bool `json:"legacy_task,omitempty"`
+	// Overflow marks a checkpoint that dropped this review's own findings to
+	// fit. Only a replay of its task clears it; approval of a HistoryLost
+	// hold accepts lost legacy history, never these findings.
+	Overflow bool `json:"overflow,omitempty"`
 }
 
 // ClearedComplete reports whether the cleared record still holds every
@@ -1534,7 +1538,7 @@ func encodeState(st State) string {
 			gate = &c
 		}
 		checkpoint := State{
-			Incomplete: true, TaskID: st.TaskID, LegacyTask: st.LegacyTask,
+			Incomplete: true, Overflow: true, TaskID: st.TaskID, LegacyTask: st.LegacyTask,
 			IssueDigest: st.IssueDigest, IssuesPending: st.IssuesPending, Goal: st.Goal, GoalKey: st.GoalKey, Semgrep: st.Semgrep,
 			Decisions: st.Decisions, Gate: gate,
 		}
@@ -1547,7 +1551,7 @@ func encodeState(st State) string {
 		}
 		if len(out) > maxState {
 			// Malformed metadata is not a recoverable task checkpoint.
-			return enc(State{Incomplete: true, Gate: gate})
+			return enc(State{Incomplete: true, Overflow: true, Gate: gate})
 		}
 		return out
 	}
