@@ -117,6 +117,23 @@ The repository has one threat model. A project's security analysis is the
 security lens in its `STPA.md`. A quickstart is a section of the project
 README.
 
+## Document bundles
+
+A directory's kind decides which documents it needs.
+`docs/templates/bundles.yaml` holds the rules, and CI checks that each file
+exists and has its shape.
+
+| Directory | Needs |
+| --- | --- |
+| Project: `projects/<name>/` | `README.md` |
+| Service: a project with `chart/` | `ARCHITECTURE.md`, or a README link to the `ARCHITECTURE.md` of the service it belongs to |
+| Collection: one sub-directory for each Application, such as `projects/platform-factory/` | A README that names each sub-directory. No file in each one |
+| Component: a source sub-directory of a service | A row in the service's `ARCHITECTURE.md` component table |
+
+`AGENTS.md`, `REVIEW.md`, `STPA.md` and a component's own `ARCHITECTURE.md`
+are optional. The check validates each one that exists. To change what a
+directory needs, change `bundles.yaml` and this table in one PR.
+
 Keep a file current by replacing text:
 
 - When work ships, rewrite the section and delete its Direction row.
