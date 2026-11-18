@@ -16,13 +16,15 @@ export interface Call {
 
 type Reply<K extends Operation> =
   | ApiResponse<K>
+  | Response
   | { status: number; detail?: string }
   | ((
       call: Call,
     ) =>
       | ApiResponse<K>
+      | Response
       | { status: number; detail?: string }
-      | Promise<ApiResponse<K> | { status: number; detail?: string }>);
+      | Promise<ApiResponse<K> | Response | { status: number; detail?: string }>);
 
 export type Routes = { [K in Operation]?: Reply<K> };
 
@@ -74,7 +76,10 @@ export function installBackend(
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input), "https://friends.example.test");
     const method = (init?.method ?? "GET").toUpperCase();
-    const grimoire = url.pathname.startsWith("/api/grimoire/");
+    // Explicit full-path fixtures also cover HEAD metadata outside the JSON schema.
+    const grimoire =
+      url.pathname.startsWith("/api/grimoire/") &&
+      !Object.hasOwn(other, `${method} ${url.pathname}`);
     const path = grimoire
       ? url.pathname.replace(/^\/api\/grimoire/, "")
       : url.pathname;
@@ -96,6 +101,7 @@ export function installBackend(
       const result = await (typeof reply === "function"
         ? (reply as (call: Call) => unknown)(call)
         : reply);
+      if (result instanceof Response) return result;
       if (isStatus(result)) {
         return new Response(
           result.status === 204
@@ -108,9 +114,12 @@ export function installBackend(
         );
       }
       if (result === undefined) return new Response(null, { status: 204 });
+      const viewer = routes["GET /lobby"];
+      const viewerId = viewer && typeof viewer === "object" && "user" in viewer
+        ? viewer.user.id : "99999999-9999-4999-8999-999999999999";
       return new Response(JSON.stringify(result), {
         status: 200,
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "X-Grimoire-Viewer-Id": viewerId },
       });
     }
     throw new Error(`Unrouted fixture call: ${method} ${url.pathname}`);

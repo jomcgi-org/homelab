@@ -24,8 +24,16 @@ import { VersionHistory } from "./VersionHistory";
  * One character's sheet workspace. The lobby links here by fragment, so the
  * section carries the id `character-<id>` and scrolls into view once loaded.
  */
-export function CharacterSheet({ character }: { character: CharacterView }) {
-  const history = useSheetHistory(character.campaign_id, character.id);
+export function CharacterSheet({
+  character,
+  accountId,
+}: {
+  character: CharacterView;
+  accountId: string;
+}) {
+  const history = useSheetHistory(
+    character.campaign_id, character.id, accountId,
+  );
   const sectionId = `character-${character.id}`;
   const headingId = `${sectionId}-name`;
   const section = useRef<HTMLElement>(null);
@@ -66,15 +74,21 @@ export function CharacterSheet({ character }: { character: CharacterView }) {
             />
           )}
         </HStack>
-        <Loaded query={history} what="this sheet">
-          {(data) => <Workspace history={data} />}
+        <Loaded query={history} what="this sheet" requireFresh>
+          {(data) => <Workspace history={data} accountId={accountId} />}
         </Loaded>
       </VStack>
     </Card>
   );
 }
 
-function Workspace({ history }: { history: SheetHistory }) {
+function Workspace({
+  history,
+  accountId,
+}: {
+  history: SheetHistory;
+  accountId: string;
+}) {
   const { character, viewer_role: role, versions } = history;
   const latest = versions[0] ?? null;
   const submitted = latest?.status === "submitted" ? latest : null;
@@ -83,6 +97,7 @@ function Workspace({ history }: { history: SheetHistory }) {
     <>
       {role === "player" && (
         <SheetForm
+          accountId={accountId}
           // Keep the local buffer mounted even when another tab submits it.
           campaignId={character.campaign_id}
           characterId={character.id}

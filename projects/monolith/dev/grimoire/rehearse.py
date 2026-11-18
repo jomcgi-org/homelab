@@ -1806,13 +1806,9 @@ def main():
             manage.get_by_label("New character name", exact=True).fill("Wren")
             manage.get_by_role("button", name="Create and assign", exact=True).click()
             toast(dm, "Character assignment saved.")
-            # Keep main's onboarding refresh. The six-second live assignment
-            # subjourney awaits #8001; the open-page privacy regression in
-            # rehearse_extended still exercises the authoritative lobby poll.
-            b.reload()
             expect(
                 campaign_card(b).get_by_text("Your character: Wren", exact=True)
-            ).to_be_visible()
+            ).to_be_visible(timeout=6000)
             assert {
                 row["email"]: row["character_name"]
                 for row in read(dm, f"/campaigns/{newcomers_id}/members").json()
@@ -1894,6 +1890,7 @@ def main():
             from rehearse_bootstrap import rehearse_bootstrap
             from rehearse_pins import rehearse_pins
             from rehearse_sheet_conflicts import rehearse_sheet_conflicts
+            from rehearse_sheet_recovery import rehearse_sheet_recovery
 
             rehearse_facts({"dm": dm, "a": a, "b": b}, args.output, report)
             rehearse_recovery(
@@ -1912,6 +1909,9 @@ def main():
                 {"dm": dm, "a": a, "b": b}, args.output, report, args.viewport or 1280
             )
             rehearse_bootstrap(
+                {"dm": dm, "a": a, "b": b}, args.output, report, args.viewport or 1280
+            )
+            rehearse_sheet_recovery(
                 {"dm": dm, "a": a, "b": b}, args.output, report, args.viewport or 1280
             )
             assert not report["errors"], report["errors"]

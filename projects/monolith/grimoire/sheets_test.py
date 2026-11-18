@@ -12,7 +12,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from grimoire.access import get_authenticated_identity
+from grimoire.access import get_authenticated_email, get_authenticated_identity
 from grimoire.models import AppUser, CampaignMember
 from grimoire.models import (
     CharacterSheetVersion,
@@ -169,6 +169,85 @@ def _version_path(campaign: dict, character: dict, version_id: str) -> str:
         f"/api/grimoire/campaigns/{campaign['id']}"
         f"/characters/{character['id']}/sheets/{version_id}"
     )
+
+
+@pytest.mark.parametrize("suffix", ["", "/options"])
+def test_sheet_read_binds_recovery_to_the_authorized_account(client, table, suffix):
+    campaign, character = table
+    path = _draft_path(campaign, character).removesuffix("/drafts") + suffix
+    for email in (PLAYER, DM):
+        viewer = client.get("/api/grimoire/lobby", headers=_auth(email))
+        assert viewer.status_code == 200
+        response = client.get(path, headers=_auth(email))
+        assert response.status_code == 200
+        assert response.headers["X-Grimoire-Viewer-Id"] == viewer.json()["user"]["id"]
+        assert response.headers["Cache-Control"] == "private, no-store"
+    denied = client.get(path, headers=_auth(OTHER_PLAYER))
+    assert denied.status_code in (403, 404)
+    assert "X-Grimoire-Viewer-Id" not in denied.headers
+
+
+def test_sign_out_identity_reads_the_current_account_without_provisioning(
+    client, table, session
+):
+    path = "/api/grimoire/lobby/identity"
+    denied = client.head(path)
+    assert denied.status_code == 403
+    assert "X-Grimoire-Viewer-Id" not in denied.headers
+    for email in (PLAYER, DM):
+        viewer = client.get("/api/grimoire/lobby", headers=_auth(email)).json()
+        response = client.head(path, headers=_auth(email))
+        assert response.status_code == 204
+        assert response.headers["X-Grimoire-Viewer-Id"] == viewer["user"]["id"]
+        assert response.headers["Cache-Control"] == "private, no-store"
+        assert response.content == b""
+    before = len(session.exec(select(AppUser)).all())
+    response = client.head(path, headers=_auth(OTHER_PLAYER))
+    assert response.status_code == 204
+    assert response.headers["X-Grimoire-Viewer-Id"] == ""
+    assert len(session.exec(select(AppUser)).all()) == before
+
+
+def test_sign_out_identity_uses_subject_even_when_application_access_is_denied(
+    client, table, session
+):
+    user = session.exec(select(AppUser).where(AppUser.email == PLAYER)).one()
+    user.issuer, user.subject = "https://issuer.example.test", "player-subject"
+    session.commit()
+
+    def identity(subject):
+        return Principal(
+            subject=subject,
+            issuer=user.issuer,
+            actor=(),
+            scope=(),
+            groups=(),
+            kind=PrincipalKind.HUMAN,
+            authority=Authority.STANDING,
+            email=PLAYER,
+        )
+
+    def no_application_access():
+        raise HTTPException(403, "Grimoire access revoked")
+
+    client.app.dependency_overrides[get_authenticated_email] = no_application_access
+    client.app.dependency_overrides[get_authenticated_identity] = lambda: identity(
+        user.subject
+    )
+    response = client.head("/api/grimoire/lobby/identity")
+    assert response.status_code == 204
+    assert response.headers["X-Grimoire-Viewer-Id"] == user.id
+    assert client.get("/api/grimoire/lobby").status_code == 403
+    campaign, character = table
+    path = _draft_path(campaign, character).removesuffix("/drafts")
+    assert client.get(path).status_code == 403
+    client.app.dependency_overrides[get_authenticated_identity] = lambda: identity(
+        "another-subject"
+    )
+    # A mailbox collision must not clear the original account's recovery.
+    response = client.head("/api/grimoire/lobby/identity")
+    assert response.status_code == 204
+    assert response.headers["X-Grimoire-Viewer-Id"] == ""
 
 
 @pytest.fixture(name="request_client")

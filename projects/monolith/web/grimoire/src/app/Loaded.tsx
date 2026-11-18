@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { Button } from "@astryxdesign/core/Button";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
@@ -10,6 +10,8 @@ interface LoadedProps<T> {
   query: UseQueryResult<T>;
   /** What failed to load, for the error title: "your campaigns". */
   what: string;
+  /** A cached response cannot authorize recovery when this view mounts. */
+  requireFresh?: boolean;
   children: (data: T) => ReactNode;
 }
 
@@ -18,8 +20,17 @@ interface LoadedProps<T> {
  * loading, a retry prompt on failure, the content once there is data. Data
  * already on screen stays there while a background refresh fails.
  */
-export function Loaded<T>({ query, what, children }: LoadedProps<T>) {
-  if (query.data !== undefined) return <>{children(query.data)}</>;
+export function Loaded<T>({
+  query,
+  what,
+  children,
+  requireFresh = false,
+}: LoadedProps<T>) {
+  const [authorized, setAuthorized] = useState(!requireFresh);
+  if (!authorized && query.isFetchedAfterMount && query.isSuccess)
+    setAuthorized(true);
+  if (authorized && query.data !== undefined)
+    return <>{children(query.data)}</>;
   if (query.isError && !(query.error instanceof SignInError)) {
     return (
       <EmptyState

@@ -1,5 +1,5 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { keys } from "../../api/lobby";
 import type { Routes } from "../../test/backend";
 import { chooseOption, findToast, openApp } from "../../test/app";
@@ -37,9 +37,10 @@ const playerSheets = (routes: Routes = {}): Routes => ({
 // Exercise actual polling without focus or navigation triggering a refetch.
 const refreshed = (assertion: () => void) =>
   waitFor(assertion, { timeout: 6_000 });
+afterEach(() => vi.unstubAllGlobals());
 
 describe("Changes from another seat", { timeout: 15_000 }, () => {
-  it("refreshes ordinary lobby changes at the existing fifteen-second interval", async () => {
+  it("refreshes ordinary lobby changes within six seconds", async () => {
     const { backend } = openApp({
       "GET /lobby": lobby({ campaigns: [campaigns.seatless] }),
     });
@@ -66,7 +67,7 @@ describe("Changes from another seat", { timeout: 15_000 }, () => {
         expect(
           screen.getByRole("article", { name: "The renamed campaign" }),
         ).toBeTruthy(),
-      { timeout: 16_000 },
+      { timeout: 6_000 },
     );
     expect(
       within(campaign).getByRole("button", { name: "Create your character" }),
@@ -147,9 +148,14 @@ describe("Changes from another seat", { timeout: 15_000 }, () => {
     );
   });
 
-  it("adds a newly assigned character when the sheets character query is refreshed", async () => {
+  it("reloads an empty seat when the character poll discovers its new assignment", async () => {
+    const reload = vi.fn();
+    vi.stubGlobal("location", { origin: "https://friends.example.test", reload });
     const { backend, client } = openApp(
-      playerSheets({ "GET /campaigns/{campaign_id}/characters": [] }),
+      playerSheets({
+        "GET /lobby": lobby({ campaigns: [{ ...campaigns.joined, player_character_id: null }] }),
+        "GET /campaigns/{campaign_id}/characters": [],
+      }),
       "/sheets",
     );
     await screen.findByText("No assigned characters.");
@@ -157,10 +163,13 @@ describe("Changes from another seat", { timeout: 15_000 }, () => {
     await act(async () => {
       await client.invalidateQueries({ queryKey: keys.characters(ids.joined) });
     });
-    await screen.findByRole("region", { name: "Mira Vale" });
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("region", { name: "Mira Vale" })).toBeNull();
   });
 
-  it("polls sheet history without accelerating the existing character access checks", async () => {
+  it("polls character access and fences the dirty editor when its assignment is cleared", async () => {
+    const reload = vi.fn();
+    vi.stubGlobal("location", { origin: "https://friends.example.test", reload });
     const { backend, client, user } = openApp(
       playerSheets({ [SHEETS]: playerHistory([miraDraft]) }),
       "/sheets",
@@ -173,40 +182,21 @@ describe("Changes from another seat", { timeout: 15_000 }, () => {
     const characterReads = backend.callsTo(
       "GET /campaigns/{campaign_id}/characters",
     ).length;
-    const lobbyReads = backend.callsTo("GET /lobby").length;
-    const sheetReads = backend.callsTo(SHEETS).length;
     backend.set({
       "GET /campaigns/{campaign_id}/characters": [],
-      "GET /lobby": lobby({
-        campaigns: [{ ...campaigns.joined, player_character_id: null }],
-      }),
-      [SHEETS]: { status: 404 },
     });
 
     await refreshed(() =>
-      expect(backend.callsTo(SHEETS).length).toBeGreaterThan(sheetReads),
+      expect(backend.callsTo("GET /campaigns/{campaign_id}/characters").length).toBeGreaterThan(characterReads),
     );
-    expect(
-      backend.callsTo("GET /campaigns/{campaign_id}/characters"),
-    ).toHaveLength(characterReads);
-    expect(backend.callsTo("GET /lobby")).toHaveLength(lobbyReads);
-    expect(screen.getByRole("spinbutton", { name: "Level" })).toBe(level);
-    expect(level.value).toBe("4");
-
-    // Keep main's access check: a refreshed character list still removes the
-    // old editor. This change introduces no recovery exception after access loss.
-    await act(async () => {
-      await client.invalidateQueries({
-        queryKey: keys.characters(ids.joined),
-        exact: true,
-      });
-    });
-    await screen.findByText("No assigned characters.");
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    expect(client.getQueryCache().getAll()).toHaveLength(0);
     expect(screen.queryByRole("region", { name: "Mira Vale" })).toBeNull();
     expect(screen.queryByRole("spinbutton", { name: "Level" })).toBeNull();
     expect(
       screen.queryByRole("region", { name: "Unsaved sheet changes" }),
     ).toBeNull();
+    expect(Object.keys(localStorage).some((key) => key.startsWith("grimoire-sheet-recovery:"))).toBe(true);
   });
 
   it("updates an open Manage dialog when the player creates a character", async () => {

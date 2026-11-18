@@ -776,8 +776,8 @@ Public Grimoire pages and the private operator sheets page stay in Svelte.
   seconds and re-reads the whole feed every fifteen, because a retraction
   edits an old event in place. Members and sheet histories refresh every five
   seconds, so open rosters receive membership changes and open sheets receive
-  submissions or DM decisions. The lobby keeps its fifteen-second refresh and
-  characters keep their on-demand reads; neither access check is accelerated. The
+  submissions or DM decisions. Lobby identity and character lists also refresh
+  every five seconds, including characterless seats and open character pickers. The
   session's approved mechanics and roll bonuses use the same
   history query as the sheet editor and take only the newest approved version.
   A sheet refresh updates a clean editor. A dirty editor merges changes to
@@ -789,9 +789,8 @@ Public Grimoire pages and the private operator sheets page stay in Svelte.
   visible in a read-only, copyable buffer; saving stays unavailable while the
   version is submitted. A return restores those edits to the editor, and an
   explicit discard removes the buffer.
-  This buffer does not survive the existing character access or viewer boundary.
-  Reassignment of a dirty sheet and any recovery after access loss await the
-  decision in [#8001](https://github.com/jomcgi-org/homelab/issues/8001).
+  Access loss unmounts the editor and hides its buffer. The hidden recovery
+  exception below permits restoring unsaved edits only after renewed access.
   The active session list, voice map and turn order refresh every fifteen
   seconds. With no active session, the session list refreshes every two seconds
   so players see the DM start or resume.
@@ -1022,6 +1021,49 @@ the link while retaining the character, its sheet versions and its knowledge
 grants. Grants follow the character; the former player loses access on the
 next request, and a newly assigned player receives that character's grants.
 
+Unsaved sheet edits follow Joe's [#8001 decision](https://github.com/jomcgi-org/homelab/issues/8001#issuecomment-6891228067):
+the browser may retain a hidden recovery buffer for the same Grimoire account,
+campaign and character. Clearing or swapping an assignment removes the form;
+membership removal and account switching also remove the old private view.
+While access is absent there is no recovery notice, count, copy action or
+visible value. Reassignment never moves unsaved values to the new character
+or to another account, including a new player assigned to the original character.
+
+`src/lib/sheet-recovery.ts` stores only changed fields, their merge bases,
+unfinished numeric input and unresolved conflicts in browser `localStorage`.
+It retains the latest edits for each account/campaign/character. A clean or
+older editor cannot erase a newer editor's buffer. Untouched fetched fields,
+derived mechanics, character names, sheet-version IDs and save revisions are
+not stored. Retention is one calendar month from the last actual edit in UTC,
+clamped to the next month's last day. Polls and recovery reads do not renew it;
+app load purges expired or malformed records. Storage failures leave the live
+editor usable and show that a recovery copy could not be kept.
+
+Recovery waits for fresh successful sheet and option reads on each mount.
+Both responses carry `X-Grimoire-Viewer-Id`, identifying the account authorized
+by each request. Both queries are scoped to the recovery account and reject a
+missing or different identity, including a cookie switch between history and
+options reads. Cached responses cannot authorize recovery. Restored fields
+merge against the freshly fetched sheet, with
+overlapping changes requiring an explicit choice. Current sheet status,
+revision and server authorization govern every save; submitted versions remain
+read-only. Saving or discarding clears that editor's buffer. Session expiry
+and account switching preserve hidden buffers. Explicit sign-out clears the
+signing-out account's buffers on this browser and fences late writes from its
+other editors. Each editor must reserve a durable account epoch before storing
+edits. Sign-out removes that epoch and independently removes the account's
+records; it needs no new storage allocation, even at full quota. Old writers
+cannot create a replacement epoch, and other tabs fence on its removal event.
+
+The sign-out link first makes an uncached `HEAD /api/grimoire/lobby/identity`
+read. This verifies the signed human identity and returns only its existing
+Grimoire account ID, matching issuer/subject even if application access was
+revoked. It neither provisions an account nor grants campaign access. A
+confirmed identity with no Grimoire account can sign out without deleting
+anyone's buffers. A failed identity read leaves every buffer intact and offers
+retry before navigating to the gateway. Cached lobby and platform account IDs
+never select whose recovery records to erase.
+
 An accepted player without a character uses
 `POST /campaigns/{campaign_id}/characters/self` with `{name}` to create and
 link their own character. A seated player receives 409; the DM uses the
@@ -1033,7 +1075,9 @@ unassigned.
 
 **Why.** Character-owned sheets and grants survive seating changes without
 moving knowledge between accounts. Campaign-scoped roles let a DM seat their
-own table without operator access.
+own table without operator access. Joe authorized hidden local recovery for a
+month to preserve unsaved work without retaining display or save authority
+after revocation.
 
 ### Single-use campaign links
 
@@ -1191,7 +1235,8 @@ when another arrives two to thirty seconds later with no other answer between
 them. Then, once no send is in flight, the session composer keeps its text,
 its audience, any interrupted send's request id and the viewer's user id and
 role in the tab's `sessionStorage`, and the tab reloads at most once a minute;
-within that minute it shows a signed-out notice. Other screens show the
+within that minute it shows a signed-out notice. Sheet readers use the hidden
+recovery boundary below on a refused read. Other screens show the
 signed-out notice and leave the reload to the player. A restored draft never
 widens its audience, and a draft kept for another viewer is dropped.
 
@@ -1221,8 +1266,14 @@ Every screen shares the lobby identity check through `ViewerBoundary`. A
 confirmed account change, removal of an existing campaign membership, change
 to its role, character or ownership, loss of account administration, or a
 lobby response denying access with 403 hides the previous view immediately.
-The boundary cancels queries, clears the query cache and saved message drafts,
-then reloads once.
+The boundary also fences a changed character-list assignment and refused sheet
+reads (401, 403 or 404), including an identity-mismatched sheet response.
+It cancels queries, clears the query cache and saved message drafts, then
+reloads once. The account-scoped hidden sheet recovery buffer is the explicit
+#8001 exception: it survives this fence, with no mounted form or recovery UI.
+Explicit sign-out clears it before navigation and broadcasts the fence to
+other tabs. Temporary sheet failures retain an already authorized editor;
+a fresh mount still needs a new successful read before restoring anything.
 It also unmounts queued speech and toasts. Ordinary lobby refreshes, renamed
 campaigns, new memberships and temporary lobby failures preserve unsaved
 work. The live check remains: hold a real login past the access-token lifetime
@@ -1258,3 +1309,9 @@ never writes a draft back to storage after the boundary has cleared it.
 
 **Why.** Journal replies refer to actions within one session. Carrying an old
 reply into a new session would leave the original action waiting for the DM.
+
+## Direction
+
+| Decision | Contract | Issue |
+| --- | --- | --- |
+| Hidden sheet recovery | Retain unsaved edits for one month, scoped to account, campaign and character; restore only after renewed authorization and clear on explicit sign-out. | [#8001](https://github.com/jomcgi-org/homelab/issues/8001) |

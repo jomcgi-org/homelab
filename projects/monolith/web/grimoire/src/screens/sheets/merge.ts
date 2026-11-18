@@ -14,7 +14,7 @@ export const fieldValue = (sheet: CharacterSheetV1, field: SheetField) =>
     ? sheet[field]
     : sheet.ability_scores[field];
 
-const withField = (
+export const withField = (
   sheet: CharacterSheetV1,
   field: SheetField,
   value: string | number,

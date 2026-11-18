@@ -40,6 +40,8 @@ export class SignInError extends ApiError {
 }
 
 export interface CallOptions<K extends Operation> {
+  /** Require the server's authorized sheet reader to match this identity. */
+  expectedViewerId?: string;
   /** Values for the `{name}` segments of the path. */
   params?: Record<string, string>;
   query?: Query<K>;
@@ -95,7 +97,9 @@ export function apiUrl<K extends Operation>(
 }
 
 export interface RequestOptions {
+  expectedViewerId?: string;
   method?: string;
+  cache?: RequestCache;
   /** Sent as JSON, or as multipart when it is FormData. */
   body?: unknown;
   signal?: AbortSignal;
@@ -111,6 +115,47 @@ export async function requestJson<T>(
   url: string,
   options: RequestOptions = {},
 ): Promise<T> {
+  const response = await requestResponse(url, options);
+  if (response.status === 204) return undefined as T;
+  const type = response.headers.get("content-type") ?? "";
+  // The gateway's static fallback must never answer for data.
+  if (!type.includes("json")) {
+    throw new UnexpectedResponseError(
+      response.status,
+      "Grimoire answered with a page instead of data. Reload and try again.",
+    );
+  }
+  const body: unknown = await response.json();
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      detail(body) ?? "Grimoire could not complete that request.",
+    );
+  }
+  if (
+    options.expectedViewerId &&
+    response.headers.get("X-Grimoire-Viewer-Id") !== options.expectedViewerId
+  )
+    throw new ApiError(403, "Your account changed. Reload Grimoire.");
+  return body as T;
+}
+
+/** HEAD metadata is deliberately outside the generated JSON contract. */
+export async function requestViewerId(url: string): Promise<string | null> {
+  const response = await requestResponse(url, {
+    method: "HEAD",
+    cache: "no-store",
+  });
+  const viewer = response.headers.get("X-Grimoire-Viewer-Id");
+  if (response.status !== 204 || viewer === null)
+    throw new ApiError(
+      response.status,
+      "Could not verify your account for sign-out. Try again.",
+    );
+  return viewer || null;
+}
+
+async function requestResponse(url: string, options: RequestOptions) {
   const upload = options.body instanceof FormData;
   const signals = [AbortSignal.timeout(TIMEOUT_MS)];
   if (options.signal) signals.push(options.signal);
@@ -119,6 +164,7 @@ export async function requestJson<T>(
     // A login redirect must surface as a sign-in signal, not be followed.
     redirect: "manual",
     credentials: "same-origin",
+    cache: options.expectedViewerId ? "no-store" : options.cache,
     signal: AbortSignal.any(signals),
     headers:
       options.body === undefined || upload
@@ -136,24 +182,7 @@ export async function requestJson<T>(
     throw new SignInError();
   }
   signIn.answered();
-  if (response.status === 204) return undefined as T;
-  const type = response.headers.get("content-type") ?? "";
-  // The gateway's static fallback must never answer for data. If it does,
-  // say so plainly instead of failing inside JSON.parse.
-  if (!type.includes("json")) {
-    throw new UnexpectedResponseError(
-      response.status,
-      "Grimoire answered with a page instead of data. Reload and try again.",
-    );
-  }
-  const body: unknown = await response.json();
-  if (!response.ok) {
-    throw new ApiError(
-      response.status,
-      detail(body) ?? "Grimoire could not complete that request.",
-    );
-  }
-  return body as T;
+  return response;
 }
 
 export function api<K extends Operation>(
@@ -164,6 +193,7 @@ export function api<K extends Operation>(
     method: operation.slice(0, operation.indexOf(" ")),
     body: options.body,
     signal: options.signal,
+    expectedViewerId: options.expectedViewerId,
   });
 }
 

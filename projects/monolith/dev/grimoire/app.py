@@ -330,6 +330,14 @@ def build_app() -> FastAPI:
     public.update(kid="local-playground", alg="RS256", use="sig")
     app = FastAPI(title="Grimoire local playground")
     app.add_exception_handler(AuthError, auth_error_handler)
+
+    @app.get("/grimoire/oauth2/logout")
+    def local_sign_out():
+        """Stand in for gateway logout; this app exists only on loopback."""
+        response = RedirectResponse("/__local", status_code=303)
+        response.delete_cookie(BROWSER_COOKIE, path="/")
+        return response
+
     # The production registration: the API, the invitation landing and the
     # web app, in that order. GRIMOIRE_WEB_DIR names the bundle run.py built.
     if not (Path(os.environ["GRIMOIRE_WEB_DIR"]) / "index.html").is_file():
