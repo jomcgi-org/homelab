@@ -1662,7 +1662,7 @@ func (e *Engine) previousStateFrom(ctx context.Context, b *Binding, pr github.Pu
 			return State{Incomplete: true}, "", fmt.Sprintf("more than %d earlier heads carry a review check", maxPreviousLookups), nil
 		}
 		looked++
-		run, st, lost, err := e.statefulReview(ctx, b, h.SHA)
+		run, st, lost, err := e.statefulReview(ctx, b, pr.Number, h.SHA)
 		if err != nil {
 			return State{}, "", "", err
 		}
@@ -1693,7 +1693,7 @@ func (e *Engine) previousStateFrom(ctx context.Context, b *Binding, pr github.Pu
 // review state. A later run that keeps none (a review that ended without a
 // report, a split request, a cancelled attempt) does not hide it. lost says
 // a newer completed run that is none of these keeps no readable state.
-func (e *Engine) statefulReview(ctx context.Context, b *Binding, sha string) (run *github.CheckRun, st State, lost bool, err error) {
+func (e *Engine) statefulReview(ctx context.Context, b *Binding, pr int, sha string) (run *github.CheckRun, st State, lost bool, err error) {
 	runs, err := e.gh.ListCheckRuns(ctx, b.repo(), sha, github.CheckRunFilter{Name: e.cfg.CheckName, AppID: e.cfg.AppID, All: true})
 	if err != nil {
 		e.ghError(ctx, e.log.With("binding", b.Name, "repo", b.repo(), "sha", sha), b, "check_runs", err)
@@ -1705,6 +1705,9 @@ func (e *Engine) statefulReview(ctx context.Context, b *Binding, sha string) (ru
 		if r.Name != e.cfg.CheckName || r.AppID != e.cfg.AppID || r.HeadSHA != sha || r.Status != "completed" ||
 			r.Title == "No review report" || r.Title == "Split this PR" || r.Conclusion == ConclusionCancelled {
 			continue
+		}
+		if r.ExternalID != MessageID(b.repo(), pr, sha) {
+			continue // Another PR's review of a shared commit is not this PR's state.
 		}
 		if st, ok := LoadState(r.Text); ok {
 			return r, st, false, nil
