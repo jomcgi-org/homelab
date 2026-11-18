@@ -1,6 +1,6 @@
 # Platform architecture
 
-The factory home cluster runs the software factory on three k3s servers. The GKE hub serves the monolith and its public and agent tiers, the Scotland connector, inference and Context Forge. Each cluster has its own ingress and its own ArgoCD installation that reconciles the platform and workloads from Git.
+The factory home cluster runs the software factory, including kagent and the itsaplan issue tracker, on three k3s servers. The GKE hub serves the monolith and its public and agent tiers, the Scotland connector, inference and Context Forge. Each cluster has its own ingress and its own ArgoCD installation that reconciles the platform and workloads from Git.
 
 ```mermaid
 flowchart LR
@@ -25,7 +25,7 @@ flowchart LR
 | Hub ingress | Routes public and trusted requests | [Cloudflare gateway](cloudflare-gateway/) | [Chart dependencies](cloudflare-gateway/Chart.yaml) | HTTP requests | Hub tunnel credential |
 | Factory ingress | Publishes factory hostnames and routes requests | [Factory edge](../platform-factory/factory-edge/) | [Factory inventory](../factory-cluster/README.md) | HTTP requests and identity tokens | Factory tunnel credential and Envoy OIDC client secret |
 
-## 1. Clusters and GitOps roots
+## 1. Clusters
 
 On each cluster, the bootstrap parent watches a directory containing the root Application. A change to the root can therefore sync even if its previous configuration pointed at the wrong tree. The hub root selects two inventories, one for shared controllers and one for workloads. EmberVM is retired, but its Applications are still listed during removal. [Hub root](../gke-cluster/kustomization.yaml) · [Platform inventory](../platform-gke/kustomization.yaml) · [Workload inventory](../gke-apps/kustomization.yaml) · [Retirement decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6893155810)
 
@@ -41,7 +41,7 @@ At home, cfgate reconciles the factory tunnel and DNS records. Envoy in the edge
 
 The hub uses GKE Dataplane V2 and Kubernetes NetworkPolicy. The factory home cluster bootstraps its own Cilium installation and reconciles a default-deny baseline and namespace allowlists from Git. [Factory network policies](../platform-factory/network-policy/)
 
-## 4. GitOps and delivery on the hub and factory home cluster
+## 4. GitOps and delivery
 
 Hub platform Applications track their Git sources. For hub workloads enrolled in Kargo, CI publishes the versioned chart to OCI, Kargo promotes its revision and ArgoCD syncs the Application. Each pipeline controls when its workload receives a published chart. [Hub Kargo](../platform-gke/kargo/) · [Hub workload Applications](../gke-apps/)
 
@@ -87,6 +87,6 @@ Earlier platform decisions, including the choice of hub node pools and promotion
 | Retire the former home Longhorn installation that provided replicated block storage | 2026-10-10 | [Home configuration retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
 | Retire KEDA on the former home cluster. It had no ScaledObjects or ScaledJobs | 2026-10-10 | [Home configuration retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
 | Retire the GPU operator that managed the driver on the former home's RTX 4090 node | 2026-10-10 | [Home configuration retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
-| Remove the former home's CAKE traffic shaper. The CNI processed ingress before its filter | 2026-10-10 | [Home configuration retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
-| Retire the former home Cilium chart, including its WireGuard and Hubble configuration | 2026-10-10 | [Home configuration retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
+| Retire the former home's node-traffic-shaper. Cilium’s tcx attachment processed ingress before the CAKE filter could shape it | 2026-10-10 | [Home configuration retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
+| Retire the former home Cilium chart that replaced Linkerd and provided policy enforcement, WireGuard encryption and Hubble flow logs | 2026-10-10 | [Home configuration retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
 | Bootstrap the factory on the rebuilt home nodes with its own GitOps root | 2026-11-13 | [Factory cluster decision](https://github.com/jomcgi-org/homelab/issues/7817) |
