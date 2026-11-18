@@ -313,11 +313,14 @@ controllers and principals that can impersonate them remain trusted.
 Direct Secret reads and exec access require separate RBAC; these policies do
 not grant either capability. The mirror ServiceAccount has no API permissions.
 
-Each run syncs payloads excluding the root manifest.json with
+Each run syncs payloads excluding the selected root index with
 Cache-Control: public, max-age=31536000, immutable. After a successful sync,
 it copies an existing manifest with Cache-Control: public, max-age=60.
 A failed sync or listing stops publication. An absent source manifest removes
 the destination manifest. Payload deletions use rclone sync's normal deletion.
+
+Set `public.manifestName: latest.json` for static-page writers. The default is
+`manifest.json` for existing publishers.
 
 The publisher must write immutable objects before replacing its manifest.
 Keep objects referenced by a current or cached manifest until those readers

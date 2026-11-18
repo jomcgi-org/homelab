@@ -1,7 +1,7 @@
 # Publishing factory data for static pages
 
 A factory-cluster writer declares a Garage bucket claim in its chart with
-`access: write` and a `public.r2Bucket` mirror. The writer uses only the
+`access: write` and a `public.r2Bucket` mirror configured with `public.manifestName: latest.json`. The writer uses only the
 claim's scoped Garage S3 credential. The platform provisions the bucket and
 runs the mirror with its own destination credential. Writers create no buckets
 and hold no R2 admin credentials. Only place public data in a mirrored bucket.
@@ -10,12 +10,12 @@ See the [factory library bucket example](../projects/shared/helm/factory-library
 Hash the exact bytes of each payload and include the digest in its object key,
 for example `stars/sites-<sha256>.json`. Upload every payload with
 `Cache-Control: public, max-age=31536000, immutable`. After every upload
-succeeds, write the bucketx27s root `manifest.json` last with the keys for that
+succeeds, write the bucketx27s root `latest.json` last with the keys for that
 complete generation and `Cache-Control: public, max-age=60`. Give each
 independent writer its own bucket so publishers cannot overwrite each otherx27s index.
 
 The [mirror template](../projects/shared/helm/factory-library/chart/templates/_mirror.tpl)
-excludes exactly `/manifest.json` from the immutable payload transfer and
+excludes exactly `/latest.json` from the immutable payload transfer and
 copies it after that transfer succeeds. Readers fetch this root index from R2
 and resolve its keys against the same bucket root. Retain payloads referenced
 by cached manifests. If a referenced object is temporarily unavailable, retry

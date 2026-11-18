@@ -14,23 +14,25 @@ esac
 run() { rclone --config /dev/null --s3-no-check-bucket "$@"; }
 # Upload payloads before publishing the manifest. A failed sync stops here.
 run sync "GARAGE:$GARAGE_BUCKET" "R2:$R2_BUCKET" \
-  --exclude /manifest.json \
+  --exclude /{{ .manifestName }} \
   --header-upload "Cache-Control: public, max-age=31536000, immutable"
 # Listing failure is an error, not proof that the manifest is absent.
-manifest=$(run lsf "GARAGE:$GARAGE_BUCKET" --files-only --max-depth 1 --include /manifest.json)
-if [ "$manifest" = manifest.json ]; then
-  run copyto "GARAGE:$GARAGE_BUCKET/manifest.json" "R2:$R2_BUCKET/manifest.json" \
+manifest=$(run lsf "GARAGE:$GARAGE_BUCKET" --files-only --max-depth 1 --include /{{ .manifestName }})
+if [ "$manifest" = {{ .manifestName }} ]; then
+  run copyto "GARAGE:$GARAGE_BUCKET/{{ .manifestName }}" "R2:$R2_BUCKET/{{ .manifestName }}" \
     --ignore-times --header-upload "Cache-Control: public, max-age=60"
 else
   # The sync excludes this key, so remove it separately when Garage lacks it.
-  run delete "R2:$R2_BUCKET" --include /manifest.json
+  run delete "R2:$R2_BUCKET" --include /{{ .manifestName }}
 fi
 {{- end -}}
 
 {{- define "factory-library.mirror" -}}
 {{- $public := .public | default dict -}}
-{{- include "factory-library.keys" (dict "path" "public bucket" "value" $public "allowed" (list "r2Bucket" "schedule" "itemPath" "image" "suspend")) -}}
+{{- include "factory-library.keys" (dict "path" "public bucket" "value" $public "allowed" (list "r2Bucket" "schedule" "itemPath" "image" "suspend" "manifestName")) -}}
 {{- if and (hasKey $public "suspend") (not (kindIs "bool" $public.suspend)) -}}{{- fail "factory-library: public.suspend must be a boolean" -}}{{- end -}}
+{{- $manifest := get $public "manifestName" | default "manifest.json" -}}
+{{- if not (has $manifest (list "manifest.json" "latest.json")) -}}{{- fail "factory-library: public.manifestName must be manifest.json or latest.json" -}}{{- end -}}
 {{- $r2Bucket := required "factory-library: public.r2Bucket is required" $public.r2Bucket -}}
 {{- include "factory-library.name" $r2Bucket -}}
 {{- if lt (len $r2Bucket) 3 -}}{{- fail "factory-library: public.r2Bucket must be at least 3 characters" -}}{{- end -}}
@@ -59,7 +61,7 @@ fi
 {{- range $key, $field := dict "ACCESS_KEY_ID" "access-key-id" "SECRET_ACCESS_KEY" "secret-access-key" "ENDPOINT" "s3-api-endpoint" -}}
 {{- $env = append $env (dict "name" (printf "RCLONE_CONFIG_R2_%s" $key) "valueFrom" (dict "secretKeyRef" (dict "name" $r2Secret "key" $field))) -}}
 {{- end -}}
-{{- $workload := dict "kind" "CronJob" "schedule" ($public.schedule | default "* * * * *") "concurrencyPolicy" "Forbid" "backoffLimit" 1 "image" $image "containerName" "mirror" "resources" (dict "requests" (dict "cpu" "10m" "memory" "64Mi") "limits" (dict "memory" "256Mi")) "command" (list "/bin/sh" "-c" (include "factory-library.mirrorScript" .)) "env" $env "writablePaths" (list (dict "name" "tmp" "mountPath" "/tmp" "sizeLimit" "64Mi")) "network" (dict "egress" (list (dict "peer" "garage" "port" 3900) (dict "peer" "r2-s3" "fqdn" (include "factory-library.r2Host" .) "port" 443))) -}}
+{{- $workload := dict "kind" "CronJob" "schedule" ($public.schedule | default "* * * * *") "concurrencyPolicy" "Forbid" "backoffLimit" 1 "image" $image "containerName" "mirror" "resources" (dict "requests" (dict "cpu" "10m" "memory" "64Mi") "limits" (dict "memory" "256Mi")) "command" (list "/bin/sh" "-c" (include "factory-library.mirrorScript" (dict "manifestName" $manifest))) "env" $env "writablePaths" (list (dict "name" "tmp" "mountPath" "/tmp" "sizeLimit" "64Mi")) "network" (dict "egress" (list (dict "peer" "garage" "port" 3900) (dict "peer" "r2-s3" "fqdn" (include "factory-library.r2Host" .) "port" 443))) -}}
 {{ include "factory-library.bucketSecret" (dict "root" .root "name" $garageSecret "bucket" .bucket "access" "read") }}
 {{ include "factory-library.mirrorAdmission" (dict "root" .root "name" $name "secret" $r2Secret) }}
 ---
