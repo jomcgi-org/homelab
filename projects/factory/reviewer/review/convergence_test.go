@@ -157,8 +157,10 @@ func TestBlockingEntriesSayKindCauseAndReopening(t *testing.T) {
 // re-check the initial not_met verdicts.
 func TestGoalVerdictsCarryAcrossHeads(t *testing.T) {
 	prev := &GoalCheck{Head: "a", Digest: "d", Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalLive}, {3, goalMet}, {4, goalUnclear}}}
-	got := keepEarlier(&GoalCheck{Head: "b", Digest: "d", Overall: goalUnclear,
-		Criteria: []GoalVerdict{{1, goalUnclear}, {2, goalUnclear}, {3, goalNotMet}, {4, goalUnclear}, {5, goalUnclear}}}, prev)
+	got := keepEarlier(&GoalCheck{
+		Head: "b", Digest: "d", Overall: goalUnclear,
+		Criteria: []GoalVerdict{{1, goalUnclear}, {2, goalUnclear}, {3, goalNotMet}, {4, goalUnclear}, {5, goalUnclear}},
+	}, prev)
 	want := []string{goalMet, goalLive, goalNotMet, goalUnclear, goalUnclear}
 	for i, c := range got.Criteria {
 		if c.Verdict != want[i] {
