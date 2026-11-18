@@ -1,0 +1,15 @@
+[Unit]
+Description=Factory node host firewall (inet factory_fw)
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target k3s.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/factory/firewall.nft
+ExecStop=/usr/sbin/nft delete table inet factory_fw
+
+[Install]
+WantedBy=multi-user.target

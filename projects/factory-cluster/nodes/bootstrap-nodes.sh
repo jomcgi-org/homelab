@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Bring up the three-server factory k3s cluster from an operator machine.
+# Bring up the three-server factory k3s cluster. Run it on node-1: the host
+# firewall (factory-firewall.nft) admits only node IPs and the tailnet.
 #
 # Needs SSH with passwordless sudo to each node. Copies this directory to each
 # node, runs install-node.sh (init on the first, join on the rest) and writes
@@ -18,7 +19,7 @@ run_install() {
 	local node="$1"
 	shift
 	ssh -n "${node}" 'rm -rf /tmp/factory-node && mkdir -p /tmp/factory-node'
-	scp -q "${HERE}"/{install-node.sh,k3s-config.yaml,authentication-config.yaml,registries.yaml,containerd-runsc.toml,99-factory.conf,zram-generator.conf,kubelet-swap.conf,k3s-gogc.conf} \
+	scp -q "${HERE}"/{install-node.sh,k3s-config.yaml,authentication-config.yaml,registries.yaml,containerd-runsc.toml,99-factory.conf,zram-generator.conf,kubelet-swap.conf,k3s-gogc.conf,factory-firewall.nft,factory-firewall.service} \
 		"${node}:/tmp/factory-node/"
 	ssh "${node}" "$@"
 	ssh -n "${node}" 'rm -rf /tmp/factory-node'
