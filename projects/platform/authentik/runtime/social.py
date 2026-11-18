@@ -1,8 +1,11 @@
 """Exercise factory social flows in a disposable Authentik database."""
 
+from base64 import b32decode
 from pathlib import Path
 from time import sleep, time
+from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
 from django.contrib.auth import SESSION_KEY
 from django.test import Client
@@ -114,7 +117,15 @@ def exercise():
         challenge = advance(browser, browser.get(url))
         assert challenge["component"] == "ak-stage-authenticator-totp"
         assert SESSION_KEY not in browser.session
-    device = browser.session["totp_device"]
+    # The setup device lives in the server session; read its secret from the
+    # otpauth:// URL the challenge gives the user's authenticator app.
+    query = parse_qs(urlparse(challenge["config_url"]).query)
+    secret = query["secret"][0]
+    device = SimpleNamespace(
+        bin_key=b32decode(secret + "=" * (-len(secret) % 8)),
+        digits=int(query.get("digits", ["6"])[0]),
+        step=int(query.get("period", ["30"])[0]),
+    )
     submit_code(browser, url, challenge["component"], device)
     user = User.objects.get(username="discord-42")
     assert str(browser.session[SESSION_KEY]) == str(user.pk)
