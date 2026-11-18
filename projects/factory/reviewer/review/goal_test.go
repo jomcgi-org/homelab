@@ -676,7 +676,7 @@ func TestGoalBlockersMayClear(t *testing.T) {
 		}
 		for _, w := range a.Withdrawn {
 			n, _ := strconv.Atoi(strings.TrimPrefix(w.ID, "HOME-212:goal:criterion-"))
-			if n < 8 || w.Note != "Withdrawn: criterion "+strconv.Itoa(n)+" was removed from HOME-212." {
+			if n < 8 || w.Note != "Withdrawn: HOME-212 now lists 7 criteria, so criterion "+strconv.Itoa(n)+" no longer exists." {
 				t.Errorf("withdrawn %s: %q", w.ID, w.Note)
 			}
 		}
@@ -685,7 +685,7 @@ func TestGoalBlockersMayClear(t *testing.T) {
 			t.Fatalf("blocking = %v", got)
 		}
 		out := Render(a, &Report{}, nil, "")
-		if !strings.Contains((out.Output.Summary + out.Output.Text), "criterion 16 was removed from HOME-212") {
+		if !strings.Contains((out.Output.Summary + out.Output.Text), "so criterion 16 no longer exists") {
 			t.Fatalf("comment does not say why:\n%s", (out.Output.Summary + out.Output.Text))
 		}
 	})
@@ -737,6 +737,13 @@ func TestIssueCriteriaCount(t *testing.T) {
 		"Done when:\n1. a\n3. not the next number":                                    0,
 		"Done when:\n1. a\n2. b\n\nOut of scope:\n- c":                                0,
 		"Done when:\n1. a\n2. b\n\nOut of scope: c":                                   2,
+		"Done when:\n1. a\n2.\tb":                                                     2,
+		"Done when:\n1) a\n2) b":                                                      2,
+		"Done when:\n1. a\n2) b":                                                      0,
+		"Done when:\n- a\n  - nested":                                                 0,
+		"Done when:\n- a\n+ b":                                                        0,
+		"Done when:\n1. a\n2.":                                                        0,
+		"Done when:\n1. a\n   more text for a\n2. b":                                  2,
 		"Done when:\n1. a\n- mixed":                                                   0,
 		"Done when:\n1. a\nDone when:\n1. b":                                          0,
 		"Done when:\n   indented first":                                               0,
@@ -752,5 +759,34 @@ func TestIssueCriteriaCount(t *testing.T) {
 	// An untrusted edit must not shorten the list and withdraw a blocker.
 	if got := issueCriteria(&IssueContext{Issue: &IssueEvidence{Key: "HOME-1", Description: "Done when:\n1. a"}}); got != 0 {
 		t.Errorf("untrusted issue text counted %d", got)
+	}
+}
+
+// Deleting criterion 2 of 3 renumbers the rest. The answer judges the new
+// criteria 1 and 2 afresh, so their earlier findings take the new verdicts,
+// and criterion 3 no longer exists.
+func TestGoalInteriorDeletionAndRestatement(t *testing.T) {
+	prior := []Finding{
+		{ID: "HOME-9:goal:criterion-1", Severity: SeverityMedium},
+		{ID: "HOME-9:goal:criterion-2", Severity: SeverityMedium},
+		{ID: "HOME-9:goal:criterion-3", Severity: SeverityMedium},
+	}
+	r := &Report{}
+	applyGoal(r, prior, "HOME", "HOME-9", &GoalCheck{Overall: goalUnclear, Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}}, Counted: 2})
+	a := Assess(r, prior)
+	if len(a.Withdrawn) != 1 || a.Withdrawn[0].ID != "HOME-9:goal:criterion-3" ||
+		a.Withdrawn[0].Note != "Withdrawn: HOME-9 now lists 2 criteria, so criterion 3 no longer exists." {
+		t.Fatalf("withdrawn = %+v", a.Withdrawn)
+	}
+	if len(a.Fixed) != 1 || a.Fixed[0].ID != "HOME-9:goal:criterion-1" {
+		t.Fatalf("fixed = %+v", a.Fixed)
+	}
+	// The restated criterion 2 is not met, so its finding stays under the same ID.
+	found := false
+	for _, b := range a.Blocking {
+		found = found || b.ID == "HOME-9:goal:criterion-2"
+	}
+	if !found {
+		t.Fatalf("blocking = %+v", a.Blocking)
 	}
 }

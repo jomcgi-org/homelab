@@ -232,7 +232,7 @@ func goalWithdrawn(id, key string, g *GoalCheck) string {
 		return ""
 	}
 	if n > g.Counted {
-		return "Withdrawn: criterion " + strconv.Itoa(n) + " was removed from " + key + "."
+		return "Withdrawn: " + key + " now lists " + strconv.Itoa(g.Counted) + " criteria, so criterion " + strconv.Itoa(n) + " no longer exists."
 	}
 	return ""
 }
@@ -244,20 +244,19 @@ func countedCriteria(g *GoalCheck) bool {
 }
 
 // issueCriteria counts the criteria in the issue's one "Done when" or
-// "Acceptance criteria" list.
-// Items are "1." numbered lines in sequence, or top-level "-" or "*" bullets
-// (task boxes allowed), one style per list; indented lines continue an item
-// and a top-level line that is no item ends the list. Only trusted issue
-// text counts: an untrusted edit must not shorten the list. Anything
-// ambiguous returns 0, which withdraws nothing: a numbering gap, mixed item
-// styles, a second list heading, or an item-like line after the list ended.
+// "Acceptance criteria" list. Only trusted issue text counts: an untrusted
+// edit must not shorten the list. Items are top-level "1." or "1)" lines
+// numbered in sequence, or top-level "-", "*" or "+" bullets (task boxes
+// allowed), one marker style per list; an indented line that is not a list
+// marker continues an item, and another top-level line ends the list. Any
+// line that could be a list marker but is not the next item (a gap, another
+// style, a nested list, an item after the list ended) or a second list
+// heading makes the list uncountable: 0, which withdraws nothing.
 func issueCriteria(in *IssueContext) int {
 	if goalKey(in) == "" || !in.Issue.Trusted {
 		return 0
 	}
-	items := 0
-	state := 0 // 0 before the heading, 1 in the list, 2 after it
-	style := ""
+	items, state, style := 0, 0, "" // state: 0 before the heading, 1 in the list, 2 after it
 	for raw := range strings.SplitSeq(in.Issue.Description, "\n") {
 		line := strings.TrimSpace(raw)
 		heading := strings.ToLower(strings.Trim(line, "#* :"))
@@ -271,45 +270,45 @@ func issueCriteria(in *IssueContext) int {
 		if state == 0 || line == "" {
 			continue
 		}
-		if raw != strings.TrimLeft(raw, " \t") {
+		marker := listMarker.MatchString(raw)
+		m := listItem.FindStringSubmatch(raw)
+		switch {
+		case m != nil && state == 1:
+			kind := m[3]
+			if m[1] != "" {
+				if m[1] != strconv.Itoa(items+1) {
+					return 0
+				}
+				kind = "n" + m[2]
+			}
+			if (style != "" && style != kind) || items >= maxCriteria {
+				return 0
+			}
+			style = kind
+			items++
+		case marker:
+			return 0
+		case raw != strings.TrimLeft(raw, " \t"):
 			if items == 0 {
 				return 0
 			}
-			continue
-		}
-		var text, kind string
-		if number, rest, ok := strings.Cut(line, ". "); ok && number != "" && strings.Trim(number, "0123456789") == "" {
-			if number != strconv.Itoa(items+1) {
-				return 0 // A gap or repeat: the count would be partial.
-			}
-			text, kind = rest, "number"
-		} else if rest, ok := strings.CutPrefix(line, "- "); ok {
-			text, kind = rest, "bullet"
-		} else if rest, ok := strings.CutPrefix(line, "* "); ok {
-			text, kind = rest, "bullet"
-		} else if items > 0 {
+		case items > 0:
 			state = 2 // The list ended.
-			continue
-		} else {
+		default:
 			return 0
 		}
-		if state == 2 {
-			return 0 // An item after the list ended is ambiguous.
-		}
-		if style != "" && style != kind {
-			return 0
-		}
-		style = kind
-		for _, box := range []string{"[ ] ", "[x] ", "[X] "} {
-			text = strings.TrimPrefix(text, box)
-		}
-		if strings.TrimSpace(text) == "" || items >= maxCriteria {
-			return 0
-		}
-		items++
 	}
 	return items
 }
+
+var (
+	// listItem is a top-level item with text: a number and "." or ")", or a
+	// bullet, then spaces or tabs.
+	listItem = regexp.MustCompile(`^(?:([0-9]{1,9})([.)])|([-*+]))[ \t]+(?:\[[ xX]\][ \t]+)?\S`)
+	// listMarker is anything Markdown could read as a list item, at any
+	// indent, including an empty one.
+	listMarker = regexp.MustCompile(`^[ \t]*(?:[0-9]{1,9}[.)]|[-*+])(?:[ \t]|$)`)
+)
 
 // goalKey is the issue a goal check judges the PR against, or "" when none
 // applies: only a trusted author's resolved issue with its full text.
