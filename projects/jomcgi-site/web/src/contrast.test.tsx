@@ -223,6 +223,11 @@ const ROLES: Record<string, Role> = {
   "--shadow-low": "shadow",
   "--shadow-med": "shadow",
   "--shadow-high": "shadow",
+  "--hikes-effort-0": "decorative",
+  "--hikes-effort-1": "decorative",
+  "--hikes-effort-2": "decorative",
+  "--hikes-effort-3": "decorative",
+  "--hikes-effort-4": "decorative",
 };
 
 const palette = new Map(

@@ -6,6 +6,20 @@ const headers = readFileSync("public/_headers", "utf8");
 const csp = headers.match(/Content-Security-Policy: (.+)/)?.[1] ?? "";
 
 describe("static hosting headers", () => {
+  it("allows the map host and workers, without data URLs in connect-src", () => {
+    expect(csp.match(/connect-src ([^;]+)/)?.[1]).toContain(
+      "https://tiles.openfreemap.org",
+    );
+    expect(csp.match(/img-src ([^;]+)/)?.[1]).toContain(
+      "https://tiles.openfreemap.org",
+    );
+    expect(csp.match(/connect-src ([^;]+)/)?.[1]).not.toContain("data:");
+    expect(csp).toContain("worker-src 'self' blob:");
+    expect(headers).toContain("geolocation=(self)");
+    expect(readFileSync("public/_redirects", "utf8")).toContain(
+      "/app/hikes /hikes 301\n/app/hikes/* /hikes 301",
+    );
+  });
   it("sends a CSP without inline or eval exceptions", () => {
     expect(csp).toContain("default-src 'self'");
     expect(csp).toContain("frame-ancestors 'none'");

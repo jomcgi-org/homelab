@@ -70,6 +70,12 @@
   --shadow-low: none;
   --shadow-med: none;
   --shadow-high: none;
+  /* The hub's effort ramp. Marker size and a sheet stroke also encode effort. */
+  --hikes-effort-0: #15a34a;
+  --hikes-effort-1: #84c91e;
+  --hikes-effort-2: #ffcb1f;
+  --hikes-effort-3: #ff6a00;
+  --hikes-effort-4: #ff0019;
 }
 
 html,

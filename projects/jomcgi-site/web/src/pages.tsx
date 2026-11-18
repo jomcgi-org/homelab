@@ -12,6 +12,7 @@ import { DocsIndexPage } from "./docs-index-page";
 import { EngineeringPage } from "./engineering-page";
 import { CvPage } from "./cv-page";
 import { HomePage } from "./home-page";
+import { HikesPage } from "./hikes-page";
 import { NotFoundPage } from "./not-found-page";
 import { FactoryPage } from "./factory-page";
 
@@ -38,4 +39,5 @@ export const PAGES: Record<string, () => React.JSX.Element> = {
   "docs.html": DocsIndexPage,
   ...DOC_PAGES,
   "engineering.html": EngineeringPage,
+  "hikes.html": HikesPage,
 };

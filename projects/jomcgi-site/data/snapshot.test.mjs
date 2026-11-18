@@ -135,13 +135,19 @@ test("writes content-named files and a latest.json index per section", async () 
     return { body: Buffer.from(body), lastModified };
   };
   const out = await mkdtemp(join(tmpdir(), "snapshot-"));
-  const log = await snapshot(SOURCES, get, out);
+  const log = await snapshot(
+    SOURCES,
+    get,
+    out,
+    new Date("2026-11-17T16:30:00Z"),
+  );
   assert.equal(log.length, 4);
 
   const stars = JSON.parse(
     await readFile(join(out, "stars", "latest.json"), "utf8"),
   );
   assert.equal(stars.asOf, "2026-11-17T15:07:04.000Z");
+  assert.equal(stars.generatedAt, "2026-11-17T16:30:00.000Z");
   const hash = createHash("sha256")
     .update('{"sites":1}')
     .digest("hex")
@@ -157,8 +163,18 @@ test("writes content-named files and a latest.json index per section", async () 
     await readFile(join(out, "hikes", "latest.json"), "utf8"),
   );
   assert.equal(hikes.asOf, "2026-11-17T16:20:41.000Z");
+  assert.equal(hikes.generatedAt, stars.generatedAt);
   assert.deepEqual(Object.keys(hikes.files), ["walks"]);
   assert.deepEqual((await readdir(join(out, "hikes", "v"))).length, 1);
+  // A successful site refresh advances its own clock, even when the forecast
+  // producer has not published another object. Keep the source age and hash.
+  await snapshot(SOURCES, get, out, new Date("2026-11-17T17:00:00Z"));
+  const refreshed = JSON.parse(
+    await readFile(join(out, "hikes", "latest.json"), "utf8"),
+  );
+  assert.equal(refreshed.generatedAt, "2026-11-17T17:00:00.000Z");
+  assert.equal(refreshed.asOf, hikes.asOf);
+  assert.deepEqual(refreshed.files, hikes.files);
 });
 
 test("a failed object read fails the snapshot", async () => {
