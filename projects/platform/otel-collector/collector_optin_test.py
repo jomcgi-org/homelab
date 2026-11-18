@@ -473,8 +473,8 @@ def test_gke_renders_live_argocd_target_with_pinned_ca():
             "tls": {"ca_file": ARGOCD_CA_MOUNT_PATH},
         },
     ]
-    assert "insecure" not in receiver["targets"][2]["tls"]
-    assert "insecure_skip_verify" not in receiver["targets"][2]["tls"]
+    assert "insecure" not in receiver["targets"][-1]["tls"]
+    assert "insecure_skip_verify" not in receiver["targets"][-1]["tls"]
     assert config["service"]["pipelines"]["metrics"]["receivers"] == [
         "http_check",
         "otlp",
