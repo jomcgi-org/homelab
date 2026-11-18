@@ -134,10 +134,12 @@ func TestApplyGoalOwnsGoalFindings(t *testing.T) {
 		blocking[b.ID] = b.Severity
 	}
 	// Criterion 3 is reported again as after_rollout and takes its low
-	// severity (HOME-179). HOME-57's blocker stays: a goal check of HOME-58
-	// does not resolve it.
-	if len(blocking) != 2 || blocking["HOME-58:goal:criterion-2"] != SeverityMedium || blocking["HOME-57:goal"] != SeverityHigh {
+	// severity (HOME-179).
+	if len(blocking) != 1 || blocking["HOME-58:goal:criterion-2"] != SeverityMedium {
 		t.Fatalf("blocking = %v", blocking)
+	}
+	if len(a.Withdrawn) != 1 || a.Withdrawn[0].ID != "HOME-57:goal" {
+		t.Fatalf("withdrawn = %+v", a.Withdrawn)
 	}
 	if !slices.ContainsFunc(a.Optional, func(f Finding) bool { return f.ID == "HOME-58:goal:criterion-3" && f.Severity == SeverityLow }) {
 		t.Fatalf("optional = %+v", a.Optional)
