@@ -10,9 +10,9 @@ See the [factory library bucket example](../projects/shared/helm/factory-library
 Hash the exact bytes of each payload and include the digest in its object key,
 for example `stars/sites-<sha256>.json`. Upload every payload with
 `Cache-Control: public, max-age=31536000, immutable`. After every upload
-succeeds, write the bucketx27s root `latest.json` last with the keys for that
+succeeds, write the bucket's root `latest.json` last with the keys for that
 complete generation and `Cache-Control: public, max-age=60`. Give each
-independent writer its own bucket so publishers cannot overwrite each otherx27s index.
+independent writer its own bucket so publishers cannot overwrite each other's index.
 
 The [mirror template](../projects/shared/helm/factory-library/chart/templates/_mirror.tpl)
 excludes exactly `/latest.json` from the immutable payload transfer and
@@ -22,14 +22,17 @@ by cached manifests. If a referenced object is temporarily unavailable, retry
 and keep serving the last complete snapshot. Verify the bytes and both cache
 policies at the public endpoint before switching readers.
 
-## Hub inventory and port issue drafts (HOME-258)
+## Hub inventory and port issues (HOME-258)
 
 The [deploy source list](../projects/jomcgi-site/data/sources.json) names the
 current Stars and Hikes keys. The [hub chart](../projects/monolith/chart/values.yaml)
 defines the schedules below (UTC). Each port must compare CPU-seconds and
-peak resident memory against the Python job on the same inputs.
+peak resident memory against the Python job on the same inputs. Each port is
+filed under [HOME-178](https://factory-plan.jomcgi.dev/factory/issue/HOME-178) with the Done when criteria below.
 
 ### Port Stars forecast publication to the factory cluster
+
+Tracked in [HOME-399](https://factory-plan.jomcgi.dev/factory/issue/HOME-399).
 
 The Python `stars-refresh` job runs at `0 */3 * * *`. It scores met.no hours
 for the light-pollution site grid, persists site hours and reads the database
@@ -47,6 +50,8 @@ Done when
 
 ### Port Hikes walk and forecast publication to the factory cluster
 
+Tracked in [HOME-400](https://factory-plan.jomcgi.dev/factory/issue/HOME-400).
+
 The Python `hikes-scrape-walks` job is manual (suspended schedule). It upserts
 WalkHighlands routes and trailheads. At `20 */2 * * *`, `hikes-refresh-forecasts`
 combines those walks with met.no forecasts, stores hourly windows and publishes
@@ -61,6 +66,8 @@ Done when
 3. Compare CPU and memory on the same walk corpus, switch readers and retire the hub schedules.
 
 ### Port Trips ingestion and public data publication to the factory cluster
+
+Tracked in [HOME-401](https://factory-plan.jomcgi.dev/factory/issue/HOME-401).
 
 The Python FastAPI service handles each authenticated `POST /api/trips/ingest`
 as it arrives. It reads a multipart image, trip slug, source and tags, validates
