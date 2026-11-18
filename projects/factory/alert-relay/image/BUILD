@@ -1,6 +1,7 @@
 # gazelle:ignore
 load("@aspect_bazel_lib//lib:tar.bzl", "tar")
 load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
 platform_transition_filegroup(
@@ -25,4 +26,9 @@ apko_image(
     tars = [
         ":alert_relay_tar_amd64",
     ],
+)
+
+build_test(
+    name = "image_build_test",
+    targets = [":image"],
 )
