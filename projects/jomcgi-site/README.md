@@ -271,7 +271,7 @@ them after promotion.
 
 CI runs `home-browser.mjs` as `:home_browser_test`: Chromium from
 `@sparticuz/chromium` loads the `:build` output with the production CSP.
-Locally, run `pnpm build`, then `pnpm test:browser` in `web/`.
+In `web/`, run `pnpm build`, then `pnpm test:browser` for home and leaderboard.
 
 ## Deploy
 
