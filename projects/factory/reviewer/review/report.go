@@ -57,13 +57,14 @@ type Report struct {
 // Finding is one review finding with an ID that stays stable across
 // rounds: `<path>:<rule>` (REVIEW.md "Report").
 type Finding struct {
-	ID       string `json:"id"`
-	Severity string `json:"severity"`
-	Path     string `json:"path,omitempty"`
-	Line     int    `json:"line,omitempty"`
-	Title    string `json:"title"`
-	Detail   string `json:"detail,omitempty"`
-	Defer    bool   `json:"defer,omitempty"`
+	GoalOrigin *goalOrigin `json:"goal_origin,omitempty"`
+	ID         string      `json:"id"`
+	Severity   string      `json:"severity"`
+	Path       string      `json:"path,omitempty"`
+	Line       int         `json:"line,omitempty"`
+	Title      string      `json:"title"`
+	Detail     string      `json:"detail,omitempty"`
+	Defer      bool        `json:"defer,omitempty"`
 	// Earlier is the agent's statement that a new finding on a later head
 	// is on code an earlier review covered and this head left alone (Scope).
 	// Left out, the finding keeps its severity.
@@ -236,6 +237,7 @@ func ParseReport(reply string) (*Report, error) {
 	}
 	for i := range r.Findings {
 		f := &r.Findings[i]
+		f.GoalOrigin = nil
 		f.Severity = strings.ToLower(strings.TrimSpace(f.Severity))
 		if rank(f.Severity) == len(Severities) {
 			return nil, fmt.Errorf("finding %d has a severity that is not one of %s", i+1, strings.Join(Severities, ", "))

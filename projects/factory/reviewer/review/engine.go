@@ -1927,7 +1927,7 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		// none of them is ever lowered.
 		applyIssueFindings(r, in.issues)
 		if b.ItsaplanProject != "" {
-			previous, err := e.recoverGoalCriteria(ctx, in.issues, in.prior.Goal, in.goal)
+			previous, err := e.priorGoalCriteria(ctx, in.issues, prior, in.prior.Goal, in.goal)
 			if err != nil {
 				return result{reason: "The original issue revision could not be read. The service will retry."}
 			}

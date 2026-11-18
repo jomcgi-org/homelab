@@ -154,7 +154,7 @@ func goalFindings(key string, g *GoalCheck) []Finding {
 // findings for the issue key, if any. An earlier goal finding stays open
 // until a valid answer resolves it (goalResolved); Assess keeps its earlier
 // severity.
-func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck, previous *GoalCheck) {
+func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck, previous map[string]*GoalCheck) {
 	ns := regexp.MustCompile(`^` + regexp.QuoteMeta(project) + `-[1-9][0-9]*:goal(:|$)`)
 	r.Findings = slices.DeleteFunc(r.Findings, func(f Finding) bool { return ns.MatchString(f.ID) })
 	r.Previous = slices.DeleteFunc(r.Previous, func(p Previous) bool { return ns.MatchString(p.ID) })
@@ -168,7 +168,7 @@ func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck, pr
 			continue
 		}
 		account := Previous{ID: p.ID, Status: StatusOpen, Note: "No valid goal check answer resolves it."}
-		if note := goalResolved(p.ID, key, g, previous); note != "" {
+		if note := goalResolved(p.ID, key, g, previous[p.ID]); note != "" {
 			account.Status, account.Note = StatusFixed, note
 		}
 		r.Previous = append(r.Previous, account)
@@ -212,6 +212,45 @@ func issueCriterionIDs(in *IssueContext, key []byte) []string {
 	return ids
 }
 
+// goalOrigin keeps a legacy criterion's evidence reference on the carried
+// finding even after a shorter answer replaces State.Goal.
+type goalOrigin struct {
+	Digest string `json:"digest"`
+	Count  int    `json:"count"`
+}
+
+func (e *Engine) priorGoalCriteria(ctx context.Context, in *IssueContext, prior []Finding, previous, current *GoalCheck) (map[string]*GoalCheck, error) {
+	result := make(map[string]*GoalCheck)
+	cache := make(map[goalOrigin]*GoalCheck)
+	for i := range prior {
+		f := &prior[i]
+		if !strings.HasPrefix(f.ID, goalKey(in)+":goal:criterion-") {
+			continue
+		}
+		if f.GoalOrigin == nil {
+			result[f.ID] = previous
+			if previous == nil || len(previous.CriterionIDs) != 0 || previous.Digest == "" {
+				continue
+			}
+			f.GoalOrigin = &goalOrigin{Digest: previous.Digest, Count: len(previous.Criteria)}
+		}
+		ref := *f.GoalOrigin
+		if ref.Count < 1 || ref.Count > maxCriteria {
+			continue
+		}
+		if _, ok := cache[ref]; !ok {
+			legacy := &GoalCheck{Digest: ref.Digest, Criteria: make([]GoalVerdict, ref.Count)}
+			recovered, err := e.recoverGoalCriteria(ctx, in, legacy, current)
+			if err != nil {
+				return nil, err
+			}
+			cache[ref] = recovered
+		}
+		result[f.ID] = cache[ref]
+	}
+	return result, nil
+}
+
 // recoverGoalCriteria authenticates historical text against the exact evidence
 // MAC saved by a reviewer that predates criterion IDs.
 func (e *Engine) recoverGoalCriteria(ctx context.Context, in *IssueContext, previous, current *GoalCheck) (*GoalCheck, error) {
@@ -238,11 +277,14 @@ func (e *Engine) recoverGoalCriteria(ctx context.Context, in *IssueContext, prev
 			return false
 		}
 		issue.Description = description
-		if evidenceDigest(&snapshot, key) != previous.Digest {
-			return false
+		for _, status := range append(slices.Clone(in.statusNames), in.Issue.Status) {
+			issue.Status = status
+			if evidenceDigest(&snapshot, key) == previous.Digest {
+				recovered.CriterionIDs = issueCriterionIDs(&snapshot, key)
+				return true
+			}
 		}
-		recovered.CriterionIDs = issueCriterionIDs(&snapshot, key)
-		return true
+		return false
 	})
 	return &recovered, err
 }

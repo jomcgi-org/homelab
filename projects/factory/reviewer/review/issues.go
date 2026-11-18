@@ -48,9 +48,10 @@ type DecisionEvidence struct {
 }
 
 type IssueContext struct {
-	issueID   int64 // Private history lookup; excluded from the evidence digest.
-	Issue     *IssueEvidence
-	Decisions []DecisionEvidence
+	statusNames []string // Candidate historical statuses, authenticated by the saved evidence MAC.
+	issueID     int64    // Private history lookup; excluded from the evidence digest.
+	Issue       *IssueEvidence
+	Decisions   []DecisionEvidence
 	// Findings are evidence failures that another read cannot fix, such as
 	// text over its bound or a reference to no issue. The review goes ahead
 	// and reports each one, so the author sees what to change.
@@ -373,6 +374,9 @@ func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullReq
 			if status == "" {
 				in.unread("status", "The issue's workflow status could not be resolved. Restore the project read; no issue text was supplied.")
 				break
+			}
+			for _, column := range p.Columns {
+				in.statusNames = append(in.statusNames, boundedIssueText(column.Name, 100))
 			}
 			in.issueID = goal.ID
 			in.Issue = &IssueEvidence{

@@ -198,7 +198,7 @@ func TestApplyGoalKeepsEarlierBlockersUntilResolved(t *testing.T) {
 				tc.g.CriterionIDs = ids
 			}
 			previous := &GoalCheck{CriterionIDs: ids, Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}}}
-			applyGoal(r, prior, "HOME", tc.key, tc.g, previous)
+			applyGoal(r, prior, "HOME", tc.key, tc.g, map[string]*GoalCheck{"HOME-58:goal:criterion-2": previous})
 			a := Assess(r, prior)
 			var blocking, fixed []string
 			for _, b := range a.Blocking {
@@ -228,18 +228,38 @@ func TestLegacyGoalRecoversOriginalDescription(t *testing.T) {
 		t.Fatal(err)
 	}
 	issue := &IssueContext{Issue: &IssueEvidence{Key: "HOME-58", Description: "Done when:\n1. First\n2. Second"}}
+	issue.Issue.Status = "Todo"
 	legacy := &GoalCheck{Digest: evidenceDigest(issue, key), Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}}}
+	issue.Issue.Status = "In Progress"
+	issue.statusNames = []string{"Todo", "In Progress"}
 	original := issue.Issue.Description
 	issue.Issue.Description = "Done when:\n1. First"
 	current := &GoalCheck{Criteria: []GoalVerdict{{1, goalMet}}, CriterionIDs: issueCriterionIDs(issue, key)}
 	api.descriptions = []string{original + " edited"}
+	const id = "HOME-58:goal:criterion-2"
+	prior := []Finding{{ID: id, Severity: SeverityMedium}}
 	for _, want := range []string{"", criterionRemoved} {
-		previous, err := e.recoverGoalCriteria(t.Context(), issue, legacy, current)
+		previous, err := e.priorGoalCriteria(t.Context(), issue, prior, legacy, current)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := goalResolved("HOME-58:goal:criterion-2", "HOME-58", current, previous); got != want {
+		if got := goalResolved(id, "HOME-58", current, previous[id]); got != want {
 			t.Fatalf("resolution = %q, want %q", got, want)
+		}
+		if want == "" {
+			report := &Report{}
+			applyGoal(report, prior, "HOME", "HOME-58", current, previous)
+			state := stateOf(Assess(report, prior), report, nil)
+			state.Goal = current
+			data, err := json.Marshal(state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var next State
+			if err := json.Unmarshal(data, &next); err != nil {
+				t.Fatal(err)
+			}
+			prior, legacy = next.Previous(), next.Goal
 		}
 		api.descriptions = append(api.descriptions, original)
 	}
@@ -263,7 +283,11 @@ func TestGoalRestatedFromSixteenCriteriaToSeven(t *testing.T) {
 	earlier.CriterionIDs = issueCriterionIDs(issue, []byte("test"))
 	prior := goalFindings(key, &earlier)
 	r := &Report{}
-	applyGoal(r, prior, "HOME", key, &current, &earlier)
+	previous := make(map[string]*GoalCheck)
+	for _, f := range prior {
+		previous[f.ID] = &earlier
+	}
+	applyGoal(r, prior, "HOME", key, &current, previous)
 	a := Assess(r, prior)
 	if len(a.Fixed) != 16 || len(a.Blocking) != 0 {
 		t.Fatalf("assessment = %+v", a)
