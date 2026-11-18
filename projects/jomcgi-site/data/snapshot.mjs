@@ -70,7 +70,13 @@ export function r2Getter(endpoint, credentials, fetchImpl = fetch) {
 }
 
 /** Writes every section's files and latest.json under `out`. Returns the log. */
-export async function snapshot(sources, get, out, now = new Date(), fetchImpl = fetch) {
+export async function snapshot(
+  sources,
+  get,
+  out,
+  now = new Date(),
+  fetchImpl = fetch,
+) {
   const log = [];
   for (const [section, { bucket, files }] of Object.entries(sources.sections)) {
     // A successful snapshot can contain unchanged source objects. Keep its

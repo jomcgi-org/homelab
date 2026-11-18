@@ -136,7 +136,7 @@ test("writes content-named files and a latest.json index per section", async () 
   };
   const out = await mkdtemp(join(tmpdir(), "snapshot-"));
   const log = await snapshot(
-    {sections: SOURCES.sections},
+    { sections: SOURCES.sections },
     get,
     out,
     new Date("2026-11-17T16:30:00Z"),
@@ -240,7 +240,10 @@ test("public manifest copies verified objects and fails on a missing object", as
     manifest,
   );
   missing = true;
-  await assert.rejects(snapshot(sources, null, out, undefined, fetchImpl), /404/);
+  await assert.rejects(
+    snapshot(sources, null, out, undefined, fetchImpl),
+    /404/,
+  );
 });
 
 test("rejects a manifest without generatedAt before reading any object", async () => {
@@ -257,6 +260,7 @@ test("rejects a manifest without generatedAt before reading any object", async (
       { sections: {}, httpsManifests: { factory: url } },
       null,
       await mkdtemp(join(tmpdir(), "snapshot-")),
+      undefined,
       async (location) => {
         assert.equal(location, url);
         return Response.json(manifest);
