@@ -305,3 +305,47 @@ def test_factory_edge_and_argocd_callback_hosts():
             "url": "https://factory-argocd.jomcgi.dev/auth/callback",
         }
     ]
+
+
+def test_factory_explore_sign_in():
+    blueprint = (
+        pathlib.Path(__file__).parent / "factory-blueprints/factory-explore.yaml"
+    )
+    entries = yaml.load(blueprint.read_text(), Loader=yaml.BaseLoader)["entries"]
+    assert all(
+        entry["model"] != "authentik_policies.policybinding" for entry in entries
+    )
+    (provider,) = (
+        e for e in entries if e["model"] == "authentik_providers_oauth2.oauth2provider"
+    )
+    (app,) = (e for e in entries if e["model"] == "authentik_core.application")
+    assert app["identifiers"]["slug"] == "factory-explore"
+    assert app["attrs"]["name"] == "Factory explorer"
+    assert app["attrs"]["provider"] == provider["id"]
+    attrs = provider["attrs"]
+    assert attrs["client_type"] == "public"
+    assert attrs["client_id"] == "factory-explore"
+    assert attrs["access_token_validity"] == "minutes=10"
+    assert attrs["include_claims_in_id_token"] == "true"
+    assert attrs["grant_types"] == ["authorization_code"]
+    assert attrs["property_mappings"] == [
+        [
+            "authentik_providers_oauth2.scopemapping",
+            ["managed", f"goauthentik.io/providers/oauth2/scope-{scope}"],
+        ]
+        for scope in ("openid", "profile")
+    ]
+    assert attrs["redirect_uris"] == [
+        {
+            "matching_mode": "strict",
+            "url": "https://factory-explore.jomcgi.dev/oidc/callback",
+        }
+    ]
+    assert attrs["authorization_flow"] == [
+        "authentik_flows.flow",
+        ["slug", "default-provider-authorization-implicit-consent"],
+    ]
+    assert attrs["signing_key"] == [
+        "authentik_crypto.certificatekeypair",
+        ["name", "authentik Self-signed Certificate"],
+    ]
