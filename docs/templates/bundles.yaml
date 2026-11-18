@@ -1,0 +1,62 @@
+# Document bundles: the documents each kind of directory needs.
+# docs/writing.md "Document bundles" explains the rules. The CI check from
+# HOME-269 reads this file, so a rule changes here and nowhere else.
+# A directory takes every kind whose `match` fits it.
+
+kinds:
+  project:
+    match: every directory projects/<name>/
+    requires:
+      - file: README.md
+        template: docs/templates/README.md
+
+  service:
+    match: a project that has chart/
+    requires:
+      - one_of:
+          - file: ARCHITECTURE.md
+            template: docs/templates/ARCHITECTURE.md
+          # A tier of another service, such as monolith-public.
+          - readme_links: projects/<other>/ARCHITECTURE.md
+
+  collection:
+    # One sub-directory for each ArgoCD Application. No file in each one.
+    match:
+      - projects/platform
+      - projects/platform-factory
+      - projects/platform-gke
+      - projects/gke-apps
+    requires:
+      - each_subdir_named_in: README.md
+
+  component:
+    match: a sub-directory of a service that holds source code
+    exclude: [chart, deploy, tests, testdata, dev]
+    requires:
+      - named_in: ../ARCHITECTURE.md # a row of the component table
+
+# A directory may add these. The check validates each one that exists.
+optional:
+  - file: AGENTS.md
+  - file: REVIEW.md
+  - file: STPA.md
+  - file: ARCHITECTURE.md # in a component; the parent's summary links it
+    requires:
+      - linked_from: ../ARCHITECTURE.md
+
+# No other document type. An upper-case *.md name outside this list fails.
+allowed_names:
+  - README.md
+  - ARCHITECTURE.md
+  - AGENTS.md
+  - REVIEW.md
+  - STPA.md
+
+format:
+  ARCHITECTURE.md:
+    - a mermaid block before the first "## " heading
+    - a "## Direction" heading
+    - 600 lines or fewer
+    - no line that starts with "Status (" or "**Status ("
+  README.md:
+    - links ARCHITECTURE.md when the same directory has one
