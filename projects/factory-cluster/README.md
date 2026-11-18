@@ -241,6 +241,13 @@ garage-init leaves both sides as they are. Delete the Garage key
 the Kubernetes Secret's credentials. To get a new key instead, empty the
 Secret's data.
 
+garage-init never changes an existing layout. If a Garage pod loses its
+metadata volume, it comes back with a new node ID, and garage-init logs
+`WARNING: nodes without a role`. Replace the node from a Garage pod to get
+three-way replication back: `garage layout assign` the new node ID with the
+old node's zone and capacity, `garage layout remove` the old ID, then
+`garage layout apply` the next version.
+
 ## Postgres
 
 If `kagent-postgres-owner` or `kagent-postgres-readwrite` in the `kagent`
@@ -646,12 +653,12 @@ in its security settings.
 
 The connector ([architecture](../factory/connector/ARCHITECTURE.md)) runs as
 `factory/factory-connector` once the deploy values set `connector.enabled`.
-Until itsaplan's bootstrap has written the agents' keys it reports ready and
-logs `waiting for itsaplan API keys`. Turning it on also
-sets `kagent.config.server.auth.serviceAccount.authority`; never change that
-value afterwards, since kagent identifies the connector by it and a changed
-principal loses every session. Delivery (pull requests, review rounds and the
-merge queue) starts with `broker.githubApp.enabled`.
+Until itsaplan's bootstrap has written the agents' keys, it reports ready and
+logs `waiting for itsaplan API keys`. Turning it on also sets
+`kagent.config.server.auth.serviceAccount.authority`. Never change that value
+afterwards: kagent identifies the connector by it, and a changed principal
+loses every session. Delivery (pull requests, review rounds and the merge
+queue) starts with `broker.githubApp.enabled`.
 
 Operators stop delivery for an issue, or clear a credential or quota block
 after fixing the grant, from the connector's own pod:
