@@ -42,11 +42,26 @@ def test_public_consumer():
     claims = [d for d in docs if d["kind"] == "ConfigMap"]
     assert {c["metadata"]["namespace"] for c in claims} == {"garage"}
     assert {
-        (c["data"]["namespace"], c["data"]["secretName"], c["data"]["bucket"], c["data"]["access"])
+        (
+            c["data"]["namespace"],
+            c["data"]["secretName"],
+            c["data"]["bucket"],
+            c["data"]["access"],
+        )
         for c in claims
     } == {
-        ("factory-public", "factory-public-factory-public-s3", "factory-public", "read"),
-        ("factory-public", "factory-public-factory-public-mirror-s3", "factory-public", "read"),
+        (
+            "factory-public",
+            "factory-public-factory-public-s3",
+            "factory-public",
+            "read",
+        ),
+        (
+            "factory-public",
+            "factory-public-factory-public-mirror-s3",
+            "factory-public",
+            "read",
+        ),
     }
     # Only the mirror's ServiceAccount may mount the R2 Secret: one denying
     # policy each for Pods, Jobs and CronJobs, each with its binding.
