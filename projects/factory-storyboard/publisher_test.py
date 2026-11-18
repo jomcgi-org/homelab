@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
+import os
+from pathlib import Path
 from unittest.mock import Mock
 
 from publisher import public_issue, public_turn, publish
@@ -42,3 +44,16 @@ def test_commit_and_retention():
     assert manifest["Key"] == "manifest.json"
     assert json.loads(manifest["Body"])["story"] == obj["Key"]
     s3.delete_object.assert_called_once_with(Bucket="factory-public", Key=old)
+
+
+def test_real_gitleaks_hit_withholds_entire_turn(monkeypatch):
+    binary = os.environ.get("GITLEAKS_BIN")
+    if binary:
+        monkeypatch.setenv(
+            "PATH", str(Path(binary).resolve().parent) + os.pathsep + os.environ["PATH"]
+        )
+    header = dict(number=1, at="2026-11-18T09:00:00Z", role="assistant")
+    turn = dict(header, completed=True, text="sample output", toolCalls=[], diff="")
+    assert public_turn(turn, [])["withheld"] is False
+    turn["diff"] = "ghp_" + "6rQ0cV2qN5mHt8ZkFx9AbR3WgY4DuL7PjE1s"
+    assert public_turn(turn, []) == dict(header, withheld=True)

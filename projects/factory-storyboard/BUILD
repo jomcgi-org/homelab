@@ -8,7 +8,10 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 js_library(
     name = "web_schema",
     srcs = glob(["schema/**"]),
-    visibility = ["//projects/jomcgi-site/web:__pkg__"],
+    visibility = [
+        "//projects/jomcgi-site/data:__pkg__",
+        "//projects/jomcgi-site/web:__pkg__",
+    ],
 )
 
 js_library(
@@ -64,5 +67,7 @@ py_test(
         "publisher.py",
         "publisher_test.py",
     ],
+    data = ["@gitleaks_linux_amd64//:gitleaks"],
+    env = {"GITLEAKS_BIN": "$(location @gitleaks_linux_amd64//:gitleaks)"},
     deps = ["@pip//pytest"],
 )

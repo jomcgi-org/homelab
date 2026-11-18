@@ -213,11 +213,12 @@ test("r2Getter signs each request and returns the body and Last-Modified", async
 });
 
 test("public manifest copies verified objects and fails on a missing object", async () => {
-  const url = SOURCES.httpsManifests.factory;
+  const url = "https://factory-data.jomcgi.dev/manifest.json";
   const sources = { sections: {}, httpsManifests: { factory: url } };
   const object = '{"kind":"story"}';
   const path = `objects/${createHash("sha256").update(object).digest("hex")}.json`;
   const manifest = JSON.stringify({
+    generatedAt: "2026-11-18T09:00:00Z",
     version: 1,
     story: path,
     goals: {},
@@ -240,4 +241,27 @@ test("public manifest copies verified objects and fails on a missing object", as
   );
   missing = true;
   await assert.rejects(snapshot(sources, null, out, undefined, fetchImpl), /404/);
+});
+
+test("rejects a manifest without generatedAt before reading any object", async () => {
+  const url = "https://factory-data.jomcgi.dev/manifest.json";
+  const manifest = {
+    version: 1,
+    story: `objects/${"a".repeat(64)}.json`,
+    goals: {},
+    issues: {},
+    sessions: {},
+  };
+  await assert.rejects(
+    snapshot(
+      { sections: {}, httpsManifests: { factory: url } },
+      null,
+      await mkdtemp(join(tmpdir(), "snapshot-")),
+      async (location) => {
+        assert.equal(location, url);
+        return Response.json(manifest);
+      },
+    ),
+    /Invalid storyboard manifest/,
+  );
 });

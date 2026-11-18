@@ -7,6 +7,7 @@
 // main.mjs runs it; this module only exports, so tests import it safely.
 import { createHash, createHmac } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { validate } from "../../factory-storyboard/schema/validate.ts";
 import { join } from "node:path";
 
 import { makeSummary, stampSummary } from "./stars-summary.mjs";
@@ -141,7 +142,8 @@ export async function snapshot(sources, get, out, now = new Date(), fetchImpl = 
     };
     const body = await read(url);
     const manifest = JSON.parse(body);
-    if (manifest.version !== 1) throw new Error("Unsupported manifest version");
+    if (!validate("manifest", manifest))
+      throw new Error("Invalid storyboard manifest");
     const paths = new Set([manifest.story]);
     for (const refs of [manifest.goals, manifest.issues, manifest.sessions]) {
       if (!refs || typeof refs !== "object" || Array.isArray(refs))
