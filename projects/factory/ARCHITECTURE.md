@@ -1887,10 +1887,28 @@ page removes its access. The edge's sign-in and route stay unchanged.
 
 ### Authentication
 
+The factory edge checks operator membership on every protected browser request.
+The gateway-wide SecurityPolicy covers the landing page, Argo CD, itsaplan and
+Grafana. The kagent HTTPRoute has its own SecurityPolicy because it also forwards
+the access token. Both policies verify the ID token against the factory-edge
+issuer and audience and allow the request only when the token’s `groups` array
+contains `authentik Admins`, the group bound to the Authentik application.
+A signed-in user whose token lacks that membership receives HTTP 403 at Envoy.
+
+The HOME-291 integration test installs the production HTTPRoutes in kind with
+an echo service behind each route. Its issuer signs tokens for both an operator
+and an applicant so the gateway makes the authorization decision in both cases.
+For each of the five application hosts, the test completes the OAuth callback,
+sends the resulting session cookies on a fresh request to `/`, and requires the
+operator to receive HTTP 200 from the backend and the applicant to receive
+HTTP 403. The kagent backend must also receive the operator’s bearer token.
+[Session assertions](../platform-factory/edge/tests/oidc/session.py) ·
+[Route and backend setup](../platform-factory/edge/tests/oidc/run.sh)
+
 | Who | How |
 | --- | --- |
 | Humans to itsaplan | Edge OIDC, then itsaplan's own OIDC client `factory-itsaplan` in Authentik; invite-only registration; a break-glass admin with a generated password |
-| Humans to kagent | Edge OIDC with the access token forwarded; kagent in trusted-proxy mode. Sign-in alone grants nothing: the edge requires `authentik Admins` in the signed ID token’s `groups` claim, and kagent session ownership limits each user to their own sessions |
+| Humans to kagent | Edge OIDC forwards the access token to kagent in trusted-proxy mode. Session ownership limits each user to their own sessions |
 | Connector to kagent | Projected ServiceAccount token (audience `kagent-invocation`) of the kept ServiceAccount `factory/factory-connector`, reviewed by kagent with TokenReview; principal `kubernetes:<authority>` and the ServiceAccount UID (finding 15) |
 | Connector to itsaplan | A coordinator external agent for comments, human-gate issues, run lookups and moving merged issues to Done (`work_items` create, read and edit, `ai_agents read` in each bound project); the coding agent's key claims runs |
 | Connector and agents to GitHub | Broker-minted App tokens, one repository per binding. The connector fetches its token with a projected ServiceAccount token (audience `factory-broker`, subject in the broker's `connectorSubjects`) and caches it until 15 minutes before expiry; a GitHub 401 refetches once |
