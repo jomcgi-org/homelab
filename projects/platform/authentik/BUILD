@@ -192,5 +192,8 @@ py_test(
     name = "factory_group_binding_test",
     srcs = ["factory_group_binding_test.py"],
     data = glob(["factory-blueprints/*.yaml"]),
-    deps = ["@pip//pyyaml"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
