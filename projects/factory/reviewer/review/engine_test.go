@@ -1388,6 +1388,34 @@ func TestLostLegacyHistoryHoldsForJoesApproval(t *testing.T) {
 	}
 }
 
+// TestLostHistoryApprovalKeepsAnOverflowedReviewsBlockers: the full review
+// under a HistoryLost hold overflows its own state. The checkpoint keeps the
+// hold but not the blockers, and replay fails again on the expired legacy
+// task. Joe's approval accepts the lost history only, so the head still fails.
+func TestLostHistoryApprovalKeepsAnOverflowedReviewsBlockers(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	st := State{Blocking: numbered(40, "a.go:%d")}
+	delete(h.k.tasks, seedLegacyReport(t, h, shaA, Report{Summary: "Unavailable original", Findings: st.Blocking}, st, ConclusionFailure))
+	shaB := sha40('b')
+	h.gh.push(7, shaB)
+	seedLegacyReport(t, h, shaB, Report{Summary: "No findings", Findings: []Finding{}}, State{Blocking: []Finding{}}, ConclusionSuccess)
+	e, ctx, _ := h.start()
+	task := runReview(t, h, e, ctx, 7, shaB)
+	big := numbered(100, "a.go:correctness:"+strings.Repeat("shared", 80)+":%d")
+	h.k.finish(task, kagent.StateCompleted, report(t, Report{Summary: "Overflowing review", Findings: big}))
+	eventually(t, "the full review", func() bool { return h.gh.check(shaB).Status == "completed" })
+	e.Tick(ctx)
+	saved := mustState(t, h.gh.check(shaB).Text)
+	failIf(t, !saved.Incomplete || !saved.Overflow || saved.Gate == nil || !saved.Gate.HistoryLost || len(saved.Blocking) != 0, "the review did not overflow under the hold: %+v", saved)
+	h.gh.review(7, "jomcgi", "APPROVED", shaB, "")
+	for _, eng := range []*Engine{e, h.engine()} {
+		eng.Tick(ctx)
+		c := h.gh.check(shaB)
+		failIf(t, c.Conclusion != ConclusionFailure || !mustState(t, c.Text).Incomplete || len(h.gh.enqueues()) != 0, "approval of lost history passed an overflowed review: %s %q", c.Conclusion, c.Title)
+	}
+}
+
 // TestFailedHistoryReadRetriesWithoutFallback: a failed GitHub read is not
 // lost history. The gate stays closed and keeps the state incomplete, with
 // no hold for Joe and no full review. The next poll replays the report.

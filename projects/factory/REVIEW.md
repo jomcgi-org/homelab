@@ -103,12 +103,14 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   (expired task, lossy record), the head stays blocked with a human hold. A
   full review shows its findings, and carries every finding of each readable
   legacy record, but cannot clear the hold. Only Joe's approval of that head
-  after the hold appears accepts the blockers no review can account for.
-  Other ambiguous or missing records keep recovery blocked. A later run on a
-  head that keeps no state does not hide an earlier run's state. Failed
-  replacement checks retry on the next poll. A GitHub check-write outage can
-  leave old PR-head and merge-group passes usable; rollout must drain the
-  queue before replacing legacy checks (#8009).
+  after the hold appears accepts the blockers no review can account for. It
+  never accepts the findings of a review whose state overflowed; only a
+  replay of that review's task recovers them. Other ambiguous or missing
+  records keep recovery blocked. A later run on a head that keeps no state
+  does not hide an earlier run's state. Failed replacement checks retry on
+  the next poll. A GitHub check-write outage can leave old PR-head and
+  merge-group passes usable; rollout must drain the queue before replacing
+  legacy checks (#8009).
   Critical.
 - **Models.** A change to the model or Codex release of an agent that edits
   code shows that the model is in that release's bundled catalogue
