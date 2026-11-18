@@ -206,6 +206,11 @@ From the repository root, validate `renovate.json` with the deployed version:
 pnpm --package=renovate@44.14.10 dlx renovate-config-validator --no-global renovate.json
 ```
 
+HOME-279 validation on 2026-11-18 returned exit code 0 and
+`Config validated successfully against 1 file(s)` for the repository config
+with SHA-256 `9a4b11f4d38c862201cfcf1677bb3b9d210637eed4c37905b21c5265688a5d4f`.
+The validator used its RegExp fallback because RE2 was unavailable.
+
 `ci` is the local validation entry point. CI runs the Bazel targets
 `//projects/platform/renovate:dependency_policy_test`,
 `//projects/platform/renovate:factory_deployment_test` and
