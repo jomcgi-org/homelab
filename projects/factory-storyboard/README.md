@@ -99,3 +99,7 @@ HOME-213 publishes snapshots under the site's `/data/factory/` path. The site's
 stay outside that rewrite. The site keeps `style-src 'self'` and
 `frame-ancestors 'none'`. HOME-225 activates the production edge routes after
 data publication. This package has no image, chart, route or Worker deployment.
+
+After rollout, run `node projects/factory-storyboard/verify-rollout.mjs` with
+Node 22.18 or later. It checks the mirror's seven-minute freshness limit and
+reads every immutable object referenced by the preview site's manifest.
