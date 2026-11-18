@@ -312,9 +312,13 @@ def test_factory_explore_sign_in():
         pathlib.Path(__file__).parent / "factory-blueprints/factory-explore.yaml"
     )
     entries = yaml.load(blueprint.read_text(), Loader=yaml.BaseLoader)["entries"]
-    assert all(
-        entry["model"] != "authentik_policies.policybinding" for entry in entries
+    (group,) = (e for e in entries if e["model"] == "authentik_core.group")
+    assert group["identifiers"]["name"] == "factory-explorer-users"
+    assert group["attrs"]["is_superuser"] == "false"
+    (binding,) = (
+        e for e in entries if e["model"] == "authentik_policies.policybinding"
     )
+    assert binding["identifiers"]["group"] == group["id"]
     (provider,) = (
         e for e in entries if e["model"] == "authentik_providers_oauth2.oauth2provider"
     )
