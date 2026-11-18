@@ -2,3 +2,14 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - application.yaml
+# HOME-363: pin the deployed outgoing owner during CI's batched chart writeback.
+patches:
+  - target:
+      group: argoproj.io
+      version: v1alpha1
+      kind: Application
+      name: factory-landing
+    patch: |-
+      - op: replace
+        path: /spec/source/targetRevision
+        value: "0.17.59"

@@ -45,10 +45,11 @@ inline style elements or attributes, so no inline hashes or
 
 ## Transferring connector status ownership (HOME-363)
 
-The first release keeps both manifests and their reviewed content-rule exemptions
-in the landing chart. The landing Application holds automated sync during the
-transfer so self-heal cannot reclaim the objects. A batched pin writeback can
-advance either chart first because this landing release still renders both.
+The landing deploy Kustomization holds the deployed Application at 0.17.59,
+which still renders both resources. CI can publish the new landing chart and
+update application.yaml in the same writeback as the factory chart. The
+Kustomization overrides that pin until adoption is verified. Automated landing
+sync is paused so self-heal cannot reclaim the resources during the handoff.
 
 After software-factory syncs the new factory chart, inspect the live objects:
 
@@ -59,11 +60,10 @@ kubectl -n factory get service/factory-connector-status \
 
 On **both** objects, verify that the Argo CD tracking ID names software-factory
 and that the sync options include Prune=false. Verify the signed-in landing page
-loads /api/status. Only then merge a follow-up removing the landing templates,
-their values and exemptions, and moving their test assertions out of the landing
-chart. Keep landing auto-sync paused through that release's pin writeback.
-Once its pin references the chart without the objects, sync factory-landing,
-restore automated sync and verify /api/status again.
+loads /api/status. Once CI has written the new landing chart pin to application.yaml,
+remove the temporary targetRevision patch in deploy/kustomization.yaml and
+restore automated sync in deploy/application.yaml in the same follow-up.
+Verify /api/status again after factory-landing reconciles.
 
 For rollback, pause software-factory auto-sync first. Restore and sync the
 previous landing chart that renders both objects. Verify factory-landing owns
