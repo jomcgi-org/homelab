@@ -107,6 +107,7 @@ js_library(
         ":node_modules/vite",
         "//projects/factory-storyboard:web_schema",
         "//projects/jomcgi-site/data:hikes_freshness",
+        "//projects/jomcgi-site/data:stars_summary",
         "//projects/monolith/frontend:blog_sources",
         "//projects/monolith/frontend:leaderboard_sources",
         "//projects/monolith/frontend:public_site_inputs",
@@ -299,6 +300,36 @@ js_test(
         ":src",
     ],
     entry_point = "browser.test.mjs",
+)
+
+js_test(
+    name = "stars_built_test",
+    args = ["$(rootpath :build)"],
+    data = [
+        "budget.mjs",
+        ":build",
+        ":node_modules/axe-core",
+        ":node_modules/happy-dom",
+        "//projects/jomcgi-site/data:stars_summary",
+    ],
+    entry_point = "stars-built.mjs",
+)
+
+js_test(
+    name = "stars_browser_test",
+    size = "medium",
+    args = ["$(rootpath :build)"],
+    data = [
+        "budget.mjs",
+        "stars-built.mjs",
+        ":build",
+        ":node_modules/@sparticuz/chromium",
+        ":node_modules/axe-core",
+        ":node_modules/happy-dom",
+        ":node_modules/playwright",
+        "//projects/jomcgi-site/data:snapshot_inputs",
+    ],
+    entry_point = "stars-browser.mjs",
 )
 
 js_library(

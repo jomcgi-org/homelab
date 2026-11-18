@@ -4,3 +4,5 @@
 /app/llm-leaderboard/* /llm-leaderboard 301
 /app/hikes /hikes 301
 /app/hikes/* /hikes 301
+/app/stars /stars 301
+/app/stars/* /stars 301

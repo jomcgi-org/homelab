@@ -55,6 +55,7 @@ export default defineConfig({
         ),
         engineering: page("engineering.html"),
         hikes: page("hikes.html"),
+        stars: page("stars.html"),
       },
       onwarn(warning, warn) {
         if (warning.code !== "MODULE_LEVEL_DIRECTIVE") warn(warning);

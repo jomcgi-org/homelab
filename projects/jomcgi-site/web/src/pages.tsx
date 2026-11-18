@@ -10,6 +10,7 @@ import { LlmLeaderboardPage } from "./llm-leaderboard-page";
 import { DOC_PAGES } from "../docs/_src/pages";
 import { DocsIndexPage } from "./docs-index-page";
 import { EngineeringPage } from "./engineering-page";
+import { StarsPage } from "./stars-page";
 import { CvPage } from "./cv-page";
 import { HomePage } from "./home-page";
 import { HikesPage } from "./hikes-page";
@@ -40,4 +41,5 @@ export const PAGES: Record<string, () => React.JSX.Element> = {
   ...DOC_PAGES,
   "engineering.html": EngineeringPage,
   "hikes.html": HikesPage,
+  "stars.html": StarsPage,
 };
