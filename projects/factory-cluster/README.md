@@ -108,7 +108,8 @@ That shows one node; run it against each agent pod for the whole cluster.
 
 ## Dependency updates
 
-Verify the 1Password item `k8s-homelab/renovate-github` before triggering the suspended CronJob. Follow [Renovate operations](../platform/renovate/README.md) for the manual run and required checks.
+Follow [Renovate operations](../platform/renovate/README.md) for the current
+credential, the manual run and the required checks.
 
 ## factory.jomcgi.dev
 
@@ -236,8 +237,10 @@ KUBECONFIG=~/.kube/factory.yaml kubectl -n garage logs job/garage-bootstrap
 
 ## Postgres
 
-After the connection string in either `kagent-postgres-owner` or
-`kagent-postgres-readwrite` changes in the `kagent` namespace, use ArgoCD
+If `kagent-postgres-owner` or `kagent-postgres-readwrite` in the `kagent`
+namespace is recreated, it stays empty until you sync the `kagent-postgres`
+Application in ArgoCD: its PostSync Job `kagent-pg-setup` writes both
+connection strings again. After either connection string changes, use ArgoCD
 to restart the kagent controller Deployment. The controller reads both
 Secrets at startup. Admission policy denies a direct `kubectl rollout restart`.
 
