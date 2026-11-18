@@ -43,7 +43,7 @@ workloads still run on the GKE hub and move off it.
 | Factory and its platform | Factory home cluster | Unchanged | [factory-cluster](projects/factory-cluster/) |
 | Private apps (monolith, Grimoire, MCP gateway) | GKE hub | Factory home cluster. The hub scales to zero | [HOME-128](https://factory-plan.jomcgi.dev/factory/issue/HOME-128), [HOME-262](https://factory-plan.jomcgi.dev/factory/issue/HOME-262) |
 | Public site jomcgi.dev | Hub monolith, moving one section at a time | Static site on Cloudflare with its data on R2 | [HOME-178](https://factory-plan.jomcgi.dev/factory/issue/HOME-178) |
-| Deploy | ArgoCD from Git. Kargo promotes the hub pipelines | Kargo for every app. Verified Freight closes the HOME issue | [HOME-116](https://factory-plan.jomcgi.dev/factory/issue/HOME-116) |
+| Deploy | ArgoCD from Git. Kargo promotes the hub pipelines | Kargo for every app. Cilium, 1Password Connect, ArgoCD, cert-manager and Kargo stay on ArgoCD. Verified Freight closes the HOME issue | [HOME-116](https://factory-plan.jomcgi.dev/factory/issue/HOME-116) |
 | Pod-to-pod identity | Cilium network policy | SPIFFE workload identity | [HOME-254](https://factory-plan.jomcgi.dev/factory/issue/HOME-254) |
 | Model choice | One fixed model for each agent | Trial arms compared on production outcomes | [HOME-244](https://factory-plan.jomcgi.dev/factory/issue/HOME-244) |
 
@@ -82,7 +82,7 @@ See [docs/security.md](docs/security.md) for the security model and
 
 | Area | GKE hub | Factory home cluster |
 | --- | --- | --- |
-| Ingress | Cloudflare Tunnel to Envoy Gateway; Cloudflare Access on private routes | Cloudflare Tunnel to Envoy Gateway; Authentik sign-in on every route |
+| Ingress | Cloudflare Tunnel to Envoy Gateway; Cloudflare Access on private routes | Cloudflare Tunnel to Envoy Gateway; Authentik sign-in on every route except Authentik's own sign-in endpoints |
 | Network | GKE Dataplane V2 | Cilium: default-deny, egress allowlists by domain name, WireGuard |
 | Sandboxing | Firecracker microVMs (EmberVM, in removal) | gVisor workspaces from Agent Substrate |
 | Storage | GCE persistent disks, Cloudflare R2, GCS | Local disks; Garage and CloudNativePG keep three copies |
