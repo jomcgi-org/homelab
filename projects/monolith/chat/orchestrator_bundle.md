@@ -108,3 +108,4 @@ Top-level projects/ directories:
 - scotland-connector
 - sextant
 - shared
+- ships
