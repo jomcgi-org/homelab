@@ -166,6 +166,8 @@ def test_upstream_factory_contracts(tmp_path):
                     "CREATE DATABASE connector_test",
                     "-c",
                     "CREATE ROLE factory_broker_accounting",
+                    "-c",
+                    "CREATE ROLE factory_storyboard",
                 ],
                 cwd=upstream,
                 env=env,
