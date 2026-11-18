@@ -8,7 +8,22 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError as error:
+    # Cached developer bundles predating HOME-347 lack PyYAML.
+    if (
+        error.name == "yaml"
+        and __name__ == "__main__"
+        and sys.argv[1:] == ["--records-only"]
+    ):
+        print(
+            "ci lint: invariant validation deferred to required CI. "
+            "Run ./bootstrap.sh to install PyYAML for local checks.",
+            file=sys.stderr,
+        )
+        sys.exit(0)
+    raise
 
 TEMPLATE = Path("docs/templates/INVARIANTS.yaml")
 LABEL = re.compile(r"//[\w./+-]*:[\w./+-]+")

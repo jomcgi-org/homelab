@@ -124,3 +124,27 @@ def test_local_lint_and_required_ci(tmp_path, monkeypatch):
     path.write_text(yaml.safe_dump({"invariants": [ROW | {"state": "typo"}]}))
     with pytest.raises(ValueError, match="unknown state"):
         check(records_only=True)
+
+
+def test_cached_bundle_without_yaml(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import check_invariants
+
+    # Simulate an interpreter that cannot find the yaml package.
+    (tmp_path / "yaml.py").write_text(
+        "raise ModuleNotFoundError('missing yaml', name='yaml')"
+    )
+    command = [sys.executable, str(Path(check_invariants.__file__).resolve())]
+    env = dict(os.environ, PYTHONPATH=str(tmp_path))
+    local = subprocess.run(
+        [*command, "--records-only"], env=env, capture_output=True, text=True
+    )
+    assert local.returncode == 0
+    assert "./bootstrap.sh" in local.stderr
+    required = subprocess.run(command, env=env, capture_output=True, text=True)
+    assert required.returncode != 0
+    assert "ModuleNotFoundError" in required.stderr
