@@ -1949,6 +1949,8 @@ from reviewer App 5758326 alongside `pr-checks`.
   at its new observation. PR number breaks equal arrival times.
   This prevents later updates from repeatedly overtaking an untouched head
   ([HOME-220](https://factory-plan.jomcgi.dev/factory/issue/HOME-220)).
+  Cross-poll and fork-head ordering edge cases are deferred by
+  [Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-220#comment-4036).
   `TestWaitingHeadStartsBeforeUpdatedPRs` holds all three slots across three
   ticks of later PR updates and pushes, then checks that the oldest waiting
   head gets the first free slot. It also covers metadata changes on the
