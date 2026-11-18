@@ -41,8 +41,8 @@ workloads still run on the GKE hub and move off it.
 | Area | Today | Direction | Tracks |
 | --- | --- | --- | --- |
 | Factory and its platform | Factory home cluster | Unchanged | [factory-cluster](projects/factory-cluster/) |
-| Private apps (monolith, Grimoire, MCP gateway) | GKE hub | Factory home cluster. The hub scales to zero | [HOME-128](https://factory-plan.jomcgi.dev/factory/issue/HOME-128), [HOME-262](https://factory-plan.jomcgi.dev/factory/issue/HOME-262) |
-| Public site jomcgi.dev | Hub monolith, moving one section at a time | Static site on Cloudflare with its data on R2 | [HOME-178](https://factory-plan.jomcgi.dev/factory/issue/HOME-178) |
+| Private apps (monolith, Grimoire, MCP gateway) | GKE hub | Factory home cluster. The hub scales to zero | [HOME-128](https://factory-plan.jomcgi.dev/factory/issue/HOME-128), [HOME-262](https://factory-plan.jomcgi.dev/factory/issue/HOME-262), [decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-178#comment-2358) |
+| Public site jomcgi.dev | Hub monolith, moving one section at a time | Static site on Cloudflare with its data on R2 | [HOME-178](https://factory-plan.jomcgi.dev/factory/issue/HOME-178), [decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-178#comment-2358) |
 | Deploy | ArgoCD from Git. Kargo promotes the hub pipelines | Kargo for every app. Cilium, 1Password Connect, ArgoCD, cert-manager and Kargo stay on ArgoCD. Verified Freight closes the HOME issue | [HOME-116](https://factory-plan.jomcgi.dev/factory/issue/HOME-116) |
 | Pod-to-pod identity | Cilium network policy | SPIFFE workload identity | [HOME-254](https://factory-plan.jomcgi.dev/factory/issue/HOME-254) |
 | Model choice | One fixed model for each agent | Trial arms compared on production outcomes | [HOME-244](https://factory-plan.jomcgi.dev/factory/issue/HOME-244) |
