@@ -662,3 +662,8 @@ reviewer:
 
 # Model providers beyond the broker's relay.
 providers: {}
+
+semgrepSync:
+  enabled: false
+  # Set the slug when the token can read multiple Semgrep deployments.
+  deployment: ""
