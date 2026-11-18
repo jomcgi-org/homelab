@@ -1180,8 +1180,10 @@ func TestLaterHeadsBlockOnlyOnTheirChanges(t *testing.T) {
 	shaB := strings.Repeat("b", 40)
 	second := round(shaB, map[string]any{"summary": "s", "findings": []any{
 		map[string]any{"id": "a.go:correctness:tabs", "severity": "medium", "path": "a.go", "line": 9, "title": "Two tabs race", "earlier": true},
-		map[string]any{"id": "b.go:correctness", "severity": "medium", "path": "b.go", "title": "Caller drops the error",
-			"cause": "interdiff-bbbb.go now returns an error from Load, and this unchanged caller drops it."},
+		map[string]any{
+			"id": "b.go:correctness", "severity": "medium", "path": "b.go", "title": "Caller drops the error",
+			"cause": "interdiff-bbbb.go now returns an error from Load, and this unchanged caller drops it.",
+		},
 		map[string]any{"id": "b.go:validation", "severity": "medium", "path": "b.go", "title": "Old helper has no test"},
 		map[string]any{"id": "interdiff-bbbb.go:validation", "severity": "medium", "path": "interdiff-bbbb.go", "title": "No regression test"},
 		map[string]any{"id": "c.go:security", "severity": "critical", "path": "c.go", "title": "Token logged"},
@@ -1189,8 +1191,10 @@ func TestLaterHeadsBlockOnlyOnTheirChanges(t *testing.T) {
 		map[string]any{"id": "a.go:correctness", "status": "fixed", "note": "The newest draft now wins."},
 	}})
 	prompt := h.k.sent()[len(h.k.sent())-1].Parts[0].Text
-	for _, want := range []string{"On code the earlier review covered and this head left alone", "Give every new blocking finding a \"cause\"",
-		"its cause names no changed file", "- cause: for each finding", "- earlier: true for a new finding"} {
+	for _, want := range []string{
+		"On code the earlier review covered and this head left alone", "Give every new blocking finding a \"cause\"",
+		"its cause names no changed file", "- cause: for each finding", "- earlier: true for a new finding",
+	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("the second prompt lacks %q", want)
 		}
