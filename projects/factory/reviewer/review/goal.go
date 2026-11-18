@@ -311,10 +311,22 @@ func goalResolved(id, key string, g *GoalCheck, previous *GoalCheck) string {
 	}
 	if previous != nil && len(g.CriterionIDs) > 0 && len(g.CriterionIDs) == len(g.Criteria) &&
 		len(previous.CriterionIDs) == len(previous.Criteria) &&
-		n > len(g.Criteria) && n <= len(previous.Criteria) && rest == ":criterion-"+strconv.Itoa(n) &&
-		retainsKnownCriteria(previous.CriterionIDs, g.CriterionIDs) &&
-		!slices.Contains(g.CriterionIDs, previous.CriterionIDs[n-1]) {
-		return criterionRemoved
+		n >= 1 && n <= len(previous.Criteria) && rest == ":criterion-"+strconv.Itoa(n) &&
+		retainsKnownCriteria(previous.CriterionIDs, g.CriterionIDs) {
+		identity := previous.CriterionIDs[n-1]
+		if n > len(g.CriterionIDs) || g.CriterionIDs[n-1] != identity {
+			index := slices.Index(g.CriterionIDs, identity)
+			if index < 0 {
+				return criterionRemoved
+			}
+			// Identical text in multiple slots cannot identify a unique move.
+			if slices.Contains(g.CriterionIDs[index+1:], identity) ||
+				slices.Contains(previous.CriterionIDs[:n-1], identity) ||
+				slices.Contains(previous.CriterionIDs[n:], identity) {
+				return ""
+			}
+			n = index + 1
+		}
 	}
 	for _, c := range g.Criteria {
 		if c.Criterion == n && c.Verdict == goalMet {

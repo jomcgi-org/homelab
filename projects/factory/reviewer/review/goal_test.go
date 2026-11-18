@@ -265,6 +265,35 @@ func TestLegacyGoalRecoversOriginalDescription(t *testing.T) {
 	}
 }
 
+func TestGoalResolvesMovedCriterionAtCurrentNumber(t *testing.T) {
+	const key = "HOME-318"
+	previous := &GoalCheck{
+		CriterionIDs: []string{"A", "B", "C"},
+		Criteria:     []GoalVerdict{{1, goalMet}, {2, goalMet}, {3, goalNotMet}},
+		Overall:      goalMet,
+	}
+	current := &GoalCheck{
+		CriterionIDs: []string{"C", "A"},
+		Criteria:     []GoalVerdict{{2, goalMet}, {1, goalMet}},
+		Overall:      goalMet,
+	}
+	prior := goalFindings(key, previous)
+	const id = key + ":goal:criterion-3"
+	r := &Report{}
+	applyGoal(r, prior, "HOME", key, current, map[string]*GoalCheck{id: previous})
+	a := Assess(r, prior)
+	if len(a.Blocking) != 0 || len(a.Fixed) != 1 || a.Fixed[0].ID != id {
+		t.Fatalf("assessment = %+v", a)
+	}
+	if len(r.Previous) != 1 || r.Previous[0].Note != "The goal check found criterion 1 met." {
+		t.Fatalf("previous = %+v", r.Previous)
+	}
+	current.Criteria[1].Verdict = goalUnclear
+	if note := goalResolved(id, key, current, previous); note != "" {
+		t.Fatalf("unverified moved criterion resolved: %q", note)
+	}
+}
+
 func TestGoalRestatedFromSixteenCriteriaToSeven(t *testing.T) {
 	const key = "HOME-212"
 	issue := &IssueContext{Issue: &IssueEvidence{Key: key, Description: "**Done when:**"}}
