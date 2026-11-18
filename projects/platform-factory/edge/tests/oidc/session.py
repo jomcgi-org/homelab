@@ -29,7 +29,7 @@ def session(host, subject):
         conn.close()
         return response.status, response.getheader("Location"), body
 
-    path = "/" if host.startswith("factory-agents.") else "/oauth2-sentinel"
+    path = "/"
     status, redirect, _ = get(path)
     assert status == 302, (host, status)
     auth = urlsplit(redirect)
@@ -50,10 +50,19 @@ def session(host, subject):
             and json.loads(body)["authorization"] == "Bearer fixture-access-operator"
         )
     else:
-        assert status == 404 and body == b"Not found\n", (host, status)
+        assert status == 200 and json.loads(body) == {"authorization": None}, (
+            host,
+            status,
+        )
     print(host, subject, status)
 
 
-for hostname in ["factory.jomcgi.dev", "factory-agents.jomcgi.dev"]:
+for hostname in [
+    "factory.jomcgi.dev",
+    "factory-argocd.jomcgi.dev",
+    "factory-plan.jomcgi.dev",
+    "factory-grafana.jomcgi.dev",
+    "factory-agents.jomcgi.dev",
+]:
     for role in ["operator", "applicant"]:
         session(hostname, role)
