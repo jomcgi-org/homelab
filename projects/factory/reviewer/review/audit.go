@@ -85,13 +85,23 @@ func (s *FileGoalAudit) Reply(repo string, pr int, head, issue, digest string) (
 
 // GoalTask is the private durable index from a stable goal key to its own
 // dispatch. Save the message before Send and the task ID as soon as it returns.
-// A lost Send response is reconciled with that same message ID.
+// Prepared means no send could have executed. Issued includes the write-ahead
+// window and ambiguous sends; only read-only reconciliation can adopt its task.
 type GoalTask struct {
 	Key       string    `json:"key"`
 	MessageID string    `json:"message_id"`
 	TaskID    string    `json:"task_id,omitempty"`
+	ContextID string    `json:"context_id,omitempty"`
+	State     string    `json:"state,omitempty"`
+	Nonce     string    `json:"nonce,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+const (
+	goalPrepared = "prepared"
+	goalIssued   = "issued"
+	goalAccepted = "accepted"
+)
 
 type GoalTasks interface {
 	LoadGoalTask(string) (*GoalTask, error)
@@ -154,6 +164,15 @@ func (s *FileGoalAudit) LoadGoalTask(key string) (*GoalTask, error) {
 	}
 	if r.Key != key || r.MessageID == "" || r.CreatedAt.IsZero() {
 		return nil, errors.New("invalid goal task index")
+	}
+	switch r.State {
+	case "": // Legacy indexes are only recovered, never treated as prepared.
+	case goalPrepared, goalIssued, goalAccepted:
+		if len(r.Nonce) != 32 {
+			return nil, errors.New("invalid goal dispatch nonce")
+		}
+	default:
+		return nil, errors.New("invalid goal dispatch state")
 	}
 	return &r, nil
 }

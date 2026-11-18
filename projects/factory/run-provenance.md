@@ -61,15 +61,34 @@ ServiceAccount and checks the repository binding. Its existing accounting role
 can call only the append function, with no direct table or sequence access.
 The message ID deduplicates retries. Conflicting provenance for the same ID
 fails instead of replacing the earlier record.
-Goal checks persist a lookup from the stable prompt MAC to their message ID
-before sending, then to the returned task ID. The lookup uses the reviewer's
-private audit volume and expires after 14 days. Recovery reads only that task;
-if the send response was lost, it reconciles the same message ID. An unrelated
-task's history cannot block the goal check. The original receipt stays fixed
-across label edits and runtime rollouts. A new task's message ID also includes
-a MAC of all receipt inputs, so changed inputs cannot collide with an older
-receipt that has no recoverable task. The lookup is removed after the reply is
-saved and before the session is deleted.
+Goal checks persist a lookup from the stable prompt MAC to a dispatch on the
+reviewer's private audit volume. Each dispatch has a retry-stable nonce, a MAC
+of all receipt inputs, and its own session, prepared before the first send.
+The session request is idempotent. Preparing a session does not send a task.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Prepared: save message and receipt
+    Prepared --> Prepared: recheck inputs and prepare isolated session
+    Prepared --> Issued: persist possible acceptance before Send
+    Issued --> Prepared: definitive refusal
+    Issued --> Accepted: response or read matching task in own session
+    Issued --> Issued: missing or unreadable task holds the check
+    Accepted --> [*]: save reply, remove lookup, delete session
+```
+
+A prepared dispatch rechecks all receipt inputs before each send. Changed
+inputs get a new message ID and session; the earlier receipt stays immutable.
+An issued dispatch is never recovered by sending again. Recovery reads its
+known task, or lists only its isolated session and verifies the opening message
+ID. An unrelated task's history cannot block the check. A late accepted task
+keeps its original receipt even after runtime or label changes.
+
+Legacy indexes with a task ID remain readable. An index without a task ID or
+session, or an issued session with no visible matching task, holds the check:
+absence cannot prove that an earlier request did not execute. Lookups retain
+the audit volume's 14-day expiry and are removed after the reply is saved,
+before session deletion.
 
 ## Implementation evidence
 

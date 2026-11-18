@@ -222,6 +222,7 @@ func run(log *slog.Logger) error {
 		MACSecret:     evidenceSecret,
 		GoalAudit:     audit,
 		GoalTasks:     audit,
+		GoalSessions:  sessions,
 	}, gh, a2a, m, log)
 	log.Info("reviewer started", "bindings", names, "check", cfg.CheckName, "app_id", cfg.AppID, "comment_author", cfg.CommentAuthor,
 		"concurrency", cfg.Concurrency, "poll", time.Duration(cfg.Intervals.Poll).String())

@@ -935,9 +935,10 @@ func (f *fakeGitHub) ownComments(number int) []github.Comment {
 type fakeKagent struct {
 	mu         sync.Mutex
 	tasks      map[string]*fakeTask
-	initial    map[string]string // message ID -> task ID
-	texts      map[string]string // message ID -> first text sent
-	gone       map[string]bool   // context IDs whose sessions were deleted
+	initial    map[string]string          // message ID -> task ID
+	texts      map[string]string          // message ID -> first text sent
+	gone       map[string]bool            // context IDs whose sessions were deleted
+	created    map[string]kagent.AgentRef // Sessions prepared before their first task.
 	sends      []kagent.Message
 	executions int
 	cancels    []string
@@ -973,7 +974,8 @@ func newFakeKagent() *fakeKagent {
 	return &fakeKagent{
 		tasks: map[string]*fakeTask{}, initial: map[string]string{}, texts: map[string]string{}, gone: map[string]bool{},
 		revision: "rev-1", revisions: map[string]string{},
-		goal: goalReply(`{"criteria": [], "overall": "met"}`),
+		goal:    goalReply(`{"criteria": [], "overall": "met"}`),
+		created: map[string]kagent.AgentRef{},
 	}
 }
 
@@ -982,12 +984,25 @@ func goalReply(answer string) string { return "I read the issue.\n\n```json\n" +
 
 // session reports the agent whose task opened a context, and whether one did.
 func (k *fakeKagent) session(contextID string) (kagent.AgentRef, bool) {
+	if a, ok := k.created[contextID]; ok {
+		return a, !k.gone[contextID]
+	}
 	for _, t := range k.tasks {
 		if t.task.ContextID == contextID {
 			return t.agent, !k.gone[contextID]
 		}
 	}
 	return kagent.AgentRef{}, false
+}
+
+func (k *fakeKagent) CreateSession(_ context.Context, agent kagent.AgentRef, requestID string) (*kagent.Session, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	id := "goal-" + requestID
+	if _, ok := k.created[id]; !ok {
+		k.created[id], k.revisions[id] = agent, k.revision
+	}
+	return &kagent.Session{ID: id, ContextID: id, AgentNamespace: agent.Namespace, AgentName: agent.Name, State: kagent.RuntimeReady, PreparedRevision: k.revisions[id]}, nil
 }
 
 func copyTask(t *kagent.Task) *kagent.Task {
@@ -1300,9 +1315,10 @@ func newHarness(t *testing.T) *harness {
 		t: t, gh: gh, k: k, m: metrics.New(nil), log: &syncBuffer{}, srv: srv,
 		sessions: &fakeSessions{k: k, set: map[string]*kagent.Session{}, errs: map[string]error{}},
 		cfg: Config{
-			GoalAudit: audit,
-			GoalTasks: audit,
-			CheckName: "factory review", AppID: testAppID, Concurrency: 2,
+			GoalAudit:    audit,
+			GoalTasks:    audit,
+			GoalSessions: k,
+			CheckName:    "factory review", AppID: testAppID, Concurrency: 2,
 			TaskPoll: 2 * time.Millisecond, Reissue: 2 * time.Millisecond, Timeout: 10 * time.Second,
 			RetryBackoff: 2 * time.Millisecond, MaxSends: 3, DispatchWindow: 5 * time.Millisecond,
 			RuleIDs: []string{"nil-deref"},

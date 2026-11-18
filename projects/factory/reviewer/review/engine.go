@@ -174,6 +174,8 @@ type Config struct {
 	GoalAudit GoalAudit
 	// GoalTasks recovers only the goal's own dispatch across restarts.
 	GoalTasks GoalTasks
+	// GoalSessions prepares an isolated session before a goal can be sent.
+	GoalSessions GoalSessionCreator
 }
 
 // Engine runs the reviewer.

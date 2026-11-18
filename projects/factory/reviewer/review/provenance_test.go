@@ -17,6 +17,7 @@ type isolatedGoalTasks struct {
 	Tasks
 	reads       []string
 	lists       int
+	sessions    []string
 	nextReadErr error
 }
 
@@ -34,6 +35,7 @@ func (k *isolatedGoalTasks) GetTask(ctx context.Context, agent kagent.AgentRef, 
 
 func (k *isolatedGoalTasks) ListTasks(ctx context.Context, agent kagent.AgentRef, session, state, token string) (*kagent.TaskPage, error) {
 	k.lists++
+	k.sessions = append(k.sessions, session)
 	return k.Tasks.ListTasks(ctx, agent, session, state, token)
 }
 
@@ -129,8 +131,177 @@ func TestGoalProvenanceRecoversAmbiguousSendAfterRestart(t *testing.T) {
 	if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "same goal text", "initial", e.log); g == nil {
 		t.Fatal("lost send did not recover by its own message ID")
 	}
-	if len(recorder.runs) != 1 || h.k.executions != 1 || len(h.k.sends) != 2 || h.k.sends[0].MessageID != h.k.sends[1].MessageID || tasks.lists != 0 {
+	if len(recorder.runs) != 1 || h.k.executions != 1 || len(h.k.sends) != 1 || tasks.lists != 1 || tasks.sessions[0] != h.k.sends[0].ContextID {
 		t.Fatal("recovery changed the receipt, executed again, or scanned other tasks")
+	}
+}
+
+type observedGoalIndex struct {
+	GoalTasks
+	afterSave func(GoalTask) error
+}
+
+func (s *observedGoalIndex) SaveGoalTask(r GoalTask) error {
+	if err := s.GoalTasks.SaveGoalTask(r); err != nil {
+		return err
+	}
+	return s.afterSave(r)
+}
+
+type goalSessionCreatorFunc func(context.Context, kagent.AgentRef, string) (*kagent.Session, error)
+
+func (f goalSessionCreatorFunc) CreateSession(ctx context.Context, agent kagent.AgentRef, id string) (*kagent.Session, error) {
+	return f(ctx, agent, id)
+}
+
+func TestPreparedGoalReusesSessionAfterLostCreationResponse(t *testing.T) {
+	h := newHarness(t)
+	recorder := &recordedRuns{}
+	h.cfg.Runs = recorder
+	h.cfg.MACSecret = func() (string, error) { return strings.Repeat("k", 32), nil }
+	h.cfg.Bindings[0].Runtime = &provenance.Runtime{Model: "model", ReasoningEffort: "high", Arm: "control"}
+	h.cfg.GoalSessions = goalSessionCreatorFunc(func(ctx context.Context, a kagent.AgentRef, id string) (*kagent.Session, error) {
+		_, err := h.k.CreateSession(ctx, a, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return nil, errors.New("creation completed but response was lost")
+	})
+	pr := github.PullRequest{Number: 7, HeadSHA: shaA}
+	in := &inputs{}
+	e := h.engine()
+	if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", "initial", e.log); g != nil || len(h.k.sends) != 0 || len(h.k.created) != 1 {
+		t.Fatal("expected one prepared session without a task")
+	}
+	h.cfg.GoalSessions = h.k
+	e = h.engine()
+	if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", "initial", e.log); g == nil || len(h.k.created) != 1 || h.k.executions != 1 {
+		t.Fatal("retry did not recover the idempotent session creation")
+	}
+	if len(recorder.runs) != 2 || recorder.runs[0] != recorder.runs[1] {
+		t.Fatal("unchanged prepared inputs did not reuse the same receipt")
+	}
+}
+
+func TestPreparedGoalRechecksInputsAfterRestart(t *testing.T) {
+	for _, checkpoint := range []string{"prepared", "session", "refused"} {
+		for _, field := range []string{"model", "effort", "arm", "system", "class"} {
+			t.Run(checkpoint+"/"+field, func(t *testing.T) {
+				h := newHarness(t)
+				recorder := &recordedRuns{}
+				h.cfg.Runs = recorder
+				h.cfg.MACSecret = func() (string, error) { return strings.Repeat("k", 32), nil }
+				h.cfg.Bindings[0].Runtime = &provenance.Runtime{Model: "old", ReasoningEffort: "high", Arm: "control", SystemPrompt: "old guidance"}
+				index := h.cfg.GoalTasks.(*FileGoalAudit)
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				var saved GoalTask
+				h.cfg.GoalTasks = &observedGoalIndex{GoalTasks: index, afterSave: func(r GoalTask) error {
+					saved = r
+					if r.State == goalPrepared && ((checkpoint == "prepared" && r.ContextID == "") || (checkpoint == "session" && r.ContextID != "")) {
+						cancel()
+					}
+					return nil
+				}}
+				if checkpoint == "refused" {
+					h.k.sendErr, h.k.afterSend = []error{kagent.ErrNotAccepted}, cancel
+				}
+				pr := github.PullRequest{Number: 7, HeadSHA: shaA}
+				in := &inputs{issues: &IssueContext{Issue: &IssueEvidence{Key: "HOME-245"}, taskClass: "unclassified"}}
+				e := h.engine()
+				if g := e.goalCall(ctx, &e.cfg.Bindings[0], pr, in, "goal text", "initial", e.log); g != nil || h.k.executions != 0 || saved.State != goalPrepared {
+					t.Fatal("expected a prepared, unexecuted dispatch")
+				}
+				before := saved
+				runtime := h.cfg.Bindings[0].Runtime
+				switch field {
+				case "model":
+					runtime.Model = "new"
+				case "effort":
+					runtime.ReasoningEffort = "xhigh"
+				case "arm":
+					runtime.Arm = "trial"
+				case "system":
+					runtime.SystemPrompt = "new guidance"
+				case "class":
+					in.issues.taskClass = `["new"]`
+				}
+				var err error
+				h.cfg.GoalTasks, err = OpenGoalAudit(index.dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				h.k.afterSend = nil
+				e = h.engine()
+				if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", "initial", e.log); g == nil || h.k.executions != 1 {
+					t.Fatal("prepared dispatch did not resume")
+				}
+				last := h.k.sends[len(h.k.sends)-1]
+				want := provenance.New(*runtime, shaA, last.Parts[0].Text, in.issues.taskClass)
+				got := recorder.runs[len(recorder.runs)-1]
+				if last.MessageID == before.MessageID || last.ContextID == before.ContextID || got.MessageID != last.MessageID || got.Record != want {
+					t.Fatal("new execution reused stale receipt or pinned session")
+				}
+			})
+		}
+	}
+}
+
+func TestIssuedGoalWithoutTaskCannotExecuteOnRestart(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		h := newHarness(t)
+		recorder := &recordedRuns{}
+		h.cfg.Runs = recorder
+		h.cfg.MACSecret = func() (string, error) { return strings.Repeat("k", 32), nil }
+		h.cfg.Bindings[0].Runtime = &provenance.Runtime{Model: "old", ReasoningEffort: "high", Arm: "control"}
+		index := h.cfg.GoalTasks.(*FileGoalAudit)
+		var issued GoalTask
+		h.cfg.GoalTasks = &observedGoalIndex{GoalTasks: index, afterSave: func(r GoalTask) error {
+			if r.State == goalIssued {
+				issued = r
+				return errors.New("stop after persisting possible acceptance")
+			}
+			return nil
+		}}
+		pr := github.PullRequest{Number: 7, HeadSHA: shaA}
+		in := &inputs{}
+		e := h.engine()
+		e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", "initial", e.log)
+		if issued.ContextID == "" || len(h.k.sends) != 0 || len(recorder.runs) != 1 {
+			t.Fatal("expected an uncertain dispatch with no send")
+		}
+		if legacy {
+			issued.State, issued.ContextID, issued.Nonce = "", "", ""
+			if err := index.SaveGoalTask(issued); err != nil {
+				t.Fatal(err)
+			}
+		}
+		h.cfg.GoalTasks = index
+		h.cfg.Bindings[0].Runtime.Model, h.cfg.Bindings[0].Runtime.ReasoningEffort = "new", "xhigh"
+		e = h.engine()
+		if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", "initial", e.log); g != nil || len(h.k.sends) != 0 || len(recorder.runs) != 1 {
+			t.Fatal("uncertain dispatch was treated as permission to execute")
+		}
+		if legacy {
+			continue
+		}
+		h.k.tasks["foreign"] = &fakeTask{agent: testAgent, task: kagent.Task{
+			ID: "foreign", ContextID: issued.ContextID,
+			History: []*kagent.Message{{MessageID: "another-message"}},
+		}}
+		if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", "initial", e.log); g != nil || len(h.k.sends) != 0 {
+			t.Fatal("adopted a task without the original opening message")
+		}
+		delete(h.k.tasks, "foreign")
+		// An earlier request can become visible later. Adopt its task by reads
+		// of this session, retaining the old receipt despite the rollout.
+		_, err := h.k.Send(context.Background(), testAgent, kagent.Message{MessageID: issued.MessageID, ContextID: issued.ContextID, Parts: []kagent.Part{{Text: "goal text"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", "initial", e.log); g == nil || len(h.k.sends) != 1 || len(recorder.runs) != 1 {
+			t.Fatal("late accepted task did not recover read-only")
+		}
 	}
 }
 
