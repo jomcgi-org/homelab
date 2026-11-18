@@ -381,3 +381,31 @@ edge routes, charts or deployment files. HOME-225 activates `/factory` and the
 legacy redirects after HOME-213. After the dev deploy, the delivery owner checks
 `https://next.jomcgi.dev/factory` and `/factory/goals/x` for HTTP 200 and the
 shell's unavailable states. Local build checks do not establish that rollout.
+
+## Engineering migration (HOME-197)
+
+`web/engineering.html` and `web/src/engineering.tsx` serve `/engineering` without
+the hub's SvelteKit runtime. The build pre-renders all 11 records and diagrams;
+the browser hydrates the systems index. The page makes no data request.
+Unmigrated application links keep their `jomcgi.dev` destination on the preview host.
+
+The source is `projects/monolith/frontend/src/routes/public/engineering/`.
+Its data and Svelte files are inputs only to the parity test, through
+`//projects/monolith/frontend:engineering_migration_sources`; the production
+entry imports the React page and its copied data and diagrams.
+
+| HOME-197 requirement | Implementation and executable evidence |
+| --- | --- |
+| Every content record and all 11 diagrams survive the move | `web/src/engineering-parity.test.tsx` compares all hub data exports and each diagram's box, group and arrow labels. `engineering.test.tsx` checks every rendered record, fact, snippet, link and diagram. |
+| Keep `/engineering`, its own HTML entry and page module, and build-time rendering | `web/engineering.html` loads only `src/engineering.tsx`; `src/pages.tsx` registers it for `build.mjs`. `a11y.test.tsx` checks the page registry and import boundaries; `:prerendered_test` checks built HTML. |
+| Copy the metadata | `engineering.test.tsx` checks the title, description, canonical, Open Graph and Twitter tags. The parity test compares title and description with the hub's `<Seo>`. |
+| Hydrate interaction and stay within 150 KiB JS | `engineering.test.tsx` exercises the systems index observer and cleanup; `prerender.test.tsx` checks hydration without a mismatch. `:budget_test` measures the built entry and its imported JS. There is no large data request or heavy optional interaction to load on intent. |
+| No inline styles, colour literals outside the palette, axe violations or low-contrast token pairs | `engineering.test.tsx` checks the rendered page for inline styles, `contrast.test.tsx` scans all styles and both palettes, and `a11y.test.tsx` runs axe on the registered engineering page. |
+| Mark the section live and route it through the prod Worker | `src/sections.ts` marks engineering live; `edge/routes.json` uses `jomcgi.dev/engineering*` for `/engineering` and its descendants, including query strings. `edge/apply.test.mjs` tests URL coverage, applying the route and removing it for rollback. The prod chart checks cover the deploy and route reconciliation Jobs. |
+
+The frontend tests run in `//projects/jomcgi-site/web:test`; the edge tests
+run in `//projects/jomcgi-site/edge:apply_test`.
+
+Local checks establish source and build parity. After the dev deploy, verify
+`https://next.jomcgi.dev/engineering` before production promotion; a local
+pass does not establish a live rollout.

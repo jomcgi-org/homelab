@@ -260,6 +260,7 @@ js_library(
         ":node_modules/vitest",
         ":src",
         "//projects/factory-storyboard:web_fixtures",
+        "//projects/monolith/frontend:engineering_migration_sources",
         "//projects/monolith/frontend:leaderboard_migration_sources",
         "//projects/monolith/frontend:scotland_migration_sources",
     ],
