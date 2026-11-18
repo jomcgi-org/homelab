@@ -229,6 +229,7 @@ filegroup(
         "//projects/embervm/runtimes/python:repo_docs",
         "//projects/embervm/runtimes/python/testdata/echo:repo_docs",
         "//projects/embervm/specs:repo_docs",
+        "//projects/factory/alert-relay:repo_docs",
         "//projects/factory/deploy:repo_docs",
         "//projects/factory/tests/itsaplan:repo_docs",
         "//projects/firecracker/sandbox/elixir:repo_docs",
