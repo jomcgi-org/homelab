@@ -118,7 +118,9 @@ the worker, which is the GitOps path for adding providers and applications.
    the factory Authentik release. Confirm that `factory-explore.yaml` is gone
    from the `authentik-mcp-blueprints` ConfigMap and the worker's mounted
    blueprints. This prevents the worker from recreating objects during cleanup.
-2. In the admin interface at `https://factory-auth.jomcgi.dev/if/admin/`,
+2. Start the [factory Authentik port-forward](../../factory-cluster/README.md#authentik-first-run)
+   and keep it running during cleanup. Sign in as an administrator at
+   `http://localhost:9000/if/admin/`, then
    open **Applications → Applications** and delete **Factory explorer** (slug
    `factory-explore`). Under **Applications → Providers**, delete the OAuth2
    provider with client ID `factory-explore` if it is still present. Refresh
