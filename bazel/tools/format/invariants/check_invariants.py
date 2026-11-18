@@ -1,5 +1,6 @@
 """Validate scoped invariant records and resolve live tests in the Bazel graph."""
 
+import argparse
 import os
 import re
 import subprocess
@@ -90,7 +91,7 @@ def eligible_tests(xml):
     }
 
 
-def check():
+def check(records_only=False):
     files = subprocess.check_output(
         [
             "git",
@@ -111,7 +112,7 @@ def check():
             except yaml.YAMLError as error:
                 raise ValueError(f"{path}: {error}") from error
     live = validate(documents)
-    if live:
+    if live and not records_only:
         expression = "set(" + " ".join(sorted(live)) + ")"
         xml = subprocess.check_output(["bazel", "query", "--output=xml", expression])
         missing = live.keys() - eligible_tests(xml)
@@ -125,7 +126,16 @@ def check():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--records-only",
+        action="store_true",
+        help="validate records locally; required CI resolves live labels",
+    )
+    args = parser.parse_args()
+    if workspace := os.environ.get("BUILD_WORKSPACE_DIRECTORY"):
+        os.chdir(workspace)
     try:
-        check()
+        check(args.records_only)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         sys.exit(str(error))

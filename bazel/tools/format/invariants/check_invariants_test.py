@@ -100,3 +100,27 @@ def test_live_test_eligibility(rule, expected):
 def test_duplicate_yaml_field():
     with pytest.raises(yaml.YAMLError, match="duplicate mapping key"):
         yaml.load("state: live\nstate: designed", Loader=InvariantLoader)
+
+
+def test_local_lint_and_required_ci(tmp_path, monkeypatch):
+    import subprocess
+
+    from check_invariants import check
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "INVARIANTS.yaml"
+    path.write_text(yaml.safe_dump({"invariants": [ROW]}))
+
+    def output(command):
+        if command[0] == "git":
+            return b"INVARIANTS.yaml\0"
+        assert command == ["bazel", "query", "--output=xml", "set(//foo:test)"]
+        return b'<query><rule name="//foo:test" class="py_test"><list name="tags"><string value="manual"/></list></rule></query>'
+
+    monkeypatch.setattr(subprocess, "check_output", output)
+    check(records_only=True)
+    with pytest.raises(ValueError, match="must be a non-manual test"):
+        check()
+    path.write_text(yaml.safe_dump({"invariants": [ROW | {"state": "typo"}]}))
+    with pytest.raises(ValueError, match="unknown state"):
+        check(records_only=True)

@@ -518,7 +518,7 @@ run_guard_case() {
 	local guard_log="$TMP/$name.guards" base_log="$TMP/$name.base"
 	local bb_log="$TMP/$name.bb.log"
 	if [[ "${8:-}" != ratchet ]]; then
-		expected_guards="./bazel/tools/format/invariants/check_invariants.py${expected_guards:+$'\n'$expected_guards}"
+		expected_guards="./bazel/tools/format/invariants/check_invariants.py --records-only${expected_guards:+$'\n'$expected_guards}"
 	fi
 	local -a command_args=()
 	[[ -z "${8:-}" ]] || command_args+=("$8")
