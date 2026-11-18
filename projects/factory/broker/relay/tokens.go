@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"time"
 
@@ -167,20 +168,22 @@ func (o *tokenObserver) parse(data []byte, sse bool) {
 	}
 	var r response
 	if sse {
+		if len(data) == 0 && o.event == "" {
+			return // a comment or keepalive, not an event
+		}
+		o.events++
 		var event struct {
 			Type     string   `json:"type"`
 			Response response `json:"response"`
 		}
 		if json.Unmarshal(data, &event) != nil {
+			o.lastType = eventName(o.event)
 			return
 		}
 		if event.Type == "" {
 			event.Type = o.event
 		}
-		o.events++
-		if len(event.Type) <= 64 {
-			o.lastType = event.Type
-		}
+		o.lastType = eventName(event.Type)
 		switch event.Type {
 		case "response.completed", "response.incomplete", "response.failed":
 		default:
@@ -228,6 +231,21 @@ func (rl *Relay) observeTokens(ctx context.Context, id actorjwt.Identity) *token
 		}
 		rl.Metrics.TokenAccounting.WithLabelValues("recorded").Inc()
 	}}
+}
+
+// eventName keeps an SSE event type for the missing-usage log only when it
+// has the shape of a Responses event name, so the log never carries text
+// from the body.
+var eventNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_.]{0,63}$`)
+
+func eventName(s string) string {
+	if eventNamePattern.MatchString(s) {
+		return s
+	}
+	if s == "" {
+		return ""
+	}
+	return "other"
 }
 
 func isSSE(contentType string) bool {
