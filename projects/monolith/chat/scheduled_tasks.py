@@ -56,9 +56,9 @@ class ClaimedOccurrence:
 
 # Joe, 2026-11-18 (#8189): hub digests end with the hub bot. A digest reads
 # chat.messages, which only the Discord gateway fills after the safeguards
-# check, so with the gateway off (DISCORD_GATEWAY_ENABLED=false, HOME-221)
-# every active digest is cancelled at once and posts this notice. Nothing is
-# left to resume against the incomplete store if the gateway comes back.
+# check. With the gateway off (DISCORD_GATEWAY_ENABLED=false, HOME-221) every
+# digest is marked retired at once (``retire_digests``); its next run then
+# posts this notice and cancels it, even if the gateway has come back.
 DIGEST_ENDED = (
     "📋 This scheduled {mode} digest has ended: the bot that stored this "
     "channel's messages is retired."
@@ -500,52 +500,46 @@ def _claim_with_engine(engine, now: datetime, claimant: str) -> list[ClaimedOccu
         return claims
 
 
-def end_all_digests(session: Session, now: datetime) -> int:
-    """Cancel every pending or claimed digest and post its final notice.
+def _retired(payload: dict) -> bool:
+    return bool(payload.get("retired_at"))
 
-    Runs on each scheduler pass while the gateway is off. A claimed digest is
-    ended too: an old leader's later finalize then finds the task no longer
-    claimed and posts nothing. The dedupe key sends one notice per task.
-    Returns the number of digests ended.
+
+def retire_digests(session: Session, now: datetime) -> int:
+    """Mark every pending or claimed digest retired; returns how many.
+
+    The marker (``retired_at`` in the payload) is durable: from then on the
+    digest's next run posts ``DIGEST_ENDED`` and cancels it, with the gateway
+    on or off. ``finalize_claim`` never writes the payload, so an old leader
+    finishing a claim cannot undo it. Each update is conditional on the
+    payload it read.
     """
-    now = as_utc(now)
-    tasks = list(
-        session.exec(
-            select(ScheduledTask)
-            .where(ScheduledTask.task_kind == "digest")
-            .where(ScheduledTask.status.in_(("pending", "claimed")))
-        ).all()
-    )
-    if not tasks:
-        return 0
-    session.exec(
-        update(ScheduledTask)
-        .where(ScheduledTask.id.in_([t.id for t in tasks]))
+    stamp = as_utc(now).isoformat()
+    retired = 0
+    tasks = session.exec(
+        select(ScheduledTask)
+        .where(ScheduledTask.task_kind == "digest")
         .where(ScheduledTask.status.in_(("pending", "claimed")))
-        .values(
-            status="cancelled",
-            completed_at=now,
-            claim_token=None,
-            claimed_at=None,
-            current_occurrence_id=None,
-        )
-    )
+    ).all()
     for task in tasks:
-        mode = json.loads(task.payload_json or "{}").get("mode", "summary")
-        enqueue_message(
-            session,
-            task.channel_id,
-            content=DIGEST_ENDED.format(mode=mode),
-            dedupe_key=f"digest-ended:{task.id}",
+        payload = json.loads(task.payload_json or "{}")
+        if _retired(payload):
+            continue
+        payload["retired_at"] = stamp
+        result = session.exec(
+            update(ScheduledTask)
+            .where(ScheduledTask.id == task.id)
+            .where(ScheduledTask.payload_json == task.payload_json)
+            .values(payload_json=json.dumps(payload))
         )
-    return len(tasks)
+        retired += result.rowcount
+    return retired
 
 
-def _end_digests_with_engine(engine, now: datetime) -> int:
+def retire_digests_with_engine(engine, now: datetime | None = None) -> int:
     with Session(engine) as session:
-        ended = end_all_digests(session, now)
+        retired = retire_digests(session, now or datetime.now(timezone.utc))
         session.commit()
-        return ended
+        return retired
 
 
 def _finalize_with_engine(
@@ -605,13 +599,13 @@ async def drain_once(
 ) -> int:
     """Claim and enqueue due work once. Returns finalized occurrence count.
 
-    With ``digests`` false, every active digest ends first (``end_all_digests``),
-    and a digest claimed anyway posts ``DIGEST_ENDED`` and is cancelled;
+    With ``digests`` false, every digest is first marked retired. A retired
+    digest's run posts ``DIGEST_ENDED`` and cancels it, gateway on or off;
     reminders are unchanged."""
     now = as_utc(now or datetime.now(timezone.utc))
     claimant = claimant or uuid.uuid4().hex
     if not digests:
-        await asyncio.to_thread(_end_digests_with_engine, engine, now)
+        await asyncio.to_thread(retire_digests_with_engine, engine, now)
     claims = await asyncio.to_thread(_claim_with_engine, engine, now, claimant)
     finalized = 0
     for claim in claims:
@@ -620,7 +614,7 @@ async def drain_once(
             end = False
             if claim.task_kind == "reminder":
                 content = f"⏰ <@{claim.author_id}> reminder: {payload['content']}"
-            elif not digests:
+            elif not digests or _retired(payload):
                 content = DIGEST_ENDED.format(mode=payload.get("mode", "summary"))
                 end = True
             else:

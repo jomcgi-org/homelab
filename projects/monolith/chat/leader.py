@@ -114,7 +114,18 @@ async def leader_start(app: FastAPI) -> list[asyncio.Task]:
     from chat.scheduled_tasks import run_scheduler
 
     # Without the gateway nothing new reaches chat.messages, so digests end
-    # (Joe, 2026-11-18, #8189); reminders keep running.
+    # (Joe, 2026-11-18, #8189); reminders keep running. Retire them before the
+    # scheduler starts, so the boundary exists from the first moment the
+    # gateway is off; each scheduler pass repeats it.
+    if not gateway:
+        from chat.scheduled_tasks import retire_digests_with_engine
+
+        try:
+            await asyncio.to_thread(retire_digests_with_engine, get_engine())
+        except Exception:
+            logger.exception(
+                "scheduled digests not retired at start; the scheduler retries"
+            )
     scheduler_task = asyncio.create_task(run_scheduler(get_engine(), digests=gateway))
     scheduler_task.add_done_callback(log_task_exception)
     register_leader_tasks(app, [scheduler_task])
