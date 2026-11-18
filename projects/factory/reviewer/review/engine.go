@@ -1617,6 +1617,9 @@ func (e *Engine) gather(ctx context.Context, b *Binding, pr github.PullRequest, 
 	if unknown != "" {
 		l.WarnContext(ctx, "previous review state is incomplete; retaining the hold and asking for a full review", "reason", unknown)
 	}
+	// Invariant policy is read at the base branch tip, not the merge base.
+	// HOME-389 moves it to the merge base
+	// (decision: https://factory-plan.jomcgi.dev/factory/issue/HOME-346#comment-3947).
 	base, err := e.gh.BranchHead(ctx, b.repo(), b.BaseBranch)
 	if err != nil {
 		return nil, err
