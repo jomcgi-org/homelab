@@ -1,0 +1,36 @@
+{{- if .Values.connector.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: factory-connector-status
+  namespace: {{ .Values.broker.namespace }}
+spec:
+  selector:
+    {{- include "factory.connectorSelector" . | nindent 4 }}
+  ports:
+    - name: status
+      port: 8082
+      targetPort: 8082
+      protocol: TCP
+{{- if .Values.networkPolicy.cilium }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: factory-landing-status
+  namespace: {{ .Values.broker.namespace }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "factory.connectorSelector" . | nindent 6 }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-landing
+            app.kubernetes.io/name: factory-landing
+      toPorts:
+        - ports:
+            - port: "8082"
+              protocol: TCP
+{{- end }}
+{{- end }}

@@ -159,7 +159,11 @@ def test_disabled_renders_byte_for_byte_without_the_connector() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         bare = Path(tmp) / "chart"
         shutil.copytree(_CHART_DIR, bare)
-        for f in ("connector.yaml", "connector-network-policy.yaml"):
+        for f in (
+            "connector.yaml",
+            "connector-network-policy.yaml",
+            "connector-status.yaml",
+        ):
             (bare / "templates" / f).unlink()
         off = ["--set", "connector.enabled=false"]
         assert _helm(_CHART_DIR, off) == _helm(bare, off)
@@ -672,3 +676,36 @@ def test_buildbuddy_key_and_host_belong_only_to_the_connector() -> None:
 def test_invalid_buildbuddy_configuration_fails_render(overrides: list[str]) -> None:
     with pytest.raises(RuntimeError):
         _render(overrides)
+
+
+def test_landing_status_access() -> None:
+    docs = _render()
+    connector_labels = {
+        "app.kubernetes.io/name": "factory-connector",
+        "app.kubernetes.io/instance": "factory",
+    }
+    ports = [{"ports": [{"port": "8082", "protocol": "TCP"}]}]
+    status_service = _in(docs, "Service", _NS, "factory-connector-status")
+    assert status_service["metadata"]["namespace"] == "factory"
+    assert status_service["spec"]["selector"] == connector_labels
+    assert status_service["spec"]["ports"] == [
+        {"name": "status", "port": 8082, "targetPort": 8082, "protocol": "TCP"}
+    ]
+    status_policy = _in(docs, "CiliumNetworkPolicy", _NS, "factory-landing-status")
+    assert status_policy["metadata"]["namespace"] == "factory"
+    assert status_policy["spec"] == {
+        "endpointSelector": {"matchLabels": connector_labels},
+        "ingress": [
+            {
+                "fromEndpoints": [
+                    {
+                        "matchLabels": {
+                            "k8s:io.kubernetes.pod.namespace": "factory-landing",
+                            "app.kubernetes.io/name": "factory-landing",
+                        }
+                    }
+                ],
+                "toPorts": ports,
+            }
+        ],
+    }
