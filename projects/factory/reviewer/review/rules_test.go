@@ -446,7 +446,7 @@ func TestSafeStripsRunsInOnePass(t *testing.T) {
 
 func TestInvariantGateFromBase(t *testing.T) {
 	gh := &baseRules{head: "base-commit", files: map[string]string{"policy/INVARIANTS.yaml": "invariants:\n  - mechanism: [a.go, src/]"}}
-	m, err := loadMechanisms(context.Background(), gh, testRepo, "main")
+	m, err := loadMechanisms(context.Background(), gh, testRepo, gh.head)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +456,17 @@ func TestInvariantGateFromBase(t *testing.T) {
 		t.Fatalf("gate = %+v", gate)
 	}
 	gh.files["policy/INVARIANTS.yaml"] = "invariants: ["
-	if _, err := loadMechanisms(context.Background(), gh, testRepo, "main"); err == nil {
+	if _, err := loadMechanisms(context.Background(), gh, testRepo, gh.head); err == nil {
 		t.Fatal("accepted malformed invariants")
+	}
+}
+
+func TestInvariantFileEditAloneRequiresHuman(t *testing.T) {
+	for _, p := range []string{"INVARIANTS.yaml", "deep/nested/INVARIANTS.yaml"} {
+		files := []github.PullRequestFile{{Status: "modified", Path: p}}
+		g := humanGate(&Binding{}, changedPaths(files), nil, nil)
+		if g == nil || !g.Needed() || len(g.Paths) != 1 || g.Paths[0] != p {
+			t.Errorf("edit to %s: gate = %+v", p, g)
+		}
 	}
 }

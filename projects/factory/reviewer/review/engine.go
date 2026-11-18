@@ -1198,14 +1198,15 @@ func (e *Engine) waitForQuota(ctx context.Context, b *Binding, run *github.Check
 
 // inputs are what a review is judged with, read before its task is sent.
 type inputs struct {
-	issues    *IssueContext
-	goal      *GoalCheck // the head's goal check, or nil
-	semgrep   *SemgrepEvidence
-	files     []github.PullRequestFile
-	size      DiffSize
-	gate      *Gate
-	prior     State
-	priorHead string
+	invariantBase string
+	issues        *IssueContext
+	goal          *GoalCheck // the head's goal check, or nil
+	semgrep       *SemgrepEvidence
+	files         []github.PullRequestFile
+	size          DiffSize
+	gate          *Gate
+	prior         State
+	priorHead     string
 	// priorUnknown says why complete earlier review state could not be recovered.
 	priorUnknown string
 	// since is what changed since priorHead, once compared is set; nil
@@ -1616,7 +1617,11 @@ func (e *Engine) gather(ctx context.Context, b *Binding, pr github.PullRequest, 
 	if unknown != "" {
 		l.WarnContext(ctx, "previous review state is incomplete; retaining the hold and asking for a full review", "reason", unknown)
 	}
-	mechanisms, err := loadMechanisms(ctx, e.gh, b.repo(), b.BaseBranch)
+	base, err := e.gh.BranchHead(ctx, b.repo(), b.BaseBranch)
+	if err != nil {
+		return nil, err
+	}
+	mechanisms, err := loadMechanisms(ctx, e.gh, b.repo(), base)
 	if err != nil {
 		e.ghError(ctx, l, b, "invariants", err)
 		return nil, err
@@ -1629,8 +1634,8 @@ func (e *Engine) gather(ctx context.Context, b *Binding, pr github.PullRequest, 
 		gate.inherit(prior.Gate)
 	}
 	return &inputs{
-		issues: e.issueContext(ctx, b, pr, files),
-		files:  files, size: measure(b, files), gate: gate,
+		invariantBase: base, issues: e.issueContext(ctx, b, pr, files),
+		files: files, size: measure(b, files), gate: gate,
 		prior: prior, priorHead: head, priorUnknown: unknown,
 	}, nil
 }
@@ -2494,7 +2499,7 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 				sortBlocked(a.Blocking)
 			}
 		}
-		var semgrepState *State
+		st := stateOf(a, r, gate)
 		if in.semgrep != nil {
 			// The goal check can run another model task after the code review.
 			// Check scan freshness after both tasks, before saving the verdict.
@@ -2504,16 +2509,15 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			}
 			// Save the agent assessment before adding the service finding.
 			// An agent finding with the same ID keeps its identity and severity.
-			st := stateOf(a, r, gate)
 			st.Semgrep = in.semgrep.stamp()
-			semgrepState = &st
 			enforceSemgrep(&a, in.semgrep)
 		}
 		a.Conclusion = ConclusionSuccess
 		if len(a.Blocking) > 0 || a.Incomplete {
 			a.Conclusion = ConclusionFailure
 		}
-		o := render(a, r, gate, footer, semgrepState)
+		st.InvariantBase = in.invariantBase
+		o := render(a, r, gate, footer, &st)
 		session := sessionAfter(b, pr, in, task)
 		o.Output.Text = withSession(o.Output.Text, session)
 		if stored, _ := LoadState(o.Output.Text); stored.Incomplete {
@@ -2677,9 +2681,40 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 	if st.Gate != nil {
 		*gate = *st.Gate
 	}
+	// Recompute the path decision against current base policy before trusting a saved pass.
+	const policyWait = "Waiting for invariant policy"
+	base, err := e.gh.BranchHead(ctx, b.repo(), b.BaseBranch)
+	pathsChanged := false
+	if err == nil && (base == "" || st.InvariantBase != base) {
+		var mechanisms mechanismPaths
+		mechanisms, err = loadMechanisms(ctx, e.gh, b.repo(), base)
+		if err == nil {
+			var files []github.PullRequestFile
+			files, err = e.gh.PullRequestFiles(ctx, b.repo(), pr.Number)
+			if err == nil {
+				current := humanGate(b, changedPaths(files), nil, mechanisms)
+				if current != nil {
+					for _, p := range current.Paths {
+						if !slices.Contains(gate.Paths, p) {
+							gate.Paths = append(gate.Paths, p)
+							pathsChanged = true
+						}
+					}
+				}
+				st.InvariantBase = base
+			}
+		}
+	}
+	if err != nil {
+		e.ghError(ctx, e.prLog(b, pr), b, "invariants", err)
+		if run.Conclusion != ConclusionSuccess {
+			return run, true
+		}
+		return e.gateCheck(ctx, b, pr, run, st, ConclusionFailure, policyWait, "The reviewer could not verify the base invariant policy.", &CommentUpdate{Verdict: VerdictHold, Headline: policyWait}, e.prLog(b, pr)), true
+	}
 	gate, recovery := e.recoveryGate(b, pr, gate)
 	priorNonce := gate.ApprovalNonce
-	changed := gate.observeLabels(labels, e.cfg.Now()) || recovery || recovered || carried
+	changed := gate.observeLabels(labels, e.cfg.Now()) || recovery || recovered || carried || pathsChanged
 	events, err := e.gh.PullRequestLabelEvents(ctx, b.repo(), pr.Number)
 	if err != nil {
 		e.ghError(ctx, e.prLog(b, pr), b, "label_events", err)
@@ -2713,7 +2748,7 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 	if !gate.Needed() {
 		// Complete label history ends a wait for it; a confirmed context
 		// ends a hold an earlier process placed only for its restart.
-		history := strings.Contains(run.Summary, labelHistoryMarker)
+		history := strings.Contains(run.Summary, labelHistoryMarker) || run.Title == policyWait
 		if !recovered && !history && (!recovery || run.Conclusion == ConclusionSuccess) &&
 			!(len(st.Blocking) > 0 && run.Conclusion != ConclusionFailure) {
 			return run, len(st.Blocking) > 0

@@ -998,9 +998,10 @@ var stateRE = regexp.MustCompile(`<!-- factory-review:state v([12]) ([A-Za-z0-9+
 // findings and human gate on the completed check. The next round must
 // account for the findings; only a person clears the human gate.
 type State struct {
-	Semgrep  *SemgrepStamp `json:"semgrep,omitempty"`
-	Blocking []Finding     `json:"blocking"`
-	Cleared  []Cleared     `json:"cleared,omitempty"`
+	InvariantBase string        `json:"invariant_base,omitempty"`
+	Semgrep       *SemgrepStamp `json:"semgrep,omitempty"`
+	Blocking      []Finding     `json:"blocking"`
+	Cleared       []Cleared     `json:"cleared,omitempty"`
 	// ClearedPartial marks a cleared record that has lost entries, on this
 	// head or an earlier one, so it cannot show every fixed finding.
 	ClearedPartial bool  `json:"cleared_partial,omitempty"`

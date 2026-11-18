@@ -95,6 +95,16 @@ actions:
           # Shared ordered guards stop at the first failure.
           ./bazel/tools/ci/ratchets.sh "$base_ref" HEAD
 
+          # Validate every tracked invariant file with the reviewer's parser.
+          invariant_list=$(mktemp)
+          git ls-files -z -- ':(glob)**/INVARIANTS.yaml' > "$invariant_list"
+          invariant_files=()
+          while IFS= read -r -d '' file; do
+            invariant_files+=("$PWD/$file")
+          done < "$invariant_list"
+          rm -f "$invariant_list"
+          bazel run //projects/factory/reviewer/cmd/check-invariants --config=ci -- "${invariant_files[@]}"
+
           commit_format_drift() {
             format_commit_subject="$1"
             shift
