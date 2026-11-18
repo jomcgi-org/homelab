@@ -31,9 +31,10 @@ func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.
 		return text, nil
 	}
 	runtime := *b.Runtime
+	var sessionBase string
 	var err error
 	if a.ContextID != "" {
-		runtime, err = e.st.SessionRuntime(ctx, a.KagentNamespace, a.ContextID, runtime)
+		runtime, sessionBase, err = e.st.SessionRuntime(ctx, a.KagentNamespace, a.ContextID, runtime)
 		if errors.Is(err, sql.ErrNoRows) {
 			err = e.verifyLegacyRuntime(ctx, r, wi, a)
 		}
@@ -56,11 +57,18 @@ func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.
 	}
 	base, err := gh.BranchHead(ctx, b.repo(), wi.Branch)
 	var h *github.HTTPError
-	if (errors.Is(err, github.ErrNotFound) || (errors.As(err, &h) && h.Status == 404)) && !r.Connector() && wi.SessionID == "" {
-		if err := e.beginAdmissionRead(ctx, r, "provenance-base", b.repo()+"/"+b.BaseBranch); err != nil {
-			return "", err
+	if errors.Is(err, github.ErrNotFound) || (errors.As(err, &h) && h.Status == 404) {
+		switch {
+		case a.Kind == "continuation" && sessionBase != "":
+			// A verified session can fail before its first push. Its accepted
+			// receipt fixes the starting commit even if main has moved on.
+			base, err = sessionBase, nil
+		case !r.Connector() && wi.SessionID == "":
+			if err := e.beginAdmissionRead(ctx, r, "provenance-base", b.repo()+"/"+b.BaseBranch); err != nil {
+				return "", err
+			}
+			base, err = gh.BranchHead(ctx, b.repo(), b.BaseBranch)
 		}
-		base, err = gh.BranchHead(ctx, b.repo(), b.BaseBranch)
 	}
 	if err != nil {
 		return "", err

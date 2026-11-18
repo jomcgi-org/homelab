@@ -32,14 +32,17 @@ func (s *Store) RecordProvenance(ctx context.Context, w *Writer, a *Attempt, p p
 	})
 }
 
-// SessionRuntime retains the model and system prompt pinned to a known session.
+// SessionRuntime retains the model, system prompt and starting commit of a
+// known session's first accepted dispatch. The commit also covers a retry
+// before that session publishes its work branch.
 // sql.ErrNoRows means the caller must verify the legacy session revision.
 // Effort is enforced by the broker on each call, so the current setting wins.
-func (s *Store) SessionRuntime(ctx context.Context, namespace, session string, configured provenance.Runtime) (provenance.Runtime, error) {
+func (s *Store) SessionRuntime(ctx context.Context, namespace, session string, configured provenance.Runtime) (provenance.Runtime, string, error) {
 	r := configured
-	err := s.DB.QueryRowContext(ctx, `SELECT a.model,a.arm,a.guidance_system_prompt FROM run r
+	var base string
+	err := s.DB.QueryRowContext(ctx, `SELECT a.model,a.arm,a.guidance_system_prompt,a.base_sha FROM run r
   JOIN delivery_attempt a ON a.run_id=r.id
   WHERE a.kagent_namespace=$1 AND a.context_id=$2 AND a.model IS NOT NULL AND a.task_id IS NOT NULL
-  ORDER BY a.id LIMIT 1`, namespace, session).Scan(&r.Model, &r.Arm, &r.SystemPrompt)
-	return r, err
+  ORDER BY a.id LIMIT 1`, namespace, session).Scan(&r.Model, &r.Arm, &r.SystemPrompt, &base)
+	return r, base, err
 }

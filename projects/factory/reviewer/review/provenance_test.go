@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
@@ -40,11 +42,14 @@ func (k *isolatedGoalTasks) ListTasks(ctx context.Context, agent kagent.AgentRef
 }
 
 type recordedRuns struct {
+	mu   sync.Mutex
 	runs []provenance.ReviewerRun
 	err  error
 }
 
 func (r *recordedRuns) RecordReview(_ context.Context, run provenance.ReviewerRun) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for _, old := range r.runs {
 		if old.MessageID == run.MessageID && old != run {
 			return errors.New("receipt conflict")
@@ -52,6 +57,64 @@ func (r *recordedRuns) RecordReview(_ context.Context, run provenance.ReviewerRu
 	}
 	r.runs = append(r.runs, run)
 	return r.err
+}
+
+func (r *recordedRuns) snapshot() []provenance.ReviewerRun {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]provenance.ReviewerRun(nil), r.runs...)
+}
+
+func TestReviewerQuotaRetryRecordsSentMessage(t *testing.T) {
+	for _, rollout := range []bool{false, true} {
+		name := "same inputs"
+		if rollout {
+			name = "changed inputs"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			h.gh.baseHead = strings.Repeat("b", 40)
+			recorder := &recordedRuns{}
+			h.cfg.Runs = recorder
+			h.cfg.Bindings[0].Runtime = &provenance.Runtime{Model: "review-model", ReasoningEffort: "xhigh", Arm: "control", SystemPrompt: "review guidance"}
+			q := &fakeQuota{}
+			h.cfg.Quota = q
+			e, ctx, stop := h.start()
+			task := runReview(t, h, e, ctx, 7, shaA)
+			first := recorder.snapshot()
+			if len(first) != 1 || first[0].MessageID != lastSend(h).MessageID {
+				t.Fatal("initial task has no matching receipt")
+			}
+			h.k.finish(task, kagent.StateFailed, "usage_limit_reached")
+			rec := waitForQuotaCheck(t, h)
+			stop()
+			if rollout {
+				h.cfg.Bindings[0].Runtime = &provenance.Runtime{Model: "new-model", ReasoningEffort: "high", Arm: "trial", SystemPrompt: "new guidance"}
+			}
+			q.set(github.QuotaReading{ReceivedAt: rec.QuotaSince.Add(time.Second)}, nil)
+			e, ctx, stop = h.start()
+			e.Tick(ctx)
+			id := h.msgID(7, shaA, 1) + "/quota-1"
+			eventually(t, "quota retry accepted with provenance", func() bool {
+				task = h.k.taskFor(id)
+				return task != "" && RecordedTask(h.gh.check(shaA).Summary).ID == task
+			})
+			runs, sent := recorder.snapshot(), lastSend(h)
+			if len(runs) != 2 || runs[0] != first[0] || runs[1].MessageID != sent.MessageID || sent.ContextID != "" {
+				t.Fatal("quota retry changed the original receipt or sent an unrecorded message")
+			}
+			want := provenance.New(*h.cfg.Bindings[0].Runtime, h.gh.baseHead, sent.Parts[0].Text, "unclassified")
+			if runs[1].Record != want {
+				t.Fatalf("quota receipt=%+v want %+v", runs[1].Record, want)
+			}
+			h.k.finish(task, kagent.StateCompleted, report(t, passing))
+			eventually(t, "quota retry completes review", func() bool {
+				return h.gh.check(shaA).Conclusion == ConclusionSuccess
+			})
+			stop()
+		})
+	}
 }
 
 func TestGoalProvenanceRecoversOriginalTaskAfterInputsChange(t *testing.T) {
@@ -414,7 +477,7 @@ func TestReviewerMessageRecordsProvenanceBeforeDispatch(t *testing.T) {
 	b := &e.cfg.Bindings[0]
 	pr := github.PullRequest{Number: 7, HeadSHA: shaA, Title: "Change"}
 	in := &inputs{issues: &IssueContext{Issue: &IssueEvidence{Key: "HOME-245"}, taskClass: `["feature"]`}}
-	msg, err := e.message(context.Background(), b, pr, &github.CheckRun{ID: 1}, in, 1, false, e.log)
+	msg, err := e.message(context.Background(), b, pr, &github.CheckRun{ID: 1}, in, 1, 0, false, e.log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +490,7 @@ func TestReviewerMessageRecordsProvenanceBeforeDispatch(t *testing.T) {
 		t.Fatalf("reviewer provenance=%+v", got)
 	}
 	recorder.err = errors.New("database unavailable")
-	if _, err := e.message(context.Background(), b, pr, &github.CheckRun{ID: 2}, in, 1, false, e.log); err == nil {
+	if _, err := e.message(context.Background(), b, pr, &github.CheckRun{ID: 2}, in, 1, 0, false, e.log); err == nil {
 		t.Fatal("built dispatchable message without durable provenance")
 	}
 }

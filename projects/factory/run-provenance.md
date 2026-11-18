@@ -28,6 +28,9 @@ session with verified provenance; no retry guesses the old model.
 
 For a new coder branch, `base_sha` is the resolved base branch commit. For an
 existing work branch, including rework, it is the resolved work branch commit.
+If a verified coder session retries before publishing its branch, it uses the
+starting commit from that session's first accepted receipt. A missing branch
+cannot move the retry onto a newer main commit; other read errors still hold it.
 The task tells the coder to start its worktree at that exact commit. Reviewer
 records use the base commit from which the service reads guidance; the PR head
 under review is also present in the reviewer message ID. Goal checks use the exact PR head
@@ -60,7 +63,9 @@ not mean a review finished or passed. The broker authenticates the reviewer
 ServiceAccount and checks the repository binding. Its existing accounting role
 can call only the append function, with no direct table or sequence access.
 The message ID deduplicates retries. Conflicting provenance for the same ID
-fails instead of replacing the earlier record.
+fails instead of replacing the earlier record. A reviewer quota retry finalizes
+its `/quota-N` suffix before writing its receipt, so the new task can record
+changed inputs without overwriting the previous task's receipt.
 Goal checks persist a lookup from the stable prompt MAC to a dispatch on the
 reviewer's private audit volume. Each dispatch has a retry-stable nonce, a MAC
 of all receipt inputs, and its own session, prepared before the first send.
@@ -98,6 +103,8 @@ before session deletion.
 | Six values for reviewer dispatch | `review.recordProvenance` and `goalCall` require the broker receipt before sending; `TestReviewerMessageRecordsProvenanceBeforeDispatch` and `TestGoalReviewRequiresProvenanceBeforeSending` cover both task types. |
 | Historical nulls and new database columns | `20261118070000_run_provenance.sql` adds nullable fields without a backfill; `TestProvenanceMigrationLeavesHistoricalRunsNull` applies the migration to an existing row. |
 | Immutable reviewer receipts | The migration's `record_reviewer_run` function writes all six values; `TestReviewerProvenanceIsAppendOnlyAndIdempotent` reads them back and rejects conflicting input. |
+| Reviewer quota retries | `TestReviewerQuotaRetryRecordsSentMessage` checks the receipt against the accepted message after a restart, with unchanged and changed runtime settings. |
+| Coder failure before its first push | `TestCoderProvenanceRetryBeforeFirstPush` checks the session's recorded SHA after main advances, current effort with pinned session runtime, and holds on 403/503 reads. |
 
 ## Rollout verification
 

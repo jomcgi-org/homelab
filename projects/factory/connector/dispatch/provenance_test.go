@@ -3,6 +3,7 @@ package dispatch_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +91,52 @@ func TestProvenanceFailurePreventsCoderSend(t *testing.T) {
 	v.tick(v.e)
 	if len(v.kg.Sends()) != 1 {
 		t.Fatal("did not resume after provenance became readable")
+	}
+}
+
+func TestCoderProvenanceRetryBeforeFirstPush(t *testing.T) {
+	for _, status := range []int{0, 404, 403, 503} {
+		t.Run(fmt.Sprintf("branch-status-%d", status), func(t *testing.T) {
+			v := provenanceEnv(t)
+			v.its.add(1, "coder", 101, "HL-7", "Fix it.")
+			v.tick(v.e)
+			first := v.latest(1)
+			session := v.work(101).SessionID
+			if first.State != store.AttemptAccepted || session == "" {
+				t.Fatal("initial task was not attached")
+			}
+			// The task fails before publishing its branch. Main and the runtime
+			// for new sessions advance while this session keeps its own inputs.
+			v.kg.finish(first.TaskID, kagent.StateFailed, "test command failed", nil)
+			v.gh.push("main", strings.Repeat("c", 40), "new base")
+			v.cfg.Bindings[0].Runtime = &provenance.Runtime{Model: "new-model", ReasoningEffort: "high", Arm: "trial", SystemPrompt: "new guidance"}
+			v.e.Release()
+			v.e = v.engine("retry-before-first-push")
+			if status != 0 {
+				v.gh.baseErr = &github.HTTPError{Status: status}
+			}
+			v.clk.Advance(5 * time.Second)
+			v.tick(v.e)
+			if status == 403 || status == 503 {
+				if len(v.kg.Sends()) != 1 || v.latest(1).Issues != 0 {
+					t.Fatal("branch read failure permitted a send")
+				}
+				v.gh.baseErr = nil
+				v.tick(v.e)
+			}
+			next, sends := v.latest(1), v.kg.Sends()
+			if len(sends) != 2 || next.State != store.AttemptAccepted || next.ContextID != session || next.MessageID == first.MessageID {
+				t.Fatalf("unpublished branch blocked the continuation: %+v sends=%d", next, len(sends))
+			}
+			runtime := provenance.Runtime{Model: "coder-model", ReasoningEffort: "high", Arm: "control", SystemPrompt: "rendered system guidance"}
+			want := provenance.New(runtime, first.Provenance.BaseSHA, sends[1].msg.Parts[0].Text, "unclassified")
+			if next.Provenance != want || !strings.Contains(next.RenderedPrompt, "Worktree starting commit: "+first.Provenance.BaseSHA) {
+				t.Fatal("retry did not retain its session's starting commit and pinned runtime")
+			}
+			if v.run(1).Provenance != first.Provenance {
+				t.Fatal("retry changed the first execution receipt")
+			}
+		})
 	}
 }
 
