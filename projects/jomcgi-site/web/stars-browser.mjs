@@ -56,11 +56,17 @@ await snapshot(
   join(root, "data"),
 );
 const headers = await readFile(join(root, "_headers"), "utf8");
-// The stars page's own policy (the /stars rule), which allows the base map.
-const csp = headers
-  .split(/\n(?=\S)/)
-  .find((rule) => rule.startsWith("/stars\n"))
-  .match(/Content-Security-Policy: (.+)/)[1];
+// Apply the matching CSP from the built headers to each response. A worker
+// inherits the site rule unless its own asset rule replaces it.
+const policies = headers.split(/\n(?=\S)/).flatMap((block) => {
+  const policy = block.match(/^  Content-Security-Policy: (.+)/m)?.[1];
+  if (!policy) return [];
+  const pattern = block
+    .split("\n")[0]
+    .replaceAll(".", "\\.")
+    .replaceAll("*", ".*");
+  return [{ path: new RegExp(`^${pattern}$`), policy }];
+});
 const axePath = createRequire(import.meta.url).resolve("axe-core/axe.min.js");
 const origin = "https://stars.test";
 const mime = {
@@ -131,20 +137,53 @@ try {
         await route.fulfill({
           body: await readFile(file),
           contentType: mime[extname(file)],
-          headers: { "Content-Security-Policy": csp },
+          headers: {
+            "Content-Security-Policy": policies.findLast((rule) =>
+              rule.path.test(path),
+            ).policy,
+          },
         });
       });
-      // Network-independent style; real MapLibre, CSS, worker and GeoJSON cells.
-      await context.route("https://tiles.openfreemap.org/**", (route) =>
+      const tileOrigin = "https://tiles.openfreemap.org";
+      await context.route(tileOrigin + "/styles/liberty", (route) =>
         route.fulfill({
-          json: { version: 8, sources: {}, layers: [] },
+          json: {
+            version: 8,
+            sources: {
+              base: {
+                type: "vector",
+                tiles: [tileOrigin + "/{z}/{x}/{y}.pbf"],
+              },
+            },
+            layers: [
+              {
+                id: "places",
+                type: "circle",
+                source: "base",
+                "source-layer": "places",
+              },
+            ],
+          },
           headers: { "Access-Control-Allow-Origin": "*" },
         }),
       );
+      let servedTiles = 0;
+      await context.route(tileOrigin + "/**/*.pbf", async (route) => {
+        // MVT v2 layer "places" with a single point at tile coordinate (0, 0).
+        await route.fulfill({
+          body: Buffer.from(
+            "1a130a06706c616365731207180122030900007802",
+            "hex",
+          ),
+          contentType: "application/vnd.mapbox-vector-tile",
+          headers: { "Access-Control-Allow-Origin": "*" },
+        });
+        servedTiles++;
+      });
       await page.goto(`${origin}/stars`, { waitUntil: "commit" });
       const heading = await page.locator("h1").elementHandle();
       assert.ok(await page.locator("#stars-summary").isVisible());
-      assert.match(await page.locator("#stars-summary").innerText(), /Site 1/);
+      await expect(page.locator("#stars-summary")).toContainText("Site 1");
       assert.equal(await page.locator("#stars-summary li").count(), 6);
       assert.equal(
         await page
@@ -252,6 +291,8 @@ try {
           page.getByRole("region", { name: "Clear dark hours by month" }),
         ).toBeVisible({ timeout: 100 });
       }).toPass({ timeout: 15_000 });
+      await expect.poll(() => servedTiles).toBeGreaterThan(0);
+      await expect(page.getByText(/The map could not load/)).toBeHidden();
       await check("keyboard map selection");
       for (let i = 0; i < 3; i++) await button("Next sites").click();
       await button("Site 95").click();
