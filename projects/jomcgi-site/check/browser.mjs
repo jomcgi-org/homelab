@@ -62,10 +62,33 @@ export async function launchBrowser() {
 // Cloudflare Web Analytics injects this beacon into HTML on proxied hosts (seen
 // on next.jomcgi.dev; not on the jomcgi.dev Worker routes). The site's CSP
 // blocks it. It is edge configuration, not site code, so ignore exactly this
-// URL; any other off-origin request or CSP violation still fails.
-const EDGE_BEACON =
-  /https:\/\/static\.cloudflareinsights\.com\/beacon\.min\.js(?:[/?#]|$|\s|')/;
-export const edgeBeacon = (text) => EDGE_BEACON.test(text);
+// script: its origin and path must match, and only Chromium's own diagnostics
+// for it are dropped. Any other off-origin request, console error or CSP
+// violation still fails.
+const BEACON_ORIGIN = "https://static.cloudflareinsights.com";
+export function isEdgeBeacon(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return (
+    url.origin === BEACON_ORIGIN &&
+    (url.pathname === "/beacon.min.js" ||
+      url.pathname.startsWith("/beacon.min.js/"))
+  );
+}
+const BEACON_CSP_CONSOLE =
+  /^Loading the script '([^']+)' violates the following Content Security Policy directive: "script-src[^"]*"/;
+export function isEdgeBeaconConsole(text) {
+  const match = BEACON_CSP_CONSOLE.exec(text);
+  return Boolean(match && isEdgeBeacon(match[1]));
+}
+export function isEdgeBeaconCsp(entry) {
+  const [directive, ...rest] = entry.split(": ");
+  return directive === "script-src-elem" && isEdgeBeacon(rest.join(": "));
+}
 
 export async function checkPage(
   browser,
@@ -82,7 +105,7 @@ export async function checkPage(
   try {
     await context.route("**/*", (route) => {
       if (new URL(route.request().url()).origin !== origin) {
-        if (edgeBeacon(route.request().url())) return route.abort();
+        if (isEdgeBeacon(route.request().url())) return route.abort();
         errors.push(`off-origin request: ${route.request().url()}`);
         return route.abort();
       }
@@ -104,7 +127,7 @@ export async function checkPage(
     page.setDefaultTimeout(15_000);
     page.on("console", (message) => {
       if (message.type() !== "error") return;
-      if (edgeBeacon(message.text())) return;
+      if (isEdgeBeaconConsole(message.text())) return;
       // Chromium reports the deliberately missing document as a console error.
       // Suppress only that exact network message; every app error still fails.
       if (
@@ -118,7 +141,7 @@ export async function checkPage(
     page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
     page.on("crash", () => errors.push("page crashed"));
     page.on("requestfailed", (request) => {
-      if (edgeBeacon(request.url())) return;
+      if (isEdgeBeacon(request.url())) return;
       errors.push(
         `request failed: ${request.url()} ${request.failure()?.errorText}`,
       );
@@ -153,9 +176,9 @@ export async function checkPage(
       `${url}: colour contrast did not run to a result`,
     );
     errors.push(
-      ...(await page.evaluate(() =>
-        globalThis.siteCheckCsp.map((value) => `CSP: ${value}`),
-      )).filter((value) => !edgeBeacon(value)),
+      ...(await page.evaluate(() => globalThis.siteCheckCsp))
+        .filter((value) => !isEdgeBeaconCsp(value))
+        .map((value) => `CSP: ${value}`),
     );
     for (const violation of results.violations) {
       errors.push(
