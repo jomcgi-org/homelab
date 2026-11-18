@@ -59,6 +59,14 @@ export async function launchBrowser() {
   });
 }
 
+// Cloudflare Web Analytics injects this beacon into HTML on proxied hosts (seen
+// on next.jomcgi.dev; not on the jomcgi.dev Worker routes). The site's CSP
+// blocks it. It is edge configuration, not site code, so ignore exactly this
+// URL; any other off-origin request or CSP violation still fails.
+const EDGE_BEACON =
+  /https:\/\/static\.cloudflareinsights\.com\/beacon\.min\.js(?:[/?#]|$|\s|')/;
+export const edgeBeacon = (text) => EDGE_BEACON.test(text);
+
 export async function checkPage(
   browser,
   { url, status = 200, colorScheme = "light", width = 1280 },
@@ -74,6 +82,7 @@ export async function checkPage(
   try {
     await context.route("**/*", (route) => {
       if (new URL(route.request().url()).origin !== origin) {
+        if (edgeBeacon(route.request().url())) return route.abort();
         errors.push(`off-origin request: ${route.request().url()}`);
         return route.abort();
       }
@@ -95,6 +104,7 @@ export async function checkPage(
     page.setDefaultTimeout(15_000);
     page.on("console", (message) => {
       if (message.type() !== "error") return;
+      if (edgeBeacon(message.text())) return;
       // Chromium reports the deliberately missing document as a console error.
       // Suppress only that exact network message; every app error still fails.
       if (
@@ -107,11 +117,12 @@ export async function checkPage(
     });
     page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
     page.on("crash", () => errors.push("page crashed"));
-    page.on("requestfailed", (request) =>
+    page.on("requestfailed", (request) => {
+      if (edgeBeacon(request.url())) return;
       errors.push(
         `request failed: ${request.url()} ${request.failure()?.errorText}`,
-      ),
-    );
+      );
+    });
     page.on("response", (response) => {
       if (
         response.status() >= 400 &&
@@ -144,7 +155,7 @@ export async function checkPage(
     errors.push(
       ...(await page.evaluate(() =>
         globalThis.siteCheckCsp.map((value) => `CSP: ${value}`),
-      )),
+      )).filter((value) => !edgeBeacon(value)),
     );
     for (const violation of results.violations) {
       errors.push(

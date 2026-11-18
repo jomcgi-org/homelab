@@ -61,6 +61,8 @@ test(
         "report-only",
         "404",
         "off-origin",
+        "edge-beacon",
+        "third-party-script",
       ]) {
         await t.test(mode, async () => {
           const server = await serve((req, res) => {
@@ -78,12 +80,16 @@ test(
                 }[mode] ?? "";
               respond(res, script, "text/javascript");
             } else {
-              const body = ["csp", "report-only"].includes(mode)
-                ? html.replace(
-                    "</body>",
-                    '<script>console.log("inline")</script></body>',
-                  )
-                : html;
+              const tag = {
+                csp: '<script>console.log("inline")</script>',
+                "report-only": '<script>console.log("inline")</script>',
+                // Cloudflare Web Analytics injects this on proxied hosts.
+                "edge-beacon":
+                  '<script defer src="https://static.cloudflareinsights.com/beacon.min.js/vfixture" data-cf-beacon=\'{"token":"fixture"}\'></script>',
+                "third-party-script":
+                  '<script defer src="https://static.cloudflareinsights.com/other.js"></script>',
+              }[mode];
+              const body = tag ? html.replace("</body>", `${tag}</body>`) : html;
               const extra =
                 mode === "report-only"
                   ? {
@@ -115,6 +121,7 @@ test(
               csp: /CSP: script-src-elem/,
               "report-only": /CSP: script-src-elem/,
               "off-origin": /CSP: connect-src|off-origin request/,
+              "third-party-script": /CSP: script-src-elem|off-origin request/,
             }[mode];
             if (expected) await assert.rejects(run(), expected);
             else assert.deepEqual(await run(), [`${server.origin}/`]);
