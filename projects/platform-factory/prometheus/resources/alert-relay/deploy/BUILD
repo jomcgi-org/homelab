@@ -27,3 +27,5 @@ helm_admissibility_render(
     release_name = "alert-relay",
     values_files = ["//projects/platform-factory/prometheus/resources/alert-relay/chart:image_values"],
 )
+
+exports_files(["application.yaml"])

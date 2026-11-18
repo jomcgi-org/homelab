@@ -1,5 +1,5 @@
 # Prometheus's alert rules (prometheus.yml loads them). Alertmanager
-# (alertmanager.yml) sends each one to the homelab Discord channel. The
+# (../stack/alertmanager.yml) sends each one to the homelab Discord channel. The
 # runbook for each alert is in projects/factory-cluster/README.md, "Alerts".
 groups:
   - name: nodes

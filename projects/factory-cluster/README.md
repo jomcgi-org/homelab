@@ -866,7 +866,9 @@ The webhook URL comes from 1Password item `factory-alerts-discord` in vault
 Edit Channel, Integrations, Webhooks, New Webhook, and copy the URL. If the
 item is missing, Alertmanager starts but logs a failed send for each alert.
 Main publishes the relay image, packages its digest in the alert-relay OCI chart,
-and writes the published chart version to the Argo CD Application. After rollout,
+and writes the published chart version to the Prometheus Argo CD Application. Argo CD renders both its chart and
+Git sources, waits for the relay Deployment to become healthy in wave 0, then
+applies the Alertmanager receiver change in wave 1. After rollout,
 check the ready pod in the factory namespace. Compare its image ID with the
 manifest digest in the published chart's image reference.
 
