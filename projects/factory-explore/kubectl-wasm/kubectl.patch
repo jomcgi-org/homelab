@@ -1,0 +1,169 @@
+diff --git a/pkg/cmd/exec_js.go b/pkg/cmd/exec_js.go
+new file mode 100644
+index 0000000..69a1354
+--- /dev/null
++++ b/pkg/cmd/exec_js.go
+@@ -0,0 +1,5 @@
++package cmd
++
++import "errors"
++
++func execPlugin(string, []string, []string) error { return errors.New("plugins are unavailable in the browser") }
+diff --git a/pkg/cmd/exec_native.go b/pkg/cmd/exec_native.go
+new file mode 100644
+index 0000000..c6448de
+--- /dev/null
++++ b/pkg/cmd/exec_native.go
+@@ -0,0 +1,7 @@
++//go:build !js
++
++package cmd
++
++import "syscall"
++
++var execPlugin = syscall.Exec
+diff --git a/pkg/cmd/plugin.go b/pkg/cmd/plugin.go
+index 360fd95..e4c9d47 100644
+--- a/pkg/cmd/plugin.go
++++ b/pkg/cmd/plugin.go
+@@ -23,7 +23,6 @@ import (
+ 	"path/filepath"
+ 	"runtime"
+ 	"strings"
+-	"syscall"
+ )
+ 
+ // PluginHandler is capable of parsing command line arguments
+@@ -84,7 +83,7 @@ func (h *DefaultPluginHandler) Execute(executablePath string, cmdArgs, environme
+ 
+ 	// invoke cmd binary relaying the environment and args given
+ 	// append executablePath to cmdArgs, as execve will make first argument the "binary name".
+-	return syscall.Exec(executablePath, append([]string{executablePath}, cmdArgs...), environment)
++	return execPlugin(executablePath, append([]string{executablePath}, cmdArgs...), environment)
+ }
+ 
+ func command(name string, arg ...string) *exec.Cmd {
+diff --git a/pkg/util/interrupt/interrupt.go b/pkg/util/interrupt/interrupt.go
+index 0265b9f..c4d1630 100644
+--- a/pkg/util/interrupt/interrupt.go
++++ b/pkg/util/interrupt/interrupt.go
+@@ -20,13 +20,8 @@ import (
+ 	"os"
+ 	"os/signal"
+ 	"sync"
+-	"syscall"
+ )
+ 
+-// terminationSignals are signals that cause the program to exit in the
+-// supported platforms (linux, darwin, windows).
+-var terminationSignals = []os.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT}
+-
+ // Handler guarantees execution of notifications after a critical section (the function passed
+ // to a Run method), even in the presence of process termination. It guarantees exactly once
+ // invocation of the provided notify functions.
+diff --git a/pkg/util/interrupt/signals_js.go b/pkg/util/interrupt/signals_js.go
+new file mode 100644
+index 0000000..91d14f8
+--- /dev/null
++++ b/pkg/util/interrupt/signals_js.go
+@@ -0,0 +1,5 @@
++package interrupt
++
++import "os"
++
++var terminationSignals = []os.Signal{os.Interrupt}
+diff --git a/pkg/util/interrupt/signals_native.go b/pkg/util/interrupt/signals_native.go
+new file mode 100644
+index 0000000..8230412
+--- /dev/null
++++ b/pkg/util/interrupt/signals_native.go
+@@ -0,0 +1,12 @@
++//go:build !js
++
++package interrupt
++
++import (
++	"os"
++	"syscall"
++)
++
++// terminationSignals are signals that cause the program to exit in the
++// supported platforms (linux, darwin, windows).
++var terminationSignals = []os.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT}
+diff --git a/pkg/util/term/resizeevents.go b/pkg/util/term/resizeevents.go
+index 2c99cc9..143c563 100644
+--- a/pkg/util/term/resizeevents.go
++++ b/pkg/util/term/resizeevents.go
+@@ -1,4 +1,4 @@
+-//go:build !windows
++//go:build !windows && !js
+ 
+ /*
+ Copyright 2016 The Kubernetes Authors.
+diff --git a/pkg/util/term/resizeevents_js.go b/pkg/util/term/resizeevents_js.go
+new file mode 100644
+index 0000000..770276c
+--- /dev/null
++++ b/pkg/util/term/resizeevents_js.go
+@@ -0,0 +1,3 @@
++package term
++
++func monitorResizeEvents(uintptr, chan<- TerminalSize, chan struct{}) {}
+diff --git a/pkg/util/umask.go b/pkg/util/umask.go
+index 3b4b06c..99559ae 100644
+--- a/pkg/util/umask.go
++++ b/pkg/util/umask.go
+@@ -1,4 +1,4 @@
+-//go:build !windows
++//go:build !windows && !js
+ 
+ /*
+ Copyright 2014 The Kubernetes Authors.
+diff --git a/pkg/util/umask_js.go b/pkg/util/umask_js.go
+new file mode 100644
+index 0000000..40ec818
+--- /dev/null
++++ b/pkg/util/umask_js.go
+@@ -0,0 +1,4 @@
++package util
++
++// Browser files have no Unix permission mask.
++func Umask(int) (int, error) { return 0, nil }
+--- a/pkg/util/BUILD.bazel
++++ b/pkg/util/BUILD.bazel
+@@ -8,4 +8,5 @@
+         "service_port.go",
+         "umask.go",
++        "umask_js.go",
+         "umask_windows.go",
+         "util.go",
+--- a/pkg/util/term/BUILD.bazel
++++ b/pkg/util/term/BUILD.bazel
+@@ -6,4 +6,5 @@
+         "resize.go",
+         "resizeevents.go",
++        "resizeevents_js.go",
+         "resizeevents_windows.go",
+         "term.go",
+--- a/pkg/cmd/BUILD.bazel
++++ b/pkg/cmd/BUILD.bazel
+@@ -6,4 +6,6 @@
+         "alpha.go",
+         "cmd.go",
++        "exec_js.go",
++        "exec_native.go",
+         "plugin.go",
+         "profiling.go",
+--- a/pkg/util/interrupt/BUILD.bazel
++++ b/pkg/util/interrupt/BUILD.bazel
+@@ -3,5 +3,9 @@
+ go_library(
+     name = "interrupt",
+-    srcs = ["interrupt.go"],
++    srcs = [
++        "interrupt.go",
++        "signals_js.go",
++        "signals_native.go",
++    ],
+     importpath = "k8s.io/kubectl/pkg/util/interrupt",
+     visibility = ["//visibility:public"],

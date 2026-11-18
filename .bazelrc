@@ -1,4 +1,5 @@
 import %workspace%/bazel/tools/preset.bazelrc
+common --experimental_isolated_extension_usages
 
 ### YOUR PROJECT SPECIFIC OPTIONS GO HERE ###
 
