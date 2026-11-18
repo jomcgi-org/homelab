@@ -65,8 +65,8 @@ export function HikesMap(props: HikesMapProps) {
           live.current.onSelect(feature.properties.id);
       });
       instance.on("error", (event) => {
-      if (isMapFailure(event)) setFailed(true);
-    });
+        if (isMapFailure(event)) setFailed(true);
+      });
       instance.on("load", () => {
         instance.addSource("walks", {
           type: "geojson",

@@ -154,7 +154,9 @@ it("keeps the map for a single failed or cancelled tile and reports other errors
     }),
   );
   expect(status()).toBeNull();
-  await act(async () => fake.handlers.get("error")!({ error: new Error("style") }));
+  await act(async () =>
+    fake.handlers.get("error")!({ error: new Error("style") }),
+  );
   expect(status()).not.toBeNull();
   view.unmount();
 });
