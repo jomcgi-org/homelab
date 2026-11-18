@@ -87,6 +87,21 @@ exports_files(
 )
 
 sh_test(
+    name = "stpa_validator_test",
+    srcs = ["docs/agents/stpa_validator_test.sh"],
+    args = [
+        "$(rootpath @jq_toolchains//:resolved_toolchain)",
+        "$(rootpath docs/agents/stpa.md)",
+    ],
+    data = [
+        "docs/agents/stpa.md",
+        "//projects:stpa_model",
+        "//projects/monolith:stpa_model",
+        "@jq_toolchains//:resolved_toolchain",
+    ],
+)
+
+sh_test(
     name = "bootstrap_test",
     srcs = ["bootstrap_test.sh"],
     data = [

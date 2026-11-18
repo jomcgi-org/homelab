@@ -498,14 +498,12 @@ flowchart TD
 
 ## Lens: security
 
-**Scope.** Adversarial abuse of the monolith's control structure: an attacker who deliberately forges or withholds identity, reaches a tool the entitlement model does not yet gate, or crosses a tier boundary in the control structure.
+**Scope.** Identity, MCP tool authorization, and the boundaries between the public and private tiers.
 
 <details>
 <summary>Maturity detail</summary>
 
 - **Built:** Separate public and private binaries (ADR security/004), public_reader role with visibility filters on the replica, Turnstile-gated chat with three nested budgets, PrincipalMiddleware bearer-token verification on every MCP message, GroupPolicyMiddleware denying every MCP tool call outside the operators group (no tool tagged mcp:public), Discord trust ledger with per-guild per-user scoring and heuristics-fed instant enforcement, Cloudflare Access lane projecting verified email to agents console, Kubernetes RBAC scoping cluster mutation (ArgoCD sync, per-Kargo-project promote Roles) to the private pod.
-- **Designed-only:** A narrower-than-operators scope for the production-moving MCP tools (#6475), principal attribution on MCP-driven cluster mutations (#6476), activation of the staged native default-deny egress NetworkPolicy for the private pod, per-domain database isolation and cross-domain contract.
-- **Note:** Refreshed for the operators-group MCP gate (core/mcp_policy.py) and kargo_promote (#6458/#6459); other findings retain their earlier review stamp.
 </details>
 
 ### Losses
@@ -522,33 +520,29 @@ flowchart TD
 
 | ID | View | Hazard (unsafe state) | → Losses | Maturity | Status | Issue |
 |----|----|----|----|----|----|----|
-| `no-egress-policy` | physical | The private monolith pod has no enforced default-deny egress policy on the hub; the native policy is staged off, so a compromised pod has open-ended cluster and internet reach | L.unauthorized-access, L.secret-exposure | designed | none | #5277 |
-| `operator-grant-spans-prod-levers` | logical | The operators group is the only MCP authorization tier, so every operators principal (including an agent holding a forwarded operators token) reaches both production cluster levers, ArgoCD sync with prune and kargo_promote with rollback, and Kargo authorizes the Promotion against the monolith ServiceAccount rather than the caller | L.integrity-loss, L.unauthorized-access | built | none | #6475 |
-| `over-broad-public-grant` | physical | public_reader is granted on a schema or view that includes non-public rows | L.unauthorized-access, L.secret-exposure | built |  |  |
-| `private-capture-retained` | physical | A captured screenshot, including of the private tier, is written to SeaweedFS with no expiry policy and persists indefinitely at a stable content-addressed URL after the request that produced it | L.unauthorized-access | built |  |  |
-| `public-route-exposes-private-path` | physical | The public HTTPRoute forwards an internal or unfiltered path to a served handler | L.unauthorized-access | built |  |  |
-| `public-tier-broad-cluster-reach` | physical | The public tier has no enforced network isolation on the hub. Its inert Cilium templates were removed in #5816, so compromised public pods retain broad in-cluster reach until native-policy successor work lands | L.unauthorized-access | built | none | #5276 |
-| `public-write-admission-bypass` | physical | The internet-adjacent public tier can write outside the intended chat_public path, or bypasses Turnstile, per-session limits, and the cluster-wide inference cap | L.integrity-loss, L.capacity-exhaustion | built |  |  |
-| `sandbox-credential-egress` | logical | The scratch-Postgres feature, when enabled, injects a database DSN into the executed code's own process environment, so a Python run in the advertised zero-network sandbox gains credentialed, in-cluster network reach to a shared datastore; the tool's own docstring still claims there is no network at all | L.secret-exposure, L.unauthorized-access | built |  |  |
-| `secret-in-wrong-tier` | physical | A private secret or a K8s token is delivered to the public or frontend tier | L.secret-exposure | built |  |  |
-| `stale-sandbox-result` | logical | A caller re-invoking run_code with the same code but different input files receives a cached result computed against a prior submission's files instead of a fresh run | L.silent-incorrectness | built |  |  |
-| `unredacted-public-doc` | logical | The docs/posts manifest generators copy an allowlisted document's full body into the public site verbatim, gating only on which path may be published, never on what the content contains, so an internal-only identifier (a cluster-internal hostname, a secret env var name) left in a published project's README/ARCHITECTURE/STPA reaches the public docs route | L.secret-exposure | built |  |  |
-| `unrestricted-tool-visibility` | logical | A monolith MCP tool is callable by a principal outside the operators group: GroupPolicyMiddleware denies such calls in prod and no tool carries mcp:public, but an absent bearer resolves to an anonymous principal rather than a 401, anonymous tools/list returns the full catalogue by design, and one env var (MCP_GROUP_POLICY_ENFORCED=false) reverts the gate to allow-all without a redeploy | L.unauthorized-access | built | enforced-prod | #4569 |
+| `over-broad-public-grant` | physical | The public_reader role reads public datasets and the public view of knowledge notes. | L.unauthorized-access, L.secret-exposure | built |  |  |
+| `private-capture-retained` | physical | The operators gate controls capture of private-tier screenshots stored in SeaweedFS. | L.unauthorized-access | built |  |  |
+| `public-route-exposes-private-path` | physical | Each public HTTPRoute sends its path to the designated public service. | L.unauthorized-access | built |  |  |
+| `public-write-admission-bypass` | physical | Public writes are confined to chat_public and its admission and inference budgets. | L.integrity-loss, L.capacity-exhaustion | built |  |  |
+| `sandbox-credential-egress` | logical | The operators gate controls access to scratch-database execution. | L.secret-exposure, L.unauthorized-access | built |  |  |
+| `secret-in-wrong-tier` | physical | Each tier receives only the credentials required by its role. | L.secret-exposure | built |  |  |
+| `unredacted-public-doc` | logical | Published documents must stay within the public content boundary. | L.secret-exposure | built |  |  |
+| `unrestricted-tool-visibility` | logical | GroupPolicyMiddleware restricts monolith MCP tool calls to operators. | L.unauthorized-access | built | enforced-prod | #4569 |
 
 ### Unsafe control actions
 
 | ID | View | Control action | Guideword | Unsafe condition | Severity | → Hazards | Status | Issue | Evidence |
 |----|----|----|----|----|----|----|----|----|----|
-| `chatpublic.write.providing` | physical | `chatpublic.write` | providing | Anonymous attacker bypasses Turnstile, per-session limits, or the cluster-wide inference cap to write outside chat_public or exhaust shared GPU | high | public-write-admission-bypass | enforced-prod |  | projects/monolith-public/chart/values.yaml:146 |
-| `docs.publish.providing` | logical | `docs.publish` | providing | A document is added to an allowlisted path and the generator publishes it unreviewed for certain markers (in-cluster hostnames, 1Password refs, private IPs, node/brick names, S3 URIs, .internal domains, secret env assignments); internal identifiers not matching these markers still pass through | medium | unredacted-public-doc | enforced-prod | #5275 | projects/monolith/knowledge/tools/gen_docs_manifest.py:128 |
-| `grant.public-reader.providing` | physical | `grant.public-reader` | providing | A schema-wide grant or a missing visibility filter serves a private row through a public route, disclosing private knowledge-graph content directly | high | over-broad-public-grant | enforced-prod |  | projects/monolith/chart/migrations/20260617000000_public_reader_role.sql:24 |
-| `k8s.mutate.providing` | physical | `k8s.mutate` | providing | A caller outside the operators group triggers ArgoCD sync/prune on any Application, or via kargo_promote creates a Promotion (rollback=true included) in any of the four production Kargo projects; denied in prod by the operators gate, but every operators principal holds both levers | high | unrestricted-tool-visibility, operator-grant-spans-prod-levers | enforced-prod | #6475 | projects/monolith/cluster/mcp.py:173, projects/monolith/cluster/mcp.py:258, projects/monolith/core/mcp_policy.py:75 |
-| `mcp.agent-session.providing` | logical | `mcp.agent-session` | providing | A caller outside the operators group starts or drives a full agent session, inheriting every tool that session can reach and compounding every other unentitled-tool row | high | unrestricted-tool-visibility | enforced-prod | #4569 | projects/monolith/factory/execution/mcp.py:1580 |
-| `mcp.chat-pardon.providing` | logical | `mcp.chat-pardon` | providing | A caller outside the operators group calls monolith_chat_trust_pardon, resetting any locked-out user's score and flipping their labels, undoing the ledger's containment of an active red-team session from a different trust boundary | high | unrestricted-tool-visibility | enforced-prod | #4569 | projects/monolith/agent/mcp.py:380 |
-| `route.public.providing` | physical | `route.public` | providing | Attacker reaches a private or internal path via the public HTTPRoute or the SSR proxy, reading private data or invoking an internal handler | high | public-route-exposes-private-path | enforced-prod |  | projects/monolith-public/chart/templates/httproute-public.yaml:13 |
-| `sandbox.run.providing` | logical | `sandbox.run` | providing | A caller outside the operators group spends zero-egress compute or, when scratch feature is enabled, reaches the in-cluster scratch database with credentialed DSN | medium | unrestricted-tool-visibility, sandbox-credential-egress | enforced-prod | #4569 | projects/monolith/sandbox/mcp.py:15 |
-| `secret.deliver-public.providing` | physical | `secret.deliver-public` | providing | A private credential, Kubernetes API-capable token, or Turnstile secret is wired into the public frontend or public backend beyond its explicitly constrained use | high | secret-in-wrong-tier | enforced-prod |  | projects/monolith/public_turnstile_secret_isolation_test.py:76 |
-| `shotter.capture.providing` | logical | `shotter.capture` | providing | A caller outside the operators group (anonymous, or a token without the groups claim) calls the screenshot tool for private.jomcgi.dev pages, disclosing private-tier page content retained indefinitely at a guessable URL | high | unrestricted-tool-visibility, private-capture-retained | enforced-prod | #4569 | projects/monolith/shotter/mcp.py:123 |
+| `chatpublic.write.providing` | physical | `chatpublic.write` | providing | Public chat admission requires Turnstile verification and enforces session limits and a cluster-wide inference cap. | high | public-write-admission-bypass | enforced-prod |  | projects/monolith-public/chart/values.yaml:146 |
+| `docs.publish.providing` | logical | `docs.publish` | providing | The public manifest generator checks allowlisted content for internal identifiers before publication. | medium | unredacted-public-doc | enforced-prod | #5275 | projects/monolith/knowledge/tools/gen_docs_manifest.py:128 |
+| `grant.public-reader.providing` | physical | `grant.public-reader` | providing | Database grants scope public_reader to public tables and visibility-filtered views. | high | over-broad-public-grant | enforced-prod |  | projects/monolith/chart/migrations/20260617000000_public_reader_role.sql:24 |
+| `k8s.mutate.providing` | physical | `k8s.mutate` | providing | GroupPolicyMiddleware gates ArgoCD sync and Kargo promotion calls on operators group membership. | high | unrestricted-tool-visibility | enforced-prod |  | projects/monolith/cluster/mcp.py:173, projects/monolith/cluster/mcp.py:258, projects/monolith/core/mcp_policy.py:75 |
+| `mcp.agent-session.providing` | logical | `mcp.agent-session` | providing | Starting or driving an agent session through MCP requires operators group membership. | high | unrestricted-tool-visibility | enforced-prod | #4569 | projects/monolith/factory/execution/mcp.py:1580 |
+| `mcp.chat-pardon.providing` | logical | `mcp.chat-pardon` | providing | Pardoning a chat user through MCP requires operators group membership. | high | unrestricted-tool-visibility | enforced-prod | #4569 | projects/monolith/agent/mcp.py:380 |
+| `route.public.providing` | physical | `route.public` | providing | The page route sends pages and client assets to the frontend. A separate HTTPRoute sends /functions/<name> directly to the invocation backend, which resolves only public functions. | high | public-route-exposes-private-path | enforced-prod |  | projects/monolith-public/chart/templates/httproute-public.yaml:41, projects/monolith-public/chart/templates/httproute-public.yaml:112 |
+| `sandbox.run.providing` | logical | `sandbox.run` | providing | Running sandbox code with scratch-database access requires operators group membership. | medium | unrestricted-tool-visibility, sandbox-credential-egress | enforced-prod | #4569 | projects/monolith/sandbox/mcp.py:15 |
+| `secret.deliver-public.providing` | physical | `secret.deliver-public` | providing | The public backend holds the Turnstile secret for verification. The frontend receives the public site key. | high | secret-in-wrong-tier | enforced-prod |  | projects/monolith/public_turnstile_secret_isolation_test.py:76 |
+| `shotter.capture.providing` | logical | `shotter.capture` | providing | Private-tier screenshots require an authorized operators-group caller. | high | unrestricted-tool-visibility, private-capture-retained | enforced-prod | #4569 | projects/monolith/shotter/mcp.py:123 |
 
 ### Unsafe feedback
 
@@ -556,14 +550,11 @@ flowchart TD
 
 | ID | View | Channel | Guideword | Unsafe condition | Severity | → Hazards | Status | Issue | Evidence |
 |----|----|----|----|----|----|----|----|----|----|
-| `docs-publish.unauthorized-source` | logical | `docs-manifest-gen` → `public-frontend`: allowlisted document content published to public site | unauthorized-source | A document is added to an allowlisted path and the generator publishes it unreviewed for certain markers (in-cluster hostnames, 1Password refs, private IPs, node/brick names, S3 URIs, .internal domains, secret env assignments); internal identifiers not matching these markers still pass through | medium | unredacted-public-doc | enforced-prod | #5275 | projects/monolith/knowledge/tools/gen_docs_manifest.py:128 |
-| `k8s-mutation-attribution.unauthorized-source` | physical | `private-binary` → `k8s-api`: identity recorded on ArgoCD sync operations and Kargo Promotions | unauthorized-source | MCP-driven syncs record the fixed username monolith-k8s-mcp and Promotions carry no requester, so the ArgoCD and Kargo audit trail names the monolith ServiceAccount, never the operator or agent session that moved production | medium | operator-grant-spans-prod-levers | none | #6476 | projects/monolith/cluster/kubernetes.py:580, projects/monolith/cluster/kargo.py:219 |
-| `sandbox-dedupe.stale` | logical | `embervm-sandbox` → `sandbox-tool`: stdout/stderr/exit_code/files for a (language, code) key | stale | Idempotency-Key is (language, code) only, not input files; resubmit with same code but different files within result-cache TTL receives stale output from prior submission | medium | stale-sandbox-result | none | #5304 | projects/monolith/sandbox/client.py:97 |
+| `docs-publish.unauthorized-source` | logical | `docs-manifest-gen` → `public-frontend`: allowlisted document content published to public site | unauthorized-source | The public manifest generator checks content from allowlisted paths before publication. | medium | unredacted-public-doc | enforced-prod | #5275 | projects/monolith/knowledge/tools/gen_docs_manifest.py:128 |
 
 <details>
-<summary><b>Not UCAs</b>: 7 examined and rejected</summary>
+<summary><b>Not UCAs</b>: 6 examined and rejected</summary>
 
-- **Anonymous tools/list returns the full MCP catalogue**: Catalogue disclosure only: on_call_tool denies every untagged call, and filtering the anonymous list would blank Context Forge's cached catalogue (projects/monolith/core/mcp_policy.py:104)
 - **Authentik and Kubernetes control-plane compromise**: Assumed not to hold
 - **Cluster layers below the monolith**: Ingress tunnel, CNI policy, admission control, secret operator are owned by docs/security.md
 - **Cluster-wide capacity exhaustion outside modeled admission and budget gates**: Not analyzed here
@@ -571,12 +562,3 @@ flowchart TD
 - **EmberVM guest and hypervisor isolation**: Covered in projects/embervm/STPA.md (logic and security lenses); this document covers only monolith-side broker
 - **Supply chain of the monolith's own image build**: Not analyzed here
 </details>
-
-### Open questions
-
-- Does Kargo's admission webhook itself refuse a Promotion for Freight not yet available to the Stage, so a holder of the monolith ServiceAccount token (bypassing cluster/kargo.py plan_promotion) cannot promote unverified Freight into production?
-- Should run_code's docstring be corrected to stop claiming zero network for Python, or should the scratch-Postgres DSN injection move behind a separate explicitly-network-capable tool?
-- The monolith-agents MCP surface (projects/monolith/app/agents_main.py) rejects anonymous callers but applies no operators gate; should any authenticated token reach its board and knowledge write tools?
-- When will the staged native default-deny egress NetworkPolicy (#5277 / #3897) be validated and activated for the private pod's open-ended cluster and internet reach?
-- Will the public tier's cluster-reach policy (#5276) be scoped to only the four intended destinations (Postgres, vLLM, embeddings, SeaweedFS)?
-- structure gap: k8s.mutate is labelled ArgoCD sync only, and there is no control action for kargo_promote (private-binary to a Kargo Promotion) or node for the GroupPolicyMiddleware operators gate; this lens folds kargo_promote into k8s.mutate.providing until the logic lens models them.
