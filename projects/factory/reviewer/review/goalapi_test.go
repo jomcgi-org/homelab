@@ -20,10 +20,14 @@ func TestGoalReasonsAPIServesTheNewestReplyForAHead(t *testing.T) {
 	head, other := strings.Repeat("a", 40), strings.Repeat("b", 40)
 	now := time.Now().UTC()
 	for _, r := range []GoalAuditRecord{
-		{Repository: "o/r", PullRequest: 7, Head: head, Issue: "HOME-1", Digest: "d1", MessageID: "m1", TaskID: "t1", Phase: "initial", CreatedAt: now,
-			Reply: "Old reasons.\n\n```json\n{\"criteria\":[],\"overall\":\"not_met\"}\n```"},
-		{Repository: "o/r", PullRequest: 7, Head: head, Issue: "HOME-1", Digest: "d1", MessageID: "m2", TaskID: "t2", Phase: "confirmation", CreatedAt: now.Add(time.Second),
-			Reply: "Criterion 2 misses the retry.\n\n```json\n{\"criteria\":[],\"overall\":\"not_met\"}\n```"},
+		{
+			Repository: "o/r", PullRequest: 7, Head: head, Issue: "HOME-1", Digest: "d1", MessageID: "m1", TaskID: "t1", Phase: "initial", CreatedAt: now,
+			Reply: "Old reasons.\n\n```json\n{\"criteria\":[],\"overall\":\"not_met\"}\n```",
+		},
+		{
+			Repository: "o/r", PullRequest: 7, Head: head, Issue: "HOME-1", Digest: "d1", MessageID: "m2", TaskID: "t2", Phase: "confirmation", CreatedAt: now.Add(time.Second),
+			Reply: "Criterion 2 misses the retry.\n\n```json\n{\"criteria\":[],\"overall\":\"not_met\"}\n```",
+		},
 		{Repository: "o/r", PullRequest: 7, Head: other, Issue: "HOME-1", Digest: "d1", MessageID: "m3", TaskID: "t3", CreatedAt: now, Reply: "```json\n{}\n```"},
 	} {
 		if err := a.Save(r); err != nil {
