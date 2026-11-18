@@ -214,6 +214,15 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
             and project_id = ${projectId} and state_type in ('backlog','completed') for share
           `);
           if (!column.length) throw conflict("Invalid finding destination");
+          // A column move can run the project's subtask automations, which
+          // move the parent or subtasks without this route's ownership check.
+          // So a finding linked to another issue is never moved here.
+          const related = await db.execute(sql`
+            select 1 from issue
+            where (id = ${id} and parent_id is not null) or parent_id = ${id}
+            limit 1
+          `);
+          if (related.length) throw conflict("Finding has a parent or subtasks");
         }
         // Upstream's single-row service leaves archived subtasks untouched.
         if (body.restore) await restoreIssue(id, actor);

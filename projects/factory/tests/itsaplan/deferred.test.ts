@@ -19,6 +19,7 @@ import { signUpTestUser } from "./__tests__/helpers/auth";
 import { createAgent, setAgentProjectRole } from "./__tests__/helpers/agents";
 import { resetDb } from "./__tests__/helpers/db";
 import { factoryRoutes } from "./factory";
+import { setSubtaskAutomationSettings } from "./modules/projects/service";
 
 app.use(factoryRoutes);
 beforeEach(resetDb);
@@ -310,6 +311,30 @@ test("the sync key can restore and update only its own INTSEC finding", async ()
   const before = await effects(human.data!.id);
   expect((await send(human.data!.id)).status).toBe(403);
   expect(await effects(human.data!.id)).toEqual(before);
+  // With subtask automation on, closing a finding linked to a human-owned
+  // parent would move that parent. The route refuses any linked finding.
+  await setSubtaskAutomationSettings(project.data!.id, {
+    completeParent: true,
+    closeSubtasks: true,
+  });
+  const parent = await setup.issues.post({ ...fields, title: "Human parent" });
+  expect(parent.status).toBe(201);
+  await db
+    .update(issue)
+    .set({ parentId: parent.data!.id })
+    .where(eq(issue.id, own.data!.id));
+  const parentBefore = await effects(parent.data!.id);
+  expect((await send(own.data!.id)).status).toBe(409);
+  expect(await effects(parent.data!.id)).toEqual(parentBefore);
+  await db
+    .update(issue)
+    .set({ parentId: null })
+    .where(eq(issue.id, own.data!.id));
+  await setSubtaskAutomationSettings(project.data!.id, {
+    completeParent: false,
+    closeSubtasks: false,
+  });
+
   expect((await send(own.data!.id)).status).toBe(200);
   expect((await effects(own.data!.id)).issue).toMatchObject({
     archivedAt: null,
