@@ -103,6 +103,10 @@ spec:
             - --storage.tsdb.retention.time=7d
             - --storage.tsdb.retention.size=4GB
             - --web.listen-address=:9090
+            # Alert links open Grafana Explore (HOME-336). The route prefix
+            # stays /, so the probes and the Grafana datasource keep their paths.
+            - --web.external-url=https://factory-grafana.jomcgi.dev/explore
+            - --web.route-prefix=/
             # Remote write, admin and lifecycle endpoints stay off.
           ports:
             - name: http
