@@ -73,8 +73,10 @@ kagent:
   # one for all Agents).
   config:
     # The Codex harness from the same fork build as the controller: Codex
-    # 0.169.1 in place of 0.161.0.
+    # 0.169.1 in place of 0.161.0. The controller starts only when `release`
+    # equals its own version, so it names the fork build, not 1.0.1.
     harnessImages:
+      release: 1.0.1-jomcgi.2c2fc329a8d8
       codex: ghcr.io/jomcgi-org/kagent/codex-harness@sha256:f1b2f7a4834394ae9170b13e4d135201e754f791312ca1990a530221ec57d9d1
     runtimeDefaults:
       cpu: "4"
