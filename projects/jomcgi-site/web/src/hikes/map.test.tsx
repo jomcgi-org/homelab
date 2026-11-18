@@ -11,6 +11,7 @@ const fake = vi.hoisted(() => ({
   fitBounds: vi.fn(),
   easeTo: vi.fn(),
   zoom: 9,
+  rendered: [] as { source: string }[],
 }));
 vi.mock("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url", () => ({
   default: "/assets/worker.js",
@@ -47,6 +48,9 @@ vi.mock("maplibre-gl", () => ({
       return fake.zoom;
     }
     easeTo = fake.easeTo;
+    queryRenderedFeatures() {
+      return fake.rendered;
+    }
   },
 }));
 
@@ -59,6 +63,7 @@ beforeEach(() => {
     },
   );
   fake.zoom = 9;
+  fake.rendered = [];
 });
 
 afterEach(() => {
@@ -154,7 +159,12 @@ it("keeps the map for a single failed or cancelled tile until it settles with no
     }),
   );
   expect(status()).toBeNull();
-  // Settling with tile errors and no base-map tile is a failed map.
+  // The settled view still renders the base map: keep it.
+  fake.rendered = [{ source: "openmaptiles" }];
+  await act(async () => fake.handlers.get("idle")!());
+  expect(status()).toBeNull();
+  // The settled view renders only the walks overlay: the map has failed.
+  fake.rendered = [{ source: "walks" }];
   await act(async () => fake.handlers.get("idle")!());
   expect(status()).not.toBeNull();
   view.unmount();
