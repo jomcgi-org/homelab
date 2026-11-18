@@ -3,6 +3,7 @@ package relay
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/provider/codexchatgpt"
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/quota"
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/store"
+	"github.com/klauspost/compress/zstd"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -974,5 +976,56 @@ func TestModelAllowlist(t *testing.T) {
 	}
 	if h.backend.count() != 2 {
 		t.Fatalf("backend calls = %d", h.backend.count())
+	}
+}
+
+func TestCompressedModelAllowlist(t *testing.T) {
+	h := newHarness(t, true)
+	h.handler.AllowedModels = []string{"gpt-5"}
+	h.handler.MaxRequestBytes = 4096
+	encoder, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer encoder.Close()
+	for _, enc := range []string{"gzip", "zstd"} {
+		for _, path := range []string{"/v1/responses", "/v1/responses/compact"} {
+			for _, tc := range []struct {
+				model   string
+				padding int
+				status  int
+			}{{"gpt-5", 0, 200}, {"other", 0, 400}, {"gpt-5", 8192, 413}} {
+				raw := []byte(fmt.Sprintf(`{"model":%q,"padding":%q}`, tc.model, strings.Repeat("x", tc.padding)))
+				var body []byte
+				if enc == "gzip" {
+					var buf bytes.Buffer
+					writer := gzip.NewWriter(&buf)
+					if _, err := writer.Write(raw); err != nil {
+						t.Fatal(err)
+					}
+					if err := writer.Close(); err != nil {
+						t.Fatal(err)
+					}
+					body = buf.Bytes()
+				} else {
+					body = encoder.EncodeAll(raw, nil)
+				}
+				req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+				req.Header.Set("Authorization", "Bearer "+h.actorJWT())
+				req.Header.Set("Content-Encoding", enc)
+				w := httptest.NewRecorder()
+				h.handler.ServeHTTP(w, req)
+				if w.Code != tc.status {
+					t.Fatalf("%s %s model %q padding %d: got %d want %d", enc, path, tc.model, tc.padding, w.Code, tc.status)
+				}
+				if w.Code == 200 {
+					h.backend.set(func(b *backend) {
+						if !bytes.Equal(body, b.lastBody) || b.lastReq.Header.Get("Content-Encoding") != enc {
+							t.Error("compressed request changed upstream")
+						}
+					})
+				}
+			}
+		}
 	}
 }
