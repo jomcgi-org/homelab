@@ -318,7 +318,7 @@ func run(log *slog.Logger) error {
 		Store: st, Plan: statusPlan, GitHub: statusGitHub,
 		Bindings: cfg.File.Bindings, IssueURL: cfg.File.Links.Issue,
 	}
-	statusHandler := &status.Handler{Load: statusSource.Load}
+	statusHandler := &status.Handler{Load: statusSource.Load, Log: log}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
