@@ -38,6 +38,7 @@ import {
   serve,
 } from "./fixture.mjs";
 import { scopeFor } from "./scope.mjs";
+import { parseHeaders } from "./headers.mjs";
 import { snapshot } from "../data/snapshot.mjs";
 
 test("production audits only Worker routes, including its scoped 404", async (t) => {
@@ -110,7 +111,7 @@ test("production audits only Worker routes, including its scoped 404", async (t)
             preview: false,
             get: http.get,
             scope: scopeFor("prod"),
-            freshness: ["/cv/latest.json", "/hikes/latest.json"].map(
+            freshness: ["/cv/latest.json", `${hubPath}/latest.json`].map(
               (path) => ({
                 path,
                 timestampField: "generatedAt",
@@ -135,7 +136,7 @@ test("production audits only Worker routes, including its scoped 404", async (t)
           );
           assert.ok(requests.includes(hubPath), "hub links are still checked");
           assert.ok(requests.includes("/cv/latest.json"));
-          assert.ok(!requests.includes("/hikes/latest.json"));
+          assert.ok(!requests.includes(`${hubPath}/latest.json`));
           assert.ok(
             !requests.includes(JUNK_PATH),
             "the hub's 404 is not audited",
@@ -344,23 +345,6 @@ test("preview requires noindex; production can be indexed", () => {
   );
 });
 
-test("/hikes may widen only the CSP directives its route rule names", () => {
-  const hikes = new Headers(headersFor("/hikes"));
-  checkHeaders(hikes, { preview: true, path: "/hikes" });
-  assert.throws(() => checkHeaders(hikes, { preview: true, path: "/" }), /CSP/);
-  const wider = new Headers(hikes);
-  wider.set(
-    "content-security-policy",
-    hikes
-      .get("content-security-policy")
-      .replace("script-src 'self'", "script-src *"),
-  );
-  assert.throws(
-    () => checkHeaders(wider, { preview: true, path: "/hikes" }),
-    /CSP script-src/,
-  );
-});
-
 test("CSP cannot be weakened by a subdirective or a duplicate", () => {
   for (const suffix of [
     "; script-src-elem * 'unsafe-inline'",
@@ -414,17 +398,30 @@ test("production wildcard routes include query URLs and retired-page 404s", () =
     assert.ok(scope.owns(path), `${path} is routed exactly`);
     assert.ok(!scope.junkPaths.includes(`${path}${JUNK_PATH}`));
   }
+  // Each section moves by adding its patterns, so derive the Worker's paths
+  // from edge/routes.json and pin only what must stay off it: the connector,
+  // the query variants of exact routes, the bare junk path and data.
+  const routes = JSON.parse(
+    readFileSync(new URL("../edge/routes.json", import.meta.url)),
+  );
+  for (const pattern of routes.patterns) {
+    const path = pattern.slice(routes.zone.length);
+    if (path.endsWith("*")) {
+      const prefix = path.slice(0, -1);
+      assert.ok(scope.owns(prefix), `${pattern} owns ${prefix}`);
+      assert.ok(scope.owns(`${prefix}?ref=test`), `${pattern} keeps queries`);
+    } else {
+      assert.ok(scope.owns(path), `${pattern} owns ${path}`);
+      assert.ok(!scope.owns(`${path}?ref=test`), `${pattern} is exact`);
+    }
+  }
   for (const path of [
     "/?ref=test",
-    "/app/notes",
     "/scotland/mcp",
     "/scotland/v1/tools",
     "/scotland?ref=test",
-    "/slop/factory",
     "/slop?ref=test",
     JUNK_PATH,
-    "/hikes",
-    "/stars",
     "/data/stars/latest.json",
   ]) {
     assert.equal(scope.owns(path), false, `${path} still belongs to the hub`);
@@ -582,5 +579,50 @@ test("a stamped stars page matches its release outside the summary markers", () 
         "/stars",
       ),
     /has no data/,
+  );
+});
+
+test("each page is held to its own _headers policy", () => {
+  // Pinned: the site default, and the /hikes map policy that detaches it.
+  const site = headersFor("/", false)["content-security-policy"];
+  const hikes = headersFor("/hikes", false)["content-security-policy"];
+  assert.match(site, /img-src 'self' data:;/);
+  assert.match(hikes, /tiles\.openfreemap\.org/);
+  assert.match(hikes, /worker-src 'self' blob:/);
+  assert.equal(headersFor("/hikes", false)["content-security-policy"], hikes);
+  const served = (csp, extra = {}) =>
+    new Headers({
+      ...headersFor("/", false),
+      ...extra,
+      "content-security-policy": csp,
+    });
+  checkHeaders(served(site), { preview: false, path: "/" });
+  checkHeaders(
+    served(hikes, {
+      "permissions-policy": headersFor("/hikes", false)["permissions-policy"],
+    }),
+    { preview: false, path: "/hikes" },
+  );
+  // The wider map policy on another page, or the site policy on /hikes, fails.
+  assert.throws(
+    () => checkHeaders(served(hikes), { preview: false, path: "/" }),
+    /CSP/,
+  );
+  assert.throws(
+    () => checkHeaders(served(site), { preview: false, path: "/hikes" }),
+    /CSP/,
+  );
+  // A _headers rule cannot lower the floor for any page.
+  const weak = parseHeaders(
+    "/*\n  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'\n",
+  );
+  assert.throws(
+    () =>
+      checkHeaders(served(weak[0].headers["content-security-policy"]), {
+        preview: false,
+        path: "/",
+        rules: weak,
+      }),
+    /_headers CSP/,
   );
 });

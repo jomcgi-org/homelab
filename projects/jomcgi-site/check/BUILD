@@ -10,6 +10,7 @@ js_library(
         "browser.mjs",
         "fixture.mjs",
         "freshness.json",
+        "headers.mjs",
         "release-fixture.mjs",
         "scope.mjs",
         "smoke.mjs",
