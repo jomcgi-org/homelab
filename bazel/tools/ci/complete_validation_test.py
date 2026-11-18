@@ -21,6 +21,12 @@ def checkout(tmp_path):
     helper = root / "bazel/tools/ci/ci"
     helper.parent.mkdir(parents=True)
     shutil.copyfile(Path(__file__).with_name("ci"), helper)
+    # ci lint runs the invariant record check before it formats.
+    checker = root / "bazel/tools/format/invariants/check_invariants.py"
+    checker.parent.mkdir(parents=True)
+    shutil.copyfile(
+        Path(__file__).parents[1] / "format/invariants/check_invariants.py", checker
+    )
     (root / "a.py").write_text("x = 1\n")
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(["git", "commit", "-qm", "base"], cwd=root, check=True)

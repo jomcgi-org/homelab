@@ -4,6 +4,11 @@
 load("@aspect_rules_py//py:defs.bzl", "py_binary", "py_library")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
+exports_files(
+    ["check_invariants.py"],
+    visibility = ["//bazel/tools/ci:__pkg__"],
+)
+
 py_library(
     name = "check_invariants_lib",
     srcs = ["check_invariants.py"],
