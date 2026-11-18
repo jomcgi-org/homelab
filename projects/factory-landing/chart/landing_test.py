@@ -28,6 +28,9 @@ def test_private_status_app():
         text=True,
     )
     rendered = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+    names = {doc["metadata"]["name"] for doc in rendered}
+    assert "factory-connector-status" not in names
+    assert "factory-landing-status" not in names
     docs = {doc["kind"]: doc for doc in rendered}
     route = docs["HTTPRoute"]["spec"]
     assert route["hostnames"] == ["factory.jomcgi.dev"]
