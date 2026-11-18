@@ -117,6 +117,9 @@ type Config struct {
 	QuotaStall time.Duration
 	// CILogs is optional; its candidates must pass base-tree validation.
 	CILogs CILogs
+	// GoalReasons is optional: the reviewer's goal check reasons for a
+	// head, posted on the issue and quoted in the round (goal_reasons.go).
+	GoalReasons GoalReasonsSource
 	// The liveness lease (HOME-141, liveness.go): a send must show a task
 	// within TaskLease (5 min), and a running turn a task event every
 	// ProgressLease (20 min), or every ToolLease (60 min) while a tool call

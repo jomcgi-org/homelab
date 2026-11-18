@@ -82,3 +82,18 @@ imagePullSecrets:
   - name: {{ .Values.imagePullSecret.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+factory.goalReasons is "true" when the reviewer serves goal reasons to the
+connector (HOME-251). Only Cilium policies that admit the connector alone
+may expose the listener, so enabling it without them fails the render.
+*/}}
+{{- define "factory.goalReasons" -}}
+{{- $g := .Values.reviewer.goalReasons | default dict }}
+{{- if and .Values.reviewer.enabled $g.enabled }}
+{{- if not (and .Values.connector.enabled .Values.itsaplan.enabled .Values.networkPolicy.cilium) }}
+{{- fail "reviewer.goalReasons.enabled needs connector.enabled, itsaplan.enabled and networkPolicy.cilium" }}
+{{- end }}
+{{- print "true" }}
+{{- end }}
+{{- end }}

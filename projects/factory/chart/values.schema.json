@@ -641,6 +641,18 @@
         "metricsPort": {
           "$ref": "#/definitions/port"
         },
+        "goalReasons": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "port": {
+              "$ref": "#/definitions/port"
+            }
+          }
+        },
         "resources": {
           "type": "object"
         }

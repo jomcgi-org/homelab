@@ -241,3 +241,21 @@ buildbuddy:
 		}
 	}
 }
+
+func TestParseReviewerGoalURL(t *testing.T) {
+	f, err := Parse([]byte(sample + "reviewerGoalURL: http://factory-reviewer.factory.svc:8091\n"))
+	if err != nil || f.ReviewerGoalURL != "http://factory-reviewer.factory.svc:8091" {
+		t.Fatalf("reviewerGoalURL = %+v, %v", f, err)
+	}
+	for _, bad := range []string{
+		"https://factory-reviewer.factory.svc:8091",
+		"http://reviewer.example.com:8091",
+		"http://factory-reviewer.factory.svc:8091/v1",
+		"http://u:p@factory-reviewer.factory.svc:8091",
+		"http://factory-reviewer.factory.svc:8091?x=1",
+	} {
+		if _, err := Parse([]byte(sample + "reviewerGoalURL: " + bad + "\n")); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+}

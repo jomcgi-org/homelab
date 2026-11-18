@@ -111,6 +111,9 @@ GitHub tokens the broker mints for that ServiceAccount.
   "apiKeyFile" "/var/run/secrets/factory-buildbuddy/api-key"
 ) }}
 {{- end }}
+{{- if include "factory.goalReasons" . }}
+{{- $_ := set $config "reviewerGoalURL" (printf "http://%s.%s.svc:%d" (include "factory.reviewerName" .) .Values.broker.namespace (int .Values.reviewer.goalReasons.port)) }}
+{{- end }}
 {{- $configYAML := toYaml $config }}
 {{- if $bb.enabled }}
 # BuildBuddy's read-only API key; only the connector mounts it.

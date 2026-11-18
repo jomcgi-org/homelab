@@ -42,7 +42,11 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   public word from those values, with finding IDs from the issue key and
   criterion number, and a parse failure shows only a fixed class. An
   earlier goal finding stays open until a valid answer on the same issue
-  resolves it.
+  resolves it. The goal check's reasons stay private: only the connector
+  reads them from the reviewer's internal listener, posts them on the issue
+  and quotes them in the coder's round as untrusted data, with no `@`
+  mention and never on GitHub
+  ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-251#comment-2324)).
   itsaplan account IDs and member kind, resolved by the service, establish
   authorship; display names and claims in text never do. Only configured
   trusted member accounts confer decision authority, and only for text

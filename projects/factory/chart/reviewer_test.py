@@ -613,6 +613,71 @@ def test_only_declared_network_paths_and_peers_admit_the_pod() -> None:
     assert not any(d["kind"] == "CiliumNetworkPolicy" for d in off)
 
 
+def test_goal_reasons_reach_the_connector_alone() -> None:
+    # Off by default: no listener, Service, ingress or connector setting.
+    off = _render()
+    assert not any(
+        d["kind"] == "Service" and d["metadata"]["name"] == "factory-reviewer"
+        for d in off
+    )
+    off_config = yaml.safe_load(
+        _in(off, "ConfigMap", "factory", "factory-reviewer")["data"]["config.yaml"]
+    )
+    assert "goalReasonsAddr" not in off_config
+
+    docs = _render(["reviewer.goalReasons.enabled=true"])
+    config = yaml.safe_load(
+        _in(docs, "ConfigMap", "factory", "factory-reviewer")["data"]["config.yaml"]
+    )
+    assert config["goalReasonsAddr"] == ":8091"
+    assert config["metricsAddr"] == ":9090"
+    deploy = _in(docs, "Deployment", "factory", "factory-reviewer")
+    ports = deploy["spec"]["template"]["spec"]["containers"][0]["ports"]
+    assert {"name": "goal-reasons", "containerPort": 8091} in ports
+    service = _in(docs, "Service", "factory", "factory-reviewer")["spec"]
+    # Only the goal reasons port: /metrics stays unexposed.
+    assert service["ports"] == [
+        {"name": "goal-reasons", "port": 8091, "targetPort": "goal-reasons"}
+    ]
+    labels = deploy["spec"]["template"]["metadata"]["labels"]
+    assert service["selector"].items() <= labels.items()
+
+    spec = _in(docs, "CiliumNetworkPolicy", "factory", "factory-reviewer")["spec"]
+    connector = _in(docs, "Deployment", "factory", "factory-connector")
+    connector_labels = connector["spec"]["template"]["metadata"]["labels"]
+    assert len(spec["ingress"]) == 1
+    (rule,) = spec["ingress"]
+    assert rule["toPorts"] == [{"ports": [{"port": "8091", "protocol": "TCP"}]}]
+    (peer,) = rule["fromEndpoints"]
+    want = dict(peer["matchLabels"])
+    assert want.pop("k8s:io.kubernetes.pod.namespace") == "factory"
+    assert want.items() <= connector_labels.items()
+
+    egress = _in(docs, "CiliumNetworkPolicy", "factory", "factory-connector")["spec"][
+        "egress"
+    ]
+    assert {
+        "toEndpoints": [
+            {
+                "matchLabels": {
+                    "k8s:io.kubernetes.pod.namespace": "factory",
+                    **spec["endpointSelector"]["matchLabels"],
+                }
+            }
+        ],
+        "toPorts": [{"ports": [{"port": "8091", "protocol": "TCP"}]}],
+    } in egress
+    connector_config = yaml.safe_load(
+        _in(docs, "ConfigMap", "factory", "factory-connector")["data"]["config.yaml"]
+    )
+    assert connector_config["reviewerGoalURL"] == "http://factory-reviewer.factory.svc:8091"
+
+    # Without the policies that admit the connector alone, it does not render.
+    for override in ("networkPolicy.cilium=false", "connector.enabled=false"):
+        with pytest.raises(RuntimeError, match="goalReasons.enabled needs"):
+            _helm(["reviewer.goalReasons.enabled=true", override])
+
+
 def test_service_identity_and_endpoints_follow_namespace_and_port_values() -> None:
     docs = _render(
         [
@@ -723,6 +788,7 @@ def test_long_default_namespace_requires_an_explicit_review_namespace() -> None:
     [
         [],
         ["reviewer.commentAuthor=jomcgi-factory-review[bot]"],
+        ["reviewer.goalReasons.enabled=true"],
         [
             "reviewer.bindings.homelab.enqueueAuthors=[]",
             "reviewer.bindings.homelab.requiredChecks[0].name=pr-checks",
