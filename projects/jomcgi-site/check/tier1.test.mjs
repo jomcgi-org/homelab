@@ -20,7 +20,12 @@ import {
   JUNK_PATH,
   tier1,
 } from "./tier1.mjs";
-import { matchRedirect, redirectRules } from "./release-fixture.mjs";
+import { snapshotTrips } from "../data/trips.mjs";
+import {
+  fixtureObject,
+  matchRedirect,
+  redirectRules,
+} from "./release-fixture.mjs";
 import { checkReleasePage } from "./tier1.mjs";
 import {
   makeSummary,
@@ -449,14 +454,9 @@ test("published snapshot freshness checks every section and detects a stopped re
   const out = mkdtempSync(join(tmpdir(), "site-check-freshness-"));
   t.after(() => rmSync(out, { recursive: true, force: true }));
   const before = Date.now();
-  await snapshot(
-    sources,
-    async () => ({
-      body: Buffer.from("{}"),
-      lastModified: "Tue, 17 Nov 2020 12:00:00 GMT",
-    }),
-    out,
-  );
+  const { trips, ...sections } = sources.sections;
+  await snapshot({ sections }, fixtureObject, out);
+  await snapshotTrips(trips, fixtureObject, out);
   for (const entry of entries) {
     const index = JSON.parse(
       readFileSync(join(out, entry.path.slice("/data/".length))),

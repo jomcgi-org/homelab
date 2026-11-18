@@ -441,6 +441,23 @@ legacy redirects after HOME-213. After the dev deploy, the delivery owner checks
 `https://next.jomcgi.dev/factory` and `/factory/goals/x` for HTTP 200 and the
 shell's unavailable states. Local build checks do not establish that rollout.
 
+## Trips rollout (HOME-242)
+
+Before promoting the Trips release to production, record the successful dev
+sync time and release. Read `https://next.jomcgi.dev/data/trips/latest.json`
+and record its `asOf`, `photoCount`, `photoAssetCount`, `photoBytes`,
+`photoMode` and `photoBase`. Keep the current production release pinned until
+a gallery image and its full-size WebP load on a preview day page. HOME-243
+tracks public derivative publication.
+
+Verify the index, trip, timeline and day links under `/trips` on preview.
+HOME-242 (issue 350), under **Goal**, specifies “Old `/app/trips` URLs get
+the site's 404 page with its navigation; no redirects”. Under **Shape**,
+item 3 assigns `jomcgi.dev/app/trips*` to the site for that purpose.
+Check the HTTP 404 status and follow the navigation back to Trips from a
+legacy day or timeline URL. Promote the verified release through the
+production pin PR described above.
+
 ## Engineering migration (HOME-197)
 
 `web/engineering.html` and `web/src/engineering.tsx` serve `/engineering` without

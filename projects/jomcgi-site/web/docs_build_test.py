@@ -51,6 +51,11 @@ def test_published_pages_are_exactly_the_filtered_manifest():
         "scotland/terms.html",
         "slop.html",
         "stars.html",
+        # The deploy-time snapshot fills these entries from the Trips export.
+        "trips.html",
+        "trip.html",
+        "trip-day.html",
+        "trip-timeline.html",
         *(f"docs/{entry['slug']}.html" for entry in manifest),
     }
     for entry in manifest:

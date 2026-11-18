@@ -10,6 +10,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { validate } from "../../factory-storyboard/schema/validate.ts";
 import { join } from "node:path";
 
+import { snapshotTrips, renderTrips } from "./trips.mjs";
 import { makeSummary, stampSummary } from "./stars-summary.mjs";
 
 const sha256 = (data) => createHash("sha256").update(data).digest("hex");
@@ -78,7 +79,13 @@ export async function snapshot(
   fetchImpl = fetch,
 ) {
   const log = [];
-  for (const [section, { bucket, files }] of Object.entries(sources.sections)) {
+  for (const [section, config] of Object.entries(sources.sections)) {
+    const { bucket, files } = config;
+    if (config.format === "trips") {
+      const data = await snapshotTrips(config, get, out);
+      log.push(await renderTrips(join(out, ".."), data));
+      continue;
+    }
     // A successful snapshot can contain unchanged source objects. Keep its
     // publication cadence separate from the age of those objects.
     const index = {

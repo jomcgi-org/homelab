@@ -93,7 +93,11 @@ export function EngineeringPage() {
                       {project.links.map((link) => (
                         <li key={link.href}>
                           <a
-                            href={new URL(link.href, ORIGIN).href}
+                            href={
+                              link.href === "/app/trips"
+                                ? "/trips"
+                                : new URL(link.href, ORIGIN).href
+                            }
                             target={
                               link.href.startsWith("/") ? undefined : "_blank"
                             }

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   cpSync,
@@ -64,6 +65,63 @@ const FIXTURE_WALKS = JSON.stringify({
   ],
 });
 
+const fixtureTrip = {
+  slug: "fixture-trip",
+  title: "Fixture trip",
+  tz: "UTC",
+  days: {},
+  stats: {},
+  highlights: [],
+};
+const objects = new Map([["walks.json", FIXTURE_WALKS]]);
+function tripObject(name, value) {
+  const body = JSON.stringify(value);
+  const key = `trips/v/${name}-${createHash("sha256").update(body).digest("hex")}.json`;
+  objects.set(key, body);
+  return key;
+}
+objects.set(
+  "trips/export.json",
+  JSON.stringify({
+    asOf: "2020-11-17T12:00:00.000Z",
+    refreshSeconds: 86400,
+    photoMode: "snapshot",
+    photoBase: "/data/trips/photos",
+    photoCount: 0,
+    photoAssetCount: 0,
+    photoBytes: 0,
+    photoMaxBytes: 0,
+    images: [],
+    files: {
+      index: tripObject("index", { count: 1, trips: [fixtureTrip] }),
+      trips: {
+        [fixtureTrip.slug]: tripObject("trip/" + fixtureTrip.slug, {
+          trip: fixtureTrip,
+          points: [
+            {
+              id: "1",
+              taken_at: "2020-11-17T12:00:00Z",
+              lat: 58,
+              lng: -125,
+              elevation: 100,
+              tags: [],
+            },
+          ],
+        }),
+      },
+    },
+  }),
+);
+export async function fixtureObject(bucket, key) {
+  const body = objects.get(key);
+  if (!body && key.startsWith("trips/"))
+    throw new Error(`Missing fixture object: ${bucket}/${key}`);
+  return {
+    body: Buffer.from(body ?? "{}"),
+    lastModified: "Tue, 17 Nov 2020 12:00:00 GMT",
+  };
+}
+
 // Exercise the built release, including the production hub/Worker boundary.
 export async function serveRelease(dist, stage, { contrast = false } = {}) {
   const scope = scopeFor(stage);
@@ -72,7 +130,7 @@ export async function serveRelease(dist, stage, { contrast = false } = {}) {
   // also stamps the stars summary into stars.html (HOME-333).
   const dataRoot = mkdtempSync(join(tmpdir(), "site-check-site-"));
   try {
-    cpSync(dist, dataRoot, { recursive: true });
+    cpSync(dist, dataRoot, { recursive: true, dereference: true });
     // Bazel outputs are read-only; the snapshot writes into the copy.
     chmodSync(dataRoot, 0o755);
     for (const entry of readdirSync(dataRoot, { recursive: true })) {
@@ -80,14 +138,7 @@ export async function serveRelease(dist, stage, { contrast = false } = {}) {
       chmodSync(path, statSync(path).isDirectory() ? 0o755 : 0o644);
     }
     // Use the real snapshot format with fixed R2 objects, without credentials.
-    await snapshot(
-      sources,
-      async (bucket, key) => ({
-        body: Buffer.from(key === "walks.json" ? FIXTURE_WALKS : "{}"),
-        lastModified: "Tue, 17 Nov 2020 12:00:00 GMT",
-      }),
-      join(dataRoot, "data"),
-    );
+    await snapshot(sources, fixtureObject, join(dataRoot, "data"));
     // Like data/main.mjs: stamp the hikes summary after the snapshot.
     await publishHikesSummary(join(dataRoot, "data"));
     const server = await serve((req, res) => {

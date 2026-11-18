@@ -167,7 +167,6 @@ const STAYS_ON_THE_HUB = [
   "jomcgi.dev/functions/og-image",
   "jomcgi.dev/api/trips/trips",
   "jomcgi.dev/slop/factory",
-  "jomcgi.dev/app/trips",
   "jomcgi.dev/app/grimoire",
 ];
 
@@ -177,6 +176,12 @@ test("no route catches a path the hub or another service still owns", () => {
 
 test("routed pages are served with and without a query string", () => {
   for (const path of [
+    "/trips",
+    "/trips/2025-trip/day/1",
+    "/trips/2025-trip/timeline",
+    "/app/trips",
+    "/app/trips/2025-trip/day/1",
+    "/data/trips/latest.json",
     "/cv",
     "/cv/",
     "/blog",
@@ -584,7 +589,7 @@ test("home and machine-readable routes are exact and leave unmigrated paths on t
     assert.ok(!served(`jomcgi.dev/${path}?ref=x`));
   }
   for (const path of [
-    "/app/trips",
+    "/app/grimoire",
     "/slop/factory",
     "/scotland/mcp",
     "/api/home/observability/stats",

@@ -5,7 +5,7 @@
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=()
 
-# Only the hikes map needs the tile host, MapLibre's blob worker and the
+# The hikes map needs the tile host, MapLibre's blob worker and the
 # reader's location. Detach the site policy, then set the wider one.
 /hikes
   ! Content-Security-Policy
@@ -61,3 +61,17 @@ https://next.jomcgi.dev/*
   Content-Type: application/json; charset=utf-8
   Cache-Control: public, max-age=0, s-maxage=3600, stale-while-revalidate=86400, stale-if-error=31536000
   Cloudflare-CDN-Cache-Control: public, max-age=3600, stale-while-revalidate=86400, stale-if-error=31536000
+
+# Pre-rendered photo variants are keyed by the original content digest.
+/data/trips/photos/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Trips photos and interactive route maps.
+
+/trips
+  ! Content-Security-Policy
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://tiles.openfreemap.org https://factory-data.jomcgi.dev; font-src 'self'; connect-src 'self' https://data.jomcgi.dev https://tiles.openfreemap.org; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
+
+/trips/*
+  ! Content-Security-Policy
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://tiles.openfreemap.org https://factory-data.jomcgi.dev; font-src 'self'; connect-src 'self' https://data.jomcgi.dev https://tiles.openfreemap.org; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
