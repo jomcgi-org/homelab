@@ -1,9 +1,13 @@
 package main
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -131,5 +135,85 @@ func TestRate(t *testing.T) {
 	now = now.Add(100 * time.Millisecond)
 	if request(p, "GET", "/api", "a").Code != 200 {
 		t.Fatal("refill")
+	}
+}
+
+// Exercise the HTTP stream on both sides of the production reverse proxy.
+func TestExplorerHourlySession(t *testing.T) {
+	var calls atomic.Int32
+	closed := make(chan struct{})
+	api := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Header.Get("Authorization") != "Bearer explorer" {
+			t.Error("missing caller credential")
+		}
+		if r.URL.Query().Get("watch") != "true" {
+			return
+		}
+		defer close(closed)
+		io.WriteString(w, "event\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer api.Close()
+	target, err := url.Parse(api.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newTestProxy()
+	p.upstream = apiProxy(target, api.Client().Transport)
+	// Place the session origin in the past, then let the watch run on wall time.
+	var offset atomic.Int64
+	offset.Store(int64(-10*time.Minute + time.Second))
+	p.now = func() time.Time { return time.Now().Add(time.Duration(offset.Load())) }
+	edge := httptest.NewServer(p)
+	defer edge.Close()
+	client := edge.Client()
+	client.Timeout = 4 * time.Second
+	get := func(query string, status int) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest("GET", edge.URL+"/api/v1/pods"+query, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer explorer")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != status {
+			resp.Body.Close()
+			t.Fatalf("status %d, want %d", resp.StatusCode, status)
+		}
+		return resp
+	}
+	first := get("", 200)
+	first.Body.Close()
+	end, err := time.Parse(time.RFC3339, first.Header.Get("X-Explore-Window-End"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	offset.Store(0)
+	watch := get("?watch=true", 200)
+	data, err := io.ReadAll(watch.Body)
+	watch.Body.Close()
+	if string(data) != "event\n" || (err != nil && !errors.Is(err, io.ErrUnexpectedEOF)) {
+		t.Fatalf("watch returned %q, %v", data, err)
+	}
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("upstream watch remained open")
+	}
+	denied := get("", 403)
+	denied.Body.Close()
+	if denied.Header.Get("X-Explore-Next-Window") != end.Add(50*time.Minute).Format(time.RFC3339) || calls.Load() != 2 {
+		t.Fatal("cooldown did not isolate the API server")
+	}
+	offset.Store(int64(time.Hour))
+	next := get("", 200)
+	next.Body.Close()
+	if calls.Load() != 3 || next.Header.Get("X-Explore-Window-End") == first.Header.Get("X-Explore-Window-End") {
+		t.Fatal("new session failed to open")
 	}
 }

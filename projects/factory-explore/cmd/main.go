@@ -198,6 +198,16 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.upstream.ServeHTTP(w, r.WithContext(ctx))
 }
 
+func apiProxy(target *url.URL, transport http.RoundTripper) http.Handler {
+	return &httputil.ReverseProxy{Transport: transport, FlushInterval: -1, Rewrite: func(r *httputil.ProxyRequest) {
+		r.SetURL(target)
+		r.Out.Header = make(http.Header)
+		for _, key := range []string{"Authorization", "Accept", "Content-Type", "User-Agent"} {
+			r.Out.Header.Set(key, r.In.Header.Get(key))
+		}
+	}}
+}
+
 func main() {
 	ca, err := os.ReadFile("/etc/kubernetes/ca.crt")
 	if err != nil {
@@ -211,14 +221,7 @@ func main() {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	transport.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
-	upstream := &httputil.ReverseProxy{Transport: transport, FlushInterval: -1, Rewrite: func(r *httputil.ProxyRequest) {
-		r.SetURL(target)
-		r.Out.Header = make(http.Header)
-		for _, key := range []string{"Authorization", "Accept", "Content-Type", "User-Agent"} {
-			r.Out.Header.Set(key, r.In.Header.Get(key))
-		}
-	}}
-	p := &proxy{users: make(map[string]*window), now: time.Now, subject: (&verifier{jwksURL: issuer + "jwks/"}).subject, upstream: upstream}
+	p := &proxy{users: make(map[string]*window), now: time.Now, subject: (&verifier{jwksURL: issuer + "jwks/"}).subject, upstream: apiProxy(target, transport)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
