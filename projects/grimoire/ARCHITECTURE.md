@@ -170,7 +170,7 @@ Treat every dump, object manifest, private object copy and restore log as restri
 
 ## Follow-up HOME issues
 
-The slices are filed under [HOME-178](https://factory-plan.jomcgi.dev/factory/issue/HOME-178) in dependency order. Each slice has the following Done when criteria.
+The slices are filed under [HOME-178](https://factory-plan.jomcgi.dev/factory/issue/HOME-178) in dependency order. Each issue holds its slice's numbered Done when criteria below ([record](https://factory-plan.jomcgi.dev/factory/issue/HOME-257#comment-4196)).
 
 ### Provision factory data and private runtime
 
