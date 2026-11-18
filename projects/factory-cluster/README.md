@@ -374,6 +374,9 @@ users:
           - --oidc-extra-scope=email
           - --oidc-extra-scope=profile
           - --oidc-extra-scope=offline_access
+        # Required by the v1 exec API. kubelogin signs in through the
+        # browser, so it needs no terminal input.
+        interactiveMode: Never
 contexts:
   - name: factory
     context:
