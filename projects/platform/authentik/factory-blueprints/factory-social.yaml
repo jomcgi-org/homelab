@@ -1,0 +1,171 @@
+version: 1
+metadata:
+  name: Factory social sign-in
+entries:
+  - model: authentik_policies_expression.expressionpolicy
+    id: social-enrollment-gate
+    identifiers:
+      name: factory-social-enrollment-gate
+    attrs:
+      expression: |
+        from authentik.core.models import User
+        info = request.context.get("oauth_userinfo") or {}
+        source = request.context["source"].slug
+        # Mapped profile includes GitHub's private primary email.
+        email = (request.context["prompt_data"].get("email") or "").strip()
+        if not email or (source == "discord" and info.get("verified") is not True) or (source == "google" and info.get("verified_email") is not True):
+            ak_message("A verified email address is required.")
+            return False
+        if User.objects.filter(email__iexact=email).exists():
+            ak_message("An account already uses this email. Sign in with that account instead.")
+            return False
+        return True
+  - model: authentik_flows.flow
+    id: social-enrollment
+    identifiers:
+      slug: factory-social-enrollment
+    attrs:
+      name: Factory social enrollment
+      title: Create a factory account
+      designation: enrollment
+      authentication: require_unauthenticated
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf social-enrollment
+      policy: !KeyOf social-enrollment-gate
+      order: 0
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30
+  - model: authentik_stages_user_write.userwritestage
+    id: social-write
+    identifiers:
+      name: factory-social-create-user
+    attrs:
+      user_creation_mode: always_create
+      user_type: external
+      create_users_group: null
+      user_path_template: factory/social
+  - model: authentik_stages_user_login.userloginstage
+    id: social-login
+    identifiers:
+      name: factory-social-login
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf social-enrollment
+      stage: !KeyOf social-write
+      order: 10
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf social-enrollment
+      stage: !KeyOf social-login
+      order: 20
+  - model: authentik_flows.flow
+    id: social-authentication
+    identifiers:
+      slug: factory-social-authentication
+    attrs:
+      name: Factory social sign-in
+      title: Sign in to the factory
+      designation: authentication
+      authentication: require_unauthenticated
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf social-authentication
+      policy: !Find [authentik_policies_expression.expressionpolicy, [name, default-source-authentication-if-sso]]
+      order: 0
+  - model: authentik_stages_authenticator_validate.authenticatorvalidatestage
+    id: validate
+    identifiers:
+      name: factory-social-mfa
+    attrs:
+      not_configured_action: skip
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf social-authentication
+      stage: !KeyOf validate
+      order: 10
+  - model: authentik_flows.flowstagebinding
+    identifiers:
+      target: !KeyOf social-authentication
+      stage: !KeyOf social-login
+      order: 20
+  - model: authentik_sources_oauth.oauthsourcepropertymapping
+    id: github-properties
+    identifiers:
+      name: factory-github-properties
+    attrs:
+      expression: |
+        return {"username": "github-" + str(info["id"])}
+  - model: authentik_sources_oauth.oauthsource
+    id: github
+    identifiers:
+      slug: github
+    attrs:
+      name: GitHub
+      provider_type: github
+      authorization_url: https://github.com/login/oauth/authorize
+      access_token_url: https://github.com/login/oauth/access_token
+      profile_url: https://api.github.com/user
+      consumer_key: !Env FACTORY_GITHUB_CLIENT_ID
+      consumer_secret: !Env FACTORY_GITHUB_CLIENT_SECRET
+      user_matching_mode: identifier
+      user_path_template: factory/social
+      authentication_flow: !KeyOf social-authentication
+      enrollment_flow: !KeyOf social-enrollment
+      user_property_mappings:
+        - !KeyOf github-properties
+  - model: authentik_sources_oauth.oauthsourcepropertymapping
+    id: google-properties
+    identifiers:
+      name: factory-google-properties
+    attrs:
+      expression: |
+        return {"username": "google-" + str(info["id"])}
+  - model: authentik_sources_oauth.oauthsource
+    id: google
+    identifiers:
+      slug: google
+    attrs:
+      name: Google
+      provider_type: google
+      consumer_key: !Env FACTORY_GOOGLE_CLIENT_ID
+      consumer_secret: !Env FACTORY_GOOGLE_CLIENT_SECRET
+      user_matching_mode: identifier
+      user_path_template: factory/social
+      authentication_flow: !KeyOf social-authentication
+      enrollment_flow: !KeyOf social-enrollment
+      user_property_mappings:
+        - !KeyOf google-properties
+  - model: authentik_sources_oauth.oauthsourcepropertymapping
+    id: discord-properties
+    identifiers:
+      name: factory-discord-properties
+    attrs:
+      expression: |
+        return {"username": "discord-" + str(info["id"])}
+  - model: authentik_sources_oauth.oauthsource
+    id: discord
+    identifiers:
+      slug: discord
+    attrs:
+      name: Discord
+      provider_type: discord
+      consumer_key: !Env FACTORY_DISCORD_CLIENT_ID
+      consumer_secret: !Env FACTORY_DISCORD_CLIENT_SECRET
+      user_matching_mode: identifier
+      user_path_template: factory/social
+      authentication_flow: !KeyOf social-authentication
+      enrollment_flow: !KeyOf social-enrollment
+      user_property_mappings:
+        - !KeyOf discord-properties
+  - model: authentik_stages_identification.identificationstage
+    identifiers:
+      name: default-authentication-identification
+    attrs:
+      sources:
+        - !KeyOf github
+        - !KeyOf google
+        - !KeyOf discord
+      show_source_labels: true

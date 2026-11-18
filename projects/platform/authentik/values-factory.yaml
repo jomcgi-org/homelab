@@ -6,7 +6,7 @@
 # Gateway, whose route lives in the `edge` namespace and blocks the admin
 # interface and the initial-setup flow (projects/platform-factory/edge/).
 #
-# Nothing here comes from 1Password. The authentik-secret-init Job generates
+# Social source credentials come from 1Password. The authentik-secret-init Job generates
 # AUTHENTIK_SECRET_KEY and the OIDC client secrets into authentik-secrets once,
 # and CloudNativePG generates the database credentials. Three database instances
 # run on separate nodes, with WAL and daily base backups in Garage. Recovery
@@ -53,7 +53,36 @@ authentik:
           secretKeyRef:
             name: authentik-pg-app
             key: password
-      # No outbound calls: the namespace's egress allows only Postgres.
+      - name: FACTORY_GITHUB_CLIENT_ID
+        valueFrom:
+          secretKeyRef:
+            name: factory-authentik-github
+            key: client-id
+      - name: FACTORY_GITHUB_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: factory-authentik-github
+            key: client-secret
+      - name: FACTORY_GOOGLE_CLIENT_ID
+        valueFrom:
+          secretKeyRef:
+            name: factory-authentik-google
+            key: client-id
+      - name: FACTORY_GOOGLE_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: factory-authentik-google
+            key: client-secret
+      - name: FACTORY_DISCORD_CLIENT_ID
+        valueFrom:
+          secretKeyRef:
+            name: factory-authentik-discord
+            key: client-id
+      - name: FACTORY_DISCORD_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: factory-authentik-discord
+            key: client-secret
       - name: AUTHENTIK_DISABLE_UPDATE_CHECK
         value: "true"
       - name: AUTHENTIK_DISABLE_STARTUP_ANALYTICS
