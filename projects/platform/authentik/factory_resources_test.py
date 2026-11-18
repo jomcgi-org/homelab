@@ -109,7 +109,7 @@ def test_factory_social_flows_and_application_grants():
             "social-login",
         ]
         assert stages(source["authentication_flow"]) == ["validate", "social-login"]
-    assert by_id["validate"]["not_configured_action"] == "skip"
+    assert by_id["validate"]["not_configured_action"] == "configure"
     assert by_id["social-write"]["create_users_group"] == "null"
     assert any(
         e["identifiers"].get("policy") == "social-enrollment-gate"

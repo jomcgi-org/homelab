@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: authentik
+      POSTGRES_USER: authentik
+      POSTGRES_HOST_AUTH_METHOD: trust
+  authentik:
+    image: ${FACTORY_TEST_IMAGE:?Use the image from values-factory.yaml}
+    command: allinone
+    depends_on:
+      - postgres
+    volumes:
+      - ..:/fixture:ro
+    environment:
+      AUTHENTIK_POSTGRESQL__HOST: postgres
+      AUTHENTIK_SECRET_KEY: disposable-test-key
+      EDGE_OIDC_CLIENT_SECRET: fixture
+      ARGOCD_OIDC_CLIENT_SECRET: fixture
+      FACTORY_GITHUB_CLIENT_ID: fixture
+      FACTORY_GITHUB_CLIENT_SECRET: fixture
+      FACTORY_GOOGLE_CLIENT_ID: fixture
+      FACTORY_GOOGLE_CLIENT_SECRET: fixture
+      FACTORY_DISCORD_CLIENT_ID: fixture
+      FACTORY_DISCORD_CLIENT_SECRET: fixture

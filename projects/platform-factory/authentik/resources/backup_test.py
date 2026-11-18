@@ -171,6 +171,8 @@ def test_authentik_external_egress_is_limited_to_provider_https():
             {"matchLabels": {"cnpg.io/cluster": "authentik-pg"}}
         ]
         assert set(external) == {"toFQDNs", "toPorts"}
-        assert external["toPorts"] == [{"ports": [{"port": "443", "protocol": "TCP"}]}]
+        (port_rule,) = external["toPorts"]
+        assert port_rule["ports"] == [{"port": "443", "protocol": "TCP"}]
+        assert set(port_rule["serverNames"]) == expected[name]
         assert {host["matchName"] for host in external["toFQDNs"]} == expected.pop(name)
     assert not expected

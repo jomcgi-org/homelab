@@ -35,6 +35,12 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+          serverNames:
+            - github.com
+            - api.github.com
+            - oauth2.googleapis.com
+            - www.googleapis.com
+            - discord.com
     - toEndpoints:
         - matchLabels:
             cnpg.io/cluster: authentik-pg
@@ -66,6 +72,10 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+          serverNames:
+            - accounts.google.com
+            - www.googleapis.com
+            - token.actions.githubusercontent.com
     - toEndpoints:
         - matchLabels:
             cnpg.io/cluster: authentik-pg

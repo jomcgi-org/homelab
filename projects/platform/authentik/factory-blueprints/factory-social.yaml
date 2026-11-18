@@ -80,7 +80,9 @@ entries:
     identifiers:
       name: factory-social-mfa
     attrs:
-      not_configured_action: skip
+      not_configured_action: configure
+      configuration_stages:
+        - !Find [authentik_stages_authenticator_totp.authenticatortotpstage, [name, default-authenticator-totp-setup]]
   - model: authentik_flows.flowstagebinding
     identifiers:
       target: !KeyOf social-enrollment
