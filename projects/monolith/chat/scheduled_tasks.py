@@ -54,6 +54,16 @@ class ClaimedOccurrence:
     claim_token: str
 
 
+# Joe, 2026-11-18 (#8189): hub digests end with the hub bot. A digest reads
+# chat.messages, which only the Discord gateway fills after the safeguards
+# check, so with the gateway off (DISCORD_GATEWAY_ENABLED=false, HOME-221) a
+# digest's next occurrence posts this notice and its task is cancelled.
+DIGEST_ENDED = (
+    "📋 This scheduled {mode} digest has ended: the bot that stored this "
+    "channel's messages is retired."
+)
+
+
 def _occurrence_id(task_id: int, scheduled_for: datetime) -> str:
     identity = f"{task_id}:{as_utc(scheduled_for).isoformat()}"
     return hashlib.sha256(identity.encode()).hexdigest()
@@ -386,8 +396,12 @@ def finalize_claim(
     claim: ClaimedOccurrence,
     content: str,
     now: datetime,
+    *,
+    end: bool = False,
 ) -> bool:
-    """Atomically enqueue a claimed occurrence and complete/advance its task."""
+    """Atomically enqueue a claimed occurrence and complete/advance its task.
+
+    ``end`` cancels a recurring task after this occurrence."""
     now = as_utc(now)
     task = session.get(ScheduledTask, claim.task_id)
     occurrence = session.get(ScheduledTaskOccurrence, claim.occurrence_id)
@@ -420,6 +434,9 @@ def finalize_claim(
     occurrence.enqueued_at = now
     if task.schedule_kind == "one_shot":
         task.status = "completed"
+        task.completed_at = now
+    elif end:
+        task.status = "cancelled"
         task.completed_at = now
     else:
         task.status = "pending"
@@ -483,10 +500,10 @@ def _claim_with_engine(engine, now: datetime, claimant: str) -> list[ClaimedOccu
 
 
 def _finalize_with_engine(
-    engine, claim: ClaimedOccurrence, content: str, now: datetime
+    engine, claim: ClaimedOccurrence, content: str, now: datetime, end: bool = False
 ) -> bool:
     with Session(engine) as session:
-        result = finalize_claim(session, claim, content, now)
+        result = finalize_claim(session, claim, content, now, end=end)
         session.commit()
         return result
 
@@ -535,8 +552,12 @@ async def drain_once(
     now: datetime | None = None,
     claimant: str | None = None,
     digest_builder: Callable[[object, ClaimedOccurrence], Awaitable[str]] | None = None,
+    digests: bool = True,
 ) -> int:
-    """Claim and enqueue due work once. Returns finalized occurrence count."""
+    """Claim and enqueue due work once. Returns finalized occurrence count.
+
+    With ``digests`` false, a due digest posts ``DIGEST_ENDED`` and its task is
+    cancelled; reminders are unchanged."""
     now = as_utc(now or datetime.now(timezone.utc))
     claimant = claimant or uuid.uuid4().hex
     claims = await asyncio.to_thread(_claim_with_engine, engine, now, claimant)
@@ -544,13 +565,17 @@ async def drain_once(
     for claim in claims:
         try:
             payload = json.loads(claim.payload_json)
+            end = False
             if claim.task_kind == "reminder":
                 content = f"⏰ <@{claim.author_id}> reminder: {payload['content']}"
+            elif not digests:
+                content = DIGEST_ENDED.format(mode=payload.get("mode", "summary"))
+                end = True
             else:
                 builder = digest_builder or _default_digest_builder
                 content = await builder(engine, claim)
             if await asyncio.to_thread(
-                _finalize_with_engine, engine, claim, content, now
+                _finalize_with_engine, engine, claim, content, now, end
             ):
                 finalized += 1
         except Exception as exc:
@@ -559,129 +584,16 @@ async def drain_once(
     return finalized
 
 
-DIGEST_NO_HISTORY = (
-    "📋 Scheduled {mode} digest skipped: this bot cannot read this channel's "
-    "history (it needs the Read Message History permission)."
-)
-
-
-def _history_text(m) -> str:
-    """A message's text: its content, else its embeds' titles and descriptions
-    (as chat.bot stores an embed-only message)."""
-    if m.content:
-        return m.content
-    parts = []
-    for embed in getattr(m, "embeds", None) or []:
-        if embed.title:
-            parts.append(embed.title)
-        if embed.description:
-            parts.append(embed.description)
-    return "\n".join(parts)
-
-
-def _window_from_history(
-    channel_id: str, newest_first: list, *, exclude_users: set[str], bot_user_id: str
-) -> list[Message]:
-    """The digest window from Discord messages, with the store's bounds.
-
-    Locked-out users are left out, as the gateway path never stores them, and
-    so are this bot's own scheduled posts, so a digest never digests digests.
-    """
-    window: list[Message] = []
-    chars = 0
-    for m in newest_first:
-        author_id = str(m.author.id)
-        text = _history_text(m)
-        if not text or author_id in exclude_users:
-            continue
-        if author_id == bot_user_id and text.startswith("📋 Scheduled"):
-            continue
-        chars += len(text)
-        if chars > 30_000 and window:
-            break
-        window.append(
-            Message(
-                discord_message_id=str(m.id),
-                channel_id=channel_id,
-                user_id=author_id,
-                username=m.author.display_name,
-                content=text,
-                is_bot=m.author.bot,
-                created_at=m.created_at,
-            )
-        )
-    window.reverse()
-    return window
-
-
-def _locked_out_with_engine(engine, guild_id: str) -> set[str]:
-    from chat import safeguards
-
-    with Session(engine) as session:
-        return safeguards.locked_out_user_ids(session, guild_id)
-
-
-def rest_digest_builder(bot, ready: Callable[[], bool], wait_seconds: float = 60.0):
-    """Build digests from Discord's channel history over REST.
-
-    Discord holds each channel's history whether or not this process has a
-    gateway session, so digests stay current when the gateway is off
-    (DISCORD_GATEWAY_ENABLED=false, HOME-221) or switched back on; nothing
-    depends on what chat.messages stored meanwhile. The bot reads it over
-    REST (``GET /channels/{id}/messages``) after its login.
-    """
-
-    async def build(engine, claim: ClaimedOccurrence) -> str:
-        import discord
-
-        from chat.summarizer import build_llm_caller
-
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + wait_seconds
-        while not ready():
-            if loop.time() >= deadline:
-                raise RuntimeError("Discord REST login not ready")
-            await asyncio.sleep(1)
-        mode = json.loads(claim.payload_json)["mode"]
-        channel = bot.get_channel(int(claim.channel_id))
-        if channel is None:
-            channel = await bot.fetch_channel(int(claim.channel_id))
-        try:
-            newest_first = [m async for m in channel.history(limit=300)]
-        except discord.Forbidden:
-            logger.warning(
-                "scheduled digest %s: no Read Message History in channel %s",
-                claim.task_id,
-                claim.channel_id,
-            )
-            return DIGEST_NO_HISTORY.format(mode=mode)
-        guild = getattr(channel, "guild", None)
-        guild_id = str(guild.id) if guild is not None else ""
-        locked = await asyncio.to_thread(_locked_out_with_engine, engine, guild_id)
-        window = _window_from_history(
-            claim.channel_id,
-            newest_first,
-            exclude_users=locked,
-            bot_user_id=str(bot.user.id) if bot.user is not None else "",
-        )
-        digest = await digest_window(window, mode, build_llm_caller())
-        return f"📋 Scheduled {mode} digest:\n{digest}"
-
-    return build
-
-
 async def run_scheduler(
-    engine,
-    poll_interval: float = POLL_INTERVAL_SECONDS,
-    digest_builder: Callable[[object, ClaimedOccurrence], Awaitable[str]] | None = None,
+    engine, poll_interval: float = POLL_INTERVAL_SECONDS, digests: bool = True
 ) -> None:
-    """Leader lifecycle loop for persisted scheduled tasks. ``digest_builder``
-    replaces the chat.messages window, for a bot without a gateway session."""
+    """Leader lifecycle loop for persisted scheduled tasks. ``digests`` is
+    false when the bot has no gateway session to store channel messages."""
     instance = uuid.uuid4().hex
     logger.info("Discord scheduled-task drain started (poll=%.1fs)", poll_interval)
     while True:
         try:
-            await drain_once(engine, claimant=instance, digest_builder=digest_builder)
+            await drain_once(engine, claimant=instance, digests=digests)
         except Exception:
             logger.exception("scheduled-task drain tick failed")
         await asyncio.sleep(poll_interval)
