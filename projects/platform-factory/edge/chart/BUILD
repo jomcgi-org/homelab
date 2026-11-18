@@ -1,3 +1,6 @@
+# Mounted from the chart ConfigMap, like otel-collector/files/backup_check.py.
+# gazelle:exclude files/health.py
+
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 

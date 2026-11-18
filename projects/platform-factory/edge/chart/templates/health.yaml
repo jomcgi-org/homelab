@@ -4,7 +4,7 @@ metadata:
   name: factory-health
 data:
   health.py: |
-{{ .Files.Get "files/health.py" | indent 4 }}
+{{ required "factory health probe script is missing" (.Files.Get "files/health.py") | indent 4 }}
 ---
 apiVersion: v1
 kind: ServiceAccount
