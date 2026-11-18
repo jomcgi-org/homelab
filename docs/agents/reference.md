@@ -321,7 +321,7 @@ when its row applies.
 |------|------|
 | Working under `projects/monolith/`, `projects/monolith/web/grimoire/` or `projects/embervm/` | that directory's `AGENTS.md` |
 | Factory: connector, broker, reviewer, agents, chart | [factory architecture](../../projects/factory/ARCHITECTURE.md); `projects/factory/REVIEW.md` for its review rules |
-| Factory home cluster request path, authentication and storage | [Factory cluster architecture](../../projects/factory-cluster/ARCHITECTURE.md) |
+| Factory home cluster request path, authentication and storage | [Platform §1, Clusters](../../projects/platform/ARCHITECTURE.md#1-clusters) · [Factory cluster architecture](../../projects/factory-cluster/ARCHITECTURE.md) |
 | Factory home cluster bootstrap and recovery | [Operator steps](../../projects/factory-cluster/README.md) |
 | The earlier hub factory (off: `swarm.factoryEnabled: false`) | [FACTORY.md](../../projects/monolith/factory/orchestration/FACTORY.md); [monolith section 4](../../projects/monolith/ARCHITECTURE.md#4-agents) |
 | A red CI run you need to diagnose | `docs/agents/ci-triage.md` |

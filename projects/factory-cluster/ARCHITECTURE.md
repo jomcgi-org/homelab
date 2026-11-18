@@ -1,22 +1,23 @@
 # Factory home cluster architecture
 
-Three k3s servers host the software factory and its operator tools. ArgoCD reconciles the platform from Git. Cloudflare carries incoming requests through the factory tunnel to Envoy Gateway. For the operator landing page, Envoy requires an Authentik session before forwarding the request to a pod.
+Three k3s servers host the software factory and its operator tools. ArgoCD reconciles the platform from Git. For a request to `https://factory.jomcgi.dev/`, Cloudflare terminates TLS and sends the request down the factory tunnel. Envoy Gateway enforces Authentik sign-in before routing the request to a landing-page pod.
 
 ```mermaid
 flowchart LR
   Browser["Operator browser (untrusted)"] -->|HTTPS| CF["Cloudflare TLS termination"]
   subgraph Cluster["Factory home cluster"]
     Tunnel["cloudflared (tunnel credential)"]
-    Proxy["Envoy proxy (OIDC client secret)"]
+    Proxy["Envoy Gateway data plane (OIDC client secret)"]
     Auth["Authentik"]
     Service["factory-landing Service"]
     Pod["factory-landing pod"]
   end
   CF -->|factory tunnel| Tunnel
   Tunnel -->|"HTTP to edge/edge-proxy:80"| Proxy
-  Proxy <-->|OIDC| Auth
-  Proxy -->|"factory.jomcgi.dev route, port 8080"| Service
-  Service --> Pod
+  Browser -.->|sign in when redirected| Auth
+  Proxy -.->|exchange authorization code| Auth
+  Proxy -->|"authorized request via HTTPRoute on edge/edge"| Service
+  Service -->|HTTP 8080| Pod
 ```
 
 The [tunnel route](../platform-factory/edge-tunnel/resources/route.yaml) selects the proxy Service. The [landing page route](../factory-landing/chart/templates/httproute.yaml) attaches to the edge Gateway and selects the application Service.
@@ -93,3 +94,5 @@ The Substrate control plane and atelet run in `ate-system`. Workers run in label
 | Decision | Date | Record |
 | --- | --- | --- |
 | Use the rebuilt home nodes for the factory with Authentik sign-in and replicated Garage storage | November 2026 | [Factory cluster checklist #7817](https://github.com/jomcgi-org/homelab/issues/7817) |
+
+See [Platform architecture §1, Clusters](../platform/ARCHITECTURE.md#1-clusters) for how the factory and hub divide workloads, and the [agent reference](../../docs/agents/reference.md) for the operator documentation index.
