@@ -185,6 +185,8 @@ it("reports an error without a tile at once", async () => {
 it("loads the MapLibre worker from a URL that skips the old cached response", async () => {
   const view = render(<HikesMap {...mapProps()} />);
   await act(async () => fake.handlers.get("load")!());
-  expect(maplibregl.setWorkerUrl).toHaveBeenCalledWith("/assets/worker.js?csp=2");
+  expect(maplibregl.setWorkerUrl).toHaveBeenCalledWith(
+    "/assets/worker.js?csp=2",
+  );
   view.unmount();
 });
