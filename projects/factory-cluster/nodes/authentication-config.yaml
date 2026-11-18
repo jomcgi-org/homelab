@@ -31,3 +31,17 @@ jwt:
         prefix: "authentik:"
       uid:
         claim: sub
+  - issuer:
+      url: https://factory-auth.jomcgi.dev/application/o/factory-explore/
+      audiences:
+        - factory-explore
+    claimMappings:
+      username:
+        claim: preferred_username
+        prefix: "explore:"
+      groups:
+        expression: "['explore:explorers']"
+      uid:
+        claim: sub
+    claimValidationRules:
+      - expression: double(claims.exp) - double(claims.iat) <= 600.0

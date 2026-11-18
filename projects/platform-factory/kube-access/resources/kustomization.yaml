@@ -4,3 +4,4 @@ kind: Kustomization
 resources:
   - admins.yaml
   - viewers.yaml
+  - explorers.yaml

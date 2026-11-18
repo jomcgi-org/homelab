@@ -1,21 +1,19 @@
-"""kubectl RBAC for Authentik groups: admins get cluster-admin, everyone else
-reads only, and only in namespaces whose objects and logs hold no private data.
-
-The API server prefixes every Authentik user and group with "authentik:"
-(projects/factory-cluster/nodes/authentication-config.yaml)."""
+"""Check factory kubectl and explorer access."""
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 HERE = Path(__file__).parent
 DOCS = [
     d
-    for name in ("admins.yaml", "viewers.yaml")
+    for name in yaml.safe_load((HERE / "kustomization.yaml").read_text())["resources"]
     for d in yaml.safe_load_all((HERE / name).read_text())
     if d
 ]
 VIEWERS = "authentik:factory-kube-viewers"
+EXPLORERS = "explore:explorers"
 ADMINS = "authentik:authentik Admins"
 # Reviewed in #8222: no private data in their objects or logs. Adding one is
 # Joe's decision; agent, ticket, chat, memory and sign-in namespaces stay out.
@@ -66,21 +64,28 @@ def test_only_admins_hold_cluster_admin():
         assert d["roleRef"]["name"] not in {"cluster-admin", "admin", "edit"}
 
 
-def test_every_subject_is_a_prefixed_authentik_group():
+def test_every_subject_is_an_access_group():
     for d in by_kind("ClusterRoleBinding") + by_kind("RoleBinding"):
         for subject in d["subjects"]:
             assert subject["kind"] == "Group"
-            assert subject["name"].startswith("authentik:")
+            assert subject["name"] in {ADMINS, VIEWERS, EXPLORERS}
 
 
 def test_viewer_roles_only_read():
     roles = {d["metadata"]["name"]: d for d in by_kind("ClusterRole")}
-    assert set(roles) == {"factory-viewer", "factory-viewer-cluster"}
+    assert set(roles) == {
+        "factory-viewer",
+        "factory-viewer-cluster",
+        "factory-explorer",
+        "factory-explorer-cluster",
+    }
     for role in roles.values():
         for rule in role["rules"]:
             assert set(rule["verbs"]) <= READ_VERBS, rule
             assert "*" not in rule["apiGroups"]
             for resource in rule["resources"]:
+                if role["metadata"]["name"].startswith("factory-explorer"):
+                    assert resource != "pods/log"
                 assert "*" not in resource
                 assert resource not in FORBIDDEN, resource
                 assert not resource.endswith("/proxy"), resource
@@ -88,19 +93,53 @@ def test_viewer_roles_only_read():
         assert "aggregationRule" not in role
 
 
-def test_viewers_read_only_the_reviewed_namespaces():
+@pytest.mark.parametrize(
+    ("group", "role"), [(VIEWERS, "factory-viewer"), (EXPLORERS, "factory-explorer")]
+)
+def test_readers_cover_only_the_reviewed_namespaces(group, role):
     bindings = [
         d
         for d in by_kind("RoleBinding")
-        if any(s["name"] == VIEWERS for s in d["subjects"])
+        if any(s["name"] == group for s in d["subjects"])
     ]
     assert {d["metadata"]["namespace"] for d in bindings} == VIEWER_NAMESPACES
     assert len(bindings) == len(VIEWER_NAMESPACES)
     for d in bindings:
-        assert d["roleRef"]["name"] == "factory-viewer"
+        assert d["roleRef"]["name"] == role
     (cluster,) = [
         d
         for d in by_kind("ClusterRoleBinding")
-        if any(s["name"] == VIEWERS for s in d["subjects"])
+        if any(s["name"] == group for s in d["subjects"])
     ]
-    assert cluster["roleRef"]["name"] == "factory-viewer-cluster"
+    assert cluster["roleRef"]["name"] == role + "-cluster"
+
+
+def test_authentication_config():
+    config = HERE.parents[2] / "factory-cluster/nodes/authentication-config.yaml"
+    assert yaml.safe_load(config.read_text())["jwt"] == [
+        {
+            "issuer": {
+                "url": "https://factory-auth.jomcgi.dev/application/o/factory-kubectl/",
+                "audiences": ["factory-kubectl"],
+            },
+            "claimMappings": {
+                "username": {"claim": "preferred_username", "prefix": "authentik:"},
+                "groups": {"claim": "groups", "prefix": "authentik:"},
+                "uid": {"claim": "sub"},
+            },
+        },
+        {
+            "issuer": {
+                "url": "https://factory-auth.jomcgi.dev/application/o/factory-explore/",
+                "audiences": ["factory-explore"],
+            },
+            "claimMappings": {
+                "username": {"claim": "preferred_username", "prefix": "explore:"},
+                "groups": {"expression": "['explore:explorers']"},
+                "uid": {"claim": "sub"},
+            },
+            "claimValidationRules": [
+                {"expression": "double(claims.exp) - double(claims.iat) <= 600.0"}
+            ],
+        },
+    ]
