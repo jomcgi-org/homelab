@@ -58,6 +58,8 @@ spec:
           - {{ .Values.kubeAPI.clientID }}
         remoteJWKS:
           uri: {{ printf "%sjwks/" $issuer }}
+          # Envoy Gateway's default. Set here so ArgoCD sees no drift.
+          cacheDuration: 300s
   authorization:
     defaultAction: Deny
     rules:
