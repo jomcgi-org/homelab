@@ -7,6 +7,8 @@ import {
   snapshotStatus,
   oldestForecast,
   timestamp,
+  SNAPSHOT_STALE_MS,
+  STALE_MS,
 } from "./hikes-freshness.mjs";
 
 const escape = (value) =>
@@ -47,11 +49,15 @@ export async function publishHikesSummary(out, now = new Date()) {
   const unknown = walks.filter((w) => !timestamp(w.forecast_fetched_at)).length;
   const time = (at) =>
     at ? `<time datetime="${escape(at)}">${escape(at)}</time>` : "unknown time";
+  // Without JavaScript the text stays as published, so say so and give the
+  // time it goes stale. Hydration replaces it with the live status.
+  const published = (text, at, ms) =>
+    `${text} (at publication${at && !text.startsWith("Stale") ? `; stale after ${time(new Date(Date.parse(at) + ms).toISOString())}` : ""})`;
   const status = (at) =>
-    `<span data-forecast-freshness data-fetched-at="${escape(at ?? "")}" data-latest-fetched-at="${escape(latest ?? "")}">${forecastStatus(at, latest, now.getTime())}</span>`;
+    `<span data-forecast-freshness data-fetched-at="${escape(at ?? "")}" data-latest-fetched-at="${escape(latest ?? "")}">${published(forecastStatus(at, latest, now.getTime()), at, STALE_MS)}</span>`;
   const summary =
     `<p>Data as of ${time(timestamp(index.asOf))} · ${status(timestamp(index.asOf))}</p>` +
-    `<p>Site snapshot: ${time(timestamp(index.generatedAt))} · <span data-snapshot-freshness data-generated-at="${escape(timestamp(index.generatedAt) ?? "")}">${snapshotStatus(index.generatedAt, now.getTime())}</span></p>` +
+    `<p>Site snapshot: ${time(timestamp(index.generatedAt))} · <span data-snapshot-freshness data-generated-at="${escape(timestamp(index.generatedAt) ?? "")}">${published(snapshotStatus(index.generatedAt, now.getTime()), timestamp(index.generatedAt), SNAPSHOT_STALE_MS)}</span></p>` +
     `<p>Latest forecast fetch: ${time(latest)}. Oldest walk forecast: ${time(oldest)}. ${status(oldest)}</p>` +
     (unknown
       ? `<p>${unknown} walks have unknown forecast age; weather windows use retained data.</p>`
