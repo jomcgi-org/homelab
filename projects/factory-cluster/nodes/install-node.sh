@@ -45,7 +45,8 @@ install -D -m 0644 "${HERE}/factory-firewall.nft" /etc/factory/firewall.nft
 install -m 0644 "${HERE}/factory-firewall.service" /etc/systemd/system/factory-firewall.service
 systemctl daemon-reload
 systemctl enable --quiet factory-firewall
-systemctl restart factory-firewall
+# reload swaps the rules in one transaction; restart would drop them first.
+systemctl reload-or-restart factory-firewall
 # rpcbind serves NFS, which no node uses.
 systemctl disable --now --quiet rpcbind.socket rpcbind.service 2>/dev/null || true
 

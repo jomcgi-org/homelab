@@ -9,6 +9,9 @@ After=local-fs.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/sbin/nft -f /etc/factory/firewall.nft
+# The file deletes and recreates the table in one nft transaction, so a
+# reload that fails to parse keeps the running rules.
+ExecReload=/usr/sbin/nft -f /etc/factory/firewall.nft
 ExecStop=/usr/sbin/nft delete table inet factory_fw
 
 [Install]

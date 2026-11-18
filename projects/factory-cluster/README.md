@@ -112,7 +112,9 @@ no zram swap starts at the next boot.
 
 To change only the host firewall, copy `nodes/factory-firewall.nft` to
 `/etc/factory/firewall.nft` on each node and run
-`sudo systemctl restart factory-firewall`; k3s keeps running. Rerunning step 2
+`sudo systemctl reload factory-firewall`; k3s keeps running. A reload swaps
+the rules in one nft transaction, so a file that fails to parse leaves the
+running rules in place. Do not use `restart`: it deletes the table first. Rerunning step 2
 also applies it, but restarts k3s on each server, one at a time. To turn the
 firewall off on a node, run
 `ssh node-2 'sudo systemctl disable --now factory-firewall'`. Stopping the unit
