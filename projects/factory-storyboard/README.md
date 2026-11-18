@@ -121,7 +121,18 @@ objects that answer 200. The check above verifies both.
 To stop the storyboard reading the connector database, set `login: false`
 for `factory_storyboard` in
 `projects/platform-factory/factory-db/resources/cluster.yaml`. CloudNativePG
-applies managed-role changes, so no manual SQL is needed. The
+applies managed-role changes. Then end any open sessions, which keep
+their access, and check that none remain:
+
+```sh
+KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db exec factory-db-1 -c postgres -- \
+  psql -At -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'factory_storyboard'"
+KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db exec factory-db-1 -c postgres -- \
+  psql -At -c "SELECT count(*) FROM pg_stat_activity WHERE usename = 'factory_storyboard'"
+```
+
+The second command must print 0. Use the primary's pod name if
+`factory-db-1` is not the primary. The
 `storyboard_delivery` view and its grant stay, so a later redeploy works
 without a new migration. To remove the grant as well, add a forward
 migration that revokes it.
