@@ -50,7 +50,7 @@ export async function publishHikesSummary(out, now = new Date()) {
   const status = (at) =>
     `<span data-forecast-freshness data-fetched-at="${escape(at ?? "")}" data-latest-fetched-at="${escape(latest ?? "")}">${forecastStatus(at, latest, now.getTime())}</span>`;
   const summary =
-    `<p>Data as of ${time(index.asOf)}.</p>` +
+    `<p>Data as of ${time(timestamp(index.asOf))} · ${status(timestamp(index.asOf))}</p>` +
     `<p>Site snapshot: ${time(timestamp(index.generatedAt))} · <span data-snapshot-freshness data-generated-at="${escape(timestamp(index.generatedAt) ?? "")}">${snapshotStatus(index.generatedAt, now.getTime())}</span></p>` +
     `<p>Latest forecast fetch: ${time(latest)}. Oldest walk forecast: ${time(oldest)}. ${status(oldest)}</p>` +
     (unknown

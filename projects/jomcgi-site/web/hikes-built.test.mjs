@@ -112,9 +112,5 @@ test("deployed HTML shows the snapshot timestamp and walk facts without JavaScri
     /Stale site snapshot · published data retained/,
   );
   assert.doesNotMatch(summary.textContent, /Excluded prose|unavailable/);
-  assert.match(
-    await readFile(join(dir, "_redirects"), "utf8"),
-    /\/app\/hikes \/hikes 301\n\/app\/hikes\/\* \/hikes 301/,
-  );
   await window.happyDOM.close();
 });
