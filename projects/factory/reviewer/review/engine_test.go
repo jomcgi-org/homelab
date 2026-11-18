@@ -2131,6 +2131,22 @@ func TestHumanGateByPathHoldsUntilApprovalOnTheHead(t *testing.T) {
 	}
 }
 
+func TestEditingInvariantFileRequiresApprovalOnHead(t *testing.T) {
+	const file = "projects/example/policy/INVARIANTS.yaml"
+	h := newHarness(t)
+	h.gh.setBaseFile(file, "invariants: []")
+	h.gh.addPR(&fakePR{Number: 7, Head: shaA, Author: "jomcgi-factory[bot]", Files: []github.PullRequestFile{{Path: file, Status: "modified", Additions: 1}}})
+	e, ctx, _ := h.start()
+	completeReview(t, h, runReview(t, h, e, ctx, 7, shaA), shaA, "review of invariant file edit")
+	c := h.gh.check(shaA)
+	st, _ := LoadState(c.Text)
+	if c.Conclusion != ConclusionFailure || st.Gate == nil || !slices.Equal(st.Gate.Paths, []string{file}) || !strings.Contains(c.Summary, gateOnlyMarker) {
+		t.Fatalf("expected a human hold for %s, got %s: %s", file, c.Conclusion, c.Summary)
+	}
+	eventually(t, "review slot released", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	approveAndCheck(t, h, e, ctx, 7, shaA, "Reviewed the invariant change.", "exact-head approval did not clear invariant hold")
+}
+
 func TestCompletedPassRechecksChangedInvariantBase(t *testing.T) {
 	h := newHarness(t)
 	addPR7(h)

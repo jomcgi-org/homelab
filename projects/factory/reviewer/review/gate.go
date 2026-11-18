@@ -315,6 +315,9 @@ func (g *Gate) observeLabels(labels []string, now time.Time) bool {
 
 const invariantFile = "INVARIANTS.yaml"
 
+// GitHub's Contents API returns inline file data up to 1 MiB.
+const maxInvariantBytes = 1 << 20
+
 type mechanismPaths map[string]bool
 
 func loadMechanisms(ctx context.Context, gh RulesReader, repo, commit string) (mechanismPaths, error) {
@@ -344,6 +347,9 @@ func loadMechanisms(ctx context.Context, gh RulesReader, repo, commit string) (m
 
 // ParseMechanisms validates one invariant file and collects its repository paths.
 func ParseMechanisms(file string, data []byte, paths map[string]bool) error {
+	if len(data) > maxInvariantBytes {
+		return fmt.Errorf("%s exceeds the 1 MiB GitHub Contents API limit: %w", file, github.ErrTooLarge)
+	}
 	var doc struct {
 		Invariants []struct{ Mechanism []string }
 	}
