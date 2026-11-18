@@ -18,10 +18,6 @@ flowchart LR
   connector -->|report outcome| plan
 ```
 
-## Components and ownership
-
-Paths are relative to `projects/factory/`.
-
 | Component | Role | Code | Pin | Untrusted input | Credentials held |
 | --- | --- | --- | --- | --- | --- |
 | itsaplan | Owns requests and run history | `chart/templates/itsaplan.yaml` | Community 1.10.0 | Issues and comments | Database, S3 and OIDC secrets |
@@ -40,7 +36,11 @@ Paths are relative to `projects/factory/`.
 
 See the [connector architecture](connector/ARCHITECTURE.md) for the [run lifecycle](connector/ARCHITECTURE.md#run-lifecycle), [revision rounds](connector/ARCHITECTURE.md#review-rounds) and [liveness lease](connector/ARCHITECTURE.md#liveness-lease). The move keeps the reviewed text without a claim-by-claim source audit ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-265#comment-3955)).
 
-## Umbrella chart
+## Current state
+
+The homelab installation uses [these deployment values](deploy/values.yaml). Component paths above are relative to `projects/factory/`.
+
+### Umbrella chart
 
 Argo CD installs the factory chart with the homelab binding in `deploy/values.yaml`. The chart renders itsaplan, the broker, connector and reviewer, plus kagent resources for each repository binding. Substrate, Authentik, the edge gateway, Postgres and Garage run as separate installations.
 
@@ -58,13 +58,9 @@ Substrate's egress gateway admits actors to the broker's relay and to
 `github.com`. Its credential provider reads a binding namespace only through
 the chart's RoleBinding and the namespace's `namespacePolicies` entry.
 
-**Ordering.** kagent CRDs are vendored in `crds/`; a PreSync/pre-upgrade
-Job server-side-applies them so upgrades update CRDs. Waves: namespaces,
-ServiceAccounts, 1Password items and the database (-2); secret-init and a
-database-ready gate (-1); kagent, itsaplan api, broker (0); itsaplan web and
-worker, connector (1); kagent CRs and the itsaplan bootstrap Job (2).
+The chart installs CRDs and waits for database readiness before starting the API. It creates repository Agents after the controller is available.
 
-## Sandbox checks
+### Sandbox checks
 
 The homelab coding binding supplies the local check tools and their download policy. Its prompt directs the coder to run `toolchain/bootstrap.sh` after cloning and source the generated environment in each shell. Remote tests run in PR CI.
 
@@ -90,7 +86,7 @@ Agents can run `ci lint`, `ci regen`, `ci ratchet`, `helm template` and scoped
 `python3 -m pytest` checks. PR CI owns BUILD generation and remote tests;
 these local checks do not establish a passing `ci test` or full `ci` run.
 
-## Memory
+### Memory
 
 `repositories[].memory` binds one coding binding's Agent to Hindsight
 (`projects/platform-factory/hindsight`) as RemoteMCPServer `memory`, limited
@@ -113,7 +109,7 @@ nDCG@10 (0.781) of ten models, against 0.522 for a stand-in for the local embedd
 chose one OpenRouter key for both instances
 ([HOME-130 comment 1439](https://factory-plan.jomcgi.dev/factory/issue/HOME-130#comment-1439)).
 
-### Memory recovery
+#### Memory recovery
 
 **Rollback.** Two levers, by what failed:
 
@@ -135,7 +131,7 @@ chose one OpenRouter key for both instances
 deployed image without network, from 1,024-dimensional vectors, and
 `keys_test` pins the recovery Job to its settings.
 
-### Bank configuration
+#### Bank configuration
 
 Every new bank starts from
 `projects/platform-factory/hindsight/resources/bank-template.json`, which the
@@ -167,15 +163,28 @@ DeepSeek through the dedicated OpenRouter credential. Its manifests disable
 MCP and admit only namespace `factory-discord`. The linked runbook records
 the boundary and rollout checks; the bridge remains HOME-162.
 
-## Discord bot
+### Discord bot
 
 Bosun answers mentions in the configured Discord servers. The bridge scopes memory to the guild and channel and passes messages to a separate kagent agent. The agent uses a dedicated model credential and has no coding tools. [Isolation decision](https://github.com/jomcgi-org/homelab/pull/8188#issuecomment-6960669519)
 
-## itsaplan
+### itsaplan
 
-The API and worker share the factory database. Attachments go to Garage. Humans sign in through the edge and itsaplan's invite-only OIDC application. The connector uses separate identities to claim coding work and coordinate issue updates.
+Humans sign in through the edge and itsaplan's invite-only OIDC application. The connector uses separate identities to claim coding work and coordinate issue updates.
 
-## Credential broker
+- **Data.** PostgreSQL is the CNPG Cluster `factory-db` in its own namespace
+  (`projects/platform-factory/factory-db`): three instances, WAL and daily
+  base backups to Garage bucket `factory-db-backups`. Its roles and databases
+  are declared (managed roles, a `Database` object), so it has no superuser
+  login; a setup Job writes `DATABASE_URL` Secrets `factory-itsaplan-db` and
+  `factory-connector-db` into `factory`. Attachments use Garage bucket
+  `factory-itsaplan` (`factory-itsaplan-s3`).
+- **Migrations** run in the api pod's init container, as upstream's chart
+  does, under itsaplan's advisory lock; the worker waits for them. The
+  pre-migration `pg_dump` is skipped (`SKIP_PRE_MIGRATION_BACKUP=1`): the dump
+  would live in an `emptyDir`, and WAL archiving already restores to any point
+  before a migration.
+
+### Credential broker
 
 `projects/factory/broker`, one replica with `Recreate`. It reuses the Codex
 OAuth code in `projects/shared/go/tokenbroker`, with the grant Secret prefix
@@ -197,11 +206,11 @@ The broker mounts the author and reviewer App private keys and holds the Codex g
 
 <a id="inputs-from-joe"></a>
 
-### Factory App Secret layout
+#### Factory App Secret layout
 
 The author App uses the 1Password SSH Key item `k8s-homelab/factory-gh-app`. Its `private key` field maps to the Kubernetes Secret key `private-key`. The text fields `app-id` and `installation-id` keep their names.
 
-### Relay limits and grant refresh
+#### Relay limits and grant refresh
 
 - **Limits.** Request bodies up to 32 MiB read within 2 minutes, at most 64
   requests in flight, and any upstream response silent for 5 minutes is cut.
@@ -249,7 +258,30 @@ The author App uses the 1Password SSH Key item `k8s-homelab/factory-gh-app`. Its
   save the retained bundle without exchanging the code again. This recovery
   state is in memory and does not survive a broker restart.
 
-### Network and Kubernetes permissions
+#### Reviewer credentials
+
+- **Reviewer App.** `githubReview` configures the reviewer App
+  (`jomcgi-factory-review`) independently of the author App. The broker mints a read-only (`contents: read`) `github-git` Secret
+  in each `reviewBindings` namespace, which must not be a coding binding's,
+  and serves `GET /github/reviewer-token?repository=` to `reviewerSubjects`
+  only, with checks and merge queues write, pull requests, contents and
+  statuses read. The reviewer's PR comment needs a separate token with
+  `issues: write` and `pull_requests: write`
+  (`githubReview.commentPermissions`).
+  `pull_requests: write` could approve, so that token never leaves the
+  broker. `/github/reviewer-comments` (`github.CommentProxy`), for the same
+  subjects only, does three things with it: finds the oldest comment
+  matching the requested prefix that `githubReview.commentAuthor` wrote on a PR
+  (reading up to 10,000 comments a page at a time and stopping at the first
+  match, so the reviewer makes one request), creates a comment on a pull
+  request (an issue number is refused), and edits a comment on a pull
+  request that the bot login wrote. Lookup has a five-minute budget in both
+  the reviewer and its broker client. The comment write gets a fresh
+  30-second budget after lookup. It serves
+  nothing else, and runs only when that login is set. An App without those
+  permissions fails only the comment. The check token keeps its narrower scope.
+
+#### Network and Kubernetes permissions
 
 - **Listeners.** The relay port admits only Substrate's egress gateway; a
   second port serves the admin endpoints, connector tokens, the connector's
@@ -273,7 +305,7 @@ The author App uses the 1Password SSH Key item `k8s-homelab/factory-gh-app`. Its
   outcome, usage endpoint reads by outcome, and the shared quota gauges.
   Labels come only from fixed sets or configuration.
 
-## Identities
+### Identities
 
 The optional notification client uses a dedicated Authentik account scoped to the monolith notification tool and its configured channel. See the [activation procedure](deploy/notify.md).
 
@@ -282,7 +314,7 @@ issuer and monolith permission check confine this sender even if it guesses
 another tool or channel. Durable dedupe handles the response-loss case that
 a connector memory cache cannot.
 
-### Factory front page
+#### Factory front page
 
 The landing page reads the connector’s cached status snapshot. It shows work that needs Joe, active work and recent merges. A failed refresh makes the snapshot unavailable.
 
@@ -419,10 +451,12 @@ version write-back.
 
 ## Findings that shape the design
 
-These upstream constraints explain the delivery and access controls above.
+The [connector](#connector) and [merge authority](#merge-authority) depend on these upstream contracts.
 
 - kagent relies on its Substrate fork for the Kubernetes Secret provider and egress gateway.
 - The Substrate gateway replaces credentials in outgoing headers. The broker supplies the account header and authorization that Codex model calls require.
+- The homelab coding binding uses the broker’s ChatGPT subscription. The broker keeps the OAuth grant outside the actors.
+- kagent exposes task dispatch and polling over A2A. The connector uses the session service for recovery.
 - Each kagent session belongs to one Agent. The connector records the session with the run so it can route revisions to the coder.
 - An agent comment does not start another itsaplan run. The connector can report progress on the issue without dispatching new work.
 - kagent trusted-proxy authentication relies on the edge to validate human access tokens. The connector authenticates separately through Kubernetes TokenReview.
