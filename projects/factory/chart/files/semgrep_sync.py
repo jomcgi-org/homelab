@@ -3,6 +3,8 @@
 import json
 import os
 import re
+import sys
+from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
@@ -76,10 +78,12 @@ def snapshot(get, deployment):
                     "location": f"{location['file_path']}:{location['line']}",
                 }
                 # Indented JSON stays literal Markdown even with backticks or newlines in rule names.
+                # itsaplan's mention parser still scans indented code, so no literal @ is left.
+                data = json.dumps(evidence).replace("@", "\\u0040")
                 link = f"https://semgrep.dev/orgs/{deployment}/findings/{number}"
                 result[key] = (
                     closed,
-                    f"Semgrep finding ID: {key}\n\nUntrusted finding data\n\n    {json.dumps(evidence)}\n\n{link}",
+                    f"Semgrep finding ID: {key}\n\nUntrusted finding data\n\n    {data}\n\n{link}",
                 )
             if len(rows) < params["page_size"]:
                 break
@@ -87,7 +91,16 @@ def snapshot(get, deployment):
     return result
 
 
+class DeferredFindings(Exception):
+    """Findings the API refused to move; every other finding was reconciled."""
+
+    def __init__(self, keys):
+        super().__init__("deferred linked findings: " + ", ".join(keys))
+        self.keys = keys
+
+
 def reconcile(findings, plan):
+    deferred = []
     me = plan("/me")
     if (
         not me["authenticated"]
@@ -141,11 +154,20 @@ def reconcile(findings, plan):
         if issue.get("archivedAt"):
             changes["restore"] = True
         if changes:
-            plan(
-                f"/issues/{issue['id']}/factory-semgrep",
-                "PATCH",
-                {"finding": key, **changes},
-            )
+            try:
+                plan(
+                    f"/issues/{issue['id']}/factory-semgrep",
+                    "PATCH",
+                    {"finding": key, **changes},
+                )
+            except HTTPError as error:
+                # 409: the finding is linked to another issue, which the API
+                # refuses to move. Report it and keep reconciling the rest.
+                if error.code != 409:
+                    raise
+                deferred.append(key)
+    if deferred:
+        raise DeferredFindings(deferred)
 
 
 def sync(get, deployment, plan):
