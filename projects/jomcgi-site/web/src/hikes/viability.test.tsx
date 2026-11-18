@@ -58,18 +58,23 @@ describe("Python router.py parity (cases copied from hikes/router_test.py)", () 
     );
   });
 
+  // The first three rows are the Python parameters; the last two add wind
+  // values near the limit.
   it.each([
     [2, 80, true],
     [2.1, 80, false],
     [2, 80.01, false],
     [0, 79.92, true],
     [0, 80.28, false],
-  ])("weather thresholds: %s mm / %s km/h", (rain, wind, want) => {
-    const row: Hour = [base, 12, Number(rain), Number(wind), 40, null, null];
-    expect(viableDays([row], 1, base * 1000)).toEqual(
-      want ? ["2026-06-15"] : [],
-    );
-  });
+  ])(
+    "TestStoredBadHours.test_stored_viability_boundaries %s mm / %s km/h",
+    (rain, wind, want) => {
+      const row: Hour = [base, 12, Number(rain), Number(wind), 40, null, null];
+      expect(viableDays([row], 1, base * 1000)).toEqual(
+        want ? ["2026-06-15"] : [],
+      );
+    },
+  );
 
   it.each([
     [4, true],
