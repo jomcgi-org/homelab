@@ -1031,8 +1031,7 @@ type State struct {
 	// replaces its original v1 check during migration.
 	LegacyTask bool `json:"legacy_task,omitempty"`
 	// Overflow marks a checkpoint that dropped this review's own findings to
-	// fit. Only a replay of its task clears it; approval of a HistoryLost
-	// hold accepts lost legacy history, never these findings.
+	// fit. Only a replay of its task clears it.
 	Overflow bool `json:"overflow,omitempty"`
 }
 
