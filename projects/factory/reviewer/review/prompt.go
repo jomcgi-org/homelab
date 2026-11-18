@@ -320,7 +320,7 @@ func Prompt(in PromptInput) string {
 			fmt.Fprintf(&b, "%s wrote%s:\n\n%s\n\n", c.Author, where, quote(clip(strings.TrimSpace(c.Body), maxPromptComment)))
 		}
 		if in.DroppedComments > 0 {
-			fmt.Fprintf(&b, "%d comments from other logins were left out.\n\n", in.DroppedComments)
+			fmt.Fprintf(&b, "%d comments were left out.\n\n", in.DroppedComments)
 		}
 	}
 
