@@ -58,6 +58,10 @@ type PromptInput struct {
 	// Interdiff is what changed since PreviousHead; nil when GitHub no
 	// longer has that commit.
 	Interdiff *github.CommitComparison
+	// Scope is what the service holds this head's new findings to: the
+	// hunks changed since PreviousHead, or after a rebase the files whose
+	// own diff changed (RebasedScope). Nil reviews the whole change again.
+	Scope *Scope
 	// PreviousUnknown says why the review of an earlier head could not be
 	// found when one may exist.
 	PreviousUnknown string
@@ -244,7 +248,7 @@ func Prompt(in PromptInput) string {
 		}
 		b.WriteString("\n")
 		if len(in.Cleared) > 0 {
-			if LaterScope(in.PreviousHead, in.Interdiff) != nil {
+			if in.Scope != nil {
 				fmt.Fprintf(&b, "Reviews of earlier heads cleared these findings. A fixed one present again on this head is a "+
 					"regression: raise it at its own severity. Raise a justified or withdrawn one again when a change since %s, "+
 					"in any file, affects it, and always when it is present on this head at high or critical severity. The "+
@@ -270,6 +274,12 @@ func Prompt(in PromptInput) string {
 		switch d := in.Interdiff; {
 		case d == nil:
 			fmt.Fprintf(&b, "GitHub no longer has %s, so there is no interdiff: review the whole change again.\n\n", in.PreviousHead)
+		case d.Status != "ahead" && in.Scope != nil:
+			fmt.Fprintf(&b, "The PR was rebased since %s (%s). The reviewer service compared the PR's own diff before and after: "+
+				"the files whose diff changed are listed in the pull request block below, and the rest make the same change as before. "+
+				"Review the listed files in full, and the rest where `main/` moved under them.", in.PreviousHead, d.Status)
+			b.WriteString(laterRule)
+			b.WriteString("\n\n")
 		case d.Status != "ahead":
 			fmt.Fprintf(&b, "The PR was rebased since %s (%s), so the interdiff includes the base's changes: review the whole change again.\n\n",
 				in.PreviousHead, d.Status)
@@ -284,11 +294,8 @@ func Prompt(in PromptInput) string {
 				fmt.Fprintf(&b, " GitHub lists only the first %d; `git -C pr diff --stat %s %s` lists them all.",
 					github.MaxCompareFiles, in.PreviousHead, in.SHA)
 			}
-			if LaterScope(in.PreviousHead, d) != nil {
-				b.WriteString(" On lines the earlier review covered and this head left alone, a new finding is high or critical, " +
-					"or it is low with defer. Mark such a finding \"earlier\": true; the reviewer service lowers a marked medium " +
-					"finding under a root rule outside the listed files to a deferred low one. Never mark a finding this head's " +
-					"changes cause or affect, such as a caller broken by a changed function: unmarked findings keep their severity.")
+			if in.Scope != nil {
+				b.WriteString(laterRule)
 			} else {
 				b.WriteString(" The list is incomplete, so review the whole change and rate every finding at its full severity.")
 			}
@@ -367,6 +374,12 @@ func Prompt(in PromptInput) string {
 		}
 		fb.WriteString("):\n")
 		writeFileList(&fb, d.Files)
+	} else if in.PreviousHead != "" && d != nil && in.Scope != nil {
+		paths := in.Scope.Paths()
+		fmt.Fprintf(&fb, "\nFiles whose diff changed since %s (%d):\n", in.PreviousHead, len(paths))
+		for _, p := range paths {
+			fmt.Fprintf(&fb, "- %s\n", quotePath(p))
+		}
 	}
 	writeUntrusted(&b, "content", in.SHA, fb.String())
 
@@ -381,8 +394,13 @@ func Prompt(in PromptInput) string {
 	b.WriteString("- path and line: repository-relative, a line in the head commit. Omit both for a finding about no single place.\n")
 	b.WriteString("- title: the failure in one line. detail: the input or state, what happens, why it matters and what resolves it.\n")
 	b.WriteString("- defer: true for a low finding worth a follow-up issue.\n")
-	if LaterScope(in.PreviousHead, in.Interdiff) != nil {
-		b.WriteString("- earlier: true only for a new finding on code the earlier review covered and this head left alone; " +
+	if in.PreviousHead != "" {
+		b.WriteString("- cause: for each finding that is new on this head or that an earlier review cleared, what changed since " +
+			in.PreviousHead + " and how that change introduced or exposed the failure, naming the changed file. Leave it empty " +
+			"for an earlier review's miss; never invent one.\n")
+	}
+	if in.Scope != nil {
+		b.WriteString("- earlier: true for a new finding on code the earlier review covered and this head left alone; " +
 			"omit it otherwise.\n")
 	}
 	b.WriteString("- previous: one entry per finding under \"Previous review\", or empty.\n")
@@ -390,6 +408,14 @@ func Prompt(in PromptInput) string {
 	b.WriteString("- Declare no verdict: the reviewer service decides it from the severities.\n")
 	return b.String()
 }
+
+// laterRule is REVIEW.md "Later heads" as the service enforces it.
+const laterRule = " On code the earlier review covered and this head left alone, a new finding is high or critical, or it is low " +
+	"with defer. Give every new blocking finding a \"cause\" that names the changed file and says how the change introduced or " +
+	"exposed the failure, such as a caller broken by a changed function or a regression. The reviewer service lowers a new medium " +
+	"finding under a root rule to a deferred low one when it sits outside the hunks changed since the previous review and its " +
+	"cause names no changed file, or when you mark it \"earlier\": true. High and critical findings keep their severity; " +
+	"one without a cause is shown as an earlier review's miss."
 
 func writeFiles(b *strings.Builder, files []RuleFile) {
 	for _, f := range files {

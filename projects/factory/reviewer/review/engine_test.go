@@ -1180,14 +1180,17 @@ func TestLaterHeadsBlockOnlyOnTheirChanges(t *testing.T) {
 	shaB := strings.Repeat("b", 40)
 	second := round(shaB, map[string]any{"summary": "s", "findings": []any{
 		map[string]any{"id": "a.go:correctness:tabs", "severity": "medium", "path": "a.go", "line": 9, "title": "Two tabs race", "earlier": true},
-		map[string]any{"id": "b.go:correctness", "severity": "medium", "path": "b.go", "title": "Caller drops the error"},
+		map[string]any{"id": "b.go:correctness", "severity": "medium", "path": "b.go", "title": "Caller drops the error",
+			"cause": "interdiff-bbbb.go now returns an error from Load, and this unchanged caller drops it."},
+		map[string]any{"id": "b.go:validation", "severity": "medium", "path": "b.go", "title": "Old helper has no test"},
 		map[string]any{"id": "interdiff-bbbb.go:validation", "severity": "medium", "path": "interdiff-bbbb.go", "title": "No regression test"},
 		map[string]any{"id": "c.go:security", "severity": "critical", "path": "c.go", "title": "Token logged"},
 	}, "previous": []any{
 		map[string]any{"id": "a.go:correctness", "status": "fixed", "note": "The newest draft now wins."},
 	}})
 	prompt := h.k.sent()[len(h.k.sent())-1].Parts[0].Text
-	for _, want := range []string{"On lines the earlier review covered and this head left alone", "Mark such a finding \"earlier\": true", "unmarked findings keep their severity", "- earlier: true only"} {
+	for _, want := range []string{"On code the earlier review covered and this head left alone", "Give every new blocking finding a \"cause\"",
+		"its cause names no changed file", "- cause: for each finding", "- earlier: true for a new finding"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("the second prompt lacks %q", want)
 		}
@@ -1196,8 +1199,19 @@ func TestLaterHeadsBlockOnlyOnTheirChanges(t *testing.T) {
 		t.Fatalf("second = %s: %s\n%s", second.Conclusion, second.Title, second.Summary)
 	}
 	_, deferred, _ := strings.Cut(second.Summary, "### Deferred")
-	if !strings.Contains(deferred, "Two tabs race (`a.go:correctness:tabs`)") || !strings.Contains(deferred, "Reported medium; lowered") {
-		t.Fatalf("the lowered finding is not deferred:\n%s", second.Summary)
+	if !strings.Contains(deferred, "Two tabs race (`a.go:correctness:tabs`)") || !strings.Contains(deferred, "Old helper has no test (`b.go:validation`)") ||
+		!strings.Contains(deferred, "Reported medium; lowered") {
+		t.Fatalf("the lowered findings are not deferred:\n%s", second.Summary)
+	}
+	blocking, _, _ := strings.Cut(second.Summary, "### Deferred")
+	for _, want := range []string{
+		"Cause on this head: interdiff-bbbb.go now returns an error from Load",
+		"Token logged (`c.go:security`)", "the reviewer named no change that caused it: an earlier review missed it.",
+		"**Defect**: change the code",
+	} {
+		if !strings.Contains(blocking, want) {
+			t.Errorf("the blocking findings lack %q:\n%s", want, blocking)
+		}
 	}
 	eventually(t, "the lowered log line", func() bool {
 		return strings.Contains(h.log.String(), `"msg":"lowered a new finding outside the interdiff"`)

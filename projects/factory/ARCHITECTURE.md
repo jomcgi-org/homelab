@@ -2007,7 +2007,7 @@ previews).
   `Includes:` resolved, and `AGENTS.md` and `docs/agents/reference.md`, all
   read from main and sent in the prompt. It treats its checkout of the head
   as data and runs nothing from it. It returns findings only (`summary`,
-  `findings[{id, severity, path, line, title, detail, defer, earlier}]`,
+  `findings[{id, severity, path, line, title, detail, defer, earlier, cause}]`,
   `previous[{id, status, note}]`, IDs `<path>:<rule>`), and the service
   decides: success only when no critical, high or medium finding blocks.
   Optional `semgrep {appId, checkName, wait}` adds GitHub-only scan evidence;
@@ -2049,20 +2049,33 @@ previews).
   raise a fixed one again whenever it is present (a regression), and a
   justified or withdrawn one when a change since the previous head
   affects it or when it is present at high or critical severity. It asks
-  the agent to check each again when the interdiff is unusable. When the
-  head descends from the previous one and GitHub lists the whole interdiff,
-  the service lowers a new medium finding the agent marks
-  `earlier` (on code an earlier review covered and the head left alone) to
-  a deferred low one when its file is outside the interdiff
-  ([HOME-107](https://factory-plan.jomcgi.dev/factory/issue/HOME-107)). An
-  unmarked finding keeps its severity, so an omitted mark never lowers a
-  regression, and so does one whose ID an earlier review recorded as
-  fixed. So does a high or critical finding (REVIEW.md lets those
-  block on earlier-reviewed lines), a finding with no path, and a
-  finding under any rule but the root rules `correctness`, `security`,
-  `boundary`, `reachability`, `validation`, `rollout` and `goal`: scoped
-  rules set their own severity, and the review-process rules are not about
-  earlier-reviewed code. A reattached
+  the agent to check each again when the interdiff is unusable. On a later
+  head each new or reopened finding carries a `cause`: the changed file, and
+  how the change introduced or exposed it. When the head descends from the
+  previous one and GitHub lists the whole interdiff, the service reads each
+  file's hunks from its patch (a file without a patch counts as changed
+  throughout). It lowers a new medium finding to a deferred low one when
+  the finding's line is outside every changed hunk and its cause names no
+  changed file, or when the agent marks it `earlier`
+  ([HOME-107](https://factory-plan.jomcgi.dev/factory/issue/HOME-107),
+  [HOME-250](https://factory-plan.jomcgi.dev/factory/issue/HOME-250)). A
+  caller broken by a changed function keeps its severity through its cause.
+  After a rebase, the service compares the PR's own diff against the base
+  before and after, and counts as changed only the files
+  whose diff changed; any stated cause counts, since the base moved too.
+  The check shows each cause, marks a new high or critical finding without
+  one as an earlier review's miss, and names a reopened finding's earlier
+  status. A finding whose ID an earlier review recorded as fixed keeps its
+  severity (a regression). So does a high or critical finding (REVIEW.md
+  lets those block on earlier-reviewed lines), a finding with no path or no
+  line in a changed file, and a finding under any rule but the root rules
+  `correctness`, `security`, `boundary`, `reachability`, `validation`,
+  `rollout` and `goal`: scoped rules set their own severity, and the
+  review-process rules are not about earlier-reviewed code. Each blocking
+  finding is a defect, missing evidence (`unverified`, `unreviewed`, an
+  `unclear` goal verdict, unverified issue evidence) or a hold (the human
+  gate, `semgrep:unverified`, an unread issue, an unavailable goal check),
+  and the check says what each kind asks for. A reattached
   review waits while it cannot read the interdiff. When GitHub no longer has
   the earlier head, it reviews the whole change again in a new attempt.
   **Why.** Each head gets a fresh kagent session that read the whole diff
@@ -2217,11 +2230,21 @@ previews).
   staging. It receives neither the first reply nor the code review's prose.
   It must judge every criterion from the initial answer; an omitted criterion
   makes the confirmation unavailable.
-  A valid confirmation supplies the verdict, including a confirmed `not_met`.
+  A valid confirmation supplies the verdict only for the initial `not_met`
+  ones, including a confirmed `not_met`; it cannot turn a `met` into a
+  `not_met`.
   A failed confirmation produces the medium `unavailable` finding; it cannot
   publish the first answer's high. Existing blockers and human holds still apply.
   The check's State caches the final answer for its head and evidence digest.
   A fresh review of that evidence reuses it; unavailable answers are not cached.
+  A later head on the same evidence digest starts from the previous head's
+  answer: the prompt carries its verdicts, its private reply from the audit
+  volume (quoted, at most 8,000 bytes) and the files changed since, and asks
+  the model to keep each verdict unless a change affects it. An `unclear`
+  answer keeps the previous head's `met` or `after_rollout`, since it shows
+  no failure; a `not_met` stands. The prompt says that CI shows whether a
+  test passes: a criterion that asks for a test is `met` when the diff adds
+  it with a build target CI runs.
 
   ```mermaid
   flowchart LR

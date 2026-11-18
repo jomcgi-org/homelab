@@ -84,8 +84,9 @@ Answer two questions.
 **Does what its issue asks:** each acceptance criterion the diff can show
 is met, the stated problem is solved, and each hunk stays within the issue's
 scope. A criterion that needs a live rollout stays with the delivery owner;
-name it without claiming it passed. With no resolvable issue, the PR's
-description stands in. A bot's PR contains only the update it names.
+name it without claiming it passed. Whether a test passes is CI's to show:
+a criterion that asks for a test is met by a test CI runs. With no
+resolvable issue, the PR's description stands in. A bot's PR contains only the update it names.
 
 Report nothing that CI fails on. Skip formatting, style, naming, optional
 refactors, speculative risks and unrelated audits. A small, inert diff needs
@@ -214,10 +215,18 @@ PR:
   leaves alone what the decision covers.
   A further variant is a new finding, rated on its own under the next rule.
 - Review what changed since the last reviewed head and what that affects.
-- On lines the earlier review covered and the new head left alone, a new
-  finding is high or critical, or it is low with `defer`. The reviewer
-  marks such a finding `earlier`, and the service lowers a marked medium
-  finding under a root rule on a file outside the changed files.
+- Each new blocking finding names its cause: the changed file, and how that
+  change introduced or exposed the failure. A cleared finding reported
+  again names why it reopened.
+- On code the earlier review covered and the new head left alone, a new
+  finding is high or critical, or it is low with `defer`. The service lowers
+  a new medium finding under a root rule when it is outside the hunks
+  changed since the last reviewed head and its cause names no changed file,
+  or when the reviewer marks it `earlier`. After a rebase, the changed files
+  are those whose own diff changed.
+- The check names each blocking finding a defect, missing evidence or a
+  hold. Missing evidence is not a confirmed defect: the author supplies the
+  named evidence. A hold clears when a person or an outside service acts.
 
 ## Joe decides
 

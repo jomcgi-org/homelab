@@ -68,6 +68,14 @@ type Finding struct {
 	// is on code an earlier review covered and this head left alone (Scope).
 	// Left out, the finding keeps its severity.
 	Earlier bool `json:"earlier,omitempty"`
+	// Cause is the agent's account of a new blocking finding on a later
+	// head: what changed since the previous reviewed head, and how that
+	// change introduced or exposed the failure (REVIEW.md "Later heads").
+	// Scope checks that it names a changed path.
+	Cause string `json:"cause,omitempty"`
+	// Kind is what clears a service finding: KindEvidence or KindHold. The
+	// agent cannot set it (ParseReport); findingKind derives the rest.
+	Kind string `json:"kind,omitempty"`
 	// Lowered is the severity the agent gave a finding Scope lowered; the
 	// agent cannot set it.
 	Lowered string `json:"-"`
@@ -150,6 +158,46 @@ func isGate(f Finding) bool {
 	return false
 }
 
+// What a blocking finding asks for. A defect needs a code change; missing
+// evidence needs the named test, result or document, and a code change only
+// if that evidence shows a defect; a hold clears when a person or an outside
+// service acts, and no code change clears it.
+const (
+	KindDefect   = "defect"
+	KindEvidence = "evidence"
+	KindHold     = "hold"
+)
+
+// findingKind is what clears f: the service's own Kind, a hold for the
+// human gate, missing evidence for the unverified and unreviewed rules and
+// an unclear goal verdict, and a defect otherwise.
+func findingKind(f Finding) string {
+	if f.Kind == KindEvidence || f.Kind == KindHold {
+		return f.Kind
+	}
+	if isGate(f) {
+		return KindHold
+	}
+	for _, seg := range ruleSegments(f.ID) {
+		if r := ruleName(seg); r == "unverified" || r == "unreviewed" {
+			return KindEvidence
+		}
+	}
+	if f.Verdict == goalUnclear {
+		return KindEvidence
+	}
+	return KindDefect
+}
+
+// kindActions say what each kind of blocking finding asks of the author.
+var kindActions = map[string]string{
+	KindDefect: "**Defect**: change the code so that the failure no longer occurs.",
+	KindEvidence: "**Missing evidence**: this is not a confirmed defect. Add or point to the evidence the finding names " +
+		"(a test CI runs, a CI result, a document the reviewer can read). Change code only if that evidence shows a defect.",
+	KindHold: "**Hold**: no code change clears it. It clears when the named person or outside service acts; " +
+		"the reviewer service then reviews the head again.",
+}
+
 // ParseReport reads the last fenced block of the agent's reply as a report.
 // No block, a block in another language, invalid JSON, a report without a
 // summary or a findings list, an unknown severity or a finding without a
@@ -203,6 +251,7 @@ func ParseReport(reply string) (*Report, error) {
 		if f.ID == "" {
 			f.ID = derivedID(f)
 		}
+		f.Cause, f.Kind = strings.TrimSpace(f.Cause), ""
 	}
 	for i := range r.Previous {
 		p := &r.Previous[i]
@@ -266,6 +315,10 @@ type Assessment struct {
 	Carried []DecisionStamp
 	// EarlierPartial carries an incomplete cleared record forward.
 	EarlierPartial bool
+	// Later marks a review of a later head of the PR, whose new blocking
+	// findings each name the change that caused them (REVIEW.md "Later
+	// heads").
+	Later bool
 }
 
 // withdrawn reports a note withdrawing a previous finding.
@@ -617,44 +670,184 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 // Scope is what a later head changed since the previous reviewed head. A new
 // finding on code that review covered and this head left alone is high,
 // critical or low with defer (REVIEW.md "Later heads"); Scope enforces that
-// for the medium findings it can place.
+// for the medium findings it can place, down to the changed hunks.
 type Scope struct {
 	paths map[string]bool
+	// hunks are the head-side line ranges each changed file's patch
+	// touches, with its context lines. A changed file without an entry has
+	// no usable patch (binary, too large, renamed from, or rebased), so
+	// every line of it counts as changed.
+	hunks map[string][]lineRange
+	// Rebased marks a scope read from the PR's own diff before and after a
+	// rebase (RebasedScope): the base moved too, so a cause need not name a
+	// path the PR changed.
+	Rebased bool
+}
+
+// lineRange is a head-side line range [from, to].
+type lineRange struct{ from, to int }
+
+var hunkHeader = regexp.MustCompile(`(?m)^@@ -[0-9]+(?:,[0-9]+)? \+([0-9]+)(?:,([0-9]+))? @@`)
+
+// patchHunks reads the head-side line ranges of a unified diff's hunks, or
+// nil when the patch is empty or has no hunk header.
+func patchHunks(patch string) []lineRange {
+	var out []lineRange
+	for _, m := range hunkHeader.FindAllStringSubmatch(patch, -1) {
+		from, err := strconv.Atoi(m[1])
+		if err != nil {
+			return nil
+		}
+		n := 1
+		if m[2] != "" {
+			if n, err = strconv.Atoi(m[2]); err != nil {
+				return nil
+			}
+		}
+		// A pure deletion (n == 0) changes the lines around where it was.
+		out = append(out, lineRange{from: max(from, 1), to: max(from+n-1, from)})
+	}
+	return out
 }
 
 // LaterScope is the scope of a head reviewed after since, or nil when there
 // is none to enforce: a first review, or an interdiff that is missing,
-// truncated or spans a rebase.
+// truncated or spans a rebase (RebasedScope covers a rebase).
 func LaterScope(since string, d *github.CommitComparison) *Scope {
 	// An answer with no file list at all, unlike an empty one, shows nothing.
 	if since == "" || d == nil || d.Status != "ahead" || d.Truncated || d.Files == nil {
 		return nil
 	}
-	s := &Scope{paths: map[string]bool{}}
+	s := &Scope{paths: map[string]bool{}, hunks: map[string][]lineRange{}}
 	for _, f := range d.Files {
-		s.paths[f.Path] = true
+		s.add(f.Path, patchHunks(f.Patch))
 		if f.PreviousPath != "" {
-			s.paths[f.PreviousPath] = true
+			s.add(f.PreviousPath, nil)
 		}
 	}
 	return s
 }
 
-// changed reports a path that names a file changed since the previous head.
-func (s *Scope) changed(p string) bool {
-	p = strings.TrimSpace(p)
-	return p != "" && (s.paths[p] || s.paths[cleanPath(p)])
+// RebasedScope is the scope of a head reviewed after since when the PR was
+// rebased in between: the files whose own diff against the base differs
+// between before (since's diff against the base) and after (the head's),
+// each changed throughout. It is nil when either list is missing or
+// truncated, so the whole change is reviewed again.
+func RebasedScope(since string, before, after []github.PullRequestFile, complete bool) *Scope {
+	if since == "" || !complete || before == nil || after == nil {
+		return nil
+	}
+	old := map[string]github.PullRequestFile{}
+	for _, f := range before {
+		old[f.Path] = f
+	}
+	s := &Scope{paths: map[string]bool{}, hunks: map[string][]lineRange{}, Rebased: true}
+	for _, f := range after {
+		o, ok := old[f.Path]
+		delete(old, f.Path)
+		if ok && f.Patch != "" && o.Status == f.Status && o.PreviousPath == f.PreviousPath && samePatch(o.Patch, f.Patch) {
+			continue
+		}
+		s.add(f.Path, nil)
+		if f.PreviousPath != "" {
+			s.add(f.PreviousPath, nil)
+		}
+	}
+	for p := range old { // A file the PR no longer changes.
+		s.add(p, nil)
+	}
+	return s
+}
+
+// samePatch reports two diffs of one file that make the same change, though
+// a rebase may have moved their hunks' line numbers.
+func samePatch(a, b string) bool {
+	strip := func(p string) string { return hunkHeader.ReplaceAllString(p, "@@") }
+	return strip(a) == strip(b)
+}
+
+func (s *Scope) add(p string, hunks []lineRange) {
+	if p = cleanPath(p); p == "" {
+		return
+	}
+	if s.paths[p] {
+		delete(s.hunks, p) // Two entries for one path: count it changed throughout.
+		return
+	}
+	s.paths[p] = true
+	if hunks != nil {
+		s.hunks[p] = hunks
+	}
+}
+
+// Paths are the changed paths, sorted.
+func (s *Scope) Paths() []string {
+	if s == nil {
+		return nil
+	}
+	out := make([]string, 0, len(s.paths))
+	for p := range s.paths {
+		out = append(out, p)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// touched reports a finding's place that a change since the previous head
+// touched: a line inside a changed hunk of its file, or any place in a
+// changed file the service cannot narrow (no line, or no usable patch).
+func (s *Scope) touched(p string, line int) bool {
+	p = cleanPath(p)
+	if p == "" || !s.paths[p] {
+		return false
+	}
+	hunks, ok := s.hunks[p]
+	if !ok || line <= 0 {
+		return true
+	}
+	return slices.ContainsFunc(hunks, func(h lineRange) bool { return line >= h.from && line <= h.to })
+}
+
+// explains reports a cause that names a path changed since the previous
+// head, as a whole word, so the claim points at a change the service can
+// see. After a rebase the base moved too, so any stated cause counts.
+func (s *Scope) explains(cause string) bool {
+	cause = strings.TrimSpace(cause)
+	if cause == "" {
+		return false
+	}
+	if s.Rebased {
+		return true
+	}
+	for p := range s.paths {
+		if namesPath(cause, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// namesPath reports text that names path p, or its file name when that is
+// unique enough to point at it (it has an extension), as a whole word.
+func namesPath(text, p string) bool {
+	if namesID(text, p) {
+		return true
+	}
+	base := p[strings.LastIndex(p, "/")+1:]
+	return strings.Contains(base, ".") && namesID(text, base)
 }
 
 // Lower returns r with each new medium finding lowered to a deferred low
-// one when the agent marks it earlier (on code an earlier
-// review covered and this head left alone) and its file is outside the files
-// changed since the previous head. Unmarked findings, high and critical
-// findings, human-gate findings, the previous round's IDs, IDs an earlier
-// review recorded as fixed, findings with no path and findings under any rule
-// but lowerableRules keep their severity, so neither an omitted mark nor a
-// regression missed on an intervening head lowers one. A nil Scope lowers
-// nothing.
+// one when it sits on code an earlier review covered and this head left
+// alone: outside every changed hunk, or in an unchanged file. Such a
+// finding keeps its severity only when its cause names a change since the
+// previous head that introduced or exposed it, such as a caller broken by
+// a changed function, and the agent does not mark it earlier. High and
+// critical findings, human-gate findings, the previous round's IDs, IDs an
+// earlier review recorded as fixed (a regression), findings with no path
+// and findings under any rule but lowerableRules keep their severity, so
+// neither a missing cause nor a regression missed on an intervening head
+// lowers a serious one. A nil Scope lowers nothing.
 func (s *Scope) Lower(r *Report, prior []Finding, cleared []Cleared) *Report {
 	if s == nil {
 		return r
@@ -673,7 +866,10 @@ func (s *Scope) Lower(r *Report, prior []Finding, cleared []Cleared) *Report {
 	for i := range out.Findings {
 		f := &out.Findings[i]
 		if f.Severity != SeverityMedium || isGate(*f) || known[f.ID] ||
-			!f.Earlier || strings.TrimSpace(f.Path) == "" || !lowerable(*f) || s.changed(f.Path) {
+			strings.TrimSpace(f.Path) == "" || !lowerable(*f) || s.touched(f.Path, f.Line) {
+			continue
+		}
+		if !f.Earlier && s.explains(f.Cause) {
 			continue
 		}
 		f.Lowered, f.Severity, f.Defer = f.Severity, SeverityLow, true
@@ -864,7 +1060,7 @@ func Render(a Assessment, r *Report, gate *Gate, footer string) Outcome {
 	if len(a.Blocking) > 0 {
 		out.WriteString("### Blocking\n\n")
 		listed := 0
-		for _, e := range blockingEntries(a.Blocking, budget-out.Len()-maxOmitted) {
+		for _, e := range blockingEntries(a.Blocking, a.entryContext(), budget-out.Len()-maxOmitted) {
 			if out.Len()+len(e)+maxOmitted > budget {
 				break
 			}
@@ -876,6 +1072,9 @@ func Render(a Assessment, r *Report, gate *Gate, footer string) Outcome {
 				n, plural(n, "finding"))
 		}
 		out.WriteString("\n")
+		if acts := kindLines(a.Blocking); acts != "" && out.Len()+len(acts) <= budget {
+			out.WriteString(acts)
+		}
 	}
 	var s strings.Builder
 	if len(a.Withdrawn) > 0 {
@@ -975,7 +1174,8 @@ func Render(a Assessment, r *Report, gate *Gate, footer string) Outcome {
 
 // loweredNote says why Scope lowered a finding.
 func loweredNote(f Finding) string {
-	return fmt.Sprintf("Reported %s; lowered because the reviewer placed it on code an earlier review covered, outside the files changed since the previous review (REVIEW.md \"Later heads\").",
+	return fmt.Sprintf("Reported %s; lowered because the reviewer placed it on code an earlier review covered and this head left alone, "+
+		"outside the hunks changed since the previous review, and named no change that introduced or exposed it (REVIEW.md \"Later heads\").",
 		oneLine(f.Lowered, 20))
 }
 
@@ -1046,6 +1246,7 @@ func storable(f Finding) Finding {
 	f.ID, f.Title = storeText(f.ID, maxTitle), storeText(f.Title, maxTitle)
 	f.Path = storeText(f.Path, maxStoredPath)
 	f.Detail = storeText(f.Detail, maxStoredDetail)
+	f.Cause = storeText(f.Cause, maxStoredDetail)
 	f.Defer, f.Earlier = false, false
 	return f
 }
@@ -1060,17 +1261,53 @@ func storeText(s string, n int) string {
 	return oneLine(s, n)
 }
 
+// entryContext is what a blocking entry says beyond its finding: whether
+// this is a later head, and how earlier heads cleared each finding.
+type entryContext struct {
+	later   bool
+	cleared map[string]string
+}
+
+func (a Assessment) entryContext() entryContext {
+	c := entryContext{later: a.Later, cleared: map[string]string{}}
+	for _, e := range a.Earlier {
+		if _, ok := c.cleared[e.ID]; !ok {
+			c.cleared[e.ID] = e.Status
+		}
+	}
+	return c
+}
+
+// kindLines says what each kind of the blocking findings asks for, one
+// line per kind present, defects first.
+func kindLines(bs []Blocked) string {
+	seen := map[string]bool{}
+	for _, b := range bs {
+		seen[findingKind(b.Finding)] = true
+	}
+	var out strings.Builder
+	for _, k := range []string{KindDefect, KindEvidence, KindHold} {
+		if seen[k] {
+			fmt.Fprintf(&out, "- %s\n", kindActions[k])
+		}
+	}
+	if out.Len() == 0 {
+		return ""
+	}
+	return "What each kind asks for:\n\n" + out.String() + "\n"
+}
+
 // blockingEntries renders the blocking findings in full when they all fit in
 // room. Otherwise it renders every one with its detail and note cut to a
 // shared length, down to none, so a revision gets each finding's location
 // and title before any finding is left out.
-func blockingEntries(bs []Blocked, room int) []string {
+func blockingEntries(bs []Blocked, c entryContext, room int) []string {
 	var entries []string
 	for _, limit := range []int{maxMessage, 500, 200, 0} {
 		entries = entries[:0]
 		total := 0
 		for _, b := range bs {
-			e := blockingEntry(b, limit)
+			e := blockingEntry(b, c, limit)
 			entries = append(entries, e)
 			total += len(e)
 		}
@@ -1083,9 +1320,14 @@ func blockingEntries(bs []Blocked, room int) []string {
 
 // blockingEntry renders one blocking finding with its detail and note cut to
 // limit characters (the detail to at most maxDetail); 0 leaves both out.
-func blockingEntry(b Blocked, limit int) string {
+func blockingEntry(b Blocked, c entryContext, limit int) string {
 	var e strings.Builder
 	writeFindingN(&e, b.Finding, min(limit, maxDetail))
+	if k := findingKind(b.Finding); k != KindDefect {
+		fmt.Fprintf(&e, "  Kind: %s.", map[string]string{KindEvidence: "missing evidence", KindHold: "hold"}[k])
+	}
+	cause := oneLine(b.Cause, min(max(limit, 200), maxMessage))
+	status, reopened := c.cleared[b.ID]
 	switch {
 	case b.Carried:
 		fmt.Fprintf(&e, "  From the previous review: %s.", b.Reason)
@@ -1093,6 +1335,14 @@ func blockingEntry(b Blocked, limit int) string {
 		fmt.Fprintf(&e, "  Raised in the previous review and still present; %s.", b.Reason)
 	case b.Repeated:
 		e.WriteString("  Raised in the previous review and still present.")
+	case reopened && cause != "":
+		fmt.Fprintf(&e, "  Reopened: an earlier head's review recorded it %s. Why: %s", oneLine(status, 20), cause)
+	case reopened:
+		fmt.Fprintf(&e, "  Reopened: an earlier head's review recorded it %s; the reviewer named no change that brought it back.", oneLine(status, 20))
+	case c.later && cause != "":
+		fmt.Fprintf(&e, "  Cause on this head: %s", cause)
+	case c.later && b.Kind == "" && b.Verdict == "" && !isGate(b.Finding):
+		e.WriteString("  New on this head, and the reviewer named no change that caused it: an earlier review missed it.")
 	}
 	if b.Note != "" && limit > 0 {
 		fmt.Fprintf(&e, " Note: %s", oneLine(b.Note, min(limit, maxMessage)))
@@ -1164,7 +1414,7 @@ func encodeState(st State) string {
 		shrink := func(fs []Finding) []Finding {
 			out := make([]Finding, len(fs))
 			for i, f := range fs {
-				f.Title, f.Detail = cut(f.Title, lim.text), cut(f.Detail, lim.detail)
+				f.Title, f.Detail, f.Cause = cut(f.Title, lim.text), cut(f.Detail, lim.detail), cut(f.Cause, lim.detail)
 				f.Path, f.ID = cut(f.Path, lim.path), clip(f.ID, lim.id)
 				if f.Path == "" {
 					f.Line = 0
