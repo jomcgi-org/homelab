@@ -57,6 +57,105 @@ func (c *Client) HeadRefChangedAt(ctx context.Context, repo, branch, head string
 	}
 }
 
+const pullRequestReadySinceQuery = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      createdAt headRefOid baseRefName isDraft state
+      labels(first: 100) { pageInfo { hasNextPage } nodes { name } }
+      timelineItems(last: 100, itemTypes: [READY_FOR_REVIEW_EVENT, UNLABELED_EVENT, REOPENED_EVENT, BASE_REF_CHANGED_EVENT]) {
+        pageInfo { hasPreviousPage }
+        nodes {
+          __typename
+          ... on ReadyForReviewEvent { createdAt }
+          ... on UnlabeledEvent { createdAt label { name } }
+          ... on ReopenedEvent { createdAt }
+          ... on BaseRefChangedEvent { createdAt }
+        }
+      }
+    }
+  }
+}`
+
+// PullRequestReadySince bounds a recovered queue age by the last transition
+// into eligibility. It reads the base repository even for fork PRs. Missing or
+// truncated history cannot justify backdating the caller's observed wait.
+func (c *Client) PullRequestReadySince(ctx context.Context, repo string, pr PullRequest, skipLabels []string) (time.Time, error) {
+	owner, name, _ := strings.Cut(repo, "/")
+	var out struct {
+		Repository struct {
+			PullRequest *struct {
+				CreatedAt   time.Time `json:"createdAt"`
+				HeadRefOid  string    `json:"headRefOid"`
+				BaseRefName string    `json:"baseRefName"`
+				IsDraft     bool      `json:"isDraft"`
+				State       string    `json:"state"`
+				Labels      struct {
+					PageInfo struct {
+						HasNextPage bool `json:"hasNextPage"`
+					} `json:"pageInfo"`
+					Nodes []struct {
+						Name string `json:"name"`
+					} `json:"nodes"`
+				} `json:"labels"`
+				TimelineItems struct {
+					PageInfo struct {
+						HasPreviousPage bool `json:"hasPreviousPage"`
+					} `json:"pageInfo"`
+					Nodes []struct {
+						Type      string    `json:"__typename"`
+						CreatedAt time.Time `json:"createdAt"`
+						Label     *struct {
+							Name string `json:"name"`
+						} `json:"label"`
+					} `json:"nodes"`
+				} `json:"timelineItems"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	}
+	if err := c.graphql(ctx, repo, pullRequestReadySinceQuery, map[string]any{"owner": owner, "name": name, "number": pr.Number}, &out); err != nil {
+		return time.Time{}, err
+	}
+	p := out.Repository.PullRequest
+	if p == nil || p.CreatedAt.IsZero() || p.HeadRefOid != pr.HeadSHA || p.BaseRefName != pr.BaseRef || p.IsDraft || p.State != "OPEN" || p.Labels.Nodes == nil || p.Labels.PageInfo.HasNextPage || p.TimelineItems.Nodes == nil || p.TimelineItems.PageInfo.HasPreviousPage {
+		return time.Time{}, errors.New("github: incomplete or changed PR eligibility")
+	}
+	skipped := func(label string) bool {
+		for _, skip := range skipLabels {
+			if strings.EqualFold(label, skip) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, label := range p.Labels.Nodes {
+		if skipped(label.Name) {
+			return time.Time{}, errors.New("github: PR is skipped")
+		}
+	}
+	since := p.CreatedAt
+	for _, event := range p.TimelineItems.Nodes {
+		if event.CreatedAt.IsZero() {
+			return time.Time{}, errors.New("github: missing eligibility event time")
+		}
+		switch event.Type {
+		case "ReadyForReviewEvent", "ReopenedEvent", "BaseRefChangedEvent":
+		case "UnlabeledEvent":
+			if event.Label == nil || event.Label.Name == "" {
+				return time.Time{}, errors.New("github: missing removed label")
+			}
+			if !skipped(event.Label.Name) {
+				continue
+			}
+		default:
+			return time.Time{}, errors.New("github: unexpected eligibility event")
+		}
+		if event.CreatedAt.After(since) {
+			since = event.CreatedAt
+		}
+	}
+	return since, nil
+}
+
 // HeadRefActivity reads at most 100 events through the ref's latest creation.
 // Missing creation (including a truncated or missing page) is no proof. Read
 // all activity types so force pushes and delete/recreate cycles cannot hide.

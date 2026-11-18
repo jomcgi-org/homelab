@@ -39,21 +39,23 @@ const (
 )
 
 type fakePR struct {
-	Number   int
-	Title    string
-	Body     string
-	Author   string
-	Head     string
-	HeadRepo string
-	HeadRef  string
-	Activity []github.RefActivity
-	Commits  []github.PullRequestCommit
-	Base     string
-	Draft    bool
-	Labels   []string
-	Updated  time.Time
-	Created  time.Time
-	Files    []github.PullRequestFile
+	Number               int
+	Title                string
+	Body                 string
+	Author               string
+	Head                 string
+	HeadRepo             string
+	HeadRef              string
+	Activity             []github.RefActivity
+	EligibilityEvents    []map[string]any
+	EligibilityTruncated bool
+	Commits              []github.PullRequestCommit
+	Base                 string
+	Draft                bool
+	Labels               []string
+	Updated              time.Time
+	Created              time.Time
+	Files                []github.PullRequestFile
 	// Heads is the timeline's head history, oldest first; the current head
 	// is appended when it changes.
 	Heads          []string
@@ -787,7 +789,7 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 	defer func() { f.gql = append(f.gql, kind) }()
 	for k, fail := range f.failGQL {
 		if fail && strings.Contains(req.Query, map[string]string{
-			"cited": "ADDED_TO_MERGE_QUEUE_EVENT", "enqueue": "enqueuePullRequest", "heads": "timelineItems", "pull_request": "mergeQueueEntry {", "merge_queue": "mergeQueue(branch", "review_acknowledgement": "... on PullRequestReview",
+			"cited": "ADDED_TO_MERGE_QUEUE_EVENT", "enqueue": "enqueuePullRequest", "heads": "HEAD_REF_FORCE_PUSHED_EVENT", "eligibility": "READY_FOR_REVIEW_EVENT", "pull_request": "mergeQueueEntry {", "merge_queue": "mergeQueue(branch", "review_acknowledgement": "... on PullRequestReview",
 		}[k]) {
 			kind = k
 			_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"type": "FORBIDDEN", "message": "injected failure"}}})
@@ -853,6 +855,26 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 			nodes = append(nodes, n)
 		}
 		reply(map[string]any{"repository": map[string]any{"mergeQueue": map[string]any{"entries": map[string]any{"nodes": nodes}}}})
+	case strings.Contains(req.Query, "READY_FOR_REVIEW_EVENT"):
+		kind = "eligibility"
+		pr := f.prs[number]
+		labels := []map[string]string{}
+		for _, label := range pr.Labels {
+			labels = append(labels, map[string]string{"name": label})
+		}
+		events := pr.EligibilityEvents
+		if events == nil {
+			events = []map[string]any{}
+		}
+		state := "OPEN"
+		if pr.Closed {
+			state = "CLOSED"
+		}
+		reply(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
+			"createdAt": pr.Created, "headRefOid": pr.Head, "baseRefName": pr.Base, "isDraft": pr.Draft, "state": state,
+			"labels":        map[string]any{"nodes": labels, "pageInfo": map[string]bool{"hasNextPage": false}},
+			"timelineItems": map[string]any{"nodes": events, "pageInfo": map[string]bool{"hasPreviousPage": pr.EligibilityTruncated}},
+		}}})
 	case strings.Contains(req.Query, "timelineItems"):
 		kind = "heads"
 		pr := f.prs[number]
@@ -912,8 +934,13 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 
 type reviewerTokens struct{}
 
-func (reviewerTokens) Token(context.Context, string) (string, error) { return "ghs_reviewer", nil }
-func (reviewerTokens) Invalidate(string)                             {}
+func (reviewerTokens) Token(_ context.Context, repo string) (string, error) {
+	if repo != testRepo {
+		return "", errors.New("repository is not bound to the reviewer")
+	}
+	return "ghs_reviewer", nil
+}
+func (reviewerTokens) Invalidate(string) {}
 
 // ownComments are the comments the reviewer wrote on a PR.
 func (f *fakeGitHub) ownComments(number int) []github.Comment {

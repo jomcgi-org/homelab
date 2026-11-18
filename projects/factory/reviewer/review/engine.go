@@ -41,6 +41,7 @@ type GitHub interface {
 	PullRequestReviews(ctx context.Context, repo string, number int) ([]github.PullRequestReview, error)
 	HeadRefActivity(ctx context.Context, repo, branch string) ([]github.RefActivity, error)
 	HeadRefChangedAt(ctx context.Context, repo, branch, head string) (time.Time, error)
+	PullRequestReadySince(ctx context.Context, repo string, pr github.PullRequest, skipLabels []string) (time.Time, error)
 	PullRequestCommits(ctx context.Context, repo string, number int, head string) ([]github.PullRequestCommit, error)
 	PullRequestLabelEvents(ctx context.Context, repo string, number int) ([]github.LabelEvent, error)
 	PullRequestCreationBoundary(ctx context.Context, repo string) (time.Time, error)
@@ -211,6 +212,7 @@ type Engine struct {
 	groups       map[string]string    // merge group commit: the conclusion of its review check
 	enqueueAfter map[string]time.Time // repo#pr@sha: next enqueue attempt after a failure
 	waiting      map[prKey]*waitingHead
+	waitPoll     uint64
 
 	// Under mu: each binding's last session sweep, and whether one runs.
 	swept    map[string]time.Time
@@ -223,12 +225,13 @@ type headKey struct {
 	sha     string
 }
 
-// waitingHead caches the current head's arrival time. Until GitHub's ref
-// activity can date it, use its first observation by this process.
+// waitingHead records the poll that first observed this eligible head. Within
+// that batch, recovered eligible arrival times refine the observation time.
 type waitingHead struct {
 	sha      string
 	since    time.Time
 	dated    bool
+	poll     uint64
 	unlisted int
 }
 
@@ -705,6 +708,7 @@ func prioritizeResumed(b *Binding, attach []candidate) {
 // noteWaiting records every eligible head before check/recovery reads, even
 // when all slots are full. Failed reads must not lose a head's place in line.
 func (e *Engine) noteWaiting(b *Binding, prs []github.PullRequest, complete bool) {
+	e.waitPoll++
 	listed := make(map[int]github.PullRequest, len(prs))
 	for _, pr := range prs {
 		listed[pr.Number] = pr
@@ -736,30 +740,35 @@ func (e *Engine) noteWaiting(b *Binding, prs []github.PullRequest, complete bool
 		}
 		key := prKey{b.Name, pr.Number}
 		if e.waiting[key] == nil {
-			e.waiting[key] = &waitingHead{sha: pr.HeadSHA, since: now}
+			e.waiting[key] = &waitingHead{sha: pr.HeadSHA, since: now, poll: e.waitPoll}
 		}
 	}
 }
 
-// dateWaiting recovers waits that began before this process or between polls.
-// Read once per head after a successful response. An unavailable activity feed
-// (for example on a fork) must neither stop reviews nor reset the observed wait.
+// dateWaiting recovers eligible waits within one observed batch, including at
+// startup. A head first seen in a later poll cannot pass an earlier batch, even
+// when only one head has readable history. Never request credentials for forks.
 func (e *Engine) dateWaiting(ctx context.Context, b *Binding, start []candidate) {
 	for _, c := range start {
 		pr := c.pr
 		w := e.waiting[prKey{b.Name, pr.Number}]
 		// A completed review needing another pass joins at its new observation,
 		// rather than inheriting the age of a head that already had a slot.
-		if w.dated || c.run != nil || pr.HeadRepo == "" || pr.HeadRef == "" {
+		if w.dated || c.run != nil || pr.HeadRepo != b.repo() || pr.HeadRef == "" {
 			continue
 		}
 		since, err := e.gh.HeadRefChangedAt(ctx, pr.HeadRepo, pr.HeadRef, pr.HeadSHA)
 		if err != nil || since.IsZero() || since.After(w.since) {
 			continue
 		}
-		// A branch may have existed long before its PR was opened.
-		if pr.CreatedAt.After(since) {
-			since = pr.CreatedAt
+		// Push time alone can predate readiness, removal of a skip label,
+		// reopening or a change of base. Recover those boundaries on restart.
+		ready, err := e.gh.PullRequestReadySince(ctx, b.repo(), pr, b.SkipLabels)
+		if err != nil || ready.IsZero() || ready.After(w.since) {
+			continue
+		}
+		if ready.After(since) {
+			since = ready
 		}
 		if since.Before(w.since) {
 			w.since = since
@@ -768,9 +777,10 @@ func (e *Engine) dateWaiting(ctx context.Context, b *Binding, start []candidate)
 	}
 }
 
-// prioritize orders new starts by the current head's wait within each author
-// priority. UpdatedAt is never an input: comments and labels cannot put a
-// later head ahead of a waiting one. PR number breaks equal arrival times.
+// prioritize orders new starts by observed eligible wait, then recovered age
+// within that batch, under each author priority. UpdatedAt is never an input.
+// Batch order keeps unknown fork ages comparable with readable ref history.
+// PR number breaks equal arrival times.
 func (e *Engine) prioritize(b *Binding, start []candidate) {
 	sort.Slice(start, func(i, j int) bool {
 		pi, pj := start[i].pr, start[j].pr
@@ -779,6 +789,9 @@ func (e *Engine) prioritize(b *Binding, start []candidate) {
 			return ei
 		}
 		wi, wj := e.waiting[prKey{b.Name, pi.Number}], e.waiting[prKey{b.Name, pj.Number}]
+		if wi.poll != wj.poll {
+			return wi.poll < wj.poll
+		}
 		if !wi.since.Equal(wj.since) {
 			return wi.since.Before(wj.since)
 		}

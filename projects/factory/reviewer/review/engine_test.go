@@ -942,6 +942,111 @@ func TestHeadArrivalOrdersSamePollAndSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestEligibilityTransitionStartsANewWaitAcrossRestart(t *testing.T) {
+	for _, skipLabel := range []bool{false, true} {
+		for _, restart := range []bool{false, true} {
+			t.Run(fmt.Sprintf("skip-label=%t/restart=%t", skipLabel, restart), func(t *testing.T) {
+				h := newHarness(t)
+				h.cfg.Concurrency, h.cfg.Timeout = 1, time.Hour
+				h.cfg.Bindings[0].EnqueueAuthors = nil
+				var clockMu sync.Mutex
+				now := time.Now().UTC().Truncate(time.Second)
+				h.cfg.Now = func() time.Time { clockMu.Lock(); defer clockMu.Unlock(); return now }
+				addPR7(h)
+				older, waiting := strings.Repeat("b", 40), strings.Repeat("c", 40)
+				b := &fakePR{
+					Number: 1, Head: older, HeadRepo: testRepo, HeadRef: "factory/older", Created: now.Add(-3 * time.Hour), Draft: !skipLabel,
+					Activity: []github.RefActivity{{ID: 1, Ref: "refs/heads/factory/older", Type: "push", Before: "previous", After: older, Timestamp: now.Add(-2 * time.Hour)}},
+				}
+				if skipLabel {
+					b.Labels = []string{"no-review"}
+				}
+				h.gh.addPR(b)
+				e, ctx, stop := h.start()
+				running := runReview(t, h, e, ctx, 7, shaA)
+				h.gh.addPR(&fakePR{
+					Number: 20, Head: waiting, HeadRepo: testRepo, HeadRef: "factory/waiting", Created: now.Add(-time.Hour),
+					Activity: []github.RefActivity{{ID: 20, Ref: "refs/heads/factory/waiting", Type: "push", Before: "previous", After: waiting, Timestamp: now.Add(-30 * time.Minute)}},
+				})
+				e.Tick(ctx)
+				if restart {
+					eventually(t, "the running task recorded", func() bool { return RecordedTask(h.gh.check(shaA).Summary).ID == running })
+					stop()
+				}
+				// The old head becomes eligible without a push, during downtime
+				// in the restart case. Its earlier branch age is not queue age.
+				clockMu.Lock()
+				now = now.Add(time.Minute)
+				clockMu.Unlock()
+				h.gh.withLock(func() {
+					b.Draft, b.Labels = false, nil
+					event := map[string]any{"__typename": "ReadyForReviewEvent", "createdAt": h.cfg.Now()}
+					if skipLabel {
+						event["__typename"], event["label"] = "UnlabeledEvent", map[string]string{"name": "no-review"}
+					}
+					b.EligibilityEvents = []map[string]any{event}
+				})
+				if restart {
+					e, ctx, _ = h.start()
+				}
+				for range 3 {
+					h.gh.withLock(func() { b.Updated = time.Now() })
+					e.Tick(ctx)
+					if h.gh.checkCount() != 1 {
+						t.Fatal("a waiting head took the occupied slot")
+					}
+				}
+				h.k.finish(running, kagent.StateCompleted, report(t, passing))
+				eventually(t, "a free slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+				e.Tick(ctx)
+				eventually(t, "the head eligible first", func() bool { return h.taskOn(20, waiting, 1) != "" })
+				if h.gh.check(older) != nil {
+					t.Fatal("new eligibility inherited the old push time")
+				}
+			})
+		}
+	}
+}
+
+func TestWaitingForkPrecedesLaterDatedRepositoryHead(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Concurrency, h.cfg.Timeout = 1, time.Hour
+	h.cfg.Bindings[0].EnqueueAuthors = nil
+	// Deliberately keep the observation clock fixed across polls: batch order
+	// must also work when timestamps are equal, or a clock moves backwards.
+	now := time.Now().UTC().Truncate(time.Second)
+	h.cfg.Now = func() time.Time { return now }
+	addPR7(h)
+	e, ctx, _ := h.start()
+	running := runReview(t, h, e, ctx, 7, shaA)
+	fork, local := strings.Repeat("b", 40), strings.Repeat("c", 40)
+	h.gh.addPR(&fakePR{
+		Number: 20, Head: fork, HeadRepo: "outside/fork", HeadRef: "fork-branch", Created: now.Add(-2 * time.Hour),
+		Activity: []github.RefActivity{{ID: 20, Ref: "refs/heads/fork-branch", Type: "push", Before: "previous", After: fork, Timestamp: now.Add(-70 * time.Minute)}},
+	})
+	e.Tick(ctx)
+	// The token fake rejects unbound repositories, as the broker does. This
+	// head has readable history older than the fork's observation, but arrives
+	// at the scheduler on a later poll and must not overtake it.
+	h.gh.addPR(&fakePR{
+		Number: 1, Head: local, HeadRepo: testRepo, HeadRef: "factory/local", Created: now.Add(-2 * time.Hour),
+		Activity: []github.RefActivity{{ID: 1, Ref: "refs/heads/factory/local", Type: "push", Before: "previous", After: local, Timestamp: now.Add(-5 * time.Minute)}},
+	})
+	for range 3 {
+		e.Tick(ctx)
+	}
+	if !e.waiting[prKey{"homelab", 1}].dated {
+		t.Fatal("fixture did not recover the repository head's older timestamp")
+	}
+	h.k.finish(running, kagent.StateCompleted, report(t, passing))
+	eventually(t, "a free slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	e.Tick(ctx)
+	eventually(t, "the waiting fork", func() bool { return h.taskOn(20, fork, 1) != "" })
+	if h.gh.check(local) != nil {
+		t.Fatal("a recovered timestamp overtook a waiting fork")
+	}
+}
+
 func TestNewHeadResetsReviewWait(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.Concurrency = 1

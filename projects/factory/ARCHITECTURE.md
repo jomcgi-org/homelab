@@ -1928,13 +1928,17 @@ from reviewer App 5758326 alongside `pr-checks`.
 
 - **Review order (HOME-220).** Running reviews retain their slots. The poller
   reattaches in-progress checks before starting new reviews. Within each
-  `enqueueAuthors` priority, new starts use the current head's arrival time,
-  oldest first. GitHub's latest ref activity dates the exact current SHA;
-  the wait starts no earlier than PR creation. This recovers waits from before
-  startup and orders heads first seen in the same poll. Git commit dates and
-  PR `UpdatedAt` do not set this order. If ref activity is unavailable, the
-  first observation is the fallback. It is recorded before check and recovery
-  reads, even while slots are full, and kept while activity reads retry.
+  `enqueueAuthors` priority, heads first observed eligible in an earlier poll
+  go first. Within one poll, GitHub's latest ref activity dates the exact
+  current SHA, bounded by PR creation and the latest readiness, skip-label
+  removal, reopening or base-change event. This recovers eligible waits at
+  startup without counting time spent as a draft or skipped PR. Incomplete
+  history keeps the first observation as the fallback. A later poll cannot
+  overtake that fallback with an older recovered timestamp. Forks keep their
+  observed wait; the reviewer never requests a token for an unbound repository.
+  Git commit dates and PR `UpdatedAt` do not set queue order. Observation is
+  recorded before check and recovery reads, even while slots are full, and
+  kept while history reads retry.
   Failed reads and metadata updates preserve the wait; a changed head or a
   successful start resets it. A completed review needing another pass joins
   at its new observation. PR number breaks equal arrival times.
@@ -1946,7 +1950,10 @@ from reviewer App 5758326 alongside `pr-checks`.
   waiting PR and failed check reads. `TestPrioritizeUsesHeadWaitWithinAuthorPriority`
   checks the author override. `TestHeadArrivalOrdersSamePollAndSurvivesRestart`
   checks head arrival order within one poll and after a restart, including a
-  new PR opened from an old branch. `TestReattachmentsKeepOrderBeforeWaitingHeads`
+  new PR opened from an old branch. `TestEligibilityTransitionStartsANewWaitAcrossRestart`
+  covers draft readiness and skip removal, including during downtime;
+  `TestWaitingForkPrecedesLaterDatedRepositoryHead` covers mixed observed and
+  recovered ages. `TestReattachmentsKeepOrderBeforeWaitingHeads`
   checks the order of resumed reviews before new starts.
 
 For issue-backed reviews, the service verifies the provenance of decision
