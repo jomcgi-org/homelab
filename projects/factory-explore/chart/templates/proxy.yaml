@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: explore-proxy
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: explore-proxy }
+  template:
+    metadata:
+      labels: { app: explore-proxy }
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ghcr-imagepull-secret
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: proxy
+          image: "{{ .Values.image.repository }}@{{ required "image.digest required" .Values.image.digest }}"
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: metrics, containerPort: 9090 }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: ca, mountPath: /etc/kubernetes, readOnly: true }
+      volumes:
+        - name: ca
+          configMap: { name: kube-root-ca.crt }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: explore-proxy
+spec:
+  selector: { app: explore-proxy }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+    - { name: metrics, port: 9090, targetPort: metrics }
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: explore-proxy
+spec:
+  endpointSelector:
+    matchLabels: { app: explore-proxy }
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: edge
+            gateway.envoyproxy.io/owning-gateway-name: edge
+            gateway.envoyproxy.io/owning-gateway-namespace: edge
+      toPorts:
+        - ports:
+            - { port: "8080", protocol: TCP }
+            - { port: "9090", protocol: TCP }
+  egress:
+    - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - { port: "443", protocol: TCP }
+            - { port: "6443", protocol: TCP }
+    - toFQDNs:
+        - matchName: factory-auth.jomcgi.dev
+      toPorts:
+        - ports:
+            - { port: "443", protocol: TCP }
+---
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: ghcr-imagepull-secret
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+type: kubernetes.io/dockerconfigjson
+spec:
+  itemPath: vaults/k8s-homelab/items/ghcr-read-permissions
