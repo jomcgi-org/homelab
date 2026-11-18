@@ -1,6 +1,6 @@
 # Grimoire on the factory cluster
 
-[HOME-257](https://factory-plan.jomcgi.dev/factory/issue/HOME-257) applies Joe's November 18 decisions on HOME-178 to the [current hub implementation](../monolith/grimoire/architecture.md). Keep existing bookmarks through path-specific Worker redirects. HOME-261 can take the catch-all after these routes move.
+[HOME-257](https://factory-plan.jomcgi.dev/factory/issue/HOME-257) plans the factory migration of the [current hub implementation](../monolith/grimoire/architecture.md). Keep existing bookmarks through path-specific Worker redirects. HOME-261 can take the catch-all after these routes move.
 
 ## Page ownership
 
@@ -154,7 +154,11 @@ The shared account calls remain live under `/api/auth/platform`. Preserve GET on
 
 Rehearse a custom-format pg_dump and pg_restore into an isolated factory database. Inventory shared identity tables, foreign keys, sequences, extensions and job checkpoints before selecting tables. Copy only required rows from shared tables, retaining primary keys and membership mappings. Copy source books, chunk images, handouts and derivatives by object key to private storage. Compare object counts, sizes and checksums against a manifest. Verify row counts, references, sequence heads, representative vector searches and reader links.
 
-For the final pass, block hub writes and drain sessions, uploads and background jobs. Take a fresh consistent dump and copy the final object delta including deletions. Restore and verify before opening factory writes. Scale hub workloads to zero while retaining database, PVCs, source objects and backups. Switch scoped routes and callback URLs, then enable one set of writers and workers. Before factory writes, rollback can simply reverse routing and restart the hub. After writes, freeze factory, reconcile changed rows and objects back to the hub and validate before switching back.
+At the start of the maintenance window, close Grimoire admission on the hub. Return a maintenance response at the Grimoire handlers on both Monolith profiles, including internal chat and invitation callbacks, so direct callers cannot bypass the freeze. Suspend Grimoire ingestion and embedding schedules and drain in-flight requests, uploads and jobs. Verify there are no active Grimoire writers. Keep shared account services running and reconcile any identity changes against stable subject IDs before enabling factory writes.
+
+Take the final consistent dump and copy the object delta, including deletions. Restore and repeat the rehearsal checks. With factory writes still closed, switch only the Grimoire paths and callbacks, smoke-test gated reads and check an unrelated route on each shared Monolith profile. Enable factory writers and schedules once. Keep the old handlers closed and retain the hub database, PVCs, source objects and backups. The shared deployments continue serving other applications until their own cutovers under HOME-128.
+
+Before the first factory write, rollback by restoring the scoped routes and callbacks, reopening the hub handlers and resuming their schedules. After writes begin, first freeze and drain factory, reconcile changed rows and objects back to the hub and verify integrity before redirecting traffic and reopening hub writes.
 
 ## Follow-up HOME issue drafts
 
@@ -183,5 +187,5 @@ File under HOME-178 in dependency order. Each slice has the following Done when 
 ### Cut over and remove hub code
 
 1. Complete the frozen final transfer, verify integrity and exercise rollback before moving traffic. Confirm legacy deep links and access boundaries on production hosts.
-2. Verify factory ingestion, campaign writes and static playback with hub replicas at zero. Retain hub state and backups through rollback acceptance.
+2. Verify factory ingestion, campaign writes and static playback with zero active hub Grimoire jobs and no traffic reaching its retired handlers. Verify unrelated hub routes still serve traffic. Retain hub state and backups through rollback acceptance.
 3. After acceptance remove hub-only Grimoire registrations, pages, workers, routes and imgproxy dependencies while preserving shared consumers and the retained state. Record path ownership for HOME-261.
