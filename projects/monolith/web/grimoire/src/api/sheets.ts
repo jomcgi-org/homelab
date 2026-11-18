@@ -103,6 +103,21 @@ const versionParams = (ref: VersionRef) => ({
   sheet_version_id: ref.versionId,
 });
 
+const fetchSheetHistory = async (
+  campaignId: string,
+  characterId: string,
+  expectedViewerId?: string,
+): Promise<SheetHistory> => {
+  const history = await api(
+    "GET /campaigns/{campaign_id}/characters/{player_character_id}/sheets",
+    {
+      params: characterParams({ campaignId, characterId }),
+      expectedViewerId,
+    },
+  );
+  return { ...history, versions: history.versions.map(toVersion) };
+};
+
 /** Shared by the editor and the session's approved mechanics and roll tray. */
 export const sheetHistoryOptions = (
   campaignId: string,
@@ -111,16 +126,7 @@ export const sheetHistoryOptions = (
 ) =>
   queryOptions({
     queryKey: keys.sheets(campaignId, characterId),
-    queryFn: async (): Promise<SheetHistory> => {
-      const history = await api(
-        "GET /campaigns/{campaign_id}/characters/{player_character_id}/sheets",
-        {
-          params: characterParams({ campaignId, characterId }),
-          expectedViewerId,
-        },
-      );
-      return { ...history, versions: history.versions.map(toVersion) };
-    },
+    queryFn: () => fetchSheetHistory(campaignId, characterId, expectedViewerId),
     refetchInterval: 5_000,
   });
 
@@ -130,8 +136,9 @@ export const useSheetHistory = (
   accountId: string,
 ) =>
   useQuery({
-    ...sheetHistoryOptions(campaignId, characterId, accountId),
     queryKey: [...keys.sheets(campaignId, characterId), "viewer", accountId],
+    queryFn: () => fetchSheetHistory(campaignId, characterId, accountId),
+    refetchInterval: 5_000,
     refetchOnMount: "always",
   });
 
