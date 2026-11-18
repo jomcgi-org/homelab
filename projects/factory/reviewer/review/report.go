@@ -1522,14 +1522,32 @@ func encodeState(st State) string {
 		}
 		// A code-review task cannot reconstruct the separate goal answer.
 		// Its bounded numbers/verdicts and public issue key must survive too.
-		out = enc(State{
+		// Keep the service gate's holds and approval baseline. Recovery
+		// replays model gate findings from the report, never from here.
+		var gate *Gate
+		if g := st.Gate; g != nil {
+			c := *g
+			c.Findings, c.Paths = nil, nil
+			for _, p := range g.Paths {
+				c.Paths = append(c.Paths, clip(p, 80))
+			}
+			gate = &c
+		}
+		checkpoint := State{
 			Incomplete: true, TaskID: st.TaskID, LegacyTask: st.LegacyTask,
 			IssueDigest: st.IssueDigest, IssuesPending: st.IssuesPending, Goal: st.Goal, GoalKey: st.GoalKey, Semgrep: st.Semgrep,
-			Decisions: st.Decisions,
-		})
+			Decisions: st.Decisions, Gate: gate,
+		}
+		out = enc(checkpoint)
+		if len(out) > maxState {
+			// Drop decision stamps before the task reference. Replay then
+			// reopens each justified high finding until Joe decides again.
+			checkpoint.Decisions = nil
+			out = enc(checkpoint)
+		}
 		if len(out) > maxState {
 			// Malformed metadata is not a recoverable task checkpoint.
-			return enc(State{Incomplete: true})
+			return enc(State{Incomplete: true, Gate: gate})
 		}
 		return out
 	}

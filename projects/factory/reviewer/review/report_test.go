@@ -1464,3 +1464,27 @@ func TestGoalFindingSeverityFollowsItsVerdict(t *testing.T) {
 		t.Fatalf("agent finding: blocking %+v", a.Blocking)
 	}
 }
+
+func TestOverflowCheckpointKeepsTaskAndServiceGate(t *testing.T) {
+	var stamps []DecisionStamp
+	for i := range 150 {
+		stamps = append(stamps, DecisionStamp{Finding: fmt.Sprintf("%d:%s", i, strings.Repeat("d", 400)), ID: int64(i + 1), Hash: strings.Repeat("h", 64)})
+	}
+	after := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	st := State{
+		Blocking:  []Finding{finding("a.go:x", SeverityHigh)},
+		TaskID:    "task-1",
+		Decisions: stamps,
+		Gate: &Gate{
+			SharedHead: true, ObservedLabels: []string{}, ApprovalAfter: after, ApprovalNonce: "nonce",
+			Findings: []Finding{finding("a.go:gate:human-gate", SeverityHigh)},
+		},
+	}
+	got, ok := LoadState(encodeState(st))
+	failIf(t, !ok || !got.Incomplete, "an oversized state was not marked incomplete")
+	failIf(t, got.TaskID != "task-1", "large decision stamps dropped the task reference")
+	failIf(t, len(got.Decisions) != 0, "oversized decision stamps were kept")
+	failIf(t, got.Gate == nil || !got.Gate.SharedHead || !got.Gate.ApprovalAfter.Equal(after) || got.Gate.ApprovalNonce != "nonce",
+		"overflow dropped the service gate's sticky hold or approval baseline")
+	failIf(t, len(got.Gate.Findings) != 0, "overflow kept model gate findings that recovery replays")
+}
