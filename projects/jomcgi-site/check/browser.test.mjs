@@ -68,6 +68,7 @@ test(
         "third-party-script",
         "beacon-in-query",
         "beacon-console",
+        "beacon-console-prefix",
       ]) {
         await t.test(mode, async () => {
           const server = await serve((req, res) => {
@@ -88,6 +89,9 @@ test(
                     'fetch("https://outside.invalid/preview?url=https://static.cloudflareinsights.com/beacon.min.js")',
                   "beacon-console":
                     'console.error("app failed near https://static.cloudflareinsights.com/beacon.min.js/x")',
+                  // Chromium's wording, then a different failure.
+                  "beacon-console-prefix":
+                    'console.error("Loading the script \'https://static.cloudflareinsights.com/beacon.min.js/x\' violates the following Content Security Policy directive: \\"script-src \'self\'\\". The action has been blocked. And the app crashed.")',
                 }[mode] ?? "";
               respond(res, script, "text/javascript");
             } else {
@@ -135,6 +139,7 @@ test(
               "third-party-script": /CSP: script-src-elem|off-origin request/,
               "beacon-in-query": /CSP: connect-src|off-origin request/,
               "beacon-console": /console: app failed near/,
+              "beacon-console-prefix": /console: .*And the app crashed/,
             }[mode];
             if (expected) await assert.rejects(run(), expected);
             else assert.deepEqual(await run(), [`${server.origin}/`]);
@@ -191,7 +196,18 @@ test("only the exact Cloudflare beacon is treated as edge-injected", () => {
       `Loading the script '${beacon}' violates the following Content Security Policy directive: "script-src 'self'". The action has been blocked.`,
     ),
   );
+  assert.ok(
+    isEdgeBeaconConsole(
+      `Loading the script '${beacon}' violates the following Content Security Policy directive: "script-src 'self'". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked.`,
+    ),
+  );
   assert.equal(isEdgeBeaconConsole(`app failed near ${beacon}`), false);
+  assert.equal(
+    isEdgeBeaconConsole(
+      `Loading the script '${beacon}' violates the following Content Security Policy directive: "script-src 'self'". The action has been blocked. And the app crashed.`,
+    ),
+    false,
+  );
   assert.ok(isEdgeBeaconCsp(`script-src-elem: ${beacon}`));
   assert.equal(isEdgeBeaconCsp(`connect-src: ${beacon}`), false);
   assert.equal(

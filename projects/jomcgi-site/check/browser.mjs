@@ -79,8 +79,10 @@ export function isEdgeBeacon(value) {
       url.pathname.startsWith("/beacon.min.js/"))
   );
 }
+// Chromium's whole diagnostic, start to end, so an app error that starts with
+// the same words and goes on to describe another failure still counts.
 const BEACON_CSP_CONSOLE =
-  /^Loading the script '([^']+)' violates the following Content Security Policy directive: "script-src[^"]*"/;
+  /^Loading the script '([^']+)' violates the following Content Security Policy directive: "script-src[^"]*"\.(?: Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback\.)? The action has been blocked\.$/;
 export function isEdgeBeaconConsole(text) {
   const match = BEACON_CSP_CONSOLE.exec(text);
   return Boolean(match && isEdgeBeacon(match[1]));
