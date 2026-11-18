@@ -245,6 +245,7 @@ filegroup(
         "//projects/monolith/dev/deploy:repo_docs",
         "//projects/monolith/dev/grimoire:repo_docs",
         "//projects/monolith/frontend:repo_docs",
+        "//projects/monolith/trips/export:repo_docs",
         "//projects/monolith/web/grimoire:repo_docs",
         "//projects/operators/oci-model-cache:repo_docs",
         "//projects/platform-factory/external-secrets:repo_docs",
@@ -332,6 +333,7 @@ py_venv_binary(
     # or the jobs image fails at startup with `ModuleNotFoundError: typer`.
     deps = [
         ":monolith_backend",
+        "//projects/monolith/trips/export",
         "@pip//typer",
     ],  # keep
 )
@@ -2370,7 +2372,10 @@ _IMPORT_BOUNDARY_SRCS = glob(
         "**/test_*.py",
         "*/tests/**/*.py",
     ],
-) + ["//projects/monolith/auth:boundary_sources"]
+) + [
+    "//projects/monolith/auth:boundary_sources",
+    "//projects/monolith/trips/export:boundary_sources",
+]
 
 # Capture Bazel's exact source selection independently of the test runfiles.
 # The test compares this manifest to what it can actually discover at runtime,
