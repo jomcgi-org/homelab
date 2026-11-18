@@ -161,5 +161,8 @@ exports_files(
         "docs/templates/ARCHITECTURE.md",
         "docs/templates/bundles.yaml",
     ],
-    visibility = ["//bazel/tools/format/document_bundles:__pkg__"],
+    visibility = [
+        "//bazel/tools/ci:__pkg__",
+        "//bazel/tools/format/document_bundles:__pkg__",
+    ],
 )

@@ -21,3 +21,8 @@ py_test(
         "@pip//pytest",
     ],
 )
+
+exports_files(
+    ["check_bundles.py"],
+    visibility = ["//bazel/tools/ci:__pkg__"],
+)

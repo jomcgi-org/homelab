@@ -962,7 +962,15 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 	for failed_guard in none check_bundles verification_genrule_guard central_build_ratchet chart_version_guard source_ratchet test_source_reachability; do
 		case "$failed_guard" in
 		none) ;;
-		check_bundles) [[ "$scenario" == pr-main ]] || continue ;;
+		check_bundles)
+			[[ "$scenario" == pr-main ]] || continue
+			checker=bazel/tools/format/document_bundles/check_bundles.py
+			mkdir -p "$workflow_root/${checker%/*}" "$workflow_root/docs/templates"
+			cp "${BUILD_BUDDY%/*}/$checker" "$workflow_root/$checker"
+			cp "${BUILD_BUDDY%/*}/docs/templates/bundles.yaml" "$workflow_root/docs/templates/"
+			touch "$workflow_root/${checker%/*}/exemptions.txt"
+			echo '# Incomplete design' >"$workflow_root/projects/service/ARCHITECTURE.md"
+			;;
 		*) [[ "$scenario" == qualifying ]] || continue ;;
 		esac
 		export TRACE="$workflow_root/trace-$failed_guard"
@@ -1000,6 +1008,10 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 			bazel() { printf 'bazel %s\n' "$*" >>"$TRACE"; }
 			python3() {
 				printf 'python3 %s\n' "$*" >>"$TRACE"
+				if [[ "$failed_guard" == check_bundles && "$1" == */check_bundles.py ]]; then
+					command python3 "$@"
+					return
+				fi
 				[[ "$failed_guard" == none || "$1" != *"/$failed_guard.py" ]]
 			}
 			# Drain login stdin so echo cannot race this stub under pipefail.
@@ -1017,6 +1029,8 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 		set -e
 		if [[ "$failed_guard" == check_bundles ]]; then
 			if [[ "$rc" -ne 0 ]] && grep -qxF 'python3 ./bazel/tools/format/document_bundles/check_bundles.py' "$TRACE" &&
+				grep -qF 'projects/service/README.md: missing required file' "$workflow_root/output-$failed_guard" &&
+				grep -q 'projects/service/ARCHITECTURE.md: .*heading: Direction' "$workflow_root/output-$failed_guard" &&
 				! grep -q '/check_doc_links.py' "$TRACE"; then
 				pass "workflow_pr_fails_document_bundle_check"
 			else
