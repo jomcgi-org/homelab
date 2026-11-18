@@ -18,8 +18,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=issuer.edge.svc.clu
 kubectl -n edge create configmap issuer-ca --from-file="$tmp/ca.pem"
 for ns in edge kagent; do
 	kubectl -n "$ns" create secret generic fixture --from-file=issuer.py --from-file="$tmp/key.pem" --from-file="$tmp/ca.pem"
-	kubectl -n "$ns" create deployment fixture --image=python:3.12-bookworm -- python /test/issuer.py
-	kubectl -n "$ns" patch deployment fixture --type=strategic -p '{"spec":{"template":{"spec":{"volumes":[{"name":"test","secret":{"secretName":"fixture"}}],"containers":[{"name":"python","volumeMounts":[{"name":"test","mountPath":"/test"}]}]}}}}'
+	kubectl -n "$ns" apply -f fixture.yaml
 	kubectl -n "$ns" rollout status deploy/fixture
 done
 kubectl -n edge expose deployment fixture --name issuer --port 443 --target-port 8443
