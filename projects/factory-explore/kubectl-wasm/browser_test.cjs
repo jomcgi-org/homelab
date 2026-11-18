@@ -106,39 +106,45 @@ async function test() {
     );
     try {
       const config = path.join(dir, "config");
-      fs.writeFileSync(
-        config,
-        JSON.stringify({
-          apiVersion: "v1",
-          kind: "Config",
-          "current-context": "test",
-          contexts: [{ name: "test", context: { cluster: "test" } }],
-          clusters: [
-            {
-              name: "test",
-              cluster: {
-                server: `https://127.0.0.1:${server.address().port}`,
-                "certificate-authority-data": "Y2E=",
+      const writeConfig = (tls) =>
+        fs.writeFileSync(
+          config,
+          JSON.stringify({
+            apiVersion: "v1",
+            kind: "Config",
+            "current-context": "test",
+            contexts: [{ name: "test", context: { cluster: "test" } }],
+            clusters: [
+              {
+                name: "test",
+                cluster: {
+                  server: `https://127.0.0.1:${server.address().port}`,
+                  ...tls,
+                },
               },
-            },
-          ],
-        }),
-      );
+            ],
+          }),
+        );
+      writeConfig({ "certificate-authority-data": "Y2E=" });
       await assert.rejects(
         run("--kubeconfig", config, "get", "pods"),
         browserError,
       );
+      writeConfig({ "tls-server-name": "original.example" });
+      const getPods = (...flags) =>
+        run("--kubeconfig", config, ...flags, "get", "pods");
+      const endpoint = `http://127.0.0.1:${server.address().port}`;
+      await assert.rejects(getPods(), browserError);
+      await assert.rejects(
+        getPods("--server", endpoint, "--tls-server-name", "explicit.example"),
+        browserError,
+      );
       assert.equal(requests.length, 0);
+      const { stdout } = await getPods("--server", endpoint);
+      assert.match(stdout.trim(), /^NAME\s+STATUS\r?\nbrowser-test\s+Running$/);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
-    const { stdout } = await run(
-      "--server",
-      `http://127.0.0.1:${server.address().port}`,
-      "get",
-      "pods",
-    );
-    assert.match(stdout.trim(), /^NAME\s+STATUS\r?\nbrowser-test\s+Running$/);
     assert.ok(
       requests.some(
         ([method, pathname]) => method === "GET" && pathname === listPath,

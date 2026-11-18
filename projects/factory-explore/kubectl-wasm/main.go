@@ -57,8 +57,12 @@ func configureBrowserTLS(root *cobra.Command, flags *genericclioptions.ConfigFla
 				userName = ctx.AuthInfo
 			}
 		}
-		if c := config.Clusters[clusterName]; c != nil && (c.InsecureSkipTLSVerify || c.TLSServerName != "" || c.CertificateAuthority != "" || len(c.CertificateAuthorityData) > 0) {
-			return browserTLSError
+		if c := config.Clusters[clusterName]; c != nil {
+			// Like client-go, discard the inherited TLS server name when --server replaces the endpoint.
+			inheritsServerName := *flags.APIServer == "" && c.TLSServerName != ""
+			if inheritsServerName || c.InsecureSkipTLSVerify || c.CertificateAuthority != "" || len(c.CertificateAuthorityData) > 0 {
+				return browserTLSError
+			}
 		}
 		if u := config.AuthInfos[userName]; u != nil && (u.ClientCertificate != "" || len(u.ClientCertificateData) > 0 || u.ClientKey != "" || len(u.ClientKeyData) > 0) {
 			return browserTLSError
