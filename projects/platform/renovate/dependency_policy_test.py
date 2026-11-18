@@ -182,14 +182,20 @@ def test_security_alerts_preserve_explicit_lockstep_groups():
     assert config["vulnerabilityAlerts"]["prCreation"] == "immediate"
 
 
-def _python_update_config(config, name, *, security=False):
+def _python_update_config(
+    config,
+    name,
+    *,
+    security=False,
+    filename="projects/model-bench/requirements-venv.txt",
+):
     """Apply matching rules and the forced GitHub vulnerability configuration."""
     inputs = {
         "matchDatasources": "pypi",
         "matchManagers": "pip_requirements",
         "matchPackageNames": re.sub(r"[-_.]+", "-", name).lower(),
         "matchDepNames": name,
-        "matchFileNames": "projects/model-bench/requirements-venv.txt",
+        "matchFileNames": filename,
         "matchDepTypes": "",
         "matchUpdateTypes": "minor",
     }
@@ -219,6 +225,30 @@ def _python_update_config(config, name, *, security=False):
             {"isVulnerabilityAlert": True, **config["vulnerabilityAlerts"]}
         )
     return effective
+
+
+@pytest.mark.parametrize(
+    ("filename", "automerge"),
+    [
+        ("projects/platform/renovate/values.yaml", False),
+        ("projects/platform-factory/renovate/application.yaml", False),
+        ("projects/factory-cluster/install-node.sh", False),
+        ("MODULE.bazel", False),
+        (".github/workflows/ci.yml", False),
+        ("buildbuddy.yaml", False),
+        ("projects/model-bench/requirements-venv.txt", True),
+    ],
+)
+@pytest.mark.parametrize("security", [False, True])
+def test_path_review_policy_applies_after_general_automerge(
+    filename, automerge, security
+):
+    config = json.loads((ROOT / "renovate.json").read_text())
+    effective = _python_update_config(
+        config, "example", filename=filename, security=security
+    )
+    assert effective["automerge"] is automerge
+    assert effective["minimumReleaseAge"] == ("1 day" if security else "3 days")
 
 
 def _minimum_age_days(config):
