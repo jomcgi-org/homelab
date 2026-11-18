@@ -2490,19 +2490,34 @@ func TestHumanGateByPathHoldsUntilApprovalOnTheHead(t *testing.T) {
 }
 
 func TestEditingInvariantFileRequiresApprovalOnHead(t *testing.T) {
-	const file = "projects/example/policy/INVARIANTS.yaml"
-	h := newHarness(t)
-	h.gh.setBaseFile(file, "invariants: []")
-	h.gh.addPR(&fakePR{Number: 7, Head: shaA, Author: "jomcgi-factory[bot]", Files: []github.PullRequestFile{{Path: file, Status: "modified", Additions: 1}}})
-	e, ctx, _ := h.start()
-	completeReview(t, h, runReview(t, h, e, ctx, 7, shaA), shaA, "review of invariant file edit")
-	c := h.gh.check(shaA)
-	st, _ := LoadState(c.Text)
-	if c.Conclusion != ConclusionFailure || st.Gate == nil || !slices.Equal(st.Gate.Paths, []string{file}) || !strings.Contains(c.Summary, gateOnlyMarker) {
-		t.Fatalf("expected a human hold for %s, got %s: %s", file, c.Conclusion, c.Summary)
+	for _, file := range []string{"INVARIANTS.yaml", "projects/example/policy/INVARIANTS.yaml"} {
+		t.Run(file, func(t *testing.T) {
+			h := newHarness(t)
+			h.cfg.Bindings[0].HumanGatePaths = nil
+			h.cfg.Bindings[0].EnqueueAuthors = []string{"jomcgi-factory[bot]"}
+			h.gh.setBaseFile(file, "invariants: []")
+			h.gh.addPR(&fakePR{Number: 7, Head: shaA, Author: "jomcgi-factory[bot]", Files: []github.PullRequestFile{{Path: file, Status: "modified", Additions: 1}}})
+			h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
+			h.gh.review(7, "jomcgi", "APPROVED", "older-head", "Reviewed a prior revision.")
+			e, ctx, _ := h.start()
+			completeReview(t, h, runReview(t, h, e, ctx, 7, shaA), shaA, "review of invariant file edit")
+			c := h.gh.check(shaA)
+			st, _ := LoadState(c.Text)
+			if c.Conclusion != ConclusionFailure || st.Gate == nil || !slices.Equal(st.Gate.Paths, []string{file}) || !strings.Contains(c.Summary, gateOnlyMarker) {
+				t.Fatalf("expected a human hold for %s, got %s: %s", file, c.Conclusion, c.Summary)
+			}
+			eventually(t, "review slot released", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+			e.Tick(ctx)
+			if h.gh.check(shaA).Conclusion != ConclusionFailure || len(h.gh.enqueues()) != 0 {
+				t.Fatal("an invariant-only edit cleared the gate without current-head approval")
+			}
+			approveAndCheck(t, h, e, ctx, 7, shaA, "Reviewed the invariant change.", "exact-head approval did not clear invariant hold")
+			e.Tick(ctx)
+			if len(h.gh.enqueues()) != 1 {
+				t.Fatal("approved invariant-only edit did not enqueue")
+			}
+		})
 	}
-	eventually(t, "review slot released", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
-	approveAndCheck(t, h, e, ctx, 7, shaA, "Reviewed the invariant change.", "exact-head approval did not clear invariant hold")
 }
 
 func TestCompletedPassRechecksChangedInvariantBase(t *testing.T) {
