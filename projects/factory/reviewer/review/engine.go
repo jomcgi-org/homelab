@@ -1738,7 +1738,8 @@ func (e *Engine) statefulReview(ctx context.Context, b *Binding, pr int, sha str
 			sources[r.ExternalID] = true
 			st, ok := LoadState(r.Text)
 			if !ok {
-				return nil, State{}, true, nil
+				// Keep the readable sources' findings; the gap keeps it incomplete.
+				st = State{Incomplete: true}
 			}
 			if inherited == nil {
 				inherited, merged = r, st
@@ -1916,7 +1917,10 @@ heads:
 				return gap() // Its review state cannot be read.
 			}
 			st, ok := LoadState(old.Text)
-			if !ok || (!st.Incomplete && st.Blocking == nil) {
+			if !ok {
+				return gap() // A completed review of ours that kept no state.
+			}
+			if !st.Incomplete && st.Blocking == nil {
 				continue // No completed report, only attempt/gate bookkeeping.
 			}
 			if ok && !st.Incomplete && st.Blocking != nil {
