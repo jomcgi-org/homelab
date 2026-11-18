@@ -138,3 +138,45 @@ def test_cluster_waits_for_all_backup_credentials():
         "backup-key-wait.yaml"
         in read("authentik/resources/kustomization.yaml")[0]["resources"]
     )
+
+
+def test_authentik_external_egress_is_limited_to_provider_https():
+    from pathlib import Path
+
+    policies = yaml.safe_load_all(
+        Path(__file__).with_name("network-policy.yaml").read_text()
+    )
+    expected = {
+        "server": {
+            "github.com",
+            "api.github.com",
+            "oauth2.googleapis.com",
+            "www.googleapis.com",
+            "discord.com",
+        },
+        "worker": {
+            "accounts.google.com",
+            "www.googleapis.com",
+            "token.actions.githubusercontent.com",
+        },
+    }
+    for policy in policies:
+        name = policy["metadata"]["name"]
+        if name not in expected:
+            continue
+        database, *external = sorted(
+            policy["spec"]["egress"], key=lambda rule: "toFQDNs" in rule
+        )
+        assert database["toEndpoints"] == [
+            {"matchLabels": {"cnpg.io/cluster": "authentik-pg"}}
+        ]
+        hosts = set()
+        for rule in external:
+            assert set(rule) == {"toFQDNs", "toPorts"}
+            (peer,) = rule["toFQDNs"]
+            (port_rule,) = rule["toPorts"]
+            assert port_rule["ports"] == [{"port": "443", "protocol": "TCP"}]
+            assert port_rule["serverNames"] == [peer["matchName"]]
+            hosts.add(peer["matchName"])
+        assert hosts == expected.pop(name)
+    assert not expected

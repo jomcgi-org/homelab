@@ -6,7 +6,7 @@
 # Gateway, whose route lives in the `edge` namespace and blocks the admin
 # interface and the initial-setup flow (projects/platform-factory/edge/).
 #
-# Nothing here comes from 1Password. The authentik-secret-init Job generates
+# Social source credentials come from 1Password. The authentik-secret-init Job generates
 # AUTHENTIK_SECRET_KEY and the OIDC client secrets into authentik-secrets once,
 # and CloudNativePG generates the database credentials. Three database instances
 # run on separate nodes, with WAL and daily base backups in Garage. Recovery
@@ -53,7 +53,6 @@ authentik:
           secretKeyRef:
             name: authentik-pg-app
             key: password
-      # No outbound calls: the namespace's egress allows only Postgres.
       - name: AUTHENTIK_DISABLE_UPDATE_CHECK
         value: "true"
       - name: AUTHENTIK_DISABLE_STARTUP_ANALYTICS
@@ -83,6 +82,40 @@ authentik:
         # The route is in the edge namespace (projects/platform-factory/edge/).
         enabled: false
   worker:
+    # Missing OAuth material delays only the social blueprint. Kubernetes
+    # refreshes this directory when the operator creates or updates a Secret.
+    volumeMounts:
+      - name: social-credentials
+        mountPath: /run/factory-social
+        readOnly: true
+    volumes:
+      - name: social-credentials
+        projected:
+          sources:
+            - secret:
+                name: factory-authentik-github
+                optional: true
+                items:
+                  - key: client-id
+                    path: github/client-id
+                  - key: client-secret
+                    path: github/client-secret
+            - secret:
+                name: factory-authentik-google
+                optional: true
+                items:
+                  - key: client-id
+                    path: google/client-id
+                  - key: client-secret
+                    path: google/client-secret
+            - secret:
+                name: factory-authentik-discord
+                optional: true
+                items:
+                  - key: client-id
+                    path: discord/client-id
+                  - key: client-secret
+                    path: discord/client-secret
     replicas: 1
     resources:
       requests:
