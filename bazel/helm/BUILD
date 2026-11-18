@@ -81,6 +81,7 @@ MANIFEST_SETS = [
 # the gate without leaving reviewable evidence here. The completeness test
 # below enforces the record against the source tree.
 SKIPPED_MANIFEST_SETS = {
+    "projects/factory-explore/chart": "Renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. //projects/factory-explore/chart:proxy_test renders the chart and checks the ingress boundary.",
     "projects/factory-landing/chart": "Factory-cluster chart; it renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. Rendered by //projects/factory-landing/deploy:template_test and //projects/factory-landing/chart:landing_test.",
     "projects/factory-public/chart": "Factory-cluster chart; it renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. Rendered by //projects/factory-public/deploy:template_test and //projects/factory-public/chart:public_test.",
     "projects/jomcgi-site/chart": "Factory-cluster chart; it renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. Rendered by //projects/jomcgi-site/deploy:template_test and //projects/jomcgi-site/chart:site_chart_test.",
