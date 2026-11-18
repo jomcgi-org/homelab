@@ -27,9 +27,8 @@ Per-lens analyses answer different safety questions:
   `missing|stale|corrupted|unauthorized-source` for feedback.
 - **security**: deliberate attack. "Who can forge/withhold/replay a control action,
   and what does it get an adversary?" Same control structure, attacks on purpose.
-  Status (`enforced-prod|enforced-dev|shipped-off|designed|none`) REQUIRED on every
-  UCA and unsafe-feedback row (what safeguard exists now). The `issue` field names
-  its HOME issue.
+  Publish only intended design boundaries and enforced or staged-off controls.
+  Every UCA and unsafe-feedback row records the control's status.
 - **governance**: data-processing safety. "Does data cross visibility boundaries,
   stay retained too long, process without basis, lose provenance?" Feedback and
   data channels matter more than control arrows. Same rejection bar.
@@ -107,12 +106,11 @@ Commit, push and open the PR only through BLOCK B, never by hand.
 
 For the security lens, `docs/runbooks/threat-model-maintenance.md` "Add a
 finding" comes first: an open security finding gets a private record and a
-HOME issue in neutral words, and no new public row.
+HOME issue in neutral words, under that runbook.
 
-File unmitigated UCAs / unsafe-feedback findings as HOME issues (the source of
+For other lenses, file unmitigated UCAs / unsafe-feedback findings as HOME issues (the source of
 truth for outstanding work), titled `<system>: <finding> (STPA <key>)`, with
-`broken safeguard` or `missing safeguard` and, for the security lens,
-`security finding` in the first line of the description. Set priority `urgent`
+`broken safeguard` or `missing safeguard` in the first line of the description. Set priority `urgent`
 for severe losses, otherwise `high`. Reference the issue from the finding's
 evidence, not a STPA.md checklist. A refresh files each new finding before
 it opens its PR, so it runs where HOME issues can be filed: a session on
@@ -171,7 +169,7 @@ hazards: condition slug: `stale-policy`, `cross-schema-grant`; ucas:
   "lens": "security", "system_dir": "projects/monolith", "commit": "abc1234",
   "scope": {"summary":"1-line headline","built":"built things","designed":"designed things","note":"OPTIONAL caveat"},
   "losses": [ {"key":"L.unauthorized-access","title":"..."}, ... ],
-  "hazards": [ {"key":"stale-policy","view":"logical","statement":"...","losses":["L.unauthorized-access"],"maturity":"built","status":"none","issue":"#5277"}, ... ],
+  "hazards": [ {"key":"stale-policy","view":"logical","statement":"...","losses":["L.unauthorized-access"],"maturity":"built","status":"shipped-off"}, ... ],
   "ucas": [ {"key":"scheduler.dispatch.wrong-timing","view":"logical","control_action":"scheduler.dispatch","guideword":"wrong-timing","condition":"...","severity":"high","hazards":["stale-policy"],"evidence":"path:line","status":"enforced-prod","issue":"#1234"}, ... ],
   "unsafe_feedback": [ {"key":"policy-fetch.stale","view":"logical","from":"acl","to":"public-api","signal":"policy rows","guideword":"stale","condition":"...","severity":"high","hazards":["stale-policy"],"evidence":"path:line","status":"enforced-dev"}, ... ],
   "non_ucas": [ {"item":"missed NOTIFY","reason":"bounded by 5s fallback (path:line)"}, ... ],
@@ -181,13 +179,8 @@ hazards: condition slug: `stale-policy`, `cross-schema-grant`; ucas:
 
 Every fragment carries `system_dir` so a lens-only run can locate the committed
 structure. `status` is REQUIRED on security-lens UCA/unsafe-feedback rows and
-optional elsewhere; any `status` must be one of
-`enforced-prod|enforced-dev|shipped-off|designed|none`, and a security-lens row
-or hazard with `status: none` MUST carry a tracking `issue`: a HOME issue key, or a
-GitHub `#N` on rows filed before the move to itsaplan. The validator enforces all
-three. Hazards MAY carry `status`/`issue` too: a tracked unsafe STATE with no
-single attacking control action (a missing egress policy, an absent jailer)
-lives on the hazard row rather than being forced onto an unrelated action.
+optional on hazards. Security statuses are `enforced-prod`, `enforced-dev`, and
+`shipped-off`. Other lenses also accept `designed` and `none`.
 A UCA `key` must be exactly `<control_action>.<guideword>` (validated). `view`:
 `logical|physical`. `layer`: free-form subgraph (e.g. `enforcement`, `ingress`).
 `severity`: `high|medium|low`. UCA guidewords:
@@ -265,8 +258,8 @@ cat > $STPA_TMP/validate.jq << 'VJQEOF'
           | "security: \(.key) missing required status"),
         (select($L == "security")
           | (.ucas // []) + (.unsafe_feedback // []) + (.hazards // []) | .[]
-          | select(.status == "none" and .issue == null)
-          | "security: \(.key) is unmitigated (status none) with no tracking issue"),
+          | select(.status == "none" or .status == "designed")
+          | "security: \(.key) requires an enforced or staged-off control"),
         ((.ucas // []) + (.unsafe_feedback // []) + (.hazards // []) | .[]
           | select(.status != null and
               (.status as $s | (["enforced-prod","enforced-dev","shipped-off","designed","none"] | index($s)) == null))
@@ -322,7 +315,7 @@ def diagram($v):
     + "**Scope.** \(.scope.summary|esc)\n\n"
     + "<details>\n<summary>Maturity detail</summary>\n\n"
     + "- **Built:** \(.scope.built|esc)\n"
-    + "- **Designed-only:** \(.scope.designed|esc)\n"
+    + (if .scope.designed then "- **Designed-only:** \(.scope.designed|esc)\n" else "" end)
     + (if (.scope.note // null) then "- **Note:** \(.scope.note|esc)\n" else "" end)
     + "</details>\n\n"
     + "### Losses\n\n| ID | Loss |\n|----|------|\n"
