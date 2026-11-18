@@ -53,36 +53,6 @@ authentik:
           secretKeyRef:
             name: authentik-pg-app
             key: password
-      - name: FACTORY_GITHUB_CLIENT_ID
-        valueFrom:
-          secretKeyRef:
-            name: factory-authentik-github
-            key: client-id
-      - name: FACTORY_GITHUB_CLIENT_SECRET
-        valueFrom:
-          secretKeyRef:
-            name: factory-authentik-github
-            key: client-secret
-      - name: FACTORY_GOOGLE_CLIENT_ID
-        valueFrom:
-          secretKeyRef:
-            name: factory-authentik-google
-            key: client-id
-      - name: FACTORY_GOOGLE_CLIENT_SECRET
-        valueFrom:
-          secretKeyRef:
-            name: factory-authentik-google
-            key: client-secret
-      - name: FACTORY_DISCORD_CLIENT_ID
-        valueFrom:
-          secretKeyRef:
-            name: factory-authentik-discord
-            key: client-id
-      - name: FACTORY_DISCORD_CLIENT_SECRET
-        valueFrom:
-          secretKeyRef:
-            name: factory-authentik-discord
-            key: client-secret
       - name: AUTHENTIK_DISABLE_UPDATE_CHECK
         value: "true"
       - name: AUTHENTIK_DISABLE_STARTUP_ANALYTICS
@@ -112,6 +82,40 @@ authentik:
         # The route is in the edge namespace (projects/platform-factory/edge/).
         enabled: false
   worker:
+    # Missing OAuth material delays only the social blueprint. Kubernetes
+    # refreshes this directory when the operator creates or updates a Secret.
+    volumeMounts:
+      - name: social-credentials
+        mountPath: /run/factory-social
+        readOnly: true
+    volumes:
+      - name: social-credentials
+        projected:
+          sources:
+            - secret:
+                name: factory-authentik-github
+                optional: true
+                items:
+                  - key: client-id
+                    path: github/client-id
+                  - key: client-secret
+                    path: github/client-secret
+            - secret:
+                name: factory-authentik-google
+                optional: true
+                items:
+                  - key: client-id
+                    path: google/client-id
+                  - key: client-secret
+                    path: google/client-secret
+            - secret:
+                name: factory-authentik-discord
+                optional: true
+                items:
+                  - key: client-id
+                    path: discord/client-id
+                  - key: client-secret
+                    path: discord/client-secret
     replicas: 1
     resources:
       requests:

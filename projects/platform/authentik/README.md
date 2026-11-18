@@ -135,6 +135,14 @@ the worker, which is the GitOps path for adding providers and applications.
    authorization code. A login prompt or network failure is inconclusive.
    Previously issued ID tokens can remain valid until their 10-minute expiry.
 
+The factory worker reads the social client keys from optional Secret volumes
+when it applies the social blueprint. The server and worker can start while
+1Password reconciles the items. If a field is missing or blank, Authentik
+rejects the social blueprint transaction. Hourly blueprint discovery retries
+an initial failed import after Kubernetes projects the keys. After rotating
+credentials on an already applied blueprint, reapply **Factory social sign-in**
+in Authentik to load the new values.
+
 ### Factory social sign-in rollback
 
 Revert the factory social configuration and wait for the worker to reconcile

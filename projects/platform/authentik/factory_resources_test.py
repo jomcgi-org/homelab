@@ -157,3 +157,36 @@ def test_factory_social_flows_and_application_grants():
             e["attrs"]["enabled"] == "true" and e["attrs"]["negate"] == "false"
             for e in grants
         )
+
+
+def test_factory_social_credentials_are_optional_worker_files():
+    deployments = {
+        doc["metadata"]["name"]: doc["spec"]["template"]["spec"]
+        for doc in yaml.safe_load_all(render())
+        if doc and doc["kind"] == "Deployment"
+    }
+    worker = deployments["authentik-worker"]
+    volume = next(v for v in worker["volumes"] if v["name"] == "social-credentials")
+    assert {
+        "name": "social-credentials",
+        "mountPath": "/run/factory-social",
+        "readOnly": True,
+    } in worker["containers"][0]["volumeMounts"]
+    sources = [s["secret"] for s in volume["projected"]["sources"]]
+    assert {s["name"] for s in sources} == {
+        f"factory-authentik-{slug}" for slug in ("github", "google", "discord")
+    }
+    for secret in sources:
+        assert secret["optional"] is True
+        slug = secret["name"].removeprefix("factory-authentik-")
+        assert secret["items"] == [
+            {"key": k, "path": f"{slug}/{k}"} for k in ("client-id", "client-secret")
+        ]
+    for pod in deployments.values():
+        assert not any(
+            e["name"].startswith("FACTORY_") for e in pod["containers"][0]["env"]
+        )
+    assert not any(
+        v["name"] == "social-credentials"
+        for v in deployments["authentik-server"].get("volumes", [])
+    )

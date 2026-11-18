@@ -12,14 +12,10 @@ services:
       - postgres
     volumes:
       - ..:/fixture:ro
+    tmpfs:
+      - /run/factory-social:mode=1777
     environment:
       AUTHENTIK_POSTGRESQL__HOST: postgres
       AUTHENTIK_SECRET_KEY: disposable-test-key
       EDGE_OIDC_CLIENT_SECRET: fixture
       ARGOCD_OIDC_CLIENT_SECRET: fixture
-      FACTORY_GITHUB_CLIENT_ID: fixture
-      FACTORY_GITHUB_CLIENT_SECRET: fixture
-      FACTORY_GOOGLE_CLIENT_ID: fixture
-      FACTORY_GOOGLE_CLIENT_SECRET: fixture
-      FACTORY_DISCORD_CLIENT_ID: fixture
-      FACTORY_DISCORD_CLIENT_SECRET: fixture

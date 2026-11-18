@@ -19,6 +19,18 @@ for filename in ("factory-auth.yaml", "factory-kubectl.yaml", "factory-social.ya
     importer = Importer.from_string(
         (Path("/fixture/factory-blueprints") / filename).read_text()
     )
+    if filename == "factory-social.yaml":
+        # An unreconciled item must keep the entire social blueprint pending.
+        path = Path("/run/factory-social")
+        for provider in ("github", "google", "discord"):
+            (path / provider).mkdir(exist_ok=True)
+            for key in ("client-id", "client-secret"):
+                if provider == "discord" and key == "client-secret":
+                    assert not importer.validate()[0]
+                (path / provider / key).write_text("fixture")
+        importer = Importer.from_string(
+            (Path("/fixture/factory-blueprints") / filename).read_text()
+        )
     assert importer.validate()[0], filename
     assert importer.apply(), filename
 

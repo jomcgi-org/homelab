@@ -8,7 +8,6 @@ resources:
   - backup-key-wait.yaml
   - secret-init.yaml
   - social-secrets.yaml
-  - social-key-wait.yaml
   - reference-grant.yaml
   - network-policy.yaml
 

@@ -163,8 +163,8 @@ entries:
       authorization_url: https://github.com/login/oauth/authorize
       access_token_url: https://github.com/login/oauth/access_token
       profile_url: https://api.github.com/user
-      consumer_key: !Env FACTORY_GITHUB_CLIENT_ID
-      consumer_secret: !Env FACTORY_GITHUB_CLIENT_SECRET
+      consumer_key: !File /run/factory-social/github/client-id
+      consumer_secret: !File /run/factory-social/github/client-secret
       user_matching_mode: identifier
       user_path_template: factory/social
       authentication_flow: !KeyOf social-authentication
@@ -185,8 +185,8 @@ entries:
     attrs:
       name: Google
       provider_type: google
-      consumer_key: !Env FACTORY_GOOGLE_CLIENT_ID
-      consumer_secret: !Env FACTORY_GOOGLE_CLIENT_SECRET
+      consumer_key: !File /run/factory-social/google/client-id
+      consumer_secret: !File /run/factory-social/google/client-secret
       user_matching_mode: identifier
       user_path_template: factory/social
       authentication_flow: !KeyOf social-authentication
@@ -207,8 +207,8 @@ entries:
     attrs:
       name: Discord
       provider_type: discord
-      consumer_key: !Env FACTORY_DISCORD_CLIENT_ID
-      consumer_secret: !Env FACTORY_DISCORD_CLIENT_SECRET
+      consumer_key: !File /run/factory-social/discord/client-id
+      consumer_secret: !File /run/factory-social/discord/client-secret
       user_matching_mode: identifier
       user_path_template: factory/social
       authentication_flow: !KeyOf social-authentication
