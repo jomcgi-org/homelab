@@ -13,10 +13,10 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 )
 
-// GoalHistory keeps service-assigned criterion IDs stable when an issue is
+// GoalCriterionHistory keeps service-assigned criterion IDs stable when an issue is
 // edited. Only keyed digests reach public State, never criterion text. Slots
 // remain reserved after removal so a later criterion cannot reuse an ID.
-type GoalHistory struct {
+type GoalCriterionHistory struct {
 	Key       string   `json:"key"`
 	Criteria  []string `json:"criteria,omitempty"`
 	KeyDigest string   `json:"keyDigest,omitempty"`
@@ -100,7 +100,7 @@ func issueCriteria(description string) ([]string, bool) {
 	return out, len(out) <= maxCriteria
 }
 
-func goalHistory(st State, project string) []GoalHistory {
+func goalHistory(st State, project string) []GoalCriterionHistory {
 	out := slices.Clone(st.GoalHistory)
 	// Older checks have findings but no inventory. Retain their issue keys
 	// for switch evidence, without claiming to know their removed criteria.
@@ -111,8 +111,8 @@ func goalHistory(st State, project string) []GoalHistory {
 	for _, f := range findings {
 		key, rest, ok := strings.Cut(f.ID, ":goal")
 		if ok && (rest == "" || strings.HasPrefix(rest, ":")) && issueNumber(key, project) > 0 &&
-			!slices.ContainsFunc(out, func(h GoalHistory) bool { return h.Key == key }) {
-			out = append(out, GoalHistory{Key: key})
+			!slices.ContainsFunc(out, func(h GoalCriterionHistory) bool { return h.Key == key }) {
+			out = append(out, GoalCriterionHistory{Key: key})
 		}
 	}
 	return out
@@ -135,7 +135,7 @@ func (e *Engine) numberCriteria(in *IssueContext) {
 	if err != nil {
 		return
 	} // sealIssues records the key failure.
-	index := slices.IndexFunc(in.History, func(h GoalHistory) bool { return h.Key == in.Issue.Key })
+	index := slices.IndexFunc(in.History, func(h GoalCriterionHistory) bool { return h.Key == in.Issue.Key })
 	history := &in.History[index]
 	keyMAC := hmac.New(sha256.New, key)
 	keyMAC.Write([]byte("criterion inventory key"))

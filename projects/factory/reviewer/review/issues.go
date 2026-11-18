@@ -54,7 +54,7 @@ type IssueContext struct {
 	Switches      []SwitchEvidence
 	Criteria      []GoalCriterion
 	CriteriaKnown bool
-	History       []GoalHistory
+	History       []GoalCriterionHistory
 	// Findings are evidence failures that another read cannot fix, such as
 	// text over its bound or a reference to no issue. The review goes ahead
 	// and reports each one, so the author sees what to change.
@@ -303,7 +303,7 @@ func applyIssueFindings(report *Report, in *IssueContext) {
 // issueContext gathers one goal issue and at most ten references per snapshot.
 // Failures carry only fixed reason strings, never response bodies.
 // Even a model reporting no findings cannot turn missing evidence into a pass.
-func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullRequest, files []github.PullRequestFile, history ...[]GoalHistory) *IssueContext {
+func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullRequest, files []github.PullRequestFile, history ...[]GoalCriterionHistory) *IssueContext {
 	in := &IssueContext{}
 	if b.ItsaplanProject == "" || !issueReader(b, pr) {
 		return in // Any other author's PR gets no issue or decision text.
@@ -389,8 +389,8 @@ func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullReq
 		}
 	}
 	if in.Issue != nil {
-		if !slices.ContainsFunc(in.History, func(h GoalHistory) bool { return h.Key == key }) {
-			in.History = append(in.History, GoalHistory{Key: key})
+		if !slices.ContainsFunc(in.History, func(h GoalCriterionHistory) bool { return h.Key == key }) {
+			in.History = append(in.History, GoalCriterionHistory{Key: key})
 		}
 		if len(in.History) > maxDecisionLinks {
 			in.unread("history", "The goal issue history exceeds the service's read bound. Earlier goal findings remain open.")

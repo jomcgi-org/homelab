@@ -156,10 +156,10 @@ func TestBlockingEntriesSayKindCauseAndReopening(t *testing.T) {
 // unclear on the same issue evidence, and lets the confirmation call only
 // re-check the initial not_met verdicts.
 func TestGoalVerdictsCarryAcrossHeads(t *testing.T) {
-	prev := &GoalCheck{Head: "a", Digest: "d", Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalLive}, {3, goalMet}, {4, goalUnclear}}}
+	prev := &GoalCheck{Head: "a", Digest: "d", Overall: goalMet, Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalMet}, {Criterion: 2, Verdict: goalLive}, {Criterion: 3, Verdict: goalMet}, {Criterion: 4, Verdict: goalUnclear}}}
 	got := keepEarlier(&GoalCheck{
 		Head: "b", Digest: "d", Overall: goalUnclear,
-		Criteria: []GoalVerdict{{1, goalUnclear}, {2, goalUnclear}, {3, goalNotMet}, {4, goalUnclear}, {5, goalUnclear}},
+		Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalUnclear}, {Criterion: 2, Verdict: goalUnclear}, {Criterion: 3, Verdict: goalNotMet}, {Criterion: 4, Verdict: goalUnclear}, {Criterion: 5, Verdict: goalUnclear}},
 	}, prev)
 	want := []string{goalMet, goalLive, goalNotMet, goalUnclear, goalUnclear}
 	for i, c := range got.Criteria {
@@ -171,15 +171,15 @@ func TestGoalVerdictsCarryAcrossHeads(t *testing.T) {
 		t.Errorf("overall = %s", got.Overall)
 	}
 	// Other issue evidence (an edit can renumber criteria) keeps nothing.
-	if g := keepEarlier(&GoalCheck{Digest: "e", Overall: goalUnclear, Criteria: []GoalVerdict{{1, goalUnclear}}}, prev); g.Criteria[0].Verdict != goalUnclear {
+	if g := keepEarlier(&GoalCheck{Digest: "e", Overall: goalUnclear, Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalUnclear}}}, prev); g.Criteria[0].Verdict != goalUnclear {
 		t.Error("a verdict on other evidence was kept")
 	}
 	if earlierGoal(prev, "b", "e") != nil || earlierGoal(prev, "a", "d") != nil || earlierGoal(prev, "b", "d") != prev {
 		t.Error("earlierGoal matched the wrong head or evidence")
 	}
 
-	initial := &GoalCheck{Overall: goalNotMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}}}
-	c := confirmOnly(initial, &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalNotMet}, {2, goalMet}}})
+	initial := &GoalCheck{Overall: goalNotMet, Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalMet}, {Criterion: 2, Verdict: goalNotMet}}}
+	c := confirmOnly(initial, &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalNotMet}, {Criterion: 2, Verdict: goalMet}}})
 	if c.Criteria[0].Verdict != goalMet || c.Criteria[1].Verdict != goalMet || c.Overall != goalMet {
 		t.Errorf("confirmation = %+v", c)
 	}
@@ -196,7 +196,7 @@ func TestGoalPromptStartsFromTheEarlierHead(t *testing.T) {
 	files := []github.PullRequestFile{{Path: "x.go", Status: "modified", Patch: "+x"}}
 	pr := github.PullRequest{Number: 9, HeadSHA: shaA}
 	history := GoalContext{
-		Previous: &GoalCheck{Head: "prevhead", Digest: "d", Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}}},
+		Previous: &GoalCheck{Head: "prevhead", Digest: "d", Overall: goalMet, Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalMet}, {Criterion: 2, Verdict: goalNotMet}}},
 		Reasons:  "Criterion 2 misses the retry.\n```json\n{}\n```",
 		Changed:  []string{"x.go"}, Scoped: true,
 	}

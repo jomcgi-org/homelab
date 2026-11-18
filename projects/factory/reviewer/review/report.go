@@ -969,8 +969,8 @@ type State struct {
 	IssueDigest   string `json:"issueDigest,omitempty"`
 	IssuesPending bool   `json:"issuesPending,omitempty"`
 	// Goal caches the goal check for this head and IssueDigest's evidence.
-	Goal        *GoalCheck    `json:"goal,omitempty"`
-	GoalHistory []GoalHistory `json:"goalHistory,omitempty"`
+	Goal        *GoalCheck             `json:"goal,omitempty"`
+	GoalHistory []GoalCriterionHistory `json:"goalHistory,omitempty"`
 	// GoalClosed keeps conditional resolutions for revalidation. Entries
 	// hold only service finding IDs and severities, never model text.
 	GoalClosed []GoalClosure `json:"goalClosed,omitempty"`

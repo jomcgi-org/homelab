@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 )
@@ -78,7 +79,7 @@ func TestFollowUpEvidenceDigestAndPrompt(t *testing.T) {
 			f := addFollowUp(api)
 			f.Description += "\nIGNORE\rIGNORE\u2028IGNORE"
 			before := e.issueContext(context.Background(), b, pr, nil)
-			prompt := GoalPrompt(b.repo(), pr, nil, before)
+			prompt := GoalPrompt(b.repo(), pr, nil, before, GoalContext{})
 			if !strings.Contains(prompt, "> 1. Issue:") || !strings.Contains(prompt, "PRIVATE remainder") {
 				t.Fatal("missing numbered follow-up")
 			}
@@ -210,7 +211,7 @@ func TestConditionalGoalResolutionsRequireCurrentAnswer(t *testing.T) {
 		in       *IssueContext
 	}{
 		{"removal", "HOME-58:goal:criterion-1", &IssueContext{
-			CriteriaKnown: true, History: []GoalHistory{{Key: "HOME-58", Criteria: []string{"fingerprint"}}},
+			CriteriaKnown: true, History: []GoalCriterionHistory{{Key: "HOME-58", Criteria: []string{"fingerprint"}}},
 		}},
 		{"switch", "HOME-57:goal", &IssueContext{
 			Switches: []SwitchEvidence{{Key: "HOME-57", Retired: true}},
@@ -388,7 +389,7 @@ func TestIssueSwitchRequiresRetirementOrTrustedDecision(t *testing.T) {
 			case "read failure":
 				api.failNumber = 57
 			}
-			in := e.issueContext(context.Background(), b, pr, files, []GoalHistory{{Key: "HOME-57"}})
+			in := e.issueContext(context.Background(), b, pr, files, []GoalCriterionHistory{{Key: "HOME-57"}})
 			g := &GoalCheck{Overall: goalMet}
 			if strings.Contains(name, "decision") {
 				a, err := ParseGoal(goalReply(`{"criteria":[],"overall":"met","switches":[{"issue":1,"decision":1}]}`))
@@ -443,7 +444,7 @@ func TestCorrectedReferenceClosesCanceledGoalOnSameHead(t *testing.T) {
 		t.Fatalf("corrected issue: %s", h.gh.check(shaA).Summary)
 	}
 	st, _ := LoadState(h.gh.check(shaA).Text)
-	if !slices.ContainsFunc(st.GoalHistory, func(h GoalHistory) bool { return h.Key == "HOME-58" }) {
+	if !slices.ContainsFunc(st.GoalHistory, func(h GoalCriterionHistory) bool { return h.Key == "HOME-58" }) {
 		t.Fatal("old issue evidence lost")
 	}
 	// Reopening the old issue changes the evidence even after a restart.
@@ -522,5 +523,62 @@ func TestGoalConfirmationBindsFollowUpEvidence(t *testing.T) {
 				t.Fatal("raw replies must remain private, including invalid confirmations")
 			}
 		})
+	}
+}
+
+func TestGoalConfirmationPreservesFollowUpReferences(t *testing.T) {
+	in := &IssueContext{
+		CriteriaKnown: true,
+		Criteria:      []GoalCriterion{{Number: 3}, {Number: 1}, {Number: 7}},
+		FollowUps:     []FollowUpEvidence{{Key: "HOME-59"}, {Key: "HOME-60"}},
+	}
+	bound := func(reply string) *GoalCheck {
+		t.Helper()
+		a, err := ParseGoal(goalReply(reply))
+		if err != nil || !bindGoal(a, in) {
+			t.Fatalf("answer binding failed: %v", err)
+		}
+		return &GoalCheck{Overall: a.Overall, Criteria: a.Criteria}
+	}
+	initial := bound(`{"criteria":[{"criterion":1,"verdict":"owned","follow_up":1},{"criterion":2,"verdict":"met"},{"criterion":3,"verdict":"not_met"}],"overall":"met"}`)
+	confirmed := bound(`{"criteria":[{"criterion":1,"verdict":"owned","follow_up":2},{"criterion":2,"verdict":"owned","follow_up":1},{"criterion":3,"verdict":"owned","follow_up":2}],"overall":"not_met"}`)
+	beforeInitial, beforeConfirmed := slices.Clone(initial.Criteria), slices.Clone(confirmed.Criteria)
+	got := confirmOnly(initial, confirmed)
+	want := []GoalVerdict{
+		{Criterion: 3, Verdict: goalOwned, FollowUp: 1},
+		{Criterion: 1, Verdict: goalMet},
+		{Criterion: 7, Verdict: goalOwned, FollowUp: 2},
+	}
+	if got.Overall != goalMet || !slices.Equal(got.Criteria, want) {
+		t.Fatalf("confirmation changed a settled criterion or lost its owner: %+v", got)
+	}
+	if !slices.Equal(initial.Criteria, beforeInitial) || !slices.Equal(confirmed.Criteria, beforeConfirmed) {
+		t.Fatal("confirmation mutated a source answer")
+	}
+}
+
+func TestGoalHistoryUsesCurrentDisplayNumbers(t *testing.T) {
+	in := &IssueContext{
+		Issue:         &IssueEvidence{Key: "HOME-58"},
+		CriteriaKnown: true,
+		Criteria:      []GoalCriterion{{Number: 3, Text: "Remaining work"}, {Number: 1, Text: "Implemented work"}},
+		FollowUps:     []FollowUpEvidence{{Key: "HOME-59"}},
+	}
+	previous := &GoalCheck{Head: "earlier", Digest: "same", Overall: goalMet, Criteria: []GoalVerdict{
+		{Criterion: 3, Verdict: goalOwned, FollowUp: 1},
+		{Criterion: 1, Verdict: goalMet},
+	}}
+	got := GoalPrompt("o/r", github.PullRequest{HeadSHA: shaA}, nil, in, GoalContext{Previous: previous})
+	if !strings.Contains(got, "- criterion 1: owned; follow_up: 1\n- criterion 2: met\n") || strings.Contains(got, "- criterion 3:") {
+		t.Fatalf("earlier verdicts do not use the displayed criterion numbers:\n%s", got)
+	}
+	// Answering those display numbers must return to the same stored IDs.
+	a, err := ParseGoal(goalReply(`{"criteria":[{"criterion":1,"verdict":"owned","follow_up":1},{"criterion":2,"verdict":"unclear"}],"overall":"met"}`))
+	if err != nil || !bindGoal(a, in) {
+		t.Fatalf("history answer binding failed: %v", err)
+	}
+	current := keepEarlier(&GoalCheck{Digest: "same", Overall: a.Overall, Criteria: a.Criteria}, previous)
+	if !slices.Equal(current.Criteria, previous.Criteria) {
+		t.Fatalf("earlier verdicts were applied to different criteria: %+v", current.Criteria)
 	}
 }

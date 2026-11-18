@@ -427,13 +427,15 @@ func confirmOnly(initial, confirmed *GoalCheck) *GoalCheck {
 	}
 	out := *confirmed
 	out.Criteria = slices.Clone(confirmed.Criteria)
-	byNumber := map[int]string{}
+	byNumber := map[int]GoalVerdict{}
 	for _, c := range initial.Criteria {
-		byNumber[c.Criterion] = c.Verdict
+		byNumber[c.Criterion] = c
 	}
 	for i, c := range out.Criteria {
-		if v, ok := byNumber[c.Criterion]; ok && v != goalNotMet {
-			out.Criteria[i].Verdict = v
+		if v, ok := byNumber[c.Criterion]; ok && v.Verdict != goalNotMet {
+			// Ownership includes its verified follow-up index. Keep the
+			// complete verdict when this criterion was not re-checked.
+			out.Criteria[i] = v
 		}
 	}
 	if initial.Overall != goalNotMet {
@@ -650,7 +652,19 @@ func GoalPrompt(repo string, pr github.PullRequest, files []github.PullRequestFi
 		fmt.Fprintf(&b, "## Earlier goal check\n\nThe goal check of the earlier head %s judged the same issue evidence:\n\n", p.Head)
 		fmt.Fprintf(&b, "- overall: %s\n", p.Overall)
 		for _, c := range p.Criteria {
-			fmt.Fprintf(&b, "- criterion %d: %s\n", c.Criterion, c.Verdict)
+			n := c.Criterion
+			if in.CriteriaKnown {
+				index := slices.IndexFunc(in.Criteria, func(current GoalCriterion) bool { return current.Number == n })
+				if index < 0 {
+					continue
+				}
+				n = index + 1 // The model uses display numbers, not stored IDs.
+			}
+			fmt.Fprintf(&b, "- criterion %d: %s", n, c.Verdict)
+			if c.Verdict == goalOwned {
+				fmt.Fprintf(&b, "; follow_up: %d", c.FollowUp)
+			}
+			b.WriteString("\n")
 		}
 		b.WriteString("\n")
 		if history.Scoped {

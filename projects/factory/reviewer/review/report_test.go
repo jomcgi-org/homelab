@@ -659,12 +659,12 @@ func TestStateStaysUnderGitHubsLimit(t *testing.T) {
 	for n := range maxCriteria {
 		st.Goal.Criteria = append(st.Goal.Criteria, GoalVerdict{Criterion: n + 1, Verdict: goalNotMet})
 	}
-	history := GoalHistory{Key: "HOME-58", KeyDigest: strings.Repeat("b", 32)}
+	history := GoalCriterionHistory{Key: "HOME-58", KeyDigest: strings.Repeat("b", 32)}
 	for n := range maxGoalHistory {
 		history.Criteria = append(history.Criteria, strings.Repeat("c", 32))
 		st.GoalClosed = append(st.GoalClosed, GoalClosure{ID: fmt.Sprintf("HOME-58:goal:criterion-%d", n+1), Severity: SeverityMedium})
 	}
-	st.GoalHistory = []GoalHistory{history}
+	st.GoalHistory = []GoalCriterionHistory{history}
 	for i := range maxStored {
 		st.Blocking = append(st.Blocking, storable(Finding{
 			ID: fmt.Sprintf("%d:%s", i, huge), Severity: SeverityHigh, Path: huge, Line: 3, Title: huge, Detail: huge,
