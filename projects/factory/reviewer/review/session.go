@@ -53,7 +53,9 @@ var contextIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 // ID comes from kagent's task, the rest from the binding, the PR listing and
 // the service's own counts.
 type SessionRef struct {
-	ContextID string `json:"contextId"`
+	// FilteredComments records that the session began with the CI comment filter in effect.
+	FilteredComments bool   `json:"filteredComments,omitempty"`
+	ContextID        string `json:"contextId"`
 	// Binding and Agent ("namespace/name") own the session; PR and Head are
 	// the pull request and head it last reviewed.
 	Binding string `json:"binding"`
@@ -77,21 +79,22 @@ type SessionRef struct {
 // Why a review's task resumed or started fresh. The values bound the
 // sessions metric's reason label.
 const (
-	reasonResumed     = "resumed"
-	reasonNone        = "none"        // no session recorded for an earlier head
-	reasonRetry       = "retry"       // an earlier attempt on this head ended without a report
-	reasonDisabled    = "disabled"    // the service has no SessionService client
-	reasonForeign     = "foreign"     // another binding, agent, PR or head
-	reasonSize        = "size"        // the session holds maxSessionBytes or more, or maxSessionReviews reviews
-	reasonUnaccounted = "unaccounted" // the session's tasks are not exactly the recorded reviews' tasks
-	reasonUnsettled   = "unsettled"   // an unrecorded turn in the session may still run
-	reasonMissing     = "missing"     // kagent has no such session for this caller, or cannot recover it
-	reasonDeleted     = "deleted"     // the session is being or was deleted
-	reasonCrashed     = "crashed"     // the session's runtime crashed
-	reasonFailed      = "failed"      // the session's runtime failed
-	reasonRevision    = "revision"    // the session runs another Agent revision than new sessions get
-	reasonUnreadable  = "unreadable"  // reading the session, the Agent or the session's tasks failed
-	reasonRefused     = "refused"     // kagent refused the continuation
+	reasonResumed       = "resumed"
+	reasonNone          = "none"     // no session recorded for an earlier head
+	reasonRetry         = "retry"    // an earlier attempt on this head ended without a report
+	reasonDisabled      = "disabled" // the service has no SessionService client
+	reasonCommentFilter = "comment_filter"
+	reasonForeign       = "foreign"     // another binding, agent, PR or head
+	reasonSize          = "size"        // the session holds maxSessionBytes or more, or maxSessionReviews reviews
+	reasonUnaccounted   = "unaccounted" // the session's tasks are not exactly the recorded reviews' tasks
+	reasonUnsettled     = "unsettled"   // an unrecorded turn in the session may still run
+	reasonMissing       = "missing"     // kagent has no such session for this caller, or cannot recover it
+	reasonDeleted       = "deleted"     // the session is being or was deleted
+	reasonCrashed       = "crashed"     // the session's runtime crashed
+	reasonFailed        = "failed"      // the session's runtime failed
+	reasonRevision      = "revision"    // the session runs another Agent revision than new sessions get
+	reasonUnreadable    = "unreadable"  // reading the session, the Agent or the session's tasks failed
+	reasonRefused       = "refused"     // kagent refused the continuation
 )
 
 // sessionPlan is how an attempt's task starts: in the recorded session
@@ -136,6 +139,8 @@ func (e *Engine) resumable(ctx context.Context, b *Binding, pr github.PullReques
 	case !contextIDPattern.MatchString(ref.ContextID) || ref.Binding != b.Name || ref.Agent != agentName(b.Agent) ||
 		ref.PR != pr.Number || ref.Head != in.priorHead:
 		return nil, reasonForeign
+	case !ref.FilteredComments:
+		return nil, reasonCommentFilter
 	case ref.Bytes >= maxSessionBytes || len(ref.Tasks) >= maxSessionReviews:
 		return nil, reasonSize
 	case len(ref.Tasks) != ref.Reviews:
@@ -279,10 +284,13 @@ func sessionAfter(b *Binding, pr github.PullRequest, in *inputs, t *kagent.Task)
 		return nil
 	}
 	ref := &SessionRef{
-		ContextID: t.ContextID, Binding: b.Name, Agent: agentName(b.Agent), PR: pr.Number, Head: pr.HeadSHA,
+		// A recovered task may have been dispatched before the filter was deployed.
+		FilteredComments: in.plan.reason != "",
+		ContextID:        t.ContextID, Binding: b.Name, Agent: agentName(b.Agent), PR: pr.Number, Head: pr.HeadSHA,
 		Path: PathFresh, Reviews: 1, Bytes: taskBytes(t), Tasks: []string{t.ID}, Rules: in.plan.rules,
 	}
 	if prev := in.prior.Session; prev != nil && prev.ContextID == t.ContextID && in.priorHead != pr.HeadSHA {
+		ref.FilteredComments = prev.FilteredComments
 		ref.Path, ref.Reviews, ref.Bytes = PathResumed, prev.Reviews+1, prev.Bytes+ref.Bytes
 		ref.Tasks = append(slices.Clone(prev.Tasks), t.ID)
 		if in.plan.resume == nil {
