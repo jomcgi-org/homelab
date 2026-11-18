@@ -20,6 +20,10 @@ spec:
   source:
     repoURL: ghcr.io/jomcgi/homelab/charts
     chart: jomcgi-site
+    # Rollback: never lower this pin alone. An older Worker lacks the newer
+    # sections while their routes still point at it, for the deploy Job's
+    # 300 s window. First set edge.serveRoutes: false and confirm the zone has
+    # no jomcgi-site routes, then lower the pin, then set serveRoutes back on.
     targetRevision: 0.23.7
     helm:
       releaseName: jomcgi-site-prod
