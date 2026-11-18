@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sort"
@@ -97,7 +98,7 @@ func (s *Source) Load(ctx context.Context) (*Snapshot, error) {
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return nil, &stageError{"needs_you", err}
 		}
 		for _, issue := range issues {
 			link := strings.NewReplacer("{issueId}", strconv.FormatInt(issue.ID, 10),
@@ -114,7 +115,7 @@ func (s *Source) Load(ctx context.Context) (*Snapshot, error) {
 	}
 	items, err := s.Store.StatusItems(ctx, names)
 	if err != nil {
-		return nil, err
+		return nil, &stageError{"work_items", err}
 	}
 	// Bound the total across bindings before making any GitHub requests.
 	// Four batches per 30-second refresh cost 480 primary points/hour, or
@@ -130,7 +131,7 @@ func (s *Source) Load(ctx context.Context) (*Snapshot, error) {
 		batches += (len(numbers) + github.StatusBatchSize - 1) / github.StatusBatchSize
 	}
 	if batches > 4 {
-		return nil, fmt.Errorf("status: GitHub query budget exceeded")
+		return nil, &stageError{"github_budget", fmt.Errorf("status: GitHub query budget exceeded")}
 	}
 	prs := map[string]map[int]*github.PRStatus{}
 	if s.GitHub != nil {
@@ -145,7 +146,7 @@ func (s *Source) Load(ctx context.Context) (*Snapshot, error) {
 			}
 			prs[b.Name], err = s.GitHub.StatusesForLanding(ctx, b.Owner+"/"+b.Repo, numbers, reviewer)
 			if err != nil {
-				return nil, err
+				return nil, &stageError{"github", err}
 			}
 		}
 	}
@@ -197,7 +198,7 @@ func (s *Source) Load(ctx context.Context) (*Snapshot, error) {
 	close(jobs)
 	wg.Wait()
 	if firstErr != nil {
-		return nil, firstErr
+		return nil, &stageError{"titles", firstErr}
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -209,12 +210,23 @@ func (s *Source) Load(ctx context.Context) (*Snapshot, error) {
 	return out, nil
 }
 
+// stageError names the read that failed. Logs carry only the stage.
+type stageError struct {
+	stage string
+	err   error
+}
+
+func (e *stageError) Error() string { return e.stage + ": " + e.err.Error() }
+func (e *stageError) Unwrap() error { return e.err }
+
 // Handler refreshes in the background, independent of visitors. HTTP never
 // starts upstream work or waits for it. Failed refreshes clear the snapshot;
 // during a refresh the previous snapshot remains readable for at most the
-// read deadline beyond its expiry. No upstream error text is exposed or logged.
+// read deadline beyond its expiry. Log receives the failing stage and whether
+// it timed out; no upstream error text is exposed or logged.
 type Handler struct {
 	Load         func(context.Context) (*Snapshot, error)
+	Log          *slog.Logger
 	mu           sync.RWMutex
 	body         []byte
 	expiresAt    time.Time
@@ -245,6 +257,15 @@ func (h *Handler) refresh(ctx context.Context) {
 	}
 	if err != nil {
 		body = nil
+		if h.Log != nil {
+			stage := "other"
+			var se *stageError
+			if errors.As(err, &se) {
+				stage = se.stage
+			}
+			h.Log.Warn("status refresh failed", "stage", stage,
+				"timeout", errors.Is(err, context.DeadlineExceeded))
+		}
 	}
 	h.mu.Lock()
 	h.body = body

@@ -1863,8 +1863,10 @@ included, checks the writer epoch, commits a `status_read` attempt, checks the
 epoch again and only then reads with `X-Request-ID`. If an epoch check or the
 journal write fails, nothing is sent. The message ID hashes method, URL and
 query; retries and takeover keep it and count attempts. HTTP/1 without
-connection reuse prevents unjournaled retries. Writer loss cancels status and
-dispatch together.
+connection reuse prevents unjournaled retries. TLS offers only `http/1.1`:
+when the client also offered `h2`, GitHub chose HTTP/2 and closed each
+HTTP/1.1 read, so `/status` returned 503 from its rollout in #7973 until
+HOME-317. Writer loss cancels status and dispatch together.
 
 A GraphQL query reads at most 25 PRs (75 connections, one
 [point](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#predicting-the-point-value-of-a-query)),
@@ -1873,8 +1875,11 @@ at most four per refresh with one auth retry each: at most 960 of the
 refreshes every 30 seconds (20-second deadline, eight concurrent reads, at
 most 100 live items and ten merges) and expires after 30 seconds. A truncated
 listing, excess live work, a failed refresh or a stopped poller clears it, and
-`/status` returns 503. Visitors trigger no upstream reads; the credential-free
-landing server proxies only this snapshot, with a two-second timeout.
+`/status` returns 503. Each failed refresh logs `status refresh failed` with
+its stage (`needs_you`, `work_items`, `github_budget`, `github`, `titles` or
+`other`) and a timeout flag, but no upstream error text. Visitors trigger no
+upstream reads; the credential-free landing server proxies only this snapshot,
+with a two-second timeout.
 
 **Why.** The connector already has the store and coordinator read access. The
 landing chart owns the status-only Service and Cilium grant, so removing the

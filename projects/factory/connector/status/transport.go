@@ -3,6 +3,7 @@ package status
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -14,13 +15,22 @@ import (
 // Avoid net/http's implicit retries on reused connections and HTTP/2 streams:
 // each wire attempt must pass through RoundTrip and the durable journal,
 // including auth retries.
-var readTransport = func() *http.Transport {
+var readTransport = newReadTransport()
+
+// The clone keeps the default TLS config, which offers h2 in ALPN. GitHub
+// then selects h2, receives HTTP/1.1 and closes the connection (EOF), so
+// ALPN offers http/1.1 only.
+func newReadTransport() *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.DisableKeepAlives = true
 	t.Protocols = new(http.Protocols)
 	t.Protocols.SetHTTP1(true)
+	if t.TLSClientConfig == nil {
+		t.TLSClientConfig = &tls.Config{}
+	}
+	t.TLSClientConfig.NextProtos = []string{"http/1.1"}
 	return t
-}()
+}
 
 // WriterTransport journals and fences each itsaplan, broker and GitHub read.
 // Begin checks the writer epoch, commits the attempt, then checks the writer

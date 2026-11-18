@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -503,5 +504,54 @@ func TestCacheExpiresAfterThirtySeconds(t *testing.T) {
 	h.ServeHTTP(r, httptest.NewRequest("GET", "/status", nil))
 	if r.Code != 503 {
 		t.Fatal("expired cache was served")
+	}
+}
+
+func TestReadTransportReachesHTTP2Servers(t *testing.T) {
+	// GitHub accepts h2 when a client offers it in TLS ALPN. A transport that
+	// offers h2 but sends HTTP/1.1 gets EOF on every read.
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+	transport := newReadTransport()
+	transport.TLSClientConfig.RootCAs = srv.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
+	res, err := (&http.Client{Transport: transport}).Post(srv.URL+"/graphql", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusNoContent || res.ProtoMajor != 1 {
+		t.Fatalf("status=%d proto=%s", res.StatusCode, res.Proto)
+	}
+}
+
+type failingStatusGitHub struct{}
+
+func (failingStatusGitHub) StatusesForLanding(context.Context, string, []int, github.CheckRunFilter) (map[int]*github.PRStatus, error) {
+	return nil, errors.New(`Post "https://api.github.com/graphql?token=upstream-detail": EOF`)
+}
+
+func TestFailedRefreshLogsOnlyItsStage(t *testing.T) {
+	var logs strings.Builder
+	source := &Source{
+		Store:    fakeStore{items: []store.StatusItem{{BindingName: "homelab", IssueID: 24, Key: "HOME-24", PRNumber: 8000}}},
+		Plan:     fakePlan{},
+		GitHub:   failingStatusGitHub{},
+		Bindings: []config.Binding{{Name: "homelab", ItsaplanProject: "HOME", Owner: "jomcgi-org", Repo: "homelab"}},
+	}
+	h := &Handler{Load: source.Load, Log: slog.New(slog.NewJSONHandler(&logs, nil))}
+	h.refresh(context.Background())
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest("GET", "/status", nil))
+	if r.Code != http.StatusServiceUnavailable {
+		t.Fatalf("response = %d", r.Code)
+	}
+	got := logs.String()
+	if !strings.Contains(got, `"msg":"status refresh failed"`) || !strings.Contains(got, `"stage":"github"`) ||
+		!strings.Contains(got, `"timeout":false`) || strings.Contains(got, "upstream-detail") || strings.Contains(got, "api.github.com") {
+		t.Fatalf("log = %s", got)
 	}
 }
