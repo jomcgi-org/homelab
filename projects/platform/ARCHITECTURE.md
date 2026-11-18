@@ -1,411 +1,92 @@
-# Platform Architecture
+# Platform architecture
 
-The cluster infrastructure: the pieces every service depends on, plus the repo-level delivery machinery (chart publish, promotion, merge queue) that puts them there, on the GKE hub, the one cluster that exists today. Current as of e18559df9 (2026-09-05). Unflagged claims are built and live; anything decided but not shipped says so and names its tracking issue. Historical ADR labels in the body point to the decision history at the end.
-
----
-
-## 1. Clusters
-
-**The GKE hub** (`homelab-hub`, a zonal Standard cluster in `europe-west2`) has served every public and private workload since the 2026-08-31 cutover: the monolith with its public and agents tiers, EmberVM, Context Forge, authentik, the ingress, and the inference embeddings pod. It is the always-on hub and the sole management plane: the plan to bring already-owned nodes back as UK home capacity was dropped on 2026-09-18 because the household is moving ([#4964](https://github.com/jomcgi-org/homelab/issues/4964) closed, not planned). The former teardown and GKE GPU proposals ([#5485](https://github.com/jomcgi-org/homelab/issues/5485), [#5461](https://github.com/jomcgi-org/homelab/issues/5461)) closed as not planned and authorize no hardware disposal. The home k3s configuration was retired from the repository in [#6914](https://github.com/jomcgi-org/homelab/issues/6914) (section 3 records why).
-
-**The factory home cluster** is the second cluster, bootstrapped on 2026-11-13 for the replacement factory ([#7817](https://github.com/jomcgi-org/homelab/issues/7817)). It is three k3s 1.37 servers with embedded etcd on the rebuilt home nodes, and runs no workloads yet. Its node bootstrap and root are in `projects/factory-cluster/` and its platform Applications in `projects/platform-factory/`. The root uses the same parent pattern as the hub (`factory-root` syncs `root/`). Its Cloudflare Tunnel and DNS records are Gateway API resources reconciled by cfgate, not dashboard settings. The tunnel's only origin is an Envoy Gateway in the `edge` namespace whose gateway-wide SecurityPolicy signs every request in through the factory's own Authentik (factory-auth.jomcgi.dev), without Cloudflare Access; applications such as ArgoCD at `factory-argocd.jomcgi.dev` run their own Authentik login behind it. ValidatingAdmissionPolicies keep Gateways, tunnel routes, the edge namespace label and Envoy's proxy and auth objects inside `edge`, in every namespace. The node inventory, pinned versions and the inputs kept outside Git are in `projects/factory-cluster/README.md`.
-
-The hub's in-cluster ArgoCD syncs one root Application. The hub's root (`hub`) is committed at `projects/gke-cluster/root/root-application.yaml`, deliberately absent from the kustomization it syncs, and synced on merge by a parent Application `hub-root` (`projects/gke-cluster/hub-root-application.yaml`) that watches only that directory. A root that synced itself could be broken by a commit to itself with nothing left to sync the fix; the parent never syncs its own definition, which is the one object applied by hand, once. It syncs two hand-maintained trees. `projects/platform-gke/` holds one Application per shared component, each pointing at the chart under `projects/platform/` with a `values-gke.yaml` overlay. `projects/gke-apps/` holds one Application per workload, consuming the service's `deploy/values.yaml` plus `values-gke.yaml` through a `$values` git ref.
-
-The hub runs two `gcloud`-managed node pools (ADR platform/016). `core-e2` is one on-demand `e2-standard-8` carrying every non-brick workload. `ember-bricks` is Spot `n2-standard-8`, autoscaling 1 to 3, tainted `embervm.jomcgi.dev/node=true` with nested virtualisation on, and carries EmberVM bricks plus the embeddings pod. The core pool never gets `embervm.io/serving=true`: the serving-envoy DaemonSet selects on that label and crash-loops on a non-brick node. Spot preemptions hit the brick pool several times a day; the platform tier no longer sees any.
-
-`bazel/tools/ci/check-application-drift.sh` renders the hub's Applications from git and diffs them against the live objects, ignoring only `targetRevision`. It needs a cluster context, so it is an operator command rather than a CI gate.
-
-(see: `projects/gke-cluster/`, `projects/platform-gke/kustomization.yaml`, `projects/gke-apps/kustomization.yaml`)
-
-**Why.** Every platform singleton had been living on Spot in a zone with a real
-preemption rate, taking a one to three minute blip several times a day, and
-the on-demand pool created to anchor EmberVM's stateful volumes could never
-host a brick because its AMD machine type has no nested virtualisation (ADR
-platform/016). An on-demand N2 core that also anchors one brick was rejected as
-paying to mask two EmberVM recovery bugs that program already owns; all-Spot
-with spread rules was rejected as the least stable shape; a tiny on-demand
-seat for a few singletons was rejected on complexity per dollar saved. One
-on-demand core pool plus Spot bricks accepts that stateful EmberVM work stays
-on Spot and recovers from its export, and that the core pool needs a manual
-resize if the non-brick footprint outgrows one node. The root deploys
-on merge through `hub-root`, which costs one hand-applied parent that should
-almost never change; to hand-edit `hub` in an incident, delete `hub-root`
-first or its selfHeal reverts the edit.
-
----
-
-## 2. Ingress and traffic
-
-External traffic enters through a Cloudflare Tunnel (a persistent outbound connection from the cluster to Cloudflare's edge), reaches the Envoy Gateway proxy data plane, and routes to services via Kubernetes `HTTPRoute` resources. No traffic is exposed to the internet directly (ADR networking/001).
-
-**Request path:**
+The factory home cluster runs the software factory on three k3s servers. The GKE hub serves the monolith and its public and agent tiers, the Scotland connector, inference and Context Forge. Each cluster has its own ingress and its own ArgoCD installation that reconciles the platform and workloads from Git.
 
 ```mermaid
-graph LR
-    A["Caller<br/>(Internet or internal)"]
-    B["Cloudflare edge<br/>+ Access"]
-    C["cloudflared<br/>(2 connectors, hub)"]
-    D["Envoy Gateway<br/>(HTTPRoute match)"]
-    E["Service"]
-
-    A -->|HTTPS| B
-    B -->|tunnel| C
-    C -->|HTTP :80| D
-    D -->|backendRef| E
+flowchart LR
+  user["Internet caller (untrusted)"] -->|HTTPS| cf[Cloudflare]
+  git["GitHub main"] -->|sync| hr
+  git -->|sync| fr
+  subgraph hub["GKE hub"]
+    hr[hub-root] --> hubapp[hub] --> ht["platform-gke + gke-apps"]
+    cf -->|hub tunnel| hc["cloudflared (tunnel token)"] --> he[Envoy Gateway] --> hw[Hub services]
+  end
+  subgraph home["Factory home cluster"]
+    fr[factory-root] --> factory[factory] --> ft[platform-factory]
+    cf -->|factory tunnel| fc["cloudflared (tunnel token)"] --> fe[Envoy Gateway] --> fw[Factory services]
+    fe -->|OIDC| auth[Factory Authentik]
+  end
 ```
 
-The hub's `cloudflared` Deployment runs two connectors using the `cluster-cloudflare-tunnel` credential (`projects/platform/cloudflare-gateway/values-gke.yaml`). On the hub the Envoy Gateway chart owns every Gateway API CRD; GKE's own Gateway API addon is disabled because its standard-channel bundle lacks the `ListenerSet` CRD Envoy Gateway requires.
+| Component | Role | Code | Pin | Untrusted input | Credentials held |
+| --- | --- | --- | --- | --- | --- |
+| Hub ArgoCD | Reconciles hub Applications | [Parent](../gke-cluster/hub-root-application.yaml) | [Chart dependency](argocd/Chart.yaml) | Manifests and charts | Hub reconciliation service account |
+| Factory ArgoCD | Reconciles factory Applications | [Parent](../factory-cluster/factory-root-application.yaml) | [Application source](../platform-factory/argocd/application.yaml) | Manifests and charts | Factory reconciliation service account |
+| Hub ingress | Routes public and trusted requests | [Cloudflare gateway](cloudflare-gateway/) | [Chart dependencies](cloudflare-gateway/Chart.yaml) | HTTP requests | Hub tunnel credential |
+| Factory ingress | Publishes factory hostnames and routes requests | [Factory edge](../platform-factory/factory-edge/) | [Factory inventory](../factory-cluster/README.md) | HTTP requests and identity tokens | Factory tunnel credential and Envoy OIDC client secret |
 
-Two ingress tiers route by audience (ADR networking/002), carried as the `ingress-tier` label on each `HTTPRoute`:
+## 1. Clusters and GitOps roots
 
-- **public**: unauthenticated routes on the public hostnames
-- **trusted**: a `SecurityPolicy` validates a Cloudflare Access JWT and maps the `email` claim to `X-Auth-Email` (`cf-ingress-library/templates/_security-policy.tpl`). A few routes use an authentik OIDC policy instead of Cloudflare Access
+On each cluster, the bootstrap parent watches a directory containing the root Application. A change to the root can therefore sync even if its previous configuration pointed at the wrong tree. The hub root selects two inventories, one for shared controllers and one for workloads. EmberVM is retired, but its Applications are still listed during removal. [Hub root](../gke-cluster/kustomization.yaml) · [Platform inventory](../platform-gke/kustomization.yaml) · [Workload inventory](../gke-apps/kustomization.yaml) · [Retirement decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6893155810)
 
-All converge on the same Envoy instance. The ingress library (`cf-ingress-library/`) provides shared `HTTPRoute` templates that services import rather than hand-rolling. Services define their routes in `deploy/values.yaml` and ArgoCD renders them. The hub serves fourteen routes on one Gateway across `jomcgi.dev`, `private.jomcgi.dev`, `friends.jomcgi.dev`, `auth.jomcgi.dev`, `mcp.jomcgi.dev` and `ships.jomcgi.dev`. The ArgoCD UI has no route on the hub (`cfIngress.enabled: false` in `projects/platform/argocd/values.yaml`); Kargo's UI is at `private.jomcgi.dev/app/kargo` behind Cloudflare Access.
+The factory root selects the platform-factory tree, which also includes workload Applications such as the factory, Hindsight and the operator landing page. Node bootstrap, ingress routes, pins and recovery procedures live with that cluster. [Factory root](../factory-cluster/kustomization.yaml) · [Application inventory](../platform-factory/kustomization.yaml) · [Factory cluster guide](../factory-cluster/README.md)
 
-**Edge caching.** Anonymous public pages and data endpoints are cache-eligible at Cloudflare: the origin emits `Cache-Control: public, s-maxage=60, stale-while-revalidate=86400, stale-if-error=31536000` and a hostname-scoped Cloudflare cache rule honours it, so `cf-cache-status` on `jomcgi.dev/` reads HIT or EXPIRED rather than DYNAMIC (ADR platform/003, originally scoped to `public.jomcgi.dev`, a hostname that no longer resolves now that the apex is the monolith). The rule lives only in the Cloudflare dashboard, not in this repo; the remaining one-time dashboard settings are tracked at #3879 (the miss-rate alert closed as not planned, #3880, and the tracker #3876 closed with the docs landed). `jomcgi.dev/docs/*` is served by the monolith frontend from repo markdown (`projects/monolith/frontend/src/routes/public/docs/`); there is no separate docs site or Cloudflare Pages project (ADR docs/002).
+## 2. Ingress and traffic on the hub and factory home cluster
 
-(see: `projects/platform/cloudflare-gateway/`, `projects/platform/cloudflare-gateway/values-gke.yaml`, `projects/platform/cf-ingress-library/`, ADR networking/001, ADR networking/002)
+On the hub, two cloudflared connectors forward traffic to Envoy Gateway. HTTPRoutes select the service by hostname and path. Public routes admit anonymous requests. Trusted routes use Cloudflare Access or a route-specific Authentik policy. [Hub gateway values](cloudflare-gateway/values-gke.yaml)
 
-**Why.** The former operator reimplemented routing primitives while production
-still used a separate static tunnel configuration, so Envoy Gateway took over
-in-cluster routing and the operator scope narrowed to edge lifecycle (ADR
-networking/001). Per-service hostnames were rejected because every service added
-manual DNS and optional SSO configuration; audience tiers make private exposure
-the default and public exposure explicit (ADR networking/002). The shared gateway
-accepts path-conflict risk and makes route-overlap checks part of CI.
+At home, cfgate reconciles the factory tunnel and DNS records. Envoy in the edge namespace routes browser traffic through the factory's own Authentik. The Kubernetes API route checks a bearer token, and the API server applies RBAC. [Factory ingress and route inventory](../factory-cluster/README.md)
 
----
+## 3. Network and CNI on the hub and factory home cluster
 
-## 3. Network and CNI
+The hub uses GKE Dataplane V2 and Kubernetes NetworkPolicy. The factory home cluster bootstraps its own Cilium installation and reconciles a default-deny baseline and namespace allowlists from Git. [Factory network policies](../platform-factory/network-policy/)
 
-**The hub's CNI is GKE Dataplane V2**, Google's managed Cilium (`anetd`). This repo's Cilium chart is not deployed there. A read-only check on 2026-09-13 found `anetd` ready on two nodes and Cilium endpoint, endpoint-slice, identity, node, and local-redirect-policy CRDs, but no `CiliumNetworkPolicy` or `CiliumClusterwideNetworkPolicy` CRDs and no Hubble deployment in `kube-system`. These are observations of the current hub configuration, not permanent limitations of GKE.
+## 4. GitOps and delivery on the hub and factory home cluster
 
-Google supports optional [Cilium cluster-wide network policies](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/configure-cilium-network-policy) and [Hubble-based Dataplane V2 observability](https://docs.cloud.google.com/kubernetes-engine/docs/concepts/about-dpv2-observability). Its Cilium integration does not support Layer 7 policies such as HTTP method/path filtering. An absent Hubble deployment therefore does not prove that GKE cannot provide Hubble, while enabling a supported network-policy feature does not supply the HTTP enforcement required by ADR networking/003. Before escalating a task as unsupported, check the current cluster resources and the relevant Google feature limitations separately. Enabling a feature or changing enforcement placement still needs the task's scope and rollout requirements to be satisfied.
+Hub platform Applications track their Git sources. For hub workloads enrolled in Kargo, CI publishes the versioned chart to OCI, Kargo promotes its revision and ArgoCD syncs the Application. Each pipeline controls when its workload receives a published chart. [Hub Kargo](../platform-gke/kargo/) · [Hub workload Applications](../gke-apps/)
 
-The inert Cilium policy templates and their gates were removed from monolith, monolith-public, monolith-agents and EmberVM in #5816. The hub lacks the policy CRDs those templates required, so their removal changes no GKE rendered resources and supplies no replacement enforcement. Standard Kubernetes `NetworkPolicy` is available for L3/L4 pod-network enforcement; application or proxy authorization is a separate enforcement surface. The cutover did not carry over home's WireGuard configuration, and nothing here claims hub wire encryption. The networking/003 programme closed with #3875 (default-deny audit, not planned) and #3824 (L7 Part A); hub default-deny is tracked with plain `NetworkPolicy` under #5276 and #5277. The absence of optional CRDs or observability on the hub is not by itself grounds to call new network-policy work impossible.
+For the software factory itself, CI writes the published OCI chart version to the [software-factory Application](../factory/deploy/application.yaml), and the home cluster’s ArgoCD syncs that revision. The factory home cluster also runs Kargo. Its bootstrap sequence brings up the controllers ArgoCD needs to reconcile the rest of the tree. [Factory bootstrap](../factory-cluster/README.md) · [Factory Kargo](../platform-factory/kargo/)
 
+## 5. Storage on the hub and factory home cluster
 
-**The home cluster's Cilium chart was retired in #6914** with the rest of the home configuration. It had replaced Linkerd's sidecar mesh (ADR platform/012) with eBPF L3/L4 `CiliumNetworkPolicy` enforcement in allow-until-selected mode, pod-to-pod WireGuard on `cilium_wg0` (node-to-node encryption was set and never in force, #5146 closed as obsolete), Hubble flow logs with cert-manager-rotated mTLS, and kube-proxy replacement. Two of its behaviours shaped later decisions and are worth keeping on record: Cilium enforced egress policy after DNAT, so a probe from an unlisted namespace was dropped as a silent timeout rather than refused, and its `tcx` attachment is what made the CAKE shaper inert (section 6). `bazel/helm/no-cilium-policies-test.sh` still guards that no application chart renders a `CiliumNetworkPolicy`.
+Hub PVCs use GCE persistent disks. CloudNativePG manages PostgreSQL for the monolith, Authentik and Context Forge. The monolith stores blobs in Cloudflare R2 and archives PostgreSQL backups to GCS. [Hub CloudNativePG](../platform-gke/cloudnative-pg/) · [Monolith hub values](../monolith/deploy/values-gke.yaml)
 
-(see: `projects/monolith/deploy/values-gke.yaml`, `projects/monolith-public/deploy/values-gke.yaml`, `projects/embervm/deploy/values-gke.yaml`, ADR platform/012, ADR networking/003)
+At home, CloudNativePG manages the factory, kagent and Authentik databases. Garage stores workload objects and PostgreSQL archives on the home nodes, so those archives share the cluster's failure domain. [Factory storage and recovery](../factory-cluster/README.md)
 
-**Why.** Linkerd sidecars prevented ordinary network policy in meshed namespaces,
-kept Jobs alive, and added a container and hop to every pod (ADR platform/012).
-Keeping Linkerd over Cilium was rejected because it preserves the policy blind
-spot and doubles data-plane complexity; enabling every Cilium capability in one
-cutover was rejected because default-deny and L7 proxying carry separate blast
-radii (ADR platform/012, ADR networking/003). Cilium therefore replaces the mesh
-incrementally, accepting label-derived authorization in place of per-connection
-workload identity and added latency only on selected L7 surfaces. With #4964
-and #5485 closed as not planned no live cluster ran the home configuration, so
-#6914 retired it from the repository (the home root, the home-only charts, the
-home Applications and the home-only dev refresh) rather than keep an
-undeployable tree that CI rendered and every agent had to be warned off;
-nothing under `projects/gke-apps/` or `projects/platform-gke/` pointed at a
-removed path.
+## 6. Scheduling and capacity on the hub and factory home cluster
 
----
+The hub separates ordinary workloads on the on-demand core pool from workloads tolerating the Spot brick pool's taint. Priority classes give critical pods precedence under resource pressure. The factory schedules across its three home servers and provides a gVisor RuntimeClass for agent workspaces. [Hub priority classes](../platform-gke/priority-classes/) · [Factory node inventory](../factory-cluster/README.md)
 
-## 4. GitOps and delivery
+## 7. Observability on the hub and factory home cluster
 
-**ArgoCD** is the control plane on the hub (3.1.8), with the roots described in section 1. Every service and platform component is an `Application` CR; ArgoCD watches the repo and reconciles the cluster to match git.
+The hub OpenTelemetry Collector exports to Honeycomb. Polylane provides read-only access to hub Kubernetes state. At home the collector tags telemetry with the factory cluster name, and operators use Grafana to query Prometheus. [Hub collector](../platform-gke/otel-collector/) · [Hub Polylane](../platform-gke/polylane/) · [Factory monitoring](../platform-factory/)
 
-**Service tier chart versioning is decoupled from merge.** On merge to main, CI computes the next semver from conventional commits, builds and publishes the chart to OCI (`ghcr.io/jomcgi/homelab/charts`), and `chart-version-bot` writes `version:` and `targetRevision:` back to `Chart.yaml` and `deploy/application.yaml` on main (ADR platform/009, ADR platform/011). PRs never move either line forward; the PR checks step `bazel/tools/ci/chart_version_guard.py` fails one that does, for any author, while still allowing a pin to be lowered as a revert. Publish idempotency and missed-bump detection live in `bazel/helm/chart-version.sh`, `write-back-versions.sh` and `check-missed-bump.sh`. The write-back is monotonic, so concurrent main runs converge on the newest version rather than the last job to finish. For the workloads that moved to the hub, `projects/<svc>/deploy/application.yaml` deploys nothing any more: it is the record of the latest published version and the revert lever, while the hub's own pins live in `projects/gke-apps/`.
+## 8. Security and policy on the hub and factory home cluster
 
-**Platform tier components** deploy on merge. Every Application under `projects/platform-gke/` tracks git HEAD with no OCI chart version, so a platform change lands the moment it merges, with no write-back step.
+On the hub, 1Password Connect supplies external secrets. Kyverno audits resource requests and copies selected secrets to workflow jobs. SPIRE issues workload identities for the EmberVM and monolith namespaces. [Hub security controllers](../platform-gke/kustomization.yaml)
 
-**Kargo owns promotion on the hub** for the monolith, monolith-agents, monolith-public, EmberVM and the public Scotland connector (`scotland-connector`, prod only, #7242). Each pipeline's Warehouse polls the OCI registry every five minutes; a new chart becomes Freight, and each Stage auto-promotes it with `argocd-update` followed by `argocd-wait`, so a chart that cannot come up fails its Promotion instead of sitting half-rolled. EmberVM runs dev then prod: `embervm-dev` (`projects/gke-apps/embervm-dev`) takes Freight first, its Stage polls the conformance runner for a functional verdict on that chart version, and prod receives only Freight dev verified and held for a 5 minute soak. The monolith pipelines are still prod only, so for them the gate is point-in-time readiness with no functional assertion (#4745); a revision-aware `/healthz` step is wired on the private monolith prod Stage but stays off until the monolith reports its chart version. The wait timeout is measured per pipeline (90 minutes for EmberVM, whose bricks rebuild a guest rootfs one node at a time). The `projects/gke-apps` pins for these Applications, `embervm-dev` included, are bootstrap floors that Kargo patches past on the live object, so `git != live` is correct there. Read the deployed version from the hub:
+The factory has separate Authentik and 1Password installations. Its admission policies restrict who can expose routes and where edge resources can be created. [Factory edge policies](../platform-factory/edge-admission/) · [Factory identity and bootstrap secrets](../factory-cluster/README.md)
 
-```bash
-kubectl get application monolith -n argocd -o jsonpath='{.spec.sources[0].targetRevision}'
-```
+## 9. Maintenance automation on the hub and factory home cluster
 
-The root carries an `ignoreDifferences` entry per promoted Application plus `RespectIgnoreDifferences=true`; without the sync option a sync stamps the git value back. The entry is not free: a JSON pointer into `spec.sources` stops ArgoCD patching any field in that array, which once left four Applications on a stale `repoURL` for weeks while the root reported success. That is what the drift check in section 1 exists to catch. `inference` and `context-forge-gateway` deploy from git HEAD.
-
-**The merge queue is GitHub's native one**, configured on the default-branch ruleset (`lets-not-delete-everything`): rebase merges only, `ALLGREEN` grouping (every group commit must pass, so a PR whose own group fails cannot merge inside a later group; the factory's hold labels rely on it), build up to 3 entries, merge up to 5, and no minimum wait. Required checks are `pr-checks` and the factory-reviewer's `factory review` from App 5758326. `gh pr merge --auto` enqueues (the queue sets the strategy and refuses a strategy flag); nobody rebases a PR because main moved, the queue does. The chart write-back commit lands under an org-admin bypass so it never queues behind itself. The `ready-to-merge` label exists and means "reviewed by the judgment tier", but nothing in the repo consumes it: the stateless DBOS reconciler that would (ADR platform/014) was never built and its issues are closed.
-
-**Per-PR preview environments do not exist.** ADR platform/005 (label-gated ApplicationSet previews with copy-on-write CNPG clones) is Draft and unbuilt: no `ApplicationSet` exists on either cluster, and the hub has no second lane at all. Its tracking issues #3882 to #3887 were closed not planned.
-
-(see: `projects/gke-cluster/root/root-application.yaml`, `projects/gke-cluster/hub-root-application.yaml`, `projects/gke-apps/`, `projects/platform/kargo/values.yaml`, `projects/platform/kargo/README.md`, `bazel/helm/README.md`, `docs/agents/reference.md` "Delivery mechanics", ADR platform/009, ADR platform/011, ADR platform/014)
-
-**Why.** Branch-side chart bumps caused duplicate versions, merge conflicts, and
-merged changes that never deployed when a bump was lost (ADR platform/009, ADR
-platform/011). Floating OCI revisions were rejected because ArgoCD cannot follow
-OCI semver ranges, while a production-only Kargo stage was rejected because it
-adds a controller without a validation stage. Post-merge idempotent publishing
-and monotonic write-back remove PR contention, and Kargo promotion accepts live
-Application state as the deployed version plus a soak gate that proves readiness
-only (ADR platform/009). The hub runs exactly the production-only shape that was
-rejected, as a stated reduction: automatic health-verified promotion replaced
-hand-edited pins. EmberVM's dev stage is restored on the hub; restoring the monolith's is the follow-up. ADR platform/014's
-custom merge reconciler was superseded by the native queue; its reasoning about
-concurrent branches becoming stale after every merge still holds.
-
-**Why.** Automated rollback must reverse source through a fresh chart and the
-ordinary review and merge queue. A pin change cannot establish that recovery
-path. The #7450 staged implementation connects revision-scoped observation
-and durable failure/reservation records to ordinary factory recovery receipts.
-Reversal covers the full rebased PR range; recovery uses the existing admission,
-independent review and merge queue. A factory-wide breaker files a decision
-issue after two reservations in an hour. Rollback defaults off. The revision gate stays disabled and
-reuses the existing `chart_version` wiring. Authorized live acceptance remains
-on #7450, including the deliberate low-risk failure exercise and verification
-that the reverse commit forward-promotes to the expected healthy revision.
-
----
-
-## 5. Storage
-
-**Block storage on the hub** is GCE persistent disk through the default `standard-rwo` class (pd-balanced, `WaitForFirstConsumer`). There is no Longhorn on the hub.
-
-**CloudNativePG** provides Postgres on the hub, which runs three `Cluster` CRs (monolith-pg with two instances, authentik-pg, context-forge-pg), each bootstrapped by recovery from the home cluster's archive and now archiving to its own prefix of a GCS Barman object store under a distinct server name, so the two clusters' archives never collide. monolith-pg also hosts EmberVM's op-log and SPIRE's datastore as additional databases. The home overlay's nightly dev-database refresh was retired with it (#6914); the hub has no dev lane.
-
-**Blob storage** is Cloudflare R2 for the monolith and monolith-public (artifacts, images, chat attachments, the stars grid, knowledge raws), with bucket names unchanged from the previous store and credentials delivered as `OnePasswordItem`s: a read-write item for the backend and its CronWorkflows, a read-only item for the public tier. EmberVM's base store and volume exports on the hub go to same-region GCS through the S3 interop endpoint.
-
-**Backup-age advisory is staged off** (#7002). The collector's shared checker
-can read `monolith/monolith-pg`, `authentik/authentik-pg` and
-`mcp/context-forge-pg` independently of Loom, adding `loom/loom-pg` only under
-its existing enablement gate. The same observation feeds the age metric and a
-named ConfigMap consumed by the private monolith advisory and Discord notifier.
-`lastSuccessfulBackup` describes base backups and does not prove WAL archival.
-
-**Why.** Honeycomb's single trigger already watches the public composite. A
-second backup scanner would give the advisory and metric different evidence.
-The Kubernetes API provides an authenticated handoff using the checker's
-ServiceAccount and the monolith's existing ConfigMap read grant. The writer
-can patch only its precreated object; no application write route, external
-account or database migration is needed. Runtime data is excluded from Argo
-diff and sync. Freshness expires after two hours and unknown observations
-preserve the notifier's durable state. Enablement and operational acceptance
-remain on #7002; configuration and failure semantics are in
-`docs/observability.md`.
-
-**Longhorn**, the home cluster's block storage, was retired with the home configuration in #6914; the hub's PVCs use GKE's `standard-rwo` storage class.
-
-**atlas-operator** applies each service's database migrations from its ConfigMap on the hub. The ConfigMap carries the entire migration history, and ArgoCD applies it as a single object with a 256 KiB last-applied-configuration annotation ceiling (see: `docs/agents/reference.md`, "Gotchas", "Keep bulk data out of chart/migrations/*.sql").
-
-(see: `projects/platform/cloudnative-pg/`, `projects/monolith/deploy/values-gke.yaml`, `projects/platform/authentik/values-gke.yaml`, `projects/embervm/deploy/values-gke.yaml`, `projects/platform/atlas-operator/`)
-
-**Why.** Imperative bucket Jobs had no teardown, separate lifecycle setup, and no
-per-application credentials, leaving derived data behind after its application
-was removed (ADR platform/007). Application self-provisioning was rejected because
-it remains invisible to GitOps and still has no deletion path; Crossplane was
-rejected as too much infrastructure for bucket provisioning alone. COSI was
-chosen for declarative ownership and reclaim policy, accepting beta APIs and a
-community driver; the decision was never deployed, and the store it targeted
-was replaced by R2 and GCS. EmberVM's bases stay on GCS rather than
-R2 because same-region GCS bandwidth is free in both directions while R2 would
-pay GCP egress on every export.
-
----
-
-## 6. Scheduling and capacity
-
-**Priority classes** rank workloads under memory oversubscription (ADR platform/010). Three are live on the hub: `homelab-critical` (100000), `homelab-disposable` (-1000, `preemptionPolicy: Never`) and `homelab-preemptible` (-9, `preemptionPolicy: Never`). The third exists because -1000 sits below the cluster autoscaler's expendable-pods cutoff of -10, so a Pending brick at the disposable class never triggered a scale-up on the hub; preemptible bricks stay evict-first but may summon a node. Bricks use it; everything else stays on disposable. The cluster runs Burstable QoS: memory request==limit (reserved), CPU request-only (allowed to burst).
-
-**Hub capacity** is the two pools in section 1; the brick pool autoscales, the core pool does not.
-
-**Node-traffic-shaper, KEDA and the GPU operator were retired with the home configuration in #6914.** The shaper was a hand-applied CAKE ingress qdisc on the home GPU node that shaped nothing, because Cilium's `tcx` attachment ran before legacy tc filters (#4171 left where ingress shaping should live undecided; the hub has no uplink to shape). KEDA was installed with no `ScaledObject` or `ScaledJob`, so nothing ever autoscaled on it. The GPU operator managed the Nvidia driver for the single RTX 4090 node; the hub has no GPU pool, and with the GKE GPU-serving proposal #5461 closed as not planned, inference placement and hardware disposition require a separate current decision.
-
-(see: `projects/platform/priority-classes/templates/priorityclasses.yaml`, ADR platform/010)
-
-**Why.** Measured memory peaks left little safe request headroom to trim, while
-rare peaks occurred at different times and held capacity idle between them (ADR
-platform/010). Guaranteed request-equals-limit sizing was rejected because it
-prevented the Firecracker tier from fitting, and BestEffort sizing was rejected
-because critical workloads would lose their reserved floor. Burstable requests
-plus priority classes accept an occasional OOM bet and designate reconstructible
-guest work as the first victim when peaks coincide. The preemptible class keeps
-that victim ordering while letting a capacity carrier ask the autoscaler for a
-node, which the disposable value cannot.
-
----
-
-## 7. Observability
-
-**otel-collector** runs one OpenTelemetry Collector Deployment on the hub and exports to Honeycomb (ADR platform/015) over OTLP HTTP, because the gRPC dials were cancelled before completing.
-
-Trace admission is deny-by-default by construction. With an empty `allowedServices` the chart renders no `otlp` receiver, no traces pipeline and no OTLP ports, so an unlisted service gets connection refused. The hub overlay (`values-gke.yaml`) lists five services (`embervm-control`, `embervm-noded`, `monolith-backend`, `monolith-jobs`, `monolith-public`) and renders the receiver; a `filter` processor then drops any span whose `service.name` is absent or unlisted, and one `composite` tail-sampling policy spends a spans-per-second budget across its sub-policies. Adding a service is a one-line values edit. A `memory_limiter` runs first in every pipeline.
-
-The metrics pipeline accepts the `http_check` receiver only: the hub overlay probes
-`https://jomcgi.dev/health` and `https://jomcgi.dev/`. The hub's Argo CD in-cluster
-target is live with Argo CD's self-signed serving leaf pinned in
-`values-gke.yaml` per #6542. The certificate expires 2027-08-30 and must be
-re-pinned from the `argocd` namespace's `argocd-secret` key `tls.crt` before
-then. Arbitrary OTLP metrics are never accepted.
-
-UptimeRobot checks `https://jomcgi.dev/health/otel-collector`, a direct public `HTTPRoute` into the hub collector's `health_check` extension that does not proxy through the frontend. Kyverno's cluster-wide OTel environment-variable injection is disabled. The OpenTelemetry Operator chart was retired with the home configuration in #6914 and is deployed nowhere. There is no in-repository trace query surface; the retired private waterfall is not being restored.
-
-**Internal observability guidance** lives in `docs/observability.md` (not published externally).
-
-**Polylane** (hub only, since 2026-09-10) is a third-party read-only view of the
-cluster's topology. `projects/platform/polylane` wraps the upstream
-`polylane-k8s` chart, vendored, and adds the `OnePasswordItem` holding the API
-key. One Deployment in the `polylane` namespace runs the agent as a native
-sidecar whose startup probe gates a `cloudflared` container, so the tunnel comes
-up only after registration lands. RBAC is enumerated `get`/`list` over 24
-resource types with no credential-bearing type among them, and `pods/log` is one
-of them, so pod log content leaves the cluster. The one write is
-`get`/`update`/`patch` pinned by `resourceNames` to the Secret the agent
-persists its registration and tunnel token into; the Application excludes that
-Secret's `data` from diffing so it does not read OutOfSync forever, and
-`ServerSideApply` is what actually keeps ArgoCD from pruning the agent's writes.
-Nothing is exposed inbound. The API key is env-injected and the 1Password
-operator does not restart consumers, so rotating it needs a `rollout restart`.
-
-(see: `projects/platform/otel-collector/values.yaml`, `projects/platform/otel-collector/values-prod.yaml`, `projects/platform/otel-collector/values-gke.yaml`, `projects/platform/kyverno/values.yaml`, `projects/platform/polylane/values.yaml`, `projects/platform-gke/polylane/application.yaml`, `docs/observability.md`)
-
-**Why.** Honeycomb quota sets the collector's admission boundary. An empty
-allowlist removes the OTLP listeners instead of relying on workloads not to send.
-The metrics pipeline cannot accept arbitrary OTLP metrics. Polylane is the first
-path out of the cluster to a third party that is not Honeycomb or Cloudflare, and
-it was taken on the shape of the grant rather than the vendor's assurances: no
-credential-bearing resource type is reachable, the agent cannot mint a Secret,
-and there is no inbound port or exported kubeconfig to revoke. Pod log content
-crossing that boundary is the cost, accepted because the alternative (dropping
-`pods/log`) diverges from the shipped chart's RBAC and would have to be
-re-diverged on every upgrade.
-
-**Why.** The hub runs the public jomcgi.dev probe; the home configuration is
-retired. Pinning Argo CD's
-self-signed serving leaf preserves TLS verification without
-`insecure_skip_verify` and leaves `server.insecure` false. With both
-`httpcheck.enabled` and `httpcheck.caMount.enabled` on, rendering fails if
-`httpcheck.caMount.caCert` is empty, null or whitespace-only. Turning the CA
-mount off is not guarded: `httpcheck.caMount.enabled: false` still renders the
-enabled target with `tls.ca_file: /etc/otel/argocd-ca/ca.crt`,
-and the missing file fails probes and risks the collector failing to start,
-stopping traces and metrics export. The absence trigger exists because a
-disabled or dead probe makes the composite trigger silent by design (it
-evaluates only received metrics), which is what happened in the 2026-09-30
-EmberVM session-create denial incident.
-
----
-
-## 8. Security and policy
-
-**Kyverno** renders two cluster policies on the hub (`projects/platform/kyverno/templates/`):
-
-- `require-resource-requests` checks first-party namespaces for CPU and memory requests plus a memory limit. `validationFailureAction: Audit`, so violations surface as PolicyReports and nothing is rejected
-- `clone-monolith-workflows-secrets` copies the Secrets Argo CronWorkflow jobs need, the R2 credential among them, into `monolith-workflows`
-
-The `inject-otel-env-vars` template is disabled. Non-root execution and dropped capabilities come from each chart's own `securityContext`. Network policy on the hub is plain `NetworkPolicy` only, and one exists (section 3); nothing on the hub enforces a `securityContext` at admission, since Kyverno's rules are Audit.
-
-**Sandbox runtime.** No workload runs under gVisor. The hub carries GKE's own `gvisor` RuntimeClass and no pod selects it; home never had one. ADR security/003 (runsc for agent sandbox pods) was accepted for a pod-shaped agent runtime that was then replaced: untrusted code runs in EmberVM Firecracker guests (`projects/embervm/ARCHITECTURE.md`, section 10), so the second kernel boundary is the microVM. #3894 remains open as the record; nothing depends on it.
-
-**cert-manager** runs on the hub. It issues from self-signed `Issuer`s only: Kargo's two webhook certificates and EmberVM's egress CA. No `ClusterIssuer` exists and nothing on the hub gets a publicly trusted certificate from it; TLS to the internet terminates at Cloudflare.
-
-**Authentik** is the in-cluster identity provider, on the hub since the cutover with its database recovered from the home archive. It issues OIDC to the Envoy Gateway `SecurityPolicy` lanes (the MCP preview, the moving lane on `friends.jomcgi.dev` per ADR security/006) and to Kargo's UI, where Kargo's own admin authorization requires the `homelab-admin` group, and enforces MFA on the accounts that reach them (`projects/platform/authentik/blueprints/`). Declarative config is blueprints applied by the worker; authentik ships no CRDs. Cloudflare Access is a separate gate on the trusted tier, and it also fronts authentik's admin console. Authentik's own credentials live in the `authentik-secrets` and `authentik-pg-app` Secrets, and each application's OIDC client secret arrives as an `OnePasswordItem`. The factory cluster runs a separate Authentik from the same chart (`values-factory.yaml`, blueprints in `factory-blueprints/`), whose secrets are generated in the cluster until its Postgres has off-node backups (`projects/factory-cluster/README.md`).
-
-**1Password Operator** syncs external credentials via `OnePasswordItem` CRs on the hub. The Connect API server and the operator are still bootstrapped out of band before the hub root syncs, because the root's first sync renders items, but on the hub the `onepassword` Application (wave 0) now adopts those resources and manages them from Git. That gives the Connect API two replicas, a `PodDisruptionBudget` (`maxUnavailable: 1`, so a node drain keeps one server up), memory requests equal to their limits, and a soft anti-affinity that spreads the replicas; a single-replica Connect was a cluster-wide secret-delivery single point of failure, since evicted or drained no pod that consumes a `OnePasswordItem` could start. The operator stays at one replica on purpose: the chart enables no leader election, so a second reconciler would race on the same items. Nothing external is hand-created; the bootstrap Secrets (`op-credentials`, `onepassword-token`) stay out of Git, and the chart renders neither unless its values supply them. Secrets generated inside the cluster (CloudNativePG credentials, cert-manager leaf certificates) are owned by their operators.
-
-**SPIRE** (hub only, since 2026-09-05) is the workload identity control plane of ADR embervm/041. `projects/platform/spire` wraps the hardened upstream chart: a server StatefulSet with its datastore on monolith-pg, an agent DaemonSet and CSI driver on both pools, trust domain `embervm.jomcgi.dev`, and a controller manager with three `ClusterSPIFFEID`s issuing X.509 SVIDs to the `embervm`, `monolith` and `monolith-agents` namespaces. Phase 1 (the control plane) and the phase 2 issuance are live; no consumer validates an SVID yet, and the flips that turn mTLS on and retire the static bearer are values-only PRs tracked in #5706. The app compares with `ServerSideDiff=true` because ArgoCD 3.1's structured-merge diff re-serializes fields `ignoreDifferences` had removed and read the StatefulSet as OutOfSync forever.
-
-**Tailscale** (hub only) runs the operator with an authenticating Kubernetes API server proxy: a tailnet identity is impersonated as a Kubernetes user and RBAC decides, with one admin bound. That is the second authentication path to the hub's API server next to Google's, and it survives a `gcloud` token expiring. The operator also publishes the monolith API on the tailnet and provides the `inference-bridge-freetoken` egress Service to the tailnet inference host on port 8090 for the private `/qwen` page. The decision on retaining that bridge is tracked in #7042.
-
-(see: `projects/platform/kyverno/`, `projects/platform/cert-manager/`, `projects/platform/authentik/`, `projects/platform/spire/`, `projects/platform-gke/spire/application.yaml`, `projects/platform-gke/tailscale/values.yaml`, `docs/security.md`)
-
-**Why.** The sidecar mesh blocked native network policy and carried recurring
-lifecycle failures, so Cilium consolidated CNI, encryption, and label-based
-policy in one node data plane (ADR platform/012). Running both meshes was rejected
-because it retains the original failure modes, and immediate Cilium mutual
-authentication was deferred because its newer identity feature was outside the
-cluster threat requirement. For application identity, Kubernetes-only
-TokenReview was rejected because it lacks browser SSO, device flow, and human
-lifecycle; provider-neutral local token verification accepts expiry-bounded
-revocation and identity-provider outages for new login (ADR embervm/032). For
-workload identity, extending the token broker to mint SPIFFE-shaped JWTs was
-rejected because it attests nothing, and GKE's managed workload identity
-certificates because they cannot attest a Firecracker guest and do not exist
-off GKE; self-hosted SPIRE is one attested issuer for platform components,
-guests and later cloud federation, at the cost of one more stateful component
-and an agent on every brick node (ADR embervm/041).
-
----
-
-## 9. Maintenance automation
-
-**Argo Workflows** runs in `monolith-workflows` on the hub as the CronWorkflow executor for the monolith's jobs. The hub is also the sole intended deployment for Renovate and apko lock maintenance. The retired home enrollment and cutover scaffolding are removed under #7068. Both hub schedules remain suspended in `values-gke.yaml` pending separately authorized credential/identity verification and enablement.
-
-**Renovate** configures a daily 04:00 America/Vancouver CronWorkflow. Its enabled managers cover Bazel modules, Go, pep621, npm/pnpm, Helm, Kubernetes manifests and ArgoCD Applications. `renovate.json` limits ordinary PR creation to before 06:00 on Monday in the same timezone, with an any-time exception for vulnerability alerts. PR #7358 stages native platform auto-merge for ordinary updates, including majors, behind independent dependency evidence and required Linux CI. It integrates #7168's cleanup; both hub writers remain suspended until the verified App-bound evidence check and activation prerequisites are enforced.
-
-**apko lock maintenance** configures a second CronWorkflow for Monday at 01:00 America/Vancouver. Its script regenerates committed apko locks, compiled root Python requirements and non-GitHub tool pins in separate maintenance PRs. It preserves ownership holds and stages native platform auto-merge behind `apkoLockMaintenance.automerge`, false in both base and hub values. Repository-wide and package-rule Renovate automerge also remain false. #7186 owns their explicit activation alongside the suspended schedules, after the independent App-bound evidence check and CI are enforced. The helper never submits approvals and missing flags stay off even in an older workflow loading the updated ConfigMap.
-
-Both workflows reference the `RENOVATE_TOKEN` key of the `renovate-github` Secret, declared through the existing OnePasswordItem. The templates and script target `jomcgi-org/homelab`; the existing dedicated identity, usable permissions and renewal remain unverified. The current chart does not mint App tokens. #7068 retains operational acceptance, including ownership reconciliation with #7001's overlapping enablement, absence of competing writers, hub Application and Secret synchronization, and successful scheduled runs with PR evidence.
-
-**Repo layout** (ADR repo/001): every deployable lives under `projects/<name>/` with its chart and `deploy/` colocated; Bazel rules and tooling live under `bazel/` (`bazel/helm`, `bazel/images`, `bazel/tools`). `projects/gke-cluster/`, `projects/platform-gke/` and `projects/gke-apps/` are the hub's hand-maintained roots over the charts under `projects/platform/` and each service's `deploy/` values (section 1); the generated home root was retired in #6914. `projects/operators/` holds the one custom operator (`oci-model-cache`, a `ModelCache` CRD that syncs HuggingFace models into an OCI registry) and the conventions in `best-practices.md` that a new operator follows. None of these is a domain of its own.
-
-(see: `projects/platform/argo-workflows/`, `projects/platform/renovate/`, `projects/platform/renovate/README.md`, `projects/operators/best-practices.md`)
-
-**Why.** Dependency and lock regeneration must run on Linux with pinned tooling,
-survive a workstation being offline, and leave a reviewable pull request rather
-than mutating the cluster directly. Argo CronWorkflows were chosen over
-in-process loops and local cron because the existing controller already owns
-cadence, deadlines, concurrency, and history. Daily Renovate retries are kept
-separate from the Monday review window, while the weekly apko job amortizes a
-more expensive whole-repository lock refresh. This accepts Argo as an operational
-dependency and keeps its write credentials scoped through 1Password.
-
-**Why.** The home cluster was retired in #6914. Its remaining enrollment and
-cutover assertions described a deployment no active root reaches. #7068 removes
-those inputs while retaining policy safeguards, the base render, and hub
-enrollment/render tests. Keeping both hub schedules suspended separates the
-repository cleanup from credential verification and operational enablement.
-The latter overlaps #7001 and requires its own authorization and live evidence.
-
----
+Argo Workflows executes the hub monolith's scheduled jobs. The hub Renovate and apko lock maintenance CronWorkflows are configured with their schedules suspended. The factory home cluster declares a separate suspended Renovate CronJob. [Hub maintenance](../platform-gke/renovate/) · [Factory maintenance](../platform-factory/renovate/)
 
 ## Direction
 
-Decided and not yet built, each with the issue that tracks it. A row leaves
-this table when the work ships or the issue closes without it.
-
-| Direction | Decided in | Tracks | State |
-| --- | --- | --- | --- |
-| Hub-only Renovate and reviewed dependency maintenance | section 9 | #7068, #7001 | cleanup integrated by #7358 with both hub schedules suspended; verified identity, required evidence check, CI isolation and #7186 activation acceptance outstanding |
-| Shared CNPG backup-age observations feed the private advisory and Discord notifier | section 5 | #7002 | repository implementation staged off; rollout, effective RBAC and failure/recovery acceptance outstanding |
-| Native `NetworkPolicy` successor enforcement on the hub | section 3 | #5276, #5277 | inert templates removed in #5816; native egress remains staged off pending its own live validation; hub-only since #4964 closed 2026-09-18 |
-| Kargo promotion on the hub gains a functional verification gate, not just stage ordering | section 4 | #4745 | staged: revision-aware `/healthz` gate wired on the monolith prod Stage behind `promotion.revisionGate.enabled` (off); reuse existing `chart_version` wiring and verify it live before activation; #7450 rollback observation and ordinary-delivery recovery are wired default-off, with production acceptance outstanding |
+| Direction | Tracks | State |
+| --- | --- | --- |
+| Extend Kargo promotion to factory applications and feed verified Freight back to the tracker | [HOME-116](https://factory-plan.jomcgi.dev/factory/issue/HOME-116) | Designed |
+| Give factory workloads SPIFFE identities for pod-to-pod authentication | [HOME-254](https://factory-plan.jomcgi.dev/factory/issue/HOME-254) | Designed |
 
 ## Decision history
 
-The ADR files were removed on 2026-09-06 (#4667); `git log -- docs/decisions/`
-has the full text.
+Earlier platform decisions, including the choice of hub node pools and promotion model, are indexed in the [previous ADR table](https://github.com/jomcgi-org/homelab/blob/3e0f7bd85f4f6f7ce4af1a483c8d75d26ea6b1ff/projects/platform/ARCHITECTURE.md#decision-history).
 
-Rationale only; these records describe decisions, not current state. This document carries what shipped.
-
-| Decision | ADR | Status | Disposition |
-|---|---|---|---|
-| Obsidian vault migration into the monolith | platform/001 | Superseded by 006 | deleted |
-| CDN-cached data fetching for public routes | platform/002 | Superseded by 003 | deleted |
-| CDN cache rule scoped to the public hostname | platform/003 | Implemented on the apex; Cloudflare-side only, remaining dashboard settings #3879 | deleted |
-| Iceberg-on-SeaweedFS lakehouse | platform/004 | Superseded; decommissioned 2026-06-14 (PR #2596) | deleted |
-| Per-PR preview environments for the monolith | platform/005 | Draft, not built; #3882 to #3887 closed not planned | deleted |
-| Decommission Obsidian, Postgres as the body of record | platform/006 | Accepted, shipped | deleted |
-| SeaweedFS bucket provisioning via COSI | platform/007 | Accepted, never deployed; the store it targeted was replaced by R2 and GCS (#3888) | deleted |
-| Monolith module boundaries | platform/008 | Accepted | deleted |
-| Post-merge chart versioning and Kargo promotion | platform/009 | Decisions 1 and 2 shipped as specified; decision 3 shipped as `argocd-update` on the live Application, prod-only on the hub; decision 4 superseded; no verification gate, #4745 | deleted |
-| Memory oversubscription via Burstable QoS and PriorityClass | platform/010 | Accepted, shipped; a third class added 2026-09-01 | deleted |
-| Idempotent chart publish with missed-bump detection | platform/011 | Accepted, shipped | deleted |
-| Cilium replaces Linkerd | platform/012 | Shipped at home; the hub runs GKE's managed Cilium instead | deleted |
-| Design system contract with distinct themes | platform/013 | Superseded by #4449: only confirmed token collisions are scoped; the contract migration, primitives, and `/design` programme were dropped; distinct themes remain | deleted |
-| Stateless merge-queue reconciler | platform/014 | Accepted, never built; native GitHub queue instead, #4915 closed | deleted |
-| Remove SigNoz, opt-in OTel collector to Honeycomb | platform/015 | Accepted, shipped on both clusters | deleted |
-| GKE hub runs two node pools | platform/016 | Accepted, shipped; live pools match | deleted |
-| Cloudflare tunnel plus Envoy Gateway | networking/001 | Implemented | deleted |
-| Path-based ingress tiers with automatic DNS | networking/002 | Implemented; two tiers live | deleted |
-| Incremental Cilium capability adoption | networking/003 | Partly shipped at home; hub work requires feature-specific targeting, including the L7 restriction above; #3873, #3824, #3875 | deleted |
-| Monorepo structure and dotfile housekeeping | repo/001 | Accepted, shipped in both phases | deleted |
-| Static docs site (VitePress on Cloudflare Pages) | docs/001 | Superseded by docs/002 | deleted |
-| Retire standalone frontends, docs into the monolith | docs/002 | Accepted, shipped; docs render at `jomcgi.dev/docs` | deleted |
-| gVisor RuntimeClass for agent sandboxes | security/003 | Accepted, never deployed; EmberVM microVMs took the role; #3894 | deleted |
-| Moving app on `friends.jomcgi.dev` as a second authorization lane | security/006 | Accepted, shipped; route and policy live on the hub | deleted |
-| SPIFFE workload identity on self-hosted SPIRE | embervm/041 | Accepted; phase 1 and phase 2 issuance live on the hub, consumers pending #5706 | deleted |
-
----
-
-## Out of scope
-
-These are not platform decisions: enterprise multicloud deployments, supply-chain governance, legacy migration. The platform is the cluster infrastructure. Everything else owns its own choices.
+| Decision | Date | Record |
+| --- | --- | --- |
+| Retire the former home Longhorn installation that provided replicated block storage | 2026-10-10 | [Home configuration retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
+| Retire KEDA on the former home cluster. It had no ScaledObjects or ScaledJobs | 2026-10-10 | [Home configuration retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
+| Retire the GPU operator that managed the driver on the former home's RTX 4090 node | 2026-10-10 | [Home configuration retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
+| Remove the former home's CAKE traffic shaper. The CNI processed ingress before its filter | 2026-10-10 | [Home configuration retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
+| Retire the former home Cilium chart, including its WireGuard and Hubble configuration | 2026-10-10 | [Home configuration retirement](https://github.com/jomcgi-org/homelab/issues/6914) |
+| Bootstrap the factory on the rebuilt home nodes with its own GitOps root | 2026-11-13 | [Factory cluster decision](https://github.com/jomcgi-org/homelab/issues/7817) |
