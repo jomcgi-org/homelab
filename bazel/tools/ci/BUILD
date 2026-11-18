@@ -73,6 +73,7 @@ py_library(
 py_test(
     name = "grimoire_journey_trigger_test",
     srcs = ["grimoire_journey_trigger_test.py"],
+    data = ["//:buildbuddy.yaml"],
     deps = [
         ":grimoire_journey_trigger_lib",
         "@pip//pytest",

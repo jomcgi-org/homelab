@@ -138,6 +138,16 @@ def decide(
     return lockfile_decision(base_lock, head_lock)
 
 
+def changed_paths(raw: str) -> list[str]:
+    """Names from `git diff --name-only -z`.
+
+    NUL-delimited output keeps unusual names as they are: plain output quotes
+    them (for example "projects/monolith/web/caf\\303\\251.ts"), and a quoted
+    name would not match its trigger prefix.
+    """
+    return [path for path in raw.split("\0") if path]
+
+
 def _git(*args: str) -> str:
     return subprocess.run(
         ["git", *args], check=True, capture_output=True, text=True
@@ -154,9 +164,9 @@ def _show(ref: str) -> str | None:
 def main(argv: list[str]) -> int:
     try:
         base = argv[1]
-        changed = _git(
-            "diff", "--name-only", base, "HEAD", "--", LOCKFILE, *TRIGGER_PATHS
-        ).split()
+        changed = changed_paths(
+            _git("diff", "--name-only", "-z", base, "HEAD", "--", LOCKFILE, *TRIGGER_PATHS)
+        )
         run, reason = decide(
             changed,
             _show(base) if LOCKFILE in changed else None,
