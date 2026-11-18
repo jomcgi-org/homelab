@@ -856,7 +856,8 @@ KUBECONFIG=~/.kube/factory.yaml kubectl -n prometheus port-forward svc/prometheu
 
 Prometheus evaluates `resources/rules.yml` and sends firing alerts to one
 Alertmanager (`resources/alertmanager.yaml`), which forwards them to alert-relay. The relay queries Prometheus for a graph
-and posts it to the homelab Discord channel. AlertRelayDown goes directly
+and posts it to the homelab Discord channel. Select a firing alert’s title
+to inspect the same query in Grafana Explore. AlertRelayDown goes directly
 from Alertmanager to Discord. The path uses nothing in the hub, so an
 alert arrives while the hub is down. Alertmanager keeps silences in an
 emptyDir: a restart forgets them.
