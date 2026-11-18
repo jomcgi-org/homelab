@@ -344,6 +344,28 @@ test("preview requires noindex; production can be indexed", () => {
   );
 });
 
+test("a stamped hikes summary passes; an unstamped or altered page fails", () => {
+  const slot = (body) =>
+    `<main><!--hikes-summary:start-->${body}<!--hikes-summary:end--></main>`;
+  const release = Buffer.from(slot("<p>build</p>"));
+  const published =
+    "<p>Data as of <time>t</time></p><p>1 Scottish walks in the published forecast. Explore walks.</p>";
+  checkReleasePage(Buffer.from(slot(published)), release, "/hikes");
+  assert.throws(
+    () => checkReleasePage(release, release, "/hikes"),
+    /hikes summary/,
+  );
+  assert.throws(
+    () =>
+      checkReleasePage(
+        Buffer.from(`<p>x</p>${slot(published)}`),
+        release,
+        "/hikes",
+      ),
+    /differs/,
+  );
+});
+
 test("/hikes may widen only the CSP directives its route rule names", () => {
   const hikes = new Headers(headersFor("/hikes"));
   checkHeaders(hikes, { preview: true, path: "/hikes" });
