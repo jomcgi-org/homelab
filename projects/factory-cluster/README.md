@@ -48,7 +48,7 @@ router must reserve these three leases.
 | Images | embedded Spegel mirror for docker.io, quay.io, registry.k8s.io, cr.agentgateway.dev and ECR Public; not ghcr.io | Public images outside ghcr.io cross the home uplink once. Spegel serves a cached image to any pod without pull credentials and mirrors whole registry hosts, so ghcr.io, which holds this repository's private images, is pulled from GHCR on each node (Joe's decision on #7817, 2026-11-14) |
 | Cilium devices | `enp+` (the wired NICs) | Auto-detection also took `tailscale0` on node-1, set every pod there to its 1280 MTU and silently dropped full-size QUIC replies from the Cloudflare edge; it also served KPR services on the tailnet |
 | Tailscale (node-1) | netfilter mode off; `src_valid_mark=0` | With Tailscale managing iptables it sets `src_valid_mark=1`, and the kernel then drops every pod packet Cilium redirects to its DNS or L7 proxy, which breaks `toFQDNs` policies |
-| Host firewall | nftables table `inet factory_fw`, input default drop; rpcbind off | Node IPs reach WireGuard and a fixed list of mTLS or SSH ports on the NIC; pods and decrypted WireGuard traffic arrive on Cilium interfaces; the tailnet reaches node-1. Other LAN hosts reached etcd, the apiserver, kubelet, Spegel and Cilium metrics before. A separate table leaves the k3s and Cilium rules alone (`nodes/factory-firewall.nft`) |
+| Host firewall | nftables table `inet factory_fw`, input default drop; rpcbind off | Node IPs reach WireGuard and a fixed list of mTLS or SSH ports on the NIC, not metrics; pods and decrypted WireGuard traffic arrive on Cilium interfaces; the tailnet reaches node-1. Other LAN hosts reached etcd, the apiserver, kubelet, Spegel and Cilium metrics before. A separate table leaves the k3s and Cilium rules alone (`nodes/factory-firewall.nft`) |
 | Ingress | Cloudflare Tunnel managed by cfgate (Gateway API) | No inbound ports; the tunnel, its routes and DNS records are Kubernetes resources. cfgate replaced StringKe/cloudflare-operator, whose last release (v0.51.0) watches Gateway API `v1alpha2` UDPRoute, which current Gateway API no longer serves |
 | Edge | Envoy Gateway 1.8.3 in `edge`, the tunnel's only origin | One proxy where sign-in is enforced for every published route; the hub runs the same release |
 | Human sign-in | Authentik 2026.5.6: OIDC at the edge Gateway for every route, and each application's own OIDC where it has one; no Cloudflare Access | One identity layer, as #7817 specifies. A gateway-wide policy means a new route cannot forget sign-in |
@@ -110,7 +110,11 @@ ssh node-2 'sudo rm -f /etc/systemd/zram-generator.conf \
 Rerun step 2 to restart k3s without them. Without the generator configuration,
 no zram swap starts at the next boot.
 
-To turn off the host firewall on a node, run
+To change only the host firewall, copy `nodes/factory-firewall.nft` to
+`/etc/factory/firewall.nft` on each node and run
+`sudo systemctl restart factory-firewall`; k3s keeps running. Rerunning step 2
+also applies it, but restarts k3s on each server, one at a time. To turn the
+firewall off on a node, run
 `ssh node-2 'sudo systemctl disable --now factory-firewall'`. Stopping the unit
 deletes only its own table. Add a node IP to the `nodes` set in
 `nodes/factory-firewall.nft` before the node joins.

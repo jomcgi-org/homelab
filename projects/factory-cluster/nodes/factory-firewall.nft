@@ -26,18 +26,21 @@ table inet factory_fw {
 		iifname "lo" accept
 
 		# Node to node on the NIC. Cilium WireGuard (UDP 51871) carries most
-		# of it, authenticated by peer keys. The TCP ports below use mTLS or
-		# SSH keys, and a spoofed source cannot finish a TCP handshake.
-		# Measured 2026-11-18: etcd peer, apiserver, health and SSH only.
+		# of it, authenticated by peer keys. Each TCP port below authenticates
+		# its peer: etcd, apiserver, kubelet and the k3s registry by cluster
+		# mTLS, SSH by key; Cilium health (4240) answers only health probes.
+		# Metrics and Hubble ports are not here: pods reach them through
+		# Cilium interfaces. Measured 2026-11-18: etcd peer, apiserver,
+		# health and SSH only.
 		iifname "enp*" ip saddr @nodes udp dport 51871 accept
-		iifname "enp*" ip saddr @nodes tcp dport { 22, 2379, 2380, 4240, 4244, 5001, 6443, 9962-9965, 10250 } accept
+		iifname "enp*" ip saddr @nodes tcp dport { 22, 2379, 2380, 4240, 5001, 6443, 10250 } accept
 
 		# Decrypted WireGuard traffic and pods arrive on Cilium interfaces.
 		iifname { "cilium_*", "lxc*" } accept
 
 		# Tailnet (node-1 only has it): SSH, kubectl, workstation access.
+		# Tailscale's own UDP is outbound-first, so conntrack admits replies.
 		iifname "tailscale0" accept
-		udp dport 41641 accept
 
 		# Address and path discovery.
 		icmp type { echo-request, destination-unreachable, time-exceeded } accept
