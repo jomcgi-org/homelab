@@ -1,6 +1,5 @@
 // Exercise the production bundle, CSS and portrait in Chromium (HOME-206:8/9).
-// Usage: node home-browser.mjs <dist>. CI runs it as :home_browser_test with
-// @sparticuz/chromium; SITE_CHROMIUM_EXECUTABLE selects another Chromium.
+// Usage: node home-browser.mjs <dist>; CI target :home_browser_test.
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -32,29 +31,22 @@ const server = await preview({
 const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
 let browser;
 const scratch = mkdtempSync(join(tmpdir(), "home-browser-"));
-// Unpacks the Chromium build from @sparticuz/chromium and its libraries into
-// a scratch directory, as leaderboard-browser.mjs does.
+// Chromium from @sparticuz/chromium, with its libraries and fonts unpacked into
+// the scratch directory (as in leaderboard-browser.mjs).
 async function chromiumPath() {
   if (process.env.SITE_CHROMIUM_EXECUTABLE)
     return process.env.SITE_CHROMIUM_EXECUTABLE;
   process.env.TMPDIR = scratch;
   const { default: chrome, inflate } = await import("@sparticuz/chromium");
-  const require = createRequire(import.meta.url);
-  const bin = join(dirname(require.resolve("@sparticuz/chromium")), "../bin");
-  await inflate(join(bin, "al2023.tar.br"));
+  const pkg = createRequire(import.meta.url).resolve("@sparticuz/chromium");
+  await inflate(join(dirname(pkg), "../bin/al2023.tar.br"));
   const executablePath = await chrome.executablePath();
   const xml = (path) => path.replaceAll("&", "&amp;").replaceAll("<", "&lt;");
+  const conf = `<fontconfig><dir>${xml(join(scratch, "fonts"))}</dir><cachedir>${xml(join(scratch, "cache"))}</cachedir></fontconfig>`;
   process.env.FONTCONFIG_FILE = join(scratch, "fonts.conf");
-  writeFileSync(
-    process.env.FONTCONFIG_FILE,
-    `<fontconfig><dir>${xml(join(scratch, "fonts"))}</dir><cachedir>${xml(join(scratch, "cache"))}</cachedir></fontconfig>`,
-  );
-  process.env.LD_LIBRARY_PATH = [
-    join(scratch, "al2023/lib"),
-    process.env.LD_LIBRARY_PATH,
-  ]
-    .filter(Boolean)
-    .join(":");
+  writeFileSync(process.env.FONTCONFIG_FILE, conf);
+  const libs = [join(scratch, "al2023/lib"), process.env.LD_LIBRARY_PATH];
+  process.env.LD_LIBRARY_PATH = libs.filter(Boolean).join(":");
   return executablePath;
 }
 async function accessible(page, label) {
