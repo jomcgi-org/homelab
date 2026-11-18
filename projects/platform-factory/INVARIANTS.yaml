@@ -8,7 +8,8 @@ invariants:
   - projects/platform-factory/network-policy/resources/baseline.yaml
   state: unproven
 - id: PLAT-2
-  statement: Every route on the edge Gateway signs in through Authentik.
+  statement: Every route on the edge Gateway signs in through Authentik, except the Authentik route that
+    serves the sign-in flow.
   mechanism:
   - projects/platform-factory/edge/chart
   test: //projects/platform-factory/edge/chart:edge_test
@@ -45,8 +46,7 @@ invariants:
   state: unproven
 - id: PLAT-9
   statement: A consumer gets only short-lived derived credentials.
-  mechanism:
-  - projects/platform-factory/external-secrets/chart/templates/policies.yaml
+  mechanism: []
   state: designed
 - id: PLAT-10
   statement: Application namespaces enforce PodSecurity restricted.
