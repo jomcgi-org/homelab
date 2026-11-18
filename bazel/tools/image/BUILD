@@ -324,7 +324,6 @@ py_test(
     deps = [
         "@pip//httpx",
         "@pip//pytest",
-        "@pip//pyyaml",
         "@pip//typer",
     ],
 )
