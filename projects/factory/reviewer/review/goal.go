@@ -57,6 +57,10 @@ type GoalCheck struct {
 	Digest   string        `json:"digest"`
 	Criteria []GoalVerdict `json:"criteria"`
 	Overall  string        `json:"overall,omitempty"`
+	// Counted is the number of criteria the service counted in the issue's
+	// list (issueCriteria), or 0 when it could not count them. It shows a
+	// removed criterion without relying on the goal check's word.
+	Counted int `json:"counted,omitempty"`
 }
 
 // errGoalAnswer is the one error a reply gets; it names no reply value.
@@ -151,8 +155,8 @@ func goalFindings(key string, g *GoalCheck) []Finding {
 // does for evidence failures. It drops each finding and account the code
 // review gave under the project's goal IDs and adds the goal check's
 // findings for the issue key, if any. An earlier goal finding stays open
-// until a valid answer resolves it (goalResolved); Assess keeps its earlier
-// severity.
+// until a valid answer resolves it (goalResolved) or Joe's rule withdraws it
+// (goalWithdrawn); Assess keeps its earlier severity.
 func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck) {
 	ns := regexp.MustCompile(`^` + regexp.QuoteMeta(project) + `-[1-9][0-9]*:goal(:|$)`)
 	r.Findings = slices.DeleteFunc(r.Findings, func(f Finding) bool { return ns.MatchString(f.ID) })
@@ -169,6 +173,8 @@ func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck) {
 		account := Previous{ID: p.ID, Status: StatusOpen, Note: "No valid goal check answer resolves it."}
 		if note := goalResolved(p.ID, key, g); note != "" {
 			account.Status, account.Note = StatusFixed, note
+		} else if note := goalWithdrawn(p.ID, key, g); note != "" {
+			account.Status, account.Note = StatusJustified, note
 		}
 		r.Previous = append(r.Previous, account)
 	}
@@ -203,6 +209,98 @@ func goalResolved(id, key string, g *GoalCheck) string {
 		}
 	}
 	return ""
+}
+
+// goalWithdrawn applies Joe's rule that goal blockers may clear
+// (projects/factory/REVIEW.md): it returns a "Withdrawn:" note when the PR
+// now names another issue, or when the trusted issue text no longer has the
+// finding's criterion. It returns "" otherwise, so a missing issue reference
+// or an uncounted criterion list keeps the finding open. A restated criterion
+// needs no rule here: a valid answer numbers every criterion, so its fresh
+// verdict replaces or resolves the earlier finding. Every word is the
+// service's.
+func goalWithdrawn(id, key string, g *GoalCheck) string {
+	issue, rest, _ := strings.Cut(id, ":goal")
+	if key == "" {
+		return ""
+	}
+	if issue != key {
+		return "Withdrawn: the PR no longer names " + issue + ". It now names " + key + "."
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(rest, ":criterion-"))
+	if !strings.HasPrefix(rest, ":criterion-") || err != nil || n < 1 || !countedCriteria(g) {
+		return ""
+	}
+	if n > g.Counted {
+		return "Withdrawn: criterion " + strconv.Itoa(n) + " was removed from " + key + "."
+	}
+	return ""
+}
+
+// countedCriteria says the service counted the issue's criteria and the goal
+// check numbered the same ones.
+func countedCriteria(g *GoalCheck) bool {
+	return g != nil && g.Counted > 0 && g.Counted == len(g.Criteria)
+}
+
+// issueCriteria counts the criteria in the issue's one "Done when" or
+// "Acceptance criteria" list.
+// Items are "1." numbered lines in sequence, or top-level "-" or "*" bullets
+// (task boxes allowed), one style per list; indented lines continue an item
+// and a top-level line of another kind ends the list.
+// Anything ambiguous returns 0, which withdraws nothing.
+func issueCriteria(in *IssueContext) int {
+	if goalKey(in) == "" {
+		return 0
+	}
+	items := 0
+	state := 0 // 0 before the heading, 1 in the list, 2 after it
+	style := ""
+	for raw := range strings.SplitSeq(in.Issue.Description, "\n") {
+		line := strings.TrimSpace(raw)
+		heading := strings.ToLower(strings.Trim(line, "#* :"))
+		if heading == "done when" || heading == "acceptance criteria" {
+			if state != 0 {
+				return 0
+			}
+			state = 1
+			continue
+		}
+		if state != 1 || line == "" {
+			continue
+		}
+		if raw != strings.TrimLeft(raw, " \t") {
+			if items == 0 {
+				return 0
+			}
+			continue
+		}
+		var text, kind string
+		if number, rest, ok := strings.Cut(line, ". "); ok && number == strconv.Itoa(items+1) {
+			text, kind = rest, "number"
+		} else if rest, ok := strings.CutPrefix(line, "- "); ok {
+			text, kind = rest, "bullet"
+		} else if rest, ok := strings.CutPrefix(line, "* "); ok {
+			text, kind = rest, "bullet"
+		} else if items > 0 {
+			state = 2 // The list ended.
+			continue
+		} else {
+			return 0
+		}
+		if style != "" && style != kind {
+			return 0
+		}
+		style = kind
+		for _, box := range []string{"[ ] ", "[x] ", "[X] "} {
+			text = strings.TrimPrefix(text, box)
+		}
+		if strings.TrimSpace(text) == "" || items >= maxCriteria {
+			return 0
+		}
+		items++
+	}
+	return items
 }
 
 // goalKey is the issue a goal check judges the PR against, or "" when none
@@ -453,7 +551,7 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 			break
 		}
 		l.InfoContext(ctx, "goal check answered", "task", t.ID, "criteria", len(a.Criteria))
-		return &GoalCheck{Head: pr.HeadSHA, Digest: issueDigest(in.issues), Criteria: a.Criteria, Overall: a.Overall}
+		return &GoalCheck{Head: pr.HeadSHA, Digest: issueDigest(in.issues), Criteria: a.Criteria, Overall: a.Overall, Counted: issueCriteria(in.issues)}
 	}
 	if ctx.Err() != nil {
 		why = "stopped" // A restart reads the indexed task or its isolated session.
@@ -563,7 +661,7 @@ func GoalPrompt(repo string, pr github.PullRequest, files []github.PullRequestFi
 	}
 
 	b.WriteString("## Answer\n\n" +
-		"Number the issue's acceptance criteria 1, 2, 3 and on, in the order the issue lists them, and judge each one:\n\n" +
+		"Number the issue's acceptance criteria 1, 2, 3 and on, in the order the issue lists them, and judge each one. When the issue has a \"Done when\" or \"Acceptance criteria\" list, each item of that list is one criterion:\n\n" +
 		"- \"met\": the diff meets it, or a quoted trusted decision above moves it to another issue.\n" +
 		"- \"not_met\": the diff does not meet it.\n" +
 		"- \"after_rollout\": only a rollout or live use can show it, and the diff makes the change it needs.\n" +

@@ -42,7 +42,19 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   public word from those values, with finding IDs from the issue key and
   criterion number, and a parse failure shows only a fixed class. An
   earlier goal finding stays open until a valid answer on the same issue
-  resolves it. The goal check's reasons stay private: only the connector
+  resolves it, or until Joe's rule withdraws it: goal blockers may clear
+  ([HOME-157](https://factory-plan.jomcgi.dev/factory/issue/HOME-157#comment-3904),
+  [HOME-318](https://factory-plan.jomcgi.dev/factory/issue/HOME-318#comment-3905),
+  [HOME-327](https://factory-plan.jomcgi.dev/factory/issue/HOME-327#comment-3906)).
+  When the PR names a different issue, the old issue's goal findings are
+  withdrawn, and the note names both issues. When the trusted issue text
+  drops a criterion, its finding is withdrawn: the service counts the items
+  of the issue's one "Done when" or "Acceptance criteria" list, and the
+  valid answer must number the same count. A restated criterion gets a
+  fresh verdict under the same ID. A missing issue reference, an uncounted
+  list or a count the answer disagrees with keeps the findings open. The
+  goal answer has no follow-up field, so no follow-up issue key reaches the
+  public check. The goal check's reasons stay private: only the connector
   reads them from the reviewer's internal listener, posts them on the issue
   and quotes them in the coder's round as untrusted data, with no `@`
   mention and never on GitHub

@@ -1499,13 +1499,8 @@ func TestGoalHistorySurvivesLegacyCapsAndOverflowAcrossRestart(t *testing.T) {
 			// the last criterion from the separate goal answer cannot fix it.
 			setGoal(answer(maxCriteria-1, goalMet))
 			assertLast(reviewRound(t, h, sha40('b'), next))
-			api.issue.Identifier = "HOME-59"
-			h.gh.withLock(func() { h.gh.prs[7].Body = "Refs HOME-59" })
 			setGoal(answer(maxCriteria, goalMet))
-			assertLast(reviewRound(t, h, sha40('c'), next))
-			api.issue.Identifier = "HOME-58"
-			h.gh.withLock(func() { h.gh.prs[7].Body = "Refs HOME-58" })
-			failIf(t, reviewRound(t, h, sha40('d'), next).Conclusion != ConclusionSuccess, "a valid goal answer resolving every original criterion did not recover delivery")
+			failIf(t, reviewRound(t, h, sha40('c'), next).Conclusion != ConclusionSuccess, "a valid goal answer resolving every original criterion did not recover delivery")
 		})
 	}
 }
