@@ -7,7 +7,8 @@
 # aggregates into view cannot widen it. A namespace is listed only when its
 # objects and logs carry no private data. The factory, agent, memory and
 # Authentik namespaces stay out: their pods and logs hold ticket text, chat
-# history and sign-in details.
+# history and sign-in details. kube_access_test.py pins the read-only verbs,
+# the forbidden resources and this namespace list.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
