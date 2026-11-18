@@ -83,6 +83,11 @@ entries:
       not_configured_action: skip
   - model: authentik_flows.flowstagebinding
     identifiers:
+      target: !KeyOf social-enrollment
+      stage: !KeyOf validate
+      order: 15
+  - model: authentik_flows.flowstagebinding
+    identifiers:
       target: !KeyOf social-authentication
       stage: !KeyOf validate
       order: 10
@@ -97,7 +102,11 @@ entries:
       name: factory-github-properties
     attrs:
       expression: |
-        return {"username": "github-" + str(info["id"])}
+        emails = client.get_github_emails(token)
+        verified = [entry for entry in emails if entry.get("verified") is True and entry.get("email")]
+        primary = next((entry for entry in verified if entry.get("primary")), None)
+        chosen = primary or (verified[0] if verified else {})
+        return {"username": "github-" + str(info["id"]), "email": chosen.get("email", "")}
   - model: authentik_sources_oauth.oauthsource
     id: github
     identifiers:
