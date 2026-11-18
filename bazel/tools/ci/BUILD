@@ -65,6 +65,21 @@ py_test(
 )
 
 py_library(
+    name = "grimoire_journey_trigger_lib",
+    srcs = ["grimoire_journey_trigger.py"],
+    imports = ["."],
+)
+
+py_test(
+    name = "grimoire_journey_trigger_test",
+    srcs = ["grimoire_journey_trigger_test.py"],
+    deps = [
+        ":grimoire_journey_trigger_lib",
+        "@pip//pytest",
+    ],
+)
+
+py_library(
     name = "source_ratchet_lib",
     srcs = ["source_ratchet.py"],
     imports = ["."],
