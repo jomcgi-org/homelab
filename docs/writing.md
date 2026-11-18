@@ -93,43 +93,44 @@ prose it replaces. Skip it for a one-component change or a version bump.
   source should read well as text.
 - A diagram is a claim like any sentence. It must match the code.
 
-## READMEs and architecture documents
+## Document types
 
-Each file answers one question. Text that answers a different question moves
-to the file that owns it.
+Each file type answers one question. Text that answers a different question
+moves to the file that owns it. To create a file, copy its template or
+follow its procedure. Do not invent a new file type: add a section to the
+type that owns the question, or ask Joe for a new row here.
 
-| File | Answers | Leaves out |
+| File | Answers | Start from |
 | --- | --- | --- |
-| Root `README.md` | What the factory is, how a change ships, where things run today and the direction | Mechanics, versions and model names |
-| `projects/<domain>/ARCHITECTURE.md` | How the domain works now, why, and what is decided next | Operator steps, rollout checklists, PR history |
-| `projects/<name>/README.md` | How to operate it: commands, inputs, recovery steps | Design rationale |
-| HOME issue | Rollout steps, acceptance checks, open questions | |
+| Root `README.md` | What the factory is, how a change ships, where things run today and next | `docs/runbooks/refresh-structure-docs.md` |
+| `projects/<domain>/ARCHITECTURE.md` | How the domain works now, why, and what is decided next | `docs/templates/ARCHITECTURE.md` |
+| `projects/<name>/README.md` | How to run and operate it, with its quickstart | `docs/templates/README.md` |
+| `projects/<domain>/STPA.md` | Which hazards exist and what controls them, with the domain's security lens | `docs/agents/stpa.md` |
+| `docs/THREAT-MODEL.md` | Which security findings are open across the repository | `docs/runbooks/threat-model-maintenance.md` |
+| `docs/runbooks/<name>.md` | How to do one named procedure | `docs/runbooks/README.md` |
+| Scoped `AGENTS.md` | Which rules an agent follows in this directory | Root `AGENTS.md` |
+| `REVIEW.md` | Which rules a review enforces. Joe decides changes | Root `REVIEW.md` "Joe decides" |
+| HOME issue | Rollout steps, acceptance checks, open questions | `docs/agents/reference.md` "Ticket shape" |
+| PR description | What changes and its evidence | `docs/agents/pull-requests.md` |
 
-An `ARCHITECTURE.md` has these parts, in this order:
+The repository has one threat model. A project's security analysis is the
+security lens in its `STPA.md`. A quickstart is a section of the project
+README.
 
-1. **Summary.** Five sentences or fewer, then one diagram of the components
-   and the main flow. A reader who stops here knows what the domain does.
-2. **Current state.** One section for each component. Write what runs now, in
-   the present tense. Draw each flow, state machine and trust boundary. End a
-   section with a `**Why.**` paragraph that links the decision.
-3. **Direction.** One table: direction, HOME issue, state. Staged-off work is
-   a row here. A row leaves the table when the work ships or its issue closes.
-4. **Decision history.** Links to the decision records.
+Keep a file current by replacing text:
 
-Keep the file current by replacing text:
-
-- When work ships, rewrite the section and delete the Direction row.
+- When work ships, rewrite the section and delete its Direction row.
 - Delete a dated status line, a delivery plan or a bootstrap note when its
   work completes. `git log` and the HOME issue keep the history.
 - Put a pinned version in one table. Do not repeat it in prose.
 - Put upstream findings that shaped the design in a `**Why.**` paragraph or an
   appendix, after the current state.
-- A section longer than 60 lines needs a diagram or a split. A file longer
-  than 600 lines moves a component into its own file and links it from the
-  summary.
+- An `ARCHITECTURE.md` section longer than 60 lines needs a diagram or a
+  split. A file longer than 600 lines moves a component into its own file
+  and links it from the summary.
 
-Files written before 2026-11-18 follow these rules when someone rewrites a
-section.
+Files written before 2026-11-18 take the template's shape when someone
+rewrites a section.
 
 ## Voice
 
