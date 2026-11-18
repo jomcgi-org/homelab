@@ -355,6 +355,7 @@ async def test_drain_loop_uses_the_ready_predicate_without_a_gateway():
 
     with patch.object(outbox, "drain_once", fake_drain):
         with pytest.raises(asyncio.CancelledError):
-            await outbox.run_outbox_drain(bot, MagicMock(), poll_interval=0, ready=lambda: True)
+            await outbox.run_outbox_drain(
+                bot, MagicMock(), poll_interval=0, ready=lambda: True
+            )
     assert calls == [bot]
-

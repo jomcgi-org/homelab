@@ -326,9 +326,7 @@ async def drain_once(bot, engine) -> int:
     return posted
 
 
-async def run_outbox_drain(
-    bot, engine, poll_interval: float = 3.0, ready=None
-) -> None:
+async def run_outbox_drain(bot, engine, poll_interval: float = 3.0, ready=None) -> None:
     """Leader-only loop: drain the outbox forever. Started in chat.leader.leader_start
     alongside the bot, so it only runs on the elected leader (the replica that
     actually holds the bot connection). ``ready`` replaces ``bot.is_ready`` when

@@ -101,9 +101,7 @@ async def leader_start(app: FastAPI) -> list[asyncio.Task]:
     # or Argo job (notify, changelog) through this pod's bot connection.
     from chat.outbox import run_outbox_drain
 
-    drain_task = asyncio.create_task(
-        run_outbox_drain(bot, get_engine(), ready=_ready)
-    )
+    drain_task = asyncio.create_task(run_outbox_drain(bot, get_engine(), ready=_ready))
     drain_task.add_done_callback(log_task_exception)
     register_leader_tasks(app, [drain_task])
     tasks.append(drain_task)

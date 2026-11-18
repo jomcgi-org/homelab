@@ -519,7 +519,14 @@ def test_hub_discord_gateway_is_off_for_the_factory_bridge(chart_context):
 def test_discord_gateway_defaults_on_when_chat_is_on():
     chart = find_chart_dir()
     rendered = subprocess.check_output(
-        [os.environ.get("HELM_BIN", "helm"), "template", "test", str(chart), "--set", "chat.enabled=true"],
+        [
+            os.environ.get("HELM_BIN", "helm"),
+            "template",
+            "test",
+            str(chart),
+            "--set",
+            "chat.enabled=true",
+        ],
         text=True,
     )
     assert re.search(r'- name: DISCORD_GATEWAY_ENABLED\n\s+value: "true"', rendered)

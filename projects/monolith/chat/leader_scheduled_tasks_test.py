@@ -107,4 +107,3 @@ async def test_gateway_on_by_default_connects_and_sweeps_locks():
         assert ready() is True
     finally:
         await _stop(tasks)
-
