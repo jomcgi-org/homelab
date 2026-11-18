@@ -378,6 +378,7 @@
         "relayPort": {
           "$ref": "#/definitions/port"
         },
+        "browserRouteEnabled": { "type": "boolean" },
         "adminPort": {
           "$ref": "#/definitions/port"
         },
