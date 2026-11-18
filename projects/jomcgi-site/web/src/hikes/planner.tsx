@@ -185,7 +185,10 @@ export function HikesPlanner() {
     <section aria-label="Walk planner">
       {snapshot ? (
         <div role="status">
-          <p>Data as of {timestamp(snapshot.asOf)}.</p>
+          <p>
+            Data as of {timestamp(snapshot.asOf)} ·{" "}
+            {forecastStatus(snapshot.asOf, null, now)}
+          </p>
           <p>
             Site snapshot: {timestamp(snapshot.generatedAt)} ·{" "}
             {snapshotStatus(snapshot.generatedAt, now)}

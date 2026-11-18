@@ -17,7 +17,7 @@ const walk = {
   summary: "licensed prose must not appear",
   hours: [[1794902400, 12, 0, 20, 30, null, null]],
 };
-async function page(walks, generatedAt = fetched) {
+async function page(walks, generatedAt = fetched, modified = fetched) {
   const dir = await mkdtemp(join(tmpdir(), "hikes-page-"));
   const out = join(dir, "data");
   const file = join(dir, "hikes.html");
@@ -30,7 +30,7 @@ async function page(walks, generatedAt = fetched) {
       sections: { hikes: { bucket: "stars", files: { walks: "walks.json" } } },
     },
     async () => ({
-      lastModified: new Date(fetched).toUTCString(),
+      lastModified: new Date(modified).toUTCString(),
       body: Buffer.from(
         JSON.stringify({ schema_version: 2, fetched_at: fetched, walks }),
       ),
@@ -83,6 +83,7 @@ test("new publication keeps partial fetch failures visible in the no-JS summary"
       ["Unknown", null],
     ].map(([name, at]) => ({ ...walk, name, forecast_fetched_at: at })),
     "2026-11-17T12:30:00Z",
+    "2026-11-17T04:00:00Z",
   );
   const html = await render("2026-11-17T12:30:00Z");
   for (const pattern of [
@@ -93,6 +94,7 @@ test("new publication keeps partial fetch failures visible in the no-JS summary"
     /Retained<\/a>[^]*?Earlier forecast retained/,
     /Unknown<\/a>[^]*?Forecast age unknown/,
     /Site snapshot: <time datetime="2026-11-17T12:30:00.000Z"/,
+    /Data as of <time datetime="2026-11-17T04:00:00.000Z">[^]*?Stale forecast/,
   ])
     assert.match(html, pattern);
   assert.doesNotMatch(html, /Stale site snapshot|unavailable/);
