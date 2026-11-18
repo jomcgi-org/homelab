@@ -28,8 +28,13 @@ for (const line of headerFile.split("\n")) {
     headerRules.push({
       host: line.startsWith("https://"),
       match: new RegExp(`^${expression}$`),
+      detach: [],
       headers: {},
     });
+  } else if (line.trimStart().startsWith("!")) {
+    // "! Name" detaches a header an earlier matching rule set.
+    const [, name] = line.match(/^\s+!\s*([\w-]+)\s*$/);
+    headerRules.at(-1).detach.push(name.toLowerCase());
   } else {
     const [, name, value] = line.match(/^\s+([\w-]+): (.+)$/);
     headerRules.at(-1).headers[name.toLowerCase()] = value;
@@ -39,14 +44,14 @@ for (const line of headerFile.split("\n")) {
 export function headersFor(path, preview = true) {
   const origin = preview ? "https://next.jomcgi.dev" : "https://jomcgi.dev";
   const url = new URL(path, origin);
-  return Object.assign(
-    {},
-    ...headerRules
-      .filter(({ host, match }) =>
-        match.test(host ? `${url.origin}${url.pathname}` : url.pathname),
-      )
-      .map((rule) => rule.headers),
-  );
+  const headers = {};
+  for (const rule of headerRules) {
+    const target = rule.host ? `${url.origin}${url.pathname}` : url.pathname;
+    if (!rule.match.test(target)) continue;
+    for (const name of rule.detach) delete headers[name];
+    Object.assign(headers, rule.headers);
+  }
+  return headers;
 }
 
 export const headers = headersFor("/");
