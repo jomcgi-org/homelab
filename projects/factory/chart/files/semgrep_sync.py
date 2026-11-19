@@ -1,5 +1,6 @@
 """Mirror main findings into issues owned by the INTSEC sync identity."""
 
+import hashlib
 import json
 import os
 import re
@@ -160,8 +161,16 @@ class DeferredFindings(Exception):
         self.keys = keys
 
 
-def reconcile(findings, plan, alert):
+def reconcile(findings, plan, alert, outbox):
+    """Mirror findings, then notify each new secret once its issue exists.
+
+    A new secret gets an outbox entry before its issue POST. The alert goes
+    out only after the issue exists, and the entry is removed only after the
+    alert is sent. A failed POST sends no alert; a failed send retries on the
+    next poll, which sees the issue and skips a second POST.
+    """
     deferred = []
+    outbox.mkdir(parents=True, exist_ok=True)
     me = plan("/me")
     if (
         not me["authenticated"]
@@ -201,12 +210,16 @@ def reconcile(findings, plan, alert):
         if issue is None:
             if not closed:
                 if key.startswith("secrets/"):
-                    alert("SemgrepNewSecret", fields)
+                    entry = outbox / hashlib.sha256(key.encode()).hexdigest()
+                    staged = entry.with_suffix(".tmp")
+                    staged.write_text(json.dumps({"key": key, "fields": fields}))
+                    staged.replace(entry)
                 plan(
                     PROJECT + "/issues",
                     "POST",
                     {**desired, "columnId": backlog, "labelIds": [label]},
                 )
+                issues[key] = desired
             continue
         if issue.get("archivedAt"):
             if closed:
@@ -230,6 +243,13 @@ def reconcile(findings, plan, alert):
                 if error.code != 409:
                     raise
                 deferred.append(key)
+    for entry in sorted(e for e in outbox.iterdir() if e.suffix != ".tmp"):
+        pending = json.loads(entry.read_text())
+        if pending["key"] in issues:
+            alert("SemgrepNewSecret", pending["fields"])
+        # Without an issue the finding closed before its POST succeeded; a
+        # later reopen writes a new entry.
+        entry.unlink()
     if deferred:
         raise DeferredFindings(deferred)
 
@@ -277,7 +297,7 @@ def sync(get, deployment, plan, alert, auth_marker):
         return
     auth_marker.with_suffix(".pending").unlink(missing_ok=True)
     auth_marker.unlink(missing_ok=True)
-    reconcile(findings, plan, alert)
+    reconcile(findings, plan, alert, auth_marker.parent / "new-secrets")
 
 
 if __name__ == "__main__":
