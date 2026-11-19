@@ -62,17 +62,22 @@ def _private_oci_layer_impl(rctx):
 
     _write_header(rctx, "Basic " + _docker_auth(rctx, registry))
     _curl(rctx, "https://%s/token?scope=repository:%s:pull&service=%s" % (registry, repository, registry), "token.json")
-    token = (json.decode(rctx.read("token.json"), default = None) or {}).get("token")
+    rctx.delete(_HEADER)  # The Basic credential is no longer needed.
+    response = json.decode(rctx.read("token.json"), default = None)
     rctx.delete("token.json")
-    if not token:
-        _fail(rctx, "the token response has no token")
+    token = response.get("token") if type(response) == "dict" else None
+    if type(token) != "string" or not token:
+        _fail(rctx, "the token response has no token string")
     _write_header(rctx, "Bearer " + token)
 
     _curl(rctx, base + "/manifests/" + rctx.attr.digest, "manifest.json", [_ACCEPT])
     if "sha256:" + _sha256(rctx, "manifest.json") != rctx.attr.digest:
         _fail(rctx, "the manifest does not match %s" % rctx.attr.digest)
-    manifest = json.decode(rctx.read("manifest.json"), default = None) or {}
-    layers = [layer.get("digest") for layer in manifest.get("layers", [])]
+    manifest = json.decode(rctx.read("manifest.json"), default = None)
+    entries = manifest.get("layers") if type(manifest) == "dict" else None
+    if type(entries) != "list":
+        _fail(rctx, "the manifest has no layer list")
+    layers = [layer.get("digest") for layer in entries if type(layer) == "dict"]
     rctx.delete("manifest.json")
     if rctx.attr.layer not in layers:
         _fail(rctx, "%s does not list layer %s" % (rctx.attr.digest, rctx.attr.layer))
