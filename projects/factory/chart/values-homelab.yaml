@@ -202,10 +202,6 @@ connector:
       concurrency: 7
   bindings:
     homelab:
-      arms:
-        - { name: control, model: gpt-6.2-astra, reasoningEffort: xhigh, weight: 70 }
-        - { name: astra-high, model: gpt-6.2-astra, reasoningEffort: high, weight: 15 }
-        - { name: luna, model: gpt-6-luna, reasoningEffort: xhigh, weight: 15 }
       itsaplanProject: HOME
       agents: [homelab-codex]
       # The factory-reviewer's check is the review: the connector enqueues a

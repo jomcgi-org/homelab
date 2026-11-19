@@ -140,3 +140,45 @@ LIMIT 20;
 Also confirm that rows admitted before the migration still have null values.
 The local PostgreSQL tests cover the migration and write paths. Live rollout
 verification needs the deployed services and is a separate acceptance step.
+
+### Activating and rolling back the Homelab trial
+
+The first release ships arm support with one active control. After the Application
+pins that release and the broker and connector are healthy, copy the bindings
+from `chart/files/coder-trial-values.yaml` into both Homelab values files. The
+scoped chart tests render this overlay. Codex CLI 0.169.1 reports
+`slug=gpt-6-luna` and `apply_patch_tool_type=freeform` in
+`codex debug models --bundled`. [Pinned catalogue entry](https://github.com/openai/codex/blob/c376cf7396eff83ce4c6ac61b9553df142e7a0be/codex-rs/models-manager/models.json#L1045)
+
+To stop the trial, set both trial weights to zero and retain their definitions
+on the arm-capable release. New work goes to control. Assigned work continues
+with its Agent, ModelConfig and broker effort endpoint. Trial resources carry
+ArgoCD prune protection. Keep the compatible connector and broker running
+while any assigned trial session or unfinished work remains. Check the connector
+database before removing the definitions or lowering the chart pin:
+
+```sql
+SELECT issue_key, state, session_id FROM work_item
+WHERE first_arm <> 'control' AND NOT escalated
+  AND (state <> 'done' OR session_id IS NOT NULL);
+```
+
+Keep the zero-weight definitions available for completed items that may reopen.
+For rollback of the activation, the support release with zero trial weights is
+the rollback target. A release predating arm support cannot serve the pinned
+effort endpoints of existing sessions. Retain the support release if such
+sessions or resumable trial assignments exist.
+
+After activation, use accepted coder attempts to verify coverage. Each row
+must have at least one run on the released configuration. Supply the rollout
+timestamp as the psql variable `rollout`.
+
+```sql
+WITH arms(name) AS (VALUES ('control'), ('astra-high'), ('luna'))
+SELECT arms.name, count(DISTINCT r.id) AS coder_runs
+FROM arms
+LEFT JOIN delivery_attempt a ON a.arm = arms.name AND a.task_id IS NOT NULL
+  AND a.created_at >= :'rollout'::timestamptz
+LEFT JOIN run r ON r.id = a.run_id AND r.origin IN ('itsaplan', 'connector')
+GROUP BY arms.name ORDER BY arms.name;
+```

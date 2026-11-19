@@ -76,9 +76,11 @@ def _helm(chart: Path, args: list[str]) -> str:
 
 
 def _render(
-    overrides: list[str] | None = None, enable: bool = True
+    overrides: list[str] | None = None, enable: bool = True, trial: bool = False
 ) -> list[dict[str, Any]]:
     args = ["--values", str(_ENABLE_FILE)] if enable else []
+    if trial:
+        args += ["--values", str(_CHART_DIR / "files/coder-trial-values.yaml")]
     for override in overrides or []:
         args += ["--set", override]
     return [d for d in yaml.safe_load_all(_helm(_CHART_DIR, args)) if d]
@@ -350,6 +352,30 @@ def test_itsaplan_keys_come_from_the_bootstrap_secrets() -> None:
     ]
 
 
+def test_single_arm_release_and_trial_drain() -> None:
+    binding = _config(_render())["bindings"][0]
+    assert "arms" not in binding
+    assert binding["runtime"]["arm"] == "control"
+
+    docs = _render(
+        [
+            "connector.bindings.homelab.arms[1].weight=0",
+            "connector.bindings.homelab.arms[2].weight=0",
+        ],
+        trial=True,
+    )
+    binding = _config(docs)["bindings"][0]
+    assert [a["name"] for a in binding["arms"] if a["weight"]] == ["control"]
+    for arm in binding["arms"][1:]:
+        name = f"{binding['kagentAgent']}-{arm['name']}"
+        agent = _in(docs, "Agent", binding["kagentNamespace"], name)
+        model = agent["spec"]["template"]["inline"]["modelConfig"]["name"]
+        assert (
+            _in(docs, "ModelConfig", binding["kagentNamespace"], model)["spec"]["model"]
+            == arm["model"]
+        )
+
+
 def test_bindings_derive_from_repositories() -> None:
     docs = _render(
         [
@@ -362,7 +388,8 @@ def test_bindings_derive_from_repositories() -> None:
             "connector.intervals.quotaStall=15m",
             "connector.intervals.progressLease=25m",
             "connector.intervals.toolLease=90m",
-        ]
+        ],
+        trial=True,
     )
     config = _config(docs)
     assert config["bindings"] == [
