@@ -528,10 +528,31 @@ func TestStoryboardDeliveryPrivileges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var projection bool
-	err = reader.QueryRow(`SELECT jsonb_agg(to_jsonb(t)) = '[{"itsaplan_project":"HOME","issue_id":213,"session_id":"session","kagent_namespace":"factory","kagent_agent":"coder","task_id":"finished"}]'::jsonb FROM public.storyboard_tasks t`).Scan(&projection)
-	if err != nil || !projection {
-		t.Fatalf("unexpected storyboard task projection: %t (%v)", projection, err)
+	tasks := func() []string {
+		t.Helper()
+		rows, err := reader.Query(`SELECT itsaplan_project, issue_id, session_id, kagent_namespace,
+			kagent_agent, task_id FROM public.storyboard_tasks ORDER BY session_id, task_id`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var project, session, namespace, agent, task string
+			var issue int
+			if err := rows.Scan(&project, &issue, &session, &namespace, &agent, &task); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, fmt.Sprintf("%s %d %s %s %s %s", project, issue, session, namespace, agent, task))
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	// The view lists only tasks that an owner approval names.
+	if got := tasks(); len(got) != 0 {
+		t.Fatalf("unapproved tasks visible: %v", got)
 	}
 	// Journals as the connector writes them: chunked content, an artifact,
 	// U+0000 next to a literal "\u0000", an unapproved reply and a journal
@@ -564,6 +585,8 @@ func TestStoryboardDeliveryPrivileges(t *testing.T) {
 		{414, 2, "finished", []byte(`{"events":null}`)},
 		{414, 1, "waiting", journal(content("m3", "Waiting reply"))},
 		{414, 1, "stale", journal(content("m4", "Old session reply"))},
+		{414, 1, "running", journal(content("m6", "Running reply"))},
+		{414, 1, "legacy", journal(content("m7", "Legacy reply"))},
 	} {
 		if _, err := st.DB.Exec(`INSERT INTO task_transcript (run_id, attempt, task_id, base_offset, state)
 			VALUES ($1, $2, $3, 0, $4)`, j.run, j.attempt, j.task, j.state); err != nil {
@@ -585,14 +608,15 @@ func TestStoryboardDeliveryPrivileges(t *testing.T) {
 			if err := rows.Scan(&project, &issue, &session, &task, &digest); err != nil {
 				t.Fatal(err)
 			}
-			if project != "HOME" || issue != 213 || session != "session" || task != "finished" {
+			if project != "HOME" || issue != 213 {
 				t.Fatalf("unexpected message row: %s %d %s %s", project, issue, session, task)
 			}
-			digests = append(digests, digest)
+			digests = append(digests, session+" "+task+" "+digest)
 		}
 		if err := rows.Err(); err != nil {
 			t.Fatal(err)
 		}
+		slices.Sort(digests)
 		return digests
 	}
 	// Journaled messages without an owner approval stay invisible.
@@ -621,14 +645,17 @@ func TestStoryboardDeliveryPrivileges(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum := func(text string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(text))) }
-	// The owner approves two messages. The other rows name text the task
-	// never held, an unfinished task, an old session or the wrong project.
+	// The owner approves three messages. One is in a session that the work
+	// item no longer records: the approval names its session. The other rows
+	// name text the task never held, unfinished tasks or the wrong project.
 	for _, a := range [][4]string{
 		{"HOME", "session", "finished", sum("Approved update")},
 		{"HOME", "session", "finished", sum("a\ufffdb\\u0000")},
 		{"HOME", "session", "finished", sum("Private project reply")},
 		{"HOME", "session", "finished", sum("Never sent")},
 		{"HOME", "session", "waiting", sum("Waiting reply")},
+		{"HOME", "session", "running", sum("Running reply")},
+		{"HOME", "session", "legacy", sum("Legacy reply")},
 		{"HOME", "old", "stale", sum("Old session reply")},
 		{"PRIV", "session", "finished", sum("Unapproved reply")},
 	} {
@@ -638,10 +665,18 @@ func TestStoryboardDeliveryPrivileges(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	want := []string{sum("Approved update"), sum("a\ufffdb\\u0000")}
+	want := []string{
+		"old stale " + sum("Old session reply"),
+		"session finished " + sum("Approved update"),
+		"session finished " + sum("a\ufffdb\\u0000"),
+	}
 	slices.Sort(want)
 	if got := messages(); !slices.Equal(got, want) {
 		t.Fatalf("message digests = %v, want %v", got, want)
+	}
+	wantTasks := []string{"HOME 213 old factory coder stale", "HOME 213 session factory coder finished"}
+	if got := tasks(); !slices.Equal(got, wantTasks) {
+		t.Fatalf("tasks = %v, want %v", got, wantTasks)
 	}
 	unrelated := pgtest.AsRole(t, st.DB, "factory_reaper")
 	var refusal interface{ SQLState() string }

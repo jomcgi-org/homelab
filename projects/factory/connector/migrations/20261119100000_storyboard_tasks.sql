@@ -1,22 +1,5 @@
 ALTER TABLE public.delivery_attempt ADD COLUMN kagent_outcome text;
 
--- Only expose completed tasks for the work item's current session. The
--- publisher checks the project and issue labels before requesting a task.
-CREATE VIEW public.storyboard_tasks AS
-SELECT DISTINCT binding.itsaplan_project, item.issue_id, item.session_id,
-       attempt.kagent_namespace, attempt.kagent_agent, attempt.task_id
-FROM public.work_item AS item
-JOIN public.repo_binding AS binding ON binding.name = item.binding_name
-JOIN public.run AS run ON run.work_item_id = item.id
-JOIN public.delivery_attempt AS attempt ON attempt.run_id = run.id
-WHERE attempt.state = 'completed'
-  AND attempt.kagent_outcome = 'TASK_STATE_COMPLETED'
-  AND attempt.context_id = item.session_id
-  AND attempt.task_id IS NOT NULL;
-
-REVOKE ALL ON public.storyboard_tasks FROM PUBLIC;
-GRANT SELECT ON public.storyboard_tasks TO factory_storyboard;
-
 -- The owner's publication approvals. Each row approves one assistant message
 -- by the SHA-256 of its text, in one task of one issue in one project. Only
 -- the table owner writes it (projects/factory-storyboard/approvals.py), and
@@ -32,19 +15,44 @@ CREATE TABLE public.storyboard_approved_message (
 
 REVOKE ALL ON public.storyboard_approved_message FROM PUBLIC;
 
--- The approved digests that occur in a completed task of the current
--- session. The connector journals kagent task history in task_transcript;
--- the text stays private. A digest covers the message as the itsaplan run
--- trace shows it: the text parts joined by newlines, with U+0000 replaced by
--- U+FFFD. Artifact text is excluded. The view returns only digests that the
--- owner approved, so the publisher learns nothing about other messages. The
--- publisher therefore needs no kagent access.
+-- The completed tasks that an owner approval names. A task matches the
+-- session and task IDs in the approval, not the work item's current session:
+-- when the connector releases the session of a done or stopped work item, it
+-- clears work_item.session_id but keeps the attempt and its journal. An
+-- approval that the owner removes also removes its task from this view. The
+-- publisher checks the project and issue labels before requesting a task.
+CREATE VIEW public.storyboard_tasks WITH (security_barrier = true) AS
+SELECT DISTINCT binding.itsaplan_project, item.issue_id, attempt.context_id AS session_id,
+       attempt.kagent_namespace, attempt.kagent_agent, attempt.task_id
+FROM public.storyboard_approved_message AS approved
+JOIN public.repo_binding AS binding ON binding.itsaplan_project = approved.itsaplan_project
+JOIN public.work_item AS item
+    ON item.binding_name = binding.name AND item.issue_key = approved.issue_key
+JOIN public.run AS run ON run.work_item_id = item.id
+JOIN public.delivery_attempt AS attempt
+    ON attempt.run_id = run.id
+   AND attempt.context_id = approved.session_id
+   AND attempt.task_id = approved.task_id
+WHERE attempt.state = 'completed'
+  AND attempt.kagent_outcome = 'TASK_STATE_COMPLETED';
+
+REVOKE ALL ON public.storyboard_tasks FROM PUBLIC;
+GRANT SELECT ON public.storyboard_tasks TO factory_storyboard;
+
+-- The approved digests that occur in a completed task that an approval
+-- names, matched as in storyboard_tasks. The connector journals kagent task
+-- history in task_transcript; the text stays private. A digest covers the
+-- message as the itsaplan run trace shows it: the text parts joined by
+-- newlines, with U+0000 replaced by U+FFFD. Artifact text is excluded. The
+-- view returns only digests that the owner approved, so the publisher learns
+-- nothing about other messages. The publisher therefore needs no kagent
+-- access.
 CREATE VIEW public.storyboard_task_messages WITH (security_barrier = true) AS
 SELECT DISTINCT task.itsaplan_project, task.issue_id, task.session_id, task.task_id,
        task.text_sha256
 FROM (
-    SELECT binding.itsaplan_project, item.issue_id, item.issue_key, item.session_id,
-           attempt.task_id,
+    SELECT binding.itsaplan_project, item.issue_id, item.issue_key,
+           attempt.context_id AS session_id, attempt.task_id,
            encode(sha256(convert_to(string_agg(event ->> 'delta', '' ORDER BY n),
                'UTF8')), 'hex') AS text_sha256
     FROM public.work_item AS item
@@ -67,7 +75,6 @@ FROM (
     ) WITH ORDINALITY AS events(event, n)
     WHERE attempt.state = 'completed'
       AND attempt.kagent_outcome = 'TASK_STATE_COMPLETED'
-      AND attempt.context_id = item.session_id
       AND event ->> 'type' = 'TEXT_MESSAGE_CONTENT'
       AND event ->> 'messageId' NOT LIKE 'artifact/%'
       -- Parse only the journals of tasks with an approved message.
@@ -75,9 +82,9 @@ FROM (
           SELECT 1 FROM public.storyboard_approved_message AS approved
           WHERE approved.itsaplan_project = binding.itsaplan_project
             AND approved.issue_key = item.issue_key
-            AND approved.session_id = item.session_id
+            AND approved.session_id = attempt.context_id
             AND approved.task_id = attempt.task_id)
-    GROUP BY binding.itsaplan_project, item.issue_id, item.issue_key, item.session_id,
+    GROUP BY binding.itsaplan_project, item.issue_id, item.issue_key, attempt.context_id,
              attempt.task_id, journal.run_id, journal.attempt, event ->> 'messageId'
 ) AS task
 JOIN public.storyboard_approved_message AS approved

@@ -97,11 +97,15 @@ tokens (`projects/factory/ARCHITECTURE.md` finding 5).
 
 The publisher reads kagent session history through the connector store. The
 connector journals each task's history in `task_transcript`. The
-`storyboard_task_messages` view returns the SHA-256 of an assistant message
-in a completed task of the current session. It returns the digest only if
-the owner approved it for that project, issue, session and task in
-`storyboard_approved_message`. The publisher login cannot read or write that
-table, so it learns nothing about other messages. The digest covers the
+`storyboard_tasks` view lists a completed task only if an approval in
+`storyboard_approved_message` names its project, issue, session and task.
+The `storyboard_task_messages` view returns the SHA-256 of an assistant
+message in such a task only if the owner approved that digest. Both views
+match the session in the approval, not the current session of the work
+item. When the connector releases the session of a done or stopped work
+item, it keeps the attempt and its journal, so the approved task stays
+visible. The publisher login cannot read or write the approval table, so it
+learns nothing about other messages. The digest covers the
 message text as the itsaplan run trace shows it. Artifact text is excluded.
 A review round has no journal, so the publisher cannot confirm its text.
 
@@ -147,9 +151,10 @@ count in `approvals.py: N approved messages for HOME` with the count in the
 final notice, `storyboard approvals for HOME: N messages match`. They must
 be equal. Use the primary's pod name if `factory-db-1` is not the primary.
 
-The publisher publishes an approved task only if the current-session view
-holds its session and task, and the message view confirms the digest of
-each approved message. Otherwise it withholds that task, logs its task ID,
+The publisher publishes an approved task only if the task view holds its
+session and task, and the message view confirms the digest of each approved
+message. It reads both views on each cycle, so a removed approval or an
+issue that is no longer eligible stops publication on the next cycle. Otherwise it withholds that task, logs its task ID,
 issue key and reason, and publishes the other records. The log line holds no
 message text. `APPROVED_HISTORY` alone never publishes a message.
 
