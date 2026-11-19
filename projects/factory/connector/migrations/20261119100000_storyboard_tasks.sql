@@ -17,17 +17,36 @@ WHERE attempt.state = 'completed'
 REVOKE ALL ON public.storyboard_tasks FROM PUBLIC;
 GRANT SELECT ON public.storyboard_tasks TO factory_storyboard;
 
--- SHA-256 of each assistant message in the same completed tasks. The
--- connector journals kagent task history in task_transcript; the text stays
--- private. The digest covers the message as the itsaplan run trace shows it:
--- the text parts joined by newlines, with U+0000 replaced by U+FFFD.
--- Artifact text is excluded. The publisher therefore needs no kagent access.
+-- The owner's publication approvals. Each row approves one assistant message
+-- by the SHA-256 of its text, in one task of one issue in one project. Only
+-- the table owner writes it (projects/factory-storyboard/approvals.py), and
+-- factory_storyboard gets no grant.
+CREATE TABLE public.storyboard_approved_message (
+    itsaplan_project text NOT NULL,
+    issue_key text NOT NULL,
+    session_id text NOT NULL,
+    task_id text NOT NULL,
+    text_sha256 text NOT NULL CHECK (text_sha256 ~ '^[0-9a-f]{64}$'),
+    PRIMARY KEY (itsaplan_project, issue_key, session_id, task_id, text_sha256)
+);
+
+REVOKE ALL ON public.storyboard_approved_message FROM PUBLIC;
+
+-- The approved digests that occur in a completed task of the current
+-- session. The connector journals kagent task history in task_transcript;
+-- the text stays private. A digest covers the message as the itsaplan run
+-- trace shows it: the text parts joined by newlines, with U+0000 replaced by
+-- U+FFFD. Artifact text is excluded. The view returns only digests that the
+-- owner approved, so the publisher learns nothing about other messages. The
+-- publisher therefore needs no kagent access.
 CREATE VIEW public.storyboard_task_messages WITH (security_barrier = true) AS
 SELECT DISTINCT task.itsaplan_project, task.issue_id, task.session_id, task.task_id,
-       encode(sha256(convert_to(task.text, 'UTF8')), 'hex') AS text_sha256
+       task.text_sha256
 FROM (
-    SELECT binding.itsaplan_project, item.issue_id, item.session_id, attempt.task_id,
-           string_agg(event ->> 'delta', '' ORDER BY n) AS text
+    SELECT binding.itsaplan_project, item.issue_id, item.issue_key, item.session_id,
+           attempt.task_id,
+           encode(sha256(convert_to(string_agg(event ->> 'delta', '' ORDER BY n),
+               'UTF8')), 'hex') AS text_sha256
     FROM public.work_item AS item
     JOIN public.repo_binding AS binding ON binding.name = item.binding_name
     JOIN public.run AS run ON run.work_item_id = item.id
@@ -51,9 +70,22 @@ FROM (
       AND attempt.context_id = item.session_id
       AND event ->> 'type' = 'TEXT_MESSAGE_CONTENT'
       AND event ->> 'messageId' NOT LIKE 'artifact/%'
-    GROUP BY binding.itsaplan_project, item.issue_id, item.session_id,
+      -- Parse only the journals of tasks with an approved message.
+      AND EXISTS (
+          SELECT 1 FROM public.storyboard_approved_message AS approved
+          WHERE approved.itsaplan_project = binding.itsaplan_project
+            AND approved.issue_key = item.issue_key
+            AND approved.session_id = item.session_id
+            AND approved.task_id = attempt.task_id)
+    GROUP BY binding.itsaplan_project, item.issue_id, item.issue_key, item.session_id,
              attempt.task_id, journal.run_id, journal.attempt, event ->> 'messageId'
-) AS task;
+) AS task
+JOIN public.storyboard_approved_message AS approved
+    ON approved.itsaplan_project = task.itsaplan_project
+   AND approved.issue_key = task.issue_key
+   AND approved.session_id = task.session_id
+   AND approved.task_id = task.task_id
+   AND approved.text_sha256 = task.text_sha256;
 
 REVOKE ALL ON public.storyboard_task_messages FROM PUBLIC;
 GRANT SELECT ON public.storyboard_task_messages TO factory_storyboard;

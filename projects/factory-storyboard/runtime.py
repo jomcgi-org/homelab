@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import os
 from collections import Counter
 from datetime import datetime, timezone
@@ -11,6 +12,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from connector_source import delivery, session_tasks, task_messages
 from delivery_stats import delivery_statistics
 from publisher import public_issue, public_turn, publish, redact
+
+LOG = logging.getLogger(__name__)
 
 STATES = {
     "active": "Working",
@@ -101,8 +104,9 @@ def documents(cursor, key, project, board, archive):
         approved = approval.get("tasks", [])
         current, confirmed = set(), set()
         if approved:
-            # Fingerprints of the connector's kagent task journal; the
-            # publisher never reads private transcript text.
+            # Fingerprints of the connector's kagent task journal, limited to
+            # the owner's approvals; the publisher never reads private
+            # transcript text.
             current = {
                 (r["session_id"], r["task_id"])
                 for r in session_tasks(cursor, key, item["id"])
@@ -120,7 +124,15 @@ def documents(cursor, key, project, board, archive):
                 not in confirmed
                 for text in texts
             ):
-                raise ValueError("approved transcript differs from completed task")
+                # A review round has no journal, and an approval can be
+                # missing or differ. Withhold this task and keep the rest.
+                LOG.warning(
+                    "withheld approved task %s of %s: the connector journal "
+                    "does not confirm its text",
+                    task_id,
+                    issue_key,
+                )
+                continue
             public_id = "session-" + hashlib.sha256(sid.encode()).hexdigest()
             session = sessions.setdefault(
                 public_id,
@@ -229,6 +241,7 @@ def main():
     import psycopg
     from psycopg.rows import dict_row
 
+    logging.basicConfig(format="%(levelname)s %(message)s")
     key = os.environ["PUBLIC_PROJECT"]
     project, board = read_board(key)
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as db:

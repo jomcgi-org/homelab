@@ -80,6 +80,15 @@ py_test(
 )
 
 py_test(
+    name = "approvals_test",
+    srcs = [
+        "approvals.py",
+        "approvals_test.py",
+    ],
+    deps = ["@pip//pytest"],
+)
+
+py_test(
     name = "delivery_stats_test",
     srcs = [
         "delivery_stats.py",
