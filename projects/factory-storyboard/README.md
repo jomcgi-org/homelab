@@ -2,7 +2,7 @@
 
 The public, read-only storyboard will tell the factory's story from goals
 through individual agent sessions. This package defines its snapshot contract
-and invented fixtures. No real sessions were used. It deploys nothing.
+and invented fixtures. No real sessions were used for the fixtures.
 
 HOME-68 added this contract and its fixtures. The reader lives at `/factory`
 in `projects/jomcgi-site/web` (HOME-224). This package has no separate site.
@@ -88,33 +88,19 @@ without generating code. The reader verifies hashes before displaying objects.
 Missing or invalid objects leave the rest of the page readable. Vite serves
 fixtures at those paths in development and tests; production builds contain none.
 
-The factory-cluster publisher will write sanitized objects and then the
-manifest to Garage. A mirror will copy them to Cloudflare R2. A narrative
-agent will write plain-text narrative fields using stat placeholders. These
-writers share this contract; the monolith's publication payloads do not carry
-over.
+The factory-storyboard CronJob runs in the factory namespace every five
+minutes. Its ServiceAccount uses the read-only connector database login and
+a Garage write claim for factory-public. Provision the 1Password item
+`factory-storyboard-readers` with a read-only project API key
+(`ITSAPLAN_KEY`), a kagent reader bearer (`KAGENT_BEARER`) and a JSON
+map of session IDs to owner-issued share tokens (`SESSION_SHARES`).
+Sessions without a share contribute no transcript. Issue statistics use
+the public board entries with a matching delivery record.
 
-HOME-213 publishes snapshots under the site's `/data/factory/` path. The site's
-`/factory/*` rewrite serves its pre-rendered shell for client routes. Data paths
-stay outside that rewrite. The site keeps `style-src 'self'` and
-`frame-ancestors 'none'`. HOME-225 activates the production edge routes after
-data publication. This package has no image, chart, route or Worker deployment.
-
-After rollout, run `node projects/factory-storyboard/verify-rollout.mjs` with
-Node 22.18 or later. It checks the mirror's seven-minute freshness limit and
-reads every immutable object referenced by the preview site's manifest.
-
-HOME-213 delivers the publisher primitives (`publisher.py`), the read-only
-database role and the site's HTTPS manifest source. Nothing schedules the
-publisher yet. [HOME-414](https://factory-plan.jomcgi.dev/factory/issue/HOME-414)
-adds the source reads, the statistics, the 5-minute workload, its bucket entry
-and the site source entry
-([split under Joe's rule](https://factory-plan.jomcgi.dev/factory/issue/HOME-157#comment-3904)).
-Its third Done when criterion holds the rollout checks
-([record](https://factory-plan.jomcgi.dev/factory/issue/HOME-414#comment-4162)):
-after rollout, `https://factory-data.jomcgi.dev/manifest.json` is at most 7
-minutes old, and `https://next.jomcgi.dev/data/factory/manifest.json` names
-objects that answer 200. The check above verifies both.
+After the migration and first mirrored snapshot, roll out the site
+snapshot and run `node projects/factory-storyboard/verify-rollout.mjs`
+using Node 22.18 or later. It checks the mirror's seven-minute limit and
+every object referenced by the preview site.
 
 ### Rollback of the database read access
 

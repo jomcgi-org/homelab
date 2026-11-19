@@ -40,6 +40,9 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ $np.connector.namespace }}
             {{- toYaml $np.connector.matchLabels | nindent 12 }}
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-storyboard
         {{- if .Values.semgrepSync.enabled }}
         - matchLabels:
             app.kubernetes.io/name: intsec-sync

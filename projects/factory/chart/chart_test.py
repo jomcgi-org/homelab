@@ -304,6 +304,12 @@ def test_controller_admits_only_bearer_paths() -> None:
                 {
                     "matchLabels": {
                         "k8s:io.kubernetes.pod.namespace": "factory",
+                        "app.kubernetes.io/name": "factory-storyboard",
+                    }
+                },
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "factory",
                         "app.kubernetes.io/name": "factory-connector",
                     }
                 },
