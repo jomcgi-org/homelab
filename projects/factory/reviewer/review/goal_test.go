@@ -315,60 +315,142 @@ func TestGoalEvidenceReadAtHeadWhenPatchOmitted(t *testing.T) {
 	}
 }
 
-// Replay the transition from the disputed #8260 finding to the read-only
-// review of the same implementation with only HOME-351.md added. The model
-// response is recorded; CI exercises the service, not model inference.
+// tree8260 holds the lines of PR #8260's head that its disputed pytest
+// finding depends on. The same lines are on main at
+// projects/platform/authentik/BUILD and bazel/tools/pytest/defs.bzl.
+var tree8260 = map[string]string{
+	"projects/platform/authentik/BUILD": `load("//bazel/tools/pytest:defs.bzl", "py_test")
+
+py_test(
+    name = "factory_group_binding_test",
+    srcs = ["factory_group_binding_test.py"],
+    data = glob(["factory-blueprints/*.yaml"]),
+)
+`,
+	"bazel/tools/pytest/defs.bzl": `def py_test(name, deps = [], **kwargs):
+    _py_test(
+        name = name,
+        pytest_main = True,
+        **kwargs
+    )
+`,
+	"projects/platform/authentik/factory_group_binding_test.py": `def test_factory_application_has_group_binding(): ...
+def test_removing_group_bindings_denies_application(): ...
+`,
+}
+
+// judge8260 stands in for the goal model, which CI cannot run. It follows the
+// prompt's evidence rules: it uses only the service-quoted evidence block,
+// checks each cited path and target against the checkout, and changes the
+// earlier not_met verdicts only when a claim holds there. Without a verified
+// claim it repeats the #8260 finding.
+func judge8260(checkout map[string]string) func(string) string {
+	notMet := "Criterion 1: pytest never runs.\n" + goalReply(`{"criteria":[{"criterion":1,"verdict":"not_met"},{"criterion":2,"verdict":"not_met"},{"criterion":3,"verdict":"not_met"}],"overall":"not_met"}`)
+	return func(prompt string) string {
+		if !strings.Contains(prompt, "## Evidence claims at the reviewed head") ||
+			!strings.Contains(prompt, "An unsupported or false claim changes nothing") ||
+			!strings.Contains(prompt, "even if no implementation changed") {
+			return notMet
+		}
+		_, block, _ := strings.Cut(prompt, "## Evidence claims at the reviewed head")
+		block, _, _ = strings.Cut(block, "## Diff")
+		verified := false
+		for line := range strings.Lines(block) {
+			line, ok := strings.CutPrefix(strings.TrimSpace(line), "> ")
+			if !ok || !strings.Contains(line, "//bazel/tools/pytest:defs.bzl") {
+				continue
+			}
+			build, cited := "", false
+			for _, field := range strings.Fields(line) {
+				if content, ok := checkout[field]; ok && strings.HasSuffix(field, "/BUILD") {
+					build, cited = content, true
+				}
+			}
+			macro, ok := checkout["bazel/tools/pytest/defs.bzl"]
+			verified = verified || (cited && ok &&
+				strings.Contains(build, `load("//bazel/tools/pytest:defs.bzl", "py_test")`) &&
+				strings.Contains(build, `name = "factory_group_binding_test"`) &&
+				strings.Contains(macro, "pytest_main = True"))
+		}
+		if !verified {
+			return notMet
+		}
+		return goalReply(`{"criteria":[{"criterion":1,"verdict":"met"},{"criterion":2,"verdict":"met"},{"criterion":3,"verdict":"met"}],"overall":"met"}`)
+	}
+}
+
+// Replay PR #8260 through the service. Its head got "pytest never runs"
+// although the py_test macro runs pytest. An evidence-only revision that
+// names //bazel/tools/pytest:defs.bzl gets criteria 1-3 met (HOME-387
+// criterion 1), and a revision whose claim the checkout contradicts keeps
+// the finding open (criterion 2).
 func TestGoalCheck8260EvidenceOnlyRevision(t *testing.T) {
 	const original = "25ef1eb37693d9bc418a17c12946f881d241d0e6"
-	const revision = "d1ad28c41c6ac49f3e76bfe18d21481c8a504d34"
 	const path = ".factory/goal-evidence/HOME-351.md"
 	const evidence = `1. projects/platform/authentik/BUILD loads py_test from //bazel/tools/pytest:defs.bzl for factory_group_binding_test.
 2. projects/platform/authentik/factory_group_binding_test.py discovers the applications in factory-blueprints/*.yaml.
 3. test_removing_group_bindings_denies_application calls the same per-application check after removing the bindings.
 `
-	h, api := issueHarness(t)
-	api.issue.Identifier = "HOME-351"
-	api.issue.Description = "Done when:\n1. A CI test requires a group gate on every factory app.\n2. Current apps pass the test.\n3. Removing group bindings for any app makes the test fail."
-	h.gh.withLock(func() {
-		pr := h.gh.prs[7]
-		pr.Body = "Refs HOME-351"
-		pr.Head, pr.Heads = original, []string{original}
-		pr.Files = []github.PullRequestFile{{Path: "projects/platform/authentik/factory_group_binding_test.py", Status: "added"}}
-	})
-	h.k.goal = "Criterion 1: pytest never runs.\n" + goalReply(`{"criteria":[{"criterion":1,"verdict":"not_met"},{"criterion":2,"verdict":"not_met"},{"criterion":3,"verdict":"not_met"}],"overall":"not_met"}`)
-	engine, ctx, _ := h.start()
-	run := func(head string) State {
-		t.Helper()
-		h.k.finish(runReview(t, h, engine, ctx, 7, head), kagent.StateCompleted, report(t, passing))
-		engine.Wait()
-		state, _ := LoadState(h.gh.check(head).Text)
-		if state.Goal == nil {
-			t.Fatal("missing goal verdict on", head)
-		}
-		return state
-	}
-	if g := run(original); g.Goal.Overall != goalNotMet || len(g.Blocking) != 4 {
-		t.Fatalf("initial verdict = %+v", g)
-	}
-	h.gh.push(7, revision)
-	h.gh.withLock(func() {
-		pr := h.gh.prs[7]
-		pr.Files = append(pr.Files, github.PullRequestFile{Path: path, Status: "added"})
-		h.gh.headFiles = map[string]string{revision + ":" + path: evidence}
-		h.gh.compares = map[string]map[string]any{original + "..." + revision: {"status": "ahead", "files": []github.PullRequestFile{{Path: path, Status: "added"}}}}
-	})
-	h.k.goal = goalReply(`{"criteria":[{"criterion":1,"verdict":"met"},{"criterion":2,"verdict":"met"},{"criterion":3,"verdict":"met"}],"overall":"met"}`)
-	got := run(revision)
-	texts := goalTexts(h)
-	last := texts[len(texts)-1]
-	for _, want := range []string{original, revision, "pytest never runs", "> " + strings.TrimSpace(strings.SplitN(evidence, "\n", 2)[0]), "even if no implementation changed"} {
-		if !strings.Contains(last, want) {
-			t.Fatalf("replay prompt missing %q", want)
-		}
-	}
-	if got.Goal.Overall != goalMet || !slices.Equal(got.Goal.Criteria, []GoalVerdict{{1, goalMet}, {2, goalMet}, {3, goalMet}}) ||
-		len(got.Blocking) != 0 {
-		t.Fatalf("evidence revision left goal findings: %+v", got)
+	for _, tc := range []struct {
+		name, revision string
+		checkout       map[string]string
+		met            bool
+	}{
+		{"true claim", "d1ad28c41c6ac49f3e76bfe18d21481c8a504d34", tree8260, true},
+		{"false claim", "e1ad28c41c6ac49f3e76bfe18d21481c8a504d34", map[string]string{
+			"projects/platform/authentik/BUILD": strings.Replace(tree8260["projects/platform/authentik/BUILD"],
+				`load("//bazel/tools/pytest:defs.bzl", "py_test")`, `load("@rules_python//python:defs.bzl", "py_test")`, 1),
+			"bazel/tools/pytest/defs.bzl": tree8260["bazel/tools/pytest/defs.bzl"],
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, api := issueHarness(t)
+			api.issue.Identifier = "HOME-351"
+			api.issue.Description = "Done when:\n1. A CI test requires a group gate on every factory app.\n2. Current apps pass the test.\n3. Removing group bindings for any app makes the test fail."
+			h.gh.withLock(func() {
+				pr := h.gh.prs[7]
+				pr.Body = "Refs HOME-351"
+				pr.Head, pr.Heads = original, []string{original}
+				pr.Files = []github.PullRequestFile{{Path: "projects/platform/authentik/factory_group_binding_test.py", Status: "added"}}
+			})
+			h.k.goalFor = judge8260(tc.checkout)
+			engine, ctx, _ := h.start()
+			run := func(head string) State {
+				t.Helper()
+				h.k.finish(runReview(t, h, engine, ctx, 7, head), kagent.StateCompleted, report(t, passing))
+				engine.Wait()
+				state, _ := LoadState(h.gh.check(head).Text)
+				if state.Goal == nil {
+					t.Fatal("missing goal verdict on", head)
+				}
+				return state
+			}
+			if g := run(original); g.Goal.Overall != goalNotMet || len(g.Blocking) != 4 {
+				t.Fatalf("initial verdict = %+v", g)
+			}
+			h.gh.push(7, tc.revision)
+			h.gh.withLock(func() {
+				pr := h.gh.prs[7]
+				pr.Files = append(pr.Files, github.PullRequestFile{Path: path, Status: "added"})
+				h.gh.headFiles = map[string]string{tc.revision + ":" + path: evidence}
+				h.gh.compares = map[string]map[string]any{original + "..." + tc.revision: {"status": "ahead", "files": []github.PullRequestFile{{Path: path, Status: "added"}}}}
+			})
+			got := run(tc.revision)
+			texts := goalTexts(h)
+			last := texts[len(texts)-1]
+			for _, want := range []string{original, tc.revision, "pytest never runs", "> " + strings.TrimSpace(strings.SplitN(evidence, "\n", 2)[0])} {
+				if !strings.Contains(last, want) {
+					t.Fatalf("replay prompt missing %q", want)
+				}
+			}
+			cleared := got.Goal.Overall == goalMet && slices.Equal(got.Goal.Criteria, []GoalVerdict{{1, goalMet}, {2, goalMet}, {3, goalMet}}) && len(got.Blocking) == 0
+			if cleared != tc.met {
+				t.Fatalf("evidence revision: cleared = %t, want %t: %+v", cleared, tc.met, got)
+			}
+			if !tc.met && (got.Goal.Overall != goalNotMet || len(got.Blocking) == 0) {
+				t.Fatalf("false claim cleared the finding: %+v", got)
+			}
+		})
 	}
 }
 

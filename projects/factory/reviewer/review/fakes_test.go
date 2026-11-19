@@ -1001,6 +1001,8 @@ type fakeKagent struct {
 	goal        string
 	onGoal      func()
 	goalReplies []string // Optional successive replies, then fall back to goal.
+	// goalFor, if set, computes a goal check's reply from its prompt.
+	goalFor func(prompt string) string
 }
 
 type fakeTask struct {
@@ -1101,6 +1103,9 @@ func (k *fakeKagent) send(agent kagent.AgentRef, msg kagent.Message) (*kagent.Ta
 	goal := k.goal
 	if strings.Contains(msg.MessageID, "/goal/") && len(k.goalReplies) > 0 {
 		goal, k.goalReplies = k.goalReplies[0], k.goalReplies[1:]
+	}
+	if strings.Contains(msg.MessageID, "/goal/") && k.goalFor != nil {
+		goal = k.goalFor(text)
 	}
 	if goal != "" && strings.Contains(msg.MessageID, "/goal/") {
 		t := &k.tasks[id].task
