@@ -85,7 +85,23 @@ export async function snapshot(
       log.push(`${section}: disabled, not snapshotted`);
       continue;
     }
-    const { bucket, files } = config;
+    const { bucket } = config;
+    let files = config.files;
+    if (config.manifest) {
+      const index = JSON.parse((await get(bucket, config.manifest)).body);
+      files = Object.fromEntries(
+        Object.keys(config.files).map((name) => {
+          const key = index.files?.[name];
+          const stem = name === "historyMap" ? "history-map" : name;
+          if (
+            typeof key !== "string" ||
+            !new RegExp(`^stars/${stem}-[0-9a-f]{64}\\.json$`).test(key)
+          )
+            throw new Error(`Invalid Stars manifest key for ${name}`);
+          return [name, key];
+        }),
+      );
+    }
     if (config.format === "trips") {
       const data = await snapshotTrips(config, get, out);
       log.push(await renderTrips(join(out, ".."), data));
@@ -103,6 +119,8 @@ export async function snapshot(
     await mkdir(join(out, section, "v"), { recursive: true });
     for (const [name, key] of Object.entries(files)) {
       const { body, lastModified } = await get(bucket, key);
+      if (config.manifest && !key.endsWith(`-${sha256(body)}.json`))
+        throw new Error(`Digest mismatch for ${key}`);
       if (section === "stars" && name === "sites")
         starsSites = JSON.parse(body);
       const file = `${name}-${sha256(body).slice(0, 12)}.json`;

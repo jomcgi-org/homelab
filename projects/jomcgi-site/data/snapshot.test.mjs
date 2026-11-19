@@ -291,3 +291,39 @@ test("rejects a manifest without generatedAt before reading any object", async (
     /Invalid storyboard manifest/,
   );
 });
+
+test("resolves and authenticates all three Stars manifest payloads", async () => {
+  const out = await mkdtemp(join(tmpdir(), "stars-manifest-"));
+  const config = {
+    ...SOURCES.sections.stars,
+    bucket: "stars-forecast",
+    manifest: "latest.json",
+  };
+  const body = Buffer.from('{"sites":[]}');
+  const hash = createHash("sha256").update(body).digest("hex");
+  const files = {
+    sites: `stars/sites-${hash}.json`,
+    map: `stars/map-${hash}.json`,
+    historyMap: `stars/history-map-${hash}.json`,
+  };
+  const get = async (bucket, key) => {
+    assert.equal(bucket, config.bucket);
+    if (key === config.manifest)
+      return { body: Buffer.from(JSON.stringify({ files })) };
+    assert.ok(Object.values(files).includes(key));
+    return { body };
+  };
+  const sources = { sections: { stars: config } };
+  await snapshot(sources, get, out);
+  const index = JSON.parse(await readFile(join(out, "stars/latest.json")));
+  assert.equal(index.sources.historyMap.key, files.historyMap);
+  await assert.rejects(
+    snapshot(
+      sources,
+      async (b, k) =>
+        k === files.map ? { body: Buffer.from("{}") } : get(b, k),
+      out,
+    ),
+    /Digest mismatch/,
+  );
+});

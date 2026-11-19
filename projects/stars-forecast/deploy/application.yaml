@@ -1,0 +1,48 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: stars-forecast
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: ghcr.io/jomcgi/homelab/charts
+    chart: stars-forecast
+    targetRevision: 0.1.0
+    helm:
+      releaseName: stars-forecast
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: stars-forecast
+  # garage-init owns credential bytes in the kept claim Secrets.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: stars-forecast-stars-forecast-s3
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      name: stars-forecast-stars-forecast-mirror-s3
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      name: stars-forecast-stars-state-s3
+      jsonPointers: [/data]
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

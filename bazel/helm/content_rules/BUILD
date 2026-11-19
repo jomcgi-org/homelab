@@ -19,6 +19,7 @@ APPLICATIONS = [
     "factory-public",
     "jomcgi-site",
     "scotland-connector",
+    "stars-forecast",
 ]
 
 py_library(

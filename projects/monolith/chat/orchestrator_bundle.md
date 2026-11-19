@@ -110,3 +110,4 @@ Top-level projects/ directories:
 - sextant
 - shared
 - ships
+- stars-forecast

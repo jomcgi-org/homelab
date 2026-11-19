@@ -1,0 +1,5 @@
+{{- if not .Values.refreshEnabled }}
+{{- $_ := unset .Values.workloads "refresh" }}
+{{- $_ := unset .Values.workloads "prune" }}
+{{- end }}
+{{ include "factory-library.all" . }}

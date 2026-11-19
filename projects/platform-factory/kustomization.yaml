@@ -32,6 +32,7 @@ resources:
   - ../factory/deploy # The software factory: kagent (projects/factory/)
   - ./prometheus # Prometheus and kube-state-metrics: the operators' metrics store
   - ./grafana # Grafana at factory-grafana.jomcgi.dev: dashboards over Prometheus
+  - ../stars-forecast/deploy
   - ../factory-public/deploy # Garage factory-public and its R2 mirror (HOME-243)
   - ../factory-explore/deploy
   - ../factory-landing/deploy # Static operator tools at factory.jomcgi.dev
