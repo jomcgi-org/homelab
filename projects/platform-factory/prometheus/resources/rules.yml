@@ -165,7 +165,11 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "The latest Semgrep to INTSEC sync failed"
+          action: "Inspect the failed sync Job's logs."
+          graph: 'kube_job_failed{namespace={{ printf "%q" $labels.namespace }},job_name={{ printf "%q" $labels.job_name }},condition="true"}'
+          threshold: "1"
+          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#semgrepsyncfailed"
+          summary: "Latest Semgrep to INTSEC sync {{ $labels.namespace }}/{{ $labels.job_name }} failed (failure flag {{ $value }}, threshold 1)"
 
   - name: relay
     rules:

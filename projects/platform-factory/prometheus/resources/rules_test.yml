@@ -502,3 +502,30 @@ tests:
               threshold: "1"
               runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#alertrelaydown"
               summary: "Alert relay has 0 available replicas (minimum 1)"
+
+  - interval: 1m
+    input_series:
+      - series: 'kube_job_failed{namespace="factory",job_name="intsec-sync-10",condition="true"}'
+        values: "1x3"
+      - series: 'kube_job_status_start_time{namespace="factory",job_name="intsec-sync-10"}'
+        values: "10x3"
+      - series: 'kube_job_status_start_time{namespace="factory",job_name="intsec-sync-20"}'
+        values: "_ _ 20x1"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: SemgrepSyncFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: factory
+              job_name: intsec-sync-10
+              condition: "true"
+            exp_annotations:
+              action: "Inspect the failed sync Job's logs."
+              graph: 'kube_job_failed{namespace="factory",job_name="intsec-sync-10",condition="true"}'
+              threshold: "1"
+              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#semgrepsyncfailed"
+              summary: "Latest Semgrep to INTSEC sync factory/intsec-sync-10 failed (failure flag 1, threshold 1)"
+      - eval_time: 3m
+        alertname: SemgrepSyncFailed
+        exp_alerts: []
