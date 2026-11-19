@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+import pytest
 from jsonschema import Draft7Validator
 
 import runtime
@@ -103,9 +104,12 @@ def test_private_issues_filtered_before_connector_or_session_read(monkeypatch):
         "merged",
     ]
     journal[1] = ("shared", "Update from private-user")
+    assert runtime.documents(None, "HOME", project, board, archive) == result
+    # APPROVED_HISTORY alone publishes nothing: a task that the
+    # current-session view does not hold stays withheld.
     queried.clear()
     monkeypatch.setattr(runtime, "session_tasks", lambda *args: [])
-    assert runtime.documents(None, "HOME", project, board, archive) == result
+    assert runtime.documents(None, "HOME", project, board, archive)[3] == {}
     story, goals, issues, sessions = result
     (session,) = sessions.values()
     assert session["turns"][0]["text"] == "Update from [redacted]"
@@ -131,7 +135,50 @@ def test_private_issues_filtered_before_connector_or_session_read(monkeypatch):
         validator.validate(doc)
 
 
-def test_unconfirmed_task_withheld_and_rest_published(monkeypatch, caplog):
+UNCONFIRMED = {
+    # A review round completes in the current session without a connector
+    # journal, so the view has no digest for its text.
+    "review round": (
+        dict(session="s", task="review", assistantTexts=["Private reply"]),
+        "review",
+        "the view does not confirm its text",
+    ),
+    "outside the current session": (
+        dict(session="old", task="code", assistantTexts=["Private reply"]),
+        "code",
+        "the current-session view does not hold its session",
+    ),
+    "missing from the view": (
+        dict(session="s", task="gone", assistantTexts=["Private reply"]),
+        "gone",
+        "the current-session view does not hold this task",
+    ),
+    "no messages": (
+        dict(session="s", task="review", assistantTexts=[]),
+        "entry 1",
+        "malformed approval",
+    ),
+    "text not a list": (
+        dict(session="s", task="review", assistantTexts="Private reply"),
+        "entry 1",
+        "malformed approval",
+    ),
+    "no timezone": (
+        dict(
+            session="s",
+            task="review",
+            at="2026-11-02T13:00:00",
+            assistantTexts=["Private reply"],
+        ),
+        "entry 1",
+        "malformed approval",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", UNCONFIRMED.values(), ids=UNCONFIRMED.keys())
+def test_unconfirmed_task_withheld_and_rest_published(monkeypatch, caplog, case):
+    record, label, reason = case
     monkeypatch.setattr(
         runtime,
         "delivery",
@@ -143,8 +190,6 @@ def test_unconfirmed_task_withheld_and_rest_published(monkeypatch, caplog):
             review_rounds=1,
         ),
     )
-    # A review round completes in the current session without a connector
-    # journal, so the view has no digest for its text.
     monkeypatch.setattr(
         runtime,
         "session_tasks",
@@ -158,6 +203,7 @@ def test_unconfirmed_task_withheld_and_rest_published(monkeypatch, caplog):
             for task, agent in (("code", "coder"), ("review", "reviewer"))
         ],
     )
+    # The view confirms only the coder's message in the current session.
     monkeypatch.setattr(
         runtime,
         "task_messages",
@@ -185,27 +231,25 @@ def test_unconfirmed_task_withheld_and_rest_published(monkeypatch, caplog):
     archive = {
         "HOME-4": {
             "tasks": [
-                {
-                    "session": "s",
-                    "task": task,
-                    "at": at,
-                    "assistantTexts": [text],
-                }
-                for task, at, text in (
-                    ("code", "2026-11-02T12:00:00Z", "Coded it"),
-                    ("review", "2026-11-02T13:00:00Z", "Reviewed it"),
-                )
+                dict(
+                    session="s",
+                    task="code",
+                    at="2026-11-02T12:00:00Z",
+                    assistantTexts=["Coded it"],
+                ),
+                dict(dict(at="2026-11-02T13:00:00Z"), **record),
             ]
         }
     }
     with caplog.at_level(logging.WARNING, logger=runtime.__name__):
         result = runtime.documents(None, "HOME", project, board, archive)
     story, goals, issues, sessions = result
-    assert "Reviewed it" not in json.dumps(result)
+    assert "Private reply" not in json.dumps(result)
     (session,) = sessions.values()
+    assert session["id"] == "session-" + digest("s")
     assert [turn["text"] for turn in session["turns"]] == ["Coded it"]
     assert [e["kind"] for e in issues["HOME-4"]["timeline"]] == ["opened", "session"]
     assert [s["issueKey"] for s in story["workInProgress"]] == ["HOME-4"]
     assert goals["home"]["issueKeys"] == ["HOME-4"]
-    assert "withheld approved task review of HOME-4" in caplog.text
-    assert "Reviewed it" not in caplog.text
+    assert caplog.messages == [f"withheld approved task {label} of HOME-4: {reason}"]
+    assert "Private reply" not in caplog.text

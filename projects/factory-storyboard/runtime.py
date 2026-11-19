@@ -37,6 +37,41 @@ def timestamp(value):
     )
 
 
+def approved_task(record):
+    """Return (session, task, at, texts) of a well-formed approval, else None."""
+    if not isinstance(record, dict):
+        return None
+    sid, task_id, texts = (record.get(k) for k in ("session", "task", "assistantTexts"))
+    if not (isinstance(sid, str) and sid and isinstance(task_id, str) and task_id):
+        return None
+    if not (
+        isinstance(texts, list) and texts and all(isinstance(t, str) for t in texts)
+    ):
+        return None
+    try:
+        at = timestamp(record.get("at"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return sid, task_id, at, texts
+
+
+def unconfirmed(fields, current, confirmed):
+    """Say why the view does not confirm an approved task, or return None."""
+    if fields is None:
+        return "malformed approval"
+    sid, task_id, _, texts = fields
+    if sid not in {session for session, _ in current}:
+        return "the current-session view does not hold its session"
+    if (sid, task_id) not in current:
+        return "the current-session view does not hold this task"
+    if any(
+        (sid, task_id, hashlib.sha256(text.encode()).hexdigest()) not in confirmed
+        for text in texts
+    ):
+        return "the view does not confirm its text"
+    return None
+
+
 class _NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         # The itsaplan key belongs only to the configured API.
@@ -115,24 +150,20 @@ def documents(cursor, key, project, board, archive):
                 (r["session_id"], r["task_id"], r["text_sha256"])
                 for r in task_messages(cursor, key, item["id"])
             }
-        for record in approved:
-            sid = record["session"]
-            task_id = record["task"]
-            texts = record["assistantTexts"]
-            if (sid, task_id) in current and any(
-                (sid, task_id, hashlib.sha256(text.encode()).hexdigest())
-                not in confirmed
-                for text in texts
-            ):
-                # A review round has no journal, and an approval can be
-                # missing or differ. Withhold this task and keep the rest.
+        for index, record in enumerate(approved):
+            fields = approved_task(record)
+            reason = unconfirmed(fields, current, confirmed)
+            if reason:
+                # Every message needs the view's digest; APPROVED_HISTORY
+                # alone publishes nothing. Log no message text.
                 LOG.warning(
-                    "withheld approved task %s of %s: the connector journal "
-                    "does not confirm its text",
-                    task_id,
+                    "withheld approved task %s of %s: %s",
+                    fields[1] if fields else f"entry {index}",
                     issue_key,
+                    reason,
                 )
                 continue
+            sid, _, at, texts = fields
             public_id = "session-" + hashlib.sha256(sid.encode()).hexdigest()
             session = sessions.setdefault(
                 public_id,
@@ -141,7 +172,6 @@ def documents(cursor, key, project, board, archive):
             if session["issueKey"] != issue_key:
                 raise ValueError("session linked to multiple issues")
             for text in texts:
-                at = timestamp(record["at"])
                 number = len(session["turns"]) + 1
                 session["turns"].append(
                     public_turn(

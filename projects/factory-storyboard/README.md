@@ -117,20 +117,41 @@ approval. An empty object publishes issue keys and metrics only. A separate
 explicit publication approval is required before you add prose to the item.
 
 After each change to `APPROVED_HISTORY`, record the same approvals in the
-connector store as the database owner. The script replaces all approvals
-for the project in one transaction:
+connector store as the database owner. `approvals.py` refuses bad input and
+then writes no SQL. It also refuses an approval set with no messages unless
+you add `--allow-empty`, which withdraws every approval for the project. The
+SQL replaces all approvals for the project in one transaction. Before its
+only `COMMIT`, it checks that the table holds exactly the approved rows and
+raises an error on a mismatch. If the input stops before the `COMMIT`,
+PostgreSQL rolls the transaction back. Run the command as one subshell, so
+that a failure in any step stops it:
 
 ```sh
-op read op://k8s-homelab/factory-storyboard-readers/APPROVED_HISTORY |
-  python3 projects/factory-storyboard/approvals.py HOME |
-  KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db exec -i factory-db-1 -c postgres -- \
-  psql -v ON_ERROR_STOP=1 -d factory_connector
+(
+  set -euo pipefail
+  history=$(op read op://k8s-homelab/factory-storyboard-readers/APPROVED_HISTORY)
+  import=$(python3 projects/factory-storyboard/approvals.py HOME <<<"$history")
+  verify=$(python3 projects/factory-storyboard/approvals.py --verify HOME <<<"$history")
+  db() {
+    KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db exec -i factory-db-1 -c postgres -- \
+      psql -X -v ON_ERROR_STOP=1 -d factory_connector
+  }
+  db <<<"$import"
+  db <<<"$verify"
+)
 ```
 
-Use the primary's pod name if `factory-db-1` is not the primary. If a task
-is a completed task of the current session, each approved message must match
-a digest in the view. Otherwise the publisher withholds that task, logs its
-task ID and issue key, and publishes the other records.
+The last step runs the same check in a read-only transaction after the
+commit. Continue only if the subshell exits with status 0. Then compare the
+count in `approvals.py: N approved messages for HOME` with the count in the
+final notice, `storyboard approvals for HOME: N messages match`. They must
+be equal. Use the primary's pod name if `factory-db-1` is not the primary.
+
+The publisher publishes an approved task only if the current-session view
+holds its session and task, and the message view confirms the digest of
+each approved message. Otherwise it withholds that task, logs its task ID,
+issue key and reason, and publishes the other records. The log line holds no
+message text. `APPROVED_HISTORY` alone never publishes a message.
 
 After publisher rollout, run
 `node projects/factory-storyboard/verify-rollout.mjs --mirror-only`
@@ -147,7 +168,8 @@ to check the seven-minute limit and every object on the preview site.
    versions that carry the withdrawn text. Keep this inventory private.
    Remove the text from `APPROVED_HISTORY`. For a whole-session
    withdrawal, remove its archive entry. Record the approvals again in the
-   connector store. Wait for the Kubernetes Secret to reconcile. Wait for a successful publisher Job started with the new Secret.
+   connector store. If no message approval remains, add `--allow-empty` to both
+   `approvals.py` commands. Wait for the Kubernetes Secret to reconcile. Wait for a successful publisher Job started with the new Secret.
 2. Fetch `https://factory-data.jomcgi.dev/manifest.json`. Record its
    `generatedAt`. For a whole session, check that its ID has disappeared
    from the session index and its events from the current issue timeline.
