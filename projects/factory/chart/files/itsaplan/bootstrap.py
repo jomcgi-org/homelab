@@ -587,7 +587,8 @@ def ensure_agents(session, team_id, project_id):
         username = want["username"]
         reviewer = username == "factory-reviewer"
         sync = username == "intsec-sync"
-        restricted = reviewer or sync
+        planner = username == "homelab-planner"
+        restricted = reviewer or planner or sync
         target_key = "INTSEC" if sync else CONFIG["project"]["key"]
         target_id = project_id
         if sync:
@@ -600,9 +601,12 @@ def ensure_agents(session, team_id, project_id):
             role_id = ensure_scoped_role(
                 session, team_id, "INTSEC sync", ("read", "create")
             )
-        elif reviewer:
+        elif reviewer or planner:
             role_id = ensure_scoped_role(
-                session, team_id, "Factory reviewer", ("read",)
+                session,
+                team_id,
+                "Homelab planner" if planner else "Factory reviewer",
+                ("read",),
             )
         name = os.environ["AGENT_SECRET_PREFIX"] + username
         settings = {

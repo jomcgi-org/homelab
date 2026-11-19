@@ -26,6 +26,9 @@ http://{{ include "factory.itsaplanName" . }}-api.{{ .Values.itsaplan.namespace 
 {{- define "factory.itsaplanAgents" -}}
 {{- $agents := .Values.itsaplan.bootstrap.agents | default list -}}
 {{- range $agents -}}
+{{- if eq (lower .username) "homelab-planner" -}}
+{{- fail "homelab-planner is reserved for scheduled planning" -}}
+{{- end -}}
 {{- if eq (lower .username) "intsec-sync" -}}
 {{- fail "intsec-sync is reserved for Semgrep" -}}
 {{- end -}}
@@ -36,6 +39,7 @@ http://{{ include "factory.itsaplanName" . }}-api.{{ .Values.itsaplan.namespace 
 {{- if .Values.reviewer.enabled -}}
 {{- $agents = append $agents (dict "username" "factory-reviewer" "name" "Factory reviewer" "triggerOnAssign" false "triggerOnMention" false) -}}
 {{- end -}}
+{{- $agents = append $agents (dict "username" "homelab-planner" "name" "Homelab planner") -}}
 {{- if .Values.semgrepSync.enabled -}}
 {{- $agents = append $agents (dict "username" "intsec-sync" "name" "INTSEC sync") -}}
 {{- end -}}

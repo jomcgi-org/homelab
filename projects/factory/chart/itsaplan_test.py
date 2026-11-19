@@ -173,6 +173,7 @@ def test_generated_secrets_are_kept_and_never_rendered() -> None:
         "factory-itsaplan-agent-homelab-codex",
         "factory-itsaplan-agent-factory-coordinator",
         "factory-itsaplan-agent-factory-reviewer",
+        "factory-itsaplan-agent-homelab-planner",
     }
     for s in secrets:
         assert "data" not in s and "stringData" not in s
@@ -274,6 +275,7 @@ def test_job_roles_name_only_their_secrets() -> None:
         "factory-itsaplan-agent-homelab-codex",
         "factory-itsaplan-agent-factory-coordinator",
         "factory-itsaplan-agent-factory-reviewer",
+        "factory-itsaplan-agent-homelab-planner",
     ]
     assert bootstrap[1]["verbs"] == ["get", "update"]
 
@@ -340,6 +342,7 @@ def test_bootstrap_config_lists_the_agents() -> None:
         "homelab-codex",
         "factory-coordinator",
         "factory-reviewer",
+        "homelab-planner",
     ]
     assert config["project"]["key"] == "HOME"
     assert config["coordinator"] == "factory-coordinator"
@@ -425,7 +428,9 @@ class ReviewerBootstrapAPI:
         raise AssertionError((method, path))
 
 
-def test_reviewer_bootstrap_is_read_only_before_key_publication(bootstrap, monkeypatch):
+@pytest.mark.parametrize("username", ["factory-reviewer", "homelab-planner"])
+def test_read_only_bootstrap_before_key_publication(bootstrap, monkeypatch, username):
+    bootstrap.CONFIG["agents"][0]["username"] = username
     api = ReviewerBootstrapAPI()
     published = []
 
@@ -443,7 +448,7 @@ def test_reviewer_bootstrap_is_read_only_before_key_publication(bootstrap, monke
         assert not api.agent["triggerOnMention"]
         assert not api.agent["chatEnabled"]
         assert api.agent["fieldTriggers"] == []
-        assert name == "factory-itsaplan-agent-factory-reviewer"
+        assert name == f"factory-itsaplan-agent-{username}"
         published.append(data)
 
     monkeypatch.setattr(bootstrap, "write_secret", publish)
