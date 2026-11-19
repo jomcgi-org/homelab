@@ -20,3 +20,14 @@ def session_tasks(cursor, project, issue_id):
         (project, issue_id),
     )
     return cursor.fetchall()
+
+
+def task_messages(cursor, project, issue_id):
+    # SHA-256 digests only: the view never returns transcript text.
+    cursor.execute(
+        """SELECT session_id, task_id, text_sha256
+           FROM public.storyboard_task_messages
+           WHERE itsaplan_project = %s AND issue_id = %s""",
+        (project, issue_id),
+    )
+    return cursor.fetchall()

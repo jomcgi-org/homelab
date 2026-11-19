@@ -95,8 +95,6 @@ py_venv_binary(
         "delivery_stats.py",
         "publisher.py",
         "runtime.py",
-        "session_history.py",
-        "task_reader.py",
     ],
     imports = ["."],
     main = "runtime.py",
@@ -132,8 +130,6 @@ py_test(
         "publisher.py",
         "runtime.py",
         "runtime_test.py",
-        "session_history.py",
-        "task_reader.py",
     ],
     data = [":schema"],
     deps = [
