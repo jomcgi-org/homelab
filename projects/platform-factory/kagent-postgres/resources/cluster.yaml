@@ -40,13 +40,25 @@ spec:
       memory: 640Mi
     limits:
       memory: 1Gi
+  # kagent rewrites session_task_event and session_task rows all day: about
+  # 16 GB of WAL a day for a 1.8 GB database (2026-11-19). Compressed
+  # full-page images and sparser checkpoints cut what reaches Garage. A
+  # 15-minute checkpoint writes about 170 MB, so the default 1 GB
+  # max_wal_size still fits beside the database on the 5Gi volume.
+  postgresql:
+    parameters:
+      wal_compression: zstd
+      checkpoint_timeout: 15min
   bootstrap:
     initdb:
       database: kagent
       # Owns the database only; kagent's logins come from setup.sql.
       owner: kagent_admin
   backup:
-    retentionPolicy: "14d"
+    # Garage keeps a full copy on every node; 14 days of this WAL would not
+    # fit on one. Off-site copies give the longer history (Joe,
+    # https://factory-plan.jomcgi.dev/factory/issue/HOME-450#comment-4597).
+    retentionPolicy: "1d"
     # The in-tree barman-cloud integration, deprecated for several releases;
     # CloudNativePG 1.31 removes it, so the operator upgrade moves this to the
     # barman-cloud plugin (which also needs cert-manager) first.
