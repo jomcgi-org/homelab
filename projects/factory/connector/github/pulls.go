@@ -1104,16 +1104,17 @@ func (t timelineActor) last() string {
 // Revert forms that git and GitHub write, as in
 // projects/monolith/factory/orchestration/factory_reverts.py: a "This reverts
 // commit <sha>" line with a full or abbreviated SHA, a "Reverts [owner/repo]#N"
-// line, or a subject that starts with "Revert" and cites #N.
+// line, or a subject that starts with "Revert" and cites #N. A qualified
+// reference counts only when it names the scanned repository.
 var (
 	revertsSHA = regexp.MustCompile(`This reverts commit ([0-9a-f]{7,40})`)
-	revertsPR  = regexp.MustCompile(`Reverts (?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#([0-9]+)`)
-	prRef      = regexp.MustCompile(`#([0-9]+)`)
+	revertsPR  = regexp.MustCompile(`Reverts ([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#([0-9]+)`)
+	prRef      = regexp.MustCompile(`([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#([0-9]+)`)
 )
 
-// RevertsMerge reports whether one commit message reverts the merge commit
-// sha or pull request number.
-func RevertsMerge(message, sha string, number int) bool {
+// RevertsMerge reports whether one commit message on repo's base branch
+// reverts the merge commit sha or pull request number.
+func RevertsMerge(message, repo, sha string, number int) bool {
 	if sha != "" {
 		for _, m := range revertsSHA.FindAllStringSubmatch(message, -1) {
 			if strings.HasPrefix(sha, m[1]) {
@@ -1130,7 +1131,10 @@ func RevertsMerge(message, sha string, number int) bool {
 		refs = append(refs, prRef.FindAllStringSubmatch(subject, -1)...)
 	}
 	for _, m := range refs {
-		if n, err := strconv.Atoi(m[1]); err == nil && n == number {
+		if m[1] != "" && !strings.EqualFold(m[1], repo) {
+			continue
+		}
+		if n, err := strconv.Atoi(m[2]); err == nil && n == number {
 			return true
 		}
 	}
@@ -1158,7 +1162,7 @@ func (c *Client) RevertedMerge(ctx context.Context, repo, branch, sha string, nu
 			if at.Before(since) || at.After(until) {
 				continue
 			}
-			if RevertsMerge(commit.Commit.Message, sha, number) && (earliest == nil || at.Before(*earliest)) {
+			if RevertsMerge(commit.Commit.Message, repo, sha, number) && (earliest == nil || at.Before(*earliest)) {
 				earliest = &at
 			}
 		}
