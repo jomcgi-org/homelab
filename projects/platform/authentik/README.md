@@ -167,6 +167,29 @@ an initial failed import after Kubernetes projects the keys. After rotating
 credentials on an already applied blueprint, reapply **Factory social sign-in**
 in Authentik to load the new values.
 
+### Roll back Bosun applications
+
+1. Before rollout, record the current parents of **authentik Admins**. To roll
+   back, revert the Bosun blueprint and social flow changes in Git. Sync factory
+   Authentik and confirm the worker now mounts the prior social blueprint and
+   no longer mounts `bosun-apply.yaml`.
+2. Use the [factory Authentik port-forward](../../factory-cluster/README.md#authentik-first-run)
+   to sign in as a local administrator. Under **Flows and Stages → Flows**,
+   delete `bosun-apply`. This closes the public entry point and removes its
+   stage binding. Under **Stages**, delete `bosun-apply-discord`.
+3. Edit the `factory-social-login` stage binding in the
+   `factory-social-authentication` flow. Remove its `bosun-record-application`
+   policy binding. Keep the login stage bound. Under **Policies**, delete
+   `bosun-record-application` and `bosun-apply-intent`. Reapply **Factory social
+   sign-in** and confirm the session-ready policy matches the reverted blueprint.
+4. Under **Directory → Groups**, restore the recorded parents of **authentik
+   Admins** and remove **bosun-member** from the parents of **discord-operators**.
+   Keep the three Bosun-related groups, their direct memberships, users and
+   Discord connections to preserve application records.
+5. From a signed-out browser, confirm the apply link no longer starts Discord
+   sign-in. Verify the two parent links are gone and existing direct applicant
+   memberships are present. Revert the edge completion route after closing the flow.
+
 ### Factory social sign-in rollback
 
 Revert the factory social configuration and wait for the worker to reconcile

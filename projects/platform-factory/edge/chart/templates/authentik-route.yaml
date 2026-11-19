@@ -93,6 +93,29 @@ spec:
           port: {{ .Values.authentik.service.port }}
           # The schema default, stated so ArgoCD's diff owns it.
           weight: 1
+    - matches:
+        - path:
+            type: Exact
+            value: /bosun/application-complete
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: gateway.envoyproxy.io
+            kind: HTTPRouteFilter
+            name: bosun-application-complete
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: HTTPRouteFilter
+metadata:
+  name: bosun-application-complete
+  namespace: {{ .Release.Namespace }}
+spec:
+  directResponse:
+    statusCode: 200
+    contentType: text/plain
+    body:
+      type: Inline
+      inline: "Bosun sign-up complete. You can close this page."
 ---
 # Replaces the gateway-wide OIDC policy for this route only. Authentik does
 # its own sign-in and MFA.
