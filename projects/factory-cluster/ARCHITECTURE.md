@@ -46,6 +46,7 @@ The tunnel publishes the route to Envoy from the labelled `edge` namespace. Envo
 | factory-grafana.jomcgi.dev | `grafana/grafana` | Envoy OIDC (client `factory-edge`), then Grafana's OIDC (client `factory-grafana`); both admit only `authentik Admins` |
 | factory-agents.jomcgi.dev | `edge/kagent` to `kagent/kagent-ui:8080` | Envoy OIDC (client `factory-edge`), only `authentik Admins`; access token forwarded to kagent |
 | factory-kube.jomcgi.dev | `edge/kube-api` to `default/kubernetes:443` | No browser sign-in: Envoy checks the bearer ID token from client `factory-kubectl` for group `authentik Admins` or `factory-kube-viewers`, then the API server checks it again and RBAC applies (see the [kubectl procedure](README.md#kubectl-through-authentik)) |
+| scotland-mcp.jomcgi.dev | `edge/scotland-connector` to `scotland-connector/scotland-connector:80` (`/v1` and `/mcp` only) | None: the one public route ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-259#comment-3908)). Policy `scotland-connector-public` replaces gateway OIDC, refuses Cloudflare Worker subrequests, and per-IP rate limits apply |
 
 The permanent sentinel route keeps the OAuth2 filter on the listener during application rollouts. The edge chart creates a placeholder OIDC Secret before applying the policy. Authentik’s initializer supplies the client secret.
 
