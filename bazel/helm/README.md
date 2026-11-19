@@ -5,8 +5,8 @@ charts and ArgoCD applications.
 
 These rules back the repo's GitOps pipeline (see the root `AGENTS.md`): charts
 are packaged as OCI artifacts in CI, image tags are pinned at build time, and
-chart versions are auto-bumped from conventional commits. Nothing here installs
-to a cluster; ArgoCD pulls the published chart and syncs.
+chart versions are auto-bumped from the commits that change chart inputs.
+Nothing here installs to a cluster; ArgoCD pulls the published chart and syncs.
 
 ## Public API
 
@@ -202,7 +202,7 @@ lint tests run Helm's strict validation.
 
 | Script                                            | Role                                                                          |
 | ------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `chart-version.sh`                                | Next semver from conventional commits scoped to the chart's Bazel dep closure |
+| `chart-version.sh`                                | Next semver from commits in the chart's Bazel dep closure; types pick bumps   |
 | `push.sh.tpl`                                     | Template for the `helm_push` runner (`{{HELM}}`, `{{CHART_TGZ}}`, ...)        |
 | `helm-template-test.sh`                           | `helm template` under the full values hierarchy; fails on render errors       |
 | `render.sh`                                       | Standalone single-service render using the extracted Helm tool                |

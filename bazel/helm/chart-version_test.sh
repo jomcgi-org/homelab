@@ -486,6 +486,22 @@ commit_in "$repo" "fix: chart follows"
 expect "scoped patch follows fallback" "0.1.3" "$(run_version "$repo")" \
 	"all commits reserve their position"
 
+# 19. A subject that is not a Conventional Commit still changes a release
+# input. On 2026-11-19 two such HOME-393 commits moved monolith's digests, the
+# repo-wide escalation also returned 0.881.30, and push.sh.tpl stopped main's
+# publish. Both the scoped walk and the escalation must give a patch.
+repo=$(new_repo nonconventional 0.881.30)
+commit_in "$repo" "Point Scotland plugin and site clients at the factory connector"
+expect "non-conventional subject is a patch" "0.881.31" "$(run_version "$repo")" \
+	"a release input changed"
+commit_path "$repo" other/source.py "Restore the complete Scotland catalog contract check"
+expect "non-conventional escalation is a patch" "0.881.32" \
+	"$(cd "$repo" && CHART_VERSION_ALL_PATHS=1 bash "$SCRIPT" chart 2>/dev/null)" \
+	"digest authority needs a higher version"
+commit_in "$repo" "feat: after the plain subjects"
+expect "feat after non-conventional subjects" "0.882.0" "$(run_version "$repo")" \
+	"a later feat still sets the minor boundary"
+
 if [[ "$FAILURES" -gt 0 ]]; then
 	echo "${FAILURES} test(s) failed"
 	exit 1

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Compute the next semver version for a Helm chart based on conventional commits
-# selected by the chart's Bazel dependency closure. Release numbers use the
+# Compute the next semver version for a Helm chart from the commits selected by
+# the chart's Bazel dependency closure. Conventional Commit types choose a minor
+# or major bump; every other commit, conventional or not, is a patch. Release numbers use the
 # same repository-wide history as the digest-authority fallback.
 #
 # Usage: chart-version.sh <chart-dir> [<bazel-package-label>]
@@ -246,7 +247,7 @@ if ! ORDERED_COMMITS=$(git rev-list --reverse "${VERSION_COMMIT}..HEAD"); then
 	exit 1
 fi
 
-# --- Find conventional commits since last version ---
+# --- Find release-input commits since last version ---
 #
 # The serial component is derived from the COMMIT, never from "read the current
 # version and add one". Publishing moved post-merge (ADR platform/009 decision
@@ -264,6 +265,13 @@ fi
 # Commits are walked OLDEST FIRST (--reverse) because the minor/major boundary
 # is positional: after a feat, the patch component counts commits AFTER that
 # feat, so the boundary index has to be known as the walk proceeds.
+#
+# Every counted commit is at least a patch, whatever its subject. A subject
+# that is not a Conventional Commit still changed a release input. A no-bump
+# result for it is a silent non-deploy when only templates changed. When the
+# image digests changed too, push.sh.tpl escalates repo-wide and that walk
+# also returns no bump, so the publish stops: on 2026-11-19 two
+# non-conventional HOME-393 commits stopped monolith at 0.881.30.
 BUMP="none"
 COMMIT_COUNT=0
 MINOR_BOUNDARY=-1 # index of the first commit to force minor-or-higher
@@ -309,7 +317,7 @@ while IFS= read -r commit; do
 		[[ "$MINOR_BOUNDARY" -lt 0 ]] && MINOR_BOUNDARY="$INDEX"
 		[[ "$BUMP" != "major" ]] && BUMP="minor"
 		;;
-	fix | perf | refactor | style | docs | test | ci | build | chore | revert)
+	*)
 		[[ "$BUMP" == "none" ]] && BUMP="patch"
 		;;
 	esac
@@ -317,7 +325,7 @@ done <<<"$ORDERED_COMMITS"
 
 # --- Apply bump ---
 if [[ "$BUMP" == "none" ]]; then
-	echo >&2 "INFO: No conventional commits found since ${CURRENT_VERSION}, no bump needed"
+	echo >&2 "INFO: No release-input commits found since ${CURRENT_VERSION}, no bump needed"
 	echo "$CURRENT_VERSION"
 	exit 0
 fi
