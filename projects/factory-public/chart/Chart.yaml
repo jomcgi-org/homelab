@@ -2,7 +2,7 @@ apiVersion: v2
 name: factory-public
 description: Garage bucket and public R2 mirror for the factory storyboard
 type: application
-version: 0.15.15
+version: 0.15.18
 dependencies:
   - name: factory-library
     version: "0.1.0"
