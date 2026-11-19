@@ -12,12 +12,15 @@ genrule(
     srcs = [
         "wrangler.jsonc",
         ":web_dist",
+        "//projects/factory-explore/kubectl-wasm",
+        "@wasm_go_sdk//:lib/wasm/wasm_exec.js",
     ],
     outs = ["site.tar"],
     cmd = """
         mkdir -p "$(@D)/site-root/app/site/dist"
         cp -rL $(location :web_dist)/. "$(@D)/site-root/app/site/dist/"
         cp $(location wrangler.jsonc) "$(@D)/site-root/app/site/wrangler.jsonc"
+        cp $(location //projects/factory-explore/kubectl-wasm:kubectl-wasm) $(location @wasm_go_sdk//:lib/wasm/wasm_exec.js) "$(@D)/site-root/app/site/dist/"
         test -z "$$(find "$(@D)/site-root" -type f -size +26214400c -print -quit)"
         tar -C "$(@D)/site-root" --owner=65532 --group=65532 -cf $@ app
     """,

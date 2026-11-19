@@ -93,20 +93,34 @@ export async function read(path: string, accept: string, signal?: AbortSignal) {
     signal: signal ? AbortSignal.any([signal, session.signal]) : session.signal,
   });
   session.signal.throwIfAborted();
+  await observeResponse(
+    response.status,
+    response.headers.get("X-Explore-Window-End"),
+    response.headers.get("X-Explore-Next-Window"),
+  );
+  if (response.status === 401) throw new Error("401 Unauthorized");
+  session.signal.throwIfAborted();
+  if (!response.ok)
+    throw new Error(`${response.status} ${response.statusText}`);
+  return response.json();
+}
+
+export async function observeResponse(
+  status: number,
+  endHeader: string | null,
+  nextHeader: string | null,
+) {
+  if (session.signal.aborted) return;
   // explore-proxy sets X-Explore-Window-End to the current time before it
   // authenticates the token, and a 401 returns that placeholder. It is not
   // the caller's window, so a 401 keeps the latest authenticated window end.
-  if (response.status === 401) throw new Error("401 Unauthorized");
-  const end = Date.parse(response.headers.get("X-Explore-Window-End") ?? "");
-  const next = Date.parse(response.headers.get("X-Explore-Next-Window") ?? "");
-  if (response.status === 403 && Number.isFinite(next)) await closeWindow(next);
+  if (status === 401) return;
+  const end = Date.parse(endHeader ?? "");
+  const next = Date.parse(nextHeader ?? "");
+  if (status === 403 && Number.isFinite(next)) await closeWindow(next);
   else if (Number.isFinite(end)) {
     windowEnd = end;
     sessionStorage.setItem(endKey, String(end));
     updateClock();
   }
-  session.signal.throwIfAborted();
-  if (!response.ok)
-    throw new Error(`${response.status} ${response.statusText}`);
-  return response.json();
 }

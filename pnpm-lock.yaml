@@ -71,6 +71,9 @@ importers:
       '@mdi/font':
         specifier: ^7.0.96
         version: 7.4.47
+      '@xterm/xterm':
+        specifier: 6.0.0
+        version: 6.0.0
       oidc-client-ts:
         specifier: ^3.0.0
         version: 3.5.0
@@ -1566,6 +1569,9 @@ packages:
 
   '@vue/shared@3.5.45':
     resolution: {integrity: sha512-ue9fgHmVNPlP7iW3+cxoBX/Cnlw53dHlVSw0JKGY6z1lObg8pHoj928M2nzG4/yVsMZ3NaRZ2s2z61uC16NDwQ==}
+
+  '@xterm/xterm@6.0.0':
+    resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
 
   acorn@8.18.0:
     resolution: {integrity: sha512-lGq+9yr1/GuAWaVYIHRjvvySG5/4VfKIvC8EWxStPdcDh/Ka7FG3twP6v4d5BkravUilhIAsG4Qj83t02LWUPQ==}
@@ -3326,8 +3332,7 @@ snapshots:
 
   '@esbuild/linux-x64@0.27.4': {}
 
-  '@esbuild/linux-x64@0.27.7':
-    optional: true
+  '@esbuild/linux-x64@0.27.7': {}
 
   '@esbuild/netbsd-arm64@0.27.7':
     optional: true
@@ -4085,6 +4090,8 @@ snapshots:
       '@vue/shared': 3.5.45
 
   '@vue/shared@3.5.45': {}
+
+  '@xterm/xterm@6.0.0': {}
 
   acorn@8.18.0: {}
 
