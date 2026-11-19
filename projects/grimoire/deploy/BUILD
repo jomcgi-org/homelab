@@ -25,8 +25,10 @@ py_test(
 filegroup(
     name = "manifests",
     srcs = [
+        "kustomization.yaml",
         "recovery.yaml",
-        "restore-job.yaml",
+        "restore.sh",
+        "restore-cronjob.yaml",
     ],
     visibility = ["//projects/platform-factory/grimoire-data:__pkg__"],
 )

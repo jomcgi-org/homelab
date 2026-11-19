@@ -1,0 +1,13 @@
+# The on-demand restore. The grimoire-data resources include this directory,
+# so the grimoire Application deploys the suspended CronJob and the script it
+# mounts, generated from restore.sh.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - restore-cronjob.yaml
+
+configMapGenerator:
+  - name: grimoire-restore-script
+    namespace: grimoire
+    files:
+      - restore.sh

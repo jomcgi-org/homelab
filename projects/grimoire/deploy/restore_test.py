@@ -68,6 +68,21 @@ INSERT INTO grimoire.note VALUES (99);
 ALTER TABLE grimoire.note
   ADD FOREIGN KEY (account_id) REFERENCES grimoire.account (id) NOT VALID;
 """
+# An index predicate whose string holds a line that ends like a NOT VALID
+# foreign key. The string is data, so the restore must accept the dump.
+PREDICATE_SOURCE = """
+CREATE EXTENSION vector;
+CREATE SCHEMA grimoire;
+CREATE TABLE grimoire.account (id bigint PRIMARY KEY);
+CREATE TABLE grimoire.note (
+  account_id bigint REFERENCES grimoire.account (id),
+  body text);
+INSERT INTO grimoire.account VALUES (1);
+INSERT INTO grimoire.note VALUES (1, 'first');
+CREATE INDEX note_marked ON grimoire.note (account_id) WHERE body <> 'first
+ FOREIGN KEY x NOT VALID;
+last';
+"""
 ROLES = """
 CREATE ROLE grimoire_restore LOGIN;
 CREATE ROLE grimoire_api LOGIN NOINHERIT;
@@ -350,6 +365,27 @@ def test_restore_refuses_a_not_valid_key_and_a_retry_succeeds(restored):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "5 valid foreign keys and 2 valid pgvector indexes" in result.stdout
     assert inventory(env, "retry") == source
+
+
+def test_restore_accepts_key_text_in_an_index_predicate(restored):
+    env, tmp, metadata, _ = restored
+    psql(env, "postgres", "-c", "CREATE DATABASE predicate_source")
+    psql(env, "predicate_source", "-c", PREDICATE_SOURCE)
+    dump(env, "predicate_source", tmp / "predicate.dump")
+    # The dump's post-data has a line that a text scan reads as a NOT VALID key.
+    post_data = subprocess.run(
+        ["pg_restore", "--section=post-data", "--file=-", tmp / "predicate.dump"],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "\n FOREIGN KEY x NOT VALID;\n" in post_data
+    create_target(env, "predicate")
+    result = restore(env, tmp / "predicate.dump", metadata, "predicate")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 valid foreign keys and 0 valid pgvector indexes" in result.stdout
+    assert inventory(env, "predicate") == inventory(env, "predicate_source")
 
 
 def test_restore_refuses_other_pgvector_metadata(restored):
