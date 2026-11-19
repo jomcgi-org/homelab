@@ -1,5 +1,4 @@
--- One activation follow-up per delivered work item. Persist the issue before
--- delegation so a restart can resume without creating another issue or run.
+-- One follow-up per work item, saved before delegation so a restart reuses it.
 CREATE TABLE activation_followup (
     work_item_id bigint PRIMARY KEY REFERENCES work_item (id),
     issue_id bigint NOT NULL UNIQUE,
