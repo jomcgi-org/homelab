@@ -234,10 +234,16 @@ def test_session_permissions():
             core, extensions = role["rules"]
             assert core["apiGroups"] == [""]
             assert set(core["resources"]) == set(
-                "componentstatuses configmaps endpoints events limitranges namespaces nodes persistentvolumeclaims persistentvolumes pods pods/log podtemplates replicationcontrollers resourcequotas serviceaccounts services".split()
+                "componentstatuses configmaps endpoints events limitranges namespaces namespaces/status nodes nodes/status persistentvolumeclaims persistentvolumeclaims/status persistentvolumes persistentvolumes/status pods pods/log pods/status podtemplates replicationcontrollers replicationcontrollers/scale replicationcontrollers/status resourcequotas resourcequotas/status serviceaccounts services services/status".split()
             )
             assert {"", "*"}.isdisjoint(extensions["apiGroups"])
-            assert {"apps", "argoproj.io"} <= set(extensions["apiGroups"])
+            assert {
+                "apps",
+                "argoproj.io",
+                "gateway.networking.x-k8s.io",
+                "internal.apiserver.k8s.io",
+                "storagemigration.k8s.io",
+            } <= set(extensions["apiGroups"])
             assert extensions["resources"] == ["*"]
             for rule in role["rules"]:
                 assert set(rule) == {"apiGroups", "resources", "verbs"}

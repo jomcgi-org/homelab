@@ -212,10 +212,10 @@ it there, and close its PR: a closed PR cannot merge, and reopening it is the
 new owner's choice. Changing the assignee or removing the delegate stops nothing. Wait
 for the stop to settle before anyone else touches the work. The connector's
 database covers itsaplan runs and its own review rounds, which itsaplan has no
-record of. Use the operator’s factory OIDC kubeconfig with the factory context and an identity authorized for database exec:
+record of. Set `FACTORY_OPERATOR_KUBECONFIG` to the path of the operator’s existing factory OIDC kubeconfig. Use the `factory` context from the [factory kubectl setup](../../projects/factory-cluster/README.md#kubectl-through-authentik) and an account authorized for database exec.
 
 ```sh
-KUBECONFIG=~/.kube/factory-operator.yaml kubectl --context=factory -n factory-db exec factory-db-1 \
+kubectl --kubeconfig="${FACTORY_OPERATOR_KUBECONFIG:?Set the operator kubeconfig path}" --context=factory -n factory-db exec factory-db-1 \
   -c postgres -- psql -At -d factory_connector -c "
   SELECT w.state,
     (SELECT count(*) FROM run r WHERE r.work_item_id = w.id

@@ -12,16 +12,25 @@ rules:
       - events
       - limitranges
       - namespaces
+      - namespaces/status
       - nodes
+      - nodes/status
       - persistentvolumeclaims
+      - persistentvolumeclaims/status
       - persistentvolumes
+      - persistentvolumes/status
       - pods
       - pods/log
+      - pods/status
       - podtemplates
       - replicationcontrollers
+      - replicationcontrollers/scale
+      - replicationcontrollers/status
       - resourcequotas
+      - resourcequotas/status
       - serviceaccounts
       - services
+      - services/status
     verbs: [get, list, watch]
   - apiGroups:
       - acme.cert-manager.io
@@ -49,8 +58,10 @@ rules:
       - flowcontrol.apiserver.k8s.io
       - gateway.envoyproxy.io
       - gateway.networking.k8s.io
+      - gateway.networking.x-k8s.io
       - generators.external-secrets.io
       - helm.cattle.io
+      - internal.apiserver.k8s.io
       - k3s.cattle.io
       - kargo.akuity.io
       - metrics.k8s.io
@@ -65,6 +76,7 @@ rules:
       - resource.k8s.io
       - scheduling.k8s.io
       - storage.k8s.io
+      - storagemigration.k8s.io
     resources: ["*"]
     verbs: [get, list, watch]
 ---
