@@ -600,7 +600,8 @@ tests:
   # Prometheus cannot scrape the exporter at 3 min, and at 10 and 11 min
   # (up 0). Each failed scrape marks every series stale. The pending alert
   # keeps its timer and fires at 5 min; the firing alert stays through the
-  # gap and lists relay. The successful scrape at 12 min reads unhealthy.
+  # gap and says that the component list is unknown. The successful scrape
+  # at 12 min reads unhealthy and lists relay again.
   - interval: 1m
     input_series:
       - series: 'up{job="factory-health",instance="health-exporter:8080"}'
@@ -629,10 +630,19 @@ tests:
               description: 'https://factory-data.jomcgi.dev/health.json reports status unhealthy. Runbook: projects/factory-cluster/README.md, "Alerts".'
       - eval_time: 10m
         alertname: FactoryHealthUnhealthy
-        exp_alerts: *health_relay_only
+        exp_alerts: &health_scrape_failing
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              action: "Check each down component in health.json."
+              graph: "factory_health_component_up"
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthUnhealthy"
+              summary: "Factory health is unhealthy, components unknown: the health exporter scrape is failing (healthy flag 0, minimum 1)"
+              description: 'https://factory-data.jomcgi.dev/health.json reports status unhealthy. Runbook: projects/factory-cluster/README.md, "Alerts".'
       - eval_time: 11m
         alertname: FactoryHealthUnhealthy
-        exp_alerts: *health_relay_only
+        exp_alerts: *health_scrape_failing
       - eval_time: 12m
         alertname: FactoryHealthUnhealthy
         exp_alerts: *health_relay_only
@@ -655,16 +665,54 @@ tests:
     alert_rule_test:
       - eval_time: 11m
         alertname: FactoryHealthUnhealthy
-        exp_alerts: *health_relay_only
+        exp_alerts: *health_scrape_failing
       - eval_time: 12m
         alertname: FactoryHealthUnhealthy
         exp_alerts: []
 
+  # The owner turns the alert check off while relay stays down. The
+  # successful scrape at 8 min drops alert-test. The scrapes at 9 and 10 min
+  # fail (up 0) while the old alert-test sample is still in the 15 min
+  # window. The summary does not name alert-test again: in the gap it says
+  # that the component list is unknown, and the scrape at 11 min lists relay.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="factory-health",instance="health-exporter:8080"}'
+        values: "1x8 0 0 1x10"
+      - series: 'factory_health_healthy'
+        values: "0x8 stale _ 0x10"
+      - series: 'factory_health_component_up{component="factory-cluster"}'
+        values: "1x8 stale _ 1x10"
+      - series: 'factory_health_component_up{component="relay"}'
+        values: "0x8 stale _ 0x10"
+      - series: 'factory_health_component_up{component="alert-test"}'
+        values: "0x7 stale"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: *health_two_down
+      - eval_time: 8m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: *health_relay_only
+      - eval_time: 9m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: *health_scrape_failing
+      - eval_time: 10m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: *health_scrape_failing
+      - eval_time: 11m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: *health_relay_only
+      - eval_time: 20m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: *health_relay_only
+
   # Prometheus cannot scrape the exporter from 11 min on. The 10 min read
   # was unhealthy, with a new file (generatedAt 600). FactoryHealthStale
   # fires at 23 min, when that file is more than 10 min old for 2 min, and
-  # stays. FactoryHealthUnhealthy keeps the 10 min read until the read
-  # leaves its 15 min window at 25 min. At least one of them always fires.
+  # stays. FactoryHealthUnhealthy keeps the healthy flag of the 10 min read,
+  # with the component list unknown, until the read leaves its 15 min window
+  # at 25 min. At least one of them always fires.
   - interval: 1m
     input_series:
       - series: 'up{job="factory-health",instance="health-exporter:8080"}'
@@ -681,7 +729,7 @@ tests:
         exp_alerts: []
       - eval_time: 22m
         alertname: FactoryHealthUnhealthy
-        exp_alerts: *health_relay_only
+        exp_alerts: *health_scrape_failing
       - eval_time: 23m
         alertname: FactoryHealthStale
         exp_alerts:
@@ -696,7 +744,7 @@ tests:
               description: 'Public readers see an old status. Runbook: projects/factory-cluster/README.md, "Alerts".'
       - eval_time: 24m
         alertname: FactoryHealthUnhealthy
-        exp_alerts: *health_relay_only
+        exp_alerts: *health_scrape_failing
       - eval_time: 25m
         alertname: FactoryHealthUnhealthy
         exp_alerts: []
