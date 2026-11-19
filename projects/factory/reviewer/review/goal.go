@@ -236,9 +236,9 @@ func goalWithdrawn(id, key string, g *GoalCheck) string {
 		return ""
 	}
 	if issue != key {
-		// The move needs a valid answer for the new issue that does not
-		// disagree with the service's count of its criteria.
-		if g == nil || (g.Counted > 0 && g.Counted != len(g.Criteria)) {
+		// The move needs a valid answer for the new issue that numbers the
+		// criteria the service counted in its trusted list.
+		if !countedCriteria(g) {
 			return ""
 		}
 		return "Withdrawn: the PR no longer names " + issue + ". It now names " + key + "."
@@ -273,24 +273,12 @@ func issueCriteria(in *IssueContext) int {
 		return 0
 	}
 	items, state, style := 0, 0, "" // state: 0 before the heading, 1 in the list, 2 after it
-	fence := ""
 	text := strings.ReplaceAll(strings.ReplaceAll(in.Issue.Description, "\r\n", "\n"), "\r", "\n")
+	if codeFence.MatchString(text) {
+		return 0 // Code blocks can hide or fake a list; count nothing.
+	}
 	for raw := range strings.SplitSeq(text, "\n") {
 		line := strings.TrimSpace(raw)
-		if m := codeFence.FindStringSubmatch(raw); m != nil && (fence == "" || strings.HasPrefix(m[1], fence)) {
-			if state != 0 {
-				return 0 // A code block in or after the list is ambiguous.
-			}
-			if fence == "" {
-				fence = m[1][:3]
-			} else {
-				fence = ""
-			}
-			continue
-		}
-		if fence != "" {
-			continue // An example before the list, such as a sample heading.
-		}
 		heading := strings.ToLower(strings.Trim(line, "#* :"))
 		if heading == "done when" || heading == "acceptance criteria" {
 			if state != 0 {
@@ -341,7 +329,7 @@ var (
 	// indent, including an empty one.
 	listMarker = regexp.MustCompile(`^[ \t]*(?:[0-9]{1,9}[.)]|[-*+])(?:[ \t]|$)`)
 	// codeFence opens or closes a fenced code block.
-	codeFence = regexp.MustCompile("^ {0,3}(```+|~~~+)")
+	codeFence = regexp.MustCompile("(?m)^ {0,3}(```|~~~)")
 )
 
 // goalKey is the issue a goal check judges the PR against, or "" when none
