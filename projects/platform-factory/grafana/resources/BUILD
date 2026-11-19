@@ -31,5 +31,4 @@ py_test(
     name = "runbook_actions_test",
     srcs = ["runbook_actions_test.py"],
     data = glob(["runbooks/*.json"]) + ["runbooks/server.py"],
-    deps = ["@pip//pytest"],
 )
