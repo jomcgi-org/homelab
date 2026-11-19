@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -164,11 +163,11 @@ func run(mode string) error {
 	}
 	digest := fmt.Sprintf("%x", hash.Sum(nil))
 	key := "walks-" + digest + ".json"
-	if err = c.Put(ctx, bucket, key, file, size, digest, "public, max-age=31536000, immutable"); err != nil {
+	if err = c.PutReader(ctx, bucket, key, file, size, digest, "public, max-age=31536000, immutable"); err != nil {
 		return err
 	}
 	index, _ := json.Marshal(manifest{key})
-	return c.Put(ctx, bucket, "latest.json", bytes.NewReader(index), int64(len(index)), fmt.Sprintf("%x", sha256.Sum256(index)), "public, max-age=60")
+	return c.Put(ctx, bucket, "latest.json", index, "public, max-age=60")
 }
 
 func encode(out io.Writer, data snapshot, now time.Time) error {
