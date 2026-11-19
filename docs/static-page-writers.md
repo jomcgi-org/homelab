@@ -1,7 +1,8 @@
 # Publishing factory data for static pages
 
 A factory-cluster writer declares a Garage bucket claim in its chart with
-`access: write` and a `public.r2Bucket` mirror configured with `public.manifestName: latest.json`. The writer uses only the
+`access: write` and a public mirror. The mirror sets `public.r2Bucket: factory-public`,
+its own `public.r2Prefix` and `public.manifestName: latest.json`. The writer uses only the
 claim's scoped Garage S3 credential. The platform provisions the bucket and
 runs the mirror with its own destination credential. Writers create no buckets
 and hold no R2 admin credentials. Only place public data in a mirrored bucket.
@@ -12,12 +13,19 @@ for example `stars/sites-<sha256>.json`. Upload every payload with
 `Cache-Control: public, max-age=31536000, immutable`. After every upload
 succeeds, write the bucket's root `latest.json` last with the keys for that
 complete generation and `Cache-Control: public, max-age=60`. Give each
-independent writer its own bucket so publishers cannot overwrite each other's index.
+independent writer its own Garage bucket and R2 prefix so publishers cannot overwrite each other's index.
+
+All writers share one R2 bucket, `factory-public`, public at
+`https://factory-data.jomcgi.dev` (HOME-492). `rclone sync` deletes what its
+Garage bucket lacks, so each mirror writes and deletes only under its prefix.
+The root mirror excludes every prefix. The
+[library rule](../projects/shared/helm/factory-library/README.md#one-public-r2-bucket)
+and its repository test enforce this.
 
 The [mirror template](../projects/shared/helm/factory-library/chart/templates/_mirror.tpl)
 excludes exactly `/latest.json` from the immutable payload transfer and
-copies it after that transfer succeeds. Readers fetch this root index from R2
-and resolve its keys against the same bucket root. Retain payloads referenced
+copies it after that transfer succeeds. Readers fetch `<prefix>/latest.json`
+from R2 and resolve each key `k` in it as `<prefix>/k`. Retain payloads referenced
 by cached manifests. If a referenced object is temporarily unavailable, retry
 and keep serving the last complete snapshot. Verify the bytes and both cache
 policies at the public endpoint before switching readers.

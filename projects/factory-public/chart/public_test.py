@@ -205,6 +205,9 @@ def test_mirror_publishes_only_health_json_from_the_health_bucket():
         "command"
     ][2]
     assert "--exclude /health.json" in script
+    # Other charts mirror into these prefixes; the root sync keeps them.
+    assert "  --exclude '/hikes/**' \\\n" in script
+    assert "  --exclude '/stars-forecast/**' \\\n" in script
     assert (
         'copyto "SRC0:factory-health/health.json" "R2:$R2_BUCKET/health.json" \\\n'
         '    --ignore-times --header-upload "Cache-Control: public, max-age=60"'

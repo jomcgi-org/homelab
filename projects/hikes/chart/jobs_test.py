@@ -35,6 +35,18 @@ def test_writer_schedules_and_credentials():
         d["metadata"]["name"]: d["spec"] for d in documents if d["kind"] == "CronJob"
     }
     assert all(job["suspend"] for job in jobs.values())
+    # One prefix of the shared public R2 bucket (HOME-492).
+    mirror = jobs["hikes-hikes-mirror"]["jobTemplate"]["spec"]["template"]["spec"]
+    env = {e["name"]: e.get("value") for e in mirror["containers"][0]["env"]}
+    assert (env["R2_BUCKET"], env["R2_PREFIX"]) == ("factory-public", "hikes")
+    items = {
+        d["metadata"]["name"]: d["spec"]["itemPath"]
+        for d in documents
+        if d["kind"] == "OnePasswordItem"
+    }
+    assert items["hikes-hikes-mirror-r2"] == (
+        "vaults/k8s-homelab/items/factory-r2-public-mirror"
+    )
     assert jobs["hikes-refresh"]["schedule"] == "20 */2 * * *"
     assert jobs["hikes-prune"]["schedule"] == "40 * * * *"
     for mode in ("catalogue", "refresh", "prune"):

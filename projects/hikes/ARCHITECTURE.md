@@ -2,7 +2,7 @@
 
 The factory chart deploys three jobs with the Go entry point in `projects/scotland-connector/cmd/hikes-writer`. The manual catalogue job follows WalkHighlands area, sub-area and route links, then merges metadata by the hub's coordinate UUID. The refresh fetches locationforecast/2.0/complete on a shared rate limiter. Each successful response replaces one walk's daylight hours. The hourly prune filters elapsed hours.
 
-The last complete Garage snapshot supplies the next job's state. Jobs hash and spool schema-v2 JSON one walk at a time, upload the immutable object, then replace the manifest. All three jobs take an exclusive Linux flock on the same local-path volume before reading Garage and hold it through publication. The claim pins concurrent pods to the same node, and process exit releases the lock. The platform mirror copies payloads to the dedicated R2 bucket before the manifest. Readers validate the referenced digest.
+The last complete Garage snapshot supplies the next job's state. Jobs hash and spool schema-v2 JSON one walk at a time, upload the immutable object, then replace the manifest. All three jobs take an exclusive Linux flock on the same local-path volume before reading Garage and hold it through publication. The claim pins concurrent pods to the same node, and process exit releases the lock. The platform mirror copies payloads to prefix `hikes/` of the shared R2 bucket `factory-public` before the manifest. Readers validate the referenced digest.
 
 ```mermaid
 flowchart LR

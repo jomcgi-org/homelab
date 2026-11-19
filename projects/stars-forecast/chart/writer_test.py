@@ -43,4 +43,26 @@ def test_writer_and_mirror():
         if enabled:
             assert jobs["refresh"]["schedule"] == "0 */3 * * *"
             assert jobs["refresh"]["concurrencyPolicy"] == "Forbid"
-        assert jobs["stars-forecast-stars-forecast-mirror"]["suspend"]
+        mirror = jobs["stars-forecast-stars-forecast-mirror"]
+        assert mirror["suspend"]
+        # One prefix of the shared public R2 bucket (HOME-492).
+        env = {
+            e["name"]: e.get("value")
+            for e in mirror["jobTemplate"]["spec"]["template"]["spec"]["containers"][0][
+                "env"
+            ]
+        }
+        assert (env["R2_BUCKET"], env["R2_PREFIX"]) == (
+            "factory-public",
+            "stars-forecast",
+        )
+        item = next(
+            d
+            for d in docs
+            if d
+            and d["kind"] == "OnePasswordItem"
+            and d["metadata"]["name"] == "stars-forecast-stars-forecast-mirror-r2"
+        )
+        assert item["spec"]["itemPath"] == (
+            "vaults/k8s-homelab/items/factory-r2-public-mirror"
+        )

@@ -14,6 +14,7 @@ flowchart LR
   health["health CronJob (HOME-260)"] -- "write health.json" --> hgarage[("Garage factory-health")]
   garage -- "rclone, every minute" --> r2[("R2 factory-public")]
   hgarage -- "copy health.json only" --> r2
+  others["stars-forecast and hikes mirrors"] -- "own prefixes only" --> r2
   r2 --> cdn["factory-data.jomcgi.dev"]
 ```
 
@@ -32,12 +33,18 @@ with its mirror, and `factory-health` for the health publisher. They render:
 - an admission rule that lets only the mirror's ServiceAccount mount the R2
   Secret.
 
-Each run syncs every object except `manifest.json` with
-`Cache-Control: public, max-age=31536000, immutable`, then copies
-`manifest.json` with `Cache-Control: public, max-age=60`.
+Each run syncs every object except `manifest.json`, `health.json` and the
+excluded prefixes with `Cache-Control: public, max-age=31536000, immutable`,
+then copies `manifest.json` with `Cache-Control: public, max-age=60`.
 
 The publisher gets write access through its own `buckets:` entry without
-`public:`. Only this chart owns `public:` for this destination.
+`public:`. This chart owns the root of R2 `factory-public`. The
+`stars-forecast` and `hikes` charts mirror into prefixes `stars-forecast/`
+and `hikes/` with the same 1Password item (HOME-492). The root mirror lists
+both in `public.excludePrefixes`, so its sync does not delete them. Add the
+prefix of each new mirror to that list:
+`//bazel/helm/content_rules:r2_prefix_test` fails without it
+([library rule](../shared/helm/factory-library/README.md#one-public-r2-bucket)).
 
 ## Factory health
 
@@ -72,7 +79,7 @@ key out of the `factory-public` sync, and copies it to
 `https://factory-data.jomcgi.dev/health.json` with
 `Cache-Control: public, max-age=60`. The file is at most about 4 minutes old:
 2 minutes between writes, 1 minute between mirror runs and 60 s of cache.
-The mirror stays the only writer to R2.
+The mirrors stay the only writers to R2.
 
 The Worker check reads
 `/accounts/<account>/workers/scripts/jomcgi-site/deployments` with a
@@ -97,10 +104,11 @@ change of bucket or token. Record the result without credential values:
    IPv6 gets `AccessDenied`, even on `factory-public`.
 3. An authenticated listing shows that R2 bucket `factory-public` holds
    nothing that must be kept.
-4. The mirror is the only writer to R2 bucket `factory-public`. Every key
-   has one writer, and here that writer is the mirror. Another job that
-   writes to the R2 bucket directly loses its objects at the next sync. The
-   trips export (`projects/monolith/trips/export`) writes `trips/photos/`
+4. The factory mirrors are the only writers to R2 bucket `factory-public`.
+   Every key has one writer: the root mirror, or the mirror that owns the
+   key's prefix. Another job that writes to the R2 bucket directly loses its
+   objects at the next sync. The trips export
+   (`projects/monolith/trips/export`) writes `trips/photos/`
    to R2 `factory-public` directly when `TRIPS_EXPORT_PUBLIC_ENABLED` is
    `true`. Check that `projects/monolith/chart/values.yaml` sets it to
    `false`, and keep it `false` while the mirror runs.

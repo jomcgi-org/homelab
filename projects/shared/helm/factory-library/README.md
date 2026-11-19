@@ -212,6 +212,8 @@ buckets:
     public:
       r2Bucket: factory-public
       itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
+      # r2Prefix: stars-forecast  # Mirror into one prefix of the R2 bucket.
+      # excludePrefixes: [hikes]  # Root mirror only: prefixes of other mirrors.
       # schedule: "* * * * *"
       # suspend: true  # Stage the mirror while verifying its destination.
 ```
@@ -254,8 +256,8 @@ a mirror CronJob. Its default schedule is every minute with Forbid concurrency, 
 ServiceAccount and no mounted token. It uses the stock rclone/rclone image at
 the 1.76.0 multi-platform digest. The optional public.image accepts only the
 stock repository and a SHA-256 digest; tags fail rendering.
-Set public.suspend to true while checking a destination. Verify its dedicated
-bucket, credential scope and endpoint before enabling the first consumer.
+Set public.suspend to true while checking a destination. Verify its bucket,
+prefix, credential scope and endpoint before you enable the mirror.
 
 The digest comes from the
 [upstream 1.76.0 package](https://github.com/rclone/rclone/pkgs/container/rclone/1515701921?tag=1.76.0).
@@ -333,8 +335,32 @@ removed from R2 when its bucket lacks it.
 The publisher must write immutable objects before replacing its manifest.
 Keep objects referenced by a current or cached manifest until those readers
 expire; the mirror does not provide a transaction across concurrent writes.
-Only one chart should own public for a destination. The later publisher declares
-its own write bucket entry without public and cannot mount the R2 Secret.
+
+### One public R2 bucket
+
+Every public mirror writes to R2 bucket `factory-public`, which is public at
+`https://factory-data.jomcgi.dev`. All mirrors use the 1Password item
+`vaults/k8s-homelab/items/factory-r2-public-mirror` (HOME-492). A separate R2
+bucket for each writer needs its own token, 1Password item and public hostname.
+
+`rclone sync` deletes each destination object that its Garage bucket does not
+have. Thus each mirror other than the root mirror sets `public.r2Prefix`. The
+prefix is one path segment of lowercase letters, digits and `-`, and other
+values fail rendering. The sync, the manifest copy, `copyKeys` and every
+delete then stay under `R2:<r2Bucket>/<r2Prefix>/`. Readers get
+`https://factory-data.jomcgi.dev/<r2Prefix>/<key>`.
+
+The root mirror in `projects/factory-public` has no prefix. Its
+`public.excludePrefixes` lists the prefix of every other mirror, and its sync
+adds `--exclude '/<prefix>/**'` for each. rclone does not delete excluded
+objects. A mirror with `r2Prefix` cannot set `excludePrefixes`.
+
+The library refuses two mirrors in one chart with the same R2 bucket and
+prefix. `//bazel/helm/content_rules:r2_prefix_test` reads every factory
+application chart. It fails when two mirrors share an R2 bucket and prefix, or
+when the root mirror does not exclude a prefix (invariant LIB-7). A writer
+without its own mirror declares a write bucket entry without `public` and
+cannot mount the R2 Secret.
 
 ## Delivery split for HOME-137
 

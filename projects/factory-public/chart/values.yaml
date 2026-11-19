@@ -11,6 +11,12 @@ buckets:
       # cache (HOME-260). The sync leaves it out.
       copyKeys:
         - {bucket: factory-health, key: health.json}
+      # Other charts mirror into these prefixes of R2 factory-public
+      # (HOME-492). The root sync must not delete their objects.
+      # //bazel/helm/content_rules:r2_prefix_test keeps this list complete.
+      excludePrefixes:
+        - hikes
+        - stars-forecast
   # The health publisher's own bucket: its write key covers nothing in
   # factory-public (HOME-260).
   - name: factory-health

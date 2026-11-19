@@ -465,14 +465,21 @@ def test_private_bucket_and_custom_schedule(chart):
     ],
 )
 @pytest.mark.parametrize("name", ["manifest.json", "latest.json"])
+@pytest.mark.parametrize("prefix", [None, "stars-forecast"])
 def test_mirror_orders_writes_and_propagates_failures(
-    chart, tmp_path, manifest, fail, expected, name
+    chart, tmp_path, manifest, fail, expected, name, prefix
 ):
     config = bucket_config()
     if name == "latest.json":
         config["buckets"][0]["public"]["manifestName"] = name
+    if prefix:
+        config["buckets"][0]["public"]["r2Prefix"] = prefix
+    # Every R2 write and delete names this destination.
+    dest = "R2:factory-public" + (f"/{prefix}" if prefix else "")
     docs = objects(render(chart, config))
     container = mirror_container(docs)
+    names = {var["name"] for var in container["env"]}
+    assert ("R2_PREFIX" in names) == bool(prefix)
     env = {
         **os.environ,
         **{var["name"]: var["value"] for var in container["env"] if "value" in var},
@@ -521,7 +528,7 @@ def test_mirror_orders_writes_and_propagates_failures(
         return
     assert sync[4:] == [
         "GARAGE:factory-public",
-        "R2:factory-public",
+        dest,
         "--exclude",
         f"/{name}",
         "--header-upload",
@@ -532,13 +539,13 @@ def test_mirror_orders_writes_and_propagates_failures(
             assert calls[-1][4].startswith("/")
         assert calls[-1][4:] == [
             calls[-1][4] if name == "latest.json" else f"GARAGE:factory-public/{name}",
-            f"R2:factory-public/{name}",
+            f"{dest}/{name}",
             "--ignore-times",
             "--header-upload",
             "Cache-Control: public, max-age=60",
         ]
     if expected[-1] == "delete":
-        assert calls[-1][4:] == ["R2:factory-public", "--include", f"/{name}"]
+        assert calls[-1][4:] == [dest, "--include", f"/{name}"]
 
 
 def test_mirror_refuses_endpoint_outside_policy_before_running_rclone(chart):
@@ -587,10 +594,15 @@ def test_copied_key_has_its_own_read_claim(chart):
 
 
 @pytest.mark.parametrize("present,last", [("health.json", "copyto"), ("", "delete")])
+@pytest.mark.parametrize("prefix", [None, "status"])
 def test_mirror_copies_only_the_named_key_with_a_short_cache(
-    chart, tmp_path, present, last
+    chart, tmp_path, present, last, prefix
 ):
-    container = mirror_container(objects(render(chart, copy_config())))
+    config = copy_config()
+    if prefix:
+        config["buckets"][0]["public"]["r2Prefix"] = prefix
+    dest = "R2:factory-public" + (f"/{prefix}" if prefix else "")
+    container = mirror_container(objects(render(chart, config)))
     env = {
         **os.environ,
         **{var["name"]: var["value"] for var in container["env"] if "value" in var},
@@ -620,7 +632,7 @@ def test_mirror_copies_only_the_named_key_with_a_short_cache(
     # The sync leaves the copied key alone, so it never deletes it from R2.
     assert calls[0][4:10] == [
         "GARAGE:factory-public",
-        "R2:factory-public",
+        dest,
         "--exclude",
         "/manifest.json",
         "--exclude",
@@ -639,7 +651,7 @@ def test_mirror_copies_only_the_named_key_with_a_short_cache(
         assert calls[-1][3:] == [
             "copyto",
             "SRC0:factory-health/health.json",
-            "R2:factory-public/health.json",
+            f"{dest}/health.json",
             "--ignore-times",
             "--header-upload",
             "Cache-Control: public, max-age=60",
@@ -647,7 +659,7 @@ def test_mirror_copies_only_the_named_key_with_a_short_cache(
     else:
         assert calls[-1][3:] == [
             "delete",
-            "R2:factory-public",
+            dest,
             "--include",
             "/health.json",
         ]
@@ -679,3 +691,140 @@ def test_copy_keys_are_unique(chart):
     result = render(chart, config)
     assert result.returncode != 0
     assert "copyKeys" in result.stderr
+
+
+def run_fake_mirror(container, tmp_path):
+    """Run the mirror script against an rclone that logs and succeeds."""
+    env = {
+        **os.environ,
+        **{var["name"]: var["value"] for var in container["env"] if "value" in var},
+    }
+    env.update(
+        RCLONE_CONFIG_R2_ENDPOINT="https://" + env["R2_HOST"],
+        FAKE_LOG=str(tmp_path / "calls.jsonl"),
+    )
+    binary = tmp_path / "rclone"
+    binary.write_text(
+        "#!" + shutil.which("python3") + "\n"
+        "import json, os, sys\n"
+        "with open(os.environ['FAKE_LOG'], 'a') as out:\n"
+        "    out.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+    )
+    binary.chmod(0o755)
+    env["PATH"] = str(tmp_path) + os.pathsep + env["PATH"]
+    result = subprocess.run(container["command"], env=env, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    return [json.loads(line) for line in Path(env["FAKE_LOG"]).read_text().splitlines()]
+
+
+def test_root_mirror_leaves_excluded_prefixes_alone(chart, tmp_path):
+    config = bucket_config()
+    config["buckets"][0]["public"]["excludePrefixes"] = ["hikes", "stars-forecast"]
+    calls = run_fake_mirror(mirror_container(objects(render(chart, config))), tmp_path)
+    # rclone sync keeps excluded destination objects without --delete-excluded.
+    assert calls[0][3:] == [
+        "sync",
+        "GARAGE:factory-public",
+        "R2:factory-public",
+        "--exclude",
+        "/manifest.json",
+        "--exclude",
+        "/hikes/**",
+        "--exclude",
+        "/stars-forecast/**",
+        "--header-upload",
+        "Cache-Control: public, max-age=31536000, immutable",
+    ]
+    assert not any("--delete-excluded" in call for call in calls)
+
+
+def test_mirrors_into_one_r2_bucket_need_distinct_prefixes(chart):
+    config = bucket_config()
+    public = config["buckets"][0]["public"]
+    config["buckets"].append(
+        {"name": "hikes", "access": "write", "public": {**public, "r2Prefix": "hikes"}}
+    )
+    docs = objects(render(chart, config))
+    env = {
+        var["name"]: var.get("value")
+        for var in docs["CronJob/consumer-hikes-mirror"]["spec"]["jobTemplate"]["spec"][
+            "template"
+        ]["spec"]["containers"][0]["env"]
+    }
+    assert (env["R2_BUCKET"], env["R2_PREFIX"]) == ("factory-public", "hikes")
+    config["buckets"][1]["public"]["r2Prefix"] = "stars"
+    config["buckets"][0]["public"]["r2Prefix"] = "stars"
+    result = render(chart, config)
+    assert result.returncode != 0
+    assert "each R2 bucket and prefix must have only one mirror" in result.stderr
+
+
+@pytest.mark.parametrize("prefix", ["a", "stars-forecast", "x" * 63])
+def test_r2_prefix_accepts_one_path_segment(chart, prefix):
+    config = bucket_config()
+    config["buckets"][0]["public"]["r2Prefix"] = prefix
+    objects(render(chart, config))
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "",
+        "a/b",
+        "/a",
+        "a/",
+        "..",
+        "../a",
+        "a..b",
+        "a.b",
+        "Stars",
+        "-a",
+        "a-",
+        "a b",
+        "x" * 64,
+        5,
+        True,
+        ["a"],
+        {"a": 1},
+    ],
+)
+def test_r2_prefix_refuses_anything_but_one_safe_segment(chart, prefix):
+    config = bucket_config()
+    config["buckets"][0]["public"]["r2Prefix"] = prefix
+    result = render(chart, config)
+    assert result.returncode != 0
+    assert (
+        "factory-library: public.r2Prefix must be one path segment of lowercase "
+        "letters, digits and -"
+    ) in result.stderr
+
+
+@pytest.mark.parametrize(
+    "excludes,error",
+    [
+        ("hikes", "public.excludePrefixes must be a list"),
+        ({"hikes": 1}, "public.excludePrefixes must be a list"),
+        (["hikes", "hikes"], "public.excludePrefixes entries must be unique"),
+        (["../hikes"], "public.excludePrefixes entries must be unique"),
+        (["hikes/**"], "public.excludePrefixes entries must be unique"),
+        (["Hikes"], "public.excludePrefixes entries must be unique"),
+        ([""], "public.excludePrefixes entries must be unique"),
+        ([5], "public.excludePrefixes entries must be unique"),
+    ],
+)
+def test_exclude_prefixes_refuses_bad_entries(chart, excludes, error):
+    config = bucket_config()
+    config["buckets"][0]["public"]["excludePrefixes"] = excludes
+    result = render(chart, config)
+    assert result.returncode != 0
+    assert "factory-library: " + error in result.stderr
+
+
+def test_exclude_prefixes_is_only_for_a_root_mirror(chart):
+    config = bucket_config()
+    config["buckets"][0]["public"].update(r2Prefix="stars", excludePrefixes=["hikes"])
+    result = render(chart, config)
+    assert result.returncode != 0
+    assert (
+        "factory-library: public.excludePrefixes is only for a mirror without r2Prefix"
+    ) in result.stderr
