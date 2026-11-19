@@ -12,7 +12,7 @@ spec:
   source:
     repoURL: ghcr.io/jomcgi/homelab/charts
     chart: factory-landing
-    targetRevision: 0.28.1
+    targetRevision: 0.29.8
     helm:
       releaseName: factory-landing
   destination:
