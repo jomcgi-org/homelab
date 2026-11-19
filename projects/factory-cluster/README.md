@@ -942,7 +942,10 @@ directory that a running session uses.
 #### KagentSuspendTimedOut
 
 kagent v1.0.1 keeps the Actor SUSPENDING, refuses
-every turn and delete for the session, and holds its worker slot. To free
+every turn and delete for the session, and holds its worker slot. The reaper
+checks every 15 seconds and deletes the assigned worker after five minutes in
+SUSPENDING. If the same claim persists after that deadline, inspect the reaper
+logs and pod assignment. Use the following fallback to free
 every locked session:
 
 ```bash
@@ -986,6 +989,48 @@ kill %1
 Run it again until step 1 finds no session. Revert before the connector
 sends to the session again. A connector recovery hold left by a send to the
 crashed session needs `connector recovery confirm-fenced`.
+
+### Measure recovery after a busy coder pod disappears
+
+For the HOME-320 live drill, use a designated coder run after the reaper and
+connector revisions under test have rolled out. In a psql session on
+`factory_connector`, set `run_id` to that run and capture its busy attempt.
+The following query also pins the pod UID and session for the measurement.
+
+```sql
+SELECT a.id AS old_attempt, a.context_id AS old_session, f.uid AS pod_uid,
+       f.pod AS pod_name
+FROM delivery_attempt a JOIN worker_fence f ON f.attempt_id = a.id
+WHERE a.run_id = :'run_id' AND a.state = 'accepted' AND a.tool_running
+  AND f.namespace = 'factory-r-homelab' AND f.gone_at IS NULL
+  AND f.session_id = a.context_id
+\gset
+\echo :pod_name :pod_uid :old_attempt :old_session
+SELECT clock_timestamp() AS drill_start \gset
+```
+
+Delete the recorded coder pod on the factory cluster with its UID as the
+delete precondition. Leave recovery to the reaper and connector. In the same
+psql session, poll the query below until the replacement appears. Starting
+the clock before deletion and stopping it on observation gives an upper bound
+on the time to an accepted retry.
+
+```sql
+SELECT f.uid, f.gone_at, a.id AS new_attempt, a.context_id AS new_session,
+       clock_timestamp() - :'drill_start'::timestamptz AS elapsed,
+       EXISTS (SELECT FROM recovery_hold WHERE target_attempt_id = f.attempt_id) AS had_hold
+FROM worker_fence f JOIN delivery_attempt old ON old.id = f.attempt_id
+JOIN delivery_attempt a ON a.run_id = old.run_id AND a.seq = old.seq + 1
+WHERE old.run_id = :'run_id' AND old.error_class = 'abandoned'
+  AND f.attempt_id = :'old_attempt' AND f.uid = :'pod_uid' AND f.gone_at IS NOT NULL
+  AND a.id > f.attempt_id AND a.context_id <> :'old_session' AND a.task_id IS NOT NULL
+ORDER BY a.id LIMIT 1;
+```
+
+Record the deployed revision, run ID, old attempt, deletion time and first
+result row in the PR. The drill passes with a fresh session, elapsed time at
+most five minutes and `had_hold = false`. If the deadline passes with no row,
+record that outcome before using the manual recovery procedure.
 
 ## Not yet done
 

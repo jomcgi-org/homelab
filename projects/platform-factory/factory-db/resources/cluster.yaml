@@ -116,6 +116,19 @@ spec:
         connectionLimit: 8
         passwordSecret:
           name: factory-db-storyboard-login
+      # The worker reaper's attempt lookup and worker-fence writes only.
+      - name: factory_reaper
+        ensure: present
+        login: true
+        inherit: false
+        superuser: false
+        createdb: false
+        createrole: false
+        replication: false
+        bypassrls: false
+        connectionLimit: 4
+        passwordSecret:
+          name: factory-db-reaper-login
   backup:
     retentionPolicy: "14d"
     # The in-tree barman-cloud integration, as kagent-pg; CloudNativePG 1.31

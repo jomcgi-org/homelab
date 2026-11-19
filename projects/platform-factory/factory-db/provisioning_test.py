@@ -40,11 +40,13 @@ LOGINS = [
         "factory",
         "factory-storyboard-db",
     ),
+    ("factory-db-reaper-login", "factory_reaper", "factory", "factory-reaper-db"),
 ]
 # These logins share the connector database and own no database.
 DATABASES = {
     "factory_broker_accounting": "factory_connector",
     "factory_storyboard": "factory_connector",
+    "factory_reaper": "factory_connector",
 }
 REVIEWER_LOGIN = ("factory-db", "factory-db-reviewer-login")
 REVIEWER_CONNECTION = ("factory", "factory-reviewer-db")

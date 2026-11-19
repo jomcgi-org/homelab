@@ -169,6 +169,8 @@ def test_upstream_factory_contracts(tmp_path):
                     "CREATE ROLE factory_broker_accounting",
                     "-c",
                     "CREATE ROLE factory_storyboard",
+                    "-c",
+                    "CREATE ROLE factory_reaper",
                 ],
                 cwd=upstream,
                 env=env,

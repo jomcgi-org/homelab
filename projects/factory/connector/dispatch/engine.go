@@ -1777,6 +1777,17 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 		// Reassignment fenced this run's attempt; its cancellation reports it.
 		return nil
 	}
+	if a.State == store.AttemptAccepted || a.State == store.AttemptAmbiguous {
+		gone, err := e.st.WorkerGone(ctx, a)
+		if err != nil {
+			return err
+		}
+		if gone {
+			return e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
+				return e.st.RequestQuietCancel(ctx, tx, a.ID, r.ID, store.CancelLeaseExpired, a.EventCount)
+			})
+		}
+	}
 	if a.State == store.AttemptFailed && a.ErrorClass == ClassAbandoned {
 		// The liveness lease ended the turn; retry within the budget.
 		return e.engineeringFailure(ctx, r, wi, a, a.Error)
@@ -2174,6 +2185,13 @@ func (e *Engine) stepCancellation(ctx context.Context, c *store.Cancellation) er
 		// all-state listing covers the original caller's sessions, including
 		// a first send whose session the work item has not recorded yet.
 		t, err := e.taskWithMessage(ctx, ref, a.ContextID, a.MessageID)
+		if err != nil && escalate {
+			// A failed lookup can hide a completed send. Retry reconciliation
+			// before using worker-loss evidence to delete this session.
+			if gone, checkErr := e.st.WorkerGone(ctx, a); gone || checkErr != nil {
+				return errors.Join(err, checkErr)
+			}
+		}
 		switch {
 		case err == nil && t == nil && e.cfg.Now().Sub(a.SentAt) < notStartedWithin:
 			// A complete scan finds no task with the message after the

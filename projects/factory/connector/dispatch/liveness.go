@@ -98,6 +98,11 @@ func (e *Engine) escalating(ctx context.Context, c *store.Cancellation, a *store
 	if e.cfg.Now().Sub(c.RequestedAt) >= e.cfg.ForceDelete {
 		return true, nil
 	}
+	// Worker loss shortens the deadline. stepCancellation still reconciles
+	// the message and checks task metadata before it can delete the session.
+	if gone, err := e.st.WorkerGone(ctx, a); err != nil || gone {
+		return gone, err
+	}
 	return e.st.ForceDeleting(ctx, a.ContextID)
 }
 
