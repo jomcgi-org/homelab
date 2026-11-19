@@ -98,8 +98,9 @@ entries:
         from authentik.stages.authenticator import devices_for_user
         from time import time
         user = request.context["pending_user"]
-        # Preserve the application intent across enrollment and the second callback.
-        if request.context["source"].slug == "discord" and request.http_request.session.get("bosun_apply_until", 0) > time():
+        # A source callback with an application next URL belongs to that application.
+        direct = request.context.get("redirect") == "authentik_core:if-user"
+        if request.context["source"].slug == "discord" and direct and request.http_request.session.get("bosun_apply_until", 0) > time():
             return True
         if user.groups.exists() or any(devices_for_user(user)):
             return True
@@ -145,11 +146,13 @@ entries:
       expression: |
         from time import time
         from authentik.core.models import Group
-        if request.context["source"].slug == "discord" and request.http_request.session.pop("bosun_apply_until", 0) > time():
+        plan = request.context["flow_plan"]
+        direct = plan.context.get("redirect") == "authentik_core:if-user"
+        if request.context["source"].slug == "discord" and request.http_request.session.pop("bosun_apply_until", 0) > time() and direct:
             user = request.context["pending_user"]
             if not user.all_groups().filter(name="bosun-member").exists():
                 user.groups.add(Group.objects.get(name="bosun-applicants"))
-            request.context["flow_plan"].context["redirect"] = "/bosun/application-complete"
+            plan.context["redirect"] = "/bosun/application-complete"
         return True
   - model: authentik_policies.policybinding
     identifiers:

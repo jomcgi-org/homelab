@@ -134,3 +134,51 @@ def test_factory_operator_apps_require_admins():
             assert [node.value for node in lookup.value] == ["name", "authentik Admins"]
             assert binding.get("enabled", True) and not binding.get("negate")
     assert seen == expected
+
+
+def test_abandoned_apply_preserves_discord_application_login(monkeypatch):
+    import sys
+    from textwrap import indent
+    from time import time
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    app_return = "/application/o/authorize/?client_id=factory-edge"
+    user = Mock()
+    user.groups.exists.return_value = False
+    session = {"bosun_apply_until": time() + 1800}
+    plan = SimpleNamespace(context={"redirect": app_return})
+    request = SimpleNamespace(
+        context={
+            "flow_plan": plan,
+            **plan.context,
+            "source": SimpleNamespace(slug="discord"),
+            "pending_user": user,
+        },
+        http_request=SimpleNamespace(session=session),
+    )
+    monkeypatch.setitem(
+        sys.modules, "authentik.core.models", SimpleNamespace(Group=Mock())
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "authentik.stages.authenticator",
+        SimpleNamespace(devices_for_user=lambda user: []),
+    )
+    social = {e.get("id"): e for e in _entries("factory-social.yaml")}
+
+    def evaluate(policy):
+        scope = {"request": request, "ak_message": Mock()}
+        exec(
+            "def run():\n" + indent(social[policy]["attrs"]["expression"], "    "),
+            scope,
+        )
+        return scope["run"]()
+
+    assert not evaluate("social-session-ready")
+    user.groups.exists.return_value = True
+    assert evaluate("social-session-ready")
+    assert evaluate("record-application")
+    assert plan.context["redirect"] == app_return
+    assert "bosun_apply_until" not in session
+    user.groups.add.assert_not_called()
