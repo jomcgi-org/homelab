@@ -517,6 +517,10 @@ run_guard_case() {
 	local output="$TMP/$name.out" got_status=0
 	local guard_log="$TMP/$name.guards" base_log="$TMP/$name.base"
 	local bb_log="$TMP/$name.bb.log"
+	# Bare ci lints first: invariant records, then document bundles.
+	if [[ -z "${8:-}" && "$failed_guard" != check_invariants.py ]]; then
+		expected_guards="bazel/tools/format/document_bundles/check_bundles.py${expected_guards:+$'\n'$expected_guards}"
+	fi
 	if [[ "${8:-}" != ratchet ]]; then
 		expected_guards="./bazel/tools/format/invariants/check_invariants.py --records-only${expected_guards:+$'\n'$expected_guards}"
 	fi
@@ -539,9 +543,6 @@ run_guard_case() {
 		pass "$name status"
 	else
 		fail "$name status" "expected $want_status, got $got_status: $(tr '\n' ' ' <"$output")"
-	fi
-	if [[ ${#command_args[@]} -eq 0 ]]; then
-		expected_guards="bazel/tools/format/document_bundles/check_bundles.py${expected_guards:+$'\n'$expected_guards}"
 	fi
 	if [[ "$(<"$guard_log")" == "$expected_guards" ]]; then
 		pass "$name guard arguments and order"
