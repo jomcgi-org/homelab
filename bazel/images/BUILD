@@ -90,6 +90,8 @@ multirun(
         "//projects/ships:image.push",
         "//projects/stars-forecast/chart:chart.push",
         "//projects/stars-forecast:image.push",
+        "//projects/trips/chart:chart.push",
+        "//projects/trips/image:image.push",
     ],
     jobs = 0,  # 0 means unlimited parallelism
     visibility = ["//visibility:public"],
@@ -122,6 +124,7 @@ multirun(
         "//projects/scotland-connector/chart:chart.push",
         "//projects/ships/chart:chart.push",
         "//projects/stars-forecast/chart:chart.push",
+        "//projects/trips/chart:chart.push",
     ],
     jobs = 0,  # 0 means unlimited parallelism
     visibility = ["//visibility:public"],

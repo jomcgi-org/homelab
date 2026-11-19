@@ -61,6 +61,7 @@ oci_digest_manifest(
         "//projects/scotland-connector/image:image.info": "//projects/scotland-connector/image:image.push",
         "//projects/ships:image.info": "//projects/ships:image.push",
         "//projects/stars-forecast:image.info": "//projects/stars-forecast:image.push",
+        "//projects/trips/image:image.info": "//projects/trips/image:image.push",
     },
     visibility = ["//visibility:public"],
 )

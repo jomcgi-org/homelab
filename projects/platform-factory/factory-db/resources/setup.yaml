@@ -104,6 +104,18 @@ type: kubernetes.io/basic-auth
 stringData:
   username: factory_reaper
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: factory-db-trips-login
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: kubernetes.io/basic-auth
+stringData:
+  username: factory_trips
+---
 # factory-db's Garage key, filled by garage-init
 # (projects/platform-factory/garage). factory-db-init holds the Cluster back
 # until it is filled: an instance that starts without it never picks it up,
@@ -174,6 +186,7 @@ rules:
       - factory-db-broker-accounting-login
       - factory-db-storyboard-login
       - factory-db-reaper-login
+      - factory-db-trips-login
     verbs: [get, update]
   - apiGroups: [""]
     resources: [secrets]
