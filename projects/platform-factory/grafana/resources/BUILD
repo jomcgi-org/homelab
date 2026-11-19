@@ -19,5 +19,4 @@ py_test(
         "@platforms//cpu:x86_64",
         "@platforms//os:linux",
     ],
-    deps = ["@pip//pytest"],
 )
