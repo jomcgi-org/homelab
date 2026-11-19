@@ -22,6 +22,7 @@ js_library(
         ":node_modules/parse5",
         ":node_modules/playwright-core",
         ":node_modules/undici",
+        "//projects/factory-storyboard:web_fixtures",
         "//projects/jomcgi-site/data:snapshot_inputs",
         "//projects/jomcgi-site/edge:migration_routes",
         "//projects/jomcgi-site/web:budget_lib",

@@ -25,6 +25,7 @@ import {
   fixtureObject,
   matchRedirect,
   redirectRules,
+  serveRelease,
 } from "./release-fixture.mjs";
 import { checkReleasePage, enabledSections } from "./tier1.mjs";
 import {
@@ -712,4 +713,30 @@ test("each page is held to its own _headers policy", () => {
       }),
     /_headers CSP/,
   );
+});
+
+test("the release fixture serves the storyboard manifest and every referenced object", async (t) => {
+  const dist = mkdtempSync(join(tmpdir(), "storyboard-release-"));
+  t.after(() => rmSync(dist, { recursive: true, force: true }));
+  writeFileSync(
+    join(dist, "hikes.html"),
+    "<!--hikes-summary:start--><!--hikes-summary:end-->",
+  );
+  writeFileSync(join(dist, "404.html"), "Missing");
+  const server = await serveRelease(dist, "dev");
+  t.after(() => server.close());
+  const base = new URL("/data/factory/", server.origin);
+  const response = await fetch(new URL("manifest.json", base));
+  assert.equal(response.status, 200);
+  const manifest = await response.json();
+  for (const path of [
+    manifest.story,
+    ...Object.values(manifest.goals),
+    ...Object.values(manifest.issues),
+    ...Object.values(manifest.sessions),
+  ]) {
+    const object = await fetch(new URL(path, base));
+    assert.equal(object.status, 200, path);
+    assert.equal((await object.json()).version, 1);
+  }
 });

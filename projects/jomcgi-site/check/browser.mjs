@@ -7,18 +7,6 @@ import chrome, { inflate } from "@sparticuz/chromium";
 import axe from "axe-core";
 import { chromium } from "playwright-core";
 
-// Sections staged on the site before their publisher lands: /factory
-// (HOME-224) reads /data/factory/ before HOME-213 publishes it. Only these
-// sections' /data files may answer 404, so a misspelled data path still
-// fails. browser.test.mjs fails once data/sources.json publishes one of them,
-// so its entry goes when the publisher lands.
-export const PENDING_DATA = ["factory"];
-
-export function pendingData(url, pending = PENDING_DATA) {
-  const section = /^\/data\/([^/]+)\//.exec(new URL(url).pathname)?.[1];
-  return section !== undefined && pending.includes(section);
-}
-
 const NOT_FOUND =
   /^Failed to load resource: the server responded with a status of 404 \(.*\)$/;
 
@@ -154,8 +142,8 @@ export async function checkPage(
       // Suppress only that exact network message; every app error still fails.
       if (
         NOT_FOUND.test(message.text()) &&
-        ((status === 404 && message.location().url === url) ||
-          pendingData(message.location().url))
+        status === 404 &&
+        message.location().url === url
       )
         return;
       errors.push(`console: ${message.text()}`);
@@ -172,8 +160,7 @@ export async function checkPage(
       if (mapActive && isVectorTile(response)) tiles++;
       if (
         response.status() >= 400 &&
-        !(response.url() === url && response.status() === status) &&
-        !(response.status() === 404 && pendingData(response.url()))
+        !(response.url() === url && response.status() === status)
       ) {
         errors.push(`HTTP ${response.status()}: ${response.url()}`);
       }
