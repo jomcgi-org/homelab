@@ -29,17 +29,18 @@ flowchart LR
 | Component | Role | Code | Pin | Untrusted input | Credentials held |
 | --- | --- | --- | --- | --- | --- |
 | itsaplan | Owns requests and run history | `chart/templates/itsaplan.yaml` | Community 1.10.0 | Issues and comments | Database, S3 and OIDC secrets |
-| Connector | Claims runs and reconciles delivery | `connector/` | Built from this repo | Issue text, agent output and PR state | itsaplan agent keys, projected tokens and short-lived author App token |
+| connector | Claims runs and reconciles delivery | `connector/` | Built from this repo | Issue text, agent output and PR state | itsaplan agent keys, projected tokens and short-lived author App token |
 | kagent | Owns agents and sessions | `chart/Chart.yaml`, `deploy/values.yaml` | Charts 1.0.1, controller fork e3d14ee3dd62 | Tasks and session messages | Controller ServiceAccount |
-| Agent Substrate | Isolates actors and injects credentials at egress | `../platform-factory/substrate/` | Fork charts 1.0.1 | Workspace traffic | Actor identity and credentials scoped by policy |
+| Agent Substrate | Isolates actors and injects credentials at egress | `../platform-factory/substrate/` | Fork charts 1.0.1, source `7ce6f439` | Workspace traffic | Actor identity and credentials scoped by policy |
+| toolchain | Installs local checks for the coding binding | `toolchain/` | Built from this repo | Tool downloads | None |
 | Codex CLI | Edits and checks the bound repository | `deploy/values.yaml`, `toolchain/` | 0.169.1 | Task and checkout | Gateway placeholders |
 | Claude Code | Claude harness supported by the staged relay | Upstream kagent harness | 2.1.285 | Session messages | Gateway placeholder |
-| Broker | Relays model calls and mints repository credentials | `broker/` | Built from this repo | Actor requests | Codex OAuth grant, both App private keys and optional Claude OAuth token |
-| Reviewer | Publishes the independent required check | `reviewer/` | Built from this repo | PR content and review replies | Projected ServiceAccount token and scoped reviewer installation token |
+| broker | Relays model calls and mints repository credentials | `broker/` | Built from this repo | Actor requests | Codex OAuth grant, both App private keys and optional Claude OAuth token |
+| reviewer | Publishes the independent required check | `reviewer/` | Built from this repo | PR content and review replies | Projected ServiceAccount token and scoped reviewer installation token |
 | GitHub | Owns PRs, checks and the merge queue | External service | Hosted | Branches and PRs | GitHub App installations |
 | Hindsight | Stores reusable coding lessons | `../platform-factory/hindsight/` | 1.2.1 | Recalled and retained text | Database and model credentials |
-| Discord bridge | Routes mentions to Bosun | `discord/` | Built from this repo | Discord messages | Bot token and Discord memory access |
-| Alert relay | Forwards Alertmanager notifications to Discord | `alert-relay/` | Built from this repo | Alertmanager webhooks | Discord webhook URL |
+| discord | Routes mentions to Bosun | `discord/` | Built from this repo | Discord messages | Bot token and Discord memory access |
+| alert-relay | Forwards Alertmanager notifications to Discord | `alert-relay/` | Built from this repo | Alertmanager webhooks | Discord webhook URL |
 
 <a id="connector"></a>
 
@@ -68,6 +69,49 @@ Substrate's egress gateway admits actors to the broker's relay and to
 the chart's RoleBinding and the namespace's `namespacePolicies` entry.
 
 The chart installs CRDs and waits for database readiness before starting the API. It creates repository Agents after the controller is available.
+
+### Worker reaper
+
+The reaper reads Substrate's actor assignments from atepg and records the worker
+namespace, pod UID and session against the connector attempt. Every 15 seconds it
+checks the Kubernetes API for that UID. On disappearance the reaper records the actor UID and
+version. The connector expires that attempt's lease immediately and checks the
+task's outcome. A completed turn proceeds to result delivery. For a running
+turn, the connector journals a force deletion of its session. Only confirmation that the session is deleted
+or absent releases the attempt for a fresh-session retry. That fence covers a
+replacement worker assigned after the observed revision. API errors
+leave the attempt open. The reaper can also delete a worker whose actor has
+remained SUSPENDING for five minutes, using the assigned UID as a delete
+precondition. Each deletion first checks the reaper's own writer epoch (an
+advisory lock and the `reaper_writer` row) and is journaled in
+`worker_deletion` under a stable operation ID, so it never repeats. The
+reaper connects as `factory_reaper`, which can read open attempts and write
+only its fence and deletion tables. The connector retains ownership of
+session recovery calls.
+[Joe's scoped reaper decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-320#comment-2891).
+If Substrate clears an assignment before the reaper first reads it, the
+reaper has no pod UID, and the attempt recovers through the ordinary
+liveness lease.
+[Joe deferred that case](https://factory-plan.jomcgi.dev/factory/issue/HOME-320#comment-4033).
+A pod that is gone while Substrate already shows a replacement assignment
+is superseded by the replacement, so a turn stuck on the old pod also waits
+for the lease.
+[Joe deferred that case too](https://factory-plan.jomcgi.dev/factory/issue/HOME-320#comment-4256).
+The release also waits for kagent to confirm the session deletion, which
+normally takes seconds; if kagent cannot confirm, the lease frees the run.
+[Joe deferred that dependency](https://factory-plan.jomcgi.dev/factory/issue/HOME-320#comment-4259).
+
+The Substrate certificate controller
+parses the repeatable `--postgres-client` flag and appends the extra identity
+to the existing PostgreSQL clients. [Flag and startup wiring](https://github.com/kagent-dev/substrate/blob/7ce6f439239c568285f6d897aaa4afd47752c775/cmd/podcertcontroller/main.go#L89-L105),
+[signer client list](https://github.com/kagent-dev/substrate/blob/7ce6f439239c568285f6d897aaa4afd47752c775/cmd/podcertcontroller/internal/postgressigner/postgressigner.go#L88-L97).
+
+The reaper decodes Actor metadata and status from this release. Suspend writes
+SUSPENDING through UpdateActor, and the store stamps each update with its time.
+Five minutes since the latest mutation therefore gives a lower bound on time
+spent in that state. [Wire schema](https://github.com/kagent-dev/substrate/blob/7ce6f439239c568285f6d897aaa4afd47752c775/api/ateapi/v1/ateapi.proto#L412-L1015),
+[suspend transition](https://github.com/kagent-dev/substrate/blob/7ce6f439239c568285f6d897aaa4afd47752c775/cmd/ateapi/internal/controlapi/workflow_suspend.go#L182-L191),
+[update timestamp](https://github.com/kagent-dev/substrate/blob/7ce6f439239c568285f6d897aaa4afd47752c775/cmd/ateapi/internal/store/atepg/atepg.go#L438-L450).
 
 ### Sandbox checks
 

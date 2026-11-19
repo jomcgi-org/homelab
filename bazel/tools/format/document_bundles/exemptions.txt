@@ -20,12 +20,6 @@ projects/factory-storyboard/ARCHITECTURE.md: opening_fence: mermaid
 projects/factory-storyboard/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
 projects/factory-storyboard/README.md: link_if_present: ARCHITECTURE.md
 projects/factory/ARCHITECTURE.md: max_lines: 600
-projects/factory/ARCHITECTURE.md: missing component row for alert-relay
-projects/factory/ARCHITECTURE.md: missing component row for discord
-projects/factory/ARCHITECTURE.md: missing component row for reviewer
-projects/factory/ARCHITECTURE.md: missing component row for toolchain
-projects/factory/ARCHITECTURE.md: opening_fence: mermaid
-projects/factory/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
 projects/factory/README.md: missing required file
 projects/gke-apps/README.md: missing child context-forge-gateway
 projects/gke-apps/README.md: missing child embervm
