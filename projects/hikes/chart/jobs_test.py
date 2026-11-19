@@ -31,6 +31,28 @@ def pod_of(doc):
     return spec["template"]["spec"]
 
 
+def assert_no_r2(result, documents):
+    """No R2 credential, R2 endpoint or R2 egress renders in namespace hikes."""
+    for marker in (
+        "R2_BUCKET",
+        "factory-r2-public-mirror",
+        "r2-s3",
+        "r2.cloudflarestorage.com",
+    ):
+        assert marker not in result
+    assert {
+        d["metadata"]["name"]: d["spec"]["itemPath"]
+        for d in documents
+        if d["kind"] == "OnePasswordItem"
+    } == {"ghcr-imagepull-secret": "vaults/k8s-homelab/items/ghcr-read-permissions"}
+    assert [d["metadata"]["name"] for d in documents if d["kind"] == "Secret"] == [
+        "hikes-hikes-s3"
+    ]
+    for policy in (d for d in documents if d["kind"] == "CiliumNetworkPolicy"):
+        for rule in policy["spec"].get("egress", []):
+            assert "toCIDR" not in rule and "toEntities" not in rule
+
+
 def test_writer_schedules_and_credentials():
     result, documents = render()
     claims = {
@@ -41,10 +63,9 @@ def test_writer_schedules_and_credentials():
         == "true"
     }
     # The factory-public release mirrors the bucket (HOME-492). This
-    # namespace holds no R2 write credential and runs no mirror.
+    # namespace holds no R2 credential and runs no mirror.
     assert claims == {"hikes-hikes-s3": ("hikes", "readwrite")}
-    assert "R2_BUCKET" not in result
-    assert "factory-r2-public-mirror" not in result
+    assert_no_r2(result, documents)
     crons = {d["metadata"]["name"]: d for d in documents if d["kind"] == "CronJob"}
     # HOME-477 turned the writers on. They sync in wave 1, after the bootstrap.
     assert {name: d["spec"]["suspend"] for name, d in crons.items()} == {
@@ -92,20 +113,15 @@ def test_bootstrap_seeds_before_the_writers():
         "name": "writer-lock",
         "persistentVolumeClaim": {"claimName": "hikes-writer-lock"},
     } in pod["volumes"]
+    # The seed is the public jomcgi.dev copy of the hub snapshot, so the
+    # hook holds only the writer's Garage credential.
     env = {e["name"]: e for e in container["env"]}
-    assert env["SOURCE_BUCKET"]["value"] == "stars"
-    assert env["SOURCE_KEY"]["value"] == "walks.json"
+    assert env["SEED_URL"]["value"] == "https://jomcgi.dev/data/hikes/latest.json"
     assert {
         e["valueFrom"]["secretKeyRef"]["name"]
         for e in container["env"]
         if "valueFrom" in e
-    } == {"hikes-hikes-s3", "hikes-seed"}
-    items = {
-        d["metadata"]["name"]: d["spec"]["itemPath"]
-        for d in documents
-        if d["kind"] == "OnePasswordItem"
-    }
-    assert items["hikes-seed"] == "vaults/k8s-homelab/items/r2-s3-public-read"
+    } == {"hikes-hikes-s3"}
     policy = next(
         d
         for d in documents
@@ -113,14 +129,11 @@ def test_bootstrap_seeds_before_the_writers():
         and d["metadata"]["name"] == "hikes-bootstrap"
     )
     fqdns = {
-        f["matchName"]
+        f["matchName"]: [p["port"] for to in rule["toPorts"] for p in to["ports"]]
         for rule in policy["spec"]["egress"]
         for f in rule.get("toFQDNs", [])
     }
-    assert fqdns == {
-        "www.walkhighlands.co.uk",
-        "7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com",
-    }
+    assert fqdns == {"www.walkhighlands.co.uk": ["443"], "jomcgi.dev": ["443"]}
 
 
 def test_suspension_removes_the_bootstrap():
@@ -128,5 +141,13 @@ def test_suspension_removes_the_bootstrap():
     crons = [d for d in documents if d["kind"] == "CronJob"]
     assert len(crons) == 3 and all(d["spec"]["suspend"] for d in crons)
     assert not [d for d in documents if d["kind"] == "Job"]
-    assert "hikes-seed" not in result
-    assert "r2-s3-public-read" not in result
+    assert "SEED_URL" not in result
+    assert_no_r2(result, documents)
+
+
+def test_seed_url_must_be_https():
+    try:
+        render("seed.url=http://jomcgi.dev/data/hikes/latest.json")
+    except subprocess.CalledProcessError:
+        return
+    raise AssertionError("an http seed URL rendered")

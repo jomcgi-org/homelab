@@ -19,18 +19,18 @@ The schedules (UTC) follow the [met.no budget](../../docs/static-page-writers.md
 
 ```mermaid
 flowchart LR
-  hub[("R2 stars/walks.json")] -- "read once, read-only token" --> boot["hikes-bootstrap, wave 0"]
+  site[("jomcgi.dev/data/hikes, copy of hub stars/walks.json")] -- "read once, HTTPS, no credential" --> boot["hikes-bootstrap, wave 0"]
   boot -- "seed plus catalogue, one generation" --> garage[("Garage hikes")]
   garage --> cron["catalogue, refresh, prune, wave 1"]
   garage -- "factory-public hikes mirror" --> r2[("R2 factory-public/hikes/")]
 ```
 
 1. In wave 0, the bootstrap hook runs with its network policy and the lock claim `hikes-writer-lock`.
-2. If Garage has no `latest.json`, the hook reads the hub's `stars/walks.json` with the read-only token `r2-s3-public-read`. It needs schema version 2 and one or more walks. The seed keeps the walk IDs and last good forecasts of routes that the first catalogue cannot fetch.
+2. If Garage has no `latest.json`, the hook reads the hub's `stars/walks.json` from the jomcgi.dev site. The site copies that object without change to `/data/hikes/v/walks-<sha12>.json`, and `https://jomcgi.dev/data/hikes/latest.json` names the file. The hook needs the first 12 hex digits of the file's SHA-256 to match its name. It also needs schema version 2 and one or more walks. The seed keeps the walk IDs and last good forecasts of routes that the first catalogue cannot fetch.
 3. The hook runs the catalogue over the seed and publishes one generation. If the catalogue fails, the hook publishes nothing and the sync fails. The next sync tries again.
 4. In wave 1, Argo CD syncs the three CronJobs. The first refresh reads the bootstrap generation.
 
-After the first generation, the hook finds `latest.json` and stops before it takes the lock. The `factory-public` release mirrors the Garage bucket `hikes` to prefix `hikes/` of R2 bucket `factory-public` (HOME-492). Its `hikes` source runs since HOME-477. This chart holds no R2 write credential.
+After the first generation, the hook finds `latest.json` and stops before it takes the lock. The `factory-public` release mirrors the Garage bucket `hikes` to prefix `hikes/` of R2 bucket `factory-public` (HOME-492). Its `hikes` source runs since HOME-477. This chart holds no R2 credential. After HOME-521, the site copies the factory generation, so a later bootstrap seeds from the last public factory generation.
 
 ## Live check
 
@@ -59,7 +59,7 @@ HOME-522 retires the hub scrape, refresh and prune entries, after a check of the
 
 ## Rollback
 
-1. To stop the jobs, set `suspendWriters: true`. Argo CD suspends the CronJobs and removes the bootstrap hook and its seed credential.
+1. To stop the jobs, set `suspendWriters: true`. Argo CD suspends the CronJobs and removes the bootstrap hook.
 2. To stop the mirror, set the `hikes` source in `projects/factory-public/chart/values.yaml` to `suspend: true`. R2 keeps what it has.
 
 Readers use the hub snapshot until HOME-521, so neither step changes a public page.

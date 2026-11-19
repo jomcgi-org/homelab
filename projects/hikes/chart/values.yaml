@@ -3,19 +3,19 @@ image:
   digest: ""
 buckets:
   # The factory-public release mirrors this bucket to R2 (HOME-492). This
-  # chart holds no R2 write credential.
+  # chart holds no R2 credential.
   - name: hikes
     access: readwrite
 # Off since HOME-477. True suspends every CronJob and removes the bootstrap
-# hook and its seed credential.
+# hook.
 suspendWriters: false
 # The bootstrap hook reads the hub's schema-v2 walk snapshot once, only while
-# Garage has no generation. The token is read-only.
+# Garage has no generation. It reads the unchanged public copy that the
+# jomcgi.dev site publishes, and checks the SHA-256 prefix in the file name.
+# The hook holds no R2 credential. For the seed, its egress adds only this
+# host, port 443.
 seed:
-  endpoint: https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
-  bucket: stars
-  key: walks.json
-  itemPath: vaults/k8s-homelab/items/r2-s3-public-read
+  url: https://jomcgi.dev/data/hikes/latest.json
 # UTC. met.no allows 20 requests/s for each application. Each refresh job
 # starts up to about 15/s, so no two may overlap. See "met.no budget" in
 # docs/static-page-writers.md.
