@@ -1,0 +1,16 @@
+{{- if .Values.workloadsEnabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: trips-ingest
+spec:
+  podSelector: {matchLabels: {app: trips-ingest}}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: edge}
+          podSelector:
+            matchLabels: {gateway.envoyproxy.io/owning-gateway-name: edge}
+      ports: [{protocol: TCP, port: 8080}]
+{{- end }}

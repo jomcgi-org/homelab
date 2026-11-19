@@ -10115,3 +10115,8 @@ filegroup(
     ],
     visibility = ["//:__pkg__"],
 )
+
+exports_files(
+    ["trips/testdata/geotagged.jpg"],
+    visibility = ["//projects/trips/ingest:__pkg__"],
+)

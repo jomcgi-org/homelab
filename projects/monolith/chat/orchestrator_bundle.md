@@ -111,3 +111,4 @@ Top-level projects/ directories:
 - shared
 - ships
 - stars-forecast
+- trips

@@ -125,6 +125,17 @@ spec:
         - ports:
             - port: "3000"
               protocol: TCP
+    {{- if .Values.tripsIngestEnabled }}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: trips
+            app: trips-ingest
+      toPorts:
+        - ports: [{port: "8080", protocol: TCP}]
+    - toFQDNs: [{matchName: jomcgi.cloudflareaccess.com}]
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
+    {{- end }}
     # Grafana (projects/platform-factory/grafana).
     - toEndpoints:
         - matchLabels:

@@ -1,0 +1,30 @@
+contents:
+  repositories:
+    - https://dl-cdn.alpinelinux.org/alpine/v3.22/main
+    - https://dl-cdn.alpinelinux.org/alpine/v3.22/community
+  keyring:
+    - https://alpinelinux.org/keys/alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub
+    - https://alpinelinux.org/keys/alpine-devel@lists.alpinelinux.org-5261cecb.rsa.pub
+  packages:
+    - alpine-baselayout
+    - ca-certificates
+    - exiftool
+    - imagemagick
+    - imagemagick-jpeg
+    - imagemagick-webp
+    - rclone
+archs:
+  - x86_64
+accounts:
+  groups:
+    - groupname: nonroot
+      gid: 65532
+  users:
+    - username: nonroot
+      uid: 65532
+      gid: 65532
+  run-as: 65532
+environment:
+  PATH: /usr/local/bin:/usr/bin:/bin
+entrypoint:
+  command: /usr/local/bin/ingest

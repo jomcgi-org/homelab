@@ -1,0 +1,44 @@
+{{- if .Values.tripsIngestEnabled }}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: trips-access
+spec:
+  targetRefs:
+    - {group: gateway.networking.k8s.io, kind: HTTPRoute, name: trips-ingest}
+  jwt:
+    providers:
+      - name: cloudflare-access
+        issuer: https://jomcgi.cloudflareaccess.com
+        remoteJWKS:
+          cacheDuration: 300s
+          uri: https://jomcgi.cloudflareaccess.com/cdn-cgi/access/certs
+        extractFrom:
+          headers: [{name: Cf-Access-Jwt-Assertion}]
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: trips-ingest
+spec:
+  parentRefs:
+    - {name: edge, namespace: edge}
+  hostnames: [private.jomcgi.dev]
+  rules:
+    - matches:
+        - path: {type: Exact, value: /api/trips/ingest}
+          method: POST
+      backendRefs: [{name: trips-ingest, namespace: trips, port: 8080}]
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: edge-trips-ingest
+  namespace: trips
+spec:
+  from: [{group: gateway.networking.k8s.io, kind: HTTPRoute, namespace: edge}]
+  to: [{group: "", kind: Service, name: trips-ingest}]
+{{- end }}

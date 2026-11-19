@@ -11,7 +11,7 @@ const hash = (body) => createHash("sha256").update(body).digest("hex");
 const escape = (text) =>
   String(text).replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
 
-export function validateExport(manifest) {
+export function validateExport(manifest, bucket = "stars") {
   if (
     !manifest ||
     !Number.isFinite(Date.parse(manifest.asOf)) ||
@@ -63,7 +63,9 @@ export function validateExport(manifest) {
       ? "/data/trips/photos"
       : mode === "private"
         ? null
-        : "https://factory-data.jomcgi.dev/trips/photos";
+        : bucket === "trips-public"
+          ? "https://trips-data.jomcgi.dev/trips/photos"
+          : "https://factory-data.jomcgi.dev/trips/photos";
   if (manifest.photoMode !== mode || manifest.photoBase !== base)
     throw new Error("Invalid trip photo destination");
 }
@@ -78,7 +80,7 @@ async function parallel(items, run) {
 export async function snapshotTrips({ bucket, files }, get, out) {
   const { body } = await get(bucket, files.export);
   const manifest = JSON.parse(body);
-  validateExport(manifest);
+  validateExport(manifest, bucket);
   const root = join(out, "trips");
   await mkdir(join(root, "v"), { recursive: true });
   const latest = {

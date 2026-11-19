@@ -1,0 +1,18 @@
+image:
+  repository: ghcr.io/jomcgi/homelab/projects/trips
+  digest: ""
+workloadsEnabled: false
+exportSuspended: true
+publicBase: https://trips-data.jomcgi.dev
+originalsClaim: trips-originals
+databaseSecret: trips-postgres
+buckets:
+  - name: trips-public
+    access: write
+    public:
+      suspend: true
+      manifestName: latest.json
+      r2Bucket: trips-public
+      itemPath: vaults/k8s-homelab/items/trips-public-mirror
+# Size the private volume from the hub inventory before migration.
+originalsSize: 128Gi

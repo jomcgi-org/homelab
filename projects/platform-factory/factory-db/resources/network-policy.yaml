@@ -52,6 +52,9 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: hindsight-discord
             app.kubernetes.io/name: hindsight
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: trips
+            app.kubernetes.io/name: trips
         # Replication and pg_basebackup between instances.
         - matchLabels:
             cnpg.io/cluster: factory-db

@@ -100,3 +100,6 @@ proxy:
       memory: 64Mi
     limits:
       memory: 256Mi
+
+# Enable after HOME-401 upload and storage parity checks.
+tripsIngestEnabled: false
