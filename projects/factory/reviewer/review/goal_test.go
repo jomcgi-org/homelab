@@ -736,17 +736,18 @@ func TestIssueCriteriaCount(t *testing.T) {
 		"Example:\n```\nDone when:\n1. x\n```\nDone when:\n1. a\n2. b":                2,
 		"Done when:\n1. a\n```\n2. b\n```":                                            0,
 		"Done when:\n```\n1. a\n```":                                                  0,
+		"Done when:\r\n1. a\r\n2.\r\n   b\r\n":                                        2,
 		"Done when:\n1. a\n2.\tb":                                                     2,
 		"Done when:\n1) a\n2) b":                                                      2,
 		"Done when:\n1. a\n2) b":                                                      0,
 		"Done when:\n- a\n  - nested":                                                 0,
 		"Done when:\n- a\n+ b":                                                        0,
-		"Done when:\n1. a\n2.":                                                        0,
+		"Done when:\n1. a\n2.":                                                        2,
 		"Done when:\n1. a\n   more text for a\n2. b":                                  2,
 		"Done when:\n1. a\n- mixed":                                                   0,
 		"Done when:\n1. a\nDone when:\n1. b":                                          0,
 		"Done when:\n   indented first":                                               0,
-		"Done when:\n1. ":                                                             0,
+		"Done when:\n1. ":                                                             1,
 	} {
 		if got := issueCriteria(&IssueContext{Issue: &IssueEvidence{Key: "HOME-1", Trusted: true, Description: desc}}); got != want {
 			t.Errorf("%q: %d criteria, want %d", desc, got, want)
@@ -797,12 +798,31 @@ func TestGoalMoveIgnoresCountAndReplayWithdrawsNothing(t *testing.T) {
 		{ID: "HOME-1:goal:criterion-3", Severity: SeverityMedium},
 		{ID: "HOME-2:goal:criterion-3", Severity: SeverityMedium},
 	}
-	disagrees := &GoalCheck{Overall: goalNotMet, Criteria: goalVerdicts(1, goalNotMet), Counted: 2}
+	// An answer for the new issue that disagrees with the service's count
+	// withdraws nothing, even when it passes.
+	disagrees := &GoalCheck{Overall: goalMet, Criteria: goalVerdicts(1, goalMet), Counted: 2}
 	r := &Report{}
 	applyGoal(r, prior, "HOME", "HOME-2", disagrees)
-	a := Assess(r, prior)
-	if len(a.Withdrawn) != 1 || a.Withdrawn[0].ID != "HOME-1:goal:criterion-3" {
-		t.Fatalf("withdrawn = %+v", a.Withdrawn)
+	if a := Assess(r, prior); len(a.Withdrawn) != 0 {
+		t.Fatalf("disagreeing answer withdrew %+v", a.Withdrawn)
+	}
+	// No answer for the new issue withdraws nothing either.
+	r = &Report{}
+	applyGoal(r, prior, "HOME", "HOME-2", nil)
+	if a := Assess(r, prior); len(a.Withdrawn) != 0 {
+		t.Fatalf("unavailable answer withdrew %+v", a.Withdrawn)
+	}
+	// A valid answer that agrees, or an issue with no countable list, does.
+	for _, g := range []*GoalCheck{
+		{Overall: goalMet, Criteria: goalVerdicts(2, goalMet), Counted: 2},
+		{Overall: goalMet, Criteria: goalVerdicts(1, goalMet)},
+	} {
+		r = &Report{}
+		applyGoal(r, prior, "HOME", "HOME-2", g)
+		a := Assess(r, prior)
+		if !slices.ContainsFunc(a.Withdrawn, func(w Blocked) bool { return w.ID == "HOME-1:goal:criterion-3" }) {
+			t.Fatalf("withdrawn = %+v", a.Withdrawn)
+		}
 	}
 	r = &Report{}
 	replayGoal(r, prior, "HOME", "HOME-2", &GoalCheck{Overall: goalMet, Criteria: goalVerdicts(1, goalMet), Counted: 1})
