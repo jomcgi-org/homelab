@@ -79,6 +79,7 @@ multirun(
         "//projects/operators/oci-model-cache/helm/oci-model-cache-operator:chart.push",
         "//projects/operators/oci-model-cache:image.push",
         "//projects/platform-factory/prometheus/resources/alert-relay/chart:chart.push",
+        "//projects/platform-factory/substrate/credential-provider:image.push",
         "//projects/scotland-connector/chart:chart.push",
         "//projects/scotland-connector/image:image.push",
         "//projects/ships/chart:chart.push",
