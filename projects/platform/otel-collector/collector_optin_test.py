@@ -31,6 +31,7 @@ import os
 import re
 import ssl
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -1417,7 +1418,8 @@ def test_factory_node_agent_pipelines():
     assert set(pipelines) == {"logs", "logs/audit", "metrics/node"}
     assert pipelines["logs/audit"]["receivers"] == ["file_log/audit"]
     assert config["receivers"]["file_log/audit"]["include"] == [
-        "/var/log/k3s-audit/audit.log"
+        "/var/log/k3s-audit/audit.log",
+        "/var/log/k3s-audit/audit-*.log",
     ]
     node = pipelines["metrics/node"]
     assert node["receivers"] == [
@@ -1786,3 +1788,74 @@ def test_redaction_is_off_in_hub_overlays():
         for doc in docs:
             if doc["kind"] == "ConfigMap" and "collector.yaml" in doc.get("data", {}):
                 assert "transform/redact" not in doc["data"]["collector.yaml"]
+
+
+@pytest.mark.skipif(
+    "OTELCOL_BIN" not in os.environ, reason="requires the chart's collector binary"
+)
+def test_factory_audit_export_after_offline_rotation(tmp_path):
+    config = _named_collector_config(_render_overlay("values-factory"), LOGS)
+    pipeline = config["service"]["pipelines"]["logs/audit"]
+    receiver = config["receivers"]["file_log/audit"]
+    receiver["include"] = [
+        str(tmp_path / Path(path).name) for path in receiver["include"]
+    ]
+    pipeline["processors"].remove("memory_limiter")
+    pipeline["exporters"] = ["file"]
+    state = tmp_path / "state"
+    output = tmp_path / "export.json"
+    config = {
+        "extensions": {
+            "file_storage/logs": {"directory": str(state), "create_directory": True}
+        },
+        "receivers": {"file_log/audit": receiver},
+        "processors": {
+            name: config["processors"][name] for name in pipeline["processors"]
+        },
+        "exporters": {"file": {"path": str(output), "append": True}},
+        "service": {
+            "extensions": ["file_storage/logs"],
+            "pipelines": {"logs/audit": pipeline},
+        },
+    }
+    conf = tmp_path / "config.yaml"
+    conf.write_text(yaml.safe_dump(config))
+    active = tmp_path / "audit.log"
+    path = "/api/v1/namespaces/default/pods/example/exec"
+
+    def append(event_id):
+        event = {
+            "auditID": event_id,
+            "requestURI": path + "?command=secret-password",
+            "annotations": {"private": "secret-password" * 150},
+        }
+        with active.open("a") as stream:
+            print(json.dumps(event), file=stream)
+
+    def collect(*expected):
+        proc = subprocess.Popen([os.environ["OTELCOL_BIN"], "--config", str(conf)])
+        try:
+            for _ in range(150):
+                assert proc.poll() is None
+                if output.exists() and all(
+                    event in output.read_text() for event in expected
+                ):
+                    break
+                time.sleep(0.1)
+            else:
+                pytest.fail(f"timed out waiting for audit events {expected}")
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+
+    append("audit-first")
+    collect("audit-first")
+    append("audit-offline")
+    active.rename(tmp_path / "audit-2026-11-19T12-00-00.000.log")
+    append("audit-current")
+    collect("audit-current", "audit-offline")
+    exported = output.read_text()
+    assert "secret-password" not in exported
+    assert exported.count(path) == 3
+    for event_id in ("audit-first", "audit-offline", "audit-current"):
+        assert exported.count(event_id) == 1

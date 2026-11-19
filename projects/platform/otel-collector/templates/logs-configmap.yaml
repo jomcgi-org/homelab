@@ -43,7 +43,11 @@ data:
     receivers:
       {{- if .Values.logs.audit }}
       file_log/audit:
-        include: [/var/log/k3s-audit/audit.log]
+        include: [/var/log/k3s-audit/audit.log, /var/log/k3s-audit/audit-*.log]
+        operators:
+          - type: json_parser
+            parse_to: body
+            on_error: drop
         start_at: beginning
         storage: file_storage/logs
       {{- end }}
@@ -123,6 +127,20 @@ data:
       {{- end }}
 
     processors:
+      {{- if .Values.logs.audit }}
+      transform/audit:
+        error_mode: propagate
+        log_statements:
+          - context: log
+            statements:
+              - set(cache["event"], body)
+              - set(body, "Kubernetes API audit")
+              - set(attributes["audit.id"], cache["event"]["auditID"])
+              - set(attributes["audit.verb"], cache["event"]["verb"])
+              - set(attributes["audit.stage"], cache["event"]["stage"])
+              - set(attributes["audit.user"], cache["event"]["user"]["username"]) where cache["event"]["user"] != nil
+              - set(attributes["audit.path"], Split(cache["event"]["requestURI"], "?")[0])
+      {{- end }}
       memory_limiter:
         check_interval: 1s
         limit_percentage: 80
@@ -431,7 +449,7 @@ data:
         {{- if .Values.logs.audit }}
         logs/audit:
           receivers: [file_log/audit]
-          processors: [memory_limiter, resource/environment, resource/cluster, batch]
+          processors: [memory_limiter, transform/audit, resource/environment, resource/cluster, batch]
           exporters: [{{ $hcExporter }}]
         {{- end }}
         logs:
