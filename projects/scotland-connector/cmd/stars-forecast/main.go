@@ -155,14 +155,33 @@ func history(grid []site, months []month) []historySite {
 	return out
 }
 
-func refresh(sites []site, cache map[string]forecast, ticks <-chan time.Time, client *http.Client) int {
+// The met.no budget for this writer. The provider allows 20 requests per second.
+const (
+	requestsPerSecond = 15
+	maxInFlight       = 15
+	// Round up, so that any 16 starts span at least one second.
+	requestGap = (time.Second + requestsPerSecond - 1) / requestsPerSecond
+)
+
+// pace returns a wait function that spaces its returns at least requestGap
+// apart. It measures from the previous start, not from a ticker phase, so a
+// stall does not release a burst of stale ticks.
+func pace() func() {
+	var last time.Time
+	return func() {
+		time.Sleep(time.Until(last.Add(requestGap)))
+		last = time.Now()
+	}
+}
+
+func refresh(sites []site, cache map[string]forecast, wait func(), client *http.Client) int {
 	var wg sync.WaitGroup
 	hoursBySite := make([][]hour, len(sites))
 	fetched := make([]bool, len(sites))
-	workers := make(chan struct{}, 15)
+	workers := make(chan struct{}, maxInFlight)
 	for i, s := range sites {
 		workers <- struct{}{}
-		<-ticks
+		wait()
 		wg.Add(1)
 		go func(i int, s site) {
 			defer wg.Done()
@@ -251,8 +270,7 @@ func run(ctx context.Context, mode string) error {
 	now := time.Now().UTC()
 	cutoff := now.Truncate(time.Hour)
 	client := &http.Client{Timeout: 30 * time.Second}
-	ticker := time.NewTicker(time.Second / 15)
-	defer ticker.Stop()
+	wait := pace()
 	sites := make([]result, len(grid))
 	darkness := "none"
 	var latest *string
@@ -271,7 +289,7 @@ func run(ctx context.Context, mode string) error {
 				delete(cache, id)
 			}
 		}
-		n := refresh(group, cache, ticker.C, client)
+		n := refresh(group, cache, wait, client)
 		successes += n
 		changed := n > 0
 		for id, f := range cache {
