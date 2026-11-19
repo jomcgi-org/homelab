@@ -49,7 +49,7 @@ Every 2 minutes it checks two components:
 | Component | Up when |
 | --- | --- |
 | `factory-cluster` | The Argo CD `argocd` Application is Healthy and reconciled within 15 minutes. It reads that one Application with a get-only Role in `argocd`. |
-| `jomcgi-site-worker` | The jomcgi.dev Worker's latest Cloudflare deployment has a deployment ID and a creation time no later than the check time. |
+| `jomcgi-site-worker` | The jomcgi.dev Worker's latest Cloudflare deployment has a deployment ID and a creation time no later than the moment the Cloudflare response arrived. |
 
 Then it writes `health.json` to the Garage bucket `factory-health` with its
 own signed PUT. Each entry shows only the component name and its up or down

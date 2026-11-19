@@ -25,6 +25,10 @@ KEY = "health.json"
 SKEW = 300
 
 
+def clock():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
 def parse(timestamp):
     return datetime.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
 
@@ -59,15 +63,17 @@ def cluster(now, env):
 
 def worker(now, env):
     # The Worker's latest deployment must have a Cloudflare deployment ID and
-    # a creation time no later than the check time.
+    # a creation time no later than the moment its response arrived, so a
+    # deployment made during this run still counts.
     account = quote(env["CLOUDFLARE_ACCOUNT_ID"], safe="")
     body = cloudflare(f"/accounts/{account}/workers/scripts/{WORKER}/deployments", env)
+    checked = clock()
     deployments = body["result"]["deployments"] if body.get("success") else []
     if not deployments:
         return False
     latest = max(deployments, key=lambda d: parse(d["created_on"]))
     created = parse(latest["created_on"])
-    return bool(latest["id"]) and created <= now
+    return bool(latest["id"]) and created <= checked
 
 
 CHECKS = {"factory-cluster": cluster, "jomcgi-site-worker": worker}
@@ -148,7 +154,7 @@ def put(body, env, now):
 
 
 def main():
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = clock()
     env = os.environ
     results = {}
     for name, check in CHECKS.items():

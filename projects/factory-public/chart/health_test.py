@@ -97,20 +97,23 @@ def test_worker_reads_the_latest_deployment_id_and_creation_time(monkeypatch):
         return body
 
     monkeypatch.setattr(health, "cloudflare", fake)
+    monkeypatch.setattr(health, "clock", lambda: NOW)
     assert health.worker(NOW, ENV) is True
     assert seen == ["/accounts/account/workers/scripts/jomcgi-site/deployments"]
     # The latest deployment decides, even when it lacks an ID.
     body["result"]["deployments"][1]["id"] = ""
     assert health.worker(NOW, ENV) is False
-    # A creation time after the check time is not a deployment that happened,
-    # even by a few seconds.
+    # A creation time after the response arrived is not a deployment that
+    # happened, even by a second.
     deployment = body["result"]["deployments"][1]
     deployment.update(id="new", created_on="2026-11-19T08:00:00Z")
     assert health.worker(NOW, ENV) is True
     deployment["created_on"] = "2026-11-19T08:00:01Z"
     assert health.worker(NOW, ENV) is False
-    deployment["created_on"] = "2026-11-19T08:02:00Z"
-    assert health.worker(NOW, ENV) is False
+    # A deployment made after the run started but before the response counts.
+    later = NOW + datetime.timedelta(seconds=5)
+    monkeypatch.setattr(health, "clock", lambda: later)
+    assert health.worker(NOW, ENV) is True
     body["result"]["deployments"] = []
     assert health.worker(NOW, ENV) is False
     body["success"] = False
