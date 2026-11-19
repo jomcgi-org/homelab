@@ -70,6 +70,7 @@ type fakeBranch struct {
 	ahead   int
 	head    string
 	subject string
+	message string
 }
 
 type fakePR struct {
@@ -105,6 +106,7 @@ func (g *fakeGitHub) push(branch, sha, subject string) {
 	}
 	b.ahead++
 	b.head, b.subject = sha, subject
+	b.message = subject + "\n\nActivation: none"
 }
 
 func (g *fakeGitHub) byNumber(n int) *fakePR {
@@ -358,11 +360,15 @@ func (g *fakeGitHub) PullRequestDetail(_ context.Context, _ string, number int) 
 	}
 	g.sync(p)
 	if p.lagSHA != "" {
-		d := &github.PullRequestDetail{PullRequest: p.pr, Reviews: p.reviews, Threads: p.threads}
+		d := &github.PullRequestDetail{
+			PullRequest: p.pr, Reviews: p.reviews, Threads: p.threads,
+			HeadMessage: g.branches[p.pr.HeadRef].message,
+		}
 		p.queue, p.pr.State, p.pr.Merged, p.mergeSHA, p.lagSHA = "", "closed", true, p.lagSHA, ""
 		return d, nil
 	}
 	return &github.PullRequestDetail{
+		HeadMessage: g.branches[p.pr.HeadRef].message,
 		PullRequest: p.pr, MergedAt: p.mergedAt, MergeCommitSHA: p.mergeSHA, MergeQueueState: p.queue,
 		MergeGroupSHA: p.groupSHA, Mergeable: p.mergeable,
 		Reviews: append([]github.Review(nil), p.reviews...), Threads: append([]github.ReviewThread(nil), p.threads...),

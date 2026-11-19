@@ -23,6 +23,7 @@ func TestEnqueueDeferredOnlyRecoversRollbackAbandonment(t *testing.T) {
 		{"retries exhausted", store.OutboxDeferredStart, "connection refused", false, false},
 		{"delivered", store.OutboxDeferredStart, "unknown kind deferred_start", true, false},
 		{"other kind", store.OutboxComment, "unknown kind deferred_start", false, false},
+		{"activation kind", store.OutboxActivation, "unknown kind deferred_start", false, false},
 		{"pending", store.OutboxDeferredStart, "", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

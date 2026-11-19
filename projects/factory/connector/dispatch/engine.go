@@ -43,6 +43,11 @@ type Itsaplan interface {
 	ProjectColumns(ctx context.Context, projectKey string) ([]itsaplan.Column, error)
 	MoveIssue(ctx context.Context, issueID, columnID int64) error
 	GetProject(ctx context.Context, key string) (*itsaplan.Project, error)
+	SearchIssues(ctx context.Context, project, query string) ([]itsaplan.Issue, error)
+	CreateIssue(ctx context.Context, project string, issue itsaplan.NewIssue) (*itsaplan.Issue, error)
+	UpdateIssue(ctx context.Context, id int64, patch itsaplan.IssueUpdate) error
+	IssueRuns(ctx context.Context, issueID, before int64) (*itsaplan.IssueRunPage, error)
+	BlockIssue(ctx context.Context, source, target int64) error
 	SearchGateIssues(ctx context.Context, project, marker string) ([]itsaplan.Issue, error)
 	CreateGateIssue(ctx context.Context, project string, body itsaplan.GateIssueWrite) (*itsaplan.Issue, error)
 	UpdateGateIssue(ctx context.Context, id int64, body itsaplan.GateIssueWrite) error
@@ -395,6 +400,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 		{"leases", e.checkLeases},
 		{"cancellations", e.stepCancellations},
 		{"delivery", e.stepDelivery},
+		{"activation recovery", e.st.RecoverActivation},
 		{"human_gates", e.stepHumanGates},
 		{"outbox", e.flushOutbox},
 		{"sessions", e.sweepSessions},
@@ -2758,6 +2764,9 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 	}
 	if it.Kind == store.OutboxIssueDone {
 		return e.deliverIssueDone(ctx, it)
+	}
+	if it.Kind == store.OutboxActivation {
+		return e.deliverActivation(ctx, it)
 	}
 	return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "unknown kind "+it.Kind)
 }

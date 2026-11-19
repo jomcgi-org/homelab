@@ -165,6 +165,91 @@ func TestGateProjectDecodesHumanAssignees(t *testing.T) {
 	}
 }
 
+func TestActivationIssueRequestsUseCoordinatorAndSeparateDelegation(t *testing.T) {
+	ctx := context.Background()
+	var got seen
+	c := server(t, 200, `{"columns":[{"id":2,"stateType":"started","position":1}],"assignees":[{"userId":"coder-id","username":"coder","kind":"agent"}]}`, &got)
+	project, err := c.GetProject(ctx, "HL")
+	if err != nil || len(project.Assignees) != 1 || project.Assignees[0].UserID != "coder-id" || got.key != "k-coord" || got.path != "/projects/HL" {
+		t.Fatalf("project=%+v request=%+v err=%v", project, got, err)
+	}
+	c = server(t, 201, `{"id":42,"identifier":"HL-4","title":"Activate HL-3: feature","columnId":1}`, &got)
+	created, err := c.CreateIssue(ctx, "HL", NewIssue{Title: "Activate HL-3: feature", Description: "step\n\n<!-- factory-activation work-item=7 -->", ColumnID: 1})
+	if err != nil || created.ID != 42 || created.Identifier != "HL-4" || got.key != "k-coord" || got.path != "/projects/HL/issues" || got.method != "POST" {
+		t.Fatalf("created=%+v request=%+v err=%v", created, got, err)
+	}
+	if _, ok := got.body["delegateUserId"]; ok {
+		t.Fatal("creation must not delegate an unfinished description")
+	}
+
+	c = server(t, 200, `{}`, &got)
+	description := "Put `Refs HL-4` in the commit message.\n\nEnable after migration."
+	if err := c.UpdateIssue(ctx, 42, IssueUpdate{Description: &description}); err != nil {
+		t.Fatal(err)
+	}
+	if got.method != "PATCH" || got.path != "/issues/42" || got.key != "k-coord" || len(got.body) != 1 || got.body["description"] != description {
+		t.Fatalf("description request=%+v", got)
+	}
+	if err := c.BlockIssue(ctx, 42, 41); err != nil {
+		t.Fatal(err)
+	}
+	if got.method != "POST" || got.path != "/issues/42/links" || got.key != "k-coord" || got.body["kind"] != "blocks" || got.body["targetIssueId"] != float64(41) {
+		t.Fatalf("link request=%+v", got)
+	}
+	delegate := "coder-id"
+	if err := c.UpdateIssue(ctx, 42, IssueUpdate{DelegateUserID: &delegate}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.body) != 1 || got.body["delegateUserId"] != delegate || got.key != "k-coord" {
+		t.Fatalf("delegate request=%+v", got)
+	}
+
+	c = server(t, 200, `[{"id":42,"identifier":"HL-4"}]`, &got)
+	marker := "<!-- factory-activation work-item=7 -->"
+	hits, err := c.SearchIssues(ctx, "HL", marker)
+	query, _ := url.ParseQuery(got.query)
+	if err != nil || len(hits) != 1 || hits[0].ID != 42 || got.path != "/projects/HL/issues/search" || got.key != "k-coord" || query.Get("q") != marker || query.Get("limit") != "500" {
+		t.Fatalf("search hits=%+v request=%+v err=%v", hits, got, err)
+	}
+	c = server(t, 200, `{"id":42,"identifier":"HL-4","assigneeUserId":"human-id","archivedAt":"2026-11-15T00:00:00Z","delegateUserId":"coder-id","links":[{"kind":"blocks","direction":"outward","issue":{"id":41}}]}`, &got)
+	is, err := c.GetIssue(ctx, 42)
+	if err != nil || is.AssigneeUserID != "human-id" || (is.ArchivedAt == nil || is.ArchivedAt.Format(time.RFC3339) != "2026-11-15T00:00:00Z") || (is.DelegateUserID == nil || *is.DelegateUserID != delegate) || len(is.Links) != 1 || is.Links[0].Direction != "outward" || is.Links[0].Issue.ID != 41 {
+		t.Fatalf("issue=%+v err=%v", is, err)
+	}
+}
+
+func TestActivationRequiresEveryEffectiveCoordinatorPermission(t *testing.T) {
+	for _, missing := range []string{"", "read", "create", "edit", "ai_agents"} {
+		work := map[string]bool{"read": true, "create": true, "edit": true}
+		if missing != "" && missing != "ai_agents" {
+			work[missing] = false
+		}
+		body, _ := json.Marshal(map[string]any{"permissions": map[string]any{
+			"work_items": work, "ai_agents": map[string]bool{"read": missing != "ai_agents"},
+		}})
+		var got seen
+		c := server(t, 200, string(body), &got)
+		p, err := c.GetProject(context.Background(), "HOME")
+		if err != nil || p.CanActivate() != (missing == "") {
+			t.Fatalf("missing %q: project=%+v, err=%v", missing, p, err)
+		}
+	}
+	if (&Project{}).CanActivate() {
+		t.Fatal("missing permissions granted activation")
+	}
+}
+
+func TestIssueRunHistoryUsesCoordinatorAndCursor(t *testing.T) {
+	var got seen
+	c := server(t, 200, `{"items":[{"id":12,"username":"coder","trigger":"delegation","status":"success","prompt":"not decoded"}],"nextCursor":12}`, &got)
+	page, err := c.IssueRuns(context.Background(), 42, 20)
+	query, _ := url.ParseQuery(got.query)
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != 12 || page.Items[0].Username != "coder" || page.Items[0].Trigger != "delegation" || page.NextCursor == nil || *page.NextCursor != 12 ||
+		got.method != "GET" || got.path != "/issues/42/agent-runs" || got.key != "k-coord" || query.Get("before") != "20" || query.Get("limit") != "50" {
+		t.Fatalf("page=%+v request=%+v err=%v", page, got, err)
+	}
+}
+
 func server(t *testing.T, status int, reply string, got *seen) *Client {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

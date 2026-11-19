@@ -2552,6 +2552,8 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 		} else {
 			in.goal = e.goalCheck(ctx, b, pr, in, r, l)
 		}
+		commits := e.commitMessages(ctx, b, pr, "", l)
+		assessActivation(r, pr.HeadSHA, commits)
 		prior := in.prior.Previous()
 		if _, err := e.interdiff(ctx, b, pr, in, l); err != nil {
 			// review reads the interdiff before outcome; never assess without it.

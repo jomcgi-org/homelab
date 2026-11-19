@@ -5,6 +5,7 @@ exports_files(["export_run_usage.sql"])
 go_library(
     name = "store",
     srcs = [
+        "activation.go",
         "admission.go",
         "deferred.go",
         "delivery.go",

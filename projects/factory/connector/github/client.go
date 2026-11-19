@@ -9,6 +9,7 @@ package github
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -130,6 +131,8 @@ type ReviewComment struct {
 // PullRequestDetail is a PR's state, reviews and threads.
 type PullRequestDetail struct {
 	PullRequest
+	// HeadMessage is the full message of headRefOid, including git trailers.
+	HeadMessage    string
 	MergedAt       time.Time
 	MergeCommitSHA string
 	// MergeQueueState is the merge queue entry's state, empty when the PR is
@@ -159,6 +162,47 @@ type CheckRun struct {
 	Title      string
 	Summary    string
 	Text       string
+}
+
+// ReviewStatePrefix and ReviewStateSuffix frame the reviewer's persisted state.
+// Callers must authenticate the check's App and head before consuming it.
+const (
+	ReviewStatePrefix       = "<!-- factory-review:state v2 "
+	ReviewStateSuffix       = " -->"
+	MaxActivationAssessment = 4000
+)
+
+// ActivationAssessment is an independent reviewer's instruction, including the
+// remaining step and its precondition. The service binds it to the reviewed head.
+type ActivationAssessment struct {
+	HeadSHA string `json:"headSha"`
+	Text    string `json:"text"`
+}
+
+func (a *ActivationAssessment) Valid(head string) bool {
+	return a != nil && head != "" && a.HeadSHA == head && strings.TrimSpace(a.Text) != "" &&
+		strings.TrimSpace(a.Text) != "none" && len(a.Text) <= MaxActivationAssessment
+}
+
+// ReviewedActivation reads only an unambiguous, bounded assessment for head.
+// It does not establish trust in the check that carried it.
+func ReviewedActivation(text, head string) *ActivationAssessment {
+	if len(text) > 65535 || strings.Count(text, ReviewStatePrefix) != 1 {
+		return nil
+	}
+	_, rest, _ := strings.Cut(text, ReviewStatePrefix)
+	encoded, _, ok := strings.Cut(rest, ReviewStateSuffix)
+	if !ok {
+		return nil
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	var state struct {
+		Activation *ActivationAssessment `json:"activation"`
+	}
+	if err != nil || json.Unmarshal(data, &state) != nil || !state.Activation.Valid(head) {
+		return nil
+	}
+	return state.Activation
 }
 
 // Status is a commit status, the latest per context.
@@ -477,6 +521,7 @@ const pullRequestQuery = `query($owner: String!, $name: String!, $number: Int!) 
       id number url state merged mergedAt isDraft title headRefOid headRefName baseRefName baseRefOid mergeable
       author { login }
       mergeCommit { oid }
+      commits(last: 1) { nodes { commit { oid message } } }
       mergeQueueEntry { state headCommit { oid } }
       labels(first: 100) { nodes { name } }
       reviews(last: 100) {
@@ -526,6 +571,14 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 					State      string `json:"state"`
 					HeadCommit *oid   `json:"headCommit"`
 				} `json:"mergeQueueEntry"`
+				Commits struct {
+					Nodes []struct {
+						Commit struct {
+							OID     string `json:"oid"`
+							Message string `json:"message"`
+						} `json:"commit"`
+					} `json:"nodes"`
+				} `json:"commits"`
 				Labels struct {
 					Nodes []struct {
 						Name string `json:"name"`
@@ -576,6 +629,9 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 	d.Mergeable = p.Mergeable
 	if p.Author != nil {
 		d.Author = p.Author.Login // an App's login has no [bot] suffix here
+	}
+	if n := p.Commits.Nodes; len(n) == 1 && n[0].Commit.OID == p.HeadRefOid {
+		d.HeadMessage = n[0].Commit.Message
 	}
 	if d.State == "merged" {
 		d.State, d.Merged = "closed", true
@@ -669,4 +725,31 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+// ActivationTrailer accepts one final trailer, including git's indented
+// continuation lines. Prose mentions, empty values and duplicate trailers do
+// not establish the delivering agent's activation decision.
+func ActivationTrailer(message string) (string, bool) {
+	message = strings.TrimSpace(strings.ReplaceAll(message, "\r\n", "\n"))
+	i := strings.LastIndex(message, "\n\n")
+	if i < 0 {
+		return "", false
+	}
+	lines := strings.Split(message[i+2:], "\n")
+	value, ok := strings.CutPrefix(lines[0], "Activation:")
+	if !ok || strings.TrimSpace(value) == "" {
+		return "", false
+	}
+	value = strings.TrimSpace(value)
+	for _, line := range lines[1:] {
+		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			return "", false
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "Activation:") {
+			return "", false
+		}
+		value += " " + strings.TrimSpace(line)
+	}
+	return value, true
 }

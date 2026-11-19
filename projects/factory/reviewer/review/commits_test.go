@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
+	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 )
 
 func prCommit(sha, msg string) github.PullRequestCommit {
@@ -164,5 +165,119 @@ func TestSplitRequestCarriesTheServiceMarker(t *testing.T) {
 	}
 	if untrusted("x "+splitOnlyMarker) == "x "+splitOnlyMarker {
 		t.Fatal("text the PR wrote keeps the split marker")
+	}
+}
+
+func TestActivationAssessmentPublishesOnlyReviewerInstructionForHead(t *testing.T) {
+	const step = "Enable transcripts after the bucket and workload identity are deployed."
+	shaB := strings.Repeat("b", 40)
+	for _, tc := range []struct {
+		name, trailer, assessment, head string
+		unread, wantStep, wantFailure   bool
+	}{
+		{name: "assessed prerequisite", trailer: "untrusted proposal", assessment: step, head: shaA, wantStep: true},
+		{name: "none", trailer: "none", assessment: step, head: shaA},
+		{name: "missing assessment", trailer: "enable after rollout", head: shaA, wantFailure: true},
+		{name: "none is not an assessment", trailer: "enable after rollout", assessment: "none", head: shaA, wantFailure: true},
+		{name: "oversized", trailer: "enable after rollout", assessment: strings.Repeat("x", github.MaxActivationAssessment+1), head: shaA, wantFailure: true},
+		{name: "unread", assessment: step, unread: true, wantFailure: true},
+		{name: "wrong head", trailer: "enable after rollout", assessment: step, head: shaB, wantFailure: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Report{Summary: "Reviewed.", Findings: []Finding{}, Activation: tc.assessment}
+			commits := Commits{List: []github.PullRequestCommit{prCommit(tc.head, "feat: ship\n\nActivation: "+tc.trailer)}, Unread: tc.unread}
+			assessActivation(r, shaA, commits)
+			o := Render(Assess(r, nil), r, nil, "reviewer footer")
+			if (o.Conclusion == ConclusionFailure) != tc.wantFailure {
+				t.Fatalf("conclusion=%s findings=%+v", o.Conclusion, r.Findings)
+			}
+			a := github.ReviewedActivation(o.Output.Text, shaA)
+			if (a != nil) != tc.wantStep {
+				t.Fatalf("assessment=%+v", a)
+			}
+			if a != nil && (a.Text != step || !strings.Contains(o.Output.Summary, step)) {
+				t.Fatal("the action or prerequisite was lost")
+			}
+			if github.ReviewedActivation(o.Output.Text, shaB) != nil {
+				t.Fatal("assessment reused on another head")
+			}
+		})
+	}
+}
+
+func TestMissingActivationAssessmentPreservesReviewFindings(t *testing.T) {
+	r := &Report{Summary: "Blocked.", Findings: []Finding{{ID: "a.go:security", Severity: SeverityCritical, Title: "Existing finding", Detail: "Keep this evidence."}}}
+	assessActivation(r, shaA, Commits{List: []github.PullRequestCommit{prCommit(shaA, "feat: ship\n\nActivation: enable after rollout")}})
+	a := Assess(r, nil)
+	if a.Conclusion != ConclusionFailure || len(a.Blocking) != 2 || a.Blocking[0].ID != "a.go:security" {
+		t.Fatalf("assessment=%+v", a)
+	}
+}
+
+func TestActivationAssessmentSurvivesBoundedStateAndSessionUpdate(t *testing.T) {
+	step := &github.ActivationAssessment{HeadSHA: shaA, Text: strings.Repeat("x", github.MaxActivationAssessment)}
+	goal := &GoalCheck{Head: shaA, Digest: "evidence", Overall: goalMet, Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalMet}}}
+	scan := &SemgrepStamp{Digest: strings.Repeat("d", 64), NoReport: true}
+	decision := DecisionStamp{Finding: "prior.go:rollout", ID: 42, Hash: strings.Repeat("d", 64)}
+	st := stateOf(Assessment{Carried: []DecisionStamp{decision}}, &Report{ActivationHead: shaA, Activation: step.Text}, nil)
+	st.Goal, st.Semgrep = goal, scan
+	for i := range 80 {
+		st.Blocking = append(st.Blocking, Finding{
+			ID: fmt.Sprintf("f%d:correctness", i), Severity: SeverityHigh,
+			Title: strings.Repeat("t", maxTitle), Detail: strings.Repeat("d", maxStoredDetail),
+		})
+	}
+	text := withSession(encodeState(st), &SessionRef{ContextID: "session", Head: shaA})
+	if len(text) > maxState {
+		t.Fatalf("state length=%d", len(text))
+	}
+	if a := github.ReviewedActivation(text, shaA); a == nil || *a != *step {
+		t.Fatalf("lost assessment: %+v", a)
+	}
+	got, ok := LoadState(text)
+	if !ok || got.Goal == nil || got.Goal.Head != goal.Head || got.Goal.Digest != goal.Digest || got.Goal.Overall != goalMet || len(got.Goal.Criteria) != 1 || got.Goal.Criteria[0] != goal.Criteria[0] {
+		t.Fatalf("lost goal check: %+v", got.Goal)
+	}
+	if got.Semgrep == nil || *got.Semgrep != *scan {
+		t.Fatalf("lost Semgrep gate: %+v", got.Semgrep)
+	}
+	if len(got.Decisions) != 1 || got.Decisions[0] != decision {
+		t.Fatalf("lost decision evidence: %+v", got.Decisions)
+	}
+}
+
+func TestReviewerServicePublishesActivationAssessmentOnItsCheck(t *testing.T) {
+	for _, assessed := range []bool{false, true} {
+		t.Run(fmt.Sprint(assessed), func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			h.gh.withLock(func() {
+				h.gh.prs[7].Commits = []github.PullRequestCommit{prCommit(shaA, "feat: ship\n\nActivation: untrusted proposal")}
+			})
+			e, ctx, _ := h.start()
+			task := runReview(t, h, e, ctx, 7, shaA)
+			const step = "Enable transcripts after the bucket and workload identity are deployed."
+			r := map[string]any{"summary": "Reviewed the change.", "findings": []any{}}
+			if assessed {
+				r["activation"] = step
+			}
+			h.k.finish(task, kagent.StateCompleted, report(t, r))
+			eventually(t, "activation review completed", func() bool { return h.gh.check(shaA).Status == "completed" })
+			c := h.gh.check(shaA)
+			if (c.Conclusion == ConclusionSuccess) != assessed || c.AppID != testAppID {
+				t.Fatalf("check=%+v", c)
+			}
+			a := github.ReviewedActivation(c.Text, shaA)
+			if assessed && (a == nil || a.Text != step) {
+				t.Fatalf("assessment=%+v", a)
+			}
+			if !assessed && a != nil {
+				t.Fatal("commit proposal was promoted to an instruction")
+			}
+			prompt := h.k.sent()[0].Parts[0].Text
+			if !strings.Contains(prompt, "independently verify the remaining action and its precondition") {
+				t.Fatal("reviewer was not asked to verify activation")
+			}
+		})
 	}
 }
