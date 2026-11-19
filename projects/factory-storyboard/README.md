@@ -132,52 +132,36 @@ withheld record gets one log line with its issue key and no text. A last
 gitleaks run scans every object and the manifest before the first write. A
 match stops the cycle.
 
-Provision the 1Password item `factory-storyboard-readers` in vault
-`k8s-homelab` before sync. It holds two fields. `ITSAPLAN_KEY` is an itsaplan
-API key that can only read work items in project HOME; the new publisher
-reads only this field. `APPROVED_HISTORY` holds `{}`; only the chart 0.1.10
-publisher reads it, so that a rollback Job can start (see "Rollout order").
-After sync, check that Secret `factory/factory-storyboard-readers`
-has both keys. The publisher refuses
-a key with any other grant. Create the key through the itsaplan API as a
-team admin, as the factory bootstrap does for `factory-reviewer`:
-
-1. Create an external agent with no projects. itsaplan shows its key only
-   once, in the `apiKey` field of the response:
-
-   ```text
-   POST /teams/<team ID>/ai-agents
-   {"username": "factory-storyboard", "name": "Factory storyboard",
-    "kind": "external", "projectIds": [], "triggerOnAssign": false,
-    "triggerOnMention": false, "fieldTriggers": [], "runnerScope": "team",
-    "chatEnabled": false}
-   ```
-
-2. Find the ID of the team role `Factory reviewer` in
-   `GET /teams/<team ID>/roles/options`. This role grants only `work_items`
-   read.
-3. Add the agent to HOME with that role. Send `POST /projects/HOME/members`
-   with `{"userId": "<agent userId>", "role": "member", "roleId": "<role ID>"}`.
-4. Send `GET /projects/HOME` with header `x-api-key: <key>`. Check that
-   `permissions.work_items` has `read: true` and every other action false.
-5. Save the key as field `ITSAPLAN_KEY` of item `factory-storyboard-readers`,
-   and add field `APPROVED_HISTORY` with the value `{}`.
+The factory chart's itsaplan bootstrap creates the publisher's key. The
+bootstrap Job creates the external agent `factory-storyboard` with no
+projects, no triggers and chat off. It gives the agent the read-only team
+role `Factory reviewer` in HOME, which grants only `work_items` read. It
+checks that access with the agent's own key, then writes the key to Secret
+`factory/factory-itsaplan-agent-factory-storyboard`, key `apiKey`. The Job
+runs after each sync of Argo CD app `factory` and rotates a key that stops
+working. This chart reads that Secret as `ITSAPLAN_KEY` and owns no
+1Password item. The publisher refuses a key with any `work_items` right
+other than read.
 
 ### Rollout order
 
 The factory chart deploys the connector, and the connector applies its
-migrations when it starts. The storyboard chart has its own Argo CD
-Application. After a merge, CI advances both pins, and the two
-Applications sync independently:
+migrations when it starts. A PostSync Job of the same chart writes the
+publisher's key. The storyboard chart has its own Argo CD Application. After
+a merge, CI advances both pins, and the two Applications sync
+independently:
 
 ```mermaid
 flowchart LR
   M[Merge] --> C["Connector applies 20261119215000_storyboard_messages"]
+  M --> B["PostSync bootstrap writes the key Secret"]
   M --> S["Storyboard CronJob uses the new image"]
   C --> R[storyboard_messages ready]
+  S -->|key absent| K["Cycle logs a warning and publishes nothing"]
   S -->|view absent| N["Cycle logs an error and publishes nothing"]
-  S -->|view present| P[Cycle publishes]
+  S -->|key and view present| P[Cycle publishes]
   R --> P
+  B --> P
 ```
 
 1. The migration only adds. The chart 0.1.10 publisher keeps reading
@@ -185,17 +169,29 @@ flowchart LR
 2. A new publisher cycle that starts before the migration applies logs
    `connector view storyboard_messages is absent` and writes nothing. The
    last manifest stays. The next cycle after the migration publishes.
-3. Save `ITSAPLAN_KEY` before the new chart syncs. Without the key, the
-   Job's pod cannot start, so it publishes nothing.
+3. A cycle that starts before the bootstrap writes the key logs
+   `itsaplan key not bootstrapped yet; skipping this cycle` and exits 0.
+   The chart marks the key reference `optional`, so the pod starts without
+   it. The last manifest stays. The next cycle after the bootstrap
+   publishes.
 
 To roll back the publisher, lower `targetRevision` in
-`deploy/application.yaml` to `0.1.10`. The old views and the
-`storyboard_approved_message` table stay for that publisher. Its Job starts
-only if item `factory-storyboard-readers` holds `APPROVED_HISTORY`. The
-provisioning steps above create it as `{}`, which the old publisher accepts
-and which publishes issue keys and metrics without prose. Keep that field
-through the rollback window. HOME-527 drops
-the old views, the table and the field after the new publisher is live.
+`deploy/application.yaml` to the last chart published before HOME-543. CI
+advances that pin after each publish, so read it from the file at the parent
+of the HOME-543 merge commit (`git show <merge>^:projects/factory-storyboard/deploy/application.yaml`),
+not from this README. Those charts read `ITSAPLAN_KEY` from Secret
+`factory-storyboard-readers`. Its
+OnePasswordItem syncs that Secret from 1Password item
+`k8s-homelab/factory-storyboard-readers`. If that item does not exist, the
+Job's pod cannot start and nothing publishes. The last manifest stays.
+
+To publish on a chart from before HOME-543, create that item with field `ITSAPLAN_KEY`.
+Copy the value from key `apiKey` of Secret
+`factory/factory-itsaplan-agent-factory-storyboard`, which the factory chart
+keeps. If the bootstrap rotates that key, copy it again. Chart 0.2.40 and
+earlier also need field `APPROVED_HISTORY` with the value `{}`. The old
+views and the `storyboard_approved_message` table stay for those charts
+until HOME-527 drops them.
 
 After publisher rollout, run
 `node projects/factory-storyboard/verify-rollout.mjs --mirror-only`

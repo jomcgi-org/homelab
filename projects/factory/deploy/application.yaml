@@ -94,6 +94,11 @@ spec:
     - group: ""
       kind: Secret
       namespace: factory
+      name: factory-itsaplan-agent-factory-storyboard
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      namespace: factory
       name: factory-itsaplan-agent-intsec-sync
       jsonPointers: [/data]
     # The Discord history import Job runs once per runId (chart

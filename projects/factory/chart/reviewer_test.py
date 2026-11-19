@@ -413,6 +413,7 @@ def test_reviewer_identity_is_mandatory_and_isolated() -> None:
             "name": "Factory reviewer",
             "triggerOnAssign": False,
             "triggerOnMention": False,
+            "readOnly": True,
         }
     ]
     secret = _in(docs, "Secret", "factory", "factory-itsaplan-agent-factory-reviewer")

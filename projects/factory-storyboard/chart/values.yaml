@@ -42,12 +42,14 @@ workloads:
       - name: DATABASE_URL
         valueFrom:
           secretKeyRef: {name: factory-storyboard-db, key: DATABASE_URL}
+      # The read-only HOME key of itsaplan agent factory-storyboard. The
+      # factory chart's PostSync itsaplan bootstrap writes this Secret; this
+      # chart only reads it. A cycle can run before the bootstrap, so the key
+      # is optional: the pod starts without it and the publisher skips the
+      # cycle.
       - name: ITSAPLAN_KEY
         valueFrom:
-          secretKeyRef: {name: factory-storyboard-readers, key: ITSAPLAN_KEY}
-# The 1Password item holds only the read-only itsaplan key (README).
-secrets:
-  factory-storyboard-readers:
-    workload: factory-storyboard
-    onePassword:
-      itemPath: vaults/k8s-homelab/items/factory-storyboard-readers
+          secretKeyRef:
+            name: factory-itsaplan-agent-factory-storyboard
+            key: apiKey
+            optional: true

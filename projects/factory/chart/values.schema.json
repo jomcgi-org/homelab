@@ -293,7 +293,11 @@
                   },
                   "name": { "type": "string", "minLength": 1 },
                   "triggerOnAssign": { "type": "boolean" },
-                  "triggerOnMention": { "type": "boolean" }
+                  "triggerOnMention": { "type": "boolean" },
+                  "readOnly": {
+                    "description": "Only work_items read in the bound project, through the Factory reviewer role; no triggers.",
+                    "type": "boolean"
+                  }
                 }
               }
             }

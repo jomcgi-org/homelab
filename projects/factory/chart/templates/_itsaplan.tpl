@@ -22,7 +22,11 @@ http://{{ include "factory.itsaplanName" . }}-api.{{ .Values.itsaplan.namespace 
 {{/* The Secret holding one bootstrap agent's API key. */}}
 {{- define "factory.itsaplanAgentSecret" -}}factory-itsaplan-agent-{{ . }}{{- end }}
 
-{{/* The reviewer identity is mandatory when enabled, independent of user agent lists. */}}
+{{/*
+The reviewer identity is mandatory when enabled, independent of user agent
+lists. A readOnly agent gets only work_items read in the bound project, and no
+triggers (files/itsaplan/bootstrap.py, verify_read_only).
+*/}}
 {{- define "factory.itsaplanAgents" -}}
 {{- $agents := .Values.itsaplan.bootstrap.agents | default list -}}
 {{- range $agents -}}
@@ -32,9 +36,12 @@ http://{{ include "factory.itsaplanName" . }}-api.{{ .Values.itsaplan.namespace 
 {{- if eq (lower .username) "factory-reviewer" -}}
 {{- fail "factory-reviewer is reserved for the chart's read-only reviewer identity" -}}
 {{- end -}}
+{{- if and .readOnly (or .triggerOnAssign .triggerOnMention) -}}
+{{- fail (printf "itsaplan.bootstrap.agents: readOnly agent %s cannot have triggers" .username) -}}
+{{- end -}}
 {{- end -}}
 {{- if .Values.reviewer.enabled -}}
-{{- $agents = append $agents (dict "username" "factory-reviewer" "name" "Factory reviewer" "triggerOnAssign" false "triggerOnMention" false) -}}
+{{- $agents = append $agents (dict "username" "factory-reviewer" "name" "Factory reviewer" "triggerOnAssign" false "triggerOnMention" false "readOnly" true) -}}
 {{- end -}}
 {{- if .Values.semgrepSync.enabled -}}
 {{- $agents = append $agents (dict "username" "intsec-sync" "name" "factory-semgrep-sync") -}}

@@ -11,6 +11,7 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import yaml
@@ -172,6 +173,7 @@ def test_generated_secrets_are_kept_and_never_rendered() -> None:
         "factory-itsaplan-bootstrap",
         "factory-itsaplan-agent-homelab-codex",
         "factory-itsaplan-agent-factory-coordinator",
+        "factory-itsaplan-agent-factory-storyboard",
         "factory-itsaplan-agent-factory-reviewer",
     }
     for s in secrets:
@@ -273,6 +275,7 @@ def test_job_roles_name_only_their_secrets() -> None:
         "factory-itsaplan-joe-sessions",
         "factory-itsaplan-agent-homelab-codex",
         "factory-itsaplan-agent-factory-coordinator",
+        "factory-itsaplan-agent-factory-storyboard",
         "factory-itsaplan-agent-factory-reviewer",
     ]
     assert bootstrap[1]["verbs"] == ["get", "update"]
@@ -345,11 +348,17 @@ def test_bootstrap_config_lists_the_agents() -> None:
     assert [a["username"] for a in config["agents"]] == [
         "homelab-codex",
         "factory-coordinator",
+        "factory-storyboard",
         "factory-reviewer",
     ]
+    read_only = {a["username"] for a in config["agents"] if a.get("readOnly")}
+    assert read_only == {"factory-storyboard", "factory-reviewer"}
     assert config["project"]["key"] == "HOME"
     assert config["coordinator"] == "factory-coordinator"
     assert config["oidc"]["clientId"] == "factory-itsaplan"
+
+
+_READ_ONLY = ("factory-reviewer", "factory-storyboard")
 
 
 @pytest.fixture
@@ -358,9 +367,16 @@ def bootstrap(tmp_path, monkeypatch):
     (tmp_path / "ca.crt").write_text("")
     config = {
         "project": {"key": "HOME"},
-        "agents": [{"username": "factory-reviewer", "name": "Factory reviewer"}],
+        "agents": [
+            {
+                "username": "factory-reviewer",
+                "name": "Factory reviewer",
+                "readOnly": True,
+            }
+        ],
     }
     (tmp_path / "config.json").write_text(json.dumps(config))
+    prefix = "factory-itsaplan-agent-"
     for key, value in {
         "SA_DIR": str(tmp_path),
         "KUBERNETES_SERVICE_HOST": "kubernetes",
@@ -369,7 +385,7 @@ def bootstrap(tmp_path, monkeypatch):
         "API_INTERNAL_URL": "http://api:3000",
         "APP_URL": "https://example.invalid",
         "CONFIG": str(tmp_path / "config.json"),
-        "AGENT_SECRET_PREFIX": "factory-itsaplan-agent-",
+        "AGENT_SECRET_PREFIX": prefix,
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr("ssl.create_default_context", lambda **_: None)
@@ -378,19 +394,45 @@ def bootstrap(tmp_path, monkeypatch):
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module, "k8s", lambda *_: {"data": {}})
-    monkeypatch.setattr(module, "secret_data", lambda _: {"apiKey": "test-key"})
+    # Each agent's Secret holds the key that the fake api issued to it.
+    monkeypatch.setattr(module, "k8s", lambda _method, name, *_: {"name": name})
+    monkeypatch.setattr(
+        module,
+        "secret_data",
+        lambda secret: {"apiKey": "test-key-" + secret["name"].removeprefix(prefix)},
+    )
     monkeypatch.setattr(module, "key_works", lambda *_: True)
     return module
 
 
 class ReviewerBootstrapAPI:
+    """Agents, roles and memberships as the admin sees them, and effective
+    project access under each agent's own key (bootstrap.request)."""
+
     def __init__(self):
-        self.agent = None
+        self.agents = {}
+        self.members = {}
         self.role = None
-        self.member = None
         self.writes = []
         self.fail_role = False
+        self.ignore_role = False
+        self.wrong_identity = False
+        self.effective_reads = []
+
+    @property
+    def agent(self):
+        (agent,) = self.agents.values()
+        return agent
+
+    @property
+    def member(self):
+        (member,) = self.members.values()
+        return member
+
+    def _agent(self, **match):
+        return next(
+            a for a in self.agents.values() if all(a[k] == v for k, v in match.items())
+        )
 
     def call(self, method, path, body=None):
         if method != "GET":
@@ -411,45 +453,96 @@ class ReviewerBootstrapAPI:
             return self.role
         if path == "/teams/1/ai-agents":
             if method == "GET":
-                return copy.deepcopy([self.agent] if self.agent else [])
+                return copy.deepcopy(list(self.agents.values()))
             assert body["projectIds"] == []
-            self.agent = {"id": 9, "userId": "reviewer-id", "projects": [], **body}
-            return {"agent": copy.deepcopy(self.agent), "apiKey": "test-key"}
-        if path == "/teams/1/ai-agents/9":
-            self.agent.update(body)
-            return copy.deepcopy(self.agent)
-        if path.endswith("/projects"):
-            self.agent["projects"] = [{"id": p} for p in body["projectIds"]]
-            return copy.deepcopy(self.agent)
+            username = body["username"]
+            agent = {
+                "id": 9 + len(self.agents),
+                "userId": f"{username}-id",
+                "projects": [],
+                **body,
+            }
+            self.agents[username] = agent
+            return {"agent": copy.deepcopy(agent), "apiKey": f"test-key-{username}"}
+        if path.startswith("/teams/1/ai-agents/"):
+            agent = self._agent(id=int(path.split("/")[4]))
+            if path.endswith("/projects"):
+                agent["projects"] = [{"id": p} for p in body["projectIds"]]
+            else:
+                agent.update(body)
+            return copy.deepcopy(agent)
         if path.startswith("/projects/HOME/members?"):
-            assert "pageSize=100" in path
-            return {"items": [self.member]}
-        if path.startswith("/projects/HOME/members"):
-            self.member = {"userId": "reviewer-id", **body}
-            self.agent["projects"] = [{"id": 3}]
+            query = parse_qs(urlsplit(path).query)
+            assert query["pageSize"] == ["100"] and query["kind"] == ["agent"]
+            user_id = self.agents[query["search"][0]]["userId"]
+            return {
+                "items": [m for m in self.members.values() if m["userId"] == user_id]
+            }
+        if path.startswith("/projects/HOME/members/"):
+            assert method == "PATCH"
+            self.members[path.rsplit("/", 1)[1]].update(body)
+            return None
+        if path == "/projects/HOME/members":
+            assert method == "POST"
+            self.members[body["userId"]] = copy.deepcopy(body)
+            self._agent(userId=body["userId"])["projects"] = [{"id": 3}]
             return None
         raise AssertionError((method, path))
 
+    def request(self, method, url, body=None, headers=None, ctx=None):
+        # Only verify_read_only calls the api directly, with the agent's key.
+        assert method == "GET" and body is None and "Cookie" not in headers
+        agent = self.agents[headers["x-api-key"].removeprefix("test-key-")]
+        path = urlsplit(url).path
+        if path == "/me":
+            user = "someone-else" if self.wrong_identity else agent["userId"]
+            return 200, None, {"authenticated": True, "user": {"id": user}}
+        assert path == "/projects/1.HOME"
+        self.effective_reads.append(agent["username"])
+        member = self.members[agent["userId"]]
+        if member.get("roleId") == self.role["id"] and not self.ignore_role:
+            permissions = copy.deepcopy(self.role["permissions"])
+        else:
+            # itsaplan's default member role, which can write.
+            permissions = {"work_items": {"read": True, "create": True, "edit": True}}
+        return 200, None, {"permissions": permissions}
 
-def test_reviewer_bootstrap_is_read_only_before_key_publication(bootstrap, monkeypatch):
+
+def _granted(permissions):
+    return {
+        (resource, action)
+        for resource, actions in permissions.items()
+        for action, allowed in actions.items()
+        if allowed
+    }
+
+
+@pytest.mark.parametrize("username", _READ_ONLY)
+def test_read_only_bootstrap_is_read_only_before_key_publication(
+    bootstrap, monkeypatch, username, capsys
+):
+    bootstrap.CONFIG["agents"] = [
+        {"username": username, "name": username, "readOnly": True}
+    ]
     api = ReviewerBootstrapAPI()
+    monkeypatch.setattr(bootstrap, "request", api.request)
     published = []
 
     def publish(name, data):
         assert api.agent["projects"] == [{"id": 3}]
         assert api.member["role"] == "member" and api.member["roleId"] == 7
-        granted = {
-            (resource, action)
-            for resource, actions in api.role["permissions"].items()
-            for action, allowed in actions.items()
-            if allowed
-        }
-        assert granted == {("work_items", "read")}
+        assert api.role["name"] == "Factory reviewer"
+        assert _granted(api.role["permissions"]) == {("work_items", "read")}
         assert not api.agent["triggerOnAssign"]
         assert not api.agent["triggerOnMention"]
         assert not api.agent["chatEnabled"]
         assert api.agent["fieldTriggers"] == []
-        assert name == "factory-itsaplan-agent-factory-reviewer"
+        assert api.agent["kind"] == "external"
+        assert name == f"factory-itsaplan-agent-{username}"
+        assert data["apiKey"] == f"test-key-{username}"
+        assert data["projectKey"] == "HOME"
+        # The key proved its own access just before it was written.
+        assert api.effective_reads[-1] == username
         published.append(data)
 
     monkeypatch.setattr(bootstrap, "write_secret", publish)
@@ -464,6 +557,98 @@ def test_reviewer_bootstrap_is_read_only_before_key_publication(bootstrap, monke
     api.agent["triggerOnMention"] = True
     bootstrap.ensure_agents(api, 1, 3)
     assert len(published) == 3  # publish() checks every repaired boundary
+    output = capsys.readouterr().out
+    assert f"verified {username} on HOME: work_items read only" in output
+    assert "test-key" not in output
+
+
+def test_read_only_agents_share_one_role(bootstrap, monkeypatch):
+    bootstrap.CONFIG["agents"] = [
+        {"username": u, "name": u, "readOnly": True} for u in _READ_ONLY
+    ]
+    api = ReviewerBootstrapAPI()
+    monkeypatch.setattr(bootstrap, "request", api.request)
+    published = {}
+    monkeypatch.setattr(
+        bootstrap, "write_secret", lambda name, data: published.update({name: data})
+    )
+    bootstrap.ensure_agents(api, 1, 3)
+    roles = [w for w in api.writes if w[1] == "/teams/1/roles"]
+    assert len(roles) == 1 and roles[0][2]["name"] == "Factory reviewer"
+    assert {m["roleId"] for m in api.members.values()} == {7}
+    assert sorted(api.effective_reads) == sorted(_READ_ONLY)
+    assert sorted(published) == sorted(
+        f"factory-itsaplan-agent-{u}" for u in _READ_ONLY
+    )
+
+
+@pytest.mark.parametrize("failure", ["wrong identity", "role ignored"])
+@pytest.mark.parametrize("existing", [False, True])
+def test_read_only_key_is_not_written_without_effective_proof(
+    bootstrap, monkeypatch, failure, existing, capsys
+):
+    bootstrap.CONFIG["agents"] = [
+        {
+            "username": "factory-storyboard",
+            "name": "Factory storyboard",
+            "readOnly": True,
+        }
+    ]
+    api = ReviewerBootstrapAPI()
+    monkeypatch.setattr(bootstrap, "request", api.request)
+    published = []
+    monkeypatch.setattr(
+        bootstrap, "write_secret", lambda name, data: published.append(name)
+    )
+    if existing:
+        bootstrap.ensure_agents(api, 1, 3)
+        published.clear()
+        capsys.readouterr()
+    if failure == "wrong identity":
+        api.wrong_identity = True
+    else:
+        api.ignore_role = True
+    with pytest.raises(SystemExit):
+        bootstrap.ensure_agents(api, 1, 3)
+    assert published == []
+    output = capsys.readouterr().out
+    assert "verified factory-storyboard" not in output
+    assert "test-key" not in output
+
+
+def test_read_only_agent_cannot_be_the_coordinator(bootstrap, monkeypatch):
+    bootstrap.CONFIG.update(
+        coordinator="factory-storyboard",
+        agents=[
+            {
+                "username": "factory-storyboard",
+                "name": "Factory storyboard",
+                "readOnly": True,
+            }
+        ],
+    )
+    api = ReviewerBootstrapAPI()
+    with pytest.raises(SystemExit, match="cannot be a readOnly agent"):
+        bootstrap.ensure_agents(api, 1, 3)
+    assert api.writes == []
+
+
+def test_read_only_agent_cannot_have_triggers() -> None:
+    # --set replaces the whole list, so give a complete entry, and turn off
+    # the connector, which needs its own agents in that list.
+    with pytest.raises(
+        RuntimeError, match="readOnly agent reader cannot have triggers"
+    ):
+        _render(
+            [
+                "connector.enabled=false",
+                "reviewer.goalReasons.enabled=false",
+                "itsaplan.bootstrap.agents[0].username=reader",
+                "itsaplan.bootstrap.agents[0].name=Reader",
+                "itsaplan.bootstrap.agents[0].readOnly=true",
+                "itsaplan.bootstrap.agents[0].triggerOnMention=true",
+            ]
+        )
 
 
 def test_sync_bootstrap_grants_only_read_and_create_in_intsec(bootstrap, monkeypatch):
