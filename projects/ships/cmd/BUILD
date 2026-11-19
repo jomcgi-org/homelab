@@ -7,6 +7,7 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/ships/cmd",
     visibility = ["//visibility:private"],
     deps = [
+        "//projects/ships/publish",
         "@com_github_lib_pq//:pq",
         "@io_nhooyr_websocket//:websocket",
     ],
