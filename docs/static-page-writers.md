@@ -19,17 +19,19 @@ independent writer its own Garage bucket and R2 prefix so publishers cannot over
 All writers share one R2 bucket, `factory-public`, public at
 `https://factory-data.jomcgi.dev` (HOME-492). Only the `factory-public`
 release holds its R2 token. Each source mirror writes and deletes only under
-its prefix, and the root sync excludes every source prefix. The
+its prefix, and the root mirror excludes every source prefix. The
 [library rule](../projects/shared/helm/factory-library/README.md#one-public-r2-bucket)
 and a content rule enforce this. Stars publishes at
 `https://factory-data.jomcgi.dev/stars-forecast/latest.json` and Hikes at
 `https://factory-data.jomcgi.dev/hikes/latest.json`.
 
 The [mirror template](../projects/shared/helm/factory-library/chart/templates/_mirror.tpl)
-excludes exactly `/latest.json` from the immutable payload transfer and
-copies it after that transfer succeeds. Readers fetch `<prefix>/latest.json`
-from R2 and resolve each key `k` in it as `<prefix>/k`. Retain payloads referenced
-by cached manifests. If a referenced object is temporarily unavailable, retry
+saves `/latest.json` before the immutable payload transfer and uploads that
+saved copy after the transfer succeeds. Only then does it delete the payloads
+that Garage no longer holds. Readers fetch `<prefix>/latest.json`
+from R2 and resolve each key `k` in it as `<prefix>/k`. Keep each payload as
+long as the [writer rule](../projects/shared/helm/factory-library/README.md#buckets-and-public-mirrors)
+requires. If a referenced object is temporarily unavailable, retry
 and keep serving the last complete snapshot. Verify the bytes and both cache
 policies at the public endpoint before switching readers.
 

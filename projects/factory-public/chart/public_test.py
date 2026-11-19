@@ -126,6 +126,10 @@ def test_public_consumer():
             f'"{mirror}"' in p["spec"]["validations"][0]["expression"] for p in own
         )
     assert len(policies) == 3 * len(MIRRORS)
+    # The library README's writer rule depends on this deadline.
+    for mirror in MIRRORS:
+        job = by_name["CronJob", mirror]["spec"]["jobTemplate"]["spec"]
+        assert job["activeDeadlineSeconds"] > 0
     policy = by_name["CiliumNetworkPolicy", "factory-public-factory-public-mirror"][
         "spec"
     ]
@@ -246,10 +250,20 @@ def test_mirror_publishes_only_health_json_from_the_health_bucket():
     # The sources own these prefixes; the root sync keeps them.
     assert "  --exclude '/stars-forecast/**' \\\n" in script
     assert "  --exclude '/hikes/**' \\\n" in script
-    assert (
+    health = (
         'copyto "SRC0:factory-health/health.json" "R2:$R2_BUCKET/health.json" \\\n'
         '    --ignore-times --header-upload "Cache-Control: public, max-age=60"'
-    ) in script
+    )
+    assert health in script
+    # Garage listings around the saved manifest, payloads without deletes,
+    # the saved manifest and health.json, then the deletes.
+    assert (
+        script.index('cat "GARAGE:$GARAGE_BUCKET/manifest.json"')
+        < script.index('\npayloads copy "GARAGE:$GARAGE_BUCKET" "R2:$R2_BUCKET"')
+        < script.index('copyto "$scratch/manifest.json" "R2:$R2_BUCKET/manifest.json"')
+        < script.index(health)
+        < script.index('run delete "R2:$R2_BUCKET" --files-from-raw')
+    )
 
 
 def test_sources_mirror_writer_buckets_under_their_prefixes():
@@ -264,10 +278,16 @@ def test_sources_mirror_writer_buckets_under_their_prefixes():
         env = {e["name"]: e.get("value") for e in container["env"]}
         assert (env["GARAGE_BUCKET"], env["R2_BUCKET"]) == (prefix, "factory-public")
         script = container["command"][2]
+        # Payloads without deletes, then the saved manifest, then the deletes.
+        dest = f'"R2:$R2_BUCKET/{prefix}"'
         assert (
-            f'run sync "GARAGE:$GARAGE_BUCKET" "R2:$R2_BUCKET/{prefix}" \\\n' in script
+            script.index('cat "GARAGE:$GARAGE_BUCKET/latest.json"')
+            < script.index(f'\npayloads copy "GARAGE:$GARAGE_BUCKET" {dest}')
+            < script.index(
+                f'copyto "$scratch/latest.json" "R2:$R2_BUCKET/{prefix}/latest.json"'
+            )
+            < script.index(f"run delete {dest} --files-from-raw")
         )
-        assert f'"R2:$R2_BUCKET/{prefix}/latest.json"' in script
         # Every R2 path in the script stays under the prefix.
         assert script.count('"R2:$R2_BUCKET') == script.count(
             f'"R2:$R2_BUCKET/{prefix}'

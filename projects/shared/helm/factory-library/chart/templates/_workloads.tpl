@@ -167,6 +167,10 @@ spec:
       {{- . | nindent 6 }}
     {{- end }}
     spec:
+      {{- if .mirror }}
+      {{- /* The deadline counts from the Job start and bounds every pod of the Job. */}}
+      activeDeadlineSeconds: {{ include "factory-library.mirrorDeadlineSeconds" . }}
+      {{- end }}
       backoffLimit: {{ dig "backoffLimit" 3 .workload }}
       template:
         {{- include "factory-library.pod" . | nindent 8 }}
