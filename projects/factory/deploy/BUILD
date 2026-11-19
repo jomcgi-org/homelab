@@ -14,7 +14,10 @@ exports_files(
 filegroup(
     name = "deploy_values",
     srcs = ["values.yaml"],
-    visibility = ["//projects/factory/chart:__pkg__"],
+    visibility = [
+        "//projects/factory/chart:__pkg__",
+        "//projects/factory/chart/admission:__pkg__",
+    ],
 )
 
 # The sha256 of the factory chart's render of these values (ArgoCD's: no

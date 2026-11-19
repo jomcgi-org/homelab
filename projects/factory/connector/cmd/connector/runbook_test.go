@@ -3,36 +3,28 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
-	"fmt"
-	"net/http"
+	"errors"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
-	"google.golang.org/grpc/metadata"
+	v1 "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
-	core "k8s.io/client-go/kubernetes/typed/core/v1"
-	"k8s.io/client-go/rest"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 func TestRevertConfirmation(t *testing.T) {
 	target := revertTarget{"locked", "executor", "factory-r-homelab", "homelab-codex-deadbeef-abcde", "uid", "factory-connector"}
-	locked := true
-	audits := 0
-	a := revertAction{tickets: map[string]preview{}, targets: func(context.Context) ([]revertTarget, error) { return []revertTarget{target}, nil }, execute: func(_ context.Context, got revertTarget) error {
-		if got != target {
-			t.Fatal(got)
+	submitted := 0
+	a := revertAction{tickets: map[string]preview{}, targets: func(context.Context) ([]revertTarget, error) { return []revertTarget{target}, nil }, submit: func(_ context.Context, user string, tgt revertTarget) error {
+		if user != "joe" || tgt != target {
+			t.Fatal(user, tgt)
 		}
-		locked = false
-		return nil
-	}, audit: func(user string, got revertTarget, result string) error {
-		if user != "joe" || got != target || result != "reverted" {
-			t.Fatal(user, got, result)
-		}
-		audits++
+		submitted++
 		return nil
 	}}
 	request := func(method, user, form string) int {
@@ -47,84 +39,100 @@ func TestRevertConfirmation(t *testing.T) {
 		}
 		return w.Code
 	}
-	if request("GET", "joe", "") != 200 || len(a.tickets) != 1 || !locked {
+	if request("GET", "joe", "") != 200 || len(a.tickets) != 1 || submitted != 0 {
 		t.Fatal("preview")
 	}
 	for ticket := range a.tickets {
 		form := "ticket=" + ticket
-		if request("POST", "other", form) != 409 || request("POST", "joe", form+"&pod=other") != 400 || !locked || audits != 0 {
+		if request("POST", "other", form) != 409 || request("POST", "joe", form+"&pod=other") != 400 || submitted != 0 {
 			t.Fatal("unreviewed execution")
 		}
-		if request("POST", "joe", form) != 200 || locked || audits != 1 || request("POST", "joe", form) != 409 {
+		if request("POST", "joe", form) != 202 || submitted != 1 || request("POST", "joe", form) != 409 {
 			t.Fatal("confirmation or replay")
 		}
 	}
 }
 
 type lockedSession struct {
-	target         revertTarget
-	token, creator string
-	deleted        atomic.Bool
-	released       bool
+	state   kagent.Session
+	reverts int
 }
 
-func (s *lockedSession) GetSession(ctx context.Context, id string) (*kagent.Session, error) {
-	md, _ := metadata.FromOutgoingContext(ctx)
-	if id != s.target.Session || len(md.Get("authorization")) != 1 || md.Get("authorization")[0] != "Bearer "+s.token {
-		return nil, fmt.Errorf("wrong identity or session")
-	}
-	state := &kagent.Session{ID: id, Creator: s.creator}
-	if s.deleted.Load() {
-		state.FailureReason = kagent.ReasonRuntimeCrashed
-	}
-	return state, nil
+func (s *lockedSession) GetSession(context.Context, string) (*kagent.Session, error) {
+	return &s.state, nil
 }
 
-func (s *lockedSession) RevertSession(ctx context.Context, id string) (*kagent.Session, error) {
-	state, err := s.GetSession(ctx, id)
-	if err != nil || !s.deleted.Load() {
-		return nil, fmt.Errorf("premature revert")
+func (s *lockedSession) RevertSession(context.Context, string) (*kagent.Session, error) {
+	if !s.state.Crashed() {
+		return nil, errors.New("not crashed")
 	}
-	state.State = kagent.RuntimeReady
-	state.FailureReason = ""
-	s.released = true
-	return state, nil
+	s.state.State = kagent.RuntimeReady
+	s.state.FailureReason = ""
+	s.reverts++
+	return nil, errors.New("lost response after successful revert")
 }
 
-func TestDeleteThenRevertAsCreator(t *testing.T) {
+func TestDurableRecoveryAndAuditRetry(t *testing.T) {
+	ctx := t.Context()
 	t.Setenv("KAGENT_AUTHORITY", "factory-home")
 	target := revertTarget{"locked", "executor", "factory-r-homelab", "homelab-codex-deadbeef-abcde", "uid", "factory-connector"}
 	claims := `{"iss":"cluster","sub":"system:serviceaccount:factory:factory-connector","aud":["kagent-invocation"],"kubernetes.io":{"namespace":"factory","serviceaccount":{"name":"factory-connector","uid":"creator-uid"}}}`
-	session := &lockedSession{target: target, token: "mock." + base64.RawURLEncoding.EncodeToString([]byte(claims)) + ".mock", creator: (kagent.CallerIdentity{Authority: "factory-home", ServiceAccountUID: "creator-uid"}).PrincipalID()}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.Method == "POST" && r.URL.Path == "/api/v1/namespaces/factory/serviceaccounts/factory-connector/token":
-			fmt.Fprintf(w, `{"apiVersion":"authentication.k8s.io/v1","kind":"TokenRequest","status":{"token":%q}}`, session.token)
-		case r.Method == "DELETE" && r.URL.Path == "/api/v1/namespaces/"+target.Namespace+"/pods/"+target.Pod:
-			var opts meta.DeleteOptions
-			if json.NewDecoder(r.Body).Decode(&opts) != nil || opts.Preconditions == nil || opts.Preconditions.UID == nil || string(*opts.Preconditions.UID) != target.UID {
-				t.Error("missing UID precondition")
-				w.WriteHeader(409)
-				return
-			}
-			session.deleted.Store(true)
-			fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","status":"Success"}`)
-		case r.Method == "GET" && session.deleted.Load():
-			w.WriteHeader(404)
-			fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","reason":"NotFound","code":404}`)
-		default:
-			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(403)
-		}
-	}))
-	defer server.Close()
-	pods, err := core.NewForConfig(&rest.Config{Host: server.URL, ContentConfig: rest.ContentConfig{ContentType: "application/json"}})
-	if err != nil {
+	source := &kagent.TokenSource{Path: filepath.Join(t.TempDir(), "token")}
+	if err := os.WriteFile(source.Path, []byte("mock."+base64.RawURLEncoding.EncodeToString([]byte(claims))+".mock"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	b := revertBackend{pods: pods, sessions: session}
-	if err = b.execute(t.Context(), target); err != nil || !session.released {
-		t.Fatal("session still locked", err)
+	sessions := &lockedSession{state: kagent.Session{ID: target.Session, Creator: (kagent.CallerIdentity{Authority: "factory-home", ServiceAccountUID: "creator-uid"}).PrincipalID()}}
+	client := fake.NewSimpleClientset(&v1.ConfigMap{ObjectMeta: meta.ObjectMeta{Name: journalName(target.Creator), Namespace: "grafana"}}, &v1.Pod{ObjectMeta: meta.ObjectMeta{Name: target.Pod, Namespace: target.Namespace, UID: "uid"}})
+	backend := func() revertBackend {
+		return revertBackend{pods: client.CoreV1(), sessions: sessions, discover: func(context.Context) ([]revertTarget, error) { return []revertTarget{target}, nil }}
+	}
+	if err := backend().submit(ctx, "joe", target); err != nil {
+		t.Fatal(err)
+	}
+	auditCount := 0
+	audit := func(user string, got revertTarget, result string) error {
+		if user != "joe" || got != target || result != "reverted" {
+			t.Fatal(user, got, result)
+		}
+		auditCount++
+		if auditCount == 1 {
+			return errors.New("Discord offline")
+		}
+		return nil
+	}
+	step := func(token *kagent.TokenSource, phase string) {
+		t.Helper()
+		b := backend()
+		if err := b.advance(ctx, target.Creator, token, audit); err != nil {
+			t.Fatal(err)
+		}
+		_, op, err := b.load(ctx, target.Creator)
+		if err != nil || op.Phase != phase {
+			t.Fatal(op, err)
+		}
+	}
+	step(source, "authorized")
+	step(nil, "deleting")
+	step(nil, "gone")
+	sessions.state.FailureReason = kagent.ReasonRuntimeCrashed
+	if err := backend().advance(ctx, target.Creator, source, nil); err == nil {
+		t.Fatal("expected lost response")
+	}
+	cm, pending, err := backend().load(ctx, target.Creator)
+	if err != nil || pending.Phase != "reverting" || pending.Epoch != 2 || pending.ID == "" {
+		t.Fatal(pending, err)
+	}
+	// A replacement process reconciles the intent once the previous lease expires.
+	pending.LeaseUntil = time.Now().Add(-time.Second)
+	if err := backend().save(ctx, cm, pending); err != nil {
+		t.Fatal(err)
+	}
+	step(source, "audit")
+	if err := backend().advance(ctx, target.Creator, nil, audit); err == nil {
+		t.Fatal("expected delivery failure")
+	}
+	step(nil, "delivered")
+	if sessions.reverts != 1 || auditCount != 2 {
+		t.Fatal(sessions.reverts, auditCount)
 	}
 }
