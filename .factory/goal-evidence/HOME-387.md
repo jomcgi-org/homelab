@@ -21,11 +21,22 @@ It supplies the macro citation only through the immutable head file API and
 checks its quoted representation in the outbound goal session. The separate
 `TestGoalPromptQuotesEveryUntrustedLine` exercises hostile delimiter text.
 
-In the read-only model replay of the #8260 source snapshot, the three
-per-criterion verdicts were pass, pass, pass. For the first, the reviewer
-followed the target to `pytest_main = True`. For the second, it identified
-qualifying bindings for Edge, ArgoCD, Grafana, itsaplan, Explorer and
-kubectl. For the third, it traced removal of each app's group bindings to
-the assertion naming that app. It kept the missing-registration finding
-open in the counterfactual with a nonexistent macro. This was a snapshot
-replay outside the deployed reviewer.
+### Replaying the evidence-only revision
+
+The parent was the exact #8260 head above. The only new file was
+`.factory/goal-evidence/HOME-351.md`. Its complete contents are the
+`evidence` constant in `TestGoalCheck8260EvidenceOnlyRevision`. Adding it
+to that parent produces Git tree `f2b000b23bfe64c86ebfc2dca44a462f0eb20ee7`
+(check with `git write-tree`). The test records both head SHAs.
+
+A read-only model review received the previous pytest finding, the three
+criteria, and line-quoted contents from that tree: the evidence file, BUILD,
+the loaded macro, the test, and every factory blueprint. It returned
+`met` for criteria 1, 2 and 3 and `met` overall. It traced the pytest
+entry point, identified positive group bindings for all six apps, and
+verified that the removal case calls the same per-app assertion.
+
+The Go regression replays that recorded verdict through the service after
+an earlier blocking check. It checks that the revision prompt includes the
+earlier finding and the new head's quoted evidence, and that the final
+check stores all three verdicts and clears the blockers.
