@@ -63,8 +63,15 @@ func (v *verifier) subject(raw string) (string, error) {
 	}
 	valid := time.Now().Before(v.expires)
 	v.Unlock()
+	// Mirror the factory-explore issuer rules in factory-cluster/nodes/authentication-config.yaml.
+	// All accepted identities receive the same group-only explorer RBAC grants.
+	var identity struct {
+		Username string   `json:"preferred_username"`
+		Issued   *float64 `json:"iat"`
+		Expires  *float64 `json:"exp"`
+	}
 	var c jwt.Claims
-	if !valid || len(keys) != 1 || token.Claims(keys[0].Key, &c) != nil || c.Expiry == nil || c.Subject == "" || c.ValidateWithLeeway(jwt.Expected{Issuer: issuer, AnyAudience: jwt.Audience{audience}, Time: time.Now()}, 0) != nil {
+	if !valid || len(keys) != 1 || token.Claims(keys[0].Key, &c, &identity) != nil || identity.Username == "" || identity.Issued == nil || identity.Expires == nil || *identity.Expires-*identity.Issued > 600 || c.Expiry == nil || c.Subject == "" || c.ValidateWithLeeway(jwt.Expected{Issuer: issuer, AnyAudience: jwt.Audience{audience}, Time: time.Now()}, 0) != nil {
 		return "", errors.New("invalid token")
 	}
 	return c.Subject, nil
@@ -176,7 +183,16 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	r = r.WithContext(ctx)
 	if !watch && r.Method == http.MethodGet {
-		p.cache.serve(w, r, p.now, func(out http.ResponseWriter) { p.forward(out, r, u, false) })
+		expired := func() bool {
+			if p.now().Before(end) && time.Now().Before(end) {
+				return false
+			}
+			_ = controller.SetWriteDeadline(time.Time{})
+			w.Header().Set("X-Explore-Next-Window", u.start.Add(time.Hour).UTC().Format(time.RFC3339))
+			p.deny(w, http.StatusForbidden, "Forbidden")
+			return true
+		}
+		p.cache.serve(w, r, p.now, expired, func(out http.ResponseWriter) { p.forward(out, r, u, false) })
 		return
 	}
 	p.forward(w, r, u, watch)
