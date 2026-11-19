@@ -1149,6 +1149,7 @@ func (c *Client) RevertedMerge(ctx context.Context, repo, branch, sha string, nu
 	for page := 1; ; page++ {
 		q.Set("page", strconv.Itoa(page))
 		var commits []struct {
+			SHA    string `json:"sha"`
 			Commit struct {
 				Message   string
 				Committer struct{ Date time.Time }
@@ -1159,7 +1160,10 @@ func (c *Client) RevertedMerge(ctx context.Context, repo, branch, sha string, nu
 		}
 		for _, commit := range commits {
 			at := commit.Commit.Committer.Date
-			if at.Before(since) || at.After(until) {
+			// The window starts at the merge, so the merge commit itself is
+			// listed. Its own subject (for example `Revert "x" (#7)` on PR #7)
+			// must never count as a revert of itself.
+			if at.Before(since) || at.After(until) || strings.EqualFold(commit.SHA, sha) {
 				continue
 			}
 			if RevertsMerge(commit.Commit.Message, repo, sha, number) && (earliest == nil || at.Before(*earliest)) {
