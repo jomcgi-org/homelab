@@ -79,3 +79,58 @@ def test_rejects_ineffective_bindings(fields):
         fields = {**fields, "group": "operators"}
     with pytest.raises(AssertionError, match="Missing enabled group binding"):
         _assert_group_binding({"identifiers": {"slug": "example"}}, [fields])
+
+
+def _entries(filename):
+    path = Path(__file__).parent / "factory-blueprints" / filename
+    return yaml.load(path.read_text(), Loader=BlueprintLoader)["entries"]
+
+
+def test_bosun_groups():
+    groups = {
+        entry["identifiers"]["name"]: entry["attrs"]
+        for entry in _entries("bosun-apply.yaml")
+        if entry["model"] == "authentik_core.group"
+    }
+    for name in ("bosun-member", "discord-operators", "bosun-applicants"):
+        assert groups[name]["is_superuser"] is False
+        assert groups[name]["roles"] == []
+    assert (
+        groups["bosun-member"]["parents"] == groups["bosun-applicants"]["parents"] == []
+    )
+    assert [p.value for p in groups["discord-operators"]["parents"]] == ["member"]
+    assert set(groups["authentik Admins"]) == {"parents"}
+    assert [p.value for p in groups["authentik Admins"]["parents"]] == ["operators"]
+
+
+def test_bosun_apply_discord():
+    entries = {e.get("id"): e for e in _entries("bosun-apply.yaml")}
+    assert entries["apply"]["identifiers"]["slug"] == "bosun-apply"
+    assert entries["start"]["identifiers"]["target"].value == "apply"
+    assert entries["start"]["identifiers"]["stage"].value == "discord-redirect"
+    assert (
+        entries["discord-redirect"]["attrs"]["target_static"]
+        == "/source/oauth/login/discord/"
+    )
+    social = {e.get("id"): e for e in _entries("factory-social.yaml")}
+    expression = social["record-application"]["attrs"]["expression"]
+    assert 'request.context["source"].slug == "discord"' in expression
+    assert 'user.groups.add(Group.objects.get(name="bosun-applicants"))' in expression
+
+
+def test_factory_operator_apps_require_admins():
+    expected = {"factory-edge", "factory-argocd", "factory-itsaplan", "factory-grafana"}
+    seen = set()
+    for param in _applications():
+        app, entries = param.values
+        slug = app["identifiers"]["slug"]
+        if slug in expected:
+            seen.add(slug)
+            (binding,) = [fields for _, fields in _binding_entries_for(app, entries)]
+            group = binding["group"]
+            assert group.tag == "!Find"
+            model, lookup = group.value
+            assert model.value == "authentik_core.group"
+            assert [node.value for node in lookup.value] == ["name", "authentik Admins"]
+            assert binding.get("enabled", True) and not binding.get("negate")
+    assert seen == expected

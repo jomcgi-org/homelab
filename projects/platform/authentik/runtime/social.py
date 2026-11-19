@@ -17,7 +17,12 @@ from authentik.policies.engine import PolicyEngine
 from authentik.sources.oauth.clients.oauth2 import OAuth2Client
 from authentik.stages.authenticator.oath import totp
 
-for filename in ("factory-auth.yaml", "factory-kubectl.yaml", "factory-social.yaml"):
+for filename in (
+    "factory-auth.yaml",
+    "factory-kubectl.yaml",
+    "factory-social.yaml",
+    "bosun-apply.yaml",
+):
     importer = Importer.from_string(
         (Path("/fixture/factory-blueprints") / filename).read_text()
     )
@@ -59,11 +64,11 @@ def sessions(username):
     return AuthenticatedSession.objects.filter(user__username=username).count()
 
 
-def callback(browser, identifier):
+def callback(browser, identifier, email="friend@example.org"):
     profile = {
         "id": identifier,
         "username": "friend",
-        "email": "friend@example.org",
+        "email": email,
         "verified": True,
     }
     with (
@@ -100,6 +105,20 @@ def submit_code(browser, url, component, device):
     return advance(browser, response)
 
 
+def finish_setup(browser, url, challenge):
+    # The setup device lives in the server session; read its secret from the
+    # otpauth:// URL the challenge gives the user's authenticator app.
+    query = parse_qs(urlparse(challenge["config_url"]).query)
+    secret = query["secret"][0]
+    device = SimpleNamespace(
+        bin_key=b32decode(secret + "=" * (-len(secret) % 8)),
+        digits=int(query.get("digits", ["6"])[0]),
+        step=int(query.get("period", ["30"])[0]),
+    )
+    submit_code(browser, url, challenge["component"], device)
+    return device
+
+
 def exercise():
     browser = Client(HTTP_HOST="localhost")
     assert callback(browser, "42").status_code == 302
@@ -132,16 +151,7 @@ def exercise():
         challenge = advance(browser, browser.get(url))
         assert challenge["component"] == "ak-stage-authenticator-totp"
         assert sessions("discord-42") == 0
-    # The setup device lives in the server session; read its secret from the
-    # otpauth:// URL the challenge gives the user's authenticator app.
-    query = parse_qs(urlparse(challenge["config_url"]).query)
-    secret = query["secret"][0]
-    device = SimpleNamespace(
-        bin_key=b32decode(secret + "=" * (-len(secret) % 8)),
-        digits=int(query.get("digits", ["6"])[0]),
-        step=int(query.get("period", ["30"])[0]),
-    )
-    submit_code(browser, url, challenge["component"], device)
+    device = finish_setup(browser, url, challenge)
     user = User.objects.get(username="discord-42")
     assert sessions("discord-42") == 1
     user.groups.remove(viewers)
@@ -164,3 +174,34 @@ def exercise():
 
 
 exercise()
+
+
+def exercise_application():
+    browser = Client(HTTP_HOST="localhost")
+    url = reverse("authentik_api:flow-executor", kwargs={"flow_slug": "bosun-apply"})
+    start = advance(browser, browser.get(url))
+    assert start["to"] == "/source/oauth/login/discord/"
+    for flow in ("enrollment", "authentication"):
+        assert callback(browser, "44", "applicant@example.org").status_code == 302
+        challenge = advance(browser, browser.get(executor(flow)))
+        if flow == "enrollment":
+            assert challenge["to"] == start["to"]
+    assert challenge["component"] == "ak-stage-authenticator-totp"
+    finish_setup(browser, executor("authentication"), challenge)
+    user = User.objects.get(username="discord-44")
+    assert sessions(user.username) == 1
+    assert list(user.all_groups().values_list("name", flat=True)) == [
+        "bosun-applicants"
+    ]
+    edge = Application.objects.get(slug="factory-edge")
+    assert not PolicyEngine(edge, user).build().result.passing
+
+    user.groups.set([Group.objects.get(name="discord-operators")])
+    assert not User.objects.get(pk=user.pk).is_superuser
+    user.groups.set([Group.objects.get(name="authentik Admins")])
+    assert {"discord-operators", "bosun-member"} <= set(
+        user.all_groups().values_list("name", flat=True)
+    )
+
+
+exercise_application()
