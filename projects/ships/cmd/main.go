@@ -24,8 +24,9 @@ const (
 	flushInterval = 2 * time.Second
 	readLimit     = 64 << 10
 	readTimeout   = 30 * time.Second
-	// A report dated further ahead of the writer clock would hold the latest
-	// position until real time reaches it, so the writer drops it.
+	// A report dated more than maxClockSkew after its frame arrives would hold
+	// the latest position until real time reaches it, so the reader drops it
+	// before the inbox write. A delayed apply cannot change that result.
 	maxClockSkew = 5 * time.Minute
 	// After SIGTERM the writer has this long to commit the frames it received.
 	stopGrace = 10 * time.Second
@@ -43,12 +44,9 @@ const (
 
 var (
 	malformed atomic.Uint64 // frames without JSON or an MMSI
-	ahead     atomic.Uint64 // reports dated more than maxClockSkew ahead
+	ahead     atomic.Uint64 // reports dated more than maxClockSkew after arrival
 	refused   atomic.Uint64 // reports PostgreSQL refuses
 )
-
-// errAhead marks a report dated too far ahead. The applier drops and counts it.
-var errAhead = errors.New("report dated too far ahead")
 
 // errLeaseLost ends a session that cannot confirm its lease.
 var errLeaseLost = errors.New("lease not confirmed")
@@ -119,6 +117,17 @@ func reportTime(value string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// report returns a position report that has coordinates and a readable time.
+// The writer ignores other position frames.
+func (f frame) report() (*position, time.Time, bool) {
+	p := f.Message.PositionReport
+	if f.MessageType != "PositionReport" || p == nil || p.Latitude == nil || p.Longitude == nil {
+		return nil, time.Time{}, false
+	}
+	at, ok := reportTime(f.MetaData.Time)
+	return p, at, ok
+}
+
 func store(ctx context.Context, tx *sql.Tx, f frame) error {
 	id := f.MetaData.MMSI.String()
 	if id == "" {
@@ -140,16 +149,9 @@ func store(ctx context.Context, tx *sql.Tx, f frame) error {
 			id, v.ImoNumber.String(), strings.TrimSpace(v.CallSign), name, v.Type, v.Dimension.A, v.Dimension.B, v.Dimension.C, v.Dimension.D, strings.TrimSpace(v.Destination), v.eta(time.Now().UTC()), v.MaximumStaticDraught)
 		return err
 	}
-	p := f.Message.PositionReport
-	if f.MessageType != "PositionReport" || p == nil || p.Latitude == nil || p.Longitude == nil {
-		return nil
-	}
-	at, ok := reportTime(f.MetaData.Time)
+	p, at, ok := f.report()
 	if !ok {
 		return nil
-	}
-	if at.After(time.Now().Add(maxClockSkew)) {
-		return errAhead
 	}
 	var lat, lon float64
 	var prior time.Time
@@ -247,9 +249,9 @@ func applyChunk(ctx context.Context, c *sql.Conn, isolate bool) (int, error) {
 	if err = rows.Err(); err != nil || len(frames) == 0 {
 		return 0, err
 	}
-	// The counters change only when the chunk commits, so a retried chunk
-	// counts each dropped report once.
-	var aheadHere, refusedHere uint64
+	// The counter changes only when the chunk commits, so a retried chunk
+	// counts each refused report once.
+	var refusedHere uint64
 	for _, raw := range frames {
 		var f frame
 		if json.Unmarshal(raw, &f) != nil {
@@ -261,10 +263,6 @@ func applyChunk(ctx context.Context, c *sql.Conn, isolate bool) (int, error) {
 			}
 		}
 		err = store(ctx, tx, f)
-		if errors.Is(err, errAhead) {
-			aheadHere++
-			err = nil
-		}
 		if isolate && dataError(err) {
 			refusedHere++
 			_, err = tx.ExecContext(ctx, "rollback to savepoint frame")
@@ -287,7 +285,6 @@ func applyChunk(ctx context.Context, c *sql.Conn, isolate bool) (int, error) {
 	if err = tx.Commit(); err != nil {
 		return 0, err
 	}
-	ahead.Add(aheadHere)
 	refused.Add(refusedHere)
 	return len(frames), nil
 }
@@ -374,8 +371,9 @@ func maintain(ctx context.Context, c *sql.Conn) error {
 	return tx.Commit()
 }
 
-// read sends each frame that decodes with an MMSI to the queue. It returns
-// when the feed fails, ctx ends or held reports false, and closes the queue.
+// read sends each frame that decodes with an MMSI to the queue, except a
+// report dated more than maxClockSkew after the frame arrived. It returns when
+// the feed fails, ctx ends or held reports false, and closes the queue.
 func read(ctx context.Context, ws *websocket.Conn, queue chan<- []byte, held func() bool) {
 	defer close(queue)
 	for {
@@ -387,9 +385,15 @@ func read(ctx context.Context, ws *websocket.Conn, queue chan<- []byte, held fun
 		if err != nil || !held() {
 			return
 		}
+		arrived := time.Now()
 		var f frame
 		if json.Unmarshal(raw, &f) != nil || f.MetaData.MMSI == "" {
 			malformed.Add(1)
+			continue
+		}
+		// Judge the date at arrival, before the frame reaches the inbox.
+		if _, at, ok := f.report(); ok && at.After(arrived.Add(maxClockSkew)) {
+			ahead.Add(1)
 			continue
 		}
 		select {

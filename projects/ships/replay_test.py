@@ -48,6 +48,18 @@ CLAIM_WAIT = (
     " where datname = current_database() and wait_event_type = 'Lock'"
     " and query like 'select id, frame from ships.inbox%'"
 )
+# The MMSIs of the position reports in the inbox and in history, in order.
+INBOX_REPORTS = (
+    "select coalesce(string_agg(convert_from(frame, 'UTF8')::json #>> '{MetaData,MMSI}',"
+    " ',' order by id), '') from ships.inbox"
+    " where convert_from(frame, 'UTF8')::json ->> 'MessageType' = 'PositionReport'"
+)
+STORED_MMSIS = (
+    "select coalesce(string_agg(distinct mmsi, ',' order by mmsi), '')"
+    " from ships.positions"
+)
+# The writer logs its counters when a session ends.
+SESSION_ENDED = re.compile(r"session ended: malformed=(\d+) ahead=(\d+) refused=(\d+) ")
 
 
 class Feed:
@@ -422,11 +434,12 @@ def test_restart_during_write_keeps_history_and_latest(pg, feed, writers):
     assert latest(factory, "321") == (base + timedelta(seconds=30), 48.03)
 
 
-def test_lease_loss_during_apply_keeps_each_report_once(pg, feed, writers):
+def test_lease_loss_during_apply_keeps_each_report_once(pg, feed, writers, tmp_path):
     factory, dsn = factory_database(pg, "ships_lease")
     base = datetime.now(UTC) - timedelta(hours=1)
     history = "select count(*) from ships.positions"
-    leader = writers(dsn, feed.url)
+    log = tmp_path / "leader.log"
+    leader = writers(dsn, feed.url, log=log)
     ws = feed.accept()
     ws.send(position(321, base, 48.0, -123.0, 3))
     until(lambda: scalar(factory, history) == 1)
@@ -443,6 +456,7 @@ def test_lease_loss_during_apply_keeps_each_report_once(pg, feed, writers):
         # PostgreSQL ends only the lease session. The stopped leader cannot see
         # the loss, so its apply transaction stays open and can still commit.
         leader.send_signal(signal.SIGSTOP)
+        stopped = time.monotonic()
         try:
             pid = scalar(factory, LEASE_PID)
             assert scalar(factory, f"select pg_terminate_backend({pid})")
@@ -453,14 +467,29 @@ def test_lease_loss_during_apply_keeps_each_report_once(pg, feed, writers):
             until(lambda: scalar(factory, CLAIM_WAIT) == 1)
             assert scalar(factory, LOCK_WAIT) == 1
             assert feed.sockets.empty()
+            # The leader's lease confirmation ends 5 seconds after its last
+            # ping. After that, a valid report waits in the stopped leader's
+            # socket.
+            time.sleep(max(0.0, stopped + 7 - time.monotonic()))
+            ws.send(position(654, base + timedelta(seconds=15), 48.5, -123.0, 3))
             # The old history write completes while the leader is stopped.
             blocker.rollback()
         finally:
             leader.send_signal(signal.SIGCONT)
 
+    # The feed sends the resumed leader another valid report.
+    try:
+        ws.send(position(655, base + timedelta(seconds=16), 48.6, -123.0, 3))
+    except (ConnectionClosed, OSError):
+        pass  # The leader closed its socket first.
+
     # The leader commits or rolls back its apply, which releases the claimed
     # row. The resumed leader cannot confirm its lease and closes its socket.
-    # The standby applies the inbox and waits 10 seconds before it subscribes.
+    # Its reader drops each frame it reads after the lease expired, so its
+    # session ends with no report in the inbox. The standby applies the inbox
+    # and waits 10 seconds before it subscribes.
+    until(lambda: SESSION_ENDED.search(log.read_text()), timeout=15)
+    assert scalar(factory, INBOX_REPORTS) == ""
     until(lambda: feed.open == 0, timeout=10)
     ws = feed.accept()
     assert feed.peak == 1
@@ -472,6 +501,8 @@ def test_lease_loss_during_apply_keeps_each_report_once(pg, feed, writers):
     assert scalar(factory, "select count(*) from ships.inbox") == 0
     assert latest(factory, "321") == (base + timedelta(seconds=10), 48.01)
 
+    # The standby's reports reach history. The reports sent to the leader
+    # after its lease expired reach neither the inbox nor history.
     ws.send(position(321, base + timedelta(seconds=20), 48.02, -123.0, 3))
     until(lambda: scalar(factory, history) == 3)
     assert latest(factory, "321") == (base + timedelta(seconds=20), 48.02)
@@ -479,6 +510,8 @@ def test_lease_loss_during_apply_keeps_each_report_once(pg, feed, writers):
         factory,
         "select count(*) = count(distinct recorded_at) from ships.positions",
     )
+    assert scalar(factory, STORED_MMSIS) == "321"
+    assert scalar(factory, "select count(*) from ships.inbox") == 0
 
 
 def test_lease_loss_with_empty_inbox_closes_the_old_socket_first(pg, feed, writers):
@@ -560,6 +593,58 @@ def test_writer_survives_default_rows_future_and_refused_reports(
     assert scalar(factory, "select count(*) from ships.inbox") == 0
     # The closed feed ends the session, and the writer logs each dropped report once.
     ws.close()
-    ended = re.compile(r"session ended: malformed=\d+ ahead=(\d+) refused=(\d+) ")
-    until(lambda: ended.search(log.read_text()))
-    assert ended.search(log.read_text()).groups() == ("1", "1")
+    until(lambda: SESSION_ENDED.search(log.read_text()))
+    assert SESSION_ENDED.search(log.read_text()).groups() == ("0", "1", "1")
+
+
+def test_future_report_is_judged_at_arrival(pg, feed, writers, tmp_path):
+    factory, dsn = factory_database(pg, "ships_arrival")
+    log = tmp_path / "writer.log"
+    writers(dsn, feed.url, log=log)
+    ws = feed.accept()
+    # A frame of another type keeps the writer's 30-second read timeout from
+    # ending the session while the test waits.
+    keepalive = json.dumps({"MessageType": "Ignored", "MetaData": {"MMSI": 999}})
+
+    with factory.connect() as blocker:
+        # The history write blocks with a report 4 minutes ahead in its apply.
+        blocker.exec_driver_sql("lock table ships.positions in access exclusive mode")
+        ws.send(
+            position(501, datetime.now(UTC) + timedelta(minutes=4), 48.0, -123.0, 3)
+        )
+        until(lambda: scalar(factory, INBOX_REPORTS) == "501")
+        until(lambda: scalar(factory, LOCK_WAIT) == 1)
+
+        # A report 6 minutes ahead of its arrival, then a report from the past.
+        arrived = time.monotonic()
+        ws.send(
+            position(502, datetime.now(UTC) + timedelta(minutes=6), 48.0, -123.0, 3)
+        )
+        ws.send(
+            position(503, datetime.now(UTC) - timedelta(minutes=1), 48.0, -123.0, 3)
+        )
+        until(lambda: "503" in scalar(factory, INBOX_REPORTS))
+        assert scalar(factory, INBOX_REPORTS) == "501,503"
+
+        # The history write stays blocked for over a minute after the arrival.
+        # An apply-time check would then see the report less than 5 minutes ahead.
+        while time.monotonic() < arrived + 65:
+            ws.send(keepalive)
+            time.sleep(min(10.0, max(0.0, arrived + 65 - time.monotonic())))
+        assert scalar(factory, LOCK_WAIT) == 1
+        assert scalar(factory, INBOX_REPORTS) == "501,503"
+        blocker.rollback()
+
+    # The 4-minute report and the past report reach history. The 6-minute
+    # report is dropped and counted once.
+    until(lambda: scalar(factory, "select count(*) from ships.inbox") == 0)
+    assert scalar(factory, STORED_MMSIS) == "501,503"
+    assert (
+        scalar(
+            factory, "select count(*) from ships.latest_positions where mmsi = '501'"
+        )
+        == 1
+    )
+    ws.close()
+    until(lambda: SESSION_ENDED.search(log.read_text()))
+    assert SESSION_ENDED.search(log.read_text()).groups() == ("0", "1", "0")
