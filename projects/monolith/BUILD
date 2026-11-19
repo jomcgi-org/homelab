@@ -10131,3 +10131,11 @@ filegroup(
     ],
     visibility = ["//:__pkg__"],
 )
+
+exports_files(
+    [
+        "trips/testdata/geotagged.jpg",
+        "trips/testdata/no_gps.jpg",
+    ],
+    visibility = ["//projects/trips/ingest:__pkg__"],
+)

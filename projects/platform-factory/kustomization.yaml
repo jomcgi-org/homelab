@@ -33,6 +33,7 @@ resources:
   - ./prometheus # Prometheus and kube-state-metrics: the operators' metrics store
   - ./grafana # Grafana at factory-grafana.jomcgi.dev: dashboards over Prometheus
   - ../stars-forecast/deploy
+  - ../trips/deploy # HOME-560 staged Trips service; HOME-554 enables it
   - ../factory-public/deploy # Garage factory-public and its R2 mirror (HOME-243)
   - ../hikes/deploy
   - ../factory-storyboard/deploy

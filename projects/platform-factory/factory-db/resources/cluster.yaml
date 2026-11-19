@@ -129,6 +129,18 @@ spec:
         connectionLimit: 4
         passwordSecret:
           name: factory-db-reaper-login
+      - name: factory_trips
+        ensure: present
+        login: true
+        inherit: false
+        superuser: false
+        createdb: false
+        createrole: false
+        replication: false
+        bypassrls: false
+        connectionLimit: 12
+        passwordSecret:
+          name: factory-db-trips-login
   backup:
     retentionPolicy: "14d"
     # The in-tree barman-cloud integration, as kagent-pg; CloudNativePG 1.31
@@ -259,3 +271,19 @@ spec:
   method: barmanObjectStore
   cluster:
     name: factory-db
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: factory-db-trips
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  cluster:
+    name: factory-db
+  name: factory_trips
+  owner: factory_trips
+  ensure: present
+  databaseReclaimPolicy: retain

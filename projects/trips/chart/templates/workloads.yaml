@@ -1,0 +1,107 @@
+{{ include "factory-library.all" . }}
+{{- if .Values.workloadsEnabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trips-ingest
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: trips-ingest}}
+  template:
+    metadata:
+      labels: {app: trips-ingest, app.kubernetes.io/name: trips}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, fsGroup: 65532}
+      containers:
+        - name: ingest
+          image: {{ printf "%s@%s" .Values.image.repository (required "image.digest is required" .Values.image.digest) | quote }}
+          command: [/usr/local/bin/ingest]
+          ports: [{containerPort: 8080}]
+          env:
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: {{ .Values.databaseSecret }}, key: DATABASE_URL}}
+            - {name: TRIPS_ORIGINALS, value: /originals}
+          volumeMounts: [{name: originals, mountPath: /originals}]
+      volumes:
+        - name: originals
+          persistentVolumeClaim: {claimName: {{ .Values.originalsClaim }}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trips-ingest
+spec:
+  selector: {app: trips-ingest}
+  ports: [{port: 8080, targetPort: 8080}]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: trips-export
+spec:
+  schedule: "0 3 * * *"
+  timeZone: Etc/UTC
+  suspend: {{ .Values.exportSuspended }}
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels: {app: trips-export, app.kubernetes.io/name: trips, factory.jomcgi.dev/garage-client: "true"}
+        spec:
+          automountServiceAccountToken: false
+          securityContext: {runAsNonRoot: true, runAsUser: 65532, fsGroup: 65532}
+          restartPolicy: Never
+          containers:
+            - name: export
+              image: {{ printf "%s@%s" .Values.image.repository (required "image.digest is required" .Values.image.digest) | quote }}
+              command: [/usr/local/bin/export]
+              envFrom:
+                - secretRef: {name: {{ .Release.Name }}-trips-public-s3}
+              env:
+                - name: DATABASE_URL
+                  valueFrom: {secretKeyRef: {name: {{ .Values.databaseSecret }}, key: DATABASE_URL}}
+                - {name: TRIPS_ORIGINALS, value: /originals}
+                - {name: TRIPS_PUBLIC_BASE, value: {{ .Values.publicBase | quote }}}
+              volumeMounts:
+                - {name: originals, mountPath: /originals, readOnly: true}
+                - {name: temp, mountPath: /tmp}
+          volumes:
+            - name: originals
+              persistentVolumeClaim: {claimName: {{ .Values.originalsClaim }}, readOnly: true}
+            - name: temp
+              emptyDir: {}
+{{- end }}
+{{- if .Values.workloadsEnabled }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: trips-database
+spec:
+  endpointSelector: {matchLabels: {app.kubernetes.io/name: trips}}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-db
+            cnpg.io/cluster: factory-db
+      toPorts:
+        - ports: [{port: "5432", protocol: TCP}]
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: trips-publication
+spec:
+  endpointSelector: {matchLabels: {app: trips-export}}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: garage
+            app.kubernetes.io/name: garage
+      toPorts:
+        - ports: [{port: "3900", protocol: TCP}]
+{{- end }}
