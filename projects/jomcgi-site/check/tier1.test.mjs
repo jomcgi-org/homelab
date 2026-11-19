@@ -331,8 +331,7 @@ test("tier 1 reads Trips data only while the section is enabled", async (t) => {
         if (req.url === "/") respond(res, html);
         else if (req.url === JUNK_PATH)
           respond(res, notFound, "text/html", {}, 404);
-        else if (req.url === "/assets/style.css")
-          respond(res, css, "text/css");
+        else if (req.url === "/assets/style.css") respond(res, css, "text/css");
         else if (req.url === "/assets/app.js")
           respond(res, "", "text/javascript");
         else {
@@ -380,7 +379,11 @@ test("a disabled section gets no page or freshness check", () => {
   assert.deepEqual(
     [
       ...enabledSections({
-        sections: { stars: {}, trips: { enabled: false }, hikes: { enabled: true } },
+        sections: {
+          stars: {},
+          trips: { enabled: false },
+          hikes: { enabled: true },
+        },
       }),
     ].sort(),
     ["hikes", "stars"],
