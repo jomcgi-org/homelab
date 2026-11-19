@@ -17,7 +17,6 @@ from xml.sax.saxutils import escape
 
 import pytest
 from fastapi import Request, Response
-from sqlalchemy.exc import DBAPIError
 from sqlmodel import Session, create_engine, text
 
 from ships.router import get_heat, get_snapshot, get_track
@@ -299,7 +298,9 @@ def test_publisher_login_cannot_write_or_alter(pg):
         assert owned == 0
         conn.rollback()
         for statement in DENIED:
-            with pytest.raises(DBAPIError) as refused:
+            # SQLAlchemy wraps the driver error; its .orig carries the
+            # SQLSTATE. Catching Exception avoids a direct sqlalchemy import.
+            with pytest.raises(Exception) as refused:
                 with conn.begin():
                     conn.exec_driver_sql(statement)
             assert refused.value.orig.sqlstate == "42501", statement
