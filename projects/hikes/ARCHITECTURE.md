@@ -16,7 +16,7 @@ flowchart LR
 
 | Component | Untrusted input | Credentials held |
 | --- | --- | --- |
-| Writer | Route HTML and meteorological forecasts | Scoped Garage write key |
+| Writer | Route HTML and meteorological forecasts | Read and write access to the hikes Garage bucket |
 | Mirror | Public Garage objects | Scoped Garage read key and R2 write token |
 
 ## Direction

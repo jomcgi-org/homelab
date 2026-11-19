@@ -3,7 +3,7 @@ image:
   digest: ""
 buckets:
   - name: hikes
-    access: write
+    access: readwrite
     public:
       r2Bucket: hikes
       manifestName: latest.json
