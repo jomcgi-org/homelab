@@ -31,9 +31,7 @@ export const countdown = ref("");
 async function closeWindow(next?: number) {
   if (nextWindow.value !== null) return;
   clearTimeout(timer);
-  // The proxy opens the next window one hour after the ten-minute window starts.
-  const opens = next ?? (windowEnd ? windowEnd + 50 * 60_000 : undefined);
-  nextWindow.value = opens ? new Date(opens).toISOString() : "";
+  nextWindow.value = next === undefined ? "" : new Date(next).toISOString();
   sessionStorage.setItem(closedKey, nextWindow.value);
   session.abort();
   await userManager.removeUser();
@@ -45,7 +43,9 @@ export function updateClock() {
   const now = Date.now();
   const deadline = Math.min(windowEnd || Infinity, tokenEnd);
   if (deadline <= now) {
-    void closeWindow();
+    // The proxy starts a new hour 50 minutes after the ten-minute window ends.
+    const windowElapsed = windowEnd > 0 && windowEnd <= now;
+    void closeWindow(windowElapsed ? windowEnd + 50 * 60_000 : undefined);
     return;
   }
   if (windowEnd) {

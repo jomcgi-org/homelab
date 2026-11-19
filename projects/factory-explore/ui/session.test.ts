@@ -111,9 +111,11 @@ test.each([
     await vi.advanceTimersByTimeAsync(0);
   }
   expect(root.textContent).toContain("Time’s up");
-  if (reason !== "expired token") {
+  if (reason === "deadline" || denied) {
     const opens = denied ? "2026-01-01T13:00:00Z" : "2026-01-01T12:50:02Z";
     expect(root.textContent).toContain(new Date(opens).toLocaleString());
+  } else {
+    expect(root.textContent).not.toContain("Your next window opens");
   }
   expect(await userManager.getUser()).toBeNull();
   expect(JSON.stringify(sessionStorage)).not.toContain("test-token");
@@ -123,6 +125,8 @@ test.each([
   reopened.mount(root);
   await vi.advanceTimersByTimeAsync(0);
   expect(root.textContent).toContain("Time’s up");
+  if (reason === "lost user during a read")
+    expect(root.textContent).not.toContain("Your next window opens");
   expect(redirect).not.toHaveBeenCalled();
   expect(silent).not.toHaveBeenCalled();
   root.querySelector("button")!.click();
