@@ -404,6 +404,7 @@ func TestGoalCheck8260EvidenceOnlyRevision(t *testing.T) {
 		}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			exporter := captureReviewSpans(t)
 			h, api := issueHarness(t)
 			api.issue.Identifier = "HOME-351"
 			api.issue.Description = "Done when:\n1. A CI test requires a group gate on every factory app.\n2. Current apps pass the test.\n3. Removing group bindings for any app makes the test fail."
@@ -435,7 +436,21 @@ func TestGoalCheck8260EvidenceOnlyRevision(t *testing.T) {
 				h.gh.headFiles = map[string]string{tc.revision + ":" + path: evidence}
 				h.gh.compares = map[string]map[string]any{original + "..." + tc.revision: {"status": "ahead", "files": []github.PullRequestFile{{Path: path, Status: "added"}}}}
 			})
+			exporter.Reset()
 			got := run(tc.revision)
+			var verdict string
+			for _, span := range exporter.GetSpans() {
+				if span.Name == "code review" {
+					for _, attr := range span.Attributes {
+						if attr.Key == "review.verdict" {
+							verdict = attr.Value.AsString()
+						}
+					}
+				}
+			}
+			if verdict != ConclusionSuccess {
+				t.Fatalf("clean code verdict with saved goal blockers = %q", verdict)
+			}
 			texts := goalTexts(h)
 			last := texts[len(texts)-1]
 			for _, want := range []string{original, tc.revision, "pytest never runs", "> " + strings.TrimSpace(strings.SplitN(evidence, "\n", 2)[0])} {

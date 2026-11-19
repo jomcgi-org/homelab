@@ -495,11 +495,16 @@ func keepEarlier(g, prev *GoalCheck) *GoalCheck {
 }
 
 func codeReviewClear(r *Report, prior []Finding, project string) bool {
+	_, verdict := codeReviewResult(r, prior, project)
+	return verdict == ConclusionSuccess
+}
+
+func codeReviewResult(r *Report, prior []Finding, project string) ([]Finding, string) {
 	ns := regexp.MustCompile(`^` + regexp.QuoteMeta(project) + `-[1-9][0-9]*:goal(:|$)`)
 	code := *r
 	code.Findings = slices.DeleteFunc(slices.Clone(r.Findings), func(f Finding) bool { return ns.MatchString(f.ID) })
 	prior = slices.DeleteFunc(slices.Clone(prior), func(f Finding) bool { return ns.MatchString(f.ID) })
-	return len(Assess(&code, prior).Blocking) == 0
+	return code.Findings, Assess(&code, prior).Conclusion
 }
 
 func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest, in *inputs, text string, initial *GoalCheck, l *slog.Logger) *GoalCheck {
