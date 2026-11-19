@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -1100,9 +1101,45 @@ func (t timelineActor) last() string {
 	return ""
 }
 
+// Revert forms that git and GitHub write, as in
+// projects/monolith/factory/orchestration/factory_reverts.py: a "This reverts
+// commit <sha>" line with a full or abbreviated SHA, a "Reverts [owner/repo]#N"
+// line, or a subject that starts with "Revert" and cites #N.
+var (
+	revertsSHA = regexp.MustCompile(`This reverts commit ([0-9a-f]{7,40})`)
+	revertsPR  = regexp.MustCompile(`Reverts (?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#([0-9]+)`)
+	prRef      = regexp.MustCompile(`#([0-9]+)`)
+)
+
+// RevertsMerge reports whether one commit message reverts the merge commit
+// sha or pull request number.
+func RevertsMerge(message, sha string, number int) bool {
+	if sha != "" {
+		for _, m := range revertsSHA.FindAllStringSubmatch(message, -1) {
+			if strings.HasPrefix(sha, m[1]) {
+				return true
+			}
+		}
+	}
+	if number <= 0 {
+		return false
+	}
+	refs := revertsPR.FindAllStringSubmatch(message, -1)
+	subject, _, _ := strings.Cut(message, "\n")
+	if strings.HasPrefix(subject, "Revert") || strings.HasPrefix(subject, "revert(") {
+		refs = append(refs, prRef.FindAllStringSubmatch(subject, -1)...)
+	}
+	for _, m := range refs {
+		if n, err := strconv.Atoi(m[1]); err == nil && n == number {
+			return true
+		}
+	}
+	return false
+}
+
 // RevertedMerge returns the first base-branch commit in the interval that
-// names the merge in a standard git revert trailer.
-func (c *Client) RevertedMerge(ctx context.Context, repo, branch, sha string, since, until time.Time, before func(int) error) (*time.Time, error) {
+// reverts the merge commit sha or pull request number.
+func (c *Client) RevertedMerge(ctx context.Context, repo, branch, sha string, number int, since, until time.Time, before func(int) error) (*time.Time, error) {
 	q := url.Values{"sha": {branch}, "since": {since.UTC().Format(time.RFC3339)}, "until": {until.UTC().Format(time.RFC3339)}, "per_page": {"100"}}
 	var earliest *time.Time
 	for page := 1; ; page++ {
@@ -1121,10 +1158,8 @@ func (c *Client) RevertedMerge(ctx context.Context, repo, branch, sha string, si
 			if at.Before(since) || at.After(until) {
 				continue
 			}
-			for _, line := range strings.Split(commit.Commit.Message, "\n") {
-				if (line == "This reverts commit "+sha+"." || line == "This reverts commit "+sha+", reversing") && (earliest == nil || at.Before(*earliest)) {
-					earliest = &at
-				}
+			if RevertsMerge(commit.Commit.Message, sha, number) && (earliest == nil || at.Before(*earliest)) {
+				earliest = &at
 			}
 		}
 		if len(commits) < MaxListed {

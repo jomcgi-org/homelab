@@ -146,20 +146,47 @@ func TestPRDeliveryResults(t *testing.T) {
 		t.Fatalf("replacement attribution: %v, %v", ok, err)
 	}
 
-	// A second arm stopped before opening a PR still has a reporting cohort.
+	// A work item that stops before it opens a PR is not in the cohort.
 	_, err = st.DB.Exec(`
         INSERT INTO work_item(id,binding_name,issue_id,issue_key,branch,agent_key,kagent_namespace,kagent_agent)
-        VALUES(3,'b',3,'HOME-3','branch3','coder','ns','coder');
+        VALUES(3,'b',3,'HOME-3','branch3','coder','ns','coder'),(4,'b',4,'HOME-4','branch4','coder','ns','coder');
         INSERT INTO run(id,work_item_id,agent_key,trigger,prompt,system_prompt,attempt,state,arm,task_class,base_sha)
-        VALUES(5,3,'coder','issue_delegated','','',1,'closed','candidate','feature','guide2');
+        VALUES(5,3,'coder','issue_delegated','','',1,'closed','candidate','feature','guide2'),
+              (6,4,'coder','issue_delegated','','',1,'closed','candidate','feature','guide2');
         UPDATE work_item SET state='stopped' WHERE id=3;`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = st.DB.QueryRow(`SELECT n=1 AND merge_rate=0 AND tokens_per_merge IS NULL
-        AND median_coder_minutes_per_merge IS NULL AND revert_rate IS NULL
-        FROM arm_delivery_results WHERE arm='candidate' AND task_class='feature' AND guidance_version='guide2'`).Scan(&ok)
+	err = st.DB.QueryRow(`SELECT NOT EXISTS (SELECT FROM delivery_outcome WHERE work_item_id=3)
+        AND NOT EXISTS (SELECT FROM arm_delivery_results WHERE arm='candidate')`).Scan(&ok)
 	if err != nil || !ok {
-		t.Fatalf("abandoned candidate arm: %v, %v", ok, err)
+		t.Fatalf("stopped item without a PR entered the cohort: %v, %v", ok, err)
+	}
+
+	// A stop while the PR is held records the open hold up to the last
+	// poll, and a hold that closes later updates the outcome.
+	_, err = st.DB.Exec(`
+        INSERT INTO pull_request(work_item_id,number,node_id,head_sha,state,held_since,polled_at)
+        VALUES(4,5,'pr5','head','open',now()-interval '3 hours',now()-interval '1 hour');
+        UPDATE work_item SET state='stopped' WHERE id=4;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = st.DB.QueryRow(`SELECT time_held = interval '2 hours' AND abandoned
+        AND (SELECT n=1 AND merge_rate=0 AND tokens_per_merge IS NULL AND median_coder_minutes_per_merge IS NULL
+             AND revert_rate IS NULL FROM arm_delivery_results
+             WHERE arm='candidate' AND task_class='feature' AND guidance_version='guide2')
+        FROM delivery_outcome WHERE node_id='pr5'`).Scan(&ok)
+	if err != nil || !ok {
+		t.Fatalf("open hold at stop: %v, %v", ok, err)
+	}
+	_, err = st.DB.Exec(`UPDATE pull_request SET polled_at=held_since+interval '150 minutes',
+        held_duration=held_duration+interval '150 minutes', held_since=NULL WHERE node_id='pr5'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = st.DB.QueryRow(`SELECT time_held = interval '150 minutes' FROM delivery_outcome WHERE node_id='pr5'`).Scan(&ok)
+	if err != nil || !ok {
+		t.Fatalf("closed hold after stop: %v, %v", ok, err)
 	}
 }

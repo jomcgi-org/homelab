@@ -1401,11 +1401,11 @@ func TestRevertedMergeWindow(t *testing.T) {
 				if r.URL.Path != "/repos/org/repo/commits" || r.URL.Query().Get("sha") != "main" {
 					t.Errorf("unexpected request %s", r.URL)
 				}
-				fmt.Fprintf(w, `[{"commit":{"message":"Undo change\n\nThis reverts commit abc.","committer":{"date":%q}}}]`, tc.at.Format(time.RFC3339))
+				fmt.Fprintf(w, `[{"commit":{"message":"Undo change\n\nThis reverts commit abc1234def.","committer":{"date":%q}}}]`, tc.at.Format(time.RFC3339))
 			}))
 			defer srv.Close()
 			client := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
-			got, err := client.RevertedMerge(context.Background(), "org/repo", "main", "abc", start, end, func(int) error { return nil })
+			got, err := client.RevertedMerge(context.Background(), "org/repo", "main", "abc1234def", 7, start, end, func(int) error { return nil })
 			if err != nil || (got != nil) != tc.match || (got != nil && !got.Equal(tc.at)) {
 				t.Fatalf("revert = %v, err = %v", got, err)
 			}
@@ -1427,7 +1427,7 @@ func TestRevertScanFencesCredentialRetry(t *testing.T) {
 		client := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
 		var pages []int
 		fenced := errors.New("writer changed")
-		_, err := client.RevertedMerge(context.Background(), "org/repo", "main", "sha", time.Now().Add(-time.Hour), time.Now(), func(page int) error {
+		_, err := client.RevertedMerge(context.Background(), "org/repo", "main", "sha", 1, time.Now().Add(-time.Hour), time.Now(), func(page int) error {
 			pages = append(pages, page)
 			if revoked && len(pages) == 2 {
 				return fenced
@@ -1438,5 +1438,41 @@ func TestRevertScanFencesCredentialRetry(t *testing.T) {
 		if !slices.Equal(pages, []int{1, 1}) || (revoked && (!errors.Is(err, fenced) || calls != 1)) || (!revoked && (err != nil || calls != 2)) {
 			t.Fatalf("revoked=%t pages=%v calls=%d err=%v", revoked, pages, calls, err)
 		}
+	}
+}
+
+// The forms match factory_reverts.py. b60e204b6 on main reverted #6586 with
+// "Reverts #6586." in its body.
+func TestRevertedMergeForms(t *testing.T) {
+	const merge = "b60e204b6f0c4c5d8e9a7b6c5d4e3f2a1b0c9d8e"
+	for _, tc := range []struct {
+		name, message string
+		match         bool
+	}{
+		{"full sha", "Revert \"x\"\n\nThis reverts commit " + merge + ".", true},
+		{"abbreviated sha", "revert: x\n\nThis reverts commit b60e204b6, reversing\nchanges.", true},
+		{"pr number", "revert(monolith): turn exact-turn session Stop control back off\n\nReverts #6586. The first live check", true},
+		{"repo pr number", "Revert \"feat: x\"\n\nReverts jomcgi-org/homelab#6586", true},
+		{"subject pr ref", "Revert \"feat: x (#6586)\"", true},
+		{"other sha", "x\n\nThis reverts commit 0123456789.", false},
+		{"short sha", "x\n\nThis reverts commit b60e2.", false},
+		{"other pr", "revert: x\n\nReverts #65861.", false},
+		{"pr ref outside revert subject", "feat: x (#6586)", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := json.Marshal([]map[string]any{{"commit": map[string]any{
+					"message": tc.message, "committer": map[string]any{"date": "2026-11-02T00:00:00Z"},
+				}}})
+				w.Write(body)
+			}))
+			defer srv.Close()
+			client := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+			start := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+			got, err := client.RevertedMerge(context.Background(), "org/repo", "main", merge, 6586, start, start.Add(7*24*time.Hour), func(int) error { return nil })
+			if err != nil || (got != nil) != tc.match {
+				t.Fatalf("revert = %v, err = %v, want match %t", got, err, tc.match)
+			}
+		})
 	}
 }

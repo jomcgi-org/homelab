@@ -1094,6 +1094,32 @@ func TestMergeQueueEjectionStartsOneRoundWithoutReenqueuingTheHead(t *testing.T)
 	}
 }
 
+// A merge group that fails only the reviewer check gets a revision round
+// with that evidence, but the round is not a CI fix.
+func TestReviewerOnlyEjectionIsNotACIFix(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.green("sha-1")
+	v.poll()
+	v.gh.mergeGroup(1, "group-sha-1")
+	v.poll()
+	v.gh.check("group-sha-1", "test", 100, "success")
+	v.gh.check("group-sha-1", "semgrep-review", 200, "failure")
+	v.gh.eject(1)
+	v.poll()
+	if n := len(v.rounds()); n != 1 {
+		t.Fatalf("rounds = %d, want one after the reviewer check failed in the merge group", n)
+	}
+	var fixes int
+	if err := v.st.DB.QueryRow(`SELECT count(*) FROM run WHERE queue_ci_fix`).Scan(&fixes); err != nil || fixes != 0 {
+		t.Fatalf("queue CI rounds: %d, %v; want 0 for a reviewer-only ejection", fixes, err)
+	}
+	sends := v.kg.Sends()
+	if text := sends[len(sends)-1].msg.Parts[0].Text; !strings.Contains(text, `Check "semgrep-review": completed / failure`) {
+		t.Fatalf("revision lacks the reviewer check evidence:\n%s", text)
+	}
+}
+
 func TestMergeQueueFailureRevisesInTheMappedSessionWithGroupEvidence(t *testing.T) {
 	v := newDeliveryEnv(t)
 	session := v.delivered()
@@ -3126,7 +3152,7 @@ func TestCILogPageCannotBeSentWithoutItsJournal(t *testing.T) {
 	}
 }
 
-func (g *fakeGitHub) RevertedMerge(_ context.Context, _, _, _ string, since, until time.Time, before func(int) error) (*time.Time, error) {
+func (g *fakeGitHub) RevertedMerge(_ context.Context, _, _, _ string, _ int, since, until time.Time, before func(int) error) (*time.Time, error) {
 	if g.scanRevert != nil {
 		return g.scanRevert(since, until, before)
 	}
