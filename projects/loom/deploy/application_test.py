@@ -80,9 +80,6 @@ def assert_default_off(hub):
     # Pin the complete existing root, including order. This prevents another
     # spelling or an added component from silently enrolling the Application.
     assert resources == [
-        "namespace-embervm.yaml",
-        "./embervm",
-        "./embervm-dev",
         "./monolith",
         "./monolith-public",
         "./monolith-agents",

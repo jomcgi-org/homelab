@@ -1,13 +1,14 @@
 # EmberVM reference deployment (GKE hub)
 
-The GKE hub, `homelab-hub`, is the only cluster and management plane.
-The deployment-agnostic design lives in [../ARCHITECTURE.md](../ARCHITECTURE.md).
+EmberVM is retired. HOME-476 removed its hub Applications, so no cluster
+deploys these values. The deployment-agnostic design lives in
+[../ARCHITECTURE.md](../ARCHITECTURE.md).
 This guide describes checked-in configuration, not a live acceptance result.
 
 ## Values and placement
 
-The production [Application](../../gke-apps/embervm/application.yaml) renders
-release `embervm` into namespace `embervm`, in this order:
+The removed production Application rendered release `embervm` into namespace
+`embervm`, in this order:
 
 1. Published chart defaults.
 2. [values.yaml](values.yaml), shared deployment settings.

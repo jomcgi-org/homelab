@@ -1,6 +1,6 @@
 # Kargo
 
-Kargo owns the live chart revision of six Applications on the GKE hub.
+Kargo owns the live chart revision of four Applications on the GKE hub.
 The UI is at `private.jomcgi.dev/app/kargo`, behind Cloudflare Access and
 Authentik. The `homelab-admin` group has promotion rights.
 
@@ -16,15 +16,13 @@ are true in this configuration.
 | monolith | kargo-monolith | monolith-chart | prod: monolith |
 | monolith-agents | kargo-monolith-agents | monolith-agents-chart | prod: monolith-agents |
 | monolith-public | kargo-monolith-public | monolith-public-chart | prod: monolith-public |
-| embervm | kargo-embervm | embervm-chart | dev: embervm-dev; prod: embervm |
 | scotland-connector | kargo-scotland-connector | scotland-connector-chart | prod: scotland-connector |
 
-All six Applications live in `argocd` and are registered through
-`projects/gke-apps/kustomization.yaml`. The three monolith pipelines and the
-scotland-connector pipeline subscribe directly to their Warehouses and have no
-upstream Stage or soak. There is no
-registered monolith dev Application. This configuration makes no decision
-about adding one.
+All four Applications live in `argocd` and are registered through
+`projects/gke-apps/kustomization.yaml`. Each pipeline subscribes directly to
+its Warehouse and has no upstream Stage or soak. There is no registered
+monolith dev Application. This configuration makes no decision about adding
+one. EmberVM's pipeline left the hub with EmberVM in HOME-476.
 
 Each Warehouse polls its OCI chart under `ghcr.io/jomcgi/homelab/charts` every
 five minutes, subject to its configured semver constraint and discovery limit.
@@ -45,8 +43,7 @@ or changed to maintain these docs.
 Every Stage runs `argocd-update`, then `argocd-wait`. The first updates the
 matching chart source's `targetRevision` and waits for its sync operation.
 The second waits for sync, operation and health together: Synced, no sync in
-flight, and Healthy. The per-pipeline timeout is ten minutes for the monolith
-pipelines and ninety minutes for EmberVM.
+flight, and Healthy. The per-pipeline timeout is ten minutes.
 
 These checks establish point-in-time Kubernetes readiness. They do not prove
 functional correctness or HTTP reachability from the controller to a workload.
@@ -54,17 +51,15 @@ functional correctness or HTTP reachability from the controller to a workload.
 report pre-apply health. A successful Promotion alone is insufficient evidence
 of complete deployment verification.
 
-EmberVM dev adds a functional check after `argocd-wait`. The `conformance` HTTP
-step polls the dev runner's verdict endpoint and accepts a pass only when
-`chart_version` matches the Freight being promoted. Missing or stale verdicts
-keep polling. Two consecutive failed cycles for that chart fail the step;
-the configured verdict timeout is ninety minutes. This gate is separate
-from `promotion.revisionGate`.
+The template also supports a functional check after `argocd-wait`. A Stage
+with `verdictURL` gets a `conformance` HTTP step that polls a runner's verdict
+endpoint and accepts a pass only when `chart_version` matches the Freight
+being promoted. Missing or stale verdicts keep polling. Two consecutive failed
+cycles for that chart fail the step. No hub Stage sets `verdictURL`. This gate
+is separate from `promotion.revisionGate`.
 
-EmberVM prod requests Freight from `dev`, with `requiredSoakTime: 5m0s`.
-Normally, Freight must be verified in dev and held there for five minutes
-before prod can take it. The soak provides upstream exposure time; it does
-not replace the conformance verdict or guarantee the absence of later faults.
+A Stage with `upstream` requests Freight from that Stage, and
+`requiredSoakTime` holds it there first. No hub Stage has an upstream.
 Argo Rollouts integration and Kargo's separate `verification` block are unused.
 The assertions live in promotion steps, and a Stage without a `verification`
 block marks Freight verified when its Promotion succeeds.
@@ -74,7 +69,7 @@ block marks Freight verified when its Promotion succeeds.
 `promotion.revisionGate.enabled` is false in the effective hub configuration.
 Only monolith's prod Stage carries `revisionURL`; no `rollout-version` step is
 rendered while the flag is false. `promotion_gate_test.py` checks that this
-wiring is inert and that enabling it leaves EmberVM's conformance steps intact.
+wiring is inert and that enabling it leaves conformance steps intact.
 
 When enabled, a Stage with `revisionURL` polls `/healthz` for a `chart_version`
 equal to the Freight's version. Stale or missing fields keep polling until the
@@ -92,7 +87,7 @@ that directory; the parent definition is
 in Git and deploy through that parent.
 
 The root's `ignoreDifferences` list covers `monolith`, `monolith-agents`,
-`monolith-public`, `embervm`, `embervm-dev` and `scotland-connector`, each at
+`monolith-public` and `scotland-connector`, each at
 `/spec/sources/0/targetRevision`. It is paired with
 `RespectIgnoreDifferences=true`. Diff suppression alone hides drift; the sync
 option also prevents a later apply from stamping the Git pin over a promotion.
@@ -148,19 +143,18 @@ inspect hub objects and do not approve Freight, promote, sync or patch anything:
 
 ```sh
 kubectl --context "${HUB_CONTEXT:?Set the homelab-hub context}" -n argocd get application hub -o yaml
-for project in kargo-monolith kargo-monolith-agents kargo-monolith-public kargo-embervm kargo-scotland-connector; do
+for project in kargo-monolith kargo-monolith-agents kargo-monolith-public kargo-scotland-connector; do
   kubectl --context "$HUB_CONTEXT" -n "$project" get warehouses,stages,promotions,freights
 done
-for app in monolith monolith-agents monolith-public embervm-dev embervm scotland-connector; do
+for app in monolith monolith-agents monolith-public scotland-connector; do
   kubectl --context "$HUB_CONTEXT" -n argocd get application "$app" \
     -o jsonpath='{.metadata.name}{" "}{.spec.sources[0].targetRevision}{" "}{.status.sync.status}{" "}{.status.health.status}{"\n"}'
 done
 ```
 
 Compare the live revision with the intended eligible Freight and inspect its
-Promotion and Stage status. EmberVM dev must satisfy its chart-aware verdict
-before normal prod eligibility and the soak; explicit approval is a separate
-bypass to record. Do not require every Application to equal the newest
+Promotion and Stage status. Record an explicit Freight approval as a bypass.
+Do not require every Application to equal the newest
 published chart while discovery, upstream checks or rollout are in progress.
 
 Use `verify_deployment` with the Application name and intended chart version

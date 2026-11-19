@@ -83,8 +83,8 @@ Kubernetes tool invocation separately requires the standing, undelegated
 `kg-agent-sa` workload identity and its `kg-agents` group. The Kubernetes
 client accepts only fixed get/list resources and a separately bounded
 `pods/log` get. Its namespaced reads are matched by Roles in a concrete
-namespace list, with Argo CD limited to `argocd`, Kargo limited to
-`kargo-monolith` and `kargo-embervm`, and cluster scope limited to nodes,
+namespace list, with Argo CD limited to `argocd`, Kargo limited to the four
+hub Kargo Project namespaces, and cluster scope limited to nodes,
 namespaces, and node metrics. It has no mutation, watch, Secret, exec, attach,
 port-forward, proxy, or wildcard route and does not import the private
 monolith cluster client.

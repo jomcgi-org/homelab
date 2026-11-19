@@ -25,10 +25,9 @@ def _load_yaml(name: str) -> dict:
 
 
 def _render_validation_release() -> list[dict]:
-    application = _load_yaml("DEV_GKE_APPLICATION")
-    release = application["spec"]["sources"][0]["helm"]["releaseName"]
-    namespace = application["spec"]["destination"]["namespace"]
-    assert release == namespace == "embervm-dev"
+    # The hub Application that named this release and namespace left with
+    # EmberVM (HOME-476).
+    release = namespace = "embervm-dev"
     command = [
         os.environ.get("HELM_BIN", "helm"),
         "template",
@@ -87,21 +86,8 @@ def test_validation_overlay_is_unreferenced_and_production_is_unchanged() -> Non
         "onepassword": {"itemPath": ""},
     }
 
-    for name in (
-        "DEV_APPLICATION",
-        "GKE_APPLICATION",
-        "DEV_GKE_APPLICATION",
-        "DEV_KUSTOMIZATION",
-        "GKE_KUSTOMIZATION",
-        "DEV_GKE_KUSTOMIZATION",
-    ):
+    for name in ("DEV_APPLICATION", "DEV_KUSTOMIZATION"):
         assert "values-store-validation-gke.yaml" not in _path(name).read_text()
-
-    gke_application = _load_yaml("GKE_APPLICATION")
-    assert gke_application["spec"]["sources"][0]["helm"]["valueFiles"] == [
-        "$values/projects/embervm/deploy/values.yaml",
-        "$values/projects/embervm/deploy/values-gke.yaml",
-    ]
 
     runbook = _path("STORE_RUNBOOK").read_text()
     validation_value_order = [

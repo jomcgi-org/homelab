@@ -218,6 +218,8 @@ def test_hub_has_no_embervm_consumers() -> None:
     projects = _chart_dir().parents[1]
     objects = _render(
         "monolith",
+        # CronWorkflows render only with a jobs image.
+        _quota_job_settings(),
         values_files=[
             projects / "monolith/deploy/values.yaml",
             projects / "monolith/deploy/values-gke.yaml",
@@ -227,10 +229,9 @@ def test_hub_has_no_embervm_consumers() -> None:
     pod = deployment["spec"]["template"]["spec"]
     env = _env(_container(deployment, "backend"))
 
-    # EMBERVM_URL stays until the hub runs the backend that answers 503 for
-    # function invocation and refuses registration without it (HOME-472
-    # activation).
-    assert env["EMBERVM_URL"] == "http://embervm-embervm.embervm.svc.cluster.local:8080"
+    # EmberVM left the hub (HOME-476): no URL, so invocation answers 503 and
+    # run_code and screenshots report "not configured".
+    assert "EMBERVM_URL" not in env
     assert "embervm" not in env["CD_HEALTH_KARGO_APPS"]
     assert all(c["name"] != "tokenbroker-spiffe-helper" for c in pod["containers"])
     grants = {
@@ -238,17 +239,23 @@ def test_hub_has_no_embervm_consumers() -> None:
         for obj in objects
         if obj["kind"] in {"Role", "RoleBinding"}
     }
-    assert not any(namespace == "kargo-embervm" for _, namespace, _ in grants)
-    # The FaaS Workload grant stays until the hub runs the backend that
-    # refuses registration without it (HOME-472 activation).
-    assert {grant for grant in grants if grant[1] == "embervm"} == {
-        ("Role", "embervm", "monolith-faas"),
-        ("RoleBinding", "embervm", "monolith-faas"),
+    # A Role in a deleted namespace fails the whole monolith sync.
+    assert not any(
+        namespace in {"embervm", "embervm-dev", "kargo-embervm"}
+        for _, namespace, _ in grants
+    )
+    assert env["FAAS_WORKLOADS_ENABLED"] == "false"
+    crons = {
+        obj["metadata"]["name"]: obj for obj in objects if obj["kind"] == "CronWorkflow"
     }
-    assert env["FAAS_WORKLOADS_ENABLED"] == "true"
-    for obj in objects:
-        if obj["kind"] == "CronWorkflow":
-            assert "EMBER_TOKENBROKER_URL" not in _env(_job_container(obj))
+    for name in (
+        "faas-reconcile",
+        "ember-codex-session-synthetic",
+        "ember-spark-session-synthetic",
+    ):
+        assert crons[name]["spec"]["suspend"] is True, name
+    for obj in crons.values():
+        assert "EMBER_TOKENBROKER_URL" not in _env(_job_container(obj))
     assert not any("TOKENBROKER" in name for name in env)
 
 

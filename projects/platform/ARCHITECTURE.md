@@ -27,7 +27,7 @@ flowchart LR
 
 ## 1. Clusters
 
-On each cluster, the bootstrap parent watches a directory containing the root Application. A change to the root can therefore sync even if its previous configuration pointed at the wrong tree. The hub root selects two inventories, one for shared controllers and one for workloads. EmberVM is retired, but its Applications are still listed during removal. [Hub root](../gke-cluster/kustomization.yaml) · [Platform inventory](../platform-gke/kustomization.yaml) · [Workload inventory](../gke-apps/kustomization.yaml) · [Retirement decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6893155810)
+On each cluster, the bootstrap parent watches a directory containing the root Application. A change to the root can therefore sync even if its previous configuration pointed at the wrong tree. The hub root selects two inventories, one for shared controllers and one for workloads. EmberVM is retired, and HOME-476 removed its Applications from the workload inventory. [Hub root](../gke-cluster/kustomization.yaml) · [Platform inventory](../platform-gke/kustomization.yaml) · [Workload inventory](../gke-apps/kustomization.yaml) · [Retirement decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6893155810)
 
 On the factory home cluster, the root reconciles the [platform-factory inventory](../platform-factory/kustomization.yaml), including the [software-factory Application](../factory/deploy/application.yaml) that deploys kagent and itsaplan. Hindsight and the operator landing page run alongside them. Node bootstrap, ingress routes, pins and recovery procedures live with that cluster. [Factory root](../factory-cluster/kustomization.yaml) · [Factory cluster guide](../factory-cluster/README.md)
 

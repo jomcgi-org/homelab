@@ -25,8 +25,6 @@ projects/factory/ARCHITECTURE.md: opening_fence: mermaid
 projects/factory/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
 projects/factory/README.md: missing required file
 projects/gke-apps/README.md: missing child context-forge-gateway
-projects/gke-apps/README.md: missing child embervm
-projects/gke-apps/README.md: missing child embervm-dev
 projects/gke-apps/README.md: missing child inference
 projects/gke-apps/README.md: missing child loom
 projects/gke-apps/README.md: missing child monolith
