@@ -48,6 +48,7 @@ func (s *Store) RecordAdmissionRead(ctx context.Context, r *Run, epoch int64, me
 func (s *Store) SetAdmissionHold(ctx context.Context, q Querier, id int64, reason string, now time.Time) error {
 	_, err := q.ExecContext(ctx, `
 		UPDATE run SET hold_reason = $2,
+            admission_held = admission_held + CASE WHEN $2 = '' AND hold_since IS NOT NULL THEN greatest($3::timestamptz - hold_since, interval '0') ELSE interval '0' END,
 			hold_since = CASE WHEN $2 = '' THEN NULL ELSE coalesce(hold_since, $3) END,
 			state = CASE WHEN $2 = '' THEN state ELSE 'waiting' END, updated_at = now()
 		WHERE id = $1`, id, reason, now)

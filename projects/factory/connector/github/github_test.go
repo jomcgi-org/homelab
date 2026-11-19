@@ -1383,3 +1383,32 @@ func TestActivationTrailerRequiresOneFinalTrailer(t *testing.T) {
 		}
 	}
 }
+
+func TestRevertedMergeWindow(t *testing.T) {
+	start := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(7 * 24 * time.Hour)
+	for _, tc := range []struct {
+		at    time.Time
+		match bool
+	}{
+		{start.Add(-time.Second), false},
+		{end.Add(-time.Hour), true},
+		{end, true},
+		{end.Add(time.Second), false},
+	} {
+		t.Run(tc.at.String(), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/repos/org/repo/commits" || r.URL.Query().Get("sha") != "main" {
+					t.Errorf("unexpected request %s", r.URL)
+				}
+				fmt.Fprintf(w, `[{"commit":{"message":"Undo change\n\nThis reverts commit abc.","committer":{"date":%q}}}]`, tc.at.Format(time.RFC3339))
+			}))
+			defer srv.Close()
+			client := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+			got, err := client.RevertedMerge(context.Background(), "org/repo", "main", "abc", start, end)
+			if err != nil || (got != nil) != tc.match || (got != nil && !got.Equal(tc.at)) {
+				t.Fatalf("revert = %v, err = %v", got, err)
+			}
+		})
+	}
+}

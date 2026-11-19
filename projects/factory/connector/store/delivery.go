@@ -115,12 +115,15 @@ func (s *Store) RecordPullRequest(ctx context.Context, q Querier, p PullRequest)
 // SetPolled records a poll of the PR and what it showed. Keep the latest
 // synthetic commit when the queue entry disappears so its checks remain
 // available after an ejection or a connector restart.
-func (s *Store) SetPolled(ctx context.Context, id int64, headSHA, state, queueState, mergeGroupSHA string, at time.Time) error {
+func (s *Store) SetPolled(ctx context.Context, id int64, headSHA, state, queueState, mergeGroupSHA string, held bool, at time.Time) error {
 	_, err := s.DB.ExecContext(ctx, `
 		UPDATE pull_request SET head_sha = $2, state = $3, merge_queue_state = nullif($4, ''), polled_at = $5,
+            held_duration = held_duration + CASE WHEN NOT $7 AND held_since IS NOT NULL
+                THEN greatest($5::timestamptz - held_since, interval '0') ELSE interval '0' END,
+            held_since = CASE WHEN $7 THEN coalesce(held_since, $5) END,
 			merge_group_sha = coalesce(nullif($6, ''), merge_group_sha),
 			updated_at = now()
-		WHERE id = $1`, id, headSHA, state, queueState, at, mergeGroupSHA)
+		WHERE id = $1`, id, headSHA, state, queueState, at, mergeGroupSHA, held)
 	return err
 }
 

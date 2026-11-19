@@ -1099,3 +1099,36 @@ func (t timelineActor) last() string {
 	}
 	return ""
 }
+
+// RevertedMerge returns the first base-branch commit in the interval that
+// names the merge in a standard git revert trailer.
+func (c *Client) RevertedMerge(ctx context.Context, repo, branch, sha string, since, until time.Time) (*time.Time, error) {
+	q := url.Values{"sha": {branch}, "since": {since.UTC().Format(time.RFC3339)}, "until": {until.UTC().Format(time.RFC3339)}, "per_page": {"100"}}
+	var earliest *time.Time
+	for page := 1; ; page++ {
+		q.Set("page", strconv.Itoa(page))
+		var commits []struct {
+			Commit struct {
+				Message   string
+				Committer struct{ Date time.Time }
+			}
+		}
+		if err := c.doUncached(ctx, repo, http.MethodGet, repoPath(repo)+"/commits?"+q.Encode(), nil, &commits); err != nil {
+			return nil, err
+		}
+		for _, commit := range commits {
+			at := commit.Commit.Committer.Date
+			if at.Before(since) || at.After(until) {
+				continue
+			}
+			for _, line := range strings.Split(commit.Commit.Message, "\n") {
+				if (line == "This reverts commit "+sha+"." || line == "This reverts commit "+sha+", reversing") && (earliest == nil || at.Before(*earliest)) {
+					earliest = &at
+				}
+			}
+		}
+		if len(commits) < MaxListed {
+			return earliest, nil
+		}
+	}
+}

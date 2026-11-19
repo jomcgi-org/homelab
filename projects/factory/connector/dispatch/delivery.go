@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/buildbuddy"
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
@@ -21,6 +22,7 @@ import (
 
 // GitHub is the subset of the GitHub client delivery uses.
 type GitHub interface {
+	RevertedMerge(ctx context.Context, repo, branch, sha string, since, until time.Time) (*time.Time, error)
 	FindPullRequest(ctx context.Context, repo, branch string) (*github.PullRequest, error)
 	CreatePullRequest(ctx context.Context, repo string, n github.NewPullRequest) (*github.PullRequest, error)
 	UpdatePullRequest(ctx context.Context, repo string, number int, u github.PullRequestUpdate) (*github.PullRequest, error)
@@ -588,7 +590,7 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	if d.Merged {
 		state = "merged"
 	}
-	if err := e.st.SetPolled(ctx, pr.ID, d.HeadSHA, state, d.MergeQueueState, d.MergeGroupSHA, e.cfg.Now()); err != nil {
+	if err := e.st.SetPolled(ctx, pr.ID, d.HeadSHA, state, d.MergeQueueState, d.MergeGroupSHA, state == "open" && b.Review.held(d.Labels) != "", e.cfg.Now()); err != nil {
 		return err
 	}
 	pr.HeadSHA, pr.State, pr.MergeQueueState = d.HeadSHA, state, d.MergeQueueState
@@ -2076,4 +2078,37 @@ func short(sha string) string {
 		return sha[:12]
 	}
 	return sha
+}
+
+// Check one merge per tick, including a final scan after its window closes.
+// The persisted cursor lets a restarted connector catch up on missed days.
+func (e *Engine) checkDeliveryReverts(ctx context.Context) error {
+	if e.gh == nil {
+		return nil
+	}
+	var node, repo, branch, sha string
+	var since, until time.Time
+	err := e.st.DB.QueryRowContext(ctx, `
+		SELECT o.node_id, b.owner || '/' || b.repo, b.base_branch, o.merge_sha,
+			coalesce(o.checked_until,o.merged_at), least($1, o.merged_at + interval '168 hours')
+		FROM delivery_outcome o JOIN work_item w ON w.id = o.work_item_id
+		JOIN repo_binding b ON b.name = w.binding_name
+		WHERE o.merge_sha IS NOT NULL AND o.reverted_at IS NULL
+		  AND coalesce(o.checked_until,o.merged_at) < o.merged_at + interval '168 hours'
+		  AND coalesce(o.checked_until,o.merged_at) + interval '1 hour' <= $1
+		ORDER BY coalesce(o.checked_until,o.merged_at), o.node_id LIMIT 1`, e.cfg.Now()).Scan(&node, &repo, &branch, &sha, &since, &until)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	reverted, err := e.gh.RevertedMerge(ctx, repo, branch, sha, since, until)
+	if err != nil {
+		return err
+	}
+	return e.w.Tx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE delivery_outcome SET checked_until=$2, reverted_at=$3 WHERE node_id=$1 AND reverted_at IS NULL`, node, until, reverted)
+		return err
+	})
 }

@@ -401,6 +401,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 		{"cancellations", e.stepCancellations},
 		{"delivery", e.stepDelivery},
 		{"activation recovery", e.st.RecoverActivation},
+		{"delivery_reverts", e.checkDeliveryReverts},
 		{"human_gates", e.stepHumanGates},
 		{"outbox", e.flushOutbox},
 		{"sessions", e.sweepSessions},

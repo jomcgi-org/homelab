@@ -87,3 +87,33 @@ func TestDeliveredIssueUsage(t *testing.T) {
 		t.Fatalf("delivered-issue report = %+v, want %+v", got, want)
 	}
 }
+
+func TestPRDeliveryResults(t *testing.T) {
+	st := open(t)
+	_, err := st.DB.Exec(`
+	INSERT INTO repo_binding(name,owner,repo,base_branch,itsaplan_project,kagent_namespace,kagent_agent,branch_prefix,max_engineering_retries)
+	VALUES ('b','org','repo','main','HOME','ns','coder','factory/',1);
+	INSERT INTO work_item(id,binding_name,issue_id,issue_key,branch,agent_key,kagent_namespace,kagent_agent)
+	SELECT i,'b',i,'HOME-'||i,'branch'||i,'coder','ns','coder' FROM generate_series(1,2) i;
+	INSERT INTO run(id,work_item_id,agent_key,trigger,prompt,system_prompt,attempt,state,arm,task_class,base_sha,input_tokens,output_tokens)
+	SELECT i,i,'coder','issue_delegated','','',1,'closed','control','task','base',100,20 FROM generate_series(1,2) i;
+	INSERT INTO run(id,work_item_id,agent_key,trigger,prompt,system_prompt,attempt,state,arm,input_tokens,output_tokens,created_at)
+	VALUES (-1,1,'coder','review','','',1,'closed','revision',20,10,now()+interval '1 minute');
+	INSERT INTO pull_request(work_item_id,number,node_id,head_sha,state)
+	SELECT i,i,'pr'||i,'head','open' FROM generate_series(1,2) i;
+	UPDATE work_item SET state='stopped' WHERE id=2;
+	UPDATE pull_request SET state='merged',merged_at=now()-interval '8 days',merge_commit_sha='sha' WHERE work_item_id=1;
+	UPDATE delivery_outcome SET reverted_at=merged_at+interval '6 days' WHERE number=1;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ok bool
+	err = st.DB.QueryRow(`SELECT n=2 AND merge_rate=0.5 AND revert_rate=1 AND tokens_per_merge=270
+		FROM arm_delivery_results WHERE arm='control'`).Scan(&ok)
+	if err != nil || !ok {
+		t.Fatalf("unexpected arm results: %v %v", ok, err)
+	}
+	if _, err := st.DB.Exec(`UPDATE delivery_outcome SET reverted_at=merged_at+interval '8 days' WHERE number=1`); err == nil {
+		t.Fatal("accepted revert outside observation window")
+	}
+}
