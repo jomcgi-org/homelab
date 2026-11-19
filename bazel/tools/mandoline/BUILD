@@ -1,3 +1,4 @@
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 # Semgrep mandoline from the private image ghcr.io/jomcgi/mandoline.
@@ -5,15 +6,12 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 # The image holds one layer with /usr/local/bin/mandoline.
 # gazelle:ignore
 
-# The layer digest must match the image digest pinned in MODULE.bazel.
-_LAYER = "blobs/sha256/66b6393de1bb8775c42540abb88e1068b8403921f71c141d23133dff92c245f1"
-
-# Layer for oci_image(tars = [...]) in a private image.
+# Layer for oci_image(tars = [...]) in a private image. MODULE.bazel pins it.
 genrule(
     name = "layer",
-    srcs = ["@mandoline_linux_amd64"],
+    srcs = ["@mandoline_layer//:layer.tar.gz"],
     outs = ["mandoline_layer.tar.gz"],
-    cmd = "cp $(execpath @mandoline_linux_amd64)/%s $@" % _LAYER,
+    cmd = "cp $< $@",
     visibility = ["//projects/factory:__subpackages__"],
 )
 
@@ -35,4 +33,10 @@ sh_test(
         "@platforms//os:linux",
         "@platforms//cpu:x86_64",
     ],
+)
+
+bzl_library(
+    name = "private_layer",
+    srcs = ["private_layer.bzl"],
+    visibility = ["//visibility:private"],
 )
