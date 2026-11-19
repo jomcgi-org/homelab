@@ -34,6 +34,26 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       readFileSync(join(dist, entry), "utf8"),
       "text/html",
     );
+  for (const entry of htmlPages(dist)) {
+    const origin = "https://jomcgi.dev";
+    const external = [
+      ...document(entry).querySelectorAll("script[src]"),
+    ].filter(
+      (script) => new URL(script.getAttribute("src"), origin).origin !== origin,
+    );
+    assert.equal(external.length, 1, entry);
+    assert.equal(
+      external[0].getAttribute("src"),
+      "https://static.cloudflareinsights.com/beacon.min.js",
+      entry,
+    );
+    assert.ok(external[0].hasAttribute("defer"), entry);
+    assert.equal(
+      external[0].getAttribute("data-cf-beacon"),
+      '{"token":"2724d79dd3e443aa82519de68347ea39"}',
+      entry,
+    );
+  }
   const index = document("blog.html");
   const posts = JSON.parse(
     readFileSync(

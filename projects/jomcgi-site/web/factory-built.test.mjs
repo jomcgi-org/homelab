@@ -45,6 +45,8 @@ test("the Factory shell is pre-rendered with unavailable states and local assets
       "script[src], link[rel='stylesheet'], link[rel='modulepreload']",
     )) {
       const asset = node.getAttribute("src") ?? node.getAttribute("href");
+      if (asset === "https://static.cloudflareinsights.com/beacon.min.js")
+        continue;
       assert.match(asset, /^\/assets\//);
       assert.ok(existsSync(join(dist, asset.slice(1))), asset);
     }

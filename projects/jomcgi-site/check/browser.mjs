@@ -59,12 +59,7 @@ export async function launchBrowser() {
   });
 }
 
-// Cloudflare Web Analytics injects this beacon into HTML on proxied hosts (seen
-// on next.jomcgi.dev; not on the jomcgi.dev Worker routes). The site's CSP
-// blocks it. It is edge configuration, not site code, so ignore exactly this
-// script: its origin and path must match, and only Chromium's own diagnostics
-// for it are dropped. Any other off-origin request, console error or CSP
-// violation still fails.
+// Block both the shipped beacon and the versioned script injected at the edge.
 const BEACON_ORIGIN = "https://static.cloudflareinsights.com";
 export function isEdgeBeacon(value) {
   let url;
@@ -129,6 +124,13 @@ export async function checkPage(
     page.setDefaultTimeout(15_000);
     page.on("console", (message) => {
       if (message.type() !== "error") return;
+      if (
+        message.text().startsWith("Failed to load resource: ") &&
+        isEdgeBeacon(message.location().url)
+      )
+        return;
+      // The edge-injected versioned beacon keeps this older exception
+      // (decision: https://factory-plan.jomcgi.dev/factory/issue/HOME-382#comment-4115).
       // Chromium attributes its CSP diagnostic to the document; the site's own
       // scripts are external files (the CSP forbids inline script), so an app
       // console call that copies the text reports its script URL instead.

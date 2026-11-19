@@ -89,7 +89,9 @@ export async function withSiteBrowser(
     await page.setRequestInterception(true);
     page.on("request", (request) => {
       const url = request.url();
-      if (!url.startsWith(origin + "/") && !url.startsWith("data:")) {
+      if (url === "https://static.cloudflareinsights.com/beacon.min.js") {
+        void request.respond({ contentType: "text/javascript", body: "" });
+      } else if (!url.startsWith(origin + "/") && !url.startsWith("data:")) {
         unexpected.push(url);
         void request.abort();
       } else if (

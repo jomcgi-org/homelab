@@ -159,7 +159,7 @@ for (const page of pages) {
         [],
         "the built page must have no structural axe violations",
       );
-      const scripts = [...doc.querySelectorAll("script")];
+      const scripts = [...doc.querySelectorAll("script:not([data-cf-beacon])")];
       assert.equal(scripts.length, 1, "one external hydration entry");
       assert.equal(scripts[0].getAttribute("type"), "module");
       const assets = [

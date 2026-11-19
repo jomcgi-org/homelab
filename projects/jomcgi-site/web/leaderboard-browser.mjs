@@ -59,6 +59,10 @@ try {
         colorScheme,
       });
       const page = await context.newPage();
+      const beacon = "https://static.cloudflareinsights.com/beacon.min.js";
+      await page.route(beacon, (route) =>
+        route.fulfill({ contentType: "text/javascript", body: "" }),
+      );
       const bars = page.locator(".bars");
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));

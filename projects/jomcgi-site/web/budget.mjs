@@ -39,6 +39,9 @@ export function initialScripts(html) {
   )) {
     const attr = attributes(attrs);
     if (!EXECUTABLE.has((attr.type ?? "").trim().toLowerCase())) continue;
+    // Measure first-party bundles without fetching analytics.
+    if (attr.src === "https://static.cloudflareinsights.com/beacon.min.js")
+      continue;
     if ("src" in attr) files.push(attr.src);
     else if (body.trim()) inline.push(body);
   }

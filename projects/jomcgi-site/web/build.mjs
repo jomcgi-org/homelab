@@ -67,7 +67,12 @@ try {
     if (parts.length !== 2) {
       throw new Error(`${entry} must hold exactly one ${MARK}`);
     }
-    const html = parts.join(assetUrls(render(entry)));
+    const html = parts
+      .join(assetUrls(render(entry)))
+      .replace(
+        "</head>",
+        `<script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token":"2724d79dd3e443aa82519de68347ea39"}'></script></head>`,
+      );
     await writeFile(
       file,
       entry === "index.html"
