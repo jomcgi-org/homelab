@@ -39,12 +39,11 @@ go_test(
         "reviewer_provenance_test.go",
         "status_test.go",
         "store_test.go",
-        "storyboard_approvals_test.go",
+        "storyboard_messages_test.go",
         "transcript_test.go",
         "usage_test.go",
     ],
     data = [
-        "//projects/factory-storyboard:approvals_sql",
         "@postgres_test//:postgres",
     ],
     embedsrcs = ["delivered_issue_usage.sql"],

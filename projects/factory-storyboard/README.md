@@ -90,73 +90,112 @@ fixtures at those paths in development and tests; production builds contain none
 
 The factory-storyboard CronJob runs in the factory namespace every five
 minutes. Its ServiceAccount uses the read-only connector database login and
-a Garage write claim for factory-public. Its egress allows only factory-db,
-the itsaplan API and Garage. No storyboard pod can reach the kagent
-controller, because its trusted-proxy listener accepts unverified bearer
-tokens (`projects/factory/ARCHITECTURE.md` finding 5).
+a Garage write claim for factory-public. Its root filesystem is read-only,
+and the secret scan writes its input files to a 256 MiB `/tmp` emptyDir.
+Its egress allows only factory-db, the itsaplan API and Garage. No
+storyboard pod can reach the kagent controller, because its trusted-proxy
+listener accepts unverified bearer tokens
+(`projects/factory/ARCHITECTURE.md` finding 5).
 
-The publisher reads kagent session history through the connector store. The
-connector journals each task's history in `task_transcript`. The
-`storyboard_tasks` view lists a completed task only if an approval in
-`storyboard_approved_message` names its project, issue, session and task.
-The `storyboard_task_messages` view returns the SHA-256 of an assistant
-message in such a task only if the owner approved that digest. Both views
-match the session in the approval, not the current session of the work
-item. When the connector releases the session of a done or stopped work
-item, it keeps the attempt and its journal, so the approved task stays
-visible. The publisher login cannot read or write the approval table, so it
-learns nothing about other messages. The digest covers the
-message text as the itsaplan run trace shows it. Artifact text is excluded.
-A review round has no journal, so the publisher cannot confirm its text.
+The publisher reads kagent session text through the connector store and
+publishes it by default
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-414#comment-5459)).
+The connector journals each task's history in `task_transcript`. The
+read-only `storyboard_messages` view returns the text of each assistant
+message in a completed task, as the itsaplan run trace shows it. Artifact
+text is excluded. A review round has no journal, so it publishes no turn.
 
-Provision the 1Password item `factory-storyboard-readers` before sync. It
-holds the project-scoped read-only `ITSAPLAN_KEY` and `APPROVED_HISTORY`.
-`APPROVED_HISTORY` is a JSON object keyed by issue key. Each entry can
-contain an approved literal title and description and a `tasks` array. Each
-task records its `session`, `task`, UTC completion time `at`, and the exact
-owner-reviewed assistant messages in `assistantTexts`. Copy each message
-from the itsaplan run trace. Keep these approved exports after connector
-cleanup. Follow the withdrawal procedure below when an owner removes an
-approval. An empty object publishes issue keys and metrics only. A separate
-explicit publication approval is required before you add prose to the item.
+| Rule | Enforced by |
+| --- | --- |
+| Project HOME only | `storyboard_messages` view |
+| Completed tasks only | `storyboard_messages` view |
+| Only tasks that the HOME binding's own kagent Agent ran; never the security agent in namespace `factory-intsec` | `storyboard_messages` view |
+| No issue labelled `private`, `security`, `security-finding` or `INTSEC`, in any letter case | Publisher, from the itsaplan labels |
+| No turn, title or description that the secret scan matches | Publisher, with gitleaks |
 
-After each change to `APPROVED_HISTORY`, record the same approvals in the
-connector store as the database owner. `approvals.py` refuses bad input and
-then writes no SQL. It also refuses an approval set with no messages unless
-you add `--allow-empty`, which withdraws every approval for the project. The
-SQL replaces all approvals for the project in one transaction. Before its
-only `COMMIT`, it checks that the table holds exactly the approved rows and
-raises an error on a mismatch. If the input stops before the `COMMIT`,
-PostgreSQL rolls the transaction back. Run the command as one subshell, so
-that a failure in any step stops it:
+The view fixes the project in the database, so the publisher login cannot
+read the transcripts of another project. The view matches the session of
+the task's attempt, not the current session of the work item. When the
+connector releases the session of a done or stopped work item, it keeps the
+attempt and its journal, so the text stays published.
 
-```sh
-(
-  set -euo pipefail
-  history=$(op read op://k8s-homelab/factory-storyboard-readers/APPROVED_HISTORY)
-  import=$(python3 projects/factory-storyboard/approvals.py HOME <<<"$history")
-  verify=$(python3 projects/factory-storyboard/approvals.py --verify HOME <<<"$history")
-  db() {
-    KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db exec -i factory-db-1 -c postgres -- \
-      psql -X -v ON_ERROR_STOP=1 -d factory_connector
-  }
-  db <<<"$import"
-  db <<<"$verify"
-)
+The connector store holds no issue labels. On each cycle the publisher reads
+the labels from itsaplan and skips a private or security issue before any
+connector read. An issue that gets one of these labels stops publishing on
+the next cycle.
+
+The publisher redacts e-mail addresses and the project's assignee IDs. One
+gitleaks run then scans every turn, title and description, each as its own
+file. A matching turn keeps only its number, time and role. A matching title
+becomes the issue key, and a matching description becomes empty. Each
+withheld record gets one log line with its issue key and no text. A last
+gitleaks run scans every object and the manifest before the first write. A
+match stops the cycle.
+
+Provision the 1Password item `factory-storyboard-readers` in vault
+`k8s-homelab` before sync. It holds two fields. `ITSAPLAN_KEY` is an itsaplan
+API key that can only read work items in project HOME; the new publisher
+reads only this field. `APPROVED_HISTORY` holds `{}`; only the chart 0.1.10
+publisher reads it, so that a rollback Job can start (see "Rollout order").
+After sync, check that Secret `factory/factory-storyboard-readers`
+has both keys. The publisher refuses
+a key with any other grant. Create the key through the itsaplan API as a
+team admin, as the factory bootstrap does for `factory-reviewer`:
+
+1. Create an external agent with no projects. itsaplan shows its key only
+   once, in the `apiKey` field of the response:
+
+   ```text
+   POST /teams/<team ID>/ai-agents
+   {"username": "factory-storyboard", "name": "Factory storyboard",
+    "kind": "external", "projectIds": [], "triggerOnAssign": false,
+    "triggerOnMention": false, "fieldTriggers": [], "runnerScope": "team",
+    "chatEnabled": false}
+   ```
+
+2. Find the ID of the team role `Factory reviewer` in
+   `GET /teams/<team ID>/roles/options`. This role grants only `work_items`
+   read.
+3. Add the agent to HOME with that role. Send `POST /projects/HOME/members`
+   with `{"userId": "<agent userId>", "role": "member", "roleId": "<role ID>"}`.
+4. Send `GET /projects/HOME` with header `x-api-key: <key>`. Check that
+   `permissions.work_items` has `read: true` and every other action false.
+5. Save the key as field `ITSAPLAN_KEY` of item `factory-storyboard-readers`,
+   and add field `APPROVED_HISTORY` with the value `{}`.
+
+### Rollout order
+
+The factory chart deploys the connector, and the connector applies its
+migrations when it starts. The storyboard chart has its own Argo CD
+Application. After a merge, CI advances both pins, and the two
+Applications sync independently:
+
+```mermaid
+flowchart LR
+  M[Merge] --> C["Connector applies 20261119215000_storyboard_messages"]
+  M --> S["Storyboard CronJob uses the new image"]
+  C --> R[storyboard_messages ready]
+  S -->|view absent| N["Cycle logs an error and publishes nothing"]
+  S -->|view present| P[Cycle publishes]
+  R --> P
 ```
 
-The last step runs the same check in a read-only transaction after the
-commit. Continue only if the subshell exits with status 0. Then compare the
-count in `approvals.py: N approved messages for HOME` with the count in the
-final notice, `storyboard approvals for HOME: N messages match`. They must
-be equal. Use the primary's pod name if `factory-db-1` is not the primary.
+1. The migration only adds. The chart 0.1.10 publisher keeps reading
+   `storyboard_tasks` and `storyboard_task_messages`.
+2. A new publisher cycle that starts before the migration applies logs
+   `connector view storyboard_messages is absent` and writes nothing. The
+   last manifest stays. The next cycle after the migration publishes.
+3. Save `ITSAPLAN_KEY` before the new chart syncs. Without the key, the
+   Job's pod cannot start, so it publishes nothing.
 
-The publisher publishes an approved task only if the task view holds its
-session and task, and the message view confirms the digest of each approved
-message. It reads both views on each cycle, so a removed approval or an
-issue that is no longer eligible stops publication on the next cycle. Otherwise it withholds that task, logs its task ID,
-issue key and reason, and publishes the other records. The log line holds no
-message text. `APPROVED_HISTORY` alone never publishes a message.
+To roll back the publisher, lower `targetRevision` in
+`deploy/application.yaml` to `0.1.10`. The old views and the
+`storyboard_approved_message` table stay for that publisher. Its Job starts
+only if item `factory-storyboard-readers` holds `APPROVED_HISTORY`. The
+provisioning steps above create it as `{}`, which the old publisher accepts
+and which publishes issue keys and metrics without prose. Keep that field
+through the rollback window. HOME-527 drops
+the old views, the table and the field after the new publisher is live.
 
 After publisher rollout, run
 `node projects/factory-storyboard/verify-rollout.mjs --mirror-only`
@@ -166,36 +205,36 @@ the preview site. This also activates its browser requirement. Run
 `node projects/factory-storyboard/verify-rollout.mjs` with Node 22.18 or later
 to check the seven-minute limit and every object on the preview site.
 
-### Withdraw a publication approval
+### Withdraw a published issue
 
-1. Record the affected issue key, session ID in the public manifest, and old
-   object paths from both the mirror and preview manifests. Include previous
-   versions that carry the withdrawn text. Keep this inventory private.
-   Remove the text from `APPROVED_HISTORY`. For a whole-session
-   withdrawal, remove its archive entry. Record the approvals again in the
-   connector store. If no message approval remains, add `--allow-empty` to both
-   `approvals.py` commands. Wait for the Kubernetes Secret to reconcile. Wait for a successful publisher Job started with the new Secret.
-2. Fetch `https://factory-data.jomcgi.dev/manifest.json`. Record its
-   `generatedAt`. For a whole session, check that its ID has disappeared
-   from the session index and its events from the current issue timeline.
-   For a partial withdrawal, read the replacement session object and check
-   that the withdrawn turns are absent. Check all current references against
-   the inventory and run `node projects/factory-storyboard/verify-rollout.mjs --mirror-only`.
-3. If preview has served the affected snapshot, sync the Argo CD Application
+The publisher withdraws whole issues, with all their sessions.
+
+1. Record the affected issue key, its session IDs in the public manifest,
+   and the old object paths from both the mirror and preview manifests.
+   Include previous versions that carry the withdrawn text. Keep this
+   inventory private.
+2. Add the label `private` to the issue in itsaplan. For a security issue,
+   add `security` instead. Wait for the next successful publisher Job.
+3. Fetch `https://factory-data.jomcgi.dev/manifest.json`. Record its
+   `generatedAt`. Check that the issue key and its session IDs have
+   disappeared from the indexes and from the story. Check all current
+   references against the inventory and run
+   `node projects/factory-storyboard/verify-rollout.mjs --mirror-only`.
+4. If preview has served the affected snapshot, sync the Argo CD Application
    `jomcgi-site-dev` after the mirror check. Its Sync-hook Job builds a fresh
    Worker deployment from the mirrored manifest. Wait for the deploy and site
    checks to succeed. Fetch `https://next.jomcgi.dev/data/factory/manifest.json`
    and repeat the content and reference checks. Its `generatedAt` must be at
-   least the mirror timestamp recorded in step 2. Run
+   least the mirror timestamp recorded in step 3. Run
    `node projects/factory-storyboard/verify-rollout.mjs` to check the digests.
-4. Check the old keys separately. The publisher normally expires unreachable
+5. Check the old keys separately. The publisher normally expires unreachable
    Garage objects once their last write is at least 24 hours old. The next
    mirror sync removes them from R2. For an urgent takedown, have the bucket
    operator remove the affected, unreferenced Garage keys immediately and
    confirm the deletions reach R2. Use authenticated listings of both buckets.
    Preserve objects still referenced by a current snapshot and resolve any
    remaining reference before deletion.
-5. After origin removal and preview redeployment, have the Cloudflare zone
+6. After origin removal and preview redeployment, have the Cloudflare zone
    operator purge the exact old object URLs and manifest URLs on both hosts.
    The mirror gives immutable objects a one-year cache lifetime. Check each
    original URL with an ordinary GET from outside the cluster. Expect HTTP
@@ -221,8 +260,8 @@ KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db exec factory-db-1 -c postg
 ```
 
 The second command must print 0. Use the primary's pod name if
-`factory-db-1` is not the primary. The `storyboard_delivery`,
-`storyboard_tasks` and `storyboard_task_messages` views, the
-`storyboard_approved_message` table and their grants stay, so a later
-redeploy works without a new migration. To remove the
-grants as well, add a forward migration that revokes them.
+`factory-db-1` is not the primary. The `storyboard_delivery` and
+`storyboard_messages` views and their grants stay, so a later redeploy works
+without a new migration. Until the HOME-518 follow-up, the chart 0.1.10
+views and their grants also stay. To remove the grants as well, add a forward
+migration that revokes them.

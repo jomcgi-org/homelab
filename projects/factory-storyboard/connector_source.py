@@ -11,23 +11,23 @@ def delivery(cursor, project, issue_id):
     return cursor.fetchone()
 
 
-def session_tasks(cursor, project, issue_id):
+def session_messages(cursor, project, issue_id):
+    # The view returns HOME only, and only completed tasks that the binding's
+    # own agent ran: never the security agent's sessions.
     cursor.execute(
-        """SELECT session_id, kagent_namespace, kagent_agent, task_id
-           FROM public.storyboard_tasks
+        """SELECT session_id, task_id, finished_at, text
+           FROM public.storyboard_messages
            WHERE itsaplan_project = %s AND issue_id = %s
-           ORDER BY session_id, task_id""",
+           ORDER BY session_id, finished_at, task_id, journal_attempt, first_event""",
         (project, issue_id),
     )
     return cursor.fetchall()
 
 
-def task_messages(cursor, project, issue_id):
-    # Owner-approved SHA-256 digests only: the view never returns text.
+def messages_view_ready(cursor):
+    # The view is absent until the connector applies its migration. The
+    # factory and storyboard charts roll out independently.
     cursor.execute(
-        """SELECT session_id, task_id, text_sha256
-           FROM public.storyboard_task_messages
-           WHERE itsaplan_project = %s AND issue_id = %s""",
-        (project, issue_id),
+        "SELECT to_regclass('public.storyboard_messages') IS NOT NULL AS ready"
     )
-    return cursor.fetchall()
+    return cursor.fetchone()["ready"]

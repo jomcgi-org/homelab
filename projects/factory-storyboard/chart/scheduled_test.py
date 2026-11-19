@@ -38,16 +38,25 @@ def test_scheduled_writer():
         and d["metadata"]["name"] == pod["serviceAccountName"]
         for d in docs
     )
-    names = {
-        v["valueFrom"]["secretKeyRef"]["name"]
+    refs = [
+        v["valueFrom"]["secretKeyRef"]
         for v in pod["containers"][0]["env"]
         if "valueFrom" in v
-    }
-    assert names == {
+    ]
+    assert {ref["name"] for ref in refs} == {
         "factory-storyboard-factory-public-s3",
         "factory-storyboard-readers",
         "factory-storyboard-db",
     }
+    # The root filesystem stays read-only; the secret scan writes to /tmp.
+    (container,) = pod["containers"]
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert container["volumeMounts"] == [{"name": "tmp", "mountPath": "/tmp"}]
+    assert pod["volumes"] == [{"name": "tmp", "emptyDir": {"sizeLimit": "256Mi"}}]
+    # The 1Password item needs only the read-only itsaplan key.
+    assert [
+        ref["key"] for ref in refs if ref["name"] == "factory-storyboard-readers"
+    ] == ["ITSAPLAN_KEY"]
 
 
 def test_no_pod_reaches_the_kagent_controller():

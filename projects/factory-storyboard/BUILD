@@ -79,23 +79,6 @@ py_test(
     deps = ["@pip//pytest"],
 )
 
-# The connector store test runs the SQL that approvals.py prints.
-filegroup(
-    name = "approvals_sql",
-    srcs = glob(["testdata/*.sql"]),
-    visibility = ["//projects/factory/connector/store:__pkg__"],
-)
-
-py_test(
-    name = "approvals_test",
-    srcs = [
-        "approvals.py",
-        "approvals_test.py",
-    ],
-    data = glob(["testdata/*"]),
-    deps = ["@pip//pytest"],
-)
-
 py_test(
     name = "delivery_stats_test",
     srcs = [

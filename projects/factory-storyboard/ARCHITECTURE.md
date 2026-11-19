@@ -28,16 +28,26 @@ checks their hashes and cross-links, and exercises rejected inputs. The
 | schema | Defines the versioned public documents shared with the site. |
 
 The publisher joins the configured itsaplan project to connector delivery
-records. It checks approved assistant text against SHA-256 digests of
-completed kagent tasks. A connector store view computes these digests from
-the connector's task journal. It returns only the digests that the owner
-approved in the connector store, so no transcript text or unapproved digest
-crosses this boundary. The publisher withholds a task that the view does not
-confirm and publishes the other records.
-The publisher has no network path to the kagent controller, whose
-trusted-proxy listener accepts unverified bearer tokens. A separate
-owner-approved export supplies the public text and retains it after
-connector cleanup.
+records and publishes session text by default. Joe chose this on 2026-11-19
+in place of per-message owner approval
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-414#comment-5459)).
+
+```mermaid
+flowchart LR
+  I["itsaplan (HOME issues and labels)"] -->|read-only key| P[Publisher]
+  V["storyboard_messages view (HOME, completed, binding agent)"] -->|read-only login| P
+  P -->|redact, gitleaks| G[(Garage factory-public)]
+  G -->|mirror| R[(R2 factory-data.jomcgi.dev)]
+```
+
+A connector store view returns the text of assistant messages in completed
+kagent tasks from the connector's task journal. The view fixes project HOME
+and admits only tasks that the HOME binding's own agent ran, so another
+project's transcripts and the security agent's sessions never cross this
+boundary. The store holds no labels, so the publisher skips issues labelled
+private or security in itsaplan. It withholds each turn that the secret scan
+matches. The publisher has no network path to the kagent controller, whose
+trusted-proxy listener accepts unverified bearer tokens.
 Every five minutes it commits immutable objects and then the manifest to
 Garage. The existing mirror copies them to R2. The site checks each hash
 before it copies the object into its deployment.
