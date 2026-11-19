@@ -15,6 +15,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/r2"
@@ -50,6 +51,16 @@ func fetch(url string, consume func(io.Reader) error) error {
 }
 
 func run(mode string) error {
+	// All writer pods mount the same local-path directory. Linux releases its
+	// advisory lock when the process exits, including on pod termination.
+	lock, err := os.Open("/var/lock/hikes")
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
 	ctx := context.Background()
 	c, err := r2.New(os.Getenv("AWS_ENDPOINT_URL"), os.Getenv("AWS_REGION"), r2.Credentials{AccessKeyID: os.Getenv("AWS_ACCESS_KEY_ID"), SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY")}, nil)
 	if err != nil {
@@ -64,7 +75,6 @@ func run(mode string) error {
 		}
 	}
 	var data snapshot
-	prior := "*"
 	obj, err := c.Get(ctx, bucket, "latest.json", "", 4096)
 	if err == nil {
 		var m manifest
@@ -84,7 +94,6 @@ func run(mode string) error {
 		if data.Version != 2 {
 			return fmt.Errorf("unsupported version %d", data.Version)
 		}
-		prior = obj.ETag
 	} else if !errors.Is(err, r2.ErrNotFound) || mode != "catalogue" {
 		return err
 	}
@@ -155,11 +164,11 @@ func run(mode string) error {
 	}
 	digest := fmt.Sprintf("%x", hash.Sum(nil))
 	key := "walks-" + digest + ".json"
-	if err = c.Put(ctx, bucket, key, file, size, digest, "public, max-age=31536000, immutable", ""); err != nil {
+	if err = c.Put(ctx, bucket, key, file, size, digest, "public, max-age=31536000, immutable"); err != nil {
 		return err
 	}
 	index, _ := json.Marshal(manifest{key})
-	return c.Put(ctx, bucket, "latest.json", bytes.NewReader(index), int64(len(index)), fmt.Sprintf("%x", sha256.Sum256(index)), "public, max-age=60", prior)
+	return c.Put(ctx, bucket, "latest.json", bytes.NewReader(index), int64(len(index)), fmt.Sprintf("%x", sha256.Sum256(index)), "public, max-age=60")
 }
 
 func encode(out io.Writer, data snapshot, now time.Time) error {

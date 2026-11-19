@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -25,16 +26,19 @@ async function page(walks, generatedAt = fetched, modified = fetched) {
     file,
     '<main><div id="hikes-published"><!--hikes-summary:start-->placeholder<!--hikes-summary:end--></div></main>',
   );
+  const body = Buffer.from(
+    JSON.stringify({ schema_version: 2, fetched_at: fetched, walks }),
+  );
+  const key = `walks-${createHash("sha256").update(body).digest("hex")}.json`;
   await snapshot(
-    {
-      sections: { hikes: { bucket: "stars", files: { walks: "walks.json" } } },
+    { sections: { hikes: { bucket: "hikes", manifest: "latest.json" } } },
+    async (bucket, path) => {
+      assert.equal(bucket, "hikes");
+      if (path === "latest.json")
+        return { body: Buffer.from(JSON.stringify({ walks: key })) };
+      assert.equal(path, key);
+      return { body, lastModified: new Date(modified).toUTCString() };
     },
-    async () => ({
-      lastModified: new Date(modified).toUTCString(),
-      body: Buffer.from(
-        JSON.stringify({ schema_version: 2, fetched_at: fetched, walks }),
-      ),
-    }),
     out,
     new Date(generatedAt),
   );
