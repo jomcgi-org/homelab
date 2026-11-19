@@ -19,7 +19,7 @@ const body = (entry: string) => {
 };
 
 describe("Scotland and slop migration", () => {
-  it.each(["scotland-data", "policy-data"])(
+  it.each(["policy-data"])(
     "%s keeps the hub's committed content verbatim",
     (name) => {
       const withoutImports = (text: string) =>

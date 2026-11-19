@@ -23,14 +23,14 @@ claude plugin install scotland@jomcgi
 Without the plugin, add the server alone:
 
 ```sh
-claude mcp add --transport http scotland https://jomcgi.dev/scotland/mcp
+claude mcp add --transport http scotland https://scotland-mcp.jomcgi.dev/mcp
 ```
 
 Codex, in `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.scotland]
-url = "https://jomcgi.dev/scotland/mcp"
+url = "https://scotland-mcp.jomcgi.dev/mcp"
 ```
 
 ## Layout
@@ -56,8 +56,8 @@ the server and need no plugin release.
 [Privacy](https://jomcgi.dev/scotland/privacy) ·
 [terms](https://jomcgi.dev/scotland/terms) ·
 [support](https://jomcgi.dev/scotland/support) ·
-[method](https://jomcgi.dev/scotland/v1/method) ·
-[OpenAPI](https://jomcgi.dev/scotland/v1/openapi.json)
+[method](https://scotland-mcp.jomcgi.dev/v1/method) ·
+[OpenAPI](https://scotland-mcp.jomcgi.dev/v1/openapi.json)
 
 ## Licence
 

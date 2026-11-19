@@ -121,7 +121,7 @@ describe("build-time machine-readable files", () => {
     expect(xml).not.toContain("/app/notes");
     expect(digest).not.toContain("/app/notes");
     expect(digest).toContain("Location: Scotland, United Kingdom");
-    expect(digest).toContain("https://jomcgi.dev/scotland/mcp");
+    expect(digest).toContain("https://scotland-mcp.jomcgi.dev/mcp");
     expect(llms([])).not.toContain("## Blog");
   });
 });

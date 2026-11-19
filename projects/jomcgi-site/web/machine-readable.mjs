@@ -41,10 +41,10 @@ const INTRO = `# Joe McGinley
 ## Scotland connector
 
 - [Scotland connector](${PUBLIC_BASE}/scotland): free, read-only MCP server and REST API for planning and checking Scottish trips. \`plan\` takes a point and up to seven days and returns, for each day, the Walkhighlands walks that fit the weather and the best road-accessible dark-sky sites for the night, each with a go or marginal verdict and its reason, or a note saying why nothing suits. \`check\` takes named walks on dates or points on nights and says whether each is on (go, marginal, no, or unknown past the hourly forecast), when, and what else suits. Pass coordinates; no sign-up or key.
-- MCP endpoint: ${PUBLIC_BASE}/scotland/mcp (Streamable HTTP, tools \`plan\` and \`check\`)
+- MCP endpoint: https://scotland-mcp.jomcgi.dev/mcp (Streamable HTTP, tools \`plan\` and \`check\`)
 - Claude Code plugin: \`claude plugin marketplace add ${PUBLIC_BASE}/scotland/marketplace.json\`, then \`claude plugin install scotland@jomcgi\`
-- [OpenAPI spec](${PUBLIC_BASE}/scotland/v1/openapi.json): the REST contract
-- [Method](${PUBLIC_BASE}/scotland/v1/method): how verdicts are decided, and the data sources to credit
+- [OpenAPI spec](https://scotland-mcp.jomcgi.dev/v1/openapi.json): the REST contract
+- [Method](https://scotland-mcp.jomcgi.dev/v1/method): how verdicts are decided, and the data sources to credit
 - [Privacy](${PUBLIC_BASE}/scotland/privacy), [terms](${PUBLIC_BASE}/scotland/terms) and [support](${PUBLIC_BASE}/scotland/support)
 `;
 

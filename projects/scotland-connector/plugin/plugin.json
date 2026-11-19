@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "scotland",
-  "version": "0.1.1",
-  "description": "Plan and check Scottish walks and stargazing: which Walkhighlands walks fit the weather and where the night sky will be dark and clear, each with a go, marginal or no verdict and its reason.",
+  "version": "0.1.2",
+  "description": "Plan and check Scottish walks and stargazing with https://scotland-mcp.jomcgi.dev/mcp: which Walkhighlands walks fit the weather and where the night sky will be dark and clear, each with a go, marginal or no verdict and its reason.",
   "author": {
     "name": "Joe McGinley",
     "email": "joe@jomcgi.dev",

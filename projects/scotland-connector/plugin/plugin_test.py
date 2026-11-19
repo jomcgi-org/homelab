@@ -11,7 +11,7 @@ from pathlib import Path
 
 _DIR = Path(__file__).resolve().parent
 _SITE = "https://jomcgi.dev/scotland"
-_MCP_URL = f"{_SITE}/mcp"
+_MCP_URL = "https://scotland-mcp.jomcgi.dev/mcp"
 
 
 def _json(rel: str) -> dict:
@@ -26,7 +26,7 @@ def test_manifests_agree():
     assert claude["description"] == openai["description"]
     assert claude["license"] == openai["license"] == "MPL-2.0"
     # The marketplace is served at jomcgi.dev/scotland/marketplace.json
-    # (projects/monolith/frontend), with a git-subdir source for this folder.
+    # (projects/jomcgi-site), with a git-subdir source for this folder.
     assert claude["repository"] == openai["repository"]
     assert claude["repository"].endswith(
         "/tree/main/projects/scotland-connector/plugin"

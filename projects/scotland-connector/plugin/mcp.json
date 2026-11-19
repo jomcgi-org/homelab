@@ -3,7 +3,7 @@
   "mcpServers": {
     "scotland": {
       "type": "streamable-http",
-      "url": "https://jomcgi.dev/scotland/mcp"
+      "url": "https://scotland-mcp.jomcgi.dev/mcp"
     }
   }
 }
