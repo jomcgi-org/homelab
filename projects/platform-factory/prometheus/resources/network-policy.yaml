@@ -24,6 +24,9 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: grafana
             app.kubernetes.io/name: runbooks
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: grafana
+            app.kubernetes.io/name: runbook-kagent-revert
       toPorts:
         - ports:
             - port: "9090"

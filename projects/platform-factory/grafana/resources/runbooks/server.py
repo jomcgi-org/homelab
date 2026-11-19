@@ -3,6 +3,7 @@
 import json
 import math
 import re
+import socket
 import time
 from datetime import UTC, datetime
 from html import escape
@@ -104,6 +105,14 @@ def section(title, render, *args):
     return f"<h2>{title}</h2>{body}"
 
 
+def revert_available():
+    try:
+        socket.getaddrinfo("runbook-kagent-revert.grafana.svc", 8080)
+    except OSError:
+        return False
+    return True
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlsplit(self.path)
@@ -117,6 +126,8 @@ class Handler(BaseHTTPRequestHandler):
             book = BOOKS[name]
             params = parse_qs(url.query)
             content = section("Current check", check, book, bind(book["check"], params))
+            if name == "KagentSuspendTimedOut" and revert_available():
+                content += '<form action="/actions/kagent-revert"><button>Review locked sessions</button></form>'
             if "details" in book:
                 content += section("Codex grant windows", quota, book["details"])
             content += section("Past hour", graph, bind(book["graph"], params))

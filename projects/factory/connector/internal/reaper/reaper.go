@@ -187,3 +187,9 @@ func Scan(ctx context.Context, actors, journal *sql.DB, pods core.PodsGetter, le
 	}
 	return errors.Join(append(errs, evidence.Err())...)
 }
+
+// SuspendingWorker returns the assigned worker only while the actor is suspending.
+func SuspendingWorker(proto []byte) (string, string, string, bool) {
+	p, state, _ := actorPlacement(proto)
+	return p.namespace, p.pod, p.uid, state == 3 && p.allowed()
+}

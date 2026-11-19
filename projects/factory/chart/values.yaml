@@ -705,3 +705,6 @@ semgrepSync:
   enabled: false
   # Set the slug when the token can read multiple Semgrep deployments.
   deployment: ""
+
+runbookRevert:
+  enabled: false

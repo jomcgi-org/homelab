@@ -228,6 +228,9 @@ patches:
       - op: add
         path: /spec/template/spec/containers/0/args/-
         value: --postgres-client=factory/factory-reaper=factory_reaper
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --postgres-client=grafana/runbook-kagent-revert=factory_reaper
   - target:
       kind: ConfigMap
       name: postgres-config
