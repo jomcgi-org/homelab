@@ -78,6 +78,10 @@ def _helm(
         "discord.agent.enabled=false",
         "--set",
         "discord.bridge.enabled=false",
+        # Goal reasons need the connector, which many renders turn off; the
+        # tests that cover them opt in with an override.
+        "--set",
+        "reviewer.goalReasons.enabled=false",
     ]
     if enable:
         args += [
@@ -161,6 +165,8 @@ def test_deploy_values_enable_the_reviewer() -> None:
     assert deploy["reviewer"]["bindings"]["homelab"]["enqueueAuthors"] == []
     # The reviewer keeps one comment on each PR, written as its App's bot.
     assert deploy["reviewer"]["commentAuthor"] == "jomcgi-factory-review[bot]"
+    # Revision rounds quote the goal check's private reasons (HOME-251).
+    assert deploy["reviewer"]["goalReasons"]["enabled"] is True
     assert deploy["connector"]["bindings"]["homelab"]["reviewerCheck"] == {
         "name": "factory review",
         "appId": 5758326,

@@ -127,7 +127,15 @@ def _pods(docs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 
 
 def test_disabled_renders_nothing_in_factory() -> None:
-    assert not _ours(_render(["itsaplan.enabled=false", "connector.enabled=false"]))
+    assert not _ours(
+        _render(
+            [
+                "itsaplan.enabled=false",
+                "connector.enabled=false",
+                "reviewer.goalReasons.enabled=false",
+            ]
+        )
+    )
 
 
 def test_no_namespace_of_its_own() -> None:
@@ -495,7 +503,7 @@ def test_reviewer_bootstrap_does_not_publish_when_role_fails(bootstrap, monkeypa
 def test_coordinator_grant_is_only_requested_with_connector_enabled() -> None:
     config = json.loads(
         _one(
-            _render(["connector.enabled=false"]),
+            _render(["connector.enabled=false", "reviewer.goalReasons.enabled=false"]),
             "ConfigMap",
             "factory-itsaplan-scripts",
         )["data"]["config.json"]

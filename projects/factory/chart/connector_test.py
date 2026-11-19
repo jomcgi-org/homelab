@@ -165,7 +165,13 @@ def test_disabled_renders_byte_for_byte_without_the_connector() -> None:
             "connector-status.yaml",
         ):
             (bare / "templates" / f).unlink()
-        off = ["--set", "connector.enabled=false"]
+        # The deploy values serve goal reasons, which need the connector.
+        off = [
+            "--set",
+            "connector.enabled=false",
+            "--set",
+            "reviewer.goalReasons.enabled=false",
+        ]
         assert _helm(_CHART_DIR, off) == _helm(bare, off)
 
 
@@ -448,6 +454,19 @@ def test_policy_egress_only_to_its_peers() -> None:
             None,
             "8083",
         ),
+        (
+            [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "factory",
+                        "app.kubernetes.io/name": "factory-reviewer",
+                        "app.kubernetes.io/instance": "factory",
+                    }
+                }
+            ],
+            None,
+            "8091",
+        ),
         (_DB, None, "5432"),
     ]
     spec = policy(_render(["broker.githubApp.enabled=true"]))
@@ -483,7 +502,10 @@ def test_peers_admit_the_connector_pod() -> None:
 @pytest.mark.parametrize(
     ("override", "message"),
     [
-        ("itsaplan.enabled=false", r"connector\.enabled needs itsaplan\.enabled"),
+        (
+            "itsaplan.enabled=false,reviewer.goalReasons.enabled=false",
+            r"connector\.enabled needs itsaplan\.enabled",
+        ),
         ("kagent.config.server.auth.serviceAccount=null", "serviceAccount.authority"),
         ("connector.bindings=null", r"connector\.bindings\.homelab is required"),
         (
