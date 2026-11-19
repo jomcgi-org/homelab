@@ -49,6 +49,16 @@ build_test(
     targets = [":build"],
 )
 
+js_library(
+    name = "test_src",
+    srcs = ["session.test.ts"],
+    deps = [
+        ":node_modules/happy-dom",
+        ":node_modules/vitest",
+        ":src",
+    ],
+)
+
 vitest_bin.vitest_test(
     name = "test",
     args = [
@@ -57,10 +67,5 @@ vitest_bin.vitest_test(
         "production",
     ],
     chdir = package_name(),
-    data = [
-        "session.test.ts",
-        ":node_modules/happy-dom",
-        ":node_modules/vitest",
-        ":src",
-    ],
+    data = [":test_src"],
 )
