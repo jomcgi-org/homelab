@@ -159,6 +159,11 @@ spec:
             - name: EMBER_DEV_TOKENBROKER_LOGIN_SPIFFE_ID
               value: {{ .Values.tokenBroker.devLoginServerId | quote }}
             {{- end }}
+            # FaaS registration writes Workload CRs through the rbac.faas
+            # grant. Without the grant, registration refuses before it
+            # writes an archive.
+            - name: FAAS_WORKLOADS_ENABLED
+              value: {{ .Values.rbac.faas.enabled | quote }}
             {{- if .Values.faas }}
             # FaaS zip-lane function registry (ADR 045 / embervm R1). The read
             # base is the R2 S3 host noded GETs archives from;

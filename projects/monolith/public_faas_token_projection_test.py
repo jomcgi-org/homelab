@@ -177,7 +177,6 @@ def test_public_gke_preserves_complete_env_and_secret_boundaries():
     base = yaml.safe_load(_value_file("DEPLOY_VALUES", "values.yaml").read_text())
     gke = yaml.safe_load(_value_file("GKE_VALUES", "values-gke.yaml").read_text())
     expected = {item["name"]: item for item in defaults["web"]["env"]}
-    expected.pop("EMBERVM_URL")
     expected["CHAT_PUBLIC_INFERENCE_URL"] = {
         "name": "CHAT_PUBLIC_INFERENCE_URL",
         "value": "https://api.meta.ai",

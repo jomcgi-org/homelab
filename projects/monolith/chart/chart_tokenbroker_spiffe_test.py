@@ -230,9 +230,20 @@ def test_hub_has_no_embervm_consumers() -> None:
     assert "EMBERVM_URL" not in env
     assert "embervm" not in env["CD_HEALTH_KARGO_APPS"]
     assert all(c["name"] != "tokenbroker-spiffe-helper" for c in pod["containers"])
+    grants = {
+        (obj["kind"], obj["metadata"].get("namespace"), obj["metadata"]["name"])
+        for obj in objects
+        if obj["kind"] in {"Role", "RoleBinding"}
+    }
+    assert not any(namespace == "kargo-embervm" for _, namespace, _ in grants)
+    # The FaaS Workload grant stays until the hub runs the backend that
+    # refuses registration without it (HOME-472 activation).
+    assert {grant for grant in grants if grant[1] == "embervm"} == {
+        ("Role", "embervm", "monolith-faas"),
+        ("RoleBinding", "embervm", "monolith-faas"),
+    }
+    assert env["FAAS_WORKLOADS_ENABLED"] == "true"
     for obj in objects:
-        if obj["kind"] in {"Role", "RoleBinding"}:
-            assert "embervm" not in obj["metadata"]["namespace"]
         if obj["kind"] == "CronWorkflow":
             assert "EMBER_TOKENBROKER_URL" not in _env(_job_container(obj))
     assert not any("TOKENBROKER" in name for name in env)
