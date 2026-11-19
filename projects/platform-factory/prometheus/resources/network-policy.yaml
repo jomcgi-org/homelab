@@ -132,6 +132,9 @@ spec:
     - fromEndpoints:
         - matchLabels:
             app.kubernetes.io/name: prometheus
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-semgrep-sync
       toPorts:
         - ports:
             - port: "9093"

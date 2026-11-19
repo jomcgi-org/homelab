@@ -155,14 +155,14 @@ groups:
             projects/factory-cluster/README.md, "Alerts".
 
 
-  - name: intsec-sync
+  - name: factory-semgrep-sync
     rules:
       - alert: SemgrepSyncFailed
         expr: |
-          kube_job_failed{job_name=~"intsec-sync-[0-9]+",condition="true"} == 1
+          kube_job_failed{job_name=~"factory-semgrep-sync-[0-9]+",condition="true"} == 1
           and on (namespace, job_name)
           (kube_job_status_start_time == on (namespace) group_left
-            max by (namespace) (kube_job_status_start_time{job_name=~"intsec-sync-[0-9]+"}))
+            max by (namespace) (kube_job_status_start_time{job_name=~"factory-semgrep-sync-[0-9]+"}))
         labels:
           severity: warning
         annotations:

@@ -586,7 +586,7 @@ def ensure_agents(session, team_id, project_id):
     for want in CONFIG["agents"]:
         username = want["username"]
         reviewer = username == "factory-reviewer"
-        sync = username == "intsec-sync"
+        sync = username == "factory-semgrep-sync"
         restricted = reviewer or sync
         target_key = "INTSEC" if sync else CONFIG["project"]["key"]
         target_id = project_id

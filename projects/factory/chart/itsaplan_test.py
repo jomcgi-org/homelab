@@ -479,7 +479,9 @@ def test_sync_bootstrap_grants_only_read_and_create_in_intsec(bootstrap, monkeyp
             return
         return original_call(method, path, body)
 
-    bootstrap.CONFIG["agents"] = [{"username": "intsec-sync", "name": "INTSEC sync"}]
+    bootstrap.CONFIG["agents"] = [
+        {"username": "factory-semgrep-sync", "name": "INTSEC sync"}
+    ]
     monkeypatch.setattr(api, "call", call)
     published = []
     monkeypatch.setattr(
@@ -636,3 +638,17 @@ def test_session_forward_has_one_fixed_upstream():
         ]
     )
     assert rule["toPorts"] == [{"ports": [{"port": "3000", "protocol": "TCP"}]}]
+
+
+def test_semgrep_sync_schedule_and_token():
+    docs = _render(["semgrepSync.enabled=true"])
+    name = "factory-semgrep-sync"
+    spec = _one(docs, "CronJob", name)["spec"]
+    assert spec["schedule"] == "*/15 * * * *"
+    assert spec["concurrencyPolicy"] == "Forbid"
+    (container,) = spec["jobTemplate"]["spec"]["template"]["spec"]["containers"]
+    (token,) = [v for v in container["env"] if v["name"] == "SEMGREP_KEY"]
+    assert token["valueFrom"]["secretKeyRef"] == {"name": name, "key": "token"}
+    assert _one(docs, "OnePasswordItem", name)["spec"]["itemPath"] == (
+        "vaults/k8s-homelab/items/factory-semgrep-sync"
+    )

@@ -47,7 +47,7 @@ spec:
             app.kubernetes.io/name: factory-storyboard
         {{- if .Values.semgrepSync.enabled }}
         - matchLabels:
-            app.kubernetes.io/name: intsec-sync
+            app.kubernetes.io/name: factory-semgrep-sync
         {{- end }}
         {{- if .Values.reviewer.enabled }}
         - matchLabels:
