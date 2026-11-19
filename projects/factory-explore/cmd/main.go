@@ -78,6 +78,7 @@ type (
 	}
 	proxy struct {
 		sync.Mutex
+		cache            readCache
 		users            map[string]*window
 		nextSweep        time.Time
 		watches, reads   int
@@ -165,6 +166,24 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	watch := strings.Contains(r.URL.Path, "/watch/") || q.Has("watch") && q.Get("watch") != "false" && q.Get("watch") != "0"
+	p.Unlock()
+	// Bound writes to a stalled downstream as well as the upstream request.
+	controller := http.NewResponseController(w)
+	if controller.SetWriteDeadline(end) == nil {
+		defer controller.SetWriteDeadline(time.Time{})
+	}
+	ctx, cancel := context.WithDeadline(r.Context(), end)
+	defer cancel()
+	r = r.WithContext(ctx)
+	if !watch && r.Method == http.MethodGet {
+		p.cache.serve(w, r, p.now, func(out http.ResponseWriter) { p.forward(out, r, u, false) })
+		return
+	}
+	p.forward(w, r, u, watch)
+}
+
+func (p *proxy) forward(w http.ResponseWriter, r *http.Request, u *window, watch bool) {
+	p.Lock()
 	if watch && (u.watches >= 8 || p.watches >= 200) || !watch && p.reads >= 32 {
 		p.Unlock()
 		p.deny(w, 429, "TooManyRequests")
@@ -187,15 +206,8 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			p.reads--
 		}
 	}()
-	// Bound writes to a stalled downstream as well as the upstream request.
-	controller := http.NewResponseController(w)
-	if controller.SetWriteDeadline(end) == nil {
-		defer controller.SetWriteDeadline(time.Time{})
-	}
-	ctx, cancel := context.WithDeadline(r.Context(), end)
-	defer cancel()
 	p.passed.Add(1)
-	p.upstream.ServeHTTP(w, r.WithContext(ctx))
+	p.upstream.ServeHTTP(w, r)
 }
 
 func apiProxy(target *url.URL, transport http.RoundTripper) http.Handler {
@@ -226,6 +238,7 @@ func main() {
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		fmt.Fprintf(w, "explore_proxy_forwarded_total %d\nexplore_proxy_rejected_total %d\n", p.passed.Load(), p.rejected.Load())
+		p.cache.metrics(w)
 	})
 	go func() { log.Fatal(http.ListenAndServe(":9090", mux)) }()
 	server := http.Server{Addr: ":8080", Handler: p, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: time.Minute}

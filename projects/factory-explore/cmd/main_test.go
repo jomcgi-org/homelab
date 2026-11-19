@@ -97,7 +97,11 @@ func TestLimits(t *testing.T) {
 			defer close(release)
 			p.upstream = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { entered <- struct{}{}; <-release })
 			for i := 0; i < tc.max; i++ {
-				go request(p, "GET", tc.path, strconv.Itoa(i%tc.users))
+				path := tc.path
+				if tc.name == "reads" {
+					path += "?id=" + strconv.Itoa(i)
+				}
+				go request(p, "GET", path, strconv.Itoa(i%tc.users))
 				select {
 				case <-entered:
 				case <-time.After(time.Second):
@@ -215,5 +219,72 @@ func TestExplorerHourlySession(t *testing.T) {
 	next.Body.Close()
 	if calls.Load() != 3 || next.Header.Get("X-Explore-Window-End") == first.Header.Get("X-Explore-Window-End") {
 		t.Fatal("new session failed to open")
+	}
+}
+
+func TestSharedReads(t *testing.T) {
+	p := newTestProxy()
+	now := time.Now()
+	p.now = func() time.Time { return now }
+	var calls atomic.Int32
+	start := make(chan struct{})
+	p.upstream = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); <-start; io.WriteString(w, "pods") })
+	done := make(chan *httptest.ResponseRecorder, 50)
+	for i := range 50 {
+		go func() { done <- request(p, "GET", "/api", strconv.Itoa(i)) }()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		p.cache.Lock()
+		joined := p.cache.coalesced
+		p.cache.Unlock()
+		if joined == 49 {
+			break
+		}
+		if time.Now().After(deadline) {
+			close(start)
+			t.Fatalf("only %d followers joined", joined)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(start)
+	for range 50 {
+		w := <-done
+		if w.Code != 200 || w.Body.String() != "pods" {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatal(calls.Load())
+	}
+	p.users["expired"] = &window{start: now.Add(-11 * time.Minute)}
+	if w := request(p, "GET", "/api", "expired"); w.Code != 403 {
+		t.Fatal(w.Code)
+	}
+	now = now.Add(3 * time.Second)
+	request(p, "GET", "/api", "0")
+	if calls.Load() != 2 {
+		t.Fatal(calls.Load())
+	}
+}
+
+func TestUncachedRequests(t *testing.T) {
+	for _, tc := range []struct {
+		method, path string
+		status       int
+	}{
+		{"GET", "/api?watch=true", 200}, {"POST", "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews", 200}, {"GET", "/api", 503},
+	} {
+		p := newTestProxy()
+		calls := 0
+		p.upstream = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(tc.status) })
+		for range 2 {
+			if w := request(p, tc.method, tc.path, "user"); w.Code != tc.status {
+				t.Fatal(w.Code)
+			}
+		}
+		if calls != 2 {
+			t.Fatal(tc, calls)
+		}
 	}
 }
