@@ -325,6 +325,10 @@ func TestTrialArmRounds(t *testing.T) {
 		{"ci", []string{"ci", "ci"}, 2},
 		{"two reviews and a CI fix", []string{"review", "review", "ci", "ci"}, 4},
 		{"a CI fix and three reviews", []string{"ci", "review", "review", "review"}, 4},
+		// A required check that fails in the merge group ejects the PR. That
+		// round is a CI fix too, not a review round.
+		{"queue CI", []string{"queue", "queue"}, 2},
+		{"two reviews and a queue CI fix", []string{"review", "review", "queue", "queue"}, 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := provenanceEnv(t)
@@ -352,9 +356,19 @@ func TestTrialArmRounds(t *testing.T) {
 				v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Pushed.", nil)
 				v.clk.Advance(5 * time.Second)
 				v.tick(v.e)
-				if tc.kinds[i-1] == "ci" {
+				switch tc.kinds[i-1] {
+				case "ci":
 					v.gh.check(head, "test", 100, "failure")
-				} else {
+				case "queue":
+					group := fmt.Sprintf("group-%d", i)
+					v.gh.green(head)
+					v.gh.review(1, "APPROVED", "reviewer", head, "")
+					v.poll()
+					v.gh.mergeGroup(1, group)
+					v.poll()
+					v.gh.check(group, "test", 100, "failure")
+					v.gh.eject(1)
+				default:
 					v.gh.review(1, "CHANGES_REQUESTED", "reviewer", head, "Fix the timeout.")
 				}
 				v.poll()

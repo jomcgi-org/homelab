@@ -1441,7 +1441,7 @@ func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr
 				return err
 			}
 		case prompt != "":
-			if round, err = e.startReviewRound(ctx, tx, wi, b, pr, latest, prompt, false); err != nil {
+			if round, err = e.startReviewRound(ctx, tx, wi, b, pr, latest, prompt, ciFailure); err != nil {
 				return err
 			}
 			if ciFailure {
