@@ -448,6 +448,14 @@ shell's unavailable states. Local build checks do not establish that rollout.
 
 ## Trips rollout (HOME-242)
 
+Trips is off until the hub's `trips-export` job commits `trips/export.json`
+(HOME-452). `data/sources.json` marks the section `"enabled": false`, so the
+snapshot skips it and the site-check checks no Trips page or freshness. The
+`/trips` routes are out of `edge/routes.json`, and the Trips links point at
+the hub. To turn it on, set `enabled` back to `true`, restore the three
+`jomcgi.dev/app/trips*`, `/data/trips/*` and `/trips*` routes, and set
+`live: true` in `web/src/sections.ts`.
+
 Before promoting the Trips release to production, record the successful dev
 sync time and release. Read `https://next.jomcgi.dev/data/trips/latest.json`
 and record its `asOf`, `photoCount`, `photoAssetCount`, `photoBytes`,

@@ -14,7 +14,6 @@
     "jomcgi.dev/app/hikes*",
     "jomcgi.dev/app/llm-leaderboard*",
     "jomcgi.dev/app/stars*",
-    "jomcgi.dev/app/trips*",
     "jomcgi.dev/artifact*",
     "jomcgi.dev/assets/*",
     "jomcgi.dev/blog*",
@@ -22,7 +21,6 @@
     "jomcgi.dev/data/hikes/*",
     "jomcgi.dev/docs*",
     "jomcgi.dev/data/stars/*",
-    "jomcgi.dev/data/trips/*",
     "jomcgi.dev/ember*",
     "jomcgi.dev/engineering*",
     "jomcgi.dev/hikes*",
@@ -34,8 +32,7 @@
     "jomcgi.dev/scotland/support",
     "jomcgi.dev/scotland/marketplace.json",
     "jomcgi.dev/slop",
-    "jomcgi.dev/stars*",
-    "jomcgi.dev/trips*"
+    "jomcgi.dev/stars*"
   ],
   "exactBecause": {
     "jomcgi.dev/scotland": "HOME-207 requires this exact landing URL; /scotland* would intercept the connector at /scotland/mcp and /scotland/v1/*. Query-string variants stay on the hub.",

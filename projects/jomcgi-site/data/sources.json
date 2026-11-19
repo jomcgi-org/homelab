@@ -20,7 +20,8 @@
       "files": {
         "export": "trips/export.json"
       },
-      "format": "trips"
+      "format": "trips",
+      "enabled": false
     }
   }
 }

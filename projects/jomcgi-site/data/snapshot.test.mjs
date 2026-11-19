@@ -197,6 +197,25 @@ test("a failed object read fails the snapshot", async () => {
   );
 });
 
+test("a disabled section is skipped without reading its objects", async () => {
+  // Trips stays disabled until the hub export commits trips/export.json
+  // (HOME-452); until then every deploy would fail on the missing object.
+  assert.equal(SOURCES.sections.trips.enabled, false);
+  const read = [];
+  const get = async (bucket, key) => {
+    read.push(`${bucket}/${key}`);
+    throw new Error(`unexpected GET ${bucket}/${key}`);
+  };
+  const out = await mkdtemp(join(tmpdir(), "snapshot-"));
+  const log = await snapshot(
+    { sections: { trips: SOURCES.sections.trips } },
+    get,
+    out,
+  );
+  assert.deepEqual(read, []);
+  assert.deepEqual(log, ["trips: disabled, not snapshotted"]);
+});
+
 test("r2Getter signs each request and returns the body and Last-Modified", async () => {
   const seen = [];
   const fetchImpl = async (url, init) => {

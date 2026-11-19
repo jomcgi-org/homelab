@@ -26,7 +26,7 @@ import {
   matchRedirect,
   redirectRules,
 } from "./release-fixture.mjs";
-import { checkReleasePage } from "./tier1.mjs";
+import { checkReleasePage, enabledSections } from "./tier1.mjs";
 import {
   makeSummary,
   stampSummary,
@@ -306,6 +306,17 @@ test("deployed pages, 404, headers, links, assets and the transfer budget fail c
   } finally {
     rmSync(dist, { recursive: true, force: true });
   }
+});
+
+test("a disabled section gets no page or freshness check", () => {
+  assert.deepEqual(
+    [
+      ...enabledSections({
+        sections: { stars: {}, trips: { enabled: false }, hikes: { enabled: true } },
+      }),
+    ].sort(),
+    ["hikes", "stars"],
+  );
 });
 
 test("link parsing decodes HTML entities and keeps only the stage origin", () => {

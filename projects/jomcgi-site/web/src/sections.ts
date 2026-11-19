@@ -85,7 +85,8 @@ export const SECTIONS: readonly Section[] = [
     group: "Apps",
     path: "/trips",
     legacy: "/app/trips",
-    live: true,
+    // Not live until the hub export commits trips/export.json (HOME-452).
+    live: false,
     summary: "Trips, day by day, with photos.",
   },
   {

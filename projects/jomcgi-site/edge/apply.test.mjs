@@ -167,6 +167,11 @@ const STAYS_ON_THE_HUB = [
   "jomcgi.dev/functions/og-image",
   "jomcgi.dev/api/trips/trips",
   "jomcgi.dev/slop/factory",
+  // Trips stays on the hub until its export commits (HOME-452).
+  "jomcgi.dev/trips",
+  "jomcgi.dev/trips/2025-trip/day/1",
+  "jomcgi.dev/app/trips",
+  "jomcgi.dev/data/trips/latest.json",
   "jomcgi.dev/app/grimoire",
 ];
 
@@ -176,12 +181,6 @@ test("no route catches a path the hub or another service still owns", () => {
 
 test("routed pages are served with and without a query string", () => {
   for (const path of [
-    "/trips",
-    "/trips/2025-trip/day/1",
-    "/trips/2025-trip/timeline",
-    "/app/trips",
-    "/app/trips/2025-trip/day/1",
-    "/data/trips/latest.json",
     "/cv",
     "/cv/",
     "/blog",
