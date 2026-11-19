@@ -45,6 +45,14 @@ installs Connect and ArgoCD from this repository's charts, and applies
 `projects/platform-factory/` deploy automatically, and ArgoCD adopts the
 Cilium, Connect and ArgoCD installs.
 
+For the HOME-463 rollout, wait for the collector DaemonSet with the audit
+pipeline to roll out. On each node, allocating the 8 GiB image alongside
+the original `/var/lib/ate` tree must leave more than 10% of nodefs free.
+The tree must fit in the formatted image in both bytes and inodes. The
+bootstrap checks capacity before stopping k3s. Run step 2 from node-1,
+check that each server rejoins healthy before continuing, then verify audit
+events from each server in Honeycomb.
+
 To upgrade k3s or gVisor, change the pins in `nodes/install-node.sh` and rerun
 step 2. It restarts one node at a time.
 
