@@ -1051,6 +1051,40 @@
             "description": "Opt in to the homelab Alpine bootstrap and public download origins for this coding binding.",
             "enum": ["homelab"]
           },
+          "mcpServers": {
+            "type": "array",
+            "default": [],
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "url", "secret", "tools"],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+                  "maxLength": 63
+                },
+                "url": {
+                  "type": "string",
+                  "pattern": "^https?://[^ /]+/[^ ]*$"
+                },
+                "secret": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+                  "maxLength": 63
+                },
+                "tools": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          },
           "memory": {
             "description": "Bind the Agent to a Hindsight MCP endpoint (projects/platform-factory/hindsight); the egress gateway injects the token.",
             "type": "object",

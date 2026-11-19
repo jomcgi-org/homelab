@@ -138,6 +138,17 @@ Agents can run `ci lint`, `ci regen`, `ci ratchet`, `helm template` and scoped
 `python3 -m pytest` checks. PR CI owns BUILD generation and remote tests;
 these local checks do not establish a passing `ci test` or full `ci` run.
 
+### Additional MCP servers
+
+Each coding repository can set `mcpServers` to a list of objects with `name`,
+`url`, `secret` and `tools`. The default is empty. Each name identifies a
+RemoteMCPServer in the binding namespace with discovery disabled. The Agent
+gets the listed tools. The Substrate egress gateway supplies Authorization
+from key `token` of the named Secret labelled `substrate.ate.dev/injectable=true`.
+For Grafana, store `Bearer <caller token>` there, matching the raw `caller`
+key of Secret `grafana/mcp-grafana-caller`. See the chart values for
+the endpoint and read tools.
+
 ### Memory
 
 `repositories[].memory` binds one coding binding's Agent to Hindsight

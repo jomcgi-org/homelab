@@ -5,6 +5,7 @@
 {{- $_ := unset $binding "codexCodeMode" }}
 {{- /* Memory is for the coding binding only (HOME-130). */}}
 {{- $_ := unset $binding "memory" }}
+{{- $_ := unset $binding "mcpServers" }}
 {{- $_ := set $binding "namespace" (include "factory.reviewerNamespace" (dict "root" $ "binding" $r)) }}
 {{- $_ := set $binding "agent" "reviewer" }}
 {{- include "factory.bindingResources" (dict "root" $ "binding" $binding "description" "Reviews pull requests in") }}

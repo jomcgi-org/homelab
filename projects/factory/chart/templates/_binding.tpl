@@ -10,7 +10,12 @@
 {{- $agent := include "factory.bindingAgentName" $r }}
 {{- $worker := printf "%s-worker" $agent }}
 {{- $toolchain := eq ($r.toolchain | default "") "homelab" }}
-{{- $memory := $r.memory }}
+{{- $servers := list }}
+{{- if $r.memory }}
+{{- $servers = append $servers (merge (dict "name" "memory") $r.memory) }}
+{{- end }}
+{{- $servers = concat $servers ($r.mcpServers | default list) }}
+{{- $names := dict }}
 ---
 # Kept: deleting it would take the Agent's WorkerPool and the git token with
 # it; removing a binding is a deliberate cleanup.
@@ -178,15 +183,19 @@ spec:
     - origin: https://pypi.org
     - origin: https://files.pythonhosted.org
 {{- end }}
-{{- if $memory }}
+{{- range $server := $servers }}
+{{- if hasKey $names $server.name }}{{ fail (printf "duplicate MCP server %s" $server.name) }}{{ end }}
+{{- $_ := set $names $server.name true }}
 ---
+{{- if eq $server.name "memory" }}
 # Shared long-term memory (projects/platform-factory/hindsight). The egress
 # gateway injects the token from the Secret; the actor holds a placeholder.
 # The controller cannot reach Hindsight, so the agent lists tools at run time.
+{{- end }}
 apiVersion: api.kagent.dev/v1alpha3
 kind: RemoteMCPServer
 metadata:
-  name: memory
+  name: {{ ternary "memory" ($server.name | quote) (eq $server.name "memory") }}
   namespace: {{ $ns }}
   labels:
     {{- include "factory.labels" $ | nindent 4 }}
@@ -194,14 +203,14 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "2"
 spec:
-  description: {{ printf "Hindsight memory for %s/%s" $r.owner $r.repo | quote }}
-  url: {{ $memory.url | quote }}
+  description: {{ printf "%s for %s/%s" (ternary "Hindsight memory" $server.name (eq $server.name "memory")) $r.owner $r.repo | quote }}
+  url: {{ $server.url | quote }}
   protocol: STREAMABLE_HTTP
   headersFrom:
     - name: Authorization
       valueFrom:
         type: Secret
-        name: {{ $memory.secret | quote }}
+        name: {{ $server.secret | quote }}
         key: token
 {{- end }}
 {{- $ctx := . }}
@@ -260,13 +269,15 @@ spec:
       modelConfig:
         name: {{ $r.agent }}{{ $suffix }}
       systemPrompt: {{ include "factory.bindingPrompt" $ctx | quote }}
-      {{- if $memory }}
+      {{- if $servers }}
       tools:
+        {{- range $server := $servers }}
         - mcp:
             server:
               kind: RemoteMCPServer
-              name: memory
-            tools: {{ $memory.tools | toJson }}
+              name: {{ ternary "memory" ($server.name | quote) (eq $server.name "memory") }}
+            tools: {{ $server.tools | toJson }}
+        {{- end }}
       {{- end }}
   harnessRef:
     name: {{ $a.harness }}

@@ -142,7 +142,41 @@ spec:
               mountPath: /var/lib/grafana
             - name: tmp
               mountPath: /tmp
+        - name: provision-viewer
+          image: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
+          command: [python, /scripts/provision_viewer.py]
+          resources:
+            requests: {cpu: 5m, memory: 16Mi}
+            limits: {memory: 48Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: run
+              mountPath: /run/grafana
+              readOnly: true
+            - name: provision-script
+              mountPath: /scripts
+              readOnly: true
+            - name: provision-api
+              mountPath: /run/kube
+              readOnly: true
       volumes:
+        - name: provision-script
+          configMap:
+            name: grafana-viewer-script
+        - name: provision-api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
         - name: config
           configMap:
             name: grafana-config
