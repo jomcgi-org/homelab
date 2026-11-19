@@ -1,5 +1,5 @@
 {
-  "head": "55b7b0ebe50fc16ad47a7299f0d800ad58d30d33",
+  "head": "a51d266c5089c02859c4afa6443e88037fd31527",
   "baseline": "b76047b8b5fac35172450ca0b0429f504a22b2c0",
   "baseline_kind": "git merge-base",
   "rows": [
@@ -68,7 +68,7 @@
       "after": "captures/blog/after-360x640-complete.png",
       "before": "captures/blog/before-360x640-complete.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 360,
         "height": 2492
@@ -1056,7 +1056,7 @@
       "after": "captures/review/after-gaps-pending-390-dark.png",
       "before": "captures/review/before-gaps-pending-390-dark.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1075,7 +1075,7 @@
       "after": "captures/review/after-gaps-pending-390-light.png",
       "before": "captures/review/before-gaps-pending-390-light.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1132,7 +1132,7 @@
       "after": "captures/review/after-notes-audit-390-dark.png",
       "before": "captures/review/before-notes-audit-390-dark.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1208,7 +1208,7 @@
       "after": "captures/review/after-notes-pending-390-dark.png",
       "before": "captures/review/before-notes-pending-390-dark.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1227,7 +1227,7 @@
       "after": "captures/review/after-notes-pending-390-light.png",
       "before": "captures/review/before-notes-pending-390-light.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
