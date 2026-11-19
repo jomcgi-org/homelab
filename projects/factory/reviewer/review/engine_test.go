@@ -2448,7 +2448,7 @@ func TestStoredFindingsSurviveTheCheckRun(t *testing.T) {
 	failIf(t, st.InvariantBase == "", "stored state has no invariant base")
 	st.InvariantBase = ""
 	b, _ := json.Marshal(st)
-	if !ok || session == nil || string(b) != `{"blocking":[{"id":"a.go#m1","severity":"medium","path":"a.go","title":"M1","detail":"Detail."}]}` {
+	if !ok || session == nil || string(b) != `{"round":1,"blocking":[{"id":"a.go#m1","severity":"medium","path":"a.go","title":"M1","detail":"Detail."}]}` {
 		t.Fatalf("stored = %s, %v, session %+v", b, ok, session)
 	}
 }
