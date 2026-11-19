@@ -55,15 +55,13 @@ def approved_task(record):
     return sid, task_id, at, texts
 
 
-def unconfirmed(fields, current, confirmed):
-    """Say why the view does not confirm an approved task, or return None."""
+def unconfirmed(fields, tasks, confirmed):
+    """Say why the views do not confirm an approved task, or return None."""
     if fields is None:
         return "malformed approval"
     sid, task_id, _, texts = fields
-    if sid not in {session for session, _ in current}:
-        return "the current-session view does not hold its session"
-    if (sid, task_id) not in current:
-        return "the current-session view does not hold this task"
+    if (sid, task_id) not in tasks:
+        return "the task view does not hold this task"
     if any(
         (sid, task_id, hashlib.sha256(text.encode()).hexdigest()) not in confirmed
         for text in texts
@@ -137,12 +135,14 @@ def documents(cursor, key, project, board, archive):
             dict(kind="opened", at=timestamp(item["createdAt"]), text="Issue opened")
         ]
         approved = approval.get("tasks", [])
-        current, confirmed = set(), set()
+        tasks, confirmed = set(), set()
         if approved:
             # Fingerprints of the connector's kagent task journal, limited to
-            # the owner's approvals; the publisher never reads private
-            # transcript text.
-            current = {
+            # the owner's approvals in the store. Both views match the session
+            # and task of an approval, so a released session still matches,
+            # and a withdrawn approval matches nothing. The publisher never
+            # reads private transcript text.
+            tasks = {
                 (r["session_id"], r["task_id"])
                 for r in session_tasks(cursor, key, item["id"])
             }
@@ -152,7 +152,7 @@ def documents(cursor, key, project, board, archive):
             }
         for index, record in enumerate(approved):
             fields = approved_task(record)
-            reason = unconfirmed(fields, current, confirmed)
+            reason = unconfirmed(fields, tasks, confirmed)
             if reason:
                 # Every message needs the view's digest; APPROVED_HISTORY
                 # alone publishes nothing. Log no message text.

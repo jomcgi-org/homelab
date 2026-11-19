@@ -105,8 +105,8 @@ def test_private_issues_filtered_before_connector_or_session_read(monkeypatch):
     ]
     journal[1] = ("shared", "Update from private-user")
     assert runtime.documents(None, "HOME", project, board, archive) == result
-    # APPROVED_HISTORY alone publishes nothing: a task that the
-    # current-session view does not hold stays withheld.
+    # APPROVED_HISTORY alone publishes nothing: a task that the task view
+    # does not hold stays withheld.
     queried.clear()
     monkeypatch.setattr(runtime, "session_tasks", lambda *args: [])
     assert runtime.documents(None, "HOME", project, board, archive)[3] == {}
@@ -136,22 +136,22 @@ def test_private_issues_filtered_before_connector_or_session_read(monkeypatch):
 
 
 UNCONFIRMED = {
-    # A review round completes in the current session without a connector
-    # journal, so the view has no digest for its text.
+    # A review round completes without a connector journal, so the view has
+    # no digest for its text.
     "review round": (
         dict(session="s", task="review", assistantTexts=["Private reply"]),
         "review",
         "the view does not confirm its text",
     ),
-    "outside the current session": (
+    "another session": (
         dict(session="old", task="code", assistantTexts=["Private reply"]),
         "code",
-        "the current-session view does not hold its session",
+        "the task view does not hold this task",
     ),
     "missing from the view": (
         dict(session="s", task="gone", assistantTexts=["Private reply"]),
         "gone",
-        "the current-session view does not hold this task",
+        "the task view does not hold this task",
     ),
     "no messages": (
         dict(session="s", task="review", assistantTexts=[]),
@@ -203,7 +203,7 @@ def test_unconfirmed_task_withheld_and_rest_published(monkeypatch, caplog, case)
             for task, agent in (("code", "coder"), ("review", "reviewer"))
         ],
     )
-    # The view confirms only the coder's message in the current session.
+    # The view confirms only the coder's message.
     monkeypatch.setattr(
         runtime,
         "task_messages",
@@ -253,3 +253,106 @@ def test_unconfirmed_task_withheld_and_rest_published(monkeypatch, caplog, case)
     assert goals["home"]["issueKeys"] == ["HOME-4"]
     assert caplog.messages == [f"withheld approved task {label} of HOME-4: {reason}"]
     assert "Private reply" not in caplog.text
+
+
+def test_released_session_publishes_until_approval_withdrawn(monkeypatch, caplog):
+    # The connector store after the owner's approval import. ReleaseSession
+    # clears the done work item's session ID, but the completed attempt, its
+    # journal and the approvals remain.
+    attempts = {("s", "code")}
+    journal = {("s", "code"): ["Coded it", "Private reply"]}
+    approvals = {("s", "code", digest("Coded it"))}
+
+    # Both views match the session and task in an approval, as the
+    # migration does, and never read the work item's current session.
+    def session_tasks(cursor, project, issue_id):
+        return [
+            dict(session_id=sid, task_id=task, kagent_namespace="f", kagent_agent="c")
+            for sid, task in sorted({(sid, task) for sid, task, _ in approvals})
+            if (sid, task) in attempts
+        ]
+
+    def task_messages(cursor, project, issue_id):
+        return [
+            dict(session_id=sid, task_id=task, text_sha256=sha)
+            for sid, task, sha in sorted(approvals)
+            if sha in {digest(text) for text in journal.get((sid, task), [])}
+        ]
+
+    monkeypatch.setattr(
+        runtime,
+        "delivery",
+        lambda *args: dict(
+            issue_key="HOME-4",
+            state="done",
+            merged_at=datetime(2026, 11, 3, tzinfo=timezone.utc),
+            pr_number=10,
+            review_rounds=1,
+        ),
+    )
+    monkeypatch.setattr(runtime, "session_tasks", session_tasks)
+    monkeypatch.setattr(runtime, "task_messages", task_messages)
+    original_turn = runtime.public_turn
+    monkeypatch.setattr(
+        runtime,
+        "public_turn",
+        lambda turn, users: original_turn(turn, users, scan=lambda _: False),
+    )
+    project = {
+        "project": {"id": 1},
+        "labels": [{"id": 7, "name": "Private"}],
+        "assignees": [],
+    }
+    board = [
+        dict(
+            id=4,
+            identifier="HOME-4",
+            projectId=1,
+            labelIds=[],
+            title="Ship it",
+            createdAt="2026-11-02T00:00:00Z",
+        )
+    ]
+    archive = {
+        "HOME-4": {
+            "tasks": [
+                dict(
+                    session="s",
+                    task="code",
+                    at="2026-11-02T12:00:00Z",
+                    assistantTexts=["Coded it"],
+                )
+            ]
+        }
+    }
+    story, goals, issues, sessions = runtime.documents(
+        None, "HOME", project, board, archive
+    )
+    (session,) = sessions.values()
+    assert [turn["text"] for turn in session["turns"]] == ["Coded it"]
+    assert [e["kind"] for e in issues["HOME-4"]["timeline"]] == [
+        "opened",
+        "session",
+        "merged",
+    ]
+    assert "Private reply" not in json.dumps([story, goals, issues, sessions])
+
+    # The owner withdraws the approval from the store. APPROVED_HISTORY
+    # still holds the task, but the next cycle withholds it.
+    approvals.clear()
+    with caplog.at_level(logging.WARNING, logger=runtime.__name__):
+        withheld = runtime.documents(None, "HOME", project, board, archive)
+    assert withheld[3] == {}
+    assert [e["kind"] for e in withheld[2]["HOME-4"]["timeline"]] == [
+        "opened",
+        "merged",
+    ]
+    assert caplog.messages == [
+        "withheld approved task code of HOME-4: the task view does not hold this task"
+    ]
+
+    # An issue that loses eligibility publishes nothing, approval or not.
+    approvals.add(("s", "code", digest("Coded it")))
+    board[0]["labelIds"] = [7]
+    _, _, issues, sessions = runtime.documents(None, "HOME", project, board, archive)
+    assert issues == {} and sessions == {}

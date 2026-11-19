@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -125,5 +126,103 @@ func TestStoryboardApprovalsImport(t *testing.T) {
 	}
 	if got := rows(); !slices.Equal(got, []string{other}) {
 		t.Fatalf("approvals after withdrawal = %v", got)
+	}
+}
+
+// TestStoryboardApprovalSurvivesSessionRelease approves a done work item's
+// messages, then releases its session as the connector does before it
+// deletes the session. The views match the session and task in the approval,
+// so they still confirm the approved digests until the owner withdraws them.
+func TestStoryboardApprovalSurvivesSessionRelease(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	if _, err := st.DB.Exec(`
+		INSERT INTO repo_binding (name, owner, repo, base_branch, itsaplan_project,
+			kagent_namespace, kagent_agent, branch_prefix, max_engineering_retries)
+		VALUES ('homelab', 'org', 'homelab', 'main', 'HOME', 'factory', 'coder', 'factory/', 2);
+		INSERT INTO work_item (binding_name, issue_id, issue_key, branch, agent_key,
+			kagent_namespace, kagent_agent, session_id, state)
+		VALUES ('homelab', 4, 'HOME-4', 'factory/HOME-4', 'coder', 'factory', 'coder', 's''1', 'done');
+		INSERT INTO run (id, agent_key, work_item_id, trigger, prompt, system_prompt, attempt, state)
+		SELECT 4, 'coder', id, 'initial', '', '', 1, 'closed' FROM work_item WHERE issue_id = 4;
+		INSERT INTO delivery_attempt (run_id, seq, run_attempt, work_item_epoch, decision_id, kind,
+			message_id, kagent_namespace, kagent_agent, context_id, task_id, state, writer_epoch,
+			kagent_outcome)
+		VALUES (4, 1, 1, 1, 'decision-4', 'initial', 'message-4', 'factory', 'coder', 's''1', 't',
+			'completed', 1, 'TASK_STATE_COMPLETED');
+		INSERT INTO task_transcript (run_id, attempt, task_id, base_offset, state)
+		VALUES (4, 1, 't', 0, convert_to('{"events": [
+			{"type": "TEXT_MESSAGE_CONTENT", "messageId": "m1", "delta": "Ca"},
+			{"type": "TEXT_MESSAGE_CONTENT", "messageId": "m1", "delta": "fé"},
+			{"type": "TEXT_MESSAGE_CONTENT", "messageId": "m2", "delta": "Done"},
+			{"type": "TEXT_MESSAGE_CONTENT", "messageId": "m3", "delta": "Private reply"}]}', 'UTF8'))`); err != nil {
+		t.Fatal(err)
+	}
+	var workID int64
+	if err := st.DB.QueryRow(`SELECT id FROM work_item WHERE issue_id = 4`).Scan(&workID); err != nil {
+		t.Fatal(err)
+	}
+	importSQL := func(name string) {
+		t.Helper()
+		owner := pgtest.AsRole(t, st.DB, "factory_connector")
+		defer owner.Close()
+		if _, err := owner.Exec(approvalsSQL(t, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reader := pgtest.AsRole(t, st.DB, "factory_storyboard")
+	views := func() []string {
+		t.Helper()
+		rows, err := reader.Query(`
+			SELECT 'task', issue_id, session_id, task_id, '' FROM public.storyboard_tasks
+			UNION ALL
+			SELECT 'message', issue_id, session_id, task_id, text_sha256 FROM public.storyboard_task_messages`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var kind, session, task, digest string
+			var issue int
+			if err := rows.Scan(&kind, &issue, &session, &task, &digest); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, strings.TrimSpace(fmt.Sprintf("%s %d %s %s %s", kind, issue, session, task, digest)))
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		slices.Sort(out)
+		return out
+	}
+	sum := func(text string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(text))) }
+	// The unapproved reply stays invisible throughout.
+	want := []string{
+		"message 4 s'1 t " + sum("Café"),
+		"message 4 s'1 t " + sum("Done"),
+		"task 4 s'1 t",
+	}
+	slices.Sort(want)
+
+	importSQL("approvals.sql")
+	if got := views(); !slices.Equal(got, want) {
+		t.Fatalf("views before release = %v, want %v", got, want)
+	}
+	released, err := st.ReleaseSession(ctx, st.DB, workID, "s'1")
+	if err != nil || !released {
+		t.Fatalf("release session: %t (%v)", released, err)
+	}
+	var cleared bool
+	if err := st.DB.QueryRow(`SELECT session_id IS NULL FROM work_item WHERE id = $1`, workID).Scan(&cleared); err != nil || !cleared {
+		t.Fatalf("work item still records its session: %t (%v)", cleared, err)
+	}
+	if got := views(); !slices.Equal(got, want) {
+		t.Fatalf("views after release = %v, want %v", got, want)
+	}
+	// Withdrawal through approvals.py removes the task from both views.
+	importSQL("approvals_empty.sql")
+	if got := views(); len(got) != 0 {
+		t.Fatalf("views after withdrawal = %v", got)
 	}
 }
