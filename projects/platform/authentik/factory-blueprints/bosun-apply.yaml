@@ -1,0 +1,71 @@
+version: 1
+metadata:
+  name: Bosun applications
+entries:
+  - model: authentik_core.group
+    identifiers:
+      name: bosun-applicants
+    attrs:
+      is_superuser: false
+      roles: []
+      parents: []
+  - model: authentik_core.group
+    id: member
+    identifiers:
+      name: bosun-member
+    attrs:
+      is_superuser: false
+      roles: []
+      parents: []
+  - model: authentik_core.group
+    id: operators
+    identifiers:
+      name: discord-operators
+    attrs:
+      is_superuser: false
+      roles: []
+      parents: [!KeyOf member]
+  - model: authentik_core.group
+    identifiers:
+      name: authentik Admins
+    attrs:
+      parents: [!KeyOf operators]
+  - model: authentik_flows.flow
+    id: apply
+    identifiers:
+      slug: bosun-apply
+    attrs:
+      name: Apply for Bosun
+      title: Apply for Bosun with Discord
+      designation: enrollment
+      authentication: require_unauthenticated
+  - model: authentik_stages_redirect.redirectstage
+    id: discord-redirect
+    identifiers:
+      name: bosun-apply-discord
+    attrs:
+      mode: static
+      target_static: /source/oauth/login/discord/
+  - model: authentik_flows.flowstagebinding
+    id: start
+    identifiers:
+      target: !KeyOf apply
+      stage: !KeyOf discord-redirect
+      order: 10
+    attrs:
+      evaluate_on_plan: false
+      re_evaluate_policies: true
+  - model: authentik_policies_expression.expressionpolicy
+    id: intent
+    identifiers:
+      name: bosun-apply-intent
+    attrs:
+      expression: |
+        from time import time
+        request.http_request.session["bosun_apply_until"] = time() + 1800
+        return True
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf start
+      policy: !KeyOf intent
+      order: 0
