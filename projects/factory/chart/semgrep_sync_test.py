@@ -316,3 +316,43 @@ def test_secrets_cursor_ends_on_nonempty_terminal_page():
 
     assert list(module["snapshot"](get, "org", 17)) == ["secrets/1", "secrets/2"]
     assert calls == [{"limit": ["2000"]}, {"limit": ["2000"], "cursor": ["a/b+= c"]}]
+
+
+def test_new_secret_alerts_once_after_its_issue_exists(sync):
+    board = Board()
+    board.issues.append({"id": 1, "description": "", "labelIds": []})
+    data = {"sast": [], "sca": [], "secrets": [secret_row("secret-6")]}
+
+    def get(path):
+        if parse_qs(urlsplit(path).query).get("page", ["0"]) != ["0"]:
+            return {"findings": []}
+        product = parse_qs(urlsplit(path).query).get("issue_type", ["secrets"])[0]
+        return {"findings": data[product]}
+
+    alerts = []
+    real = Board.__call__
+
+    def failing_post(self, path, method="GET", body=None):
+        if method == "POST":
+            raise TimeoutError()
+        return real(self, path, method, body)
+
+    def failing_alert(name, fields):
+        raise TimeoutError()
+
+    # The issue POST fails: no alert goes out for an issue that does not exist.
+    Board.__call__ = failing_post
+    try:
+        with pytest.raises(TimeoutError):
+            sync(get, "org", board, failing_alert)
+    finally:
+        Board.__call__ = real
+    # The POST succeeds and the alert fails: the next poll retries the alert
+    # without a second issue.
+    with pytest.raises(TimeoutError):
+        sync(get, "org", board, failing_alert)
+    assert len(board.issues) == 2
+    for _ in range(2):
+        sync(get, "org", board, lambda name, fields: alerts.append(name))
+    assert alerts == ["SemgrepNewSecret"]
+    assert len(board.issues) == 2
