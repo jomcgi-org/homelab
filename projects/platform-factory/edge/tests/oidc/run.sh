@@ -9,6 +9,31 @@ for ns in "${namespaces[@]}"; do kubectl create namespace "$ns"; done
 
 # Use the CRDs and controller shipped with the edge chart.
 helm template crds "$chart"/charts/gateway-crds-helm-*.tgz --set crds.gatewayAPI.enabled=true --set crds.envoyGateway.enabled=true | kubectl apply --server-side -f -
+# Exercise the production RoleBindings against the API server's authorizer.
+kubectl apply -f "$projects/platform-factory/kube-access/resources/sessions.yaml"
+session=(kubectl --as=oidc-test-session --as-group=authentik:factory-kube-sessions auth can-i)
+for verb in get list watch; do
+	resources=$(kubectl api-resources --verbs="$verb" -o name)
+	for resource in $resources; do
+		[[ $resource == secrets ]] && continue
+		"${session[@]}" "$verb" "$resource" --all-namespaces --quiet
+	done
+done
+"${session[@]}" -n factory get secrets/factory-itsaplan-joe-sessions --quiet
+"${session[@]}" -n factory create pods/factory-itsaplan-session-forward-0 --subresource=portforward --quiet
+expect_denied() {
+	local answer
+	answer=$("${session[@]}" "$@") && return 1
+	[[ $answer == no ]]
+}
+expect_denied -n factory list secrets
+expect_denied -n factory watch secrets
+expect_denied -n factory get secrets/other
+expect_denied -n factory patch deployments.apps
+expect_denied -n factory create pods/other --subresource=exec
+expect_denied -n factory create pods/other --subresource=portforward
+expect_denied -n default create pods/factory-itsaplan-session-forward-0 --subresource=portforward
+
 helm install edge "$chart"/charts/gateway-helm-*.tgz -n edge --skip-crds --wait \
 	--set crds.enabled=false --set config.envoyGateway.provider.type=Kubernetes \
 	--set config.envoyGateway.provider.kubernetes.deploy.type=GatewayNamespace
