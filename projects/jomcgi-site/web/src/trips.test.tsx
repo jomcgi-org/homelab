@@ -14,6 +14,16 @@ import { isStale, photoUrl } from "./trips-data";
 import { LazyMap, PhotoGrid } from "./trips-ui";
 import type { Latest, Payload } from "./trips-types";
 
+// MapLibre needs WebGL, which happy-dom lacks. The fake map fails the way a
+// blocked style request does: after showMap returns, through its callback.
+const disposeMap = vi.hoisted(() => vi.fn());
+vi.mock("./trips-map", () => ({
+  showMap: (_c: unknown, _d: unknown, _s: unknown, onFailure: () => void) => {
+    queueMicrotask(onFailure);
+    return disposeMap;
+  },
+}));
+
 const payload: Payload = {
   trip: {
     slug: "2025-trip",
@@ -161,6 +171,16 @@ describe("populated static trip pages", () => {
     expect(
       screen.getByRole("button", { name: "Load interactive map" }),
     ).toBeTruthy();
+  });
+  it("disposes of a failed map and offers a retry", async () => {
+    render(<LazyMap slug="2025-trip" load={async () => []} />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Load interactive map" }),
+    );
+    expect(
+      await screen.findByRole("button", { name: "Retry map" }),
+    ).toBeTruthy();
+    expect(disposeMap).toHaveBeenCalledOnce();
   });
   it("lightbox supports next/previous, Escape, and focus return", async () => {
     // happy-dom lacks the dialog top-layer methods; native dialog owns focus
