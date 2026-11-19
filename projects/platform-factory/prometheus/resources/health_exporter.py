@@ -1,15 +1,18 @@
 """Export the factory's public health.json as Prometheus gauges (HOME-415).
 
 Each scrape reads the file that public readers see, at its public URL. The
-exporter calls no cluster or Cloudflare API. A failed read exports only
-factory_health_read_success 0, so the rules in rules.yml use the newest
-sample in a time window.
+exporter calls no cluster or Cloudflare API. A failed read sets
+factory_health_read_success to 0 and keeps the other series of the last valid
+read, so a short read gap does not change the rules in rules.yml. A valid read
+that drops a component drops its series, and Prometheus marks that series
+stale at the same scrape.
 """
 
 import datetime
 import json
 import os
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, urlopen
 
@@ -41,7 +44,6 @@ def samples(document):
         raise ValueError("generatedAt has no time zone")
     components = [(str(c["name"]), c["state"] == "up") for c in document["components"]]
     return [
-        ("read_success", "", 1),
         ("healthy", "", int(document["status"] == "healthy")),
         ("generated_at_seconds", "", int(generated.timestamp())),
     ] + [
@@ -50,12 +52,22 @@ def samples(document):
     ]
 
 
+# The rows of the last valid read. LOCK also keeps a slow read from replacing
+# the rows of a newer one.
+LOCK = threading.Lock()
+last_valid = []
+
+
 def render(fetch):
-    try:
-        rows = samples(fetch())
-    except Exception as error:  # Any failed read or invalid document.
-        print(f"health.json read failed: {type(error).__name__}", file=sys.stderr)
-        rows = [("read_success", "", 0)]
+    global last_valid
+    with LOCK:
+        try:
+            last_valid = samples(fetch())
+            ok = 1
+        except Exception as error:  # Any failed read or invalid document.
+            print(f"health.json read failed: {type(error).__name__}", file=sys.stderr)
+            ok = 0
+        rows = [("read_success", "", ok)] + last_valid
     lines = []
     for name in HELP:
         matching = [row for row in rows if row[0] == name]

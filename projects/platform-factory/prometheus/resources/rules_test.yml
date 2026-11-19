@@ -518,19 +518,22 @@ tests:
         exp_alerts: []
 
   # The owner turns the alert check off while relay stays down. To 11 min
-  # the file lists alert-test and relay down; reads fail at 12 and 13 min;
-  # the next file, at 14 min, lists relay only. The alert stays and names
-  # only the components of the newest read.
+  # the file lists alert-test and relay down; reads fail at 12 and 13 min,
+  # and the exporter keeps the series of the 11 min read; the next file, at
+  # 14 min, lists relay only. The alert stays and names only the components
+  # of the newest read.
   - interval: 1m
     input_series:
+      - series: 'factory_health_read_success'
+        values: "1x11 0 0 1x21"
       - series: 'factory_health_healthy'
-        values: "1x4 0x6 stale _ 0x21"
+        values: "1x4 0x30"
       - series: 'factory_health_component_up{component="factory-cluster"}'
-        values: "1x11 stale _ 1x21"
+        values: "1x35"
       - series: 'factory_health_component_up{component="relay"}'
-        values: "1x4 0x6 stale _ 0x21"
+        values: "1x4 0x30"
       - series: 'factory_health_component_up{component="alert-test"}'
-        values: "_x5 0x6 stale"
+        values: "_x5 0x8 stale"
     alert_rule_test:
       - eval_time: 10m
         alertname: FactoryHealthUnhealthy
@@ -563,16 +566,19 @@ tests:
         alertname: FactoryHealthUnhealthy
         exp_alerts: *health_relay_down
 
-  # Reads fail for 10 min while the file is unhealthy: the exporter drops
-  # the series (stale markers). The alert stays, and lists both components.
+  # Reads fail from 10 to 19 min while the file is unhealthy: the exporter
+  # keeps the series of the last valid read. The alert stays, and lists both
+  # components.
   - interval: 1m
     input_series:
+      - series: 'factory_health_read_success'
+        values: "1x9 0x9 1x10"
       - series: 'factory_health_healthy'
-        values: "0x9 stale _x9 0x10"
+        values: "0x29"
       - series: 'factory_health_component_up{component="factory-cluster"}'
-        values: "0x9 stale _x9 0x10"
+        values: "0x29"
       - series: 'factory_health_component_up{component="jomcgi-site-worker"}'
-        values: "0x9 stale _x9 0x10"
+        values: "0x29"
     alert_rule_test:
       - eval_time: 15m
         alertname: FactoryHealthUnhealthy
@@ -614,13 +620,14 @@ tests:
         alertname: FactoryHealthStale
         exp_alerts: []
 
-  # A fresh file with a 5 min read gap is quiet. A stale file that then
-  # becomes unreadable keeps the one alert after the last read leaves the
+  # A fresh file with a 5 min read gap is quiet: the exporter keeps the
+  # generatedAt of its last valid read. A stale file whose exporter then
+  # stops answering keeps the one alert after the last scrape leaves the
   # 15 min window.
   - interval: 1m
     input_series:
       - series: 'factory_health_generated_at_seconds'
-        values: "0+60x10 stale _x4 900+60x5 1200x4 stale"
+        values: "0+60x10 600x4 900+60x5 1200x4 stale"
     alert_rule_test:
       - eval_time: 15m
         alertname: FactoryHealthStale
@@ -650,7 +657,8 @@ tests:
               summary: "Prometheus read no health.json in 15m (maximum age 10m)"
               description: 'Public readers see an old status. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
-  # No reading at all: every read fails from the start. It fires after 2 min.
+  # No valid read at all: every read fails from the start, so the exporter
+  # has no series to keep. It fires after 2 min.
   - interval: 1m
     input_series:
       - series: 'factory_health_read_success'

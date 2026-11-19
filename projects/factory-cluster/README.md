@@ -515,8 +515,11 @@ cluster or Cloudflare API
 ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-260#comment-3909)).
 It exports `factory_health_healthy`, `factory_health_generated_at_seconds`,
 `factory_health_component_up` and `factory_health_read_success`. A failed read
-exports only `factory_health_read_success 0`. Both rules take the newest
-sample in 15 min, so a short read gap neither clears nor fires them.
+sets `factory_health_read_success` to 0 and keeps the other series of the last
+valid read, so a short read gap neither clears nor fires the alerts. A valid
+read that drops a component drops its series, and the component leaves the
+alert summary at that scrape. If Prometheus cannot scrape the exporter,
+`FactoryHealthUnhealthy` clears and `FactoryHealthStale` reports the old file.
 
 For `FactoryHealthUnhealthy`, read the file and check each down component:
 

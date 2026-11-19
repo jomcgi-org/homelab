@@ -177,16 +177,17 @@ groups:
       # The public factory health file (projects/factory-public README,
       # "Factory health"), read at its public URL by health-exporter. The
       # health CronJob writes it every 2 min; the mirror and a 60 s cache add
-      # up to 2 min. A failed read exports no status or age, so both rules
-      # take the newest sample in 15 min: a short read gap neither clears
-      # nor fires them. Together they replace the hub's Honeycomb trigger on
+      # up to 2 min. After a failed read the exporter keeps the series of its
+      # last valid read, so a short read gap neither clears nor fires the
+      # rules. If Prometheus cannot scrape the exporter, the series go stale:
+      # FactoryHealthUnhealthy clears and FactoryHealthStale reports the old
+      # file. Together they replace the hub's Honeycomb trigger on
       # jomcgi.dev/health (HOME-415).
-      # The summary lists only the components of the newest read: a
-      # component sample counts only when its time is that read's time, the
-      # newest factory_health_healthy sample. A component that a later file
-      # removes leaves the list at once.
+      # The condition and the summary read only the newest scrape, so the
+      # summary names the down components of the same read. A component that
+      # a valid read removes goes stale at that scrape and leaves the list.
       - alert: FactoryHealthUnhealthy
-        expr: max(last_over_time(factory_health_healthy[15m])) == 0
+        expr: max(factory_health_healthy) == 0
         for: 5m
         labels:
           severity: critical
@@ -196,16 +197,15 @@ groups:
           threshold: "1"
           runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthUnhealthy"
           summary: >-
-            Factory health is unhealthy, down: {{ range $i, $c := query `last_over_time(factory_health_component_up[15m]) == 0
-            and max_over_time(timestamp(factory_health_component_up)[15m:])
-            == on() group_left() max(max_over_time(timestamp(factory_health_healthy)[15m:]))`
+            Factory health is unhealthy, down: {{ range $i, $c := query `factory_health_component_up == 0`
             | sortByLabel `component` }}{{ if $i }}, {{ end }}{{ $c.Labels.component }}{{ else }}none listed{{ end }} (healthy flag {{ $value }}, minimum 1)
           description: >-
             https://factory-data.jomcgi.dev/health.json reports status
             unhealthy. Runbook: projects/factory-cluster/README.md, "Alerts".
-      # No series at all (no read in 15 min, or the exporter never ran) is 0.
-      # Both branches have no labels, so a stale file that then becomes
-      # unreadable keeps one alert and one timer.
+      # No series at all (no valid read since the exporter started, or no
+      # scrape in 15 min) is 0.
+      # Both branches have no labels, so a stale file whose exporter then
+      # stops answering keeps one alert and one timer.
       - alert: FactoryHealthStale
         expr: >-
           (time() - max(max_over_time(factory_health_generated_at_seconds[15m])) > 600)
