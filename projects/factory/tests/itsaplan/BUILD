@@ -15,6 +15,8 @@ py_test(
     srcs = ["integration_test.py"],
     data = [
         "deferred.test.ts",
+        "delivery-outcome-assertions.sql",
+        "delivery-outcome-backfill.sql",
         "token-usage.test.ts",
         "//projects/factory/chart:deferred_adapter",
         "//projects/factory/connector/itsaplan:delivered_usage_report",

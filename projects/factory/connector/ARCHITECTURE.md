@@ -619,3 +619,22 @@ merge count. Missing token receipts leave that metric NULL.
 Revert detection scans base-branch commits for standard Git revert trailers
 naming the merge SHA during the first 168 hours after merge. Recent merges
 can still change the revert rate.
+
+After rollout, run this coverage query on the connector database. It returns
+the first-coder cohorts of merged PRs that are missing from the results view.
+An empty result confirms coverage, including historical NULL provenance.
+
+```sql
+SELECT first_coder.arm, first_coder.task_class, first_coder.base_sha
+FROM pull_request pr
+LEFT JOIN LATERAL (
+    SELECT r.arm, r.task_class, r.base_sha
+    FROM run r
+    WHERE r.work_item_id = pr.work_item_id AND r.origin <> 'reviewer'
+    ORDER BY r.created_at, r.id
+    LIMIT 1
+) first_coder ON true
+WHERE pr.merged_at IS NOT NULL
+EXCEPT
+SELECT arm, task_class, guidance_version FROM arm_delivery_results;
+```
