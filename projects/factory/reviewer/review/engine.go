@@ -2182,7 +2182,7 @@ heads:
 			// The code review cannot clear goal findings, including during
 			// replay. Only a bound goal answer can resolve them. Re-add known
 			// service findings when an older snapshot has no bound answer.
-			applyGoal(report, prior.Previous(), b.ItsaplanProject, key, goal)
+			replayGoal(report, prior.Previous(), b.ItsaplanProject, key, goal)
 			known := &IssueContext{}
 			for _, f := range r.stored.Blocking {
 				if goalIDs.MatchString(f.ID) {

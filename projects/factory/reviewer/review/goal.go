@@ -158,6 +158,17 @@ func goalFindings(key string, g *GoalCheck) []Finding {
 // until a valid answer resolves it (goalResolved) or Joe's rule withdraws it
 // (goalWithdrawn); Assess keeps its earlier severity.
 func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck) {
+	applyGoalWith(r, prior, project, key, g, true)
+}
+
+// replayGoal is applyGoal for history replay: it withdraws nothing, so a
+// replayed record that predates Joe's rule, or that overflowed its saved
+// findings, never drops a blocker. The next live review applies the rule.
+func replayGoal(r *Report, prior []Finding, project, key string, g *GoalCheck) {
+	applyGoalWith(r, prior, project, key, g, false)
+}
+
+func applyGoalWith(r *Report, prior []Finding, project, key string, g *GoalCheck, withdraw bool) {
 	ns := regexp.MustCompile(`^` + regexp.QuoteMeta(project) + `-[1-9][0-9]*:goal(:|$)`)
 	r.Findings = slices.DeleteFunc(r.Findings, func(f Finding) bool { return ns.MatchString(f.ID) })
 	r.Previous = slices.DeleteFunc(r.Previous, func(p Previous) bool { return ns.MatchString(p.ID) })
@@ -173,7 +184,7 @@ func applyGoal(r *Report, prior []Finding, project, key string, g *GoalCheck) {
 		account := Previous{ID: p.ID, Status: StatusOpen, Note: "No valid goal check answer resolves it."}
 		if note := goalResolved(p.ID, key, g); note != "" {
 			account.Status, account.Note = StatusFixed, note
-		} else if note := goalWithdrawn(p.ID, key, g); note != "" {
+		} else if note := goalWithdrawn(p.ID, key, g); withdraw && note != "" {
 			account.Status, account.Note = StatusJustified, note
 		}
 		r.Previous = append(r.Previous, account)
@@ -257,8 +268,23 @@ func issueCriteria(in *IssueContext) int {
 		return 0
 	}
 	items, state, style := 0, 0, "" // state: 0 before the heading, 1 in the list, 2 after it
+	fence := ""
 	for raw := range strings.SplitSeq(in.Issue.Description, "\n") {
 		line := strings.TrimSpace(raw)
+		if m := codeFence.FindStringSubmatch(raw); m != nil && (fence == "" || strings.HasPrefix(m[1], fence)) {
+			if state != 0 {
+				return 0 // A code block in or after the list is ambiguous.
+			}
+			if fence == "" {
+				fence = m[1][:3]
+			} else {
+				fence = ""
+			}
+			continue
+		}
+		if fence != "" {
+			continue // An example before the list, such as a sample heading.
+		}
 		heading := strings.ToLower(strings.Trim(line, "#* :"))
 		if heading == "done when" || heading == "acceptance criteria" {
 			if state != 0 {
@@ -308,6 +334,8 @@ var (
 	// listMarker is anything Markdown could read as a list item, at any
 	// indent, including an empty one.
 	listMarker = regexp.MustCompile(`^[ \t]*(?:[0-9]{1,9}[.)]|[-*+])(?:[ \t]|$)`)
+	// codeFence opens or closes a fenced code block.
+	codeFence = regexp.MustCompile("^ {0,3}(```+|~~~+)")
 )
 
 // goalKey is the issue a goal check judges the PR against, or "" when none

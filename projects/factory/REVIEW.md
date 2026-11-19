@@ -52,7 +52,8 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   of the issue's one "Done when" or "Acceptance criteria" list, only when
   the issue text has a trusted author and editor, and the valid answer
   must number the same count. A numbering gap or any other ambiguity
-  counts nothing. A restated criterion gets a fresh verdict under the same
+  counts nothing, as does a code block in or after the list. History replay
+  withdraws nothing. A restated criterion gets a fresh verdict under the same
   ID. A missing issue reference, an uncounted list or a count the answer
   disagrees with withdraws nothing; a finding then clears only when a
   valid answer marks it met. The
