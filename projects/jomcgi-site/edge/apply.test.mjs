@@ -293,8 +293,12 @@ test("the files are valid and import the live Monolith rule completely", () => {
 test("no rule keeps strong ETags, so Cloudflare compresses the site", () => {
   // Cloudflare does not compress a response whose strong ETag it keeps, so
   // with this setting every jomcgi.dev page and script went out uncompressed.
+  // The file leaves the field out, so the edge Job never writes it.
   for (const rule of RULES.rules)
-    assert.ok(!rule.action_parameters.respect_strong_etags, rule.description);
+    assert.ok(
+      !Object.hasOwn(rule.action_parameters, "respect_strong_etags"),
+      rule.description,
+    );
   // The import turned it on, so the first run after this change writes.
   assert.ok(!sameRule(LIVE[0], RULES.rules[0]));
 });
