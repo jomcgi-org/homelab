@@ -7,5 +7,5 @@ egress gateway injects, and git sends a placeholder Authorization header the
 gateway replaces from the broker-minted Secret github-git.
 */}}
 {{- range $r := .Values.repositories }}
-{{- include "factory.bindingResources" (dict "root" $ "binding" $r "description" "Delivers changes to") }}
+{{- include "factory.bindingResources" (dict "root" $ "binding" $r "coder" true "description" "Delivers changes to") }}
 {{- end }}

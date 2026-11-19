@@ -373,6 +373,19 @@ def test_bindings_derive_from_repositories() -> None:
             "baseBranch": "main",
             "kagentNamespace": "factory-r-homelab",
             "kagentAgent": "homelab-codex",
+            "arms": [
+                {
+                    "name": name,
+                    "model": model,
+                    "reasoningEffort": effort,
+                    "weight": weight,
+                }
+                for name, model, effort, weight in [
+                    ("control", "gpt-6.2-astra", "xhigh", 70),
+                    ("astra-high", "gpt-6.2-astra", "high", 15),
+                    ("luna", "gpt-6-luna", "xhigh", 15),
+                ]
+            ],
             "runtime": {
                 "model": _in(docs, "ModelConfig", "factory-r-homelab", "codex")["spec"][
                     "model"

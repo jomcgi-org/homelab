@@ -80,6 +80,7 @@ type Agent struct {
 // Binding is a repository binding, the agent keys that may deliver it and
 // its review policy.
 type Binding struct {
+	Arms    []provenance.Arm
 	Runtime *provenance.Runtime
 	store.Binding
 	Agents            []string
@@ -1057,7 +1058,7 @@ func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
 		wi, err = e.st.GetWorkItem(ctx, r.WorkItemID)
 	} else {
 		wi, reassigned, err = e.st.ResolveWorkItem(ctx, r.ID, store.NewWorkItem{
-			Binding: b.Binding, IssueID: r.IssueID, IssueKey: r.IssueKey, AgentKey: r.AgentKey,
+			Binding: b.Binding, FirstArm: provenance.SelectArm(r.IssueKey, b.Arms), IssueID: r.IssueID, IssueKey: r.IssueKey, AgentKey: r.AgentKey,
 		})
 	}
 	if errors.Is(err, store.ErrAdmissionStopped) {

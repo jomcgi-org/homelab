@@ -312,3 +312,51 @@ func TestRefusedCoderRetryBudgetKeepsFirstAcceptedProvenance(t *testing.T) {
 		t.Fatalf("exhausted refused attempt retained a stale run snapshot: %+v", next)
 	}
 }
+
+func TestTrialArmRounds(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		limit int
+	}{{"review", 3}, {"ci", 2}} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := provenanceEnv(t)
+			b := &v.cfg.Bindings[0]
+			b.Review.MaxReviewRounds = 6
+			b.Arms = []provenance.Arm{{Name: "luna", Model: "gpt-6-luna", ReasoningEffort: "high", Weight: 1}}
+			v.e.Release()
+			v.e = v.engine("trial")
+			v.its.add(1, "coder", 101, "HL-7", "Fix the issue.")
+			v.tick(v.e)
+			initial := v.run(1).Provenance
+			if initial.Arm != "luna" || initial.Model != "gpt-6-luna" {
+				t.Fatal(initial)
+			}
+			session := v.work(101).SessionID
+			for i := 1; i <= tc.limit; i++ {
+				head := fmt.Sprintf("%040x", i)
+				v.gh.push("factory/HL-7", head, "fix: issue")
+				v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Pushed.", nil)
+				v.clk.Advance(5 * time.Second)
+				v.tick(v.e)
+				if tc.name == "ci" {
+					v.gh.check(head, "test", 100, "failure")
+				} else {
+					v.gh.review(1, "CHANGES_REQUESTED", "reviewer", head, "Fix the timeout.")
+				}
+				v.poll()
+				rounds := v.rounds()
+				if len(rounds) != i {
+					t.Fatalf("rounds=%d want %d", len(rounds), i)
+				}
+				wi := v.work(101)
+				want := "luna"
+				if i == tc.limit {
+					want = "control"
+				}
+				if rounds[i-1].Provenance.Arm != want || wi.FirstArm != "luna" || wi.Escalated != (i == tc.limit) || (wi.SessionID != session) != (i == tc.limit) {
+					t.Fatalf("round %d: work=%+v run=%+v", i, wi, rounds[i-1])
+				}
+			}
+		})
+	}
+}

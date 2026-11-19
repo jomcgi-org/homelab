@@ -83,6 +83,20 @@ GitHub tokens the broker mints for that ServiceAccount.
 }}
 {{- $binding = mustMergeOverwrite $binding (deepCopy $b) }}
 {{- $_ := set $binding "runtime" (include "factory.runRuntime" (dict "root" $ "binding" $r) | fromJson) }}
+{{- if $b.arms }}
+{{- $seen := dict }}
+{{- $total := 0 }}
+{{- range $arm := $b.arms }}
+{{- if hasKey $seen $arm.name }}{{- fail "coder arm names must be unique" }}{{- end }}
+{{- $_ := set $seen $arm.name true }}
+{{- $total = add $total $arm.weight }}
+{{- if eq $arm.name "control" }}
+{{- $_ := set $binding.runtime "model" $arm.model }}
+{{- $_ := set $binding.runtime "reasoningEffort" $arm.reasoningEffort }}
+{{- end }}
+{{- end }}
+{{- if or (not (hasKey $seen "control")) (eq $total 0) }}{{- fail "coder arms require control and a positive total weight" }}{{- end }}
+{{- end }}
 {{- $bindings = append $bindings $binding }}
 {{- end }}
 {{- range $k, $_ := $c.bindings | default dict }}

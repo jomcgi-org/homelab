@@ -36,13 +36,17 @@ func (s *Store) RecordProvenance(ctx context.Context, w *Writer, a *Attempt, p p
 // known session's first accepted dispatch. The commit also covers a retry
 // before that session publishes its work branch.
 // sql.ErrNoRows means the caller must verify the legacy session revision.
-// Effort is enforced by the broker on each call, so the current setting wins.
-func (s *Store) SessionRuntime(ctx context.Context, namespace, session string, configured provenance.Runtime) (provenance.Runtime, string, error) {
+// Arm-specific URLs pin effort in the session model configuration. Sessions
+// using the shared relay endpoint follow the current broker default.
+func (s *Store) SessionRuntime(ctx context.Context, namespace, session string, configured provenance.Runtime, pinEffort bool) (provenance.Runtime, string, error) {
 	r := configured
-	var base string
-	err := s.DB.QueryRowContext(ctx, `SELECT a.model,a.arm,a.guidance_system_prompt,a.base_sha FROM run r
+	var base, effort string
+	err := s.DB.QueryRowContext(ctx, `SELECT a.model,a.arm,a.guidance_system_prompt,a.base_sha,a.reasoning_effort FROM run r
   JOIN delivery_attempt a ON a.run_id=r.id
   WHERE a.kagent_namespace=$1 AND a.context_id=$2 AND a.model IS NOT NULL AND a.task_id IS NOT NULL
-  ORDER BY a.id LIMIT 1`, namespace, session).Scan(&r.Model, &r.Arm, &r.SystemPrompt, &base)
+  ORDER BY a.id LIMIT 1`, namespace, session).Scan(&r.Model, &r.Arm, &r.SystemPrompt, &base, &effort)
+	if pinEffort && err == nil {
+		r.ReasoningEffort = effort
+	}
 	return r, base, err
 }

@@ -293,6 +293,10 @@ func TestRelaySetsReasoningEffort(t *testing.T) {
 	if r, _ := got["reasoning"].(map[string]any); r["effort"] != "xhigh" || r["summary"] != "auto" || got["model"] != "gpt-6-astra" || got["stream"] != true {
 		t.Fatalf("upstream request = %v", got)
 	}
+	got = send("/v1/effort/high/responses", `{"model":"gpt-6.2-astra"}`, "")
+	if r, _ := got["reasoning"].(map[string]any); r["effort"] != "high" {
+		t.Fatalf("trial request = %v", got)
+	}
 	// A request without reasoning gains it.
 	got = send("/v1/responses", `{"model":"gpt-6-astra","reasoning":null}`, "")
 	if r, _ := got["reasoning"].(map[string]any); r["effort"] != "xhigh" {

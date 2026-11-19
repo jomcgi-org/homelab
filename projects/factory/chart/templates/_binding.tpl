@@ -90,27 +90,6 @@ spec:
     resources:
       {{- toYaml $a.worker.resources | nindent 6 }}
 ---
-# The broker's Codex relay. kagent binds the origin's Authorization header
-# (prefix "Bearer ") to an actor JWT for audience factory-broker; Codex holds
-# only a placeholder.
-apiVersion: api.kagent.dev/v1alpha3
-kind: ModelConfig
-metadata:
-  name: {{ $r.agent }}
-  namespace: {{ $ns }}
-  labels:
-    {{- include "factory.labels" $ | nindent 4 }}
-  annotations:
-    argocd.argoproj.io/sync-wave: "2"
-spec:
-  provider: OpenAI
-  model: {{ $a.model | quote }}
-  openAI:
-    baseUrl: {{ include "factory.brokerRelayURL" $ | quote }}
-    apiFormat: responses
-  actorJwt:
-    audiences: [factory-broker]
----
 apiVersion: api.kagent.dev/v1alpha3
 kind: Harness
 metadata:
@@ -214,11 +193,43 @@ spec:
         name: {{ $memory.secret | quote }}
         key: token
 {{- end }}
+{{- $ctx := . }}
+{{- $arms := list (dict "name" "control" "model" $a.model) }}
+{{- if .coder }}
+{{- with (index ($.Values.connector.bindings | default dict) $r.name) }}
+{{- if .arms }}{{- $arms = .arms }}{{- end }}
+{{- end }}
+{{- end }}
+{{- range $arm := $arms }}
+{{- $url := include "factory.brokerRelayURL" $ }}
+{{- if $arm.reasoningEffort }}{{- $url = printf "%s/effort/%s" $url $arm.reasoningEffort }}{{- end }}
+{{- $suffix := ternary "" (printf "-%s" $arm.name) (eq $arm.name "control") }}
+---
+# The broker's Codex relay. kagent binds the origin's Authorization header
+# (prefix "Bearer ") to an actor JWT for audience factory-broker; Codex holds
+# only a placeholder.
+apiVersion: api.kagent.dev/v1alpha3
+kind: ModelConfig
+metadata:
+  name: {{ $r.agent }}{{ $suffix }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  provider: OpenAI
+  model: {{ $arm.model | quote }}
+  openAI:
+    baseUrl: {{ $url | quote }}
+    apiFormat: responses
+  actorJwt:
+    audiences: [factory-broker]
 ---
 apiVersion: api.kagent.dev/v1alpha3
 kind: Agent
 metadata:
-  name: {{ $agent }}
+  name: {{ $agent }}{{ $suffix }}
   namespace: {{ $ns }}
   labels:
     {{- include "factory.labels" $ | nindent 4 }}
@@ -230,8 +241,8 @@ spec:
     inline:
       description: {{ printf "%s %s/%s" $description $r.owner $r.repo | quote }}
       modelConfig:
-        name: {{ $r.agent }}
-      systemPrompt: {{ include "factory.bindingPrompt" . | quote }}
+        name: {{ $r.agent }}{{ $suffix }}
+      systemPrompt: {{ include "factory.bindingPrompt" $ctx | quote }}
       {{- if $memory }}
       tools:
         - mcp:
@@ -251,6 +262,7 @@ spec:
     - name: homelab-tools
     {{- end }}
   {{- end }}
+{{- end }}
 {{- if $.Values.networkPolicy.cilium }}
 ---
 # Worker pods: actor traffic arrives only from Substrate's router and leaves
