@@ -1,0 +1,3 @@
+Criterion 1. In projects/factory/reviewer/review/engine.go, Engine.review starts a new review root and a code review child for each attempt. Engine.outcome starts the goal check with the review parent. Engine.complete records the verdict after GitHub accepts the conclusion, including cancellation. TestReviewTrace in engine_test.go exercises both checks and inspects their parent, PR, head, round, verdict, finding count and reported usage. TestSupersededHeadCancelsTheOldReview checks the cancelled root for the old SHA.
+
+The reviewer exports through OTLP/gRPC when reviewer.traceEndpoint is configured. Live delivery requires the collector gateway, allowlist and rollout described in the activation trailer.

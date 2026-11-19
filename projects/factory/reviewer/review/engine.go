@@ -3054,6 +3054,14 @@ func (e *Engine) complete(ctx context.Context, b *Binding, run *github.CheckRun,
 		}
 		return false
 	}
+	// A cancellation can arrive while the code check is active. The verdict
+	// belongs to the review that owns the GitHub check run.
+	if work, ok := ctx.Value(reviewUsageKey{}).(*spanUsage); ok {
+		for work.parent != nil {
+			work = work.parent
+		}
+		work.span.SetAttributes(attribute.String("review.verdict", o.Conclusion))
+	}
 	e.m.ReviewsCompleted.WithLabelValues(b.Name, o.Conclusion).Inc()
 	l.InfoContext(ctx, "review check completed", "conclusion", o.Conclusion, "title", o.Output.Title)
 	return true
@@ -3065,7 +3073,6 @@ func (e *Engine) finish(ctx context.Context, b *Binding, pr github.PullRequest, 
 	if !e.complete(ctx, b, run, o, l) {
 		return false
 	}
-	trace.SpanFromContext(ctx).SetAttributes(attribute.String("review.verdict", o.Conclusion))
 	e.queueCompletedComment(ctx, b, pr, run, o.Output.Text, o.Comment)
 	return true
 }

@@ -627,6 +627,7 @@ func TestReattachWithoutRecordedTaskResendsTheMessage(t *testing.T) {
 }
 
 func TestSupersededHeadCancelsTheOldReview(t *testing.T) {
+	exporter := captureReviewSpans(t)
 	h := newHarness(t)
 	addPR7(h)
 	e, ctx, _ := h.start()
@@ -650,6 +651,25 @@ func TestSupersededHeadCancelsTheOldReview(t *testing.T) {
 	if c := h.gh.check(shaA); c.Conclusion != ConclusionCancelled {
 		t.Fatalf("old check = %+v", c)
 	}
+	e.Wait()
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "review" || span.Parent.IsValid() {
+			continue
+		}
+		var head, verdict string
+		for _, attr := range span.Attributes {
+			switch attr.Key {
+			case "pr.head_sha":
+				head = attr.Value.AsString()
+			case "review.verdict":
+				verdict = attr.Value.AsString()
+			}
+		}
+		if head == shaA && verdict == ConclusionCancelled {
+			return
+		}
+	}
+	t.Fatal("missing cancelled verdict on superseded review root")
 }
 
 // A shared commit still needs current PR context: labels and approvals on
@@ -4381,12 +4401,18 @@ func TestAddedFileInvariantAnswerInCompletedCheck(t *testing.T) {
 	}
 }
 
-func TestReviewTrace(t *testing.T) {
+func captureReviewSpans(t *testing.T) *tracetest.InMemoryExporter {
+	t.Helper()
 	exporter := tracetest.NewInMemoryExporter()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	previous := otel.GetTracerProvider()
 	otel.SetTracerProvider(provider)
-	defer otel.SetTracerProvider(previous)
+	t.Cleanup(func() { otel.SetTracerProvider(previous) })
+	return exporter
+}
+
+func TestReviewTrace(t *testing.T) {
+	exporter := captureReviewSpans(t)
 	h, _ := issueHarness(t)
 	secret, _ := testMACSecret()
 	h.k.goal = secret + "\n" + goalReply(`{"criteria":[{"criterion":1,"verdict":"met"}],"overall":"met"}`)
