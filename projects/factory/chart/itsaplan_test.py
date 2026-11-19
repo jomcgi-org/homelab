@@ -480,7 +480,7 @@ def test_sync_bootstrap_grants_only_read_and_create_in_intsec(bootstrap, monkeyp
         return original_call(method, path, body)
 
     bootstrap.CONFIG["agents"] = [
-        {"username": "factory-semgrep-sync", "name": "INTSEC sync"}
+        {"username": "intsec-sync", "name": "factory-semgrep-sync"}
     ]
     monkeypatch.setattr(api, "call", call)
     published = []

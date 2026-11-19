@@ -5,6 +5,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -36,7 +37,17 @@ def snapshot(get, deployment):
         page = 0
         while True:
             params["page"] = page
-            payload = get(f"/{endpoint}?{urlencode(params)}")
+            try:
+                payload = get(f"/{endpoint}?{urlencode(params)}")
+            except HTTPError as error:
+                if (
+                    page == 0
+                    and params["page_size"] == 3000
+                    and error.code in (400, 422)
+                ):
+                    params["page_size"] = 100
+                    continue
+                raise
             rows = payload["secrets"] if "secrets" in payload else payload["findings"]
             if not isinstance(rows, list):
                 raise ValueError("missing Semgrep page")
@@ -87,7 +98,8 @@ def snapshot(get, deployment):
                     {"repository": REPO, "file": location["file_path"], "link": link},
                     f"Semgrep finding ID: {key}\n\nUntrusted finding data\n\n    {data}\n\n{link}",
                 )
-            if len(rows) < params["page_size"]:
+            paging = payload.get("paging") or {}
+            if not rows or ("next" in paging and not paging["next"]):
                 break
             page += 1
     return result
@@ -107,9 +119,9 @@ def reconcile(findings, plan, alert):
     if (
         not me["authenticated"]
         or not me["user"]["isAgent"]
-        or me["user"]["username"] != "factory-semgrep-sync"
+        or me["user"]["username"] != "intsec-sync"
     ):
-        raise ValueError("expected factory-semgrep-sync identity")
+        raise ValueError("expected intsec-sync identity")
     setup = plan(PROJECT)
     (label,) = [l["id"] for l in setup["labels"] if l["name"] == "semgrep"]
     columns = {col["id"]: col["stateType"] for col in setup["columns"]}
@@ -177,7 +189,7 @@ def reconcile(findings, plan, alert):
 def send_alert(name, fields):
     summary = (
         f"{fields['repository']} {fields['file']}"
-        if fields
+        if name == "SemgrepNewSecret"
         else "Semgrep sync authentication failed"
     )
     alert = {
@@ -203,10 +215,16 @@ def sync(get, deployment, plan, alert, auth_marker):
     except HTTPError as error:
         if error.code not in (401, 403):
             raise
+        pending = auth_marker.with_suffix(".pending")
         if not auth_marker.exists():
-            alert("SemgrepAuthenticationFailed", {})
-            auth_marker.touch()
+            if not pending.exists():
+                staged = pending.with_suffix(".tmp")
+                staged.write_text(str(uuid4()))
+                staged.replace(pending)
+            alert("SemgrepAuthenticationFailed", {"outage": pending.read_text()})
+            pending.replace(auth_marker)
         return
+    auth_marker.with_suffix(".pending").unlink(missing_ok=True)
     auth_marker.unlink(missing_ok=True)
     reconcile(findings, plan, alert)
 

@@ -192,7 +192,7 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
         const owned = await db.execute(sql`
           select i.id from issue i
           join project p on p.id = i.project_id
-          join ai_agent a on a.team_id = p.team_id and a.username = 'factory-semgrep-sync'
+          join ai_agent a on a.team_id = p.team_id and a.username = 'intsec-sync'
           join issue_activity h on h.issue_id = i.id and h.kind = 'activity' and h.action = 'created'
           join issue_label il on il.issue_id = i.id
           join label l on l.id = il.label_id and l.project_id = p.id

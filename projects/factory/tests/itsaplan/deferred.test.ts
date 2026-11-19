@@ -247,7 +247,7 @@ test("the sync key can restore and update only its own INTSEC finding", async ()
   const label = (await setup.labels.post({ name: "semgrep" })).data!;
   const agent = (
     await createAgent(owner, projectKey, {
-      username: "factory-semgrep-sync",
+      username: "intsec-sync",
       name: "INTSEC sync",
       kind: "external",
     })
