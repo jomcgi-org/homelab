@@ -531,11 +531,13 @@ def test_mirror_refuses_endpoint_outside_policy_before_running_rclone(chart):
     assert result.stderr.strip() == "R2 endpoint does not match the declared egress"
 
 
+@pytest.mark.parametrize("manifest", ["manifest.json", "latest.json"])
 @pytest.mark.parametrize("present,last", [("health.json", "copyto"), ("", "delete")])
 def test_mirror_replaces_mutable_keys_with_a_short_cache(
-    chart, tmp_path, present, last
+    chart, tmp_path, present, last, manifest
 ):
     config = bucket_config()
+    config["buckets"][0]["public"]["manifestName"] = manifest
     config["buckets"][0]["public"]["mutableKeys"] = ["health.json"]
     container = mirror_container(objects(render(chart, config)))
     env = {
@@ -568,7 +570,7 @@ def test_mirror_replaces_mutable_keys_with_a_short_cache(
         "GARAGE:factory-public",
         "R2:factory-public",
         "--exclude",
-        "/manifest.json",
+        f"/{manifest}",
     ]
     assert calls[0][8:10] == ["--exclude", "/health.json"]
     if last == "copyto":
