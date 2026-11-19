@@ -65,6 +65,12 @@ http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "ht
 
 http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
 
+http_file(
+    name = "factory_codex_catalog",
+    sha256 = "d50b6749506d97e5f334dbabcb666eb1689f423cf3e88cfabdcf3c536b873068",
+    urls = ["https://raw.githubusercontent.com/openai/codex/c376cf7396eff83ce4c6ac61b9553df142e7a0be/codex-rs/models-manager/models.json"],
+)
+
 multiarch_http_file = use_repo_rule("//bazel/tools/http:multiarch_http_file.bzl", "multiarch_http_file")
 
 # Private API server for the factory credential admission test. Match the
@@ -411,6 +417,17 @@ oci.pull(
 use_repo(oci, "python_base", "python_base_linux_amd64", "python_base_linux_arm64_v8")
 use_repo(oci, "custom_crane_regctl_toolchains")
 
+oci.pull(
+    name = "factory_codex_upstream",
+    digest = "sha256:51d92a9c9b5e819325e89491a80678539fc60dc7713a6e4e4b150ff9adc0a3cb",
+    image = "ghcr.io/jomcgi-org/kagent/codex-harness",
+    platforms = ["linux/amd64"],
+)
+use_repo(oci, "factory_codex_upstream_linux_amd64")
+
+import_harness = use_repo_rule("//projects/factory/codex-code-mode:harness.bzl", "import_harness")
+import_harness(name = "factory_codex_binaries", index = "@factory_codex_upstream_linux_amd64//:index.json")
+
 # PostgreSQL 16 + pgvector for e2e integration tests
 oci.pull(
     name = "pgvector_pg16",
@@ -527,6 +544,10 @@ apko.translate_lock(
     lock = "//projects/factory/broker/image:apko.lock.json",
 )
 apko.translate_lock(
+    name = "factory_codex_mode_lock",
+    lock = "//projects/factory/codex-code-mode:apko.lock.json",
+)
+apko.translate_lock(
     name = "factory_connector_lock",
     lock = "//projects/factory/connector/image:apko.lock.json",
 )
@@ -566,7 +587,7 @@ apko.translate_lock(
     name = "embervm_runtime_pi_lock",
     lock = "//projects/embervm/runtimes/pi:apko.lock.json",
 )
-use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "factory_alert_relay_lock", "factory_broker_lock", "factory_connector_lock", "factory_landing_lock", "factory_reviewer_lock", "jomcgi_site_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "scotland_connector_lock", "shotter_lock", "stars_grid_apko_lock")
+use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "factory_alert_relay_lock", "factory_broker_lock", "factory_codex_mode_lock", "factory_connector_lock", "factory_landing_lock", "factory_reviewer_lock", "jomcgi_site_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "scotland_connector_lock", "shotter_lock", "stars_grid_apko_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")

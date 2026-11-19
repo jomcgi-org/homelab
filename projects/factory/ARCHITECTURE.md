@@ -20,6 +20,7 @@ See the [connector architecture](connector/ARCHITECTURE.md) for the [run lifecyc
 | Coding harness | Codex CLI | 0.169.1, from the `jomcgi-org/kagent` fork build (branch `jomcgi/codex-6.2`, which also carries kagent#3653) |
 | Repository, PR, CI, merge queue | GitHub | |
 | Provider and GitHub credentials | `projects/factory/broker` | this repo |
+| Codex tool-mode trial runtime | `projects/factory/codex-code-mode` | this repo |
 | Relationships between itsaplan, kagent and GitHub | [Connector architecture](connector/ARCHITECTURE.md) | this repo |
 | Agents' shared long-term memory | Hindsight (`projects/platform-factory/hindsight`) | 1.2.1 (`ghcr.io/vectorize-io/hindsight-api`), by digest |
 

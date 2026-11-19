@@ -36,6 +36,7 @@ helm_chart(
     name = "chart",
     images = {
         "broker.image": "//projects/factory/broker/image:image.info",
+        "codexTrial.image": "//projects/factory/codex-code-mode:image.info",
         "connector.image": "//projects/factory/connector/image:image.info",
         "reviewer.image": "//projects/factory/reviewer/image:image.info",
     },

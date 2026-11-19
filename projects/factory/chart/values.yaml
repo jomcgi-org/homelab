@@ -173,6 +173,12 @@ clusterDomain: cluster.local
 # Enable after the forwarding scope, broker and Authentik callback deploy.
 codexAdminRouteEnabled: false
 
+codexTrial:
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/factory/codex-code-mode
+    tag: main
+    digest: ""
+
 broker:
   # A login that can only call the connector's accounting append functions.
   # Provisioned by factory-db; never use the connector owner's Secret here.
@@ -329,8 +335,8 @@ agents:
 # endpoint (projects/platform-factory/hindsight) as RemoteMCPServer `memory`,
 # limited to `tools`, and adds files/memory-prompt.txt to its prompt. The
 # Secret must exist first: kagent rejects the Agent while it is missing.
-# Set codexCodeMode: true and codexCodeModeImage to the published digest of
-# projects/factory/codex-code-mode on the experimental binding only.
+# Omit codexCodeMode for ordinary bindings. Explicit false and true select
+# direct and code mode respectively on the same published trial image.
 repositories: []
 
 # The Substrate worker image for binding WorkerPools, matching Substrate's

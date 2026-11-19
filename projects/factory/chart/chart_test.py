@@ -95,11 +95,20 @@ def _one(docs: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
 
 def test_binding_codex_code_mode_image() -> None:
     assert "workload" not in _one(_render(), "Harness", "codex")["spec"]
-    image = "registry.example/codex-code-mode@sha256:" + "a" * 64
-    pin = f"repositories[0].codexCodeModeImage={image}"
-    assert "workload" not in _one(_render([pin]), "Harness", "codex")["spec"]
-    docs = _render([pin, "repositories[0].codexCodeMode=true"])
-    assert _one(docs, "Harness", "codex")["spec"]["workload"] == {"image": image}
+    digest = "sha256:" + "a" * 64
+    for mode in ("false", "true"):
+        docs = _render(
+            [
+                f"codexTrial.image.digest={digest}",
+                f"repositories[0].codexCodeMode={mode}",
+            ]
+        )
+        spec = _one(docs, "Harness", "codex")["spec"]
+        assert (
+            spec["workload"]["image"]
+            == f"ghcr.io/jomcgi/homelab/projects/factory/codex-code-mode@{digest}"
+        )
+        assert {"name": "FACTORY_CODE_MODE", "value": mode} in spec["env"]
 
 
 def test_crds_match_vendored_chart() -> None:

@@ -122,14 +122,18 @@ metadata:
     argocd.argoproj.io/sync-wave: "2"
 spec:
   {{ $a.harness }}: {}
-  {{- if $r.codexCodeMode }}
-  {{- if ne $a.harness "codex" }}
-  {{- fail "codexCodeModeImage requires a Codex harness" }}
+  {{- if hasKey $r "codexCodeMode" }}
+  {{- if or (ne $a.harness "codex") (ne $a.model "gpt-6.2-astra") }}
+  {{- fail "codexCodeMode requires the gpt-6.2-astra Codex trial model" }}
   {{- end }}
   workload:
-    image: {{ required "codexCodeMode requires codexCodeModeImage" $r.codexCodeModeImage | quote }}
+    image: {{ printf "%s@%s" $.Values.codexTrial.image.repository (required "codexCodeMode requires a published trial image digest" $.Values.codexTrial.image.digest) | quote }}
   {{- end }}
   env:
+    {{- if hasKey $r "codexCodeMode" }}
+    - name: FACTORY_CODE_MODE
+      value: {{ $r.codexCodeMode | quote }}
+    {{- end }}
     # git sends a placeholder Authorization to GitHub; the egress gateway
     # replaces it from github-git (EgressPolicy github-git). No credential
     # helper or prompt can hand git anything else.
