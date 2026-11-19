@@ -70,7 +70,13 @@ spec:
             io.cilium.k8s.policy.serviceaccount: grimoire-worker
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: grimoire
+            io.cilium.k8s.policy.serviceaccount: grimoire-restore
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: grimoire
             cnpg.io/cluster: grimoire
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: grimoire
+            cnpg.io/cluster: grimoire-recovered
         # The connector's evidence (factory chart).
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory
