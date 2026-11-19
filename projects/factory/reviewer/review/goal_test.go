@@ -754,6 +754,7 @@ func TestIssueCriteriaCount(t *testing.T) {
 		"Done when:\n1. ```go":                                                        0,
 		"Done when:\n1. a <b>\n2. c":                                                  0,
 		"Done when:\n1. Keep p95 latency < 200 ms.\n2. b":                             2,
+		"Title\n=\nDone when:\n1. a":                                                  0,
 		"Done when:\r\n1. a\r\n2.\r\n   b\r\n":                                        0,
 		"Done when:\n1. a\n2.\tb":                                                     2,
 		"Done when:\n1) a\n2) b":                                                      2,
@@ -870,5 +871,11 @@ func TestUncountedAnswerKeepsMainRules(t *testing.T) {
 	}
 	if !slices.ContainsFunc(a.Blocking, func(b Blocked) bool { return b.ID == "HOME-7:goal:criterion-3" }) {
 		t.Fatalf("criterion 3 left the blockers without a verdict: %+v", a.Blocking)
+	}
+	// A met verdict still fixes an earlier finding on an uncounted list.
+	r = &Report{}
+	applyGoal(r, prior, "HOME", "HOME-7", &GoalCheck{Overall: goalUnclear, Criteria: []GoalVerdict{{1, goalMet}, {2, goalMet}, {3, goalMet}}})
+	if a := Assess(r, prior); len(a.Fixed) != 2 || len(a.Withdrawn) != 0 {
+		t.Fatalf("met verdicts: fixed %+v withdrawn %+v", a.Fixed, a.Withdrawn)
 	}
 }

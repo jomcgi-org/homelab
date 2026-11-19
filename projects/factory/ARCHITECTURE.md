@@ -1948,8 +1948,9 @@ counted "Done when" list no longer reaches the finding's criterion
 fixed service text that names the issue keys and criterion number only.
 The criteria counter handles a plain numbered or bulleted Done when list.
 Unusual Markdown counts nothing, so it withdraws nothing and main's rules
-apply ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-416#comment-4339));
-HOME-436 adds full CommonMark parsing.
+apply. HOME-416 covers plain lists only, and HOME-436 owns unusual Markdown
+and full CommonMark parsing
+([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-416#comment-4353)).
 
 The reviewer stores private goal replies on the `factory-reviewer-goal-audit`
 PVC for 14 days from first receipt. After rollback, keep the PVC, the hourly
