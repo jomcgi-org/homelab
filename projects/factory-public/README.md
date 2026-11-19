@@ -97,9 +97,25 @@ The Worker check reads
 `/accounts/<account>/workers/scripts/jomcgi-site/deployments` with a
 read-only token from 1Password item `factory-health-cloudflare` (fields
 `api-token` and `account-id`; permission Account, Workers Scripts, Read).
-Until that item exists, `jomcgi-site-worker` is `down`. Alerting on the
-status and age in the file is
-[HOME-415](https://factory-plan.jomcgi.dev/factory/issue/HOME-415).
+Until that item exists, `jomcgi-site-worker` is `down`.
+
+The factory Prometheus alerts on the public file:
+`FactoryHealthUnhealthy` and `FactoryHealthStale`
+([runbook](../factory-cluster/README.md#factoryhealthunhealthy-factoryhealthstale)).
+
+### Alert check
+
+The `ALERT_TEST` value of the `health` workload adds the component
+`alert-test`, always `down`. To check the alert path after a rollout:
+
+1. In a PR, set `ALERT_TEST` to `"true"` in `chart/values.yaml`.
+2. After Argo CD syncs, wait for `"status":"unhealthy"` with `alert-test`
+   in `curl -s https://factory-data.jomcgi.dev/health.json`. It takes about
+   4 min.
+3. About 5 min later, Discord gets one `FactoryHealthUnhealthy` message that
+   names `alert-test`.
+4. In a second PR, set `ALERT_TEST` to `"false"`.
+5. When the file shows `healthy` again, Discord gets the resolved message.
 
 ## Before the mirror runs
 

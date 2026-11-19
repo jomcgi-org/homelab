@@ -4,11 +4,12 @@ kind: Kustomization
 # Prometheus and kube-state-metrics for the operators' metrics view
 # (projects/factory-cluster/README.md, "Metrics view"), Alertmanager for its
 # alerts ("Alerts"), the namespace's allowlist and the scrape ingress rules at
-# each target.
+# each target. health-exporter reads the public factory health file.
 resources:
   - network-policy.yaml
   - scrape-ingress.yaml
   - kube-state-metrics.yaml
+  - health-exporter.yaml
   - prometheus.yaml
   - alertmanager.yaml
 
@@ -22,3 +23,7 @@ configMapGenerator:
     namespace: prometheus
     files:
       - alertmanager.yml
+  - name: health-exporter
+    namespace: prometheus
+    files:
+      - health_exporter.py

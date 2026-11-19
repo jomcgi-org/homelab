@@ -291,5 +291,8 @@ false through Git to disable this path; existing backup schedules are unchanged.
 health as static data, refreshed every 2 minutes and cached for 60 s
 ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-260#comment-3909)).
 See [factory-public](../projects/factory-public/README.md#factory-health). The hub
-collector's httpcheck probes it; alerting on its `status` and `generatedAt` is
-[HOME-415](https://factory-plan.jomcgi.dev/factory/issue/HOME-415).
+collector's httpcheck probes it. On the factory cluster, `FactoryHealthUnhealthy`
+and `FactoryHealthStale` alert on its `status` and `generatedAt`
+([runbook](../projects/factory-cluster/README.md#factoryhealthunhealthy-factoryhealthstale)).
+They replace the Honeycomb trigger above. HOME-261 removes that trigger and
+the hub route.

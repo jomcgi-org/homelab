@@ -189,7 +189,10 @@ def test_health_publisher_holds_no_factory_public_credential():
     refs = {
         e["valueFrom"]["secretKeyRef"]["name"]: e["valueFrom"]["secretKeyRef"]
         for e in container["env"]
+        if "valueFrom" in e
     }
+    # The HOME-415 alert check is off.
+    assert {"name": "ALERT_TEST", "value": "false"} in container["env"]
     # Its Garage key covers factory-health only, never factory-public.
     assert set(refs) == {
         "factory-public-factory-health-s3",

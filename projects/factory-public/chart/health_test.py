@@ -69,6 +69,23 @@ def test_a_failed_read_publishes_down_without_its_error(monkeypatch, capsys):
     assert "internal" not in capsys.readouterr().out
 
 
+def test_alert_test_adds_one_down_component(monkeypatch):
+    uploads = []
+    monkeypatch.setattr(health, "CHECKS", {"factory-cluster": lambda now, env: True})
+    monkeypatch.setattr(health, "put", lambda body, env, now: uploads.append(body))
+    for flag in ("false", "true"):
+        monkeypatch.setenv("ALERT_TEST", flag)
+        health.main()
+    off, on = (json.loads(body) for body in uploads)
+    assert off["status"] == "healthy"
+    assert off["components"] == [{"name": "factory-cluster", "state": "up"}]
+    assert on["status"] == "unhealthy"
+    assert on["components"] == [
+        {"name": "alert-test", "state": "down"},
+        {"name": "factory-cluster", "state": "up"},
+    ]
+
+
 def test_cluster_needs_healthy_argocd_reconciled_in_15_minutes(monkeypatch):
     status = {"health": {"status": "Healthy"}, "reconciledAt": "2026-11-19T07:50:00Z"}
     monkeypatch.setattr(health, "kube", lambda path: {"status": status})

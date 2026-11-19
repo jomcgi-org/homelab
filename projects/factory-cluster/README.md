@@ -371,7 +371,9 @@ checks instead.
 changes: a job there, an egress rule in `resources/network-policy.yaml`, and
 an ingress rule at the target in `resources/scrape-ingress.yaml`. Those
 ingress rules are CiliumClusterwideNetworkPolicies so they sync whether or
-not the target's namespace exists yet, and leave with Prometheus.
+not the target's namespace exists yet, and leave with Prometheus. A target in
+the prometheus namespace, such as kube-state-metrics or health-exporter, has
+its ingress rule in `resources/network-policy.yaml`.
 
 Edit a dashboard by changing its JSON; Grafana rejects saves from the UI. Each
 ConfigMap's name carries its content hash, so a change rolls the pod.
@@ -445,6 +447,8 @@ curl -s -X POST -H 'Content-Type: application/json' http://localhost:9093/api/v2
 | `FactoryCodexQuotaReadingStale` | The broker's newest Codex quota reading is more than 2 h old, or there is no reading at all, for 15 min, so the quota alerts could not fire |
 | `SemgrepSyncFailed` | The newest Semgrep to INTSEC sync Job in its namespace has failed |
 | `AlertRelayDown` | No ready relay replica for 5 min |
+| `FactoryHealthUnhealthy` | The public `health.json` reports a `status` other than `healthy` for 5 min. The message names each down component |
+| `FactoryHealthStale` | The newest `health.json` that Prometheus read has a `generatedAt` more than 10 min old, or Prometheus read none in 15 min, for 2 min |
 
 #### Writing an alert
 
@@ -485,6 +489,48 @@ reused; see the broker's logs first.
 
 Check the broker's usage reads
 (`factory_broker_codex_usage_refresh_total` by outcome) and its logs.
+
+#### FactoryHealthUnhealthy, FactoryHealthStale
+
+These two alerts replace the hub's Honeycomb trigger
+`jomcgi.dev /health composite unhealthy` (`aJgkA4vC2m8`) on
+`https://jomcgi.dev/health`. HOME-261 removes that trigger and the hub route
+with the catch-all.
+
+```mermaid
+flowchart LR
+  job["health CronJob"] -- "PUT every 2 min" --> garage[("Garage factory-health")]
+  garage -- "mirror copies every minute" --> r2[("R2 factory-public")]
+  r2 -- "GET factory-data.jomcgi.dev, 60 s cache" --> exporter["health-exporter"]
+  exporter -- "scrape every 30 s" --> prom["Prometheus rules"]
+  prom -- "firing alert" --> am["Alertmanager"]
+  am -- webhook --> relay["alert-relay"]
+  relay -- "post with graph" --> discord["Discord"]
+```
+
+`health-exporter` in the prometheus namespace reads
+`https://factory-data.jomcgi.dev/health.json` on each scrape. It calls no
+cluster or Cloudflare API
+([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-260#comment-3909)).
+It exports `factory_health_healthy`, `factory_health_generated_at_seconds`,
+`factory_health_component_up` and `factory_health_read_success`. A failed read
+exports only `factory_health_read_success 0`. Both rules take the newest
+sample in 15 min, so a short read gap neither clears nor fires them.
+
+For `FactoryHealthUnhealthy`, read the file and check each down component:
+
+- `factory-cluster`: the `argocd` Application is not Healthy, or it did not
+  reconcile in 15 min.
+- `jomcgi-site-worker`: the Cloudflare read failed, or the Worker's latest
+  deployment has no ID. Check that Secret `factory-health-cloudflare` exists
+  in `factory-public`.
+- `alert-test`: the alert check in
+  [factory-public](../factory-public/README.md#alert-check) is on.
+
+For `FactoryHealthStale`, compare the public `generatedAt` with the exporter's
+reads (`kubectl -n prometheus logs deploy/health-exporter`). If the public
+file is old, check the `health` and `factory-public-factory-public-mirror`
+CronJobs in `factory-public`.
 
 #### NodeDiskFilling
 

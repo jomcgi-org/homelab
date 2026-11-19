@@ -86,6 +86,12 @@ scrape_configs:
     static_configs:
       - targets: [kube-state-metrics:8080]
 
+  # The public factory health file (HOME-415): health-exporter reads
+  # https://factory-data.jomcgi.dev/health.json on each scrape.
+  - job_name: factory-health
+    static_configs:
+      - targets: [health-exporter:8080]
+
   # Cilium on the host network of each node: the agent, Hubble's flow and
   # drop counters, and both operator replicas.
   - job_name: cilium-agent

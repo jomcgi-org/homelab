@@ -172,6 +172,49 @@ groups:
           runbook: "https://factory-runbooks.jomcgi.dev/SemgrepSyncFailed"
           summary: "Latest Semgrep to INTSEC sync {{ $labels.namespace }}/{{ $labels.job_name }} failed (failure flag {{ $value }}, threshold 1)"
 
+  - name: factory-health
+    rules:
+      # The public factory health file (projects/factory-public README,
+      # "Factory health"), read at its public URL by health-exporter. The
+      # health CronJob writes it every 2 min; the mirror and a 60 s cache add
+      # up to 2 min. A failed read exports no status or age, so both rules
+      # take the newest sample in 15 min: a short read gap neither clears
+      # nor fires them. Together they replace the hub's Honeycomb trigger on
+      # jomcgi.dev/health (HOME-415).
+      - alert: FactoryHealthUnhealthy
+        expr: max(last_over_time(factory_health_healthy[15m])) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          action: "Check each down component in health.json."
+          graph: "factory_health_component_up"
+          threshold: "1"
+          runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthUnhealthy"
+          summary: "Factory health is unhealthy, down: {{ range $i, $c := query `last_over_time(factory_health_component_up[15m]) == 0` | sortByLabel `component` }}{{ if $i }}, {{ end }}{{ $c.Labels.component }}{{ else }}none listed{{ end }} (healthy flag {{ $value }}, minimum 1)"
+          description: >-
+            https://factory-data.jomcgi.dev/health.json reports status
+            unhealthy. Runbook: projects/factory-cluster/README.md, "Alerts".
+      # No series at all (no read in 15 min, or the exporter never ran) is 0.
+      # Both branches have no labels, so a stale file that then becomes
+      # unreadable keeps one alert and one timer.
+      - alert: FactoryHealthStale
+        expr: >-
+          (time() - max(max_over_time(factory_health_generated_at_seconds[15m])) > 600)
+          or (absent_over_time(factory_health_generated_at_seconds[15m]) * 0)
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          action: "Check the factory-public health and mirror CronJobs."
+          graph: "time() - max(max_over_time(factory_health_generated_at_seconds[15m])) or vector(0)"
+          threshold: "600"
+          runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthStale"
+          summary: "{{ if eq $value 0.0 }}Prometheus read no health.json in 15m{{ else }}The newest health.json is {{ $value | humanizeDuration }} old{{ end }} (maximum age 10m)"
+          description: >-
+            Public readers see an old status. Runbook:
+            projects/factory-cluster/README.md, "Alerts".
+
   - name: relay
     rules:
       - alert: AlertRelayDown

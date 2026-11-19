@@ -483,6 +483,150 @@ tests:
               description: 'The quota alerts cannot fire on an old reading. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
 
+  # health.json turns unhealthy at 5 min with the test component alert-test
+  # down. One alert fires 5 min later and names it; the next healthy file at
+  # 25 min clears it.
+  - interval: 1m
+    input_series:
+      - series: 'factory_health_healthy'
+        values: "1x4 0x19 1x10"
+      - series: 'factory_health_component_up{component="factory-cluster"}'
+        values: "1x35"
+      - series: 'factory_health_component_up{component="alert-test"}'
+        values: "_x5 0x19 stale"
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: &health_unhealthy
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              action: "Check each down component in health.json."
+              graph: "factory_health_component_up"
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthUnhealthy"
+              summary: "Factory health is unhealthy, down: alert-test (healthy flag 0, minimum 1)"
+              description: 'https://factory-data.jomcgi.dev/health.json reports status unhealthy. Runbook: projects/factory-cluster/README.md, "Alerts".'
+      - eval_time: 24m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: *health_unhealthy
+      - eval_time: 25m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: []
+
+  # Reads fail for 10 min while the file is unhealthy: the exporter drops
+  # the series (stale markers). The alert stays, and lists both components.
+  - interval: 1m
+    input_series:
+      - series: 'factory_health_healthy'
+        values: "0x9 stale _x9 0x10"
+      - series: 'factory_health_component_up{component="factory-cluster"}'
+        values: "0x9 stale _x9 0x10"
+      - series: 'factory_health_component_up{component="jomcgi-site-worker"}'
+        values: "0x9 stale _x9 0x10"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              action: "Check each down component in health.json."
+              graph: "factory_health_component_up"
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthUnhealthy"
+              summary: "Factory health is unhealthy, down: factory-cluster, jomcgi-site-worker (healthy flag 0, minimum 1)"
+              description: 'https://factory-data.jomcgi.dev/health.json reports status unhealthy. Runbook: projects/factory-cluster/README.md, "Alerts".'
+
+  # The writer stops at 10 min: generatedAt stays 600 while reads succeed.
+  # The file is more than 10 min old from 21 min and the alert fires 2 min
+  # later. A new file at 32 min clears it.
+  - interval: 1m
+    input_series:
+      - series: 'factory_health_generated_at_seconds'
+        values: "0+60x10 600x20 1920+60x5"
+    alert_rule_test:
+      - eval_time: 22m
+        alertname: FactoryHealthStale
+        exp_alerts: []
+      - eval_time: 23m
+        alertname: FactoryHealthStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              action: "Check the factory-public health and mirror CronJobs."
+              graph: "time() - max(max_over_time(factory_health_generated_at_seconds[15m])) or vector(0)"
+              threshold: "600"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthStale"
+              summary: "The newest health.json is 13m 0s old (maximum age 10m)"
+              description: 'Public readers see an old status. Runbook: projects/factory-cluster/README.md, "Alerts".'
+      - eval_time: 32m
+        alertname: FactoryHealthStale
+        exp_alerts: []
+
+  # A fresh file with a 5 min read gap is quiet. A stale file that then
+  # becomes unreadable keeps the one alert after the last read leaves the
+  # 15 min window.
+  - interval: 1m
+    input_series:
+      - series: 'factory_health_generated_at_seconds'
+        values: "0+60x10 stale _x4 900+60x5 1200x4 stale"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: FactoryHealthStale
+        exp_alerts: []
+      - eval_time: 36m
+        alertname: FactoryHealthStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              action: "Check the factory-public health and mirror CronJobs."
+              graph: "time() - max(max_over_time(factory_health_generated_at_seconds[15m])) or vector(0)"
+              threshold: "600"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthStale"
+              summary: "The newest health.json is 16m 0s old (maximum age 10m)"
+              description: 'Public readers see an old status. Runbook: projects/factory-cluster/README.md, "Alerts".'
+      - eval_time: 46m
+        alertname: FactoryHealthStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              action: "Check the factory-public health and mirror CronJobs."
+              graph: "time() - max(max_over_time(factory_health_generated_at_seconds[15m])) or vector(0)"
+              threshold: "600"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthStale"
+              summary: "Prometheus read no health.json in 15m (maximum age 10m)"
+              description: 'Public readers see an old status. Runbook: projects/factory-cluster/README.md, "Alerts".'
+
+  # No reading at all: every read fails from the start. It fires after 2 min.
+  - interval: 1m
+    input_series:
+      - series: 'factory_health_read_success'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: FactoryHealthStale
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: FactoryHealthStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              action: "Check the factory-public health and mirror CronJobs."
+              graph: "time() - max(max_over_time(factory_health_generated_at_seconds[15m])) or vector(0)"
+              threshold: "600"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthStale"
+              summary: "Prometheus read no health.json in 15m (maximum age 10m)"
+              description: 'Public readers see an old status. Runbook: projects/factory-cluster/README.md, "Alerts".'
+
+
   - interval: 1m
     input_series:
       - series: 'kube_deployment_status_replicas_available{namespace="prometheus",deployment="alert-relay"}'
