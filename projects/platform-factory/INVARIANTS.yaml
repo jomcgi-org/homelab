@@ -39,9 +39,11 @@ invariants:
   - projects/platform-factory/network-policy/resources/onepassword.yaml
   - projects/platform-factory/network-policy/resources/argocd.yaml
   state: unproven
-# PLAT-8: only ArgoCD writes a claim. The garbage collector may also update a
-# claim that is being deleted, and keep its data, labels and annotations. It
-# removes the foregroundDeletion finalizer so a pruned claim goes away.
+# PLAT-8: only ArgoCD writes a claim. The garbage collector may also remove
+# the foregroundDeletion finalizer from a claim that is being deleted, so a
+# pruned claim goes away. That update keeps the other finalizers in their
+# order, and keeps name, data, binaryData, immutable, labels, annotations and
+# ownerReferences.
 - id: PLAT-8
   statement: A bucket claim is granted only to an authorized namespace.
   mechanism:

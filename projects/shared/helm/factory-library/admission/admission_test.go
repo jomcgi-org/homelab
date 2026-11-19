@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -606,41 +608,105 @@ func testClaimAuthorization(t *testing.T, ctx context.Context, admin dynamic.Int
 
 // ArgoCD prunes with foreground propagation. The API server then keeps the
 // claim with the foregroundDeletion finalizer until the garbage collector
-// removes it (HOME-492). The collector may remove finalizers from a claim
-// that is being deleted, and change nothing else.
+// removes it (HOME-492). The collector may remove only that finalizer from a
+// claim that is being deleted. It must keep the other finalizers in their
+// order and change nothing else.
 func testClaimGarbageCollection(t *testing.T, ctx context.Context, admin dynamic.Interface, clients map[string]dynamic.Interface, claim *unstructured.Unstructured) {
 	const policy = "garage-claim-authorizations"
 	const refusal = "Only ArgoCD may change Garage claim authorizations."
+	const foreground = metav1.FinalizerDeleteDependents
+	const keep, hold = "example.com/keep", "example.com/hold"
 	dryRun := metav1.UpdateOptions{DryRun: []string{metav1.DryRunAll}}
-	pruned := claim.DeepCopy()
-	pruned.SetResourceVersion("")
-	pruned.SetUID("")
-	pruned.SetManagedFields(nil)
-	_ = unstructured.SetNestedField(pruned.Object, "pruned-s3", "data", "secretName")
-	pruned.SetName(fmt.Sprintf("garage-claim-%x", sha256.Sum256([]byte(namespace+"/pruned-s3"))))
-	argo := resource(clients[argoController], pruned)
-	if _, err := argo.Create(ctx, pruned, metav1.CreateOptions{}); err != nil {
-		t.Fatal(err)
+	owner := metav1.OwnerReference{
+		APIVersion: "v1", Kind: "ConfigMap", Name: "claim-owner",
+		UID: "00000000-0000-4000-8000-000000000002",
 	}
-	foreground := metav1.DeletePropagationForeground
-	if err := argo.Delete(ctx, pruned.GetName(), metav1.DeleteOptions{PropagationPolicy: &foreground}); err != nil {
-		t.Fatal(err)
-	}
-	// envtest runs no garbage collector, so the finalizer stays.
-	deleting, err := resource(admin, pruned).Get(ctx, pruned.GetName(), metav1.GetOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if deleting.GetDeletionTimestamp() == nil || len(deleting.GetFinalizers()) != 1 || deleting.GetFinalizers()[0] != metav1.FinalizerDeleteDependents {
-		t.Fatalf("want a deleting claim with only the foregroundDeletion finalizer, got %v", deleting.GetFinalizers())
-	}
-	removal := func(edit func(*unstructured.Unstructured)) *unstructured.Unstructured {
-		o := deleting.DeepCopy()
-		o.SetFinalizers(nil)
-		if edit != nil {
-			edit(o)
+	// prune lets ArgoCD create a claim and delete it. envtest runs no garbage
+	// collector, so the claim stays with its finalizers.
+	prune := func(secretName string, finalizers []string, owners []metav1.OwnerReference, propagation metav1.DeletionPropagation) *unstructured.Unstructured {
+		t.Helper()
+		o := claim.DeepCopy()
+		o.SetResourceVersion("")
+		o.SetUID("")
+		o.SetManagedFields(nil)
+		_ = unstructured.SetNestedField(o.Object, secretName, "data", "secretName")
+		o.SetName(fmt.Sprintf("garage-claim-%x", sha256.Sum256([]byte(namespace+"/"+secretName))))
+		o.SetFinalizers(finalizers)
+		o.SetOwnerReferences(owners)
+		argo := resource(clients[argoController], o)
+		if _, err := argo.Create(ctx, o, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
 		}
-		return o
+		if err := argo.Delete(ctx, o.GetName(), metav1.DeleteOptions{PropagationPolicy: &propagation}); err != nil {
+			t.Fatal(err)
+		}
+		deleting, err := resource(admin, o).Get(ctx, o.GetName(), metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if deleting.GetDeletionTimestamp() == nil {
+			t.Fatalf("want a deleting claim %s, got finalizers %v", secretName, deleting.GetFinalizers())
+		}
+		return deleting
+	}
+	gone := func(o *unstructured.Unstructured) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			_, err := resource(admin, o).Get(ctx, o.GetName(), metav1.GetOptions{})
+			if apierrors.IsNotFound(err) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("deleting claim %s must go away after its finalizers go: %v", o.GetName(), err)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	withFinalizers := func(o *unstructured.Unstructured, finalizers ...string) *unstructured.Unstructured {
+		c := o.DeepCopy()
+		c.SetFinalizers(finalizers)
+		return c
+	}
+	deny := func(change string, o *unstructured.Unstructured) {
+		t.Helper()
+		if _, err := resource(clients[garbageCollector], o).Update(ctx, o, dryRun); !policyDenial(err, policy, refusal) {
+			t.Fatalf("garbage collector %s: %v", change, err)
+		}
+	}
+	// removeForeground sends the merge patch that the garbage collector sends:
+	// the other finalizers in their order, or null, with the resource version.
+	removeForeground := func(o *unstructured.Unstructured) {
+		t.Helper()
+		var rest []string
+		for _, f := range o.GetFinalizers() {
+			if f != foreground {
+				rest = append(rest, f)
+			}
+		}
+		patch, err := json.Marshal(map[string]interface{}{"metadata": map[string]interface{}{
+			"resourceVersion": o.GetResourceVersion(), "finalizers": rest,
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := resource(clients[garbageCollector], o).Patch(ctx, o.GetName(), types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+			t.Fatalf("garbage collector foregroundDeletion removal from %s: %v", o.GetName(), err)
+		}
+	}
+	// ArgoCD stands in for the controller that owns the other finalizers.
+	release := func(o *unstructured.Unstructured) {
+		t.Helper()
+		patch := []byte(`{"metadata":{"finalizers":null}}`)
+		if _, err := resource(clients[argoController], o).Patch(ctx, o.GetName(), types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+			t.Fatalf("argocd finalizer removal from %s: %v", o.GetName(), err)
+		}
+	}
+
+	// A pruned claim with only the foregroundDeletion finalizer.
+	pruned := prune("pruned-s3", nil, nil, metav1.DeletePropagationForeground)
+	if !slices.Equal(pruned.GetFinalizers(), []string{foreground}) {
+		t.Fatalf("want only the foregroundDeletion finalizer, got %v", pruned.GetFinalizers())
 	}
 	edits := map[string]func(*unstructured.Unstructured){
 		"data": func(o *unstructured.Unstructured) {
@@ -658,16 +724,21 @@ func testClaimGarbageCollection(t *testing.T, ctx context.Context, admin dynamic
 			labels["extra"] = "x"
 			o.SetLabels(labels)
 		},
-		"annotations": func(o *unstructured.Unstructured) { o.SetAnnotations(map[string]string{"gc": "metadata"}) },
+		"annotations":     func(o *unstructured.Unstructured) { o.SetAnnotations(map[string]string{"gc": "metadata"}) },
+		"ownerReferences": func(o *unstructured.Unstructured) { o.SetOwnerReferences([]metav1.OwnerReference{owner}) },
+		"immutable":       func(o *unstructured.Unstructured) { o.Object["immutable"] = true },
 	}
 	for field, edit := range edits {
-		_, err := resource(clients[garbageCollector], deleting).Update(ctx, removal(edit), dryRun)
-		if !policyDenial(err, policy, refusal) {
-			t.Fatalf("garbage collector changed %s of a deleting claim: %v", field, err)
-		}
+		o := withFinalizers(pruned)
+		edit(o)
+		deny("changed "+field+" while it removed foregroundDeletion", o)
 	}
+	// The finalizers stay the same here, so the update removes no finalizer.
+	ownerOnly := pruned.DeepCopy()
+	ownerOnly.SetOwnerReferences([]metav1.OwnerReference{owner})
+	deny("changed only the ownerReferences of a deleting claim", ownerOnly)
 	for _, user := range []string{attacker, argoController} {
-		_, err := resource(clients[user], deleting).Update(ctx, removal(nil), dryRun)
+		_, err := resource(clients[user], pruned).Update(ctx, withFinalizers(pruned), dryRun)
 		if user == attacker && !policyDenial(err, policy, refusal) || user == argoController && err != nil {
 			t.Fatalf("%s finalizer removal: %v", user, err)
 		}
@@ -678,23 +749,50 @@ func testClaimGarbageCollection(t *testing.T, ctx context.Context, admin dynamic
 		t.Fatal(err)
 	}
 	live.SetFinalizers([]string{"factory.jomcgi.dev/hold"})
-	if _, err := resource(clients[garbageCollector], live).Update(ctx, live, dryRun); !policyDenial(err, policy, refusal) {
-		t.Fatalf("garbage collector updated a live claim: %v", err)
+	deny("updated a live claim", live)
+	removeForeground(pruned)
+	gone(pruned)
+
+	// A pruned claim with other finalizers and an owner reference. The
+	// collector may remove only foregroundDeletion, and the claim stays until
+	// the other finalizers go.
+	kept := prune("kept-s3", []string{keep, hold}, []metav1.OwnerReference{owner}, metav1.DeletePropagationForeground)
+	if !slices.Equal(kept.GetFinalizers(), []string{keep, hold, foreground}) {
+		t.Fatalf("want the other finalizers before foregroundDeletion, got %v", kept.GetFinalizers())
 	}
-	// Send the patch that the garbage collector sends to remove a finalizer.
-	patch := fmt.Sprintf(`{"metadata":{"resourceVersion":%q,"finalizers":null}}`, deleting.GetResourceVersion())
-	if _, err := resource(clients[garbageCollector], deleting).Patch(ctx, deleting.GetName(), types.MergePatchType, []byte(patch), metav1.PatchOptions{}); err != nil {
-		t.Fatalf("garbage collector finalizer removal: %v", err)
+	deny("removed a different finalizer", withFinalizers(kept, hold, foreground))
+	deny("removed a different finalizer with foregroundDeletion", withFinalizers(kept, hold))
+	deny("reordered the other finalizers", withFinalizers(kept, hold, keep))
+	// The API server refuses a new finalizer on a deleting object before
+	// admission runs. The policy refuses it too.
+	_, err = resource(clients[garbageCollector], kept).Update(ctx, withFinalizers(kept, keep, hold, "example.com/extra"), dryRun)
+	if !policyDenial(err, policy, refusal) && !(apierrors.IsInvalid(err) && strings.Contains(err.Error(), "no new finalizers")) {
+		t.Fatalf("garbage collector added a finalizer with foregroundDeletion removal: %v", err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		_, err := resource(admin, pruned).Get(ctx, pruned.GetName(), metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("deleting claim must go away after finalizer removal: %v", err)
-		}
-		time.Sleep(50 * time.Millisecond)
+	unowned := kept.DeepCopy()
+	unowned.SetOwnerReferences(nil)
+	deny("removed an owner reference", unowned)
+	unowned.SetFinalizers([]string{keep, hold})
+	deny("removed an owner reference with foregroundDeletion", unowned)
+	removeForeground(kept)
+	stays, err := resource(admin, kept).Get(ctx, kept.GetName(), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("claim with other finalizers must stay: %v", err)
 	}
+	if stays.GetDeletionTimestamp() == nil || !slices.Equal(stays.GetFinalizers(), []string{keep, hold}) ||
+		len(stays.GetOwnerReferences()) != 1 {
+		t.Fatalf("want the other finalizers and the owner reference to stay, got %v %v", stays.GetFinalizers(), stays.GetOwnerReferences())
+	}
+	release(stays)
+	gone(stays)
+
+	// A deleting claim without the foregroundDeletion finalizer.
+	background := prune("background-s3", []string{keep}, nil, metav1.DeletePropagationBackground)
+	if !slices.Equal(background.GetFinalizers(), []string{keep}) {
+		t.Fatalf("want only the %s finalizer, got %v", keep, background.GetFinalizers())
+	}
+	deny("updated a deleting claim without foregroundDeletion", background.DeepCopy())
+	deny("removed a different finalizer without foregroundDeletion", withFinalizers(background))
+	release(background)
+	gone(background)
 }

@@ -3,12 +3,14 @@
 # Only the trusted GitOps controller may write declarations in garage. Match
 # the reserved name as well as old/new labels, including removal and deletion.
 #
-# One exception: the Kubernetes garbage collector may update a claim that is
-# already being deleted, if data, binaryData, labels, annotations and name
-# stay the same. When ArgoCD prunes a claim with foreground propagation, the
-# claim keeps the foregroundDeletion finalizer until the garbage collector
-# removes it. Without the exception, the claim never goes away and the
-# ArgoCD sync waits on it forever (HOME-492).
+# One exception: the Kubernetes garbage collector may remove the
+# foregroundDeletion finalizer from a claim that is already being deleted.
+# The update must remove only that finalizer and keep the other finalizers
+# in their order. It must not change name, data, binaryData, immutable,
+# labels, annotations or ownerReferences. When ArgoCD prunes a claim with
+# foreground propagation, the claim keeps the foregroundDeletion finalizer
+# until the garbage collector removes it. Without the exception, the claim
+# never goes away and the ArgoCD sync waits on it forever (HOME-492).
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -42,7 +44,14 @@ spec:
         request.operation == "UPDATE" &&
         request.userInfo.username == "system:serviceaccount:kube-system:generic-garbage-collector" &&
         has(oldObject.metadata.deletionTimestamp) &&
+        has(oldObject.metadata.finalizers) &&
+        "foregroundDeletion" in oldObject.metadata.finalizers &&
+        (has(object.metadata.finalizers) ? object.metadata.finalizers : []) ==
+          oldObject.metadata.finalizers.filter(f, f != "foregroundDeletion") &&
+        (has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []) ==
+          (has(oldObject.metadata.ownerReferences) ? oldObject.metadata.ownerReferences : []) &&
         object.metadata.name == oldObject.metadata.name &&
+        (has(object.immutable) ? object.immutable : false) == (has(oldObject.immutable) ? oldObject.immutable : false) &&
         (has(object.data) ? object.data : {}) == (has(oldObject.data) ? oldObject.data : {}) &&
         (has(object.binaryData) ? object.binaryData : {}) == (has(oldObject.binaryData) ? oldObject.binaryData : {}) &&
         (has(object.metadata.labels) ? object.metadata.labels : {}) ==
