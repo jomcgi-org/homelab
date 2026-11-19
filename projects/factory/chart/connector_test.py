@@ -367,6 +367,16 @@ def test_bindings_derive_from_repositories() -> None:
             "baseBranch": "main",
             "kagentNamespace": "factory-r-homelab",
             "kagentAgent": "homelab-codex",
+            "runtime": {
+                "model": _in(docs, "ModelConfig", "factory-r-homelab", "codex")["spec"][
+                    "model"
+                ],
+                "reasoningEffort": "xhigh",
+                "arm": "control",
+                "systemPrompt": _in(
+                    docs, "Agent", "factory-r-homelab", "homelab-codex"
+                )["spec"]["template"]["inline"]["systemPrompt"],
+            },
             "itsaplanProject": "HOME",
             "agents": ["homelab-codex"],
             "trustedReviewers": ["reviewer-bot"],

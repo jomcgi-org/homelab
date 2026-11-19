@@ -412,6 +412,17 @@ func TestSessionListDeleteAndNameOverGRPC(t *testing.T) {
 		}
 		var resp RawMessage
 		switch method {
+		case "/kagent.api.v1.SessionService/CreateSession":
+			ref, err := field(req, 5)
+			if err != nil || string(ref) != string(encodeRef(agent)) {
+				return status.Error(codes.InvalidArgument, "wrong agent reference")
+			}
+			requestID, err := field(req, 3)
+			if err != nil || string(requestID) != "stable-request" {
+				return status.Error(codes.InvalidArgument, "wrong request ID")
+			}
+			calls = append(calls, "create:"+string(requestID))
+			resp = EncodeSession(Session{ID: "prepared", ContextID: "prepared", PreparedRevision: "rev-1", State: RuntimeReady, AgentNamespace: agent.Namespace, AgentName: agent.Name})
 		case "/kagent.api.v1.SessionService/ListSessions":
 			tok, ref, err := DecodeListSessions(req)
 			if err != nil {
@@ -460,6 +471,12 @@ func TestSessionListDeleteAndNameOverGRPC(t *testing.T) {
 	defer c.Close()
 	ctx := context.Background()
 
+	for range 2 {
+		s, err := c.CreateSession(ctx, agent, "stable-request")
+		if err != nil || s.ID != "prepared" || s.ContextID != s.ID || s.PreparedRevision != "rev-1" || s.AgentName != agent.Name {
+			t.Fatalf("prepare session = %+v %v", s, err)
+		}
+	}
 	page, next, err := c.ListSessions(ctx, agent, "")
 	if err != nil || next != "p2" || len(page) != 2 {
 		t.Fatalf("first page = %+v %q %v", page, next, err)
@@ -487,6 +504,7 @@ func TestSessionListDeleteAndNameOverGRPC(t *testing.T) {
 		t.Fatalf("name = %+v %v", s, err)
 	}
 	want := []string{
+		"create:stable-request", "create:stable-request",
 		"list::factory-r-homelab-review/homelab-reviewer", "list:p2:factory-r-homelab-review/homelab-reviewer",
 		"delete:s1", "delete:busy", "force-delete:busy", "name:s2:factory-review/o/r/8",
 	}

@@ -132,6 +132,20 @@ const (
 // ListSessionsPage is the most sessions one ListSessions call returns.
 const ListSessionsPage = 100
 
+// CreateSession prepares a session without sending a model task. The pinned
+// SessionService schema uses agent=5 and request_id=3. Retries must preserve
+// both fields (kagent commit 558e3d761, proto/kagent/api/v1/sessions.proto).
+func (s *Sessions) CreateSession(ctx context.Context, agent AgentRef, requestID string) (*Session, error) {
+	ctx, cancel := context.WithTimeout(ctx, RevertSessionTimeout)
+	defer cancel()
+	var body []byte
+	body = protowire.AppendTag(body, 5, protowire.BytesType)
+	body = protowire.AppendBytes(body, encodeRef(agent))
+	body = protowire.AppendTag(body, 3, protowire.BytesType)
+	body = protowire.AppendString(body, requestID)
+	return s.invoke(ctx, "/kagent.api.v1.SessionService/CreateSession", body)
+}
+
 // GetSession reads a session.
 func (s *Sessions) GetSession(ctx context.Context, id string) (*Session, error) {
 	ctx, cancel := context.WithTimeout(ctx, GetSessionTimeout)

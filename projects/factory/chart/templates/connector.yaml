@@ -81,7 +81,9 @@ GitHub tokens the broker mints for that ServiceAccount.
   "kagentNamespace" $r.namespace
   "kagentAgent" (include "factory.bindingAgentName" $r)
 }}
-{{- $bindings = append $bindings (mustMergeOverwrite $binding (deepCopy $b)) }}
+{{- $binding = mustMergeOverwrite $binding (deepCopy $b) }}
+{{- $_ := set $binding "runtime" (include "factory.runRuntime" (dict "root" $ "binding" $r) | fromJson) }}
+{{- $bindings = append $bindings $binding }}
 {{- end }}
 {{- range $k, $_ := $c.bindings | default dict }}
 {{- if not (has $k $repoNames) }}

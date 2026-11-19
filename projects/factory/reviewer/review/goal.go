@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -329,7 +330,7 @@ func codeReviewClear(r *Report, prior []Finding, project string) bool {
 }
 
 func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest, in *inputs, text, phase string, l *slog.Logger) *GoalCheck {
-	if e.cfg.GoalAudit == nil {
+	if e.cfg.GoalAudit == nil || e.cfg.GoalTasks == nil || e.cfg.GoalSessions == nil {
 		l.WarnContext(ctx, "goal check unavailable", "reason", "audit")
 		return nil
 	}
@@ -345,22 +346,79 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 		Parts:     []kagent.Part{{Text: text}},
 		Metadata:  map[string]any{"factory.jomcgi.dev/repository": b.repo(), "factory.jomcgi.dev/pull-request": pr.Number, "factory.jomcgi.dev/head": pr.HeadSHA},
 	}
+	indexKey := agentName(b.Agent) + "\x00" + msg.MessageID
+	dispatch, err := e.cfg.GoalTasks.LoadGoalTask(indexKey)
+	if err != nil {
+		l.WarnContext(ctx, "goal check unavailable", "reason", "task_lookup")
+		return nil
+	}
+	prefix := msg.MessageID
 	var t *kagent.Task
+	if dispatch == nil {
+		nonce := make([]byte, 16)
+		if _, err := rand.Read(nonce); err != nil {
+			l.WarnContext(ctx, "goal check unavailable", "reason", "task_index")
+			return nil
+		}
+		dispatch = &GoalTask{Key: indexKey, State: goalPrepared, Nonce: hex.EncodeToString(nonce), CreatedAt: e.cfg.Now().UTC()}
+	} else {
+		msg.MessageID, msg.ContextID = dispatch.MessageID, dispatch.ContextID
+		if dispatch.TaskID != "" {
+			t = &kagent.Task{ID: dispatch.TaskID}
+		}
+	}
 	why := "timeout"
 	for deadline := e.cfg.Now().Add(e.cfg.Timeout); ctx.Err() == nil && e.cfg.Now().Before(deadline); e.sleep(ctx, e.cfg.TaskPoll) {
 		var err error
-		if t == nil {
-			t, err = e.tasks.Send(ctx, b.Agent, msg)
+		var next *kagent.Task
+		if t != nil {
+			next, err = e.tasks.GetTask(ctx, b.Agent, t.ID)
+		} else if dispatch.State == goalPrepared {
+			if err := e.prepareGoalDispatch(ctx, b, in, pr.HeadSHA, prefix, key, dispatch, &msg); err != nil {
+				why = "dispatch_prepare"
+				break
+			}
+			// Persist possible acceptance before making the external call.
+			dispatch.State = goalIssued
+			if err := e.cfg.GoalTasks.SaveGoalTask(*dispatch); err != nil {
+				why = "task_index"
+				break
+			}
+			next, err = e.tasks.Send(ctx, b.Agent, msg)
+			if errors.Is(err, kagent.ErrNotAccepted) || errors.Is(err, kagent.ErrRejected) || errors.Is(err, kagent.ErrTaskNotFound) {
+				// No earlier ambiguous send is retried through this path.
+				dispatch.State = goalPrepared
+				if saveErr := e.cfg.GoalTasks.SaveGoalTask(*dispatch); saveErr != nil {
+					why = "task_index"
+					break
+				}
+				if !errors.Is(err, kagent.ErrNotAccepted) {
+					why = "rejected"
+					break
+				}
+			}
 		} else {
-			t, err = e.tasks.GetTask(ctx, b.Agent, t.ID)
-		}
-		if errors.Is(err, kagent.ErrRejected) {
-			why = "rejected"
-			break
+			next, err = e.recoverGoalDispatch(ctx, b, dispatch)
+			if errors.Is(err, errGoalDispatchUncertain) {
+				why = "dispatch_uncertain"
+				break
+			}
 		}
 		if err != nil {
 			e.kagentError(ctx, l, b, "goal", err)
-			continue // A send finds the task again.
+			continue // Recover an uncertain send through reads of its own session.
+		}
+		t = next
+		if t == nil || t.ID == "" {
+			why = "task_lookup"
+			break
+		}
+		if dispatch.TaskID != t.ID {
+			dispatch.TaskID, dispatch.State = t.ID, goalAccepted
+			if err := e.cfg.GoalTasks.SaveGoalTask(*dispatch); err != nil {
+				why = "task_index"
+				break
+			}
 		}
 		if !kagent.Quiescent(t.Status.State) {
 			continue
@@ -375,6 +433,12 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 			Phase: phase, CreatedAt: e.cfg.Now().UTC(), State: t.Status.State, Reply: reply,
 		}); err != nil {
 			why = "audit"
+			break
+		}
+		// Retire the index only after the reply is durable and before deleting
+		// the task's session. An audit failure must keep the recovery pointer.
+		if err := e.cfg.GoalTasks.DeleteGoalTask(indexKey); err != nil {
+			why = "task_index"
 			break
 		}
 		// No review resumes this session, so its snapshot goes now.
@@ -392,7 +456,7 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 		return &GoalCheck{Head: pr.HeadSHA, Digest: issueDigest(in.issues), Criteria: a.Criteria, Overall: a.Overall}
 	}
 	if ctx.Err() != nil {
-		why = "stopped" // A restart sends the same message and finds the task.
+		why = "stopped" // A restart reads the indexed task or its isolated session.
 	} else if t != nil && !kagent.Quiescent(t.Status.State) {
 		e.cancelTask(ctx, b, t.ID, l)
 	}

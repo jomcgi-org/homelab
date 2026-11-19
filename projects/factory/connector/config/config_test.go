@@ -29,6 +29,7 @@ bindings:
     agents: [coder]
     kagentNamespace: factory-homelab
     kagentAgent: coder
+    runtime: {model: test-model, reasoningEffort: high, arm: control}
 `
 
 func TestLoadRequiresTheControllersAuthority(t *testing.T) {

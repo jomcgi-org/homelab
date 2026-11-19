@@ -229,14 +229,7 @@ spec:
       description: {{ printf "%s %s/%s" $description $r.owner $r.repo | quote }}
       modelConfig:
         name: {{ $r.agent }}
-      {{- $prompt := $a.systemPrompt }}
-      {{- if $toolchain }}
-      {{- $prompt = printf "%s\n%s" $prompt ($.Files.Get "files/toolchain-prompt.txt") }}
-      {{- end }}
-      {{- if $memory }}
-      {{- $prompt = printf "%s\n%s" $prompt ($.Files.Get "files/memory-prompt.txt") }}
-      {{- end }}
-      systemPrompt: {{ $prompt | quote }}
+      systemPrompt: {{ include "factory.bindingPrompt" . | quote }}
       {{- if $memory }}
       tools:
         - mcp:

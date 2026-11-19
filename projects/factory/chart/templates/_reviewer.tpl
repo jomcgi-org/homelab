@@ -48,6 +48,8 @@ system:serviceaccount:{{ .Values.broker.namespace }}:{{ include "factory.reviewe
 {{- range $k, $v := omit $b "namespace" }}
 {{- $_ := set $binding $k $v }}
 {{- end }}
+{{- $agentBinding := dict "agent" "reviewer" }}
+{{- $_ := set $binding "runtime" (include "factory.runRuntime" (dict "root" $ "binding" $agentBinding) | fromJson) }}
 {{- $bindings = append $bindings $binding }}
 {{- end }}
 {{- $config := dict
