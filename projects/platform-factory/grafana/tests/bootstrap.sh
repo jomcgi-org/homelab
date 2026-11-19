@@ -25,5 +25,4 @@ mapfile -t args < <(sed -n '/^          args:/,/^          env:/s/^            -
 docker run -d --name "$mcp" --network "container:$grafana" --env-file "$tmp/caller.env" \
 	-e GRAFANA_URL=http://127.0.0.1:3000 -e GRAFANA_SERVICE_ACCOUNT_TOKEN_FILE=/viewer \
 	-v "$tmp/viewer:/viewer:ro" --entrypoint /app/mcp-grafana "$mcp_image" "${args[@]}" >/dev/null
-"${client[@]}" --env-file "$tmp/caller.env" "$python_image" sh -ec \
-	'pip install -q mcp==1.26.0 && python /test/viewer_read.py'
+"${client[@]}" --env-file "$tmp/caller.env" "$python_image" python /test/viewer_read.py
