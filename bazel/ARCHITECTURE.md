@@ -96,9 +96,11 @@ Lock maintenance: `update-apko-locks.sh` re-resolves a lock (needs Bazel, and pi
 ### Private inputs
 
 `//bazel/tools/mandoline` gives the Semgrep mandoline layer and binary from the
-private image `ghcr.io/jomcgi/mandoline`. The repository rule
-`private_oci_layer` fetches only the layer blob, pinned by sha256 in
-`MODULE.bazel`, with the GHCR login that CI writes before Bazel runs. A build
+private image `ghcr.io/jomcgi/mandoline`, pinned by image digest in
+`MODULE.bazel`. The repository rule `private_oci_layer` checks the manifest and
+fetches only the pinned layer, with the GHCR login that CI writes before Bazel
+runs. It runs curl on the runner, so the remote downloader never sees the
+credential or the registry token. A build
 without GHCR credentials fails to fetch it. The external repository exports the
 blob to `//bazel/tools/mandoline` only, and only `//projects/factory/...` can see
 its targets. Only private images may use them. `rules_oci`'s `oci.pull` is not

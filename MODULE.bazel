@@ -421,17 +421,17 @@ oci.pull(
 )
 use_repo(oci, "pgvector_pg16", "pgvector_pg16_linux_amd64")
 
-# Private Semgrep mandoline CLI: one layer of ghcr.io/jomcgi/mandoline:0.25.0
-# (sha256:c64906d143c02ed0c7ee29f9a906014e5956ed6ab0912e25b347f0665c258ba8).
-# The package stays private; CI authenticates with its GHCR login. Only
-# //bazel/tools/mandoline can see the layer.
+# Private Semgrep mandoline CLI: the one layer of ghcr.io/jomcgi/mandoline:0.25.0,
+# pinned by image digest. The package stays private; CI authenticates with its
+# GHCR login. Only //bazel/tools/mandoline can see the layer.
 private_oci_layer = use_repo_rule("//bazel/tools/mandoline:private_layer.bzl", "private_oci_layer")
 
 private_oci_layer(
     name = "mandoline_layer",
+    digest = "sha256:c64906d143c02ed0c7ee29f9a906014e5956ed6ab0912e25b347f0665c258ba8",
+    layer = "sha256:66b6393de1bb8775c42540abb88e1068b8403921f71c141d23133dff92c245f1",
     registry = "ghcr.io",
     repository = "jomcgi/mandoline",
-    sha256 = "66b6393de1bb8775c42540abb88e1068b8403921f71c141d23133dff92c245f1",
     visibility_to = ["//bazel/tools/mandoline:__pkg__"],
 )
 

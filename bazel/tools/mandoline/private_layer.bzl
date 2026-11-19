@@ -1,10 +1,17 @@
-"""private_oci_layer: fetch one layer blob from a private registry.
+"""private_oci_layer: fetch one layer of a pinned private image.
 
 rules_oci's oci.pull makes its repository public to the whole workspace. This
-rule downloads only the pinned layer, checks its sha256, and exports it to one
-package. It authenticates like rules_oci: it reads the Docker config that
-`docker login` writes ($DOCKER_CONFIG or ~/.docker/config.json).
+rule fetches the image manifest by digest, checks that it lists the pinned
+layer, downloads only that layer, checks both sha256 values, and exports the
+layer to one package.
+
+It authenticates like rules_oci, from the Docker config that `docker login`
+writes ($DOCKER_CONFIG or ~/.docker/config.json). Every request runs with curl
+on the machine that runs Bazel, never through repository_ctx.download, so a
+remote downloader never sees the credential or the registry token.
 """
+
+_ACCEPT = "Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
 
 def _docker_auth(rctx, registry):
     config_dir = rctx.os.environ.get("DOCKER_CONFIG") or (rctx.os.environ.get("HOME", "") + "/.docker")
@@ -17,24 +24,42 @@ def _docker_auth(rctx, registry):
         fail("private_oci_layer: %s has no inline auth for %s" % (path, registry))
     return entry["auth"]
 
+def _curl(rctx, url, output, header_file, extra = []):
+    # The credential is read from header_file, so it is in no argument or log.
+    cmd = ["curl", "--fail", "--silent", "--show-error", "--location", "--retry", "3", "--header", "@" + header_file]
+    for header in extra:
+        cmd += ["--header", header]
+    result = rctx.execute(cmd + ["--output", output, url], timeout = 900)
+    if result.return_code != 0:
+        fail("private_oci_layer: GET %s failed: %s" % (url, result.stderr))
+
+def _sha256(rctx, path):
+    result = rctx.execute(["sha256sum", path])
+    if result.return_code != 0:
+        fail("private_oci_layer: sha256sum %s failed: %s" % (path, result.stderr))
+    return result.stdout.split(" ")[0]
+
 def _private_oci_layer_impl(rctx):
-    registry = rctx.attr.registry
-    basic = _docker_auth(rctx, registry)
-    token_url = "https://%s/token?scope=repository:%s:pull&service=%s" % (registry, rctx.attr.repository, registry)
-    rctx.download(
-        url = token_url,
-        output = "token.json",
-        auth = {token_url: {"type": "pattern", "pattern": "Basic <password>", "password": basic}},
-    )
-    token = json.decode(rctx.read("token.json"))["token"]
+    registry, repository = rctx.attr.registry, rctx.attr.repository
+    base = "https://%s/v2/%s" % (registry, repository)
+
+    rctx.file("auth.header", "Authorization: Basic %s\n" % _docker_auth(rctx, registry))
+    _curl(rctx, "https://%s/token?scope=repository:%s:pull&service=%s" % (registry, repository, registry), "token.json", "auth.header")
+    rctx.file("auth.header", "Authorization: Bearer %s\n" % json.decode(rctx.read("token.json"))["token"])
     rctx.delete("token.json")
-    blob_url = "https://%s/v2/%s/blobs/sha256:%s" % (registry, rctx.attr.repository, rctx.attr.sha256)
-    rctx.download(
-        url = blob_url,
-        output = "layer.tar.gz",
-        sha256 = rctx.attr.sha256,
-        auth = {blob_url: {"type": "pattern", "pattern": "Bearer <password>", "password": token}},
-    )
+
+    _curl(rctx, base + "/manifests/" + rctx.attr.digest, "manifest.json", "auth.header", [_ACCEPT])
+    if "sha256:" + _sha256(rctx, "manifest.json") != rctx.attr.digest:
+        fail("private_oci_layer: the manifest does not match %s" % rctx.attr.digest)
+    layers = [layer["digest"] for layer in json.decode(rctx.read("manifest.json"))["layers"]]
+    rctx.delete("manifest.json")
+    if rctx.attr.layer not in layers:
+        fail("private_oci_layer: %s does not list layer %s" % (rctx.attr.digest, rctx.attr.layer))
+
+    _curl(rctx, base + "/blobs/" + rctx.attr.layer, "layer.tar.gz", "auth.header")
+    rctx.delete("auth.header")
+    if "sha256:" + _sha256(rctx, "layer.tar.gz") != rctx.attr.layer:
+        fail("private_oci_layer: the layer does not match %s" % rctx.attr.layer)
 
     # In this repository "//pkg" names its own packages; "@@//pkg" is the main one.
     visibility = ["@@" + v if v.startswith("//") else v for v in rctx.attr.visibility_to]
@@ -43,9 +68,10 @@ def _private_oci_layer_impl(rctx):
 private_oci_layer = repository_rule(
     implementation = _private_oci_layer_impl,
     attrs = {
+        "digest": attr.string(mandatory = True, doc = "The image manifest digest, sha256:<hex>."),
+        "layer": attr.string(mandatory = True, doc = "The layer digest to export, sha256:<hex>."),
         "registry": attr.string(mandatory = True),
         "repository": attr.string(mandatory = True),
-        "sha256": attr.string(mandatory = True, doc = "The layer blob digest, without the sha256: prefix."),
         "visibility_to": attr.string_list(mandatory = True),
     },
     environ = ["DOCKER_CONFIG", "HOME"],
