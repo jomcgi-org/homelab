@@ -227,17 +227,22 @@ func (c *Client) base() string {
 // do sends one call with the repository's token. A 401 drops the cached
 // token and tries once more with a fresh one.
 func (c *Client) do(ctx context.Context, repo, method, path string, body, out any) error {
-	return c.send(ctx, repo, method, path, body, out, true)
+	return c.send(ctx, repo, method, path, body, out, true, nil)
 }
 
 // doUncached is do without the ETag cache, for large reads of immutable
 // resources that would only crowd it.
 func (c *Client) doUncached(ctx context.Context, repo, method, path string, body, out any) error {
-	return c.send(ctx, repo, method, path, body, out, false)
+	return c.send(ctx, repo, method, path, body, out, false, nil)
 }
 
-func (c *Client) send(ctx context.Context, repo, method, path string, body, out any, cache bool) error {
+func (c *Client) send(ctx context.Context, repo, method, path string, body, out any, cache bool, before func() error) error {
 	for try := 0; ; try++ {
+		if before != nil {
+			if err := before(); err != nil {
+				return err
+			}
+		}
 		err := c.once(ctx, repo, method, path, body, out, cache)
 		var h *HTTPError
 		if try == 0 && errors.As(err, &h) && h.Status == http.StatusUnauthorized {

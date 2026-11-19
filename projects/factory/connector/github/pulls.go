@@ -1106,9 +1106,6 @@ func (c *Client) RevertedMerge(ctx context.Context, repo, branch, sha string, si
 	q := url.Values{"sha": {branch}, "since": {since.UTC().Format(time.RFC3339)}, "until": {until.UTC().Format(time.RFC3339)}, "per_page": {"100"}}
 	var earliest *time.Time
 	for page := 1; ; page++ {
-		if err := before(page); err != nil {
-			return nil, err
-		}
 		q.Set("page", strconv.Itoa(page))
 		var commits []struct {
 			Commit struct {
@@ -1116,7 +1113,7 @@ func (c *Client) RevertedMerge(ctx context.Context, repo, branch, sha string, si
 				Committer struct{ Date time.Time }
 			}
 		}
-		if err := c.doUncached(ctx, repo, http.MethodGet, repoPath(repo)+"/commits?"+q.Encode(), nil, &commits); err != nil {
+		if err := c.send(ctx, repo, http.MethodGet, repoPath(repo)+"/commits?"+q.Encode(), nil, &commits, false, func() error { return before(page) }); err != nil {
 			return nil, err
 		}
 		for _, commit := range commits {

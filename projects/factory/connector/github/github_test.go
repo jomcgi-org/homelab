@@ -1412,3 +1412,31 @@ func TestRevertedMergeWindow(t *testing.T) {
 		})
 	}
 }
+
+func TestRevertScanFencesCredentialRetry(t *testing.T) {
+	for _, revoked := range []bool{false, true} {
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			if calls == 1 {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			fmt.Fprint(w, "[]")
+		}))
+		client := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+		var pages []int
+		fenced := errors.New("writer changed")
+		_, err := client.RevertedMerge(context.Background(), "org/repo", "main", "sha", time.Now().Add(-time.Hour), time.Now(), func(page int) error {
+			pages = append(pages, page)
+			if revoked && len(pages) == 2 {
+				return fenced
+			}
+			return nil
+		})
+		srv.Close()
+		if !slices.Equal(pages, []int{1, 1}) || (revoked && (!errors.Is(err, fenced) || calls != 1)) || (!revoked && (err != nil || calls != 2)) {
+			t.Fatalf("revoked=%t pages=%v calls=%d err=%v", revoked, pages, calls, err)
+		}
+	}
+}
