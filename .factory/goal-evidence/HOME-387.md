@@ -14,6 +14,9 @@
    (`load("//bazel/tools/pytest:defs.bzl", "py_test")` and target
    `factory_group_binding_test`) and `bazel/tools/pytest/defs.bzl`
    (`pytest_main = True`). The test does not claim a live model verdict.
+   Joe decided that the live replay of #8260 on the deployed reviewer is an
+   after-rollout check, and that this regression test is the evidence before
+   merge ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-387#comment-4607)).
 2. The "false claim" case of the same test keeps the evidence file but
    loads `py_test` from another file in the checkout. The finding stays open
    with an overall `not_met`.
