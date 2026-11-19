@@ -1009,6 +1009,10 @@ goal finding when the PR names a different issue, or when the issue's
 counted "Done when" list no longer reaches the finding's criterion
 (`goalWithdrawn` in `reviewer/review/goal.go`). The withdrawal note is
 fixed service text that names the issue keys and criterion number only.
+The criteria counter handles a plain numbered or bulleted Done when list.
+Unusual Markdown counts nothing, so it withdraws nothing and main's rules
+apply ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-416#comment-4339));
+HOME-436 adds full CommonMark parsing.
 
 The reviewer stores private goal replies on the `factory-reviewer-goal-audit`
 PVC for 14 days from first receipt. After rollback, keep the PVC, the hourly
