@@ -273,11 +273,29 @@ func issueCriteria(in *IssueContext) int {
 	}
 	items, state, style := 0, 0, "" // state: 0 before the heading, 1 in the list, 2 after it
 	text := strings.ReplaceAll(strings.ReplaceAll(in.Issue.Description, "\r\n", "\n"), "\r", "\n")
-	if codeFence.MatchString(text) {
-		return 0 // Code blocks can hide or fake a list; count nothing.
-	}
+	// HTML comments render nothing; an unclosed one hides the rest.
+	text = htmlComment.ReplaceAllString(text, "")
+	fence := "" // the open code fence's character run, or ""
 	for raw := range strings.SplitSeq(text, "\n") {
 		line := strings.TrimSpace(raw)
+		if m := codeFence.FindStringSubmatch(raw); m != nil {
+			switch {
+			case fence == "":
+				if state != 0 {
+					return 0 // A code block in or after the list is ambiguous.
+				}
+				fence = m[1]
+				continue
+			// A fence closes only on a run of its character at least as long,
+			// with nothing after it.
+			case m[1][0] == fence[0] && len(m[1]) >= len(fence) && strings.TrimSpace(m[2]) == "":
+				fence = ""
+				continue
+			}
+		}
+		if fence != "" {
+			continue // Example text before the list, such as a diagram.
+		}
 		heading := strings.ToLower(strings.Trim(line, "#* :"))
 		if heading == "done when" || heading == "acceptance criteria" {
 			if state != 0 {
@@ -327,8 +345,10 @@ var (
 	// listMarker is anything Markdown could read as a list item, at any
 	// indent, including an empty one.
 	listMarker = regexp.MustCompile(`^[ \t]*(?:[0-9]{1,9}[.)]|[-*+])(?:[ \t]|$)`)
-	// codeFence opens or closes a fenced code block.
-	codeFence = regexp.MustCompile("(?m)^ {0,3}(```|~~~)")
+	// codeFence is a fenced code block's opening or closing line.
+	codeFence = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})(.*)$")
+	// htmlComment matches a comment, or an unclosed one to the end.
+	htmlComment = regexp.MustCompile(`(?s)<!--.*?(?:-->|$)`)
 )
 
 // goalKey is the issue a goal check judges the PR against, or "" when none
