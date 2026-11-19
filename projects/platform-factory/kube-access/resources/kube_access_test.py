@@ -29,6 +29,38 @@ VIEWER_NAMESPACES = {
     "jomcgi-site-prod",
 }
 READ_VERBS = {"get", "list", "watch"}
+# Core subresources that serve GET, from the factory cluster API discovery
+# (/api/v1, Kubernetes v1.37). kubectl api-resources lists no subresources.
+CORE_GET_SUBRESOURCES = {
+    "namespaces/status",
+    "nodes/proxy",
+    "nodes/status",
+    "persistentvolumeclaims/status",
+    "persistentvolumes/status",
+    "pods/attach",
+    "pods/ephemeralcontainers",
+    "pods/exec",
+    "pods/log",
+    "pods/portforward",
+    "pods/proxy",
+    "pods/resize",
+    "pods/status",
+    "replicationcontrollers/scale",
+    "replicationcontrollers/status",
+    "resourcequotas/status",
+    "services/proxy",
+    "services/status",
+}
+# A GET on these opens a command stream or a proxy to the kubelet or a
+# workload: a write, so sessions never get them cluster-wide.
+STREAM_SUBRESOURCES = {
+    "nodes/proxy",
+    "pods/attach",
+    "pods/exec",
+    "pods/portforward",
+    "pods/proxy",
+    "services/proxy",
+}
 FORBIDDEN = {
     "secrets",
     "configmaps",
@@ -220,7 +252,7 @@ def test_session_permissions():
                     "apiGroups": [""],
                     "resources": ["pods/portforward"],
                     "resourceNames": ["factory-itsaplan-session-forward-0"],
-                    "verbs": ["create"],
+                    "verbs": ["get", "create"],
                 },
                 {
                     "apiGroups": [""],
@@ -234,8 +266,12 @@ def test_session_permissions():
             core, extensions = role["rules"]
             assert core["apiGroups"] == [""]
             assert set(core["resources"]) == set(
-                "componentstatuses configmaps endpoints events limitranges namespaces namespaces/status nodes nodes/status persistentvolumeclaims persistentvolumeclaims/status persistentvolumes persistentvolumes/status pods pods/log pods/status podtemplates replicationcontrollers replicationcontrollers/scale replicationcontrollers/status resourcequotas resourcequotas/status serviceaccounts services services/status".split()
+                "componentstatuses configmaps endpoints events limitranges namespaces namespaces/status nodes nodes/status persistentvolumeclaims persistentvolumeclaims/status persistentvolumes persistentvolumes/status pods pods/ephemeralcontainers pods/log pods/resize pods/status podtemplates replicationcontrollers replicationcontrollers/scale replicationcontrollers/status resourcequotas resourcequotas/status serviceaccounts services services/status".split()
             )
+            # Every readable core subresource, except the stream and proxy
+            # ones, which act as writes.
+            subresources = {r for r in core["resources"] if "/" in r}
+            assert subresources == CORE_GET_SUBRESOURCES - STREAM_SUBRESOURCES
             assert {"", "*"}.isdisjoint(extensions["apiGroups"])
             assert set(extensions["apiGroups"]) == {
                 "acme.cert-manager.io",
@@ -322,6 +358,23 @@ def test_session_permissions():
         ("list", "secrets", None, "factory", False),
         ("watch", "secrets", None, "factory", False),
         ("create", "pods/exec", "factory-db-1", "factory", False),
+        (
+            "get",
+            "pods/portforward",
+            "factory-itsaplan-session-forward-0",
+            "factory",
+            True,
+        ),
+        ("get", "pods/portforward", "factory-itsaplan-web-example", "factory", False),
+        ("get", "pods/log", "example", "default", True),
+        ("get", "pods/ephemeralcontainers", "example", "default", True),
+        ("get", "nodes/status", "node-1", None, True),
+        ("get", "replicationcontrollers/scale", "example", "default", True),
+        ("get", "nodes/proxy", "node-1", None, False),
+        ("get", "pods/exec", "factory-db-1", "factory", False),
+        ("get", "pods/attach", "factory-db-1", "factory", False),
+        ("get", "pods/proxy", "factory-db-1", "factory", False),
+        ("get", "services/proxy", "example", "factory", False),
         ("patch", "pods", "example", "factory", False),
         ("watch", "pods", None, "default", True),
     ],

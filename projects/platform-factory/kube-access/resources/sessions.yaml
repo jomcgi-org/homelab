@@ -3,6 +3,11 @@ kind: ClusterRole
 metadata:
   name: factory-sessions
 # New API groups need an explicit entry. A wildcard group would include core Secrets.
+# Core rules list every readable subresource except the stream and proxy ones:
+# a GET on pods/exec, pods/attach, pods/portforward, pods/proxy, nodes/proxy
+# or services/proxy opens a channel that runs commands in a pod or sends
+# requests to the kubelet or a workload. Those are writes, and sessions get
+# no writes except the named port-forward below.
 rules:
   - apiGroups: [""]
     resources:
@@ -20,7 +25,9 @@ rules:
       - persistentvolumes
       - persistentvolumes/status
       - pods
+      - pods/ephemeralcontainers
       - pods/log
+      - pods/resize
       - pods/status
       - podtemplates
       - replicationcontrollers
@@ -102,7 +109,8 @@ rules:
   - apiGroups: [""]
     resources: [pods/portforward]
     resourceNames: [factory-itsaplan-session-forward-0]
-    verbs: [create]
+    # kubectl port-forward over WebSocket authorizes as get; SPDY as create.
+    verbs: [get, create]
   - apiGroups: [""]
     resources: [secrets]
     resourceNames: [factory-itsaplan-joe-sessions]
