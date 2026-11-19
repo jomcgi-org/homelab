@@ -1,6 +1,10 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
+# runtime/social.py runs inside the Authentik container (runtime/check.sh),
+# whose Django is not a Bazel dependency.
+# gazelle:exclude runtime/social.py
+
 exports_files(
     ["values-gke.yaml"],
     visibility = ["//projects/platform-gke/authentik:__pkg__"],
