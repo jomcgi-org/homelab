@@ -58,8 +58,8 @@ func TestRefreshGeneration(t *testing.T) {
 	// Winter midnight is below nautical darkness at both sites.
 	at := time.Date(time.Now().Year()+1, 1, 1, 0, 0, 0, 0, time.UTC)
 	objects := map[string][]byte{
-		"/state/grid.json":        []byte(`[{"id":"a","lat":56,"lon":-4},{"id":"b","lat":57,"lon":-4}]`),
-		"/state/climatology.json": []byte(`[{"site_id":"a","month":2,"dark_hours":7,"clear_dark_hours":3}]`),
+		"/source/grid.json":        []byte(`[{"id":"a","lat":56,"lon":-4},{"id":"b","lat":57,"lon":-4}]`),
+		"/source/climatology.json": []byte(`[{"site_id":"a","month":2,"dark_hours":7,"clear_dark_hours":3}]`),
 	}
 	j := sha256.Sum256([]byte("b"))[0] % shards
 	objects["/state/"+shardKey(int(j))], _ = json.Marshal(map[string]forecast{"b": {oldTime, []hour{{at, 2, -20}}}})
@@ -87,12 +87,22 @@ func TestRefreshGeneration(t *testing.T) {
 		w.Write(data)
 	}))
 	defer srv.Close()
-	for _, prefix := range []string{"STATE_", "PUBLIC_"} {
+	for _, prefix := range []string{"SOURCE_", "STATE_", "PUBLIC_"} {
 		t.Setenv(prefix+"AWS_ENDPOINT_URL", srv.URL)
 		t.Setenv(prefix+"BUCKET", strings.ToLower(strings.TrimSuffix(prefix, "_")))
 		t.Setenv(prefix+"AWS_ACCESS_KEY_ID", "fixture")
 		t.Setenv(prefix+"AWS_SECRET_ACCESS_KEY", "fixture")
 	}
+	for _, mode := range []string{"grid", "climatology"} {
+		if err := run(ctx, mode); err != nil {
+			t.Fatal(err)
+		}
+		key := "/" + mode + ".json"
+		if string(objects["/source"+key]) != string(objects["/state"+key]) {
+			t.Fatalf("import changed %s", mode)
+		}
+	}
+	allFailed := false
 	previous := http.DefaultTransport
 	defer func() { http.DefaultTransport = previous }()
 	http.DefaultTransport = roundTrip(func(r *http.Request) (*http.Response, error) {
@@ -100,7 +110,7 @@ func TestRefreshGeneration(t *testing.T) {
 			return previous.RoundTrip(r)
 		}
 		status := 200
-		if r.URL.Query().Get("lat") == "57" {
+		if allFailed || r.URL.Query().Get("lat") == "57" {
 			status = 503
 		}
 		body := fmt.Sprintf(`{"properties":{"timeseries":[{"time":%q,"data":{"instant":{"details":{"cloud_area_fraction":0}}}}]}}`, at.Format(time.RFC3339))
@@ -153,5 +163,16 @@ func TestRefreshGeneration(t *testing.T) {
 	read("historyMap", &history)
 	if len(history.Sites) != 1 || history.Sites[0].Dark[1] != 7 || history.Sites[0].Clear[1] != 3 {
 		t.Fatal(history)
+	}
+	// A total provider outage must keep the last published generation.
+	allFailed = true
+	writes = nil
+	if err := run(ctx, "refresh"); err == nil {
+		t.Fatal("expected all fetches to fail")
+	}
+	for _, key := range writes {
+		if strings.HasPrefix(key, "/public/") {
+			t.Fatalf("overwrote public object during outage: %s", key)
+		}
 	}
 }
