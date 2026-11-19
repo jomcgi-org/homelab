@@ -207,7 +207,7 @@ def test_upstream_factory_contracts(tmp_path):
                 "--set=ON_ERROR_STOP=1",
             ]
             for migration in sorted((connector / "migrations").glob("*.sql")):
-                if migration.name == "20261119050000_delivery_outcomes.sql":
+                if migration.name == "20261119090000_delivery_outcomes.sql":
                     fixtures = Path(__file__).parent
                     migration_args.extend(
                         [
