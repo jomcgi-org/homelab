@@ -51,7 +51,7 @@ class Board:
             return {
                 "authenticated": True,
                 "user": {
-                    "username": "factory-semgrep-sync",
+                    "username": "intsec-sync",
                     "isAgent": True,
                     "id": "bot",
                 },
@@ -99,6 +99,8 @@ def test_mirror(sync):
         alerts.append((name, fields))
 
     def get(path):
+        if parse_qs(urlsplit(path).query)["page"] != ["0"]:
+            return {"findings": []}
         product = parse_qs(urlsplit(path).query).get("issue_type", ["secrets"])[0]
         if product == "secrets":
             assert urlsplit(path).path == "/org/secrets"
@@ -142,7 +144,11 @@ def test_failure_on_last_product_writes_nothing(sync):
     def get(path):
         if path.startswith("/org/secrets"):
             raise TimeoutError()
-        return {"findings": [row(1)]}
+        return {
+            "findings": [row(1)]
+            if parse_qs(urlsplit(path).query)["page"] == ["0"]
+            else []
+        }
 
     with pytest.raises(TimeoutError):
         sync(
@@ -161,6 +167,8 @@ def test_linked_finding_does_not_stop_later_findings(sync):
     data = {"sast": [row(1), row(2)], "sca": [], "secrets": []}
 
     def get(path):
+        if parse_qs(urlsplit(path).query)["page"] != ["0"]:
+            return {"findings": []}
         product = parse_qs(urlsplit(path).query).get("issue_type", ["secrets"])[0]
         return {"findings": data[product]}
 
@@ -191,6 +199,8 @@ def test_finding_data_has_no_literal_mention(sync):
     data = {"sast": [row(1, rule_name="@joe rule")], "sca": [], "secrets": []}
 
     def get(path):
+        if parse_qs(urlsplit(path).query)["page"] != ["0"]:
+            return {"findings": []}
         product = parse_qs(urlsplit(path).query).get("issue_type", ["secrets"])[0]
         return {"findings": data[product]}
 
@@ -207,7 +217,11 @@ def test_auth_error_alerts_once_before_board_access(status, deployment, sync):
 
     def get(path):
         if path.startswith("/org/findings"):
-            return {"findings": [row(1)]}
+            return {
+                "findings": [row(1)]
+                if parse_qs(urlsplit(path).query)["page"] == ["0"]
+                else []
+            }
         raise HTTPError(path, status, "", {}, None)
 
     alerts = []
@@ -218,4 +232,29 @@ def test_auth_error_alerts_once_before_board_access(status, deployment, sync):
             lambda *args: pytest.fail("accessed INTSEC"),
             lambda *args: alerts.append(args),
         )
-    assert alerts == [("SemgrepAuthenticationFailed", {})]
+    assert len(alerts) == 1
+    sync(lambda _: {"findings": []}, "org", Board())
+    sync(get, deployment, pytest.fail, lambda *args: alerts.append(args))
+    assert [name for name, _ in alerts] == ["SemgrepAuthenticationFailed"] * 2
+    assert alerts[0][1]["outage"] != alerts[1][1]["outage"]
+
+
+@pytest.mark.parametrize("reject_large", [False, True])
+@pytest.mark.parametrize("with_paging", [False, True])
+def test_findings_continue_past_server_capped_pages(reject_large, with_paging):
+    from urllib.error import HTTPError
+
+    def get(path):
+        params = parse_qs(urlsplit(path).query)
+        if params.get("issue_type") != ["sast"]:
+            return {"findings": []}
+        if reject_large and params["page_size"] == ["3000"]:
+            raise HTTPError(path, 400, "page_size", {}, None)
+        page = int(params["page"][0])
+        payload = {"findings": [row(page + 1)] if page < 2 else []}
+        if with_paging:
+            assert page <= 1
+            payload["paging"] = {"next": "/findings?page=1" if page == 0 else None}
+        return payload
+
+    assert list(module["snapshot"](get, "org")) == ["sast/1", "sast/2"]

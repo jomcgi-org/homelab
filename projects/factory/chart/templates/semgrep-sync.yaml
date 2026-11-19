@@ -65,7 +65,7 @@ spec:
                   value: {{ include "factory.itsaplanInternalURL" . }}
                 - name: PLAN_KEY
                   valueFrom:
-                    secretKeyRef: {name: factory-itsaplan-agent-factory-semgrep-sync, key: apiKey}
+                    secretKeyRef: {name: factory-itsaplan-agent-intsec-sync, key: apiKey}
                 - name: SEMGREP_KEY
                   valueFrom:
                     secretKeyRef: {name: factory-semgrep-sync, key: token}

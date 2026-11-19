@@ -94,7 +94,7 @@ spec:
     - group: ""
       kind: Secret
       namespace: factory
-      name: factory-itsaplan-agent-factory-semgrep-sync
+      name: factory-itsaplan-agent-intsec-sync
       jsonPointers: [/data]
     # The Discord history import Job runs once per runId (chart
     # templates/discord.yaml). Its pod template names the connector image and
