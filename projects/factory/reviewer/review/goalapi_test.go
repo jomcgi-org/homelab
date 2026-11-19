@@ -26,7 +26,7 @@ func TestGoalReasonsAPIServesTheNewestReplyForAHead(t *testing.T) {
 		},
 		{
 			Repository: "o/r", PullRequest: 7, Head: head, Issue: "HOME-1", Digest: "d1", MessageID: "m2", TaskID: "t2", Phase: "confirmation", CreatedAt: now.Add(time.Second),
-			Reply: "Criterion 2 misses the retry.\n\n```json\n{\"criteria\":[],\"overall\":\"not_met\"}\n```",
+			Reply: "Criterion 2: missing retry.\n\n```json\n{\"criteria\":[{\"criterion\":1,\"verdict\":\"met\"},{\"criterion\":2,\"verdict\":\"not_met\"}],\"overall\":\"not_met\"}\n```",
 		},
 		{Repository: "o/r", PullRequest: 7, Head: other, Issue: "HOME-1", Digest: "d1", MessageID: "m3", TaskID: "t3", CreatedAt: now, Reply: "```json\n{}\n```"},
 	} {
@@ -49,7 +49,7 @@ func TestGoalReasonsAPIServesTheNewestReplyForAHead(t *testing.T) {
 		return resp, g
 	}
 	resp, g := get(http.MethodGet, "repository=o/r&pullRequest=7&head="+head)
-	if resp.StatusCode != http.StatusOK || g.Reasons != "Criterion 2 misses the retry." || g.Phase != "confirmation" ||
+	if resp.StatusCode != http.StatusOK || g.Reasons != "Criterion 2: missing retry." || len(g.Findings) != 1 || g.Findings[0] != "Criterion 2: missing retry." || g.Phase != "confirmation" ||
 		g.Issue != "HOME-1" || g.Digest != "d1" || g.Head != head || resp.Header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("answer = %d %+v", resp.StatusCode, g)
 	}

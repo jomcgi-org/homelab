@@ -34,7 +34,12 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   comment ([decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6931275436)).
   The code-review prompt gets none. Only the goal check receives the issue
   and its decisions, in the same delimited and quoted blocks, with the diff
-  and no PR title, description or comment. On a later head it also receives
+  and no PR title, description or comment. Before reporting a missing fact,
+  it searches the reviewed commit, including definitions outside the diff.
+  Coders can add public repository references by criterion number in
+  `.factory/goal-evidence/<issue-key>.md`. The reviewer checks each claim
+  against that commit without running PR commands. Only verified facts
+  affect the verdict. On a later head it also receives
   the previous head's goal verdicts and private reply on the same issue
   evidence, quoted, and the names of the files changed since. Its answer counts only as
   criterion numbers and the verdicts `met`, `not_met`, `after_rollout` and
