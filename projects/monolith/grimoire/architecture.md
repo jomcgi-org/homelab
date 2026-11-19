@@ -615,17 +615,21 @@ for the factory migration (HOME-484). Joe submits each run by hand.
 
 ```mermaid
 flowchart LR
-  pg[(monolith-pg)] -->|pg_dump and inventory, one snapshot| dump[pg-dump init container]
+  pg[(monolith-pg)] -->|pg_dump, references and inventory, one snapshot| dump[pg-dump init container]
   dump -->|emptyDir /work| upload[grimoire-migration-dump]
-  upload -->|upload, copy, read back| r2[R2 grimoire/migration/run id/]
+  upload -->|upload, copy, compare with source| r2[R2 grimoire/migration/run id/]
   bucket[R2 grimoire, outside migration/] -->|server-side copy| r2
 ```
 
 The init container runs `chart/files/grimoire-migration-dump.sh` in the
-factory restore's Postgres image. `grimoire/migration.py` uploads the dump
-files and copies every bucket object. Then it writes the referenced locations
-that the copy lacks, and `SHA256SUMS` last. Each digest comes from the
-object as stored in R2. The run stays in the private bucket, because it holds
+factory restore's Postgres image. In one snapshot, it writes the dump, the
+inventory and the object locations that rows reference
+(`chart/files/grimoire-references.sql`). `grimoire/migration.py` reads no
+database row. It uploads the dump files and copies every bucket object. Then
+it writes the referenced locations that the copy lacks, and `SHA256SUMS`
+last. Each digest comes from the object as stored in R2, and must match a
+digest of its source, or the run stops. The job reads each copied object
+twice: once at the source and once at the copy. The run stays in the private bucket, because it holds
 copyrighted book text. The factory side, its read key and its checks are in
 `projects/grimoire/deploy/README.md`.
 

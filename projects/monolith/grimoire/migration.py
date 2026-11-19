@@ -2,25 +2,31 @@
 
 The ``grimoire-migration-dump`` CronWorkflow
 (``chart/templates/grimoire-migration-dump.yaml``) runs this handler after its
-``pg-dump`` init container writes the dump files to
-``GRIMOIRE_MIGRATION_WORK``. One run writes these objects under
-``<prefix><run id>/`` in the Grimoire bucket:
+``pg-dump`` init container writes the dump files and ``references.csv`` to
+``GRIMOIRE_MIGRATION_WORK``. The init container reads all of them in one
+snapshot, and this handler reads no database row. One run writes these objects
+under ``<prefix><run id>/`` in the Grimoire bucket:
 
 - ``grimoire.dump``, ``vector.metadata``, ``source.inventory``: the files that
   the factory restore reads (``projects/grimoire/deploy/README.md``).
 - ``objects/<key>``: a server-side copy of every bucket object outside
   ``<prefix>``. This includes every object that a database row references.
-- ``missing-references.txt``: each referenced ``s3://`` location that the copy
-  does not hold, one for each line.
+- ``missing-references.txt``: each ``s3://`` location that a row in the
+  snapshot references and the copy does not hold, one for each line.
 - ``SHA256SUMS``: the SHA-256 of each object above, in ``sha256sum`` format.
 
 The job reads each object back from R2 to calculate its digest, so the
-manifest describes the stored bytes. It writes ``SHA256SUMS`` last. A run
-without ``SHA256SUMS`` is incomplete, and the factory never reads it.
+manifest describes the stored bytes. Each stored object must match its
+source: the local dump file, or the bucket object that it copies. R2 gives no
+SHA-256 for an object, and a multipart ETag is not an MD5, so the job reads
+each source object too. A difference stops the run. It writes ``SHA256SUMS``
+last. A run without ``SHA256SUMS`` is incomplete, and the factory never reads
+it.
 """
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import logging
 import os
@@ -29,17 +35,18 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from grimoire import images
 from grimoire.jobs import DEFAULT_BUCKET
-from grimoire.models import KnowledgeChunk, SessionEvent
 
 logger = logging.getLogger("monolith.grimoire.migration")
 
 DEFAULT_PREFIX = "migration/"
 # The pg-dump init container writes these files (chart/files/grimoire-migration-dump.sh).
 DUMP_FILES = ("grimoire.dump", "vector.metadata", "source.inventory")
+# Also from the init container, in the dump's snapshot. The run does not hold it.
+REFERENCES = "references.csv"
 OBJECTS = "objects/"
 MISSING = "missing-references.txt"
 MANIFEST = "SHA256SUMS"
@@ -76,32 +83,28 @@ def check_key(key: str) -> str:
     return key
 
 
-def references(session: Session, bucket: str) -> set[str]:
-    """Every object location that a Grimoire row references, as ``s3://`` URIs.
+def references(path: Path, bucket: str) -> set[str]:
+    """Every object location in ``path``, as ``s3://`` URIs.
 
-    Chunk images store a full URI. An uploaded handout stores a key in the
-    handout bucket, which is ``bucket``. A handout that shows a chunk image
-    references that chunk's ``image_ref``, so the first query covers it.
+    The init container writes ``path`` with
+    ``chart/files/grimoire-references.sql``, in the dump's snapshot. Each CSV
+    row is ``image_ref,<stored value>`` for a chunk image, which stores a full
+    URI, or ``upload,<key>`` for an uploaded handout, which stores a key in the
+    handout bucket, ``bucket``.
     """
     found: set[str] = set()
-    image_refs = session.exec(
-        select(KnowledgeChunk.image_ref).where(KnowledgeChunk.image_ref.is_not(None))
-    )
-    for image_ref in image_refs:
-        # An unparsable ref stays in its stored form. The copy cannot hold it.
-        parsed = images.parse_s3_uri(image_ref)
-        found.add(f"s3://{parsed[0]}/{parsed[1]}" if parsed else image_ref)
-    bodies = session.exec(
-        select(SessionEvent.body).where(SessionEvent.kind == "handout")
-    )
-    for body in bodies:
-        image = (body or {}).get("image")
-        if (
-            isinstance(image, dict)
-            and image.get("source") == "upload"
-            and isinstance(image.get("key"), str)
-        ):
-            found.add(f"s3://{bucket}/{image['key']}")
+    with path.open(newline="", encoding="utf-8") as handle:
+        for row in csv.reader(handle):
+            match row:
+                case ["image_ref", image_ref]:
+                    # An unparsable ref stays in its stored form. The copy
+                    # cannot hold it.
+                    parsed = images.parse_s3_uri(image_ref)
+                    found.add(f"s3://{parsed[0]}/{parsed[1]}" if parsed else image_ref)
+                case ["upload", key]:
+                    found.add(f"s3://{bucket}/{key}")
+                case _:
+                    raise ValueError(f"{path.name}: unknown reference row {row!r}")
     return found
 
 
@@ -166,16 +169,21 @@ def write_run(
             raise RuntimeError(f"{name}: the stored object differs from the dump file")
         sums[name] = stored
 
-    # List after the dump and the reference query. A row commits after its
-    # object upload, so the listing holds every object that they reference.
+    # List after the snapshot. A row commits after its object upload, so the
+    # listing holds every object that a snapshot row references.
     keys = list_keys(client, bucket, prefix)
 
     def copy(key: str) -> tuple[int, str]:
         target = run + OBJECTS + key
+        source = stored_digest(client, bucket, key)
         client.copy_object(
             Bucket=bucket, Key=target, CopySource={"Bucket": bucket, "Key": key}
         )
-        return stored_digest(client, bucket, target)
+        stored = stored_digest(client, bucket, target)
+        # A source that changes after its read also stops the run.
+        if stored != source:
+            raise RuntimeError(f"{OBJECTS}{key}: the copy differs from its source")
+        return stored
 
     object_bytes = 0
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
@@ -205,9 +213,9 @@ async def grimoire_migration_dump(session: Session) -> None:
         raise RuntimeError("GRIMOIRE_MIGRATION_WORK unset; no dump files to upload")
     bucket = os.environ.get("GRIMOIRE_S3_BUCKET", DEFAULT_BUCKET)
     prefix = os.environ.get("GRIMOIRE_MIGRATION_PREFIX", DEFAULT_PREFIX)
-    refs = references(session, bucket)
-    # The copy takes minutes. Hold no transaction open during it.
-    session.rollback()
+    # jobs_main gives each job a session. This job uses none: a row that
+    # changes after the snapshot must not change the run.
+    refs = references(Path(work) / REFERENCES, bucket)
     summary = write_run(
         build_s3_client(), bucket, prefix, Path(work), refs, datetime.now(UTC)
     )

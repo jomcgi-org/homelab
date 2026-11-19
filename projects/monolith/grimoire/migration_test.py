@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import csv
 import hashlib
 import shutil
 import subprocess
@@ -10,7 +12,7 @@ from datetime import UTC, datetime
 import pytest
 
 from grimoire import migration
-from grimoire.models import KnowledgeChunk, SessionEvent
+from grimoire.models import KnowledgeChunk
 from shared.testing.sqlite import sqlite_session
 
 NOW = datetime(2026, 11, 19, 12, 30, 5, tzinfo=UTC)
@@ -46,6 +48,7 @@ class FakeR2:
         self.objects = dict(objects)
         self.page_size = page_size
         self.writes: list[str] = []
+        self.reads: list[str] = []
         self.corrupt: set[str] = set()
 
     def list_objects_v2(self, Bucket, ContinuationToken=None):
@@ -61,6 +64,7 @@ class FakeR2:
 
     def get_object(self, Bucket, Key):
         assert Bucket == "grimoire"
+        self.reads.append(Key)
         return {"Body": Body(self.objects[Key])}
 
     def _store(self, key: str, data: bytes):
@@ -120,6 +124,9 @@ def test_run_holds_the_dump_every_object_and_a_manifest_of_stored_bytes(work):
         assert digest == sha256(r2.objects[RUN + path])
     for key in copied:
         assert r2.objects[RUN + "objects/" + key] == SOURCE[key]
+        assert sums[f"objects/{key}"] == sha256(SOURCE[key])
+        # Each copy is compared with a digest of its source, read before the copy.
+        assert r2.reads.index(key) < r2.reads.index(RUN + "objects/" + key)
     assert r2.objects[RUN + "missing-references.txt"] == b""
     # Earlier runs stay out of the copy, and the manifest is the last write.
     assert not any("objects/migration/" in key for key in r2.objects)
@@ -174,16 +181,15 @@ def test_a_stored_dump_that_differs_stops_the_run(work):
     assert RUN + "SHA256SUMS" not in r2.objects
 
 
-def test_a_copy_that_differs_is_recorded_as_stored(work):
-    # The manifest describes R2's bytes. A check against it finds the bad copy.
+def test_a_copy_that_differs_from_its_source_stops_the_run(work):
+    # The factory check accepts any bytes that SHA256SUMS lists, so the run
+    # must not list a bad copy.
     r2 = FakeR2(SOURCE)
-    target = RUN + "objects/books/phb/chunks/chunks.ndjson"
-    r2.corrupt.add(target)
-    migration.write_run(r2, "grimoire", "migration/", work, set(), NOW)
-    sums = parse(r2.objects[RUN + "SHA256SUMS"])
-    digest = sums["objects/books/phb/chunks/chunks.ndjson"]
-    assert digest == sha256(r2.objects[target])
-    assert digest != sha256(SOURCE["books/phb/chunks/chunks.ndjson"])
+    r2.corrupt.add(RUN + "objects/books/phb/chunks/chunks.ndjson")
+    with pytest.raises(RuntimeError, match="chunks.ndjson: the copy differs"):
+        migration.write_run(r2, "grimoire", "migration/", work, set(), NOW)
+    assert RUN + "SHA256SUMS" not in r2.objects
+    assert RUN + "missing-references.txt" not in r2.objects
 
 
 @pytest.mark.parametrize("key", ["bad\nkey", "bad\\key", "bad\rkey"])
@@ -200,43 +206,66 @@ def test_the_prefix_must_be_a_directory(work, prefix):
         migration.write_run(FakeR2(SOURCE), "grimoire", prefix, work, set(), NOW)
 
 
-def test_references_cover_chunk_images_and_uploaded_handouts():
+def write_references(path, rows):
+    # The CSV form that COPY ... TO STDOUT WITH (FORMAT csv) writes.
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        csv.writer(handle).writerows(rows)
+
+
+def test_references_read_the_snapshot_file(tmp_path):
+    upload = "campaigns/c1/handouts/" + "b" * 32 + ".png"
+    path = tmp_path / "references.csv"
+    write_references(
+        path,
+        [
+            ("image_ref", "s3://grimoire/books/phb/raw/img/a.png"),
+            ("image_ref", 's3://other-bucket/img, with "quotes".png'),
+            ("image_ref", "not-a-uri"),
+            ("upload", upload),
+        ],
+    )
+    assert migration.references(path, "grimoire") == {
+        "s3://grimoire/books/phb/raw/img/a.png",
+        's3://other-bucket/img, with "quotes".png',
+        "not-a-uri",
+        f"s3://grimoire/{upload}",
+    }
+
+
+@pytest.mark.parametrize(
+    "rows", [[("narration", "x")], [("upload",)], [("upload", "a", "b")]]
+)
+def test_an_unknown_reference_row_stops_the_run(tmp_path, rows):
+    path = tmp_path / "references.csv"
+    write_references(path, rows)
+    with pytest.raises(ValueError, match="unknown reference row"):
+        migration.references(path, "grimoire")
+
+
+def test_the_job_reports_the_snapshot_references_not_the_live_rows(work, monkeypatch):
+    # The snapshot row pointed at old.png, which is gone. After the snapshot,
+    # the hub re-ingested the chunk and pointed the row at new.png. The run must
+    # still report old.png, because the restored row points at it.
+    old = "s3://grimoire/books/phb/raw/img/old.png"
+    new = "s3://grimoire/books/phb/raw/img/new.png"
+    write_references(work / migration.REFERENCES, [("image_ref", old)])
+    r2 = FakeR2({**SOURCE, "books/phb/raw/img/new.png": b"new image"})
+    monkeypatch.setattr("grimoire.ingest.build_s3_client", lambda: r2)
+    monkeypatch.setenv("GRIMOIRE_MIGRATION_WORK", str(work))
+    monkeypatch.setenv("GRIMOIRE_S3_BUCKET", "grimoire")
+    monkeypatch.setenv("GRIMOIRE_MIGRATION_PREFIX", "migration/")
     with sqlite_session() as session:
         session.add(
             KnowledgeChunk(
-                book_id="phb",
-                chunk_ref="image-1",
-                content="",
-                seq=1,
-                image_ref="s3://grimoire/books/phb/raw/img/a.png",
+                book_id="phb", chunk_ref="image-1", content="", seq=1, image_ref=new
             )
         )
-        session.add(
-            KnowledgeChunk(book_id="phb", chunk_ref="text-1", content="t", seq=2)
-        )
-        upload = "campaigns/c1/handouts/" + "b" * 32 + ".png"
-        bodies = [
-            ("handout", {"title": "map", "image": {"source": "upload", "key": upload}}),
-            ("handout", {"image": {"source": "chunk", "chunk_id": "x"}}),
-            ("handout", {"title": "no image"}),
-            ("narration", {"image": {"source": "upload", "key": "ignored"}}),
-        ]
-        for seq, (kind, body) in enumerate(bodies, start=1):
-            session.add(
-                SessionEvent(
-                    campaign_id="c1",
-                    session_id="s1",
-                    seq=seq,
-                    kind=kind,
-                    audience="table",
-                    body=body,
-                )
-            )
         session.commit()
-        assert migration.references(session, "grimoire") == {
-            "s3://grimoire/books/phb/raw/img/a.png",
-            f"s3://grimoire/{upload}",
-        }
+        asyncio.run(migration.grimoire_migration_dump(session))
+    (manifest,) = [key for key in r2.writes if key.endswith("/SHA256SUMS")]
+    run = manifest.removesuffix("SHA256SUMS")
+    assert r2.objects[run + "missing-references.txt"] == f"{old}\n".encode()
+    assert r2.objects[run + "objects/books/phb/raw/img/new.png"] == b"new image"
 
 
 def test_run_ids_sort_in_time_order():

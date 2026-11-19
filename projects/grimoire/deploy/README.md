@@ -60,8 +60,8 @@ writes one run under `migration/<run id>/` of the private R2 bucket
 | `vector.metadata` | The source's pgvector version and schema |
 | `source.inventory` | [inventory.sql](inventory.sql) on the source, in the dump's snapshot |
 | `objects/<key>` | A copy of each object in the bucket outside `migration/` |
-| `missing-references.txt` | Each `s3://` location that a row references and the copy lacks |
-| `SHA256SUMS` | The SHA-256 of each object above, read back from R2 |
+| `missing-references.txt` | Each `s3://` location that a row in the dump's snapshot references and the copy lacks |
+| `SHA256SUMS` | The SHA-256 of each object above, read back from R2. Each object matches its source, or the run stops |
 
 The job writes `SHA256SUMS` last. A run without it is incomplete, and the
 factory jobs ignore it. Each run holds copyrighted book text, so it stays in

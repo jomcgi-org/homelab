@@ -2,10 +2,12 @@
 On-demand copy of the Grimoire data for the factory migration (HOME-484).
 
 One pod. The pg-dump init container runs the factory restore's Postgres image
-and writes the dump files to an emptyDir (files/grimoire-migration-dump.sh).
-Then the jobs container runs grimoire-migration-dump (grimoire/migration.py):
-it uploads the files, copies the bucket and writes SHA256SUMS last, under
-grimoire.migrationDump.prefix of the private grimoire bucket.
+and writes the dump files and the referenced object locations to an emptyDir,
+all from one snapshot (files/grimoire-migration-dump.sh). Then the jobs
+container runs grimoire-migration-dump (grimoire/migration.py): it uploads the
+files, copies the bucket, compares each copy with its source and writes
+SHA256SUMS last, under grimoire.migrationDump.prefix of the private grimoire
+bucket. It reads no database row.
 
 The CronWorkflow is always suspended and its schedule never occurs. An
 operator submits each run:
@@ -31,6 +33,8 @@ data:
   # A copy of projects/grimoire/deploy/inventory.sql. A chart test pins it.
   inventory.sql: |
     {{- .Files.Get "files/grimoire-inventory.sql" | nindent 4 }}
+  references.sql: |
+    {{- .Files.Get "files/grimoire-references.sql" | nindent 4 }}
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: CronWorkflow
@@ -103,6 +107,8 @@ spec:
                 value: /work
               - name: INVENTORY_SQL
                 value: /scripts/inventory.sql
+              - name: REFERENCES_SQL
+                value: /scripts/references.sql
               - name: HOME
                 value: /tmp
             # The image's postgres user, so libpq finds a passwd entry.
@@ -127,6 +133,7 @@ spec:
           image: "{{ .Values.jobs.image.repository }}@{{ .Values.jobs.image.digest }}"
           args: ["grimoire-migration-dump"]
           env:
+            # jobs_main opens a session for each job. This job reads no row.
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
