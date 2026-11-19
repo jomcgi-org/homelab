@@ -717,6 +717,7 @@
       "required": ["enabled"],
       "additionalProperties": false,
       "properties": {
+        "traceEndpoint": { "type": "string" },
         "notify": {
           "type": "object",
           "additionalProperties": false,

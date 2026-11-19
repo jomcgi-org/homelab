@@ -547,6 +547,8 @@ itsaplan:
 # queue. One replica in the broker's namespace, as ServiceAccount
 # factory-connector, which the chart keeps.
 connector:
+  # OTLP/gRPC URL of the factory trace receiver. Empty disables export.
+  traceEndpoint: ""
   # Staged off until the hub route and dedicated Authentik app password exist.
   notify:
     enabled: false

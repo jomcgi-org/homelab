@@ -177,6 +177,19 @@ def test_disabled_renders_byte_for_byte_without_the_connector() -> None:
         assert _helm(_CHART_DIR, off) == _helm(bare, off)
 
 
+_TRACE_ENDPOINT = "http://otel-collector.otel-collector.svc.cluster.local:4317"
+
+
+def test_connector_trace_export_uses_the_factory_gateway() -> None:
+    env = _env(_render([f"connector.traceEndpoint={_TRACE_ENDPOINT}"]))
+    assert env["OTEL_SERVICE_NAME"] == "factory-connector"
+    assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == _TRACE_ENDPOINT
+    # Export stays off in the deploy values until the gateway is live.
+    for off in (_env(_render(enable=False)), _env(_render())):
+        assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in off
+        assert "OTEL_SERVICE_NAME" not in off
+
+
 def test_deploy_values_render_is_locked() -> None:
     # What ArgoCD applies from main's deploy values (no CRDs) changes only
     # with a deliberate update of deploy/render.sha256. The chart version
@@ -454,7 +467,9 @@ def test_policy_egress_only_to_its_peers() -> None:
     def policy(docs: list[dict[str, Any]]) -> dict[str, Any]:
         return _in(docs, "CiliumNetworkPolicy", _NS, "factory-connector")["spec"]
 
-    docs = _render(["broker.githubApp.enabled=false"])
+    docs = _render(
+        ["broker.githubApp.enabled=false", f"connector.traceEndpoint={_TRACE_ENDPOINT}"]
+    )
     spec = policy(docs)
     assert (
         spec["endpointSelector"]["matchLabels"].items()
@@ -466,6 +481,19 @@ def test_policy_egress_only_to_its_peers() -> None:
         for r in spec["egress"]
     ]
     assert peers == [
+        (
+            [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "otel-collector",
+                        "app.kubernetes.io/name": "otel-collector",
+                        "app.kubernetes.io/instance": "otel-collector",
+                    }
+                }
+            ],
+            None,
+            "4317",
+        ),
         (
             [
                 {

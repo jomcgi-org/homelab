@@ -23,6 +23,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/internal/tracing"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -123,6 +125,17 @@ func unblock(scope string) error {
 func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	tp, err := tracing.Init(ctx)
+	if err != nil {
+		return err
+	}
+	if tp != nil {
+		defer func() {
+			flush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tp.Shutdown(flush)
+		}()
+	}
 
 	cfg, err := config.Load(os.Getenv)
 	if err != nil {

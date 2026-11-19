@@ -23,9 +23,12 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/store",
     visibility = ["//visibility:public"],
     deps = [
+        "//projects/factory/connector/internal/tracing",
         "//projects/factory/connector/itsaplan",
         "//projects/factory/connector/provenance",
         "@com_github_lib_pq//:pq",
+        "@io_opentelemetry_go_otel//attribute",
+        "@io_opentelemetry_go_otel_trace//:trace",
     ],
 )
 

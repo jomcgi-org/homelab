@@ -221,6 +221,12 @@ spec:
           image: {{ include "factory.connectorImage" . | quote }}
           imagePullPolicy: {{ $c.image.pullPolicy }}
           env:
+            {{- with $c.traceEndpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ . | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: factory-connector
+            {{- end }}
             - name: FACTORY_CONNECTOR_CONFIG
               value: /etc/factory-connector/config.yaml
             - name: FACTORY_CONNECTOR_DATABASE_URL

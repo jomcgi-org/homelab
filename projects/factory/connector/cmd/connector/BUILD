@@ -17,6 +17,7 @@ go_library(
         "//projects/factory/connector/dispatch",
         "//projects/factory/connector/github",
         "//projects/factory/connector/internal/reaper",
+        "//projects/factory/connector/internal/tracing",
         "//projects/factory/connector/itsaplan",
         "//projects/factory/connector/kagent",
         "//projects/factory/connector/metrics",
