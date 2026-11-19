@@ -1029,6 +1029,7 @@ var stateRE = regexp.MustCompile(`<!-- factory-review:state v([12]) ([A-Za-z0-9+
 // findings and human gate on the completed check. The next round must
 // account for the findings; only a person clears the human gate.
 type State struct {
+	Round         int                          `json:"round,omitempty"`
 	InvariantBase string                       `json:"invariant_base,omitempty"`
 	Semgrep       *SemgrepStamp                `json:"semgrep,omitempty"`
 	Activation    *github.ActivationAssessment `json:"activation,omitempty"`

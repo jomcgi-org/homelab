@@ -440,6 +440,15 @@ func TestGoalCheck8260EvidenceOnlyRevision(t *testing.T) {
 			got := run(tc.revision)
 			var verdict string
 			for _, span := range exporter.GetSpans() {
+				var round int64
+				for _, attr := range span.Attributes {
+					if attr.Key == "review.round" {
+						round = attr.Value.AsInt64()
+					}
+				}
+				if round != 2 {
+					t.Fatalf("%s round on revised head = %d, want 2", span.Name, round)
+				}
 				if span.Name == "code review" {
 					for _, attr := range span.Attributes {
 						if attr.Key == "review.verdict" {
