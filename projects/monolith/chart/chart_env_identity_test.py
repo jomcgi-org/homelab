@@ -548,7 +548,7 @@ def _rbac_objects(rendered):
     }
 
 
-def _expected_rbac(release, enabled):
+def _expected_rbac(release, enabled, *, hub=False):
     subject = {"kind": "ServiceAccount", "name": release, "namespace": release}
     expected = {}
     for gate, kind, namespace, name, rules, subjects in [
@@ -593,6 +593,7 @@ def _expected_rbac(release, enabled):
                 [subject],
             )
             for namespace in _KARGO_PROJECT_NAMESPACES
+            if not (hub and namespace == "kargo-embervm")
         ),
     ]:
         if not enabled[gate]:
@@ -620,9 +621,10 @@ def test_default_rbac_preserves_rule_and_binding_contract(environment, renders):
         {
             "clusterAccess": True,
             "schedulerWorkflows": True,
-            "faas": True,
+            "faas": environment != "gke",
             "kargoPromote": True,
         },
+        hub=environment == "gke",
     )
 
 
@@ -1540,7 +1542,6 @@ def test_cd_health_renders_every_kargo_production_mapping(environment, renders):
     apps = json.loads(env["CD_HEALTH_KARGO_APPS"]["value"])
     names = (
         "monolith",
-        "embervm",
         "monolith-public",
         "monolith-agents",
         "scotland-connector",
