@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
@@ -276,7 +277,8 @@ func issueCriteria(in *IssueContext) int {
 	// Comments, code blocks and HTML blocks can hide or fake list items.
 	// Rather than parse them, count nothing when the issue has any. This
 	// also skips an issue with a diagram; such an issue keeps main's rules.
-	if strings.Contains(text, "<!--") || unsafeBlock.MatchString(text) {
+	// Thematic breaks and setext underlines change what nearby lines mean.
+	if strings.Contains(text, "<!--") || unsafeBlock.MatchString(text) || ruleLine.MatchString(text) {
 		return 0
 	}
 	for raw := range strings.SplitSeq(text, "\n") {
@@ -297,6 +299,9 @@ func issueCriteria(in *IssueContext) int {
 		m := listItem.FindStringSubmatch(raw)
 		switch {
 		case m != nil && state == 1:
+			if !strings.ContainsFunc(raw[len(m[0])-1:], func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) {
+				return 0 // An item needs words; "* * *" is a thematic break.
+			}
 			kind := m[3]
 			if m[1] != "" {
 				if m[1] != strconv.Itoa(items+1) {
@@ -325,8 +330,8 @@ func issueCriteria(in *IssueContext) int {
 }
 
 var (
-	// listItem is a top-level item: a number and "." or ")", or a bullet,
-	// then text, or nothing (its text may follow on indented lines).
+	// listItem is a top-level item marker: a number and "." or ")", or a
+	// bullet. issueCriteria also requires words on the marker line.
 	listItem = regexp.MustCompile(`^(?:([0-9]{1,9})([.)])|([-*+]))(?:[ \t]+(?:\[[ xX]\][ \t]+)?\S|[ \t]*$)`)
 	// listMarker is anything Markdown could read as a list item, at any
 	// indent, including an empty one.
@@ -334,6 +339,9 @@ var (
 	// unsafeBlock is a line that can open a fenced code block or an HTML
 	// block, at any indent.
 	unsafeBlock = regexp.MustCompile("(?m)^[ \t]*(?:```|~~~|<)")
+	// ruleLine is a line of only rule characters: a thematic break or a
+	// setext heading underline.
+	ruleLine = regexp.MustCompile(`(?m)^[ \t]*(?:[-*_=][ \t]*){3,}$`)
 )
 
 // goalKey is the issue a goal check judges the PR against, or "" when none
