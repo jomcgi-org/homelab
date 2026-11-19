@@ -1,6 +1,7 @@
 -- Run with psql -XqAt -v ON_ERROR_STOP=1 against a quiescent, scoped copy.
 BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
-SET LOCAL TIME ZONE 'UTC';
+-- GMT is built in, so it needs no time zone files.
+SET LOCAL TIME ZONE 'GMT';
 SET LOCAL search_path = pg_catalog;
 SET LOCAL extra_float_digits = 3;
 

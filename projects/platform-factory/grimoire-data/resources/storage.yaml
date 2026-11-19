@@ -1,9 +1,23 @@
+# Private Garage keys. garage-init fills each Secret from its claim below and
+# can update only these Secrets. Neither bucket has a public mirror: book
+# text, scans, embeddings and backups stay in the cluster.
 apiVersion: v1
 kind: Secret
 metadata:
   name: grimoire-backup-s3
   namespace: grimoire
   annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grimoire-recovery-s3
+  namespace: grimoire
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
 type: Opaque
 ---
@@ -13,6 +27,7 @@ metadata:
   name: grimoire-api-s3
   namespace: grimoire
   annotations:
+    argocd.argoproj.io/sync-wave: "-2"
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
 type: Opaque
 ---
@@ -22,6 +37,7 @@ metadata:
   name: grimoire-worker-s3
   namespace: grimoire
   annotations:
+    argocd.argoproj.io/sync-wave: "-2"
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
 type: Opaque
 ---
@@ -30,10 +46,12 @@ kind: Role
 metadata:
   name: garage-init
   namespace: grimoire
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
 rules:
   - apiGroups: [""]
     resources: [secrets]
-    resourceNames: [grimoire-recovery-s3, grimoire-restore-s3, grimoire-backup-s3, grimoire-api-s3, grimoire-worker-s3]
+    resourceNames: [grimoire-backup-s3, grimoire-recovery-s3, grimoire-api-s3, grimoire-worker-s3]
     verbs: [get, update]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -41,6 +59,8 @@ kind: RoleBinding
 metadata:
   name: garage-init
   namespace: grimoire
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -50,6 +70,39 @@ subjects:
     name: garage-init
     namespace: garage
 ---
+# Claim names are garage-claim- and the SHA-256 of NAMESPACE/SECRET.
+# The Cluster writes WAL archives and base backups.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: garage-claim-59ad1b7bf0a6d69df42668a03590b88bac7f9374856c108970a324eda88c520b
+  namespace: garage
+  labels:
+    factory.jomcgi.dev/garage-claim: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+data:
+  namespace: grimoire
+  secretName: grimoire-backup-s3
+  bucket: grimoire-backups
+  access: readwrite
+---
+# The backup restore check reads backups only.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: garage-claim-7a31a80eae09b665c3685460fe7c89a479f5f0f63fd1b67e162f89a9ad48c7c9
+  namespace: garage
+  labels:
+    factory.jomcgi.dev/garage-claim: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+data:
+  namespace: grimoire
+  secretName: grimoire-recovery-s3
+  bucket: grimoire-backups
+  access: read
+---
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -57,6 +110,8 @@ metadata:
   namespace: garage
   labels:
     factory.jomcgi.dev/garage-claim: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
 data:
   namespace: grimoire
   secretName: grimoire-api-s3
@@ -70,65 +125,10 @@ metadata:
   namespace: garage
   labels:
     factory.jomcgi.dev/garage-claim: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
 data:
   namespace: grimoire
   secretName: grimoire-worker-s3
   bucket: grimoire-private
   access: readwrite
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: garage-claim-59ad1b7bf0a6d69df42668a03590b88bac7f9374856c108970a324eda88c520b
-  namespace: garage
-  labels:
-    factory.jomcgi.dev/garage-claim: "true"
-data:
-  namespace: grimoire
-  secretName: grimoire-backup-s3
-  bucket: grimoire-backups
-  access: readwrite
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: grimoire-restore-s3
-  namespace: grimoire
-  annotations:
-    argocd.argoproj.io/sync-options: Prune=false,Delete=false
-type: Opaque
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: garage-claim-550863cc9740cb355c85aa0e25ee18636b5242330068b5400188a0277fc88437
-  namespace: garage
-  labels:
-    factory.jomcgi.dev/garage-claim: "true"
-data:
-  namespace: grimoire
-  secretName: grimoire-restore-s3
-  bucket: grimoire-private
-  access: readwrite
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: grimoire-recovery-s3
-  namespace: grimoire
-  annotations:
-    argocd.argoproj.io/sync-options: Prune=false,Delete=false
-type: Opaque
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: garage-claim-7a31a80eae09b665c3685460fe7c89a479f5f0f63fd1b67e162f89a9ad48c7c9
-  namespace: garage
-  labels:
-    factory.jomcgi.dev/garage-claim: "true"
-data:
-  namespace: grimoire
-  secretName: grimoire-recovery-s3
-  bucket: grimoire-backups
-  access: read
