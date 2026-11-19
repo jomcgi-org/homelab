@@ -54,8 +54,8 @@ test("production audits only Worker routes, including its scoped 404", async (t)
   mkdirSync(join(dist, "assets"));
   const notFound = html.replace("Readable page", "This page isn't here.");
   // Since HOME-206 the Worker serves the homepage, so the release pages link
-  // to a path that stays off the Worker (the Scotland connector).
-  const hubPath = "/scotland/mcp";
+  // to a path that stays off the Worker (/slop/factory, until HOME-68).
+  const hubPath = "/slop/factory";
   assert.equal(scope.owns(hubPath), false);
   const page = html.replace('href="/"', `href="${hubPath}"`);
   for (const [name, body] of Object.entries({
@@ -491,8 +491,8 @@ test("production wildcard routes include query URLs and retired-page 404s", () =
     assert.equal(matchRedirect(redirects, path), undefined, path);
   }
   // Each section moves by adding its patterns, so derive the Worker's paths
-  // from edge/routes.json and pin only what must stay off it: the connector,
-  // the query variants of exact routes, the bare junk path and data.
+  // from edge/routes.json and pin only what must stay off it: the query
+  // variants of exact routes, the bare junk path and data.
   const routes = JSON.parse(
     readFileSync(new URL("../edge/routes.json", import.meta.url)),
   );
@@ -509,8 +509,6 @@ test("production wildcard routes include query URLs and retired-page 404s", () =
   }
   for (const path of [
     "/?ref=test",
-    "/scotland/mcp",
-    "/scotland/v1/tools",
     "/scotland?ref=test",
     "/slop?ref=test",
     JUNK_PATH,
@@ -518,6 +516,12 @@ test("production wildcard routes include query URLs and retired-page 404s", () =
     "/data/__site-check-unrouted/latest.json",
   ]) {
     assert.equal(scope.owns(path), false, `${path} still belongs to the hub`);
+  }
+  // HOME-475: the Worker owns the retired connector paths and answers 308.
+  for (const path of ["/scotland/mcp", "/scotland/v1/tools"]) {
+    assert.ok(scope.owns(path), path);
+    assert.ok(scope.owns(`${path}?ref=test`), `${path}?ref=test`);
+    assert.equal(matchRedirect(redirects, path).status, 308, path);
   }
 });
 

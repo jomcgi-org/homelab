@@ -30,7 +30,7 @@ browser against the stage host before a deployment counts as verified.
 Tier 1 uses Node `fetch`. Dev checks every HTML page in the bundled release.
 Prod selects pages from the edge Job's `edge/routes.json`: Blog, CV, the
 leaderboard, Scotland and its policy pages, and the drafts note. Exact route exceptions keep query
-variants, the Scotland connector and `/slop/factory` on the hub.
+variants and `/slop/factory` on the hub.
 It checks real response headers, all built assets, internal links and
 JavaScript transfer sizes. Each owned page prefix has a junk path that must
 return HTTP 404 and the release's 404 HTML, including the retired prefixes

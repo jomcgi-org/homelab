@@ -31,11 +31,13 @@
     "jomcgi.dev/scotland/terms",
     "jomcgi.dev/scotland/support",
     "jomcgi.dev/scotland/marketplace.json",
+    "jomcgi.dev/scotland/mcp*",
+    "jomcgi.dev/scotland/v1*",
     "jomcgi.dev/slop",
     "jomcgi.dev/stars*"
   ],
   "exactBecause": {
-    "jomcgi.dev/scotland": "HOME-207 requires this exact landing URL; /scotland* would intercept the connector at /scotland/mcp and /scotland/v1/*. Query-string variants stay on the hub.",
+    "jomcgi.dev/scotland": "HOME-207 requires this exact landing URL; /scotland* would take every /scotland/ descendant, and HOME-475 moves only the retired connector paths /scotland/mcp* and /scotland/v1*. Query-string variants stay on the hub.",
     "jomcgi.dev/scotland/privacy": "HOME-207 routes only this policy file, with an exact pattern; descendants and query-string variants stay on the hub.",
     "jomcgi.dev/scotland/terms": "HOME-207 routes only this policy file, with an exact pattern; descendants and query-string variants stay on the hub.",
     "jomcgi.dev/scotland/support": "HOME-207 routes only this policy file, with an exact pattern; descendants and query-string variants stay on the hub.",

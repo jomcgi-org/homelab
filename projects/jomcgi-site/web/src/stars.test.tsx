@@ -230,7 +230,7 @@ describe("stars static and interactive page", () => {
     expect(html).toContain('href="https://jomcgi.dev/stars"');
     // The whole file, in order, so that an extra rule fails.
     expect(readFileSync("public/_redirects", "utf8")).toBe(
-      "/factory /factory/ 200\n/factory/* /factory/ 200\n/app/llm-leaderboard /llm-leaderboard 301\n/app/llm-leaderboard/* /llm-leaderboard 301\n/app/hikes /hikes 301\n/app/hikes/* /hikes 301\n/app/stars /stars 301\n/app/stars/* /stars 301\n",
+      "/factory /factory/ 200\n/factory/* /factory/ 200\n/app/llm-leaderboard /llm-leaderboard 301\n/app/llm-leaderboard/* /llm-leaderboard 301\n/app/hikes /hikes 301\n/app/hikes/* /hikes 301\n/app/stars /stars 301\n/app/stars/* /stars 301\n/scotland/mcp https://scotland-mcp.jomcgi.dev/mcp 308\n/scotland/v1/* https://scotland-mcp.jomcgi.dev/v1/:splat 308\n",
     );
   });
 });

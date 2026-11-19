@@ -384,15 +384,23 @@ to load on intent. Each entry hydrates only its own page through `mount.tsx`.
 | Scotland marketplace | `web/marketplace.test.mjs` checks the built catalog’s plugin source and factory MCP endpoint (`web:marketplace_test`). |
 | Hydration and the 150 KiB JS limit | `web/src/prerender.test.tsx` hydrates every page without recoverable errors (`web:test`); `web/budget.mjs` measures initial JS from built entries (`web:budget_test`). |
 | Palette, inline styles and accessibility | `web/src/contrast.test.tsx` scans TypeScript and CSS and checks both palette modes; `web/src/a11y.test.tsx` runs axe on every registered page (`web:test`). |
-| Exact routes and unlisted drafts | `edge/apply.test.mjs` checks route patterns against the connector and factory paths (`edge:apply_test`); `web/src/scotland.test.tsx` checks `live`, the drafts index exclusion, and noindex metadata and headers (`web:test`). |
+| Exact routes and unlisted drafts | `edge/apply.test.mjs` checks that only the retired connector patterns reach `/scotland/mcp` and `/scotland/v1`, and that no pattern reaches `/slop/factory` (`edge:apply_test`); `web/src/scotland.test.tsx` checks `live`, the drafts index exclusion, and noindex metadata and headers (`web:test`). |
 
 The [local browser verification](validation/scotland-browser.md) records
 hydration with the compiled scripts and full axe results for these five pages.
 All 20 light/dark and desktop/mobile cases passed, including colour contrast.
 
-The six URLs use exact patterns in `edge/routes.json`. The connector keeps
-`/scotland/mcp` and `/scotland/v1/*`; `/slop/factory` stays on the hub. The hub
-pages remain available for rollback when the section patterns are removed.
+The six URLs use exact patterns in `edge/routes.json`. `/slop/factory` stays
+on the hub. The hub pages remain available for rollback when the section
+patterns are removed.
+
+HOME-475 retired the hub copy of the Scotland connector. The patterns
+`jomcgi.dev/scotland/mcp*` and `jomcgi.dev/scotland/v1*` send its old URLs to
+the Worker. `web/public/_redirects` answers `/scotland/mcp` and
+`/scotland/v1/*` with a 308 to the same path on `scotland-mcp.jomcgi.dev`, and
+the query string goes with it. A 308 keeps the method and body, so an MCP
+client that follows redirects keeps working. Other paths under these patterns
+get the 404 page. `web:scotland_built_test` checks both rules in the build.
 `exactBecause` records HOME-207's explicit exceptions to the wildcard rule:
 query-string variants such as `/scotland?ref=x` and `/slop?ref=x` still reach
 the hub. Descendants are also outside these six exact patterns. The edge

@@ -6,3 +6,5 @@
 /app/hikes/* /hikes 301
 /app/stars /stars 301
 /app/stars/* /stars 301
+/scotland/mcp https://scotland-mcp.jomcgi.dev/mcp 308
+/scotland/v1/* https://scotland-mcp.jomcgi.dev/v1/:splat 308

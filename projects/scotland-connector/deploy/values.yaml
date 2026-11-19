@@ -1,5 +1,14 @@
-# Hub production values for the public Scotland connector. There is one
-# cluster, so there is no values-gke.yaml overlay.
+# Values of the hub copy of the Scotland connector. The factory copy
+# (application.yaml here) layers factory/values.yaml on top of this file.
+
+# HOME-475 retired the hub copy: zero pods and no autoscaler. The hub
+# Application cannot take a new values file, because Argo CD keeps its sources
+# as Kargo set them (projects/gke-cluster/root/root-application.yaml). So the
+# hub-only keys go here, and factory/values.yaml restores the factory copy's
+# autoscaler. The namespace, the R2 Secret and the Kargo stage stay.
+replicas: 0
+autoscaling:
+  enabled: false
 
 config:
   # Cloudflare R2 account endpoint, the one the monolith's stars-refresh job
@@ -19,13 +28,17 @@ r2Credentials:
     itemPath: vaults/k8s-homelab/items/r2-s3-public-read
 
 route:
-  # The public apex under /scotland (#7243): jomcgi.dev/scotland/mcp and
-  # jomcgi.dev/scotland/v1/... The apex already resolves through the tunnel
-  # and its Cloudflare cache rule honours the API's Cache-Control.
+  # Off since HOME-475. The jomcgi-site Worker owns jomcgi.dev/scotland/mcp*
+  # and /scotland/v1* (edge/routes.json) and answers them with a 308 to the
+  # same path on scotland-mcp.jomcgi.dev. Until its prod pin carries that
+  # route, these paths reach the hub's apex route to monolith-public.
+  #
+  # Before HOME-475 this served the public apex under /scotland (#7243).
+  # The hostname and prefix stay for a rollback and the chart tests.
   #
   # These values deploy from git HEAD while Kargo sets the chart version, so
   # a chart below 0.3.1 (which ignores pathPrefix) would serve this route on
   # bare /v1 and /mcp. Keep that in mind before lowering the Kargo pin.
-  enabled: true
+  enabled: false
   hostname: jomcgi.dev
   pathPrefix: /scotland
