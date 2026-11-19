@@ -1,7 +1,7 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 go_library(
-    name = "hikes_writer_lib",
+    name = "hikes-writer_lib",
     srcs = [
         "catalogue.go",
         "forecast.go",
@@ -19,14 +19,8 @@ go_library(
 
 go_binary(
     name = "hikes-writer",
-    embed = [":hikes_writer_lib"],
+    embed = [":hikes-writer_lib"],
     visibility = ["//projects/hikes:__pkg__"],
-)
-
-go_test(
-    name = "hikes_writer_test",
-    srcs = ["writer_test.go"],
-    embed = [":hikes_writer_lib"],
 )
 
 go_test(
