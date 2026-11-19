@@ -102,8 +102,14 @@ def test_worker_reads_the_latest_deployment_id_and_creation_time(monkeypatch):
     # The latest deployment decides, even when it lacks an ID.
     body["result"]["deployments"][1]["id"] = ""
     assert health.worker(NOW, ENV) is False
-    # A creation time in the future is not a deployment that happened.
-    body["result"]["deployments"][1].update(id="new", created_on="2026-11-19T09:00:00Z")
+    # A creation time after the check time is not a deployment that happened,
+    # even by a few seconds.
+    deployment = body["result"]["deployments"][1]
+    deployment.update(id="new", created_on="2026-11-19T08:00:00Z")
+    assert health.worker(NOW, ENV) is True
+    deployment["created_on"] = "2026-11-19T08:00:01Z"
+    assert health.worker(NOW, ENV) is False
+    deployment["created_on"] = "2026-11-19T08:02:00Z"
     assert health.worker(NOW, ENV) is False
     body["result"]["deployments"] = []
     assert health.worker(NOW, ENV) is False
