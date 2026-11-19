@@ -47,6 +47,7 @@ def _render(
     overrides: list[str] | None = None,
     binding: bool = True,
     values: Path = _DEPLOY_VALUES,
+    trial: bool = False,
 ) -> list[dict[str, Any]]:
     argv = [
         os.environ.get("HELM_BIN", "helm"),
@@ -75,6 +76,8 @@ def _render(
             "--set",
             "kagent.rbac.namespaces={kagent,factory-r-homelab}",
         ]
+    if trial:
+        argv += ["--values", str(_CHART_DIR / "files/coder-trial-values.yaml")]
     for override in overrides or []:
         # "string:" sets the value as a string (helm --set-string).
         if override.startswith("string:"):
@@ -711,7 +714,7 @@ def test_default_coder_uses_a_catalogued_model() -> None:
 
 
 def test_binding_relays_through_the_broker_with_an_actor_jwt() -> None:
-    docs = _render()
+    docs = _render(trial=True)
     ns = "factory-r-homelab"
     assert _in(docs, "ModelConfig", ns, "codex")["spec"] == {
         "provider": "OpenAI",
@@ -729,6 +732,16 @@ def test_binding_relays_through_the_broker_with_an_actor_jwt() -> None:
         ("astra-high", "gpt-6.2-astra", "high"),
         ("luna", "gpt-6-luna", "xhigh"),
     ]:
+        for kind, name in [
+            ("ModelConfig", f"codex-{suffix}"),
+            ("Agent", f"homelab-codex-{suffix}"),
+        ]:
+            assert (
+                _in(docs, kind, ns, name)["metadata"]["annotations"][
+                    "argocd.argoproj.io/sync-options"
+                ]
+                == "Prune=false,Delete=false"
+            )
         config = _in(docs, "ModelConfig", ns, f"codex-{suffix}")["spec"]
         assert config["model"] == model
         assert config["openAI"]["baseUrl"].endswith(f"/v1/effort/{effort}")

@@ -217,6 +217,9 @@ metadata:
     {{- include "factory.labels" $ | nindent 4 }}
   annotations:
     argocd.argoproj.io/sync-wave: "2"
+    {{- if $suffix }}
+    {{- include "factory.keep" $ | nindent 4 }}
+    {{- end }}
 spec:
   provider: OpenAI
   model: {{ $arm.model | quote }}
@@ -236,6 +239,9 @@ metadata:
     factory.jomcgi.dev/repository: {{ $r.name }}
   annotations:
     argocd.argoproj.io/sync-wave: "2"
+    {{- if $suffix }}
+    {{- include "factory.keep" $ | nindent 4 }}
+    {{- end }}
 spec:
   template:
     inline:
