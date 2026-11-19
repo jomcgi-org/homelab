@@ -180,6 +180,7 @@ def test_upstream_factory_contracts(tmp_path):
                     "CREATE ROLE factory_storyboard",
                     "-c",
                     "CREATE ROLE factory_reaper",
+                    "-c",
                     "CREATE ROLE factory_leaderboard",
                 ],
                 cwd=upstream,
