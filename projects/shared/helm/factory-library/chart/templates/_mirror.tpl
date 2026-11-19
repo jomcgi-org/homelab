@@ -12,6 +12,16 @@ case "$RCLONE_CONFIG_R2_ENDPOINT" in
   *) echo "R2 endpoint does not match the declared egress" >&2; exit 1 ;;
 esac
 run() { rclone --config /dev/null --s3-no-check-bucket "$@"; }
+{{- if eq .manifestName "latest.json" }}
+# Immutable generation keys exist before the writer commits this manifest.
+scratch=$(mktemp -d /tmp/mirror.XXXXXX)
+captured="$scratch/latest.json"
+trap 'rm -rf "$scratch"' EXIT
+manifest=$(run lsf "GARAGE:$GARAGE_BUCKET" --files-only --max-depth 1 --include /latest.json)
+if [ "$manifest" = latest.json ]; then
+  run cat "GARAGE:$GARAGE_BUCKET/latest.json" > "$captured"
+fi
+{{- end }}
 # Upload payloads before publishing the manifest. A failed sync stops here.
 run sync "GARAGE:$GARAGE_BUCKET" "R2:$R2_BUCKET" \
   --exclude /{{ .manifestName }} \
@@ -19,10 +29,12 @@ run sync "GARAGE:$GARAGE_BUCKET" "R2:$R2_BUCKET" \
   --exclude /{{ .key }} \
 {{- end }}
   --header-upload "Cache-Control: public, max-age=31536000, immutable"
+{{- if ne .manifestName "latest.json" }}
 # Listing failure is an error, not proof that the manifest is absent.
 manifest=$(run lsf "GARAGE:$GARAGE_BUCKET" --files-only --max-depth 1 --include /{{ .manifestName }})
+{{- end }}
 if [ "$manifest" = {{ .manifestName }} ]; then
-  run copyto "GARAGE:$GARAGE_BUCKET/{{ .manifestName }}" "R2:$R2_BUCKET/{{ .manifestName }}" \
+  run copyto {{ if eq .manifestName "latest.json" }}"$captured"{{ else }}"GARAGE:$GARAGE_BUCKET/{{ .manifestName }}"{{ end }} "R2:$R2_BUCKET/{{ .manifestName }}" \
     --ignore-times --header-upload "Cache-Control: public, max-age=60"
 else
   # The sync excludes this key, so remove it separately when Garage lacks it.

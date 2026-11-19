@@ -195,42 +195,6 @@ func refresh(sites []site, cache map[string]forecast, ticks <-chan time.Time, cl
 const shards = 64
 
 func shardKey(i int) string { return fmt.Sprintf("forecast/%02d.json", i) }
-func prune(ctx context.Context, state bucket, cutoff time.Time) error {
-	for j := 0; j < shards; j++ {
-		key := shardKey(j)
-		obj, err := state.Get(ctx, state.name, key, "", 64<<20)
-		if errors.Is(err, r2.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		var cache map[string]forecast
-		if err = json.Unmarshal(obj.Body, &cache); err != nil {
-			return err
-		}
-		changed := false
-		for id, f := range cache {
-			i := sort.Search(len(f.Hours), func(i int) bool { return !f.Hours[i].Time.Before(cutoff) })
-			if i > 0 {
-				changed = true
-				f.Hours = f.Hours[i:]
-				cache[id] = f
-			}
-		}
-		if changed {
-			data, err := json.Marshal(cache)
-			if err != nil {
-				return err
-			}
-			if err = state.Replace(ctx, state.name, key, data, obj.ETag); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 func run(ctx context.Context, mode string) error {
 	state, err := connect("STATE_")
 	if err != nil {
@@ -252,9 +216,7 @@ func run(ctx context.Context, mode string) error {
 		_, err = state.write(ctx, key, rows)
 		return err
 	}
-	if mode == "prune" {
-		return prune(ctx, state, time.Now().UTC().Truncate(time.Hour))
-	}
+
 	if mode != "refresh" {
 		return fmt.Errorf("unknown mode %q", mode)
 	}
@@ -311,7 +273,16 @@ func run(ctx context.Context, mode string) error {
 		}
 		n := refresh(group, cache, ticker.C, client)
 		successes += n
-		if n > 0 {
+		changed := n > 0
+		for id, f := range cache {
+			i := sort.Search(len(f.Hours), func(i int) bool { return !f.Hours[i].Time.Before(cutoff) })
+			if i > 0 {
+				changed = true
+				f.Hours = f.Hours[i:]
+				cache[id] = f
+			}
+		}
+		if changed {
 			if _, err = state.write(ctx, key, cache); err != nil {
 				return err
 			}
@@ -386,7 +357,7 @@ func run(ctx context.Context, mode string) error {
 
 func main() {
 	if len(os.Args) != 2 {
-		log.Fatal("expected grid, climatology, refresh, or prune")
+		log.Fatal("expected grid, climatology, or refresh")
 	}
 	if err := run(context.Background(), os.Args[1]); err != nil {
 		log.Fatal(err)
