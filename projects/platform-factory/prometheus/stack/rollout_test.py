@@ -3,6 +3,7 @@ from pathlib import Path
 import shutil
 import subprocess
 
+import pytest
 import yaml
 
 
@@ -24,7 +25,7 @@ def sync_wave(doc):
     )
 
 
-def default_receiver(docs):
+def alertmanager_config(docs):
     pod = deployment(docs, "alertmanager")["spec"]["template"]["spec"]
     config = next(
         vol["configMap"]["name"] for vol in pod["volumes"] if vol["name"] == "config"
@@ -34,7 +35,7 @@ def default_receiver(docs):
         for doc in docs
         if doc["kind"] == "ConfigMap" and doc["metadata"]["name"] == config
     )
-    return yaml.safe_load(cm["data"]["alertmanager.yml"])["route"]["receiver"]
+    return yaml.safe_load(cm["data"]["alertmanager.yml"])
 
 
 def test_receiver_cutover(tmp_path):
@@ -50,9 +51,14 @@ def test_receiver_cutover(tmp_path):
         "projects/platform-factory/prometheus/stack",
     }
     kustomize = os.environ["KUSTOMIZE_BIN"]
-    assert default_receiver(render(kustomize, "build", base)) == "discord"
+    assert (
+        alertmanager_config(render(kustomize, "build", base))["route"]["receiver"]
+        == "discord"
+    )
     desired = render(kustomize, "build", stack)
-    assert default_receiver(desired) == "relay"
+    config = alertmanager_config(desired)
+    assert config["route"]["receiver"] == "relay"
+    assert_grant_inhibitions(config)
     relay = deployment(
         render(
             os.environ["HELM_BIN"],
@@ -83,8 +89,7 @@ def test_alert_links_open_grafana_explore(tmp_path):
     assert "--web.route-prefix=/" in args
 
 
-def test_grant_inhibitions():
-    config = yaml.safe_load(Path(__file__).with_name("alertmanager.yml").read_text())
+def assert_grant_inhibitions(config):
     assert config["inhibit_rules"] == [
         {
             "source_matchers": ['alertname="FactoryCodexQuotaExhausted"'],
@@ -104,7 +109,25 @@ def test_alert_annotations():
     for group in yaml.safe_load(rules.read_text())["groups"]:
         for rule in group["rules"]:
             if "alert" in rule:
-                for key in ("summary", "action", "graph", "threshold", "runbook"):
-                    assert rule.get("annotations", {}).get(key, "").strip(), (
-                        f"{rule['alert']} needs a non-empty {key} annotation"
-                    )
+                assert_alert_annotations(rule)
+
+
+def assert_alert_annotations(rule):
+    for key in ("summary", "action", "graph", "threshold", "runbook"):
+        assert rule.get("annotations", {}).get(key, "").strip(), (
+            f"{rule['alert']} needs a non-empty {key} annotation"
+        )
+
+
+def test_alert_without_action_fails():
+    rule = {
+        "alert": "Example",
+        "annotations": {
+            "summary": "Usage is 95% (threshold 90%)",
+            "graph": "usage_percent",
+            "threshold": "90",
+            "runbook": "https://example.org/runbook",
+        },
+    }
+    with pytest.raises(AssertionError, match="Example needs a non-empty action"):
+        assert_alert_annotations(rule)
