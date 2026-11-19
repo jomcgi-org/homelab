@@ -3,7 +3,10 @@
 import base64
 import hashlib
 import importlib.util
+import os
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 import yaml
@@ -67,6 +70,30 @@ def by_kind(docs, kind):
     return {doc["metadata"]["name"]: doc for doc in docs if doc["kind"] == kind}
 
 
+@pytest.fixture(scope="module")
+def rendered(tmp_path_factory):
+    """The grimoire Application's manifests, as Argo CD builds them."""
+    # Materialize runfiles: Kustomize's load restriction rejects symlinks that
+    # resolve outside a resource directory in a Bazel sandbox.
+    root = tmp_path_factory.mktemp("kustomize")
+    for directory in (
+        "projects/platform-factory/grimoire-data/resources",
+        "projects/grimoire/deploy",
+    ):
+        shutil.copytree(REPO / directory, root / directory)
+    result = subprocess.run(
+        [
+            os.environ.get("KUSTOMIZE_BIN", "kustomize"),
+            "build",
+            root / "projects/platform-factory/grimoire-data/resources",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+
+
 def wave(doc):
     return int(
         doc["metadata"].get("annotations", {}).get("argocd.argoproj.io/sync-wave", "0")
@@ -101,9 +128,9 @@ def test_no_policy_reaches_inference_or_the_world():
         assert word not in specs
 
 
-def test_runtime_and_restore_pods_select_their_policies():
-    job = read("projects/grimoire/deploy/restore-job.yaml")[0]
-    pod = job["spec"]["template"]["spec"]
+def test_runtime_and_restore_pods_select_their_policies(rendered):
+    cronjob = by_kind(rendered, "CronJob")["grimoire-restore"]
+    pod = cronjob["spec"]["jobTemplate"]["spec"]["template"]["spec"]
     assert pod["serviceAccountName"] == "grimoire-restore"
     assert pod["automountServiceAccountToken"] is False
     env = {item["name"]: item.get("value") for item in pod["containers"][0]["env"]}
@@ -113,6 +140,43 @@ def test_runtime_and_restore_pods_select_their_policies():
     assert set(accounts) == {"grimoire-api", "grimoire-worker", "grimoire-restore"}
     for account in accounts.values():
         assert account["automountServiceAccountToken"] is False
+
+
+def test_application_deploys_the_restore_on_demand_only(rendered):
+    cronjob = by_kind(rendered, "CronJob")["grimoire-restore"]
+    # A sync starts no run: the CronJob is suspended, its schedule never
+    # occurs, and no restore Job is rendered.
+    assert cronjob["spec"]["suspend"] is True
+    assert cronjob["spec"]["schedule"] == "0 0 31 2 *"
+    assert "grimoire-restore" not in by_kind(rendered, "Job")
+    # An unbound claim stays Progressing, and Argo CD would then hold the
+    # PostSync grants. Each run makes its own claim instead.
+    assert "PersistentVolumeClaim" not in {doc["kind"] for doc in rendered}
+    job = cronjob["spec"]["jobTemplate"]["spec"]
+    assert job["backoffLimit"] == 0
+    pod = job["template"]["spec"]
+    volumes = {volume["name"]: volume for volume in pod["volumes"]}
+    claim = volumes["snapshot"]["ephemeral"]["volumeClaimTemplate"]["spec"]
+    assert claim["storageClassName"] == "local-path"
+    # Only the stage container writes the dump; the restore reads it.
+    (stage,) = pod["initContainers"]
+    (restore,) = pod["containers"]
+    mounts = {
+        container["name"]: {mount["name"]: mount for mount in container["volumeMounts"]}
+        for container in (stage, restore)
+    }
+    assert set(mounts["stage"]) == {"snapshot"}
+    assert mounts["pg-restore"]["snapshot"]["readOnly"] is True
+    assert restore["command"] == ["bash", "/scripts/restore.sh"]
+    assert mounts["pg-restore"]["scripts"]["mountPath"] == "/scripts"
+
+    # The mounted script is the repository's restore.sh.
+    name = volumes["scripts"]["configMap"]["name"]
+    script = by_kind(rendered, "ConfigMap")[name]
+    assert name.startswith("grimoire-restore-script-")
+    assert script["metadata"]["namespace"] == "grimoire"
+    restore_sh = (REPO / "projects/grimoire/deploy/restore.sh").read_text()
+    assert script["data"] == {"restore.sh": restore_sh}
 
 
 def test_database_admits_only_grimoire_identities():

@@ -60,6 +60,19 @@ the dump. CI runs it on a synthetic dump.
 HOME-484 owns the real hub dump, the private object copy with checksums and
 the rehearsal on real data.
 
+The `grimoire` Application deploys the CronJob `grimoire-restore`
+([restore-cronjob.yaml](restore-cronjob.yaml)) and the ConfigMap that
+[kustomization.yaml](kustomization.yaml) generates from `restore.sh`. The
+CronJob is suspended, so a sync starts nothing. Each run gets its own volume.
+Its `stage` container waits until you copy the dump in.
+
+```mermaid
+flowchart LR
+  create[kubectl create job] --> stage[stage: wait for /snapshot/ready]
+  stage -->|kubectl cp, touch ready| restore[pg-restore: restore.sh]
+  restore --> done[log line, then the volume is deleted after 1 day]
+```
+
 1. On the source, record the pgvector version and schema in `vector.metadata`:
 
    ```sh
@@ -67,18 +80,31 @@ the rehearsal on real data.
    ```
 
 2. Take a custom-format dump of the scoped source: `pg_dump -Fc -f grimoire.dump`.
-3. Put both files on the PVC `grimoire-restore-snapshot` in namespace `grimoire`.
-4. Add [restore-job.yaml](restore-job.yaml) to a one-shot GitOps change.
-5. In the same change, generate ConfigMap `grimoire-restore-script` from `restore.sh`.
-6. Sync it. Read the log line `restored with N valid foreign keys and M valid pgvector indexes`.
-7. Run [inventory.sql](inventory.sql) on the source and on `grimoire`, then compare:
+3. Start a run, copy both files into it, then release it:
+
+   ```sh
+   job=grimoire-restore-$(date -u +%Y%m%d%H%M%S)
+   kubectl -n grimoire create job "$job" --from=cronjob/grimoire-restore
+   until kubectl -n grimoire exec "job/$job" -c stage -- true; do sleep 5; done
+   pod=$(kubectl -n grimoire get pod -l job-name="$job" -o jsonpath='{.items[0].metadata.name}')
+   kubectl -n grimoire cp grimoire.dump "$pod:/snapshot/grimoire.dump" -c stage
+   kubectl -n grimoire cp vector.metadata "$pod:/snapshot/vector.metadata" -c stage
+   kubectl -n grimoire exec "$pod" -c stage -- touch /snapshot/ready
+   kubectl -n grimoire wait "pod/$pod" --for=condition=Initialized
+   kubectl -n grimoire logs -f "$pod" -c pg-restore
+   ```
+
+4. Read the log line `restored with N valid foreign keys and M valid pgvector indexes`.
+5. Run [inventory.sql](inventory.sql) on the source and on `grimoire`, then compare:
 
    ```sh
    psql -XqAt -v ON_ERROR_STOP=1 -f inventory.sql > grimoire.inventory
    diff -q source.inventory grimoire.inventory
    ```
 
-8. Remove the Job in the next change.
+6. Delete the run: `kubectl -n grimoire delete job "$job"`. This deletes the
+   dump with the run's volume. Otherwise the Job and its volume go 1 day after
+   the run ends. A run that gets no dump ends after 1 day.
 
 ### Restore a backup
 

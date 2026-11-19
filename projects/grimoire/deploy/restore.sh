@@ -28,12 +28,17 @@ fi
 pg_restore --list "$PRIVATE_DUMP" >"$tmp/archive"
 awk '!($1 ~ /^[0-9]+;$/ && (($4 == "EXTENSION" && $5 == "-" && $6 == "vector") || ($4 == "COMMENT" && $5 == "-" && $6 == "EXTENSION" && $7 == "vector")))' "$tmp/archive" >"$tmp/restore"
 
-# Count what the target must have from the dump alone. A NOT VALID foreign key
-# stays NOT VALID in the target, so it can never match the valid count.
-want_keys=$(awk '$1 ~ /^[0-9]+;$/ && $4 == "FK" && $5 == "CONSTRAINT" {n++} END {print n + 0}' "$tmp/restore")
-pg_restore --use-list="$tmp/restore" --section=post-data --file="$tmp/post-data.sql" "$PRIVATE_DUMP"
-want_indexes=$(grep -cE '^CREATE (UNIQUE )?INDEX .* USING (hnsw|ivfflat) ' "$tmp/post-data.sql" || true)
-not_valid=$(grep -cE ' FOREIGN KEY .* NOT VALID;$' "$tmp/post-data.sql" || true)
+# Count what the target must have from the dump alone. Each count renders only
+# the archive entries of its type, so the foreign key check never reads a
+# string in an index predicate. A NOT VALID foreign key stays NOT VALID in the
+# target, so it can never match the valid count.
+awk '$1 ~ /^[0-9]+;$/ && $4 == "FK" && $5 == "CONSTRAINT"' "$tmp/restore" >"$tmp/keys"
+want_keys=$(wc -l <"$tmp/keys")
+pg_restore --use-list="$tmp/keys" --file="$tmp/keys.sql" "$PRIVATE_DUMP"
+awk '$1 ~ /^[0-9]+;$/ && $4 == "INDEX"' "$tmp/restore" >"$tmp/indexes"
+pg_restore --use-list="$tmp/indexes" --file="$tmp/indexes.sql" "$PRIVATE_DUMP"
+want_indexes=$(grep -cE '^CREATE (UNIQUE )?INDEX .* USING (hnsw|ivfflat) ' "$tmp/indexes.sql" || true)
+not_valid=$(grep -c ' NOT VALID;$' "$tmp/keys.sql" || true)
 if [[ $not_valid != 0 ]]; then
 	echo "NOT VALID foreign keys in the dump: $not_valid. Validate them in the source, then dump again" >&2
 	exit 1

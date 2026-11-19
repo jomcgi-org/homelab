@@ -11,6 +11,8 @@ filegroup(
     name = "manifests",
     srcs = [
         "database.yaml",
+        "grants.sql",
+        "kustomization.yaml",
         "policy.yaml",
         "runtime.yaml",
         "secret_init.py",
