@@ -597,3 +597,23 @@ rarely worth a day of it.
 | Decision | Date | Record |
 | --- | --- | --- |
 | Keep stopped sessions for one hour | 2026-11-16 | [HOME-136](https://factory-plan.jomcgi.dev/factory/issue/HOME-136#comment-1045) |
+
+### Delivery outcomes
+
+Read the connector PostgreSQL database for the results of delivered and stopped PRs.
+
+```sql
+SELECT * FROM arm_delivery_results ORDER BY arm, task_class, guidance_version;
+```
+
+The first coder run supplies the arm, task class and guidance checkout (base SHA).
+Historical runs without provenance form a NULL cohort. The underlying
+`pr_delivery_results` view joins each terminal PR to all coder runs of its work
+item, including retries. Minutes measure first send to finish per attempt.
+Time held sums completed admission holds and observed PR hold-label intervals since the migration.
+Stopped items without a PR contribute an abandoned outcome until delivery resumes.
+Tokens per merge divides total coder input and output across the cohort by its
+merge count. Missing token receipts leave that metric NULL.
+Revert detection scans base-branch commits for standard Git revert trailers
+naming the merge SHA during the first 168 hours after merge. Recent merges
+can still change the revert rate.

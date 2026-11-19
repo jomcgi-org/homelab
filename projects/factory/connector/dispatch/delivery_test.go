@@ -3120,3 +3120,7 @@ func TestCILogPageCannotBeSentWithoutItsJournal(t *testing.T) {
 		t.Fatalf("sent %d pages, rounds %d", sent, len(v.rounds()))
 	}
 }
+
+func (g *fakeGitHub) RevertedMerge(context.Context, string, string, string, time.Time, time.Time) (*time.Time, error) {
+	return nil, nil
+}
