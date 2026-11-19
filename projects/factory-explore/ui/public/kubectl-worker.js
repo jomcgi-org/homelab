@@ -13,6 +13,9 @@ self.onmessage = async ({ data }) => {
       postMessage({ module });
       return;
     }
+    // Go diagnostics can include argv. Only the redacted terminal output
+    // channel should receive runtime messages in this command worker.
+    self.console = new Proxy(self.console, { get: () => () => {} });
     importScripts("/wasm_exec.js");
     const { module, args, token, server } = data;
     const request = self.fetch.bind(self);

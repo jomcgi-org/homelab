@@ -49,10 +49,17 @@ async function execute() {
   try {
     const [module, token] = await Promise.all([loadKubectl(), getIdToken()]);
     if (id !== generation) return;
-    if (!command.includes(token)) history.push(command);
+    if (command.includes(token) || args.some((arg) => arg.includes(token))) {
+      term.writeln(
+        "Use the explorer connection without including credentials.",
+      );
+      return finish();
+    }
+    history.push(command);
     cursor = history.length;
     worker = new Worker("/kubectl-worker.js");
-    worker.onerror = () => {
+    worker.onerror = (event) => {
+      event.preventDefault();
       term.writeln("kubectl failed");
       finish();
     };
