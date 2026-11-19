@@ -33,8 +33,16 @@ const (
 
 var (
 	malformed atomic.Uint64 // frames without JSON or an MMSI
-	rejected  atomic.Uint64 // reports dated too far ahead or refused by PostgreSQL
+	ahead     atomic.Uint64 // reports dated more than maxClockSkew ahead
+	refused   atomic.Uint64 // reports PostgreSQL refuses
 )
+
+// errAhead marks a report dated too far ahead. The applier drops and counts it.
+var errAhead = errors.New("report dated too far ahead")
+
+func logCounters(event string, last time.Time) {
+	log.Printf("%s: malformed=%d ahead=%d refused=%d last_apply=%v", event, malformed.Load(), ahead.Load(), refused.Load(), last)
+}
 
 type position struct {
 	Latitude, Longitude, Sog, Cog   *float64
@@ -128,8 +136,7 @@ func store(ctx context.Context, tx *sql.Tx, f frame) error {
 		return nil
 	}
 	if at.After(time.Now().Add(maxClockSkew)) {
-		rejected.Add(1)
-		return nil
+		return errAhead
 	}
 	var lat, lon float64
 	var prior time.Time
@@ -194,13 +201,18 @@ func apply(ctx context.Context, c *sql.Conn) error {
 
 // applyChunk applies the oldest spooled frames. With isolate set, a savepoint
 // around each frame lets the chunk commit without a frame PostgreSQL refuses.
+//
+// FOR UPDATE claims the frames until the transaction ends. If PostgreSQL ends
+// only the lease session, the old apply can still commit while a standby holds
+// the lease. The standby then waits on the claimed rows and skips the rows the
+// old apply deleted, so each frame reaches history once.
 func applyChunk(ctx context.Context, c *sql.Conn, isolate bool) (int, error) {
 	tx, err := c.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, "select id, frame from ships.inbox order by id limit $1", batchSize)
+	rows, err := tx.QueryContext(ctx, "select id, frame from ships.inbox order by id limit $1 for update", batchSize)
 	if err != nil {
 		return 0, err
 	}
@@ -222,6 +234,9 @@ func applyChunk(ctx context.Context, c *sql.Conn, isolate bool) (int, error) {
 	if err = rows.Err(); err != nil || len(frames) == 0 {
 		return 0, err
 	}
+	// The counters change only when the chunk commits, so a retried chunk
+	// counts each dropped report once.
+	var aheadHere, refusedHere uint64
 	for _, raw := range frames {
 		var f frame
 		if json.Unmarshal(raw, &f) != nil {
@@ -233,8 +248,12 @@ func applyChunk(ctx context.Context, c *sql.Conn, isolate bool) (int, error) {
 			}
 		}
 		err = store(ctx, tx, f)
+		if errors.Is(err, errAhead) {
+			aheadHere++
+			err = nil
+		}
 		if isolate && dataError(err) {
-			rejected.Add(1)
+			refusedHere++
 			_, err = tx.ExecContext(ctx, "rollback to savepoint frame")
 		}
 		if err == nil && isolate {
@@ -244,11 +263,20 @@ func applyChunk(ctx context.Context, c *sql.Conn, isolate bool) (int, error) {
 			return 0, err
 		}
 	}
-	// The spooler commits new frames meanwhile, so delete only the frames read.
-	if _, err = tx.ExecContext(ctx, "delete from ships.inbox where id = any($1)", pq.Int64Array(ids)); err != nil {
+	// The spooler commits new frames meanwhile, so delete only the claimed frames.
+	deleted, err := tx.ExecContext(ctx, "delete from ships.inbox where id = any($1)", pq.Int64Array(ids))
+	if err != nil {
 		return 0, err
 	}
-	return len(frames), tx.Commit()
+	if n, err := deleted.RowsAffected(); err != nil || n != int64(len(ids)) {
+		return 0, errors.Join(errors.New("inbox claim lost"), err)
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, err
+	}
+	ahead.Add(aheadHere)
+	refused.Add(refusedHere)
+	return len(frames), nil
 }
 
 //go:embed maintenance.sql
@@ -355,6 +383,7 @@ func applyLoop(ctx context.Context, c *sql.Conn, spooled <-chan struct{}, last *
 			if err := maintain(ctx, c); err != nil {
 				return err
 			}
+			logCounters("ingest running", *last)
 		}
 	}
 }
@@ -433,7 +462,7 @@ func ingest(ctx context.Context, db *sql.DB, key string) error {
 	if applyErr := <-applied; err == nil {
 		err = applyErr
 	}
-	log.Printf("session ended: malformed=%d rejected=%d last_apply=%v", malformed.Load(), rejected.Load(), committed)
+	logCounters("session ended", committed)
 	if err != nil {
 		return err
 	}
