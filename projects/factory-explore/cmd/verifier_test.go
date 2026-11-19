@@ -57,7 +57,7 @@ func TestBearerVerification(t *testing.T) {
 			if tc.name == "missing username" {
 				name = ""
 			}
-			raw, err := jwt.Signed(signer).Claims(jwt.Claims{Subject: "visitor-123", Issuer: tc.iss, Audience: jwt.Audience{tc.aud}, IssuedAt: jwt.NewNumericDate(now), Expiry: jwt.NewNumericDate(now.Add(tc.ttl))}).Claims(map[string]string{"preferred_username": name}).Serialize()
+			raw, err := jwt.Signed(signer).Claims(jwt.Claims{Subject: "visitor-123", Issuer: tc.iss, Audience: jwt.Audience{tc.aud}, IssuedAt: jwt.NewNumericDate(now), Expiry: jwt.NewNumericDate(now.Add(tc.ttl))}).Claims(map[string]any{"preferred_username": name}).Serialize()
 			if err != nil {
 				t.Fatal(err)
 			}
