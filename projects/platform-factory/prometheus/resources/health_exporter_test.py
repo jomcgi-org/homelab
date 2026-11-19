@@ -9,6 +9,8 @@ import threading
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
+import pytest
+
 SPEC = importlib.util.spec_from_file_location(
     "health_exporter", Path(__file__).resolve().parent / "health_exporter.py"
 )
@@ -23,6 +25,27 @@ HEALTHY = {
         {"name": "jomcgi-site-worker", "state": "up"},
     ],
 }
+HEALTHY_VALUES = {
+    "factory_health_read_success": "1",
+    "factory_health_healthy": "1",
+    "factory_health_generated_at_seconds": "1795122603",
+    'factory_health_component_up{component="factory-cluster"}': "1",
+    'factory_health_component_up{component="jomcgi-site-worker"}': "1",
+}
+UNHEALTHY = dict(
+    HEALTHY,
+    status="unhealthy",
+    components=HEALTHY["components"] + [{"name": "alert-test", "state": "down"}],
+)
+
+
+@pytest.fixture(autouse=True)
+def no_valid_read(monkeypatch):
+    monkeypatch.setattr(exporter, "last_valid", [])
+
+
+def unreachable():
+    raise OSError("connection refused")
 
 
 def check_metrics(text):
@@ -44,31 +67,34 @@ def values(text):
 def test_a_healthy_file_exports_status_age_and_components():
     text = exporter.render(lambda: HEALTHY)
     check_metrics(text)
-    assert values(text) == {
-        "factory_health_read_success": "1",
-        "factory_health_healthy": "1",
-        "factory_health_generated_at_seconds": "1795122603",
-        'factory_health_component_up{component="factory-cluster"}': "1",
-        'factory_health_component_up{component="jomcgi-site-worker"}': "1",
-    }
+    assert values(text) == HEALTHY_VALUES
 
 
 def test_an_unhealthy_file_exports_its_down_component():
-    document = dict(
-        HEALTHY,
-        status="unhealthy",
-        components=HEALTHY["components"] + [{"name": "alert-test", "state": "down"}],
-    )
-    text = exporter.render(lambda: document)
+    text = exporter.render(lambda: UNHEALTHY)
     check_metrics(text)
     assert values(text)["factory_health_healthy"] == "0"
     assert values(text)['factory_health_component_up{component="alert-test"}'] == "0"
 
 
-def test_a_failed_or_invalid_read_exports_only_read_success_0(capsys):
-    def unreachable():
-        raise OSError("connection refused")
+def test_a_failed_read_keeps_the_series_of_the_last_valid_read(capsys):
+    valid = values(exporter.render(lambda: UNHEALTHY))
+    for fetch in [unreachable, lambda: {}]:
+        text = exporter.render(fetch)
+        check_metrics(text)
+        assert values(text) == dict(valid, factory_health_read_success="0")
+    assert "health.json read failed: OSError" in capsys.readouterr().err
 
+
+def test_a_valid_read_drops_a_removed_component():
+    exporter.render(lambda: UNHEALTHY)
+    exporter.render(unreachable)
+    text = exporter.render(lambda: HEALTHY)
+    check_metrics(text)
+    assert values(text) == HEALTHY_VALUES
+
+
+def test_a_failed_read_before_any_valid_read_exports_only_read_success_0(capsys):
     invalid = [
         {},
         dict(HEALTHY, generatedAt="2026-11-19T21:10:03"),

@@ -1,0 +1,94 @@
+# promtool unit tests for rules.yml on the production rule grid (BUILD:
+# rules_test). Rules run every 30 s, as in prometheus.yml. The series have
+# one sample each 37 s, so most scrapes fall between two evaluations.
+rule_files:
+  - rules.yml
+
+evaluation_interval: 30s
+
+tests:
+  # relay is down from the start, and the alert fires at 5 min. alert-test
+  # goes down in the scrape at 6m10s and leaves in the scrape at 12m20s. The
+  # file is healthy in the scrape at 19m07s. Each change shows at the next
+  # evaluation, and the alert always names a down component.
+  - interval: 37s
+    input_series:
+      - series: 'factory_health_healthy'
+        values: "0x30 1x9"
+      - series: 'factory_health_component_up{component="factory-cluster"}'
+        values: "1x40"
+      - series: 'factory_health_component_up{component="relay"}'
+        values: "0x30 1x9"
+      - series: 'factory_health_component_up{component="alert-test"}'
+        values: "_x10 0x9 stale"
+    alert_rule_test:
+      - eval_time: 4m30s
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: &relay_down
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              action: "Check each down component in health.json."
+              graph: "factory_health_component_up"
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthUnhealthy"
+              summary: "Factory health is unhealthy, down: relay (healthy flag 0, minimum 1)"
+              description: 'https://factory-data.jomcgi.dev/health.json reports status unhealthy. Runbook: projects/factory-cluster/README.md, "Alerts".'
+      - eval_time: 6m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: *relay_down
+      - eval_time: 6m30s
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: &two_down
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              action: "Check each down component in health.json."
+              graph: "factory_health_component_up"
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthUnhealthy"
+              summary: "Factory health is unhealthy, down: alert-test, relay (healthy flag 0, minimum 1)"
+              description: 'https://factory-data.jomcgi.dev/health.json reports status unhealthy. Runbook: projects/factory-cluster/README.md, "Alerts".'
+      - eval_time: 12m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: *two_down
+      - eval_time: 12m30s
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: *relay_down
+      - eval_time: 19m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: *relay_down
+      - eval_time: 19m30s
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: []
+
+  # The file turns unhealthy in the scrape at 6m10s, with alert-test down.
+  # The rule first sees it at 6m30s and fires 5 min later, at 11m30s. The
+  # first message names alert-test.
+  - interval: 37s
+    input_series:
+      - series: 'factory_health_healthy'
+        values: "1x9 0x20"
+      - series: 'factory_health_component_up{component="factory-cluster"}'
+        values: "1x30"
+      - series: 'factory_health_component_up{component="alert-test"}'
+        values: "_x10 0x20"
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: []
+      - eval_time: 11m30s
+        alertname: FactoryHealthUnhealthy
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              action: "Check each down component in health.json."
+              graph: "factory_health_component_up"
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthUnhealthy"
+              summary: "Factory health is unhealthy, down: alert-test (healthy flag 0, minimum 1)"
+              description: 'https://factory-data.jomcgi.dev/health.json reports status unhealthy. Runbook: projects/factory-cluster/README.md, "Alerts".'
