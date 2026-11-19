@@ -1,5 +1,7 @@
 load("//bazel/helm:defs.bzl", "argocd_app")
 
+exports_files(["application.yaml"])
+
 argocd_app(
     name = "ships",
     chart = "projects/ships/chart",

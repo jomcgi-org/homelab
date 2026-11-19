@@ -2,3 +2,7 @@ apiVersion: v2
 name: ships
 version: 0.12.16
 description: Pacific Northwest AIS ingestion on factory
+dependencies:
+  - name: factory-library
+    version: "0.1.0"
+    repository: "file://../../shared/helm/factory-library/chart"

@@ -35,8 +35,12 @@ py_test(
     srcs = ["ingester_test.py"],
     data = [
         ":chart",
+        "//projects/ships/deploy:application.yaml",
         "@multitool//tools/helm",
     ],
-    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "SHIPS_APPLICATION": "$(rootpath //projects/ships/deploy:application.yaml)",
+    },
     deps = ["@pip//pyyaml"],
 )
