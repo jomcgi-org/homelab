@@ -48,12 +48,13 @@ CLAIM_WAIT = (
     " where datname = current_database() and wait_event_type = 'Lock'"
     " and query like 'select id, frame from ships.inbox%'"
 )
-# The MMSIs of the position reports in the inbox and in history, in order.
+# The MMSIs of the position reports in the inbox, in receive order.
 INBOX_REPORTS = (
     "select coalesce(string_agg(convert_from(frame, 'UTF8')::json #>> '{MetaData,MMSI}',"
     " ',' order by id), '') from ships.inbox"
     " where convert_from(frame, 'UTF8')::json ->> 'MessageType' = 'PositionReport'"
 )
+# The distinct MMSIs in history.
 STORED_MMSIS = (
     "select coalesce(string_agg(distinct mmsi, ',' order by mmsi), '')"
     " from ships.positions"
