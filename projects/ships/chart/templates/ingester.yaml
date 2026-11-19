@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ships-ingester
+spec:
+  replicas: {{ ternary 1 0 .Values.enabled }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ships-ingester
+  template:
+    metadata:
+      labels:
+        app: ships-ingester
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ghcr-imagepull-secret
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ingester
+          image: "{{ .Values.image.repository }}@{{ required "image.digest required" .Values.image.digest }}"
+          env:
+            - name: AISSTREAM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ships-marine
+                  key: ais-stream-api-key
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ships-db-app
+                  key: uri
+            - name: SHIPS_RETENTION_ENABLED
+              value: {{ .Values.retentionEnabled | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

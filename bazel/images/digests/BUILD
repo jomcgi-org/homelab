@@ -54,6 +54,7 @@ oci_digest_manifest(
         "//projects/monolith:stars_grid_image.info": "//projects/monolith:stars_grid_image.push",
         "//projects/operators/oci-model-cache:image.info": "//projects/operators/oci-model-cache:image.push",
         "//projects/scotland-connector/image:image.info": "//projects/scotland-connector/image:image.push",
+        "//projects/ships:image.info": "//projects/ships:image.push",
         "//projects/stars-forecast:image.info": "//projects/stars-forecast:image.push",
     },
     visibility = ["//visibility:public"],

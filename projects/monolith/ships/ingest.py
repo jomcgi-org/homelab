@@ -66,6 +66,8 @@ async def ais_stream_loop(stop: asyncio.Event) -> None:
     delay = INITIAL_RECONNECT_DELAY
 
     while not stop.is_set():
+        minute = int(time.time() // 60)
+        frames = 0
         try:
             logger.info("ships ingest: connecting to AISStream at %s", url)
             async with websockets.connect(url, ssl=ssl_ctx) as ws:
@@ -90,6 +92,13 @@ async def ais_stream_loop(stop: asyncio.Event) -> None:
                 async for raw in ws:
                     if stop.is_set():
                         break
+                    current_minute = int(time.time() // 60)
+                    if current_minute != minute:
+                        logger.info(
+                            "ships AIS frames minute=%d count=%d", minute, frames
+                        )
+                        minute, frames = current_minute, 0
+                    frames += 1
                     kind, row = parse_message(raw)
                     if kind == "position":
                         positions.append(row)
@@ -110,6 +119,9 @@ async def ais_stream_loop(stop: asyncio.Event) -> None:
             raise
         except Exception:
             logger.exception("ships ingest: stream error")
+        finally:
+            if frames:
+                logger.info("ships AIS frames minute=%d count=%d", minute, frames)
 
         if not stop.is_set():
             await asyncio.sleep(delay)
