@@ -20,7 +20,7 @@ export function parseArguments(line: string): string[] {
     } else if (char === "\\" && quote !== "'") {
       const next = line[i + 1];
       if (next === undefined) throw new Error("Incomplete escape");
-      if (quote && !['"', "\\", "$", "x60"].includes(next)) word += char;
+      if (quote && !['"', "\\", "$", "`"].includes(next)) word += char;
       else {
         word += next;
         i++;

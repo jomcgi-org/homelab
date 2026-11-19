@@ -59,7 +59,9 @@ js_library(
     name = "test_src",
     srcs = [
         "arguments.test.ts",
+        "history.test.ts",
         "session.test.ts",
+        "worker-output.test.ts",
     ],
     deps = [
         ":node_modules/happy-dom",

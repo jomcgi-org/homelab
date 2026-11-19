@@ -25,3 +25,9 @@ test("rejects incomplete quotes and escapes", () => {
   for (const line of ["get 'pods", 'get "pods', "get pods\\"])
     expect(() => parseArguments(line)).toThrow();
 });
+
+test("unescapes backticks in a double-quoted Go template", () => {
+  expect(
+    parseArguments('get pods -o go-template="{{print \\`pods\\`}}"'),
+  ).toEqual(["get", "pods", "-o", "go-template={{print `pods`}}"]);
+});
