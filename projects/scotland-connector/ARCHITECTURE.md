@@ -27,10 +27,13 @@ The factory route is public, with no sign-in, as Joe decided
 Its route-level SecurityPolicy replaces the gateway OIDC policy with the hub's
 origin rules, and native Envoy rate limits match the hub's. The factory tunnel
 publishes scotland-mcp.jomcgi.dev. The cutover is staged
-([HOME-259 #comment-3953](https://factory-plan.jomcgi.dev/factory/issue/HOME-259#comment-3953)):
-the hub keeps serving `jomcgi.dev/scotland/mcp` and `/scotland/v1/*` until
-HOME-393 points the plugin and marketplace at the new hostname, makes the hub
-URLs answer with a 404 or a pointer, and scales the hub to zero.
+([HOME-259 #comment-3953](https://factory-plan.jomcgi.dev/factory/issue/HOME-259#comment-3953)).
+The plugin, the site's Scotland page and its catalog point at the new hostname
+(#8338). The jomcgi-site Worker answers `jomcgi.dev/scotland/mcp` and
+`/scotland/v1/*` with a 308 to the same path on scotland-mcp.jomcgi.dev
+(HOME-475). HOME-540 scales the hub copy to zero: `deploy/values.yaml` gives
+it zero pods, no autoscaler and no route, and `factory/values.yaml` restores
+the factory copy's autoscaler.
 
 ## Shape
 
@@ -610,11 +613,12 @@ answer any request.
   (#7248), as the monolith's is.
 - HPA 2 to 10 on container CPU at 60%, scaling up by up to 100% every 30
   seconds and down by one pod a minute; PDB `maxUnavailable: 1`; replicas
-  spread across nodes. A new pod is ready after two R2 GETs.
-- The route shares the `jomcgi.dev` apex with `monolith-public` under
-  `route.pathPrefix` `/scotland`: it matches only `/scotland/v1` and
-  `/scotland/mcp`, rewrites each back to `/v1` and `/mcp`, and wins over the
-  apex catch-all `/` by Gateway API longest-path precedence. It carries
+  spread across nodes. A new pod is ready after two R2 GETs. The hub copy
+  runs zero pods and no HPA since HOME-540.
+- The hub route, off since HOME-540, shares the `jomcgi.dev` apex with
+  `monolith-public` under `route.pathPrefix` `/scotland`. It matches only
+  `/scotland/v1` and `/scotland/mcp`, rewrites each back to `/v1` and `/mcp`,
+  and wins over the apex catch-all `/` by Gateway API longest-path precedence. It carries
   per-client limits keyed on `CF-Connecting-IP` in the shape
   `projects/monolith-public` proves (a fail-safe bucket for missing or
   malformed identities, a Distinct bucket per valid address), and Cloudflare
