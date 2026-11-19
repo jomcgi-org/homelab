@@ -4313,3 +4313,44 @@ func fixedAll(fs []Finding) []Previous {
 	}
 	return out
 }
+
+func TestAddedFileInvariantAnswerInCompletedCheck(t *testing.T) {
+	const added = "pkg/sub/new.go"
+	for _, gated := range []bool{false, true} {
+		for _, uncovered := range []bool{false, true} {
+			t.Run(fmt.Sprintf("gated=%t/uncovered=%t", gated, uncovered), func(t *testing.T) {
+				h := newHarness(t)
+				h.cfg.Bindings[0].EnqueueAuthors = []string{"jomcgi-factory[bot]"}
+				files := []github.PullRequestFile{{Path: added, Status: "added", Additions: 1}}
+				if gated {
+					files = append(files, github.PullRequestFile{Path: "pkg/old.go", Status: "modified"})
+				}
+				h.gh.addPR(&fakePR{Number: 7, Head: shaA, Author: "jomcgi-factory[bot]", Files: files})
+				const policy = "invariants:\n  - mechanism: [pkg/old.go]"
+				h.gh.baseFiles["pkg/INVARIANTS.yaml"] = policy
+				const reason = "The new file also implements the protected mechanism."
+				c := reviewRound(t, h, shaA, map[string]any{
+					"summary": "Reviewed the added file.", "findings": []Finding{},
+					"invariant_scopes": []InvariantScopeAnswer{{Path: added, Uncovered: uncovered, Reason: reason}},
+				})
+				prompt := lastPrompt(h)
+				for _, want := range []string{"For every added file", added, "pkg/INVARIANTS.yaml", policy} {
+					if !strings.Contains(prompt, want) {
+						t.Fatalf("prompt missing %q", want)
+					}
+				}
+				if strings.Contains(c.Summary, added+":invariant-scope") != uncovered || strings.Contains(c.Summary, reason) != uncovered {
+					t.Fatalf("published findings: %s", c.Summary)
+				}
+				wantConclusion := ConclusionSuccess
+				if gated {
+					wantConclusion = ConclusionFailure
+				}
+				st, ok := LoadState(c.Text)
+				if !ok || c.Conclusion != wantConclusion || st.Gate.Needed() != gated || len(st.Blocking) != 0 {
+					t.Fatalf("conclusion %q, state %+v", c.Conclusion, st)
+				}
+			})
+		}
+	}
+}
