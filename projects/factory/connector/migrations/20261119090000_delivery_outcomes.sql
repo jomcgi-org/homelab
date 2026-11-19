@@ -33,6 +33,17 @@ ALTER TABLE pull_request ADD COLUMN held_since timestamptz,
     ADD COLUMN held_duration interval NOT NULL DEFAULT interval '0';
 ALTER TABLE run ADD COLUMN admission_held interval NOT NULL DEFAULT interval '0';
 
+CREATE FUNCTION delivery_minutes(target text, first_run bigint)
+RETURNS TABLE(first_build_minutes numeric, rework_minutes numeric)
+LANGUAGE sql STABLE AS $$
+    SELECT coalesce(sum(extract(epoch FROM a.finished_at - a.first_sent_at)/60)
+               FILTER (WHERE r.id = first_run), 0),
+           coalesce(sum(extract(epoch FROM a.finished_at - a.first_sent_at)/60)
+               FILTER (WHERE r.id <> first_run), 0)
+    FROM run r JOIN delivery_attempt a ON a.run_id = r.id
+    WHERE r.outcome_node = target;
+$$;
+
 CREATE FUNCTION refresh_delivery_metrics(target text) RETURNS void LANGUAGE sql AS $$
 UPDATE delivery_outcome dest
 SET metrics_recorded = true,
@@ -52,14 +63,7 @@ FROM (
         WHERE work_item_id = o.work_item_id AND origin <> 'reviewer'
         ORDER BY created_at, id LIMIT 1
     ) f ON true
-    CROSS JOIN LATERAL (
-        SELECT coalesce(sum(extract(epoch FROM a.finished_at - a.first_sent_at)/60)
-            FILTER (WHERE r.id = f.id), 0) AS first_build_minutes,
-            coalesce(sum(extract(epoch FROM a.finished_at - a.first_sent_at)/60)
-            FILTER (WHERE r.id <> f.id), 0) AS rework_minutes
-        FROM run r JOIN delivery_attempt a ON a.run_id = r.id
-        WHERE r.outcome_node = o.node_id
-    ) minutes
+    CROSS JOIN delivery_minutes(o.node_id, f.id) minutes
     CROSS JOIN LATERAL (
         SELECT CASE WHEN count(input_tokens + output_tokens) = count(*)
             THEN coalesce(sum(input_tokens + output_tokens), 0) END AS tokens,
@@ -113,6 +117,27 @@ END $$;
 CREATE TRIGGER work_outcome AFTER UPDATE OF state ON work_item
     FOR EACH ROW WHEN (OLD.state IS DISTINCT FROM NEW.state) EXECUTE FUNCTION record_work_outcome();
 SELECT sync_delivery_outcome(id) FROM work_item;
+
+-- A close can assign the run before cancellation finishes its current attempt.
+CREATE FUNCTION refresh_finished_minutes() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE owner_node text; work_id bigint;
+BEGIN
+    SELECT outcome_node, work_item_id INTO owner_node, work_id
+    FROM run WHERE id = NEW.run_id FOR UPDATE;
+    IF owner_node IS NOT NULL THEN
+        PERFORM 1 FROM delivery_outcome WHERE node_id = owner_node FOR UPDATE;
+        UPDATE delivery_outcome SET (first_build_minutes, rework_minutes) = (
+            SELECT * FROM delivery_minutes(owner_node, (
+                SELECT id FROM run WHERE work_item_id = work_id AND origin <> 'reviewer'
+                ORDER BY created_at, id LIMIT 1
+            ))
+        ) WHERE node_id = owner_node;
+    END IF;
+    RETURN NULL;
+END $$;
+CREATE TRIGGER finished_outcome_minutes AFTER UPDATE OF finished_at ON delivery_attempt
+    FOR EACH ROW WHEN (OLD.finished_at IS DISTINCT FROM NEW.finished_at)
+    EXECUTE FUNCTION refresh_finished_minutes();
 
 -- Late usage receipts belong to the run's assigned PR, even after replacement.
 CREATE FUNCTION refresh_run_usage() RETURNS trigger LANGUAGE plpgsql AS $$

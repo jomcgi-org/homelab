@@ -101,7 +101,16 @@ func TestPRDeliveryResults(t *testing.T) {
 	VALUES (-1,1,'coder','review','','',1,'closed','revision',20,10,now()+interval '1 minute');
 	INSERT INTO pull_request(work_item_id,number,node_id,head_sha,state)
 	SELECT i,i,'pr'||i,'head','open' FROM generate_series(1,2) i;
-	UPDATE pull_request SET state='closed' WHERE number=2;
+	INSERT INTO delivery_attempt(run_id,seq,run_attempt,work_item_epoch,decision_id,kind,message_id,
+        kagent_namespace,kagent_agent,state,writer_epoch,first_sent_at)
+    VALUES (2,1,1,1,'decision','initial','msg','ns','coder','accepted',1,now()-interval '17 minutes');
+    INSERT INTO delivery_attempt(run_id,seq,run_attempt,work_item_epoch,decision_id,kind,message_id,
+        kagent_namespace,kagent_agent,state,writer_epoch,first_sent_at,finished_at)
+    VALUES (1,1,1,1,'first','initial','first','ns','coder','completed',1,now()-interval '10 minutes',now()),
+           (-1,1,1,1,'revision','continuation','revision','ns','coder','completed',1,now()-interval '15 minutes',now());
+    INSERT INTO review_event(pull_request_id,github_node_id,commit_sha,author,kind,source,disposition,round_run_id)
+    SELECT id,'event','head','reviewer','changes_requested','reviewer','acted',-1 FROM pull_request WHERE number=1;
+    UPDATE pull_request SET state='closed' WHERE number=2;
  UPDATE work_item SET state='stopped' WHERE id=2;
 	UPDATE pull_request SET state='merged',merged_at=now()-interval '8 days',merge_commit_sha='sha' WHERE work_item_id=1;
 	UPDATE delivery_outcome SET reverted_at=merged_at+interval '6 days' WHERE number=1;`)
@@ -110,6 +119,9 @@ func TestPRDeliveryResults(t *testing.T) {
 	}
 	var ok bool
 	err = st.DB.QueryRow(`SELECT n=2 AND merge_rate=0.5 AND revert_rate=1 AND tokens_per_merge=270
+        AND median_coder_minutes_per_merge=25 AND median_review_rounds=0.5
+        AND (SELECT first_build_minutes=10 AND rework_minutes=15 AND review_rounds=1
+             FROM delivery_outcome WHERE node_id='pr1')
 		FROM arm_delivery_results WHERE arm='control'`).Scan(&ok)
 	if err != nil || !ok {
 		t.Fatalf("unexpected arm results: %v %v", ok, err)
@@ -122,13 +134,32 @@ func TestPRDeliveryResults(t *testing.T) {
     UPDATE pull_request SET node_id='replacement',number=3,state='open' WHERE work_item_id=2;
     INSERT INTO run(id,work_item_id,agent_key,trigger,prompt,system_prompt,attempt,state,input_tokens,output_tokens)
     VALUES(4,2,'coder','review','','',1,'closed',40,10);
-    UPDATE pull_request SET merged_at=now(),state='merged' WHERE number=3;`)
+    UPDATE pull_request SET merged_at=now(),state='merged' WHERE number=3;
+    UPDATE delivery_attempt SET finished_at=first_sent_at+interval '17 minutes',state='canceled'
+    WHERE message_id='msg';`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = st.DB.QueryRow(`SELECT n=3 AND tokens_per_merge=160 AND (SELECT tokens=120 FROM delivery_outcome WHERE number=2)
+	err = st.DB.QueryRow(`SELECT n=3 AND tokens_per_merge=160 AND (SELECT tokens=120 AND first_build_minutes=17 AND rework_minutes=0 FROM delivery_outcome WHERE number=2)
         FROM arm_delivery_results WHERE arm='control'`).Scan(&ok)
 	if err != nil || !ok {
 		t.Fatalf("replacement attribution: %v, %v", ok, err)
+	}
+
+	// A second arm stopped before opening a PR still has a reporting cohort.
+	_, err = st.DB.Exec(`
+        INSERT INTO work_item(id,binding_name,issue_id,issue_key,branch,agent_key,kagent_namespace,kagent_agent)
+        VALUES(3,'b',3,'HOME-3','branch3','coder','ns','coder');
+        INSERT INTO run(id,work_item_id,agent_key,trigger,prompt,system_prompt,attempt,state,arm,task_class,base_sha)
+        VALUES(5,3,'coder','issue_delegated','','',1,'closed','candidate','feature','guide2');
+        UPDATE work_item SET state='stopped' WHERE id=3;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = st.DB.QueryRow(`SELECT n=1 AND merge_rate=0 AND tokens_per_merge IS NULL
+        AND median_coder_minutes_per_merge IS NULL AND revert_rate IS NULL
+        FROM arm_delivery_results WHERE arm='candidate' AND task_class='feature' AND guidance_version='guide2'`).Scan(&ok)
+	if err != nil || !ok {
+		t.Fatalf("abandoned candidate arm: %v, %v", ok, err)
 	}
 }
