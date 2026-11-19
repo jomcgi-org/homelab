@@ -13,6 +13,7 @@ go_binary(
     embed = [":credential-provider_lib"],
     pure = "on",
     static = "on",
+    visibility = ["//visibility:public"],
 )
 
 go_test(
