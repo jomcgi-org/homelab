@@ -628,7 +628,7 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 	current := map[string]bool{}
 	low := 0
 	for _, f := range r.Findings {
-		if p, was := priorByID[f.ID]; was && f.Verdict != goalLive && !cleared(f.ID) && rank(p.Severity) < rank(f.Severity) {
+		if p, was := priorByID[f.ID]; was && f.Verdict != goalLive && f.Verdict != goalOwned && !cleared(f.ID) && rank(p.Severity) < rank(f.Severity) {
 			reason[f.ID] = fmt.Sprintf("reported again as %s; it keeps its earlier severity", f.Severity)
 			f.Severity = p.Severity
 		}
@@ -643,7 +643,7 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 			f.Severity, f.Lowered = sev, ""
 		}
 		switch {
-		case f.Severity == SeverityLow && f.Lowered != "":
+		case f.Severity == SeverityLow && (f.Lowered != "" || f.Verdict == goalOwned):
 			a.Deferred = append(a.Deferred, f)
 		case f.Severity == SeverityLow:
 			if low++; low > MaxLow {

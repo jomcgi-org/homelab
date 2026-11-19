@@ -859,3 +859,55 @@ func TestPublishedOutputCarriesNoUnkeyedEvidenceHash(t *testing.T) {
 		}
 	}
 }
+
+func TestOwnedCriterion(t *testing.T) {
+	for _, tc := range []struct{ name, state, description, failure, want string }{
+		{"verified", "started", "- Ship telemetry.", "", goalOwned},
+		{"example", "started", "```\n- Ship telemetry.\n```", "", goalNotMet},
+		{"comment", "started", "<!--\nDone when\n- Ship telemetry.\n-->", "", goalNotMet},
+		{"lazy continuation", "started", "- Ship telemetry.\nonly as an example.", "", goalNotMet},
+		{"quoted", "started", "> - Ship telemetry.", "", goalNotMet},
+		{"continuation", "started", "Done when\n- Ship telemetry.\n  Only in a mock.", "", goalNotMet},
+		{"missing", "started", "- Ship telemetry.", "missing", goalNotMet},
+		{"closed", "completed", "- Ship telemetry.", "", goalNotMet},
+		{"unrelated", "started", "- Ship a dashboard.", "", goalNotMet},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, b, api, _ := issueSetup()
+			goal := &itsaplan.Issue{Identifier: "HOME-1", Links: []itsaplan.IssueLink{{Issue: itsaplan.IssueRef{ID: api.issue.ID, Identifier: api.issue.Identifier}}}}
+			api.fail = tc.failure
+			api.project.Columns[0].StateType = tc.state
+			api.issue.Description = tc.description
+			in := &IssueContext{Issue: &IssueEvidence{Key: goal.Identifier, Trusted: true, Description: "Done when\n1. Ship telemetry."}}
+			e.readFollowUps(context.Background(), b.ItsaplanProject, api.project, goal, in)
+			a, err := ParseGoal("```json\n" + `{"criteria":[{"criterion":1,"verdict":"owned","follow_up":"HOME-58"}],"overall":"met"}` + "\n```")
+			if err != nil {
+				t.Fatal(err)
+			}
+			a.verifyOwnership(in)
+			feedback := (&GoalCheck{Criteria: a.Criteria, followUps: a.followUps}).ownershipFeedback()
+			if a.Criteria[0].Verdict != tc.want || strings.Contains(feedback, "HOME-58") != (tc.want == goalOwned) {
+				t.Fatalf("verdict %v, feedback %q", a.Criteria, feedback)
+			}
+			findings := goalFindings(goal.Identifier, &GoalCheck{Overall: a.Overall, Criteria: a.Criteria})
+			if len(findings) != 1 || strings.Contains(findings[0].Title+findings[0].Detail, "HOME-58") {
+				t.Fatalf("public findings %v", findings)
+			}
+		})
+	}
+}
+
+func TestOwnershipRejectsPartialSourceCriterion(t *testing.T) {
+	in := &IssueContext{
+		Issue:     &IssueEvidence{Key: "HOME-1", Trusted: true, Description: "Done when\n- Ship telemetry\nfor all production tenants."},
+		FollowUps: map[string]string{"HOME-58": "- Ship telemetry"},
+	}
+	a := goalAnswer{Criteria: []GoalVerdict{{1, goalOwned}}, followUps: map[int]string{1: "HOME-58"}}
+	a.verifyOwnership(in)
+	if a.Criteria[0].Verdict != goalNotMet {
+		t.Fatal("partial ownership cleared the production scope")
+	}
+	if issueCriteria(in) != 1 {
+		t.Fatal("the source still lists one criterion")
+	}
+}

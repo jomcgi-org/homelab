@@ -71,7 +71,7 @@ func (s *FileGoalAudit) Reasons(repo string, pr int, head string) (GoalReasons, 
 	if !found {
 		return GoalReasons{}, false
 	}
-	reasons := strings.TrimSpace(replyReasons(best.Reply))
+	reasons := strings.TrimSpace(best.Ownership + replyReasons(best.Reply))
 	if reasons == "" {
 		return GoalReasons{}, false
 	}

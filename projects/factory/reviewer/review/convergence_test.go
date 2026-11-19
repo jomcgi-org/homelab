@@ -340,3 +340,12 @@ func TestRebasedHeadReviewsOnlyFilesWhoseDiffChanged(t *testing.T) {
 		t.Fatalf("the unchanged file's late finding was not deferred:\n%s", c.Summary)
 	}
 }
+
+func TestConfirmationOwnershipFeedback(t *testing.T) {
+	initial := &GoalCheck{Criteria: []GoalVerdict{{1, goalOwned}, {2, goalNotMet}, {3, goalMet}}, followUps: map[int]string{1: "HOME-10"}}
+	confirmation := &GoalCheck{Criteria: []GoalVerdict{{1, goalMet}, {2, goalOwned}, {3, goalOwned}}, followUps: map[int]string{2: "HOME-20", 3: "HOME-30"}}
+	got := confirmOnly(initial, confirmation).ownershipFeedback()
+	if got != "Criterion 1 is owned by HOME-10.\nCriterion 2 is owned by HOME-20.\n" {
+		t.Fatal(got)
+	}
+}

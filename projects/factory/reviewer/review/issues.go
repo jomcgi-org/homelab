@@ -51,6 +51,7 @@ type DecisionEvidence struct {
 type IssueContext struct {
 	Issue     *IssueEvidence
 	Decisions []DecisionEvidence
+	FollowUps map[string]string `json:",omitempty"`
 	// Findings are evidence failures that another read cannot fix, such as
 	// text over its bound or a reference to no issue. The review goes ahead
 	// and reports each one, so the author sees what to change.
@@ -297,6 +298,33 @@ func applyIssueFindings(report *Report, in *IssueContext) {
 	}
 }
 
+// readFollowUps snapshots the linked open issues for the private goal check.
+func (e *Engine) readFollowUps(ctx context.Context, project string, p *itsaplan.Project, goal *itsaplan.Issue, in *IssueContext) {
+	if len(goal.Links) > maxDecisionLinks {
+		return
+	}
+	for _, link := range goal.Links {
+		key := link.Issue.Identifier
+		n := issueNumber(key, project)
+		if n == 0 || key == goal.Identifier || link.Issue.Archived {
+			continue
+		}
+		i, err := e.cfg.Itsaplan.GetIssueByNumber(ctx, project, n)
+		if err != nil || i == nil || i.Identifier != key || i.ID != link.Issue.ID || i.ProjectID != p.Project.ID || i.ArchivedAt != nil || len(i.Description) > maxDecisionText {
+			continue
+		}
+		for _, col := range p.Columns {
+			if col.ID == i.ColumnID && (col.StateType == "started" || col.StateType == "unstarted" || col.StateType == "backlog") {
+				if in.FollowUps == nil {
+					in.FollowUps = map[string]string{}
+				}
+				in.FollowUps[key] = i.Description
+				break
+			}
+		}
+	}
+}
+
 // issueContext gathers one goal issue and at most ten references per snapshot.
 // Failures carry only fixed reason strings, never response bodies.
 // Even a model reporting no findings cannot turn missing evidence into a pass.
@@ -377,6 +405,7 @@ func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullReq
 				break
 			}
 			in.taskClass = class
+			e.readFollowUps(ctx, b.ItsaplanProject, p, goal, in)
 			in.Issue = &IssueEvidence{
 				Key: key, Title: boundedIssueText(goal.Title, maxPromptTitle),
 				Description: boundedIssueText(goal.Description, maxIssueText),

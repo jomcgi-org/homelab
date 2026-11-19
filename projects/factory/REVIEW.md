@@ -42,8 +42,12 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   affect the verdict. On a later head it also receives
   the previous head's goal verdicts and private reply on the same issue
   evidence, quoted, and the names of the files changed since. Its answer counts only as
-  criterion numbers and the verdicts `met`, `not_met`, `after_rollout` and
-  `unclear`: any other field or value voids it. The service writes every
+  criterion numbers and the verdicts `met`, `not_met`, `after_rollout`,
+  `unclear` and (for criteria only) `owned`. An `owned` answer supplies a private
+  `follow_up` key. The service checks the linked issue is open and lists the
+  criterion in its description. A failed match yields `not_met`. Only connector
+  feedback names the key. The public review says “owned by a follow-up”.
+  [Joe’s decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-417#comment-4483). The service writes every
   public word from those values, with finding IDs from the issue key and
   criterion number, and a parse failure shows only a fixed class. An
   earlier goal finding stays open until a valid answer on the same issue
