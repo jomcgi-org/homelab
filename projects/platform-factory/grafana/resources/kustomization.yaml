@@ -10,6 +10,7 @@ resources:
   - grafana.yaml
   - route.yaml
   - runbooks.yaml
+  - runbooks-route.yaml
 
 configMapGenerator:
   - name: grafana-config

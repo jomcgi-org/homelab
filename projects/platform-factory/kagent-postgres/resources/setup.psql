@@ -19,12 +19,15 @@ CREATE OR REPLACE FUNCTION kagent.pending_claims()
 RETURNS TABLE(session_id text, executor_id text)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
 BEGIN
+  IF to_regclass('kagent.session') IS NULL OR to_regclass('kagent.session_task_event') IS NULL THEN
+    RETURN;
+  END IF;
   RETURN QUERY SELECT DISTINCT s.id::text, e.quiescence_executor_id::text
     FROM kagent.session s JOIN kagent.session_task_event e USING (history_id)
     WHERE e.quiescence_pending AND e.quiescence_executor_id IS NOT NULL;
 END
 $$;
-REVOKE ALL ON FUNCTION kagent.pending_claims() FROM PUBLIC;
+REVOKE ALL ON FUNCTION kagent.pending_claims() FROM PUBLIC, kagent_readwrite;
 GRANT USAGE ON SCHEMA kagent TO pg_monitor;
 GRANT EXECUTE ON FUNCTION kagent.pending_claims() TO pg_monitor;
 RESET ROLE;

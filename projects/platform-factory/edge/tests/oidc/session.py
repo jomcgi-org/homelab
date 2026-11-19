@@ -75,6 +75,7 @@ for hostname in [
     "factory.jomcgi.dev",
     "factory-argocd.jomcgi.dev",
     "factory-plan.jomcgi.dev",
+    "factory-runbooks.jomcgi.dev",
     "factory-grafana.jomcgi.dev",
     "factory-agents.jomcgi.dev",
 ]:

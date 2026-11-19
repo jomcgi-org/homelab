@@ -1,0 +1,26 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: runbooks
+  namespace: grafana
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+      namespace: edge
+  hostnames:
+    - factory-runbooks.jomcgi.dev
+  # matches, kind, group and weight are the schema defaults, stated so
+  # ArgoCD's diff owns them.
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: runbooks
+          port: 8080
+          weight: 1

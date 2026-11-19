@@ -96,6 +96,19 @@ def test_edge_guards(docs):
             }
         ],
     }
+    route_path = Path(
+        os.environ.get(
+            "RUNBOOKS_ROUTE",
+            Path(__file__).resolve().parents[2]
+            / "grafana/resources/runbooks-route.yaml",
+        )
+    )
+    route = yaml.safe_load(route_path.read_text())
+    assert route["metadata"]["namespace"] in admitted
+    assert route["spec"]["hostnames"] == ["factory-runbooks.jomcgi.dev"]
+    assert route["spec"]["parentRefs"] == [
+        {**policy["targetRefs"][0], "namespace": "edge"}
+    ]
     sentinel = docs["HTTPRoute", "oidc-sentinel"]["spec"]
     assert sentinel["hostnames"] == ["factory.jomcgi.dev"]
     assert sentinel["rules"][0]["matches"][0]["path"]["value"] == "/oauth2-sentinel"

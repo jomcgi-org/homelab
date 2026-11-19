@@ -27,11 +27,13 @@ py_test(
         ":chart",
         "//projects/platform-factory/edge-admission/resources:policies.yaml",
         "//projects/platform-factory/edge-tunnel/resources:route.yaml",
+        "//projects/platform-factory/grafana/resources:runbooks-route.yaml",
         "@multitool//tools/helm",
     ],
     env = {
         "EDGE_ADMISSION": "$(rootpath //projects/platform-factory/edge-admission/resources:policies.yaml)",
         "EDGE_TUNNEL": "$(rootpath //projects/platform-factory/edge-tunnel/resources:route.yaml)",
+        "RUNBOOKS_ROUTE": "$(rootpath //projects/platform-factory/grafana/resources:runbooks-route.yaml)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
     deps = [
