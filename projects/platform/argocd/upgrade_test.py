@@ -170,3 +170,12 @@ def test_factory_hostname_and_oidc():
         == "https://factory-auth.jomcgi.dev/application/o/factory-argocd/"
     )
     assert oidc["clientSecret"] == "$argocd-authentik-oidc:client-secret"
+
+
+def test_factory_admin_groups():
+    values = yaml.safe_load(Path(__file__).with_name("values-factory.yaml").read_text())
+    policy = values["argo-cd"]["configs"]["rbac"]["policy.csv"]
+    assert set(policy.splitlines()) == {
+        "g, authentik Admins, role:admin",
+        "g, factory-operators, role:admin",
+    }

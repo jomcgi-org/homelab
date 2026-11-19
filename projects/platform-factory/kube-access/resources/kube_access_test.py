@@ -58,7 +58,8 @@ def test_only_admins_hold_cluster_admin():
         "name": "cluster-admin",
     }
     assert binding["subjects"] == [
-        {"apiGroup": "rbac.authorization.k8s.io", "kind": "Group", "name": ADMINS}
+        {"apiGroup": "rbac.authorization.k8s.io", "kind": "Group", "name": group}
+        for group in (ADMINS, "authentik:factory-operators")
     ]
     for d in by_kind("RoleBinding"):
         assert d["roleRef"]["name"] not in {"cluster-admin", "admin", "edit"}
@@ -68,7 +69,12 @@ def test_every_subject_is_an_access_group():
     for d in by_kind("ClusterRoleBinding") + by_kind("RoleBinding"):
         for subject in d["subjects"]:
             assert subject["kind"] == "Group"
-            assert subject["name"] in {ADMINS, VIEWERS, EXPLORERS}
+            assert subject["name"] in {
+                ADMINS,
+                "authentik:factory-operators",
+                VIEWERS,
+                EXPLORERS,
+            }
 
 
 def test_viewer_roles_only_read():

@@ -147,9 +147,20 @@ def test_factory_social_flows_and_application_grants():
         users.objects.filter.assert_called_with(email__iexact="friend@example.org")
 
     admins = ["authentik_core.group", ["name", "authentik Admins"]]
+    operators = ["authentik_core.group", ["name", "factory-operators"]]
+    (group,) = (
+        e
+        for e in entries("factory-auth.yaml")
+        if e["model"] == "authentik_core.group"
+        and e["identifiers"]["name"] == "factory-operators"
+    )
+    assert group["attrs"]["is_superuser"] == "false"
     for file, app, allowed in [
-        ("factory-auth.yaml", "edge-app", [admins]),
-        ("factory-kubectl.yaml", "kubectl-app", [admins, "kube-viewers"]),
+        ("factory-auth.yaml", "edge-app", [admins, operators]),
+        ("factory-auth.yaml", "argocd-app", [admins, operators]),
+        ("factory-grafana.yaml", "grafana-app", [admins, operators]),
+        ("factory-itsaplan.yaml", "itsaplan-app", [admins, operators]),
+        ("factory-kubectl.yaml", "kubectl-app", [admins, operators, "kube-viewers"]),
     ]:
         grants = [e for e in entries(file) if e["identifiers"].get("target") == app]
         assert [e["identifiers"]["group"] for e in grants] == allowed

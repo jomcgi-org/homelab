@@ -4,8 +4,8 @@ metadata:
   labels:
     blueprints.goauthentik.io/description: |
       Grafana's own OIDC client at factory-grafana.jomcgi.dev, behind the edge
-      Gateway's sign-in. Like the edge and ArgoCD clients it admits only the
-      authentik Admins group, and every sign-in needs a second factor.
+      Gateway's sign-in. Like the edge and ArgoCD clients it admits
+      factory-operators and authentik Admins, and every sign-in needs a second factor.
 entries:
   # Grafana runs the authorization-code flow with PKCE as a confidential
   # client (projects/platform-factory/grafana/resources/grafana.ini).
@@ -42,7 +42,7 @@ entries:
       invalidation_flow:
         !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
       # Grafana maps the profile scope's groups claim to its Admin role and
-      # refuses anyone outside authentik Admins (role_attribute_strict).
+      # refuses anyone outside both operator groups (role_attribute_strict).
       property_mappings:
         - !Find [
             authentik_providers_oauth2.scopemapping,
@@ -63,6 +63,7 @@ entries:
       slug: factory-grafana
     attrs:
       name: Factory metrics
+      policy_engine_mode: any
       provider: !KeyOf grafana-provider
       meta_launch_url: https://factory-grafana.jomcgi.dev/
       meta_description: Grafana, the factory cluster's metrics view.
@@ -72,6 +73,15 @@ entries:
       target: !KeyOf grafana-app
       group: !Find [authentik_core.group, [name, authentik Admins]]
       order: 0
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf grafana-app
+      group: !Find [authentik_core.group, [name, factory-operators]]
+      order: 5
     attrs:
       enabled: true
       negate: false
