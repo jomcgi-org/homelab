@@ -1,7 +1,7 @@
-# HOME-516 sets generous starting budgets and keeps zero replicas.
-# HOME-537 sets enabled=true after a public check shows the hub stopped.
-# HOME-526 right-sizes the budgets from factory metrics.
-enabled: false
+# HOME-516 set generous starting budgets. HOME-537 runs one replica after
+# the hub-stop check passed. HOME-526 right-sizes the budgets from factory
+# metrics. To roll back, set enabled=false before the hub ingest starts again.
+enabled: true
 retentionEnabled: false
 image:
   repository: ghcr.io/jomcgi/homelab/projects/ships

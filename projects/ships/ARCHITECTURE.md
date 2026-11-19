@@ -188,7 +188,7 @@ flowchart LR
   applier -->|write, then delete the claimed rows in one transaction, history connection| tables[(positions, latest_positions, vessels)]
 ```
 
-The chart runs one ingester replica when `enabled` is true and none when it is false. The default stays false until HOME-537. `chart/ingester_test.py` asserts both cases and the starting budgets in [Ingest and capacity](#ingest-and-capacity). CNPG creates the three-instance database from `chart/sql/bootstrap.sql` as the `ships` owner. The ingester connects with the owner URI from the `ships-db-app` Secret. Enable retention separately after importing and reconciling historical heat at a UTC boundary.
+The chart runs one ingester replica when `enabled` is true and none when it is false. HOME-537 set the default to true; `enabled=false` is the rollback. `chart/ingester_test.py` asserts both cases and the starting budgets in [Ingest and capacity](#ingest-and-capacity). CNPG creates the three-instance database from `chart/sql/bootstrap.sql` as the `ships` owner. The ingester connects with the owner URI from the `ships-db-app` Secret. Enable retention separately after importing and reconciling historical heat at a UTC boundary.
 
 A session subscribes only while it holds the PostgreSQL advisory lock `(409, 1)`. The lease connection holds that lock and runs nothing else. The writer pings it every second. A ping that succeeds confirms the lease for 5 seconds from the moment the writer sent it. If a ping fails or the confirmation expires, the writer closes its AISStream socket at once. A timer does the close at expiry, so a ping that hangs on a dead connection cannot delay it. The reader also drops each frame that it reads after the confirmation expires.
 
