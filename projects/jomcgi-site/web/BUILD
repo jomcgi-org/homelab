@@ -199,7 +199,6 @@ js_test(
     args = ["$(rootpath :build)"],
     data = [
         ":build",
-        ":hub_fixture",
     ],
     entry_point = "marketplace.test.mjs",
 )

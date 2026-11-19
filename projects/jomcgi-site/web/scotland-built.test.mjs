@@ -19,6 +19,16 @@ const hub = evaluateHub(
   ],
   "({ PUBLIC_BASE, facts, setups, sources, policyLinks, privacy, terms, support, UPDATED })",
 );
+const migratedURL = (value) =>
+  value
+    .replaceAll(
+      "https://jomcgi.dev/scotland/mcp",
+      "https://scotland-mcp.jomcgi.dev/mcp",
+    )
+    .replaceAll(
+      "https://jomcgi.dev/scotland/v1/",
+      "https://scotland-mcp.jomcgi.dev/v1/",
+    );
 const normalize = (text) => text.replace(/\s+/g, " ").trim();
 const literal = (source, name) => {
   const match = source.match(new RegExp(`${name}="([^"]+)"`));
@@ -84,20 +94,21 @@ for (const page of pages) {
         assert.ok(
           [...root.querySelectorAll("a")].some(
             (a) =>
-              a.getAttribute("href") === link.href && a.textContent === link.v,
+              a.getAttribute("href") === migratedURL(link.href) &&
+              a.textContent === link.v,
           ),
           link.href,
         );
       }
       if (page.slug === "scotland") {
         for (const fact of hub.facts)
-          assert.ok(content.includes(fact.v), fact.k);
+          assert.ok(content.includes(migratedURL(fact.v)), fact.k);
         for (const setup of hub.setups) {
           assert.ok(content.includes(setup.how), setup.label);
           if (setup.code)
             assert.ok(
               [...root.querySelectorAll("pre")].some(
-                (pre) => pre.textContent === setup.code,
+                (pre) => pre.textContent === migratedURL(setup.code),
               ),
               setup.id,
             );
