@@ -1,3 +1,4 @@
+// invariant: FACT-5
 // Package actorjwt verifies the actor JWTs Substrate's egress gateway injects
 // for kagent ModelConfigs with actorJwt, against the issuer's published keys.
 // See the kagent-dev/substrate guide docs/guides/actor-jwts.md.

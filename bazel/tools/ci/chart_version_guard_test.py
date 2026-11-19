@@ -1,3 +1,4 @@
+# invariant: ROOT-1
 """Tests for the chart version guard (ADR platform/009 decision 1)."""
 
 from __future__ import annotations

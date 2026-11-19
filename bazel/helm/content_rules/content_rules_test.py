@@ -1,3 +1,5 @@
+# invariant: PLAT-13
+# invariant: LIB-6
 """Each content rule passes a good manifest and fails a bad one (HOME-350)."""
 
 import copy

@@ -1,3 +1,5 @@
+{{- /* invariant: FACT-1 */ -}}
+{{- /* invariant: FACT-2 */ -}}
 {{/* Shared coding and review binding resources. Keep the caller's source file stable. */}}
 {{- define "factory.bindingResources" -}}
 {{- $r := .binding }}

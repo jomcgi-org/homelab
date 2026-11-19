@@ -1,3 +1,8 @@
+# invariant: LIB-1
+# invariant: LIB-2
+# invariant: LIB-3
+# invariant: LIB-4
+# invariant: LIB-5
 """Render the public API, including refusals and offline-safe secret generation."""
 
 import base64

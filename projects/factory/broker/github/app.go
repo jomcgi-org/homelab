@@ -1,3 +1,4 @@
+// invariant: FACT-3
 // Package github mints GitHub App installation tokens downscoped to one
 // repository: agent tokens written to each binding's git Secret, and
 // connector tokens served on request.

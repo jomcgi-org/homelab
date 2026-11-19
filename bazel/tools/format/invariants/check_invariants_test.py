@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 import yaml
 
@@ -148,3 +150,48 @@ def test_cached_bundle_without_yaml(tmp_path):
     required = subprocess.run(command, env=env, capture_output=True, text=True)
     assert required.returncode != 0
     assert "ModuleNotFoundError" in required.stderr
+
+
+@pytest.mark.parametrize(
+    ("replacement", "error"),
+    [
+        ("", "fewer marked files"),
+        ("# invariant: UNKNOWN-8", "unknown invariant UNKNOWN-8"),
+    ],
+)
+def test_marker_regressions(tmp_path, monkeypatch, replacement, error):
+    import subprocess
+
+    from check_invariants import check_markers
+
+    monkeypatch.chdir(tmp_path)
+    subprocess.run(["git", "init", "-q"], check=True)
+    docs = {Path("INVARIANTS.yaml"): {"invariants": [ROW]}}
+    mechanism = Path(ROW["mechanism"][0])
+    mechanism.parent.mkdir(parents=True, exist_ok=True)
+    marker = "# invariant: " + ROW["id"]
+    mechanism.write_text(marker)
+    test = Path("test.py")
+    test.write_text(marker)
+
+    def commit():
+        subprocess.run(["git", "add", "."], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.org",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+            check=True,
+        )
+
+    commit()
+    test.write_text(replacement)
+    commit()
+    with pytest.raises(ValueError, match=error):
+        check_markers(docs, "HEAD^")

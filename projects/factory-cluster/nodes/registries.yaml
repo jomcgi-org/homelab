@@ -1,3 +1,4 @@
+# invariant: CLUS-3
 # Installed to /etc/rancher/k3s/registries.yaml by install-node.sh, which
 # restarts k3s to apply it. With embedded-registry enabled, k3s runs Spegel for
 # the registries listed here: a pull is first looked up on the other nodes,

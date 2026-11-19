@@ -1,3 +1,4 @@
+// invariant: FACT-4
 // Package config loads the factory credential broker's configuration from a
 // YAML (or JSON) file, with environment overrides for deployment values.
 package config

@@ -1,3 +1,7 @@
+{{- /* invariant: LIB-1 */ -}}
+{{- /* invariant: LIB-3 */ -}}
+{{- /* invariant: LIB-4 */ -}}
+{{- /* invariant: LIB-5 */ -}}
 {{- define "factory-library.pod" -}}
 {{- $w := .workload -}}
 {{- include "factory-library.name" ($w.containerName | default .name) -}}

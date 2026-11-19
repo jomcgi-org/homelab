@@ -1,3 +1,5 @@
+{{- /* invariant: LIB-2 */ -}}
+{{- /* invariant: LIB-5 */ -}}
 {{/* Public entry point. Each workload owns its ServiceAccount and policy. */}}
 {{- define "factory-library.all" -}}
 {{- include "factory-library.validateExceptions" . -}}

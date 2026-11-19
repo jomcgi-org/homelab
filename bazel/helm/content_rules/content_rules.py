@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# invariant: PLAT-13
+# invariant: LIB-6
 """Content rules for application charts on the factory cluster (HOME-350).
 
 Usage: content_rules.py RELEASE_NAMESPACE [Kind/namespace/name ...] < render.yaml

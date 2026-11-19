@@ -1,3 +1,4 @@
+# invariant: PLAT-3
 # The factory cluster's only internet path is Cloudflare Tunnel, then the cfgate
 # Gateway, then the Envoy Gateway in `edge`, which signs every request in through
 # Authentik. These policies keep every piece of that path inside `edge` (and

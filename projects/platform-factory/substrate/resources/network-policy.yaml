@@ -1,3 +1,4 @@
+# invariant: PLAT-6
 # Agent Substrate's allowlist under the cluster-wide default-deny
 # (projects/platform-factory/network-policy/resources/baseline.yaml).
 #
