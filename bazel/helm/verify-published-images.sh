@@ -33,9 +33,15 @@ _fail() {
 # image set.
 _image_pins() {
 	"$HELM" show values "$@" | awk '
+    # Remove one matching pair of enclosing double or single (\047) quotes
+    # and keep every character inside, so a malformed pin still mismatches.
+    function unquote(value) {
+      if (value ~ /^".*"$/ || value ~ /^\047.*\047$/)
+        return substr(value, 2, length(value) - 2)
+      return value
+    }
     function flush() {
-      # Values may use double or single (\047) quotes; strip both.
-      gsub(/["\047]/, "", repo); gsub(/["\047]/, "", digest)
+      repo = unquote(repo); digest = unquote(digest)
       if (repo ~ /^ghcr\.io\/jomcgi\/homelab\// && digest != "") {
         print repo "\t" digest
       }
