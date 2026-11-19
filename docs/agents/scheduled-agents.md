@@ -582,8 +582,11 @@ of coverage, report the missed coverage once; do not falsely report green.
 
 - An hourly general improvement scout or a second refill loop. It overlaps
   delivery/backlog evidence and bypasses #7935's human-selected Backlog.
-- An autonomous janitor that closes issues, cancels sessions, deletes branches
-  or prunes data. These are ownership decisions, not read-only proposals.
+- An autonomous janitor that cancels sessions, deletes branches or prunes
+  data. These are ownership decisions. The factory triage job (HOME-386)
+  closes or splits issues only through the connector's
+  [triage actions](../../projects/factory/connector/triage.md)
+  ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-386#comment-3915)).
 - An ADR index/status scheduler. The repository retired that format.
 - A nightly model that repeats passing tests, rewrites prose, enumerates
   CVEs without reachability, or demands more tests by coverage percentage.

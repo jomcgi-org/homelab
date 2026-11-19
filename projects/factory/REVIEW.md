@@ -93,7 +93,14 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   author, in the same delimited, quoted and sanitized block as the reviewer.
   It has a read-only repository token, no push, no coding-agent key or
   session, no itsaplan tools and a fresh session per run. Its output reaches
-  itsaplan only through the connector's proposal path. The connector takes
+  itsaplan only through the connector's proposal path, or through the
+  [triage actions](connector/triage.md) for a
+  schedule whose reviewed values list them. The connector runs only the
+  listed ops, checks each precondition against its own state first and holds
+  every write credential. Model text sets no title, description or
+  instruction (HOME-386,
+  [decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-386#comment-3915)).
+  The connector takes
   each issue's title and instructions from a reviewed schedule template on
   `main`. Planner text goes only into a delimited evidence block, quoted
   and sanitized so no text closes the block or starts a line of its own.

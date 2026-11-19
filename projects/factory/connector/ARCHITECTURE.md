@@ -96,7 +96,7 @@ the writer fence. A stop that commits first prevents the send (HOME-151).
 
 ## Planner proposals (designed)
 
-The planner design takes instructions from a schedule template on the base branch. Planner output enters the delegated issue as quoted evidence.
+The planner design takes instructions from a schedule template on the base branch. Planner output enters the delegated issue as quoted evidence. The factory triage job adds [allowlisted actions](triage.md) that the connector checks and runs.
 
 **Why.** Joe chose delegated fixes for the three pilots
 ([decision](https://github.com/jomcgi-org/homelab/issues/7935#issuecomment-6891325789),
@@ -591,6 +591,7 @@ rarely worth a day of it.
 | --- | --- | --- |
 | Fence old executions independently during recovery | HOME-38 | designed |
 | Name failed CI targets and tests in round prompts | HOME-125 | `staged off` behind `connector.buildbuddy` |
+| Factory triage job acts through a fixed [allowlist](triage.md) | HOME-386 | designed |
 
 ## Decision history
 
