@@ -733,6 +733,9 @@ func TestIssueCriteriaCount(t *testing.T) {
 		"Done when:\n1. a\n3. not the next number":                                    0,
 		"Done when:\n1. a\n2. b\n\nOut of scope:\n- c":                                0,
 		"Done when:\n1. a\n2. b\n\nOut of scope: c":                                   2,
+		"Example:\n```\nDone when:\n1. x\n```\nDone when:\n1. a\n2. b":                2,
+		"Done when:\n1. a\n```\n2. b\n```":                                            0,
+		"Done when:\n```\n1. a\n```":                                                  0,
 		"Done when:\n1. a\n2.\tb":                                                     2,
 		"Done when:\n1) a\n2) b":                                                      2,
 		"Done when:\n1. a\n2) b":                                                      0,
@@ -784,5 +787,26 @@ func TestGoalInteriorDeletionAndRestatement(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("blocking = %+v", a.Blocking)
+	}
+}
+
+// A move to another issue withdraws the old issue's findings whatever the
+// new issue's count, and history replay never withdraws.
+func TestGoalMoveIgnoresCountAndReplayWithdrawsNothing(t *testing.T) {
+	prior := []Finding{
+		{ID: "HOME-1:goal:criterion-3", Severity: SeverityMedium},
+		{ID: "HOME-2:goal:criterion-3", Severity: SeverityMedium},
+	}
+	disagrees := &GoalCheck{Overall: goalNotMet, Criteria: goalVerdicts(1, goalNotMet), Counted: 2}
+	r := &Report{}
+	applyGoal(r, prior, "HOME", "HOME-2", disagrees)
+	a := Assess(r, prior)
+	if len(a.Withdrawn) != 1 || a.Withdrawn[0].ID != "HOME-1:goal:criterion-3" {
+		t.Fatalf("withdrawn = %+v", a.Withdrawn)
+	}
+	r = &Report{}
+	replayGoal(r, prior, "HOME", "HOME-2", &GoalCheck{Overall: goalMet, Criteria: goalVerdicts(1, goalMet), Counted: 1})
+	if a := Assess(r, prior); len(a.Withdrawn) != 0 {
+		t.Fatalf("replay withdrew %+v", a.Withdrawn)
 	}
 }
