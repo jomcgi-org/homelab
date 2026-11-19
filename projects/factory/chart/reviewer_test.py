@@ -912,3 +912,19 @@ def test_semgrep_is_opt_in_github_only_config() -> None:
 def test_semgrep_rejects_incomplete_or_token_config(overrides: list[str]) -> None:
     with pytest.raises(RuntimeError):
         _helm(overrides)
+
+
+def test_codex_trial_stays_with_one_coding_binding() -> None:
+    docs = _render(
+        _TWO_REPOSITORIES
+        + [
+            "repositories[0].codexCodeMode=true",
+            "codexTrial.image.digest=sha256:" + "a" * 64,
+        ]
+    )
+    trial_namespaces = [
+        doc["metadata"]["namespace"]
+        for doc in docs
+        if doc["kind"] == "Harness" and "workload" in doc["spec"]
+    ]
+    assert trial_namespaces == ["factory-r-homelab"]

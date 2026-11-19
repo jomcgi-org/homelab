@@ -2,6 +2,7 @@
 {{- range $r := .Values.repositories }}
 {{- $binding := deepCopy $r }}
 {{- $_ := unset $binding "toolchain" }}
+{{- $_ := unset $binding "codexCodeMode" }}
 {{- /* Memory is for the coding binding only (HOME-130). */}}
 {{- $_ := unset $binding "memory" }}
 {{- $_ := set $binding "namespace" (include "factory.reviewerNamespace" (dict "root" $ "binding" $r)) }}
