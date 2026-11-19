@@ -114,6 +114,10 @@ try {
         viewport: { width, height: 900 },
       });
       const page = await context.newPage();
+      const beacon = "https://static.cloudflareinsights.com/beacon.min.js";
+      await page.route(beacon, (route) =>
+        route.fulfill({ contentType: "text/javascript", body: "" }),
+      );
       await page.clock.install({ time: now });
       const requests = [],
         errors = [];
@@ -305,6 +309,7 @@ try {
       assert.ok(
         requests.every(
           (url) =>
+            url === beacon ||
             url.startsWith(origin) ||
             url.startsWith("https://tiles.openfreemap.org/"),
         ),

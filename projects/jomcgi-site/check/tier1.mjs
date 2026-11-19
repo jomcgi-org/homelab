@@ -119,7 +119,7 @@ const parseCsp = (value, label) => {
 // Every page's policy must keep these, whatever its _headers rule sets.
 const CSP_FLOOR = {
   "default-src": "'self'",
-  "script-src": "'self'",
+  "script-src": "'self' https://static.cloudflareinsights.com/beacon.min.js",
   "frame-ancestors": "'none'",
   "base-uri": "'none'",
   "form-action": "'none'",
@@ -138,6 +138,14 @@ export function checkHeaders(
   const expected = parseCsp(want["content-security-policy"], " in _headers");
   const csp = parseCsp(headers.get("content-security-policy"), "");
   for (const [directive, value] of Object.entries(CSP_FLOOR)) {
+    // A script asset such as the MapLibre worker may keep the stricter
+    // same-origin script policy: the beacon runs only in pages.
+    if (
+      asset &&
+      directive === "script-src" &&
+      expected.get(directive) === "'self'"
+    )
+      continue;
     assert.equal(expected.get(directive), value, `_headers CSP ${directive}`);
   }
   for (const value of expected.values()) {

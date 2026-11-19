@@ -12,6 +12,49 @@ const hikes = rule("/hikes");
 const hikesCsp = policy(hikes);
 
 describe("static hosting headers", () => {
+  it("permits the analytics script and collector on trips pages", () => {
+    for (const path of ["/trips", "/trips/*"]) {
+      const directives = policy(rule(path)).split("; ");
+      expect(directives.filter((d) => d.startsWith("script-src "))).toEqual([
+        "script-src 'self' https://static.cloudflareinsights.com/beacon.min.js",
+      ]);
+      expect(
+        directives.find((d) => d.startsWith("connect-src ")),
+      ).toContain("https://cloudflareinsights.com");
+    }
+  });
+  it("permits the analytics script and collector on site, hikes and stars pages", () => {
+    for (const path of ["/*", "/hikes", "/stars"]) {
+      const directives = policy(rule(path)).split("; ");
+      // Include sources in every directive so a new host in img-src,
+      // worker-src or another directive also fails the origin check.
+      const origins = new Set(
+        directives.flatMap((directive) =>
+          directive
+            .split(" ")
+            .filter((source) => source.includes("://"))
+            .map((source) => new URL(source).origin),
+        ),
+      );
+      expect(origins).toEqual(
+        new Set([
+          "https://static.cloudflareinsights.com",
+          "https://cloudflareinsights.com",
+          "https://data.jomcgi.dev",
+          ...(path === "/*" ? [] : ["https://tiles.openfreemap.org"]),
+        ]),
+      );
+      // The beacon path is stricter than its origin, and it meets HOME-382
+      // criterion 2 (decision: https://factory-plan.jomcgi.dev/factory/issue/HOME-382#comment-3949).
+      expect(directives.filter((d) => d.startsWith("script-src "))).toEqual([
+        "script-src 'self' https://static.cloudflareinsights.com/beacon.min.js",
+      ]);
+      expect(directives.filter((d) => d.startsWith("connect-src "))).toEqual([
+        "connect-src 'self' https://cloudflareinsights.com https://data.jomcgi.dev" +
+          (path === "/*" ? "" : " https://tiles.openfreemap.org"),
+      ]);
+    }
+  });
   it("gives the hikes map tile access, workers and geolocation", () => {
     expect(csp).not.toMatch(/openfreemap|blob:/);
     expect(rule("/*")).toContain("geolocation=()");
@@ -80,11 +123,12 @@ describe("static hosting headers", () => {
   it("adds tile connections only to the MapLibre worker asset policy", () => {
     const worker = rule("/assets/maplibre-gl-worker-*.js");
     expect(worker).toContain("! Content-Security-Policy");
-    const connect = "connect-src 'self' https://data.jomcgi.dev";
-    expect(csp).toContain(connect + ";");
+    // The worker runs no analytics: it may fetch only same-origin scripts,
+    // site data and tiles, whatever the page policy grants.
     expect(policy(worker)).toBe(
-      csp.replace(connect, connect + " https://tiles.openfreemap.org"),
+      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://data.jomcgi.dev https://tiles.openfreemap.org; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'",
     );
+    expect(policy(worker)).not.toContain("cloudflareinsights");
     expect(rule("/assets/*")).not.toContain("Content-Security-Policy");
   });
 

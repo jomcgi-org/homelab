@@ -98,6 +98,10 @@ try {
           reducedMotion,
         });
         const page = await context.newPage();
+        const beacon = "https://static.cloudflareinsights.com/beacon.min.js";
+        await page.route(beacon, (route) =>
+          route.fulfill({ contentType: "text/javascript", body: "" }),
+        );
         const errors = [],
           requests = [];
         page.on("pageerror", (error) => errors.push(error.message));
@@ -191,7 +195,9 @@ try {
         );
         assert.deepEqual(errors, [], label);
         assert.ok(
-          requests.every((url) => url.startsWith(`${origin}/`)),
+          requests.every(
+            (url) => url === beacon || url.startsWith(`${origin}/`),
+          ),
           "no hub/API requests",
         );
         console.log(`ok ${label}`);

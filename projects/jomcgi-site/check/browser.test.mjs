@@ -65,6 +65,7 @@ test(
         "404",
         "off-origin",
         "edge-beacon",
+        "shipped-beacon",
         "third-party-script",
         "beacon-in-query",
         "beacon-console",
@@ -103,6 +104,7 @@ test(
                 csp: '<script>console.log("inline")</script>',
                 "report-only": '<script>console.log("inline")</script>',
                 // Cloudflare Web Analytics injects this on proxied hosts.
+                "shipped-beacon": `<script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token":"2724d79dd3e443aa82519de68347ea39"}'></script>`,
                 "edge-beacon":
                   '<script defer src="https://static.cloudflareinsights.com/beacon.min.js/vfixture" data-cf-beacon=\'{"token":"fixture"}\'></script>',
                 "third-party-script":
