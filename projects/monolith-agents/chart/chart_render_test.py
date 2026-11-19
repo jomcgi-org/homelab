@@ -131,10 +131,8 @@ def _deployment(documents: list[dict]) -> dict:
 OBSERVATION_NAMESPACES = {
     "argocd",
     "authentik",
-    "embervm",
     "inference",
     "kargo",
-    "kargo-embervm",
     "kargo-monolith",
     "mcp",
     "monolith",
@@ -198,7 +196,6 @@ def test_agents_tier_has_exact_restricted_read_rbac(documents: list[dict]) -> No
         role for role in roles if role["metadata"]["name"].endswith("-kargo-reader")
     ]
     assert {role["metadata"]["namespace"] for role in kargo} == {
-        "kargo-embervm",
         "kargo-monolith",
         "kargo-monolith-agents",
         "kargo-monolith-public",

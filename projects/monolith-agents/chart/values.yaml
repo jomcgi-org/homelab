@@ -45,10 +45,8 @@ kubernetesRead:
   observationNamespaces:
     - argocd
     - authentik
-    - embervm
     - inference
     - kargo
-    - kargo-embervm
     - kargo-monolith
     - mcp
     - monolith
@@ -56,7 +54,6 @@ kubernetesRead:
     - otel-collector
   argocdNamespace: argocd
   kargoNamespaces:
-    - kargo-embervm
     - kargo-monolith
     - kargo-monolith-agents
     - kargo-monolith-public
