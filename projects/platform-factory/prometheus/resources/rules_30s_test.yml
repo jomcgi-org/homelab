@@ -98,8 +98,9 @@ tests:
   # relay is down from the start. Prometheus cannot scrape the exporter at
   # 6m10s and 7m24s (up 0), and each failed scrape marks every series stale.
   # The scrape at 6m47s reads unhealthy; the scrape at 8m01s reads healthy.
-  # The alert stays through each gap and clears at the next evaluation after
-  # the healthy scrape.
+  # The alert stays through each gap and says that the component list is
+  # unknown. After the scrape at 6m47s it lists relay again, and it clears
+  # at the next evaluation after the healthy scrape.
   - interval: 37s
     input_series:
       - series: 'up{job="factory-health",instance="health-exporter:8080"}'
@@ -116,16 +117,25 @@ tests:
         exp_alerts: *relay_down
       - eval_time: 6m30s
         alertname: FactoryHealthUnhealthy
-        exp_alerts: *relay_down
+        exp_alerts: &scrape_failing
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              action: "Check each down component in health.json."
+              graph: "factory_health_component_up"
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthUnhealthy"
+              summary: "Factory health is unhealthy, components unknown: the health exporter scrape is failing (healthy flag 0, minimum 1)"
+              description: 'https://factory-data.jomcgi.dev/health.json reports status unhealthy. Runbook: projects/factory-cluster/README.md, "Alerts".'
       - eval_time: 7m
         alertname: FactoryHealthUnhealthy
         exp_alerts: *relay_down
       - eval_time: 7m30s
         alertname: FactoryHealthUnhealthy
-        exp_alerts: *relay_down
+        exp_alerts: *scrape_failing
       - eval_time: 8m
         alertname: FactoryHealthUnhealthy
-        exp_alerts: *relay_down
+        exp_alerts: *scrape_failing
       - eval_time: 8m30s
         alertname: FactoryHealthUnhealthy
         exp_alerts: []

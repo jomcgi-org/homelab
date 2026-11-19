@@ -185,13 +185,14 @@ groups:
       # names the down components of the same read. A component that a valid
       # read removes goes stale at that scrape and leaves the list.
       # A failed scrape of the exporter (up 0) marks every series stale. While
-      # up is 0, the second branch uses the last values of the 15 min before,
-      # so a scrape gap neither clears the alert nor restarts its timer, and
-      # the next successful scrape replaces them. In a gap the list can also
-      # name a component that a valid read removed in those 15 min. After
-      # 15 min without a scrape the alert clears. FactoryHealthStale fires by
-      # 12 min after the last scrape: the newest generatedAt is then more than
-      # 10 min old for 2 min.
+      # up is 0, the second branch uses the last healthy flag of the 15 min
+      # before, so a scrape gap neither clears the alert nor restarts its
+      # timer. The summary then says that the component list is unknown: an
+      # old list can name a component that a valid read removed. The next
+      # successful scrape replaces the flag and lists the down components
+      # again. After 15 min without a scrape the alert clears.
+      # FactoryHealthStale fires by 12 min after the last scrape: the newest
+      # generatedAt is then more than 10 min old for 2 min.
       - alert: FactoryHealthUnhealthy
         expr: >-
           max(factory_health_healthy) == 0
@@ -206,9 +207,10 @@ groups:
           threshold: "1"
           runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthUnhealthy"
           summary: >-
-            Factory health is unhealthy, down: {{ range $i, $c := query `factory_health_component_up == 0
-            or (last_over_time(factory_health_component_up[15m]) == 0 and on() max(up{job="factory-health"}) == 0)`
-            | sortByLabel `component` }}{{ if $i }}, {{ end }}{{ $c.Labels.component }}{{ else }}none listed{{ end }} (healthy flag {{ $value }}, minimum 1)
+            Factory health is unhealthy, {{ if query `max(up{job="factory-health"}) == 0` }}components
+            unknown: the health exporter scrape is failing{{ else }}down: {{ range $i, $c := query
+            `factory_health_component_up == 0` | sortByLabel `component` }}{{ if $i }}, {{ end }}{{
+            $c.Labels.component }}{{ else }}none listed{{ end }}{{ end }} (healthy flag {{ $value }}, minimum 1)
           description: >-
             https://factory-data.jomcgi.dev/health.json reports status
             unhealthy. Runbook: projects/factory-cluster/README.md, "Alerts".
