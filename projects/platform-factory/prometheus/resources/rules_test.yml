@@ -517,6 +517,52 @@ tests:
         alertname: FactoryHealthUnhealthy
         exp_alerts: []
 
+  # The owner turns the alert check off while relay stays down. To 11 min
+  # the file lists alert-test and relay down; reads fail at 12 and 13 min;
+  # the next file, at 14 min, lists relay only. The alert stays and names
+  # only the components of the newest read.
+  - interval: 1m
+    input_series:
+      - series: 'factory_health_healthy'
+        values: "1x4 0x6 stale _ 0x21"
+      - series: 'factory_health_component_up{component="factory-cluster"}'
+        values: "1x11 stale _ 1x21"
+      - series: 'factory_health_component_up{component="relay"}'
+        values: "1x4 0x6 stale _ 0x21"
+      - series: 'factory_health_component_up{component="alert-test"}'
+        values: "_x5 0x6 stale"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: &health_two_down
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              action: "Check each down component in health.json."
+              graph: "factory_health_component_up"
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthUnhealthy"
+              summary: "Factory health is unhealthy, down: alert-test, relay (healthy flag 0, minimum 1)"
+              description: 'https://factory-data.jomcgi.dev/health.json reports status unhealthy. Runbook: projects/factory-cluster/README.md, "Alerts".'
+      - eval_time: 13m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: *health_two_down
+      - eval_time: 14m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: &health_relay_down
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              action: "Check each down component in health.json."
+              graph: "factory_health_component_up"
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthUnhealthy"
+              summary: "Factory health is unhealthy, down: relay (healthy flag 0, minimum 1)"
+              description: 'https://factory-data.jomcgi.dev/health.json reports status unhealthy. Runbook: projects/factory-cluster/README.md, "Alerts".'
+      - eval_time: 30m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: *health_relay_down
+
   # Reads fail for 10 min while the file is unhealthy: the exporter drops
   # the series (stale markers). The alert stays, and lists both components.
   - interval: 1m

@@ -181,6 +181,10 @@ groups:
       # take the newest sample in 15 min: a short read gap neither clears
       # nor fires them. Together they replace the hub's Honeycomb trigger on
       # jomcgi.dev/health (HOME-415).
+      # The summary lists only the components of the newest read: a
+      # component sample counts only when its time is that read's time, the
+      # newest factory_health_healthy sample. A component that a later file
+      # removes leaves the list at once.
       - alert: FactoryHealthUnhealthy
         expr: max(last_over_time(factory_health_healthy[15m])) == 0
         for: 5m
@@ -191,7 +195,11 @@ groups:
           graph: "factory_health_component_up"
           threshold: "1"
           runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthUnhealthy"
-          summary: "Factory health is unhealthy, down: {{ range $i, $c := query `last_over_time(factory_health_component_up[15m]) == 0` | sortByLabel `component` }}{{ if $i }}, {{ end }}{{ $c.Labels.component }}{{ else }}none listed{{ end }} (healthy flag {{ $value }}, minimum 1)"
+          summary: >-
+            Factory health is unhealthy, down: {{ range $i, $c := query `last_over_time(factory_health_component_up[15m]) == 0
+            and max_over_time(timestamp(factory_health_component_up)[15m:])
+            == on() group_left() max(max_over_time(timestamp(factory_health_healthy)[15m:]))`
+            | sortByLabel `component` }}{{ if $i }}, {{ end }}{{ $c.Labels.component }}{{ else }}none listed{{ end }} (healthy flag {{ $value }}, minimum 1)
           description: >-
             https://factory-data.jomcgi.dev/health.json reports status
             unhealthy. Runbook: projects/factory-cluster/README.md, "Alerts".

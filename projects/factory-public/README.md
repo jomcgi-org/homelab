@@ -105,16 +105,18 @@ The factory Prometheus alerts on the public file:
 
 ### Alert check
 
-The `ALERT_TEST` value of the `health` workload adds the component
-`alert-test`, always `down`. To check the alert path after a rollout:
+The chart value `healthAlertTest: true` adds the component `alert-test`,
+always `down`. The chart default is `false`. To check the alert path after a
+rollout:
 
-1. In a PR, set `ALERT_TEST` to `"true"` in `chart/values.yaml`.
+1. In a PR, add `valuesObject: {healthAlertTest: true}` under
+   `spec.source.helm` in `deploy/application.yaml`.
 2. After Argo CD syncs, wait for `"status":"unhealthy"` with `alert-test`
    in `curl -s https://factory-data.jomcgi.dev/health.json`. It takes about
    4 min.
 3. About 5 min later, Discord gets one `FactoryHealthUnhealthy` message that
    names `alert-test`.
-4. In a second PR, set `ALERT_TEST` to `"false"`.
+4. In a second PR, remove that `valuesObject` line.
 5. When the file shows `healthy` again, Discord gets the resolved message.
 
 ## Before the mirror runs
