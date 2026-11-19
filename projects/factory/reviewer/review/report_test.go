@@ -1452,8 +1452,11 @@ func TestInvariantScopeAnswerIsAdvisory(t *testing.T) {
 
 func TestInvariantScopeAnswersSkipLowBudget(t *testing.T) {
 	answer := `{"path":"new.go","uncovered":true}`
-	lows := strings.Repeat(`{"severity":"low","title":"existing"},`, MaxLow) + `{"severity":"low","title":"existing"}`
-	reply := "```json\n" + `{"summary":"s","findings":[` + lows + `],"invariant_scopes":[{"uncovered":"false"},` + answer + "]}\n```"
+	var lows []string
+	for i := range MaxLow + 1 {
+		lows = append(lows, fmt.Sprintf(`{"severity":"low","title":"existing %d"}`, i))
+	}
+	reply := "```json\n" + `{"summary":"s","findings":[` + strings.Join(lows, ",") + `],"invariant_scopes":[{"uncovered":"false"},` + answer + "]}\n```"
 	r, err := ParseReport(reply)
 	if err != nil {
 		t.Fatal(err)
