@@ -1,0 +1,7 @@
+{
+  "graph": "time() - max(factory_broker_quota_observed_at_seconds{provider=\"codex\"})",
+  "check": "time() - max(factory_broker_quota_observed_at_seconds{provider=\"codex\"}) or vector(+Inf)",
+  "condition": "lt",
+  "limit": 7200.0,
+  "steps": "Check the broker's usage reads\n(`factory_broker_codex_usage_refresh_total` by outcome) and its logs.\n\nkubectl -n factory logs deploy/factory-broker -c broker --tail=100"
+}

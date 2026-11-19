@@ -1,0 +1,7 @@
+{
+  "graph": "kube_job_failed{namespace=~@namespace,job_name=~@job_name,condition=\"true\"}",
+  "check": "kube_job_failed{namespace=~@namespace,job_name=~@job_name,condition=\"true\"}",
+  "condition": "lt",
+  "limit": 1.0,
+  "steps": "With the factory kubeconfig, run `kubectl -n <namespace> logs job/<job_name>`\nusing the namespace and Job name in the alert summary. The alert clears when a\nnewer sync Job starts unless that Job also fails."
+}

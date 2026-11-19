@@ -18,6 +18,10 @@ metadata:
     # operator deletes its PVCs with the Cluster.
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
+  monitoring:
+    customQueriesConfigMap:
+      - name: session-claims
+        key: queries
   instances: 3
   imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
   primaryUpdateStrategy: unsupervised
@@ -85,3 +89,23 @@ spec:
   method: barmanObjectStore
   cluster:
     name: kagent-pg
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: session-claims
+  namespace: kagent-pg
+  labels:
+    cnpg.io/reload: "true"
+data:
+  queries: |
+    quiescence:
+      primary: true
+      target_databases: [kagent]
+      query: |
+        SELECT session_id AS session, executor_id AS executor, 1 AS pending FROM kagent.pending_claims()
+        UNION ALL SELECT '', '', 0
+      metrics:
+        - session: {usage: LABEL, description: Session ID}
+        - executor: {usage: LABEL, description: Executor ID}
+        - pending: {usage: GAUGE, description: Pending quiescence claim}

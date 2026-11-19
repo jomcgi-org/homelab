@@ -11,3 +11,20 @@
 \getenv kagent_owner_password KAGENT_OWNER_PASSWORD
 \getenv kagent_readwrite_password KAGENT_READWRITE_PASSWORD
 \ir setup.sql
+
+-- CNPG's metrics collector uses pg_monitor. Expose only the claim pairs,
+-- including on a fresh install where kagent has not migrated its tables yet.
+SET LOCAL ROLE kagent_owner;
+CREATE OR REPLACE FUNCTION kagent.pending_claims()
+RETURNS TABLE(session_id text, executor_id text)
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+BEGIN
+  RETURN QUERY SELECT DISTINCT s.id::text, e.quiescence_executor_id::text
+    FROM kagent.session s JOIN kagent.session_task_event e USING (history_id)
+    WHERE e.quiescence_pending AND e.quiescence_executor_id IS NOT NULL;
+END
+$$;
+REVOKE ALL ON FUNCTION kagent.pending_claims() FROM PUBLIC;
+GRANT USAGE ON SCHEMA kagent TO pg_monitor;
+GRANT EXECUTE ON FUNCTION kagent.pending_claims() TO pg_monitor;
+RESET ROLE;

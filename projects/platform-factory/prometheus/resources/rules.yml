@@ -24,7 +24,7 @@ groups:
           action: "Inspect the largest directories on the root filesystem."
           graph: "max(container_fs_usage_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node={{ printf \"%q\" $labels.node }}} / container_fs_limit_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node={{ printf \"%q\" $labels.node }}})"
           threshold: "0.75"
-          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#nodediskfilling"
+          runbook: "https://factory-runbooks.jomcgi.dev/NodeDiskFilling"
           summary: "{{ $labels.node }}'s root filesystem is {{ $value | humanizePercentage }} full (threshold 75%)"
           description: >-
             Image garbage collection starts at 85% and the kubelet evicts pods
@@ -69,7 +69,7 @@ groups:
           action: "Recover the locked session using the suspend-timeout runbook."
           graph: "kagent:suspend_timeouts:sum{pod={{ printf \"%q\" $labels.pod }}}"
           threshold: "0"
-          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#kagentsuspendtimedout"
+          runbook: "https://factory-runbooks.jomcgi.dev/KagentSuspendTimedOut"
           summary: "A kagent session suspend passed the 30 s limit ({{ $labels.timeouts }} since the controller started)"
           description: >-
             kagent keeps the session locked and its worker slot held until a
@@ -92,7 +92,7 @@ groups:
           action: "Schedule a quota reset for this grant."
           graph: "factory_broker_grant_quota_used_percent{grant={{ printf \"%q\" $labels.grant }},window={{ printf \"%q\" $labels.window }}}"
           threshold: "90"
-          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#factorycodexquotalow-factorycodexquotaexhausted"
+          runbook: "https://factory-runbooks.jomcgi.dev/FactoryCodexQuotaLow"
           summary: "Codex grant {{ $labels.grant }} has used {{ $value }}% of its {{ $labels.window }} window (threshold 90%)"
           description: >-
             Coder and review turns stop at 100%. Plan a reset or another
@@ -106,7 +106,7 @@ groups:
           action: "Reset the exhausted grant."
           graph: "factory_broker_grant_quota_exhausted{grant={{ printf \"%q\" $labels.grant }}}"
           threshold: "1"
-          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#factorycodexquotalow-factorycodexquotaexhausted"
+          runbook: "https://factory-runbooks.jomcgi.dev/FactoryCodexQuotaExhausted"
           summary: "Codex grant {{ $labels.grant }} is out of quota (exhausted flag {{ $value }} of 1)"
           # For each window the grant has used up: its reset, or that it has
           # none (never another window's). A grant refused with no window at
@@ -125,7 +125,7 @@ groups:
           action: "Repeat device login for this grant."
           graph: "factory_broker_codex_grant_state{grant={{ printf \"%q\" $labels.grant }},state!=\"ready\"}"
           threshold: "1"
-          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#factorycodexgrantnotready"
+          runbook: "https://factory-runbooks.jomcgi.dev/FactoryCodexGrantNotReady"
           summary: "Codex grant {{ $labels.grant }} is {{ range query (printf `max by (state) (factory_broker_codex_grant_state{grant=%q,state!=\"ready\"}) == 1` $labels.grant) }}{{ .Labels.state }}{{ end }} (non-ready flag {{ $value }} of 1)"
           description: >-
             The broker cannot relay Codex turns with this grant. Runbook:
@@ -147,7 +147,7 @@ groups:
           action: "Check the broker quota refresh logs."
           graph: "time() - max(factory_broker_quota_observed_at_seconds{provider=\"codex\"}) or vector(0)"
           threshold: "7200"
-          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#factorycodexquotareadingstale"
+          runbook: "https://factory-runbooks.jomcgi.dev/FactoryCodexQuotaReadingStale"
           summary: "{{ if eq $value 0.0 }}The broker has no Codex quota reading{{ else }}The broker has not read the Codex quota for {{ $value | humanizeDuration }}{{ end }} (maximum age 2h)"
           description: >-
             The quota alerts cannot fire on an old reading. Runbook:
@@ -168,7 +168,7 @@ groups:
           action: "Inspect the failed sync Job's logs."
           graph: 'kube_job_failed{namespace={{ printf "%q" $labels.namespace }},job_name={{ printf "%q" $labels.job_name }},condition="true"}'
           threshold: "1"
-          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#semgrepsyncfailed"
+          runbook: "https://factory-runbooks.jomcgi.dev/SemgrepSyncFailed"
           summary: "Latest Semgrep to INTSEC sync {{ $labels.namespace }}/{{ $labels.job_name }} failed (failure flag {{ $value }}, threshold 1)"
 
   - name: relay
@@ -182,5 +182,5 @@ groups:
           action: "Restore one ready alert-relay replica."
           graph: "min(kube_deployment_status_replicas_available{namespace=\"prometheus\",deployment=\"alert-relay\"}) or vector(0)"
           threshold: "1"
-          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#alertrelaydown"
+          runbook: "https://factory-runbooks.jomcgi.dev/AlertRelayDown"
           summary: "Alert relay has {{ $value }} available replicas (minimum 1)"

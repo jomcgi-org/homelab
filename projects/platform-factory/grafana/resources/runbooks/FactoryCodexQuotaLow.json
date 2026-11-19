@@ -1,0 +1,11 @@
+{
+  "graph": "factory_broker_grant_quota_used_percent{grant=~@grant,window=~@window}",
+  "check": "factory_broker_grant_quota_used_percent{grant=~@grant,window=~@window}",
+  "condition": "lt",
+  "limit": 90.0,
+  "steps": "Read the grant's usage\non the broker's metrics: `factory_broker_grant_quota_used_percent` and\n`factory_broker_quota_resets_at_seconds` (Prometheus, port-forward\n`svc/prometheus` 9090). A person resets the plan or logs the broker in to\nanother account (`projects/factory/broker`, device login). Coder turns that\nhung on HTTP 429 may need `connector cancel` afterwards.",
+  "details": {
+    "usage": "max by (grant,window) (factory_broker_grant_quota_used_percent{provider=\"codex\"})",
+    "resets": "max by (grant,window) (factory_broker_grant_quota_resets_at_seconds{provider=\"codex\"})"
+  }
+}
