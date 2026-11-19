@@ -180,7 +180,7 @@ func run(log *slog.Logger) error {
 	var names []string
 	for _, b := range cfg.Bindings {
 		rb := review.Binding{
-			Name: b.Name, Owner: b.Owner, Repo: b.Repo, BaseBranch: b.BaseBranch,
+			Name: b.Name, Owner: b.Owner, Repo: b.Repo, BaseBranch: b.BaseBranch, Runtime: b.Runtime,
 			Agent:      kagent.AgentRef{Namespace: b.KagentNamespace, Name: b.KagentAgent},
 			SkipLabels: b.SkipLabels, EnqueueAuthors: b.EnqueueAuthors,
 			HumanGatePaths: b.HumanGatePaths, HumanGateLabels: b.HumanGateLabels, HumanApprovers: b.HumanApprovers,
@@ -202,6 +202,7 @@ func run(log *slog.Logger) error {
 		semgrep = &review.Semgrep{AppID: s.AppID, CheckName: s.CheckName, Wait: time.Duration(s.Wait)}
 	}
 	eng := review.New(review.Config{
+		Runs:          &github.BrokerRuns{URL: cfg.BrokerURL, Bearer: fileToken(cfg.BrokerTokenFile)},
 		Semgrep:       semgrep,
 		CheckName:     cfg.CheckName,
 		AppID:         cfg.AppID,
@@ -220,6 +221,8 @@ func run(log *slog.Logger) error {
 		Itsaplan:      issues,
 		MACSecret:     evidenceSecret,
 		GoalAudit:     audit,
+		GoalTasks:     audit,
+		GoalSessions:  sessions,
 	}, gh, a2a, m, log)
 	log.Info("reviewer started", "bindings", names, "check", cfg.CheckName, "app_id", cfg.AppID, "comment_author", cfg.CommentAuthor,
 		"concurrency", cfg.Concurrency, "poll", time.Duration(cfg.Intervals.Poll).String())

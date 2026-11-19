@@ -19,6 +19,7 @@ bindings:
     baseBranch: main
     kagentNamespace: factory-review
     kagentAgent: reviewer
+    runtime: {model: test-model, reasoningEffort: high, arm: control}
     requiredChecks:
       - name: pr-checks
         statusCreator: buildbuddy-io[bot]

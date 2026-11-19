@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/provenance"
 	"gopkg.in/yaml.v3"
 )
 
@@ -114,6 +115,8 @@ type Binding struct {
 	GeneratedPaths []string `yaml:"generatedPaths"`
 	MaxDiffLines   int      `yaml:"maxDiffLines"`
 	MaxDiffFiles   int      `yaml:"maxDiffFiles"`
+
+	Runtime *provenance.Runtime `yaml:"runtime"`
 }
 
 // Binding defaults.
@@ -265,6 +268,9 @@ func Parse(b []byte) (*Config, error) {
 	names, repos := map[string]bool{}, map[string]bool{}
 	for i := range c.Bindings {
 		b := &c.Bindings[i]
+		if err := b.Runtime.Validate(); err != nil {
+			return nil, fmt.Errorf("binding %s: %w", b.Name, err)
+		}
 		if b.ItsaplanProject != "" && c.ItsaplanURL == "" {
 			return nil, fmt.Errorf("config: binding %s: itsaplanProject needs itsaplanURL", b.Name)
 		}

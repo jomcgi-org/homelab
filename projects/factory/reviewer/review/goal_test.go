@@ -326,9 +326,13 @@ func TestGoalCheckStagedSemgrepReplay(t *testing.T) {
 	if st.Gate == nil || c.Conclusion != ConclusionFailure {
 		t.Fatal("the staged verdict bypassed the human gate")
 	}
+	contexts := map[string]bool{}
 	for _, m := range h.k.sent() {
-		if strings.Contains(m.MessageID, "/goal/") && m.ContextID != "" {
-			t.Fatal("confirmation must open a fresh session")
+		if strings.Contains(m.MessageID, "/goal/") {
+			if m.ContextID == "" || contexts[m.ContextID] || m.TaskID != "" {
+				t.Fatal("each goal must use its own prepared session and opening task")
+			}
+			contexts[m.ContextID] = true
 		}
 	}
 	records := auditRecords(t, h.cfg.GoalAudit.(*FileGoalAudit))

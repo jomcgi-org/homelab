@@ -90,7 +90,8 @@ func run(logger *slog.Logger) error {
 		defer db.Close()
 		db.SetMaxOpenConns(8)
 		db.SetMaxIdleConns(2)
-		d.relay.TokenUsage = &usage.Store{DB: db}
+		d.runStore = &usage.Store{DB: db}
+		d.relay.TokenUsage = d.runStore
 	}
 	go d.verifier.Run(ctx)
 	go d.grants.Run(ctx)
@@ -146,6 +147,7 @@ func run(logger *slog.Logger) error {
 }
 
 type deps struct {
+	runStore *usage.Store
 	verifier *actorjwt.Verifier
 	grants   *grant.Manager
 	relay    *relay.Relay
@@ -314,6 +316,7 @@ func (d *deps) adminMux(cfg config.Config, metricsHandler http.Handler) *http.Se
 	// The reviewer's PR comment, written here so the comment token, which
 	// could approve, never reaches the reviewer.
 	mux.Handle("/github/reviewer-comments", d.reviewer.Require(cfg.TokenReview.ReviewerSubjects, comments))
+	mux.Handle("/runs/reviewer", d.reviewer.Require(cfg.TokenReview.ReviewerSubjects, d.runStore.ReviewerHandler(cfg.ReviewBindings)))
 	return mux
 }
 
