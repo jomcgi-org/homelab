@@ -41,12 +41,17 @@ GARAGE = peer(
     {"k8s:io.kubernetes.pod.namespace": "garage", "app.kubernetes.io/name": "garage"},
     "3900",
 )
+# This account's R2 endpoint, where the hub writes the migration runs.
+R2_HOST = "7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
+R2 = (f"fqdn:{R2_HOST}", "443")
+R2_SECRET = "grimoire-migration-r2"
 # Every egress peer of each Job and runtime identity, besides DNS. No
 # inference endpoint is configured yet.
 PEERS = {
     "grimoire-api": {DATABASE, GARAGE},
     "grimoire-worker": {DATABASE, GARAGE},
-    "grimoire-restore": {DATABASE, RECOVERED},
+    "grimoire-restore": {DATABASE, RECOVERED, R2},
+    "grimoire-migration-check": {R2},
     "grimoire-db-setup": {("kube-apiserver", None)},
 }
 # (Secret, bucket, access)
@@ -122,6 +127,10 @@ def peers(rule):
         return {(entity, None) for entity in rule["toEntities"]}
     ports = [port["port"] for entry in rule["toPorts"] for port in entry["ports"]]
     assert len(ports) == 1, rule
+    if "toFQDNs" in rule:
+        # Exact names only: a pattern would reach other hosts.
+        assert all(set(name) == {"matchName"} for name in rule["toFQDNs"]), rule
+        return {(f"fqdn:{name['matchName']}", ports[0]) for name in rule["toFQDNs"]}
     return {peer(selector["matchLabels"], ports[0]) for selector in rule["toEndpoints"]}
 
 
@@ -140,8 +149,22 @@ def test_each_identity_reaches_dns_and_only_its_peers(name):
 
 def test_no_policy_reaches_inference_or_the_world():
     specs = yaml.safe_dump([doc["spec"] for doc in resources("policy.yaml")])
-    for word in ("inference", "world", "toCIDR", "toFQDNs", "0.0.0.0"):
+    for word in ("inference", "world", "toCIDR", "0.0.0.0"):
         assert word not in specs
+    # The R2 endpoint is the only host outside the cluster, for two identities.
+    outside = {
+        name: {
+            reached
+            for reached in PEERS[name]
+            if isinstance(reached[0], str) and reached[0].startswith("fqdn:")
+        }
+        for name in PEERS
+    }
+    assert {name for name, hosts in outside.items() if hosts} == {
+        "grimoire-restore",
+        "grimoire-migration-check",
+    }
+    assert set().union(*outside.values()) == {R2}
 
 
 def test_runtime_and_restore_pods_select_their_policies(rendered):
@@ -153,46 +176,129 @@ def test_runtime_and_restore_pods_select_their_policies(rendered):
     assert env["PGHOST"] == "grimoire-rw.grimoire.svc"
     assert env["PGUSER"] == "grimoire_restore"
     accounts = by_kind(resources("runtime.yaml"), "ServiceAccount")
-    assert set(accounts) == {"grimoire-api", "grimoire-worker", "grimoire-restore"}
+    assert set(accounts) == {
+        "grimoire-api",
+        "grimoire-worker",
+        "grimoire-restore",
+        "grimoire-migration-check",
+    }
     for account in accounts.values():
         assert account["automountServiceAccountToken"] is False
 
 
-def test_application_deploys_the_restore_on_demand_only(rendered):
-    cronjob = by_kind(rendered, "CronJob")["grimoire-restore"]
+def on_demand_pod(rendered, name):
+    cronjob = by_kind(rendered, "CronJob")[name]
     # A sync starts no run: the CronJob is suspended, its schedule never
-    # occurs, and no restore Job is rendered.
+    # occurs, and no Job of that name is rendered.
     assert cronjob["spec"]["suspend"] is True
     assert cronjob["spec"]["schedule"] == "0 0 31 2 *"
-    assert "grimoire-restore" not in by_kind(rendered, "Job")
-    # An unbound claim stays Progressing, and Argo CD would then hold the
-    # PostSync grants. Each run makes its own claim instead.
-    assert "PersistentVolumeClaim" not in {doc["kind"] for doc in rendered}
+    assert name not in by_kind(rendered, "Job")
     job = cronjob["spec"]["jobTemplate"]["spec"]
     assert job["backoffLimit"] == 0
     pod = job["template"]["spec"]
+    assert pod["serviceAccountName"] == name
+    assert pod["automountServiceAccountToken"] is False
+    return pod
+
+
+def env_of(container):
+    return {item["name"]: item for item in container["env"]}
+
+
+def secrets_of(container):
+    return {
+        item["valueFrom"]["secretKeyRef"]["name"]
+        for item in container["env"]
+        if "secretKeyRef" in item.get("valueFrom", {})
+    }
+
+
+def reads_r2(container):
+    env = env_of(container)
+    assert env["RCLONE_CONFIG_R2_ENDPOINT"]["value"] == f"https://{R2_HOST}"
+    assert env["R2_BUCKET"]["value"] == "grimoire"
+    assert env["MIGRATION_PREFIX"]["value"] == "migration/"
+    for name, key in (
+        ("RCLONE_CONFIG_R2_ACCESS_KEY_ID", "access-key-id"),
+        ("RCLONE_CONFIG_R2_SECRET_ACCESS_KEY", "secret-access-key"),
+    ):
+        assert env[name]["valueFrom"]["secretKeyRef"] == {"name": R2_SECRET, "key": key}
+    assert container["image"].startswith("docker.io/rclone/rclone@sha256:")
+
+
+def test_application_deploys_the_restore_on_demand_only(rendered):
+    pod = on_demand_pod(rendered, "grimoire-restore")
+    # An unbound claim stays Progressing, and Argo CD would then hold the
+    # PostSync grants. Each run makes its own claim instead.
+    assert "PersistentVolumeClaim" not in {doc["kind"] for doc in rendered}
     volumes = {volume["name"]: volume for volume in pod["volumes"]}
     claim = volumes["snapshot"]["ephemeral"]["volumeClaimTemplate"]["spec"]
     assert claim["storageClassName"] == "local-path"
-    # Only the stage container writes the dump; the restore reads it.
-    (stage,) = pod["initContainers"]
+    # Only the fetch container writes the dump and holds the R2 key. The
+    # restore reads the dump and holds the database login.
+    (fetch,) = pod["initContainers"]
     (restore,) = pod["containers"]
     mounts = {
         container["name"]: {mount["name"]: mount for mount in container["volumeMounts"]}
-        for container in (stage, restore)
+        for container in (fetch, restore)
     }
-    assert set(mounts["stage"]) == {"snapshot"}
+    assert not mounts["fetch"]["snapshot"].get("readOnly")
     assert mounts["pg-restore"]["snapshot"]["readOnly"] is True
+    assert fetch["command"] == [
+        "/bin/sh",
+        "/scripts/migration.sh",
+        "fetch",
+        "/snapshot",
+    ]
+    reads_r2(fetch)
+    assert secrets_of(fetch) == {R2_SECRET}
+    assert secrets_of(restore) == {"grimoire-app"}
     assert restore["command"] == ["bash", "/scripts/restore.sh"]
+    env = env_of(restore)
+    assert env["PRIVATE_DUMP"]["value"] == "/snapshot/grimoire.dump"
+    assert env["VECTOR_METADATA"]["value"] == "/snapshot/vector.metadata"
+    assert env["SOURCE_INVENTORY"]["value"] == "/snapshot/source.inventory"
+    assert env["INVENTORY_SQL"]["value"] == "/scripts/inventory.sql"
     assert mounts["pg-restore"]["scripts"]["mountPath"] == "/scripts"
 
-    # The mounted script is the repository's restore.sh.
+    # The mounted scripts are the repository's.
     name = volumes["scripts"]["configMap"]["name"]
     script = by_kind(rendered, "ConfigMap")[name]
     assert name.startswith("grimoire-restore-script-")
     assert script["metadata"]["namespace"] == "grimoire"
-    restore_sh = (REPO / "projects/grimoire/deploy/restore.sh").read_text()
-    assert script["data"] == {"restore.sh": restore_sh}
+    assert script["data"] == {
+        file: (REPO / DEPLOY / file).read_text()
+        for file in ("restore.sh", "migration.sh", "inventory.sql")
+    }
+
+
+def test_the_migration_check_reads_r2_and_nothing_else(rendered):
+    pod = on_demand_pod(rendered, "grimoire-migration-check")
+    assert "initContainers" not in pod
+    (check,) = pod["containers"]
+    assert check["command"] == ["/bin/sh", "/scripts/migration.sh", "check"]
+    reads_r2(check)
+    assert secrets_of(check) == {R2_SECRET}
+    assert not any(name.startswith("PG") for name in env_of(check))
+    volumes = {volume["name"]: volume for volume in pod["volumes"]}
+    assert volumes["scripts"]["configMap"]["name"].startswith(
+        "grimoire-restore-script-"
+    )
+
+
+def test_the_r2_key_comes_from_its_1password_item(rendered):
+    item = by_kind(rendered, "OnePasswordItem")[R2_SECRET]
+    assert item["metadata"]["namespace"] == "grimoire"
+    assert item["spec"] == {
+        "itemPath": "vaults/k8s-homelab/items/grimoire-migration-r2"
+    }
+    # Only the two R2 readers name the key.
+    readers = set()
+    for doc in rendered:
+        if doc["kind"] in {"CronJob", "Job", "Deployment", "StatefulSet"}:
+            if R2_SECRET in yaml.safe_dump(doc):
+                readers.add(doc["metadata"]["name"])
+    assert readers == {"grimoire-restore", "grimoire-migration-check"}
 
 
 def test_database_admits_only_grimoire_identities():

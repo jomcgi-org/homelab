@@ -1,9 +1,10 @@
-# On-demand restore of a dump into the factory grimoire database. The CronJob
-# stays suspended and its schedule never occurs, so a sync starts nothing. An
-# operator starts one run with `kubectl create job --from` (README.md). The
-# stage container waits until the operator copies the dump into the run's own
-# volume. The pod runs as the owner identity: the grimoire-restore policy
-# allows DNS and the database on 5432, and nothing else.
+# On-demand restore of the newest hub dump into the factory grimoire database.
+# The CronJob stays suspended and its schedule never occurs, so a sync starts
+# nothing. An operator starts one run with `kubectl create job --from`
+# (README.md). The fetch container copies the newest complete run from the
+# private R2 bucket into the run's own volume. The pod runs as the owner
+# identity: the grimoire-restore policy allows DNS, the database on 5432 and
+# the R2 endpoint on 443, and nothing else.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -17,8 +18,8 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 0
-      # Ends a run that waits for a dump that never comes.
-      activeDeadlineSeconds: 86400
+      # Bounds a slow fetch or restore.
+      activeDeadlineSeconds: 21600
       # Deletes the pod and its volume, with the dump, a day after the run.
       ttlSecondsAfterFinished: 86400
       template:
@@ -37,11 +38,40 @@ spec:
             seccompProfile:
               type: RuntimeDefault
           initContainers:
-            - name: stage
-              # The operator copies grimoire.dump and vector.metadata into
-              # /snapshot with kubectl cp, then creates /snapshot/ready.
-              image: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
-              command: [bash, -c, "until [[ -e /snapshot/ready ]]; do sleep 5; done"]
+            - name: fetch
+              # Copies grimoire.dump, vector.metadata and source.inventory of
+              # the newest complete run, and checks them against its SHA256SUMS.
+              # Only this container holds the read-only R2 key.
+              image: docker.io/rclone/rclone@sha256:7cbeec24a44f206067597c0368be4de90ae19a64d5113c7d1938bd737a81e466
+              command: [/bin/sh, /scripts/migration.sh, fetch, /snapshot]
+              env:
+                - name: R2_BUCKET
+                  value: grimoire
+                - name: MIGRATION_PREFIX
+                  value: migration/
+                - name: RCLONE_CONFIG_R2_TYPE
+                  value: s3
+                - name: RCLONE_CONFIG_R2_PROVIDER
+                  value: Cloudflare
+                - name: RCLONE_CONFIG_R2_REGION
+                  value: auto
+                - name: RCLONE_CONFIG_R2_FORCE_PATH_STYLE
+                  value: "true"
+                # The grimoire-restore policy allows this host only.
+                - name: RCLONE_CONFIG_R2_ENDPOINT
+                  value: https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+                - name: RCLONE_CONFIG_R2_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: grimoire-migration-r2
+                      key: access-key-id
+                - name: RCLONE_CONFIG_R2_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: grimoire-migration-r2
+                      key: secret-access-key
+                - name: HOME
+                  value: /tmp
               securityContext:
                 allowPrivilegeEscalation: false
                 readOnlyRootFilesystem: true
@@ -49,13 +79,18 @@ spec:
                   drop: [ALL]
               resources:
                 requests:
-                  cpu: 10m
-                  memory: 16Mi
+                  cpu: 100m
+                  memory: 128Mi
                 limits:
-                  memory: 64Mi
+                  memory: 256Mi
               volumeMounts:
                 - name: snapshot
                   mountPath: /snapshot
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
           containers:
             - name: pg-restore
               # The instances' image, for a matching pg_restore.
@@ -79,6 +114,11 @@ spec:
                   value: /snapshot/grimoire.dump
                 - name: VECTOR_METADATA
                   value: /snapshot/vector.metadata
+                # restore.sh then compares the target with the hub's inventory.
+                - name: SOURCE_INVENTORY
+                  value: /snapshot/source.inventory
+                - name: INVENTORY_SQL
+                  value: /scripts/inventory.sql
                 - name: HOME
                   value: /tmp
               securityContext:

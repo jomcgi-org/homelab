@@ -971,6 +971,17 @@ def grimoire_extract_entities() -> None:
     _run_job("grimoire-extract-entities", "grimoire.jobs", "grimoire_extract_entities")
 
 
+@app.command("grimoire-migration-dump")
+def grimoire_migration_dump() -> None:
+    """Upload a Grimoire dump and a copy of its objects for the factory migration.
+
+    Runs in the grimoire-migration-dump CronWorkflow after its pg-dump init
+    container writes the dump files to GRIMOIRE_MIGRATION_WORK. Writes one run
+    under GRIMOIRE_MIGRATION_PREFIX in the private GRIMOIRE_S3_BUCKET, with
+    SHA256SUMS last."""
+    _run_job("grimoire-migration-dump", "grimoire.migration", "grimoire_migration_dump")
+
+
 @app.command("grimoire-backfill-hierarchy")
 def grimoire_backfill_hierarchy() -> None:
     """Backfill section_hierarchy onto already-loaded grimoire chunks.

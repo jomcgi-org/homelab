@@ -7300,6 +7300,20 @@ py_test(
 )
 
 py_test(
+    name = "grimoire_migration_test",
+    srcs = ["grimoire/migration_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_grimoire",
+        "//projects/monolith/shared/testing/sqlite",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "grimoire_extract_test",
     srcs = ["grimoire/extract_test.py"],
     imports = ["."],
