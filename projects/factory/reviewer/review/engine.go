@@ -1372,13 +1372,13 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 	run = &local
 	rec := RecordedTask(run.Summary)
 	attempt := max(rec.Attempt, 1)
-	parent, root := otel.Tracer("factory-reviewer").Start(ctx, "review", trace.WithNewRoot(), trace.WithAttributes(attribute.Int("pr.number", pr.Number), attribute.String("pr.head_sha", pr.HeadSHA)))
+	parent, root := otel.Tracer("factory-reviewer").Start(ctx, "review", trace.WithNewRoot(), reviewAttributes(pr, attempt))
 	defer root.End()
 	parent = withUsage(parent, root)
 	startCode := func() (context.Context, trace.Span) {
 		round := attribute.Int("review.round", attempt)
 		root.SetAttributes(round)
-		ctx, span := otel.Tracer("factory-reviewer").Start(parent, "code review", trace.WithAttributes(round))
+		ctx, span := otel.Tracer("factory-reviewer").Start(parent, "code review", reviewAttributes(pr, attempt))
 		return withUsage(ctx, span), span
 	}
 	ctx, code := startCode()
@@ -1692,7 +1692,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				continue
 			}
 			recordUsage(ctx, t)
-			res := e.outcome(parent, code, b, currentPR, t, in, l)
+			res := e.outcome(parent, code, attempt, b, currentPR, t, in, l)
 			if ctx.Err() != nil {
 				continue // stop ends the review.
 			}
@@ -2571,7 +2571,7 @@ type result struct {
 
 // outcome reads a quiescent task. Only a parsed report can pass, and a
 // gated head passes only once its human approved it.
-func (e *Engine) outcome(ctx context.Context, code trace.Span, b *Binding, pr github.PullRequest, task *kagent.Task, in *inputs, l *slog.Logger) result {
+func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Binding, pr github.PullRequest, task *kagent.Task, in *inputs, l *slog.Logger) result {
 	footer := e.footer(b, pr, task.ID)
 	switch task.Status.State {
 	case kagent.StateCompleted, kagent.StateInputRequired:
@@ -2581,15 +2581,8 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, b *Binding, pr gi
 			l.WarnContext(ctx, "the review reply has no usable report", "task", task.ID, "error", err, "reply_bytes", len(reply))
 			return result{reason: "the reviewer's reply had no usable findings report: " + oneLine(err.Error(), maxTitle) + "."}
 		}
-		counts := map[string]int{}
-		for _, f := range r.Findings {
-			counts[f.Severity]++
-		}
-		for _, severity := range Severities {
-			attr := attribute.Int("review.findings."+severity, counts[severity])
-			code.SetAttributes(attr)
-			trace.SpanFromContext(ctx).SetAttributes(attr)
-		}
+		recordFindings(code, r.Findings)
+		code.SetAttributes(attribute.String("review.verdict", Assess(r, in.prior.Previous()).Conclusion))
 		code.AddEvent("report parsed")
 		code.End()
 		// Only a usable code review starts the goal check, which costs a
@@ -2598,7 +2591,7 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, b *Binding, pr gi
 		if key == "" {
 			in.goal = nil // The State keeps no answer for another issue.
 		} else {
-			in.goal = e.goalCheck(ctx, b, pr, in, r, l)
+			in.goal = e.goalCheck(ctx, b, pr, round, in, r, l)
 		}
 		commits := e.commitMessages(ctx, b, pr, "", l)
 		assessActivation(r, pr.HeadSHA, commits)
@@ -2638,6 +2631,7 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, b *Binding, pr gi
 		}
 		decisions := joeDecisions(b, pr, comments)
 		decisions.Carried = in.prior.Decisions
+		recordFindings(trace.SpanFromContext(ctx), r.Findings)
 		a := AssessDecided(r, prior, decisions)
 		a.Earlier, a.EarlierPartial = decisions.Revalidate(in.prior.Cleared), !in.prior.ClearedComplete()
 		a.Later = in.priorHead != "" && in.priorHead != pr.HeadSHA
@@ -3389,5 +3383,19 @@ func recordUsage(ctx context.Context, t *kagent.Task) {
 		for s, _ := ctx.Value(reviewUsageKey{}).(*spanUsage); s != nil; s = s.parent {
 			s.add(u)
 		}
+	}
+}
+
+func reviewAttributes(pr github.PullRequest, round int) trace.SpanStartOption {
+	return trace.WithAttributes(attribute.Int("pr.number", pr.Number), attribute.String("pr.head_sha", pr.HeadSHA), attribute.Int("review.round", round))
+}
+
+func recordFindings(span trace.Span, findings []Finding) {
+	counts := map[string]int{}
+	for _, f := range findings {
+		counts[f.Severity]++
+	}
+	for _, severity := range Severities {
+		span.SetAttributes(attribute.Int("review.findings."+severity, counts[severity]))
 	}
 }

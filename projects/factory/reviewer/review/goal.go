@@ -450,11 +450,13 @@ func goalKey(in *IssueContext) string {
 // message ID carries a MAC of the prompt, so a restart finds the same task.
 // The prompt holds private issue text, so the MAC uses the evidence key, as
 // sealIssues does. Nil is unavailable; the logs name only a fixed reason.
-func (e *Engine) goalCheck(ctx context.Context, b *Binding, pr github.PullRequest, in *inputs, r *Report, l *slog.Logger) (answer *GoalCheck) {
-	ctx, span := otel.Tracer("factory-reviewer").Start(ctx, "goal check")
+func (e *Engine) goalCheck(ctx context.Context, b *Binding, pr github.PullRequest, round int, in *inputs, r *Report, l *slog.Logger) (answer *GoalCheck) {
+	ctx, span := otel.Tracer("factory-reviewer").Start(ctx, "goal check", reviewAttributes(pr, round))
 	ctx = withUsage(ctx, span)
 	defer func() {
+		recordFindings(span, goalFindings(goalKey(in.issues), answer))
 		if answer == nil {
+			span.SetAttributes(attribute.String("review.verdict", "unavailable"))
 			traceFailure(span, "goal check unavailable")
 		} else if goalVerdict(answer.Overall) {
 			span.SetAttributes(attribute.String("review.verdict", answer.Overall))
