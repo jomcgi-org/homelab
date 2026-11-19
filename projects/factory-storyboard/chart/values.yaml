@@ -13,6 +13,10 @@ workloads:
     resources:
       requests: {cpu: 100m, memory: 128Mi}
       limits: {memory: 512Mi}
+    # The root filesystem is read-only. Each cycle's gitleaks run reads one
+    # file per text from a temporary directory here.
+    writablePaths:
+      - {name: tmp, mountPath: /tmp, sizeLimit: 256Mi}
     network:
       egress:
         - {peer: factory-db, port: 5432}
@@ -41,9 +45,7 @@ workloads:
       - name: ITSAPLAN_KEY
         valueFrom:
           secretKeyRef: {name: factory-storyboard-readers, key: ITSAPLAN_KEY}
-      - name: APPROVED_HISTORY
-        valueFrom:
-          secretKeyRef: {name: factory-storyboard-readers, key: APPROVED_HISTORY}
+# The 1Password item holds only the read-only itsaplan key (README).
 secrets:
   factory-storyboard-readers:
     workload: factory-storyboard

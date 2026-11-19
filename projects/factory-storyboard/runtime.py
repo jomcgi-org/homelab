@@ -9,9 +9,9 @@ from datetime import datetime, timezone
 from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from connector_source import delivery, session_tasks, task_messages
+from connector_source import delivery, messages_view_ready, session_messages
 from delivery_stats import delivery_statistics
-from publisher import public_issue, public_turn, publish, redact
+from publisher import gitleaks, public_issue, public_texts, public_turns, publish
 
 LOG = logging.getLogger(__name__)
 
@@ -35,39 +35,6 @@ def timestamp(value):
         .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z")
     )
-
-
-def approved_task(record):
-    """Return (session, task, at, texts) of a well-formed approval, else None."""
-    if not isinstance(record, dict):
-        return None
-    sid, task_id, texts = (record.get(k) for k in ("session", "task", "assistantTexts"))
-    if not (isinstance(sid, str) and sid and isinstance(task_id, str) and task_id):
-        return None
-    if not (
-        isinstance(texts, list) and texts and all(isinstance(t, str) for t in texts)
-    ):
-        return None
-    try:
-        at = timestamp(record.get("at"))
-    except (AttributeError, TypeError, ValueError):
-        return None
-    return sid, task_id, at, texts
-
-
-def unconfirmed(fields, tasks, confirmed):
-    """Say why the views do not confirm an approved task, or return None."""
-    if fields is None:
-        return "malformed approval"
-    sid, task_id, _, texts = fields
-    if (sid, task_id) not in tasks:
-        return "the task view does not hold this task"
-    if any(
-        (sid, task_id, hashlib.sha256(text.encode()).hexdigest()) not in confirmed
-        for text in texts
-    ):
-        return "the view does not confirm its text"
-    return None
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -95,14 +62,26 @@ def read_board(key):
     return project, get("/issues/board")["issues"]
 
 
-def documents(cursor, key, project, board, archive):
+def documents(cursor, key, project, board, scan=gitleaks):
+    """Return the snapshot documents, or None if the connector view is absent."""
+    if not messages_view_ready(cursor):
+        # Fail closed: before the connector migration applies, publish
+        # nothing and keep the last manifest.
+        LOG.error(
+            "connector view storyboard_messages is absent: the connector "
+            "migration has not applied; this cycle published nothing"
+        )
+        return None
     labels = {entry["id"]: entry["name"] for entry in project["labels"]}
     users = [entry["userId"] for entry in project["assignees"]]
-    rows, issues, sessions, summaries = [], {}, {}, []
     goal_id = key.lower()
+    eligible = []
     for item in sorted(board, key=lambda row: row["identifier"]):
         if item["projectId"] != project["project"]["id"] or item.get("archivedAt"):
             continue
+        # The store holds no labels. A private or security issue stops here,
+        # before any connector read, so a newly labelled issue stops
+        # publishing on the next cycle.
         if not public_issue(
             {"project": key, "labels": [labels[i] for i in item["labelIds"]]}, {key}
         ):
@@ -110,23 +89,29 @@ def documents(cursor, key, project, board, archive):
         row = delivery(cursor, key, item["id"])
         if not row:
             continue
-        issue_key = row["issue_key"]
-        if issue_key != item["identifier"]:
+        if row["issue_key"] != item["identifier"]:
             raise ValueError("connector issue key mismatch")
+        eligible.append((item, row, session_messages(cursor, key, item["id"])))
+    # One scan covers every title and description.
+    texts = public_texts(
+        [
+            text
+            for item, _, _ in eligible
+            for text in (item["title"], item.get("description") or "")
+        ],
+        users,
+        scan,
+    )
+    rows, issues, sessions, summaries = [], {}, {}, []
+    for index, (item, row, messages) in enumerate(eligible):
+        issue_key = row["issue_key"]
         state = STATES[row["state"]]
-        approval = archive.get(issue_key, {})
-        title = (
-            redact(item["title"], users)
-            if item["title"] == approval.get("title")
-            else issue_key
+        title, description = texts[2 * index : 2 * index + 2]
+        if title is None or description is None:
+            LOG.warning("withheld issue text of %s: secret scan", issue_key)
+        summary = dict(
+            goalId=goal_id, title=title or issue_key, state=state, issueKey=issue_key
         )
-        description = item.get("description") or ""
-        description = (
-            redact(description, users)
-            if description == approval.get("description")
-            else ""
-        )
-        summary = dict(goalId=goal_id, title=title, state=state, issueKey=issue_key)
         summaries.append(summary)
         rows.append(
             dict(row, created_at=datetime.fromisoformat(item["createdAt"]), state=state)
@@ -134,36 +119,10 @@ def documents(cursor, key, project, board, archive):
         timeline = [
             dict(kind="opened", at=timestamp(item["createdAt"]), text="Issue opened")
         ]
-        approved = approval.get("tasks", [])
-        tasks, confirmed = set(), set()
-        if approved:
-            # Fingerprints of the connector's kagent task journal, limited to
-            # the owner's approvals in the store. Both views match the session
-            # and task of an approval, so a released session still matches,
-            # and a withdrawn approval matches nothing. The publisher never
-            # reads private transcript text.
-            tasks = {
-                (r["session_id"], r["task_id"])
-                for r in session_tasks(cursor, key, item["id"])
-            }
-            confirmed = {
-                (r["session_id"], r["task_id"], r["text_sha256"])
-                for r in task_messages(cursor, key, item["id"])
-            }
-        for index, record in enumerate(approved):
-            fields = approved_task(record)
-            reason = unconfirmed(fields, tasks, confirmed)
-            if reason:
-                # Every message needs the view's digest; APPROVED_HISTORY
-                # alone publishes nothing. Log no message text.
-                LOG.warning(
-                    "withheld approved task %s of %s: %s",
-                    fields[1] if fields else f"entry {index}",
-                    issue_key,
-                    reason,
-                )
-                continue
-            sid, _, at, texts = fields
+        # The view's rows: the text of each assistant message in a completed
+        # task of this issue, in session and task order.
+        for message in messages:
+            sid = message["session_id"]
             public_id = "session-" + hashlib.sha256(sid.encode()).hexdigest()
             session = sessions.setdefault(
                 public_id,
@@ -171,30 +130,26 @@ def documents(cursor, key, project, board, archive):
             )
             if session["issueKey"] != issue_key:
                 raise ValueError("session linked to multiple issues")
-            for text in texts:
-                number = len(session["turns"]) + 1
-                session["turns"].append(
-                    public_turn(
-                        dict(
-                            number=number,
-                            at=at,
-                            role="assistant",
-                            completed=True,
-                            text=text,
-                            toolCalls=[],
-                        ),
-                        users,
-                    )
+            at = timestamp(message["finished_at"])
+            number = len(session["turns"]) + 1
+            session["turns"].append(
+                dict(
+                    number=number,
+                    at=at,
+                    role="assistant",
+                    text=message["text"],
+                    toolCalls=[],
                 )
-                timeline.append(
-                    dict(
-                        kind="session",
-                        at=at,
-                        turn=number,
-                        sessionId=public_id,
-                        text="Session turn",
-                    )
+            )
+            timeline.append(
+                dict(
+                    kind="session",
+                    at=at,
+                    turn=number,
+                    sessionId=public_id,
+                    text="Session turn",
                 )
+            )
         if row["merged_at"]:
             timeline.append(
                 dict(
@@ -209,13 +164,31 @@ def documents(cursor, key, project, board, archive):
             kind="issue",
             key=issue_key,
             goalId=goal_id,
-            title=title,
+            title=summary["title"],
             state=state,
-            description=description,
+            description=description or "",
             timeline=sorted(
                 timeline, key=lambda event: datetime.fromisoformat(event["at"])
             ),
         )
+    # One scan covers every turn. A matching turn keeps only its header.
+    public = iter(
+        public_turns(
+            [turn for session in sessions.values() for turn in session["turns"]],
+            users,
+            scan,
+        )
+    )
+    for session in sessions.values():
+        session["turns"] = [next(public) for _ in session["turns"]]
+        for turn in session["turns"]:
+            if turn["withheld"]:
+                LOG.warning(
+                    "withheld turn %d of %s in %s: secret scan",
+                    turn["number"],
+                    session["id"],
+                    session["issueKey"],
+                )
     stats, charts = delivery_statistics(rows)
     shipped = sorted(
         (r for r in rows if r["merged_at"]), key=lambda r: r["merged_at"], reverse=True
@@ -277,9 +250,9 @@ def main():
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as db:
         with db.cursor() as cursor:
             cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-            docs = documents(
-                cursor, key, project, board, json.loads(os.environ["APPROVED_HISTORY"])
-            )
+            docs = documents(cursor, key, project, board)
+    if docs is None:
+        return
     publish(
         boto3.client("s3", endpoint_url=os.environ["AWS_ENDPOINT_URL"]),
         os.environ["BUCKET"],

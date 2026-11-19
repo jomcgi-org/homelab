@@ -9,350 +9,250 @@ from jsonschema import Draft7Validator
 
 import runtime
 
+FINISHED = datetime(2026, 11, 2, 12, tzinfo=timezone.utc)
+LABELS = [
+    {"id": 7, "name": "Private"},
+    {"id": 8, "name": "security"},
+    {"id": 9, "name": "INTSEC"},
+    {"id": 10, "name": "deferred"},
+]
 
-def digest(text):
-    return hashlib.sha256(text.encode()).hexdigest()
+
+def public_id(session):
+    return "session-" + hashlib.sha256(session.encode()).hexdigest()
 
 
-def test_private_issues_filtered_before_connector_or_session_read(monkeypatch):
-    queried = []
+def no_secrets(bodies):
+    return set()
 
-    def delivery(cursor, project, issue_id):
-        queried.append(issue_id)
-        return dict(
-            issue_key="HOME-4",
-            state="done",
-            merged_at=datetime(2026, 11, 3, tzinfo=timezone.utc),
-            pr_number=10,
-            review_rounds=0,
-        )
 
-    monkeypatch.setattr(runtime, "delivery", delivery)
+def secret_scan(bodies):
+    return {i for i, body in enumerate(bodies) if b"SECRET" in body}
 
-    def references(cursor, project, issue_id):
-        assert issue_id == 4
-        return [
-            dict(
-                session_id=session,
-                task_id="task",
-                kagent_namespace="factory",
-                kagent_agent="coder",
-            )
-            for session in ("shared", "unshared")
-        ]
 
-    # The connector view returns digests only, never transcript text.
-    journal = [
-        ("shared", "Unapproved reply with private goal reasons"),
-        ("shared", "Update from private-user"),
-        ("unshared", "Another session reply"),
-    ]
-
-    def messages(cursor, project, issue_id):
-        assert (project, issue_id) == ("HOME", 4)
-        return [
-            dict(session_id=session, task_id="task", text_sha256=digest(text))
-            for session, text in journal
-        ]
-
-    original_turn = runtime.public_turn
-    monkeypatch.setattr(runtime, "session_tasks", references)
-    monkeypatch.setattr(runtime, "task_messages", messages)
-    monkeypatch.setattr(
-        runtime,
-        "public_turn",
-        lambda turn, users: original_turn(turn, users, scan=lambda _: False),
-    )
-    project = {
-        "project": {"id": 1},
-        "labels": [{"id": 7, "name": "Private"}],
-        "assignees": [{"userId": "private-user"}],
-    }
-    board = [
-        dict(
-            id=i,
-            identifier=f"HOME-{i}",
-            projectId=pid,
-            labelIds=labels,
-            title="private-user shipped",
-            createdAt="2026-11-02T00:00:00Z",
-        )
-        for i, pid, labels in [(2, 2, []), (3, 1, [7]), (4, 1, [])]
-    ]
-    archive = {
-        "HOME-4": {
-            "title": "private-user shipped",
-            "tasks": [
-                {
-                    "session": "shared",
-                    "task": "task",
-                    "at": "2026-11-02T12:00:00Z",
-                    "assistantTexts": ["Update from private-user"],
-                }
-            ],
-        }
-    }
-    result = runtime.documents(None, "HOME", project, board, archive)
-    assert "Unapproved reply" not in json.dumps(result)
-    assert queried == [4]
-    # A digest from another session or a changed message withholds the task.
-    journal[1] = ("unshared", "Update from private-user")
-    withheld = runtime.documents(None, "HOME", project, board, archive)
-    assert withheld[3] == {}
-    assert [e["kind"] for e in withheld[2]["HOME-4"]["timeline"]] == [
-        "opened",
-        "merged",
-    ]
-    journal[1] = ("shared", "Update from private-user")
-    assert runtime.documents(None, "HOME", project, board, archive) == result
-    # APPROVED_HISTORY alone publishes nothing: a task that the task view
-    # does not hold stays withheld.
-    queried.clear()
-    monkeypatch.setattr(runtime, "session_tasks", lambda *args: [])
-    assert runtime.documents(None, "HOME", project, board, archive)[3] == {}
-    story, goals, issues, sessions = result
-    (session,) = sessions.values()
-    assert session["turns"][0]["text"] == "Update from [redacted]"
-    assert queried == [4]
-    assert goals["home"]["issueKeys"] == ["HOME-4"]
-    assert goals["home"]["burnUp"] == [
-        dict(date="2026-11-02", shipped=0, total=1),
-        dict(date="2026-11-03", shipped=1, total=1),
-    ]
-    assert issues["HOME-4"]["title"] == "[redacted] shipped"
-    assert story["stats"]["mergeHours"]["value"] == 24
-    assert story["recentlyShipped"][0]["state"] == "Shipped"
-
-    assert runtime.documents(None, "HOME", project, board, {})[3] == {}
-    board[-1]["labelIds"] = [7]
-    assert runtime.documents(None, "HOME", project, board, archive)[3] == {}
-
+def validate(docs):
     schema = json.loads(
         (Path(__file__).parent / "schema/v1/snapshot.schema.json").read_text()
     )
+    story, goals, issues, sessions = docs
     validator = Draft7Validator(schema)
     for doc in [story, *goals.values(), *issues.values(), *sessions.values()]:
         validator.validate(doc)
 
 
-UNCONFIRMED = {
-    # A review round completes without a connector journal, so the view has
-    # no digest for its text.
-    "review round": (
-        dict(session="s", task="review", assistantTexts=["Private reply"]),
-        "review",
-        "the view does not confirm its text",
-    ),
-    "another session": (
-        dict(session="old", task="code", assistantTexts=["Private reply"]),
-        "code",
-        "the task view does not hold this task",
-    ),
-    "missing from the view": (
-        dict(session="s", task="gone", assistantTexts=["Private reply"]),
-        "gone",
-        "the task view does not hold this task",
-    ),
-    "no messages": (
-        dict(session="s", task="review", assistantTexts=[]),
-        "entry 1",
-        "malformed approval",
-    ),
-    "text not a list": (
-        dict(session="s", task="review", assistantTexts="Private reply"),
-        "entry 1",
-        "malformed approval",
-    ),
-    "no timezone": (
+class Store:
+    """The connector views: delivery facts and the text of eligible messages.
+
+    The store test checks that storyboard_messages holds only completed HOME
+    tasks that the binding's own agent ran, never the security agent's.
+    """
+
+    def __init__(self, monkeypatch, messages, merged_at=None):
+        self.queried = []
+        self.messages = messages
+        self.merged_at = merged_at
+        monkeypatch.setattr(runtime, "delivery", self.delivery)
+        monkeypatch.setattr(runtime, "session_messages", self.session_messages)
+        monkeypatch.setattr(runtime, "messages_view_ready", lambda cursor: True)
+
+    def delivery(self, cursor, project, issue_id):
+        self.queried.append(("delivery", issue_id))
+        return dict(
+            issue_key=f"HOME-{issue_id}",
+            state="done" if self.merged_at else "review",
+            merged_at=self.merged_at,
+            pr_number=10,
+            review_rounds=0,
+        )
+
+    def session_messages(self, cursor, project, issue_id):
+        assert project == "HOME"
+        self.queried.append(("messages", issue_id))
+        return [
+            dict(session_id=session, task_id=task, finished_at=at, text=text)
+            for issue, session, task, at, text in self.messages
+            if issue == issue_id
+        ]
+
+
+def board(*issues):
+    return [
         dict(
-            session="s",
-            task="review",
-            at="2026-11-02T13:00:00",
-            assistantTexts=["Private reply"],
-        ),
-        "entry 1",
-        "malformed approval",
-    ),
+            id=i,
+            identifier=f"HOME-{i}",
+            projectId=project,
+            labelIds=labels,
+            title="private-user shipped",
+            description="Asked by a@test.dev",
+            createdAt="2026-11-02T00:00:00Z",
+        )
+        for i, project, labels in issues
+    ]
+
+
+PROJECT = {
+    "project": {"id": 1},
+    "labels": LABELS,
+    "assignees": [{"userId": "private-user"}],
 }
 
 
-@pytest.mark.parametrize("case", UNCONFIRMED.values(), ids=UNCONFIRMED.keys())
-def test_unconfirmed_task_withheld_and_rest_published(monkeypatch, caplog, case):
-    record, label, reason = case
-    monkeypatch.setattr(
-        runtime,
-        "delivery",
-        lambda *args: dict(
-            issue_key="HOME-4",
-            state="review",
-            merged_at=None,
-            pr_number=10,
-            review_rounds=1,
-        ),
+def test_private_and_security_issues_never_reach_the_connector(monkeypatch):
+    store = Store(monkeypatch, [(i, "s", "t", FINISHED, "Reply") for i in range(2, 7)])
+    items = board(
+        (2, 2, []),  # another project
+        (3, 1, [7]),  # Private
+        (4, 1, [10]),  # deferred only: public
+        (5, 1, [8]),  # security
+        (6, 1, [10, 9]),  # INTSEC
     )
-    monkeypatch.setattr(
-        runtime,
-        "session_tasks",
-        lambda *args: [
-            dict(
-                session_id="s",
-                task_id=task,
-                kagent_namespace="factory",
-                kagent_agent=agent,
-            )
-            for task, agent in (("code", "coder"), ("review", "reviewer"))
+    _, _, issues, sessions = runtime.documents(None, "HOME", PROJECT, items, no_secrets)
+    assert store.queried == [("delivery", 4), ("messages", 4)]
+    assert list(issues) == ["HOME-4"]
+    assert [s["issueKey"] for s in sessions.values()] == ["HOME-4"]
+
+
+def test_normal_session_publishes_by_default(monkeypatch):
+    later = datetime(2026, 11, 2, 14, tzinfo=timezone.utc)
+    Store(
+        monkeypatch,
+        [
+            (4, "s", "code", FINISHED, "Update from private-user"),
+            (4, "s", "code", FINISHED, "Opened the PR"),
+            (4, "s", "revise", later, "Fixed the review finding"),
         ],
+        merged_at=datetime(2026, 11, 3, tzinfo=timezone.utc),
     )
-    # The view confirms only the coder's message.
-    monkeypatch.setattr(
-        runtime,
-        "task_messages",
-        lambda *args: [
-            dict(session_id="s", task_id="code", text_sha256=digest("Coded it"))
-        ],
-    )
-    original_turn = runtime.public_turn
-    monkeypatch.setattr(
-        runtime,
-        "public_turn",
-        lambda turn, users: original_turn(turn, users, scan=lambda _: False),
-    )
-    project = {"project": {"id": 1}, "labels": [], "assignees": []}
-    board = [
-        dict(
-            id=4,
-            identifier="HOME-4",
-            projectId=1,
-            labelIds=[],
-            title="Ship it",
-            createdAt="2026-11-02T00:00:00Z",
-        )
-    ]
-    archive = {
-        "HOME-4": {
-            "tasks": [
-                dict(
-                    session="s",
-                    task="code",
-                    at="2026-11-02T12:00:00Z",
-                    assistantTexts=["Coded it"],
-                ),
-                dict(dict(at="2026-11-02T13:00:00Z"), **record),
-            ]
-        }
-    }
-    with caplog.at_level(logging.WARNING, logger=runtime.__name__):
-        result = runtime.documents(None, "HOME", project, board, archive)
-    story, goals, issues, sessions = result
-    assert "Private reply" not in json.dumps(result)
+    docs = runtime.documents(None, "HOME", PROJECT, board((4, 1, [])), no_secrets)
+    story, goals, issues, sessions = docs
     (session,) = sessions.values()
-    assert session["id"] == "session-" + digest("s")
-    assert [turn["text"] for turn in session["turns"]] == ["Coded it"]
-    assert [e["kind"] for e in issues["HOME-4"]["timeline"]] == ["opened", "session"]
-    assert [s["issueKey"] for s in story["workInProgress"]] == ["HOME-4"]
+    assert session["id"] == public_id("s")
+    assert session["title"] == "[redacted] shipped"
+    assert session["turns"] == [
+        dict(
+            number=1,
+            at="2026-11-02T12:00:00.000Z",
+            role="assistant",
+            withheld=False,
+            text="Update from [redacted]",
+            toolCalls=[],
+        ),
+        dict(
+            number=2,
+            at="2026-11-02T12:00:00.000Z",
+            role="assistant",
+            withheld=False,
+            text="Opened the PR",
+            toolCalls=[],
+        ),
+        dict(
+            number=3,
+            at="2026-11-02T14:00:00.000Z",
+            role="assistant",
+            withheld=False,
+            text="Fixed the review finding",
+            toolCalls=[],
+        ),
+    ]
+    issue = issues["HOME-4"]
+    assert issue["title"] == "[redacted] shipped"
+    assert issue["description"] == "Asked by [redacted]"
+    assert [(e["kind"], e.get("turn")) for e in issue["timeline"]] == [
+        ("opened", None),
+        ("session", 1),
+        ("session", 2),
+        ("session", 3),
+        ("merged", None),
+    ]
     assert goals["home"]["issueKeys"] == ["HOME-4"]
-    assert caplog.messages == [f"withheld approved task {label} of HOME-4: {reason}"]
-    assert "Private reply" not in caplog.text
-
-
-def test_released_session_publishes_until_approval_withdrawn(monkeypatch, caplog):
-    # The connector store after the owner's approval import. ReleaseSession
-    # clears the done work item's session ID, but the completed attempt, its
-    # journal and the approvals remain.
-    attempts = {("s", "code")}
-    journal = {("s", "code"): ["Coded it", "Private reply"]}
-    approvals = {("s", "code", digest("Coded it"))}
-
-    # Both views match the session and task in an approval, as the
-    # migration does, and never read the work item's current session.
-    def session_tasks(cursor, project, issue_id):
-        return [
-            dict(session_id=sid, task_id=task, kagent_namespace="f", kagent_agent="c")
-            for sid, task in sorted({(sid, task) for sid, task, _ in approvals})
-            if (sid, task) in attempts
-        ]
-
-    def task_messages(cursor, project, issue_id):
-        return [
-            dict(session_id=sid, task_id=task, text_sha256=sha)
-            for sid, task, sha in sorted(approvals)
-            if sha in {digest(text) for text in journal.get((sid, task), [])}
-        ]
-
-    monkeypatch.setattr(
-        runtime,
-        "delivery",
-        lambda *args: dict(
-            issue_key="HOME-4",
-            state="done",
-            merged_at=datetime(2026, 11, 3, tzinfo=timezone.utc),
-            pr_number=10,
-            review_rounds=1,
-        ),
-    )
-    monkeypatch.setattr(runtime, "session_tasks", session_tasks)
-    monkeypatch.setattr(runtime, "task_messages", task_messages)
-    original_turn = runtime.public_turn
-    monkeypatch.setattr(
-        runtime,
-        "public_turn",
-        lambda turn, users: original_turn(turn, users, scan=lambda _: False),
-    )
-    project = {
-        "project": {"id": 1},
-        "labels": [{"id": 7, "name": "Private"}],
-        "assignees": [],
-    }
-    board = [
-        dict(
-            id=4,
-            identifier="HOME-4",
-            projectId=1,
-            labelIds=[],
-            title="Ship it",
-            createdAt="2026-11-02T00:00:00Z",
-        )
+    assert goals["home"]["burnUp"] == [
+        dict(date="2026-11-02", shipped=0, total=1),
+        dict(date="2026-11-03", shipped=1, total=1),
     ]
-    archive = {
-        "HOME-4": {
-            "tasks": [
-                dict(
-                    session="s",
-                    task="code",
-                    at="2026-11-02T12:00:00Z",
-                    assistantTexts=["Coded it"],
-                )
-            ]
-        }
-    }
-    story, goals, issues, sessions = runtime.documents(
-        None, "HOME", project, board, archive
+    assert story["stats"]["mergeHours"]["value"] == 24
+    assert story["recentlyShipped"][0]["state"] == "Shipped"
+    assert "private-user" not in json.dumps(docs)
+    assert "a@test.dev" not in json.dumps(docs)
+    validate(docs)
+
+
+def test_secret_scan_withholds_matching_turns_and_issue_text(monkeypatch, caplog):
+    Store(
+        monkeypatch,
+        [
+            (4, "s", "code", FINISHED, "Set the key to SECRET"),
+            (4, "s", "code", FINISHED, "Opened the PR"),
+        ],
     )
+    items = board((4, 1, []))
+    items[0]["title"] = "Rotate SECRET"
+    with caplog.at_level(logging.WARNING, logger=runtime.__name__):
+        docs = runtime.documents(None, "HOME", PROJECT, items, secret_scan)
+    _, _, issues, sessions = docs
+    assert "SECRET" not in json.dumps(docs)
     (session,) = sessions.values()
-    assert [turn["text"] for turn in session["turns"]] == ["Coded it"]
+    assert session["turns"] == [
+        dict(number=1, at="2026-11-02T12:00:00.000Z", role="assistant", withheld=True),
+        dict(
+            number=2,
+            at="2026-11-02T12:00:00.000Z",
+            role="assistant",
+            withheld=False,
+            text="Opened the PR",
+            toolCalls=[],
+        ),
+    ]
+    # A matching title falls back to the issue key. The description, which
+    # the scan does not match, still publishes.
+    assert issues["HOME-4"]["title"] == session["title"] == "HOME-4"
+    assert issues["HOME-4"]["description"] == "Asked by [redacted]"
     assert [e["kind"] for e in issues["HOME-4"]["timeline"]] == [
         "opened",
         "session",
-        "merged",
-    ]
-    assert "Private reply" not in json.dumps([story, goals, issues, sessions])
-
-    # The owner withdraws the approval from the store. APPROVED_HISTORY
-    # still holds the task, but the next cycle withholds it.
-    approvals.clear()
-    with caplog.at_level(logging.WARNING, logger=runtime.__name__):
-        withheld = runtime.documents(None, "HOME", project, board, archive)
-    assert withheld[3] == {}
-    assert [e["kind"] for e in withheld[2]["HOME-4"]["timeline"]] == [
-        "opened",
-        "merged",
+        "session",
     ]
     assert caplog.messages == [
-        "withheld approved task code of HOME-4: the task view does not hold this task"
+        "withheld issue text of HOME-4: secret scan",
+        f"withheld turn 1 of {public_id('s')} in HOME-4: secret scan",
     ]
+    assert "SECRET" not in caplog.text
+    validate(docs)
 
-    # An issue that loses eligibility publishes nothing, approval or not.
-    approvals.add(("s", "code", digest("Coded it")))
-    board[0]["labelIds"] = [7]
-    _, _, issues, sessions = runtime.documents(None, "HOME", project, board, archive)
+
+@pytest.mark.parametrize("label", [7, 8, 9])
+def test_issue_stops_publishing_once_private_or_security_labelled(monkeypatch, label):
+    store = Store(monkeypatch, [(4, "s", "code", FINISHED, "Coded it")])
+    items = board((4, 1, []))
+    _, _, issues, sessions = runtime.documents(None, "HOME", PROJECT, items, no_secrets)
+    assert list(issues) == ["HOME-4"] and len(sessions) == 1
+    # The next cycle reads the new label from itsaplan before any connector read.
+    store.queried.clear()
+    items[0]["labelIds"] = [label]
+    story, goals, issues, sessions = runtime.documents(
+        None, "HOME", PROJECT, items, no_secrets
+    )
     assert issues == {} and sessions == {}
+    assert goals["home"]["issueKeys"] == [] and story["recentlyShipped"] == []
+    assert store.queried == []
+
+
+def test_session_linked_to_two_issues_stops_the_cycle(monkeypatch):
+    Store(
+        monkeypatch,
+        [(4, "s", "a", FINISHED, "First"), (5, "s", "b", FINISHED, "Second")],
+    )
+    with pytest.raises(ValueError, match="multiple issues"):
+        runtime.documents(
+            None, "HOME", PROJECT, board((4, 1, []), (5, 1, [])), no_secrets
+        )
+
+
+def test_absent_connector_view_publishes_nothing(monkeypatch, caplog):
+    # The storyboard chart can roll out before the connector migration.
+    store = Store(monkeypatch, [(4, "s", "t", FINISHED, "Reply")])
+    monkeypatch.setattr(runtime, "messages_view_ready", lambda cursor: False)
+    with caplog.at_level(logging.ERROR):
+        docs = runtime.documents(None, "HOME", PROJECT, board((4, 1, [])), no_secrets)
+    assert docs is None
+    assert store.queried == []
+    assert "storyboard_messages is absent" in caplog.text
