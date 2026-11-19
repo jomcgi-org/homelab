@@ -103,9 +103,7 @@ def test_worker_reads_the_latest_deployment_id_and_creation_time(monkeypatch):
     body["result"]["deployments"][1]["id"] = ""
     assert health.worker(NOW, ENV) is False
     # A creation time in the future is not a deployment that happened.
-    body["result"]["deployments"][1].update(
-        id="new", created_on="2026-11-19T09:00:00Z"
-    )
+    body["result"]["deployments"][1].update(id="new", created_on="2026-11-19T09:00:00Z")
     assert health.worker(NOW, ENV) is False
     body["result"]["deployments"] = []
     assert health.worker(NOW, ENV) is False
