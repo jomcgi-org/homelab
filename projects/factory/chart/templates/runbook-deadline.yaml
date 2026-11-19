@@ -1,0 +1,111 @@
+{{- if .Values.runbookRevert.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: runbook-deadline, namespace: grafana}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: runbook-deadline, namespace: grafana}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+    resourceNames: [runbook-revert-factory-connector, runbook-revert-factory-reviewer]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: runbook-deadline, namespace: grafana}
+subjects: [{kind: ServiceAccount, name: runbook-deadline, namespace: grafana}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: runbook-deadline}
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata: {name: runbook-deadline-bootstrap, namespace: grafana}
+spec: {selfSigned: {}}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: {name: runbook-deadline-ca, namespace: grafana}
+spec:
+  isCA: true
+  commonName: runbook-deadline-ca
+  secretName: runbook-deadline-ca
+  issuerRef: {name: runbook-deadline-bootstrap}
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata: {name: runbook-deadline, namespace: grafana}
+spec: {ca: {secretName: runbook-deadline-ca}}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: {name: runbook-deadline, namespace: grafana}
+spec:
+  dnsNames: [runbook-deadline.grafana.svc]
+  secretName: runbook-deadline-tls
+  issuerRef: {name: runbook-deadline}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: runbook-deadline, namespace: grafana}
+spec:
+  selector: {app.kubernetes.io/name: runbook-deadline}
+  ports: [{port: 443, targetPort: 8443}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: runbook-deadline, namespace: grafana}
+spec:
+  selector: {matchLabels: {app.kubernetes.io/name: runbook-deadline}}
+  template:
+    metadata: {labels: {app.kubernetes.io/name: runbook-deadline}}
+    spec:
+      serviceAccountName: runbook-deadline
+      {{- include "factory.imagePullSecrets" . | nindent 6 }}
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, fsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: webhook
+          image: {{ include "factory.connectorImage" . | quote }}
+          args: [runbook-deadline]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: tls, mountPath: /tls, readOnly: true}]
+      volumes:
+        - name: tls
+          secret: {secretName: runbook-deadline-tls, defaultMode: 0440}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: runbook-deadline
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    cert-manager.io/inject-ca-from: grafana/runbook-deadline
+webhooks:
+  - name: deadline.runbooks.jomcgi.dev
+    clientConfig: {service: {namespace: grafana, name: runbook-deadline}}
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 5
+    rules:
+      - {operations: [UPDATE], apiGroups: [""], apiVersions: [v1], resources: [configmaps]}
+      - {operations: [DELETE], apiGroups: [""], apiVersions: [v1], resources: [pods]}
+    matchConditions:
+      - name: action
+        expression: request.userInfo.username == 'system:serviceaccount:grafana:runbook-kagent-revert'
+      - name: deletion
+        expression: request.operation == 'DELETE' || object.data.phase == 'deleting'
+{{- if .Values.networkPolicy.cilium }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata: {name: runbook-deadline, namespace: grafana}
+spec:
+  endpointSelector: {matchLabels: {app.kubernetes.io/name: runbook-deadline}}
+  ingress:
+    - fromEntities: [kube-apiserver, host, remote-node]
+      toPorts: [{ports: [{port: "8443", protocol: TCP}]}]
+  egress:
+    - toEntities: [kube-apiserver]
+{{- end }}
+{{- end }}

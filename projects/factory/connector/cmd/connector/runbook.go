@@ -292,6 +292,9 @@ func (b revertBackend) advance(ctx context.Context, owner string, credential *ka
 			return err
 		}
 		session, err := b.sessions.GetSession(ctx, t.Session)
+		if errors.Is(err, kagent.ErrSessionNotFound) || errors.Is(err, kagent.ErrSessionUnrecoverable) {
+			return finish("session missing or unrecoverable")
+		}
 		if err != nil {
 			return err
 		}
@@ -302,6 +305,9 @@ func (b revertBackend) advance(ctx context.Context, owner string, credential *ka
 			return finish("invalid worker assignment")
 		}
 		if op.Phase == "confirmed" {
+			if !time.Now().Before(op.Deadline) || op.Deadline.After(time.Now().Add(6*time.Minute)) {
+				return finish("invalid confirmation deadline")
+			}
 			targets, err := b.discover(ctx)
 			if err != nil {
 				return err
@@ -332,6 +338,9 @@ func (b revertBackend) advance(ctx context.Context, owner string, credential *ka
 			return err
 		}
 		restored, err := b.sessions.RevertSession(ctx, t.Session)
+		if errors.Is(err, kagent.ErrSessionNotFound) || errors.Is(err, kagent.ErrSessionUnrecoverable) {
+			return finish("session missing or unrecoverable")
+		}
 		if err != nil {
 			return errors.New("revert outcome pending")
 		}

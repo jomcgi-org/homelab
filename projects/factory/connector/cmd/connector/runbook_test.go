@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -54,12 +55,13 @@ func TestRevertConfirmation(t *testing.T) {
 }
 
 type lockedSession struct {
-	state   kagent.Session
-	reverts int
+	state     kagent.Session
+	reverts   int
+	lookupErr error
 }
 
 func (s *lockedSession) GetSession(context.Context, string) (*kagent.Session, error) {
-	return &s.state, nil
+	return &s.state, s.lookupErr
 }
 
 func (s *lockedSession) RevertSession(context.Context, string) (*kagent.Session, error) {
@@ -86,8 +88,24 @@ func TestDurableRecoveryAndAuditRetry(t *testing.T) {
 	backend := func() revertBackend {
 		return revertBackend{pods: client.CoreV1(), sessions: sessions, discover: func(context.Context) ([]revertTarget, error) { return []revertTarget{target}, nil }}
 	}
-	if err := backend().submit(ctx, "joe", target); err != nil {
-		t.Fatal(err)
+	// Drive the same preview and confirmation POST used by the runbook button.
+	action := revertAction{targets: backend().discover, submit: backend().submit, tickets: map[string]preview{}}
+	previewReq := httptest.NewRequest("GET", actionPath, nil)
+	previewReq.Header.Set("X-Runbook-User", "joe")
+	page := httptest.NewRecorder()
+	action.ServeHTTP(page, previewReq)
+	ticket := regexp.MustCompile(`name="ticket" value="([^"]+)"`).FindStringSubmatch(page.Body.String())
+	if page.Code != 200 || len(ticket) != 2 || !strings.Contains(page.Body.String(), target.Pod) {
+		t.Fatal(page.Body.String())
+	}
+	confirm := httptest.NewRequest("POST", actionPath, strings.NewReader("ticket="+ticket[1]))
+	confirm.Header.Set("Origin", "https://factory-runbooks.jomcgi.dev")
+	confirm.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	confirm.Header.Set("X-Runbook-User", "joe")
+	response := httptest.NewRecorder()
+	action.ServeHTTP(response, confirm)
+	if response.Code != 202 {
+		t.Fatal(response.Body.String())
 	}
 	auditCount := 0
 	audit := func(user string, got revertTarget, result string) error {
@@ -134,5 +152,36 @@ func TestDurableRecoveryAndAuditRetry(t *testing.T) {
 	step(nil, "delivered")
 	if sessions.reverts != 1 || auditCount != 2 {
 		t.Fatal(sessions.reverts, auditCount)
+	}
+	for _, phase := range []string{"gone", "reverting"} {
+		if err := backend().submit(ctx, "joe", target); err != nil {
+			t.Fatal(err)
+		}
+		cm, op, err := backend().load(ctx, target.Creator)
+		if err != nil {
+			t.Fatal(err)
+		}
+		op.Phase = phase
+		op.Deadline = time.Now().Add(-time.Minute)
+		if err := backend().save(ctx, cm, op); err != nil {
+			t.Fatal(err)
+		}
+		sessions.lookupErr = kagent.ErrSessionNotFound
+		if err := backend().advance(ctx, target.Creator, source, nil); err != nil {
+			t.Fatal(err)
+		}
+		sink := func(user string, got revertTarget, result string) error {
+			if result != "session missing or unrecoverable" || user != "joe" || got != target {
+				t.Fatal(result, user, got)
+			}
+			return nil
+		}
+		if err := backend().advance(ctx, target.Creator, nil, sink); err != nil {
+			t.Fatal(err)
+		}
+		_, op, err = backend().load(ctx, target.Creator)
+		if err != nil || op.Phase != "delivered" {
+			t.Fatal(op, err)
+		}
 	}
 }

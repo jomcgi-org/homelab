@@ -19,6 +19,8 @@ go_test(
         "TEST_APISERVER": "$(rootpath @envtest_1_37_0_linux_amd64//:kube-apiserver)",
     },
     deps = [
+        "//projects/factory/connector/runbookadmission",
+        "@io_k8s_api//admissionregistration/v1:admissionregistration",
         "@io_k8s_api//authorization/v1:authorization",
         "@io_k8s_api//core/v1:core",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
