@@ -83,6 +83,12 @@ def snapshot(get, deployment, deployment_id):
             if not isinstance(rows, list):
                 raise ValueError("missing Semgrep page")
             for row in rows:
+                repository = row.get("repository") or {}
+                if repository.get("name") != REPO or row.get("ref") not in (
+                    "main",
+                    "refs/heads/main",
+                ):
+                    continue
                 finding_id = (
                     quote(row["id"], safe="")
                     if product == "secrets"
@@ -91,12 +97,6 @@ def snapshot(get, deployment, deployment_id):
                 if finding_id in seen:
                     raise ValueError("overlapping Semgrep pages")
                 seen.add(finding_id)
-                repository = row.get("repository") or {}
-                if repository.get("name") != REPO or row.get("ref") not in (
-                    "main",
-                    "refs/heads/main",
-                ):
-                    continue
                 status = row.get("status", "").lower()
                 if product == "secrets":
                     status = status.removeprefix("finding_status_")
