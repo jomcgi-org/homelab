@@ -17,6 +17,9 @@ _CHART_DIR = Path(__file__).resolve().parent
 _DEPLOY_VALUES = Path(
     os.environ.get("DEPLOY_VALUES", _CHART_DIR.parent / "deploy" / "values.yaml")
 )
+_FACTORY_VALUES = Path(
+    os.environ.get("FACTORY_VALUES", _CHART_DIR.parent / "factory" / "values.yaml")
+)
 _MONOLITH_PUBLIC_VALUES = Path(
     os.environ.get(
         "MONOLITH_PUBLIC_VALUES",
@@ -45,7 +48,9 @@ def test_aurora_is_enabled_in_deploy_and_has_explicit_enabled_wiring() -> None:
         assert env["STARS_BUCKET"] == "stars"
 
 
-def _render(overrides: list[str] | None = None) -> list[dict[str, Any]]:
+def _template(
+    overrides: list[str] | None = None, values: list[Path] | None = None
+) -> str:
     argv = [
         os.environ.get("HELM_BIN", "helm"),
         "template",
@@ -53,15 +58,21 @@ def _render(overrides: list[str] | None = None) -> list[dict[str, Any]]:
         str(_CHART_DIR),
         "--namespace",
         "scotland-connector",
-        "--values",
-        str(_DEPLOY_VALUES),
     ]
+    for path in values or [_DEPLOY_VALUES]:
+        argv += ["--values", str(path)]
     for override in overrides or []:
         argv += ["--set", override]
     result = subprocess.run(argv, check=False, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"helm template failed: {result.stderr}")
-    return [d for d in yaml.safe_load_all(result.stdout) if d]
+    return result.stdout
+
+
+def _render(
+    overrides: list[str] | None = None, values: list[Path] | None = None
+) -> list[dict[str, Any]]:
+    return [d for d in yaml.safe_load_all(_template(overrides, values)) if d]
 
 
 def _one(docs: list[dict[str, Any]], kind: str) -> dict[str, Any]:
@@ -256,15 +267,53 @@ def test_image_deploys_by_digest_when_stamped() -> None:
     )
 
 
-def test_hpa_owns_replicas_with_a_floor_of_two() -> None:
-    docs = _render()
+def test_factory_hpa_owns_replicas_with_a_floor_of_two() -> None:
+    # The factory copy serves the connector, with the values its Application
+    # layers. Its public route is factory/resources/route.yaml.
+    docs = _render(values=[_DEPLOY_VALUES, _FACTORY_VALUES])
     hpa = _one(docs, "HorizontalPodAutoscaler")
     assert hpa["spec"]["minReplicas"] >= 2
     assert (
         hpa["spec"]["scaleTargetRef"]["name"]
         == _one(docs, "Deployment")["metadata"]["name"]
     )
+    assert _one(docs, "Deployment")["spec"]["replicas"] == 2
     assert _one(docs, "PodDisruptionBudget")["spec"]["maxUnavailable"] == 1
+    assert "HTTPRoute" not in {d["kind"] for d in docs}
+
+
+def test_hub_copy_runs_no_pods_and_claims_no_route() -> None:
+    # HOME-540 scaled the hub copy to zero. The jomcgi-site Worker answers its
+    # old URLs with a 308 to scotland-mcp.jomcgi.dev.
+    docs = _render()
+    assert _one(docs, "Deployment")["spec"]["replicas"] == 0
+    kinds = {d["kind"] for d in docs}
+    for kind in (
+        "HorizontalPodAutoscaler",
+        "HTTPRoute",
+        "BackendTrafficPolicy",
+        "SecurityPolicy",
+    ):
+        assert kind not in kinds
+
+
+def test_hub_only_values_leave_the_factory_render_unchanged(tmp_path: Path) -> None:
+    # Rebuild the values as they were before HOME-540: the factory render from
+    # them must be the same bytes as the render from the current values.
+    hub = yaml.safe_load(_DEPLOY_VALUES.read_text())
+    factory = yaml.safe_load(_FACTORY_VALUES.read_text())
+    assert hub.pop("replicas") == 0
+    assert hub.pop("autoscaling") == {"enabled": False}
+    assert hub["route"]["enabled"] is False
+    hub["route"]["enabled"] = True
+    assert factory.pop("replicas") == 2
+    assert factory.pop("autoscaling") == {"enabled": True}
+    before = [tmp_path / "deploy.yaml", tmp_path / "factory.yaml"]
+    before[0].write_text(yaml.safe_dump(hub))
+    before[1].write_text(yaml.safe_dump(factory))
+    assert _template(values=before) == _template(
+        values=[_DEPLOY_VALUES, _FACTORY_VALUES]
+    )
 
 
 def test_gateway_raises_the_routes_descriptor_cap() -> None:
