@@ -157,11 +157,15 @@ limits, split the work into smaller sub-tasks before delegation.
 
 ### API access
 
-- Port-forward the API: `KUBECONFIG=~/.kube/factory.yaml kubectl -n factory
+Use the node-1 session identity in the Authentik group `factory-kube-sessions`.
+The operator adds membership in the Authentik admin UI. The admin certificate
+in `~/.kube/factory.yaml` is for break-glass use only.
+
+- Port-forward the API: `KUBECONFIG=~/.kube/factory-sessions.yaml kubectl -n factory
   port-forward svc/factory-itsaplan-api 13000:3000`.
 - Sign in with `POST /api/auth/sign-in/email`, using fields `email` and
   `password` from Secret `factory/factory-itsaplan-joe-sessions`, read with
-  `KUBECONFIG=~/.kube/factory.yaml`. Keep the values and session cookie out of
+  `KUBECONFIG=~/.kube/factory-sessions.yaml`. Keep the values and session cookie out of
   command output and logs. Send header
   `Origin: https://factory-plan.jomcgi.dev`, keep the session cookie, and
   call `POST /api/auth/sign-out` when done. Sign-in is rate-limited (429), so
@@ -206,10 +210,10 @@ it there, and close its PR: a closed PR cannot merge, and reopening it is the
 new owner's choice. Changing the assignee or removing the delegate stops nothing. Wait
 for the stop to settle before anyone else touches the work. The connector's
 database covers itsaplan runs and its own review rounds, which itsaplan has no
-record of:
+record of. An operator with database exec access checks it:
 
 ```sh
-KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db exec factory-db-1 \
+kubectl -n factory-db exec factory-db-1 \
   -c postgres -- psql -At -d factory_connector -c "
   SELECT w.state,
     (SELECT count(*) FROM run r WHERE r.work_item_id = w.id
@@ -236,7 +240,7 @@ has not finished within 10 seconds
 So wait five minutes after the stop settles, run the search again and close
 any open PR it finds. Only then is the handoff settled. If
 `factory-db-1` is not the primary, take the name from
-`KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db get cluster
+`KUBECONFIG=~/.kube/factory-sessions.yaml kubectl -n factory-db get cluster
 factory-db`.
 
 Then file a new HOME issue, assigned to Joe with no delegate, that links the

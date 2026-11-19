@@ -20,6 +20,13 @@ entries:
     attrs:
       is_superuser: false
 
+  - model: authentik_core.group
+    id: kube-sessions
+    identifiers:
+      name: factory-kube-sessions
+    attrs:
+      is_superuser: false
+
   # ── 2. kubelogin's client ────────────────────────────────────────────────
   # A public client with PKCE: kubelogin runs on each person's machine and can
   # hold no secret. Its redirect is kubelogin's loopback listener.
@@ -116,6 +123,15 @@ entries:
       target: !KeyOf kubectl-app
       group: !KeyOf kube-viewers
       order: 10
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf kubectl-app
+      group: !KeyOf kube-sessions
+      order: 20
     attrs:
       enabled: true
       negate: false

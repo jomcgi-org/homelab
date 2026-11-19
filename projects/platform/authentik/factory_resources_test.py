@@ -160,7 +160,11 @@ def test_factory_social_flows_and_application_grants():
         ("factory-auth.yaml", "argocd-app", [admins, operators]),
         ("factory-grafana.yaml", "grafana-app", [admins, operators]),
         ("factory-itsaplan.yaml", "itsaplan-app", [admins, operators]),
-        ("factory-kubectl.yaml", "kubectl-app", [admins, operators, "kube-viewers"]),
+        (
+            "factory-kubectl.yaml",
+            "kubectl-app",
+            [admins, operators, "kube-viewers", "kube-sessions"],
+        ),
     ]:
         grants = [e for e in entries(file) if e["identifiers"].get("target") == app]
         assert [e["identifiers"]["group"] for e in grants] == allowed
