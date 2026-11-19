@@ -1405,12 +1405,17 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 	next := func(reason string) bool {
 		traceFailure(root, "review attempt failed")
 		traceFailure(code, "review attempt failed")
+		code.SetAttributes(attribute.String("review.verdict", ConclusionFailure))
+		recordFindings(code, nil)
 		root.AddEvent("review attempt failed", trace.WithAttributes(attribute.Int("review.attempt", attempt)))
 		l.WarnContext(ctx, "review attempt ended without a report", "attempt", attempt, "task", rec.ID, "reason", reason)
 		if attempt >= MaxAttempts {
 			o := NoReport(fmt.Sprintf("Attempt %d of %d ended without a report: %s", attempt, MaxAttempts, reason), e.footer(b, pr, rec.ID))
+			st := State{Round: round}
+			recordFindings(root, nil)
 			if in != nil && in.semgrep != nil {
-				st, _ := LoadState(run.Text)
+				st, _ = LoadState(run.Text)
+				st.Round = round
 				st.Semgrep = in.semgrep.stamp()
 				st.Semgrep.NoReport = true
 				if b.ItsaplanProject != "" {
@@ -1418,11 +1423,12 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 					// snapshots stay unchanged. NoReport still forbids a pass.
 					st.IssueDigest = issueDigest(in.issues)
 				}
-				o.Output.Text = encodeState(st)
 				if in.semgrep.Unavailable != "" {
+					root.SetAttributes(attribute.Int("review.findings.medium", 1))
 					o.Output.Summary += "\n\n**medium** `semgrep:unverified`: " + in.semgrep.Unavailable + "."
 				}
 			}
+			o.Output.Text = encodeState(st)
 			e.finish(parent, b, pr, run, o, l)
 			return true
 		}
@@ -1491,7 +1497,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				}
 				// Advance once per reviewed head. Older checkpoints omit Round.
 				round = max(1, in.prior.Round)
-				if in.priorHead != "" && in.priorHead != pr.HeadSHA {
+				if (in.priorHead != "" || in.prior.Round > 0) && in.priorHead != pr.HeadSHA {
 					round++
 				}
 				root.SetAttributes(attribute.Int("review.round", round))
@@ -1834,6 +1840,9 @@ func (e *Engine) previousStateFrom(ctx context.Context, b *Binding, pr github.Pu
 	// head (a replacement PR) inherits the reviews of its shared commits,
 	// so another PR's checkpoint never stops the walk before this PR's own
 	// older history.
+	// NoReport advances the round without supplying findings or an interdiff base.
+	var exhaustedRound int
+	defer func() { st.Round = max(st.Round, exhaustedRound) }()
 	truncated := func() (State, string, string, error) {
 		return State{Incomplete: true}, "", "its timeline has more commit and push events than the reviewer reads", nil
 	}
@@ -1842,7 +1851,7 @@ func (e *Engine) previousStateFrom(ctx context.Context, b *Binding, pr github.Pu
 			// This PR's own review may lie beyond the visible timeline.
 			return truncated()
 		}
-		st, head, unknown, found, err := e.previousStateWalk(ctx, b, pr, hist, inherit)
+		st, head, unknown, found, err := e.previousStateWalk(ctx, b, pr, hist, inherit, &exhaustedRound)
 		if err != nil || found {
 			return st, head, unknown, err
 		}
@@ -1850,7 +1859,7 @@ func (e *Engine) previousStateFrom(ctx context.Context, b *Binding, pr github.Pu
 	return State{}, "", "", nil
 }
 
-func (e *Engine) previousStateWalk(ctx context.Context, b *Binding, pr github.PullRequest, hist *github.HeadHistory, inherit bool) (st State, head, unknown string, found bool, err error) {
+func (e *Engine) previousStateWalk(ctx context.Context, b *Binding, pr github.PullRequest, hist *github.HeadHistory, inherit bool, exhaustedRound *int) (st State, head, unknown string, found bool, err error) {
 	seen := map[string]bool{pr.HeadSHA: true}
 	looked := 0
 	for i := len(hist.Heads) - 1; i >= 0; i-- {
@@ -1863,7 +1872,7 @@ func (e *Engine) previousStateWalk(ctx context.Context, b *Binding, pr github.Pu
 			return State{Incomplete: true}, "", fmt.Sprintf("more than %d earlier heads carry a review check", maxPreviousLookups), true, nil
 		}
 		looked++
-		run, st, lost, err := e.statefulReview(ctx, b, pr.Number, h.SHA, inherit)
+		run, st, lost, err := e.statefulReview(ctx, b, pr.Number, h.SHA, inherit, exhaustedRound)
 		if err != nil {
 			return State{}, "", "", true, err
 		}
@@ -1891,7 +1900,7 @@ func (e *Engine) previousStateWalk(ctx context.Context, b *Binding, pr github.Pu
 // review state. A later run that keeps none (a review that ended without a
 // report, a split request, a cancelled attempt) does not hide it. lost says
 // a newer completed run that is none of these keeps no readable state.
-func (e *Engine) statefulReview(ctx context.Context, b *Binding, pr int, sha string, inherit bool) (run *github.CheckRun, st State, lost bool, err error) {
+func (e *Engine) statefulReview(ctx context.Context, b *Binding, pr int, sha string, inherit bool, exhaustedRound *int) (run *github.CheckRun, st State, lost bool, err error) {
 	runs, err := e.gh.ListCheckRuns(ctx, b.repo(), sha, github.CheckRunFilter{Name: e.cfg.CheckName, AppID: e.cfg.AppID, All: true})
 	if err != nil {
 		e.ghError(ctx, e.log.With("binding", b.Name, "repo", b.repo(), "sha", sha), b, "check_runs", err)
@@ -1908,7 +1917,15 @@ func (e *Engine) statefulReview(ctx context.Context, b *Binding, pr int, sha str
 	for i := range runs {
 		r := &runs[i]
 		if r.Name != e.cfg.CheckName || r.AppID != e.cfg.AppID || r.HeadSHA != sha || r.Status != "completed" ||
-			r.Title == "No review report" || r.Title == "Split this PR" || r.Conclusion == ConclusionCancelled {
+			r.Title == "Split this PR" || r.Conclusion == ConclusionCancelled {
+			continue
+		}
+		if r.Title == "No review report" {
+			if r.ExternalID == MessageID(b.repo(), pr, sha) {
+				if saved, ok := LoadState(r.Text); ok {
+					*exhaustedRound = max(*exhaustedRound, saved.Round)
+				}
+			}
 			continue
 		}
 		if r.ExternalID != MessageID(b.repo(), pr, sha) {
@@ -2829,6 +2846,9 @@ func (e *Engine) notifyGate(ctx context.Context, b *Binding, l *slog.Logger, by 
 // reconcileGate revalidates completed human gates and persists changes.
 // It returns the current check (nil on write failure) and whether to defer enqueue.
 func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (*github.CheckRun, bool) {
+	if run.Title == "No review report" {
+		return run, true
+	}
 	st, ok := LoadState(run.Text)
 	if st.Semgrep != nil && (st.Semgrep.NoReport || !st.Semgrep.Verified) {
 		return run, true

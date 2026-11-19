@@ -439,7 +439,7 @@ func TestSemgrepAndIssueEvidenceKeepTheAttemptBound(t *testing.T) {
 	}
 	e.Wait()
 	st, ok := LoadState(h.gh.check(shaA).Text)
-	if !ok || st.Semgrep == nil || !st.Semgrep.NoReport || st.IssueDigest == "" {
+	if !ok || st.Round != 1 || st.Semgrep == nil || !st.Semgrep.NoReport || st.IssueDigest == "" {
 		t.Fatalf("exhausted review lost its evidence bindings: %+v", st)
 	}
 	for range 2 {

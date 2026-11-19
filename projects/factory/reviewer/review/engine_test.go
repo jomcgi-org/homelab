@@ -488,8 +488,8 @@ func TestUnusableReplyIsNeverSuccess(t *testing.T) {
 			if strings.Contains(c.Summary, "account 1234") || strings.Contains(c.Summary, `"nit"`) {
 				t.Fatal("provider status or reply text reached the public check")
 			}
-			if _, ok := LoadState(c.Text); ok {
-				t.Fatal("a review without a report stored findings")
+			if st, ok := LoadState(c.Text); !ok || st.Round != 1 || st.Blocking != nil {
+				t.Fatal("exhausted review must checkpoint its round without a findings report")
 			}
 			if n, _ := h.k.state(); n != MaxAttempts || h.taskOn(7, shaA, 3) == "" {
 				t.Fatalf("executions = %d, want one per attempt", n)
@@ -498,6 +498,52 @@ func TestUnusableReplyIsNeverSuccess(t *testing.T) {
 				t.Fatalf("retries = %v", got)
 			}
 		})
+	}
+}
+
+func TestExhaustedRevisionAdvancesRound(t *testing.T) {
+	exporter := captureReviewSpans(t)
+	h := newHarness(t)
+	addPR7(h)
+	reviewRound(t, h, shaA, passing)
+	second := sha40('b')
+	h.gh.push(7, second)
+	e, ctx, stop := h.start()
+	defer stop()
+	runReview(t, h, e, ctx, 7, second)
+	eventually(t, "exhausted second head", func() bool {
+		h.k.finishOpen(kagent.StateCompleted, "no report")
+		return h.gh.check(second).Status == "completed"
+	})
+	e.Wait()
+	if got := stateOn(t, h.gh.check(second)).Round; got != 2 {
+		t.Fatalf("exhausted round = %d", got)
+	}
+	checked := false
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "review" {
+			continue
+		}
+		attrs := map[string]string{}
+		for _, a := range span.Attributes {
+			attrs[string(a.Key)] = a.Value.Emit()
+		}
+		if attrs["pr.head_sha"] != second {
+			continue
+		}
+		checked = true
+		for _, sev := range Severities {
+			if attrs["review.findings."+sev] != "0" {
+				t.Errorf("exhausted %s count = %q", sev, attrs["review.findings."+sev])
+			}
+		}
+	}
+	if !checked {
+		t.Fatal("missing exhausted root span")
+	}
+	third := reviewRound(t, h, sha40('c'), passing)
+	if got := stateOn(t, third).Round; got != 3 {
+		t.Fatalf("subsequent round = %d", got)
 	}
 }
 
