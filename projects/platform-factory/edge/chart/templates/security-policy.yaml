@@ -1,3 +1,4 @@
+{{- /* invariant: PLAT-2 */ -}}
 {{- /*
 Every route on the edge Gateway signs in through Authentik before Envoy
 forwards the request. A SecurityPolicy that targets a route replaces this one

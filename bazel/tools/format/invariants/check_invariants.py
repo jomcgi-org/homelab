@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from collections import Counter
 from pathlib import Path
 
 try:
@@ -106,7 +107,58 @@ def eligible_tests(xml):
     }
 
 
-def check(records_only=False):
+# Restrict matches to standalone comment lines so examples in strings and
+# prose uses of "invariant" do not count as declarations.
+MARKER = re.compile(
+    rb"^\s*(?:#|//|/\*|<!--|\{\{-?\s*/\*)\s*invariant:\s*"
+    rb"([A-Za-z][A-Za-z0-9-]*-[0-9]+)\s*(?:\*/(?:\s*-?\}\})?|-->)?\s*$"
+)
+
+
+def markers_at(revision):
+    result = subprocess.run(
+        ["git", "grep", "-z", "-I", "-F", "invariant:", revision, "--"],
+        stdout=subprocess.PIPE,
+    )
+    if result.returncode == 1:
+        return set()
+    result.check_returncode()
+    markers = set()
+    for entry in result.stdout.split(b"\n"):
+        if entry:
+            source, line = entry.split(b"\0", 1)
+            if match := MARKER.fullmatch(line):
+                path = Path(os.fsdecode(source).removeprefix(revision + ":"))
+                markers.add((path, match[1].decode()))
+    return markers
+
+
+def check_markers(documents, base):
+    head = markers_at("HEAD")
+    rows = {
+        row["id"]: row
+        for source, doc in documents.items()
+        if source != TEMPLATE
+        for row in doc["invariants"]
+    }
+    for path, ident in sorted(head):
+        if ident not in rows:
+            raise ValueError(f"{path}: unknown invariant {ident}")
+    for ident, row in rows.items():
+        for name in row["mechanism"]:
+            required = Path(name)
+            if not any(
+                marker == ident and (path == required or required in path.parents)
+                for path, marker in head
+            ):
+                raise ValueError(f"{name}: missing invariant marker {ident}")
+    counts = Counter(ident for _, ident in head)
+    lost = Counter(ident for _, ident in markers_at(base)) - counts
+    if lost:
+        raise ValueError("fewer marked files for " + ", ".join(sorted(lost)))
+
+
+def check(records_only=False, base=None):
     files = subprocess.check_output(
         [
             "git",
@@ -127,6 +179,8 @@ def check(records_only=False):
             except yaml.YAMLError as error:
                 raise ValueError(f"{path}: {error}") from error
     live = validate(documents)
+    if base:
+        check_markers(documents, base)
     if live and not records_only:
         expression = "set(" + " ".join(sorted(live)) + ")"
         xml = subprocess.check_output(["bazel", "query", "--output=xml", expression])
@@ -147,10 +201,13 @@ if __name__ == "__main__":
         action="store_true",
         help="validate records locally; required CI resolves live labels",
     )
+    parser.add_argument(
+        "--base", help="compare committed invariant markers against this revision"
+    )
     args = parser.parse_args()
     if workspace := os.environ.get("BUILD_WORKSPACE_DIRECTORY"):
         os.chdir(workspace)
     try:
-        check(args.records_only)
+        check(args.records_only, args.base)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         sys.exit(str(error))

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# invariant: PLAT-13
+# invariant: LIB-6
 # helm-template-test.sh - Validates that a Helm chart renders successfully with given values
 #
 # Usage: helm-template-test.sh <helm-binary> <release-name> <chart-path> <namespace> [values-files...]

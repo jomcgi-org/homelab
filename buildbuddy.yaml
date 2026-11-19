@@ -276,7 +276,7 @@ actions:
 
               # Validate root README structural claims against the working tree.
               python3 ./bazel/tools/format/readme_structure/check_readme_structure.py
-              bazel run //bazel/tools/format/invariants:check_invariants --config=ci
+              bazel run //bazel/tools/format/invariants:check_invariants --config=ci -- --base "$base_ref"
 
               # Check working-tree links, including on full-history clones.
               python3 ./bazel/tools/format/doc_links/check_doc_links.py

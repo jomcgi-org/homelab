@@ -1,3 +1,4 @@
+// invariant: FACT-9
 package review
 
 import (

@@ -1,3 +1,5 @@
+{{- /* invariant: FACT-7 */ -}}
+{{- /* invariant: FACT-8 */ -}}
 {{- if .Values.broker.enabled }}
 {{- /*
 RBAC cannot narrow the broker's Secret `create` in binding namespaces by name,

@@ -1,3 +1,4 @@
+// invariant: FACT-10
 // Package review is the factory reviewer's loop. It polls each binding's
 // open PRs into the base branch, keeps a `factory review` check run on every
 // head, sends each new head to the binding's kagent reviewer agent,

@@ -1,3 +1,5 @@
+# invariant: PLAT-13
+# invariant: LIB-6
 # Hand-managed targets (same convention as bazel/tools/format/readme_structure).
 # gazelle:exclude content_rules.py
 # gazelle:exclude content_rules_test.py

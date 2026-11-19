@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# invariant: ROOT-1
 """Reject PRs that move a published chart's version forward on the branch.
 
 Usage:

@@ -1,3 +1,4 @@
+# invariant: PLAT-2
 """Every application signs in; only kagent receives the edge access token.
 
 kubectl's route is the one bearer route: Envoy checks an Authentik ID token

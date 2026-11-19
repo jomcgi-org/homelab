@@ -1,3 +1,4 @@
+// invariant: FACT-5
 package actorjwt
 
 import (

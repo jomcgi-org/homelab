@@ -1,3 +1,4 @@
+# invariant: PLAT-7
 # ArgoCD components talk freely among themselves; outside the namespace they
 # reach only the API server and the Git and chart sources this cluster syncs.
 apiVersion: cilium.io/v2

@@ -1,3 +1,4 @@
+// invariant: FACT-3
 package github
 
 import (

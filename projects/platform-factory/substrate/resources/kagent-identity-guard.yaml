@@ -1,3 +1,4 @@
+# invariant: PLAT-5
 # Substrate trusts the identity kagent/kagent-controller as a global owner and
 # a router ingress client (../values/substrate.yaml), and the pod certificate
 # that proves it is issued to any pod running as that ServiceAccount. Until

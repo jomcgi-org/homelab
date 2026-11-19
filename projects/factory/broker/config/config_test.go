@@ -1,3 +1,4 @@
+// invariant: FACT-4
 package config
 
 import (

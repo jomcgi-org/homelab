@@ -1,3 +1,5 @@
+// invariant: FACT-10
+// invariant: FACT-11
 package dispatch
 
 import (
