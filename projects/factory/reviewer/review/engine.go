@@ -1117,6 +1117,9 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		return true
 	}
 	ctx, root := otel.Tracer("factory-reviewer").Start(ctx, "review", trace.WithNewRoot(), reviewAttributes(pr, 1))
+	// Zero counts until a report replaces them, so a review that ends
+	// without a usable report (cancelled, stopped, no reply) still has them.
+	recordFindings(root, nil)
 	ctx = withUsage(ctx, root)
 	rctx, cancel := context.WithCancelCause(ctx)
 	r := &running{number: pr.Number, cancel: cancel, done: make(chan struct{})}
