@@ -101,7 +101,8 @@ func TestPRDeliveryResults(t *testing.T) {
 	VALUES (-1,1,'coder','review','','',1,'closed','revision',20,10,now()+interval '1 minute');
 	INSERT INTO pull_request(work_item_id,number,node_id,head_sha,state)
 	SELECT i,i,'pr'||i,'head','open' FROM generate_series(1,2) i;
-	UPDATE work_item SET state='stopped' WHERE id=2;
+	UPDATE pull_request SET state='closed' WHERE number=2;
+ UPDATE work_item SET state='stopped' WHERE id=2;
 	UPDATE pull_request SET state='merged',merged_at=now()-interval '8 days',merge_commit_sha='sha' WHERE work_item_id=1;
 	UPDATE delivery_outcome SET reverted_at=merged_at+interval '6 days' WHERE number=1;`)
 	if err != nil {
@@ -115,5 +116,19 @@ func TestPRDeliveryResults(t *testing.T) {
 	}
 	if _, err := st.DB.Exec(`UPDATE delivery_outcome SET reverted_at=merged_at+interval '8 days' WHERE number=1`); err == nil {
 		t.Fatal("accepted revert outside observation window")
+	}
+
+	_, err = st.DB.Exec(`UPDATE work_item SET state='active' WHERE id=2;
+    UPDATE pull_request SET node_id='replacement',number=3,state='open' WHERE work_item_id=2;
+    INSERT INTO run(id,work_item_id,agent_key,trigger,prompt,system_prompt,attempt,state,input_tokens,output_tokens)
+    VALUES(4,2,'coder','review','','',1,'closed',40,10);
+    UPDATE pull_request SET merged_at=now(),state='merged' WHERE number=3;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = st.DB.QueryRow(`SELECT n=3 AND tokens_per_merge=160 AND (SELECT tokens=120 FROM delivery_outcome WHERE number=2)
+        FROM arm_delivery_results WHERE arm='control'`).Scan(&ok)
+	if err != nil || !ok {
+		t.Fatalf("replacement attribution: %v, %v", ok, err)
 	}
 }

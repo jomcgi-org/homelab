@@ -608,8 +608,10 @@ SELECT * FROM arm_delivery_results ORDER BY arm, task_class, guidance_version;
 
 The first coder run supplies the arm, task class and guidance checkout (base SHA).
 Historical runs without provenance form a NULL cohort. The underlying
-`pr_delivery_results` view joins each terminal PR to all coder runs of its work
-item, including retries. Minutes measure first send to finish per attempt.
+`pr_delivery_results` view reads the metrics stored for each terminal PR. At closure the connector
+assigns outstanding coder runs to that outcome. Replacement PRs inherit the first
+coder arm and receive only the remaining runs. Late token receipts update the
+outcome that owns the run. Minutes measure first send to finish per attempt.
 Time held sums completed admission holds and observed PR hold-label intervals since the migration.
 Stopped items without a PR contribute an abandoned outcome until delivery resumes.
 Tokens per merge divides total coder input and output across the cohort by its
