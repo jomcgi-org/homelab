@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from sqlmodel import Session
 
 from core.db import get_session
+from faas import embervm_client
 from faas.invoke_router import _INVOKE_METHODS, _json, relay_to_function
 from faas.repository import get_public_function
 
@@ -51,6 +52,8 @@ async def invoke_public_function(
     function", and "not yet smoke-passed": the public origin must not leak the
     existence of a private or un-vetted function.
     """
+    if not embervm_client.EMBERVM_URL:
+        return _json(503, {"error": "public function invocation is disabled"})
     fn = get_public_function(session, name)
     if fn is None:
         return _json(404, {"error": "function not found"})
