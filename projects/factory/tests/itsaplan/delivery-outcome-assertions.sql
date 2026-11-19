@@ -3,8 +3,9 @@ BEGIN
     IF (SELECT count(*) FROM delivery_outcome) <> 2 OR
        NOT EXISTS (SELECT FROM pr_delivery_results WHERE number=11 AND merged AND NOT abandoned
                    AND arm='control' AND guidance_version='base' AND tokens=150) OR
-       NOT EXISTS (SELECT FROM pr_delivery_results WHERE work_item_id=2 AND number IS NULL AND abandoned) THEN
-        RAISE EXCEPTION 'migration failed to backfill historical deliveries and stopped items';
+       NOT EXISTS (SELECT FROM pr_delivery_results WHERE work_item_id=2 AND number=12 AND abandoned) OR
+       EXISTS (SELECT FROM delivery_outcome WHERE work_item_id=3) THEN
+        RAISE EXCEPTION 'migration failed to backfill historical deliveries and stopped PRs';
     END IF;
 
     UPDATE delivery_outcome SET reverted_at=merged_at+interval '3 days' WHERE number=11;

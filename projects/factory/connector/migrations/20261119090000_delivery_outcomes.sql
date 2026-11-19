@@ -1,4 +1,5 @@
--- A stopped delivery may resume. A merged PR remains delivered even if its
+-- One row per PR; a work item that never opened a PR has no outcome. A
+-- stopped delivery may resume. A merged PR remains delivered even if its
 -- work item subsequently stops. Keep PR identity across a replacement PR.
 CREATE TABLE delivery_outcome (
     node_id text PRIMARY KEY,
@@ -44,6 +45,18 @@ LANGUAGE sql STABLE AS $$
     WHERE r.outcome_node = target;
 $$;
 
+-- Completed holds plus any hold still open: a PR's up to its last poll, a
+-- run's up to its last update. Triggers below refresh it when a hold closes.
+CREATE FUNCTION delivery_time_held(target text) RETURNS interval
+LANGUAGE sql STABLE AS $$
+    SELECT coalesce((SELECT sum(admission_held + CASE WHEN hold_since IS NULL THEN interval '0'
+                         ELSE greatest(updated_at - hold_since, interval '0') END)
+                     FROM run WHERE outcome_node = target), interval '0')
+         + coalesce((SELECT held_duration + CASE WHEN held_since IS NULL THEN interval '0'
+                         ELSE greatest(coalesce(polled_at, held_since) - held_since, interval '0') END
+                     FROM pull_request WHERE node_id = target), interval '0');
+$$;
+
 CREATE FUNCTION refresh_delivery_metrics(target text) RETURNS void LANGUAGE sql AS $$
 UPDATE delivery_outcome dest
 SET metrics_recorded = true,
@@ -55,9 +68,8 @@ FROM (
     SELECT o.node_id, f.arm, f.task_class, f.base_sha AS guidance_version,
            minutes.first_build_minutes, minutes.rework_minutes,
            rounds.review_rounds, rounds.ci_fix_rounds + usage.queue_fixes AS ci_fix_rounds, usage.tokens,
-           coalesce(usage.time_held, interval '0') + coalesce(pr.held_duration, interval '0') AS time_held
+           delivery_time_held(o.node_id) AS time_held
     FROM delivery_outcome o
-    LEFT JOIN pull_request pr ON pr.node_id = o.node_id
     LEFT JOIN LATERAL (
         SELECT id, arm, task_class, base_sha FROM run
         WHERE work_item_id = o.work_item_id AND origin <> 'reviewer'
@@ -67,7 +79,7 @@ FROM (
     CROSS JOIN LATERAL (
         SELECT CASE WHEN count(input_tokens + output_tokens) = count(*)
             THEN coalesce(sum(input_tokens + output_tokens), 0) END AS tokens,
-            count(*) FILTER (WHERE queue_ci_fix) AS queue_fixes, sum(admission_held) AS time_held
+            count(*) FILTER (WHERE queue_ci_fix) AS queue_fixes
         FROM run WHERE outcome_node = o.node_id
     ) usage
     CROSS JOIN LATERAL (
@@ -80,11 +92,6 @@ FROM (
 $$;
 
 CREATE FUNCTION sync_delivery_outcome(wid bigint, observed_pr boolean DEFAULT false) RETURNS void LANGUAGE sql AS $$
-    DELETE FROM delivery_outcome WHERE work_item_id = wid AND number IS NULL;
-    INSERT INTO delivery_outcome(node_id, work_item_id, abandoned)
-    SELECT 'work-item/' || w.id, w.id, true FROM work_item w
-    WHERE w.id = wid AND w.state = 'stopped'
-      AND NOT EXISTS (SELECT 1 FROM pull_request WHERE work_item_id = wid);
     INSERT INTO delivery_outcome(node_id, work_item_id, number, merged_at, merge_sha, abandoned)
     SELECT p.node_id, w.id, p.number, p.merged_at, p.merge_commit_sha, p.merged_at IS NULL
     FROM work_item w JOIN pull_request p ON p.work_item_id = w.id
@@ -96,11 +103,11 @@ CREATE FUNCTION sync_delivery_outcome(wid bigint, observed_pr boolean DEFAULT fa
         AND w.state <> 'stopped' AND p.state = 'open';
     UPDATE run r SET outcome_node = o.node_id
     FROM delivery_outcome o LEFT JOIN pull_request p ON p.node_id=o.node_id
-    WHERE o.work_item_id=wid AND NOT o.metrics_recorded AND (o.number IS NULL OR p.id IS NOT NULL)
+    WHERE o.work_item_id=wid AND NOT o.metrics_recorded AND p.id IS NOT NULL
       AND r.work_item_id=wid AND r.origin <> 'reviewer' AND r.outcome_node IS NULL;
     SELECT refresh_delivery_metrics(o.node_id) FROM delivery_outcome o
     LEFT JOIN pull_request p ON p.node_id=o.node_id
-    WHERE o.work_item_id=wid AND NOT o.metrics_recorded AND (o.number IS NULL OR p.id IS NOT NULL);
+    WHERE o.work_item_id=wid AND NOT o.metrics_recorded AND p.id IS NOT NULL;
 $$;
 CREATE FUNCTION record_pr_outcome() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -150,6 +157,26 @@ BEGIN
 END $$;
 CREATE TRIGGER outcome_usage AFTER UPDATE OF input_tokens,output_tokens ON run
     FOR EACH ROW WHEN (NEW.outcome_node IS NOT NULL) EXECUTE FUNCTION refresh_run_usage();
+
+-- A hold that closes after the snapshot updates the recorded time held.
+CREATE FUNCTION refresh_pr_held() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE delivery_outcome SET time_held = delivery_time_held(node_id)
+    WHERE node_id = NEW.node_id AND metrics_recorded
+      AND time_held IS DISTINCT FROM delivery_time_held(node_id);
+    RETURN NULL;
+END $$;
+CREATE TRIGGER outcome_pr_held AFTER UPDATE OF held_duration, held_since, polled_at ON pull_request
+    FOR EACH ROW EXECUTE FUNCTION refresh_pr_held();
+CREATE FUNCTION refresh_run_held() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE delivery_outcome SET time_held = delivery_time_held(node_id)
+    WHERE node_id = NEW.outcome_node AND metrics_recorded
+      AND time_held IS DISTINCT FROM delivery_time_held(node_id);
+    RETURN NULL;
+END $$;
+CREATE TRIGGER outcome_run_held AFTER UPDATE OF admission_held, hold_since ON run
+    FOR EACH ROW WHEN (NEW.outcome_node IS NOT NULL) EXECUTE FUNCTION refresh_run_held();
 
 CREATE VIEW pr_delivery_results AS
 SELECT o.*, merged_at IS NOT NULL AS merged, reverted_at IS NOT NULL AS reverted FROM delivery_outcome o;
