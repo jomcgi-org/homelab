@@ -45,6 +45,7 @@ go_library(
         "20261119100000_storyboard_tasks.sql",
         "20261119110000_delivery_outcomes.sql",
         "20261119120000_coder_arms.sql",
+        "20261119130000_planner.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],
