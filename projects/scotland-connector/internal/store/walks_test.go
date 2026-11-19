@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -48,5 +49,23 @@ func TestWalkStoreKeepsLastGoodSnapshot(t *testing.T) {
 	f.fail = fmt.Errorf("%w: stars/walks.json", r2.ErrNotFound)
 	if err := s.Refresh(ctx); !errors.Is(err, r2.ErrNotFound) || s.Current() != first {
 		t.Fatalf("outage err=%v", err)
+	}
+}
+
+func TestWalkManifestWaitsForPayload(t *testing.T) {
+	key := fmt.Sprintf("walks-%x.json", sha256.Sum256([]byte(walksV1)))
+	f := &fakeR2{calls: map[string]int{}, objects: map[string]r2.Object{
+		"latest.json": {Body: []byte(fmt.Sprintf(`{"walks":%q}`, key)), ETag: "m1"},
+		key:           {Body: []byte(walksV1), ETag: "w1"},
+	}}
+	s := NewWalks("hikes", "latest.json", time.Minute, f, slog.Default())
+	if err := s.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first := s.Current()
+	next := fmt.Sprintf("walks-%064d.json", 0)
+	f.objects["latest.json"] = r2.Object{Body: []byte(fmt.Sprintf(`{"walks":%q}`, next)), ETag: "m2"}
+	if err := s.Refresh(context.Background()); err == nil || s.Current() != first || s.tag != "m1" {
+		t.Fatal("incomplete generation replaced current dataset")
 	}
 }

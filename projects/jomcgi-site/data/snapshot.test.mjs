@@ -327,3 +327,27 @@ test("resolves and authenticates all three Stars manifest payloads", async () =>
     /Digest mismatch/,
   );
 });
+
+test("hikes follows the upstream manifest and keeps its index on digest failure", async () => {
+  const out = await mkdtemp(join(tmpdir(), "hikes-manifest-"));
+  let body = Buffer.from('{"schema_version":2,"walks":[]}');
+  const key = `walks-${createHash("sha256").update(body).digest("hex")}.json`;
+  const sources = {
+    sections: { hikes: { bucket: "hikes", manifest: "latest.json" } },
+  };
+  const get = async (bucket, path) => {
+    assert.equal(bucket, "hikes");
+    if (path === "latest.json")
+      return { body: Buffer.from(JSON.stringify({ walks: key })) };
+    assert.equal(path, key);
+    return { body };
+  };
+  await snapshot(sources, get, out);
+  const file = join(out, "hikes/latest.json");
+  const first = await readFile(file, "utf8");
+  const published = JSON.parse(first).files.walks.replace("/data/", "");
+  assert.deepEqual(await readFile(join(out, published)), body);
+  body = Buffer.from("{}");
+  await assert.rejects(snapshot(sources, get, out), /Digest mismatch/);
+  assert.equal(await readFile(file, "utf8"), first);
+});

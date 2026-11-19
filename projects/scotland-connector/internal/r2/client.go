@@ -266,3 +266,34 @@ func hmacSHA256(key []byte, data string) []byte {
 	h.Write([]byte(data))
 	return h.Sum(nil)
 }
+
+// Put writes a JSON object, optionally conditional on the prior generation.
+func (c *Client) Put(ctx context.Context, bucket, key string, body io.Reader, size int64, digest, cache, prior string) error {
+	u := *c.endpoint
+	u.Path = "/" + bucket + "/" + key
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u.String(), body)
+	if err != nil {
+		return err
+	}
+	req.ContentLength = size
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cache-Control", cache)
+	if prior == "*" {
+		req.Header.Set("If-None-Match", "*")
+	} else if prior != "" {
+		req.Header.Set("If-Match", prior)
+	}
+	date := c.now().UTC().Format("20060102T150405Z")
+	req.Header.Set("X-Amz-Date", date)
+	req.Header.Set("X-Amz-Content-Sha256", digest)
+	req.Header.Set("Authorization", authorization(req, []string{"host", "x-amz-content-sha256", "x-amz-date"}, date, c.region, c.creds))
+	res, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode/100 != 2 {
+		return fmt.Errorf("put %s: HTTP %d", key, res.StatusCode)
+	}
+	return nil
+}

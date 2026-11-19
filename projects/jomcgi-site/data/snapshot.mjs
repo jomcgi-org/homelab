@@ -87,7 +87,7 @@ export async function snapshot(
     }
     const { bucket } = config;
     let files = config.files;
-    if (config.manifest) {
+    if (section === "stars" && config.manifest) {
       const index = JSON.parse((await get(bucket, config.manifest)).body);
       files = Object.fromEntries(
         Object.keys(config.files).map((name) => {
@@ -117,7 +117,15 @@ export async function snapshot(
     };
     let starsSites;
     await mkdir(join(out, section, "v"), { recursive: true });
-    for (const [name, key] of Object.entries(files)) {
+    let resolved = files;
+    if (section === "hikes" && config.manifest) {
+      const { body } = await get(bucket, config.manifest);
+      const { walks } = JSON.parse(body);
+      if (!/^walks-[0-9a-f]{64}\.json$/.test(walks))
+        throw new Error("Invalid hikes manifest");
+      resolved = { walks };
+    }
+    for (const [name, key] of Object.entries(resolved)) {
       const { body, lastModified } = await get(bucket, key);
       if (config.manifest && !key.endsWith(`-${sha256(body)}.json`))
         throw new Error(`Digest mismatch for ${key}`);
