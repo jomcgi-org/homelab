@@ -122,6 +122,20 @@ export async function fixtureObject(bucket, key) {
   };
 }
 
+function fixtureManifest(location) {
+  const url = new URL(location);
+  if (
+    url.origin !== "https://factory-data.jomcgi.dev" ||
+    !/^\/(manifest\.json|objects\/[a-f0-9]{64}\.json)$/.test(url.pathname)
+  )
+    throw new Error(`Unexpected fixture request: ${url}`);
+  const file = new URL(
+    "../../factory-storyboard/fixtures" + url.pathname,
+    import.meta.url,
+  );
+  return new Response(readFileSync(file));
+}
+
 // Exercise the built release, including the production hub/Worker boundary.
 export async function serveRelease(dist, stage, { contrast = false } = {}) {
   const scope = scopeFor(stage);
@@ -138,7 +152,13 @@ export async function serveRelease(dist, stage, { contrast = false } = {}) {
       chmodSync(path, statSync(path).isDirectory() ? 0o755 : 0o644);
     }
     // Use the real snapshot format with fixed R2 objects, without credentials.
-    await snapshot(sources, fixtureObject, join(dataRoot, "data"));
+    await snapshot(
+      sources,
+      fixtureObject,
+      join(dataRoot, "data"),
+      undefined,
+      fixtureManifest,
+    );
     // Like data/main.mjs: stamp the hikes summary after the snapshot.
     await publishHikesSummary(join(dataRoot, "data"));
     const server = await serve((req, res) => {

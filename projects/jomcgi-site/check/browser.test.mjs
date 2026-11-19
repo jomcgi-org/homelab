@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readFileSync } from "node:fs";
 import {
   checkPage,
   isEdgeBeacon,
   isEdgeBeaconConsole,
   isEdgeBeaconCsp,
   launchBrowser,
-  PENDING_DATA,
-  pendingData,
   tier2,
 } from "./browser.mjs";
 import { css, html, isolateBrowserCache, respond, serve } from "./fixture.mjs";
@@ -63,6 +60,7 @@ test(
         "csp",
         "report-only",
         "404",
+        "missing-factory",
         "off-origin",
         "edge-beacon",
         "shipped-beacon",
@@ -74,7 +72,9 @@ test(
       ]) {
         await t.test(mode, async () => {
           const server = await serve((req, res) => {
-            if (req.url === "/assets/style.css") {
+            if (req.url === "/data/factory/manifest.json") {
+              respond(res, "{}", "application/json", {}, 404);
+            } else if (req.url === "/assets/style.css") {
               respond(res, css, "text/css");
             } else if (req.url === "/assets/app.js") {
               const script =
@@ -84,6 +84,7 @@ test(
                     'document.querySelector("p").style.color = "lightgray";',
                   console: 'console.error("fixture console error")',
                   exception: 'throw new Error("fixture exception")',
+                  "missing-factory": 'fetch("/data/factory/manifest.json")',
                   "off-origin": 'fetch("https://outside.invalid/forbidden")',
                   // The beacon URL inside another URL or an app message must
                   // not hide a real failure.
@@ -138,6 +139,7 @@ test(
                 status: mode === "404" ? 404 : 200,
               });
             const expected = {
+              "missing-factory": /HTTP 404: .*\/data\/factory\/manifest\.json/,
               contrast: /axe color-contrast/,
               console: /fixture console error/,
               exception: /fixture exception/,
@@ -162,32 +164,6 @@ test(
     }
   },
 );
-
-test("only data of a staged section may answer 404", () => {
-  const at = (path) => pendingData(`https://next.jomcgi.dev${path}`);
-  assert.equal(at("/data/factory/manifest.json"), true);
-  assert.equal(at("/data/stars/latest.json"), false);
-  // A misspelled section is not staged, so its 404 still fails the page.
-  assert.equal(at("/data/star/latest.json"), false);
-  assert.equal(at("/data/factory-x/manifest.json"), false);
-  assert.equal(at("/data/latest.json"), false);
-  assert.equal(at("/assets/app.js"), false);
-  assert.equal(at("/factory/"), false);
-});
-
-test("a staged section leaves the list when the snapshot publishes it", () => {
-  // Remove the section from PENDING_DATA in browser.mjs when its source is
-  // added to data/sources.json (for /factory: HOME-213).
-  const sources = JSON.parse(
-    readFileSync(new URL("../data/sources.json", import.meta.url), "utf8"),
-  );
-  for (const section of PENDING_DATA) {
-    assert.ok(
-      !(section in sources.sections),
-      `${section} is published; remove it from PENDING_DATA`,
-    );
-  }
-});
 
 test("only the exact Cloudflare beacon is treated as edge-injected", () => {
   const beacon = "https://static.cloudflareinsights.com/beacon.min.js/v8c78";

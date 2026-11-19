@@ -20,7 +20,10 @@ js_library(
 js_library(
     name = "web_fixtures",
     srcs = glob(["fixtures/**/*.json"]),
-    visibility = ["//projects/jomcgi-site/web:__pkg__"],
+    visibility = [
+        "//projects/jomcgi-site/check:__pkg__",
+        "//projects/jomcgi-site/web:__pkg__",
+    ],
 )
 
 filegroup(
