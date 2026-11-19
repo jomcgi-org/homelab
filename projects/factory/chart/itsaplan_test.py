@@ -608,3 +608,31 @@ def test_bootstrap_defers_work_in_each_bound_project():
     assert len(configs) == 1
     config = json.loads(configs[0]["data"]["config.json"])
     assert config["deferredProjects"] == ["HOME"]
+
+
+def test_session_forward_has_one_fixed_upstream():
+    docs = _render()
+    name = "factory-itsaplan-session-forward"
+    relay = _one(docs, "StatefulSet", name)
+    assert relay["metadata"]["namespace"] == "factory"
+    assert relay["spec"]["replicas"] == 1
+    pod = relay["spec"]["template"]["spec"]
+    assert not pod["automountServiceAccountToken"]
+    (container,) = pod["containers"]
+    (script,) = container["args"]
+    assert 'net.connect(3000, "factory-itsaplan-api")' in script
+    assert '.listen(3000, "127.0.0.1")' in script
+    policy = _one(docs, "CiliumNetworkPolicy", name)["spec"]
+    assert (
+        policy["endpointSelector"]["matchLabels"]
+        == relay["spec"]["selector"]["matchLabels"]
+    )
+    (rule,) = policy["egress"]
+    (target,) = rule["toEndpoints"]
+    assert (
+        target["matchLabels"]
+        == _one(docs, "Deployment", "factory-itsaplan-api")["spec"]["selector"][
+            "matchLabels"
+        ]
+    )
+    assert rule["toPorts"] == [{"ports": [{"port": "3000", "protocol": "TCP"}]}]

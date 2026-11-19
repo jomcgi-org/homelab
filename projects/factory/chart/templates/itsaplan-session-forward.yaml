@@ -1,0 +1,57 @@
+{{- if .Values.itsaplan.enabled }}
+{{- $name := printf "%s-session-forward" (include "factory.itsaplanName" .) }}
+{{- $selector := include "factory.itsaplanSelector" (dict "root" . "component" "session-forward") }}
+# The StatefulSet gives RBAC a stable pod name. Only kubectl port-forward
+# can reach the loopback listener. The upstream is fixed for every connection.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Values.itsaplan.namespace }}
+spec:
+  clusterIP: None
+  selector:
+    {{- $selector | nindent 4 }}
+  ports:
+    - port: 3000
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Values.itsaplan.namespace }}
+spec:
+  replicas: 1
+  serviceName: {{ $name }}
+  selector:
+    matchLabels:
+      {{- $selector | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- $selector | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "factory.itsaplanPodSecurity" . | nindent 8 }}
+      containers:
+        - name: forward
+          image: {{ .Values.itsaplan.images.web }}
+          command: [node, -e]
+          args:
+            - |
+              const net = require("node:net");
+              net.createServer(client => {
+                const api = net.connect(3000, "{{ include "factory.itsaplanName" . }}-api");
+                client.on("error", () => api.destroy());
+                api.on("error", () => client.destroy());
+                client.on("close", () => api.destroy());
+                api.on("close", () => client.destroy());
+                client.pipe(api).pipe(client);
+              }).listen(3000, "127.0.0.1");
+          resources:
+            requests: {cpu: 5m, memory: 32Mi}
+            limits: {memory: 96Mi}
+          securityContext:
+            {{- include "factory.itsaplanContainerSecurity" . | nindent 12 }}
+{{- end }}

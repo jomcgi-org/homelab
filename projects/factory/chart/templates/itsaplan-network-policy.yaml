@@ -32,6 +32,8 @@ spec:
         - matchLabels:
             {{- toYaml $edge | nindent 12 }}
         - matchLabels:
+            {{- include "factory.itsaplanSelector" (dict "root" . "component" "session-forward") | nindent 12 }}
+        - matchLabels:
             {{- include "factory.itsaplanSelector" (dict "root" . "component" "web") | nindent 12 }}
         - matchLabels:
             {{- include "factory.itsaplanSelector" (dict "root" . "component" "worker") | nindent 12 }}
@@ -81,6 +83,28 @@ spec:
       toPorts:
         - ports:
             - port: "443"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}-session-forward
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "factory.itsaplanSelector" (dict "root" . "component" "session-forward") | nindent 6 }}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            {{- include "factory.itsaplanSelector" (dict "root" . "component" "api") | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "3000"
               protocol: TCP
 ---
 apiVersion: cilium.io/v2

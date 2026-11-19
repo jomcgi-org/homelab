@@ -219,6 +219,7 @@ def test_session_permissions():
                 {
                     "apiGroups": [""],
                     "resources": ["pods/portforward"],
+                    "resourceNames": ["factory-itsaplan-session-forward-0"],
                     "verbs": ["create"],
                 },
                 {
@@ -241,3 +242,63 @@ def test_session_permissions():
             for rule in role["rules"]:
                 assert set(rule) == {"apiGroups", "resources", "verbs"}
                 assert set(rule["verbs"]) == READ_VERBS
+
+
+@pytest.mark.parametrize(
+    "verb,resource,name,namespace,allowed",
+    [
+        (
+            "create",
+            "pods/portforward",
+            "factory-itsaplan-session-forward-0",
+            "factory",
+            True,
+        ),
+        (
+            "create",
+            "pods/portforward",
+            "factory-itsaplan-web-example",
+            "factory",
+            False,
+        ),
+        (
+            "create",
+            "pods/portforward",
+            "factory-itsaplan-session-forward-0",
+            "default",
+            False,
+        ),
+        ("get", "secrets", "factory-itsaplan-joe-sessions", "factory", True),
+        ("get", "secrets", "factory-itsaplan-joe-sessions", "default", False),
+        ("get", "secrets", "factory-itsaplan-admin", "factory", False),
+        ("list", "secrets", None, "factory", False),
+        ("watch", "secrets", None, "factory", False),
+        ("create", "pods/exec", "factory-db-1", "factory", False),
+        ("patch", "pods", "example", "factory", False),
+        ("watch", "pods", None, "default", True),
+    ],
+)
+def test_session_core_requests(verb, resource, name, namespace, allowed):
+    rules = []
+    for binding in by_kind("RoleBinding") + by_kind("ClusterRoleBinding"):
+        if binding["metadata"].get("namespace", namespace) != namespace:
+            continue
+        if not any(s["name"] == SESSIONS for s in binding["subjects"]):
+            continue
+        ref = binding["roleRef"]
+        for role in by_kind(ref["kind"]):
+            if (
+                role["metadata"]["name"] == ref["name"]
+                and role["metadata"].get("namespace", namespace) == namespace
+            ):
+                rules.extend(role["rules"])
+    assert (
+        any(
+            {"", "*"}.intersection(rule["apiGroups"])
+            and {verb, "*"}.intersection(rule["verbs"])
+            and {resource, "*"}.intersection(rule["resources"])
+            and ("resourceNames" not in rule or name in rule["resourceNames"])
+            for rule in rules
+        )
+        == allowed
+    )
