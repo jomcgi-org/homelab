@@ -242,7 +242,9 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
       workItem: "create",
       params: t.Object({ issueId: t.Numeric({ minimum: 1 }) }),
       body: t.Object({
-        finding: t.String({ pattern: "^(sast|sca|secrets)/[0-9]+$" }),
+        finding: t.String({
+          pattern: "^((sast|sca)/[0-9]+|secrets/[A-Za-z0-9._~%-]+)$",
+        }),
         title: t.Optional(t.String()),
         description: t.Optional(t.String()),
         columnId: t.Optional(t.Integer()),

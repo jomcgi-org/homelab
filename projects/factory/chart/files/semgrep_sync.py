@@ -83,23 +83,34 @@ def snapshot(get, deployment, deployment_id):
             if not isinstance(rows, list):
                 raise ValueError("missing Semgrep page")
             for row in rows:
-                number = int(row["id"])
-                if number in seen:
+                finding_id = (
+                    quote(row["id"], safe="")
+                    if product == "secrets"
+                    else int(row["id"])
+                )
+                if finding_id in seen:
                     raise ValueError("overlapping Semgrep pages")
-                seen.add(number)
-                if row["repository"]["name"] != REPO or row["ref"] not in (
+                seen.add(finding_id)
+                repository = row.get("repository") or {}
+                if repository.get("name") != REPO or row.get("ref") not in (
                     "main",
                     "refs/heads/main",
                 ):
                     continue
-                status = row["status"].lower()
+                status = row.get("status", "").lower()
+                if product == "secrets":
+                    status = status.removeprefix("finding_status_")
                 closed = (
                     status in ("fixed", "ignored")
+                    or (
+                        product == "secrets"
+                        and status in ("removed", "provisionally_ignored")
+                    )
                     or row.get("triage_state", "").lower() == "ignored"
                 )
                 if not closed and status not in ("open", "reopened"):
                     continue
-                severity = row["severity"].lower()
+                severity = row.get("severity", "").lower().removeprefix("severity_")
                 qualifies = (
                     product == "secrets"
                     or (product == "sast" and severity in ("high", "critical"))
@@ -113,20 +124,29 @@ def snapshot(get, deployment, deployment_id):
                 )
                 if not closed and not qualifies:
                     continue
-                key = f"{product}/{number}"
-                location = row["location"]
-                evidence = {
-                    "rule": row["rule_name"],
-                    "severity": severity,
-                    "location": f"{location['file_path']}:{location['line']}",
-                }
+                key = f"{product}/{finding_id}"
+                if product == "secrets":
+                    path = row.get("findingPath") or "(path unavailable)"
+                    evidence = {"location": path}
+                    if row.get("ruleHashId"):
+                        evidence["rule"] = row["ruleHashId"]
+                    if severity:
+                        evidence["severity"] = severity
+                else:
+                    location = row["location"]
+                    path = location["file_path"]
+                    evidence = {
+                        "rule": row["rule_name"],
+                        "severity": severity,
+                        "location": f"{path}:{location['line']}",
+                    }
                 # Indented JSON stays literal Markdown even with backticks or newlines in rule names.
                 # itsaplan's mention parser still scans indented code, so no literal @ is left.
                 data = json.dumps(evidence).replace("@", "\\u0040")
-                link = f"https://semgrep.dev/orgs/{deployment}/findings/{number}"
+                link = f"https://semgrep.dev/orgs/{deployment}/findings/{finding_id}"
                 result[key] = (
                     closed,
-                    {"repository": REPO, "file": location["file_path"], "link": link},
+                    {"repository": REPO, "file": path, "link": link},
                     f"Semgrep finding ID: {key}\n\nUntrusted finding data\n\n    {data}\n\n{link}",
                 )
     return result
@@ -159,7 +179,8 @@ def reconcile(findings, plan, alert):
     archived = plan(PROJECT + "/issues/archived")
     for issue in board + archived:
         match = re.match(
-            r"Semgrep finding ID: ((?:sast|sca|secrets)/[0-9]+)\n", issue["description"]
+            r"Semgrep finding ID: ((?:sast|sca)/[0-9]+|secrets/[A-Za-z0-9._~%-]+)\n",
+            issue["description"],
         )
         if label not in issue["labelIds"] or not match:
             continue
