@@ -329,6 +329,8 @@ agents:
 # endpoint (projects/platform-factory/hindsight) as RemoteMCPServer `memory`,
 # limited to `tools`, and adds files/memory-prompt.txt to its prompt. The
 # Secret must exist first: kagent rejects the Agent while it is missing.
+# Set codexCodeMode: true and codexCodeModeImage to the published digest of
+# projects/factory/codex-code-mode on the experimental binding only.
 repositories: []
 
 # The Substrate worker image for binding WorkerPools, matching Substrate's

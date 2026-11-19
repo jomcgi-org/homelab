@@ -96,6 +96,15 @@ def _one(docs: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
     return found[0]
 
 
+def test_binding_codex_code_mode_image() -> None:
+    assert "workload" not in _one(_render(), "Harness", "codex")["spec"]
+    image = "registry.example/codex-code-mode@sha256:" + "a" * 64
+    pin = f"repositories[0].codexCodeModeImage={image}"
+    assert "workload" not in _one(_render([pin]), "Harness", "codex")["spec"]
+    docs = _render([pin, "repositories[0].codexCodeMode=true"])
+    assert _one(docs, "Harness", "codex")["spec"]["workload"] == {"image": image}
+
+
 def test_crds_match_vendored_chart() -> None:
     with tarfile.open(_CHART_DIR / "charts" / "kagent-crds-1.0.1.tgz") as tgz:
         vendored = {

@@ -1034,6 +1034,16 @@
             "type": "string",
             "minLength": 1
           },
+          "codexCodeMode": {
+            "description": "Select the experimental Codex code-mode image for this binding.",
+            "type": "boolean",
+            "default": false
+          },
+          "codexCodeModeImage": {
+            "description": "Opt this binding into the projects/factory/codex-code-mode image by digest.",
+            "type": "string",
+            "pattern": "^.+@sha256:[a-f0-9]{64}$"
+          },
           "toolchain": {
             "description": "Opt in to the homelab Alpine bootstrap and public download origins for this coding binding.",
             "enum": ["homelab"]
