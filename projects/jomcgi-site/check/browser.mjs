@@ -54,6 +54,7 @@ export async function launchBrowser() {
   return chromium.launch({
     executablePath,
     env,
+    args: ["--enable-unsafe-swiftshader"],
     headless: true,
     timeout: 30_000,
   });
@@ -89,7 +90,7 @@ export function isEdgeBeaconCsp(entry) {
 
 export async function checkPage(
   browser,
-  { url, status = 200, colorScheme = "light", width = 1280 },
+  { url, status = 200, colorScheme = "light", width = 1280, checkMap = false },
 ) {
   const origin = new URL(url).origin;
   const context = await browser.newContext({
@@ -99,9 +100,22 @@ export async function checkPage(
     bypassCSP: false,
   });
   const errors = [];
+  const tileOrigin = "https://tiles.openfreemap.org";
+  function isVectorTile(response) {
+    const target = new URL(response.url());
+    return (
+      target.origin === tileOrigin &&
+      /\/\d+\/\d+\/\d+\.pbf$/.test(target.pathname) &&
+      response.status() === 200
+    );
+  }
+  let mapActive = false;
+  let tiles = 0;
   try {
     await context.route("**/*", (route) => {
-      if (new URL(route.request().url()).origin !== origin) {
+      const requestOrigin = new URL(route.request().url()).origin;
+      if (requestOrigin !== origin) {
+        if (mapActive && requestOrigin === tileOrigin) return route.fallback();
         if (isEdgeBeacon(route.request().url())) return route.abort();
         errors.push(`off-origin request: ${route.request().url()}`);
         return route.abort();
@@ -155,6 +169,7 @@ export async function checkPage(
       );
     });
     page.on("response", (response) => {
+      if (mapActive && isVectorTile(response)) tiles++;
       if (
         response.status() >= 400 &&
         !(response.url() === url && response.status() === status) &&
@@ -183,6 +198,42 @@ export async function checkPage(
         results.violations.some(({ id }) => id === "color-contrast"),
       `${url}: colour contrast did not run to a result`,
     );
+    const links = await page
+      .locator("a[href]")
+      .evaluateAll((anchors) =>
+        anchors
+          .map((anchor) => anchor.href)
+          .filter((href) => new URL(href).origin === location.origin),
+      );
+    const path = new URL(url).pathname;
+    if (checkMap && ["/stars", "/hikes"].includes(path)) {
+      const button = (name) => page.getByRole("button", { name, exact: true });
+      if (path === "/hikes") await button("Explore walks").click();
+      mapActive = true;
+      const firstTile = page
+        .waitForEvent("response", {
+          predicate: isVectorTile,
+          timeout: 15000,
+        })
+        .catch(() => undefined);
+      await button(
+        path === "/stars" ? "Load interactive map" : "Show map",
+      ).click();
+      await page
+        .locator("canvas.maplibregl-canvas")
+        .waitFor({ state: "visible" });
+      // The canvas can appear before the worker requests its first tile.
+      await firstTile;
+      await page.waitForLoadState("networkidle");
+      console.log(`tier 2 ${path}: ${tiles} vector tile responses (HTTP 200)`);
+      if (!tiles) errors.push("no successful vector tile response");
+      if (
+        /the map could not load|couldn’t load the map/i.test(
+          await page.locator("body").innerText(),
+        )
+      )
+        errors.push("map error text displayed");
+    }
     errors.push(
       ...(await page.evaluate(() => globalThis.siteCheckCsp))
         .filter((value) => !isEdgeBeaconCsp(value))
@@ -194,13 +245,7 @@ export async function checkPage(
       );
     }
     assert.deepEqual(errors, [], `${url} (${colorScheme}, ${width}px)`);
-    return await page
-      .locator("a[href]")
-      .evaluateAll((anchors) =>
-        anchors
-          .map((anchor) => anchor.href)
-          .filter((href) => new URL(href).origin === location.origin),
-      );
+    return links;
   } finally {
     await context.close();
   }
@@ -211,11 +256,19 @@ export async function checkPage(
 // heavier pages); two keeps memory in bounds and each stage near 2 minutes.
 export const TIER2_CONCURRENCY = 2;
 
-export async function tier2(pages, concurrency = TIER2_CONCURRENCY) {
+export async function tier2(
+  pages,
+  { concurrency = TIER2_CONCURRENCY, checkMaps = true } = {},
+) {
   const browser = await launchBrowser();
   const checks = pages.flatMap((page) =>
     ["light", "dark"].flatMap((colorScheme) =>
-      [390, 1280].map((width) => ({ ...page, colorScheme, width })),
+      [390, 1280].map((width) => ({
+        ...page,
+        colorScheme,
+        width,
+        checkMap: checkMaps && colorScheme === "light" && width === 1280,
+      })),
     ),
   );
   const links = [];

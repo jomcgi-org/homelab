@@ -226,3 +226,67 @@ test("only the exact Cloudflare beacon is treated as edge-injected", () => {
     false,
   );
 });
+
+test("a worker denied tile access by its response CSP fails the map check", async (t) => {
+  isolateBrowserCache(t);
+  const browser = await launchBrowser();
+  t.after(() => browser.close());
+  const tileOrigin = "https://tiles.openfreemap.org";
+  let workerPolicy = "connect-src " + tileOrigin;
+  let servedTiles = 0;
+  const newContext = browser.newContext.bind(browser);
+  t.mock.method(browser, "newContext", async function (options) {
+    const context = await newContext(options);
+    await context.route(tileOrigin + "/**", (route) => {
+      servedTiles++;
+      return route.fulfill({
+        status: 200,
+        headers: { "access-control-allow-origin": "*" },
+        body: Buffer.from([0]),
+      });
+    });
+    return context;
+  });
+  let workerRejected = false;
+  const server = await serve((req, res) => {
+    if (req.url === "/worker-rejected") {
+      workerRejected = true;
+      return respond(res, "", "text/plain");
+    }
+    if (req.url === "/assets/style.css") return respond(res, css, "text/css");
+    if (req.url === "/assets/app.js")
+      return respond(
+        res,
+        `document.querySelector("button").onclick = () => {
+      document.querySelector("canvas").hidden = false;
+      new Worker("/worker.js").onmessage = () => fetch("/worker-rejected");
+    }`,
+        "text/javascript",
+      );
+    if (req.url === "/worker.js")
+      return respond(
+        res,
+        `fetch("https://tiles.openfreemap.org/0/0/0.pbf").then(response => response.arrayBuffer()).catch(() => postMessage("rejected"))`,
+        "text/javascript",
+        { "content-security-policy": workerPolicy },
+      );
+    respond(
+      res,
+      html.replace(
+        "</main>",
+        '<button>Load interactive map</button><canvas class="maplibregl-canvas" hidden></canvas></main>',
+      ),
+    );
+  });
+  t.after(() => server.close());
+  const run = () =>
+    checkPage(browser, { url: server.origin + "/stars", checkMap: true });
+  await run();
+  assert.equal(servedTiles, 1);
+  workerPolicy = "connect-src 'self'";
+  await assert.rejects(run(), (error) =>
+    error.actual?.includes("no successful vector tile response"),
+  );
+  assert.equal(servedTiles, 1);
+  assert.equal(workerRejected, true);
+});

@@ -25,7 +25,7 @@ test(
             get: http.get,
             scope: scopeFor(stage),
           });
-          await checkLinks(http.get, await tier2(pages));
+          await checkLinks(http.get, await tier2(pages, { checkMaps: false }));
         } finally {
           await http.close();
           await server.close();
