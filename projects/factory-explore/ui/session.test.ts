@@ -111,7 +111,7 @@ test.each([
     await vi.advanceTimersByTimeAsync(0);
   }
   expect(root.textContent).toContain("Time’s up");
-  if (reason === "deadline" || denied) {
+  if (reason === "deadline" || reason === "expiry while suspended" || denied) {
     const opens = denied ? "2026-01-01T13:00:00Z" : "2026-01-01T12:50:02Z";
     expect(root.textContent).toContain(new Date(opens).toLocaleString());
   } else {

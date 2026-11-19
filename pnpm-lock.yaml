@@ -97,7 +97,7 @@ importers:
         specifier: '>=6.4.3 <7'
         version: 6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)
       vitest:
-        specifier: 4.1.11
+        specifier: '>=4.1.11 <5'
         version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@22.19.7)(happy-dom@21.0.4(patch_hash=8828327337fcb7e7ae0ec3d5184c2fd0f188852f611c461caf93fb490f2726e3))(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0))
 
   projects/factory-landing/web:
