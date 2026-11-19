@@ -62,7 +62,7 @@ def _private_oci_layer_impl(rctx):
 
     _write_header(rctx, "Basic " + _docker_auth(rctx, registry))
     _curl(rctx, "https://%s/token?scope=repository:%s:pull&service=%s" % (registry, repository, registry), "token.json")
-    token = json.decode(rctx.read("token.json")).get("token")
+    token = (json.decode(rctx.read("token.json"), default = None) or {}).get("token")
     rctx.delete("token.json")
     if not token:
         _fail(rctx, "the token response has no token")
@@ -71,7 +71,8 @@ def _private_oci_layer_impl(rctx):
     _curl(rctx, base + "/manifests/" + rctx.attr.digest, "manifest.json", [_ACCEPT])
     if "sha256:" + _sha256(rctx, "manifest.json") != rctx.attr.digest:
         _fail(rctx, "the manifest does not match %s" % rctx.attr.digest)
-    layers = [layer["digest"] for layer in json.decode(rctx.read("manifest.json"))["layers"]]
+    manifest = json.decode(rctx.read("manifest.json"), default = None) or {}
+    layers = [layer.get("digest") for layer in manifest.get("layers", [])]
     rctx.delete("manifest.json")
     if rctx.attr.layer not in layers:
         _fail(rctx, "%s does not list layer %s" % (rctx.attr.digest, rctx.attr.layer))
