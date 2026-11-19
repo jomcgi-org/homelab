@@ -93,6 +93,19 @@ Lock maintenance: `update-apko-locks.sh` re-resolves a lock (needs Bazel, and pi
 
 ---
 
+### Private inputs
+
+`//bazel/tools/mandoline` gives the Semgrep mandoline layer and binary from the
+private image `ghcr.io/jomcgi/mandoline`, pinned by digest in `MODULE.bazel`.
+CI logs in to GHCR before Bazel runs, so the fetch is authenticated. A build
+without GHCR credentials fails to fetch it. Only `//projects/factory/...` can see
+the targets, and only private images may use them.
+
+**Why.** The INTSEC audit Harness runs a private image built by Bazel. The
+sandbox gets no GHCR token. Copies of the layer and binary in the BuildBuddy
+cache, which is private to the org, are accepted
+([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-234#comment-5555)).
+
 ## 4. CI: BuildBuddy Workflows
 
 One action in `buildbuddy.yaml`, `pr-checks`, handles pull requests, merge-queue candidates (`gh-readonly-queue/*`, which arrive as push events), and pushes to `main`. Its exact name remains the GitHub ruleset's required status check. Every run clones full history (`git_fetch_depth: 0`) and uses the same runner and snapshot namespace. A gate requires `GIT_BRANCH` to equal `GIT_REPO_DEFAULT_BRANCH` and `GIT_PR_NUMBER` to be zero before routing into publishing or chart-version write-back. The PR-number condition keeps a pull request from a fork branch named `main` out of that route: PR events set `GIT_BRANCH` to the head ref and `GIT_PR_NUMBER` non-zero, push events never set a PR number, and a fork's push fires the fork's webhooks. Credential isolation is unchanged by the gate: BuildBuddy injects secrets for every trusted event, including same-repo events and collaborator fork PRs, executes the YAML from the pushed branch, and already supplied `GHCR_TOKEN` to `pr-checks`; `ON_MAIN` is a routing guard inside a PR-controlled script.
