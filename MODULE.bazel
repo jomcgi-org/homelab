@@ -426,7 +426,11 @@ oci.pull(
 use_repo(oci, "factory_codex_upstream_linux_amd64")
 
 import_harness = use_repo_rule("//projects/factory/codex-code-mode:harness.bzl", "import_harness")
-import_harness(name = "factory_codex_binaries", index = "@factory_codex_upstream_linux_amd64//:index.json")
+
+import_harness(
+    name = "factory_codex_binaries",
+    index = "@factory_codex_upstream_linux_amd64//:index.json",
+)
 
 # PostgreSQL 16 + pgvector for e2e integration tests
 oci.pull(
