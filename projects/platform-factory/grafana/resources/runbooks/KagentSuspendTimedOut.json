@@ -1,4 +1,5 @@
 {
+  "actions": ["kagent-revert"],
   "graph": "kagent:suspend_timeouts:sum{pod=~@pod}",
   "check": "max by (session,executor) (cnpg_quiescence_pending) and on(session,executor) max by (session,executor) (cnpg_quiescence_pending offset 1m)",
   "condition": "lt",

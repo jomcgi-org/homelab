@@ -502,8 +502,14 @@ kagent v1.0.1 keeps the Actor SUSPENDING, refuses
 every turn and delete for the session, and holds its worker slot. The reaper
 checks every 15 seconds and deletes the assigned worker after five minutes in
 SUSPENDING. If the same claim persists after that deadline, inspect the reaper
-logs and pod assignment. Use the following fallback to free
-every locked session:
+logs and pod assignment. When the reviewed action is enabled, sign in to the
+[KagentSuspendTimedOut runbook](https://factory-runbooks.jomcgi.dev/KagentSuspendTimedOut)
+and select **Review locked sessions**. For the session you intend to free,
+check its executor, worker namespace, pod name and UID, and creator account,
+then select **Confirm revert**. Recovery deletes that worker and reverts the
+session as its creator. The service log and Discord report the result.
+
+If the action is unavailable, the node-1 fallback frees every locked session:
 
 ```bash
 # 1. The locked sessions: the same quiescence claim (session and executor)
