@@ -163,6 +163,13 @@ chat:
   movingChatInferenceUrl: "https://api.meta.ai"
   embeddingUrl: "http://inference-embeddings.inference.svc.cluster.local:8080"
 
+# HOME-516: the factory ingester (projects/ships) owns the AISStream key, so
+# the hub stops its AIS ingest. The Ships routes keep serving stored data until
+# HOME-411 and HOME-412. To roll back, stop the factory ingester first, then
+# set this to true, so the key never has two sockets.
+marine:
+  enabled: false
+
 # Kubernetes NetworkPolicy has no additive audit mode. Keep the native app
 # egress policy off until GKE network-policy logs cover a representative live
 # window, including periodic leader jobs and the secret-backed ICAL feed.

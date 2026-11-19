@@ -596,6 +596,8 @@ def test_writer_survives_default_rows_future_and_refused_reports(
     ws.close()
     until(lambda: SESSION_ENDED.search(log.read_text()))
     assert SESSION_ENDED.search(log.read_text()).groups() == ("0", "1", "1")
+    # The rollout check counts this line. The next session waits leaseGrace.
+    assert log.read_text().count("subscribed to AISStream") == 1
 
 
 def test_future_report_is_judged_at_arrival(pg, feed, writers, tmp_path):

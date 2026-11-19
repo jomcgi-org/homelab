@@ -2024,6 +2024,22 @@ def test_recovery_gke_session_dependencies_use_dev_identities(recovery_gke_rende
     assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in env
 
 
+def test_hub_stops_ais_ingest_and_keeps_ships_routes(renders):
+    """HOME-516: the factory ingester (projects/ships) holds the AISStream key.
+
+    Without the key the hub's ingest loop returns at once. The ships routes do
+    not read it, so the hub keeps serving its stored ships data.
+    """
+    ais = {"AISSTREAM_API_KEY", "BOUNDING_BOX"}
+    # Positive control: the base values still render the ingest env.
+    assert ais <= _env_by_name(_deployment_backend_env(renders["prod"])).keys()
+    gke = renders["gke"]
+    assert not ais & _env_by_name(_deployment_backend_env(gke)).keys()
+    docs = {(kind, name) for kind, name, _ in _docs(gke)}
+    assert ("OnePasswordItem", "monolith-marine") not in docs
+    assert ("HTTPRoute", "monolith-ships-redirect") in docs
+
+
 def test_clone_merge_job_is_weekly_suspended_and_receives_database(renders):
     jobs = _cron_docs(renders["prod"])
     merge = jobs["knowledge-merge-clones"]

@@ -5,33 +5,8 @@ import subprocess
 import yaml
 
 
-def test_shadow_activation():
-    # The chart default runs zero replicas until HOME-483 sets enabled=true.
-    for overrides, replicas in (([], 0), (["--set", "enabled=true"], 1)):
-        result = subprocess.check_output(
-            [
-                os.getenv("HELM_BIN", "helm"),
-                "template",
-                "ships",
-                str(Path(__file__).parent),
-                "--set",
-                "image.digest=sha256:" + "0" * 64,
-                *overrides,
-            ]
-        )
-        spec = next(
-            doc["spec"]
-            for doc in yaml.safe_load_all(result)
-            if doc["kind"] == "Deployment"
-        )
-        assert spec["replicas"] == replicas
-        assert spec["strategy"]["type"] == "Recreate"
-        container = spec["template"]["spec"]["containers"][0]
-        assert container["env"][-1]["value"] == "false"
-
-
-def test_sized_database():
-    rendered = subprocess.check_output(
+def render(*overrides):
+    result = subprocess.check_output(
         [
             os.getenv("HELM_BIN", "helm"),
             "template",
@@ -39,11 +14,66 @@ def test_sized_database():
             str(Path(__file__).parent),
             "--set",
             "image.digest=sha256:" + "0" * 64,
-            "--set",
-            "database.storage=5Gi,database.resources.requests.memory=128Mi",
+            *overrides,
         ]
     )
-    docs = list(yaml.safe_load_all(rendered))
+    return list(yaml.safe_load_all(result))
+
+
+def deployment(docs):
+    return next(d["spec"] for d in docs if d["kind"] == "Deployment")
+
+
+def test_activation():
+    # HOME-516 runs one ingester by default; enabled=false stops it.
+    for overrides, replicas in (([], 1), (["--set", "enabled=false"], 0)):
+        spec = deployment(render(*overrides))
+        assert spec["replicas"] == replicas
+        assert spec["strategy"]["type"] == "Recreate"
+        container = spec["template"]["spec"]["containers"][0]
+        assert container["env"][-1]["value"] == "false"
+
+
+def test_cutover_defaults():
+    # The starting budgets that ARCHITECTURE.md states, before right-sizing.
+    docs = render()
+    container = deployment(docs)["template"]["spec"]["containers"][0]
+    assert container["resources"] == {
+        "requests": {"cpu": "250m", "memory": "512Mi"},
+        "limits": {"cpu": "1", "memory": "1Gi"},
+    }
+    cluster = next(d["spec"] for d in docs if d["kind"] == "Cluster")
+    assert cluster["storage"] == {"storageClass": "local-path", "size": "20Gi"}
+    assert cluster["resources"] == {
+        "requests": {"cpu": "100m", "memory": "512Mi"},
+        "limits": {"memory": "1Gi"},
+    }
+    # The hub reads the same 1Password item and key (monolith marine values).
+    key = next(e for e in container["env"] if e["name"] == "AISSTREAM_API_KEY")
+    ref = key["valueFrom"]["secretKeyRef"]
+    assert ref["key"] == "ais-stream-api-key"
+    item = next(
+        d
+        for d in docs
+        if d["kind"] == "OnePasswordItem" and d["metadata"]["name"] == ref["name"]
+    )
+    assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/marine"
+    policy = next(
+        d["spec"]
+        for d in docs
+        if d["kind"] == "CiliumNetworkPolicy"
+        and d["metadata"]["name"] == "ships-ingester"
+    )
+    assert {
+        "toFQDNs": [{"matchName": "stream.aisstream.io"}],
+        "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
+    } in policy["egress"]
+
+
+def test_sized_database():
+    docs = render(
+        "--set", "database.storage=5Gi,database.resources.requests.memory=128Mi"
+    )
     cluster = next(d["spec"] for d in docs if d["kind"] == "Cluster")
     assert cluster["storage"]["size"] == "5Gi"
     (ref,) = cluster["bootstrap"]["initdb"]["postInitApplicationSQLRefs"][
