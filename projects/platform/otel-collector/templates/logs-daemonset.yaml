@@ -93,6 +93,11 @@ spec:
           resources:
             {{- toYaml .Values.logs.resources | nindent 12 }}
           volumeMounts:
+            {{- if .Values.logs.audit }}
+            - name: audit
+              mountPath: /var/log/k3s-audit
+              readOnly: true
+            {{- end }}
             - name: config
               mountPath: /conf
               readOnly: true
@@ -104,6 +109,12 @@ spec:
             - name: tmp
               mountPath: /tmp
       volumes:
+        {{- if .Values.logs.audit }}
+        - name: audit
+          hostPath:
+            path: /var/log/k3s-audit
+            type: DirectoryOrCreate
+        {{- end }}
         - name: config
           configMap:
             name: {{ include "otel-collector.logs.fullname" . }}

@@ -41,6 +41,12 @@ data:
         create_directory: true
 
     receivers:
+      {{- if .Values.logs.audit }}
+      file_log/audit:
+        include: [/var/log/k3s-audit/audit.log]
+        start_at: beginning
+        storage: file_storage/logs
+      {{- end }}
       file_log:
         # /var/log/pods/<namespace>_<pod>_<uid>/<container>/<restart>.log. The
         # underscore after the namespace glob is what stops "embervm" from also
@@ -422,6 +428,12 @@ data:
     service:
       extensions: [health_check, file_storage/logs]
       pipelines:
+        {{- if .Values.logs.audit }}
+        logs/audit:
+          receivers: [file_log/audit]
+          processors: [memory_limiter, resource/environment, resource/cluster, batch]
+          exporters: [{{ $hcExporter }}]
+        {{- end }}
         logs:
           receivers: [file_log]
           processors: [memory_limiter{{ if .Values.logs.sanitize }}, transform/sanitize{{ end }}, transform/parse, filter/severity{{ if .Values.logs.redact }}, transform/redact{{ end }}{{ if .Values.logs.dedup.enabled }}, log_dedup{{ end }}, k8s_attributes, transform/service{{ if .Values.environment }}, resource/environment{{ end }}{{ if .Values.clusterName }}, resource/cluster{{ end }}, batch]
