@@ -58,12 +58,12 @@ func (e *Engine) stepPlanner(ctx context.Context) error {
 	var run, fp, route, title, description, priority string
 	var started bool
 	err := e.st.DB.QueryRowContext(ctx, `SELECT run_id,fingerprint,disposition,title,description,priority,create_started
- FROM planner_proposal WHERE title IS NOT NULL AND issue_key IS NULL AND closed_at IS NULL AND next_attempt<=now()
+ FROM planner_proposal WHERE title IS NOT NULL AND issue_key IS NULL AND closed_at IS NULL AND NOT filing_stopped AND next_attempt<=now()
  ORDER BY next_attempt,run_id,fingerprint LIMIT 1`).Scan(&run, &fp, &route, &title, &description, &priority, &started)
 	if errors.Is(err, sql.ErrNoRows) {
 		return e.w.Tx(ctx, func(tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, `SELECT finish_planner_run(run_id) FROM planner_run r WHERE processed AND finished_at IS NULL AND NOT EXISTS
- (SELECT FROM planner_proposal p WHERE p.run_id=r.run_id AND issue_key IS NULL AND closed_at IS NULL)`)
+ (SELECT FROM planner_proposal p WHERE p.run_id=r.run_id AND issue_key IS NULL AND closed_at IS NULL AND NOT filing_stopped)`)
 			return err
 		})
 	}
@@ -82,14 +82,23 @@ func (e *Engine) stepPlanner(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
+	call := plannerTrackerCall{engine: e, run: run, fingerprint: fp}
 	var filed *itsaplan.Issue
 	if started {
+		if err := call.begin(ctx, "SearchIssues", marker); err != nil {
+			return err
+		}
 		hits, err := e.its.SearchIssues(ctx, b.ItsaplanProject, marker)
+		err = call.result(ctx, err)
 		if err != nil {
 			return err
 		}
 		for _, hit := range hits {
+			if err := call.begin(ctx, "GetIssue", fmt.Sprint(hit.ID)); err != nil {
+				return err
+			}
 			is, err := e.its.GetIssue(ctx, hit.ID)
+			err = call.result(ctx, err)
 			if err != nil {
 				return err
 			}
@@ -104,7 +113,11 @@ func (e *Engine) stepPlanner(ctx context.Context) error {
 			return nil
 		}
 	} else {
+		if err := call.begin(ctx, "GetProject", b.ItsaplanProject); err != nil {
+			return err
+		}
 		project, err := e.its.GetProject(ctx, b.ItsaplanProject)
+		err = call.result(ctx, err)
 		if err != nil {
 			return err
 		}
@@ -126,20 +139,11 @@ func (e *Engine) stepPlanner(ctx context.Context) error {
 		if req.ColumnID <= 0 {
 			return errors.New("planner disposition has no column")
 		}
-		if err = e.w.Tx(ctx, func(tx *sql.Tx) error {
-			res, err := tx.ExecContext(ctx, `UPDATE planner_proposal SET create_started=true WHERE run_id=$1 AND fingerprint=$2 AND NOT create_started AND closed_at IS NULL`, run, fp)
-			if err != nil {
-				return err
-			}
-			n, err := res.RowsAffected()
-			if n != 1 {
-				return errors.New("planner send already claimed")
-			}
-			return err
-		}); err != nil {
+		if err := call.begin(ctx, "CreateIssue", b.ItsaplanProject); err != nil {
 			return err
 		}
 		filed, err = e.its.CreateIssue(ctx, b.ItsaplanProject, req)
+		err = call.result(ctx, err)
 		if err != nil {
 			return err
 		}
@@ -148,4 +152,63 @@ func (e *Engine) stepPlanner(ctx context.Context) error {
 		_, err := tx.ExecContext(ctx, `UPDATE planner_proposal SET issue_key=$3 WHERE run_id=$1 AND fingerprint=$2 AND issue_key IS NULL`, run, fp, filed.Identifier)
 		return err
 	})
+}
+
+type plannerTrackerCall struct {
+	engine                                *Engine
+	run, fingerprint, operation, resource string
+}
+
+func (c *plannerTrackerCall) begin(ctx context.Context, operation, resource string) error {
+	c.operation, c.resource = operation, resource
+	err := c.engine.w.Tx(ctx, func(tx *sql.Tx) error {
+		if operation == "CreateIssue" {
+			res, err := tx.ExecContext(ctx, `UPDATE planner_proposal SET create_started=true WHERE run_id=$1 AND fingerprint=$2 AND NOT create_started AND NOT filing_stopped AND closed_at IS NULL AND issue_key IS NULL`, c.run, c.fingerprint)
+			if err != nil {
+				return err
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if n != 1 {
+				return errors.New("planner send already claimed")
+			}
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO planner_tracker_attempt(run_id,fingerprint,operation,resource,writer_epoch) VALUES($1,$2,$3,$4,$5)
+ ON CONFLICT(run_id,fingerprint,operation,resource) DO UPDATE SET writer_epoch=excluded.writer_epoch,last_attempt=now(),attempts=planner_tracker_attempt.attempts+1`, c.run, c.fingerprint, operation, resource, c.engine.w.Epoch)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	return c.engine.guard(ctx)
+}
+
+func (c *plannerTrackerCall) result(ctx context.Context, result error) error {
+	refused := c.engine.countRefusal(roleCoordinator, "planner_"+c.operation, result)
+	err := c.engine.w.Tx(ctx, func(tx *sql.Tx) error {
+		var streak, attempts int
+		err := tx.QueryRowContext(ctx, `UPDATE planner_tracker_attempt SET refusals=CASE WHEN $5 THEN refusals+1 ELSE 0 END
+ WHERE run_id=$1 AND fingerprint=$2 AND operation=$3 AND resource=$4 RETURNING refusals, attempts`, c.run, c.fingerprint, c.operation, c.resource, refused).Scan(&streak, &attempts)
+		if err != nil {
+			return err
+		}
+		var status *itsaplan.HTTPError
+		throttled := errors.As(result, &status) && status.Status == 429
+		rejected := c.operation == "CreateIssue" && (refused || terminalHTTP(result) || throttled || errors.Is(result, itsaplan.ErrWIPLimit))
+		retryable := refused || throttled || errors.Is(result, itsaplan.ErrWIPLimit)
+		stop := streak >= outboxAuthMaxTries || (rejected && (!retryable || attempts >= outboxAuthMaxTries))
+		if !rejected && !stop {
+			return nil
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE planner_proposal SET create_started=create_started AND NOT $3, filing_stopped=$4,
+ closed_at=CASE WHEN $4 AND (NOT create_started OR $3) THEN now() ELSE closed_at END
+ WHERE run_id=$1 AND fingerprint=$2`, c.run, c.fingerprint, rejected, stop)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	return result
 }

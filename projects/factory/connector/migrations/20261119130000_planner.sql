@@ -124,3 +124,19 @@ ALTER TABLE planner_run ADD COLUMN final_message text, ADD COLUMN processed bool
 ALTER TABLE planner_proposal ADD COLUMN title text, ADD COLUMN description text,
     ADD COLUMN priority text, ADD COLUMN create_started boolean NOT NULL DEFAULT false,
     ADD COLUMN next_attempt timestamptz NOT NULL DEFAULT now();
+
+-- A receipt lookup abandoned after persistent refusal keeps its fingerprint
+-- open: the create may already have committed in the tracker.
+ALTER TABLE planner_proposal ADD COLUMN filing_stopped boolean NOT NULL DEFAULT false;
+CREATE TABLE planner_tracker_attempt (
+    run_id text NOT NULL,
+    fingerprint text NOT NULL,
+    operation text NOT NULL,
+    resource text NOT NULL,
+    writer_epoch bigint NOT NULL,
+    attempts integer NOT NULL DEFAULT 1,
+    last_attempt timestamptz NOT NULL DEFAULT now(),
+    refusals integer NOT NULL DEFAULT 0,
+    PRIMARY KEY (run_id, fingerprint, operation, resource),
+    FOREIGN KEY (run_id, fingerprint) REFERENCES planner_proposal
+);
