@@ -1,0 +1,234 @@
+{{- if .Values.runbookRevert.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: runbook-kagent-revert
+  namespace: grafana
+{{- range $ns := list "factory-r-homelab" "factory-r-homelab-review" }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: runbook-kagent-revert
+  namespace: {{ $ns }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: runbook-kagent-revert
+  namespace: {{ $ns }}
+subjects:
+  - kind: ServiceAccount
+    name: runbook-kagent-revert
+    namespace: grafana
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: runbook-kagent-revert
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runbook-kagent-revert
+  namespace: grafana
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: runbook-kagent-revert
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: runbook-kagent-revert
+    spec:
+      serviceAccountName: runbook-kagent-revert
+      {{- include "factory.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: reaper
+          image: {{ include "factory.connectorImage" . | quote }}
+          args: ["runbook-kagent-revert"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: KAGENT_AUTHORITY
+              value: {{ .Values.kagent.config.server.auth.serviceAccount.authority | quote }}
+            - name: DISCORD_WEBHOOK
+              valueFrom:
+                secretKeyRef:
+                  name: runbook-discord
+                  key: webhook-url
+          volumeMounts:
+            - name: ate
+              mountPath: /var/run/ate
+              readOnly: true
+      volumes:
+        - name: ate
+          projected:
+            defaultMode: 0440
+            sources:
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: ca.pem
+              - podCertificate:
+                  signerName: postgres.podcert.ate.dev/identity
+                  keyType: ECDSAP256
+                  credentialBundlePath: client.pem
+                  userAnnotations:
+                    postgres.podcert.ate.dev/username: factory_reaper
+{{- if .Values.networkPolicy.cilium }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: runbook-kagent-revert
+  namespace: grafana
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: runbook-kagent-revert
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: edge
+            gateway.envoyproxy.io/owning-gateway-name: edge
+            gateway.envoyproxy.io/owning-gateway-namespace: edge
+      toPorts:
+        - ports: [{port: "8080", protocol: TCP}]
+  egress:
+    - toFQDNs: [{matchName: discord.com}]
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kagent
+            {{- include "factory.kagentSelector" (dict "root" . "component" "controller") | nindent 12 }}
+      toPorts:
+        - ports: [{port: "8083", protocol: TCP}]
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: prometheus
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports: [{port: "9090", protocol: TCP}]
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: ate-system
+            app: postgres
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: runbook-kagent-revert, namespace: grafana}
+spec:
+  selector: {app.kubernetes.io/name: runbook-kagent-revert}
+  ports: [{port: 8080}]
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: runbook-kagent-revert, namespace: grafana}
+spec:
+  parentRefs: [{group: gateway.networking.k8s.io, kind: Gateway, name: edge, namespace: edge}]
+  hostnames: [factory-runbooks.jomcgi.dev]
+  rules:
+    - matches:
+        - path: {type: Exact, value: /actions/kagent-revert}
+      backendRefs:
+        - {group: "", kind: Service, name: runbook-kagent-revert, port: 8080, weight: 1}
+---
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata: {name: runbook-discord, namespace: grafana}
+spec: {itemPath: vaults/k8s-homelab/items/factory-alerts-discord}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: runbook-kagent-revert, namespace: factory}
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]
+    resourceNames: ["factory-connector", "factory-reviewer"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: runbook-kagent-revert, namespace: factory}
+subjects: [{kind: ServiceAccount, name: runbook-kagent-revert, namespace: grafana}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: runbook-kagent-revert}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: runbook-revert-credentials
+  annotations: {argocd.argoproj.io/sync-wave: "-2"}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["serviceaccounts/token"]
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["DELETE"]
+        resources: ["pods"]
+  matchConditions:
+    - name: action-identity
+      expression: request.userInfo.username == 'system:serviceaccount:grafana:runbook-kagent-revert'
+  validations:
+    - expression: >-
+        request.operation != 'CREATE' ||
+        (object.spec.audiences == ['kagent-invocation'] && object.spec.expirationSeconds <= 600)
+      message: Only short-lived kagent invocation tokens are permitted.
+    - expression: >-
+        request.operation != 'DELETE' ||
+        ((request.namespace == 'factory-r-homelab' && request.name.matches('^homelab-codex-[0-9a-f]{8,10}-[a-z0-9]{5}$') ||
+          request.namespace == 'factory-r-homelab-review' && request.name.matches('^homelab-reviewer-[0-9a-f]{8,10}-[a-z0-9]{5}$')) &&
+          has(request.options.preconditions) && request.options.preconditions.uid == oldObject.metadata.uid)
+      message: Only UID-fenced worker deletes are permitted.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: runbook-revert-credentials
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+spec:
+  policyName: runbook-revert-credentials
+  validationActions: [Deny]
+{{- if .Values.imagePullSecret.enabled }}
+---
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+type: kubernetes.io/dockerconfigjson
+metadata: {name: {{ .Values.imagePullSecret.name }}, namespace: grafana}
+spec: {itemPath: {{ .Values.imagePullSecret.itemPath | quote }}}
+{{- end }}
+{{- end }}

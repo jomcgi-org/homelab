@@ -71,6 +71,7 @@ def test_edge_guards(docs):
             "issuer": issuer,
             "audiences": [policy["oidc"]["clientID"]],
             "remoteJWKS": {"uri": issuer + "jwks/", "cacheDuration": "300s"},
+            "claimToHeaders": [{"claim": "sub", "header": "X-Runbook-User"}],
             "extractFrom": {"cookies": [cookie]},
         }
     ]

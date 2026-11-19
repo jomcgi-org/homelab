@@ -45,6 +45,9 @@ jwt:
         uri: {{ printf "%sjwks/" $issuer }}
         # The CRD default; stated so the live policy matches the render.
         cacheDuration: 300s
+      claimToHeaders:
+        - claim: sub
+          header: X-Runbook-User
       extractFrom:
         cookies:
           - factory-edge-id-token

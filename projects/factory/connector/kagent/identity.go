@@ -168,3 +168,12 @@ func projectedIdentity(token string) (issuer, uid string, err error) {
 	}
 	return invalid()
 }
+
+// TokenPrincipal derives the expected session creator from a TokenRequest response.
+func TokenPrincipal(token, authority string) (string, error) {
+	_, uid, err := projectedIdentity(token)
+	if err != nil || authority == "" {
+		return "", ErrCallerIdentity
+	}
+	return (CallerIdentity{ServiceAccountUID: uid, Authority: authority}).PrincipalID(), nil
+}

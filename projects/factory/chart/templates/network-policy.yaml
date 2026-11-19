@@ -27,6 +27,11 @@ spec:
       {{- include "factory.kagentSelector" (dict "root" . "component" "controller") | nindent 6 }}
   ingress:
     - fromEndpoints:
+        {{- if .Values.runbookRevert.enabled }}
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: grafana
+            app.kubernetes.io/name: runbook-kagent-revert
+        {{- end }}
         # The UI's nginx proxies /api, /a2a and /mcp.
         - matchLabels:
             {{- include "factory.kagentSelector" (dict "root" . "component" "ui") | nindent 12 }}

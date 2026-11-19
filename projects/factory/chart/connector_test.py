@@ -821,3 +821,30 @@ def test_reaper_pod_permissions():
     assert (
         connector["spec"]["template"]["spec"]["automountServiceAccountToken"] is False
     )
+
+
+def test_runbook_revert_permissions():
+    docs = _render(["runbookRevert.enabled=true"])
+    name = "runbook-kagent-revert"
+    subject = {"kind": "ServiceAccount", "name": name, "namespace": "grafana"}
+    grants = {}
+    for binding in docs:
+        if subject not in binding.get("subjects", []):
+            continue
+        assert binding["kind"] == "RoleBinding"
+        ns = binding["metadata"]["namespace"]
+        assert binding["roleRef"]["kind"] == "Role"
+        grants[ns] = _in(docs, "Role", ns, binding["roleRef"]["name"])["rules"]
+    workers = [{"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "delete"]}]
+    assert grants == {
+        "factory-r-homelab": workers,
+        "factory-r-homelab-review": workers,
+        "factory": [
+            {
+                "apiGroups": [""],
+                "resources": ["serviceaccounts/token"],
+                "verbs": ["create"],
+                "resourceNames": ["factory-connector", "factory-reviewer"],
+            }
+        ],
+    }

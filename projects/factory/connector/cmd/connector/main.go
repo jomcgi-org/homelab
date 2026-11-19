@@ -44,6 +44,8 @@ func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	var err error
 	switch {
+	case len(os.Args) == 2 && os.Args[1] == "runbook-kagent-revert":
+		err = runRevert(log)
 	case len(os.Args) == 2 && os.Args[1] == "reaper":
 		err = runReaper(log)
 	case len(os.Args) > 1 && os.Args[1] == "recovery":
