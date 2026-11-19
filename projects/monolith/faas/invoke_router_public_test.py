@@ -89,6 +89,7 @@ def submitted(monkeypatch):
         state["calls"].append({"name": name, "guest_path": guest_path})
         return state["response"]
 
+    monkeypatch.setattr(mod.embervm_client, "EMBERVM_URL", "http://embervm.test")
     monkeypatch.setattr(mod.embervm_client, "submit", _submit)
     return state
 
@@ -136,4 +137,17 @@ def test_unsmoked_public_function_is_404(client, session, submitted):
 def test_unknown_function_is_404(client, session, submitted):
     resp = client.get("/functions/nope")
     assert resp.status_code == 404
+    assert submitted["calls"] == []
+
+
+def test_disabled_public_invocation_never_submits(
+    client, session, submitted, monkeypatch
+):
+    from faas import embervm_client
+
+    _add_function(session, "og-image", visibility="public", smoked=True)
+    monkeypatch.setattr(embervm_client, "EMBERVM_URL", "")
+    response = client.post("/functions/og-image/render")
+    assert response.status_code == 503
+    assert response.json() == {"error": "public function invocation is disabled"}
     assert submitted["calls"] == []
