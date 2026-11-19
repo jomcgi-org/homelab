@@ -27,7 +27,10 @@ spec:
     namespace: scotland-connector
   syncPolicy:
     automated:
-      prune: true
+      # Off: the first syncs use a chart pin that still renders the Namespace,
+      # and a later chart without it must not prune the namespace and its
+      # resources. Turn it back on once the pin includes createNamespace.
+      prune: false
       selfHeal: true
     # The chart's Namespace is off here (factory/values.yaml), so Argo CD
     # creates the namespace with the same restricted Pod Security labels.
