@@ -118,6 +118,17 @@ else
 	fail "matching changed image" "$out"
 fi
 
+# Single-quoted YAML values are the same pins as unquoted ones.
+setup single-quoted
+candidate_values "'${STALE_DIGEST}'" >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
+final_values "'${INDEX_DIGEST}'" >"$CASE_DIR/final.values"
+printf '%s\tskipped\t%s\t%s\t%s\n' "$RUN" '//projects/demo:image.push' "$REPO" "$INDEX_DIGEST" >"$CASE_DIR/results"
+if out=$(run_case); then
+	pass "single-quoted digest pins match the image result"
+else
+	fail "single-quoted digest pins" "$out"
+fi
+
 # A stale final pin fails even when it equals the candidate's desired input.
 setup stale-pin
 candidate_values "$STALE_DIGEST" >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
