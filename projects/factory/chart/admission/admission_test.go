@@ -135,12 +135,22 @@ func TestActionPermissions(t *testing.T) {
 		{"system:serviceaccount:grafana:runbook-deadline", "get", "grafana", "configmaps", "", "runbook-revert-factory-connector", true},
 		{"system:serviceaccount:grafana:runbook-deadline", "update", "grafana", "configmaps", "", "runbook-revert-factory-connector", false},
 		{"system:serviceaccount:grafana:runbook-deadline", "delete", "factory-r-homelab", "pods", "", "worker", false},
+		{"system:serviceaccount:grafana:runbooks", "delete", "factory-r-homelab", "pods", "", "worker", false},
+		{"system:serviceaccount:grafana:runbooks", "update", "grafana", "configmaps", "", "runbook-revert-factory-connector", false},
+		{"system:serviceaccount:factory:factory-reviewer", "update", "grafana", "configmaps", "", "runbook-revert-factory-connector", false},
+		{"system:serviceaccount:factory:factory-connector", "update", "grafana", "configmaps", "", "runbook-revert-factory-connector", true},
+		{"system:serviceaccount:factory:factory-connector", "get", "factory-r-homelab", "pods", "", "worker", true},
+		{"system:serviceaccount:factory:factory-connector", "get", "factory-r-homelab-review", "pods", "", "worker", false},
+		{"system:serviceaccount:factory:factory-reviewer", "get", "factory-r-homelab-review", "pods", "", "worker", true},
+		{"system:serviceaccount:factory:factory-reviewer", "get", "factory-r-homelab", "pods", "", "worker", false},
+		{"system:serviceaccount:factory:factory-connector", "delete", "factory-r-homelab", "pods", "", "worker", false},
+		{"system:serviceaccount:factory:factory-reviewer", "delete", "factory-r-homelab-review", "pods", "", "worker", false},
 		{"system:serviceaccount:factory:factory-connector", "update", "grafana", "configmaps", "", "runbook-revert-factory-reviewer", false},
 		{"system:serviceaccount:factory:factory-reviewer", "update", "grafana", "configmaps", "", "runbook-revert-factory-reviewer", true},
 	} {
 		deadline := time.Now().Add(10 * time.Second)
 		for {
-			review, err := client.AuthorizationV1().SubjectAccessReviews().Create(ctx, &auth.SubjectAccessReview{Spec: auth.SubjectAccessReviewSpec{User: tc.user, ResourceAttributes: &auth.ResourceAttributes{Verb: tc.verb, Namespace: tc.ns, Resource: tc.resource, Subresource: tc.sub, Name: tc.name}}}, meta.CreateOptions{})
+			review, err := client.AuthorizationV1().SubjectAccessReviews().Create(ctx, &auth.SubjectAccessReview{Spec: auth.SubjectAccessReviewSpec{User: tc.user, Groups: []string{"system:authenticated", "system:serviceaccounts", "system:serviceaccounts:" + strings.Split(tc.user, ":")[2]}, ResourceAttributes: &auth.ResourceAttributes{Verb: tc.verb, Namespace: tc.ns, Resource: tc.resource, Subresource: tc.sub, Name: tc.name}}}, meta.CreateOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}

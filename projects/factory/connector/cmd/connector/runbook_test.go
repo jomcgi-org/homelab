@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	v1 "k8s.io/api/core/v1"
@@ -55,17 +58,24 @@ func TestRevertConfirmation(t *testing.T) {
 }
 
 type lockedSession struct {
-	state     kagent.Session
-	reverts   int
-	lookupErr error
+	state      kagent.Session
+	reverts    int
+	lookupErr  error
+	workerGone func(context.Context) bool
 }
 
-func (s *lockedSession) GetSession(context.Context, string) (*kagent.Session, error) {
+func (s *lockedSession) GetSession(ctx context.Context, id string) (*kagent.Session, error) {
+	if id != s.state.ID {
+		return nil, kagent.ErrSessionNotFound
+	}
+	if s.reverts == 0 && s.workerGone(ctx) {
+		s.state.FailureReason = kagent.ReasonRuntimeCrashed
+	}
 	return &s.state, s.lookupErr
 }
 
-func (s *lockedSession) RevertSession(context.Context, string) (*kagent.Session, error) {
-	if !s.state.Crashed() {
+func (s *lockedSession) RevertSession(ctx context.Context, id string) (*kagent.Session, error) {
+	if id != s.state.ID || !s.workerGone(ctx) || !s.state.Crashed() {
 		return nil, errors.New("not crashed")
 	}
 	s.state.State = kagent.RuntimeReady
@@ -75,16 +85,28 @@ func (s *lockedSession) RevertSession(context.Context, string) (*kagent.Session,
 }
 
 func TestDurableRecoveryAndAuditRetry(t *testing.T) {
+	for _, target := range []revertTarget{
+		{"locked", "executor", "factory-r-homelab", "homelab-codex-deadbeef-abcde", "uid", "factory-connector"},
+		{"locked", "executor", "factory-r-homelab-review", "homelab-reviewer-deadbeef-abcde", "uid", "factory-reviewer"},
+	} {
+		t.Run(target.Creator, func(t *testing.T) { testConfirmedRecovery(t, target) })
+	}
+}
+
+func testConfirmedRecovery(t *testing.T, target revertTarget) {
 	ctx := t.Context()
 	t.Setenv("KAGENT_AUTHORITY", "factory-home")
-	target := revertTarget{"locked", "executor", "factory-r-homelab", "homelab-codex-deadbeef-abcde", "uid", "factory-connector"}
-	claims := `{"iss":"cluster","sub":"system:serviceaccount:factory:factory-connector","aud":["kagent-invocation"],"kubernetes.io":{"namespace":"factory","serviceaccount":{"name":"factory-connector","uid":"creator-uid"}}}`
+	claims := fmt.Sprintf(`{"iss":"cluster","sub":"system:serviceaccount:factory:%[1]s","aud":["kagent-invocation"],"kubernetes.io":{"namespace":"factory","serviceaccount":{"name":"%[1]s","uid":"creator-uid"}}}`, target.Creator)
 	source := &kagent.TokenSource{Path: filepath.Join(t.TempDir(), "token")}
 	if err := os.WriteFile(source.Path, []byte("mock."+base64.RawURLEncoding.EncodeToString([]byte(claims))+".mock"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	sessions := &lockedSession{state: kagent.Session{ID: target.Session, Creator: (kagent.CallerIdentity{Authority: "factory-home", ServiceAccountUID: "creator-uid"}).PrincipalID()}}
 	client := fake.NewSimpleClientset(&v1.ConfigMap{ObjectMeta: meta.ObjectMeta{Name: journalName(target.Creator), Namespace: "grafana"}}, &v1.Pod{ObjectMeta: meta.ObjectMeta{Name: target.Pod, Namespace: target.Namespace, UID: "uid"}})
+	sessions.workerGone = func(ctx context.Context) bool {
+		_, err := client.CoreV1().Pods(target.Namespace).Get(ctx, target.Pod, meta.GetOptions{})
+		return apierrors.IsNotFound(err)
+	}
 	backend := func() revertBackend {
 		return revertBackend{pods: client.CoreV1(), sessions: sessions, discover: func(context.Context) ([]revertTarget, error) { return []revertTarget{target}, nil }}
 	}
@@ -132,7 +154,6 @@ func TestDurableRecoveryAndAuditRetry(t *testing.T) {
 	step(source, "authorized")
 	step(nil, "deleting")
 	step(nil, "gone")
-	sessions.state.FailureReason = kagent.ReasonRuntimeCrashed
 	if err := backend().advance(ctx, target.Creator, source, nil); err == nil {
 		t.Fatal("expected lost response")
 	}

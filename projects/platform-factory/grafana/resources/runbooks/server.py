@@ -105,9 +105,31 @@ def section(title, render, *args):
     return f"<h2>{title}</h2>{body}"
 
 
-def revert_available():
+# A reviewed action ID selects its preview route and service. Book content and
+# alert query parameters cannot supply a destination or command.
+ACTIONS = {
+    "kagent-revert": (
+        "runbook-kagent-revert.grafana.svc",
+        "/actions/kagent-revert",
+        "Review locked sessions",
+    ),
+}
+
+
+def action_buttons(book):
+    forms = []
+    for action_id in book.get("actions", []):
+        service, route, label = ACTIONS[action_id]
+        if service_available(service):
+            forms.append(
+                f'<form method="get" action="{route}"><button>{label}</button></form>'
+            )
+    return "".join(forms)
+
+
+def service_available(service):
     try:
-        socket.getaddrinfo("runbook-kagent-revert.grafana.svc", 8080)
+        socket.getaddrinfo(service, 8080)
     except OSError:
         return False
     return True
@@ -126,8 +148,7 @@ class Handler(BaseHTTPRequestHandler):
             book = BOOKS[name]
             params = parse_qs(url.query)
             content = section("Current check", check, book, bind(book["check"], params))
-            if name == "KagentSuspendTimedOut" and revert_available():
-                content += '<form action="/actions/kagent-revert"><button>Review locked sessions</button></form>'
+            content += action_buttons(book)
             if "details" in book:
                 content += section("Codex grant windows", quota, book["details"])
             content += section("Past hour", graph, bind(book["graph"], params))

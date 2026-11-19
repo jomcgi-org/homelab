@@ -825,36 +825,70 @@ def test_reaper_pod_permissions():
 
 def test_runbook_revert_permissions():
     docs = _render(["runbookRevert.enabled=true"])
-    name = "runbook-kagent-revert"
-    subject = {"kind": "ServiceAccount", "name": name, "namespace": "grafana"}
-    grants = {}
-    for binding in docs:
-        if subject not in binding.get("subjects", []):
-            continue
-        assert binding["kind"] == "RoleBinding"
-        ns = binding["metadata"]["namespace"]
-        assert binding["roleRef"]["kind"] == "Role"
-        grants.setdefault(ns, []).extend(
-            _in(docs, "Role", ns, binding["roleRef"]["name"])["rules"]
-        )
-    workers = [{"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "delete"]}]
-    journals = [
-        {
-            "apiGroups": [""],
-            "resources": ["configmaps"],
-            "resourceNames": ["runbook-revert-" + owner],
-            "verbs": ["get", "update"],
-        }
-        for owner in ("factory-connector", "factory-reviewer")
-    ]
-    assert grants == {
-        "grafana": journals,
-        "factory-r-homelab": workers,
-        "factory-r-homelab-review": workers,
+    # Resolve every rendered binding, including group and cluster grants. A
+    # second binding in a different template must expand this set and fail.
+    roles = {
+        (doc["kind"], doc["metadata"].get("namespace"), doc["metadata"]["name"]): doc
+        for doc in docs
+        if doc["kind"] in ("Role", "ClusterRole")
     }
-    for owner in ("factory-connector", "factory-reviewer"):
-        binding = _in(docs, "RoleBinding", "grafana", "runbook-revert-" + owner)
-        assert binding["subjects"] == [
-            subject,
-            {"kind": "ServiceAccount", "name": owner, "namespace": "factory"},
-        ]
+
+    def permissions(namespace, account):
+        groups = {
+            "system:authenticated",
+            "system:serviceaccounts",
+            f"system:serviceaccounts:{namespace}",
+        }
+        user = f"system:serviceaccount:{namespace}:{account}"
+        grants = []
+        for doc in docs:
+            if doc["kind"] not in ("RoleBinding", "ClusterRoleBinding"):
+                continue
+            ns = doc["metadata"].get("namespace")
+            if not any(
+                subject["kind"] == "ServiceAccount"
+                and subject.get("namespace", ns) == namespace
+                and subject["name"] == account
+                or subject["kind"] == "Group"
+                and subject["name"] in groups
+                or subject["kind"] == "User"
+                and subject["name"] == user
+                for subject in doc.get("subjects", [])
+            ):
+                continue
+            ref = doc["roleRef"]
+            role = roles[
+                ref["kind"], ns if ref["kind"] == "Role" else None, ref["name"]
+            ]
+            for rule in role["rules"]:
+                assert rule["apiGroups"] == [""]
+                grants.extend(
+                    (ns, resource, name, verb)
+                    for resource in rule["resources"]
+                    for name in rule.get("resourceNames", ["*"])
+                    for verb in rule["verbs"]
+                )
+        return set(grants)
+
+    owners = {
+        "factory-connector": "factory-r-homelab",
+        "factory-reviewer": "factory-r-homelab-review",
+    }
+    readers = {
+        ("grafana", "configmaps", "runbook-revert-" + owner, "get") for owner in owners
+    }
+    journals = readers | {
+        (ns, resource, name, "update") for ns, resource, name, _ in readers
+    }
+    workers = {
+        (ns, "pods", "*", verb) for ns in owners.values() for verb in ("get", "delete")
+    }
+    assert permissions("grafana", "runbooks") == set()
+    assert permissions("grafana", "runbook-deadline") == readers
+    assert permissions("grafana", "runbook-kagent-revert") == journals | workers
+    for owner, worker_ns in owners.items():
+        assert permissions("factory", owner) == {
+            (worker_ns, "pods", "*", "get"),
+            ("grafana", "configmaps", "runbook-revert-" + owner, "get"),
+            ("grafana", "configmaps", "runbook-revert-" + owner, "update"),
+        }
