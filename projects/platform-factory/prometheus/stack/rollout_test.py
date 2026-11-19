@@ -81,3 +81,30 @@ def test_alert_links_open_grafana_explore(tmp_path):
     args = pod["containers"][0]["args"]
     assert "--web.external-url=https://factory-grafana.jomcgi.dev/explore" in args
     assert "--web.route-prefix=/" in args
+
+
+def test_grant_inhibitions():
+    config = yaml.safe_load(Path(__file__).with_name("alertmanager.yml").read_text())
+    assert config["inhibit_rules"] == [
+        {
+            "source_matchers": ['alertname="FactoryCodexQuotaExhausted"'],
+            "target_matchers": ['alertname="FactoryCodexQuotaLow"'],
+            "equal": ["grant"],
+        },
+        {
+            "source_matchers": ['alertname="FactoryCodexGrantNotReady"'],
+            "target_matchers": ['alertname=~"FactoryCodexQuota(Low|Exhausted)"'],
+            "equal": ["grant"],
+        },
+    ]
+
+
+def test_alert_annotations():
+    rules = Path(__file__).absolute().parent.parent / "resources/rules.yml"
+    for group in yaml.safe_load(rules.read_text())["groups"]:
+        for rule in group["rules"]:
+            if "alert" in rule:
+                for key in ("summary", "action", "graph", "threshold", "runbook"):
+                    assert rule.get("annotations", {}).get(key, "").strip(), (
+                        f"{rule['alert']} needs a non-empty {key} annotation"
+                    )
