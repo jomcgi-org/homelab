@@ -55,7 +55,7 @@ type InvariantScopeAnswer struct {
 // Report is the reviewer agent's findings and optional activation assessment.
 // The service decides the conclusion; any verdict the agent declares is ignored.
 type Report struct {
-	InvariantScopes []InvariantScopeAnswer `json:"invariant_scopes,omitempty"`
+	InvariantScopes []InvariantScopeAnswer `json:"-"`
 	Summary         string                 `json:"summary"`
 	// Activation is independently assessed text, never an instruction copied
 	// blindly from the commit. ActivationHead is set only by the service.
@@ -244,10 +244,21 @@ func parseReport(reply string, legacy bool) (*Report, error) {
 		return nil, errors.New("the last fenced block holds more than one JSON value")
 	}
 	var probe struct {
-		Findings json.RawMessage `json:"findings"`
+		Findings        json.RawMessage `json:"findings"`
+		InvariantScopes json.RawMessage `json:"invariant_scopes"`
 	}
 	if json.Unmarshal([]byte(last[2]), &probe) != nil || probe.Findings == nil || string(probe.Findings) == "null" {
 		return nil, errors.New("the report has no findings list")
+	}
+	// Advisory data cannot invalidate the required findings report.
+	var answers []json.RawMessage
+	if json.Unmarshal(probe.InvariantScopes, &answers) == nil {
+		for _, raw := range answers {
+			var answer InvariantScopeAnswer
+			if json.Unmarshal(raw, &answer) == nil && answer.Path != "" {
+				r.InvariantScopes = append(r.InvariantScopes, answer)
+			}
+		}
 	}
 	if strings.TrimSpace(r.Summary) == "" {
 		return nil, errors.New("the report has no summary")
@@ -726,6 +737,10 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 	}
 	for _, answer := range r.InvariantScopes {
 		if answer.Uncovered {
+			if low++; low > MaxLow {
+				a.DroppedLow++
+				continue
+			}
 			a.Optional = append(a.Optional, Finding{ID: answer.Path + ":invariant-scope", Severity: SeverityLow, Path: answer.Path, Title: "Invariant scope may be uncovered", Detail: answer.Reason})
 		}
 	}
