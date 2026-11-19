@@ -1,6 +1,7 @@
-# HOME-516 starts one ingester with generous budgets and no hub baseline.
-# A follow-up right-sizes them from 24 to 48 hours of factory metrics.
-enabled: true
+# HOME-516 sets generous starting budgets and keeps zero replicas.
+# HOME-537 sets enabled=true after a public check shows the hub stopped.
+# HOME-526 right-sizes the budgets from factory metrics.
+enabled: false
 retentionEnabled: false
 image:
   repository: ghcr.io/jomcgi/homelab/projects/ships
