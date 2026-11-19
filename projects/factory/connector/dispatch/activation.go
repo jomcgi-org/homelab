@@ -23,6 +23,7 @@ var (
 	errActivationOwned       = errors.New("activation follow-up has another owner or delegate")
 	errActivationUnqueued    = errors.New("activation delegate is set but no delegation run is recorded")
 	errActivationPermissions = errors.New("coordinator activation permissions are not effective")
+	errActivationUnassessed  = errors.New("no trusted activation assessment; review the delivered head and finalize the follow-up before delegating it")
 )
 
 func reviewedActivation(p *ReviewPolicy, d *github.PullRequestDetail, checks []github.CheckRun) string {
@@ -378,7 +379,7 @@ func (e *Engine) activate(ctx context.Context, it *store.OutboxItem, p activatio
 	if p.Step == "" {
 		// Legacy or externally merged work still gets a tracked, linked issue,
 		// but raw commit instructions never start a coding session.
-		return e.abandonActivation(ctx, it, p, errors.New("no trusted activation assessment; review the delivered head and finalize the follow-up before delegating it"))
+		return e.abandonActivation(ctx, it, p, errActivationUnassessed)
 	}
 	// A person may have canceled the original during the create/link calls.
 	if err := e.beginActivationCall(ctx, it, p.WorkID, "GetIssue", fmt.Sprint(p.IssueID)); err != nil {
@@ -500,6 +501,12 @@ func (e *Engine) abandonActivation(ctx context.Context, it *store.OutboxItem, p 
 	if id != 0 {
 		where = fmt.Sprintf("Finish the description and blocks link on %s (issue %d), then delegate it to %s.", key, id, p.Agent)
 	}
+	reason := publicReason(err)
+	if errors.Is(err, errActivationUnassessed) && id != 0 {
+		operation = "delegate the follow-up"
+		reason = "the delivered head has no reviewer assessment"
+		where = fmt.Sprintf("%s (issue %d) blocks this issue and stays undelegated: the configured reviewer has not assessed the step at the delivered head %s. Assess the step and its precondition at that head, put them in the description of %s, and delegate it only after that assessment.", key, id, p.HeadURL, key)
+	}
 	if errors.Is(err, errActivationOwned) {
 		where = fmt.Sprintf("%s (issue %d) already has another assignee or delegate, possibly assigned automatically by its column. Its ownership and description were preserved. The owner should finalize its description with its Refs key and the outstanding step above, and add a blocks link to %s. Delegate it only after an explicit handoff.", key, id, p.IssueKey)
 	}
@@ -513,7 +520,7 @@ func (e *Engine) abandonActivation(ctx context.Context, it *store.OutboxItem, p 
 	return e.st.Tx(ctx, func(tx *sql.Tx) error {
 		if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/activation-abandoned/%d/%d", p.WorkID, it.ID), 0, "",
 			commentPayload{IssueID: p.IssueID, Body: "The PR merged, but activation remains: " + p.step() +
-				"\n\nThe factory could not " + operation + " (" + publicReason(err) + "). " + where +
+				"\n\nThe factory could not " + operation + " (" + reason + "). " + where +
 				" Search for `" + p.marker() + "` before creating anything; an earlier create may have succeeded.\n\nMerged PR: " + p.PRURL}); err != nil {
 			return err
 		}

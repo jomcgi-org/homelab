@@ -1749,10 +1749,14 @@ func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		mdLink("itsaplan run "+strconv.FormatInt(runID, 10), e.expand(e.cfg.Links.Run, wi, runID, "")),
 		mdLink(wi.SessionID, e.expand(e.cfg.Links.Session, wi, 0, wi.SessionID)),
 		mdLink("#"+strconv.Itoa(pr.Number), pr.URL), mergeLink)
+	headURL := "https://github.com/" + b.repo() + "/commit/" + d.HeadSHA
 	if activation != "none" {
 		body = strings.Replace(body, "Merged: "+wi.IssueKey+" is done.",
 			"Merged: "+wi.IssueKey+" still needs activation.\n\nOutstanding step: "+activation+
 				"\n\nThe issue stays In Progress with a blocking activation follow-up. Delegation requires a trusted assessment of the step and its precondition.", 1)
+		// A squash or rebase merge has another SHA, so name the head whose
+		// trailer needs the assessment.
+		body += "- Delivered head: " + mdLink(short(d.HeadSHA), headURL) + "\n"
 	}
 	commentKey := fmt.Sprintf("comment/merged/%d", wi.ID)
 	err := e.st.Tx(ctx, func(tx *sql.Tx) error {
@@ -1777,7 +1781,7 @@ func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 					WorkID: wi.ID, IssueID: wi.IssueID, IssueKey: wi.IssueKey,
 					Project: b.ItsaplanProject, Column: b.Review.DoneColumn, Agent: wi.AgentKey,
 					IssueURL: e.expand(e.cfg.Links.Issue, wi, 0, ""), PRURL: pr.URL, CommentKey: commentKey,
-					Step: step, HeadURL: "https://github.com/" + b.repo() + "/commit/" + d.HeadSHA,
+					Step: step, HeadURL: headURL,
 				})
 		}
 		return e.st.Enqueue(ctx, tx, store.OutboxIssueDone, fmt.Sprintf("issue-done/%d", wi.ID), 0, "",

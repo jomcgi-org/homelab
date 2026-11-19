@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -727,29 +728,47 @@ func truncate(s string, n int) string {
 	return s[:n]
 }
 
-// ActivationTrailer accepts one final trailer, including git's indented
-// continuation lines. Prose mentions, empty values and duplicate trailers do
-// not establish the delivering agent's activation decision.
+// ActivationTrailer accepts one Activation entry as the last entry of the
+// message's final trailer block, including git's indented continuation lines.
+// Other trailers, such as Co-authored-by, may precede it in that block. Prose
+// mentions, empty values and duplicate trailers do not establish the
+// delivering agent's activation decision.
 func ActivationTrailer(message string) (string, bool) {
 	message = strings.TrimSpace(strings.ReplaceAll(message, "\r\n", "\n"))
 	i := strings.LastIndex(message, "\n\n")
 	if i < 0 {
 		return "", false
 	}
-	lines := strings.Split(message[i+2:], "\n")
-	value, ok := strings.CutPrefix(lines[0], "Activation:")
+	var entries [][]string
+	for _, line := range strings.Split(message[i+2:], "\n") {
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			if len(entries) == 0 || strings.HasPrefix(strings.TrimSpace(line), "Activation:") {
+				return "", false
+			}
+			entries[len(entries)-1] = append(entries[len(entries)-1], line)
+			continue
+		}
+		if !trailerRE.MatchString(line) {
+			return "", false // a prose line: the final paragraph is no trailer block
+		}
+		entries = append(entries, []string{line})
+	}
+	for _, entry := range entries[:len(entries)-1] {
+		if strings.HasPrefix(entry[0], "Activation:") {
+			return "", false
+		}
+	}
+	last := entries[len(entries)-1]
+	value, ok := strings.CutPrefix(last[0], "Activation:")
 	if !ok || strings.TrimSpace(value) == "" {
 		return "", false
 	}
 	value = strings.TrimSpace(value)
-	for _, line := range lines[1:] {
-		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
-			return "", false
-		}
-		if strings.HasPrefix(strings.TrimSpace(line), "Activation:") {
-			return "", false
-		}
+	for _, line := range last[1:] {
 		value += " " + strings.TrimSpace(line)
 	}
 	return value, true
 }
+
+// trailerRE matches the first line of a git trailer entry.
+var trailerRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*:`)
