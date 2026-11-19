@@ -77,7 +77,28 @@ func (s *FileGoalAudit) Reasons(repo string, pr int, head string) (GoalReasons, 
 	}
 	var findings []string
 	if answer, err := ParseGoal(best.Reply); err == nil {
-		for _, c := range answer.Criteria {
+		effective := &GoalCheck{Criteria: answer.Criteria, Overall: answer.Overall}
+		if best.Initial != nil {
+			effective = confirmOnly(best.Initial, effective)
+		}
+		if effective.Overall == goalNotMet {
+			for _, line := range strings.Split(reasons, "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "Overall: ") {
+					findings = append(findings, clip(strings.TrimSpace(line), 400))
+					break
+				}
+			}
+			// Older replies explain the overall result in unlabelled prose.
+			if len(findings) == 0 {
+				for _, line := range strings.Split(reasons, "\n") {
+					if detail := strings.TrimSpace(line); detail != "" && !strings.HasPrefix(detail, "Criterion ") {
+						findings = append(findings, "Overall: "+clip(detail, 400))
+						break
+					}
+				}
+			}
+		}
+		for _, c := range effective.Criteria {
 			if c.Verdict != "not_met" {
 				continue
 			}
