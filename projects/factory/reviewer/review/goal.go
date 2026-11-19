@@ -17,6 +17,9 @@ import (
 	"strings"
 	"unicode"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 )
@@ -447,7 +450,17 @@ func goalKey(in *IssueContext) string {
 // message ID carries a MAC of the prompt, so a restart finds the same task.
 // The prompt holds private issue text, so the MAC uses the evidence key, as
 // sealIssues does. Nil is unavailable; the logs name only a fixed reason.
-func (e *Engine) goalCheck(ctx context.Context, b *Binding, pr github.PullRequest, in *inputs, r *Report, l *slog.Logger) *GoalCheck {
+func (e *Engine) goalCheck(ctx context.Context, b *Binding, pr github.PullRequest, in *inputs, r *Report, l *slog.Logger) (answer *GoalCheck) {
+	ctx, span := otel.Tracer("factory-reviewer").Start(ctx, "goal check")
+	ctx = withUsage(ctx, span)
+	defer func() {
+		if answer == nil {
+			traceFailure(span, "goal check unavailable")
+		} else if goalVerdict(answer.Overall) {
+			span.SetAttributes(attribute.String("review.verdict", answer.Overall))
+		}
+		span.End()
+	}()
 	digest := issueDigest(in.issues)
 	if g := in.goal; g != nil && g.Head == pr.HeadSHA && g.Digest == digest {
 		return g
@@ -673,6 +686,7 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 		if !kagent.Quiescent(t.Status.State) {
 			continue
 		}
+		recordUsage(ctx, t)
 		reply := ReplyText(t)
 		a, parseErr := ParseGoal(reply)
 		valid := parseErr == nil && (t.Status.State == kagent.StateCompleted || t.Status.State == kagent.StateInputRequired)

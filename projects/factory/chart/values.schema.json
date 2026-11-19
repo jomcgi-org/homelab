@@ -491,6 +491,7 @@
       "required": ["enabled"],
       "additionalProperties": false,
       "properties": {
+        "traceEndpoint": { "type": "string" },
         "enabled": {
           "type": "boolean"
         },
