@@ -120,7 +120,11 @@ export function LazyMap({
     try {
       const [module, days] = await Promise.all([import("./trips-map"), load()]);
       if (!alive.current || !container.current) return;
-      cleanup.current = module.showMap(container.current, days, slug);
+      cleanup.current = module.showMap(container.current, days, slug, () => {
+        cleanup.current?.();
+        cleanup.current = null;
+        if (alive.current) setState("error");
+      });
       setState("ready");
     } catch {
       if (alive.current) setState("error");

@@ -3,9 +3,15 @@
 import * as maplibregl from "maplibre-gl";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
+import { watchMapHealth } from "./map-errors";
 import type { Day } from "./trips-types";
 
-export function showMap(container: HTMLElement, days: Day[], slug: string) {
+export function showMap(
+  container: HTMLElement,
+  days: Day[],
+  slug: string,
+  onFailure: () => void,
+) {
   maplibregl.setWorkerUrl(workerUrl);
   const map = new maplibregl.Map({
     container,
@@ -13,6 +19,9 @@ export function showMap(container: HTMLElement, days: Day[], slug: string) {
     zoom: 1,
   });
   map.setStyle("https://tiles.openfreemap.org/styles/liberty");
+  // A failed style or base map leaves a blank canvas; report it so the
+  // caller can dispose of the map and offer a retry.
+  watchMapHealth(map, ["route"], onFailure);
   map.addControl(new maplibregl.NavigationControl());
   map.on("load", () => {
     map.resize();
