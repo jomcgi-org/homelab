@@ -1,0 +1,16 @@
+enabled: false
+retentionEnabled: false
+image:
+  repository: ghcr.io/jomcgi/homelab/projects/ships
+  digest: ""
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+# Populate from the measured seven-day footprint, WAL and rollover headroom.
+database:
+  storage: ""
+  resources: {}

@@ -1,0 +1,63 @@
+{{- if .Values.database.storage }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ships-initdb
+data:
+  schema.sql: |
+{{ .Files.Get "sql/bootstrap.sql" | indent 4 }}
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: ships-db
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
+  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: required
+    topologyKey: kubernetes.io/hostname
+  storage:
+    storageClass: local-path
+    size: {{ .Values.database.storage | quote }}
+  resources:
+    {{- toYaml (required "set measured database.resources with database.storage" .Values.database.resources) | nindent 4 }}
+  bootstrap:
+    initdb:
+      database: ships
+      owner: ships
+      postInitApplicationSQLRefs:
+        configMapRefs:
+          - name: ships-initdb
+            key: schema.sql
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ships-db
+spec:
+  endpointSelector:
+    matchLabels: { cnpg.io/cluster: ships-db }
+  ingress:
+    - fromEndpoints:
+        - matchLabels: { app: ships-ingester }
+        - matchLabels: { cnpg.io/cluster: ships-db }
+      toPorts:
+        - ports: [{ port: "5432", protocol: TCP }]
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: cnpg-system
+            app.kubernetes.io/name: cloudnative-pg
+        - matchLabels: { cnpg.io/cluster: ships-db }
+      toPorts:
+        - ports: [{ port: "8000", protocol: TCP }]
+  egress:
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels: { cnpg.io/cluster: ships-db }
+      toPorts:
+        - ports: [{ port: "5432", protocol: TCP }, { port: "8000", protocol: TCP }]
+{{- end }}

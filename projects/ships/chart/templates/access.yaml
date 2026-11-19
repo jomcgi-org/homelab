@@ -1,0 +1,31 @@
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: ships-marine
+spec:
+  itemPath: vaults/k8s-homelab/items/marine
+---
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: ghcr-imagepull-secret
+type: kubernetes.io/dockerconfigjson
+spec:
+  itemPath: vaults/k8s-homelab/items/ghcr-read-permissions
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ships-ingester
+spec:
+  endpointSelector:
+    matchLabels: { app: ships-ingester }
+  egress:
+    - toFQDNs:
+        - matchName: stream.aisstream.io
+      toPorts:
+        - ports: [{ port: "443", protocol: TCP }]
+    - toEndpoints:
+        - matchLabels: { cnpg.io/cluster: ships-db }
+      toPorts:
+        - ports: [{ port: "5432", protocol: TCP }]

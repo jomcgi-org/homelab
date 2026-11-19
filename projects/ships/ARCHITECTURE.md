@@ -92,3 +92,15 @@ Done when
 1. After cutover acceptance, archive required history and verify a restore including historical heat.
 2. Remove hub subscription, credentials references, partition jobs, routes and superseded frontend code. Retire hub tables after restore verification and the agreed rollback window.
 3. Verify factory freshness with the hub disabled and run the affected monolith and site checks.
+
+## Factory shadow deployment
+
+| Component | Responsibility |
+| --- | --- |
+| cmd | Holds the database session lock, reads one bounded frame at a time, writes vessel history and refreshes heat. |
+
+Set `database.storage` and `database.resources` from the baseline to provision the three-instance factory database. CNPG initializes its Ships tables as the application owner. The ingester uses the database owner connection from the CNPG `ships-db-app` Secret in the ships namespace. Each accepted report updates history and latest in a single transaction. The chart starts at zero replicas. Enable the shadow pod after the database and feed credential exist. Enable retention separately after importing and reconciling historical heat at a UTC boundary.
+
+The hub logs received frame counts keyed by Unix minute. For 1,440 complete minutes, sum counts across pod restarts by minute, include zero-count minutes, then divide each count by 60 before calculating the median and maximum. Check log coverage before interpreting missing buckets. Run `baseline.sql` on the hub at the closing boundary. Capture the same traffic for isolated replay and record CPU and working set before choosing production allocations.
+
+The synthetic restart fixture in `verify_replay.py` locks the history table, sends a backlog and kills the writer during its insert. A second process acquires the socket, the fixture resends the uncommitted report, and both databases are read through the hub's snapshot, track and heat functions. On 2026-11-19 the isolated Go writer averaged 0.0147 cores from startup through the blocked write and reached 25,820 KiB sampled RSS during the stall (PostgreSQL 17, Go 1.24.13, WebSocket library v1.8.11). The fixture covers two UTC partitions and five input frames before the backlog. Production sizing still needs a replay at the measured hub rate.
