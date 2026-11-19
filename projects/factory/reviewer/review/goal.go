@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -21,10 +22,11 @@ import (
 )
 
 // The goal check (HOME-58) is a model call apart from the code review. Only
-// it sees the private issue and its decisions, and its answer may hold only
-// criterion numbers and these verdicts. The service writes every public word
+// it sees the private issue and its decisions. The reply may name a private
+// follow-up, but only criterion numbers and verdicts enter public state. The service writes every public word
 // from them (Joe's decision on #8116).
 const (
+	goalOwned   = "owned"
 	goalMet     = "met"
 	goalNotMet  = "not_met"
 	goalUnclear = "unclear"
@@ -47,17 +49,19 @@ type GoalVerdict struct {
 
 // goalAnswer is the only shape a goal check's reply may take.
 type goalAnswer struct {
-	Criteria []GoalVerdict `json:"criteria"`
-	Overall  string        `json:"overall"`
+	followUps map[int]string
+	Criteria  []GoalVerdict `json:"criteria"`
+	Overall   string        `json:"overall"`
 }
 
 // GoalCheck is a validated answer for one head and evidence digest. It holds
 // only numbers and enum values, so the public State can keep it as a cache.
 type GoalCheck struct {
-	Head     string        `json:"head"`
-	Digest   string        `json:"digest"`
-	Criteria []GoalVerdict `json:"criteria"`
-	Overall  string        `json:"overall,omitempty"`
+	followUps map[int]string // Private keys for combining answers before audit.
+	Head      string         `json:"head"`
+	Digest    string         `json:"digest"`
+	Criteria  []GoalVerdict  `json:"criteria"`
+	Overall   string         `json:"overall,omitempty"`
 	// Counted is the number of criteria the service counted in the issue's
 	// list (issueCriteria), or 0 when it could not count them. It shows a
 	// removed criterion without relying on the goal check's word.
@@ -89,19 +93,68 @@ func ParseGoal(reply string) (*goalAnswer, error) {
 	}
 	dec := json.NewDecoder(strings.NewReader(last[2]))
 	dec.DisallowUnknownFields()
-	var a goalAnswer
+	var a struct {
+		Criteria []struct {
+			GoalVerdict
+			FollowUp *string `json:"follow_up,omitempty"`
+		} `json:"criteria"`
+		Overall string `json:"overall"`
+	}
 	if dec.Decode(&a) != nil || dec.More() || a.Criteria == nil || len(a.Criteria) > maxCriteria || !goalVerdict(a.Overall) {
 		return nil, errGoalAnswer
 	}
+	out := goalAnswer{Criteria: []GoalVerdict{}, Overall: a.Overall, followUps: map[int]string{}}
 	seen := map[int]bool{}
 	for _, c := range a.Criteria {
 		// Numbers 1 to N once each: a skipped criterion voids the answer.
-		if c.Criterion < 1 || c.Criterion > len(a.Criteria) || seen[c.Criterion] || !goalVerdict(c.Verdict) {
+		if c.Criterion < 1 || c.Criterion > len(a.Criteria) || seen[c.Criterion] || (!goalVerdict(c.Verdict) && c.Verdict != goalOwned) || (c.FollowUp != nil && c.Verdict != goalOwned) {
 			return nil, errGoalAnswer
 		}
+		if c.FollowUp != nil {
+			out.followUps[c.Criterion] = *c.FollowUp
+		}
+		out.Criteria = append(out.Criteria, c.GoalVerdict)
 		seen[c.Criterion] = true
 	}
-	return &a, nil
+	return &out, nil
+}
+
+// verifyOwnership checks the complete criterion against the tracker snapshot.
+func (a *goalAnswer) verifyOwnership(in *IssueContext) {
+	criteria := criterionTexts(in, true)
+	for i, c := range a.Criteria {
+		if c.Verdict != goalOwned {
+			continue
+		}
+		a.Criteria[i].Verdict = goalNotMet
+		if len(criteria) != len(a.Criteria) {
+			continue
+		}
+		desc, ok := in.FollowUps[a.followUps[c.Criterion]]
+		if !ok {
+			continue
+		}
+		// Accept a top-level task list or an explicit acceptance section.
+		if listItem.MatchString(strings.TrimLeft(desc, "\r\n")) {
+			desc = "Done when\n" + desc
+		}
+		for _, item := range parseCriterionList(desc, true) {
+			if strings.EqualFold(strings.Join(strings.Fields(item), " "), strings.Join(strings.Fields(criteria[c.Criterion-1]), " ")) {
+				a.Criteria[i].Verdict = goalOwned
+				break
+			}
+		}
+	}
+}
+
+func (g *GoalCheck) ownershipFeedback() string {
+	var feedback strings.Builder
+	for _, c := range g.Criteria {
+		if c.Verdict == goalOwned {
+			fmt.Fprintf(&feedback, "Criterion %d is owned by %s.\n", c.Criterion, g.followUps[c.Criterion])
+		}
+	}
+	return feedback.String()
 }
 
 // goalFindings renders a goal check. Each word is the service's: the issue
@@ -118,6 +171,9 @@ func goalFindings(key string, g *GoalCheck) []Finding {
 	add := func(id, title, subject, verdict string) {
 		f := Finding{ID: id, Verdict: verdict}
 		switch verdict {
+		case goalOwned:
+			f.Severity, f.Title = SeverityLow, title+"owned by a follow-up"
+			f.Detail = "An open follow-up owns " + subject + "."
 		case goalNotMet:
 			f.Severity, f.Title = SeverityMedium, title+"not met"
 			f.Detail = "The goal check found that the diff does not meet " + subject +
@@ -270,18 +326,27 @@ func countedCriteria(g *GoalCheck) bool {
 // style, a nested list, an item after the list ended) or a second list
 // heading makes the list uncountable: 0, which withdraws nothing.
 func issueCriteria(in *IssueContext) int {
+	return len(criterionTexts(in, false))
+}
+
+func criterionTexts(in *IssueContext, ownership bool) []string {
 	if goalKey(in) == "" || !in.Issue.Trusted {
-		return 0
+		return nil
 	}
+	return parseCriterionList(in.Issue.Description, ownership)
+}
+
+func parseCriterionList(description string, ownership bool) []string {
+	var criteria []string
 	items, state, style := 0, 0, "" // state: 0 before the heading, 1 in the list, 2 after it
-	text := strings.ReplaceAll(strings.ReplaceAll(in.Issue.Description, "\r\n", "\n"), "\r", "\n")
+	text := strings.ReplaceAll(strings.ReplaceAll(description, "\r\n", "\n"), "\r", "\n")
 	// Comments, code blocks and HTML can hide or fake list items, anywhere
 	// in a line. Rather than parse them, count nothing when the issue has an
 	// HTML tag start, "```" or "~~~". Such an issue, for example one with a
 	// diagram, keeps main's rules. A comparison such as "< 200 ms" counts.
 	// Thematic breaks and setext underlines change what nearby lines mean.
 	if htmlStart.MatchString(text) || strings.Contains(text, "```") || strings.Contains(text, "~~~") || ruleLine.MatchString(text) {
-		return 0
+		return nil
 	}
 	for raw := range strings.SplitSeq(text, "\n") {
 		line := strings.TrimSpace(raw)
@@ -289,7 +354,7 @@ func issueCriteria(in *IssueContext) int {
 		// A line indented four or more is an indented code block, not a heading.
 		if (heading == "done when" || heading == "acceptance criteria") && !strings.HasPrefix(strings.ReplaceAll(raw, "\t", "    "), "    ") {
 			if state != 0 {
-				return 0
+				return nil
 			}
 			state = 1
 			continue
@@ -303,41 +368,48 @@ func issueCriteria(in *IssueContext) int {
 		case m != nil && state == 1:
 			// The words start after the marker: m[1]+m[2] or m[3].
 			if !strings.ContainsFunc(raw[len(m[1])+len(m[2])+len(m[3]):], func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) {
-				return 0 // An item needs words; "* * *" is a thematic break.
+				return nil // An item needs words; "* * *" is a thematic break.
 			}
 			kind := m[3]
 			if m[1] != "" {
 				if m[1] != strconv.Itoa(items+1) {
-					return 0
+					return nil
 				}
 				kind = "n" + m[2]
 			}
 			if (style != "" && style != kind) || items >= maxCriteria {
-				return 0
+				return nil
 			}
 			style = kind
 			items++
+			criteria = append(criteria, strings.TrimSpace(listPrefix.ReplaceAllString(raw, "")))
 		case marker:
-			return 0
+			return nil
 		case raw != strings.TrimLeft(raw, " \t"):
 			if items == 0 {
-				return 0
+				return nil
 			}
+			criteria[items-1] += " " + line
 		case items > 0:
+			// Unindented prose can continue a Markdown item. Do not transfer
+			// ownership based on a partial item.
+			if ownership {
+				return nil
+			}
 			state = 2 // The list ended.
 		default:
-			return 0
+			return nil
 		}
 	}
-	return items
+	return criteria
 }
 
 var (
 	// listItem is a top-level item marker: a number and "." or ")", or a
 	// bullet. issueCriteria also requires words on the marker line.
-	listItem = regexp.MustCompile(`^(?:([0-9]{1,9})([.)])|([-*+]))(?:[ \t]+(?:\[[ xX]\][ \t]+)?\S|[ \t]*$)`)
-	// listMarker is anything Markdown could read as a list item, at any
-	// indent, including an empty one.
+	listItem   = regexp.MustCompile(`^(?:([0-9]{1,9})([.)])|([-*+]))(?:[ \t]+(?:\[[ xX]\][ \t]+)?\S|[ \t]*$)`)
+	listPrefix = regexp.MustCompile(`^(?:[0-9]+[.)]|[-*+])[ \t]+(?:\[[ xX]\][ \t]+)?`)
+	// listMarker includes nested and empty items.
 	listMarker = regexp.MustCompile(`^[ \t]*(?:[0-9]{1,9}[.)]|[-*+])(?:[ \t]|$)`)
 	// htmlStart is the start of an HTML tag, comment or declaration.
 	htmlStart = regexp.MustCompile(`<[A-Za-z/!?]`)
@@ -405,15 +477,11 @@ func (e *Engine) goalCheck(ctx context.Context, b *Binding, pr github.PullReques
 			"Reassess the issue and reviewed tree independently before confirming a not_met verdict. " +
 			"Check whether the issue plans a later enablement or rollout step. " +
 			"An absence of code findings alone does not prove the goal is met.\n"
-		confirmed := e.goalCall(ctx, b, pr, in, text, g, l)
-		// ParseGoal requires exactly 1..N, so a shorter answer omits a
-		// criterion the first answer judged. Omission cannot resolve it.
-		if confirmed != nil && len(confirmed.Criteria) < len(g.Criteria) {
-			l.WarnContext(ctx, "goal check unavailable", "reason", "confirmation_coverage")
-			return nil
-		}
-		g = confirmOnly(g, confirmed)
+		g = e.goalCall(ctx, b, pr, in, text, g, l)
 	}
+	if g != nil {
+		g.followUps = nil
+	} // Only the private audit retains ownership keys.
 	return keepEarlier(g, prev)
 }
 
@@ -434,11 +502,15 @@ func settled(v string) bool { return v == goalMet || v == goalLive }
 // not_met against a clean code review; it is no second review of the
 // criteria the initial answer found met. A nil confirmation is unavailable.
 func confirmOnly(initial, confirmed *GoalCheck) *GoalCheck {
-	if confirmed == nil {
+	if confirmed == nil || len(confirmed.Criteria) < len(initial.Criteria) {
 		return nil
 	}
 	out := *confirmed
 	out.Criteria = slices.Clone(confirmed.Criteria)
+	out.followUps = maps.Clone(confirmed.followUps)
+	if out.followUps == nil {
+		out.followUps = map[int]string{}
+	}
 	byNumber := map[int]string{}
 	for _, c := range initial.Criteria {
 		byNumber[c.Criterion] = c.Verdict
@@ -446,6 +518,7 @@ func confirmOnly(initial, confirmed *GoalCheck) *GoalCheck {
 	for i, c := range out.Criteria {
 		if v, ok := byNumber[c.Criterion]; ok && v != goalNotMet {
 			out.Criteria[i].Verdict = v
+			out.followUps[c.Criterion] = initial.followUps[c.Criterion]
 		}
 	}
 	if initial.Overall != goalNotMet {
@@ -586,13 +659,27 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 			continue
 		}
 		reply := ReplyText(t)
+		a, parseErr := ParseGoal(reply)
+		valid := parseErr == nil && (t.Status.State == kagent.StateCompleted || t.Status.State == kagent.StateInputRequired)
+		var g *GoalCheck
+		var ownership string
+		if valid {
+			a.verifyOwnership(in.issues)
+			g = &GoalCheck{followUps: a.followUps, Head: pr.HeadSHA, Digest: issueDigest(in.issues), Criteria: a.Criteria, Overall: a.Overall, Counted: issueCriteria(in.issues)}
+			if initial != nil {
+				g = confirmOnly(initial, g)
+			}
+			if g != nil {
+				ownership = g.ownershipFeedback()
+			}
+		}
 		// Persist the entire reply, including prose and malformed answers,
 		// before deleting its session or publishing any verdict. Never log it.
 		if err := e.cfg.GoalAudit.Save(GoalAuditRecord{
 			Repository: b.repo(), PullRequest: pr.Number, Head: pr.HeadSHA,
 			Issue: goalKey(in.issues), Digest: issueDigest(in.issues),
 			MessageID: msg.MessageID, TaskID: t.ID, SessionID: t.ContextID,
-			Initial: initial, Phase: phase, CreatedAt: e.cfg.Now().UTC(), State: t.Status.State, Reply: reply,
+			Initial: initial, Ownership: ownership, Phase: phase, CreatedAt: e.cfg.Now().UTC(), State: t.Status.State, Reply: reply,
 		}); err != nil {
 			why = "audit"
 			break
@@ -609,13 +696,16 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 				e.kagentError(ctx, l, b, "delete_session", err)
 			}
 		}
-		a, err := ParseGoal(reply)
-		if (t.Status.State != kagent.StateCompleted && t.Status.State != kagent.StateInputRequired) || err != nil {
+		if valid && g == nil {
+			why = "confirmation_coverage"
+			break
+		}
+		if !valid {
 			why = "answer"
 			break
 		}
 		l.InfoContext(ctx, "goal check answered", "task", t.ID, "criteria", len(a.Criteria))
-		return &GoalCheck{Head: pr.HeadSHA, Digest: issueDigest(in.issues), Criteria: a.Criteria, Overall: a.Overall, Counted: issueCriteria(in.issues)}
+		return g
 	}
 	if ctx.Err() != nil {
 		why = "stopped" // A restart reads the indexed task or its isolated session.
@@ -670,6 +760,9 @@ func GoalPrompt(repo string, pr github.PullRequest, files []github.PullRequestFi
 	}
 	b.WriteString("Workflow status is mutable metadata, not a decision:\n\n")
 	writeQuoted(&b, "workflow", pr.HeadSHA, "Status: "+strconv.Quote(i.Status))
+	for _, key := range slices.Sorted(maps.Keys(in.FollowUps)) {
+		writeQuoted(&b, "follow-up", pr.HeadSHA, key+"\n"+in.FollowUps[key])
+	}
 	for n, d := range in.Decisions {
 		fmt.Fprintf(&b, "Reference %d: %s; exists=%t; trusted provenance=%t; %s.\n", n+1, strconv.Quote(d.URL), d.Exists, d.Trusted, d.Reason)
 		text := fmt.Sprintf("Author account: %s\nText: %s\n", strconv.Quote(d.Author), strconv.Quote(d.Text))
@@ -737,6 +830,7 @@ func GoalPrompt(repo string, pr github.PullRequest, files []github.PullRequestFi
 	b.WriteString("## Answer\n\n" +
 		"Number the issue's acceptance criteria 1, 2, 3 and on, in the order the issue lists them, and judge each one. When the issue has a \"Done when\" or \"Acceptance criteria\" list, each item of that list is one criterion:\n\n" +
 		"- \"met\": the reviewed tree meets it, including verified unchanged wiring, or a quoted trusted decision above moves it to another issue.\n" +
+		"- \"owned\": for a criterion listed in an open follow-up above, include its key as \"follow_up\". Never use owned for overall.\n" +
 		"- \"not_met\": the reviewed tree does not meet it.\n" +
 		"- \"after_rollout\": only a rollout or live use can show it, and the diff makes the change it needs.\n" +
 		"- \"unclear\": the reviewed tree and the issue evidence cannot show it either way, for any other reason.\n\n" +

@@ -22,6 +22,7 @@ const (
 // GoalAuditRecord is private. It must never enter a check, comment or log.
 // Reply holds the entire final reply before the verdict parser bounds it.
 type GoalAuditRecord struct {
+	Ownership   string     `json:"ownership,omitempty"`
 	Initial     *GoalCheck `json:"initial,omitempty"` // Verdicts the confirmation was asked to recheck.
 	Repository  string     `json:"repository"`
 	PullRequest int        `json:"pull_request"`
