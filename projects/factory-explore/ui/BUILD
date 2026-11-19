@@ -57,7 +57,10 @@ build_test(
 
 js_library(
     name = "test_src",
-    srcs = ["session.test.ts"],
+    srcs = [
+        "arguments.test.ts",
+        "session.test.ts",
+    ],
     deps = [
         ":node_modules/happy-dom",
         ":node_modules/vitest",
