@@ -9,3 +9,6 @@ python3 ./bazel/tools/ci/verification_genrule_guard.py .
 python3 ./bazel/tools/ci/central_build_ratchet.py "$1" "$2"
 python3 ./bazel/tools/ci/chart_version_guard.py "$1" "$2"
 python3 ./bazel/tools/ci/source_ratchet.py "$1" "$2"
+if [[ -d projects/factory-cluster/nodes ]]; then
+	bash bazel/tools/ci/factory-node-controls.sh
+fi

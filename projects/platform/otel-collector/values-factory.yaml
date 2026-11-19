@@ -35,6 +35,7 @@ gateway:
   enabled: false
 
 logs:
+  audit: true
   enabled: true
   # 198Mi median and 238Mi peak per agent over 14-16 Nov, near the old 256Mi
   # limit. Requested at the 99th percentile plus 10%; the limit is 1.5 times

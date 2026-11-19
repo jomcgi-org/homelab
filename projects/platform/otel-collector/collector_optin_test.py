@@ -1414,7 +1414,11 @@ def test_factory_node_agent_pipelines():
     _assert_pipelines_reference_defined_components(config)
 
     pipelines = config["service"]["pipelines"]
-    assert set(pipelines) == {"logs", "metrics/node"}
+    assert set(pipelines) == {"logs", "logs/audit", "metrics/node"}
+    assert pipelines["logs/audit"]["receivers"] == ["file_log/audit"]
+    assert config["receivers"]["file_log/audit"]["include"] == [
+        "/var/log/k3s-audit/audit.log"
+    ]
     node = pipelines["metrics/node"]
     assert node["receivers"] == [
         "kubelet_stats/node",
@@ -1478,9 +1482,13 @@ def test_factory_node_agent_pipelines():
     ds = next(d for d in docs if d["kind"] == "DaemonSet")
     pod = ds["spec"]["template"]["spec"]
     # Host metrics read the container's /proc; no host filesystem beyond the
-    # pod logs and the agent's own state directory is mounted.
+    # pod logs, audit logs and the agent's own state directory is mounted.
     host_paths = {v["hostPath"]["path"] for v in pod["volumes"] if "hostPath" in v}
-    assert host_paths == {"/var/log/pods", "/var/lib/otel-collector-logs"}
+    assert host_paths == {
+        "/var/log/k3s-audit",
+        "/var/log/pods",
+        "/var/lib/otel-collector-logs",
+    }
     assert "hostNetwork" not in pod
 
 
