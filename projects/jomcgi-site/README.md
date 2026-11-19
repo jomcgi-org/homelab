@@ -275,9 +275,11 @@ deployed verification. Removing `jomcgi.dev/docs*` rolls docs back to the hub.
 
 `/stars` serves `web/stars.html` with the hub page's title and description.
 `/app/stars` and its old probe subroutes redirect there with 301. The page,
-the redirects and `/data/stars/*` move together in `edge/routes.json`. Only
-the `/stars` rule in `_headers` allows the base map and blob workers
-([header check](validation/stars-headers.md)).
+the redirects and `/data/stars/*` move together in `edge/routes.json`. The
+`/stars` rule in `_headers` allows the base map and blob workers
+([header check](validation/stars-headers.md)). MapLibre's worker takes its CSP
+from its own response, so the `/assets/maplibre-gl-worker-*.js` rule gives it
+the tile host ([deployed maps](validation/maps-live.md)).
 
 Forecast `asOf` is `fetched_at`. History `asOf` is the `lastModified` of
 `history-map.json` in `latest.json` `sources`, read again at each refresh.
