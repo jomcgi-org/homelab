@@ -22,7 +22,7 @@ import (
 
 // GitHub is the subset of the GitHub client delivery uses.
 type GitHub interface {
-	RevertedMerge(ctx context.Context, repo, branch, sha string, since, until time.Time) (*time.Time, error)
+	RevertedMerge(ctx context.Context, repo, branch, sha string, since, until time.Time, before func(int) error) (*time.Time, error)
 	FindPullRequest(ctx context.Context, repo, branch string) (*github.PullRequest, error)
 	CreatePullRequest(ctx context.Context, repo string, n github.NewPullRequest) (*github.PullRequest, error)
 	UpdatePullRequest(ctx context.Context, repo string, number int, u github.PullRequestUpdate) (*github.PullRequest, error)
@@ -1347,9 +1347,10 @@ func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr
 	limited := wi.ReviewRounds >= b.Review.MaxReviewRounds
 	held := b.Review.held(d.Labels) != ""
 	var feedback string
+	var ciFailure bool
 	if !limited && !held {
 		var err error
-		feedback, err = e.ejectionFeedback(ctx, b, pr, d)
+		feedback, ciFailure, err = e.ejectionFeedback(ctx, b, pr, d)
 		if err != nil {
 			return err // keep merging so the next poll retries the evidence read
 		}
@@ -1430,6 +1431,12 @@ func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr
 		case prompt != "":
 			if round, err = e.startReviewRound(ctx, tx, wi, b, pr, latest, prompt); err != nil {
 				return err
+			}
+			if ciFailure {
+				_, err = tx.ExecContext(ctx, `UPDATE run SET queue_ci_fix=true WHERE id=$1`, round.ID)
+				if err != nil {
+					return err
+				}
 			}
 			outcome = fmt.Sprintf("Review round %d of %d will address the ejection in the mapped session.",
 				wi.ReviewRounds+1, b.Review.MaxReviewRounds)
@@ -1636,23 +1643,24 @@ func formatFailures(id string, f *buildbuddy.Failures) string {
 // ejectionFeedback uses configured names, fixed state classes and links
 // built from repository identity and numeric check IDs. No CI-provided URL,
 // title, summary or status description reaches the coding agent.
-func (e *Engine) ejectionFeedback(ctx context.Context, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) (string, error) {
+func (e *Engine) ejectionFeedback(ctx context.Context, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) (string, bool, error) {
+	var ciFailure bool
 	var s strings.Builder
 	fmt.Fprintf(&s, "The merge queue ejected this PR at %s.\n", pr.EnqueuedHeadSHA)
 	if pr.MergeGroupSHA != "" {
 		if err := e.beginEjectionRead(ctx, pr, "group-checks", pr.MergeGroupSHA); err != nil {
-			return "", err
+			return "", false, err
 		}
 		checks, err := e.gh.CheckRuns(ctx, b.repo(), pr.MergeGroupSHA)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		if err := e.beginEjectionRead(ctx, pr, "group-statuses", pr.MergeGroupSHA); err != nil {
-			return "", err
+			return "", false, err
 		}
 		statuses, err := e.gh.Statuses(ctx, b.repo(), pr.MergeGroupSHA)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		commitURL := fmt.Sprintf("https://github.com/%s/commit/%s/checks", b.repo(), pr.MergeGroupSHA)
 		fmt.Fprintf(&s, "\nMerge-group checks: %s\n", commitURL)
@@ -1662,6 +1670,7 @@ func (e *Engine) ejectionFeedback(ctx context.Context, b *Binding, pr *store.Pul
 			}
 			for _, want := range b.Review.checks() {
 				if want.AppID != 0 && c.AppID == want.AppID && c.Name == want.Name {
+					ciFailure = true
 					checkURL := commitURL
 					if c.ID > 0 {
 						checkURL = fmt.Sprintf("https://github.com/%s/runs/%d", b.repo(), c.ID)
@@ -1677,10 +1686,11 @@ func (e *Engine) ejectionFeedback(ctx context.Context, b *Binding, pr *store.Pul
 			}
 			for _, want := range b.Review.checks() {
 				if want.StatusCreator != "" && strings.EqualFold(st.Creator, want.StatusCreator) && st.Context == want.Name {
+					ciFailure = true
 					fmt.Fprintf(&s, "- Status %q: %s (%s).\n", want.Name, st.State, commitURL)
 					text, err := e.ciFailures(ctx, b, pr, d, pr.MergeGroupSHA, st.URL)
 					if err != nil {
-						return "", err
+						return "", false, err
 					}
 					if text != "" {
 						s.WriteString(strings.TrimPrefix(text, "\n") + "\n")
@@ -1694,7 +1704,7 @@ func (e *Engine) ejectionFeedback(ctx context.Context, b *Binding, pr *store.Pul
 	}
 	s.WriteString("\nInspect the queue failure before pushing. If CI infrastructure flaked, you may rebase and re-push " +
 		"the same change. The new head must pass the usual CI and independent review gates.\n")
-	return s.String(), nil
+	return s.String(), ciFailure, nil
 }
 
 type issueDonePayload struct {
@@ -2086,29 +2096,51 @@ func (e *Engine) checkDeliveryReverts(ctx context.Context) error {
 	if e.gh == nil {
 		return nil
 	}
+	var prID int64
 	var node, repo, branch, sha string
 	var since, until time.Time
 	err := e.st.DB.QueryRowContext(ctx, `
-		SELECT o.node_id, b.owner || '/' || b.repo, b.base_branch, o.merge_sha,
-			coalesce(o.checked_until,o.merged_at), least($1, o.merged_at + interval '168 hours')
+		SELECT p.id, o.node_id, b.owner || '/' || b.repo, b.base_branch, o.merge_sha,
+			coalesce(o.checked_until,o.merged_at), coalesce(o.scan_until, least($1, o.merged_at + interval '168 hours'))
 		FROM delivery_outcome o JOIN work_item w ON w.id = o.work_item_id
 		JOIN repo_binding b ON b.name = w.binding_name
-		WHERE o.merge_sha IS NOT NULL AND o.reverted_at IS NULL
+		JOIN pull_request p ON p.work_item_id = w.id
+		WHERE (o.retry_at IS NULL OR o.retry_at <= $1) AND o.merge_sha IS NOT NULL AND o.reverted_at IS NULL
 		  AND coalesce(o.checked_until,o.merged_at) < o.merged_at + interval '168 hours'
 		  AND coalesce(o.checked_until,o.merged_at) + interval '1 hour' <= $1
-		ORDER BY coalesce(o.checked_until,o.merged_at), o.node_id LIMIT 1`, e.cfg.Now()).Scan(&node, &repo, &branch, &sha, &since, &until)
+		ORDER BY coalesce(o.checked_until,o.merged_at), o.node_id LIMIT 1`, e.cfg.Now()).Scan(&prID, &node, &repo, &branch, &sha, &since, &until)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	reverted, err := e.gh.RevertedMerge(ctx, repo, branch, sha, since, until)
-	if err != nil {
+	// Persist the upper bound so a retry or takeover journals the same pages.
+	if err := e.w.Tx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE delivery_outcome SET scan_until=$2 WHERE node_id=$1`, node, until)
+		return err
+	}); err != nil {
 		return err
 	}
+	reverted, err := e.gh.RevertedMerge(ctx, repo, branch, sha, since, until, func(page int) error {
+		if err := e.guard(ctx); err != nil {
+			return err
+		}
+		id := fmt.Sprintf("revert/%s/%d/%d/%d", node, since.UnixMicro(), until.UnixMicro(), page)
+		if err := e.st.RecordDeliveryRead(ctx, prID, e.w.Epoch, id, "base-commits", branch); err != nil {
+			return err
+		}
+		return e.guard(ctx)
+	})
+	if err != nil {
+		retryErr := e.w.Tx(ctx, func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, `UPDATE delivery_outcome SET retry_at=$2 WHERE node_id=$1`, node, e.cfg.Now().Add(time.Hour))
+			return err
+		})
+		return errors.Join(err, retryErr)
+	}
 	return e.w.Tx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE delivery_outcome SET checked_until=$2, reverted_at=$3 WHERE node_id=$1 AND reverted_at IS NULL`, node, until, reverted)
+		_, err := tx.ExecContext(ctx, `UPDATE delivery_outcome SET checked_until=$2, reverted_at=$3, retry_at=NULL, scan_until=NULL WHERE node_id=$1 AND reverted_at IS NULL`, node, until, reverted)
 		return err
 	})
 }

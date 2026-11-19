@@ -108,8 +108,10 @@ func (s *Store) RecordPullRequest(ctx context.Context, q Querier, p PullRequest)
 		INSERT INTO pull_request (work_item_id, number, node_id, url, head_sha, state)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (work_item_id) DO UPDATE SET number = $2, node_id = $3, url = $4, head_sha = $5,
-			state = $6, updated_at = now()
-		RETURNING `+prCols, p.WorkItemID, p.Number, p.NodeID, p.URL, p.HeadSHA, p.State))
+			state = $6, updated_at = now(),
+            held_duration = CASE WHEN pull_request.node_id = EXCLUDED.node_id THEN pull_request.held_duration ELSE interval '0' END,
+            held_since = CASE WHEN pull_request.node_id = EXCLUDED.node_id THEN pull_request.held_since END
+        RETURNING `+prCols, p.WorkItemID, p.Number, p.NodeID, p.URL, p.HeadSHA, p.State))
 }
 
 // SetPolled records a poll of the PR and what it showed. Keep the latest

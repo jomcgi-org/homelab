@@ -1102,10 +1102,13 @@ func (t timelineActor) last() string {
 
 // RevertedMerge returns the first base-branch commit in the interval that
 // names the merge in a standard git revert trailer.
-func (c *Client) RevertedMerge(ctx context.Context, repo, branch, sha string, since, until time.Time) (*time.Time, error) {
+func (c *Client) RevertedMerge(ctx context.Context, repo, branch, sha string, since, until time.Time, before func(int) error) (*time.Time, error) {
 	q := url.Values{"sha": {branch}, "since": {since.UTC().Format(time.RFC3339)}, "until": {until.UTC().Format(time.RFC3339)}, "per_page": {"100"}}
 	var earliest *time.Time
 	for page := 1; ; page++ {
+		if err := before(page); err != nil {
+			return nil, err
+		}
 		q.Set("page", strconv.Itoa(page))
 		var commits []struct {
 			Commit struct {

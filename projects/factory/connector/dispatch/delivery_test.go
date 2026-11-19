@@ -24,15 +24,16 @@ import (
 // branch, reviews, check runs and statuses per commit, and a merge queue that
 // takes a PR only at its expected head.
 type fakeGitHub struct {
-	mu       sync.Mutex
-	calls    int
-	branches map[string]*fakeBranch
-	prs      []*fakePR
-	checks   map[string][]github.CheckRun
-	statuses map[string][]github.Status
-	creates  int
-	enqueues []string
-	nodes    int
+	scanRevert func(time.Time, time.Time, func(int) error) (*time.Time, error)
+	mu         sync.Mutex
+	calls      int
+	branches   map[string]*fakeBranch
+	prs        []*fakePR
+	checks     map[string][]github.CheckRun
+	statuses   map[string][]github.Status
+	creates    int
+	enqueues   []string
+	nodes      int
 	// loseCreate opens the next PR but loses the response; findErr fails
 	// the next lookups.
 	loseCreate bool
@@ -1126,6 +1127,10 @@ func TestMergeQueueFailureRevisesInTheMappedSessionWithGroupEvidence(t *testing.
 	v.poll()
 	if n := len(v.rounds()); n != 1 {
 		t.Fatalf("rounds = %d, want one after failed merge-group CI", n)
+	}
+	var fixes int
+	if err := v.st.DB.QueryRow(`SELECT count(*) FROM run WHERE queue_ci_fix`).Scan(&fixes); err != nil || fixes != 1 {
+		t.Fatalf("queue CI rounds: %d, %v", fixes, err)
 	}
 	sends := v.kg.Sends()
 	last := sends[len(sends)-1]
@@ -3121,6 +3126,54 @@ func TestCILogPageCannotBeSentWithoutItsJournal(t *testing.T) {
 	}
 }
 
-func (g *fakeGitHub) RevertedMerge(context.Context, string, string, string, time.Time, time.Time) (*time.Time, error) {
+func (g *fakeGitHub) RevertedMerge(_ context.Context, _, _, _ string, since, until time.Time, before func(int) error) (*time.Time, error) {
+	if g.scanRevert != nil {
+		return g.scanRevert(since, until, before)
+	}
 	return nil, nil
+}
+
+func TestDeliveryOutcomeLifecycle(t *testing.T) {
+	t.Run("abandoned", func(t *testing.T) {
+		v := newDeliveryEnv(t)
+		v.delivered()
+		v.gh.close(1)
+		v.poll()
+		var stopped bool
+		if err := v.st.DB.QueryRow(`SELECT abandoned AND NOT merged FROM pr_delivery_results WHERE number=1`).Scan(&stopped); err != nil || !stopped {
+			t.Fatalf("closed PR outcome: %v, %v", stopped, err)
+		}
+	})
+	t.Run("merged then reverted", func(t *testing.T) {
+		v := newDeliveryEnv(t)
+		v.delivered()
+		v.gh.merge(1, "merge-sha")
+		v.poll()
+		var at time.Time
+		if err := v.st.DB.QueryRow(`SELECT merged_at FROM delivery_outcome WHERE number=1 AND NOT abandoned`).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		revert := at.Add(24 * time.Hour)
+		v.clk.Advance(revert.Sub(v.clk.Now()) + 2*time.Hour)
+		v.gh.scanRevert = func(since, until time.Time, before func(int) error) (*time.Time, error) {
+			if revert.Before(since) || revert.After(until) {
+				t.Fatalf("unexpected scan %v to %v", since, until)
+			}
+			for page := 1; page <= 2; page++ {
+				if err := before(page); err != nil {
+					return nil, err
+				}
+				var n int
+				if err := v.st.DB.QueryRow(`SELECT count(*) FROM delivery_read WHERE operation='base-commits'`).Scan(&n); err != nil || n != page {
+					t.Fatalf("page %d journal: %d, %v", page, n, err)
+				}
+			}
+			return &revert, nil
+		}
+		v.poll()
+		var got time.Time
+		if err := v.st.DB.QueryRow(`SELECT reverted_at FROM delivery_outcome WHERE number=1`).Scan(&got); err != nil || !got.Equal(revert) {
+			t.Fatalf("revert: %v, %v", got, err)
+		}
+	})
 }

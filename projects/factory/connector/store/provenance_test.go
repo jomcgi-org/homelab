@@ -17,8 +17,7 @@ func TestProvenanceMigrationLeavesHistoricalRunsNull(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Restore the pre-migration shape with a real historical row, then apply it.
-	_, err := st.DB.Exec(`DROP VIEW arm_delivery_results, pr_delivery_results;
- DROP FUNCTION public.record_reviewer_run(text,text,text,text,text,text,text,text,text);
+	_, err := st.DB.Exec(`DROP FUNCTION public.record_reviewer_run(text,text,text,text,text,text,text,text,text);
  ALTER TABLE run DROP COLUMN model,DROP COLUMN reasoning_effort,DROP COLUMN arm,DROP COLUMN base_sha,
  DROP COLUMN prompt_hash,DROP COLUMN task_class,DROP COLUMN reviewer_message_id,DROP COLUMN guidance_system_prompt,DROP COLUMN provenance_required;
  ALTER TABLE delivery_attempt DROP COLUMN rendered_prompt,DROP COLUMN model,DROP COLUMN reasoning_effort,

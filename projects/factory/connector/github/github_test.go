@@ -1405,7 +1405,7 @@ func TestRevertedMergeWindow(t *testing.T) {
 			}))
 			defer srv.Close()
 			client := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
-			got, err := client.RevertedMerge(context.Background(), "org/repo", "main", "abc", start, end)
+			got, err := client.RevertedMerge(context.Background(), "org/repo", "main", "abc", start, end, func(int) error { return nil })
 			if err != nil || (got != nil) != tc.match || (got != nil && !got.Equal(tc.at)) {
 				t.Fatalf("revert = %v, err = %v", got, err)
 			}
