@@ -14,37 +14,49 @@ flowchart LR
   health["health CronJob (HOME-260)"] -- "write health.json" --> hgarage[("Garage factory-health")]
   garage -- "rclone, every minute" --> r2[("R2 factory-public")]
   hgarage -- "copy health.json only" --> r2
-  others["stars-forecast and hikes mirrors"] -- "own prefixes only" --> r2
+  sources[("Garage stars-forecast and hikes")] -- "read-only, one mirror each, under its prefix" --> r2
   r2 --> cdn["factory-data.jomcgi.dev"]
 ```
 
 ## Values
 
 The chart has two `buckets:` entries in `chart/values.yaml`: `factory-public`
-with its mirror, and `factory-health` for the health publisher. They render:
+with its mirror, and `factory-health` for the health publisher. The mirror
+also lists the Garage buckets `stars-forecast` and `hikes` in
+`public.sources`. They render:
 
 - a Garage bucket claim and key Secret for each entry, which garage-init fills;
-- the mirror CronJob (stock `rclone/rclone`, pinned by digest), under its own
-  ServiceAccount with no token mounted;
-- the `OnePasswordItem` for `vaults/k8s-homelab/items/factory-r2-public-mirror`
-  (fields `access-key-id`, `secret-access-key` and `s3-api-endpoint`);
+- the root mirror CronJob and one CronJob for each source (stock
+  `rclone/rclone`, pinned by digest), each under its own ServiceAccount with
+  no token mounted;
+- a read-only Garage claim on each source bucket, which writes nothing;
+- one `OnePasswordItem` for each mirror, all for
+  `vaults/k8s-homelab/items/factory-r2-public-mirror` (fields
+  `access-key-id`, `secret-access-key` and `s3-api-endpoint`);
 - a network policy that allows egress only to Garage on 3900, the R2 S3
   endpoint on 443, and DNS;
-- an admission rule that lets only the mirror's ServiceAccount mount the R2
-  Secret.
+- an admission rule for each mirror that lets only its ServiceAccount mount
+  its R2 Secret.
 
-Each run syncs every object except `manifest.json`, `health.json` and the
-excluded prefixes with `Cache-Control: public, max-age=31536000, immutable`,
-then copies `manifest.json` with `Cache-Control: public, max-age=60`.
+Each root run syncs every object except `manifest.json`, `health.json`,
+`stars-forecast/` and `hikes/` with
+`Cache-Control: public, max-age=31536000, immutable`, then copies
+`manifest.json` with `Cache-Control: public, max-age=60`.
 
 The publisher gets write access through its own `buckets:` entry without
-`public:`. This chart owns the root of R2 `factory-public`. The
-`stars-forecast` and `hikes` charts mirror into prefixes `stars-forecast/`
-and `hikes/` with the same 1Password item (HOME-492). The root mirror lists
-both in `public.excludePrefixes`, so its sync does not delete them. Add the
-prefix of each new mirror to that list:
-`//bazel/helm/content_rules:r2_prefix_test` fails without it
-([library rule](../shared/helm/factory-library/README.md#one-public-r2-bucket)).
+`public:`. Only this namespace holds the R2 token (HOME-492). Each source
+mirror syncs one writer's Garage bucket under its prefix of R2
+`factory-public`, and the library adds that prefix to the root sync's
+excludes ([library rule](../shared/helm/factory-library/README.md#one-public-r2-bucket)):
+
+| Source bucket | Writer chart | Public manifest | Activated by |
+| --- | --- | --- | --- |
+| `stars-forecast` | `projects/stars-forecast` | `https://factory-data.jomcgi.dev/stars-forecast/latest.json` | HOME-478 |
+| `hikes` | `projects/hikes` | `https://factory-data.jomcgi.dev/hikes/latest.json` | HOME-477 |
+
+Both sources stay `suspend: true` until their activation. To add a writer,
+add a `public.sources` entry here. The writer chart keeps a Garage bucket
+without `public:`.
 
 ## Factory health
 
@@ -104,10 +116,10 @@ change of bucket or token. Record the result without credential values:
    IPv6 gets `AccessDenied`, even on `factory-public`.
 3. An authenticated listing shows that R2 bucket `factory-public` holds
    nothing that must be kept.
-4. The factory mirrors are the only writers to R2 bucket `factory-public`.
-   Every key has one writer: the root mirror, or the mirror that owns the
-   key's prefix. Another job that writes to the R2 bucket directly loses its
-   objects at the next sync. The trips export
+4. The mirrors of this chart are the only writers to R2 bucket
+   `factory-public`. Every key has one writer: the root mirror, or the
+   source mirror that owns the key's prefix. Another job that writes to the
+   R2 bucket directly loses its objects at the next sync. The trips export
    (`projects/monolith/trips/export`) writes `trips/photos/`
    to R2 `factory-public` directly when `TRIPS_EXPORT_PUBLIC_ENABLED` is
    `true`. Check that `projects/monolith/chart/values.yaml` sets it to
@@ -165,6 +177,7 @@ After the mirror runs:
 bb remote test --config=ci //projects/factory-public/...
 ```
 
-`chart:public_test` renders the chart and checks the single `buckets:` entry,
-the rendered resources and the Application. The admission rules are tested
-in `//projects/shared/helm/factory-library/admission:admission_test`.
+`chart:public_test` renders the chart and checks the `buckets:` entries, the
+source mirrors, the rendered resources and the Application. The admission
+rules are tested in
+`//projects/shared/helm/factory-library/admission:admission_test`.

@@ -2,14 +2,14 @@
 
 The factory chart deploys three jobs with the Go entry point in `projects/scotland-connector/cmd/hikes-writer`. The manual catalogue job follows WalkHighlands area, sub-area and route links, then merges metadata by the hub's coordinate UUID. The refresh fetches locationforecast/2.0/complete on a shared rate limiter. Each successful response replaces one walk's daylight hours. The hourly prune filters elapsed hours.
 
-The last complete Garage snapshot supplies the next job's state. Jobs hash and spool schema-v2 JSON one walk at a time, upload the immutable object, then replace the manifest. All three jobs take an exclusive Linux flock on the same local-path volume before reading Garage and hold it through publication. The claim pins concurrent pods to the same node, and process exit releases the lock. The platform mirror copies payloads to prefix `hikes/` of the shared R2 bucket `factory-public` before the manifest. Readers validate the referenced digest.
+The last complete Garage snapshot supplies the next job's state. Jobs hash and spool schema-v2 JSON one walk at a time, upload the immutable object, then replace the manifest. All three jobs take an exclusive Linux flock on the same local-path volume before reading Garage and hold it through publication. The claim pins concurrent pods to the same node, and process exit releases the lock. A source mirror in the `factory-public` release copies payloads, then the manifest, to prefix `hikes/` of R2 bucket `factory-public`. This namespace holds no R2 credential (HOME-492). Readers validate the referenced digest.
 
 ```mermaid
 flowchart LR
   WalkHighlands --> Writer
   MET --> Writer
   Writer --> Garage
-  Garage --> Mirror --> R2
+  Garage -- read-only key --> Mirror[factory-public source mirror] --> R2[R2 factory-public/hikes/]
   R2 --> Site
   R2 --> Connector
 ```
@@ -17,7 +17,7 @@ flowchart LR
 | Component | Untrusted input | Credentials held |
 | --- | --- | --- |
 | Writer | Route HTML and meteorological forecasts | Read and write access to the hikes Garage bucket |
-| Mirror | Public Garage objects | Scoped Garage read key and R2 write token |
+| Source mirror, in namespace `factory-public` | Public Garage objects | Garage read key and the `factory-public` R2 token |
 
 ## Direction
 

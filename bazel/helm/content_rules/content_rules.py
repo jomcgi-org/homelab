@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # invariant: PLAT-13
 # invariant: LIB-6
+# invariant: LIB-8
 """Content rules for application charts on the factory cluster (HOME-350).
 
 Usage: content_rules.py RELEASE_NAMESPACE [Kind/namespace/name ...] < render.yaml
@@ -323,6 +324,42 @@ def rule_library_defaults(doc, namespace):
     return out
 
 
+# R2 tokens cover a whole bucket, so a prefix in a mirror command is no write
+# boundary. Only the release in this namespace holds the token for R2 bucket
+# factory-public. It mirrors other charts' Garage buckets as sources, each
+# under its own prefix (HOME-492, LIB-8).
+PUBLIC_R2_BUCKET = "factory-public"
+PUBLIC_R2_ITEM = "vaults/k8s-homelab/items/factory-r2-public-mirror"
+PUBLIC_R2_NAMESPACE = "factory-public"
+
+
+def rule_public_r2(doc, namespace):
+    """Only namespace factory-public mirrors into R2 bucket factory-public."""
+    if namespace == PUBLIC_R2_NAMESPACE:
+        return []
+    fix = (
+        f"declare the Garage bucket as a public.sources entry of the "
+        f"{PUBLIC_R2_NAMESPACE} release"
+    )
+    if (
+        doc.get("kind") == "OnePasswordItem"
+        and (doc.get("spec") or {}).get("itemPath") == PUBLIC_R2_ITEM
+    ):
+        return [f"{_name(doc)}: holds the {PUBLIC_R2_BUCKET} R2 token; {fix}"]
+    _, pod = pod_template(doc)
+    if pod is None:
+        return []
+    return [
+        f"{_name(doc)}: container {c.get('name')} mirrors into R2 "
+        f"{PUBLIC_R2_BUCKET}; {fix}"
+        for c in containers(pod)
+        if any(
+            e.get("name") == "R2_BUCKET" and e.get("value") == PUBLIC_R2_BUCKET
+            for e in c.get("env") or []
+        )
+    ]
+
+
 RULES = [
     rule_digest,
     rule_namespace,
@@ -330,6 +367,7 @@ RULES = [
     rule_service,
     rule_role,
     rule_library_defaults,
+    rule_public_r2,
 ]
 
 

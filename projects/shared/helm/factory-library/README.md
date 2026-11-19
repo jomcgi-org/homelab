@@ -212,10 +212,10 @@ buckets:
     public:
       r2Bucket: factory-public
       itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
-      # r2Prefix: stars-forecast  # Mirror into one prefix of the R2 bucket.
-      # excludePrefixes: [hikes]  # Root mirror only: prefixes of other mirrors.
       # schedule: "* * * * *"
       # suspend: true  # Stage the mirror while verifying its destination.
+      # sources:  # Garage buckets of other charts, each under its own prefix.
+      #   - {bucket: stars-forecast, r2Prefix: stars-forecast, manifestName: latest.json, suspend: true}
 ```
 
 Each entry creates a kept Secret named RELEASE-BUCKET-s3. Its fields are
@@ -338,29 +338,62 @@ expire; the mirror does not provide a transaction across concurrent writes.
 
 ### One public R2 bucket
 
-Every public mirror writes to R2 bucket `factory-public`, which is public at
-`https://factory-data.jomcgi.dev`. All mirrors use the 1Password item
-`vaults/k8s-homelab/items/factory-r2-public-mirror` (HOME-492). A separate R2
-bucket for each writer needs its own token, 1Password item and public hostname.
+R2 bucket `factory-public` is public at `https://factory-data.jomcgi.dev`.
+Its token in `vaults/k8s-homelab/items/factory-r2-public-mirror` can write
+and delete every object in the bucket. A prefix in a mirror command is not a
+boundary for that token. Thus only the `factory-public` release in namespace
+`factory-public` holds the token and runs mirrors into the bucket (HOME-492).
+A writer chart declares its own Garage bucket without `public` and holds no
+R2 credential.
 
-`rclone sync` deletes each destination object that its Garage bucket does not
-have. Thus each mirror other than the root mirror sets `public.r2Prefix`. The
-prefix is one path segment of lowercase letters, digits and `-`, and other
-values fail rendering. The sync, the manifest copy, `copyKeys` and every
-delete then stay under `R2:<r2Bucket>/<r2Prefix>/`. Readers get
+```mermaid
+flowchart LR
+  subgraph fp["namespace factory-public: holds the R2 token"]
+    root["root mirror"]
+    smirror["stars-forecast source mirror"]
+    hmirror["hikes source mirror"]
+  end
+  gfp[("Garage factory-public")] -->|read| root
+  gsf[("Garage stars-forecast")] -->|read-only claim| smirror
+  ghk[("Garage hikes")] -->|read-only claim| hmirror
+  root -->|"sync root, excludes /stars-forecast/** and /hikes/**"| r2[("R2 factory-public")]
+  smirror -->|"sync under stars-forecast/"| r2
+  hmirror -->|"sync under hikes/"| r2
+```
+
+The root mirror's `public.sources` lists the Garage buckets of other charts.
+Each entry takes `bucket`, `r2Prefix`, and optional `manifestName`,
+`schedule` and `suspend`. The prefix is one path segment of lowercase
+letters, digits and `-`, and other values fail rendering. Each bucket and
+each prefix occurs once, and the bucket is not the root mirror's own bucket.
+Admission policy names contain the namespace, release and prefix, and must
+fit in 63 characters. Thus a prefix in release `factory-public` has at most
+14 characters.
+
+Each source gets its own CronJob, named `RELEASE-PREFIX-mirror`, with the
+root mirror's image, R2 bucket and 1Password item. It gets its own
+OnePasswordItem, admission guard and read-only Garage claim on the source
+bucket. Garage-init grants that claim like any other: the claim in the
+`garage` namespace binds the reading namespace, Secret, bucket and `read`.
+The source mirror has no `copyKeys`.
+
+A source sync, its manifest copy and every delete name
+`R2:<r2Bucket>/<r2Prefix>`, so they stay under that prefix. Readers get
 `https://factory-data.jomcgi.dev/<r2Prefix>/<key>`.
 
-The root mirror in `projects/factory-public` has no prefix. Its
-`public.excludePrefixes` lists the prefix of every other mirror, and its sync
-adds `--exclude '/<prefix>/**'` for each. rclone does not delete excluded
-objects. A mirror with `r2Prefix` cannot set `excludePrefixes`.
+The root sync adds `--exclude '/<r2Prefix>/**'` for each source. rclone does
+not delete excluded objects. The library derives these excludes in the same
+render, so a source prefix that the root sync does not exclude cannot exist.
+`public.r2Prefix` and `public.excludePrefixes` are unsupported fields. One
+chart pin controls the excludes and the source mirrors together. The
+Garage writer of the root bucket must not use a source prefix as a key
+prefix: the root sync leaves those keys out.
 
-The library refuses two mirrors in one chart with the same R2 bucket and
-prefix. `//bazel/helm/content_rules:r2_prefix_test` reads every factory
-application chart. It fails when two mirrors share an R2 bucket and prefix, or
-when the root mirror does not exclude a prefix (invariant LIB-7). A writer
-without its own mirror declares a write bucket entry without `public` and
-cannot mount the R2 Secret.
+Content rule `rule_public_r2` checks the render of every factory application.
+Outside namespace `factory-public`, it refuses a OnePasswordItem for the
+token's item and a container with `R2_BUCKET=factory-public` (invariant
+LIB-8). The library tests prove the derived excludes and the prefix
+confinement (invariant LIB-7).
 
 ## Delivery split for HOME-137
 
