@@ -17,7 +17,7 @@ spec:
   source:
     repoURL: ghcr.io/jomcgi/homelab/charts
     chart: jomcgi-site
-    targetRevision: 0.49.7
+    targetRevision: 0.49.13
     helm:
       releaseName: jomcgi-site-dev
   destination:
