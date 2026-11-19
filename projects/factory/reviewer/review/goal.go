@@ -274,11 +274,12 @@ func issueCriteria(in *IssueContext) int {
 	}
 	items, state, style := 0, 0, "" // state: 0 before the heading, 1 in the list, 2 after it
 	text := strings.ReplaceAll(strings.ReplaceAll(in.Issue.Description, "\r\n", "\n"), "\r", "\n")
-	// Comments, code blocks and HTML blocks can hide or fake list items.
-	// Rather than parse them, count nothing when the issue has any. This
-	// also skips an issue with a diagram; such an issue keeps main's rules.
+	// Comments, code blocks and HTML can hide or fake list items, anywhere
+	// in a line. Rather than parse them, count nothing when the issue has a
+	// "<", "```" or "~~~". Such an issue, for example one with a diagram,
+	// keeps main's rules.
 	// Thematic breaks and setext underlines change what nearby lines mean.
-	if strings.Contains(text, "<!--") || unsafeBlock.MatchString(text) || ruleLine.MatchString(text) {
+	if strings.ContainsAny(text, "<") || strings.Contains(text, "```") || strings.Contains(text, "~~~") || ruleLine.MatchString(text) {
 		return 0
 	}
 	for raw := range strings.SplitSeq(text, "\n") {
@@ -299,7 +300,8 @@ func issueCriteria(in *IssueContext) int {
 		m := listItem.FindStringSubmatch(raw)
 		switch {
 		case m != nil && state == 1:
-			if !strings.ContainsFunc(raw[len(m[0])-1:], func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) {
+			// The words start after the marker: m[1]+m[2] or m[3].
+			if !strings.ContainsFunc(raw[len(m[1])+len(m[2])+len(m[3]):], func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) {
 				return 0 // An item needs words; "* * *" is a thematic break.
 			}
 			kind := m[3]
@@ -336,9 +338,6 @@ var (
 	// listMarker is anything Markdown could read as a list item, at any
 	// indent, including an empty one.
 	listMarker = regexp.MustCompile(`^[ \t]*(?:[0-9]{1,9}[.)]|[-*+])(?:[ \t]|$)`)
-	// unsafeBlock is a line that can open a fenced code block or an HTML
-	// block, at any indent.
-	unsafeBlock = regexp.MustCompile("(?m)^[ \t]*(?:```|~~~|<)")
 	// ruleLine is a line of only rule characters: a thematic break or a
 	// setext heading underline.
 	ruleLine = regexp.MustCompile(`(?m)^[ \t]*(?:[-*_=][ \t]*){3,}$`)
