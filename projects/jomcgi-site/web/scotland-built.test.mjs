@@ -203,7 +203,7 @@ test("all six exact edge routes have files in the deployment output", () => {
     ...pages.map((page) => `jomcgi.dev/${page.slug}`),
     "jomcgi.dev/scotland/marketplace.json",
   ].sort();
-  // The retired connector paths end in `*`; the next test covers them.
+  // The legacy connector paths end in `*`; the next test covers them.
   const owned = routes.patterns
     .filter((pattern) => /^jomcgi\.dev\/(scotland|slop)/.test(pattern))
     .filter((pattern) => !pattern.endsWith("*"))
@@ -225,7 +225,7 @@ test("all six exact edge routes have files in the deployment output", () => {
   }
 });
 
-test("the build sends the retired connector URLs to scotland-mcp.jomcgi.dev", () => {
+test("the build sends the legacy connector URLs to scotland-mcp.jomcgi.dev", () => {
   // HOME-475. A 308 keeps the method and body, so an MCP POST follows it.
   const redirects = readFileSync(join(dist, "_redirects"), "utf8").split("\n");
   for (const rule of [

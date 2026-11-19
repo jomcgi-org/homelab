@@ -26,11 +26,16 @@ spec:
     - repoURL: https://github.com/jomcgi-org/homelab.git
       targetRevision: HEAD
       ref: values
-  # HOME-475 retired this copy: the values render `replicas: 0` and no HPA.
-  # So this Application has no ignoreDifferences on /spec/replicas and no
-  # RespectIgnoreDifferences. With them, Argo CD would keep the live pod count
-  # after it prunes the HPA. These fields sit outside spec.sources, so the hub
-  # root applies this change, unlike a change to a values path.
+  # The HPA owns the live replica count and the chart renders `replicas:`, so
+  # without this ArgoCD reads every scale-out as drift and selfHeal scales it
+  # straight back. Scoped to the one Deployment, as for monolith-public-web.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: scotland-connector
+      namespace: scotland-connector
+      jsonPointers:
+        - /spec/replicas
   destination:
     server: https://kubernetes.default.svc
     namespace: scotland-connector
@@ -40,6 +45,10 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      # Suppressing the diff is not the same as not applying the value: without
+      # this ArgoCD keeps stamping the rendered replicas back on every sync and
+      # the HPA's scale-out is undone within a sync interval.
+      - RespectIgnoreDifferences=true
     retry:
       limit: 5
       backoff:
