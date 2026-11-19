@@ -58,6 +58,14 @@
     }
   },
   "properties": {
+    "codexTrial": {
+      "type": "object",
+      "required": ["image"],
+      "additionalProperties": false,
+      "properties": {
+        "image": { "$ref": "#/properties/broker/properties/image" }
+      }
+    },
     "codexAdminRouteEnabled": { "type": "boolean" },
     "kagent": {
       "description": "kagent install or reference. Other keys are the kagent 1.0.1 subchart's values.",
@@ -1035,14 +1043,9 @@
             "minLength": 1
           },
           "codexCodeMode": {
-            "description": "Select the experimental Codex code-mode image for this binding.",
+            "description": "Set true for code mode or false for direct mode on the trial image. Omit for the normal harness.",
             "type": "boolean",
             "default": false
-          },
-          "codexCodeModeImage": {
-            "description": "Opt this binding into the projects/factory/codex-code-mode image by digest.",
-            "type": "string",
-            "pattern": "^.+@sha256:[a-f0-9]{64}$"
           },
           "toolchain": {
             "description": "Opt in to the homelab Alpine bootstrap and public download origins for this coding binding.",

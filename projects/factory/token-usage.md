@@ -213,11 +213,17 @@ acceptance step.
 
 The deployed kagent fork writes the actor's `$CODEX_HOME/config.toml` in
 `go/harness/codex/internal/adapter/adapter.go` and launches Codex app-server
-with strict config. The experimental image layers `/etc/codex/config.toml`
-onto that same digest, setting `features.code_mode_only = true`. Publish
-`projects/factory/codex-code-mode/Dockerfile` with its directory as the build
-context, then set one repository's `codexCodeModeImage` to the digest and
-`codexCodeMode` to true. The model catalog can override the feature selection.
+with strict config. The trial packages the same adapter and Codex executables in an
+amd64 Alpine 3.22 apko image. Its launcher passes the tested catalog and
+web-search overrides to app-server in both arms. The binding's
+`FACTORY_CODE_MODE` environment value sets `features.code_mode_only`.
+
+After CI publishes the image and the factory Application pins the chart with
+its digest, set `repositories[].codexCodeMode: false` on one gpt-6.2-astra
+trial binding. Dispatch the fixed task below, then set the value to true and
+repeat in a fresh session after the Agent revision changes. Record both run
+IDs, effective tool names, input and output totals from the connector. Remove
+the key to return the binding to its ordinary harness.
 
 Two fresh app-server threads in the factory Codex 0.169.1 actor used the same
 adapter-generated provider config, checkout, model and prompt. For both runs
