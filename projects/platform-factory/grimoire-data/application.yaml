@@ -13,7 +13,7 @@ spec:
   source:
     repoURL: https://github.com/jomcgi-org/homelab.git
     targetRevision: HEAD
-    path: projects/grimoire/deploy/resources
+    path: projects/platform-factory/grimoire-data/resources
   destination:
     server: https://kubernetes.default.svc
     namespace: grimoire
