@@ -1449,3 +1449,16 @@ func TestInvariantScopeAnswerIsAdvisory(t *testing.T) {
 		}
 	}
 }
+
+func TestInvariantScopeAnswersShareLowBudget(t *testing.T) {
+	answer := `{"path":"new.go","uncovered":true}`
+	reply := "```json\n" + `{"summary":"s","findings":[{"severity":"low","title":"existing"}],"invariant_scopes":[{"uncovered":"false"},` + strings.Repeat(answer+",", MaxLow-1) + answer + "]}\n```"
+	r, err := ParseReport(reply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := Assess(r, nil)
+	if len(a.Optional) != MaxLow || a.DroppedLow != 1 || a.Conclusion != ConclusionSuccess {
+		t.Fatalf("assessment = %+v", a)
+	}
+}
