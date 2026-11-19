@@ -9,6 +9,7 @@ databases, so the snapshot, track and heat products compare directly.
 import asyncio
 import json
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -35,6 +36,17 @@ UTC_SESSION = {"options": "-c timezone=GMT"}
 LOCK_WAIT = (
     "select count(*) from pg_stat_activity"
     " where wait_event_type = 'Lock' and query like 'with added%'"
+)
+# The PostgreSQL server is shared by the tests, so these read one database.
+LEASE_PID = (
+    "select pid from pg_locks where locktype = 'advisory' and granted"
+    " and classid = 409 and objid = 1"
+    " and database = (select oid from pg_database where datname = current_database())"
+)
+CLAIM_WAIT = (
+    "select count(*) from pg_stat_activity"
+    " where datname = current_database() and wait_event_type = 'Lock'"
+    " and query like 'select id, frame from ships.inbox%'"
 )
 
 
@@ -70,8 +82,9 @@ def feed():
 @pytest.fixture
 def writers():
     started = []
+    logs = []
 
-    def start(dsn, url, retention=False):
+    def start(dsn, url, retention=False, log=None):
         env = dict(
             os.environ,
             DATABASE_URL=dsn,
@@ -79,8 +92,12 @@ def writers():
             AISSTREAM_URL=url,
             SHIPS_RETENTION_ENABLED="true" if retention else "false",
         )
+        stderr = None
+        if log is not None:
+            stderr = log.open("w")
+            logs.append(stderr)
         process = subprocess.Popen(
-            [os.path.abspath(os.environ["SHIPS_BINARY"])], env=env
+            [os.path.abspath(os.environ["SHIPS_BINARY"])], env=env, stderr=stderr
         )
         started.append(process)
         return process
@@ -90,6 +107,8 @@ def writers():
         if process.poll() is None:
             process.kill()
         process.wait(timeout=10)
+    for handle in logs:
+        handle.close()
 
 
 def factory_database(pg, name):
@@ -390,7 +409,65 @@ def test_restart_during_write_keeps_history_and_latest(pg, feed, writers):
     assert latest(factory, "321") == (base + timedelta(seconds=30), 48.03)
 
 
-def test_writer_survives_default_rows_future_and_refused_reports(pg, feed, writers):
+def test_lease_loss_during_apply_keeps_each_report_once(pg, feed, writers):
+    factory, dsn = factory_database(pg, "ships_lease")
+    base = datetime.now(UTC) - timedelta(hours=1)
+    history = "select count(*) from ships.positions"
+    leader = writers(dsn, feed.url)
+    ws = feed.accept()
+    ws.send(position(321, base, 48.0, -123.0, 3))
+    until(lambda: scalar(factory, history) == 1)
+
+    with factory.connect() as blocker:
+        # A row lock on the latest position blocks the history write but not
+        # maintenance, so a standby reaches its own apply.
+        blocker.exec_driver_sql(
+            "select 1 from ships.latest_positions where mmsi = '321' for update"
+        )
+        ws.send(position(321, base + timedelta(seconds=10), 48.01, -123.0, 3))
+        until(lambda: scalar(factory, LOCK_WAIT) == 1)
+
+        # PostgreSQL ends only the lease session. The stopped leader cannot see
+        # the loss, so its apply transaction stays open and can still commit.
+        leader.send_signal(signal.SIGSTOP)
+        try:
+            pid = scalar(factory, LEASE_PID)
+            assert scalar(factory, f"select pg_terminate_backend({pid})")
+            until(lambda: scalar(factory, LEASE_PID) is None)
+            writers(dsn, feed.url)
+            # The standby takes the lease and waits on the claimed inbox row.
+            # It does not read the row and start a second history write.
+            until(lambda: scalar(factory, CLAIM_WAIT) == 1)
+            assert scalar(factory, LOCK_WAIT) == 1
+            assert feed.sockets.empty()
+            # The old history write completes while the leader is stopped.
+            blocker.rollback()
+        finally:
+            leader.send_signal(signal.SIGCONT)
+
+    # The leader commits or rolls back its apply. Either way the standby
+    # applies the inbox before it subscribes, and each report is in history once.
+    ws = feed.accept()
+    assert scalar(factory, history) == 2
+    assert scalar(
+        factory,
+        "select count(*) = count(distinct recorded_at) from ships.positions",
+    )
+    assert scalar(factory, "select count(*) from ships.inbox") == 0
+    assert latest(factory, "321") == (base + timedelta(seconds=10), 48.01)
+
+    ws.send(position(321, base + timedelta(seconds=20), 48.02, -123.0, 3))
+    until(lambda: scalar(factory, history) == 3)
+    assert latest(factory, "321") == (base + timedelta(seconds=20), 48.02)
+    assert scalar(
+        factory,
+        "select count(*) = count(distinct recorded_at) from ships.positions",
+    )
+
+
+def test_writer_survives_default_rows_future_and_refused_reports(
+    pg, feed, writers, tmp_path
+):
     factory, dsn = factory_database(pg, "ships_partitions")
     now = datetime.now(UTC)
     tomorrow = (now + timedelta(days=1)).replace(
@@ -405,7 +482,8 @@ def test_writer_survives_default_rows_future_and_refused_reports(pg, feed, write
             ),
             {"at": tomorrow},
         )
-    writers(dsn, feed.url)
+    log = tmp_path / "writer.log"
+    writers(dsn, feed.url, log=log)
     ws = feed.accept()
     assert scalar(factory, "select count(*) from ships.positions_default") == 0
     assert (
@@ -436,3 +514,8 @@ def test_writer_survives_default_rows_future_and_refused_reports(pg, feed, write
         == 0
     )
     assert scalar(factory, "select count(*) from ships.inbox") == 0
+    # The closed feed ends the session, and the writer logs each dropped report once.
+    ws.close()
+    ended = re.compile(r"session ended: malformed=\d+ ahead=(\d+) refused=(\d+) ")
+    until(lambda: ended.search(log.read_text()))
+    assert ended.search(log.read_text()).groups() == ("1", "1")
