@@ -36,6 +36,11 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ $np.connector.namespace }}
             {{- toYaml $np.connector.matchLabels | nindent 12 }}
+        {{- if .Values.leaderboard.enabled }}
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.broker.namespace }}
+            app.kubernetes.io/name: factory-leaderboard
+        {{- end }}
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: edge
             gateway.envoyproxy.io/owning-gateway-name: edge

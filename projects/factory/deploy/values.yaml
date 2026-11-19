@@ -218,6 +218,9 @@ itsaplan:
 
 # The connector (projects/factory/connector) as factory/factory-connector,
 # for the homelab binding.
+leaderboard:
+  enabled: true
+
 connector:
   traceEndpoint: http://otel-collector.otel-collector.svc.cluster.local:4317
   enabled: true
