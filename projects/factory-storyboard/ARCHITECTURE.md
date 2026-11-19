@@ -30,7 +30,10 @@ checks their hashes and cross-links, and exercises rejected inputs. The
 The publisher joins the configured itsaplan project to connector delivery
 records. It checks approved assistant text against SHA-256 digests of
 completed kagent tasks. A connector store view computes these digests from
-the connector's task journal, so no transcript text crosses this boundary.
+the connector's task journal. It returns only the digests that the owner
+approved in the connector store, so no transcript text or unapproved digest
+crosses this boundary. The publisher withholds a task that the view does not
+confirm and publishes the other records.
 The publisher has no network path to the kagent controller, whose
 trusted-proxy listener accepts unverified bearer tokens. A separate
 owner-approved export supplies the public text and retains it after

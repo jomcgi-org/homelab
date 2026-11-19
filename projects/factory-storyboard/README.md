@@ -97,8 +97,11 @@ tokens (`projects/factory/ARCHITECTURE.md` finding 5).
 
 The publisher reads kagent session history through the connector store. The
 connector journals each task's history in `task_transcript`. The
-`storyboard_task_messages` view returns only the SHA-256 of each assistant
-message in a completed task of the current session. The digest covers the
+`storyboard_task_messages` view returns the SHA-256 of an assistant message
+in a completed task of the current session. It returns the digest only if
+the owner approved it for that project, issue, session and task in
+`storyboard_approved_message`. The publisher login cannot read or write that
+table, so it learns nothing about other messages. The digest covers the
 message text as the itsaplan run trace shows it. Artifact text is excluded.
 A review round has no journal, so the publisher cannot confirm its text.
 
@@ -108,12 +111,26 @@ holds the project-scoped read-only `ITSAPLAN_KEY` and `APPROVED_HISTORY`.
 contain an approved literal title and description and a `tasks` array. Each
 task records its `session`, `task`, UTC completion time `at`, and the exact
 owner-reviewed assistant messages in `assistantTexts`. Copy each message
-from the itsaplan run trace. If the task is a completed task of the current
-session, every approved message must match a digest in the view. Otherwise
-the publisher stops the cycle. Keep these approved exports after connector
+from the itsaplan run trace. Keep these approved exports after connector
 cleanup. Follow the withdrawal procedure below when an owner removes an
 approval. An empty object publishes issue keys and metrics only. A separate
 explicit publication approval is required before you add prose to the item.
+
+After each change to `APPROVED_HISTORY`, record the same approvals in the
+connector store as the database owner. The script replaces all approvals
+for the project in one transaction:
+
+```sh
+op read op://k8s-homelab/factory-storyboard-readers/APPROVED_HISTORY |
+  python3 projects/factory-storyboard/approvals.py HOME |
+  KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db exec -i factory-db-1 -c postgres -- \
+  psql -v ON_ERROR_STOP=1 -d factory_connector
+```
+
+Use the primary's pod name if `factory-db-1` is not the primary. If a task
+is a completed task of the current session, each approved message must match
+a digest in the view. Otherwise the publisher withholds that task, logs its
+task ID and issue key, and publishes the other records.
 
 After publisher rollout, run
 `node projects/factory-storyboard/verify-rollout.mjs --mirror-only`
@@ -129,8 +146,8 @@ to check the seven-minute limit and every object on the preview site.
    object paths from both the mirror and preview manifests. Include previous
    versions that carry the withdrawn text. Keep this inventory private.
    Remove the text from `APPROVED_HISTORY`. For a whole-session
-   withdrawal, remove its archive entry. Wait for the Kubernetes Secret to
-   reconcile. Wait for a successful publisher Job started with the new Secret.
+   withdrawal, remove its archive entry. Record the approvals again in the
+   connector store. Wait for the Kubernetes Secret to reconcile. Wait for a successful publisher Job started with the new Secret.
 2. Fetch `https://factory-data.jomcgi.dev/manifest.json`. Record its
    `generatedAt`. For a whole session, check that its ID has disappeared
    from the session index and its events from the current issue timeline.
@@ -178,6 +195,7 @@ KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db exec factory-db-1 -c postg
 
 The second command must print 0. Use the primary's pod name if
 `factory-db-1` is not the primary. The `storyboard_delivery`,
-`storyboard_tasks` and `storyboard_task_messages` views and their grants
-stay, so a later redeploy works without a new migration. To remove the
+`storyboard_tasks` and `storyboard_task_messages` views, the
+`storyboard_approved_message` table and their grants stay, so a later
+redeploy works without a new migration. To remove the
 grants as well, add a forward migration that revokes them.

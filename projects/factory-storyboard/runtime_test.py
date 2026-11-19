@@ -2,9 +2,9 @@ from datetime import datetime, timezone
 
 import hashlib
 import json
+import logging
 from pathlib import Path
 from jsonschema import Draft7Validator
-import pytest
 
 import runtime
 
@@ -94,10 +94,14 @@ def test_private_issues_filtered_before_connector_or_session_read(monkeypatch):
     result = runtime.documents(None, "HOME", project, board, archive)
     assert "Unapproved reply" not in json.dumps(result)
     assert queried == [4]
-    # A digest from another session or a changed message refuses the cycle.
+    # A digest from another session or a changed message withholds the task.
     journal[1] = ("unshared", "Update from private-user")
-    with pytest.raises(ValueError, match="differs from completed task"):
-        runtime.documents(None, "HOME", project, board, archive)
+    withheld = runtime.documents(None, "HOME", project, board, archive)
+    assert withheld[3] == {}
+    assert [e["kind"] for e in withheld[2]["HOME-4"]["timeline"]] == [
+        "opened",
+        "merged",
+    ]
     journal[1] = ("shared", "Update from private-user")
     queried.clear()
     monkeypatch.setattr(runtime, "session_tasks", lambda *args: [])
@@ -125,3 +129,83 @@ def test_private_issues_filtered_before_connector_or_session_read(monkeypatch):
     validator = Draft7Validator(schema)
     for doc in [story, *goals.values(), *issues.values(), *sessions.values()]:
         validator.validate(doc)
+
+
+def test_unconfirmed_task_withheld_and_rest_published(monkeypatch, caplog):
+    monkeypatch.setattr(
+        runtime,
+        "delivery",
+        lambda *args: dict(
+            issue_key="HOME-4",
+            state="review",
+            merged_at=None,
+            pr_number=10,
+            review_rounds=1,
+        ),
+    )
+    # A review round completes in the current session without a connector
+    # journal, so the view has no digest for its text.
+    monkeypatch.setattr(
+        runtime,
+        "session_tasks",
+        lambda *args: [
+            dict(
+                session_id="s",
+                task_id=task,
+                kagent_namespace="factory",
+                kagent_agent=agent,
+            )
+            for task, agent in (("code", "coder"), ("review", "reviewer"))
+        ],
+    )
+    monkeypatch.setattr(
+        runtime,
+        "task_messages",
+        lambda *args: [
+            dict(session_id="s", task_id="code", text_sha256=digest("Coded it"))
+        ],
+    )
+    original_turn = runtime.public_turn
+    monkeypatch.setattr(
+        runtime,
+        "public_turn",
+        lambda turn, users: original_turn(turn, users, scan=lambda _: False),
+    )
+    project = {"project": {"id": 1}, "labels": [], "assignees": []}
+    board = [
+        dict(
+            id=4,
+            identifier="HOME-4",
+            projectId=1,
+            labelIds=[],
+            title="Ship it",
+            createdAt="2026-11-02T00:00:00Z",
+        )
+    ]
+    archive = {
+        "HOME-4": {
+            "tasks": [
+                {
+                    "session": "s",
+                    "task": task,
+                    "at": at,
+                    "assistantTexts": [text],
+                }
+                for task, at, text in (
+                    ("code", "2026-11-02T12:00:00Z", "Coded it"),
+                    ("review", "2026-11-02T13:00:00Z", "Reviewed it"),
+                )
+            ]
+        }
+    }
+    with caplog.at_level(logging.WARNING, logger=runtime.__name__):
+        result = runtime.documents(None, "HOME", project, board, archive)
+    story, goals, issues, sessions = result
+    assert "Reviewed it" not in json.dumps(result)
+    (session,) = sessions.values()
+    assert [turn["text"] for turn in session["turns"]] == ["Coded it"]
+    assert [e["kind"] for e in issues["HOME-4"]["timeline"]] == ["opened", "session"]
+    assert [s["issueKey"] for s in story["workInProgress"]] == ["HOME-4"]
+    assert goals["home"]["issueKeys"] == ["HOME-4"]
+    assert "withheld approved task review of HOME-4" in caplog.text
+    assert "Reviewed it" not in caplog.text

@@ -23,7 +23,7 @@ def session_tasks(cursor, project, issue_id):
 
 
 def task_messages(cursor, project, issue_id):
-    # SHA-256 digests only: the view never returns transcript text.
+    # Owner-approved SHA-256 digests only: the view never returns text.
     cursor.execute(
         """SELECT session_id, task_id, text_sha256
            FROM public.storyboard_task_messages

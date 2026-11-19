@@ -534,7 +534,8 @@ func TestStoryboardDeliveryPrivileges(t *testing.T) {
 		t.Fatalf("unexpected storyboard task projection: %t (%v)", projection, err)
 	}
 	// Journals as the connector writes them: chunked content, an artifact,
-	// U+0000 next to a literal "\u0000", and a journal with no events.
+	// U+0000 next to a literal "\u0000", an unapproved reply and a journal
+	// with no events.
 	journal := func(events ...map[string]string) []byte {
 		b, err := json.Marshal(map[string]any{"events": events, "historyEvents": len(events)})
 		if err != nil {
@@ -546,58 +547,105 @@ func TestStoryboardDeliveryPrivileges(t *testing.T) {
 		return map[string]string{"type": "TEXT_MESSAGE_CONTENT", "messageId": id, "delta": delta}
 	}
 	for _, j := range []struct {
+		run     int
 		attempt int
 		task    string
 		state   []byte
 	}{
-		{1, "finished", journal(
+		{414, 1, "finished", journal(
 			map[string]string{"type": "TEXT_MESSAGE_START", "messageId": "m1", "role": "assistant"},
 			content("m1", "Approved "),
 			content("artifact/x", "Private artifact"),
 			content("m2", "a\x00b\\u0000"),
+			content("m5", "Unapproved reply"),
 			content("m1", "update"),
 			map[string]string{"type": "TEXT_MESSAGE_END", "messageId": "m1"},
 		)},
-		{2, "finished", []byte(`{"events":null}`)},
-		{1, "waiting", journal(content("m3", "Waiting reply"))},
-		{1, "stale", journal(content("m4", "Old session reply"))},
+		{414, 2, "finished", []byte(`{"events":null}`)},
+		{414, 1, "waiting", journal(content("m3", "Waiting reply"))},
+		{414, 1, "stale", journal(content("m4", "Old session reply"))},
 	} {
 		if _, err := st.DB.Exec(`INSERT INTO task_transcript (run_id, attempt, task_id, base_offset, state)
-			VALUES (414, $1, $2, 0, $3)`, j.attempt, j.task, j.state); err != nil {
+			VALUES ($1, $2, $3, 0, $4)`, j.run, j.attempt, j.task, j.state); err != nil {
 			t.Fatal(err)
 		}
 	}
-	rows, err := reader.Query(`SELECT itsaplan_project, issue_id, session_id, task_id, text_sha256
-		FROM public.storyboard_task_messages ORDER BY text_sha256`)
+	messages := func() []string {
+		t.Helper()
+		rows, err := reader.Query(`SELECT itsaplan_project, issue_id, session_id, task_id, text_sha256
+			FROM public.storyboard_task_messages ORDER BY text_sha256`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var digests []string
+		for rows.Next() {
+			var project, session, task, digest string
+			var issue int
+			if err := rows.Scan(&project, &issue, &session, &task, &digest); err != nil {
+				t.Fatal(err)
+			}
+			if project != "HOME" || issue != 213 || session != "session" || task != "finished" {
+				t.Fatalf("unexpected message row: %s %d %s %s", project, issue, session, task)
+			}
+			digests = append(digests, digest)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return digests
+	}
+	// Journaled messages without an owner approval stay invisible.
+	if got := messages(); len(got) != 0 {
+		t.Fatalf("unapproved message digests visible: %v", got)
+	}
+	// A private project's task with the same session and task IDs.
+	_, err = st.DB.Exec(`
+        INSERT INTO repo_binding (name, owner, repo, base_branch, itsaplan_project,
+            kagent_namespace, kagent_agent, branch_prefix, max_engineering_retries)
+        VALUES ('private', 'org', 'private', 'main', 'PRIV', 'factory', 'coder', 'factory/', 2);
+        INSERT INTO work_item (binding_name, issue_id, issue_key, branch, agent_key,
+            kagent_namespace, kagent_agent, session_id)
+        VALUES ('private', 300, 'PRIV-300', 'factory/PRIV-300', 'coder', 'factory', 'coder', 'session');
+        INSERT INTO run (id, agent_key, work_item_id, trigger, prompt, system_prompt, attempt, state)
+        SELECT 415, 'coder', id, 'initial', '', '', 1, 'closed' FROM work_item WHERE issue_id=300;
+        INSERT INTO delivery_attempt (run_id,seq,run_attempt,work_item_epoch,decision_id,kind,message_id,
+            kagent_namespace,kagent_agent,context_id,task_id,state,writer_epoch,kagent_outcome)
+        VALUES (415,1,1,1,'decision-private','initial','message-private','factory','coder',
+            'session','finished','completed',1,'TASK_STATE_COMPLETED')`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var digests []string
-	for rows.Next() {
-		var project, session, task, digest string
-		var issue int
-		if err := rows.Scan(&project, &issue, &session, &task, &digest); err != nil {
-			t.Fatal(err)
-		}
-		if project != "HOME" || issue != 213 || session != "session" || task != "finished" {
-			t.Fatalf("unexpected message row: %s %d %s %s", project, issue, session, task)
-		}
-		digests = append(digests, digest)
-	}
-	if err := rows.Err(); err != nil {
+	if _, err := st.DB.Exec(`INSERT INTO task_transcript (run_id, attempt, task_id, base_offset, state)
+		VALUES (415, 1, 'finished', 0, $1)`, journal(content("p1", "Private project reply"))); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{
-		fmt.Sprintf("%x", sha256.Sum256([]byte("Approved update"))),
-		fmt.Sprintf("%x", sha256.Sum256([]byte("a�b\\u0000"))),
+	sum := func(text string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(text))) }
+	// The owner approves two messages. The other rows name text the task
+	// never held, an unfinished task, an old session or the wrong project.
+	for _, a := range [][4]string{
+		{"HOME", "session", "finished", sum("Approved update")},
+		{"HOME", "session", "finished", sum("a\ufffdb\\u0000")},
+		{"HOME", "session", "finished", sum("Private project reply")},
+		{"HOME", "session", "finished", sum("Never sent")},
+		{"HOME", "session", "waiting", sum("Waiting reply")},
+		{"HOME", "old", "stale", sum("Old session reply")},
+		{"PRIV", "session", "finished", sum("Unapproved reply")},
+	} {
+		if _, err := st.DB.Exec(`INSERT INTO storyboard_approved_message
+			(itsaplan_project, issue_key, session_id, task_id, text_sha256)
+			VALUES ($1, 'HOME-213', $2, $3, $4)`, a[0], a[1], a[2], a[3]); err != nil {
+			t.Fatal(err)
+		}
 	}
+	want := []string{sum("Approved update"), sum("a\ufffdb\\u0000")}
 	slices.Sort(want)
-	if !slices.Equal(digests, want) {
-		t.Fatalf("message digests = %v, want %v", digests, want)
+	if got := messages(); !slices.Equal(got, want) {
+		t.Fatalf("message digests = %v, want %v", got, want)
 	}
 	unrelated := pgtest.AsRole(t, st.DB, "factory_reaper")
 	var refusal interface{ SQLState() string }
-	for _, view := range []string{"storyboard_tasks", "storyboard_task_messages"} {
+	for _, view := range []string{"storyboard_tasks", "storyboard_task_messages", "storyboard_approved_message"} {
 		_, err = unrelated.Exec("SELECT * FROM public." + view)
 		if !errors.As(err, &refusal) || refusal.SQLState() != "42501" {
 			t.Fatalf("unrelated role read of %s: %v", view, err)
@@ -609,6 +657,10 @@ func TestStoryboardDeliveryPrivileges(t *testing.T) {
 		"SELECT * FROM public.work_item",
 		"UPDATE public.work_item SET review_rounds = 1 WHERE issue_id = 213",
 		"DELETE FROM public.run",
+		// The publisher can neither list nor change approvals.
+		"SELECT text_sha256 FROM public.storyboard_approved_message",
+		"INSERT INTO public.storyboard_approved_message VALUES ('HOME', 'HOME-213', 'session', 'finished', repeat('0', 64))",
+		"DELETE FROM public.storyboard_approved_message",
 	} {
 		_, err := reader.Exec(query)
 		var state interface{ SQLState() string }
