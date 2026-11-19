@@ -78,13 +78,13 @@ func (r *Reviewer) Require(allowed []string, next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "forbidden")
 			return
 		}
-		next.ServeHTTP(w, req.WithContext(withUser(req.Context(), user)))
+		next.ServeHTTP(w, req.WithContext(WithUser(req.Context(), user)))
 	})
 }
 
 type userKey struct{}
 
-func withUser(ctx context.Context, user string) context.Context {
+func WithUser(ctx context.Context, user string) context.Context {
 	return context.WithValue(ctx, userKey{}, user)
 }
 

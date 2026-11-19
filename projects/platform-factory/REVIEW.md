@@ -10,6 +10,8 @@ boundary: a rule below broken on them is critical.
   - Authentik's own route.
   - `kagent-authentik-oidc`, which carries the shared `edge.oidc` settings
     plus `forwardAccessToken: true`.
+  - `codex-admin-authentik-oidc`, which forwards the access token with the
+    shared `edge.oidc` settings on the broker’s `/admin/codex` route.
   - `kube-api-authentik-jwt` on the `kube-api` route
     (factory-kube.jomcgi.dev). kubectl cannot follow the browser redirect,
     so this policy checks a bearer token instead: one JWT provider with the
@@ -31,6 +33,16 @@ boundary: a rule below broken on them is critical.
   `test_only_kagent_forwards_the_access_token` pins the edge chart policies,
   and `test_kube_api_requires_an_authentik_token_from_a_kube_group` pins the
   bearer policy, route, grant and TLS check.
+
+
+  The Codex policy is reserved for a follow-up after the broker listener, ingress
+  policy and exact Authentik callback are deployed. Its redirect URL must
+  be `https://factory.jomcgi.dev/admin/codex/oauth2/callback` so the same
+  policy handles sign-in and callback. Couple route enablement to the broker
+  chart pin so rollback also withdraws the route. The Codex quota and grant
+  alerts already link the page; the link answers only after the route is
+  enabled. [Joe staged the route](https://factory-plan.jomcgi.dev/factory/issue/HOME-323#comment-4035)
+  to HOME-405.
   The `oidc-sentinel` route stays.
   Authentik's admin, user, API and initial-setup paths keep answering 403
   publicly.

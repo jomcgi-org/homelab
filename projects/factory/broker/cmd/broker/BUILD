@@ -38,6 +38,7 @@ go_test(
     srcs = ["main_test.go"],
     embed = [":broker_lib"],
     deps = [
+        "//projects/factory/broker/actorjwt",
         "//projects/factory/broker/config",
         "//projects/factory/broker/internal/fakes",
         "//projects/factory/broker/metrics",

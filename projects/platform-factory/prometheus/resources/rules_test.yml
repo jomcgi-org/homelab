@@ -305,7 +305,7 @@ tests:
               threshold: "1"
               runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#factorycodexquotalow-factorycodexquotaexhausted"
               summary: "Codex grant codex-primary is out of quota (exhausted flag 1 of 1)"
-              description: 'Coder turns fail until then. The primary window resets at 2026-11-25 00:14:00 +0000 UTC. Runbook: projects/factory-cluster/README.md, "Alerts".'
+              description: 'Coder turns fail until then. The primary window resets at 2026-11-25 00:14:00 +0000 UTC. Runbook: projects/factory-cluster/README.md, "Alerts". Codex login: https://factory.jomcgi.dev/admin/codex/'
 
   # A grant that needs a login pages after 10 min; ready is quiet.
   - interval: 1m
@@ -330,7 +330,7 @@ tests:
               threshold: "1"
               runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#factorycodexgrantnotready"
               summary: "Codex grant codex-primary is login_required (non-ready flag 1 of 1)"
-              description: 'The broker cannot relay Codex turns with this grant. Runbook: projects/factory-cluster/README.md, "Alerts".'
+              description: 'The broker cannot relay Codex turns with this grant. Runbook: projects/factory-cluster/README.md, "Alerts". Codex login: https://factory.jomcgi.dev/admin/codex/'
 
   # A grant that moves from login_required to error at 17 min stays not
   # ready: the alert fires 10 min after the first state, naming the current.
@@ -358,7 +358,7 @@ tests:
               threshold: "1"
               runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#factorycodexgrantnotready"
               summary: "Codex grant codex-primary is error (non-ready flag 1 of 1)"
-              description: 'The broker cannot relay Codex turns with this grant. Runbook: projects/factory-cluster/README.md, "Alerts".'
+              description: 'The broker cannot relay Codex turns with this grant. Runbook: projects/factory-cluster/README.md, "Alerts". Codex login: https://factory.jomcgi.dev/admin/codex/'
 
   # A grant refused with no window at 100% names every window's reset.
   - interval: 1m
@@ -382,7 +382,7 @@ tests:
               threshold: "1"
               runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#factorycodexquotalow-factorycodexquotaexhausted"
               summary: "Codex grant codex-primary is out of quota (exhausted flag 1 of 1)"
-              description: 'Coder turns fail until then. The primary window resets at 2026-11-25 00:14:00 +0000 UTC. Runbook: projects/factory-cluster/README.md, "Alerts".'
+              description: 'Coder turns fail until then. The primary window resets at 2026-11-25 00:14:00 +0000 UTC. Runbook: projects/factory-cluster/README.md, "Alerts". Codex login: https://factory.jomcgi.dev/admin/codex/'
 
   # A full window without a reset time says so; it never borrows the reset
   # of another window.
@@ -409,7 +409,7 @@ tests:
               threshold: "1"
               runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#factorycodexquotalow-factorycodexquotaexhausted"
               summary: "Codex grant codex-primary is out of quota (exhausted flag 1 of 1)"
-              description: 'Coder turns fail until then. The primary window has no reset time. Runbook: projects/factory-cluster/README.md, "Alerts".'
+              description: 'Coder turns fail until then. The primary window has no reset time. Runbook: projects/factory-cluster/README.md, "Alerts". Codex login: https://factory.jomcgi.dev/admin/codex/'
 
   # A reading that goes stale and then disappears keeps one alert: it fires
   # 15 min after the reading turned stale, not 15 min after it disappeared.

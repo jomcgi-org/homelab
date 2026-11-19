@@ -426,6 +426,9 @@ func TestDeviceLogin(t *testing.T) {
 		var status map[string]any
 		_ = json.Unmarshal(rec.Body.Bytes(), &status)
 		if status["login"] == "granted" && status["grant_state"] == "present" {
+			if status["account"] != h.auth.AccountID {
+				t.Fatalf("unexpected login account %v", status["account"])
+			}
 			break
 		}
 		if status["login"] == "failed" || time.Now().After(deadline) {

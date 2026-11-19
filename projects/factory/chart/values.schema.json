@@ -58,6 +58,7 @@
     }
   },
   "properties": {
+    "codexAdminRouteEnabled": { "type": "boolean" },
     "kagent": {
       "description": "kagent install or reference. Other keys are the kagent 1.0.1 subchart's values.",
       "type": "object",

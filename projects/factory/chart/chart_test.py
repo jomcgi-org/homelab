@@ -648,7 +648,14 @@ def test_broker_policy() -> None:
                         ns: "factory",
                         "app.kubernetes.io/name": "factory-connector",
                     }
-                }
+                },
+                {
+                    "matchLabels": {
+                        ns: "edge",
+                        "gateway.envoyproxy.io/owning-gateway-name": "edge",
+                        "gateway.envoyproxy.io/owning-gateway-namespace": "edge",
+                    }
+                },
             ],
             "toPorts": [{"ports": [{"port": "8081", "protocol": "TCP"}]}],
         },
@@ -669,6 +676,7 @@ def test_broker_policy() -> None:
         },
         {
             "toFQDNs": [
+                {"matchName": "factory-auth.jomcgi.dev"},
                 {"matchName": "auth.openai.com"},
                 {"matchName": "chatgpt.com"},
                 {"matchName": "api.github.com"},
@@ -1274,3 +1282,33 @@ def test_discord_import_runs_once_per_run_id_with_the_bridge_boundary() -> None:
     )
     with pytest.raises(RuntimeError, match="discord.import needs discord.bridge"):
         _render(_DISCORD[:1] + _DISCORD[2:3] + ["discord.import.enabled=true"])
+
+
+def test_codex_admin_route_follows_broker_chart():
+    assert not any(d["metadata"]["name"] == "codex-admin" for d in _render())
+    docs = _render(["codexAdminRouteEnabled=true"])
+    route = _in(docs, "HTTPRoute", "edge", "codex-admin")["spec"]
+    assert route["hostnames"] == ["factory.jomcgi.dev"]
+    (rule,) = route["rules"]
+    assert rule["matches"] == [
+        {"path": {"type": "PathPrefix", "value": "/admin/codex"}}
+    ]
+    (backend,) = rule["backendRefs"]
+    assert (backend["namespace"], backend["name"], backend["port"]) == (
+        "factory",
+        "factory-broker",
+        8081,
+    )
+    policy = _in(docs, "SecurityPolicy", "edge", "codex-admin-authentik-oidc")["spec"]
+    assert policy["targetRefs"] == [
+        {
+            "group": "gateway.networking.k8s.io",
+            "kind": "HTTPRoute",
+            "name": "codex-admin",
+        }
+    ]
+    assert policy["oidc"]["forwardAccessToken"]
+    assert (
+        policy["oidc"]["redirectURL"]
+        == "https://factory.jomcgi.dev/admin/codex/oauth2/callback"
+    )
