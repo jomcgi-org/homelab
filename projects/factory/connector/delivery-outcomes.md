@@ -21,7 +21,7 @@ merge count. Missing token receipts leave that metric NULL.
 Revert detection scans base-branch commits during the first 168 hours after merge.
 It accepts the forms that `factory_reverts.py` accepts: `This reverts commit <sha>`
 with a full or abbreviated merge SHA, `Reverts [owner/repo]#N`, or a subject that
-starts with `Revert` and cites `#N`. Recent merges
+starts with `Revert` and cites `#N`. A reference qualified with another repository does not count. Recent merges
 can still change the revert rate.
 
 After rollout, check that every merged PR in the connector database has a
