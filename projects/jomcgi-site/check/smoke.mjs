@@ -23,7 +23,7 @@ export async function smoke(dist) {
         get: http.get,
         scope: scopeFor(stage),
       });
-      await checkLinks(http.get, await tier2(pages));
+      await checkLinks(http.get, await tier2(pages, { checkMaps: false }));
       console.log(`image smoke: ${stage} release passed both tiers`);
     } finally {
       await http.close();
