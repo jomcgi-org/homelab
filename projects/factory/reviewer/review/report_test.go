@@ -1450,15 +1450,22 @@ func TestInvariantScopeAnswerIsAdvisory(t *testing.T) {
 	}
 }
 
-func TestInvariantScopeAnswersShareLowBudget(t *testing.T) {
+func TestInvariantScopeAnswersSkipLowBudget(t *testing.T) {
 	answer := `{"path":"new.go","uncovered":true}`
-	reply := "```json\n" + `{"summary":"s","findings":[{"severity":"low","title":"existing"}],"invariant_scopes":[{"uncovered":"false"},` + strings.Repeat(answer+",", MaxLow-1) + answer + "]}\n```"
+	lows := strings.Repeat(`{"severity":"low","title":"existing"},`, MaxLow) + `{"severity":"low","title":"existing"}`
+	reply := "```json\n" + `{"summary":"s","findings":[` + lows + `],"invariant_scopes":[{"uncovered":"false"},` + answer + "]}\n```"
 	r, err := ParseReport(reply)
 	if err != nil {
 		t.Fatal(err)
 	}
 	a := Assess(r, nil)
-	if len(a.Optional) != MaxLow || a.DroppedLow != 1 || a.Conclusion != ConclusionSuccess {
+	scoped := 0
+	for _, f := range a.Optional {
+		if f.ID == "new.go:invariant-scope" {
+			scoped++
+		}
+	}
+	if scoped != 1 || len(a.Optional) != MaxLow+1 || a.DroppedLow != 1 || a.Conclusion != ConclusionSuccess {
 		t.Fatalf("assessment = %+v", a)
 	}
 }

@@ -735,12 +735,10 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 	if len(a.Blocking) > 0 {
 		a.Conclusion = ConclusionFailure
 	}
+	// HOME-349: every "yes" is listed. The answers stay outside the MaxLow
+	// budget, so ordinary low findings cannot hide an uncovered scope.
 	for _, answer := range r.InvariantScopes {
 		if answer.Uncovered {
-			if low++; low > MaxLow {
-				a.DroppedLow++
-				continue
-			}
 			a.Optional = append(a.Optional, Finding{ID: answer.Path + ":invariant-scope", Severity: SeverityLow, Path: answer.Path, Title: "Invariant scope may be uncovered", Detail: answer.Reason})
 		}
 	}
