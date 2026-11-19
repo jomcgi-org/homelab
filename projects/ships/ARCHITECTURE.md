@@ -17,16 +17,16 @@ Hub resource use, measured in Honeycomb (`metrics` dataset, hub containers) for 
 | monolith `backend` (ingest shares it with other modules) | 0.26 / 0.61 / 0.98 | 544 MiB / 626 MiB |
 | monolith `postgres` (all monolith databases) | 0.33 / 1.04 / 1.46 | 897 MiB / 956 MiB |
 
-These are shared-container totals, so they bound the ingest cost from above. The hub emits no ingest telemetry. [Joe's decision of 2026-11-19](https://factory-plan.jomcgi.dev/factory/issue/HOME-516#comment-5531) skips a hub baseline. HOME-516 starts the factory ingester with generous budgets, and factory metrics size it later.
+These are shared-container totals, so they bound the ingest cost from above. The hub emits no ingest telemetry. [Joe's decision of 2026-11-19](https://factory-plan.jomcgi.dev/factory/issue/HOME-516#comment-5531) skips a hub baseline. HOME-516 sets generous starting budgets at zero replicas. [HOME-537](https://factory-plan.jomcgi.dev/factory/issue/HOME-537) gives the ingester its replica, and factory metrics size it later.
 
 HOME-516 sets these starting budgets in `chart/values.yaml`:
 
 | Workload | Requests | Limits | Storage |
 | --- | --- | --- | --- |
-| `ships-ingester`, one pod | 250m CPU, 512 MiB | 1 CPU, 1 GiB | none |
+| `ships-ingester`, one pod from HOME-537 | 250m CPU, 512 MiB | 1 CPU, 1 GiB | none |
 | `ships-db`, each of three instances | 100m CPU, 512 MiB | 1 GiB memory | 20 GiB local-path |
 
-These values keep wide headroom, because no measurement sets them. A follow-up HOME issue right-sizes them after 24 to 48 hours of factory Prometheus metrics. It reads pod CPU and memory from the `kubelet-resource` job and the size of the `ships` database. local-path volumes do not expand, so the first storage size errs high. Retention stays off, so every day of `ships.positions` stays on disk until retention is enabled.
+These values keep wide headroom, because no measurement sets them. [HOME-526](https://factory-plan.jomcgi.dev/factory/issue/HOME-526) right-sizes them after 24 to 48 hours of factory Prometheus metrics. It reads pod CPU and memory from the `kubelet-resource` job and the size of the `ships` database. local-path volumes do not expand, so the first storage size errs high. Retention stays off, so every day of `ships.positions` stays on disk until retention is enabled.
 
 ## Publication contract
 
@@ -67,7 +67,10 @@ Done when
 
 ### Cutover and activation
 
-Tracked in [HOME-516](https://factory-plan.jomcgi.dev/factory/issue/HOME-516). Joe chose a direct cutover on the same AISStream key, with no overlap and no hub baseline ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-516#comment-5531)). One PR sets `marine.enabled=false` in the hub values and `enabled=true` in this chart. The hub stops first, because Argo CD reads the hub values from Git at merge. The factory app reads only published charts. It starts after CI publishes this chart and advances the pin in `deploy/application.yaml`.
+Tracked in [HOME-516](https://factory-plan.jomcgi.dev/factory/issue/HOME-516) and [HOME-537](https://factory-plan.jomcgi.dev/factory/issue/HOME-537). Joe chose a direct cutover on the same AISStream key, with no overlap and no hub baseline ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-516#comment-5531)). The requirement is that the key never has two concurrent AISStream subscriptions. The factory app can sync a published chart before the hub rollout finishes, so the cutover has two steps:
+
+1. HOME-516 sets `marine.enabled=false` in the hub values. In this chart it sets the starting budgets and storage, and keeps `enabled=false`. Argo CD syncs the hub values from Git at merge. The factory app syncs after CI publishes this chart and advances the pin in `deploy/application.yaml`. CNPG then creates `ships-db`, and the ingester has zero replicas.
+2. HOME-537 sets `enabled=true`, which gives the ingester one replica. It merges only after the hub-stop check below passes.
 
 ```mermaid
 sequenceDiagram
@@ -76,15 +79,44 @@ sequenceDiagram
   participant CI
   participant Factory as factory ships app
   participant Feed as AISStream
+  Note over Main,Feed: HOME-516
   Main->>Hub: Argo CD syncs values-gke.yaml, marine off
   Hub-->>Feed: pods restart without the key and close the socket
   CI->>Main: publish the ships chart and advance its pin
-  Main->>Factory: Argo CD syncs the new chart
-  Factory->>Factory: CNPG creates ships-db, the ingester takes the lease
+  Main->>Factory: Argo CD syncs ships-db and zero ingesters
+  Note over Main,Feed: the hub-stop check passes
+  Note over Main,Feed: HOME-537
+  CI->>Main: publish the ships chart and advance its pin
+  Main->>Factory: Argo CD syncs one ingester
+  Factory->>Factory: the ingester takes the lease
   Factory->>Feed: subscribe after the 10 s grace
 ```
 
-History has a gap between the two syncs, which Joe accepted. So no day has output from both the hub and the factory. The hub keeps serving its stored Ships data until HOME-411 and HOME-412. The writer logs `subscribed to AISStream` after it sends the subscription. To roll back, stop the factory ingester first, then turn the hub ingest on, so the key never has two sockets.
+History has a gap between the hub stop and the first factory subscription, which Joe accepted. Positions from both ingesters can share a UTC date, but their subscriptions never overlap. The hub keeps serving its stored Ships data until HOME-411 and HOME-412.
+
+**Hub-stop check (HOME-516).** Run this command after the hub backend rollout. The Cloudflare cache can serve a stale page for up to 24 hours (`stale-if-error=86400`), so a unique query string bypasses it. The script prints the age of the newest vessel `updated_at` at or before now. It also prints the count of vessels updated in the last 10 minutes.
+
+```sh
+curl -fsS "https://jomcgi.dev/app/ships?check=$(date +%s)" | python3 -c '
+import re, sys
+from datetime import datetime, timedelta, timezone
+now = datetime.now(timezone.utc)
+found = re.findall(r"updated_at:\"([^\"]+)\"", sys.stdin.read())
+past = [t for t in map(datetime.fromisoformat, found) if t <= now]
+print("newest age:", now - max(past))
+print("updated in 10 min:", sum(t > now - timedelta(minutes=10) for t in past))
+'
+```
+
+The hub has stopped when the newest age is more than 10 minutes and the count is 0. Before the cutover, at 22:13Z on 2026-11-19, the newest was 12 s old and 441 vessels updated in the last 10 minutes.
+
+**Factory checks (HOME-537).** Run these with `KUBECONFIG=~/.kube/factory.yaml` after the factory app syncs one ingester:
+
+1. **Pod Ready.** `kubectl -n ships wait --for=condition=Ready pod -l app=ships-ingester --timeout=5m` succeeds.
+2. **One subscription.** `kubectl -n ships logs deploy/ships-ingester` shows `subscribed to AISStream` exactly once and no `ingest session ended` line. The writer logs that line after it sends the subscription.
+3. **Positions arrive.** On the `ships-db` primary (`-l cnpg.io/cluster=ships-db,cnpg.io/instanceRole=primary`, container `postgres`), run `psql -d ships -Atc "select count(*), max(received_at) from ships.positions"` twice, 5 minutes apart. The count grows, and `max(received_at)` is less than 5 minutes old.
+
+To roll back, confirm that no `ships-ingester` pod runs before the hub ingest starts again. After HOME-537, first set `enabled=false` or lower the pin. Then set `marine.enabled=true` in the hub values. The key then never has two sockets.
 
 ### Garage sink and R2 mirror
 
@@ -141,7 +173,7 @@ flowchart LR
   applier -->|write, then delete the claimed rows in one transaction, history connection| tables[(positions, latest_positions, vessels)]
 ```
 
-The chart runs one ingester replica when `enabled` is true and none when it is false. `chart/ingester_test.py` asserts both and the starting budgets in [Ingest and capacity](#ingest-and-capacity). CNPG creates the three-instance database from `chart/sql/bootstrap.sql` as the `ships` owner. The ingester connects with the owner URI from the `ships-db-app` Secret. Enable retention separately after importing and reconciling historical heat at a UTC boundary.
+The chart runs one ingester replica when `enabled` is true and none when it is false. The default stays false until HOME-537. `chart/ingester_test.py` asserts both cases and the starting budgets in [Ingest and capacity](#ingest-and-capacity). CNPG creates the three-instance database from `chart/sql/bootstrap.sql` as the `ships` owner. The ingester connects with the owner URI from the `ships-db-app` Secret. Enable retention separately after importing and reconciling historical heat at a UTC boundary.
 
 A session subscribes only while it holds the PostgreSQL advisory lock `(409, 1)`. The lease connection holds that lock and runs nothing else. The writer pings it every second. A ping that succeeds confirms the lease for 5 seconds from the moment the writer sent it. If a ping fails or the confirmation expires, the writer closes its AISStream socket at once. A timer does the close at expiry, so a ping that hangs on a dead connection cannot delay it. The reader also drops each frame that it reads after the confirmation expires.
 

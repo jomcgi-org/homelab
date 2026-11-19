@@ -25,8 +25,8 @@ def deployment(docs):
 
 
 def test_activation():
-    # HOME-516 runs one ingester by default; enabled=false stops it.
-    for overrides, replicas in (([], 1), (["--set", "enabled=false"], 0)):
+    # HOME-516 keeps zero replicas. HOME-537 sets enabled=true after the hub stops.
+    for overrides, replicas in (([], 0), (["--set", "enabled=true"], 1)):
         spec = deployment(render(*overrides))
         assert spec["replicas"] == replicas
         assert spec["strategy"]["type"] == "Recreate"
@@ -35,9 +35,11 @@ def test_activation():
 
 
 def test_cutover_defaults():
-    # The starting budgets that ARCHITECTURE.md states, before right-sizing.
+    # The starting budgets that ARCHITECTURE.md states, at zero replicas.
     docs = render()
-    container = deployment(docs)["template"]["spec"]["containers"][0]
+    spec = deployment(docs)
+    assert spec["replicas"] == 0
+    container = spec["template"]["spec"]["containers"][0]
     assert container["resources"] == {
         "requests": {"cpu": "250m", "memory": "512Mi"},
         "limits": {"cpu": "1", "memory": "1Gi"},
