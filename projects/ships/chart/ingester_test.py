@@ -6,6 +6,7 @@ import yaml
 
 
 def test_shadow_activation():
+    # The chart default runs zero replicas until HOME-483 sets enabled=true.
     for overrides, replicas in (([], 0), (["--set", "enabled=true"], 1)):
         result = subprocess.check_output(
             [

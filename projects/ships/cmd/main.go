@@ -86,6 +86,18 @@ func (v vessel) eta(now time.Time) any {
 	return nil
 }
 
+// reportTime reads time_utc. A timestamp without an offset is UTC, as the hub
+// parser reads it.
+func reportTime(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05 -0700 MST", "2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
+		if at, err := time.Parse(layout, value); err == nil {
+			return at, true
+		}
+	}
+	return time.Time{}, false
+}
+
 func store(ctx context.Context, tx *sql.Tx, f frame) error {
 	id := f.MetaData.MMSI.String()
 	if id == "" {
@@ -111,11 +123,8 @@ func store(ctx context.Context, tx *sql.Tx, f frame) error {
 	if f.MessageType != "PositionReport" || p == nil || p.Latitude == nil || p.Longitude == nil {
 		return nil
 	}
-	at, err := time.Parse(time.RFC3339Nano, f.MetaData.Time)
-	if err != nil {
-		at, err = time.Parse("2006-01-02 15:04:05 -0700 MST", f.MetaData.Time)
-	}
-	if err != nil {
+	at, ok := reportTime(f.MetaData.Time)
+	if !ok {
 		return nil
 	}
 	if at.After(time.Now().Add(maxClockSkew)) {
@@ -125,7 +134,7 @@ func store(ctx context.Context, tx *sql.Tx, f frame) error {
 	var lat, lon float64
 	var prior time.Time
 	var first sql.NullTime
-	err = tx.QueryRowContext(ctx, "select lat,lon,recorded_at,first_seen_at_location from ships.latest_positions where mmsi=$1", id).Scan(&lat, &lon, &prior, &first)
+	err := tx.QueryRowContext(ctx, "select lat,lon,recorded_at,first_seen_at_location from ships.latest_positions where mmsi=$1", id).Scan(&lat, &lon, &prior, &first)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -162,7 +171,7 @@ func dataError(err error) bool {
 	return errors.As(err, &pqErr) && (pqErr.Code.Class() == "22" || pqErr.Code.Class() == "23")
 }
 
-// spool commits received frames to ships.inbox before the writer applies them.
+// spool commits received frames to ships.inbox in receive order.
 func spool(ctx context.Context, c *sql.Conn, frames [][]byte) error {
 	_, err := c.ExecContext(ctx, `insert into ships.inbox(frame)
  select frame from unnest($1::bytea[]) with ordinality as received(frame, n) order by n`, pq.ByteaArray(frames))
@@ -195,14 +204,16 @@ func applyChunk(ctx context.Context, c *sql.Conn, isolate bool) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	var last int64
+	var ids []int64
 	var frames [][]byte
 	for rows.Next() {
+		var id int64
 		var raw []byte
-		if err = rows.Scan(&last, &raw); err != nil {
+		if err = rows.Scan(&id, &raw); err != nil {
 			rows.Close()
 			return 0, err
 		}
+		ids = append(ids, id)
 		frames = append(frames, raw)
 	}
 	if err = rows.Close(); err != nil {
@@ -233,7 +244,8 @@ func applyChunk(ctx context.Context, c *sql.Conn, isolate bool) (int, error) {
 			return 0, err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, "delete from ships.inbox where id <= $1", last); err != nil {
+	// The spooler commits new frames meanwhile, so delete only the frames read.
+	if _, err = tx.ExecContext(ctx, "delete from ships.inbox where id = any($1)", pq.Int64Array(ids)); err != nil {
 		return 0, err
 	}
 	return len(frames), tx.Commit()
@@ -285,29 +297,98 @@ func read(ctx context.Context, ws *websocket.Conn, queue chan<- []byte) {
 	}
 }
 
+// spoolLoop commits queued frames to ships.inbox every flushInterval or
+// batchSize frames and signals spooled after each commit. When the queue
+// closes, it commits the frames it holds and returns.
+func spoolLoop(ctx context.Context, c *sql.Conn, queue <-chan []byte, spooled chan<- struct{}) error {
+	ticker := time.NewTicker(flushInterval)
+	defer ticker.Stop()
+	batch := make([][]byte, 0, batchSize)
+	for {
+		closed := false
+		select {
+		case raw, open := <-queue:
+			if open {
+				batch = append(batch, raw)
+				if len(batch) < batchSize {
+					continue
+				}
+			}
+			closed = !open
+		case <-ticker.C:
+		}
+		var err error
+		if len(batch) == 0 {
+			err = c.PingContext(ctx)
+		} else if err = spool(ctx, c, batch); err != nil {
+			log.Printf("inbox write failed: lost_frames=%d", len(batch))
+		} else {
+			clear(batch)
+			batch = batch[:0]
+			select {
+			case spooled <- struct{}{}:
+			default: // The applier has an unread signal.
+			}
+		}
+		if err != nil || closed {
+			return err
+		}
+	}
+}
+
+// applyLoop applies ships.inbox after each spool signal and runs maintenance
+// every hour. When spooled closes, it applies once more and returns.
+func applyLoop(ctx context.Context, c *sql.Conn, spooled <-chan struct{}, last *time.Time) error {
+	maintenance := time.NewTicker(time.Hour)
+	defer maintenance.Stop()
+	for {
+		select {
+		case _, open := <-spooled:
+			if err := apply(ctx, c); err != nil {
+				return err
+			}
+			*last = time.Now().UTC()
+			if !open {
+				return nil
+			}
+		case <-maintenance.C:
+			if err := maintain(ctx, c); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 func ingest(ctx context.Context, db *sql.DB, key string) error {
 	// Database work continues for stopGrace after SIGTERM, so received frames commit.
 	work, cancelWork := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelWork()
 	defer context.AfterFunc(ctx, func() { time.AfterFunc(stopGrace, cancelWork) })()
-	c, err := db.Conn(work)
+	// The lease connection holds the advisory lock and commits frames to the
+	// inbox. The history connection applies them, so a blocked history write
+	// does not stop inbox commits.
+	lease, err := db.Conn(work)
 	if err != nil {
 		return err
 	}
-	defer c.Close()
+	defer lease.Close()
 	var held bool
-	if err = c.QueryRowContext(work, "select pg_try_advisory_lock(409,1)").Scan(&held); err != nil {
+	if err = lease.QueryRowContext(work, "select pg_try_advisory_lock(409,1)").Scan(&held); err != nil {
 		return err
 	}
 	if !held {
 		return errors.New("database lease unavailable")
 	}
-	if err = maintain(work, c); err != nil {
+	history, err := db.Conn(work)
+	if err != nil {
 		return err
 	}
-	nextMaintenance := time.Now().Add(time.Hour)
+	defer history.Close()
+	if err = maintain(work, history); err != nil {
+		return err
+	}
 	// Recover the frames that an interrupted session spooled but did not apply.
-	if err = apply(work, c); err != nil {
+	if err = apply(work, history); err != nil {
 		return err
 	}
 	if ctx.Err() != nil {
@@ -330,55 +411,36 @@ func ingest(ctx context.Context, db *sql.DB, key string) error {
 		return err
 	}
 	ws.SetReadLimit(readLimit)
+	session, endSession := context.WithCancel(ctx)
+	defer endSession()
 	queue := make(chan []byte, batchSize)
-	go read(ctx, ws, queue)
-	ticker := time.NewTicker(flushInterval)
-	defer ticker.Stop()
-	batch := make([][]byte, 0, batchSize)
+	go read(session, ws, queue)
+	spooled := make(chan struct{}, 1)
+	applied := make(chan error, 1)
 	var committed time.Time
-	defer func() {
-		log.Printf("session ended: malformed=%d rejected=%d last_commit=%v", malformed.Load(), rejected.Load(), committed)
+	go func() {
+		applyErr := applyLoop(work, history, spooled, &committed)
+		if applyErr != nil {
+			endSession() // The reader stops and the spooler commits what it holds.
+		}
+		applied <- applyErr
 	}()
-	for {
-		closed := false
-		select {
-		case raw, open := <-queue:
-			if open {
-				batch = append(batch, raw)
-				if len(batch) < batchSize {
-					continue
-				}
-			}
-			closed = !open
-		case <-ticker.C:
-		}
-		if len(batch) == 0 {
-			err = c.PingContext(work)
-		} else if err = spool(work, c, batch); err != nil {
-			log.Printf("inbox write failed: lost_frames=%d", len(batch))
-		} else {
-			clear(batch)
-			batch = batch[:0]
-			if err = apply(work, c); err == nil {
-				committed = time.Now().UTC()
-			}
-		}
-		if err != nil {
-			return err
-		}
-		if closed {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return errors.New("feed closed")
-		}
-		if time.Now().After(nextMaintenance) {
-			if err = maintain(work, c); err != nil {
-				return err
-			}
-			nextMaintenance = time.Now().Add(time.Hour)
-		}
+	err = spoolLoop(work, lease, queue, spooled)
+	if err != nil {
+		cancelWork() // A blocked apply returns, and the inbox keeps its frames.
 	}
+	close(spooled)
+	if applyErr := <-applied; err == nil {
+		err = applyErr
+	}
+	log.Printf("session ended: malformed=%d rejected=%d last_apply=%v", malformed.Load(), rejected.Load(), committed)
+	if err != nil {
+		return err
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return errors.New("feed closed")
 }
 
 func main() {

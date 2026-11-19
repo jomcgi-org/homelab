@@ -150,12 +150,13 @@ def historical(engine):
     return [tuple(row) for row in rows]
 
 
-def position(mmsi, at, lat, lon, speed, name="", aisstream_time=False):
-    stamp = (
-        at.strftime("%Y-%m-%d %H:%M:%S.%f000 +0000 UTC")
-        if aisstream_time
-        else at.isoformat()
-    )
+def position(mmsi, at, lat, lon, speed, name="", aisstream_time=False, naive=False):
+    if aisstream_time:
+        stamp = at.strftime("%Y-%m-%d %H:%M:%S.%f000 +0000 UTC")
+    elif naive:
+        stamp = at.replace(tzinfo=None).isoformat()  # Both sides read it as UTC.
+    else:
+        stamp = at.isoformat()
     return json.dumps(
         {
             "MessageType": "PositionReport",
@@ -260,8 +261,11 @@ def test_replay_matches_hub(pg, monkeypatch, feed, writers):
         position(456, midnight - timedelta(minutes=10), 48.5, -123.2, 0, name=" Tug "),
         position(456, midnight - timedelta(minutes=4), 48.5, -123.2, 0),
         position(456, midnight - timedelta(minutes=3), 48.5, -123.2, 0),
+        # A timestamp without an offset, between two reports that have one.
+        position(789, midnight + timedelta(seconds=4), 48.7, -123.1, 1, naive=True),
+        position(789, midnight + timedelta(seconds=9), 48.71, -123.1, 1),
     ]
-    mmsis = ["123", "456", "201", "202", "203"]
+    mmsis = ["123", "456", "789", "201", "202", "203"]
 
     # The hub path: scheduled maintenance, then ingest, rollup and a retry.
     asyncio.run(partition_maintenance_handler(None))
@@ -296,6 +300,10 @@ def test_replay_matches_hub(pg, monkeypatch, feed, writers):
     assert products(factory, mmsis) == products(hub, mmsis)
     recorded_at, _ = latest(factory, "123")
     assert recorded_at == midnight + timedelta(seconds=3)
+    assert latest(factory, "789") == (midnight + timedelta(seconds=9), 48.71)
+    assert (
+        scalar(factory, "select count(*) from ships.positions where mmsi = '789'") == 2
+    )
     partitions = scalar(
         factory,
         "select string_agg(distinct c.relname, ',' order by c.relname)"
@@ -311,23 +319,25 @@ def test_restart_during_write_keeps_history_and_latest(pg, feed, writers):
     factory, dsn = factory_database(pg, "ships_restart")
     base = datetime.now(UTC) - timedelta(hours=1)
     history = "select count(*) from ships.positions"
+    inbox = "select count(*) from ships.inbox"
     leader = writers(dsn, feed.url)
     ws = feed.accept()
     ws.send(position(321, base, 48.0, -123.0, 3))
     until(lambda: scalar(factory, history) == 1)
 
     with factory.connect() as blocker:
+        # The history write blocks after the writer commits the report to the inbox.
         blocker.exec_driver_sql("lock table ships.positions in access exclusive mode")
         ws.send(position(321, base + timedelta(seconds=10), 48.01, -123.0, 3))
-        until(
-            lambda: (
-                scalar(factory, "select count(*) from ships.inbox") == 1
-                and scalar(factory, LOCK_WAIT) == 1
-            )
-        )
+        until(lambda: scalar(factory, inbox) == 1 and scalar(factory, LOCK_WAIT) == 1)
+        # A report received during the stall still reaches the inbox.
+        ws.send(position(321, base + timedelta(seconds=20), 48.02, -123.0, 3))
+        until(lambda: scalar(factory, inbox) == 2)
+        assert scalar(factory, LOCK_WAIT) == 1
         standby = writers(dsn, feed.url)
 
-        # Frames the stored report cannot reach the database while it is blocked.
+        # The inbox write blocks too. The reader stops at the bounded queue.
+        blocker.exec_driver_sql("lock table ships.inbox in share mode")
         ignored = " " * 8192 + json.dumps(
             {"MessageType": "Ignored", "MetaData": {"MMSI": 999}}
         )
@@ -353,31 +363,31 @@ def test_restart_during_write_keeps_history_and_latest(pg, feed, writers):
             time.sleep(0.05)
         assert feed.sockets.empty(), "the standby opened a second socket"
         assert len(sent) < backlog, (
-            "the leader kept reading while its write was blocked"
+            "the leader kept reading while its inbox write was blocked"
         )
         assert peak < 64 * 1024, f"leader RSS reached {peak} KiB"
         assert blocker.exec_driver_sql(history).scalar() == 1
         leader.kill()
         leader.wait()
 
-    # The standby takes the lease and applies the spooled report before it subscribes.
+    # The standby takes the lease and applies both spooled reports before it subscribes.
     ws = feed.accept()
-    assert scalar(factory, history) == 2
-    assert scalar(factory, "select count(*) from ships.inbox") == 0
-    assert latest(factory, "321") == (base + timedelta(seconds=10), 48.01)
+    assert scalar(factory, history) == 3
+    assert scalar(factory, inbox) == 0
+    assert latest(factory, "321") == (base + timedelta(seconds=20), 48.02)
 
     # An older report joins the history and keeps the newer latest position.
     ws.send(position(321, base + timedelta(seconds=5), 48.005, -123.0, 3))
-    until(lambda: scalar(factory, history) == 3)
-    assert latest(factory, "321") == (base + timedelta(seconds=10), 48.01)
+    until(lambda: scalar(factory, history) == 4)
+    assert latest(factory, "321") == (base + timedelta(seconds=20), 48.02)
 
     # SIGTERM commits the frames the writer already received.
-    ws.send(position(321, base + timedelta(seconds=20), 48.02, -123.0, 3))
+    ws.send(position(321, base + timedelta(seconds=30), 48.03, -123.0, 3))
     time.sleep(0.5)
     standby.send_signal(signal.SIGTERM)
     assert standby.wait(timeout=20) == 0
-    assert scalar(factory, history) == 4
-    assert latest(factory, "321") == (base + timedelta(seconds=20), 48.02)
+    assert scalar(factory, history) == 5
+    assert latest(factory, "321") == (base + timedelta(seconds=30), 48.03)
 
 
 def test_writer_survives_default_rows_future_and_refused_reports(pg, feed, writers):
