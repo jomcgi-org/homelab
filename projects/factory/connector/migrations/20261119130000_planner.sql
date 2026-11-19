@@ -48,6 +48,7 @@ CREATE TABLE planner_proposal (
     reserved_at timestamptz NOT NULL DEFAULT now(),
     closed_at timestamptz,
     issue_key text UNIQUE,
+    reproducible boolean NOT NULL DEFAULT false CHECK (NOT reproducible OR issue_key IS NOT NULL),
     PRIMARY KEY (run_id, fingerprint)
 );
 CREATE UNIQUE INDEX planner_open_fingerprint ON planner_proposal(fingerprint) WHERE closed_at IS NULL;
@@ -110,7 +111,8 @@ BEGIN
         RETURN false;
     END IF;
     UPDATE planner_schedule SET low_yield =
-        CASE WHEN EXISTS (SELECT FROM planner_proposal WHERE run_id = incoming) THEN 0 ELSE least(4, low_yield + 1) END
+        CASE WHEN EXISTS (SELECT FROM planner_proposal WHERE run_id = incoming
+            AND reproducible AND closed_at IS NULL) THEN 0 ELSE least(4, low_yield + 1) END
         WHERE name = job;
     RETURN true;
 END;
