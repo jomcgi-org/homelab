@@ -14,8 +14,13 @@ module = runpy.run_path(
 @pytest.fixture
 def sync(tmp_path):
     def run(get, deployment, plan, alert=None):
+        def api(path):
+            if path == "" and deployment:
+                return {"deployments": [{"slug": deployment, "id": 17}]}
+            return get(path)
+
         return module["sync"](
-            get, deployment, plan, alert or pytest.fail, tmp_path / "auth-failed"
+            api, deployment, plan, alert or pytest.fail, tmp_path / "auth-failed"
         )
 
     return run
@@ -99,12 +104,12 @@ def test_mirror(sync):
         alerts.append((name, fields))
 
     def get(path):
-        if parse_qs(urlsplit(path).query)["page"] != ["0"]:
+        if parse_qs(urlsplit(path).query).get("page", ["0"]) != ["0"]:
             return {"findings": []}
         product = parse_qs(urlsplit(path).query).get("issue_type", ["secrets"])[0]
         if product == "secrets":
-            assert urlsplit(path).path == "/org/secrets"
-            return {"secrets": data[product]}
+            assert urlsplit(path).path == "/17/secrets"
+            return {"findings": data[product]}
         assert urlsplit(path).path == "/org/findings"
         params = parse_qs(urlsplit(path).query)
         assert params["dedup"] == ["true"] and params["page_size"] == ["3000"]
@@ -142,7 +147,7 @@ def test_mirror(sync):
 
 def test_failure_on_last_product_writes_nothing(sync):
     def get(path):
-        if path.startswith("/org/secrets"):
+        if path.startswith("/17/secrets"):
             raise TimeoutError()
         return {
             "findings": [row(1)]
@@ -167,7 +172,7 @@ def test_linked_finding_does_not_stop_later_findings(sync):
     data = {"sast": [row(1), row(2)], "sca": [], "secrets": []}
 
     def get(path):
-        if parse_qs(urlsplit(path).query)["page"] != ["0"]:
+        if parse_qs(urlsplit(path).query).get("page", ["0"]) != ["0"]:
             return {"findings": []}
         product = parse_qs(urlsplit(path).query).get("issue_type", ["secrets"])[0]
         return {"findings": data[product]}
@@ -199,7 +204,7 @@ def test_finding_data_has_no_literal_mention(sync):
     data = {"sast": [row(1, rule_name="@joe rule")], "sca": [], "secrets": []}
 
     def get(path):
-        if parse_qs(urlsplit(path).query)["page"] != ["0"]:
+        if parse_qs(urlsplit(path).query).get("page", ["0"]) != ["0"]:
             return {"findings": []}
         product = parse_qs(urlsplit(path).query).get("issue_type", ["secrets"])[0]
         return {"findings": data[product]}
@@ -257,4 +262,21 @@ def test_findings_continue_past_server_capped_pages(reject_large, with_paging):
             payload["paging"] = {"next": "/findings?page=1" if page == 0 else None}
         return payload
 
-    assert list(module["snapshot"](get, "org")) == ["sast/1", "sast/2"]
+    assert list(module["snapshot"](get, "org", 17)) == ["sast/1", "sast/2"]
+
+
+def test_secrets_cursor_ends_on_nonempty_terminal_page():
+    calls = []
+
+    def get(path):
+        if path.startswith("/org/findings?"):
+            return {"findings": []}
+        assert urlsplit(path).path == "/17/secrets"
+        calls.append(parse_qs(urlsplit(path).query))
+        if len(calls) == 1:
+            return {"findings": [row(1)], "cursor": "a/b+= c"}
+        assert len(calls) == 2
+        return {"findings": [row(2)], "cursor": None}
+
+    assert list(module["snapshot"](get, "org", 17)) == ["secrets/1", "secrets/2"]
+    assert calls == [{"limit": ["2000"]}, {"limit": ["2000"], "cursor": ["a/b+= c"]}]
