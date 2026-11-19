@@ -48,6 +48,7 @@ func TestDefaultNamesUnchanged(t *testing.T) {
 	want := []string{
 		"tokenbroker_codex_usage_total",
 		"tokenbroker_grant_quota_exhausted",
+		"tokenbroker_grant_quota_resets_at_seconds",
 		"tokenbroker_grant_quota_used_percent",
 		"tokenbroker_quota_exhausted",
 		"tokenbroker_quota_observed_at_seconds",
@@ -69,7 +70,7 @@ func TestPrefixedNames(t *testing.T) {
 			t.Fatalf("metric %q lacks the configured prefix", name)
 		}
 	}
-	if len(got) != 10 {
-		t.Fatalf("metric families = %v, want 10", got)
+	if len(got) != 11 {
+		t.Fatalf("metric families = %v, want 11", got)
 	}
 }

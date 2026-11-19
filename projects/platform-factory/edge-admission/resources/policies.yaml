@@ -250,9 +250,9 @@ spec:
     - expression: >-
         request.namespace != 'grafana' ||
         (has(object.spec.hostnames) && size(object.spec.hostnames) > 0 &&
-         object.spec.hostnames.all(h, h == 'factory-grafana.jomcgi.dev'))
+         object.spec.hostnames.all(h, h in ['factory-grafana.jomcgi.dev', 'factory-runbooks.jomcgi.dev']))
       message: >-
-        Routes in the grafana namespace must name only factory-grafana.jomcgi.dev.
+        Routes in the grafana namespace must name only factory-grafana.jomcgi.dev or factory-runbooks.jomcgi.dev.
     - expression: >-
         request.namespace != 'factory-landing' ||
         (has(object.spec.hostnames) && size(object.spec.hostnames) > 0 &&

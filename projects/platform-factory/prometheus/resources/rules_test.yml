@@ -43,7 +43,7 @@ tests:
               action: "Inspect the largest directories on the root filesystem."
               graph: "max(container_fs_usage_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node=\"node-1\"} / container_fs_limit_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node=\"node-1\"})"
               threshold: "0.75"
-              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#nodediskfilling"
+              runbook: "https://factory-runbooks.jomcgi.dev/NodeDiskFilling"
               summary: "node-1's root filesystem is 80% full (threshold 75%)"
               description: 'Image garbage collection starts at 85% and the kubelet evicts pods at 90%. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
@@ -75,7 +75,7 @@ tests:
               action: "Recover the locked session using the suspend-timeout runbook."
               graph: "kagent:suspend_timeouts:sum{pod=\"kagent-controller-a\"}"
               threshold: "0"
-              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#kagentsuspendtimedout"
+              runbook: "https://factory-runbooks.jomcgi.dev/KagentSuspendTimedOut"
               summary: A kagent session suspend passed the 30 s limit (1 since the controller started)
               description: &suspend_description 'kagent keeps the session locked and its worker slot held until a person deletes the worker pod and reverts the session. Runbook: projects/factory-cluster/README.md, "Alerts".'
       - eval_time: 170m
@@ -111,7 +111,7 @@ tests:
               action: "Recover the locked session using the suspend-timeout runbook."
               graph: "kagent:suspend_timeouts:sum{pod=\"kagent-controller-a\"}"
               threshold: "0"
-              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#kagentsuspendtimedout"
+              runbook: "https://factory-runbooks.jomcgi.dev/KagentSuspendTimedOut"
               summary: A kagent session suspend passed the 30 s limit (2 since the controller started)
               description: *suspend_description
 
@@ -165,7 +165,7 @@ tests:
               action: "Recover the locked session using the suspend-timeout runbook."
               graph: "kagent:suspend_timeouts:sum{pod=\"kagent-controller-a\"}"
               threshold: "0"
-              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#kagentsuspendtimedout"
+              runbook: "https://factory-runbooks.jomcgi.dev/KagentSuspendTimedOut"
               summary: A kagent session suspend passed the 30 s limit (1 since the controller started)
               description: *suspend_description
 
@@ -197,7 +197,7 @@ tests:
               action: "Recover the locked session using the suspend-timeout runbook."
               graph: "kagent:suspend_timeouts:sum{pod=\"kagent-controller-a\"}"
               threshold: "0"
-              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#kagentsuspendtimedout"
+              runbook: "https://factory-runbooks.jomcgi.dev/KagentSuspendTimedOut"
               summary: A kagent session suspend passed the 30 s limit (1 since the controller started)
               description: *suspend_description
       - eval_time: 165m
@@ -271,7 +271,7 @@ tests:
               action: "Schedule a quota reset for this grant."
               graph: "factory_broker_grant_quota_used_percent{grant=\"codex-primary\",window=\"primary\"}"
               threshold: "90"
-              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#factorycodexquotalow-factorycodexquotaexhausted"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryCodexQuotaLow"
               summary: "Codex grant codex-primary has used 95% of its primary window (threshold 90%)"
               description: 'Coder and review turns stop at 100%. Plan a reset or another account. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
@@ -303,7 +303,7 @@ tests:
               action: "Reset the exhausted grant."
               graph: "factory_broker_grant_quota_exhausted{grant=\"codex-primary\"}"
               threshold: "1"
-              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#factorycodexquotalow-factorycodexquotaexhausted"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryCodexQuotaExhausted"
               summary: "Codex grant codex-primary is out of quota (exhausted flag 1 of 1)"
               description: 'Coder turns fail until then. The primary window resets at 2026-11-25 00:14:00 +0000 UTC. Runbook: projects/factory-cluster/README.md, "Alerts". Codex login: https://factory.jomcgi.dev/admin/codex/'
 
@@ -328,7 +328,7 @@ tests:
               action: "Repeat device login for this grant."
               graph: "factory_broker_codex_grant_state{grant=\"codex-primary\",state!=\"ready\"}"
               threshold: "1"
-              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#factorycodexgrantnotready"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryCodexGrantNotReady"
               summary: "Codex grant codex-primary is login_required (non-ready flag 1 of 1)"
               description: 'The broker cannot relay Codex turns with this grant. Runbook: projects/factory-cluster/README.md, "Alerts". Codex login: https://factory.jomcgi.dev/admin/codex/'
 
@@ -356,7 +356,7 @@ tests:
               action: "Repeat device login for this grant."
               graph: "factory_broker_codex_grant_state{grant=\"codex-primary\",state!=\"ready\"}"
               threshold: "1"
-              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#factorycodexgrantnotready"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryCodexGrantNotReady"
               summary: "Codex grant codex-primary is error (non-ready flag 1 of 1)"
               description: 'The broker cannot relay Codex turns with this grant. Runbook: projects/factory-cluster/README.md, "Alerts". Codex login: https://factory.jomcgi.dev/admin/codex/'
 
@@ -380,7 +380,7 @@ tests:
               action: "Reset the exhausted grant."
               graph: "factory_broker_grant_quota_exhausted{grant=\"codex-primary\"}"
               threshold: "1"
-              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#factorycodexquotalow-factorycodexquotaexhausted"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryCodexQuotaExhausted"
               summary: "Codex grant codex-primary is out of quota (exhausted flag 1 of 1)"
               description: 'Coder turns fail until then. The primary window resets at 2026-11-25 00:14:00 +0000 UTC. Runbook: projects/factory-cluster/README.md, "Alerts". Codex login: https://factory.jomcgi.dev/admin/codex/'
 
@@ -407,7 +407,7 @@ tests:
               action: "Reset the exhausted grant."
               graph: "factory_broker_grant_quota_exhausted{grant=\"codex-primary\"}"
               threshold: "1"
-              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#factorycodexquotalow-factorycodexquotaexhausted"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryCodexQuotaExhausted"
               summary: "Codex grant codex-primary is out of quota (exhausted flag 1 of 1)"
               description: 'Coder turns fail until then. The primary window has no reset time. Runbook: projects/factory-cluster/README.md, "Alerts". Codex login: https://factory.jomcgi.dev/admin/codex/'
 
@@ -430,7 +430,7 @@ tests:
               action: "Check the broker quota refresh logs."
               graph: "time() - max(factory_broker_quota_observed_at_seconds{provider=\"codex\"}) or vector(0)"
               threshold: "7200"
-              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#factorycodexquotareadingstale"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryCodexQuotaReadingStale"
               summary: "The broker has no Codex quota reading (maximum age 2h)"
               description: 'The quota alerts cannot fire on an old reading. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
@@ -454,7 +454,7 @@ tests:
               action: "Check the broker quota refresh logs."
               graph: "time() - max(factory_broker_quota_observed_at_seconds{provider=\"codex\"}) or vector(0)"
               threshold: "7200"
-              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#factorycodexquotareadingstale"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryCodexQuotaReadingStale"
               summary: "The broker has no Codex quota reading (maximum age 2h)"
               description: 'The quota alerts cannot fire on an old reading. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
@@ -478,7 +478,7 @@ tests:
               action: "Check the broker quota refresh logs."
               graph: "time() - max(factory_broker_quota_observed_at_seconds{provider=\"codex\"}) or vector(0)"
               threshold: "7200"
-              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#factorycodexquotareadingstale"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryCodexQuotaReadingStale"
               summary: "The broker has not read the Codex quota for 2h 20m 0s (maximum age 2h)"
               description: 'The quota alerts cannot fire on an old reading. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
@@ -500,7 +500,7 @@ tests:
               action: "Restore one ready alert-relay replica."
               graph: "min(kube_deployment_status_replicas_available{namespace=\"prometheus\",deployment=\"alert-relay\"}) or vector(0)"
               threshold: "1"
-              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#alertrelaydown"
+              runbook: "https://factory-runbooks.jomcgi.dev/AlertRelayDown"
               summary: "Alert relay has 0 available replicas (minimum 1)"
 
   - interval: 1m
@@ -524,7 +524,7 @@ tests:
               action: "Inspect the failed sync Job's logs."
               graph: 'kube_job_failed{namespace="factory",job_name="intsec-sync-10",condition="true"}'
               threshold: "1"
-              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#semgrepsyncfailed"
+              runbook: "https://factory-runbooks.jomcgi.dev/SemgrepSyncFailed"
               summary: "Latest Semgrep to INTSEC sync factory/intsec-sync-10 failed (failure flag 1, threshold 1)"
       - eval_time: 3m
         alertname: SemgrepSyncFailed

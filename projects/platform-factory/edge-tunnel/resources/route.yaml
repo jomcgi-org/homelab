@@ -27,6 +27,7 @@ spec:
     - factory-auth.jomcgi.dev
     - factory-plan.jomcgi.dev
     - factory-grafana.jomcgi.dev
+    - factory-runbooks.jomcgi.dev
     - factory-agents.jomcgi.dev
     - factory-kube.jomcgi.dev
     - scotland-mcp.jomcgi.dev

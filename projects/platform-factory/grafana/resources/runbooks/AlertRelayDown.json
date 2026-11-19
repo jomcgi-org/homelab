@@ -1,0 +1,7 @@
+{
+  "graph": "min(kube_deployment_status_replicas_available{namespace=\"prometheus\",deployment=\"alert-relay\"}) or vector(0)",
+  "check": "min(kube_deployment_status_replicas_available{namespace=\"prometheus\",deployment=\"alert-relay\"}) or vector(0)",
+  "condition": "ge",
+  "limit": 1.0,
+  "steps": "Inspect Deployment availability and recent pod events.\n\nkubectl -n prometheus describe deployment alert-relay\nkubectl -n prometheus get events --sort-by=.lastTimestamp"
+}

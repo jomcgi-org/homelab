@@ -88,7 +88,15 @@ func message(a alert, graph bool) embed {
 	started := fmt.Sprintf("Started <t:%d:R>", a.StartsAt.Unix())
 	budget := 4096 - len(started) - 1
 	var lines []string
-	runbook := "[Runbook](" + a.Annotations["runbook"] + ")"
+	link := a.Annotations["runbook"]
+	if strings.HasPrefix(link, "https://factory-runbooks.jomcgi.dev/") {
+		params := url.Values{}
+		for key, value := range a.Labels {
+			params.Set(key, value)
+		}
+		link += "?" + params.Encode()
+	}
+	runbook := "[Runbook](" + link + ")"
 	linkLen := len(utf16.Encode([]rune(runbook)))
 	includeLink := a.Annotations["runbook"] != "" && linkLen < budget
 	if includeLink {

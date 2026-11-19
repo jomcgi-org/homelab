@@ -134,6 +134,15 @@ spec:
         - ports:
             - port: "3000"
               protocol: TCP
+    # Read-only runbook pages.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: grafana
+            app.kubernetes.io/name: runbooks
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
     # Static operator landing page.
     - toEndpoints:
         - matchLabels:

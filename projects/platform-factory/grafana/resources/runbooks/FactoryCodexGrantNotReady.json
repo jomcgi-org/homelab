@@ -1,0 +1,7 @@
+{
+  "graph": "factory_broker_codex_grant_state{grant=~@grant,state!=\"ready\"}",
+  "check": "factory_broker_codex_grant_state{grant=~@grant,state=\"ready\"}",
+  "condition": "ge",
+  "limit": 1.0,
+  "steps": "Log the broker in again with its device login\n(`projects/factory/broker`). `refresh_blocked` means a refresh token was\nreused; see the broker's logs first.\n\nkubectl -n factory logs deploy/factory-broker -c broker --tail=100"
+}

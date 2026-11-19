@@ -9,6 +9,7 @@ resources:
   - oidc.yaml
   - grafana.yaml
   - route.yaml
+  - runbooks.yaml
 
 configMapGenerator:
   - name: grafana-config
@@ -27,3 +28,15 @@ configMapGenerator:
       - dashboards/cilium-drops.json
       - dashboards/cnpg.json
       - dashboards/factory-delivery.json
+  - name: runbooks
+    namespace: grafana
+    files:
+      - runbooks/server.py
+      - runbooks/NodeDiskFilling.json
+      - runbooks/KagentSuspendTimedOut.json
+      - runbooks/FactoryCodexQuotaLow.json
+      - runbooks/FactoryCodexQuotaExhausted.json
+      - runbooks/FactoryCodexGrantNotReady.json
+      - runbooks/FactoryCodexQuotaReadingStale.json
+      - runbooks/SemgrepSyncFailed.json
+      - runbooks/AlertRelayDown.json

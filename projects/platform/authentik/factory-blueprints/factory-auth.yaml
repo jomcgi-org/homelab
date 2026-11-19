@@ -51,6 +51,8 @@ entries:
         - matching_mode: strict
           url: https://factory-grafana.jomcgi.dev/oauth2/callback
         - matching_mode: strict
+          url: https://factory-runbooks.jomcgi.dev/oauth2/callback
+        - matching_mode: strict
           url: https://factory-agents.jomcgi.dev/oauth2/callback
       authorization_flow:
         !Find [
