@@ -39,6 +39,21 @@ def row(number, **values):
     }
 
 
+def secret_row(finding_id, **fields):
+    # Wire names from the SecretsService list response, not the Findings API.
+    # sdks-io/apimatic-semgrep-python-sdk@aaef3dd9, ProtosSecretsV1SecretsFinding._names.
+    return {
+        "id": str(finding_id),
+        "repository": {"name": "jomcgi-org/homelab"},
+        "ref": "refs/heads/main",
+        "findingPath": "src/file",
+        "ruleHashId": "rule-hash",
+        "severity": "SEVERITY_LOW",
+        "status": "FINDING_STATUS_OPEN",
+        **fields,
+    }
+
+
 class Board:
     def __init__(self):
         self.issues = []
@@ -95,7 +110,7 @@ def test_mirror(sync):
     data = {
         "sast": [row(1), row(2, severity="low"), row(3, ref="refs/pull/7/merge")],
         "sca": [row(4, exposure="reachable"), row(5, exposure="unreachable")],
-        "secrets": [row(6, severity="low")],
+        "secrets": [secret_row("secret-6"), secret_row(7, ref="feature")],
     }
 
     alerts = []
@@ -119,7 +134,7 @@ def test_mirror(sync):
     assert [i["title"] for i in board.issues[1:]] == [
         "Semgrep sast/1",
         "Semgrep sca/4",
-        "Semgrep secrets/6",
+        "Semgrep secrets/secret-6",
     ]
     sync(get, "org", board, alert)
     assert alerts == [
@@ -128,11 +143,18 @@ def test_mirror(sync):
             {
                 "repository": "jomcgi-org/homelab",
                 "file": "src/file",
-                "link": "https://semgrep.dev/orgs/org/findings/6",
+                "link": "https://semgrep.dev/orgs/org/findings/secret-6",
             },
         )
     ]
     assert len(board.writes) == 3
+    secret_issue = board.issues[-1]
+    assert "rule-hash" in secret_issue["description"]
+    for status, col in [("FINDING_STATUS_FIXED", 2), ("FINDING_STATUS_OPEN", 1)]:
+        data["secrets"][0]["status"] = status
+        sync(get, "org", board, alert)
+        assert secret_issue["columnId"] == col
+    assert len(alerts) == 1
     data["sast"][0]["location"]["line"] = 42
     sync(get, "org", board, alert)
     issue = board.issues[1]
@@ -274,9 +296,19 @@ def test_secrets_cursor_ends_on_nonempty_terminal_page():
         assert urlsplit(path).path == "/17/secrets"
         calls.append(parse_qs(urlsplit(path).query))
         if len(calls) == 1:
-            return {"findings": [row(1)], "cursor": "a/b+= c"}
+            return {"findings": [secret_row(1)], "cursor": "a/b+= c"}
         assert len(calls) == 2
-        return {"findings": [row(2)], "cursor": None}
+        return {
+            "findings": [
+                {
+                    "id": "2",
+                    "ref": "main",
+                    "repository": {"name": "jomcgi-org/homelab"},
+                    "status": "FINDING_STATUS_OPEN",
+                }
+            ],
+            "cursor": None,
+        }
 
     assert list(module["snapshot"](get, "org", 17)) == ["secrets/1", "secrets/2"]
     assert calls == [{"limit": ["2000"]}, {"limit": ["2000"], "cursor": ["a/b+= c"]}]
