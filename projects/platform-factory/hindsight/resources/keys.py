@@ -32,9 +32,9 @@ CTX = ssl.create_default_context(cafile=f"{SA}/ca.crt")
 
 NAMESPACE = "hindsight"
 KEYS = "hindsight-keys"
-FIELDS = ("tenant-api-key", "mcp-token")
-# (namespace, Secret) of each binding that gets the MCP token as key `token`.
-AGENTS = [("factory-r-homelab", "hindsight-mcp")]
+# Source key in hindsight-keys -> destination namespace and Secret.
+AGENTS = {"mcp-token": ("factory-r-homelab", "hindsight-mcp")}
+FIELDS = ("tenant-api-key", *AGENTS)
 
 
 def call(method, path, body=None):
@@ -97,8 +97,8 @@ def ensure_keys():
 
 
 def share_token(data):
-    want = {"token": data["mcp-token"]}
-    for namespace, name in AGENTS:
+    for field, (namespace, name) in AGENTS.items():
+        want = {"token": data[field]}
         current = get_eventually(name, namespace)
         if current.get("data") != want:
             current["data"] = want
