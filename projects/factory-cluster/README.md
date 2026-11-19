@@ -518,8 +518,11 @@ It exports `factory_health_healthy`, `factory_health_generated_at_seconds`,
 sets `factory_health_read_success` to 0 and keeps the other series of the last
 valid read, so a short read gap neither clears nor fires the alerts. A valid
 read that drops a component drops its series, and the component leaves the
-alert summary at that scrape. If Prometheus cannot scrape the exporter,
-`FactoryHealthUnhealthy` clears and `FactoryHealthStale` reports the old file.
+alert summary at that scrape. If Prometheus cannot scrape the exporter
+(`up{job="factory-health"}` 0), `FactoryHealthUnhealthy` keeps the last values
+for up to 15 min, and the next successful scrape replaces them.
+`FactoryHealthStale` fires by 12 min after the last scrape, because the newest
+`generatedAt` is then more than 10 min old for 2 min.
 
 For `FactoryHealthUnhealthy`, read the file and check each down component:
 
