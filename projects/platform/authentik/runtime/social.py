@@ -39,7 +39,17 @@ for filename in ("factory-auth.yaml", "factory-kubectl.yaml", "factory-social.ya
         importer = Importer.from_string(
             (Path("/fixture/factory-blueprints") / filename).read_text()
         )
-    assert importer.validate()[0], filename
+    # The worker applies Authentik's default blueprints in the background, so
+    # an object a factory blueprint looks up can appear a little later.
+    for _ in range(30):
+        valid, logs = importer.validate()
+        if valid:
+            break
+        sleep(2)
+        importer = Importer.from_string(
+            (Path("/fixture/factory-blueprints") / filename).read_text()
+        )
+    assert valid, (filename, [str(log) for log in logs][:5])
     assert importer.apply(), filename
 
 
