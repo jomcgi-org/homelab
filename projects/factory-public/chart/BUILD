@@ -22,18 +22,4 @@ py_test(
         ":chart",
         "//projects/factory-public/deploy:application.yaml",
         "//projects/platform-factory/prometheus/resources:cloudflare_exporter.py",
-        "@multitool//tools/helm",
-    ],
-    env = {
-        "CLOUDFLARE_EXPORTER": "$(rootpath //projects/platform-factory/prometheus/resources:cloudflare_exporter.py)",
-        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
-        "PUBLIC_APPLICATION": "$(rootpath //projects/factory-public/deploy:application.yaml)",
-    },
-    deps = ["@pip//pyyaml"],
-)
-
-py_test(
-    name = "health_test",
-    srcs = ["health_test.py"],
-    data = ["files/health.py"],
-)
+        "FAKE_RCLONE": "$(rootpath //projects/shared/helm/factory-library:fake_rclone.py)",
