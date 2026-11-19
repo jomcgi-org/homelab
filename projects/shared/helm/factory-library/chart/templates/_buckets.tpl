@@ -83,7 +83,9 @@ subjects:
 {{- end -}}
 {{- end -}}
 {{- $destination := required "factory-library: public.r2Bucket is required" (.public | default dict).r2Bucket -}}
-{{- if hasKey $destinations $destination -}}{{- fail "factory-library: each R2 bucket must have only one mirror" -}}{{- end -}}
+{{/* Mirrors into one R2 bucket need distinct prefixes; the mirror validates each prefix. */}}
+{{- $destination = printf "%v/%v" $destination ((.public | default dict).r2Prefix | default "") -}}
+{{- if hasKey $destinations $destination -}}{{- fail "factory-library: each R2 bucket and prefix must have only one mirror" -}}{{- end -}}
 {{- $_ := set $destinations $destination true -}}
 {{- end -}}
 {{- range $name := $names -}}

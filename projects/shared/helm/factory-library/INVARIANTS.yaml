@@ -42,3 +42,11 @@ invariants:
   - bazel/helm/helm-template-test.sh
   test: //bazel/helm/content_rules:content_rules_test
   state: live
+- id: LIB-7
+  statement: A mirror without r2Prefix excludes every prefix that another factory mirror writes into
+    the same R2 bucket, and each R2 bucket and prefix has one mirror.
+  mechanism:
+  - projects/shared/helm/factory-library/chart/templates/_mirror.tpl
+  - bazel/helm/content_rules/BUILD
+  test: //bazel/helm/content_rules:r2_prefix_test
+  state: live

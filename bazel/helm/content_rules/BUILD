@@ -1,9 +1,11 @@
 # invariant: PLAT-13
 # invariant: LIB-6
+# invariant: LIB-7
 # Hand-managed targets (same convention as bazel/tools/format/readme_structure).
 # gazelle:exclude content_rules.py
 # gazelle:exclude content_rules_test.py
 # gazelle:exclude coverage_test.py
+# gazelle:exclude r2_prefix_test.py
 
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
@@ -57,6 +59,22 @@ py_test(
     env = {
         "APPLICATIONS": " ".join(APPLICATIONS),
         "KUSTOMIZATION": "$(rootpath //projects:factory_kustomization)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+# Mirrors that share an R2 bucket cannot delete each other's objects
+# (HOME-492). Reads each application's chart values.
+py_test(
+    name = "r2_prefix_test",
+    srcs = ["r2_prefix_test.py"],
+    data = ["//projects/{}/chart:values.yaml".format(a) for a in APPLICATIONS],
+    env = {
+        "APPLICATIONS": " ".join(APPLICATIONS),
+        "VALUES": " ".join(["$(rootpath //projects/{}/chart:values.yaml)".format(a) for a in APPLICATIONS]),
     },
     deps = [
         "@pip//pytest",

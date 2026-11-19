@@ -268,4 +268,4 @@
         public:
           r2Bucket: factory-public
           itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
-  error: each R2 bucket must have only one mirror
+  error: each R2 bucket and prefix must have only one mirror

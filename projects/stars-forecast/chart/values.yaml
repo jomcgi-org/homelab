@@ -8,8 +8,10 @@ buckets:
 - name: stars-forecast
   access: write
   public:
-    r2Bucket: stars-forecast
-    itemPath: vaults/k8s-homelab/items/stars-forecast-r2-mirror
+    # One public R2 bucket, one prefix for each writer (HOME-492).
+    r2Bucket: factory-public
+    r2Prefix: stars-forecast
+    itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
     manifestName: latest.json
     suspend: true
 workloads:

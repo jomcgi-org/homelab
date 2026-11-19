@@ -5,9 +5,11 @@ buckets:
   - name: hikes
     access: readwrite
     public:
-      r2Bucket: hikes
+      # One public R2 bucket, one prefix for each writer (HOME-492).
+      r2Bucket: factory-public
+      r2Prefix: hikes
       manifestName: latest.json
-      itemPath: vaults/k8s-homelab/items/hikes-r2-public-mirror
+      itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
       suspend: true
 suspendWriters: true
 jobs:
