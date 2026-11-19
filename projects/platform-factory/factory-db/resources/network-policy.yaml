@@ -47,6 +47,9 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory
             app.kubernetes.io/name: factory-reaper
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-leaderboard
         # The reviewer's durable state.
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory

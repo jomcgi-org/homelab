@@ -1,0 +1,97 @@
+{{- if and .Values.connector.enabled .Values.leaderboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: factory-leaderboard
+  namespace: {{ .Values.broker.namespace }}
+data:
+  leaderboard.sql: |
+    {{- .Files.Get "files/leaderboard.sql" | nindent 4 }}
+  leaderboard.py: |
+    {{- .Files.Get "files/leaderboard.py" | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: factory-leaderboard
+  namespace: {{ .Values.broker.namespace }}
+spec:
+  schedule: "17 5 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: factory-leaderboard
+        spec:
+          serviceAccountName: {{ include "factory.connectorName" . }}
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            fsGroup: 65532
+            seccompProfile: {type: RuntimeDefault}
+          initContainers:
+            - name: aggregate
+              image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+              command: [psql, "-d", "$(DATABASE_URL)", "-XAtq", "-v", "ON_ERROR_STOP=1", "-f", /scripts/leaderboard.sql, "-o", /data/rows.json]
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef: {name: {{ .Values.connector.database.secretName }}, key: DATABASE_URL}
+              securityContext: &security
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: {drop: [ALL]}
+              volumeMounts:
+                - {name: scripts, mountPath: /scripts, readOnly: true}
+                - {name: data, mountPath: /data}
+          containers:
+            - name: publish
+              image: {{ .Values.itsaplan.images.jobs }}
+              command: [python, /scripts/leaderboard.py]
+              env:
+                - name: BROKER_URL
+                  value: {{ printf "http://%s:%d" (include "factory.brokerName" .) (int .Values.broker.adminPort) }}
+              securityContext: *security
+              volumeMounts:
+                - {name: scripts, mountPath: /scripts, readOnly: true}
+                - {name: data, mountPath: /data, readOnly: true}
+                - {name: broker, mountPath: /broker, readOnly: true}
+          volumes:
+            - name: scripts
+              configMap: {name: factory-leaderboard}
+            - name: data
+              emptyDir: {}
+            - name: broker
+              projected:
+                sources:
+                  - serviceAccountToken: {audience: factory-broker, expirationSeconds: 3600, path: token}
+{{- if .Values.networkPolicy.cilium }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: factory-leaderboard
+  namespace: {{ .Values.broker.namespace }}
+spec:
+  endpointSelector:
+    matchLabels: {app.kubernetes.io/name: factory-leaderboard}
+  egress:
+    - toEndpoints:
+        {{- toYaml .Values.connector.database.endpoints | nindent 8 }}
+      toPorts:
+        - ports: [{port: {{ .Values.connector.database.port | quote }}, protocol: TCP}]
+    - toEndpoints:
+        - matchLabels:
+            {{- include "factory.brokerSelector" . | nindent 12 }}
+      toPorts:
+        - ports: [{port: {{ .Values.broker.adminPort | quote }}, protocol: TCP}]
+    - toFQDNs: [{matchName: api.github.com}]
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
+{{- end }}
+{{- end }}

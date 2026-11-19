@@ -673,6 +673,12 @@ def test_broker_policy() -> None:
                 },
                 {
                     "matchLabels": {
+                        ns: "factory",
+                        "app.kubernetes.io/name": "factory-leaderboard",
+                    }
+                },
+                {
+                    "matchLabels": {
                         ns: "edge",
                         "gateway.envoyproxy.io/owning-gateway-name": "edge",
                         "gateway.envoyproxy.io/owning-gateway-namespace": "edge",

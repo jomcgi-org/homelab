@@ -183,7 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument(
         "--json-out",
         default=None,
-        help="Also write a structured leaderboard JSON here (for the public page)",
+        help="Write a local JSON report",
     )
     p_report.add_argument(
         "--generated-at",
@@ -1037,6 +1037,19 @@ def _index(args) -> None:
 
 def _report(args) -> None:
     """Generate the leaderboard markdown from cached result JSON files."""
+    json_out = getattr(args, "json_out", None)
+    if json_out:
+        projects = Path(__file__).resolve().parents[2]
+        snapshots = (
+            projects
+            / "monolith/frontend/src/lib/public/llm-leaderboard/leaderboard.json",
+            projects / "jomcgi-site/web/src/factory-outcomes.json",
+        )
+        if Path(json_out).resolve() in snapshots:
+            raise ValueError(
+                "Public leaderboard snapshots cannot be written by bench report"
+            )
+
     tasks = load_tasks(Path(args.tasks))
     task_class_of = {t.id: t.task_class.value for t in tasks}
 
@@ -1175,7 +1188,6 @@ def _report(args) -> None:
     out_path.write_text(md)
     print(f"Report written to {out_path}")
 
-    json_out = getattr(args, "json_out", None)
     if json_out:
         _write_leaderboard_json(
             Path(json_out),
