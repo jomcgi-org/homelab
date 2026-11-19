@@ -1439,10 +1439,10 @@ func TestInvariantScopeAnswerIsAdvisory(t *testing.T) {
 				baseline = a
 				continue
 			}
-			if len(a.Optional) != 1 || a.Optional[0].Severity != SeverityLow || a.Optional[0].Path != "new.go" {
-				t.Fatalf("optional findings %v", a.Optional)
+			if len(a.Advisories) != 1 || a.Advisories[0].Path != "new.go" || len(a.Optional) != 0 {
+				t.Fatalf("advisories %v, optional %v", a.Advisories, a.Optional)
 			}
-			a.Optional = nil
+			a.Advisories = nil
 			if !reflect.DeepEqual(a, baseline) {
 				t.Fatalf("answer changed assessment: %+v vs %+v", a, baseline)
 			}
@@ -1450,25 +1450,24 @@ func TestInvariantScopeAnswerIsAdvisory(t *testing.T) {
 	}
 }
 
-func TestInvariantScopeAnswersSkipLowBudget(t *testing.T) {
-	answer := `{"path":"new.go","uncovered":true}`
-	var lows []string
+func TestInvariantScopeNoticesStayOutsideFindingLimit(t *testing.T) {
+	var answers []string
 	for i := range MaxLow + 1 {
-		lows = append(lows, fmt.Sprintf(`{"severity":"low","title":"existing %d"}`, i))
+		answers = append(answers, fmt.Sprintf(`{"path":"new%d.go","uncovered":true,"reason":"new mechanism"}`, i))
 	}
-	reply := "```json\n" + `{"summary":"s","findings":[` + strings.Join(lows, ",") + `],"invariant_scopes":[{"uncovered":"false"},` + answer + "]}\n```"
+	reply := "```json\n" + `{"summary":"s","findings":[],"invariant_scopes":[` + strings.Join(answers, ",") + "]}\n```"
 	r, err := ParseReport(reply)
 	if err != nil {
 		t.Fatal(err)
 	}
 	a := Assess(r, nil)
-	scoped := 0
-	for _, f := range a.Optional {
-		if f.ID == "new.go:invariant-scope" {
-			scoped++
-		}
-	}
-	if scoped != 1 || len(a.Optional) != MaxLow+1 || a.DroppedLow != 1 || a.Conclusion != ConclusionSuccess {
+	if len(a.Optional) != 0 || a.DroppedLow != 0 || len(a.Advisories) != MaxLow+1 || a.Conclusion != ConclusionSuccess {
 		t.Fatalf("assessment = %+v", a)
+	}
+	notices := advisorySection(a)
+	for i := range MaxLow + 1 {
+		if !strings.Contains(notices, fmt.Sprintf("`new%d.go`", i)) {
+			t.Fatalf("notice for new%d.go missing:\n%s", i, notices)
+		}
 	}
 }

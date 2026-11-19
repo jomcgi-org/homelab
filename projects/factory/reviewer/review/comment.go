@@ -343,13 +343,14 @@ func findingsSection(a Assessment, r *Report) string {
 		}
 	}
 	tail := clip(sinceSection(a), maxSince)
-	budget := maxFindings - len(head) - len(tail)
+	notices := advisorySection(a)
+	budget := maxFindings - len(head) - len(notices) - len(tail)
 	for omitted := 0; ; omitted++ {
 		shown := rows[:len(rows)-omitted]
 		for _, limit := range []int{maxDetail, 500, 0} {
 			body := findingsTable(shown, omitted, a.DroppedLow) + findingDetails(shown, limit)
 			if len(body) <= budget || (limit == 0 && len(shown) == 0) {
-				return strings.TrimRight(head+body+tail, "\n")
+				return strings.TrimRight(head+body+notices+tail, "\n")
 			}
 		}
 	}

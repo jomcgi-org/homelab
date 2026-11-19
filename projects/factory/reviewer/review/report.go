@@ -374,6 +374,10 @@ type Assessment struct {
 	Approved []Finding
 	Approver string
 	Optional []Finding
+	// Advisories are the reviewer's "yes" answers to the HOME-349 invariant
+	// scope question. They are notices, not findings, so they never count
+	// against MaxLow or the conclusion, and each one is listed.
+	Advisories []InvariantScopeAnswer
 	// Deferred are low findings worth a follow-up, including those Scope
 	// lowered, which MaxLow never drops.
 	Deferred []Finding
@@ -735,11 +739,9 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 	if len(a.Blocking) > 0 {
 		a.Conclusion = ConclusionFailure
 	}
-	// HOME-349: every "yes" is listed. The answers stay outside the MaxLow
-	// budget, so ordinary low findings cannot hide an uncovered scope.
 	for _, answer := range r.InvariantScopes {
 		if answer.Uncovered {
-			a.Optional = append(a.Optional, Finding{ID: answer.Path + ":invariant-scope", Severity: SeverityLow, Path: answer.Path, Title: "Invariant scope may be uncovered", Detail: answer.Reason})
+			a.Advisories = append(a.Advisories, answer)
 		}
 	}
 	return a
@@ -1233,6 +1235,7 @@ func render(a Assessment, r *Report, gate *Gate, footer string, state *State) Ou
 		}
 		s.WriteString("\n")
 	}
+	s.WriteString(advisorySection(a))
 	if len(a.Deferred) > 0 {
 		s.WriteString("### Deferred\n\n")
 		for _, f := range a.Deferred {
@@ -1282,6 +1285,9 @@ func render(a Assessment, r *Report, gate *Gate, footer string, state *State) Ou
 	}
 	for _, f := range append(append([]Finding(nil), a.Optional...), a.Deferred...) {
 		add(f)
+	}
+	for _, n := range a.Advisories {
+		add(Finding{Severity: SeverityLow, Path: n.Path, Title: "Invariant scope may be uncovered", Detail: n.Reason})
 	}
 	o.Output.Annotations = anns
 	return o
@@ -1816,4 +1822,24 @@ func clip(s string, n int) string {
 		n--
 	}
 	return s[:n] + "…"
+}
+
+// advisorySection lists every invariant scope notice. It is not a findings
+// list: the review contract's finding limit does not apply to it.
+func advisorySection(a Assessment) string {
+	if len(a.Advisories) == 0 {
+		return ""
+	}
+	var s strings.Builder
+	s.WriteString("### Invariant scope notices\n\n")
+	s.WriteString("Advisory: the reviewer thinks these added files may belong to an invariant scope that no rule covers. They do not change the conclusion.\n\n")
+	for _, n := range a.Advisories {
+		fmt.Fprintf(&s, "- `%s`", oneLine(n.Path, maxTitle))
+		if r := oneLine(n.Reason, maxTitle); r != "" {
+			s.WriteString(": " + r)
+		}
+		s.WriteString("\n")
+	}
+	s.WriteString("\n")
+	return s.String()
 }
