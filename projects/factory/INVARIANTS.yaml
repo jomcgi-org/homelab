@@ -31,9 +31,9 @@ invariants:
   test: //projects/factory/broker/actorjwt:actorjwt_test
   state: live
 - id: FACT-6
-  statement: The broker's token and admin port admits only the connector, the reviewer and Prometheus.
+  statement: The broker's token and admin port admits only the edge gateway, the connector, the reviewer, the enabled leaderboard publisher and Prometheus.
   mechanism:
-  - projects/factory/chart/templates/network-policy.yaml
+  - projects/factory/chart/templates/broker-network-policy.yaml
   state: unproven
 - id: FACT-7
   statement: The broker writes only its grant Secret and github-git Secrets.

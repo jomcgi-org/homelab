@@ -383,7 +383,8 @@ func TestReviewerTokenAdmitsOnlyReviewerSubjects(t *testing.T) {
 // The comment token comes from its own minter, with only the comment
 // permissions, so the check token never gains issues write and an App
 // without it fails only the comment. An empty map serves none.
-func TestCommentMinterHoldsOnlyCommentPermissions(t *testing.T) {
+func appKeyFile(t *testing.T) string {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -393,6 +394,11 @@ func TestCommentMinterHoldsOnlyCommentPermissions(t *testing.T) {
 	if err := os.WriteFile(path, pemKey, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	return path
+}
+
+func TestCommentMinterHoldsOnlyCommentPermissions(t *testing.T) {
+	path := appKeyFile(t)
 	idp := fakes.NewIdP(t)
 	cfg := config.Defaults()
 	cfg.Namespace = "factory"
@@ -449,5 +455,69 @@ func TestBrowserAdmin(t *testing.T) {
 		if rec.Code != tc.status {
 			t.Errorf("%s %s = %d, want %d", tc.method, tc.path, rec.Code, tc.status)
 		}
+	}
+}
+
+func TestLeaderboardTokenBoundaries(t *testing.T) {
+	const repo = "jomcgi-org/homelab"
+	const publisher = "system:serviceaccount:factory:factory-leaderboard"
+	const connector = "system:serviceaccount:factory:factory-connector"
+	var mints atomic.Int32
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mints.Add(1)
+		var body struct {
+			Repositories []string
+			Permissions  map[string]string
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/app/installations/3/access_tokens" ||
+			json.NewDecoder(r.Body).Decode(&body) != nil || len(body.Repositories) != 1 || body.Repositories[0] != "homelab" ||
+			!maps.Equal(body.Permissions, map[string]string{"contents": "write", "pull_requests": "write"}) {
+			t.Error("unexpected installation token request or scope")
+			http.Error(w, "bad request", 400)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"token":"fixture","expires_at":"2099-01-01T00:00:00Z","repositories":[{"full_name":"jomcgi-org/homelab"}],"permissions":{"contents":"write","pull_requests":"write"}}`)
+	}))
+	defer api.Close()
+	client := fake.NewSimpleClientset()
+	client.PrependReactor("create", "tokenreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		review := action.(k8stesting.CreateAction).GetObject().(*authenticationv1.TokenReview).DeepCopy()
+		review.Status = authenticationv1.TokenReviewStatus{Authenticated: true, Audiences: review.Spec.Audiences, User: authenticationv1.UserInfo{Username: review.Spec.Token}}
+		return true, review, nil
+	})
+	cfg := config.Defaults()
+	cfg.Namespace = "factory"
+	cfg.ActorJWT.Issuer = fakes.NewIdP(t).URL
+	cfg.GitHub.PrivateKeyFile, cfg.GitHub.AppID, cfg.GitHub.InstallationID = appKeyFile(t), "9", "3"
+	cfg.GitHub.APIURL = api.URL
+	cfg.Bindings = []config.Binding{{Name: "homelab", Repository: repo}, {Name: "other", Repository: "jomcgi-org/other"}}
+	cfg.TokenReview.ConnectorSubjects = []string{connector}
+	d, err := build(context.Background(), cfg, client, quota.NewStore(), metrics.New(), slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := d.adminHandler(cfg, http.NotFoundHandler())
+	for _, tc := range []struct {
+		subject, route, repo string
+		status               int
+	}{
+		{connector, "leaderboard", repo, 403},
+		{"system:serviceaccount:other:factory-leaderboard", "leaderboard", repo, 403},
+		{publisher, "connector", repo, 403},
+		{publisher, "leaderboard", "jomcgi-org/other", 404},
+		{publisher, "leaderboard", "jomcgi-org/unbound", 404},
+		{publisher, "leaderboard", repo, 200},
+	} {
+		req := httptest.NewRequest("GET", "/github/"+tc.route+"-token?repository="+tc.repo, nil)
+		req.Header.Set("Authorization", "Bearer "+tc.subject)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != tc.status {
+			t.Errorf("%s %s %s: got %d, want %d", tc.subject, tc.route, tc.repo, rec.Code, tc.status)
+		}
+	}
+	if mints.Load() != 1 {
+		t.Errorf("got %d mints, want 1", mints.Load())
 	}
 }
