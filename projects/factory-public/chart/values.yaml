@@ -72,6 +72,10 @@ workloads:
       - name: CLOUDFLARE_ACCOUNT_ID
         valueFrom:
           secretKeyRef: {name: factory-health-cloudflare, key: account-id, optional: true}
+      # The HOME-415 alert check (README "Factory health"): "true" adds the
+      # component alert-test, always down, so FactoryHealthUnhealthy fires.
+      - name: ALERT_TEST
+        value: "false"
     network:
       egress:
         - {peer: kube-apiserver, port: 6443}

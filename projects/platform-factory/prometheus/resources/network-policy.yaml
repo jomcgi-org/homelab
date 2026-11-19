@@ -47,6 +47,8 @@ spec:
     - toEndpoints:
         - matchLabels:
             app.kubernetes.io/name: kube-state-metrics
+        - matchLabels:
+            app.kubernetes.io/name: health-exporter
       toPorts:
         - ports:
             - port: "8080"
@@ -193,6 +195,34 @@ spec:
     # Discord's webhook API; a webhook URL on another host needs it here.
     - toFQDNs:
         - matchName: discord.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: health-exporter
+  namespace: prometheus
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: health-exporter
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    # The public health file only (HOME-415).
+    - toFQDNs:
+        - matchName: factory-data.jomcgi.dev
       toPorts:
         - ports:
             - port: "443"

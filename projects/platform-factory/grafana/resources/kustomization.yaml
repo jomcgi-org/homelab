@@ -41,3 +41,5 @@ configMapGenerator:
       - runbooks/FactoryCodexQuotaReadingStale.json
       - runbooks/SemgrepSyncFailed.json
       - runbooks/AlertRelayDown.json
+      - runbooks/FactoryHealthUnhealthy.json
+      - runbooks/FactoryHealthStale.json

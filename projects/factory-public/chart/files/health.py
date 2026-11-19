@@ -77,6 +77,9 @@ def worker(now, env):
 
 
 CHECKS = {"factory-cluster": cluster, "jomcgi-site-worker": worker}
+# The HOME-415 alert check (README "Factory health"): ALERT_TEST=true adds
+# this component, always down.
+TEST_COMPONENT = "alert-test"
 
 
 def compose(results, now):
@@ -162,6 +165,8 @@ def main():
             results[name] = bool(check(now, env))
         except Exception:  # Any read failure or missing input is down.
             results[name] = False
+    if env.get("ALERT_TEST") == "true":
+        results[TEST_COMPONENT] = False
     document = compose(results, now)
     put(json.dumps(document, separators=(",", ":")).encode(), env, now)
     print(json.dumps(document))
