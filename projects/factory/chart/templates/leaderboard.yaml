@@ -1,5 +1,12 @@
 {{- if and .Values.connector.enabled .Values.leaderboard.enabled }}
 apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: factory-leaderboard
+  namespace: {{ .Values.broker.namespace }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: factory-leaderboard
@@ -26,7 +33,7 @@ spec:
           labels:
             app.kubernetes.io/name: factory-leaderboard
         spec:
-          serviceAccountName: {{ include "factory.connectorName" . }}
+          serviceAccountName: factory-leaderboard
           automountServiceAccountToken: false
           restartPolicy: Never
           securityContext:
@@ -41,7 +48,7 @@ spec:
               env:
                 - name: DATABASE_URL
                   valueFrom:
-                    secretKeyRef: {name: {{ .Values.connector.database.secretName }}, key: DATABASE_URL}
+                    secretKeyRef: {name: factory-leaderboard-db, key: DATABASE_URL}
               securityContext: &security
                 allowPrivilegeEscalation: false
                 readOnlyRootFilesystem: true

@@ -739,10 +739,16 @@ def _agentic_cell(
         "jomcgi-site/web/src/factory-outcomes.json",
     ],
 )
-def test_report_protects_public_snapshots(target):
+@pytest.mark.parametrize("option", ["out", "json_out"])
+def test_report_protects_public_snapshots(target, option):
     with pytest.raises(ValueError, match="Public leaderboard snapshots"):
         _report(
-            argparse.Namespace(json_out=Path(__file__).resolve().parents[2] / target)
+            argparse.Namespace(
+                **{
+                    "out": "report.md",
+                    option: Path(__file__).resolve().parents[2] / target,
+                }
+            )
         )
 
 

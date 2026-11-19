@@ -76,7 +76,7 @@ def publish(rows):
     content = snapshot(rows)
     jwt = Path("/broker/token").read_text().strip()
     token = api(
-        os.environ["BROKER_URL"] + "/github/connector-token?repository=" + REPO, jwt
+        os.environ["BROKER_URL"] + "/github/leaderboard-token?repository=" + REPO, jwt
     )["token"]
 
     def github(path, method="GET", payload=None):
