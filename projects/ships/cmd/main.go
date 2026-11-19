@@ -15,8 +15,25 @@ import (
 	"syscall"
 	"time"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 	"nhooyr.io/websocket"
+)
+
+const (
+	batchSize     = 200 // frames in one inbox write and one apply transaction
+	flushInterval = 2 * time.Second
+	readLimit     = 64 << 10
+	readTimeout   = 30 * time.Second
+	// A report dated further ahead of the writer clock would hold the latest
+	// position until real time reaches it, so the writer drops it.
+	maxClockSkew = 5 * time.Minute
+	// After SIGTERM the writer has this long to commit the frames it received.
+	stopGrace = 10 * time.Second
+)
+
+var (
+	malformed atomic.Uint64 // frames without JSON or an MMSI
+	rejected  atomic.Uint64 // reports dated too far ahead or refused by PostgreSQL
 )
 
 type position struct {
@@ -101,6 +118,10 @@ func store(ctx context.Context, tx *sql.Tx, f frame) error {
 	if err != nil {
 		return nil
 	}
+	if at.After(time.Now().Add(maxClockSkew)) {
+		rejected.Add(1)
+		return nil
+	}
 	var lat, lon float64
 	var prior time.Time
 	var first sql.NullTime
@@ -120,6 +141,7 @@ func store(ctx context.Context, tx *sql.Tx, f frame) error {
 			firstSeen = first.Time
 		}
 	}
+	// An older report joins the history. The WHERE clause keeps the newer latest position.
 	_, err = tx.ExecContext(ctx, `with added as (
  insert into ships.positions(mmsi,lat,lon,speed,course,heading,nav_status,ship_name,recorded_at)
  values($1,$2,$3,$4,$5,$6,$7,nullif($8,''),$9) returning *)
@@ -127,26 +149,94 @@ func store(ctx context.Context, tx *sql.Tx, f frame) error {
  select mmsi,lat,lon,speed,course,heading,nav_status,ship_name,recorded_at,$10 from added
  on conflict(mmsi) do update set lat=excluded.lat,lon=excluded.lon,speed=excluded.speed,course=excluded.course,
  heading=excluded.heading,nav_status=excluded.nav_status,ship_name=coalesce(excluded.ship_name,old.ship_name),
- recorded_at=excluded.recorded_at,first_seen_at_location=excluded.first_seen_at_location,updated_at=now()`,
+ recorded_at=excluded.recorded_at,first_seen_at_location=excluded.first_seen_at_location,updated_at=now()
+ where old.recorded_at <= excluded.recorded_at`,
 		id, p.Latitude, p.Longitude, p.Sog, p.Cog, p.TrueHeading, p.NavigationalStatus, name, at, firstSeen)
 	return err
 }
 
-func flush(ctx context.Context, c *sql.Conn, batch []frame) error {
-	if len(batch) == 0 {
-		return c.PingContext(ctx)
-	}
-	tx, err := c.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for _, f := range batch {
-		if err = store(ctx, tx, f); err != nil {
+// dataError reports a PostgreSQL data exception or constraint violation: a
+// frame that fails every retry, so the writer drops it.
+func dataError(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && (pqErr.Code.Class() == "22" || pqErr.Code.Class() == "23")
+}
+
+// spool commits received frames to ships.inbox before the writer applies them.
+func spool(ctx context.Context, c *sql.Conn, frames [][]byte) error {
+	_, err := c.ExecContext(ctx, `insert into ships.inbox(frame)
+ select frame from unnest($1::bytea[]) with ordinality as received(frame, n) order by n`, pq.ByteaArray(frames))
+	return err
+}
+
+// apply moves spooled frames into history, latest positions and vessels in
+// receive order. A frame leaves ships.inbox in the transaction that applies it.
+func apply(ctx context.Context, c *sql.Conn) error {
+	for {
+		n, err := applyChunk(ctx, c, false)
+		if dataError(err) {
+			n, err = applyChunk(ctx, c, true)
+		}
+		if err != nil || n < batchSize {
 			return err
 		}
 	}
-	return tx.Commit()
+}
+
+// applyChunk applies the oldest spooled frames. With isolate set, a savepoint
+// around each frame lets the chunk commit without a frame PostgreSQL refuses.
+func applyChunk(ctx context.Context, c *sql.Conn, isolate bool) (int, error) {
+	tx, err := c.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, "select id, frame from ships.inbox order by id limit $1", batchSize)
+	if err != nil {
+		return 0, err
+	}
+	var last int64
+	var frames [][]byte
+	for rows.Next() {
+		var raw []byte
+		if err = rows.Scan(&last, &raw); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		frames = append(frames, raw)
+	}
+	if err = rows.Close(); err != nil {
+		return 0, err
+	}
+	if err = rows.Err(); err != nil || len(frames) == 0 {
+		return 0, err
+	}
+	for _, raw := range frames {
+		var f frame
+		if json.Unmarshal(raw, &f) != nil {
+			continue // The reader spools only frames that decode.
+		}
+		if isolate {
+			if _, err = tx.ExecContext(ctx, "savepoint frame"); err != nil {
+				return 0, err
+			}
+		}
+		err = store(ctx, tx, f)
+		if isolate && dataError(err) {
+			rejected.Add(1)
+			_, err = tx.ExecContext(ctx, "rollback to savepoint frame")
+		}
+		if err == nil && isolate {
+			_, err = tx.ExecContext(ctx, "release savepoint frame")
+		}
+		if err != nil {
+			return 0, err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, "delete from ships.inbox where id <= $1", last); err != nil {
+		return 0, err
+	}
+	return len(frames), tx.Commit()
 }
 
 //go:embed maintenance.sql
@@ -171,20 +261,58 @@ func maintain(ctx context.Context, c *sql.Conn) error {
 	return tx.Commit()
 }
 
+// read sends each frame that decodes with an MMSI to the queue. It returns
+// when the feed fails or ctx ends, and closes the queue.
+func read(ctx context.Context, ws *websocket.Conn, queue chan<- []byte) {
+	defer close(queue)
+	for {
+		readCtx, cancel := context.WithTimeout(ctx, readTimeout)
+		_, raw, err := ws.Read(readCtx)
+		cancel()
+		if err != nil {
+			return
+		}
+		var f frame
+		if json.Unmarshal(raw, &f) != nil || f.MetaData.MMSI == "" {
+			malformed.Add(1)
+			continue
+		}
+		select {
+		case queue <- raw:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 func ingest(ctx context.Context, db *sql.DB, key string) error {
-	c, err := db.Conn(ctx)
+	// Database work continues for stopGrace after SIGTERM, so received frames commit.
+	work, cancelWork := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelWork()
+	defer context.AfterFunc(ctx, func() { time.AfterFunc(stopGrace, cancelWork) })()
+	c, err := db.Conn(work)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
 	var held bool
-	if err = c.QueryRowContext(ctx, "select pg_try_advisory_lock(409,1)").Scan(&held); err != nil || !held {
+	if err = c.QueryRowContext(work, "select pg_try_advisory_lock(409,1)").Scan(&held); err != nil {
+		return err
+	}
+	if !held {
 		return errors.New("database lease unavailable")
 	}
-	if err = maintain(ctx, c); err != nil {
+	if err = maintain(work, c); err != nil {
 		return err
 	}
 	nextMaintenance := time.Now().Add(time.Hour)
+	// Recover the frames that an interrupted session spooled but did not apply.
+	if err = apply(work, c); err != nil {
+		return err
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	url := os.Getenv("AISSTREAM_URL")
 	if url == "" {
 		url = "wss://stream.aisstream.io/v0/stream"
@@ -201,67 +329,51 @@ func ingest(ctx context.Context, db *sql.DB, key string) error {
 	if err = ws.Write(ctx, websocket.MessageText, sub); err != nil {
 		return err
 	}
-	ws.SetReadLimit(64 << 10)
-	readerCtx, stop := context.WithCancel(ctx)
-	defer stop()
-	const capacity = 200
-	queue := make(chan frame, capacity)
-	var malformed atomic.Uint64
-	go func() {
-		defer close(queue)
-		for {
-			readCtx, cancel := context.WithTimeout(readerCtx, 30*time.Second)
-			_, raw, err := ws.Read(readCtx)
-			cancel()
-			if err != nil {
-				return
-			}
-			var f frame
-			if json.Unmarshal(raw, &f) != nil || f.MetaData.MMSI == "" {
-				malformed.Add(1)
-				continue
-			}
-			select {
-			case queue <- f:
-			case <-readerCtx.Done():
-				return
-			}
-		}
-	}()
-	ticker := time.NewTicker(2 * time.Second)
+	ws.SetReadLimit(readLimit)
+	queue := make(chan []byte, batchSize)
+	go read(ctx, ws, queue)
+	ticker := time.NewTicker(flushInterval)
 	defer ticker.Stop()
-	batch := make([]frame, 0, capacity)
+	batch := make([][]byte, 0, batchSize)
 	var committed time.Time
-	defer func() { log.Printf("session ended: malformed=%d last_commit=%v", malformed.Load(), committed) }()
+	defer func() {
+		log.Printf("session ended: malformed=%d rejected=%d last_commit=%v", malformed.Load(), rejected.Load(), committed)
+	}()
 	for {
-		var closed bool
+		closed := false
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case f, open := <-queue:
-			closed = !open
+		case raw, open := <-queue:
 			if open {
-				batch = append(batch, f)
-				if len(batch) < capacity {
+				batch = append(batch, raw)
+				if len(batch) < batchSize {
 					continue
 				}
 			}
+			closed = !open
 		case <-ticker.C:
 		}
-		if err = flush(ctx, c, batch); err != nil {
-			log.Printf("database flush failed: uncommitted_frames=%d", len(batch))
-			return err
-		}
-		if len(batch) > 0 {
-			committed = time.Now().UTC()
+		if len(batch) == 0 {
+			err = c.PingContext(work)
+		} else if err = spool(work, c, batch); err != nil {
+			log.Printf("inbox write failed: lost_frames=%d", len(batch))
+		} else {
 			clear(batch)
 			batch = batch[:0]
+			if err = apply(work, c); err == nil {
+				committed = time.Now().UTC()
+			}
+		}
+		if err != nil {
+			return err
 		}
 		if closed {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return errors.New("feed closed")
 		}
 		if time.Now().After(nextMaintenance) {
-			if err = maintain(ctx, c); err != nil {
+			if err = maintain(work, c); err != nil {
 				return err
 			}
 			nextMaintenance = time.Now().Add(time.Hour)
@@ -284,8 +396,8 @@ func main() {
 	db.SetMaxIdleConns(0) // Release the session lock whenever the socket closes.
 	for delay := time.Second; ctx.Err() == nil; {
 		started := time.Now()
-		if ingest(ctx, db, key) != nil && ctx.Err() == nil {
-			log.Print("ingest session ended; reconnecting")
+		if err := ingest(ctx, db, key); err != nil && ctx.Err() == nil {
+			log.Printf("ingest session ended: %v", err)
 		}
 		if time.Since(started) > time.Minute {
 			delay = time.Second

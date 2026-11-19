@@ -17,12 +17,17 @@ than shaving a dialect-specific INSERT ... ON CONFLICT.
 """
 
 from core.clock import as_utc
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, select
 
 from ships.ais import PriorPosition, should_insert_position
 from ships.models import LatestPosition, Position, Vessel
+
+# A report dated further ahead than this would hold the latest position until
+# real time reaches it, so the persister drops it. The factory writer
+# (projects/ships/cmd) uses the same bound.
+MAX_CLOCK_SKEW = timedelta(minutes=5)
 
 
 def persist_batch(session: Session, positions: list[dict], vessels: list[dict]) -> int:
@@ -56,13 +61,18 @@ def persist_batch(session: Session, positions: list[dict], vessels: list[dict]) 
     history: list[Position] = []
     # Latest surviving position per mmsi within this batch, with computed first_seen.
     latest_by_mmsi: dict[str, tuple[dict, datetime | None]] = {}
+    newest_accepted = datetime.now(timezone.utc) + MAX_CLOCK_SKEW
 
     for data in positions:
         mmsi = data.get("mmsi")
         if not mmsi:
             continue
+        recorded_at = data.get("recorded_at")
+        if recorded_at is not None and recorded_at > newest_accepted:
+            continue
 
-        should, first_seen = should_insert_position(data, prior.get(mmsi))
+        last = prior.get(mmsi)
+        should, first_seen = should_insert_position(data, last)
         if not should:
             continue
 
@@ -80,6 +90,10 @@ def persist_batch(session: Session, positions: list[dict], vessels: list[dict]) 
                 received_at=datetime.now(timezone.utc),
             )
         )
+        # An older report joins the history and keeps the newer latest position.
+        if last is not None and recorded_at is not None:
+            if recorded_at < last.recorded_at:
+                continue
         latest_by_mmsi[mmsi] = (data, first_seen)
 
         # Advance the working prior so a SECOND position for the same mmsi later

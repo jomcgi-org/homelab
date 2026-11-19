@@ -8,7 +8,11 @@ filegroup(
         "migrations/*.sql",
         "migrations/atlas.sum",
     ]),
-    visibility = ["//projects/monolith:__subpackages__"],
+    visibility = [
+        "//projects/monolith:__subpackages__",
+        # The factory Ships replay runs the hub schema as its parity target.
+        "//projects/ships:__pkg__",
+    ],
 )
 
 filegroup(
