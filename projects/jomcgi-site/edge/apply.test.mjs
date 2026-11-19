@@ -28,10 +28,10 @@ const SCOTLAND_AND_SLOP_PATHS = [
   "/scotland/marketplace.json",
   "/slop",
 ];
-// HOME-475 retired the hub copy of the Scotland connector. These patterns
-// send its old URLs to the Worker, and web/public/_redirects answers them
-// with a 308 to the same path on scotland-mcp.jomcgi.dev.
-const RETIRED_CONNECTOR = [
+// HOME-475: these patterns send the hub connector's old URLs to the Worker,
+// and web/public/_redirects answers them with a 308 to the same path on
+// scotland-mcp.jomcgi.dev. The hub copy serves them until prod has the routes.
+const LEGACY_CONNECTOR = [
   "jomcgi.dev/scotland/mcp*",
   "jomcgi.dev/scotland/v1*",
 ];
@@ -52,16 +52,16 @@ function canMatchPrefix(pattern, prefix) {
   return visit(0, 0);
 }
 
-test("Scotland and slop own exact static URLs and the retired connector paths", () => {
+test("Scotland and slop own exact static URLs and the legacy connector paths", () => {
   for (const path of SCOTLAND_AND_SLOP_PATHS)
     assert.ok(ROUTES.patterns.includes(`jomcgi.dev${path}`));
-  for (const pattern of RETIRED_CONNECTOR)
+  for (const pattern of LEGACY_CONNECTOR)
     assert.ok(ROUTES.patterns.includes(pattern), pattern);
   for (const pattern of ROUTES.patterns) {
     const route = pattern.replace(/^https?:\/\//, "");
     const prefixes = ["jomcgi.dev/slop/factory"];
-    // Only the retired connector patterns reach the old connector paths.
-    if (!RETIRED_CONNECTOR.includes(pattern))
+    // Only the legacy connector patterns reach the old connector paths.
+    if (!LEGACY_CONNECTOR.includes(pattern))
       prefixes.push("jomcgi.dev/scotland/mcp", "jomcgi.dev/scotland/v1");
     for (const prefix of prefixes) {
       assert.ok(

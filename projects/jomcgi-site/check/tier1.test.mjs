@@ -517,7 +517,7 @@ test("production wildcard routes include query URLs and retired-page 404s", () =
   ]) {
     assert.equal(scope.owns(path), false, `${path} still belongs to the hub`);
   }
-  // HOME-475: the Worker owns the retired connector paths and answers 308.
+  // HOME-475: the Worker owns the legacy connector paths and answers 308.
   for (const path of ["/scotland/mcp", "/scotland/v1/tools"]) {
     assert.ok(scope.owns(path), path);
     assert.ok(scope.owns(`${path}?ref=test`), `${path}?ref=test`);
