@@ -6,7 +6,6 @@ import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
-from collections import Counter
 from pathlib import Path
 
 try:
@@ -152,10 +151,27 @@ def check_markers(documents, base):
                 for path, marker in head
             ):
                 raise ValueError(f"{name}: missing invariant marker {ident}")
-    counts = Counter(ident for _, ident in head)
-    lost = Counter(ident for _, ident in markers_at(base)) - counts
-    if lost:
-        raise ValueError("fewer marked files for " + ", ".join(sorted(lost)))
+    names = subprocess.check_output(
+        [
+            "git",
+            "diff",
+            "--find-renames",
+            "--diff-filter=R",
+            "--name-status",
+            "-z",
+            base,
+            "HEAD",
+            "--",
+        ]
+    ).split(b"\0")
+    # Rename records contain status, old path, and new path.
+    renames = {
+        Path(os.fsdecode(old)): Path(os.fsdecode(new))
+        for old, new in zip(names[1::3], names[2::3])
+    }
+    for path, ident in sorted(markers_at(base)):
+        if (renames.get(path, path), ident) not in head:
+            raise ValueError(f"{path}: dropped invariant marker {ident}")
 
 
 def check(records_only=False, base=None):

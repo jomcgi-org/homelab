@@ -155,7 +155,9 @@ def test_cached_bundle_without_yaml(tmp_path):
 @pytest.mark.parametrize(
     ("replacement", "error"),
     [
-        ("", "fewer marked files"),
+        ("", "dropped invariant marker"),
+        ("unrelated", "dropped invariant marker"),
+        ("rename", None),
         ("# invariant: UNKNOWN-8", "unknown invariant UNKNOWN-8"),
     ],
 )
@@ -191,7 +193,16 @@ def test_marker_regressions(tmp_path, monkeypatch, replacement, error):
         )
 
     commit()
-    test.write_text(replacement)
+    if replacement == "rename":
+        test.rename("renamed.py")
+    elif replacement == "unrelated":
+        test.write_text("")
+        Path("unrelated.py").write_text(marker)
+    else:
+        test.write_text(replacement)
     commit()
+    if error is None:
+        check_markers(docs, "HEAD^")
+        return
     with pytest.raises(ValueError, match=error):
         check_markers(docs, "HEAD^")

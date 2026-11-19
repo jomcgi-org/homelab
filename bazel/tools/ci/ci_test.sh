@@ -1068,6 +1068,9 @@ for scenario in qualifying chart-only app-only multi-project mixed ordinary hand
 			grep -q "/$guard.py" "$TRACE" || fail "workflow_${scenario}_$guard" 'head guard was skipped'
 		done
 		grep -q '^cleanup$' "$TRACE" || fail "workflow_${scenario}_cleanup" 'snapshot hygiene was skipped'
+		if [[ "$scenario" == formatter ]]; then
+			grep -q 'invariants:check_invariants .* --base ' "$TRACE" || fail workflow_formatter_markers 'formatter head skipped invariant markers'
+		fi
 		case "$scenario" in
 		social-pr | missing-parent | diff-failure | partial-diff)
 			grep -q 'tool .*authentik/runtime/check.sh' "$TRACE" || fail "workflow_${scenario}_social" 'social flow check was skipped'
