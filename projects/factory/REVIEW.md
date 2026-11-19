@@ -56,7 +56,9 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   must number the same count. A numbering gap or any other ambiguity
   counts nothing, as does any HTML comment, code fence or HTML block in the
   issue: those can hide or fake list items. An issue with a diagram keeps
-  main's rules. An indented heading is code, not a heading. History replay
+  main's rules. So does a thematic break, a setext underline, or an item
+  with no words on its marker line. An indented heading is code, not a
+  heading. History replay
   withdraws nothing. A restated criterion gets a fresh verdict under the same
   ID. A missing issue reference, an uncounted list or a count the answer
   disagrees with withdraws nothing; a finding then clears only when a
