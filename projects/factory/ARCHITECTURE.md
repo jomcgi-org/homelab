@@ -309,7 +309,11 @@ The connector uses separate identities to claim coding work and coordinate issue
   instance admin); sets invite-only registration and the OIDC provider; and
   creates team `factory`, project `HOME` and the external agents
   `homelab-codex` (claims runs, assignment and mention triggers) and
-  `factory-coordinator` (coordinates issue updates).
+  `factory-coordinator` (coordinates issue updates). The `readOnly` agents
+  `factory-reviewer` and `factory-storyboard` get no triggers and only
+  `work_items read` in HOME. The bootstrap proves that access with each
+  agent's own key, then writes the key to `factory-itsaplan-agent-<username>`
+  ([HOME-543](https://factory-plan.jomcgi.dev/factory/issue/HOME-543)).
 - **Public api surface.** The route answers 404 for MCP and for the runner
   feeds (`claim`, `heartbeat`, `events`, `result` of runs and chats), so
   claiming and reporting runs happens only inside the cluster. An agent key

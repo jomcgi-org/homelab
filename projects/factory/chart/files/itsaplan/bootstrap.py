@@ -14,7 +14,9 @@ Idempotent; every step reads before it writes:
    Secret AGENT_SECRET_PREFIX<username>. An agent whose Secret holds no
    working key gets a new key; an agent is never created twice.
    Verify the coordinator's identity and effective project permissions with
-   its own key, granting missing rights through a dedicated team role.
+   its own key, granting missing rights through a dedicated team role. A
+   readOnly agent gets only the read-only team role in that project, and its
+   key is written only after the key itself proves that access.
 5. Joe's sessions account, invited as a regular member of that project. Its
    password is saved in SESSIONS_SECRET before sign-up and never rotated.
 
@@ -480,6 +482,43 @@ def ensure_scoped_access(session, team_id, project_id, agent, role_id, project_k
             session.call("PATCH", f"{base}/{user}", want)
 
 
+# The team role of every readOnly agent. The name dates from factory-reviewer,
+# its first user; renaming it would leave the live role behind.
+READ_ONLY_ROLE = "Factory reviewer"
+
+
+def verify_read_only(team_id, agent, key):
+    """Prove, with the agent's own key, that it can only read work items."""
+    headers = {"x-api-key": key}
+    _, _, me = request("GET", API + "/me", headers=headers)
+    if (
+        not me.get("authenticated")
+        or (me.get("user") or {}).get("id") != agent["userId"]
+    ):
+        raise SystemExit(f"{agent['username']}'s key does not identify the agent")
+    project = f"/projects/{team_id}.{CONFIG['project']['key']}"
+    _, _, access = request("GET", API + project, headers=headers)
+    permissions = access["permissions"]
+    granted = {
+        (resource, action)
+        for resource, actions in permissions.items()
+        for action, enabled in actions.items()
+        if enabled is not False
+    }
+    if (
+        granted != {("work_items", "read")}
+        or permissions["work_items"]["read"] is not True
+    ):
+        raise SystemExit(
+            f"{agent['username']} is not read-only on {CONFIG['project']['key']}; "
+            "its key was not written"
+        )
+    print(
+        f"verified {agent['username']} on {CONFIG['project']['key']}: "
+        "work_items read only"
+    )
+
+
 COORDINATOR_PERMISSIONS = {
     "work_items": {"read": True, "create": True, "edit": True},
     "ai_agents": {"read": True},
@@ -585,9 +624,11 @@ def ensure_agents(session, team_id, project_id):
     existing = {a["username"].lower(): a for a in session.call("GET", base)}
     for want in CONFIG["agents"]:
         username = want["username"]
-        reviewer = username == "factory-reviewer"
+        read_only = want.get("readOnly") is True
         sync = username == "intsec-sync"
-        restricted = reviewer or sync
+        if read_only and (sync or username == coordinator):
+            raise SystemExit(f"{username} cannot be a readOnly agent")
+        restricted = read_only or sync
         target_key = "INTSEC" if sync else CONFIG["project"]["key"]
         target_id = project_id
         if sync:
@@ -600,10 +641,8 @@ def ensure_agents(session, team_id, project_id):
             role_id = ensure_scoped_role(
                 session, team_id, "INTSEC sync", ("read", "create")
             )
-        elif reviewer:
-            role_id = ensure_scoped_role(
-                session, team_id, "Factory reviewer", ("read",)
-            )
+        elif read_only:
+            role_id = ensure_scoped_role(session, team_id, READ_ONLY_ROLE, ("read",))
         name = os.environ["AGENT_SECRET_PREFIX"] + username
         settings = {
             "name": want["name"],
@@ -658,6 +697,8 @@ def ensure_agents(session, team_id, project_id):
             ensure_scoped_access(
                 session, team_id, target_id, agent, role_id, target_key
             )
+        if read_only:
+            verify_read_only(team_id, agent, key)
         write_secret(
             name,
             {

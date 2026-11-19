@@ -590,7 +590,12 @@ def test_peers_admit_the_connector_pod() -> None:
         ),
         (
             "connector.coordinator=stranger",
-            "stranger is not in itsaplan.bootstrap.agents",
+            "stranger is not a writable agent in itsaplan.bootstrap.agents",
+        ),
+        (
+            # A readOnly agent's key can never claim runs or write comments.
+            "connector.coordinator=factory-storyboard",
+            "factory-storyboard is not a writable agent",
         ),
         ("connector.bindings.homelab.owner=x", "owner"),
         ("connector.bindings.homelab.maxRebaseRounds=-1", "maxRebaseRounds"),

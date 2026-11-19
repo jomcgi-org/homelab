@@ -490,7 +490,9 @@ itsaplan:
   # What the bootstrap Job creates once: a team, its project and the external
   # agents. Each agent's API key goes to Secret factory-itsaplan-agent-<username>
   # (keys apiKey, agentId, teamId, projectKey, url); a lost Secret gets the
-  # same agent a new key.
+  # same agent a new key. A readOnly agent gets only work_items read in the
+  # project, through the Factory reviewer role, and no triggers; the bootstrap
+  # checks that with the agent's own key before it writes the key.
   bootstrap:
     team:
       name: Factory
@@ -511,6 +513,11 @@ itsaplan:
         name: Factory coordinator
         triggerOnAssign: false
         triggerOnMention: false
+      # The public storyboard publisher (projects/factory-storyboard) reads the
+      # project's issues with this key.
+      - username: factory-storyboard
+        name: Factory storyboard
+        readOnly: true
   # Settings written to the api's environment over the chart's.
   env: {}
   resources:
