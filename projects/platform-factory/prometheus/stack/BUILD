@@ -16,5 +16,8 @@ py_test(
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "KUSTOMIZE_BIN": "$(rootpath @multitool//tools/kustomize)",
     },
-    deps = ["@pip//pyyaml"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
