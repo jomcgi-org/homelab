@@ -12,6 +12,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # Each sets content_rules = True on its argocd_app, which creates the marker.
 APPLICATIONS = [
     "factory-explore",
+    "factory-explore-site",
     "factory-landing",
     "factory-public",
     "jomcgi-site",

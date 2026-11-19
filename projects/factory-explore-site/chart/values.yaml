@@ -1,0 +1,54 @@
+publishEnabled: false
+image:
+  repository: ghcr.io/jomcgi/homelab/projects/factory-explore-site
+  digest: ''
+workloads:
+  factory-explore-deploy:
+    kind: Job
+    hook: Sync
+    containerName: wrangler
+    backoffLimit: 1
+    command:
+    - /bin/sh
+    - -ec
+    - cp -R /app/site /tmp/site && cd /tmp/site && exec /app/projects/jomcgi-site/wrangler/wrangler
+      deploy
+    env:
+    - name: HOME
+      value: /tmp
+    - name: CLOUDFLARE_API_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: factory-explore-cloudflare
+          key: api-token
+    - name: CLOUDFLARE_ACCOUNT_ID
+      valueFrom:
+        secretKeyRef:
+          name: factory-explore-cloudflare
+          key: account-id
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 512Mi
+    writablePaths:
+    - name: tmp
+      mountPath: /tmp
+      sizeLimit: 512Mi
+    network:
+      egress:
+      - peer: cloudflare-api
+        fqdn: api.cloudflare.com
+        port: 443
+secrets:
+  ghcr-imagepull-secret:
+    workload: factory-explore-deploy
+    onePassword:
+      itemPath: vaults/k8s-homelab/items/ghcr-read-permissions
+      type: kubernetes.io/dockerconfigjson
+  factory-explore-cloudflare:
+    workload: factory-explore-deploy
+    onePassword:
+      itemPath: vaults/k8s-homelab/items/factory-explore-cloudflare
+exceptions: []

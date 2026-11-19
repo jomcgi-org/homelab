@@ -101,3 +101,11 @@ sh_test(
     srcs = ["run_test.sh"],
     data = ["run.sh"],
 )
+
+exports_files(
+    [
+        "apko.yaml",
+        "apko.lock.json",
+    ],
+    visibility = ["//projects/factory-explore-site:__pkg__"],
+)

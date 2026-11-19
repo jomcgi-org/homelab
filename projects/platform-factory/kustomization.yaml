@@ -35,6 +35,7 @@ resources:
   - ../factory-public/deploy # Garage factory-public and its R2 mirror (HOME-243)
   - ../factory-explore/deploy
   - ../factory-landing/deploy # Static operator tools at factory.jomcgi.dev
+  - ../factory-explore-site/deploy # Publishes the explorer Worker on sync
   - ../jomcgi-site/deploy # jomcgi.dev site: dev-stage deploy Job for next.jomcgi.dev (HOME-174)
   - ../scotland-connector/deploy
   - ./edge-tunnel # Publishes the edge hostnames; deployed last, removed first

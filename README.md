@@ -100,7 +100,8 @@ projects/               # Services, operators and sites, each with its deploy co
 ├── factory/            #   Software factory: umbrella chart, connector, broker, reviewer
 ├── factory-cluster/    #   Factory home cluster: k3s node bootstrap and ArgoCD root
 ├── platform-factory/   #   Factory home cluster Applications (Cilium, Authentik, Garage, Hindsight, Kargo)
-├── factory-explore/    #   Read-only browser kubectl and time-limited Kubernetes API proxy
+├── factory-explore/    #   Sparkles browser UI, read-only kubectl and time-limited Kubernetes API proxy
+├── factory-explore-site/ #   Wrangler Job that publishes the UI to Cloudflare
 ├── factory-landing/    #   Private landing page at factory.jomcgi.dev
 ├── factory-public/     #   Garage bucket and R2 mirror for public factory data
 ├── factory-storyboard/ #   Public factory snapshot schema and invented fixtures

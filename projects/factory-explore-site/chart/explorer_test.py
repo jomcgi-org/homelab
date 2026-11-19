@@ -1,0 +1,60 @@
+import os
+from pathlib import Path
+import subprocess
+
+import yaml
+
+
+DIGEST = "sha256:" + "0" * 64
+
+
+def render(*settings):
+    rendered = subprocess.check_output(
+        [
+            os.environ["HELM_BIN"],
+            "template",
+            "factory-explore",
+            str(Path(__file__).parent),
+            "--set",
+            f"image.digest={DIGEST}",
+            *settings,
+        ],
+        text=True,
+    )
+    resources = [doc for doc in yaml.safe_load_all(rendered) if doc]
+    return resources
+
+
+def test_registered_release_waits_for_activation():
+    resources = render()
+    assert [doc["kind"] for doc in resources] == ["ConfigMap"]
+    assert "publishEnabled" not in resources[0]["metadata"]
+    assert resources[0]["data"]["publishEnabled"] == "false"
+
+
+def test_worker_deploy_job():
+    resources = render("--set", "publishEnabled=true")
+    marker = next(
+        doc
+        for doc in resources
+        if doc["kind"] == "ConfigMap"
+        and doc["metadata"]["name"] == "factory-explore-release"
+    )
+    assert "publishEnabled" not in marker["metadata"]
+    assert marker["data"]["publishEnabled"] == "true"
+    jobs = [doc for doc in resources if doc["kind"] == "Job"]
+    assert len(jobs) == 1
+    assert jobs[0]["metadata"]["annotations"]["argocd.argoproj.io/hook"] == "Sync"
+    container = jobs[0]["spec"]["template"]["spec"]["containers"][0]
+    assert container["image"].endswith("@" + DIGEST)
+    assert "wrangler deploy" in container["command"][-1]
+    assert {"Service", "Deployment", "HTTPRoute"}.isdisjoint(
+        doc["kind"] for doc in resources
+    )
+    cloudflare = {
+        entry["valueFrom"]["secretKeyRef"]["name"]
+        for entry in container["env"]
+        if entry["name"].startswith("CLOUDFLARE_")
+    }
+    assert cloudflare == {"factory-explore-cloudflare"}
+    assert "jomcgi-site-cloudflare" not in str(resources)

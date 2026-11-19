@@ -1,0 +1,20 @@
+{
+  "name": "factory-explore",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "vue": "^3.5.0",
+    "vuetify": "^3.7.9",
+    "oidc-client-ts": "^3.0.0",
+    "@mdi/font": "^7.0.96"
+  },
+  "devDependencies": {
+    "vite": "6.4.5",
+    "@vitejs/plugin-vue": "^5.2.0",
+    "@esbuild/linux-x64": "0.27.7",
+    "@rollup/rollup-linux-x64-gnu": "4.68.0"
+  }
+}
