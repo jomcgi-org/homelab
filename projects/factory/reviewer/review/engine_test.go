@@ -4346,7 +4346,7 @@ func TestAddedFileInvariantAnswerInCompletedCheck(t *testing.T) {
 						t.Fatalf("prompt missing %q", want)
 					}
 				}
-				if strings.Contains(c.Summary, added+":invariant-scope") != uncovered || strings.Contains(c.Summary, reason) != uncovered {
+				if strings.Contains(c.Summary, "### Invariant scope notices") != uncovered || strings.Contains(c.Summary, "`"+added+"`") != uncovered || strings.Contains(c.Summary, reason) != uncovered {
 					t.Fatalf("published findings: %s", c.Summary)
 				}
 				// The published check must attach a low-severity notice to the
