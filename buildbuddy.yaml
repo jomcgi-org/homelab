@@ -212,6 +212,10 @@ actions:
           if [ "$ON_MAIN" = true ] && [ "$SKIP_MAIN_PUBLISH" = true ]; then
             echo "Skipping format for generated main commit."
           else
+            # Document bundles are checked on every PR head, format-bot
+            # heads included: the author and subject prove nothing.
+            python3 ./bazel/tools/format/document_bundles/check_bundles.py
+
             # Format-bot heads skip formatting only; tests still gate them.
             AUTHOR="$(git log -1 --format='%an')"
             if [ "$AUTHOR" = "ci-format-bot" ] &&

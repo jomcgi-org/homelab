@@ -95,6 +95,15 @@ prose it replaces. Skip it for a one-component change or a version bump.
 
 ## Document types
 
+The Format stage of `pr-checks` and local `ci lint` both run
+[`check_bundles.py`](../bazel/tools/format/document_bundles/check_bundles.py).
+It reads [the bundle rules](templates/bundles.yaml) and reports the path and
+missing document or required part. Keep the rules in the JSON subset of YAML
+so the check runs with the Python standard library on every workstation.
+The check reads the component table rows and columns separately; a
+same-table check is deferred by
+[Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-269#comment-4037).
+
 Each file type answers one question. Text that answers a different question
 moves to the file that owns it. To create a file, copy its template or
 follow its procedure. Do not invent a new file type: add a section to the
@@ -121,9 +130,7 @@ README.
 ## Document bundles
 
 A directory's kind decides which documents it needs.
-`docs/templates/bundles.yaml` holds the rules. HOME-269 adds the CI check
-that each file exists and has its shape; until it merges, review applies
-the rules.
+`docs/templates/bundles.yaml` holds the rules.
 
 | Directory | Needs |
 | --- | --- |
@@ -133,9 +140,8 @@ the rules.
 | Component: a source sub-directory of a service | A row in the service's `ARCHITECTURE.md` component table |
 
 `AGENTS.md`, `REVIEW.md`, `STPA.md`, `INVARIANTS.yaml` and a component's own
-`ARCHITECTURE.md` are optional. The HOME-269 check will validate each one
-that exists. To change what a directory needs, change `bundles.yaml` and this
-table in one PR.
+`ARCHITECTURE.md` are optional. To change what a directory needs, change
+`bundles.yaml` and this table in one PR.
 
 Keep a file current by replacing text:
 

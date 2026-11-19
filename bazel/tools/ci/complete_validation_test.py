@@ -27,6 +27,9 @@ def checkout(tmp_path):
     shutil.copyfile(
         Path(__file__).parents[1] / "format/invariants/check_invariants.py", checker
     )
+    checker = root / "bazel/tools/format/document_bundles/check_bundles.py"
+    checker.parent.mkdir(parents=True)
+    checker.write_text("pass\n")
     (root / "a.py").write_text("x = 1\n")
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(["git", "commit", "-qm", "base"], cwd=root, check=True)

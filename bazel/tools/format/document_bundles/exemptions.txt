@@ -1,0 +1,187 @@
+projects/embervm/ARCHITECTURE.md: heading: Direction
+projects/embervm/ARCHITECTURE.md: max_lines: 600
+projects/embervm/ARCHITECTURE.md: missing component row for conformance
+projects/embervm/ARCHITECTURE.md: missing component row for proto
+projects/embervm/ARCHITECTURE.md: missing component row for rootfs
+projects/embervm/ARCHITECTURE.md: missing component row for runtimes
+projects/embervm/ARCHITECTURE.md: missing component row for scratch-prep
+projects/embervm/ARCHITECTURE.md: missing component row for tokenbroker
+projects/embervm/ARCHITECTURE.md: missing component row for xds
+projects/embervm/ARCHITECTURE.md: opening_fence: mermaid
+projects/embervm/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
+projects/embervm/QUICKSTART.md: outside allowed_names
+projects/factory-explore/ARCHITECTURE.md: missing component row for cmd
+projects/factory-explore/ARCHITECTURE.md: missing component row for kubectl-wasm
+projects/factory-explore/ARCHITECTURE.md: missing file or link from projects/factory-explore/README.md to projects/*/ARCHITECTURE.md
+projects/factory-landing/ARCHITECTURE.md: missing component row for web
+projects/factory-public/ARCHITECTURE.md: missing file or link from projects/factory-public/README.md to projects/*/ARCHITECTURE.md
+projects/factory-storyboard/ARCHITECTURE.md: heading: Direction
+projects/factory-storyboard/ARCHITECTURE.md: opening_fence: mermaid
+projects/factory-storyboard/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
+projects/factory-storyboard/README.md: link_if_present: ARCHITECTURE.md
+projects/factory/ARCHITECTURE.md: max_lines: 600
+projects/factory/ARCHITECTURE.md: missing component row for alert-relay
+projects/factory/ARCHITECTURE.md: missing component row for discord
+projects/factory/ARCHITECTURE.md: missing component row for reviewer
+projects/factory/ARCHITECTURE.md: missing component row for toolchain
+projects/factory/ARCHITECTURE.md: opening_fence: mermaid
+projects/factory/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
+projects/factory/README.md: missing required file
+projects/gke-apps/README.md: missing child context-forge-gateway
+projects/gke-apps/README.md: missing child embervm
+projects/gke-apps/README.md: missing child embervm-dev
+projects/gke-apps/README.md: missing child inference
+projects/gke-apps/README.md: missing child loom
+projects/gke-apps/README.md: missing child monolith
+projects/gke-apps/README.md: missing child monolith-agents
+projects/gke-apps/README.md: missing child monolith-public
+projects/gke-apps/README.md: missing child scotland-connector
+projects/gke-apps/README.md: missing required file
+projects/gke-cluster/README.md: missing required file
+projects/grimoire/ARCHITECTURE.md: heading: Direction
+projects/grimoire/ARCHITECTURE.md: opening_fence: mermaid
+projects/grimoire/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
+projects/grimoire/README.md: missing required file
+projects/jomcgi-site/ARCHITECTURE.md: missing component row for web
+projects/jomcgi-site/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
+projects/loom/README.md: missing required file
+projects/mcp/ARCHITECTURE.md: opening_fence: mermaid
+projects/mcp/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
+projects/model-bench/ARCHITECTURE.md: opening_fence: mermaid
+projects/model-bench/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
+projects/model-bench/README.md: link_if_present: ARCHITECTURE.md
+projects/monolith-agents/ARCHITECTURE.md: missing file or link from projects/monolith-agents/README.md to projects/*/ARCHITECTURE.md
+projects/monolith-agents/README.md: missing required file
+projects/monolith-public/ARCHITECTURE.md: missing file or link from projects/monolith-public/README.md to projects/*/ARCHITECTURE.md
+projects/monolith-public/ASSET-ARCHIVE.md: outside allowed_names
+projects/monolith-public/README.md: missing required file
+projects/monolith/ARCHITECTURE.md: heading: Direction
+projects/monolith/ARCHITECTURE.md: max_lines: 600
+projects/monolith/ARCHITECTURE.md: missing component row for agent
+projects/monolith/ARCHITECTURE.md: missing component row for agent_kubernetes
+projects/monolith/ARCHITECTURE.md: missing component row for agent_sessions
+projects/monolith/ARCHITECTURE.md: missing component row for agent_view
+projects/monolith/ARCHITECTURE.md: missing component row for app
+projects/monolith/ARCHITECTURE.md: missing component row for artifact
+projects/monolith/ARCHITECTURE.md: missing component row for auth
+projects/monolith/ARCHITECTURE.md: missing component row for campsites
+projects/monolith/ARCHITECTURE.md: missing component row for chat
+projects/monolith/ARCHITECTURE.md: missing component row for chat_public
+projects/monolith/ARCHITECTURE.md: missing component row for cluster
+projects/monolith/ARCHITECTURE.md: missing component row for core
+projects/monolith/ARCHITECTURE.md: missing component row for dr_jobs
+projects/monolith/ARCHITECTURE.md: missing component row for e2e
+projects/monolith/ARCHITECTURE.md: missing component row for ember_public
+projects/monolith/ARCHITECTURE.md: missing component row for faas
+projects/monolith/ARCHITECTURE.md: missing component row for factory
+projects/monolith/ARCHITECTURE.md: missing component row for framework
+projects/monolith/ARCHITECTURE.md: missing component row for frontend
+projects/monolith/ARCHITECTURE.md: missing component row for goosecracker
+projects/monolith/ARCHITECTURE.md: missing component row for grimoire
+projects/monolith/ARCHITECTURE.md: missing component row for grimoire_chat
+projects/monolith/ARCHITECTURE.md: missing component row for hikes
+projects/monolith/ARCHITECTURE.md: missing component row for home
+projects/monolith/ARCHITECTURE.md: missing component row for knowledge
+projects/monolith/ARCHITECTURE.md: missing component row for moving
+projects/monolith/ARCHITECTURE.md: missing component row for observability
+projects/monolith/ARCHITECTURE.md: missing component row for personal_retrieval_audit
+projects/monolith/ARCHITECTURE.md: missing component row for public_assets_image
+projects/monolith/ARCHITECTURE.md: missing component row for sandbox
+projects/monolith/ARCHITECTURE.md: missing component row for scheduler
+projects/monolith/ARCHITECTURE.md: missing component row for scripts
+projects/monolith/ARCHITECTURE.md: missing component row for shared
+projects/monolith/ARCHITECTURE.md: missing component row for ships
+projects/monolith/ARCHITECTURE.md: missing component row for shotter
+projects/monolith/ARCHITECTURE.md: missing component row for stars
+projects/monolith/ARCHITECTURE.md: missing component row for swarm
+projects/monolith/ARCHITECTURE.md: missing component row for trips
+projects/monolith/ARCHITECTURE.md: missing component row for updates
+projects/monolith/ARCHITECTURE.md: missing component row for web
+projects/monolith/ARCHITECTURE.md: missing component row for worldcup
+projects/monolith/ARCHITECTURE.md: opening_fence: mermaid
+projects/monolith/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
+projects/monolith/factory/MCP.md: outside allowed_names
+projects/monolith/factory/orchestration/FACTORY.md: outside allowed_names
+projects/monolith/factory/orchestration/IMPROVEMENT_PREVIEW.md: outside allowed_names
+projects/monolith/frontend/CACHE-SAFETY.md: outside allowed_names
+projects/monolith/frontend/DATE-PERFORMANCE.md: outside allowed_names
+projects/monolith/frontend/FIRST-PAINT.md: outside allowed_names
+projects/monolith/frontend/GALLERY-PERFORMANCE.md: outside allowed_names
+projects/monolith/frontend/NOTES-PERFORMANCE.md: outside allowed_names
+projects/monolith/frontend/PHOTO-PERFORMANCE.md: outside allowed_names
+projects/monolith/frontend/SCREENSHOT-ROUTING.md: outside allowed_names
+projects/monolith/frontend/SHIPS-ANIMATION.md: outside allowed_names
+projects/monolith/frontend/STARS-INTERACTION.md: outside allowed_names
+projects/monolith/frontend/TRIP-PREVIEW-PERFORMANCE.md: outside allowed_names
+projects/monolith/frontend/performance/BUNDLE_BUDGETS.md: outside allowed_names
+projects/monolith/frontend/src/routes/public/app/firecracker/PERFORMANCE.md: outside allowed_names
+projects/monolith/frontend/src/routes/public/app/frank/PERFORMANCE.md: outside allowed_names
+projects/monolith/frontend/src/routes/public/app/grimoire/PERFORMANCE.md: outside allowed_names
+projects/monolith/frontend/src/routes/public/app/hikes/PERFORMANCE.md: outside allowed_names
+projects/monolith/frontend/src/routes/public/app/llm-leaderboard/PERFORMANCE.md: outside allowed_names
+projects/monolith/frontend/src/routes/public/app/notes/PERFORMANCE.md: outside allowed_names
+projects/monolith/frontend/src/routes/public/app/ships/PERFORMANCE.md: outside allowed_names
+projects/monolith/frontend/src/routes/public/app/stars/PERFORMANCE.md: outside allowed_names
+projects/monolith/frontend/src/routes/public/app/trips/PERFORMANCE.md: outside allowed_names
+projects/monolith/frontend/src/routes/public/scotland/PERFORMANCE.md: outside allowed_names
+projects/monolith/stars/AURORA.md: outside allowed_names
+projects/platform-factory/README.md: missing child argocd
+projects/platform-factory/README.md: missing child authentik
+projects/platform-factory/README.md: missing child cert-manager
+projects/platform-factory/README.md: missing child cfgate
+projects/platform-factory/README.md: missing child cilium
+projects/platform-factory/README.md: missing child cloudnative-pg
+projects/platform-factory/README.md: missing child edge
+projects/platform-factory/README.md: missing child edge-admission
+projects/platform-factory/README.md: missing child edge-tunnel
+projects/platform-factory/README.md: missing child external-secrets
+projects/platform-factory/README.md: missing child factory-buckets
+projects/platform-factory/README.md: missing child factory-db
+projects/platform-factory/README.md: missing child factory-edge
+projects/platform-factory/README.md: missing child garage
+projects/platform-factory/README.md: missing child grafana
+projects/platform-factory/README.md: missing child hindsight
+projects/platform-factory/README.md: missing child hindsight-discord
+projects/platform-factory/README.md: missing child kagent-postgres
+projects/platform-factory/README.md: missing child kargo
+projects/platform-factory/README.md: missing child kube-access
+projects/platform-factory/README.md: missing child kube-system-defaults
+projects/platform-factory/README.md: missing child network-policy
+projects/platform-factory/README.md: missing child onepassword
+projects/platform-factory/README.md: missing child otel-collector
+projects/platform-factory/README.md: missing child prometheus
+projects/platform-factory/README.md: missing child renovate
+projects/platform-factory/README.md: missing child runtimeclasses
+projects/platform-factory/README.md: missing child substrate
+projects/platform-factory/README.md: missing required file
+projects/platform-gke/README.md: missing child argo-workflows
+projects/platform-gke/README.md: missing child argocd
+projects/platform-gke/README.md: missing child atlas-operator
+projects/platform-gke/README.md: missing child authentik
+projects/platform-gke/README.md: missing child cert-manager
+projects/platform-gke/README.md: missing child cloudflare-gateway
+projects/platform-gke/README.md: missing child cloudnative-pg
+projects/platform-gke/README.md: missing child kargo
+projects/platform-gke/README.md: missing child kyverno
+projects/platform-gke/README.md: missing child onepassword
+projects/platform-gke/README.md: missing child otel-collector
+projects/platform-gke/README.md: missing child polylane
+projects/platform-gke/README.md: missing child priority-classes
+projects/platform-gke/README.md: missing child renovate
+projects/platform-gke/README.md: missing child spire
+projects/platform-gke/README.md: missing child tailscale
+projects/platform-gke/README.md: missing required file
+projects/platform/renovate/COVERAGE.md: outside allowed_names
+projects/scotland-connector/ARCHITECTURE.md: max_lines: 600
+projects/scotland-connector/ARCHITECTURE.md: missing component row for cmd
+projects/scotland-connector/ARCHITECTURE.md: missing component row for internal
+projects/scotland-connector/ARCHITECTURE.md: missing component row for plugin
+projects/scotland-connector/ARCHITECTURE.md: opening_fence: mermaid
+projects/scotland-connector/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
+projects/scotland-connector/READINESS.md: outside allowed_names
+projects/scotland-connector/README.md: missing required file
+projects/scotland-connector/plugin/skills/scotland-trips/SKILL.md: outside allowed_names
+projects/ships/ARCHITECTURE.md: heading: Direction
+projects/ships/ARCHITECTURE.md: opening_fence: mermaid
+projects/ships/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
+projects/ships/README.md: missing required file
