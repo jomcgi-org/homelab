@@ -62,7 +62,7 @@ flowchart TD
   Substrate[Substrate database and actor snapshots] --> Local[Single-node local-path volumes]
 ```
 
-Each server retains 20 etcd snapshots. Recovery of encrypted cluster state also requires the server token. Garage replicates each object across the three nodes. CloudNativePG uses separate buckets for `kagent-pg`, `factory-db` and `authentik-pg`, with 14 days of archives. Losing the whole cluster can take both the databases and these archives. Substrate's own database and snapshots depend on their individual nodes.
+Each server retains 20 etcd snapshots. Recovery of encrypted cluster state also requires the server token. Garage replicates each object across the three nodes. CloudNativePG uses separate buckets for `kagent-pg`, `factory-db` and `authentik-pg`, with 14 days of archives for `factory-db` and `authentik-pg` and 1 day for `kagent-pg`, whose WAL volume would otherwise fill the nodes ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-450#comment-4597)). Losing the whole cluster can take both the databases and these archives. Substrate's own database and snapshots depend on their individual nodes.
 
 ## Reconciliation and workloads
 
