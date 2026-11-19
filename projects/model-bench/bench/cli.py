@@ -1038,14 +1038,13 @@ def _index(args) -> None:
 def _report(args) -> None:
     """Generate the leaderboard markdown from cached result JSON files."""
     json_out = getattr(args, "json_out", None)
-    if json_out:
-        projects = Path(__file__).resolve().parents[2]
-        snapshots = (
-            projects
-            / "monolith/frontend/src/lib/public/llm-leaderboard/leaderboard.json",
-            projects / "jomcgi-site/web/src/factory-outcomes.json",
-        )
-        if Path(json_out).resolve() in snapshots:
+    projects = Path(__file__).resolve().parents[2]
+    snapshots = (
+        projects / "monolith/frontend/src/lib/public/llm-leaderboard/leaderboard.json",
+        projects / "jomcgi-site/web/src/factory-outcomes.json",
+    )
+    for output in (args.out, json_out):
+        if output and Path(output).resolve() in snapshots:
             raise ValueError(
                 "Public leaderboard snapshots cannot be written by bench report"
             )
