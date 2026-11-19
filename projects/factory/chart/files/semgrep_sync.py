@@ -26,29 +26,60 @@ def request(url, headers, method="GET", body=None):
         return json.load(response)
 
 
-def snapshot(get, deployment):
+def findings_pages(get, slug, product):
+    params = dict(
+        repos=REPO,
+        ref="refs/heads/main",
+        issue_type=product,
+        dedup="true",
+        page_size=3000,
+        page=0,
+    )
+    while True:
+        try:
+            payload = get(f"/{slug}/findings?{urlencode(params)}")
+        except HTTPError as error:
+            if (
+                params["page"] == 0
+                and params["page_size"] == 3000
+                and error.code in (400, 422)
+            ):
+                params["page_size"] = 100
+                continue
+            raise
+        rows = payload["findings"]
+        yield rows
+        paging = payload.get("paging") or {}
+        if not rows or ("next" in paging and not paging["next"]):
+            return
+        params["page"] += 1
+
+
+def secrets_pages(get, deployment_id):
+    params = {"limit": 2000}
+    seen = set()
+    while True:
+        payload = get(f"/{deployment_id}/secrets?{urlencode(params)}")
+        yield payload["findings"]
+        cursor = payload.get("cursor")
+        if not cursor:
+            return
+        if cursor in seen:
+            raise ValueError("repeated Semgrep Secrets cursor")
+        seen.add(cursor)
+        params["cursor"] = cursor
+
+
+def snapshot(get, deployment, deployment_id):
     result = {}
     for product in ("sast", "sca", "secrets"):
-        endpoint = "secrets" if product == "secrets" else "findings"
-        params = {"repos": REPO, "ref": "refs/heads/main", "page_size": 100}
-        if product != "secrets":
-            params.update(issue_type=product, dedup="true", page_size=3000)
+        pages = (
+            secrets_pages(get, deployment_id)
+            if product == "secrets"
+            else findings_pages(get, deployment, product)
+        )
         seen = set()
-        page = 0
-        while True:
-            params["page"] = page
-            try:
-                payload = get(f"/{endpoint}?{urlencode(params)}")
-            except HTTPError as error:
-                if (
-                    page == 0
-                    and params["page_size"] == 3000
-                    and error.code in (400, 422)
-                ):
-                    params["page_size"] = 100
-                    continue
-                raise
-            rows = payload["secrets"] if "secrets" in payload else payload["findings"]
+        for rows in pages:
             if not isinstance(rows, list):
                 raise ValueError("missing Semgrep page")
             for row in rows:
@@ -98,10 +129,6 @@ def snapshot(get, deployment):
                     {"repository": REPO, "file": location["file_path"], "link": link},
                     f"Semgrep finding ID: {key}\n\nUntrusted finding data\n\n    {data}\n\n{link}",
                 )
-            paging = payload.get("paging") or {}
-            if not rows or ("next" in paging and not paging["next"]):
-                break
-            page += 1
     return result
 
 
@@ -208,10 +235,13 @@ def send_alert(name, fields):
 
 def sync(get, deployment, plan, alert, auth_marker):
     try:
-        if not deployment:
-            (deployment,) = [org["slug"] for org in get("")["deployments"]]
-        slug = quote(deployment, safe="")
-        findings = snapshot(lambda path: get(f"/{slug}{path}"), slug)
+        (org,) = [
+            org
+            for org in get("")["deployments"]
+            if not deployment or org["slug"] == deployment
+        ]
+        slug = quote(org["slug"], safe="")
+        findings = snapshot(get, slug, int(org["id"]))
     except HTTPError as error:
         if error.code not in (401, 403):
             raise
