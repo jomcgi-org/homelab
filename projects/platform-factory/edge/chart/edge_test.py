@@ -106,9 +106,21 @@ def test_edge_guards(docs):
     route = yaml.safe_load(route_path.read_text())
     assert route["metadata"]["namespace"] in admitted
     assert route["spec"]["hostnames"] == ["factory-runbooks.jomcgi.dev"]
+    # HOME-338 criterion 1: the runbook site refuses anyone without an
+    # `authentik Admins` sign-in. The route attaches to the edge Gateway, so the
+    # Gateway policy above (default Deny, allow only that group) covers it.
+    # A route-level SecurityPolicy would replace that policy, and none targets
+    # this route. Edge admission lets only the edge namespace create one.
     assert route["spec"]["parentRefs"] == [
         {**policy["targetRefs"][0], "namespace": "edge"}
     ]
+    for (kind, _), doc in docs.items():
+        if kind == "SecurityPolicy":
+            assert all(
+                ref.get("name") != route["metadata"]["name"]
+                or ref.get("kind") != "HTTPRoute"
+                for ref in doc["spec"].get("targetRefs", [])
+            )
     sentinel = docs["HTTPRoute", "oidc-sentinel"]["spec"]
     assert sentinel["hostnames"] == ["factory.jomcgi.dev"]
     assert sentinel["rules"][0]["matches"][0]["path"]["value"] == "/oauth2-sentinel"
