@@ -2,6 +2,8 @@
 
 This inventory records the live and unproven rows at commit `e5b9a9973`. Each row links its catalog entry to the marker in each mechanism file. For live rows, the test links show the Bazel target declaration and the marked source in its srcs. PLAT-2 names the edge chart directory. Its authentication policy lives in the SecurityPolicy template.
 
+The Format-stage check enforces the mechanism markers. This table covers the test markers. Joe accepted the two together as the coverage evidence for HOME-348 ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-348#comment-4590)).
+
 ## `INVARIANTS.yaml`
 
 | Record | State | Mechanism markers | Test marker |
