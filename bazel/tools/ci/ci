@@ -118,6 +118,7 @@ cmd_lint() {
 			}
 		done
 	fi
+	python3 bazel/tools/format/document_bundles/check_bundles.py || return 1
 	local -a files=()
 	local f
 	while IFS= read -r f; do

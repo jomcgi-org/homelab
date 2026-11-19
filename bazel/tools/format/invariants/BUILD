@@ -6,7 +6,10 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 exports_files(
     ["check_invariants.py"],
-    visibility = ["//bazel/tools/ci:__pkg__"],
+    visibility = [
+        "//bazel/tools/ci:__pkg__",
+        "//bazel/tools/format/document_bundles:__pkg__",
+    ],
 )
 
 py_library(

@@ -140,6 +140,8 @@ sh_test(
         "ratchets.sh",
         "runner-resources.env",
         "//:buildbuddy.yaml",
+        "//:docs/templates/bundles.yaml",
+        "//bazel/tools/format/document_bundles:check_bundles.py",
     ],
 )
 
