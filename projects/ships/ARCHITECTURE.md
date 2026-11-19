@@ -107,7 +107,7 @@ for p in pods:
 kubectl -n monolith get rs -l app.kubernetes.io/name=monolith,app.kubernetes.io/component=app
 ```
 
-The hub has stopped when every listed backend pod prints `False` (no `AISSTREAM_API_KEY`), all of them belong to the newest ReplicaSet, and no older ReplicaSet has a ready or terminating pod. Before the cutover, at 22:24Z on 2026-11-19, both pods of ReplicaSet `monolith-6cdbb5f47d` still had `AISSTREAM_API_KEY`.
+The hub has stopped when every listed backend pod prints `False` (no `AISSTREAM_API_KEY`), all of them belong to the newest ReplicaSet, and no older ReplicaSet has a ready or terminating pod.
 
 **Freshness check (supplement).** After the pod check passes, the public page confirms that no hub process still writes positions. The Cloudflare cache can serve a stale page for up to 24 hours (`stale-if-error=86400`), so a unique query string bypasses it. The script prints the age of the newest vessel `updated_at` at or before now. It also prints the count of vessels updated in the last 10 minutes.
 
@@ -123,7 +123,21 @@ print("updated in 10 min:", sum(t > now - timedelta(minutes=10) for t in past))
 '
 ```
 
-Both checks pass when, in addition, the newest age is more than 10 minutes and the count is 0. Before the cutover, at 22:13Z on 2026-11-19, the newest was 12 s old and 441 vessels updated in the last 10 minutes.
+Both checks pass when, in addition, the newest age is more than 10 minutes and the count is 0.
+
+**Cutover record.** Before the cutover, at 22:24Z on 2026-11-19, both pods of ReplicaSet `monolith-6cdbb5f47d` still had `AISSTREAM_API_KEY`, and at 22:13Z the newest vessel was 12 s old with 441 updated in 10 minutes. Both checks passed at 2026-11-19 23:16:23Z, before HOME-537 gave the factory ingester its replica. The ReplicaSet listing is filtered to ReplicaSets with desired or current pods. Every other hub backend ReplicaSet had 0 desired and 0 current:
+
+```text
+$ <freshness check>                          # 2026-11-19T23:16:23Z
+vessels: 7844
+newest: 2026-11-19T23:05:51+00:00 age: 0:10:31.991372
+updated in 10 min: 0
+$ <pod check>                                # 2026-11-19T23:16:24Z
+monolith-f9d468948-l4bpq monolith-f9d468948 Running False
+monolith-f9d468948-nmjj7 monolith-f9d468948 Running False
+$ kubectl -n monolith get rs -l app.kubernetes.io/name=monolith,app.kubernetes.io/component=app --no-headers | awk '$2>0||$3>0'
+monolith-f9d468948    2     2     2     10m
+```
 
 **Factory checks (HOME-537).** Run these with `KUBECONFIG=~/.kube/factory.yaml` after the factory app syncs one ingester:
 
