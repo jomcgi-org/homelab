@@ -117,3 +117,10 @@ BEGIN
     RETURN true;
 END;
 $$;
+
+-- Populated from the reviewed schedule configuration and isolated run result.
+ALTER TABLE planner_schedule ADD COLUMN issue_title text, ADD COLUMN instructions text;
+ALTER TABLE planner_run ADD COLUMN final_message text, ADD COLUMN processed boolean NOT NULL DEFAULT false;
+ALTER TABLE planner_proposal ADD COLUMN title text, ADD COLUMN description text,
+    ADD COLUMN priority text, ADD COLUMN create_started boolean NOT NULL DEFAULT false,
+    ADD COLUMN next_attempt timestamptz NOT NULL DEFAULT now();

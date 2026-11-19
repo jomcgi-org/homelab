@@ -9,9 +9,12 @@ import (
 )
 
 type NewIssue struct {
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	ColumnID    int64  `json:"columnId"`
+	AssigneeUserID string `json:"assigneeUserId,omitempty"`
+	DelegateUserID string `json:"delegateUserId,omitempty"`
+	Priority       string `json:"priority,omitempty"`
+	Title          string `json:"title"`
+	Description    string `json:"description"`
+	ColumnID       int64  `json:"columnId"`
 }
 
 // CreateIssue deliberately leaves delegation until the real identifier is
