@@ -308,6 +308,74 @@ test("deployed pages, 404, headers, links, assets and the transfer budget fail c
   }
 });
 
+test("tier 1 reads Trips data only while the section is enabled", async (t) => {
+  const dist = mkdtempSync(join(tmpdir(), "site-check-trips-"));
+  t.after(() => rmSync(dist, { recursive: true, force: true }));
+  mkdirSync(join(dist, "assets"));
+  const notFound = html.replace("Readable page", "This page isn't here.");
+  for (const [name, body] of Object.entries({
+    "index.html": html,
+    "trips.html": html,
+    "404.html": notFound,
+    "assets/style.css": css,
+    "assets/app.js": "",
+  }))
+    writeFileSync(join(dist, name), body);
+  // Like dev, this scope owns every path, so only the sources flag decides.
+  const scope = { owns: () => true, junkPaths: [JUNK_PATH] };
+  for (const enabled of [false, true]) {
+    await t.test(enabled ? "enabled" : "disabled", async () => {
+      const requests = [];
+      const server = await serve((req, res) => {
+        requests.push(req.url);
+        if (req.url === "/") respond(res, html);
+        else if (req.url === JUNK_PATH)
+          respond(res, notFound, "text/html", {}, 404);
+        else if (req.url === "/assets/style.css")
+          respond(res, css, "text/css");
+        else if (req.url === "/assets/app.js")
+          respond(res, "", "text/javascript");
+        else {
+          res.writeHead(404);
+          res.end("no such object");
+        }
+      });
+      const http = client(server.origin);
+      try {
+        const run = () =>
+          tier1({
+            origin: server.origin,
+            dist,
+            preview: false,
+            get: http.get,
+            scope,
+            sources: { sections: { trips: { enabled } } },
+            freshness: [
+              {
+                path: "/data/trips/latest.json",
+                timestampField: "generatedAt",
+                maxAgeSeconds: 60,
+              },
+            ],
+          });
+        if (enabled) {
+          await assert.rejects(run(), /\/data\/trips\/latest\.json/);
+          assert.ok(requests.includes("/data/trips/latest.json"));
+        } else {
+          await run();
+          assert.deepEqual(
+            requests.filter((url) => url.startsWith("/data/trips/")),
+            [],
+          );
+        }
+      } finally {
+        await http.close();
+        await server.close();
+      }
+    });
+  }
+});
+
 test("a disabled section gets no page or freshness check", () => {
   assert.deepEqual(
     [
