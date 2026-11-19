@@ -1203,6 +1203,15 @@ func (s *Store) FinishAttempt(ctx context.Context, q Querier, id int64, state, c
 	return err
 }
 
+// CompleteTask preserves the kagent outcome for successful connector attempts.
+func (s *Store) CompleteTask(ctx context.Context, q Querier, id int64, outcome string) error {
+	_, err := q.ExecContext(ctx, `
+        UPDATE delivery_attempt SET state = 'completed', kagent_outcome = $2,
+            error_class = NULL, error = NULL, finished_at = now()
+        WHERE id = $1`, id, outcome)
+	return err
+}
+
 // Briefs lists the contexts the work item's session-opening sends
 // recorded, newest first.
 func (s *Store) Briefs(ctx context.Context, workID int64) ([]string, error) {

@@ -1,3 +1,5 @@
+ALTER TABLE public.delivery_attempt ADD COLUMN kagent_outcome text;
+
 -- Only expose completed tasks for the work item's current session. The
 -- publisher checks the project and issue labels before requesting a task.
 CREATE VIEW public.storyboard_tasks AS
@@ -8,6 +10,7 @@ JOIN public.repo_binding AS binding ON binding.name = item.binding_name
 JOIN public.run AS run ON run.work_item_id = item.id
 JOIN public.delivery_attempt AS attempt ON attempt.run_id = run.id
 WHERE attempt.state = 'completed'
+  AND attempt.kagent_outcome = 'TASK_STATE_COMPLETED'
   AND attempt.context_id = item.session_id
   AND attempt.task_id IS NOT NULL;
 

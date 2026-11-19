@@ -1979,7 +1979,7 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 	case kagent.StateCompleted, kagent.StateInputRequired:
 		res := itsaplan.Result{Status: "success", Output: Output(t)}
 		return e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
-			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptCompleted, "", ""); err != nil {
+			if err := e.st.CompleteTask(ctx, tx, a.ID, state); err != nil {
 				return err
 			}
 			if state == kagent.StateCompleted {

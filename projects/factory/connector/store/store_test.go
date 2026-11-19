@@ -507,6 +507,34 @@ func TestStoryboardDeliveryPrivileges(t *testing.T) {
 	if project != "HOME" || issue != "HOME-213" {
 		t.Fatalf("unexpected projection: %q %q", project, issue)
 	}
+	_, err = st.DB.Exec(`
+        UPDATE work_item SET session_id='session' WHERE issue_id=213;
+        INSERT INTO run (id, agent_key, work_item_id, trigger, prompt, system_prompt, attempt, state)
+        SELECT 414, 'coder', id, 'initial', '', '', 1, 'closed' FROM work_item WHERE issue_id=213;
+        INSERT INTO delivery_attempt (run_id,seq,run_attempt,work_item_epoch,decision_id,kind,message_id,
+            kagent_namespace,kagent_agent,context_id,task_id,state,writer_epoch,kagent_outcome)
+        SELECT 414,n,1,1,'decision-' || n,'initial','message-' || n,'factory','coder',session,task,state,1,outcome
+        FROM (VALUES
+            (1,'session','finished','completed','TASK_STATE_COMPLETED'),
+            (2,'session','waiting','completed','TASK_STATE_INPUT_REQUIRED'),
+            (3,'old','stale','completed','TASK_STATE_COMPLETED'),
+            (4,'session','running','accepted',NULL),
+            (5,'session','legacy','completed',NULL)
+        ) AS cases(n,session,task,state,outcome)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var projection bool
+	err = reader.QueryRow(`SELECT jsonb_agg(to_jsonb(t)) = '[{"itsaplan_project":"HOME","issue_id":213,"session_id":"session","kagent_namespace":"factory","kagent_agent":"coder","task_id":"finished"}]'::jsonb FROM public.storyboard_tasks t`).Scan(&projection)
+	if err != nil || !projection {
+		t.Fatalf("unexpected storyboard task projection: %t (%v)", projection, err)
+	}
+	unrelated := pgtest.AsRole(t, st.DB, "factory_reaper")
+	_, err = unrelated.Exec("SELECT * FROM public.storyboard_tasks")
+	var refusal interface{ SQLState() string }
+	if !errors.As(err, &refusal) || refusal.SQLState() != "42501" {
+		t.Fatalf("unrelated role read: %v", err)
+	}
 	for _, query := range []string{
 		"SELECT prompt FROM public.run",
 		"SELECT state FROM public.task_transcript",
