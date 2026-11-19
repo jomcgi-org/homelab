@@ -1116,6 +1116,8 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		e.mu.Unlock()
 		return true
 	}
+	ctx, root := otel.Tracer("factory-reviewer").Start(ctx, "review", trace.WithNewRoot(), reviewAttributes(pr, 1))
+	ctx = withUsage(ctx, root)
 	rctx, cancel := context.WithCancelCause(ctx)
 	r := &running{number: pr.Number, cancel: cancel, done: make(chan struct{})}
 	e.inflight[key] = r
@@ -1155,6 +1157,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		if err != nil {
 			e.ghError(ctx, l, b, "create_check", err)
 			cancel(nil)
+			root.End()
 			e.done(key)
 			close(r.done)
 			return false
@@ -1177,6 +1180,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 			if err != nil {
 				e.ghError(ctx, l, b, "update_check", err)
 				cancel(nil)
+				root.End()
 				e.done(key)
 				close(r.done)
 				return false
@@ -1193,6 +1197,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		defer e.wg.Done()
 		defer e.done(key)
 		defer cancel(nil)
+		defer root.End()
 		if kind == "new" {
 			e.queueMirror(rctx, b, pr, run, &CommentUpdate{Verdict: VerdictReviewing})
 		}
@@ -1372,13 +1377,11 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 	run = &local
 	rec := RecordedTask(run.Summary)
 	attempt := max(rec.Attempt, 1)
-	parent, root := otel.Tracer("factory-reviewer").Start(ctx, "review", trace.WithNewRoot(), reviewAttributes(pr, attempt))
-	defer root.End()
-	parent = withUsage(parent, root)
+	parent, root := ctx, trace.SpanFromContext(ctx)
+	round := 1
 	startCode := func() (context.Context, trace.Span) {
-		round := attribute.Int("review.round", attempt)
-		root.SetAttributes(round)
-		ctx, span := otel.Tracer("factory-reviewer").Start(parent, "code review", reviewAttributes(pr, attempt))
+		root.SetAttributes(attribute.Int("review.attempt", attempt))
+		ctx, span := otel.Tracer("factory-reviewer").Start(parent, "code review", reviewAttributes(pr, round), trace.WithAttributes(attribute.Int("review.attempt", attempt)))
 		return withUsage(ctx, span), span
 	}
 	ctx, code := startCode()
@@ -1402,7 +1405,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 	next := func(reason string) bool {
 		traceFailure(root, "review attempt failed")
 		traceFailure(code, "review attempt failed")
-		root.AddEvent("review attempt failed", trace.WithAttributes(attribute.Int("review.round", attempt)))
+		root.AddEvent("review attempt failed", trace.WithAttributes(attribute.Int("review.attempt", attempt)))
 		l.WarnContext(ctx, "review attempt ended without a report", "attempt", attempt, "task", rec.ID, "reason", reason)
 		if attempt >= MaxAttempts {
 			o := NoReport(fmt.Sprintf("Attempt %d of %d ended without a report: %s", attempt, MaxAttempts, reason), e.footer(b, pr, rec.ID))
@@ -1486,6 +1489,13 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 					// An unknown label baseline needs fresh approval.
 					in.gate.resetApproval(e.cfg.Now())
 				}
+				// Advance once per reviewed head. Older checkpoints omit Round.
+				round = max(1, in.prior.Round)
+				if in.priorHead != "" && in.priorHead != pr.HeadSHA {
+					round++
+				}
+				root.SetAttributes(attribute.Int("review.round", round))
+				code.SetAttributes(attribute.Int("review.round", round))
 				// Rebind inherited prior-head recovery to this PR.
 				in.gate, _ = e.recoveryGate(b, pr, in.gate)
 				in.gate, _ = e.retainGate(b, pr, in.gate, false)
@@ -1692,7 +1702,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				continue
 			}
 			recordUsage(ctx, t)
-			res := e.outcome(parent, code, attempt, b, currentPR, t, in, l)
+			res := e.outcome(parent, code, round, b, currentPR, t, in, l)
 			if ctx.Err() != nil {
 				continue // stop ends the review.
 			}
@@ -2285,6 +2295,7 @@ heads:
 	}
 	prior.Gate, prior.TaskID, prior.LegacyTask = gate, saved.TaskID, saved.LegacyTask
 	prior.IssueDigest, prior.IssuesPending = saved.IssueDigest, saved.IssuesPending
+	prior.Round = saved.Round
 	prior.Goal, prior.GoalKey = saved.Goal, saved.GoalKey
 	prior.Semgrep = saved.Semgrep
 	if b.ItsaplanProject != "" && issueReader(b, pr) {
@@ -2693,6 +2704,7 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 		if len(a.Blocking) > 0 || a.Incomplete {
 			a.Conclusion = ConclusionFailure
 		}
+		st.Round = round
 		st.InvariantBase = in.invariantBase
 		o := render(a, r, gate, footer, &st)
 		session := sessionAfter(b, pr, in, task)
