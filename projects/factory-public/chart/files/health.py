@@ -21,7 +21,7 @@ APPLICATION = "/apis/argoproj.io/v1alpha1/namespaces/argocd/applications/argocd"
 CLOUDFLARE = "https://api.cloudflare.com/client/v4"
 WORKER = "jomcgi-site"
 KEY = "health.json"
-# Clock skew allowed between Cloudflare and this node.
+# Clock skew allowed for a reconciledAt time slightly ahead of this node.
 SKEW = 300
 
 
@@ -59,7 +59,7 @@ def cluster(now, env):
 
 def worker(now, env):
     # The Worker's latest deployment must have a Cloudflare deployment ID and
-    # a creation time that is not in the future.
+    # a creation time no later than the check time.
     account = quote(env["CLOUDFLARE_ACCOUNT_ID"], safe="")
     body = cloudflare(f"/accounts/{account}/workers/scripts/{WORKER}/deployments", env)
     deployments = body["result"]["deployments"] if body.get("success") else []
@@ -67,7 +67,7 @@ def worker(now, env):
         return False
     latest = max(deployments, key=lambda d: parse(d["created_on"]))
     created = parse(latest["created_on"])
-    return bool(latest["id"]) and (created - now).total_seconds() <= SKEW
+    return bool(latest["id"]) and created <= now
 
 
 CHECKS = {"factory-cluster": cluster, "jomcgi-site-worker": worker}
