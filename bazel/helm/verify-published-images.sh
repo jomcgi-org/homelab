@@ -34,7 +34,8 @@ _fail() {
 _image_pins() {
 	"$HELM" show values "$@" | awk '
     function flush() {
-      gsub(/"/, "", repo); gsub(/"/, "", digest)
+      # Values may use double or single (\047) quotes; strip both.
+      gsub(/["\047]/, "", repo); gsub(/["\047]/, "", digest)
       if (repo ~ /^ghcr\.io\/jomcgi\/homelab\// && digest != "") {
         print repo "\t" digest
       }
