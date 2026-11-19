@@ -455,7 +455,7 @@ func TestUnknownRulesAreAlwaysSent(t *testing.T) {
 
 // TestUnaccountedTurnStartsAFreshSession resumes the first head's session
 // for a second head whose every attempt ends without a report, so its
-// check keeps no State. The third head finds the first head's session
+// check keeps only the round. The third head finds the first head's session
 // reference, but the session also holds the second head's turn: it starts
 // fresh instead of resuming a session larger than recorded.
 func TestUnaccountedTurnStartsAFreshSession(t *testing.T) {
@@ -482,8 +482,8 @@ func TestUnaccountedTurnStartsAFreshSession(t *testing.T) {
 		return c != nil && c.Status == "completed" && c.Conclusion == ConclusionFailure
 	})
 	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
-	if _, ok := LoadState(h.gh.check(sessionShaB).Text); ok {
-		t.Fatalf("a review without a report kept a State")
+	if st := stateOn(t, h.gh.check(sessionShaB)); st.Round != 2 || st.Session != nil || st.Blocking != nil {
+		t.Fatalf("exhausted checkpoint = %+v, want round 2 without a report or session", st)
 	}
 
 	third := finishHead(t, h, e, ctx, sessionShaC, passing, nil)
