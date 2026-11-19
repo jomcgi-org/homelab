@@ -18,9 +18,9 @@ describe("static hosting headers", () => {
       expect(directives.filter((d) => d.startsWith("script-src "))).toEqual([
         "script-src 'self' https://static.cloudflareinsights.com/beacon.min.js",
       ]);
-      expect(
-        directives.find((d) => d.startsWith("connect-src ")),
-      ).toContain("https://cloudflareinsights.com");
+      expect(directives.find((d) => d.startsWith("connect-src "))).toContain(
+        "https://cloudflareinsights.com",
+      );
     }
   });
   it("permits the analytics script and collector on site, hikes and stars pages", () => {
