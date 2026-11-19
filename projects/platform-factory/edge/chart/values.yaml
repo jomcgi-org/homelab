@@ -89,6 +89,7 @@ kubeAPI:
     - authentik Admins
     - factory-operators
     - factory-kube-viewers
+    - factory-kube-sessions
 
 proxy:
   # Name of the Service Envoy Gateway creates for the proxy. The tunnel route

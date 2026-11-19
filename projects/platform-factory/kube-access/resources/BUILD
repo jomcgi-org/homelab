@@ -8,6 +8,7 @@ py_test(
         "explorers.yaml",
         "flowcontrol.yaml",
         "kustomization.yaml",
+        "sessions.yaml",
         "viewers.yaml",
         "//projects:factory-cluster/nodes/authentication-config.yaml",
     ],

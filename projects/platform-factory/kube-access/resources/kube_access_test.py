@@ -14,6 +14,7 @@ DOCS = [
 ]
 VIEWERS = "authentik:factory-kube-viewers"
 EXPLORERS = "explore:explorers"
+SESSIONS = "authentik:factory-kube-sessions"
 ADMINS = "authentik:authentik Admins"
 # Reviewed in #8222: no private data in their objects or logs. Adding one is
 # Joe's decision; agent, ticket, chat, memory and sign-in namespaces stay out.
@@ -74,11 +75,13 @@ def test_every_subject_is_an_access_group():
                 "authentik:factory-operators",
                 VIEWERS,
                 EXPLORERS,
+                SESSIONS,
             }
 
 
 def test_viewer_roles_only_read():
     roles = {d["metadata"]["name"]: d for d in by_kind("ClusterRole")}
+    roles.pop("factory-sessions")
     assert set(roles) == {
         "factory-viewer",
         "factory-viewer-cluster",
@@ -189,3 +192,52 @@ def test_all_explorer_requests_use_the_explorer_priority_level():
             "nonResourceRules": [{"verbs": ["*"], "nonResourceURLs": ["*"]}],
         }
     ]
+
+
+def test_session_permissions():
+    for kind in ("ClusterRole", "Role"):
+        (binding,) = [
+            b
+            for b in by_kind(kind + "Binding")
+            if any(s["name"] == SESSIONS for s in b["subjects"])
+        ]
+        namespace = "factory" if kind == "Role" else None
+        assert binding["metadata"].get("namespace") == namespace
+        assert binding["roleRef"] == {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": kind,
+            "name": "factory-sessions",
+        }
+        (role,) = [
+            r
+            for r in by_kind(kind)
+            if r["metadata"]["name"] == "factory-sessions"
+            and r["metadata"].get("namespace") == namespace
+        ]
+        if kind == "Role":
+            assert role["rules"] == [
+                {
+                    "apiGroups": [""],
+                    "resources": ["pods/portforward"],
+                    "verbs": ["create"],
+                },
+                {
+                    "apiGroups": [""],
+                    "resources": ["secrets"],
+                    "verbs": ["get"],
+                    "resourceNames": ["factory-itsaplan-joe-sessions"],
+                },
+            ]
+        else:
+            assert "aggregationRule" not in role
+            core, extensions = role["rules"]
+            assert core["apiGroups"] == [""]
+            assert set(core["resources"]) == set(
+                "componentstatuses configmaps endpoints events limitranges namespaces nodes persistentvolumeclaims persistentvolumes pods pods/log podtemplates replicationcontrollers resourcequotas serviceaccounts services".split()
+            )
+            assert {"", "*"}.isdisjoint(extensions["apiGroups"])
+            assert {"apps", "argoproj.io"} <= set(extensions["apiGroups"])
+            assert extensions["resources"] == ["*"]
+            for rule in role["rules"]:
+                assert set(rule) == {"apiGroups", "resources", "verbs"}
+                assert set(rule["verbs"]) == READ_VERBS

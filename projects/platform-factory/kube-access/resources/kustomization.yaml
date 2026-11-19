@@ -6,3 +6,4 @@ resources:
   - viewers.yaml
   - explorers.yaml
   - flowcontrol.yaml
+  - sessions.yaml
