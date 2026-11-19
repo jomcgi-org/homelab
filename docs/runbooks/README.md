@@ -11,7 +11,8 @@ description matching. Open one only when:
 
 ## Index
 
-One row per entry in this directory.
+One row per procedure: a file in this directory, or a named section of a
+project README.
 
 ### Ops / cluster
 
@@ -20,6 +21,7 @@ One row per entry in this directory.
 | [argocd-outofsync.md](argocd-outofsync.md) | ArgoCD OutOfSync / "is my change live?" |
 | [public-tier-checklist.md](public-tier-checklist.md) | Public tier / jomcgi.dev / `public_reader`, including the shared response cache contract |
 | [embervm-stateful-generation-quarantine.md](embervm-stateful-generation-quarantine.md) | A stateful EmberVM workload refuses to wake with `volume quarantined` |
+| [EmberVM hub removal](../../projects/embervm/dev/deploy/README.md#hub-removal-home-476) | After HOME-476 merges: delete the `embervm-dev` namespace, RBAC and a leftover CRD; check the brick pool |
 | [private-action-synthetics.md](private-action-synthetics.md) | Verify the deployed factory status reader with `POST /api/swarm/factory/synthetics` |
 | [threat-model-maintenance.md](threat-model-maintenance.md) | Record or close a security finding, change `docs/THREAT-MODEL.md`, per-domain security lenses in each `STPA.md`, model review |
 

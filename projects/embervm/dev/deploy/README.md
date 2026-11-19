@@ -1,8 +1,89 @@
 # EmberVM dev on the GKE hub
 
 EmberVM is retired. HOME-476 removed `embervm-dev` and its Kargo stage from
-`homelab-hub`. The design is in
+`homelab-hub`. The [hub removal](#hub-removal-home-476) procedure deletes
+what the prune leaves. The design is in
 [../../ARCHITECTURE.md](../../ARCHITECTURE.md).
+
+## Hub removal (HOME-476)
+
+The `embervm-dev` Application has no resources finalizer. The `hub`
+Application's prune therefore deletes only the Application object. The
+`embervm-dev` namespace and the release's ClusterRole and ClusterRoleBinding
+stay. The shared `workloads.embervm.dev` CRD can also stay.
+
+An operator with hub write access does these steps in order after the
+HOME-476 merge. Set `HUB_CONTEXT` to the hub's kubectl context.
+
+1. Confirm that Argo CD pruned both EmberVM Applications.
+
+   ```sh
+   kubectl --context "$HUB_CONTEXT" -n argocd get application embervm embervm-dev
+   ```
+
+   Both names must return `NotFound`. `embervm` has the resources finalizer,
+   so its `NotFound` also shows that its cascade delete finished. If an
+   Application remains, stop and use the
+   [OutOfSync runbook](../../../../docs/runbooks/argocd-outofsync.md).
+
+2. Delete the `embervm-dev` namespace.
+
+   ```sh
+   kubectl --context "$HUB_CONTEXT" -n embervm-dev get deployments,workloads,pvc
+   kubectl --context "$HUB_CONTEXT" delete namespace embervm-dev --timeout=10m
+   kubectl --context "$HUB_CONTEXT" get pv -o jsonpath='{range .items[?(@.spec.claimRef.namespace=="embervm-dev")]}{.metadata.name}{"\n"}{end}'
+   ```
+
+   The first command lists the dev Deployments, Workloads and the 1Gi
+   `embervm-dev-embervm-oplog` PVC. The namespace delete removes all of them,
+   with the PVC's `standard-rwo` disk. Joe allowed the op-log disposal
+   ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-476#comment-5552)).
+   The `get pv` command must print nothing. If the namespace stays
+   `Terminating`, read its `.status.conditions` to find the blocking object.
+
+3. Delete the release's cluster-scoped RBAC.
+
+   ```sh
+   kubectl --context "$HUB_CONTEXT" get clusterrole,clusterrolebinding -l app.kubernetes.io/instance=embervm-dev
+   kubectl --context "$HUB_CONTEXT" delete clusterrole,clusterrolebinding -l app.kubernetes.io/instance=embervm-dev
+   ```
+
+   The `get` must list only `clusterrole/embervm-dev-embervm` and
+   `clusterrolebinding/embervm-dev-embervm`. The dev render has no other
+   cluster-scoped object except the CRD. After the delete, the `get` prints
+   `No resources found`.
+
+4. Delete a leftover `workloads.embervm.dev` CRD.
+
+   ```sh
+   kubectl --context "$HUB_CONTEXT" get crd workloads.embervm.dev
+   kubectl --context "$HUB_CONTEXT" get workloads.embervm.dev --all-namespaces
+   kubectl --context "$HUB_CONTEXT" delete crd workloads.embervm.dev
+   ```
+
+   Both releases rendered this CRD, and Argo CD tracked it to the release that
+   synced last. If the first command returns `NotFound`, the `embervm` cascade
+   deleted the CRD: go to step 5. Otherwise the second command must print
+   `No resources found`, because a CRD delete also deletes every Workload.
+   Then run the delete. No hub consumer reads the CRD after HOME-476.
+
+5. Check the `ember-bricks` Spot pool.
+
+   ```sh
+   kubectl --context "$HUB_CONTEXT" get nodes -l cloud.google.com/gke-nodepool=ember-bricks
+   for node in $(kubectl --context "$HUB_CONTEXT" get nodes -l cloud.google.com/gke-nodepool=ember-bricks -o name); do
+     kubectl --context "$HUB_CONTEXT" get pods --all-namespaces --field-selector "spec.nodeName=${node#node/}"
+   done
+   ```
+
+   `gcloud` manages this pool outside GitOps, and its autoscaler removes
+   unneeded nodes. No pod in `embervm` or `embervm-dev` may remain. Such a pod
+   means that an earlier step did not finish. The pool reaches zero nodes only
+   when no other pod needs it. The hub `inference` embeddings pod selects
+   `embervm.io/serving: "true"`, and only brick nodes carry that label
+   ([values-gke.yaml](../../../inference/deploy/values-gke.yaml)). That pod
+   keeps one node until it moves. DaemonSet pods and Argo batch pods at
+   priority `homelab-disposable` can also appear. They do not keep a node.
 
 ## The Application defined the value order
 
