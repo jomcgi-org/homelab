@@ -32,6 +32,7 @@ test.each([
   "expired token",
   "expiry while suspended",
   "window denial",
+  "lost user during a read",
 ])("%s ends the explorer", async (reason) => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-01-01T12:00:00Z"));
@@ -42,7 +43,7 @@ test.each([
   const silent = vi
     .spyOn(UserManager.prototype, "signinSilent")
     .mockResolvedValue(null);
-  const { userManager } = await import("./src/apiConfig");
+  const { userManager, read } = await import("./src/apiConfig");
   const lifetime =
     reason === "expired token"
       ? -1
@@ -61,7 +62,7 @@ test.each([
   );
   const denied = reason === "window denial";
   const fetchApi = vi.fn(
-    async () =>
+    async (_url: string, _init: RequestInit) =>
       new Response(
         JSON.stringify({ kind: "APIGroupDiscoveryList", items: [] }),
         {
@@ -77,9 +78,31 @@ test.each([
   const root = document.createElement("div");
   app.mount(root);
   await vi.advanceTimersByTimeAsync(0);
+  if (reason === "lost user during a read") {
+    await userManager.removeUser();
+    await expect(read("/api", "application/json")).rejects.toThrow(
+      "Explorer session ended",
+    );
+  }
   if (reason === "deadline") {
     expect(root.textContent).toContain("0:02 left");
-    await vi.advanceTimersByTimeAsync(2000);
+    let watchSignal: AbortSignal | undefined;
+    fetchApi.mockImplementationOnce(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          const signal = init.signal!;
+          watchSignal = signal;
+          signal.addEventListener("abort", () => reject(signal.reason));
+        }),
+    );
+    const stopped = expect(
+      read("/api/v1/pods?watch=true", "application/json"),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(root.textContent).toContain("0:01 left");
+    expect(watchSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1000);
+    await stopped;
   }
   if (reason === "expiry while suspended") {
     expect(root.textContent).toContain("0:02 left");

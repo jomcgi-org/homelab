@@ -28,7 +28,7 @@ onMounted(async () => {
       await userManager.removeUser();
       message.value = "Logged out";
     } else {
-      await getIdToken();
+      await getIdToken({ initialVisit: true });
       // A suspended tab can resume before its overdue timeout fires.
       document.addEventListener("visibilitychange", updateClock);
       window.addEventListener("pageshow", updateClock);

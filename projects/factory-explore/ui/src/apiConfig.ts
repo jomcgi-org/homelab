@@ -66,7 +66,7 @@ export function completeSignin() {
   sessionStorage.removeItem(endKey);
 }
 
-export async function getIdToken() {
+export async function getIdToken({ initialVisit = false } = {}) {
   const user = await userManager.getUser();
   if (user)
     tokenEnd = user.expired
@@ -75,8 +75,12 @@ export async function getIdToken() {
   updateClock();
   if (nextWindow.value !== null) throw new Error("Explorer session ended");
   if (!user?.id_token) {
-    await userManager.signinRedirect();
-    throw new Error("Redirecting to sign in");
+    if (initialVisit && !user && !windowEnd) {
+      await userManager.signinRedirect();
+      throw new Error("Redirecting to sign in");
+    }
+    await closeWindow();
+    throw new Error("Explorer session ended");
   }
   return user.id_token;
 }
