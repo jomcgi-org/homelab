@@ -19,6 +19,9 @@ go_binary(
 
 go_test(
     name = "stars-forecast_test",
-    srcs = ["forecast_test.go"],
+    srcs = [
+        "forecast_test.go",
+        "refresh_test.go",
+    ],
     embed = [":stars-forecast_lib"],
 )
