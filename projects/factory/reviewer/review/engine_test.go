@@ -11,6 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
@@ -4373,6 +4377,64 @@ func TestAddedFileInvariantAnswerInCompletedCheck(t *testing.T) {
 					t.Fatalf("conclusion %q, state %+v", c.Conclusion, st)
 				}
 			})
+		}
+	}
+}
+
+func TestReviewTrace(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	defer otel.SetTracerProvider(previous)
+	h, _ := issueHarness(t)
+	secret, _ := testMACSecret()
+	h.k.goal = secret + "\n" + goalReply(`{"criteria":[{"criterion":1,"verdict":"met"}],"overall":"met"}`)
+	e, ctx, stop := h.start()
+	defer stop()
+	finishHead(t, h, e, ctx, shaA, Report{Summary: secret, Findings: []Finding{finding("a.go:bug", SeverityHigh)}}, func(id string) {
+		h.k.stamp(id, map[string]any{"inputTokens": float64(12), "outputTokens": float64(3)})
+	})
+	e.Wait()
+	spans := exporter.GetSpans()
+	if len(spans) != 3 {
+		t.Fatalf("got %d spans", len(spans))
+	}
+	root := spans[2]
+	if root.Name != "review" || root.Parent.IsValid() {
+		t.Fatal("missing review root")
+	}
+	attrs := map[string]string{}
+	for _, s := range spans {
+		if s.Name != "review" && s.Parent.SpanID() != root.SpanContext.SpanID() {
+			t.Fatal("unexpected span parent")
+		}
+		for _, a := range s.Attributes {
+			if strings.Contains(a.Value.Emit(), secret) {
+				t.Fatal("private value in span")
+			}
+			attrs[s.Name+"/"+string(a.Key)] = a.Value.Emit()
+		}
+		for _, ev := range s.Events {
+			for _, a := range ev.Attributes {
+				if strings.Contains(a.Value.Emit(), secret) {
+					t.Fatal("private value in event")
+				}
+			}
+		}
+	}
+	for k, v := range map[string]string{
+		"review/pr.number":                 "7",
+		"review/pr.head_sha":               shaA,
+		"review/review.round":              "1",
+		"review/review.verdict":            "failure",
+		"review/tokens.input":              "12",
+		"code review/tokens.output":        "3",
+		"code review/review.findings.high": "1",
+		"goal check/review.verdict":        "met",
+	} {
+		if attrs[k] != v {
+			t.Errorf("%s: got %q, want %q", k, attrs[k], v)
 		}
 	}
 }

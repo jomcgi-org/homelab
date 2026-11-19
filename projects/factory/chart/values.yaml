@@ -636,6 +636,7 @@ connector:
 # and Substrate credentialProvider.namespacePolicies. Deploy values follow the
 # chart publish; neither the connector's reviewerCheck nor a ruleset changes here.
 reviewer:
+  traceEndpoint: ""
   enabled: false
   # Overwritten at build time by helm_chart(images = ...).
   image:

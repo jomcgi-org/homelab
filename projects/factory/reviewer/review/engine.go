@@ -25,6 +25,11 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
@@ -680,6 +685,7 @@ func (e *Engine) holdSharedHead(ctx context.Context, b *Binding, pr github.PullR
 	e.mu.Lock()
 	delete(e.pendingHolds, key)
 	e.mu.Unlock()
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String("review.verdict", o.Conclusion))
 	e.queueCompletedComment(ctx, b, pr, run, o.Output.Text, o.Comment)
 	return run
 }
@@ -1366,6 +1372,17 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 	run = &local
 	rec := RecordedTask(run.Summary)
 	attempt := max(rec.Attempt, 1)
+	parent, root := otel.Tracer("factory-reviewer").Start(ctx, "review", trace.WithNewRoot(), trace.WithAttributes(attribute.Int("pr.number", pr.Number), attribute.String("pr.head_sha", pr.HeadSHA)))
+	defer root.End()
+	parent = withUsage(parent, root)
+	startCode := func() (context.Context, trace.Span) {
+		round := attribute.Int("review.round", attempt)
+		root.SetAttributes(round)
+		ctx, span := otel.Tracer("factory-reviewer").Start(parent, "code review", trace.WithAttributes(round))
+		return withUsage(ctx, span), span
+	}
+	ctx, code := startCode()
+	defer func() { code.End() }()
 	began := e.cfg.Now()
 	if rec.ID != "" && rec.Sent.IsZero() {
 		rec.Sent = run.StartedAt
@@ -1383,6 +1400,9 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 	// next ends the attempt without a report. It reports true when that was
 	// the last attempt and the check is complete.
 	next := func(reason string) bool {
+		traceFailure(root, "review attempt failed")
+		traceFailure(code, "review attempt failed")
+		root.AddEvent("review attempt failed", trace.WithAttributes(attribute.Int("review.round", attempt)))
 		l.WarnContext(ctx, "review attempt ended without a report", "attempt", attempt, "task", rec.ID, "reason", reason)
 		if attempt >= MaxAttempts {
 			o := NoReport(fmt.Sprintf("Attempt %d of %d ended without a report: %s", attempt, MaxAttempts, reason), e.footer(b, pr, rec.ID))
@@ -1400,7 +1420,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 					o.Output.Summary += "\n\n**medium** `semgrep:unverified`: " + in.semgrep.Unavailable + "."
 				}
 			}
-			e.finish(ctx, b, pr, run, o, l)
+			e.finish(parent, b, pr, run, o, l)
 			return true
 		}
 		e.m.Retries.WithLabelValues(b.Name).Inc()
@@ -1409,7 +1429,9 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			gate = in.gate
 		}
 		note := fmt.Sprintf("Attempt %d ended without a report: %s Attempt %d follows.", attempt, reason, attempt+1)
+		code.End()
 		attempt++
+		ctx, code = startCode()
 		rec, msg, sends = recorded{Attempt: attempt}, nil, 0
 		e.recordProgress(ctx, b, run, gate, rec, note, l)
 		e.sleep(ctx, e.cfg.RetryBackoff)
@@ -1624,7 +1646,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 						e.retainGate(b, p, &Gate{SharedHead: true, Labels: labels[pr.HeadSHA]}, false)
 					}
 				}
-				e.finish(ctx, b, pr, run, sharedHeadOutcome(run, labels[pr.HeadSHA], e.cfg.Now()), l)
+				e.finish(parent, b, pr, run, sharedHeadOutcome(run, labels[pr.HeadSHA], e.cfg.Now()), l)
 				return
 			}
 			listed := slices.IndexFunc(prs, func(p github.PullRequest) bool {
@@ -1669,7 +1691,8 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				}
 				continue
 			}
-			res := e.outcome(ctx, b, currentPR, t, in, l)
+			recordUsage(ctx, t)
+			res := e.outcome(parent, code, b, currentPR, t, in, l)
 			if ctx.Err() != nil {
 				continue // stop ends the review.
 			}
@@ -1689,7 +1712,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 					return
 				}
 			}
-			if e.finish(ctx, b, currentPR, run, res.o, l) {
+			if e.finish(parent, b, currentPR, run, res.o, l) {
 				e.observe(ctx, b, res.r, res.a, l)
 				e.observeSession(ctx, b, t, res.session, l)
 			}
@@ -2548,7 +2571,7 @@ type result struct {
 
 // outcome reads a quiescent task. Only a parsed report can pass, and a
 // gated head passes only once its human approved it.
-func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest, task *kagent.Task, in *inputs, l *slog.Logger) result {
+func (e *Engine) outcome(ctx context.Context, code trace.Span, b *Binding, pr github.PullRequest, task *kagent.Task, in *inputs, l *slog.Logger) result {
 	footer := e.footer(b, pr, task.ID)
 	switch task.Status.State {
 	case kagent.StateCompleted, kagent.StateInputRequired:
@@ -2558,6 +2581,17 @@ func (e *Engine) outcome(ctx context.Context, b *Binding, pr github.PullRequest,
 			l.WarnContext(ctx, "the review reply has no usable report", "task", task.ID, "error", err, "reply_bytes", len(reply))
 			return result{reason: "the reviewer's reply had no usable findings report: " + oneLine(err.Error(), maxTitle) + "."}
 		}
+		counts := map[string]int{}
+		for _, f := range r.Findings {
+			counts[f.Severity]++
+		}
+		for _, severity := range Severities {
+			attr := attribute.Int("review.findings."+severity, counts[severity])
+			code.SetAttributes(attr)
+			trace.SpanFromContext(ctx).SetAttributes(attr)
+		}
+		code.AddEvent("report parsed")
+		code.End()
 		// Only a usable code review starts the goal check, which costs a
 		// second model call.
 		key := goalKey(in.issues)
@@ -3031,6 +3065,7 @@ func (e *Engine) finish(ctx context.Context, b *Binding, pr github.PullRequest, 
 	if !e.complete(ctx, b, run, o, l) {
 		return false
 	}
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String("review.verdict", o.Conclusion))
 	e.queueCompletedComment(ctx, b, pr, run, o.Output.Text, o.Comment)
 	return true
 }
@@ -3278,6 +3313,7 @@ func (e *Engine) ghError(ctx context.Context, l *slog.Logger, b *Binding, call s
 	if ctx.Err() != nil {
 		return // shutting down
 	}
+	traceFailure(trace.SpanFromContext(ctx), "GitHub "+call+" failed")
 	e.m.GitHubErrors.WithLabelValues(b.Name, call).Inc()
 	l.WarnContext(ctx, "GitHub call failed", "call", call, "error", err)
 }
@@ -3286,8 +3322,45 @@ func (e *Engine) kagentError(ctx context.Context, l *slog.Logger, b *Binding, ca
 	if ctx.Err() != nil {
 		return
 	}
+	traceFailure(trace.SpanFromContext(ctx), "Kagent "+call+" failed")
 	e.m.KagentErrors.WithLabelValues(b.Name, call).Inc()
 	l.WarnContext(ctx, "kagent call failed", "call", call, "error", err)
 }
 
 func short(sha string) string { return sha[:min(12, len(sha))] }
+
+// Use fixed operation labels because transport errors may include response bodies.
+func traceFailure(span trace.Span, operation string) {
+	span.RecordError(errors.New(operation))
+	span.SetStatus(codes.Error, operation)
+}
+
+type reviewUsageKey struct{}
+
+// A review and its checks run sequentially. A goal check can consume two
+// tasks when the first answer needs independent confirmation.
+type spanUsage struct {
+	parent *spanUsage
+	span   trace.Span
+	total  Usage
+}
+
+func withUsage(ctx context.Context, span trace.Span) context.Context {
+	parent, _ := ctx.Value(reviewUsageKey{}).(*spanUsage)
+	return context.WithValue(ctx, reviewUsageKey{}, &spanUsage{span: span, parent: parent})
+}
+
+func (s *spanUsage) add(u Usage) {
+	s.total.Input += u.Input
+	s.total.Cached += u.Cached
+	s.total.Output += u.Output
+	s.span.SetAttributes(attribute.Int64("tokens.input", s.total.Input), attribute.Int64("tokens.cached", s.total.Cached), attribute.Int64("tokens.output", s.total.Output))
+}
+
+func recordUsage(ctx context.Context, t *kagent.Task) {
+	if u, ok := TaskUsage(t); ok {
+		for s, _ := ctx.Value(reviewUsageKey{}).(*spanUsage); s != nil; s = s.parent {
+			s.add(u)
+		}
+	}
+}
