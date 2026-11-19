@@ -492,6 +492,9 @@ def test_mirror_orders_writes_and_propagates_failures(
         "    out.write(json.dumps(args) + '\\n')\n"
         "command = args[3]\n"
         "if command == os.environ['FAKE_FAIL']: sys.exit(1)\n"
+        "if command == 'cat': sys.stdout.buffer.write(b'generation-one\\n')\n"
+        "if command == 'copyto' and args[4].startswith('/'):\n"
+        "    assert open(args[4], 'rb').read() == b'generation-one\\n'\n"
         "if command == 'lsf': print(os.environ['FAKE_MANIFEST'], end='')\n"
     )
     binary.chmod(0o755)
@@ -501,11 +504,22 @@ def test_mirror_orders_writes_and_propagates_failures(
     calls = [
         json.loads(line) for line in Path(env["FAKE_LOG"]).read_text().splitlines()
     ]
+    if name == "latest.json":
+        expected = (
+            ["lsf"]
+            + (["cat"] if manifest else [])
+            + ["sync", "copyto" if manifest else "delete"]
+        )
+        if fail:
+            expected = expected[: expected.index(fail) + 1]
     assert [call[3] for call in calls] == expected
     assert all(
         call[:3] == ["--config", "/dev/null", "--s3-no-check-bucket"] for call in calls
     )
-    assert calls[0][4:] == [
+    sync = next((call for call in calls if call[3] == "sync"), None)
+    if sync is None:
+        return
+    assert sync[4:] == [
         "GARAGE:factory-public",
         "R2:factory-public",
         "--exclude",
@@ -514,8 +528,10 @@ def test_mirror_orders_writes_and_propagates_failures(
         "Cache-Control: public, max-age=31536000, immutable",
     ]
     if expected[-1] == "copyto":
+        if name == "latest.json":
+            assert calls[-1][4].startswith("/")
         assert calls[-1][4:] == [
-            f"GARAGE:factory-public/{name}",
+            calls[-1][4] if name == "latest.json" else f"GARAGE:factory-public/{name}",
             f"R2:factory-public/{name}",
             "--ignore-times",
             "--header-upload",

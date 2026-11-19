@@ -144,47 +144,12 @@ workloads:
       - peer: stars-source
         fqdn: 7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
         port: 443
-  prune:
-    kind: CronJob
-    schedule: 50 * * * *
-    backoffLimit: 0
-    command:
-    - /opt/app
-    args:
-    - prune
-    resources:
-      requests:
-        cpu: 250m
-        memory: 128Mi
-      limits:
-        memory: 512Mi
-    env:
-    - name: STATE_AWS_ENDPOINT_URL
-      valueFrom:
-        secretKeyRef:
-          name: stars-forecast-stars-state-s3
-          key: AWS_ENDPOINT_URL
-    - name: STATE_AWS_REGION
-      valueFrom:
-        secretKeyRef:
-          name: stars-forecast-stars-state-s3
-          key: AWS_REGION
-    - name: STATE_AWS_ACCESS_KEY_ID
-      valueFrom:
-        secretKeyRef:
-          name: stars-forecast-stars-state-s3
-          key: AWS_ACCESS_KEY_ID
-    - name: STATE_AWS_SECRET_ACCESS_KEY
-      valueFrom:
-        secretKeyRef:
-          name: stars-forecast-stars-state-s3
-          key: AWS_SECRET_ACCESS_KEY
-    - name: STATE_BUCKET
-      valueFrom:
-        secretKeyRef:
-          name: stars-forecast-stars-state-s3
-          key: BUCKET
 secrets:
+  ghcr-imagepull-secret:
+    workload: grid
+    onePassword:
+      itemPath: vaults/k8s-homelab/items/ghcr-read-permissions
+      type: kubernetes.io/dockerconfigjson
   stars-input:
     workload: grid
     onePassword:

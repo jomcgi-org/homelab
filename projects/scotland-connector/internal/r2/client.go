@@ -126,23 +126,11 @@ func (c *Client) Put(ctx context.Context, bucket, key string, body []byte, cache
 
 // PutReader uploads an object with an already computed length and SHA-256.
 func (c *Client) PutReader(ctx context.Context, bucket, key string, body io.Reader, size int64, digest, cache string) error {
-	return c.put(ctx, bucket, key, body, size, digest, cache, "")
-}
-
-// Replace updates a cached shard only if its generation is still current.
-func (c *Client) Replace(ctx context.Context, bucket, key string, body []byte, etag string) error {
-	return c.put(ctx, bucket, key, bytes.NewReader(body), int64(len(body)), fmt.Sprintf("%x", sha256.Sum256(body)), "private", etag)
-}
-
-func (c *Client) put(ctx context.Context, bucket, key string, body io.Reader, size int64, digest, cache, etag string) error {
 	u := *c.endpoint
 	u.Path = "/" + bucket + "/" + key
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u.String(), body)
 	if err != nil {
 		return err
-	}
-	if etag != "" {
-		req.Header.Set("If-Match", etag)
 	}
 	req.ContentLength = size
 	req.Header.Set("Content-Type", "application/json")
@@ -156,9 +144,6 @@ func (c *Client) put(ctx context.Context, bucket, key string, body io.Reader, si
 		return err
 	}
 	defer resp.Body.Close()
-	if etag != "" && resp.StatusCode == http.StatusPreconditionFailed {
-		return nil
-	}
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("put %s/%s: %s", bucket, key, resp.Status)
 	}
