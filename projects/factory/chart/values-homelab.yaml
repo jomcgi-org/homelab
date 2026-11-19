@@ -102,24 +102,24 @@ kagent:
 agents:
   codex:
     model: gpt-6.2-astra
-    # Substrate workers (requests 1 CPU, 1Gi), one actor each. The nodes
+    # Substrate workers (requests 1 CPU, 768Mi), one actor each. The nodes
     # idle at ~4% CPU, so the queue and merge contention bound throughput, not
     # compute. Two more than connector.agents below allows runs: an idle
     # session's actor keeps its worker after its turn, and a resume with no
     # free worker fails ("no worker has room"), which the connector records
     # as an ambiguous send (HOME-131, 2026-11-16).
-    concurrency: 9
+    concurrency: 12
     # The request covers what reclaim cannot take from a busy worker, not its
     # peak. Most of a worker's memory is file cache, which the kernel drops
     # under pressure: on 18 Nov, busy workers held 0.2-1.2Gi of anonymous and
-    # shared memory and 2.8-3.7Gi of file cache. Nine workers at 1Gi request
-    # what six at 1536Mi did. A turn above its request uses free node memory,
-    # then zram swap: the kubelets give each container swap in proportion to
-    # its request (LimitedSwap), about 1Gi here (HOME-142).
+    # shared memory and 2.8-3.7Gi of file cache. Twelve workers at 768Mi
+    # request what nine at 1Gi did (HOME-570). A turn above its request uses
+    # free node memory, then zram swap: the kubelets give each container swap in proportion to
+    # its request (LimitedSwap), about 768Mi here (HOME-142).
     worker:
       resources:
         requests:
-          memory: 1Gi
+          memory: 768Mi
   # The reviewer reads and never edits, so it needs no apply_patch. It runs
   # gpt-6.2-sol (Joe, 2026-11-17:
   # https://github.com/jomcgi-org/homelab/pull/8193#issuecomment-6963828989),
@@ -130,15 +130,16 @@ agents:
   reviewer:
     model: gpt-6.2-sol
     # One worker per concurrent review (reviewer.concurrency).
-    concurrency: 3
+    concurrency: 5
     # The review binding has no toolchain and runs no PR code, so its
     # workers stay small: 1.2Gi at most for one worker and 2.7Gi for all
-    # three together (14-16 Nov), sized per worker like the coder pool. The
+    # three together (14-16 Nov), sized per worker like the coder pool. Five
+    # workers at 640Mi request about what three at 1Gi did (HOME-570). The
     # limit stays at the actor booking plus gVisor.
     worker:
       resources:
         requests:
-          memory: 1Gi
+          memory: 640Mi
 
 # jomcgi-org/homelab. Its namespace is also granted in Substrate's
 # credentialProvider.namespacePolicies
@@ -195,11 +196,11 @@ itsaplan:
 # for the homelab binding.
 connector:
   enabled: true
-  # homelab-codex claims up to 7 runs at once, two fewer than the
+  # homelab-codex claims up to 10 runs at once, two fewer than the
   # agents.codex.concurrency workers that hold them (see there).
   agents:
     - username: homelab-codex
-      concurrency: 7
+      concurrency: 10
   bindings:
     homelab:
       itsaplanProject: HOME
@@ -244,7 +245,7 @@ connector:
 reviewer:
   enabled: true
   # Reviews at once; agents.reviewer.concurrency gives each a worker.
-  concurrency: 3
+  concurrency: 5
   # The coder gets the goal check's private reasons in its next revision
   # round, posted on the issue by the connector (HOME-251).
   goalReasons:
