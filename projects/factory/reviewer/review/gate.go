@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/mail"
 	"path"
 	"slices"
@@ -322,6 +323,12 @@ const maxInvariantBytes = 1 << 20
 type mechanismPaths map[string]bool
 
 func loadMechanisms(ctx context.Context, gh RulesReader, repo, commit string) (mechanismPaths, error) {
+	return readInvariantPolicy(ctx, gh, repo, commit, nil)
+}
+
+// scopes contains the ancestor policy paths needed for added files. Fill them
+// during the same base-tree read that determines the mechanism gate.
+func readInvariantPolicy(ctx context.Context, gh RulesReader, repo, commit string, scopes map[string]*RuleFile) (mechanismPaths, error) {
 	tree, err := gh.Tree(ctx, repo, commit)
 	if err != nil {
 		return nil, err
@@ -330,7 +337,8 @@ func loadMechanisms(ctx context.Context, gh RulesReader, repo, commit string) (m
 		return nil, errors.New("cannot discover invariant files in a truncated tree")
 	}
 	paths := mechanismPaths{}
-	for file := range tree.Files {
+	budget := maxRules
+	for _, file := range slices.Sorted(maps.Keys(tree.Files)) {
 		if path.Base(file) != invariantFile {
 			continue
 		}
@@ -341,7 +349,10 @@ func loadMechanisms(ctx context.Context, gh RulesReader, repo, commit string) (m
 		if err := ParseMechanisms(file, data, paths); err != nil {
 			return nil, err
 		}
-
+		if _, wanted := scopes[file]; wanted {
+			f := bounded(file, data, &budget, maxRuleFile)
+			scopes[file] = &f
+		}
 	}
 	return paths, nil
 }

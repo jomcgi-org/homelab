@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -38,17 +39,19 @@ func AttemptMessageID(repo string, number int, sha string, runID int64, attempt 
 
 // PromptInput is what a review task is built from.
 type PromptInput struct {
-	Semgrep *SemgrepEvidence
-	Repo    string
-	Number  int
-	URL     string
-	Base    string
-	SHA     string
-	Title   string
-	Body    string
-	Author  string
-	Files   []github.PullRequestFile
-	Rules   *Rules
+	InvariantScopes map[string]*RuleFile
+	InvariantBase   string
+	Semgrep         *SemgrepEvidence
+	Repo            string
+	Number          int
+	URL             string
+	Base            string
+	SHA             string
+	Title           string
+	Body            string
+	Author          string
+	Files           []github.PullRequestFile
+	Rules           *Rules
 	// Previous are the blocking and human-gate findings of the review of
 	// PreviousHead.
 	Previous     []Finding
@@ -192,6 +195,14 @@ func Prompt(in PromptInput) string {
 		}
 	}
 
+	if slices.ContainsFunc(in.Files, func(f github.PullRequestFile) bool { return f.Status == "added" }) {
+		fmt.Fprintf(&b, "For every added file listed below, does it implement a mechanism in an invariant scope that no rule caught? Use the INVARIANTS.yaml files in its directory and ancestors at base commit %s. Return one invariant_scopes entry per added file with path, uncovered (true or false), and reason. These answers are advisory only. Keep them separate from findings and previous.\n\n", in.InvariantBase)
+		for _, name := range slices.Sorted(maps.Keys(in.InvariantScopes)) {
+			if f := in.InvariantScopes[name]; f != nil {
+				fmt.Fprintf(&b, "Base invariant file %q at %s (read the full file at this commit if clipped or omitted):\n%s\n\n", name, in.InvariantBase, f.Content)
+			}
+		}
+	}
 	if in.Gate.Needed() {
 		b.WriteString("## Human gate\n\n")
 		b.WriteString("The reviewer service already holds this head for a human review")
@@ -398,7 +409,7 @@ func Prompt(in PromptInput) string {
 		"Read a clipped head message with git before assessing it. Keep the activation string within 4000 bytes.\n\n")
 	b.WriteString("End your reply with exactly one fenced JSON block and nothing after it:\n\n")
 	b.WriteString("```json\n")
-	b.WriteString(`{"summary": "...", "activation": "Remaining action and its precondition, or empty when none.", "findings": [{"id": "dir/file.go:correctness", "severity": "medium", "path": "dir/file.go", "line": 12, "title": "...", "detail": "...", "defer": false}], "previous": [{"id": "...", "status": "fixed", "note": "..."}]}`)
+	b.WriteString(`{"summary": "...", "activation": "Remaining action and its precondition, or empty when none.", "invariant_scopes": [{"path": "added/file.go", "uncovered": false, "reason": "..."}], "findings": [{"id": "dir/file.go:correctness", "severity": "medium", "path": "dir/file.go", "line": 12, "title": "...", "detail": "...", "defer": false}], "previous": [{"id": "...", "status": "fixed", "note": "..."}]}`)
 	b.WriteString("\n```\n\n")
 	b.WriteString("- severity: \"critical\", \"high\", \"medium\" or \"low\", rated by the review rules above. Critical, high " +
 		"and medium block the merge; low never does.\n")
