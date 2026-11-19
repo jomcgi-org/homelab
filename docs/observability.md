@@ -284,3 +284,12 @@ false through Git to disable this path; existing backup schedules are unchanged.
 - Monolith health components and Discord alerts:
   `projects/monolith/factory/ops_health.py`,
   `projects/monolith/factory/health_alerts.py`, chart values `healthAlerts`
+
+## Factory health
+
+`https://factory-data.jomcgi.dev/health.json` holds the factory's composite
+health as static data, refreshed every 2 minutes and cached for 60 s
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-260#comment-3909)).
+See [factory-public](../projects/factory-public/README.md#factory-health). The hub
+collector's httpcheck probes it; alerting on its `status` and `generatedAt` is
+[HOME-415](https://factory-plan.jomcgi.dev/factory/issue/HOME-415).

@@ -28,6 +28,14 @@ spec:
       kind: Secret
       name: factory-public-factory-public-mirror-s3
       jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      name: factory-public-factory-health-s3
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      name: factory-public-factory-public-mirror-factory-health-s3
+      jsonPointers: [/data]
   syncPolicy:
     automated:
       prune: true

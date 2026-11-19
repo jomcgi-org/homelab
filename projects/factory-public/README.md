@@ -11,15 +11,18 @@ Argo CD deploys it in namespace `factory-public` through
 ```mermaid
 flowchart LR
   publisher["Publisher (HOME-213)"] -- write --> garage[("Garage factory-public")]
+  health["health CronJob (HOME-260)"] -- "write health.json" --> hgarage[("Garage factory-health")]
   garage -- "rclone, every minute" --> r2[("R2 factory-public")]
+  hgarage -- "copy health.json only" --> r2
   r2 --> cdn["factory-data.jomcgi.dev"]
 ```
 
 ## Values
 
-The chart has one `buckets:` entry in `chart/values.yaml`. It renders:
+The chart has two `buckets:` entries in `chart/values.yaml`: `factory-public`
+with its mirror, and `factory-health` for the health publisher. They render:
 
-- the Garage bucket claim and the key Secret, which garage-init fills;
+- a Garage bucket claim and key Secret for each entry, which garage-init fills;
 - the mirror CronJob (stock `rclone/rclone`, pinned by digest), under its own
   ServiceAccount with no token mounted;
 - the `OnePasswordItem` for `vaults/k8s-homelab/items/factory-r2-public-mirror`
@@ -35,6 +38,49 @@ Each run syncs every object except `manifest.json` with
 
 The publisher gets write access through its own `buckets:` entry without
 `public:`. Only this chart owns `public:` for this destination.
+
+## Factory health
+
+The `health` CronJob publishes factory health as static data, so public
+readers never call the cluster
+([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-260#comment-3909)).
+Every 2 minutes it checks two components:
+
+| Component | Up when |
+| --- | --- |
+| `factory-cluster` | The Argo CD `argocd` Application is Healthy and reconciled within 15 minutes. It reads that one Application with a get-only Role in `argocd`. |
+| `jomcgi-site-worker` | The jomcgi.dev Worker's latest Cloudflare deployment has a deployment ID and a creation time that is not in the future. |
+
+Then it writes `health.json` to the Garage bucket `factory-health` with its
+own signed PUT. Each entry shows only the component name and its up or down
+state: no versions, error text, internal hostnames or secrets
+([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-260#comment-4485)).
+
+```json
+{"status": "healthy", "generatedAt": "2026-11-19T08:00:00Z",
+ "components": [{"name": "factory-cluster", "state": "up"},
+                {"name": "jomcgi-site-worker", "state": "up"}]}
+```
+
+A failed read or a missing input makes that component `down` and the
+`status` `unhealthy`.
+
+The publisher's Garage key has write access to `factory-health` only. It has
+no access to `factory-public`. The mirror reads `health.json` from
+`factory-health` with its own read-only key (`public.copyKeys`), leaves the
+key out of the `factory-public` sync, and copies it to
+`https://factory-data.jomcgi.dev/health.json` with
+`Cache-Control: public, max-age=60`. The file is at most about 4 minutes old:
+2 minutes between writes, 1 minute between mirror runs and 60 s of cache.
+The mirror stays the only writer to R2.
+
+The Worker check reads
+`/accounts/<account>/workers/scripts/jomcgi-site/deployments` with a
+read-only token from 1Password item `factory-health-cloudflare` (fields
+`api-token` and `account-id`; permission Account, Workers Scripts, Read).
+Until that item exists, `jomcgi-site-worker` is `down`. Alerting on the
+status and age in the file is
+[HOME-415](https://factory-plan.jomcgi.dev/factory/issue/HOME-415).
 
 ## Before the mirror runs
 

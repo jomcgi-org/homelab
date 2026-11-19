@@ -464,6 +464,7 @@ def test_gke_renders_live_argocd_target_with_pinned_ca():
     assert receiver["collection_interval"] == "60s"
     assert receiver["targets"] == [
         {"endpoint": "https://jomcgi.dev/health", "method": "GET"},
+        {"endpoint": "https://factory-data.jomcgi.dev/health.json", "method": "GET"},
         {"endpoint": "https://jomcgi.dev/", "method": "GET"},
         {
             "endpoint": "https://argocd-server.argocd.svc:443/healthz",
@@ -471,8 +472,8 @@ def test_gke_renders_live_argocd_target_with_pinned_ca():
             "tls": {"ca_file": ARGOCD_CA_MOUNT_PATH},
         },
     ]
-    assert "insecure" not in receiver["targets"][2]["tls"]
-    assert "insecure_skip_verify" not in receiver["targets"][2]["tls"]
+    assert "insecure" not in receiver["targets"][3]["tls"]
+    assert "insecure_skip_verify" not in receiver["targets"][3]["tls"]
     assert config["service"]["pipelines"]["metrics"]["receivers"] == [
         "http_check",
         "otlp",
@@ -668,12 +669,13 @@ def test_loom_is_default_off_in_every_overlay(values_name):
         ),
         (
             "values-gke",
-            "e52f89f65f14a99b445b2c14437d474c3392755a6cbbccd215943d4ef7561258",
+            "b462bd1650fea3d295d327638f1bc99588ef4dfab7d204ed65454dbac50a59c0",
         ),
     ],
 )
 def test_loom_default_off_preserves_collector_config(values_name, expected_sha256):
-    # Literal fingerprints from main before Loom monitoring was added.
+    # Literal fingerprints from main before Loom monitoring was added. The
+    # values-gke one also covers the factory health target (HOME-260).
     docs = _render_overlay(values_name)
     config = next(
         d["data"]["collector.yaml"]
@@ -694,6 +696,7 @@ def test_gke_loom_monitoring_has_scoped_rbac_and_hardened_job():
     config = _collector_config(docs)
     assert config["receivers"]["http_check"]["targets"] == [
         {"endpoint": "https://jomcgi.dev/health", "method": "GET"},
+        {"endpoint": "https://factory-data.jomcgi.dev/health.json", "method": "GET"},
         {"endpoint": "https://jomcgi.dev/", "method": "GET"},
         {
             "endpoint": "https://argocd-server.argocd.svc:443/healthz",
