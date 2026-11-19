@@ -236,6 +236,11 @@ func goalWithdrawn(id, key string, g *GoalCheck) string {
 		return ""
 	}
 	if issue != key {
+		// The move needs a valid answer for the new issue that does not
+		// disagree with the service's count of its criteria.
+		if g == nil || (g.Counted > 0 && g.Counted != len(g.Criteria)) {
+			return ""
+		}
 		return "Withdrawn: the PR no longer names " + issue + ". It now names " + key + "."
 	}
 	n, err := strconv.Atoi(strings.TrimPrefix(rest, ":criterion-"))
@@ -269,7 +274,8 @@ func issueCriteria(in *IssueContext) int {
 	}
 	items, state, style := 0, 0, "" // state: 0 before the heading, 1 in the list, 2 after it
 	fence := ""
-	for raw := range strings.SplitSeq(in.Issue.Description, "\n") {
+	text := strings.ReplaceAll(strings.ReplaceAll(in.Issue.Description, "\r\n", "\n"), "\r", "\n")
+	for raw := range strings.SplitSeq(text, "\n") {
 		line := strings.TrimSpace(raw)
 		if m := codeFence.FindStringSubmatch(raw); m != nil && (fence == "" || strings.HasPrefix(m[1], fence)) {
 			if state != 0 {
@@ -328,9 +334,9 @@ func issueCriteria(in *IssueContext) int {
 }
 
 var (
-	// listItem is a top-level item with text: a number and "." or ")", or a
-	// bullet, then spaces or tabs.
-	listItem = regexp.MustCompile(`^(?:([0-9]{1,9})([.)])|([-*+]))[ \t]+(?:\[[ xX]\][ \t]+)?\S`)
+	// listItem is a top-level item: a number and "." or ")", or a bullet,
+	// then text, or nothing (its text may follow on indented lines).
+	listItem = regexp.MustCompile(`^(?:([0-9]{1,9})([.)])|([-*+]))(?:[ \t]+(?:\[[ xX]\][ \t]+)?\S|[ \t]*$)`)
 	// listMarker is anything Markdown could read as a list item, at any
 	// indent, including an empty one.
 	listMarker = regexp.MustCompile(`^[ \t]*(?:[0-9]{1,9}[.)]|[-*+])(?:[ \t]|$)`)

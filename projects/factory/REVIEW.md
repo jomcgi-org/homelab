@@ -46,8 +46,10 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   ([HOME-157](https://factory-plan.jomcgi.dev/factory/issue/HOME-157#comment-3904),
   [HOME-318](https://factory-plan.jomcgi.dev/factory/issue/HOME-318#comment-3905),
   [HOME-327](https://factory-plan.jomcgi.dev/factory/issue/HOME-327#comment-3906)).
-  When the PR names a different issue, the old issue's goal findings are
-  withdrawn, and the note names both issues. When the trusted issue text
+  When the PR names a different, readable issue and the goal check gives a
+  valid answer for it that does not disagree with the service's count of
+  its criteria, the old issue's goal findings are withdrawn, and the note
+  names both issues. When the trusted issue text
   drops a criterion, its finding is withdrawn: the service counts the items
   of the issue's one "Done when" or "Acceptance criteria" list, only when
   the issue text has a trusted author and editor, and the valid answer
