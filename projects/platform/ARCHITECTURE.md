@@ -23,7 +23,7 @@ flowchart LR
 | Hub ArgoCD | Reconciles hub Applications | [Parent](../gke-cluster/hub-root-application.yaml) | [Chart dependency](argocd/Chart.yaml) | Manifests and charts | Hub reconciliation service account |
 | Factory ArgoCD | Reconciles factory Applications | [Parent](../factory-cluster/factory-root-application.yaml) | [Application source](../platform-factory/argocd/application.yaml) | Manifests and charts | Factory reconciliation service account |
 | Hub ingress | Routes public and trusted requests | [Cloudflare gateway](cloudflare-gateway/) | [Chart dependencies](cloudflare-gateway/Chart.yaml) | HTTP requests | Hub tunnel credential |
-| Factory ingress | Publishes factory hostnames and routes requests | [Factory edge](../platform-factory/factory-edge/) | [Factory inventory](../factory-cluster/README.md) | HTTP requests and identity tokens | Factory tunnel credential and Envoy OIDC client secret |
+| Factory ingress | Publishes factory hostnames and routes requests | [Factory edge](../platform-factory/factory-edge/) | [Factory inventory](../factory-cluster/ARCHITECTURE.md#ingress-and-identity) | HTTP requests and identity tokens | Factory tunnel credential and Envoy OIDC client secret |
 
 ## 1. Clusters
 
@@ -37,7 +37,7 @@ See the [factory cluster architecture](../factory-cluster/ARCHITECTURE.md) for t
 
 On the hub, two cloudflared connectors forward traffic to Envoy Gateway. HTTPRoutes select the service by hostname and path. Public routes admit anonymous requests. Trusted routes use Cloudflare Access or a route-specific Authentik policy. [Hub gateway values](cloudflare-gateway/values-gke.yaml)
 
-At home, cfgate reconciles the factory tunnel and DNS records. Envoy in the edge namespace routes browser traffic through the factory's own Authentik. The Kubernetes API route checks a bearer token, and the API server applies RBAC. [Factory ingress and route inventory](../factory-cluster/README.md)
+At home, cfgate reconciles the factory tunnel and DNS records. Envoy in the edge namespace routes browser traffic through the factory's own Authentik. The Kubernetes API route checks a bearer token, and the API server applies RBAC. [Factory ingress and route inventory](../factory-cluster/ARCHITECTURE.md#ingress-and-identity)
 
 ## 3. Network and CNI on the hub and factory home cluster
 
@@ -53,11 +53,11 @@ For the software factory itself, CI writes the published OCI chart version to th
 
 Hub PVCs use GCE persistent disks. CloudNativePG manages PostgreSQL for the monolith, Authentik and Context Forge. The monolith stores blobs in Cloudflare R2 and archives PostgreSQL backups to GCS. [Hub CloudNativePG](../platform-gke/cloudnative-pg/) · [Monolith hub values](../monolith/deploy/values-gke.yaml)
 
-At home, CloudNativePG manages the factory, kagent and Authentik databases. Garage stores workload objects and PostgreSQL archives on the home nodes, so those archives share the cluster's failure domain. [Factory storage and recovery](../factory-cluster/README.md)
+At home, CloudNativePG manages the factory, kagent and Authentik databases. Garage stores workload objects and PostgreSQL archives on the home nodes, so those archives share the cluster's failure domain. [Factory storage and recovery](../factory-cluster/ARCHITECTURE.md#state-and-recovery)
 
 ## 6. Scheduling and capacity on the hub and factory home cluster
 
-The hub separates ordinary workloads on the on-demand core pool from workloads tolerating the Spot brick pool's taint. Priority classes give critical pods precedence under resource pressure. The factory schedules across its three home servers and provides a gVisor RuntimeClass for agent workspaces. [Hub priority classes](../platform-gke/priority-classes/) · [Factory node inventory](../factory-cluster/README.md)
+The hub separates ordinary workloads on the on-demand core pool from workloads tolerating the Spot brick pool's taint. Priority classes give critical pods precedence under resource pressure. The factory schedules across its three home servers and provides a gVisor RuntimeClass for agent workspaces. [Hub priority classes](../platform-gke/priority-classes/) · [Factory node inventory](../factory-cluster/ARCHITECTURE.md#nodes-and-sandboxing)
 
 ## 7. Observability on the hub and factory home cluster
 
