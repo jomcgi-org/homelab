@@ -343,13 +343,18 @@ func findingsSection(a Assessment, r *Report) string {
 		}
 	}
 	tail := clip(sinceSection(a), maxSince)
-	notices := advisorySection(a)
-	budget := maxFindings - len(head) - len(notices) - len(tail)
+	// Findings fit first; advisory notices get only the space left, so they
+	// can never push a blocking finding out of the comment.
+	budget := maxFindings - len(head) - len(tail)
 	for omitted := 0; ; omitted++ {
 		shown := rows[:len(rows)-omitted]
 		for _, limit := range []int{maxDetail, 500, 0} {
 			body := findingsTable(shown, omitted, a.DroppedLow) + findingDetails(shown, limit)
 			if len(body) <= budget || (limit == 0 && len(shown) == 0) {
+				notices := ""
+				if room := budget - len(body) - len("…"); room > 0 {
+					notices = clip(advisorySection(a), room)
+				}
 				return strings.TrimRight(head+body+notices+tail, "\n")
 			}
 		}
