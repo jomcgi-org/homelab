@@ -110,7 +110,11 @@ def test_mirror(sync):
     data = {
         "sast": [row(1), row(2, severity="low"), row(3, ref="refs/pull/7/merge")],
         "sca": [row(4, exposure="reachable"), row(5, exposure="unreachable")],
-        "secrets": [secret_row("secret-6"), secret_row(7, ref="feature")],
+        "secrets": [
+            {"repository": {"name": "example/other"}, "ref": "main"},
+            {"repository": {"name": "jomcgi-org/homelab"}, "ref": "feature"},
+            secret_row("secret-6"),
+        ],
     }
 
     alerts = []
@@ -151,7 +155,7 @@ def test_mirror(sync):
     secret_issue = board.issues[-1]
     assert "rule-hash" in secret_issue["description"]
     for status, col in [("FINDING_STATUS_FIXED", 2), ("FINDING_STATUS_OPEN", 1)]:
-        data["secrets"][0]["status"] = status
+        data["secrets"][-1]["status"] = status
         sync(get, "org", board, alert)
         assert secret_issue["columnId"] == col
     assert len(alerts) == 1
