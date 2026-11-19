@@ -19,6 +19,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/internal/tracing"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
@@ -385,7 +389,11 @@ func fatal(err error) bool {
 
 // Tick runs one dispatch pass. It returns store.ErrNotWriter once another
 // process has taken over; the caller must stop.
-func (e *Engine) Tick(ctx context.Context) error {
+func (e *Engine) Tick(ctx context.Context) (result error) {
+	ctx, span := tracing.StartPoll(ctx)
+	var phaseErr error
+	defer func() { tracing.FinishPoll(ctx, span, errors.Join(result, phaseErr)) }()
+
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
@@ -416,6 +424,8 @@ func (e *Engine) Tick(ctx context.Context) error {
 			e.observePhase(ctx, p.name, err)
 		}
 		if err != nil {
+			phaseErr = err
+			span.AddEvent("phase failed", trace.WithAttributes(attribute.String("phase", p.name)))
 			if fatal(err) {
 				return err
 			}
@@ -869,7 +879,26 @@ func (e *Engine) stepLocked(ctx context.Context, id int64) error {
 }
 
 // step advances one open run. The caller holds the run's lock.
-func (e *Engine) step(ctx context.Context, r *store.Run) error {
+func (e *Engine) step(ctx context.Context, r *store.Run) (result error) {
+	if trace.SpanFromContext(ctx).IsRecording() {
+		id, issue, source, workID := r.ID, r.IssueKey, r.State, r.WorkItemID
+		defer func() {
+			attrs := []attribute.KeyValue{attribute.Int64("run.id", id), attribute.String("issue.key", issue), attribute.String("state.from", source)}
+			attrs = append(attrs, e.workAttrs(ctx, workID)...)
+			outcome := "unchanged"
+			current, err := e.st.GetRun(ctx, id)
+			if err == nil {
+				attrs = append(attrs, attribute.String("state.to", current.State))
+				if current.State != source {
+					outcome = "advanced"
+				}
+			}
+			if result != nil || err != nil {
+				outcome = "error"
+			}
+			tracing.Observe(ctx, "run observed", append(attrs, attribute.String("outcome", outcome))...)
+		}()
+	}
 	// Only an unlinked itsaplan run is new work that may resume delivery.
 	// A linked run, held for admission or waiting for its brief, has already
 	// been admitted and must honor any later stop. A stop of an unlinked run
@@ -2823,4 +2852,20 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 		return e.deliverActivation(ctx, it)
 	}
 	return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "unknown kind "+it.Kind)
+}
+
+// workAttrs returns the PR number, head SHA and review round of a run's work
+// item, so a poll that only advances a run can still be followed to its PR.
+func (e *Engine) workAttrs(ctx context.Context, workID int64) []attribute.KeyValue {
+	if workID == 0 {
+		return nil
+	}
+	var attrs []attribute.KeyValue
+	if wi, err := e.st.GetWorkItem(ctx, workID); err == nil {
+		attrs = append(attrs, attribute.Int("round", wi.ReviewRounds))
+	}
+	if pr, err := e.st.PullRequestFor(ctx, workID); err == nil && pr != nil {
+		attrs = append(attrs, attribute.Int("pr.number", pr.Number), attribute.String("head.sha", pr.HeadSHA))
+	}
+	return attrs
 }

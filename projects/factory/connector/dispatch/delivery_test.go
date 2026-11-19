@@ -2,6 +2,7 @@ package dispatch_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net"
@@ -10,6 +11,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdk "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/buildbuddy"
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
@@ -2791,6 +2797,7 @@ func TestHumanOwnershipOnAQueuedPRSurvivesLabelRemoval(t *testing.T) {
 }
 
 func TestCanceledIssueIsDequeuedAndNotMovedToDone(t *testing.T) {
+	exporter := captureWorkSpans(t)
 	v := newDeliveryEnv(t)
 	v.delivered()
 	v.gh.green("sha-1")
@@ -2809,6 +2816,24 @@ func TestCanceledIssueIsDequeuedAndNotMovedToDone(t *testing.T) {
 	// It merges anyway, say by hand: the issue stays canceled.
 	v.gh.merge(1, "merge-sha-1")
 	v.poll()
+	var actions []string
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "factory.merge_queue" {
+			continue
+		}
+		if span.Parent.IsValid() {
+			t.Fatal("queue action has a parent")
+		}
+		for _, a := range span.Attributes {
+			if string(a.Key) == "action" {
+				actions = append(actions, a.Value.AsString())
+			}
+		}
+	}
+	if got := strings.Join(actions, ","); got != "enqueue,dequeue,merge" {
+		t.Fatalf("queue action spans = %s", got)
+	}
+
 	v.poll()
 	if moves := v.its.Moves(); len(moves) != 0 {
 		t.Fatalf("moves = %+v; a canceled issue must not move to Done", moves)
@@ -3238,5 +3263,206 @@ func TestDoneMoveOutageSurvivesIdleOutboxTicks(t *testing.T) {
 	v.tick(v.e)
 	if len(v.its.Moves()) != 1 || testutil.ToFloat64(v.m.ItsaplanUnavailable.WithLabelValues("outbox")) != 0 {
 		t.Fatal("successful Done move did not clear outage")
+	}
+}
+
+func captureWorkSpans(t *testing.T) *tracetest.InMemoryExporter {
+	t.Helper()
+	exporter := tracetest.NewInMemoryExporter()
+	previous := otel.GetTracerProvider()
+	tp := sdk.NewTracerProvider(sdk.WithSyncer(exporter))
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() { otel.SetTracerProvider(previous); _ = tp.Shutdown(context.Background()) })
+	return exporter
+}
+
+func TestWorkSpans(t *testing.T) {
+	exporter := captureWorkSpans(t)
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.green("sha-1")
+	v.poll()
+	v.gh.eject(1)
+	v.poll()
+	rounds := v.rounds()
+	if len(rounds) != 1 {
+		t.Fatalf("got %d review rounds", len(rounds))
+	}
+	rollback := errors.New("abort close")
+	before := len(exporter.GetSpans())
+	err := v.st.Tx(v.ctx, func(tx *sql.Tx) error {
+		if err := v.st.SetRunState(v.ctx, tx, rounds[0].ID, store.RunClosed, "reported success"); err != nil {
+			return err
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) || len(exporter.GetSpans()) != before {
+		t.Fatalf("rolled-back close emitted a span or failed: %v", err)
+	}
+	const secret = "secret-task-result-sentinel"
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, secret, nil)
+	v.poll()
+	v.poll()
+	counts := map[string]int{}
+	actions := map[string]int{}
+	correlatedPoll := false
+	enqueueEvents := 0
+	advancedRun := false
+	runWithPR := false
+	for _, span := range exporter.GetSpans() {
+		if span.Parent.IsValid() {
+			t.Errorf("%s has parent", span.Name)
+		}
+		if strings.Contains(fmt.Sprint(span.Attributes, span.Events, span.Status), secret) {
+			t.Fatal("task result leaked")
+		}
+		attrs := map[string]string{}
+		for _, a := range span.Attributes {
+			attrs[string(a.Key)] = a.Value.Emit()
+		}
+		if attrs["outcome"] == "" {
+			t.Errorf("%s missing outcome", span.Name)
+		}
+		if span.Name != "factory.poll" && attrs["issue.key"] != "HL-7" {
+			t.Errorf("%s missing issue", span.Name)
+		}
+		switch span.Name {
+		case "factory.poll":
+			pollAttrs := map[string]string{}
+			for _, a := range span.Attributes {
+				if a.Value.Type() == attribute.STRINGSLICE {
+					pollAttrs[string(a.Key)] = strings.Join(a.Value.AsStringSlice(), ",")
+				}
+			}
+			for _, event := range span.Events {
+				fields := map[string]string{}
+				for _, a := range event.Attributes {
+					fields[string(a.Key)] = a.Value.Emit()
+				}
+				if event.Name == "run observed" && fields["run.id"] == "1" && fields["state.to"] == store.RunFinishing && fields["state.from"] == store.RunDispatched && fields["outcome"] == "advanced" {
+					advancedRun = true
+				}
+				if event.Name == "run observed" && fields["pr.number"] != "" {
+					if fields["pr.number"] != "1" || fields["head.sha"] != "sha-1" || fields["round"] == "" {
+						t.Errorf("run observed event lacks PR, head or round: %v", fields)
+					}
+					runWithPR = true
+					for key, want := range map[string]string{"poll.pr.number": "1", "poll.head.sha": "sha-1"} {
+						if got := pollAttrs[key]; got != want {
+							t.Errorf("poll root %s = %q, want %q", key, got, want)
+						}
+					}
+					if pollAttrs["poll.round"] == "" {
+						t.Error("poll root lacks round")
+					}
+				}
+				if event.Name != "factory.merge_queue" || fields["action"] != "enqueue" {
+					continue
+				}
+				enqueueEvents++
+				for key, want := range map[string]string{"run.id": "1", "issue.key": "HL-7", "pr.number": "1", "head.sha": "sha-1", "round": "0", "state.from": store.WorkReview, "state.to": store.WorkMerging, "outcome": "enqueue"} {
+					if got := fields[key]; got != want {
+						t.Errorf("poll enqueue event %s = %q, want %q", key, got, want)
+					}
+				}
+			}
+			for _, a := range span.Attributes {
+				if string(a.Key) == "poll.issue.key" && strings.Join(a.Value.AsStringSlice(), ",") == "HL-7" && attrs["poll.run.id"] != "" {
+					correlatedPoll = true
+				}
+			}
+		case "factory.run":
+			wantRound, wantFrom := "1", store.RunDispatched
+			if attrs["run.id"] == "1" {
+				wantRound, wantFrom = "0", store.RunFinishing
+			}
+			if attrs["pr.number"] != "1" || attrs["head.sha"] != "sha-1" || attrs["round"] != wantRound || attrs["state.from"] != wantFrom {
+				t.Errorf("run span attributes = %v", attrs)
+			}
+			if attrs["run.id"] == "" || attrs["state.to"] != "closed" {
+				t.Error("missing run transition")
+			}
+		case "factory.review_round":
+			if attrs["round"] != "1" || attrs["run.id"] == "" {
+				t.Error("missing review identifiers")
+			}
+			fallthrough
+		case "factory.merge_queue":
+			if span.Name == "factory.merge_queue" {
+				actions[attrs["action"]]++
+				wantRound := map[string]string{"enqueue": "0", "ejection": "0"}[attrs["action"]]
+				if attrs["round"] != wantRound {
+					t.Errorf("%s queue span round = %q, want %q", attrs["action"], attrs["round"], wantRound)
+				}
+				if attrs["run.id"] != "1" || attrs["outcome"] != attrs["action"] || len(span.Links) != 1 {
+					t.Errorf("queue span lacks run, outcome or triggering poll: %v", attrs)
+				}
+			}
+			if attrs["pr.number"] != "1" || attrs["head.sha"] != "sha-1" || attrs["run.id"] == "" || attrs["state.from"] == "" || attrs["state.to"] == "" {
+				t.Error("missing PR identifiers")
+			}
+		}
+		counts[span.Name]++
+	}
+	for name, want := range map[string]int{"factory.run": 2, "factory.review_round": 1, "factory.poll": 6} {
+		if counts[name] != want {
+			t.Errorf("%s spans = %d, want %d", name, counts[name], want)
+		}
+	}
+	if !advancedRun {
+		t.Error("missing nonterminal run transition on poll")
+	}
+	if !runWithPR {
+		t.Error("no poll observed a run with its PR, head and round")
+	}
+	if enqueueEvents != 1 {
+		t.Errorf("poll enqueue events = %d, want one", enqueueEvents)
+	}
+	if !correlatedPoll || len(actions) != 2 || actions["enqueue"] != 1 || actions["ejection"] != 1 {
+		t.Errorf("correlated poll=%v, queue actions=%v", correlatedPoll, actions)
+	}
+}
+
+// An enqueue whose GitHub response was lost is reconciled on the next poll.
+// The reconcile path emits the same enqueue root as a confirmed enqueue.
+func TestLostEnqueueResponseEmitsEnqueueSpan(t *testing.T) {
+	exporter := captureWorkSpans(t)
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.mu.Lock()
+	v.gh.byNumber(1).queue = "QUEUED"
+	v.gh.mu.Unlock()
+	v.poll()
+	if w := v.work(101); w.State != store.WorkMerging {
+		t.Fatalf("work item = %s, want merging", w.State)
+	}
+	found := 0
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "factory.merge_queue" {
+			continue
+		}
+		attrs := map[string]string{}
+		for _, a := range span.Attributes {
+			attrs[string(a.Key)] = a.Value.Emit()
+		}
+		found++
+		for key, want := range map[string]string{
+			"action": "enqueue", "enqueue.reconciled": "true", "outcome": "enqueue",
+			"issue.key": "HL-7", "pr.number": "1", "head.sha": "sha-1", "round": "0",
+			"run.id": "1", "state.to": store.WorkMerging,
+		} {
+			if got := attrs[key]; got != want {
+				t.Errorf("reconciled enqueue span %s = %q, want %q", key, got, want)
+			}
+		}
+		if span.Parent.IsValid() || len(span.Links) != 1 {
+			t.Error("reconciled enqueue span is not a root linked to its poll")
+		}
+	}
+	if found != 1 {
+		t.Fatalf("enqueue spans = %d, want one", found)
+	}
+	if len(v.gh.enqueues) != 0 {
+		t.Fatalf("enqueues = %v; the PR was already queued", v.gh.enqueues)
 	}
 }

@@ -14,6 +14,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/internal/tracing"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/jomcgi/homelab/projects/factory/connector/buildbuddy"
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
@@ -257,7 +261,7 @@ func (e *Engine) stopWork(ctx context.Context, wi *store.WorkItem, reason string
 
 // stoppedPR follows the open PR of a stopped work item: a queued PR is
 // dequeued, and a merge is recorded without moving the issue to Done.
-func (e *Engine) stoppedPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) error {
+func (e *Engine) stoppedPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) (result error) {
 	switch {
 	case d.Merged:
 		return e.merged(ctx, wi, b, pr, d)
@@ -267,11 +271,15 @@ func (e *Engine) stoppedPR(ctx context.Context, wi *store.WorkItem, b *Binding, 
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
+	ctx, span, finish := e.startQueueAction(ctx, wi, pr, d, "dequeue")
+	defer func() { finish(result) }()
 	if err := e.gh.DequeuePullRequest(ctx, b.repo(), pr.NodeID); err != nil {
 		return fmt.Errorf("dequeue PR %d: %w", pr.Number, err)
 	}
 	e.m.MergeQueue.WithLabelValues("dequeued").Inc()
-	e.log.InfoContext(ctx, "PR dequeued; delivery stopped", "work_item", wi.ID, "pr", pr.Number)
+	if !span.IsRecording() {
+		e.log.InfoContext(ctx, "PR dequeued; delivery stopped", "work_item", wi.ID, "pr", pr.Number, "head", d.HeadSHA)
+	}
 	return e.st.MarkDequeued(ctx, pr)
 }
 
@@ -564,7 +572,7 @@ func (e *Engine) lastItsaplanRun(ctx context.Context, workID int64) int64 {
 
 // pollPR reads the PR and acts on what changed: the merge, a merge queue
 // ejection, review events on the head, or a head ready to enqueue.
-func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest) error {
+func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest) (result error) {
 	repo := b.repo()
 	if wi.State != store.WorkStopped {
 		// The issue decides first: a person who canceled it in itsaplan must
@@ -641,7 +649,7 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		return e.ejected(ctx, wi, b, pr, again)
 	case d.MergeQueueState != "":
 		// Queued although the enqueue's answer was lost.
-		return e.enqueued(ctx, wi, b, pr, d, d.MergeQueueState)
+		return e.reconcileEnqueue(ctx, wi, b, pr, d)
 	}
 	if d.Mergeable == "UNKNOWN" {
 		return nil // GitHub is still computing mergeability; poll again
@@ -681,13 +689,17 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
+	ctx, span, finish := e.startQueueAction(ctx, wi, pr, d, "enqueue")
+	defer func() { finish(result) }()
 	qs, err := e.gh.EnqueuePullRequest(ctx, repo, pr.NodeID, d.HeadSHA)
 	if err != nil {
 		e.m.MergeQueue.WithLabelValues("enqueue_error").Inc()
 		return fmt.Errorf("enqueue PR %d at %s: %w", pr.Number, d.HeadSHA, err)
 	}
 	e.m.MergeQueue.WithLabelValues("enqueued").Inc()
-	e.log.InfoContext(ctx, "PR enqueued", "work_item", wi.ID, "pr", pr.Number, "head", d.HeadSHA)
+	if !span.IsRecording() {
+		e.log.InfoContext(ctx, "PR enqueued", "work_item", wi.ID, "pr", pr.Number, "head", d.HeadSHA)
+	}
 	return e.enqueued(ctx, wi, b, pr, d, qs)
 }
 
@@ -701,6 +713,15 @@ func (e *Engine) enqueued(ctx context.Context, wi *store.WorkItem, b *Binding, p
 	queued := *d
 	queued.MergeQueueState = qs
 	return e.stoppedPR(ctx, wi, b, pr, &queued)
+}
+
+// reconcileEnqueue records an enqueue whose GitHub response was lost. It
+// emits the same enqueue span as a confirmed enqueue, marked as reconciled.
+func (e *Engine) reconcileEnqueue(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) (result error) {
+	ctx, span, finish := e.startQueueAction(ctx, wi, pr, d, "enqueue")
+	defer func() { finish(result) }()
+	span.SetAttributes(attribute.Bool("enqueue.reconciled", true))
+	return e.enqueued(ctx, wi, b, pr, d, d.MergeQueueState)
 }
 
 // humanHoldMarker is how the factory-reviewer marks a failed check whose only
@@ -1349,7 +1370,9 @@ func succeeded(c Check, head string, checks []github.CheckRun, statuses []github
 
 // ejected records the confirmed ejection and starts a bounded revision in
 // the mapped session. The rejected head stays barred from the merge queue.
-func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) error {
+func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) (result error) {
+	ctx, _, finish := e.startQueueAction(ctx, wi, pr, d, "ejection")
+	defer func() { finish(result) }()
 	if hasHumanLabel(d.Labels) {
 		return e.stopWork(ctx, wi, "the queued PR is human-owned")
 	}
@@ -1733,7 +1756,9 @@ type issueDonePayload struct {
 
 // merged records the observed merge and its activation decision. A completed
 // code delivery may still leave the itsaplan issue waiting for activation.
-func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) error {
+func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) (result error) {
+	ctx, span, finish := e.startQueueAction(ctx, wi, pr, d, "merge")
+	defer func() { finish(result) }()
 	activation, valid := github.ActivationTrailer(d.HeadMessage)
 	step := ""
 	if !valid || activation != "none" {
@@ -1759,6 +1784,7 @@ func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		at = e.cfg.Now()
 	}
 	runID := e.lastItsaplanRun(ctx, wi.ID)
+	span.SetAttributes(attribute.Int64("run.id", runID))
 	merge := d.MergeCommitSHA
 	mergeLink := short(merge)
 	if merge != "" {
@@ -2158,4 +2184,31 @@ func (e *Engine) checkDeliveryReverts(ctx context.Context) error {
 		_, err := tx.ExecContext(ctx, `UPDATE delivery_outcome SET checked_until=$2, reverted_at=$3, retry_at=NULL, scan_until=NULL WHERE node_id=$1 AND reverted_at IS NULL`, node, until, reverted)
 		return err
 	})
+}
+
+func (e *Engine) startQueueAction(ctx context.Context, wi *store.WorkItem, pr *store.PullRequest, detail *github.PullRequestDetail, action string) (context.Context, trace.Span, func(error)) {
+	attrs := []attribute.KeyValue{
+		attribute.String("issue.key", wi.IssueKey), attribute.Int("pr.number", pr.Number),
+		attribute.String("head.sha", detail.HeadSHA), attribute.String("state.from", wi.State),
+		attribute.Int("round", wi.ReviewRounds), attribute.String("action", action),
+	}
+	workID := wi.ID
+	actionCtx, span := tracing.Start(ctx, "factory.merge_queue", trace.WithAttributes(attrs...))
+	finish := func(result error) {
+		if span.IsRecording() || trace.SpanFromContext(ctx).IsRecording() {
+			attrs = append(attrs, attribute.Int64("run.id", e.lastItsaplanRun(ctx, workID)))
+			if current, err := e.st.GetWorkItem(ctx, workID); err == nil {
+				attrs = append(attrs, attribute.String("state.to", current.State))
+			}
+			outcome := action
+			if result != nil {
+				outcome = "error"
+			}
+			attrs = append(attrs, attribute.String("outcome", outcome))
+			span.SetAttributes(attrs...)
+			tracing.Observe(ctx, "factory.merge_queue", attrs...)
+		}
+		tracing.Finish(span, result, action)
+	}
+	return actionCtx, span, finish
 }

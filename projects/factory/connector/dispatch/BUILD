@@ -25,11 +25,14 @@ go_library(
     deps = [
         "//projects/factory/connector/buildbuddy",
         "//projects/factory/connector/github",
+        "//projects/factory/connector/internal/tracing",
         "//projects/factory/connector/itsaplan",
         "//projects/factory/connector/kagent",
         "//projects/factory/connector/metrics",
         "//projects/factory/connector/provenance",
         "//projects/factory/connector/store",
+        "@io_opentelemetry_go_otel//attribute",
+        "@io_opentelemetry_go_otel_trace//:trace",
     ],
 )
 
@@ -80,5 +83,9 @@ go_test(
         "@io_k8s_api//core/v1:core",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
         "@io_k8s_client_go//kubernetes/fake",
+        "@io_opentelemetry_go_otel//:otel",
+        "@io_opentelemetry_go_otel//attribute",
+        "@io_opentelemetry_go_otel_sdk//trace",
+        "@io_opentelemetry_go_otel_sdk//trace/tracetest",
     ],
 )
