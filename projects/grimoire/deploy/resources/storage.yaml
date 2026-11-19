@@ -1,0 +1,90 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grimoire-backup-s3
+  namespace: grimoire
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grimoire-api-s3
+  namespace: grimoire
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grimoire-worker-s3
+  namespace: grimoire
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: garage-init
+  namespace: grimoire
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [grimoire-backup-s3, grimoire-api-s3, grimoire-worker-s3]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: garage-init
+  namespace: grimoire
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: garage-init
+subjects:
+  - kind: ServiceAccount
+    name: garage-init
+    namespace: garage
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: garage-claim-75a948f4b287b32abc87a8ba6ce4d6c6b004f88a0e11d816314a9327b745de43
+  namespace: garage
+  labels:
+    factory.jomcgi.dev/garage-claim: "true"
+data:
+  namespace: grimoire
+  secretName: grimoire-api-s3
+  bucket: grimoire-private
+  access: read
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: garage-claim-7764b248ac32e845e13df6305f4d8c64b692d986ac2628d2eaf72224c6a2fbe2
+  namespace: garage
+  labels:
+    factory.jomcgi.dev/garage-claim: "true"
+data:
+  namespace: grimoire
+  secretName: grimoire-worker-s3
+  bucket: grimoire-private
+  access: readwrite
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: garage-claim-59ad1b7bf0a6d69df42668a03590b88bac7f9374856c108970a324eda88c520b
+  namespace: garage
+  labels:
+    factory.jomcgi.dev/garage-claim: "true"
+data:
+  namespace: grimoire
+  secretName: grimoire-backup-s3
+  bucket: grimoire-backups
+  access: readwrite
