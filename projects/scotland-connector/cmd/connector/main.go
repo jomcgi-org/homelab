@@ -123,7 +123,7 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 		return -1
 	}))
 
-	ws := store.NewWalks(cfg.bucket, cfg.walksKey, cfg.refreshInterval, client, log)
+	ws := store.NewWalks(env("HIKES_BUCKET", cfg.bucket), cfg.walksKey, cfg.refreshInterval, client, log)
 	reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Name: "scotland_connector_walks_forecast_age_seconds",
 		Help: "Seconds since the newest MET Norway fetch in the live walk snapshot.",

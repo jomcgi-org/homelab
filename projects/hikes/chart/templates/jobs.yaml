@@ -1,0 +1,20 @@
+{{ include "factory-library.buckets" . }}
+{{- range $mode, $schedule := .Values.jobs }}
+{{- $env := list }}
+{{- range list "AWS_ENDPOINT_URL" "AWS_REGION" "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "BUCKET" }}
+{{- $env = append $env (dict "name" . "valueFrom" (dict "secretKeyRef" (dict "name" "hikes-hikes-s3" "key" .))) }}
+{{- end }}
+{{- $egress := list }}
+{{- if eq $mode "catalogue" }}
+{{- $egress = list (dict "peer" "walkhighlands" "fqdn" "www.walkhighlands.co.uk" "port" 443) }}
+{{- else if eq $mode "refresh" }}
+{{- $egress = list (dict "peer" "met-no" "fqdn" "api.met.no" "port" 443) }}
+{{- end }}
+{{- $workload := dict "writablePaths" (list (dict "name" "tmp" "mountPath" "/tmp" "sizeLimit" "128Mi")) "schedule" $schedule "args" (list $mode) "env" $env "resources" (dict "requests" (dict "cpu" "50m" "memory" "64Mi") "limits" (dict "memory" "256Mi")) "network" (dict "egress" $egress) }}
+{{- $render := include "factory-library.cronjob" (dict "root" $ "name" (printf "hikes-%s" $mode) "workload" $workload) }}
+{{- if eq $mode "catalogue" }}
+{{ $render | replace "  schedule:" "  suspend: true\n  schedule:" }}
+{{- else }}
+{{ $render }}
+{{- end }}
+{{- end }}

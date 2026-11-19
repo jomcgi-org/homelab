@@ -1,0 +1,9 @@
+apiVersion: v2
+name: hikes
+description: Publish WalkHighlands routes and daylight forecasts
+type: application
+version: 0.1.0
+dependencies:
+  - name: factory-library
+    version: "0.1.0"
+    repository: "file://../../shared/helm/factory-library/chart"

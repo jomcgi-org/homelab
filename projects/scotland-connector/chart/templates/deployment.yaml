@@ -75,6 +75,10 @@ spec:
               value: {{ .Values.config.sitesKey | quote }}
             - name: STARS_HISTORY_KEY
               value: {{ .Values.config.historyKey | quote }}
+            {{- with .Values.config.walksBucket }}
+            - name: HIKES_BUCKET
+              value: {{ . | quote }}
+            {{- end }}
             - name: STARS_WALKS_KEY
               value: {{ .Values.config.walksKey | quote }}
             - name: AURORA_ENABLED

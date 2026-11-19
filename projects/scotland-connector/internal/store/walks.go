@@ -2,14 +2,20 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"regexp"
 	"sync/atomic"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/r2"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
 )
+
+var walkPayloadKey = regexp.MustCompile(`^walks-[0-9a-f]{64}\.json$`)
 
 // WalkStore keeps the walk snapshot in memory. It is optional: readiness
 // depends only on the stars Store, so a missing or broken walks.json takes
@@ -40,11 +46,28 @@ func (s *WalkStore) Refresh(ctx context.Context) error {
 	if obj.NotModified && s.cur.Load() != nil {
 		return nil
 	}
+	tag := obj.ETag
+	if s.key == "latest.json" {
+		var manifest struct{ Walks string }
+		if err := json.Unmarshal(obj.Body, &manifest); err != nil {
+			return err
+		}
+		if !walkPayloadKey.MatchString(manifest.Walks) {
+			return fmt.Errorf("invalid walk manifest key")
+		}
+		obj, err = s.get.Get(ctx, s.bucket, manifest.Walks, "", maxSnapshotBytes)
+		if err != nil {
+			return err
+		}
+		if fmt.Sprintf("walks-%x.json", sha256.Sum256(obj.Body)) != manifest.Walks {
+			return fmt.Errorf("walk snapshot digest mismatch")
+		}
+	}
 	ds, err := walks.Parse(obj.Body, obj.ETag)
 	if err != nil {
 		return err
 	}
-	s.tag = obj.ETag
+	s.tag = tag
 	s.cur.Store(ds)
 	s.log.Info("walk snapshot loaded", "walks", len(ds.Walks), "version", ds.Version, "fetched_at", ds.FetchedAt)
 	return nil

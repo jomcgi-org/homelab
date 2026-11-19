@@ -93,6 +93,7 @@ Top-level projects/ directories:
 - gke-apps
 - gke-cluster
 - grimoire
+- hikes
 - inference
 - jomcgi-site
 - loom
