@@ -343,7 +343,7 @@ var (
 	htmlStart = regexp.MustCompile(`<[A-Za-z/!?]`)
 	// ruleLine is a line of only rule characters: a thematic break or a
 	// setext heading underline.
-	ruleLine = regexp.MustCompile(`(?m)^[ \t]*(?:[-*_=][ \t]*){3,}$`)
+	ruleLine = regexp.MustCompile(`(?m)^[ \t]*(?:(?:[-*_][ \t]*){3,}|=+[ \t]*)$`)
 )
 
 // goalKey is the issue a goal check judges the PR against, or "" when none
