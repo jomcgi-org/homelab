@@ -104,8 +104,8 @@ Provision two 1Password items before sync:
   entry can contain an approved literal title and description and a `tasks`
   array. Each task records its `session`, `task`, UTC completion time `at`,
   and the exact owner-reviewed assistant messages in `assistantTexts`.
-  Keep these approved exports after connector cleanup. Removing an approval
-  removes the corresponding content on the next successful publication.
+  Keep these approved exports after connector cleanup. Follow the withdrawal
+  procedure below when an owner removes an approval.
   An empty object publishes issue keys and metrics only.
 - `storyboard-owner-shares` holds the reader's `UPSTREAM_BEARER` and
   `OWNER_GRANTS`, a JSON array. Each grant contains `namespace`, `agent`,
@@ -121,6 +121,46 @@ to check the source manifest age and every referenced object. Once the first com
 the preview site. This also activates its browser requirement. Run
 `node projects/factory-storyboard/verify-rollout.mjs` with Node 22.18 or later
 to check the seven-minute limit and every object on the preview site.
+
+### Withdraw a publication approval
+
+1. Record the affected issue key, session ID in the public manifest, and old
+   object paths from both the mirror and preview manifests. Include previous
+   versions that carry the withdrawn text. Keep this inventory private.
+   Remove the text from `APPROVED_HISTORY` and its fingerprint from the
+   reader's `approvedHashes`. For a whole-session withdrawal, remove its
+   archive entry and grants, and revoke the owner's share. Wait for both
+   Kubernetes Secrets to reconcile. Roll the reader Deployment so it reloads
+   its grants. Wait for a successful publisher Job started with the new Secret.
+2. Fetch `https://factory-data.jomcgi.dev/manifest.json`. Record its
+   `generatedAt`. For a whole session, check that its ID has disappeared
+   from the session index and its events from the current issue timeline.
+   For a partial withdrawal, read the replacement session object and check
+   that the withdrawn turns are absent. Check all current references against
+   the inventory and run `node projects/factory-storyboard/verify-rollout.mjs --mirror-only`.
+3. If preview has served the affected snapshot, sync the Argo CD Application
+   `jomcgi-site-dev` after the mirror check. Its Sync-hook Job builds a fresh
+   Worker deployment from the mirrored manifest. Wait for the deploy and site
+   checks to succeed. Fetch `https://next.jomcgi.dev/data/factory/manifest.json`
+   and repeat the content and reference checks. Its `generatedAt` must be at
+   least the mirror timestamp recorded in step 2. Run
+   `node projects/factory-storyboard/verify-rollout.mjs` to check the digests.
+4. Check the old keys separately. The publisher normally expires unreachable
+   Garage objects once their last write is at least 24 hours old. The next
+   mirror sync removes them from R2. For an urgent takedown, have the bucket
+   operator remove the affected, unreferenced Garage keys immediately and
+   confirm the deletions reach R2. Use authenticated listings of both buckets.
+   Preserve objects still referenced by a current snapshot and resolve any
+   remaining reference before deletion.
+5. After origin removal and preview redeployment, have the Cloudflare zone
+   operator purge the exact old object URLs and manifest URLs on both hosts.
+   The mirror gives immutable objects a one-year cache lifetime. Check each
+   original URL with an ordinary GET from outside the cluster. Expect HTTP
+   404 or 410 for withdrawn objects at both `/objects/…` on the mirror and
+   `/data/factory/objects/…` on preview. Repeat the manifest checks after the
+   purge. If a deployment-specific Worker URL still serves an old copy,
+   disable access to that deployment and verify its URL too. Keep that
+   revision out of rollback while it contains withdrawn data. Copies already downloaded by readers can persist.
 
 ### Rollback of the database read access
 
