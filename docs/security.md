@@ -285,7 +285,7 @@ and the kube API need.
 `monolith-agents` chart defines its own Roles for core workload status, events,
 bounded logs, workload controllers, and pod metrics in an enumerated namespace
 list. Argo CD Application reads are a Role in `argocd`; Kargo Freight reads are
-Roles in `kargo-monolith` and `kargo-embervm`. One independent ClusterRole has
+Roles in the four hub Kargo Project namespaces. One independent ClusterRole has
 only nodes, namespaces, and node metrics. All rules are get/list except the
 get-only `pods/log`; there is no watch, mutation, Secret, exec, attach,
 port-forward, proxy, wildcard group, wildcard resource, or reuse of the private

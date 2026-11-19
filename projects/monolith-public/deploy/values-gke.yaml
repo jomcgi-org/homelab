@@ -15,10 +15,6 @@ web:
       secretKeyRef:
         key: uri
         name: monolith-public-writer-db
-  # HOME-472: remove this entry only after the hub runs a backend that
-  # answers 503 for published functions without it.
-  - name: EMBERVM_URL
-    value: http://embervm-embervm.embervm.svc.cluster.local:8080
   - name: K8S_AUTH_TOKEN_FILE
     value: /var/run/secrets/embervm-public-faas/token
   - name: CHAT_PUBLIC_CHAR_CAP

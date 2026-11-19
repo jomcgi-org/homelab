@@ -62,7 +62,7 @@ current state, its direction and the reasons.
 - [**OCI Model Cache**](projects/operators/oci-model-cache/) and [**Sextant**](projects/sextant/): a Kubernetes operator that syncs HuggingFace models to OCI registries, and the generator that turns its YAML state machine into type-safe Go.
 - [**Design system**](projects/design-system/): the shared `--ds-*` token contract the frontends build against.
 - [**Build system**](bazel/): Bazel rules for Helm and OCI images. Builds run remotely on BuildBuddy.
-- [**EmberVM**](projects/embervm/) and its [Firecracker components](projects/firecracker/): microVM orchestrator, retired on 2026-11-15 ([decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6893155810)). Its removal from the hub is in progress.
+- [**EmberVM**](projects/embervm/) and its [Firecracker components](projects/firecracker/): microVM orchestrator, retired on 2026-11-15 ([decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6893155810)). HOME-476 removed it from the hub's GitOps tree; its code stays in the repository.
 
 ## Applications
 
@@ -84,7 +84,7 @@ See [docs/security.md](docs/security.md) for the security model and
 | --- | --- | --- |
 | Ingress | Cloudflare Tunnel to Envoy Gateway; Cloudflare Access on private routes | Cloudflare Tunnel to Envoy Gateway; Authentik sign-in on every route except Authentik's own sign-in endpoints |
 | Network | GKE Dataplane V2 | Cilium: default-deny, egress allowlists by domain name, WireGuard |
-| Sandboxing | Firecracker microVMs (EmberVM, in removal) | gVisor workspaces from Agent Substrate |
+| Sandboxing | None since EmberVM's removal (HOME-476) | gVisor workspaces from Agent Substrate |
 | Storage | GCE persistent disks, Cloudflare R2, GCS | Local disks; Garage and CloudNativePG keep three copies |
 | Secrets | 1Password Operator; nothing in Git | 1Password Operator; nothing in Git |
 | Observability | OpenTelemetry collector to Honeycomb | The same collector, plus Prometheus, Grafana and Discord alerts |

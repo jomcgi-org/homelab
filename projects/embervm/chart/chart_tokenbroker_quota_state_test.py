@@ -103,10 +103,8 @@ def test_quota_state_is_dedicated_durable_and_narrowly_scoped() -> None:
 
 
 def test_every_argocd_application_preserves_runtime_quota_data() -> None:
-    applications = [
-        Path(os.environ["GKE_APPLICATION"]),
-        Path(os.environ["DEV_APPLICATION"]),
-    ]
+    # The hub Applications left with EmberVM (HOME-476).
+    applications = [Path(os.environ["DEV_APPLICATION"])]
     for path in applications:
         application = yaml.safe_load(path.read_text())
         release = _application_release_name(application)

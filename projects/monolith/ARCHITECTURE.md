@@ -1854,8 +1854,8 @@ own database and object-storage credentials, synced into its namespace, and a
 ServiceAccount with its own enumerated read RBAC. Namespaced workload reads are
 separate Roles in the recorded namespace allowlist; Argo CD Applications are
 limited to `argocd`, Kargo Freight and Stages to the four Kargo Project
-namespaces (`kargo-embervm`, `kargo-monolith`, `kargo-monolith-agents`,
-`kargo-monolith-public`), and
+namespaces (`kargo-monolith`, `kargo-monolith-agents`,
+`kargo-monolith-public`, `kargo-scotland-connector`), and
 the only cluster-scoped exceptions are nodes, namespaces, and node metrics.
 There is no watch, mutation, Secret, exec, attach, port-forward, or proxy grant.
 The read tools independently require the standing workload principal

@@ -130,8 +130,6 @@ py_test(
         "//projects/embervm/dev/deploy:gke_values",
         "//projects/embervm/dev/deploy:recovery_values",
         "//projects/embervm/dev/deploy:store_validation_values",
-        "//projects/gke-apps/embervm:application.yaml",
-        "//projects/gke-apps/embervm-dev:application.yaml",
         "@multitool//tools/helm",
     ] + glob([
         "files/**/*",
@@ -148,14 +146,11 @@ py_test(
         # The INACTIVE GKE recovery preset, rendered over chart defaults only.
         "RECOVERY_VALUES": "$(rootpath //projects/embervm/dev/deploy:recovery_values)",
         "STORE_VALIDATION_VALUES": "$(rootpath //projects/embervm/dev/deploy:store_validation_values)",
-        "GKE_APPLICATION": "$(rootpath //projects/gke-apps/embervm:application.yaml)",
-        # The Applications, so releaseName is read from where it is DECLARED.
-        # Production is the hub Application; the home one was retired in #6914.
-        "PROD_APPLICATION": "$(rootpath //projects/gke-apps/embervm:application.yaml)",
+        # The dev Application, so its releaseName is read from where it is
+        # DECLARED. The hub Applications left with EmberVM (HOME-476).
         "DEV_APPLICATION": "$(rootpath //projects/embervm/dev/deploy:application)",
-        # embervm-dev on the GKE hub: its overlay and its Application.
+        # The former hub overlay for embervm-dev.
         "DEV_GKE_VALUES": "$(rootpath //projects/embervm/dev/deploy:gke_values)",
-        "DEV_GKE_APPLICATION": "$(rootpath //projects/gke-apps/embervm-dev:application.yaml)",
     },
     deps = [
         "@pip//pytest",
@@ -180,10 +175,6 @@ py_test(
         "//projects/embervm/dev/deploy:gke_values",
         "//projects/embervm/dev/deploy:kustomization.yaml",
         "//projects/embervm/dev/deploy:store_validation_values",
-        "//projects/gke-apps/embervm:application.yaml",
-        "//projects/gke-apps/embervm:kustomization.yaml",
-        "//projects/gke-apps/embervm-dev:application.yaml",
-        "//projects/gke-apps/embervm-dev:kustomization.yaml",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
@@ -193,10 +184,6 @@ py_test(
         "DEV_APPLICATION": "$(rootpath //projects/embervm/dev/deploy:application)",
         "DEV_KUSTOMIZATION": "$(rootpath //projects/embervm/dev/deploy:kustomization.yaml)",
         "DEV_VALUES": "$(rootpath //projects/embervm/dev/deploy:deploy_values)",
-        "GKE_APPLICATION": "$(rootpath //projects/gke-apps/embervm:application.yaml)",
-        "GKE_KUSTOMIZATION": "$(rootpath //projects/gke-apps/embervm:kustomization.yaml)",
-        "DEV_GKE_APPLICATION": "$(rootpath //projects/gke-apps/embervm-dev:application.yaml)",
-        "DEV_GKE_KUSTOMIZATION": "$(rootpath //projects/gke-apps/embervm-dev:kustomization.yaml)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "PROD_GKE_VALUES": "$(rootpath //projects/embervm/deploy:gke_values)",
         "DEV_GKE_VALUES": "$(rootpath //projects/embervm/dev/deploy:gke_values)",
@@ -328,7 +315,6 @@ py_test(
         "Chart.yaml",
         "values.yaml",
         "//projects/embervm/dev/deploy:application",
-        "//projects/gke-apps/embervm:application.yaml",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
@@ -336,7 +322,6 @@ py_test(
     ]),
     env = {
         "DEV_APPLICATION": "$(rootpath //projects/embervm/dev/deploy:application)",
-        "GKE_APPLICATION": "$(rootpath //projects/gke-apps/embervm:application.yaml)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
     deps = ["@pip//pyyaml"],

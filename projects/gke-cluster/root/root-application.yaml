@@ -12,8 +12,8 @@
 # essentially never change.
 #
 # Until 2026-09-28 this file was hand-applied after merge. That left the live
-# root missing the embervm-dev entry below for days while git said otherwise:
-# every Kargo promotion of embervm-dev was stamped straight back by selfHeal.
+# root missing a Kargo entry for days while git said otherwise: selfHeal
+# stamped every promotion of that Application straight back.
 #
 # To force a sync now rather than wait for the poll, use the monolith MCP tool
 # k8s_sync_argocd_app with name "hub-root" (then "hub").
@@ -79,8 +79,8 @@ spec:
   # will NOT apply, and ArgoCD will keep reporting success. That is the trade
   # for having promotions survive, and it is why
   # bazel/tools/ci/check-application-drift.sh exists: run it after changing any
-  # source field on monolith, monolith-agents, monolith-public, embervm,
-  # embervm-dev or scotland-connector.
+  # source field on monolith, monolith-agents, monolith-public or
+  # scotland-connector.
   ignoreDifferences:
     - group: argoproj.io
       kind: Application
@@ -95,18 +95,6 @@ spec:
     - group: argoproj.io
       kind: Application
       name: monolith-agents
-      jsonPointers:
-        - /spec/sources/0/targetRevision
-    - group: argoproj.io
-      kind: Application
-      name: embervm
-      jsonPointers:
-        - /spec/sources/0/targetRevision
-    # Kargo's embervm dev stage, armed in the same change that added
-    # projects/gke-apps/embervm-dev. Same trade as the entries above.
-    - group: argoproj.io
-      kind: Application
-      name: embervm-dev
       jsonPointers:
         - /spec/sources/0/targetRevision
     # The public Scotland connector (#7242). Same trade as the entries above.

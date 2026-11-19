@@ -1,13 +1,13 @@
 # EmberVM dev on the GKE hub
 
-`embervm-dev` is the conformance lane on `homelab-hub`. Kargo promotes a chart
-through this release before production. The design is in
+EmberVM is retired. HOME-476 removed `embervm-dev` and its Kargo stage from
+`homelab-hub`. The design is in
 [../../ARCHITECTURE.md](../../ARCHITECTURE.md).
 
-## The Application defines the value order
+## The Application defined the value order
 
-The [hub Application](../../../gke-apps/embervm-dev/application.yaml) uses release
-and namespace `embervm-dev`, with chart defaults followed by
+The removed hub Application used release and namespace `embervm-dev`, with
+chart defaults followed by
 [values.yaml](values.yaml), then [values-gke.yaml](values-gke.yaml).
 The shared dev file retains historical home placement settings, so it must
 not be used alone on the hub. Production's `../../deploy/values-gke.yaml`

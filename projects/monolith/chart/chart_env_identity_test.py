@@ -621,7 +621,8 @@ def test_default_rbac_preserves_rule_and_binding_contract(environment, renders):
         {
             "clusterAccess": True,
             "schedulerWorkflows": True,
-            "faas": True,
+            # EmberVM left the hub (HOME-476), taking the faas Role's namespace.
+            "faas": environment != "gke",
             "kargoPromote": True,
         },
         hub=environment == "gke",

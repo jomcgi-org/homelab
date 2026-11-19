@@ -104,8 +104,8 @@ promotion:
   # that polls that URL until its JSON body reports
   # `chart_version == <the Freight's chart version>`, which closes the
   # argocd-wait residual race (a Healthy computed against the pre-apply pods)
-  # without Argo Rollouts. The step's construction is the embervm conformance
-  # step's, minus the verdict; see templates/promotion.yaml.
+  # without Argo Rollouts. The step's construction is the conformance step's,
+  # minus the verdict; see templates/promotion.yaml.
   #
   # Off because the monolith's /healthz does not carry chart_version yet.
   # Turning this on before that field ships makes every promotion poll a body
@@ -119,13 +119,10 @@ promotion:
   # copy of it, so a second pipeline cannot drift from the first.
   #
   # waitTimeout is PER PIPELINE, not shared, and that is measured rather than
-  # tidy. It was shared at 10m0s when monolith was the only pipeline, whose dev
-  # rollout takes about 10 seconds. embervm's does not: its bricks rebuild a
-  # guest rootfs on every chart bump, one node at a time, and its 0.12.9 roll
-  # took 12m50s to reach Synced/Healthy with nothing wrong with it. A shared
-  # 10m0s would have failed that promotion on a healthy rollout, which is the
-  # worst failure a gate can have: it teaches the operator that red means
-  # nothing. Any new pipeline needs its own measurement, not this default.
+  # tidy. A healthy EmberVM roll (pipeline removed in HOME-476) took 12m50s,
+  # so a shared 10m0s would have failed it. A gate that reds a healthy rollout
+  # teaches the operator that red means nothing. Any new pipeline needs its
+  # own measurement, not this default.
   pipelines:
     - name: monolith
       # The Warehouse's own name, referenced by every Stage's requestedFreight.
@@ -172,8 +169,7 @@ promotion:
       # single quotes here means nothing needs escaping.
       desiredRevisionExpr: "${{ chartFrom('oci://ghcr.io/jomcgi/homelab/charts/monolith').Version }}"
       # Prod only: this pipeline has no registered dev Application or upstream
-      # Stage. EmberVM has its own dev/prod pipeline below. Adding a monolith
-      # dev lane is a separate decision.
+      # Stage. Adding a monolith dev lane is a separate decision.
       #
       # argocd-update and argocd-wait check sync completion and point-in-time
       # readiness. There is no upstream soak or functional assertion here.
@@ -204,108 +200,6 @@ promotion:
           # pipeline's waitTimeout uses; the http step defaults to it anyway,
           # written out so the value is read here rather than in the template.
           verdictTimeout: 10m0s
-    - name: embervm
-      warehouse: embervm-chart
-      project: kargo-embervm
-      chartRepo: oci://ghcr.io/jomcgi/homelab/charts/embervm
-      # Floor at the version embervm-dev was pinned to when this was built, so
-      # the first promotion is forward-only. Dev had frozen at 0.12.2 while
-      # production reached 0.12.9, which is the drift this pipeline replaces:
-      # the write-back only ever resolved production's application.yaml, so dev
-      # was invisible to it (#4832 item 2, #4856).
-      semverConstraint: ">=0.12.2"
-      discoveryLimit: 20
-      appSourceRepo: ghcr.io/jomcgi/homelab/charts
-      appSourceChart: embervm
-      # Kargo expression, not Helm. Single quotes inside: Helm's `quote` escapes
-      # inner double quotes and Kargo's parser would receive backslashes.
-      desiredRevisionExpr: "${{ chartFrom('oci://ghcr.io/jomcgi/homelab/charts/embervm').Version }}"
-      # 30m0s, NOT monolith's 10m0s, and this is measured rather than padded.
-      # An embervm chart bump rebuilds each brick's guest rootfs, one node at a
-      # time. The chart 0.12.9 roll on 2026-08-14 took 12m50s to reach
-      # Synced/Healthy (07:38:26 to 07:51:16) with nothing wrong with it.
-      #
-      # So a shared 10m0s would have failed that promotion on a perfectly
-      # healthy rollout, and a gate that reds on healthy rollouts is worse than
-      # no gate: it trains the operator to ignore it. 30m0s is that measurement
-      # with room for a slower node, not a round number.
-      #
-      # This bound is still not the detector: progressDeadlineSeconds trips the
-      # Application to Degraded first and argocd-wait fails fast on that. It
-      # only catches a workload that never reaches a terminal state at all.
-      #
-      # RAISED to 90 minutes for the 0.41.7 to 0.47.x jump (#5224). The 30m0s above
-      # was measured on a roll where the guest base refs did NOT move, which is
-      # the common case and the one the paragraph above describes. That jump
-      # moves 13 of 14 base digests (a renovate apko lock refresh rewrote every
-      # runtime lock), so a node bakes ~7.5 GB of rootfs before its brick pods
-      # report Ready.
-      #
-      # The cost is PER NODE, not per pod: the builder is content addressed by
-      # guest digest into the shared node hostPath, so a second pod landing on
-      # a node that already baked is a hardlink cache hit. Four nodes need a
-      # cold bake, three of them serialized inside the 2gi class wave by
-      # maxUnavailable 1. At the measured rate that is roughly 40m.
-      #
-      # 90 minutes rather than 60 because this MUST stay above
-      # bricks.progressDeadlineSeconds (3600s) by a real margin, or the ordering
-      # the paragraph above depends on inverts. The two clocks do not start
-      # together: this budget starts when the argocd-update step starts, while a
-      # brick's Progressing clock starts only once its sync wave is reached,
-      # which is minutes to tens of minutes later. At 60m0s the detector could
-      # never win the race, and a wedged brick would surface as an
-      # uninformative "step timed out" at the full budget instead of a
-      # ProgressDeadlineExceeded naming the Deployment.
-      #
-      # Left at 90 minutes afterwards rather than reverted: undershooting fails
-      # a HEALTHY roll, which the comment above calls the worst thing a gate can
-      # do, while overshooting only delays the report of a roll that was never
-      # going to finish. progressDeadlineSeconds stays the real detector.
-      #
-      # Written 1h30m0s, not 90m0s, for the same reason requiredSoakTime is
-      # written 2m0s: the API server stores the normalized form, and it carries
-      # any duration of an hour or more in hours. Written as 90m0s the value
-      # round-tripped as 1h30m0s, so ArgoCD saw both embervm Stages drift the
-      # instant it synced them and the kargo Application sat permanently
-      # OutOfSync, re-syncing on every reconcile.
-      waitTimeout: 1h30m0s
-      stages:
-        # DEV THEN PROD, restored on the hub after the 2026-08-31 cutover had
-        # left this pipeline prod only, where a chart reached production having
-        # proved only that its pods came up. embervm-dev now runs on the hub
-        # (projects/gke-apps/embervm-dev, dev/deploy/values-gke.yaml).
-        #
-        # The dev stage runs a FUNCTIONAL gate (#5224): after argocd-wait it
-        # polls the conformance runner the embervm chart ships into dev until
-        # that runner reports a verdict for THAT chart version, covering task
-        # cold boot, session create / bank / relight / destroy,
-        # create-after-destroy, and the control-plane invariants from
-        # GET /v1/conformance, and requiring two consecutive red cycles before
-        # failing so a settling transient does not fail a healthy roll.
-        - name: dev
-          application: embervm-dev
-          upstream: []
-          autoPromotion: true
-          verdictURL: http://embervm-dev-embervm-conformance.embervm-dev.svc.cluster.local:8080/verdict
-          # A lifecycle-only runner cannot establish Codex compatibility.
-          # Bootstrap this requirement before publishing a new CLI/model.
-          verdictRequiredScenarios: [S9]
-          # Cover 30m readiness, two suites including the 5m Codex probe,
-          # and the 30m interval before the second cycle. Use the API's
-          # normalized hour spelling to avoid permanent ArgoCD drift.
-          verdictTimeout: 1h30m0s
-        # Receives only Freight dev has already taken, verified, and held for
-        # the soak. The Freight-approval lever in the Kargo UI bypasses both,
-        # which is the hotfix path and the escape hatch for a wedged dev stage
-        # (#5250: an ArgoCD operation stuck phase=Running on embervm-dev held a
-        # Promotion for its full timeout; the runbook's stuck-sync section
-        # clears it).
-        - name: prod
-          application: embervm
-          upstream:
-            - dev
-          requiredSoakTime: 5m0s
-          autoPromotion: true
     - name: monolith-agents
       warehouse: monolith-agents-chart
       project: kargo-monolith-agents

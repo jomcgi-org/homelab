@@ -15,13 +15,17 @@ agentSessions:
 frontend:
   qwenApiBase: "http://inference-bridge-freetoken.tailscale.svc.cluster.local:8090"
 
-# HOME-472: semgrep.embervmUrl keeps its deploy/values.yaml value until the
-# hub runs a backend that answers 503 for function invocation and refuses
-# registration without it. Empty it after that.
+# EmberVM left the hub (HOME-476). Without its URL, function invocation
+# answers 503, registration refuses, run_code and screenshots report "not
+# configured", and the EmberVM CronWorkflows suspend.
+semgrep:
+  embervmUrl: ""
 
 rbac:
-  # HOME-472: rbac.faas stays on until the hub runs a backend that refuses
-  # function registration before any archive write. Turn it off after that.
+  # Off with EmberVM: the faas Role lived in the embervm namespace, which
+  # HOME-476 removes. Without the grant, registration refuses before any write.
+  faas:
+    enabled: false
   kargoPromote:
     namespaces:
       - kargo-monolith

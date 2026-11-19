@@ -400,18 +400,8 @@ def test_chart_defaults_disable_the_store_and_use_hub_sqlite_storage() -> None:
     )
 
 
-def test_production_application_selects_gcs_and_hub_safe_sqlite_fallback() -> None:
-    application = yaml.safe_load(Path(os.environ["GKE_APPLICATION"]).read_text())
-    helm = application["spec"]["sources"][0]["helm"]
-    assert helm["valueFiles"] == [
-        "$values/projects/embervm/deploy/values.yaml",
-        "$values/projects/embervm/deploy/values-gke.yaml",
-    ]
-    assert (
-        helm["releaseName"]
-        == application["spec"]["destination"]["namespace"]
-        == "embervm"
-    )
+def test_production_hub_values_select_gcs_and_hub_safe_sqlite_fallback() -> None:
+    # The hub Application that loaded these files left with EmberVM (HOME-476).
     values = [Path(os.environ["PROD_VALUES"]), Path(os.environ["GKE_VALUES"])]
     documents = [
         d for d in yaml.safe_load_all(_render("embervm", values)) if isinstance(d, dict)
@@ -920,7 +910,9 @@ def renders():
     prod_values = Path(os.environ["PROD_VALUES"])
     gke_values = Path(os.environ["GKE_VALUES"])
     dev_values = Path(os.environ["DEV_VALUES"])
-    prod_release = _application_name(Path(os.environ["PROD_APPLICATION"]))
+    # Production's hub Application left with EmberVM (HOME-476); its release
+    # was `embervm`.
+    prod_release = "embervm"
     dev_release = _application_name(Path(os.environ["DEV_APPLICATION"]))
     return {
         "prod": _render(prod_release, [chart / "values.yaml", prod_values]),
@@ -2981,13 +2973,6 @@ def test_gke_drain_uses_bounded_flush_and_ordinary_rollout_budget():
     ],
 )
 def test_ceiling_ownership_stays_disabled_outside_hub_dev(values_names) -> None:
-    if values_names == ["PROD_VALUES", "GKE_VALUES"]:
-        application = yaml.safe_load(Path(os.environ["GKE_APPLICATION"]).read_text())
-        assert application["spec"]["sources"][0]["helm"]["valueFiles"] == [
-            "$values/projects/embervm/deploy/values.yaml",
-            "$values/projects/embervm/deploy/values-gke.yaml",
-        ]
-
     # Bare defaults disable bricks, so expose their class configuration without
     # granting any ceiling ownership. The shipped stacks already enable bricks.
     rendered = _render(
@@ -3020,32 +3005,9 @@ def test_hub_dev_renders_only_what_the_hub_can_run() -> None:
     keep the two conformance bricks with one demand-opened canary, and keep the
     conformance runner the Kargo dev gate polls.
     """
-    application = yaml.safe_load(Path(os.environ["DEV_GKE_APPLICATION"]).read_text())
-    helm = application["spec"]["sources"][0]["helm"]
-    # Production's hub overlay carries production identities; dev must not load it.
-    assert helm["valueFiles"] == [
-        "$values/projects/embervm/dev/deploy/values.yaml",
-        "$values/projects/embervm/dev/deploy/values-gke.yaml",
-    ]
-    release = helm["releaseName"]
-    assert release == application["metadata"]["name"] == "embervm-dev"
-    assert application["spec"]["destination"]["namespace"] == "embervm-dev"
-    assert (
-        "RespectIgnoreDifferences=true"
-        in application["spec"]["syncPolicy"]["syncOptions"]
-    )
-    assert {
-        "kind": "ConfigMap",
-        "name": "embervm-dev-embervm-tokenbroker-quota",
-        "jsonPointers": ["/data"],
-    } in application["spec"]["ignoreDifferences"]
-    assert (
-        application["metadata"]["annotations"]["kargo.akuity.io/authorized-stage"]
-        == "kargo-embervm:dev"
-    )
-    # Both releases render the cluster-scoped Workload CRD; a cascading delete
-    # of dev must never be able to take production's CRD with it.
-    assert "finalizers" not in application["metadata"]
+    # The hub Application that loaded dev values plus dev/deploy/values-gke.yaml
+    # under release `embervm-dev` left with EmberVM (HOME-476).
+    release = "embervm-dev"
 
     rendered = _render(
         release,
