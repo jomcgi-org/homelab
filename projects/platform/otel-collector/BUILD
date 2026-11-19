@@ -100,6 +100,7 @@ py_test(
         "values-factory.yaml",
         "values-test-mixed-targets.yaml",
         "@multitool//tools/helm",
+        "@multitool//tools/otelcol-contrib",
         # Chart.lock plus the vendored charts/ tree are load-bearing for
         # `helm template`: without them the render aborts on the cf-ingress
         # subchart dependency that the public health route uses.
@@ -110,6 +111,7 @@ py_test(
     ]),
     env = {
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "OTELCOL_BIN": "$(rootpath @multitool//tools/otelcol-contrib)",
     },
     deps = [
         "@pip//pytest",

@@ -1790,10 +1790,13 @@ def test_redaction_is_off_in_hub_overlays():
                 assert "transform/redact" not in doc["data"]["collector.yaml"]
 
 
-@pytest.mark.skipif(
-    "OTELCOL_BIN" not in os.environ, reason="requires the chart's collector binary"
-)
 def test_factory_audit_export_after_offline_rotation(tmp_path):
+    collector = os.environ["OTELCOL_BIN"]
+    version = yaml.safe_load(_values("values").read_text())["image"]["tag"]
+    assert (
+        subprocess.check_output([collector, "--version"], text=True).strip().split()[-1]
+        == version
+    )
     config = _named_collector_config(_render_overlay("values-factory"), LOGS)
     pipeline = config["service"]["pipelines"]["logs/audit"]
     receiver = config["receivers"]["file_log/audit"]
@@ -1833,7 +1836,7 @@ def test_factory_audit_export_after_offline_rotation(tmp_path):
             print(json.dumps(event), file=stream)
 
     def collect(*expected):
-        proc = subprocess.Popen([os.environ["OTELCOL_BIN"], "--config", str(conf)])
+        proc = subprocess.Popen([collector, "--config", str(conf)])
         try:
             for _ in range(150):
                 assert proc.poll() is None
