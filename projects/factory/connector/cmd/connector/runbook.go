@@ -128,11 +128,14 @@ type revertBackend struct {
 
 var workerName = regexp.MustCompile(`^homelab-(codex|reviewer)-[0-9a-f]{8,10}-[a-z0-9]{5}$`)
 
-func (b revertBackend) targets(ctx context.Context) ([]revertTarget, error) {
+func lockedClaimQuery() string {
 	// Require a recent sample and a distinct observation at least 60s older.
 	const metric = `cnpg_quiescence_pending{job="cnpg",namespace="kagent-pg",cluster="kagent-pg"}`
-	expr := "(time() - timestamp(" + metric + ") < 35) and (" + metric + " == 1) and ((timestamp(" + metric + ") - timestamp(" + metric + " offset 75s)) >= 60) and (" + metric + " offset 75s == 1)"
-	req, err := http.NewRequestWithContext(ctx, "GET", "http://prometheus.prometheus.svc:9090/api/v1/query?query="+url.QueryEscape(expr), nil)
+	return "(time() - timestamp(" + metric + ") < 35) and (" + metric + " == 1) and ((timestamp(" + metric + ") - timestamp(" + metric + " offset 75s)) >= 60) and (" + metric + " offset 75s == 1)"
+}
+
+func (b revertBackend) targets(ctx context.Context) ([]revertTarget, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://prometheus.prometheus.svc:9090/api/v1/query?query="+url.QueryEscape(lockedClaimQuery()), nil)
 	if err != nil {
 		return nil, err
 	}
