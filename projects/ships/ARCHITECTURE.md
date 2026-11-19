@@ -50,7 +50,7 @@ Tracked in [HOME-409](https://factory-plan.jomcgi.dev/factory/issue/HOME-409).
 Done when
 
 1. A replay that CI runs shows that snapshot, track and heat match the hub on shared input, including duplicates, out-of-order reports and a UTC partition rollover. The factory database starts from the factory bootstrap SQL.
-2. A restart during a write keeps memory bounded, one active socket, durable history and the latest position. A report that was not committed is received again or recovered, and an older report never replaces a newer latest position.
+2. A restart during a write keeps memory bounded, one active socket, durable history and the latest position. AISStream does not resend a report, so a report is durable once it is in the inbox: every report committed to the inbox reaches history after a restart, including a restart during a blocked history write, and the reports that can be lost are only those still in the bounded in-memory queue (its size is stated in [Factory shadow deployment](#factory-shadow-deployment)). An older report never replaces a newer latest position. Tests cover each case.
 3. The chart deploys the ingester with zero replicas, and the PR's `Activation:` trailer names HOME-483.
 
 ### Ingester sizing and activation
@@ -101,22 +101,25 @@ Done when
 
 | Component | Responsibility |
 | --- | --- |
-| cmd | Holds the database lease, commits received frames to `ships.inbox`, applies them to history, latest positions and vessels, and runs partition maintenance and the heat refresh. |
+| cmd | Holds the database lease and commits received frames to `ships.inbox`. A second connection applies them to history, latest positions and vessels, and runs partition maintenance and the heat refresh. |
 
 ```mermaid
 flowchart LR
   feed[AISStream socket] -->|one frame, 64 KiB limit| reader
-  reader -->|channel of 200 frames| writer
-  writer -->|commit each batch| inbox[(ships.inbox)]
-  inbox -->|apply and delete in one transaction| tables[(positions, latest_positions, vessels)]
+  reader -->|channel of 200 frames| spooler
+  spooler -->|commit up to 200 frames, lease connection| inbox[(ships.inbox)]
+  inbox -->|read in receive order| applier
+  applier -->|write, then delete from inbox in one transaction, history connection| tables[(positions, latest_positions, vessels)]
 ```
 
 The chart starts the ingester at zero replicas. HOME-483 sets `resources`, `database.storage` and `database.resources` from the baseline, then turns the ingester on. CNPG creates the three-instance database from `chart/sql/bootstrap.sql` as the `ships` owner. The ingester connects with the owner URI from the `ships-db-app` Secret. Enable retention separately after importing and reconciling historical heat at a UTC boundary.
 
-A session subscribes only while it holds the PostgreSQL advisory lock `(409, 1)`, so one socket is open at a time. At session start the writer runs maintenance and applies the frames that `ships.inbox` still holds. Every 2 seconds or 200 frames, it commits the batch to `ships.inbox` and then applies it in receive order. A crash during the apply leaves the batch in `ships.inbox` for the next session. A crash before the inbox commit loses that batch, because AISStream does not resend. After SIGTERM the writer stops reading and has 10 seconds to commit the frames it received.
+A session subscribes only while it holds the PostgreSQL advisory lock `(409, 1)`, so one socket is open at a time. The lease connection holds that lock, and the spooler commits frames to `ships.inbox` on it. The applier uses a second connection, so a blocked history write does not stop inbox commits. At session start the writer runs maintenance and applies the frames that `ships.inbox` still holds. The spooler commits a batch every 2 seconds or 200 frames. The applier then applies the inbox in receive order. A crash during the apply leaves the frames in `ships.inbox` for the next session. While the history write is blocked, the inbox grows on disk. After SIGTERM the writer stops reading and has 10 seconds to commit the frames it received.
 
-The writer ports the hub's deduplication and upserts. An older report joins the history and keeps the newer latest position. The writer drops a report dated more than 5 minutes ahead of its clock, so a bad timestamp cannot hold the latest position. The hub persister applies the same two rules. Maintenance moves default-partition rows into a new day partition before it attaches that partition.
+AISStream does not resend a report, so a report is durable when its inbox commit completes. Before that commit, a report waits in memory: up to 200 frames in the reader channel and up to 200 in the spooler batch. A crash can lose only these 400 frames. If the inbox write blocks, the reader stops at the full channel and does not read the socket.
 
-`replay_test.py` runs in CI against PostgreSQL. It sends the same frames to the hub persister and the Go writer, then compares the hub's snapshot, track and heat responses for both databases. The input has duplicates, an out-of-order report, a UTC partition rollover and an expired day. Both sides bank and drop the expired day, and a retry banks nothing new. A second case blocks a write, floods the socket and kills the writer. The standby must keep one socket, recover the spooled report and keep the newer latest position.
+The writer ports the hub's deduplication and upserts. An older report joins the history and keeps the newer latest position. The writer drops a report dated more than 5 minutes ahead of its clock, so a bad timestamp cannot hold the latest position. The hub persister applies the same two rules. Both read a timestamp without an offset as UTC. Maintenance moves default-partition rows into a new day partition before it attaches that partition.
+
+`replay_test.py` runs in CI against PostgreSQL. It sends the same frames to the hub persister and the Go writer, then compares the hub's snapshot, track and heat responses for both databases. The input has duplicates, an out-of-order report, a timestamp without an offset, a UTC partition rollover and an expired day. Both sides bank and drop the expired day, and a retry banks nothing new. A second case blocks the history write and sends a report during the stall. It then blocks the inbox write, floods the socket and kills the writer. The standby must keep one socket, apply both spooled reports and keep the newer latest position.
 
 The hub logs received frame counts keyed by Unix minute, and `baseline.sql` reads the hub's partition rows and bytes. HOME-483 uses both for the baseline.

@@ -298,6 +298,11 @@ class TestParseMessage:
         assert data["recorded_at"].tzinfo is not None
         assert data["recorded_at"] == datetime(2024, 1, 15, 10, 0, 0, tzinfo=UTC)
 
+    def test_position_naive_timestamp_is_utc(self):
+        raw = self._position_message().replace("10:00:00Z", "10:00:00")
+        _, data = parse_message(raw)
+        assert data["recorded_at"] == datetime(2024, 1, 15, 10, 0, 0, tzinfo=UTC)
+
     def test_position_accepts_bytes_input(self):
         kind, data = parse_message(self._position_message().encode())
         assert kind == "position"

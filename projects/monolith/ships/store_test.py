@@ -7,11 +7,13 @@ persist_batch reads prior state only from the DB, advances prior within a batch,
 preserves ship_name, and upserts vessels.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlmodel import select
 
+from ships.ais import parse_message
 from ships.models import LatestPosition, Position, Vessel
 from ships.store import persist_batch
 from shared.testing.sqlite import sqlite_session
@@ -192,6 +194,28 @@ def test_report_dated_beyond_clock_skew_is_dropped(session):
     assert persist_batch(session, [pos], []) == 0
     assert _count(session, Position) == 0
     assert session.get(LatestPosition, "779") is None
+
+
+def test_naive_timestamp_is_utc_and_keeps_the_batch(session):
+    def frame(mmsi, stamp):
+        return json.dumps(
+            {
+                "MessageType": "PositionReport",
+                "MetaData": {"MMSI": mmsi, "time_utc": stamp},
+                "Message": {"PositionReport": {"Latitude": 10.0, "Longitude": 20.0}},
+            }
+        )
+
+    naive_at = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=1)
+    rows = [
+        parse_message(frame("780", naive_at.replace(tzinfo=None).isoformat()))[1],
+        parse_message(frame("781", naive_at.isoformat()))[1],
+    ]
+
+    assert persist_batch(session, rows, []) == 2
+    stored = session.get(LatestPosition, "780").recorded_at
+    assert stored.replace(tzinfo=None) == naive_at.replace(tzinfo=None)
+    assert session.get(LatestPosition, "781") is not None
 
 
 def test_ship_name_preserved_when_new_position_has_none(session):

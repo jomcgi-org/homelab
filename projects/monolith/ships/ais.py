@@ -183,10 +183,13 @@ def _parse_ais_time(value: object) -> datetime | None:
     text = value.strip()
 
     # ISO 8601 (e.g. "2024-01-15T10:00:00Z"), the shape used by test fixtures.
+    # A timestamp without an offset is UTC, as the factory writer reads it.
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         pass
+    else:
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
     # AISStream Go-style layout (e.g. "2024-01-15 10:00:00.000000000 +0000 UTC").
     match = _AIS_TIME_RE.match(text)
