@@ -82,6 +82,11 @@ exports_files(
 )
 
 exports_files(
+    ["MODULE.bazel"],
+    visibility = ["//projects/factory/reviewer/harness:__pkg__"],
+)
+
+exports_files(
     ["buildbuddy.yaml"],
     visibility = ["//bazel/tools/ci:__pkg__"],
 )

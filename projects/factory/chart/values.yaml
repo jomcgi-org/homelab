@@ -653,6 +653,10 @@ reviewer:
   # broker's comment token, which needs the App's Issues write permission.
   # Empty posts no comment.
   commentAuthor: ""
+  # The review Harness's workload image (spec.workload.image), for example the
+  # private Codex harness plus mandoline from projects/factory/reviewer/harness.
+  # Empty keeps kagent's built-in harness image. Only the review Harness reads it.
+  harnessImage: ""
   # GitHub-only Semgrep evidence. Unset is off; enabling follows chart write-back.
   # semgrep: {appId: 4746654, checkName: semgrep-cloud-platform/scan, wait: 10m}
   semgrep: null
