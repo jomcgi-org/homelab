@@ -2,8 +2,8 @@ package main
 
 import (
 	"bytes"
-	"context"
-	"errors"
+	"crypto/sha256"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/scotland-connector/internal/r2"
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/walks"
 )
 
@@ -44,34 +43,51 @@ func TestForecastReplacement(t *testing.T) {
 
 func TestBootstrapSeedKeepsHubWalks(t *testing.T) {
 	fetched := time.Date(2026, 11, 19, 20, 0, 0, 0, time.UTC)
-	hub := map[string]string{
-		"/stars/walks.json": `{"schema_version":2,"generated_at":"2026-11-19T20:20:00Z","fetched_at":"2026-11-19T20:00:00Z","walks":[` +
-			`{"id":"kept","name":"Old name","url":"https://www.walkhighlands.co.uk/kept.shtml","lat":57,"lon":-4,"distance_km":5,"ascent_m":100,"duration_h":2,"forecast_fetched_at":"2026-11-19T20:00:00Z","hours":[[1795636800,1,2,3,4,5,6]]},` +
-			`{"id":"unscraped","name":"Gone","url":"https://www.walkhighlands.co.uk/gone.shtml","lat":56,"lon":-5,"distance_km":3,"ascent_m":50,"duration_h":1,"forecast_fetched_at":"2026-11-19T20:00:00Z","hours":[]}]}`,
-		"/stars/v1.json": `{"schema_version":1,"walks":[{"id":"x"}]}`,
+	hub := `{"schema_version":2,"generated_at":"2026-11-19T20:20:38.530470+00:00","fetched_at":"2026-11-19T20:00:00+00:00","walks":[` +
+		`{"id":"kept","name":"Old name","url":"https://www.walkhighlands.co.uk/kept.shtml","lat":57,"lon":-4,"distance_km":5,"ascent_m":100,"duration_h":2,"forecast_fetched_at":"2026-11-19T20:00:00+00:00","hours":[[1795636800,1,2,3,4,5,6]]},` +
+		`{"id":"unscraped","name":"Gone","url":"https://www.walkhighlands.co.uk/gone.shtml","lat":56,"lon":-5,"distance_km":3,"ascent_m":50,"duration_h":1,"forecast_fetched_at":"2026-11-19T20:00:00+00:00","hours":[]}]}`
+	v1 := `{"schema_version":1,"walks":[{"id":"x"}]}`
+	sha12 := func(body string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(body)))[:12] }
+	// The site's layout: latest.json names a copy of the hub object by the
+	// first 12 hex digits of its SHA-256.
+	files := map[string]string{}
+	publish := func(dir, walksPath, body string) {
+		if walksPath == "" {
+			walksPath = "/data/hikes/v/walks-" + sha12(body) + ".json"
+		}
+		files[dir+"/latest.json"] = fmt.Sprintf(`{"asOf":"2026-11-19T20:20:40.000Z","files":{"walks":%q},"sources":{"walks":{"bucket":"stars","key":"walks.json","lastModified":"2026-11-19T20:20:40.000Z"}}}`, walksPath)
+		if strings.HasPrefix(walksPath, "/") {
+			files[walksPath] = body
+		}
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, ok := hub[r.URL.Path]
+	publish("/data/hikes", "", hub)
+	publish("/v1", "", v1)
+	publish("/mismatch", "/data/hikes/v/walks-000000000000.json", hub)
+	publish("/elsewhere", "https://example.com/data/hikes/v/walks-"+sha12(hub)+".json", hub)
+	publish("/unnamed", "/data/hikes/v/walks.json", hub)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := files[r.URL.Path]
 		if !ok || r.Method != http.MethodGet {
 			http.NotFound(w, r)
 			return
 		}
-		w.Header().Set("ETag", `"seed"`)
 		io.WriteString(w, body)
 	}))
 	defer server.Close()
-	source, err := r2.New(server.URL, "", r2.Credentials{AccessKeyID: "id", SecretAccessKey: "secret"}, nil)
-	if err != nil {
-		t.Fatal(err)
+	hc := server.Client()
+	for _, c := range []struct{ name, address, want string }{
+		{"missing manifest", server.URL + "/missing/latest.json", "HTTP 404"},
+		{"plain HTTP fixture URL", strings.Replace(server.URL, "https://", "http://", 1) + "/data/hikes/latest.json", "need an https URL"},
+		{"walks on another host", server.URL + "/elsewhere/latest.json", "unexpected walks path"},
+		{"walks not content-named", server.URL + "/unnamed/latest.json", "unexpected walks path"},
+		{"digest mismatch", server.URL + "/mismatch/latest.json", "digest mismatch"},
+		{"schema version 1", server.URL + "/v1/latest.json", "need schema version 2"},
+	} {
+		if _, err := seed(hc, c.address); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: got error %v, want %q", c.name, err, c.want)
+		}
 	}
-	ctx := context.Background()
-	if _, err := seed(ctx, source, "stars", "missing.json"); !errors.Is(err, r2.ErrNotFound) {
-		t.Fatalf("missing seed: %v", err)
-	}
-	if _, err := seed(ctx, source, "stars", "v1.json"); err == nil {
-		t.Fatal("seed accepted schema version 1")
-	}
-	data, err := seed(ctx, source, "stars", "walks.json")
+	data, err := seed(hc, server.URL+"/data/hikes/latest.json")
 	if err != nil {
 		t.Fatal(err)
 	}

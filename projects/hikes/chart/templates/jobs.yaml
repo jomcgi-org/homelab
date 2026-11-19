@@ -19,25 +19,13 @@
 {{- if not .Values.suspendWriters }}
 {{- /* Argo CD runs this Sync hook on every sync, in wave 0 with its network
 policy and the lock claim. While Garage has no generation, it seeds from the
-hub snapshot and runs the first catalogue as one publication. The CronJobs
-sync in wave 1, after it succeeds. */}}
-{{- $source := list (dict "name" "SOURCE_AWS_ENDPOINT_URL" "value" .Values.seed.endpoint) (dict "name" "SOURCE_BUCKET" "value" .Values.seed.bucket) (dict "name" "SOURCE_KEY" "value" .Values.seed.key) }}
-{{- range $name, $key := dict "SOURCE_AWS_ACCESS_KEY_ID" "access-key-id" "SOURCE_AWS_SECRET_ACCESS_KEY" "secret-access-key" }}
-{{- $source = append $source (dict "name" $name "valueFrom" (dict "secretKeyRef" (dict "name" "hikes-seed" "key" $key))) }}
-{{- end }}
-{{- $seedHost := (urlParse .Values.seed.endpoint).host }}
-{{- $workload := dict "kind" "Job" "hook" "Sync" "hookWave" 0 "backoffLimit" 0 "writablePaths" (list (dict "name" "tmp" "mountPath" "/tmp" "sizeLimit" "128Mi")) "args" (list "bootstrap") "env" (concat $garage $source) "resources" $resources "network" (dict "egress" (list $walkhighlands (dict "peer" "hub-walks" "fqdn" $seedHost "port" 443))) }}
+public jomcgi.dev copy of the hub snapshot and runs the first catalogue as one
+publication. It holds no R2 credential. The CronJobs sync in wave 1, after it
+succeeds. */}}
+{{- $site := urlParse .Values.seed.url }}
+{{- if ne $site.scheme "https" }}{{- fail "hikes: seed.url must be an https URL" }}{{- end }}
+{{- $workload := dict "kind" "Job" "hook" "Sync" "hookWave" 0 "backoffLimit" 0 "writablePaths" (list (dict "name" "tmp" "mountPath" "/tmp" "sizeLimit" "128Mi")) "args" (list "bootstrap") "env" (append $garage (dict "name" "SEED_URL" "value" .Values.seed.url)) "resources" $resources "network" (dict "egress" (list $walkhighlands (dict "peer" "jomcgi-site" "fqdn" $site.host "port" 443))) }}
 {{- $_ := set $writers "hikes-bootstrap" (include "factory-library.job" (dict "root" $ "name" "hikes-bootstrap" "workload" $workload)) }}
----
-apiVersion: onepassword.com/v1
-kind: OnePasswordItem
-metadata:
-  name: hikes-seed
-  annotations:
-    argocd.argoproj.io/sync-wave: "-2"
-type: Opaque
-spec:
-  itemPath: {{ .Values.seed.itemPath }}
 {{- end }}
 {{- range $name, $render := $writers }}
 {{- range splitList "\n---" $render }}
