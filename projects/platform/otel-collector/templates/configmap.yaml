@@ -97,6 +97,11 @@ data:
           - key: deployment.environment
             value: {{ .Values.environment | quote }}
             action: upsert
+          {{- if .Values.clusterName }}
+          - key: k8s.cluster.name
+            value: {{ .Values.clusterName | quote }}
+            action: upsert
+          {{- end }}
       {{- end }}
       {{- if .Values.allowedServices }}
       # Enforces the opt-in list. The filter processor DROPS spans matching a
@@ -108,6 +113,19 @@ data:
           span:
             - 'resource.attributes["service.name"] == nil'
             - '{{ range $i, $s := .Values.allowedServices }}{{ if $i }} and {{ end }}resource.attributes["service.name"] != {{ $s | quote }}{{ end }}'
+      {{- if .Values.sanitizeTraceAttributes }}
+      # Removes gen_ai prompt, completion, message and tool call text from
+      # spans and span events. Token counts, model and tool names remain.
+      transform/trace_content:
+        error_mode: propagate
+        trace_statements:
+          - context: span
+            statements:
+              - delete_matching_keys(attributes, {{ .Values.traceContentPattern | quote }})
+          - context: spanevent
+            statements:
+              - delete_matching_keys(attributes, {{ .Values.traceContentPattern | quote }})
+      {{- end }}
       tail_sampling:
         decision_wait: {{ .Values.sampling.decisionWaitSeconds }}s
         num_traces: {{ .Values.sampling.numTraces }}
@@ -119,6 +137,9 @@ data:
         tail_storage: pebble_tail_storage
         {{- end }}
         policies:
+          {{- if .Values.sampling.policies }}
+          {{- toYaml .Values.sampling.policies | nindent 10 }}
+          {{- else }}
           # These two policies are deliberate uncapped exemptions. Explicitly
           # expected outcomes are excluded, so routine 4xx and backpressure
           # cannot bypass the composite ceiling even if an instrumentation
@@ -208,6 +229,7 @@ data:
                   percent: {{ .Values.sampling.rateAllocation.slowPercent }}
                 - policy: baseline
                   percent: {{ .Values.sampling.rateAllocation.baselinePercent }}
+          {{- end }}
       {{- end }}
 
     {{- $hcExporter := "otlp/honeycomb" }}
@@ -253,14 +275,15 @@ data:
         {{- if .Values.allowedServices }}
         traces:
           receivers: [otlp]
-          processors: [memory_limiter, filter/allowlist{{ if .Values.environment }}, resource/environment{{ end }}, tail_sampling, batch]
+          processors: [memory_limiter, filter/allowlist{{ if .Values.sanitizeTraceAttributes }}, transform/trace_content{{ end }}{{ if .Values.environment }}, resource/environment{{ end }}, tail_sampling, batch]
           exporters: [{{ $hcExporter }}]
         {{- end }}
-        {{- if or .Values.httpcheck.enabled .Values.allowedServices }}
+        {{- $otlpMetrics := and .Values.allowedServices .Values.otlpMetrics }}
+        {{- if or .Values.httpcheck.enabled $otlpMetrics }}
         # Allow OTLP metrics only when at least one service is already opted in
         # to the shared receiver. Probe-only renders remain closed to OTLP.
         metrics:
-          receivers: [{{ if .Values.httpcheck.enabled }}http_check{{ if .Values.allowedServices }}, {{ end }}{{ end }}{{ if .Values.allowedServices }}otlp{{ end }}]
+          receivers: [{{ if .Values.httpcheck.enabled }}http_check{{ if $otlpMetrics }}, {{ end }}{{ end }}{{ if $otlpMetrics }}otlp{{ end }}]
           processors: [memory_limiter{{ if .Values.environment }}, resource/environment{{ end }}, batch]
           exporters: [{{ $hcMetricsExporter }}]
         {{- end }}

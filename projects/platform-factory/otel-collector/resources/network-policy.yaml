@@ -1,7 +1,3 @@
-# otel-collector on the factory cluster: two agents that only send. Neither
-# accepts connections (kubelet probes from the local host are not subject to
-# policy), and Honeycomb is the only destination outside the cluster.
-#
 # Node agent (DaemonSet): its own node's kubelet and Cilium endpoints, the API
 # server for pod metadata, and Honeycomb.
 apiVersion: cilium.io/v2
@@ -61,4 +57,54 @@ spec:
       toPorts:
         - ports:
             - port: "443"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: trace-gateway
+  namespace: otel-collector
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: otel-collector
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+          matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values: [factory-connector, factory-broker, factory-reviewer]
+      toPorts:
+        - ports:
+            - port: "4317"
+              protocol: TCP
+  egress:
+    - toFQDNs:
+        - matchName: api.honeycomb.io
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: factory-trace-export
+  namespace: factory
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [factory-connector, factory-broker, factory-reviewer]
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: otel-collector
+            app.kubernetes.io/name: otel-collector
+      toPorts:
+        - ports:
+            - port: "4317"
               protocol: TCP

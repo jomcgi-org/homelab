@@ -1,6 +1,4 @@
-# Factory home cluster (projects/factory-cluster/README.md). Node and cluster
-# telemetry only: no trace gateway, since nothing on the cluster emits traces
-# yet. Everything goes to the hub's Honeycomb environment (homelab) with
+# Factory home cluster. Everything goes to the hub's Honeycomb environment (homelab) with
 # deployment.environment=factory and k8s.cluster.name=factory on every event;
 # those two attributes, not dataset names, separate the clusters. The
 # environment puts every metric in its `metrics` dataset and routes logs by
@@ -32,7 +30,33 @@ environment: factory
 clusterName: factory
 
 gateway:
-  enabled: false
+  enabled: true
+
+sanitizeTraceAttributes: true
+otlpMetrics: false
+allowedServices:
+  - factory-connector
+  - factory-broker
+  - factory-reviewer
+
+# Budget scenario over 30 days: at 100,000 incoming spans/day, if 5% of
+# spans belong to error or slow traces, keep 150,000 plus about 2,850 from
+# the 0.1% baseline. That adds about 0.15M events to the shared ~12M of
+# 20M/month. Error and slow traffic is uncapped, so this is an estimate.
+sampling:
+  policies:
+    - name: errors
+      type: status_code
+      status_code:
+        status_codes: [ERROR]
+    - name: slow
+      type: latency
+      latency:
+        threshold_ms: 10000
+    - name: baseline
+      type: probabilistic
+      probabilistic:
+        sampling_percentage: 0.1
 
 logs:
   audit: true

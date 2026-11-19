@@ -905,6 +905,9 @@ def test_binding_worker_pool_sets_resources_and_concurrency() -> None:
     config = yaml.safe_load(
         _one(docs, "ConfigMap", "kagent-controller")["data"]["controller.yaml"]
     )
+    # Actor pods get no collector route until HOME-544 adds a producer-only path.
+    assert config["runtimeDefaults"]["telemetry"] == {}
+    assert config["telemetry"] == {}
     assert config["runtimeDefaults"]["cpu"] == "4"
     assert config["runtimeDefaults"]["memory"] == "8Gi"
 

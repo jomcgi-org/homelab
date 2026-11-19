@@ -71,11 +71,15 @@ UptimeRobot checks `https://jomcgi.dev/health/otel-collector`. The `HTTPRoute`
 sends traffic directly to the collector's `health_check` extension on port
 13133 and rewrites the path to `/`. The public frontend is not on this path.
 
+## Traces first
+
+Record work in code we write as spans with attributes describing the operation and its outcome. Use logs for startup, crashes and third-party components.
+
 ## Trace admission is deny-by-default
 
 `allowedServices` defaults to an empty list in `values.yaml`. Read
-`values-gke.yaml` for the services the hub admits; this document does not list
-them, because that list changes and a copy here would go stale.
+`values-gke.yaml` for the services the hub admits and
+`values-factory.yaml` for the factory allowlist.
 
 While the list is empty the rendered collector has:
 
@@ -88,7 +92,7 @@ refused. The gate is a property of the rendered config, not a convention about
 what nobody has pointed at it.
 
 Admitting a service is a one-line `allowedServices` override in
-`values-gke.yaml`, using the exact OpenTelemetry `service.name`. A non-empty
+the cluster’s values file, using the exact OpenTelemetry `service.name`. A non-empty
 allowlist renders the OTLP receiver, trace pipeline, ports, allowlist filter, and
 tail sampler. The workload must also configure its exporter endpoint.
 
@@ -97,7 +101,9 @@ not on the list, so a service whose `OTEL_SERVICE_NAME` differs from its
 allowlist entry exports successfully and has every span discarded, with nothing
 reporting the mismatch.
 
-When at least one trace service is admitted, the shared OTLP receiver also feeds
+The factory gateway accepts only traces, and only from the `factory-connector`, `factory-broker` and `factory-reviewer` pods. Actor pods have no route to it; kagent harness export waits on a producer-only path (HOME-544). Before sampling, the factory collector deletes `gen_ai` prompt, completion, message, system instruction and tool call argument and result attributes from spans and span events. Token counts, model names and tool names remain.
+
+On the hub, when at least one trace service is admitted, the shared OTLP receiver also feeds
 the metrics pipeline. The trace allowlist remains specific to the traces
 pipeline.
 
