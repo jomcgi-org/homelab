@@ -54,10 +54,9 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   of the issue's one "Done when" or "Acceptance criteria" list, only when
   the issue text has a trusted author and editor, and the valid answer
   must number the same count. A numbering gap or any other ambiguity
-  counts nothing, as does any HTML comment or HTML block in the issue, or a
-  code block in or after the list. A fenced block before the list, such as a
-  diagram, is skipped by Markdown's fence rules, and an indented heading is
-  code, not a heading. History replay
+  counts nothing, as does any HTML comment, code fence or HTML block in the
+  issue: those can hide or fake list items. An issue with a diagram keeps
+  main's rules. An indented heading is code, not a heading. History replay
   withdraws nothing. A restated criterion gets a fresh verdict under the same
   ID. A missing issue reference, an uncounted list or a count the answer
   disagrees with withdraws nothing; a finding then clears only when a
