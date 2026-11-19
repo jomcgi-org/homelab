@@ -54,9 +54,9 @@ excludes ([library rule](../shared/helm/factory-library/README.md#one-public-r2-
 | `stars-forecast` | `projects/stars-forecast` | `https://factory-data.jomcgi.dev/stars-forecast/latest.json` | HOME-478 |
 | `hikes` | `projects/hikes` | `https://factory-data.jomcgi.dev/hikes/latest.json` | HOME-477 |
 
-Both sources stay `suspend: true` until their activation. To add a writer,
-add a `public.sources` entry here. The writer chart keeps a Garage bucket
-without `public:`.
+Both sources run since their activation. To stop one, set its `suspend` to
+`true`: R2 keeps what it has. To add a writer, add a `public.sources` entry
+here. The writer chart keeps a Garage bucket without `public:`.
 
 ## Factory health
 

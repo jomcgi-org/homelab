@@ -17,17 +17,17 @@ buckets:
       # the R2 credential.
       sources:
         # https://factory-data.jomcgi.dev/stars-forecast/latest.json
-        # HOME-478 sets suspend to false.
+        # On since HOME-478. Set true to stop it; R2 keeps what it has.
         - bucket: stars-forecast
           r2Prefix: stars-forecast
           manifestName: latest.json
-          suspend: true
+          suspend: false
         # https://factory-data.jomcgi.dev/hikes/latest.json
-        # HOME-477 sets suspend to false.
+        # On since HOME-477. Set true to stop it; R2 keeps what it has.
         - bucket: hikes
           r2Prefix: hikes
           manifestName: latest.json
-          suspend: true
+          suspend: false
   # The health publisher's own bucket: its write key covers nothing in
   # factory-public (HOME-260).
   - name: factory-health

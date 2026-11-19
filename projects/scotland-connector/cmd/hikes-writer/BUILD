@@ -27,5 +27,8 @@ go_test(
     name = "hikes-writer_test",
     srcs = ["writer_test.go"],
     embed = [":hikes-writer_lib"],
-    deps = ["//projects/scotland-connector/internal/walks"],
+    deps = [
+        "//projects/scotland-connector/internal/r2",
+        "//projects/scotland-connector/internal/walks",
+    ],
 )

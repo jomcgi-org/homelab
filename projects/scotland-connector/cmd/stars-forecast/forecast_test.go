@@ -93,14 +93,19 @@ func TestRefreshGeneration(t *testing.T) {
 		t.Setenv(prefix+"AWS_ACCESS_KEY_ID", "fixture")
 		t.Setenv(prefix+"AWS_SECRET_ACCESS_KEY", "fixture")
 	}
-	for _, mode := range []string{"grid", "climatology"} {
-		if err := run(ctx, mode); err != nil {
-			t.Fatal(err)
-		}
-		key := "/" + mode + ".json"
+	// The inputs sync hook imports both before the refresh CronJob syncs.
+	if err := run(ctx, "inputs"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"grid", "climatology"} {
+		key := "/" + name + ".json"
 		if string(objects["/source"+key]) != string(objects["/state"+key]) {
-			t.Fatalf("import changed %s", mode)
+			t.Fatalf("import changed %s", name)
 		}
+	}
+	delete(objects, "/source/climatology.json")
+	if err := run(ctx, "climatology"); err == nil {
+		t.Fatal("imported a missing climatology")
 	}
 	allFailed := false
 	previous := http.DefaultTransport
