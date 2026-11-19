@@ -25,6 +25,6 @@ So `/stars` gets exactly one policy, the map policy, and the other pages keep
 the site policy.
 
 **Not shown here.** The real base map tiles from `tiles.openfreemap.org` need
-the deployed page on `next.jomcgi.dev` after the dev deploy; that live check is
-HOME-210 criterion 15. `web:stars_browser_test` checks the map under the
-`/stars` policy with a local style fixture.
+the deployed page; [maps-live.md](maps-live.md) records them on
+`next.jomcgi.dev`. `web:stars_browser_test` checks the map under the `/stars`
+policy with a local style fixture.
