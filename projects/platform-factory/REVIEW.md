@@ -6,7 +6,7 @@ boundary: a rule below broken on them is critical.
 
 - **Every route signs in.** Each HTTPRoute attaches to the `edge` Gateway
   under its gateway-wide Authentik OIDC policy or one of the route-level
-  SecurityPolicies below. There are only four:
+  SecurityPolicies below. Five are active. The Codex policy is reserved for HOME-405.
   - Authentik's own route.
   - `kagent-authentik-oidc`, which carries the shared `edge.oidc` settings
     plus `forwardAccessToken: true`.
