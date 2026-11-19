@@ -737,9 +737,14 @@ func TestIssueCriteriaCount(t *testing.T) {
 		"Done when:\n1. a\n3. not the next number":                                    0,
 		"Done when:\n1. a\n2. b\n\nOut of scope:\n- c":                                0,
 		"Done when:\n1. a\n2. b\n\nOut of scope: c":                                   2,
-		"Example:\n```\nDone when:\n1. x\n```\nDone when:\n1. a\n2. b":                0,
+		"Example:\n```\nDone when:\n1. x\n```\nDone when:\n1. a\n2. b":                2,
 		"Done when:\n1. a\n```\n2. b\n```":                                            0,
 		"Done when:\n```\n1. a\n```":                                                  0,
+		"````\n```\nDone when:\n1. Example\n":                                         0,
+		"<!--\nDone when:\n1. A\n-->\nText.":                                          0,
+		"<!-- note -->\nDone when:\n1. a\n2. b":                                       2,
+		"```mermaid\nflowchart TD\n  A --> B\n```\n\nDone when:\n1. a\n2. b":          2,
+		"~~~\nDone when:\n1. x\n```\n~~~\nDone when:\n1. a":                           1,
 		"Done when:\r\n1. a\r\n2.\r\n   b\r\n":                                        2,
 		"Done when:\n1. a\n2.\tb":                                                     2,
 		"Done when:\n1) a\n2) b":                                                      2,
@@ -837,5 +842,24 @@ func TestGoalMoveIgnoresCountAndReplayWithdrawsNothing(t *testing.T) {
 	replayGoal(r, prior, "HOME", "HOME-2", &GoalCheck{Overall: goalMet, Criteria: goalVerdicts(1, goalMet), Counted: 1})
 	if a := Assess(r, prior); len(a.Withdrawn) != 0 {
 		t.Fatalf("replay withdrew %+v", a.Withdrawn)
+	}
+}
+
+// With an uncounted list, an earlier blocker keeps main's rules: a met
+// verdict fixes it and an after_rollout verdict lowers it (HOME-179), and
+// nothing is withdrawn.
+func TestUncountedAnswerKeepsMainRules(t *testing.T) {
+	prior := []Finding{{ID: "HOME-7:goal:criterion-2", Severity: SeverityMedium}, {ID: "HOME-7:goal:criterion-3", Severity: SeverityMedium}}
+	r := &Report{}
+	applyGoal(r, prior, "HOME", "HOME-7", &GoalCheck{Overall: goalUnclear, Criteria: []GoalVerdict{{1, goalMet}, {2, goalLive}}})
+	a := Assess(r, prior)
+	if len(a.Withdrawn) != 0 {
+		t.Fatalf("withdrawn = %+v", a.Withdrawn)
+	}
+	if !slices.ContainsFunc(a.Optional, func(f Finding) bool { return f.ID == "HOME-7:goal:criterion-2" && f.Severity == SeverityLow }) {
+		t.Fatalf("after_rollout did not lower criterion 2: %+v", a.Optional)
+	}
+	if !slices.ContainsFunc(a.Blocking, func(b Blocked) bool { return b.ID == "HOME-7:goal:criterion-3" }) {
+		t.Fatalf("criterion 3 left the blockers without a verdict: %+v", a.Blocking)
 	}
 }
