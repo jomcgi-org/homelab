@@ -10,11 +10,6 @@ projects/embervm/ARCHITECTURE.md: missing component row for xds
 projects/embervm/ARCHITECTURE.md: opening_fence: mermaid
 projects/embervm/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
 projects/embervm/QUICKSTART.md: outside allowed_names
-projects/factory-explore-site/ARCHITECTURE.md: missing file or link from projects/factory-explore-site/README.md to projects/*/ARCHITECTURE.md
-projects/factory-explore/ARCHITECTURE.md: missing component row for cmd
-projects/factory-explore/ARCHITECTURE.md: missing component row for kubectl-wasm
-projects/factory-explore/ARCHITECTURE.md: missing component row for ui
-projects/factory-explore/ARCHITECTURE.md: missing file or link from projects/factory-explore/README.md to projects/*/ARCHITECTURE.md
 projects/factory-landing/ARCHITECTURE.md: missing component row for web
 projects/factory-public/ARCHITECTURE.md: missing file or link from projects/factory-public/README.md to projects/*/ARCHITECTURE.md
 projects/factory-storyboard/ARCHITECTURE.md: heading: Direction

@@ -1,5 +1,8 @@
 # Explorer API rollout
 
+See the [explorer architecture](ARCHITECTURE.md) for the components and
+their trust boundaries.
+
 HOME-356 stages the in-cluster Service `explore-proxy.factory-explore.svc:8080`.
 The Application in `projects/platform-factory/kustomization.yaml` installs the
 proxy before public routing. Its NetworkPolicy admits only the edge gateway.

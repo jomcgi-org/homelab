@@ -1,5 +1,7 @@
 # Factory Explorer
 
+See the [explorer architecture](../factory-explore/ARCHITECTURE.md).
+
 The read-only Sparkles fork in `projects/factory-explore/ui/` is based on xdavidwu/sparkles commit
 `fe113cfbe1f5db41a8e25940adb6d28195a23686` (MIT). Its Vue application
 uses Authentik's factory-explore public client. The HOME-355 blueprint registers the redirect URI
