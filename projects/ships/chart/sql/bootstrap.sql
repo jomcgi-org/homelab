@@ -71,3 +71,10 @@ CREATE TABLE ships.heat_cells_historical (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (lat_bin, lon_bin)
 );
+
+-- The writer commits received frames here before it applies them. A frame
+-- leaves the inbox in the transaction that applies it.
+CREATE TABLE ships.inbox (
+    id     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    frame  BYTEA NOT NULL
+);

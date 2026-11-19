@@ -5,8 +5,16 @@ DECLARE
   part text;
 BEGIN
   FOR d IN SELECT current_date + offset_days FROM generate_series(-7, 2) AS offset_days LOOP
-    EXECUTE format('CREATE TABLE IF NOT EXISTS ships.%I PARTITION OF ships.positions FOR VALUES FROM (%L) TO (%L)',
-                   'positions_' || to_char(d,'YYYYMMDD'), d, d+1);
+    part := 'positions_' || to_char(d,'YYYYMMDD');
+    CONTINUE WHEN to_regclass(format('ships.%I', part)) IS NOT NULL;
+    -- Rows that reached the default partition move into the new day first,
+    -- because PostgreSQL refuses a partition whose range the default holds.
+    EXECUTE format('CREATE TABLE ships.%I (LIKE ships.positions)', part);
+    EXECUTE format('WITH moved AS (DELETE FROM ships.positions_default
+                      WHERE recorded_at >= %L AND recorded_at < %L RETURNING *)
+                    INSERT INTO ships.%I SELECT * FROM moved', d, d+1, part);
+    EXECUTE format('ALTER TABLE ships.positions ATTACH PARTITION ships.%I FOR VALUES FROM (%L) TO (%L)',
+                   part, d, d+1);
   END LOOP;
 
   IF current_setting('ships.retention') = 'on' THEN

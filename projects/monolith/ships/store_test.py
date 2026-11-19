@@ -156,6 +156,44 @@ def test_intra_batch_dedup_against_just_accepted_position(session):
     )  # only the first survived
 
 
+def test_older_report_joins_history_and_keeps_newer_latest(session):
+    newer = _position("777", 10.0, 20.0, speed=5.0, recorded_at=T0)
+    older = _position(
+        "777", 10.01, 20.0, speed=5.0, recorded_at=T0 - timedelta(seconds=30)
+    )
+    persist_batch(session, [newer], [])
+
+    inserted = persist_batch(session, [older], [])
+
+    assert inserted == 1
+    assert _count(session, Position) == 2
+    latest = session.get(LatestPosition, "777")
+    assert latest.recorded_at.replace(tzinfo=None) == T0.replace(tzinfo=None)
+    assert latest.lat == 10.0
+
+
+def test_older_report_in_the_same_batch_keeps_newer_latest(session):
+    newer = _position("778", 10.0, 20.0, speed=5.0, recorded_at=T0)
+    older = _position(
+        "778", 10.01, 20.0, speed=5.0, recorded_at=T0 - timedelta(seconds=30)
+    )
+
+    inserted = persist_batch(session, [newer, older], [])
+
+    assert inserted == 2
+    latest = session.get(LatestPosition, "778")
+    assert latest.recorded_at.replace(tzinfo=None) == T0.replace(tzinfo=None)
+
+
+def test_report_dated_beyond_clock_skew_is_dropped(session):
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    pos = _position("779", 10.0, 20.0, speed=5.0, recorded_at=future)
+
+    assert persist_batch(session, [pos], []) == 0
+    assert _count(session, Position) == 0
+    assert session.get(LatestPosition, "779") is None
+
+
 def test_ship_name_preserved_when_new_position_has_none(session):
     seeded = LatestPosition(
         mmsi="555",

@@ -10,6 +10,11 @@ helm_chart(
     visibility = ["//visibility:public"],
 )
 
+exports_files(
+    ["sql/bootstrap.sql"],
+    visibility = ["//projects/ships:__pkg__"],
+)
+
 helm_lint_test(
     name = "lint_test",
     extra_values = [":chart.images_values"],
