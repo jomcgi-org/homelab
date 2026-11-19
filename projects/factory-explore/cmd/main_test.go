@@ -288,3 +288,17 @@ func TestUncachedRequests(t *testing.T) {
 		}
 	}
 }
+
+func TestCoalescedWindowExpiry(t *testing.T) {
+	p := newTestProxy()
+	entered, release := make(chan struct{}), make(chan struct{})
+	p.upstream = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(entered); <-release; io.WriteString(w, "pods") })
+	defer close(release)
+	p.users["follower"] = &window{start: time.Now().Add(-10*time.Minute + 250*time.Millisecond), rate: rate.NewLimiter(10, 40)}
+	go request(p, "GET", "/api", "leader")
+	<-entered
+	w := request(p, "GET", "/api", "follower")
+	if w.Code != 403 || w.Header().Get("X-Explore-Next-Window") == "" || p.cache.coalesced != 1 {
+		t.Fatal(w.Code, w.Header(), p.cache.coalesced)
+	}
+}

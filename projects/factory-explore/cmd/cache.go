@@ -88,7 +88,7 @@ func (w *capture) Write(b []byte) (int, error) {
 	return n, err
 }
 
-func (c *readCache) serve(w http.ResponseWriter, r *http.Request, now func() time.Time, forward func(http.ResponseWriter)) {
+func (c *readCache) serve(w http.ResponseWriter, r *http.Request, now func() time.Time, expired func() bool, forward func(http.ResponseWriter)) {
 	k := cacheKey{r.URL.Path, r.URL.RawQuery, r.Header.Get("Accept")}
 	c.Lock()
 	if el := c.entries[k]; el != nil {
@@ -97,7 +97,9 @@ func (c *readCache) serve(w http.ResponseWriter, r *http.Request, now func() tim
 			c.lru.MoveToFront(el)
 			c.hits++
 			c.Unlock()
-			e.write(w)
+			if !expired() {
+				e.write(w)
+			}
 			return
 		}
 		c.remove(el)
@@ -107,7 +109,7 @@ func (c *readCache) serve(w http.ResponseWriter, r *http.Request, now func() tim
 		c.Unlock()
 		select {
 		case <-f.done:
-			if r.Context().Err() != nil {
+			if expired() || r.Context().Err() != nil {
 				return
 			}
 			if f.result != nil {
@@ -116,6 +118,7 @@ func (c *readCache) serve(w http.ResponseWriter, r *http.Request, now func() tim
 				forward(w)
 			}
 		case <-r.Context().Done():
+			expired()
 		}
 		return
 	}
