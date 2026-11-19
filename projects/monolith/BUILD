@@ -8371,6 +8371,37 @@ py_test(
 )
 
 py_test(
+    name = "ships_baseline_test",
+    srcs = ["ships/baseline_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_ships",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "ships_baseline_pg_test",
+    size = "large",
+    srcs = ["ships/baseline_pg_test.py"],
+    data = [
+        "//projects/monolith/chart:migrations",
+        "@postgres_test//:postgres",
+    ],
+    env = {"PYTEST_ADDOPTS": "-p shared.testing.plugin"},
+    imports = ["."],
+    target_compatible_with = ["@platforms//os:linux"],
+    deps = [
+        ":pkg_ships",
+        ":shared_testing",
+        "@pip//psycopg",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "ships_retention_test",
     srcs = ["ships/retention_test.py"],
     imports = ["."],

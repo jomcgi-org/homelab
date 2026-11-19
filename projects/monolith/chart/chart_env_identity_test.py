@@ -528,6 +528,23 @@ _DEFAULT_KARGO_PROMOTE_RULES = [
     },
     {"apiGroups": ["kargo.akuity.io"], "resources": ["stages"], "verbs": ["promote"]},
 ]
+_DEFAULT_SHIPS_BASELINE_READ_RULES = [
+    {"apiGroups": [""], "resources": ["pods"], "verbs": ["list"]},
+    {"apiGroups": [""], "resources": ["pods/log"], "verbs": ["get"]},
+    {"apiGroups": ["metrics.k8s.io"], "resources": ["pods"], "verbs": ["list"]},
+]
+_DEFAULT_SHIPS_BASELINE_EXECUTOR_RULES = [
+    {
+        "apiGroups": ["argoproj.io"],
+        "resources": ["workflowtaskresults"],
+        "verbs": ["create", "patch"],
+    },
+]
+_SHIPS_BASELINE_SUBJECT = {
+    "kind": "ServiceAccount",
+    "name": "ships-baseline",
+    "namespace": "monolith-workflows",
+}
 _KARGO_PROJECT_NAMESPACES = [
     "kargo-embervm",
     "kargo-monolith",
@@ -595,6 +612,22 @@ def _expected_rbac(release, enabled, *, hub=False):
             for namespace in _KARGO_PROJECT_NAMESPACES
             if not (hub and namespace == "kargo-embervm")
         ),
+        (
+            "shipsBaseline",
+            "Role",
+            release,
+            "ships-baseline-read",
+            _DEFAULT_SHIPS_BASELINE_READ_RULES,
+            [_SHIPS_BASELINE_SUBJECT],
+        ),
+        (
+            "shipsBaseline",
+            "Role",
+            "monolith-workflows",
+            "ships-baseline-executor",
+            _DEFAULT_SHIPS_BASELINE_EXECUTOR_RULES,
+            [_SHIPS_BASELINE_SUBJECT],
+        ),
     ]:
         if not enabled[gate]:
             continue
@@ -623,6 +656,7 @@ def test_default_rbac_preserves_rule_and_binding_contract(environment, renders):
             "schedulerWorkflows": True,
             "faas": True,
             "kargoPromote": True,
+            "shipsBaseline": True,
         },
         hub=environment == "gke",
     )
@@ -632,8 +666,9 @@ def test_default_rbac_preserves_rule_and_binding_contract(environment, renders):
 @pytest.mark.parametrize("scheduler", [False, True])
 @pytest.mark.parametrize("faas", [False, True])
 @pytest.mark.parametrize("promote", [False, True])
+@pytest.mark.parametrize("baseline", [False, True])
 def test_optional_rbac_gates_remove_both_roles_and_all_subject_bindings(
-    tmp_path, cluster, scheduler, faas, promote
+    tmp_path, cluster, scheduler, faas, promote, baseline
 ):
     # Layer onto actual home values, where the accidental production grants
     # matter, while keeping a distinct release identity.
@@ -642,6 +677,7 @@ def test_optional_rbac_gates_remove_both_roles_and_all_subject_bindings(
         "schedulerWorkflows": scheduler,
         "faas": faas,
         "kargoPromote": promote,
+        "shipsBaseline": baseline,
     }
     override = tmp_path / "rbac.yaml"
     override.write_text(
@@ -660,13 +696,22 @@ def test_optional_rbac_gates_remove_both_roles_and_all_subject_bindings(
         "value": "true" if faas else "false",
     }
     if not any(enabled.values()):
-        # No additive alternate binding may retain access for either the
-        # backend or the cross-namespace monolith-stats workflow identity.
+        # No additive alternate binding may retain access for the backend or
+        # the cross-namespace monolith-stats or ships-baseline identities.
         assert actual == {}
+    # The ships-baseline CronWorkflow needs its ServiceAccount, so the gate
+    # removes both.
+    baseline_kinds = {
+        doc["kind"]
+        for doc in yaml.safe_load_all(rendered)
+        if isinstance(doc, dict) and doc["metadata"]["name"] == "ships-baseline"
+    }
+    assert baseline_kinds == ({"CronWorkflow", "ServiceAccount"} if baseline else set())
 
 
 @pytest.mark.parametrize(
-    "gate", ["clusterAccess", "schedulerWorkflows", "faas", "kargoPromote"]
+    "gate",
+    ["clusterAccess", "schedulerWorkflows", "faas", "kargoPromote", "shipsBaseline"],
 )
 @pytest.mark.parametrize("invalid", ["false", 1])
 def test_rbac_gate_rejects_non_boolean_values(tmp_path, gate, invalid):

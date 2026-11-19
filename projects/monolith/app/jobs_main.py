@@ -918,6 +918,17 @@ def ships_partition_maintenance() -> None:
     )
 
 
+@app.command("ships-baseline")
+def ships_baseline() -> None:
+    """Sample the hub AIS ingest for one window and write the baseline to R2."""
+    from ships.baseline import baseline_handler
+
+    configure_logging()
+    logger.info("ships-baseline: starting")
+    asyncio.run(baseline_handler())
+    logger.info("ships-baseline: done")
+
+
 @app.command("dr-jobs-scrape-nhs")
 def dr_jobs_scrape_nhs() -> None:
     """Scrape NHS Scotland vacancies (one-shot of dr_jobs.scrape_nhs)."""

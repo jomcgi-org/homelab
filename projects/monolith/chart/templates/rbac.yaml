@@ -1,4 +1,4 @@
-{{- range $name := list "clusterAccess" "schedulerWorkflows" "faas" "kargoPromote" }}
+{{- range $name := list "clusterAccess" "schedulerWorkflows" "faas" "kargoPromote" "shipsBaseline" }}
 {{- if not (kindIs "bool" (index $.Values.rbac $name "enabled")) }}
 {{- fail (printf "rbac.%s.enabled must be a boolean" $name) }}
 {{- end }}

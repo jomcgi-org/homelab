@@ -1,0 +1,101 @@
+{{- /*
+HOME-483: the ships-baseline CronWorkflow (ships/baseline.py) samples the
+backend pods of this release. Its own ServiceAccount reads the release
+namespace only: it lists pods and pod metrics and reads pod logs. It reads no
+Secrets and has no write verbs. The shared argo-workflow executor SA keeps
+none of this access.
+
+The second Role lets Argo's wait sidecar report the step result, as for
+monolith-stats (projects/platform/argo-workflows/templates/monolith-stats-rbac.yaml).
+rbac.shipsBaseline.enabled gates this RBAC and the CronWorkflow together, so
+the RBAC renders exactly when the CronWorkflow renders.
+*/ -}}
+{{- /* The same sharedS3 validation as cronworkflows.yaml: Helm may render
+       this file first. */ -}}
+{{- if not (kindIs "map" .Values.sharedS3) }}
+{{- fail "sharedS3 must be a map with boolean field enabled" }}
+{{- end }}
+{{- if not (kindIs "bool" .Values.sharedS3.enabled) }}
+{{- fail "sharedS3.enabled must be a boolean" }}
+{{- end }}
+{{- $baseline := dict }}
+{{- range .Values.jobs.cronWorkflows }}
+{{- if .shipsBaseline }}
+{{- $baseline = . }}
+{{- end }}
+{{- end }}
+{{- if and .Values.rbac.shipsBaseline.enabled .Values.jobs.image $baseline (or (not $baseline.requiresSharedS3) .Values.sharedS3.enabled) }}
+{{- $sa := required "a shipsBaseline CronWorkflow needs serviceAccountName" $baseline.serviceAccountName }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $sa }}
+  namespace: {{ .Values.jobs.workflowNamespace }}
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $sa }}-read
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+rules:
+  # KubeReader.pods: the backend pods by label selector.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  # KubeReader.logs: the leader's frame-count lines.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # KubeReader.metrics: CPU and working set of the backend containers.
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $sa }}-read
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $sa }}-read
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Values.jobs.workflowNamespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $sa }}-executor
+  namespace: {{ .Values.jobs.workflowNamespace }}
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflowtaskresults"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $sa }}-executor
+  namespace: {{ .Values.jobs.workflowNamespace }}
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $sa }}-executor
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Values.jobs.workflowNamespace }}
+{{- end }}

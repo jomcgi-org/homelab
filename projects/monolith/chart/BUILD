@@ -553,6 +553,23 @@ py_test(
 )
 
 py_test(
+    name = "ships_baseline_job_test",
+    srcs = ["ships_baseline_job_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "migrations/**/*",
+    ]),
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = ["@pip//pyyaml"],
+)
+
+py_test(
     name = "trips_export_job_test",
     srcs = ["trips_export_job_test.py"],
     data = [

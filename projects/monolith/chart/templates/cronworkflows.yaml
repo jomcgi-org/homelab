@@ -32,6 +32,8 @@ image guard elsewhere.
 {{- /* The publication lane is opt-in because it changes public visibility. */ -}}
 {{- else if and .requiresSharedS3 (not $.Values.sharedS3.enabled) }}
 {{- /* A job that cannot run without the shared S3 env is not scheduled. */ -}}
+{{- else if and .shipsBaseline (not $.Values.rbac.shipsBaseline.enabled) }}
+{{- /* ships-baseline cannot run without its ServiceAccount and Roles. */ -}}
 {{- else }}
 ---
 apiVersion: argoproj.io/v1alpha1
@@ -126,6 +128,11 @@ spec:
       strategy: OnWorkflowSuccess
     templates:
       - name: run
+        {{- with .retryStrategy }}
+        # A retried pod runs the same command again; the job must resume.
+        retryStrategy:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         {{- if .knowledgeReview }}
         outputs:
           parameters:
@@ -169,6 +176,13 @@ spec:
             - name: EMBER_TOKENBROKER_SVID_BUNDLE
               value: /run/tokenbroker-svid/svid_bundle.pem
             {{- end }}
+            {{- end }}
+            {{- if .shipsBaseline }}
+            # ships-baseline samples the backend pods of this release.
+            - name: SHIPS_BASELINE_NAMESPACE
+              value: {{ $.Release.Namespace | quote }}
+            - name: SHIPS_BASELINE_POD_SELECTOR
+              value: {{ printf "app.kubernetes.io/name=monolith,app.kubernetes.io/instance=%s,app.kubernetes.io/component=app" $.Release.Name | quote }}
             {{- end }}
             {{- range $k, $v := .env }}
             - name: {{ $k }}

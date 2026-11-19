@@ -17,9 +17,24 @@ Hub resource use, measured in Honeycomb (`metrics` dataset, hub containers) for 
 | monolith `backend` (ingest shares it with other modules) | 0.26 / 0.61 / 0.98 | 544 MiB / 626 MiB |
 | monolith `postgres` (all monolith databases) | 0.33 / 1.04 / 1.46 | 897 MiB / 956 MiB |
 
-These are shared-container totals, so they bound the ingest cost from above. The hub emits no ingest telemetry, and the message rate and retained rows need hub database access. [HOME-483](https://factory-plan.jomcgi.dev/factory/issue/HOME-483) measures them before it sets production budgets ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-256#comment-4186)). HOME-409 delivers the ingester at zero replicas, and HOME-483 owns the hub baseline and the production budgets ([scope decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-409#comment-5163)). Start the Go pod's shadow run with requests of 250m CPU and 256 MiB and limits of 1 CPU and 512 MiB. These are trial allocations for the Go process alone.
+These are shared-container totals, so they bound the ingest cost from above. [HOME-483](https://factory-plan.jomcgi.dev/factory/issue/HOME-483) measures the message rate, retained rows and ingest container use before it sets production budgets ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-256#comment-4186)). HOME-409 delivers the ingester at zero replicas, and HOME-483 owns the hub baseline and the production budgets ([scope decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-409#comment-5163)). Start the Go pod's shadow run with requests of 250m CPU and 256 MiB and limits of 1 CPU and 512 MiB. These are trial allocations for the Go process alone.
 
-HOME-483 collects a 24-hour hub baseline before it sizes production. Count received WebSocket frames per minute before parsing and report median and peak messages/s. At the same UTC boundary count rows in ships.positions and record total partition and index bytes. Sample container CPU usage rate and working-set bytes each minute, recording p95 and peak. The hub container shares other modules, so profile the ingest task and compare a replay of the same traffic in an isolated process. Record window, source, shared-container totals and isolated measurements alongside the final requests. Size database storage for the observed seven-day footprint, indexes, WAL and a partition rollover. Verify memory, write lag and CPU headroom while heat and export run concurrently.
+The `ships-baseline` CronWorkflow in the monolith chart measures the hub for 24 hours ([code](../monolith/ships/baseline.py)). No session or factory worker can read the hub cluster.
+
+```mermaid
+flowchart LR
+  leader[hub backend leader] -->|frame-count log lines, pods/log| job[ships-baseline job]
+  metrics[metrics.k8s.io] -->|backend CPU and working set| job
+  pg[(hub ships.positions)] -->|rows and bytes at window end| job
+  job -->|one JSON object| r2[(R2 bucket stars)]
+  r2 -->|jomcgi-site-r2-read| factory[factory]
+```
+
+Each minute the job reads the leader's `ships AIS frames minute=M count=N` lines and the backend containers' usage. It writes `ships-baseline/<workflow name>.json` in the private `stars` bucket. The object gives median, p95 and peak messages/s from per-minute frame counts. It gives p50, p95 and peak CPU cores and working-set bytes of the backend container on the pod that logged frames in the same minute. It gives `ships.positions` rows with partition and index bytes, counted in one snapshot after the window ends. Each section names its source and its window or observation time, and the raw per-minute series follow.
+
+A run starts at 00:00 UTC and lasts a little over 24 hours, so `Forbid` skips the next start. A new window starts every second day. The job's ServiceAccount lists pods and pod metrics and reads pod logs in the `monolith` namespace only. The object is also the checkpoint: the job rewrites it every 5 minutes, and a retried pod resumes the same window.
+
+The backend container shares other modules, so its use bounds the ingest cost from above. HOME-483 also profiles the ingest task and compares a replay of the same traffic in an isolated process. Record window, source, shared-container totals and isolated measurements alongside the final requests. Size database storage for the observed seven-day footprint, indexes, WAL and a partition rollover. Verify memory, write lag and CPU headroom while heat and export run concurrently.
 
 ## Publication contract
 
@@ -148,4 +163,4 @@ The writer ports the hub's deduplication and upserts. An older report joins the 
 
 `replay_test.py` runs in CI against PostgreSQL. It sends the same frames to the hub persister and the Go writer, then compares the hub's snapshot, track and heat responses for both databases. The input has duplicates, an out-of-order report, a timestamp without an offset, a UTC partition rollover and an expired day. Both sides bank and drop the expired day, and a retry banks nothing new. A second case blocks the history write and sends a report during the stall. It then blocks the inbox write, floods the socket and kills the writer. The standby must keep one socket, apply both spooled reports and keep the newer latest position. A third case blocks the history write, stops the writer and ends only its lease session. The standby must wait on the claimed inbox row, and each report must reach history once. After its lease expires, the feed sends the stopped writer a valid report, and sends another when the writer resumes. After the row is released, the resumed writer must close its socket before the standby subscribes. Neither late report reaches the inbox or history, and the standby's report does. A fourth case ends only the lease session of a running writer with an empty inbox. The writer must close its socket before the next lease holder subscribes. The fake feed counts its open subscribed sockets, and each case fails if the count reaches two. A fifth case checks that the writer drops and counts a future report and a report PostgreSQL refuses. A sixth case blocks the history write for over a minute. A report 6 minutes ahead of its arrival is dropped and counted, and a report 4 minutes ahead reaches history.
 
-The hub logs received frame counts keyed by Unix minute, and `baseline.sql` reads the hub's partition rows and bytes. HOME-483 uses both for the baseline.
+The hub logs received frame counts keyed by Unix minute. The `ships-baseline` job reads them for the HOME-483 baseline ([Ingest and capacity](#ingest-and-capacity)).

@@ -144,6 +144,7 @@ def test_batch_handlers_dispatch_without_startup_registration(command, handler_p
     [
         ("home-calendar-poll", "home.schedule.calendar_poll_handler"),
         ("observability-stats-rollup", "home.observability.rollup.stats_rollup"),
+        ("ships-baseline", "ships.baseline.baseline_handler"),
     ],
 )
 def test_sessionless_handlers_dispatch_without_registration(command, handler_path):

@@ -22,6 +22,11 @@ rbac:
       - kargo-monolith-agents
       - kargo-monolith-public
       - kargo-scotland-connector
+  # The ships-baseline CronWorkflow's ServiceAccount (HOME-483) lists pods and
+  # pod metrics and reads pod logs in the release namespace. Off also removes
+  # the CronWorkflow.
+  shipsBaseline:
+    enabled: true
 
 backend:
   # Whether this deployment runs the leader-elected singletons (Discord bot,
@@ -650,6 +655,46 @@ jobs:
           memory: 256Mi
         limits:
           memory: 256Mi
+    # HOME-483 hub baseline for the factory AIS ingester (ships/baseline.py).
+    # A run samples the ingest leader's frame-count logs and the backend
+    # container metrics each minute for 24 hours. It then counts
+    # ships.positions and writes s3://stars/ships-baseline/<workflow name>.json.
+    # A run lasts a little over 24 hours, so Forbid skips the next start: a new
+    # window starts at 00:00 UTC every second day. A retried pod resumes from
+    # the object. Its own ServiceAccount reads only the release namespace
+    # (templates/ships-baseline-rbac.yaml).
+    - name: ships-baseline
+      args: ["ships-baseline"]
+      schedule: "0 0 * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 93600 # 26h: the window, retries and the count
+      suspend: false
+      s3: true
+      requiresSharedS3: true
+      shipsBaseline: true
+      serviceAccountName: ships-baseline
+      retryStrategy:
+        limit: 5
+        retryPolicy: Always
+        backoff:
+          duration: "1m"
+          factor: 2
+          maxDuration: "30m"
+      env:
+        # Argo substitutes the workflow name. It names the object, so a
+        # retried pod finds its own checkpoint.
+        SHIPS_BASELINE_RUN: "{{workflow.name}}"
+        # The private stars bucket. The factory reads it with
+        # jomcgi-site-r2-read; the job never writes a public bucket.
+        SHIPS_BASELINE_S3_BUCKET: stars
+        SHIPS_BASELINE_S3_PREFIX: ships-baseline/
+        SHIPS_BASELINE_WINDOW_MINUTES: "1440"
+      resources:
+        requests:
+          cpu: 50m
+          memory: 256Mi
+        limits:
+          memory: 512Mi
     - name: dr-jobs-scrape-nhs
       replaces: dr_jobs.scrape_nhs
       args: ["dr-jobs-scrape-nhs"]
