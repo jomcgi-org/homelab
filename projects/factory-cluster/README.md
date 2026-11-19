@@ -899,6 +899,15 @@ curl -s -X POST -H 'Content-Type: application/json' http://localhost:9093/api/v2
 | `SemgrepSyncFailed` | The newest Semgrep to INTSEC sync Job in its namespace has failed |
 | `AlertRelayDown` | No ready relay replica for 5 min |
 
+#### Writing an alert
+
+Write a `summary` that gives the observed value and the threshold, with units.
+Give the responder one concrete next step in `action` and link the relevant
+procedure in `runbook`. Set `graph` to a PromQL query that shows the cause
+for the affected resource, and set `threshold` to the numeric boundary in
+the graph’s units. Choose a `for` duration long enough that a brief blip
+does not page anyone. Use `critical` only when a person must act now.
+
 #### SemgrepSyncFailed
 
 With the factory kubeconfig, run `kubectl -n <namespace> logs job/<job_name>`

@@ -17,6 +17,14 @@ route:
       receiver: relay-no-resolved
       group_by: ["..."]
 
+inhibit_rules:
+  - source_matchers: ['alertname="FactoryCodexQuotaExhausted"']
+    target_matchers: ['alertname="FactoryCodexQuotaLow"']
+    equal: [grant]
+  - source_matchers: ['alertname="FactoryCodexGrantNotReady"']
+    target_matchers: ['alertname=~"FactoryCodexQuota(Low|Exhausted)"']
+    equal: [grant]
+
 receivers:
   - name: discord
     discord_configs:
