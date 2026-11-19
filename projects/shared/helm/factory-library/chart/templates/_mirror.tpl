@@ -29,20 +29,26 @@ fi
 {{- if .excludePrefixes }}
 # The sources of this release own the excluded prefixes. Sync does not delete excluded R2 objects.
 {{- end }}
-# Upload payloads before publishing the manifest. A failed sync stops here.
-run sync "GARAGE:$GARAGE_BUCKET" "{{ .dest }}" \
-  --exclude /{{ .manifestName }} \
+# payloads copy|sync: every object except the manifest and the copied keys.
+payloads() {
+  run "$1" "GARAGE:$GARAGE_BUCKET" "{{ .dest }}" \
+    --exclude /{{ .manifestName }} \
 {{- range .copyKeys }}
-  --exclude /{{ .key }} \
+    --exclude /{{ .key }} \
 {{- end }}
 {{- range .excludePrefixes }}
-  --exclude '/{{ . }}/**' \
+    --exclude '/{{ . }}/**' \
 {{- end }}
-  --header-upload "Cache-Control: public, max-age=31536000, immutable"
+    --header-upload "Cache-Control: public, max-age=31536000, immutable"
+}
+# 1. Upload payloads and delete nothing, so the manifest that R2 still holds
+# keeps every object it names. A failed copy stops here.
+payloads copy
 {{- if ne .manifestName "latest.json" }}
 # Listing failure is an error, not proof that the manifest is absent.
 manifest=$(run lsf "GARAGE:$GARAGE_BUCKET" --files-only --max-depth 1 --include /{{ .manifestName }})
 {{- end }}
+# 2. Publish the manifest after every object it names.
 if [ "$manifest" = {{ .manifestName }} ]; then
   run copyto {{ if eq .manifestName "latest.json" }}"$captured"{{ else }}"GARAGE:$GARAGE_BUCKET/{{ .manifestName }}"{{ end }} "{{ .dest }}/{{ .manifestName }}" \
     --ignore-times --header-upload "Cache-Control: public, max-age=60"
@@ -61,6 +67,10 @@ else
   run delete "{{ $.dest }}" --include /{{ .key }}
 fi
 {{- end }}
+# 3. Only now delete from R2 what Garage no longer holds. A writer keeps each
+# payload until its cached manifests stop naming it, so this deletes nothing
+# that the manifest above names. A failed sync leaves extra objects only.
+payloads sync
 {{- end -}}
 
 {{- define "factory-library.mirror" -}}

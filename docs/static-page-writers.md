@@ -28,7 +28,8 @@ and a content rule enforce this. Stars publishes at
 
 The [mirror template](../projects/shared/helm/factory-library/chart/templates/_mirror.tpl)
 excludes exactly `/latest.json` from the immutable payload transfer and
-copies it after that transfer succeeds. Readers fetch `<prefix>/latest.json`
+copies it after that transfer succeeds. Only then does it delete the payloads
+that Garage no longer holds. Readers fetch `<prefix>/latest.json`
 from R2 and resolve each key `k` in it as `<prefix>/k`. Retain payloads referenced
 by cached manifests. If a referenced object is temporarily unavailable, retry
 and keep serving the last complete snapshot. Verify the bytes and both cache

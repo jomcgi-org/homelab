@@ -356,7 +356,7 @@ func TestProductsSchemaTimestampsAndCacheHeaders(t *testing.T) {
 
 	// Every payload is immutable under a key that holds its digest.
 	for _, key := range s3.keys() {
-		if key == "latest.json" {
+		if key == "latest.json" || key == stateKey {
 			continue
 		}
 		obj := s3.object(t, key)
@@ -364,9 +364,12 @@ func TestProductsSchemaTimestampsAndCacheHeaders(t *testing.T) {
 			t.Errorf("%s: digest %t, Cache-Control %q, Content-Type %q", key, verify(key, obj.body), obj.cache, obj.kind)
 		}
 	}
-	// Tracks, heat and snapshot before the manifest.
-	if puts := s3.puts; puts[len(puts)-1] != "latest.json" || puts[len(puts)-2] != snapKey {
+	// Tracks, heat and snapshot before the manifest, then the collector state.
+	if puts := s3.puts; puts[len(puts)-1] != stateKey || puts[len(puts)-2] != "latest.json" || puts[len(puts)-3] != snapKey {
 		t.Fatalf("write order %v", puts)
+	}
+	if obj := s3.object(t, stateKey); obj.cache != "no-store" {
+		t.Fatalf("state Cache-Control %q", obj.cache)
 	}
 }
 
@@ -431,8 +434,8 @@ func TestChangedVesselsOnlyRebuildTheirTracks(t *testing.T) {
 	if *second.vessels["111"].Track == *first.vessels["111"].Track || *second.vessels["222"].Track != *first.vessels["222"].Track {
 		t.Fatal("track keys did not follow the changed vessel")
 	}
-	// The new track, the snapshot and the manifest. Heat is unchanged.
-	if got := s3.puts[before:]; len(got) != 3 || !strings.HasPrefix(got[0], "tracks/111-") {
+	// The new track, the snapshot, the manifest and the state. Heat is unchanged.
+	if got := s3.puts[before:]; len(got) != 4 || !strings.HasPrefix(got[0], "tracks/111-") {
 		t.Fatalf("second run wrote %v", got)
 	}
 
@@ -448,7 +451,7 @@ func TestChangedVesselsOnlyRebuildTheirTracks(t *testing.T) {
 	if third.vessels["222"].Track != nil || *third.vessels["111"].Track != *second.vessels["111"].Track {
 		t.Fatalf("hourly run tracks %v %v", third.vessels["222"].Track, third.vessels["111"].Track)
 	}
-	if got := s3.puts[before:]; len(got) != 2 {
+	if got := s3.puts[before:]; len(got) != 3 {
 		t.Fatalf("hourly run wrote %v", got)
 	}
 }
@@ -496,32 +499,165 @@ func TestInterruptedPublishKeepsCompleteGeneration(t *testing.T) {
 	}
 }
 
-func TestExpiredKeepsWhatReadersCanStillHold(t *testing.T) {
+func TestCollectKeepsPayloadsForGraceAfterRetirement(t *testing.T) {
 	key := func(name string, n int) string { return name + "-" + strings.Repeat(string(rune('a'+n)), 64) + ".json" }
-	cutoff := t0.Add(-grace)
-	before := func(d time.Duration) time.Time { return cutoff.Add(-d) }
+	now := t0
+	old := now.Add(-72 * time.Hour)
 	objects := map[string]time.Time{
-		"latest.json":        before(time.Hour),
-		"notes.txt":          before(time.Hour), // not the writer's key
-		key("snapshot", 0):   before(20 * time.Minute),
-		key("snapshot", 1):   before(10 * time.Minute), // current at cutoff
-		key("snapshot", 2):   cutoff.Add(time.Minute),  // previous
-		key("heat", 0):       before(time.Hour),        // current
-		key("tracks/111", 0): before(time.Hour),
-		key("tracks/111", 1): before(time.Minute), // current at cutoff
-		key("tracks/111", 2): cutoff.Add(time.Minute),
-		key("tracks/222", 0): before(48 * time.Hour), // unchanged, current
-		key("tracks/333", 0): before(time.Hour),      // history expired
-		key("tracks/333", 1): before(time.Minute),
-		key("tracks/444", 0): cutoff.Add(time.Minute), // recent orphan
+		"latest.json":        old,
+		stateKey:             old,
+		"notes.txt":          old, // not the writer's key
+		key("snapshot", 0):   old, // retired 31 minutes ago
+		key("snapshot", 1):   old, // previous: retires now
+		key("snapshot", 2):   now, // current
+		key("heat", 0):       old, // current for days
+		key("tracks/111", 0): old, // retired exactly a grace period ago
+		key("tracks/111", 1): old, // retired 29 minutes ago
+		key("tracks/111", 2): now, // current
+		key("tracks/222", 0): old, // previous, gone from the new generation
+		key("tracks/333", 0): old, // orphan without a retirement time
+		key("tracks/444", 0): old, // named again after it retired
 	}
-	refs := map[string]bool{
-		key("snapshot", 2): true, key("snapshot", 3): true, key("heat", 0): true,
-		key("tracks/111", 3): true, key("tracks/222", 0): true,
+	retired := map[string]time.Time{
+		key("snapshot", 0):   now.Add(-31 * time.Minute),
+		key("tracks/111", 0): now.Add(-grace),
+		key("tracks/111", 1): now.Add(-29 * time.Minute),
+		key("tracks/222", 0): now.Add(-time.Hour), // stale: prev names it
+		key("tracks/444", 0): now.Add(-time.Hour),
+		key("tracks/555", 0): now.Add(-time.Hour), // no longer in the bucket
 	}
-	want := []string{key("snapshot", 0), key("tracks/111", 0), key("tracks/333", 0), key("tracks/333", 1)}
-	if got := expired(objects, refs, cutoff); !reflect.DeepEqual(got, want) {
-		t.Fatalf("expired %v\nwant %v", got, want)
+	prev := map[string]bool{key("snapshot", 1): true, key("heat", 0): true, key("tracks/222", 0): true}
+	cur := map[string]bool{
+		key("snapshot", 2): true, key("heat", 0): true, key("tracks/111", 2): true, key("tracks/444", 0): true,
+	}
+	next, expired := collect(objects, retired, prev, cur, now)
+	if want := []string{key("snapshot", 0), key("tracks/111", 0)}; !reflect.DeepEqual(expired, want) {
+		t.Fatalf("expired %v\nwant %v", expired, want)
+	}
+	want := map[string]time.Time{
+		key("snapshot", 0):   now.Add(-31 * time.Minute),
+		key("snapshot", 1):   now,
+		key("tracks/111", 0): now.Add(-grace),
+		key("tracks/111", 1): now.Add(-29 * time.Minute),
+		key("tracks/222", 0): now,
+		key("tracks/333", 0): now,
+	}
+	if !reflect.DeepEqual(next, want) {
+		t.Fatalf("retired %v\nwant %v", next, want)
+	}
+
+	// Without the previous generation or the state, nothing retired leaves:
+	// every unnamed payload starts a new grace period.
+	for _, tc := range []struct {
+		retired map[string]time.Time
+		prev    map[string]bool
+	}{{retired, nil}, {nil, prev}} {
+		next, expired := collect(objects, tc.retired, tc.prev, cur, now)
+		if len(expired) != 0 || len(next) != 6 {
+			t.Fatalf("unknown history: expired %v, retired %v", expired, next)
+		}
+		for key, at := range next {
+			if !at.Equal(now) {
+				t.Errorf("%s retired at %v, want %v", key, at, now)
+			}
+		}
+	}
+}
+
+// trackOf returns the track key that the published snapshot names for a vessel.
+func trackOf(t *testing.T, st *store, mmsi string) *string {
+	t.Helper()
+	g, err := resolve(context.Background(), st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g.vessels[mmsi].Track
+}
+
+// runEvery publishes every two minutes from start until end, inclusive.
+func runEvery(t *testing.T, st *store, db *fakeDB, clock *time.Time, start, end time.Time) {
+	t.Helper()
+	for at := start; !at.After(end); at = at.Add(2 * time.Minute) {
+		if _, err := publishAt(t, st, db, clock, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A track uploaded days ago leaves 30 minutes after the generation that
+// drops it, also when the vessel has no track at all after that.
+func TestTrackThatDisappearsStaysForGrace(t *testing.T) {
+	s3, db, st, clock := newFixture(t)
+	runEvery(t, st, db, clock, t0, t0)
+	old := *trackOf(t, st, "222")
+	// Days later retention drops the last positions of vessel 222. The
+	// hourly rebuild publishes a null track.
+	gone := t0.Add(72 * time.Hour)
+	delete(db.points, "222")
+	runEvery(t, st, db, clock, gone, gone)
+	if trackOf(t, st, "222") != nil {
+		t.Fatal("vessel 222 still has a track")
+	}
+	// Neither the current nor the previous generation names the key from
+	// the second run on, and its object is days old. It stays.
+	runEvery(t, st, db, clock, gone.Add(2*time.Minute), gone.Add(28*time.Minute))
+	if !slices.Contains(s3.keys(), old) {
+		t.Fatal("the dropped track left before its grace period ended")
+	}
+	runEvery(t, st, db, clock, gone.Add(30*time.Minute), gone.Add(30*time.Minute))
+	if slices.Contains(s3.keys(), old) {
+		t.Fatal("the dropped track stayed after its grace period")
+	}
+}
+
+// A replaced track leaves 30 minutes after its replacement, not 30 minutes
+// after the replacement's object was written.
+func TestReplacedTrackStaysForGrace(t *testing.T) {
+	s3, db, st, clock := newFixture(t)
+	runEvery(t, st, db, clock, t0, t0)
+	first := *trackOf(t, st, "111")
+	// Days later vessel 111 reports again: a newer track replaces it.
+	moved := t0.Add(72 * time.Hour)
+	db.rows[0].UpdatedAt = stamp{moved.Add(-time.Minute)}
+	db.points["111"] = append([]point{{Lat: 48.6, Lon: -123.3, RecordedAt: stamp{moved.Add(-time.Minute)}}}, db.points["111"]...)
+	runEvery(t, st, db, clock, moved, moved.Add(28*time.Minute))
+	second := *trackOf(t, st, "111")
+	if second == first {
+		t.Fatal("the track did not change")
+	}
+	keys := s3.keys()
+	if !slices.Contains(keys, first) || !slices.Contains(keys, second) {
+		t.Fatalf("a track left before the grace period ended: %v", keys)
+	}
+	runEvery(t, st, db, clock, moved.Add(30*time.Minute), moved.Add(30*time.Minute))
+	keys = s3.keys()
+	if slices.Contains(keys, first) || !slices.Contains(keys, second) {
+		t.Fatalf("after the grace period: %v", keys)
+	}
+}
+
+// A lost or unreadable state restarts the grace period of every unnamed
+// payload, and never deletes one early.
+func TestLostStateKeepsUnnamedPayloads(t *testing.T) {
+	s3, db, st, clock := newFixture(t)
+	runEvery(t, st, db, clock, t0, t0)
+	old := *trackOf(t, st, "222")
+	gone := t0.Add(72 * time.Hour)
+	delete(db.points, "222")
+	runEvery(t, st, db, clock, gone, gone.Add(20*time.Minute))
+	// The state goes bad 20 minutes into the grace period.
+	s3.mu.Lock()
+	obj := s3.objects[stateKey]
+	obj.body = []byte("{")
+	s3.objects[stateKey] = obj
+	s3.mu.Unlock()
+	runEvery(t, st, db, clock, gone.Add(22*time.Minute), gone.Add(50*time.Minute))
+	if !slices.Contains(s3.keys(), old) {
+		t.Fatal("the dropped track left early after the state was lost")
+	}
+	runEvery(t, st, db, clock, gone.Add(52*time.Minute), gone.Add(52*time.Minute))
+	if slices.Contains(s3.keys(), old) {
+		t.Fatal("the dropped track stayed after its new grace period")
 	}
 }
 

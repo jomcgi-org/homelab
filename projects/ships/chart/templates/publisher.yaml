@@ -5,8 +5,10 @@
 {{- range list "AWS_ENDPOINT_URL" "AWS_REGION" "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "BUCKET" }}
 {{- $env = append $env (dict "name" . "valueFrom" (dict "secretKeyRef" (dict "name" $secret "key" .))) }}
 {{- end }}
-{{- /* The publisher runs only read-only transactions. */ -}}
-{{- $env = append $env (dict "name" "DATABASE_URL" "valueFrom" (dict "secretKeyRef" (dict "name" "ships-db-app" "key" "uri"))) }}
+{{- /* The read-only ships_publisher login (templates/database.yaml), never
+the owner's ships-db-app. Its password is URL-safe, so the URL needs no escaping. */ -}}
+{{- $env = append $env (dict "name" "DATABASE_PASSWORD" "valueFrom" (dict "secretKeyRef" (dict "name" "ships-publisher-login" "key" "password"))) }}
+{{- $env = append $env (dict "name" "DATABASE_URL" "value" (printf "postgresql://ships_publisher:$(DATABASE_PASSWORD)@ships-db-rw.%s.svc:5432/ships?sslmode=require" .Release.Namespace)) }}
 {{- $workload := dict "schedule" .Values.publisher.schedule "backoffLimit" 0 "args" (list "publish") "env" $env "resources" .Values.publisher.resources }}
 {{- $render := include "factory-library.cronjob" (dict "root" $ "name" "ships-publish" "workload" $workload) }}
 {{- range splitList "\n---" $render }}

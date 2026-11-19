@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 
 import yaml
 
@@ -243,10 +244,18 @@ def test_mirror_publishes_only_health_json_from_the_health_bucket():
     assert "  --exclude '/stars-forecast/**' \\\n" in script
     assert "  --exclude '/hikes/**' \\\n" in script
     assert "  --exclude '/ships/**' \\\n" in script
-    assert (
+    health = (
         'copyto "SRC0:factory-health/health.json" "R2:$R2_BUCKET/health.json" \\\n'
         '    --ignore-times --header-upload "Cache-Control: public, max-age=60"'
-    ) in script
+    )
+    assert health in script
+    # Payloads without deletes, then the manifest and health.json, then the deletes.
+    assert (
+        script.index("\npayloads copy\n")
+        < script.index('"R2:$R2_BUCKET/manifest.json"')
+        < script.index(health)
+        < script.index("\npayloads sync")
+    )
 
 
 def test_sources_mirror_writer_buckets_under_their_prefixes():
@@ -262,9 +271,16 @@ def test_sources_mirror_writer_buckets_under_their_prefixes():
         assert (env["GARAGE_BUCKET"], env["R2_BUCKET"]) == (prefix, "factory-public")
         script = container["command"][2]
         assert (
-            f'run sync "GARAGE:$GARAGE_BUCKET" "R2:$R2_BUCKET/{prefix}" \\\n' in script
+            f'  run "$1" "GARAGE:$GARAGE_BUCKET" "R2:$R2_BUCKET/{prefix}" \\\n'
+            in script
         )
-        assert f'"R2:$R2_BUCKET/{prefix}/latest.json"' in script
+        # Payloads without deletes, then the manifest, then the deletes.
+        manifest = f'"R2:$R2_BUCKET/{prefix}/latest.json"'
+        assert (
+            script.index("\npayloads copy\n")
+            < script.index(manifest)
+            < script.index("\npayloads sync")
+        )
         # Every R2 path in the script stays under the prefix.
         assert script.count('"R2:$R2_BUCKET') == script.count(
             f'"R2:$R2_BUCKET/{prefix}'
@@ -273,80 +289,6 @@ def test_sources_mirror_writer_buckets_under_their_prefixes():
         assert item["spec"]["itemPath"] == (
             "vaults/k8s-homelab/items/factory-r2-public-mirror"
         )
-
-
-# A stand-in for rclone that keeps Garage and R2 as directories. Each object
-# appears only when its copy completes, as on S3. With FAKE_INTERRUPT_AFTER=N,
-# sync stops with an error after N transfers, before it deletes anything.
-FAKE_RCLONE = r"""
-import json, os, shutil, sys
-
-args = sys.argv[1:]
-assert args[:3] == ["--config", "/dev/null", "--s3-no-check-bucket"], args
-command, rest = args[3], args[4:]
-roots = {"GARAGE": os.environ["FAKE_GARAGE"], "R2": os.environ["FAKE_R2"]}
-
-
-def local(path):
-    remote, sep, name = path.partition(":")
-    return os.path.join(roots[remote], name) if sep and remote in roots else path
-
-
-def flag(name):
-    return [rest[i + 1] for i, arg in enumerate(rest) if arg == name]
-
-
-def files(root):
-    out = set()
-    for base, _, names in os.walk(root):
-        for name in names:
-            if not name.startswith("."):
-                out.add(os.path.relpath(os.path.join(base, name), root))
-    return out
-
-
-def copy(source, target, headers):
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    shutil.copyfile(source, target + ".part")
-    os.replace(target + ".part", target)
-    log = os.path.join(os.environ["FAKE_R2"], ".headers.json")
-    seen = json.load(open(log)) if os.path.exists(log) else {}
-    seen[os.path.relpath(target, os.environ["FAKE_R2"])] = headers
-    json.dump(seen, open(log, "w"))
-
-
-if command == "lsf":
-    root = local(rest[0])
-    for pattern in flag("--include"):
-        if os.path.isfile(os.path.join(root, pattern.lstrip("/"))):
-            print(pattern.lstrip("/"))
-elif command == "cat":
-    sys.stdout.buffer.write(open(local(rest[0]), "rb").read())
-elif command == "sync":
-    source, target = local(rest[0]), local(rest[1])
-    excluded = {e.lstrip("/") for e in flag("--exclude")}
-    wanted = sorted(files(source) - excluded)
-    budget = int(os.environ.get("FAKE_INTERRUPT_AFTER", "-1"))
-    for name in wanted:
-        dest = os.path.join(target, name)
-        if os.path.exists(dest) and open(dest, "rb").read() == open(os.path.join(source, name), "rb").read():
-            continue
-        if budget == 0:
-            sys.exit("interrupted")
-        budget -= 1
-        copy(os.path.join(source, name), dest, flag("--header-upload"))
-    for name in files(target) - set(wanted) - excluded if os.path.isdir(target) else []:
-        os.remove(os.path.join(target, name))
-elif command == "copyto":
-    copy(local(rest[0]), local(rest[1]), flag("--header-upload"))
-elif command == "delete":
-    for pattern in flag("--include"):
-        path = os.path.join(local(rest[0]), pattern.lstrip("/"))
-        if os.path.exists(path):
-            os.remove(path)
-else:
-    sys.exit("unexpected command " + command)
-"""
 
 
 def payload(root, name, value):
@@ -368,12 +310,19 @@ def generation(root, lat):
 
 
 def resolve(prefix):
-    """Read the generation that a public reader of the prefix sees."""
+    """Read the generation that a public reader of the prefix sees.
+
+    Every key it names must exist with the bytes that its digest names.
+    """
     manifest = json.loads((prefix / "latest.json").read_text())
     keys = {manifest["snapshot"], manifest["heat"]}
+    assert (prefix / manifest["snapshot"]).exists(), (
+        "latest.json names a missing snapshot"
+    )
     snapshot = json.loads((prefix / manifest["snapshot"]).read_bytes())
     keys |= {v["track"] for v in snapshot["vessels"]}
     for key in keys:
+        assert (prefix / key).exists(), f"latest.json names missing {key}"
         digest = key.rsplit("-", 1)[1].removesuffix(".json")
         assert hashlib.sha256((prefix / key).read_bytes()).hexdigest() == digest, key
     return keys
@@ -386,48 +335,81 @@ def test_ships_mirror_survives_an_interrupted_copy(tmp_path):
     bucket, prefix = garage / "ships", r2 / "factory-public" / "ships"
     bucket.mkdir(parents=True)
     prefix.mkdir(parents=True)
+    # The library's directory-backed rclone stand-in (fake_rclone.py).
     binary = tmp_path / "bin" / "rclone"
     binary.parent.mkdir()
-    binary.write_text("#!" + shutil.which("python3") + "\n" + FAKE_RCLONE)
+    binary.write_text(
+        "#!"
+        + shutil.which("python3")
+        + "\n"
+        + Path(os.environ["FAKE_RCLONE"]).read_text()
+    )
     binary.chmod(0o755)
-    env = {
-        **os.environ,
-        **{var["name"]: var["value"] for var in container["env"] if "value" in var},
-        "FAKE_GARAGE": str(garage),
-        "FAKE_R2": str(r2),
-        "PATH": str(binary.parent) + os.pathsep + os.environ["PATH"],
-    }
-    env["RCLONE_CONFIG_R2_ENDPOINT"] = "https://" + env["R2_HOST"]
 
-    def mirror(interrupt_after=-1):
-        run_env = dict(env, FAKE_INTERRUPT_AFTER=str(interrupt_after))
-        return subprocess.run(container["command"], env=run_env, capture_output=True)
+    def mirror(r2_root, budget=None):
+        state = tempfile.mkdtemp(dir=tmp_path)
+        env = {
+            **os.environ,
+            **{var["name"]: var["value"] for var in container["env"] if "value" in var},
+            "FAKE_REMOTES": json.dumps({"GARAGE": str(garage), "R2": str(r2_root)}),
+            "FAKE_STATE": state,
+            "PATH": str(binary.parent) + os.pathsep + os.environ["PATH"],
+        }
+        env["RCLONE_CONFIG_R2_ENDPOINT"] = "https://" + env["R2_HOST"]
+        if budget is not None:
+            env["FAKE_BUDGET"] = str(budget)
+        result = subprocess.run(container["command"], env=env, capture_output=True)
+        headers = Path(state) / "headers.json"
+        return result, json.loads(headers.read_text()) if headers.exists() else {}
+
+    def interrupt_at_every_step(expected):
+        """Stop a run before each call and between each object write or delete.
+
+        Each run starts from the same R2 state. Readers always resolve a
+        complete generation: the one before the run, or the new one.
+        """
+        budget = 0
+        while True:
+            attempt = Path(tempfile.mkdtemp(dir=tmp_path)) / "r2"
+            shutil.copytree(r2, attempt)
+            result, _ = mirror(attempt, budget)
+            assert resolve(attempt / "factory-public" / "ships") in expected, budget
+            if result.returncode == 0:
+                return budget
+            assert b"interrupted" in result.stderr, result.stderr
+            budget += 1
 
     first = generation(bucket, 48.5)
-    assert mirror().returncode == 0
+    assert mirror(r2)[0].returncode == 0
     assert resolve(prefix) == first
 
     # The writer publishes a second generation and keeps the first one's
     # objects. The mirror stops after one transfer.
     second = generation(bucket, 48.6)
-    result = mirror(interrupt_after=1)
-    assert result.returncode != 0
+    assert mirror(r2, budget=4)[0].returncode != 0
     # Readers still get the first generation, every object complete.
     assert resolve(prefix) == first
+    assert interrupt_at_every_step([first, second]) > 0
 
     # A long outage: the writer's grace period ends and it removes the
-    # objects that only the first generation names.
+    # objects that only the first generation names. R2 still serves them
+    # under its first latest.json, so the mirror deletes them only after it
+    # replaces that manifest.
     for key in first - second:
         (bucket / key).unlink()
-    assert mirror().returncode == 0
+    # lsf, cat, copy and its upload of the second track, copyto and its
+    # upload, then sync and its two deletes: nine steps.
+    assert interrupt_at_every_step([first, second]) == 9
+
+    # Recovery: the next complete run catches up.
+    result, headers = mirror(r2)
+    assert result.returncode == 0
     assert resolve(prefix) == second
     stored = {p.relative_to(prefix).as_posix() for p in prefix.rglob("*.json")}
     assert stored == second | {"latest.json"}
-    headers = json.loads((r2 / ".headers.json").read_text())
-    assert headers["factory-public/ships/latest.json"] == [
-        "Cache-Control: public, max-age=60"
-    ]
+    assert headers[str(prefix / "latest.json")] == ["Cache-Control: public, max-age=60"]
+    _, headers = mirror(tmp_path / "fresh")
     for key in second:
-        assert headers[f"factory-public/ships/{key}"] == [
+        assert headers[str(tmp_path / "fresh" / "factory-public" / "ships" / key)] == [
             "Cache-Control: public, max-age=31536000, immutable"
         ]

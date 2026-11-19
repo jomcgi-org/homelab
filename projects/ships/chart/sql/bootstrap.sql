@@ -1,3 +1,13 @@
+-- The publisher's login. It owns nothing and only reads the tables that the
+-- grants at the end of this file name. CloudNativePG sets LOGIN and the
+-- password from managed.roles (templates/database.yaml).
+DO $$
+BEGIN
+    CREATE ROLE ships_publisher NOLOGIN NOINHERIT;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END
+$$;
+
 SET ROLE ships;
 
 CREATE SCHEMA IF NOT EXISTS ships;
@@ -78,3 +88,10 @@ CREATE TABLE ships.inbox (
     id     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     frame  BYTEA NOT NULL
 );
+
+-- The publisher reads these five tables and nothing else. It cannot write,
+-- lock for update, create, alter or drop. A query through ships.positions
+-- checks only the parent's privileges, so new partitions need no grant.
+GRANT USAGE ON SCHEMA ships TO ships_publisher;
+GRANT SELECT ON ships.vessels, ships.positions, ships.latest_positions,
+    ships.heat_cells, ships.heat_cells_historical TO ships_publisher;

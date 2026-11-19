@@ -273,7 +273,7 @@ flowchart LR
   item[1Password item] -->|operator| credential[R2 Secret]
   garage -->|read on 3900| mirror[rclone CronJob]
   credential -->|environment| mirror
-  mirror -->|sync payloads, then manifest on 443| r2[R2 bucket]
+  mirror -->|copy payloads, manifest, then delete on 443| r2[R2 bucket]
 ```
 
 The item supplies access-key-id, secret-access-key and s3-api-endpoint.
@@ -315,11 +315,19 @@ controllers and principals that can impersonate them remain trusted.
 Direct Secret reads and exec access require separate RBAC; these policies do
 not grant either capability. The mirror ServiceAccount has no API permissions.
 
-Each run syncs payloads excluding the selected root index with
-Cache-Control: public, max-age=31536000, immutable. After a successful sync,
-it copies an existing manifest with Cache-Control: public, max-age=60.
-A failed sync or listing stops publication. An absent source manifest removes
-the destination manifest. Payload deletions use rclone sync's normal deletion.
+Each run has three steps. Each step starts only after the previous one
+succeeds, so a stop at any point leaves the R2 manifest naming only objects
+that R2 holds:
+
+1. `rclone copy` uploads the payloads, all objects except the selected root
+   index, with Cache-Control: public, max-age=31536000, immutable. It deletes
+   nothing.
+2. The run copies an existing manifest with Cache-Control: public,
+   max-age=60. An absent source manifest removes the destination manifest.
+3. `rclone sync` with the same filters deletes the payloads that Garage no
+   longer holds.
+
+A failed copy or listing stops publication.
 
 Set `public.manifestName: latest.json` for static-page writers. The default is
 `manifest.json` for existing publishers.
@@ -328,13 +336,15 @@ Set `public.manifestName: latest.json` for static-page writers. The default is
 example `[{bucket: factory-health, key: health.json}]`. The writer of that key
 then needs no access to the mirrored bucket. Each key is a root `*.json` name
 other than the manifest. The mirror gets a separate read-only Garage key for
-each named bucket. The sync leaves these keys out. After the manifest step,
-each key is copied from its bucket with the manifest's 60-second cache, or
+each named bucket. The copy and the sync leave these keys out. After the
+manifest step, each key is copied from its bucket with the manifest's 60-second cache, or
 removed from R2 when its bucket lacks it.
 
 The publisher must write immutable objects before replacing its manifest.
 Keep objects referenced by a current or cached manifest until those readers
 expire; the mirror does not provide a transaction across concurrent writes.
+The mirror's delete step relies on this: it deletes only what Garage no
+longer holds, after R2 has the new manifest.
 
 ### One public R2 bucket
 

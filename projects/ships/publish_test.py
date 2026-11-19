@@ -17,6 +17,7 @@ from xml.sax.saxutils import escape
 
 import pytest
 from fastapi import Request, Response
+from sqlalchemy.exc import DBAPIError
 from sqlmodel import Session, create_engine, text
 
 from ships.router import get_heat, get_snapshot, get_track
@@ -101,12 +102,20 @@ def factory_database(pg, name):
     superuser = create_engine(f"{base}/{name}")
     with superuser.begin() as conn:
         conn.exec_driver_sql(Path(os.environ["SHIPS_BOOTSTRAP_SQL"]).read_text())
+        # The operator sets LOGIN on the managed role (templates/database.yaml)
+        # as the superuser. The bootstrap SQL ends as role ships.
+        conn.exec_driver_sql("RESET ROLE")
+        conn.exec_driver_sql("ALTER ROLE ships_publisher LOGIN")
     superuser.dispose()
     engine = create_engine(
         f"postgresql+psycopg://ships@127.0.0.1:{pg.port}/{name}",
         connect_args=UTC_SESSION,
     )
-    return engine, f"postgres://ships@127.0.0.1:{pg.port}/{name}?sslmode=disable"
+    # The publisher connects as its read-only login, as in the chart.
+    return (
+        engine,
+        f"postgres://ships_publisher@127.0.0.1:{pg.port}/{name}?sslmode=disable",
+    )
 
 
 SEED = """
@@ -208,6 +217,8 @@ def test_publisher_matches_hub(pg, bucket):
     first, first_snapshot = assert_matches_hub(engine)
     keys = {key: obj["cache"] for key, obj in Bucket.objects.items()}
     assert keys.pop("latest.json") == "public, max-age=60"
+    # The collector's state: the retirement time of each unnamed payload.
+    assert keys.pop("publisher-state.json") == "no-store"
     assert set(keys.values()) == {"public, max-age=31536000, immutable"}
 
     # A new report for vessel 222 rebuilds only its track.
@@ -225,3 +236,78 @@ def test_publisher_matches_hub(pg, bucket):
     tracks = {v["mmsi"]: v["track"] for v in first_snapshot["vessels"]}
     changed = {v["mmsi"]: v["track"] for v in second_snapshot["vessels"]}
     assert changed["111"] == tracks["111"] and changed["222"] != tracks["222"]
+
+
+# Each statement needs a privilege that ships_publisher lacks. Each runs in
+# its own read-write transaction: the grants refuse it, not the READ ONLY
+# mode of the publisher's own transaction.
+DENIED = [
+    "insert into ships.vessels (mmsi) values ('999')",
+    "update ships.latest_positions set lat = 0",
+    "delete from ships.positions",
+    "truncate ships.heat_cells",
+    "select * from ships.vessels for update",
+    "lock table ships.heat_cells_historical in exclusive mode",
+    "select * from ships.inbox",
+    "delete from ships.inbox",
+    "select nextval('ships.positions_id_seq')",
+    "alter table ships.positions add column extra integer",
+    "drop table ships.heat_cells_historical",
+    "create table ships.extra (id integer)",
+    "create table public.extra (id integer)",
+    "create index on ships.vessels (name)",
+    "create schema extra",
+    "set role ships",
+]
+
+
+def test_publisher_login_cannot_write_or_alter(pg):
+    engine, dsn = factory_database(pg, "ships_publisher_grants")
+    with engine.begin() as conn:
+        conn.exec_driver_sql(SEED)
+        # A day partition that the ingester attaches later. A read through
+        # the parent needs no grant on it.
+        conn.exec_driver_sql(
+            "CREATE TABLE ships.positions_20990101 (LIKE ships.positions);"
+            "ALTER TABLE ships.positions ATTACH PARTITION ships.positions_20990101"
+            " FOR VALUES FROM ('2099-01-01') TO ('2099-01-02');"
+            "INSERT INTO ships.positions (mmsi, lat, lon, recorded_at)"
+            " VALUES ('111', 48, -123, '2099-01-01 12:00:00+00')"
+        )
+    login = create_engine(dsn.replace("postgres://", "postgresql+psycopg://", 1))
+    with login.connect() as conn:
+        assert (
+            conn.exec_driver_sql("select count(*) from ships.positions").scalar() == 4
+        )
+        for table in (
+            "vessels",
+            "latest_positions",
+            "heat_cells",
+            "heat_cells_historical",
+        ):
+            conn.exec_driver_sql(f"select * from ships.{table}").fetchall()
+        conn.rollback()
+        attributes = conn.exec_driver_sql(
+            "select rolsuper, rolinherit, rolcreaterole, rolcreatedb, rolreplication,"
+            " rolbypassrls from pg_roles where rolname = current_user"
+        ).one()
+        assert not any(attributes)
+        owned = conn.exec_driver_sql(
+            "select count(*) from pg_class where relowner ="
+            " (select oid from pg_roles where rolname = current_user)"
+        ).scalar()
+        assert owned == 0
+        conn.rollback()
+        for statement in DENIED:
+            with pytest.raises(DBAPIError) as refused:
+                with conn.begin():
+                    conn.exec_driver_sql(statement)
+            assert refused.value.orig.sqlstate == "42501", statement
+    login.dispose()
+    # The owner still sees the seeded rows: nothing the login tried changed them.
+    with engine.connect() as conn:
+        assert conn.exec_driver_sql("select count(*) from ships.vessels").scalar() == 1
+        assert (
+            conn.exec_driver_sql("select count(*) from ships.positions").scalar() == 4
+        )
+    engine.dispose()

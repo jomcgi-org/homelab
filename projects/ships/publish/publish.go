@@ -18,9 +18,10 @@ import (
 )
 
 const (
-	// grace is how long a replaced object stays in the bucket. It covers the
-	// mirror interval, the manifest cache, the page refresh and a mirror
-	// outage of up to about 25 minutes.
+	// grace is how long a payload stays in the bucket after the first
+	// committed generation that does not name it. It covers the mirror
+	// interval, the manifest cache, the page refresh and a mirror outage of
+	// up to about 25 minutes.
 	grace = 30 * time.Minute
 	// margin covers an ingester transaction that started before the previous
 	// view and committed after it: its updated_at is its start time.
@@ -101,6 +102,8 @@ type stats struct {
 	puts                              int
 	putBytes                          int64
 	deletes                           int
+	// retired counts the payloads in their grace period after this run.
+	retired int
 }
 
 type publisher struct {
@@ -128,6 +131,10 @@ func (p *publisher) write(ctx context.Context, key string, body []byte) error {
 func (p *publisher) run(ctx context.Context, open func(context.Context) (reader, error)) error {
 	var err error
 	if p.objects, err = p.store.list(ctx); err != nil {
+		return err
+	}
+	retired, err := readRetired(ctx, p.store, p.objects)
+	if err != nil {
 		return err
 	}
 	prev, err := resolve(ctx, p.store)
@@ -235,20 +242,33 @@ func (p *publisher) run(ctx context.Context, open func(context.Context) (reader,
 	p.stats.puts++
 	p.stats.putBytes += int64(len(top))
 
-	refs := cur.refs()
+	// The manifest commits the generation. Record when each payload left the
+	// committed generations, then delete what retired a grace period ago.
+	var prevRefs map[string]bool
 	if prev != nil {
-		for key := range prev.refs() {
-			refs[key] = true
-		}
+		prevRefs = prev.refs()
 	}
+	next, expired := collect(p.objects, retired, prevRefs, cur.refs(), p.now())
 	var failed error
-	for _, key := range expired(p.objects, refs, p.now().Add(-grace)) {
+	for _, key := range expired {
 		if err := p.store.remove(ctx, key); err != nil {
+			// The key keeps its retirement time, so the next run retries.
 			failed = errors.Join(failed, err)
 			continue
 		}
+		delete(next, key)
 		p.stats.deletes++
 	}
+	state, err := json.Marshal(gcState{Version: schemaVersion, Retired: next})
+	if err != nil {
+		return errors.Join(failed, err)
+	}
+	if err := p.store.put(ctx, stateKey, state, "no-store"); err != nil {
+		return errors.Join(failed, err)
+	}
+	p.stats.puts++
+	p.stats.putBytes += int64(len(state))
+	p.stats.retired = len(next)
 	return failed
 }
 
@@ -286,7 +306,7 @@ func publishOnce() error {
 	err = p.run(ctx, func(ctx context.Context) (reader, error) { return openReader(ctx, db) })
 	st := p.stats
 	// One line per run gives the bytes and object writes of each cycle.
-	log.Printf("publish: vessels=%d tracks=%d rebuilt=%d skipped=%d full=%t puts=%d put_bytes=%d deletes=%d",
-		st.vessels, st.tracks, st.rebuilt, st.skipped, st.full, st.puts, st.putBytes, st.deletes)
+	log.Printf("publish: vessels=%d tracks=%d rebuilt=%d skipped=%d full=%t puts=%d put_bytes=%d deletes=%d retired=%d",
+		st.vessels, st.tracks, st.rebuilt, st.skipped, st.full, st.puts, st.putBytes, st.deletes, st.retired)
 	return err
 }

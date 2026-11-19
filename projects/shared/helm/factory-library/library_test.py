@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 
@@ -458,11 +459,12 @@ def test_private_bucket_and_custom_schedule(chart):
 @pytest.mark.parametrize(
     "manifest,fail,expected",
     [
-        ("manifest.json\n", "", ["sync", "lsf", "copyto"]),
-        ("", "", ["sync", "lsf", "delete"]),
-        ("manifest.json\n", "sync", ["sync"]),
-        ("manifest.json\n", "lsf", ["sync", "lsf"]),
-        ("manifest.json\n", "copyto", ["sync", "lsf", "copyto"]),
+        ("manifest.json\n", "", ["copy", "lsf", "copyto", "sync"]),
+        ("", "", ["copy", "lsf", "delete", "sync"]),
+        ("manifest.json\n", "copy", ["copy"]),
+        ("manifest.json\n", "lsf", ["copy", "lsf"]),
+        ("manifest.json\n", "copyto", ["copy", "lsf", "copyto"]),
+        ("manifest.json\n", "sync", ["copy", "lsf", "copyto", "sync"]),
     ],
 )
 @pytest.mark.parametrize("name", ["manifest.json", "latest.json"])
@@ -522,37 +524,149 @@ def test_mirror_orders_writes_and_propagates_failures(
         expected = (
             ["lsf"]
             + (["cat"] if manifest else [])
-            + ["sync", "copyto" if manifest else "delete"]
+            + ["copy", "copyto" if manifest else "delete", "sync"]
         )
         if fail:
             expected = expected[: expected.index(fail) + 1]
+    # Payloads first with no delete, then the manifest, then the deletes.
     assert [call[3] for call in calls] == expected
     assert all(
         call[:3] == ["--config", "/dev/null", "--s3-no-check-bucket"] for call in calls
     )
-    sync = next((call for call in calls if call[3] == "sync"), None)
-    if sync is None:
-        return
-    assert sync[4:] == [
-        garage,
-        dest,
-        "--exclude",
-        f"/{name}",
-        "--header-upload",
-        "Cache-Control: public, max-age=31536000, immutable",
+    for call in calls:
+        if call[3] in ("copy", "sync"):
+            assert call[4:] == [
+                garage,
+                dest,
+                "--exclude",
+                f"/{name}",
+                "--header-upload",
+                "Cache-Control: public, max-age=31536000, immutable",
+            ]
+        if call[3] == "copyto":
+            if name == "latest.json":
+                assert call[4].startswith("/")
+            assert call[4:] == [
+                call[4] if name == "latest.json" else f"{garage}/{name}",
+                f"{dest}/{name}",
+                "--ignore-times",
+                "--header-upload",
+                "Cache-Control: public, max-age=60",
+            ]
+        if call[3] == "delete":
+            assert call[4:] == [dest, "--include", f"/{name}"]
+
+
+def fake_rclone(tmp_path):
+    """Install the directory-backed rclone stand-in; return its PATH entry."""
+    binary = tmp_path / "bin" / "rclone"
+    binary.parent.mkdir(exist_ok=True)
+    binary.write_text(
+        "#!" + shutil.which("python3") + "\n" + (HERE / "fake_rclone.py").read_text()
+    )
+    binary.chmod(0o755)
+    return str(binary.parent)
+
+
+def write_generation(bucket, generation, manifest):
+    """Write two digest-named payloads, then the manifest that names them."""
+    keys = []
+    for part in ("a", "b"):
+        body = json.dumps({"generation": generation, "part": part}).encode()
+        key = f"{part}-{hashlib.sha256(body).hexdigest()}.json"
+        (bucket / key).write_bytes(body)
+        keys.append(key)
+    (bucket / manifest).write_text(json.dumps(keys))
+    return set(keys)
+
+
+def public_view(prefix, manifest):
+    """The objects a reader resolves through the public manifest.
+
+    Every key the manifest names must exist with the bytes its digest names.
+    """
+    if not (prefix / manifest).exists():
+        return set()
+    keys = set(json.loads((prefix / manifest).read_text()))
+    for key in keys:
+        digest = key.rsplit("-", 1)[1].removesuffix(".json")
+        assert (prefix / key).exists(), f"{manifest} names missing {key}"
+        assert hashlib.sha256((prefix / key).read_bytes()).hexdigest() == digest
+    return keys
+
+
+@pytest.mark.parametrize("name", ["manifest.json", "latest.json"])
+@pytest.mark.parametrize("source", [False, True])
+def test_interrupted_mirror_keeps_the_public_manifest_complete(
+    chart, tmp_path, name, source
+):
+    config = bucket_config()
+    config["buckets"][0]["public"]["sources"] = [
+        {"bucket": "hikes", "r2Prefix": "hikes", "manifestName": name}
     ]
-    if expected[-1] == "copyto":
-        if name == "latest.json":
-            assert calls[-1][4].startswith("/")
-        assert calls[-1][4:] == [
-            calls[-1][4] if name == "latest.json" else f"{garage}/{name}",
-            f"{dest}/{name}",
-            "--ignore-times",
-            "--header-upload",
-            "Cache-Control: public, max-age=60",
-        ]
-    if expected[-1] == "delete":
-        assert calls[-1][4:] == [dest, "--include", f"/{name}"]
+    bucket, prefix, job = "factory-public", "", "consumer-factory-public-mirror"
+    if source:
+        bucket, prefix, job = "hikes", "hikes", "consumer-hikes-mirror"
+    else:
+        config["buckets"][0]["public"]["manifestName"] = name
+    container = mirror_container(objects(render(chart, config)), job)
+    garage, r2 = tmp_path / "garage", tmp_path / "r2"
+    (garage / bucket).mkdir(parents=True)
+    (r2 / "factory-public").mkdir(parents=True)
+    source_dir = garage / bucket
+    public = r2 / "factory-public" / prefix
+    # An object under another mirror's prefix. The root mirror must keep it.
+    other = r2 / "factory-public" / ("stars" if source else "hikes") / "keep.json"
+    other.parent.mkdir(parents=True)
+    other.write_text("{}")
+    path = fake_rclone(tmp_path)
+
+    def mirror(r2_root, budget=None):
+        run = tempfile.mkdtemp(dir=tmp_path)
+        env = {
+            **os.environ,
+            **{var["name"]: var["value"] for var in container["env"] if "value" in var},
+            "FAKE_REMOTES": json.dumps({"GARAGE": str(garage), "R2": str(r2_root)}),
+            "FAKE_STATE": run,
+            "PATH": path + os.pathsep + os.environ["PATH"],
+        }
+        env["RCLONE_CONFIG_R2_ENDPOINT"] = "https://" + env["R2_HOST"]
+        if budget is not None:
+            env["FAKE_BUDGET"] = str(budget)
+        return subprocess.run(container["command"], env=env, capture_output=True)
+
+    first = write_generation(source_dir, 1, name)
+    assert mirror(r2).returncode == 0
+    assert public_view(public, name) == first
+    # A long outage: the writer publishes a second generation and removes the
+    # payloads that only the first one named, which R2 still serves.
+    second = write_generation(source_dir, 2, name)
+    for key in first:
+        (source_dir / key).unlink()
+    # Stop a run before each call and between each object write or delete.
+    budget = 0
+    while True:
+        attempt = Path(tempfile.mkdtemp(dir=tmp_path)) / "r2"
+        shutil.copytree(r2, attempt)
+        result = mirror(attempt, budget)
+        view = public_view(attempt / "factory-public" / prefix, name)
+        assert view in (first, second), budget
+        if result.returncode == 0:
+            break
+        assert b"interrupted" in result.stderr, result.stderr
+        budget += 1
+    # The runs stopped at every call and object write or delete.
+    assert budget >= 9
+    # Recovery: the next complete run catches up and removes the old payloads.
+    assert mirror(r2).returncode == 0
+    assert public_view(public, name) == second
+    stored = {
+        p.relative_to(public).as_posix()
+        for p in public.rglob("*")
+        if p.is_file() and not p.is_relative_to(other.parent)
+    }
+    assert stored == second | {name}
+    assert other.read_text() == "{}"
 
 
 def test_mirror_refuses_endpoint_outside_policy_before_running_rclone(chart):
@@ -631,15 +745,19 @@ def test_mirror_copies_only_the_named_key_with_a_short_cache(
     calls = [
         json.loads(line) for line in Path(env["FAKE_LOG"]).read_text().splitlines()
     ]
-    # The sync leaves the copied key alone, so it never deletes it from R2.
-    assert calls[0][4:10] == [
-        "GARAGE:factory-public",
-        "R2:factory-public",
-        "--exclude",
-        "/manifest.json",
-        "--exclude",
-        "/health.json",
-    ]
+    # The payload copy and the sync leave the copied key alone, so neither
+    # copies it with the immutable cache nor deletes it from R2.
+    assert [calls[0][3], calls[-1][3]] == ["copy", "sync"]
+    for call in (calls[0], calls[-1]):
+        assert call[4:10] == [
+            "GARAGE:factory-public",
+            "R2:factory-public",
+            "--exclude",
+            "/manifest.json",
+            "--exclude",
+            "/health.json",
+        ]
+    calls = calls[:-1]
     assert calls[-2][3:] == [
         "lsf",
         "SRC0:factory-health",
@@ -806,18 +924,19 @@ def test_root_sync_excludes_every_source_prefix(chart, tmp_path, sources):
     container = mirror_container(objects(render(chart, config)))
     calls = run_fake_mirror(container, tmp_path)
     # rclone sync keeps excluded destination objects without --delete-excluded.
-    assert calls[0][3:] == [
-        "sync",
-        "GARAGE:factory-public",
-        "R2:factory-public",
-        "--exclude",
-        "/manifest.json",
-        "--exclude",
-        "/health.json",
-        *[arg for name in sources for arg in ("--exclude", f"/{name}/**")],
-        "--header-upload",
-        "Cache-Control: public, max-age=31536000, immutable",
-    ]
+    for call, command in ((calls[0], "copy"), (calls[-1], "sync")):
+        assert call[3:] == [
+            command,
+            "GARAGE:factory-public",
+            "R2:factory-public",
+            "--exclude",
+            "/manifest.json",
+            "--exclude",
+            "/health.json",
+            *[arg for name in sources for arg in ("--exclude", f"/{name}/**")],
+            "--header-upload",
+            "Cache-Control: public, max-age=31536000, immutable",
+        ]
     assert not any("--delete-excluded" in call for call in calls)
 
 
@@ -829,8 +948,9 @@ def test_source_writes_and_deletes_only_under_its_prefix(chart, tmp_path, listin
     assert [call[3] for call in calls] == (
         ["lsf"]
         + (["cat"] if listing else [])
-        + ["sync"]
+        + ["copy"]
         + (["copyto"] if listing else ["delete"])
+        + ["sync"]
     )
     remotes = [arg for call in calls for arg in call if arg.startswith("R2:")]
     assert remotes

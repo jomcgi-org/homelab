@@ -17,9 +17,11 @@ py_test(
     data = [
         ":chart",
         "//projects/factory-public/deploy:application.yaml",
+        "//projects/shared/helm/factory-library:fake_rclone.py",
         "@multitool//tools/helm",
     ],
     env = {
+        "FAKE_RCLONE": "$(rootpath //projects/shared/helm/factory-library:fake_rclone.py)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "PUBLIC_APPLICATION": "$(rootpath //projects/factory-public/deploy:application.yaml)",
     },

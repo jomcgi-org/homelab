@@ -2,6 +2,14 @@ load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
+# Tests write fake_rclone.py as an executable named rclone; nothing imports it.
+# gazelle:exclude fake_rclone.py
+
+exports_files(
+    ["fake_rclone.py"],
+    visibility = ["//projects/factory-public/chart:__pkg__"],
+)
+
 # Expose this package's README to the repository documentation aggregate.
 filegroup(
     name = "repo_docs",
@@ -13,6 +21,7 @@ py_test(
     name = "library_test",
     srcs = ["library_test.py"],
     data = [
+        "fake_rclone.py",
         "//projects/shared/helm/factory-library/chart",
         "@multitool//tools/helm",
     ] + glob(["goldens/**"]),

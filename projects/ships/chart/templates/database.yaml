@@ -33,6 +33,72 @@ spec:
         configMapRefs:
           - name: ships-initdb
             key: schema.sql
+  managed:
+    # The publisher's read-only login. bootstrap.sql creates the role and
+    # its SELECT grants; the operator sets LOGIN and the password from the
+    # Secret. The attributes are stated so the item matches the defaulted
+    # live one in ArgoCD's diff.
+    roles:
+      - name: ships_publisher
+        ensure: present
+        login: true
+        inherit: false
+        superuser: false
+        createdb: false
+        createrole: false
+        replication: false
+        bypassrls: false
+        connectionLimit: 2
+        passwordSecret:
+          name: ships-publisher-login
+---
+# The publisher's login. ArgoCD keeps this placeholder and ignores its data
+# (deploy/application.yaml). ships-publisher-login-generate fills the
+# password once, before the Cluster, and never rotates it.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ships-publisher-login
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+    helm.sh/resource-policy: keep
+# The operator's format for a role's password.
+type: kubernetes.io/basic-auth
+stringData:
+  username: ships_publisher
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ships-publisher-login-generate
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [ships-publisher-login]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ships-publisher-login-generate
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ships-publisher-login-generate
+subjects:
+  - kind: ServiceAccount
+    name: ships-publisher-login-generate
+    namespace: {{ .Release.Namespace }}
+{{- /* The library's generator adds a missing password and keeps username. */}}
+{{- $keys := dict "password" 24 }}
+{{- $env := list (dict "name" "POD_NAMESPACE" "value" .Release.Namespace) (dict "name" "SECRET_NAME" "value" "ships-publisher-login") (dict "name" "SECRET_KEYS" "value" (toJson $keys)) }}
+{{- $init := dict "kind" "Job" "kubernetesApi" true "image" .Values.database.loginGenerator.image "resources" .Values.database.loginGenerator.resources "command" (list "python3" "-c" (include "factory-library.secretGenerator" .)) "env" $env "network" (dict "egress" (list (dict "peer" "kube-apiserver" "port" 6443))) }}
+{{ include "factory-library.job" (dict "root" $ "name" "ships-publisher-login-generate" "workload" $init "secretInitializer" true) }}
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy

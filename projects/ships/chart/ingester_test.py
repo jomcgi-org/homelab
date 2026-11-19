@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -109,10 +110,11 @@ def test_publisher_writes_only_its_garage_bucket():
     container = pod["containers"][0]
     assert container["args"] == ["publish"]
     assert container["image"].endswith("@sha256:" + "0" * 64)
-    assert {e["valueFrom"]["secretKeyRef"]["name"] for e in container["env"]} == {
-        "ships-ships-s3",
-        "ships-db-app",
-    }
+    assert {
+        e["valueFrom"]["secretKeyRef"]["name"]
+        for e in container["env"]
+        if "valueFrom" in e
+    } == {"ships-ships-s3", "ships-publisher-login"}
     assert pod["automountServiceAccountToken"] is False
     # Egress: Garage from the library policy, the database from the chart.
     library = docs["CiliumNetworkPolicy", "ships-publish"]["spec"]
@@ -131,3 +133,106 @@ def test_publisher_writes_only_its_garage_bucket():
     assert {"app.kubernetes.io/name": "ships-publish"} in [
         e["matchLabels"] for e in ingress["fromEndpoints"]
     ]
+
+
+def test_publisher_never_gets_the_owner_credential():
+    # The owner login can alter or drop the ingestion tables. The publisher
+    # connects as the read-only ships_publisher login only.
+    for overrides in ([], ["--set", "publisher.suspend=false"]):
+        _, docs = render_publisher(*overrides)
+        job = docs["CronJob", "ships-publish"]
+        assert "ships-db-app" not in json.dumps(job)
+        container = job["spec"]["jobTemplate"]["spec"]["template"]["spec"][
+            "containers"
+        ][0]
+        env = {e["name"]: e for e in container["env"]}
+        assert env["DATABASE_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
+            "name": "ships-publisher-login",
+            "key": "password",
+        }
+        assert env["DATABASE_URL"]["value"] == (
+            "postgresql://ships_publisher:$(DATABASE_PASSWORD)"
+            "@ships-db-rw.ships.svc:5432/ships?sslmode=require"
+        )
+        # Kubernetes expands $(DATABASE_PASSWORD) only from an earlier entry.
+        names = [e["name"] for e in container["env"]]
+        assert names.index("DATABASE_PASSWORD") < names.index("DATABASE_URL")
+    # Only the ingester mounts the owner credential.
+    rendered, docs = render_publisher()
+    owners = {
+        (kind, name)
+        for (kind, name), doc in docs.items()
+        if "ships-db-app" in json.dumps(doc)
+    }
+    assert owners == {("Deployment", "ships-ingester")}
+
+
+def test_publisher_login_is_a_managed_read_only_role():
+    _, docs = render_publisher()
+    (role,) = docs["Cluster", "ships-db"]["spec"]["managed"]["roles"]
+    assert role == {
+        "name": "ships_publisher",
+        "ensure": "present",
+        "login": True,
+        "inherit": False,
+        "superuser": False,
+        "createdb": False,
+        "createrole": False,
+        "replication": False,
+        "bypassrls": False,
+        "connectionLimit": 2,
+        "passwordSecret": {"name": "ships-publisher-login"},
+    }
+    secret = docs["Secret", "ships-publisher-login"]
+    assert secret["type"] == "kubernetes.io/basic-auth"
+    assert secret["stringData"] == {"username": "ships_publisher"}
+    assert "data" not in secret
+    assert secret["metadata"]["annotations"]["helm.sh/resource-policy"] == "keep"
+    # The generator runs before the Cluster and may only fill this Secret.
+    job = docs["Job", "ships-publisher-login-generate"]
+    assert job["metadata"]["annotations"]["argocd.argoproj.io/hook"] == "Sync"
+    assert job["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "-1"
+    container = job["spec"]["template"]["spec"]["containers"][0]
+    env = {e["name"]: e.get("value") for e in container["env"]}
+    assert env["SECRET_NAME"] == "ships-publisher-login"
+    assert json.loads(env["SECRET_KEYS"]) == {"password": 24}
+    assert docs["Role", "ships-publisher-login-generate"]["rules"] == [
+        {
+            "apiGroups": [""],
+            "resources": ["secrets"],
+            "resourceNames": ["ships-publisher-login"],
+            "verbs": ["get", "patch"],
+        }
+    ]
+    # ArgoCD keeps the generated password.
+    application = yaml.safe_load(Path(os.environ["SHIPS_APPLICATION"]).read_text())[
+        "spec"
+    ]
+    assert {
+        "group": "",
+        "kind": "Secret",
+        "name": "ships-publisher-login",
+        "jsonPointers": ["/data"],
+    } in application["ignoreDifferences"]
+    assert "RespectIgnoreDifferences=true" in application["syncPolicy"]["syncOptions"]
+
+
+def test_publisher_login_waits_for_a_sized_database():
+    # Without database.storage the chart renders no database, no login and
+    # no generator Job, so nothing runs before HOME-516.
+    result = subprocess.check_output(
+        [
+            os.getenv("HELM_BIN", "helm"),
+            "template",
+            "ships",
+            str(Path(__file__).parent),
+            "--set",
+            "image.digest=sha256:" + "0" * 64,
+        ],
+        text=True,
+    )
+    kinds = {
+        (d["kind"], d["metadata"]["name"]) for d in yaml.safe_load_all(result) if d
+    }
+    assert not {k for k in kinds if "ships-publisher-login" in k[1]}
+    assert ("Cluster", "ships-db") not in kinds

@@ -38,10 +38,12 @@ also lists the Garage buckets `stars-forecast`, `hikes` and `ships` in
 - an admission rule for each mirror that lets only its ServiceAccount mount
   its R2 Secret.
 
-Each root run syncs every object except `manifest.json`, `health.json`,
+Each root run copies every object except `manifest.json`, `health.json`,
 `stars-forecast/`, `hikes/` and `ships/` with
 `Cache-Control: public, max-age=31536000, immutable`, then copies
-`manifest.json` with `Cache-Control: public, max-age=60`.
+`manifest.json` with `Cache-Control: public, max-age=60`. Only then does a
+sync with the same filters delete what Garage no longer holds. Each source
+mirror uses the same three steps under its prefix.
 
 The publisher gets write access through its own `buckets:` entry without
 `public:`. Only this namespace holds the R2 token (HOME-492). Each source

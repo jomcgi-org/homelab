@@ -18,11 +18,16 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: ships
-  # garage-init owns credential bytes in the kept claim Secret.
+  # garage-init owns credential bytes in the kept claim Secret, and
+  # ships-publisher-login-generate owns the publisher's password.
   ignoreDifferences:
     - group: ""
       kind: Secret
       name: ships-ships-s3
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      name: ships-publisher-login
       jsonPointers: [/data]
   syncPolicy:
     automated:
