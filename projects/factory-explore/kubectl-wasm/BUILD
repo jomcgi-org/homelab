@@ -46,10 +46,12 @@ sh_test(
         "$(rootpath :browser_test.cjs)",
         "$(rootpath @wasm_go_sdk//:lib/wasm/wasm_exec.js)",
         "$(rootpath :kubectl-wasm)",
+        "$(rootpath //projects/factory-explore/ui:public/kubectl-worker.js)",
     ],
     data = [
         "browser_test.cjs",
         ":kubectl-wasm",
+        "//projects/factory-explore/ui:public/kubectl-worker.js",
         "@nodejs_linux_amd64//:node_bin",
         "@wasm_go_sdk//:lib/wasm/wasm_exec.js",
     ],

@@ -6,7 +6,7 @@ const path = require("node:path");
 const { promisify } = require("node:util");
 const { gunzipSync } = require("node:zlib");
 
-const [runtime, asset, ...args] = process.argv.slice(2);
+const [runtime, asset, workerScript, ...args] = process.argv.slice(2);
 
 async function runKubectl() {
   globalThis.fs = fs;
@@ -22,11 +22,56 @@ async function runKubectl() {
   await go.run(instance);
 }
 
+// Supply browser worker globals around the deployed worker script.
+async function workerTable(server) {
+  const { Worker } = require("node:worker_threads");
+  const worker = new Worker(
+    `
+    const {parentPort, workerData} = require("node:worker_threads");
+    const fs = require("node:fs");
+    const vm = require("node:vm");
+    const evaluate = path => vm.runInThisContext(fs.readFileSync(path, "utf8"));
+    globalThis.self = globalThis;
+    globalThis.process = undefined;
+    globalThis.fs = undefined;
+    globalThis.importScripts = () => evaluate(workerData.runtime);
+    globalThis.postMessage = message => parentPort.postMessage(message);
+    const request = fetch;
+    globalThis.fetch = (url, options) => url === "/kubectl.wasm.gz"
+      ? new Response(fs.readFileSync(workerData.asset)) : request(url, options);
+    evaluate(workerData.workerScript);
+    parentPort.on("message", data => self.onmessage({data}));
+  `,
+    { eval: true, workerData: { runtime, asset, workerScript } },
+  );
+  try {
+    return await new Promise((resolve, reject) => {
+      let output = "";
+      worker.on("error", reject);
+      worker.on("message", (data) => {
+        if (data.module)
+          worker.postMessage({
+            module: data.module,
+            args: ["get", "pods"],
+            server,
+            token: "test-token",
+          });
+        if (data.output) output += data.output;
+        if (data.failed) reject(new Error("kubectl worker failed"));
+        if (data.done) resolve(output);
+      });
+      worker.postMessage({ compile: true });
+    });
+  } finally {
+    await worker.terminate();
+  }
+}
+
 async function test() {
   const run = (...command) =>
     promisify(execFile)(
       process.execPath,
-      [__filename, runtime, asset, ...command],
+      [__filename, runtime, asset, workerScript, ...command],
       { argv0: "browser", timeout: 60000 },
     );
   assert.match(
@@ -140,6 +185,10 @@ async function test() {
         browserError,
       );
       assert.equal(requests.length, 0);
+      assert.match(
+        (await workerTable(endpoint)).trim(),
+        /^NAME\s+STATUS\r?\nbrowser-test\s+Running$/,
+      );
       const { stdout } = await getPods("--server", endpoint);
       assert.match(stdout.trim(), /^NAME\s+STATUS\r?\nbrowser-test\s+Running$/);
     } finally {

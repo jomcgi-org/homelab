@@ -7,6 +7,11 @@ load("@npm//:defs.bzl", "npm_link_all_packages")
 load("@npm//projects/factory-explore/ui:vite/package_json.bzl", vite_bin = "bin")
 load("@npm//projects/factory-explore/ui:vitest/package_json.bzl", vitest_bin = "bin")
 
+exports_files(
+    ["public/kubectl-worker.js"],
+    visibility = ["//projects/factory-explore/kubectl-wasm:__pkg__"],
+)
+
 npm_link_all_packages(name = "node_modules")
 
 js_library(
@@ -25,6 +30,7 @@ js_library(
         ":node_modules/@mdi/font",
         ":node_modules/@rollup/rollup-linux-x64-gnu",
         ":node_modules/@vitejs/plugin-vue",
+        ":node_modules/@xterm/xterm",
         ":node_modules/oidc-client-ts",
         ":node_modules/vite",
         ":node_modules/vue",

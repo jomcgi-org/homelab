@@ -1,5 +1,11 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from "vue";
+import {
+  ref,
+  watch,
+  onMounted,
+  onBeforeUnmount,
+  defineAsyncComponent,
+} from "vue";
 import {
   VApp,
   VAppBar,
@@ -19,6 +25,19 @@ import {
   type V2APIGroupDiscovery,
 } from "./discovery";
 
+import { schedulePreload } from "./kubectl";
+const TerminalPage = defineAsyncComponent(() => import("./TerminalPage.vue"));
+const terminal = ref(false);
+const initial = ref("");
+function openTerminal(command = "") {
+  initial.value = command;
+  terminal.value = true;
+}
+let cancelPreload: (() => void) | undefined;
+onMounted(() => {
+  cancelPreload = schedulePreload();
+});
+onBeforeUnmount(() => cancelPreload?.());
 interface Resource {
   title: string;
   prefix: string;
@@ -30,7 +49,9 @@ const resource = ref<Resource>();
 // Explorers may read only the namespaces bound to them, never "default", so
 // no namespaced request starts until the user names one.
 const namespace = ref("");
-const rows = ref<{ cells: unknown[] }[]>([]);
+const rows = ref<
+  { cells: unknown[]; object?: { metadata?: { name?: string } } }[]
+>([]);
 const columns = ref<{ title: string; key: string }[]>([]);
 const error = ref("");
 const loading = ref(false);
@@ -116,10 +137,15 @@ watch(
     <VAppBar
       ><VAppBarTitle>Sparkles · Factory Explorer</VAppBarTitle
       ><span v-if="countdown">{{ countdown }} left</span
-      ><VBtn href="/oidc/logout">Log out</VBtn></VAppBar
+      ><VBtn @click="terminal ? (terminal = false) : openTerminal()">{{
+        terminal ? "Resources" : "Terminal"
+      }}</VBtn>
+      <VBtn href="/oidc/logout">Log out</VBtn></VAppBar
     >
     <VMain
-      ><VContainer>
+      ><VContainer v-if="terminal"
+        ><TerminalPage :initial="initial" /></VContainer
+      ><VContainer v-else>
         <VTextField
           v-if="resource?.namespaced"
           label="Namespace"
@@ -136,10 +162,29 @@ watch(
         <VBtn @click="refresh++">Refresh</VBtn>
         <p v-if="error" role="alert">{{ error }}</p>
         <VDataTable
-          :headers="columns"
+          :headers="[
+            ...columns,
+            { title: '', key: 'terminal', sortable: false },
+          ]"
           :items="rows"
           :loading="loading"
-        /> </VContainer
-    ></VMain>
+          ><template #item.terminal="{ item }"
+            ><VBtn
+              v-if="resource && item.cells.length"
+              @click="
+                openTerminal(
+                  'kubectl describe ' +
+                    resource.title +
+                    ' ' +
+                    (item.object?.metadata?.name ?? item.cells[0]) +
+                    (resource.namespaced ? ' -n ' + namespace : ''),
+                )
+              "
+              >Open in terminal</VBtn
+            ></template
+          ></VDataTable
+        >
+      </VContainer></VMain
+    >
   </VApp>
 </template>
