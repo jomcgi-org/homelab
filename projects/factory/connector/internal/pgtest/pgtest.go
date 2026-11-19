@@ -227,7 +227,8 @@ func start() (*Server, error) {
 			_, err = db.Exec(`CREATE ROLE factory_connector LOGIN;
 				CREATE ROLE factory_broker_accounting LOGIN NOINHERIT;
                 CREATE ROLE factory_storyboard LOGIN NOINHERIT;
-				CREATE ROLE factory_reaper LOGIN NOINHERIT`)
+				CREATE ROLE factory_reaper LOGIN NOINHERIT;
+                CREATE ROLE factory_leaderboard LOGIN NOINHERIT`)
 			db.Close()
 			if err != nil {
 				return nil, err
