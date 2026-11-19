@@ -525,6 +525,7 @@ func ingest(ctx context.Context, db *sql.DB, key string) error {
 	if err = ws.Write(session, websocket.MessageText, sub); err != nil {
 		return err
 	}
+	log.Print("subscribed to AISStream")
 	ws.SetReadLimit(readLimit)
 	queue := make(chan []byte, batchSize)
 	go read(session, ws, queue, l.held)

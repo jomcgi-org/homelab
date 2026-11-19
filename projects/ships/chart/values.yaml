@@ -1,4 +1,6 @@
-enabled: false
+# HOME-516 starts one ingester with generous budgets and no hub baseline.
+# A follow-up right-sizes them from 24 to 48 hours of factory metrics.
+enabled: true
 retentionEnabled: false
 image:
   repository: ghcr.io/jomcgi/homelab/projects/ships
@@ -6,11 +8,17 @@ image:
 resources:
   requests:
     cpu: 250m
-    memory: 256Mi
+    memory: 512Mi
   limits:
     cpu: "1"
-    memory: 512Mi
-# Populate from the measured seven-day footprint, WAL and rollover headroom.
+    memory: 1Gi
+# Each of the three instances. local-path volumes do not expand, so the
+# first size errs high. Retention is off, so every day stays on disk.
 database:
-  storage: ""
-  resources: {}
+  storage: 20Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
