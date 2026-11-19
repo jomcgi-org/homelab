@@ -58,7 +58,7 @@ func (e *Engine) stepPlanner(ctx context.Context) error {
 	var run, fp, route, title, description, priority string
 	var started bool
 	err := e.st.DB.QueryRowContext(ctx, `SELECT run_id,fingerprint,disposition,title,description,priority,create_started
- FROM planner_proposal WHERE title IS NOT NULL AND issue_key IS NULL AND closed_at IS NULL AND NOT filing_stopped AND next_attempt<=now()
+ FROM planner_proposal WHERE title IS NOT NULL AND issue_key IS NULL AND closed_at IS NULL AND (NOT filing_stopped OR create_started) AND next_attempt<=now()
  ORDER BY next_attempt,run_id,fingerprint LIMIT 1`).Scan(&run, &fp, &route, &title, &description, &priority, &started)
 	if errors.Is(err, sql.ErrNoRows) {
 		return e.w.Tx(ctx, func(tx *sql.Tx) error {
@@ -77,7 +77,7 @@ func (e *Engine) stepPlanner(ctx context.Context) error {
 		return errors.New("missing HOME planner binding")
 	}
 	if err = e.w.Tx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE planner_proposal SET next_attempt=now()+interval '1 minute' WHERE run_id=$1 AND fingerprint=$2`, run, fp)
+		_, err := tx.ExecContext(ctx, `UPDATE planner_proposal SET next_attempt=now()+CASE WHEN filing_stopped THEN interval '1 hour' ELSE interval '1 minute' END WHERE run_id=$1 AND fingerprint=$2`, run, fp)
 		return err
 	}); err != nil {
 		return err
@@ -149,7 +149,7 @@ func (e *Engine) stepPlanner(ctx context.Context) error {
 		}
 	}
 	return e.w.Tx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE planner_proposal SET issue_key=$3 WHERE run_id=$1 AND fingerprint=$2 AND issue_key IS NULL`, run, fp, filed.Identifier)
+		_, err := tx.ExecContext(ctx, `UPDATE planner_proposal SET issue_key=$3,filing_stopped=false WHERE run_id=$1 AND fingerprint=$2 AND issue_key IS NULL`, run, fp, filed.Identifier)
 		return err
 	})
 }
@@ -203,6 +203,7 @@ func (c *plannerTrackerCall) result(ctx context.Context, result error) error {
 			return nil
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE planner_proposal SET create_started=create_started AND NOT $3, filing_stopped=$4,
+ next_attempt=CASE WHEN $4 AND create_started AND NOT $3 THEN now()+interval '1 hour' ELSE next_attempt END,
  closed_at=CASE WHEN $4 AND (NOT create_started OR $3) THEN now() ELSE closed_at END
  WHERE run_id=$1 AND fingerprint=$2`, c.run, c.fingerprint, rejected, stop)
 		return err

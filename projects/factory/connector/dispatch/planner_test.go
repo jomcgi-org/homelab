@@ -69,3 +69,32 @@ func TestPlannerPersistentCreateRefusalReleasesRun(t *testing.T) {
 		t.Fatalf("create attempts %d, error %v", attempts, err)
 	}
 }
+
+func TestPlannerReceiptAfterCredentialRecovery(t *testing.T) {
+	v := plannerFixture(t)
+	v.its.loseActivationCreate = true
+	v.tick(v.e)
+	v.its.issueErr = &itsaplan.HTTPError{Status: 403}
+	for range 12 {
+		if _, err := v.st.DB.Exec("UPDATE planner_proposal SET next_attempt=now()"); err != nil {
+			t.Fatal(err)
+		}
+		v.tick(v.e)
+	}
+	v.tick(v.e)
+	var held bool
+	if err := v.st.DB.QueryRow(`SELECT finished_at IS NOT NULL AND filing_stopped AND create_started AND closed_at IS NULL AND issue_key IS NULL AND next_attempt>now()+interval '50 minutes' FROM planner_proposal JOIN planner_run USING(run_id)`).Scan(&held); err != nil || !held {
+		t.Fatalf("pending receipt after refusals: %v, %v", held, err)
+	}
+	v.e.Release()
+	v.e = v.engine("recovered-writer")
+	v.its.issueErr = nil
+	if _, err := v.st.DB.Exec("UPDATE planner_proposal SET next_attempt=now()"); err != nil {
+		t.Fatal(err)
+	}
+	v.tick(v.e)
+	var key string
+	if err := v.st.DB.QueryRow("SELECT issue_key FROM planner_proposal WHERE NOT filing_stopped").Scan(&key); err != nil || key != "HOME-1001" || v.its.activationCreates != 1 {
+		t.Fatalf("recovered %q after %d creates: %v", key, v.its.activationCreates, err)
+	}
+}
