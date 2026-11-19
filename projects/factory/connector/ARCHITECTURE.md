@@ -447,14 +447,16 @@ repository and numeric check ID; statuses link to the merge-group commit's
 checks page. CI-provided URLs, summaries and descriptions are omitted. If the
 queue entry disappeared before its commit was observed, the prompt says the
 evidence is unavailable.
-GitHub's `CONFLICTING` mergeability asks the agent to rebase on the bound
-`origin/<base>` and resolve. This stays one ejection round against the review
-bound and consumes the head's conflict event, so an unchanged head cannot
-start another rebase round on a later review poll. If the review bound is
-already exhausted, the next review poll handles a conflicting head against
-the separate rebase bound. A CI infrastructure flake
-may be repaired by rebasing and re-pushing the same change; the new head needs
-the usual checks and independent review.
+A conflicting ejection round asks the agent to rebase on `origin/<base>` and resolve.
+That review round consumes the head's conflict event. At the review cap the
+next poll handles the conflict against the separate rebase cap.
+HOME-460 traced premature `round_limit` events to `ejected` in
+[dispatch/delivery.go](dispatch/delivery.go). At the review cap it recorded
+`EventRoundLimit` even before GitHub reported a conflict. On the next poll,
+`reviewEvents` skipped the head's event ID at `SeenEvents`, before the rebase
+branch could set `limited` from `RebaseRounds >= MaxRebaseRounds`.
+For a CI infrastructure flake the agent can rebase and push the same change.
+The new head needs the usual checks and independent review.
 
 The ejection and round start commit together and are announced on the issue.
 An ejected head is never re-enqueued. A new head
