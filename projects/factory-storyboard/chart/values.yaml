@@ -17,11 +17,9 @@ workloads:
       egress:
         - {peer: factory-db, port: 5432}
         - {peer: itsaplan-api, port: 3000}
-        - {peer: kagent-controller, port: 8083}
     env:
       - {name: PUBLIC_PROJECT, value: HOME}
       - {name: ITSAPLAN_URL, value: "http://factory-itsaplan-api.factory.svc:3000"}
-      - {name: KAGENT_URL, value: "http://kagent-controller.kagent.svc:8083"}
       - name: AWS_ACCESS_KEY_ID
         valueFrom:
           secretKeyRef: {name: factory-storyboard-factory-public-s3, key: AWS_ACCESS_KEY_ID}
@@ -43,13 +41,40 @@ workloads:
       - name: ITSAPLAN_KEY
         valueFrom:
           secretKeyRef: {name: factory-storyboard-readers, key: ITSAPLAN_KEY}
-      - name: KAGENT_BEARER
+      - name: READER_TOKEN
         valueFrom:
-          secretKeyRef: {name: factory-storyboard-readers, key: KAGENT_BEARER}
-      - name: SESSION_SHARES
+          secretKeyRef: {name: factory-storyboard-readers, key: READER_TOKEN}
+      - name: APPROVED_HISTORY
         valueFrom:
-          secretKeyRef: {name: factory-storyboard-readers, key: SESSION_SHARES}
+          secretKeyRef: {name: factory-storyboard-readers, key: APPROVED_HISTORY}
+  storyboard-task-reader:
+    kind: Deployment
+    replicas: 1
+    args: [serve-tasks]
+    ports: [{name: http, containerPort: 8080}]
+    service:
+      ports: [{name: http, port: 8080, targetPort: http}]
+    resources:
+      requests: {cpu: 10m, memory: 32Mi}
+      limits: {memory: 96Mi}
+    network:
+      egress:
+        - {peer: kagent-controller, port: 8083}
+    env:
+      - name: READER_TOKEN
+        valueFrom:
+          secretKeyRef: {name: factory-storyboard-readers, key: READER_TOKEN}
+      - name: OWNER_GRANTS
+        valueFrom:
+          secretKeyRef: {name: storyboard-owner-shares, key: OWNER_GRANTS}
+      - name: UPSTREAM_BEARER
+        valueFrom:
+          secretKeyRef: {name: storyboard-owner-shares, key: UPSTREAM_BEARER}
 secrets:
+  storyboard-owner-shares:
+    workload: storyboard-task-reader
+    onePassword:
+      itemPath: vaults/k8s-homelab/items/storyboard-owner-shares
   factory-storyboard-readers:
     workload: factory-storyboard
     onePassword:

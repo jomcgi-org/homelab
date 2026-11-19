@@ -1,0 +1,25 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: storyboard-task-egress
+spec:
+  endpointSelector:
+    matchLabels: {app.kubernetes.io/name: factory-storyboard}
+  egress:
+    - toEndpoints:
+        - matchLabels: {app.kubernetes.io/name: storyboard-task-reader}
+      toPorts:
+        - ports: [{port: "8080", protocol: TCP}]
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: storyboard-task-ingress
+spec:
+  endpointSelector:
+    matchLabels: {app.kubernetes.io/name: storyboard-task-reader}
+  ingress:
+    - fromEndpoints:
+        - matchLabels: {app.kubernetes.io/name: factory-storyboard}
+      toPorts:
+        - ports: [{port: "8080", protocol: TCP}]

@@ -137,7 +137,11 @@ function fixtureManifest(location) {
 }
 
 // Exercise the built release, including the production hub/Worker boundary.
-export async function serveRelease(dist, stage, { contrast = false } = {}) {
+export async function serveRelease(
+  dist,
+  stage,
+  { contrast = false, snapshotSources = sources } = {},
+) {
   const scope = scopeFor(stage);
   const rules = redirectRules(dist);
   // Like run.sh: copy the release, then snapshot its data into the copy, which
@@ -153,7 +157,7 @@ export async function serveRelease(dist, stage, { contrast = false } = {}) {
     }
     // Use the real snapshot format with fixed R2 objects, without credentials.
     await snapshot(
-      sources,
+      snapshotSources,
       fixtureObject,
       join(dataRoot, "data"),
       undefined,

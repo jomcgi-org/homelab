@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import sys
 from collections import Counter
 from datetime import datetime, timezone
 from urllib.parse import quote
@@ -11,7 +12,8 @@ from urllib.request import Request, build_opener
 from connector_source import delivery, session_tasks
 from delivery_stats import delivery_statistics
 from publisher import public_issue, public_turn, publish, redact
-from session_history import _NoRedirect, completed_task
+from session_history import _NoRedirect
+from task_reader import serve
 
 STATES = {
     "active": "Working",
@@ -54,7 +56,17 @@ def read_board(key):
     return project, get("/issues/board")["issues"]
 
 
-def documents(cursor, key, project, board, shares):
+def confirmed_messages(task_id):
+    address = hashlib.sha256(task_id.encode()).hexdigest()
+    request = Request(
+        "http://storyboard-task-reader.factory.svc:8080/tasks/" + address,
+        headers={"Authorization": "Bearer " + os.environ["READER_TOKEN"]},
+    )
+    with build_opener(_NoRedirect()).open(request, timeout=35) as response:
+        return json.load(response)
+
+
+def documents(cursor, key, project, board, archive):
     labels = {entry["id"]: entry["name"] for entry in project["labels"]}
     users = [entry["userId"] for entry in project["assignees"]]
     rows, issues, sessions, summaries = [], {}, {}, []
@@ -73,7 +85,18 @@ def documents(cursor, key, project, board, shares):
         if issue_key != item["identifier"]:
             raise ValueError("connector issue key mismatch")
         state = STATES[row["state"]]
-        title = redact(item["title"], users)
+        approval = archive.get(issue_key, {})
+        title = (
+            redact(item["title"], users)
+            if item["title"] == approval.get("title")
+            else issue_key
+        )
+        description = item.get("description") or ""
+        description = (
+            redact(description, users)
+            if description == approval.get("description")
+            else ""
+        )
         summary = dict(goalId=goal_id, title=title, state=state, issueKey=issue_key)
         summaries.append(summary)
         rows.append(
@@ -82,22 +105,26 @@ def documents(cursor, key, project, board, shares):
         timeline = [
             dict(kind="opened", at=timestamp(item["createdAt"]), text="Issue opened")
         ]
-        for ref in session_tasks(cursor, key, item["id"]):
-            sid = ref["session_id"]
-            if sid not in shares:
-                continue
-            url = (
-                os.environ["KAGENT_URL"]
-                + "/agents/"
-                + "/".join(
-                    quote(ref[k], safe="") for k in ("kagent_namespace", "kagent_agent")
-                )
-            )
-            task = completed_task(
-                url, sid, ref["task_id"], os.environ["KAGENT_BEARER"], shares[sid]
-            )
-            if task is None:
-                continue
+        approved = approval.get("tasks", [])
+        current = (
+            {
+                (r["session_id"], r["task_id"])
+                for r in session_tasks(cursor, key, item["id"])
+            }
+            if approved
+            else set()
+        )
+        for record in approved:
+            sid = record["session"]
+            task_id = record["task"]
+            texts = record["assistantTexts"]
+            if (sid, task_id) in current:
+                confirmed = confirmed_messages(task_id)
+                if any(
+                    hashlib.sha256(text.encode()).hexdigest() not in confirmed
+                    for text in texts
+                ):
+                    raise ValueError("approved transcript differs from shared task")
             public_id = "session-" + hashlib.sha256(sid.encode()).hexdigest()
             session = sessions.setdefault(
                 public_id,
@@ -105,22 +132,22 @@ def documents(cursor, key, project, board, shares):
             )
             if session["issueKey"] != issue_key:
                 raise ValueError("session linked to multiple issues")
-            for msg in task.get("history", []):
-                role = {"ROLE_USER": "user", "ROLE_AGENT": "assistant"}[msg["role"]]
-                at = timestamp(task["status"]["timestamp"])
+            for text in texts:
+                at = timestamp(record["at"])
                 number = len(session["turns"]) + 1
-                turn = public_turn(
-                    dict(
-                        number=number,
-                        at=at,
-                        role=role,
-                        completed=True,
-                        text="\n".join(p["text"] for p in msg["parts"] if "text" in p),
-                        toolCalls=[],
-                    ),
-                    users,
+                session["turns"].append(
+                    public_turn(
+                        dict(
+                            number=number,
+                            at=at,
+                            role="assistant",
+                            completed=True,
+                            text=text,
+                            toolCalls=[],
+                        ),
+                        users,
+                    )
                 )
-                session["turns"].append(turn)
                 timeline.append(
                     dict(
                         kind="session",
@@ -146,7 +173,7 @@ def documents(cursor, key, project, board, shares):
             goalId=goal_id,
             title=title,
             state=state,
-            description=redact(item.get("description") or "", users),
+            description=description,
             timeline=sorted(
                 timeline, key=lambda event: datetime.fromisoformat(event["at"])
             ),
@@ -212,7 +239,7 @@ def main():
         with db.cursor() as cursor:
             cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             docs = documents(
-                cursor, key, project, board, json.loads(os.environ["SESSION_SHARES"])
+                cursor, key, project, board, json.loads(os.environ["APPROVED_HISTORY"])
             )
     publish(
         boto3.client("s3", endpoint_url=os.environ["AWS_ENDPOINT_URL"]),
@@ -223,4 +250,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["serve-tasks"]:
+        serve()
+    else:
+        main()

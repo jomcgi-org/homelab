@@ -723,7 +723,11 @@ test("the release fixture serves the storyboard manifest and every referenced ob
     "<!--hikes-summary:start--><!--hikes-summary:end-->",
   );
   writeFileSync(join(dist, "404.html"), "Missing");
-  const server = await serveRelease(dist, "dev");
+  const snapshotSources = JSON.parse(
+    readFileSync(new URL("../data/sources.json", import.meta.url)),
+  );
+  snapshotSources.httpsManifests.factory.enabled = true;
+  const server = await serveRelease(dist, "dev", { snapshotSources });
   t.after(() => server.close());
   const base = new URL("/data/factory/", server.origin);
   const response = await fetch(new URL("manifest.json", base));

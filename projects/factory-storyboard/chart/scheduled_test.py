@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -43,3 +44,27 @@ def test_scheduled_writer():
         "factory-storyboard-readers",
         "factory-storyboard-db",
     }
+    reader = next(
+        d
+        for d in docs
+        if d
+        and d["kind"] == "Deployment"
+        and d["metadata"]["name"] == "storyboard-task-reader"
+    )
+    reader_env = {
+        v["name"] for v in reader["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert reader_env == {"READER_TOKEN", "OWNER_GRANTS", "UPSTREAM_BEARER"}
+    publisher_env = {v["name"] for v in pod["containers"][0]["env"]}
+    assert publisher_env.isdisjoint({"UPSTREAM_BEARER", "OWNER_GRANTS"})
+    policies = [
+        d["spec"]
+        for d in docs
+        if d
+        and d["kind"] == "CiliumNetworkPolicy"
+        and d["spec"]["endpointSelector"]["matchLabels"].get("app.kubernetes.io/name")
+        == "factory-storyboard"
+    ]
+    assert policies
+    assert "kagent-controller" not in str(policies)
+    assert '"8083"' not in json.dumps(policies)

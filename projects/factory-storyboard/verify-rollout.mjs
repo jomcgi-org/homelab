@@ -19,7 +19,6 @@ async function check(url, checkFreshness) {
     const age = Date.now() - Date.parse(manifest.generatedAt);
     if (!Number.isFinite(age) || age < 0 || age > 7 * 60_000)
       throw new Error(`manifest generated at ${manifest.generatedAt}`);
-    return;
   }
   const paths = new Set([
     manifest.story,
@@ -40,6 +39,7 @@ for (const [url, freshness] of [
   ["https://factory-data.jomcgi.dev/manifest.json", true],
   ["https://next.jomcgi.dev/data/factory/manifest.json", false],
 ]) {
+  if (!freshness && process.argv.includes("--mirror-only")) continue;
   try {
     await check(url, freshness);
     console.log(`PASS ${url}`);

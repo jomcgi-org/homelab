@@ -90,17 +90,37 @@ fixtures at those paths in development and tests; production builds contain none
 
 The factory-storyboard CronJob runs in the factory namespace every five
 minutes. Its ServiceAccount uses the read-only connector database login and
-a Garage write claim for factory-public. Provision the 1Password item
-`factory-storyboard-readers` with a read-only project API key
-(`ITSAPLAN_KEY`), a kagent reader bearer (`KAGENT_BEARER`) and a JSON
-map of session IDs to owner-issued share tokens (`SESSION_SHARES`).
-Sessions without a share contribute no transcript. Issue statistics use
-the public board entries with a matching delivery record.
+a Garage write claim for factory-public. The publisher has no controller ingress grant.
+The separate storyboard-task-reader verifies a publisher-specific bearer and
+accepts GET requests for individually granted tasks. It uses its own upstream
+identity and each owner's share. It returns only approved assistant-message
+fingerprints confirmed in the completed task.
 
-After the migration and first mirrored snapshot, roll out the site
-snapshot and run `node projects/factory-storyboard/verify-rollout.mjs`
-using Node 22.18 or later. It checks the mirror's seven-minute limit and
-every object referenced by the preview site.
+Provision two 1Password items before sync:
+
+- `factory-storyboard-readers` holds the project-scoped read-only
+  `ITSAPLAN_KEY`, a random `READER_TOKEN` of at least 32 characters and
+  `APPROVED_HISTORY`. The latter is a JSON object keyed by issue key. Each
+  entry can contain an approved literal title and description and a `tasks`
+  array. Each task records its `session`, `task`, UTC completion time `at`,
+  and the exact owner-reviewed assistant messages in `assistantTexts`.
+  Keep these approved exports after connector cleanup. Removing an approval
+  removes the corresponding content on the next successful publication.
+  An empty object publishes issue keys and metrics only.
+- `storyboard-owner-shares` holds the reader's `UPSTREAM_BEARER` and
+  `OWNER_GRANTS`, a JSON array. Each grant contains `namespace`, `agent`,
+  `session`, `task`, the owner's `share`, and `approvedHashes` (SHA-256 of
+  each approved assistant message's UTF-8 text). A session share grants
+  read access. A separate explicit publication approval is required before
+  adding any prose to either item.
+
+After publisher rollout, run
+`node projects/factory-storyboard/verify-rollout.mjs --mirror-only`
+to check the source manifest age and every referenced object. Once the first complete mirror is available, set
+`httpsManifests.factory.enabled` in the site's sources.json to true and deploy
+the preview site. This also activates its browser requirement. Run
+`node projects/factory-storyboard/verify-rollout.mjs` with Node 22.18 or later
+to check the seven-minute limit and every object on the preview site.
 
 ### Rollback of the database read access
 

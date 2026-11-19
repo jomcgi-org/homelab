@@ -137,6 +137,7 @@ test(
               checkPage(browser, {
                 url: `${server.origin}/`,
                 status: mode === "404" ? 404 : 200,
+                factoryEnabled: true,
               });
             const expected = {
               "missing-factory": /HTTP 404: .*\/data\/factory\/manifest\.json/,
