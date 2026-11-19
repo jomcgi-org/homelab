@@ -35,7 +35,9 @@ def _private_oci_layer_impl(rctx):
         sha256 = rctx.attr.sha256,
         auth = {blob_url: {"type": "pattern", "pattern": "Bearer <password>", "password": token}},
     )
-    rctx.file("BUILD.bazel", 'exports_files(["layer.tar.gz"], visibility = %s)\n' % repr(rctx.attr.visibility_to))
+    # In this repository "//pkg" names its own packages; "@@//pkg" is the main one.
+    visibility = ["@@" + v if v.startswith("//") else v for v in rctx.attr.visibility_to]
+    rctx.file("BUILD.bazel", 'exports_files(["layer.tar.gz"], visibility = %s)\n' % repr(visibility))
 
 private_oci_layer = repository_rule(
     implementation = _private_oci_layer_impl,
