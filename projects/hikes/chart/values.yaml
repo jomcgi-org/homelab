@@ -2,13 +2,10 @@ image:
   repository: ghcr.io/jomcgi/homelab/projects/hikes
   digest: ""
 buckets:
+  # The factory-public release mirrors this bucket to R2 (HOME-492). This
+  # chart holds no R2 credential.
   - name: hikes
     access: readwrite
-    public:
-      r2Bucket: hikes
-      manifestName: latest.json
-      itemPath: vaults/k8s-homelab/items/hikes-r2-public-mirror
-      suspend: true
 suspendWriters: true
 jobs:
   catalogue: "0 0 1 1 *"

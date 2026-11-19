@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - policy.yaml
+  - storage.yaml
+  - runtime.yaml
+  - setup.yaml
+  - database.yaml
+  # The suspended restore CronJob and the ConfigMap made from restore.sh.
+  - ../../../grimoire/deploy
+
+configMapGenerator:
+  - name: grimoire-db-setup
+    namespace: grimoire
+    files:
+      - secret_init.py
+      - grants.sql
+    options:
+      annotations:
+        argocd.argoproj.io/sync-wave: "-2"

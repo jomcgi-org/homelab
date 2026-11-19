@@ -42,3 +42,17 @@ invariants:
   - bazel/helm/helm-template-test.sh
   test: //bazel/helm/content_rules:content_rules_test
   state: live
+- id: LIB-7
+  statement: A public.sources mirror writes and deletes only under its R2 prefix, and the root sync of
+    the same release excludes every source prefix.
+  mechanism:
+  - projects/shared/helm/factory-library/chart/templates/_mirror.tpl
+  test: //projects/shared/helm/factory-library:library_test
+  state: live
+- id: LIB-8
+  statement: Only namespace factory-public renders the factory-public R2 token or a mirror into R2
+    bucket factory-public.
+  mechanism:
+  - bazel/helm/content_rules/content_rules.py
+  test: //bazel/helm/content_rules:content_rules_test
+  state: live

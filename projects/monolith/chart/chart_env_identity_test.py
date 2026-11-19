@@ -548,7 +548,7 @@ def _rbac_objects(rendered):
     }
 
 
-def _expected_rbac(release, enabled):
+def _expected_rbac(release, enabled, *, hub=False):
     subject = {"kind": "ServiceAccount", "name": release, "namespace": release}
     expected = {}
     for gate, kind, namespace, name, rules, subjects in [
@@ -593,6 +593,7 @@ def _expected_rbac(release, enabled):
                 [subject],
             )
             for namespace in _KARGO_PROJECT_NAMESPACES
+            if not (hub and namespace == "kargo-embervm")
         ),
     ]:
         if not enabled[gate]:
@@ -623,6 +624,7 @@ def test_default_rbac_preserves_rule_and_binding_contract(environment, renders):
             "faas": True,
             "kargoPromote": True,
         },
+        hub=environment == "gke",
     )
 
 
@@ -647,10 +649,16 @@ def test_optional_rbac_gates_remove_both_roles_and_all_subject_bindings(
             {"rbac": {key: {"enabled": value} for key, value in enabled.items()}}
         )
     )
-    actual = _rbac_objects(
-        _render("recovery", [Path(os.environ["DEPLOY_VALUES"]), override])
-    )
+    rendered = _render("recovery", [Path(os.environ["DEPLOY_VALUES"]), override])
+    actual = _rbac_objects(rendered)
     assert actual == _expected_rbac("recovery", enabled)
+    # The backend refuses FaaS registration before any archive write when
+    # the Workload grant is off.
+    env = _env_by_name(_deployment_backend_env(rendered))
+    assert env["FAAS_WORKLOADS_ENABLED"] == {
+        "name": "FAAS_WORKLOADS_ENABLED",
+        "value": "true" if faas else "false",
+    }
     if not any(enabled.values()):
         # No additive alternate binding may retain access for either the
         # backend or the cross-namespace monolith-stats workflow identity.
@@ -1540,7 +1548,6 @@ def test_cd_health_renders_every_kargo_production_mapping(environment, renders):
     apps = json.loads(env["CD_HEALTH_KARGO_APPS"]["value"])
     names = (
         "monolith",
-        "embervm",
         "monolith-public",
         "monolith-agents",
         "scotland-connector",

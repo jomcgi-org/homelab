@@ -417,10 +417,6 @@ cdHealth:
       kargo_namespace: kargo-monolith
       chart_repo_suffix: /charts/monolith
       chart_path: projects/monolith/chart
-    - app: embervm
-      kargo_namespace: kargo-embervm
-      chart_repo_suffix: /charts/embervm
-      chart_path: projects/embervm/chart
     - app: monolith-public
       kargo_namespace: kargo-monolith-public
       chart_repo_suffix: /charts/monolith-public

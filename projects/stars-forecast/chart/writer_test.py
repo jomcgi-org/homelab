@@ -5,7 +5,7 @@ import subprocess
 import yaml
 
 
-def test_writer_and_mirror():
+def test_writer_without_mirror():
     cmd = [
         os.environ["HELM_BIN"],
         "template",
@@ -43,4 +43,9 @@ def test_writer_and_mirror():
         if enabled:
             assert jobs["refresh"]["schedule"] == "0 */3 * * *"
             assert jobs["refresh"]["concurrencyPolicy"] == "Forbid"
-        assert jobs["stars-forecast-stars-forecast-mirror"]["suspend"]
+        # The factory-public release mirrors the bucket (HOME-492). This
+        # namespace holds no R2 credential and runs no mirror.
+        assert "stars-forecast-stars-forecast-mirror" not in jobs
+        rendered = yaml.safe_dump_all(docs)
+        assert "R2_BUCKET" not in rendered
+        assert "factory-r2-public-mirror" not in rendered

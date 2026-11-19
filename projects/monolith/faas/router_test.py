@@ -117,6 +117,8 @@ def fakes(monkeypatch):
         return state["smoke"]
 
     monkeypatch.setattr(router_mod.embervm_client, "submit", _submit)
+    monkeypatch.setattr(router_mod.embervm_client, "EMBERVM_URL", "http://embervm.test")
+    monkeypatch.setenv("FAAS_WORKLOADS_ENABLED", "true")
     return state
 
 
@@ -281,6 +283,33 @@ def test_unsmoked_row_is_not_short_circuited(client, session, fakes):
 # --------------------------------------------------------------------------- #
 # Validation rejections (no row persisted)
 # --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("grant", "url"),
+    [
+        ("false", "http://embervm.test"),
+        (None, "http://embervm.test"),
+        ("true", ""),
+    ],
+)
+def test_disabled_registration_refuses_before_any_write(
+    client, session, fakes, monkeypatch, grant, url
+):
+    # HOME-472: with rbac.faas off or no EmberVM, the archive upload, the
+    # Workload write and the smoke run never start.
+    if grant is None:
+        monkeypatch.delenv("FAAS_WORKLOADS_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("FAAS_WORKLOADS_ENABLED", grant)
+    monkeypatch.setattr(embervm_client, "EMBERVM_URL", url)
+    resp = _post(client)
+    assert resp.status_code == 503
+    assert _detail(resp) == "function registration is disabled"
+    assert fakes["put_calls"] == []
+    assert fakes["upsert_calls"] == []
+    assert fakes["submit_calls"] == []
+    assert get_function(session, "echo-fn") is None
 
 
 def test_requirements_outside_baked_set_rejected(client, session, fakes):

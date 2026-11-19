@@ -11,6 +11,23 @@ buckets:
       # cache (HOME-260). The sync leaves it out.
       copyKeys:
         - {bucket: factory-health, key: health.json}
+      # Garage buckets of other charts. This release mirrors each one under
+      # its own prefix of R2 factory-public, with a read-only key, and the
+      # root sync excludes each prefix (HOME-492). No other namespace holds
+      # the R2 credential.
+      sources:
+        # https://factory-data.jomcgi.dev/stars-forecast/latest.json
+        # HOME-478 sets suspend to false.
+        - bucket: stars-forecast
+          r2Prefix: stars-forecast
+          manifestName: latest.json
+          suspend: true
+        # https://factory-data.jomcgi.dev/hikes/latest.json
+        # HOME-477 sets suspend to false.
+        - bucket: hikes
+          r2Prefix: hikes
+          manifestName: latest.json
+          suspend: true
   # The health publisher's own bucket: its write key covers nothing in
   # factory-public (HOME-260).
   - name: factory-health

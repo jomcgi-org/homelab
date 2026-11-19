@@ -1,0 +1,197 @@
+# The runtime logins and their grants. grimoire-db-init (before the Cluster)
+# generates each login's password once and waits for garage-init to fill the
+# backup key. grimoire-db-grants (after every sync) applies grants.sql as the
+# database owner. Both are idempotent.
+#
+# ArgoCD owns each login Secret as a placeholder and ignores its data.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grimoire-api-login
+  namespace: grimoire
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+# The operator's format for a role's password.
+type: kubernetes.io/basic-auth
+stringData:
+  username: grimoire_api
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grimoire-worker-login
+  namespace: grimoire
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: kubernetes.io/basic-auth
+stringData:
+  username: grimoire_worker
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grimoire-db-setup
+  namespace: grimoire
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: grimoire-db-setup
+  namespace: grimoire
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [grimoire-api-login, grimoire-worker-login]
+    verbs: [get, update]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [grimoire-backup-s3]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: grimoire-db-setup
+  namespace: grimoire
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: grimoire-db-setup
+subjects:
+  - kind: ServiceAccount
+    name: grimoire-db-setup
+    namespace: grimoire
+---
+# Waits up to 30 minutes for garage-init, which runs every 10 minutes. If the
+# deadline passes, the sync fails: sync grimoire again once the key is there.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: grimoire-db-init
+  namespace: grimoire
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/sync-options: Replace=true,Force=true
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: grimoire-db-setup
+    spec:
+      serviceAccountName: grimoire-db-setup
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: init
+          image: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
+          command: [python3, -I, -u, /scripts/secret_init.py]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: grimoire-db-setup
+---
+# After every sync, once the Cluster is healthy. It runs as the owner
+# identity, so the grimoire-restore policy applies: DNS and the database only.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: grimoire-db-grants
+  namespace: grimoire
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: grimoire-db-grants
+    spec:
+      serviceAccountName: grimoire-restore
+      automountServiceAccountToken: false
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 26
+        runAsGroup: 26
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: grants
+          # The instances' image, for a matching psql.
+          image: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
+          command:
+            - psql
+            - --no-psqlrc
+            - --set=ON_ERROR_STOP=1
+            - --single-transaction
+            - --file=/scripts/grants.sql
+          env:
+            - name: PGHOST
+              value: grimoire-rw.grimoire.svc
+            - name: PGDATABASE
+              value: grimoire
+            - name: PGUSER
+              value: grimoire_restore
+            - name: PGSSLMODE
+              value: require
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grimoire-app
+                  key: password
+            - name: HOME
+              value: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: scripts
+          configMap:
+            name: grimoire-db-setup
+        - name: tmp
+          emptyDir: {}

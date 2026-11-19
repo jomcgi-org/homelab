@@ -150,7 +150,6 @@ projects/platform-factory/README.md: missing child prometheus
 projects/platform-factory/README.md: missing child renovate
 projects/platform-factory/README.md: missing child runtimeclasses
 projects/platform-factory/README.md: missing child substrate
-projects/platform-factory/README.md: missing required file
 projects/platform-gke/README.md: missing child argo-workflows
 projects/platform-gke/README.md: missing child argocd
 projects/platform-gke/README.md: missing child atlas-operator

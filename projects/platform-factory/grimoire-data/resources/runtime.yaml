@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grimoire-api
+  namespace: grimoire
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grimoire-worker
+  namespace: grimoire
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grimoire-restore
+  namespace: grimoire
+automountServiceAccountToken: false

@@ -1,0 +1,121 @@
+# On-demand restore of a dump into the factory grimoire database. The CronJob
+# stays suspended and its schedule never occurs, so a sync starts nothing. An
+# operator starts one run with `kubectl create job --from` (README.md). The
+# stage container waits until the operator copies the dump into the run's own
+# volume. The pod runs as the owner identity: the grimoire-restore policy
+# allows DNS and the database on 5432, and nothing else.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: grimoire-restore
+  namespace: grimoire
+spec:
+  suspend: true
+  # 31 February: never, even if the CronJob is resumed.
+  schedule: "0 0 31 2 *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      # Ends a run that waits for a dump that never comes.
+      activeDeadlineSeconds: 86400
+      # Deletes the pod and its volume, with the dump, a day after the run.
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: grimoire-restore
+        spec:
+          serviceAccountName: grimoire-restore
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 26
+            runAsGroup: 26
+            fsGroup: 26
+            seccompProfile:
+              type: RuntimeDefault
+          initContainers:
+            - name: stage
+              # The operator copies grimoire.dump and vector.metadata into
+              # /snapshot with kubectl cp, then creates /snapshot/ready.
+              image: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
+              command: [bash, -c, "until [[ -e /snapshot/ready ]]; do sleep 5; done"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  memory: 64Mi
+              volumeMounts:
+                - name: snapshot
+                  mountPath: /snapshot
+          containers:
+            - name: pg-restore
+              # The instances' image, for a matching pg_restore.
+              image: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
+              command: [bash, /scripts/restore.sh]
+              env:
+                - name: PGHOST
+                  value: grimoire-rw.grimoire.svc
+                - name: PGDATABASE
+                  value: grimoire
+                - name: PGUSER
+                  value: grimoire_restore
+                - name: PGSSLMODE
+                  value: require
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: grimoire-app
+                      key: password
+                - name: PRIVATE_DUMP
+                  value: /snapshot/grimoire.dump
+                - name: VECTOR_METADATA
+                  value: /snapshot/vector.metadata
+                - name: HOME
+                  value: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  memory: 1Gi
+              volumeMounts:
+                - name: snapshot
+                  mountPath: /snapshot
+                  readOnly: true
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            # A claim for each run, deleted with its pod. Argo CD never holds an
+            # unbound claim, which would keep the Application Progressing.
+            - name: snapshot
+              ephemeral:
+                volumeClaimTemplate:
+                  spec:
+                    accessModes: [ReadWriteOnce]
+                    storageClassName: local-path
+                    resources:
+                      requests:
+                        storage: 32Gi
+            - name: scripts
+              configMap:
+                name: grimoire-restore-script
+            - name: tmp
+              emptyDir:
+                sizeLimit: 256Mi

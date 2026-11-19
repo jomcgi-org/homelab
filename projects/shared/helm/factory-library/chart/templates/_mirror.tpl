@@ -1,3 +1,4 @@
+{{- /* invariant: LIB-7 */ -}}
 {{/* This public endpoint is already used by the homelab R2 consumers. It is
 policy data, not a credential. The Secret endpoint must agree at runtime. */}}
 {{- define "factory-library.r2Host" -}}
@@ -22,11 +23,20 @@ if [ "$manifest" = latest.json ]; then
   run cat "GARAGE:$GARAGE_BUCKET/latest.json" > "$captured"
 fi
 {{- end }}
+{{- if .prefix }}
+# Every write and delete below stays under prefix {{ .prefix }}/ of the R2 bucket.
+{{- end }}
+{{- if .excludePrefixes }}
+# The sources of this release own the excluded prefixes. Sync does not delete excluded R2 objects.
+{{- end }}
 # Upload payloads before publishing the manifest. A failed sync stops here.
-run sync "GARAGE:$GARAGE_BUCKET" "R2:$R2_BUCKET" \
+run sync "GARAGE:$GARAGE_BUCKET" "{{ .dest }}" \
   --exclude /{{ .manifestName }} \
 {{- range .copyKeys }}
   --exclude /{{ .key }} \
+{{- end }}
+{{- range .excludePrefixes }}
+  --exclude '/{{ . }}/**' \
 {{- end }}
   --header-upload "Cache-Control: public, max-age=31536000, immutable"
 {{- if ne .manifestName "latest.json" }}
@@ -34,28 +44,28 @@ run sync "GARAGE:$GARAGE_BUCKET" "R2:$R2_BUCKET" \
 manifest=$(run lsf "GARAGE:$GARAGE_BUCKET" --files-only --max-depth 1 --include /{{ .manifestName }})
 {{- end }}
 if [ "$manifest" = {{ .manifestName }} ]; then
-  run copyto {{ if eq .manifestName "latest.json" }}"$captured"{{ else }}"GARAGE:$GARAGE_BUCKET/{{ .manifestName }}"{{ end }} "R2:$R2_BUCKET/{{ .manifestName }}" \
+  run copyto {{ if eq .manifestName "latest.json" }}"$captured"{{ else }}"GARAGE:$GARAGE_BUCKET/{{ .manifestName }}"{{ end }} "{{ .dest }}/{{ .manifestName }}" \
     --ignore-times --header-upload "Cache-Control: public, max-age=60"
 else
   # The sync excludes this key, so remove it separately when Garage lacks it.
-  run delete "R2:$R2_BUCKET" --include /{{ .manifestName }}
+  run delete "{{ .dest }}" --include /{{ .manifestName }}
 fi
 {{- range .copyKeys }}
 # A copied key comes from another bucket of this chart. Its writer replaces it
 # in place, so it gets the manifest's short cache.
 key=$(run lsf "{{ .remote }}:{{ .bucket }}" --files-only --max-depth 1 --include /{{ .key }})
 if [ "$key" = {{ .key }} ]; then
-  run copyto "{{ .remote }}:{{ .bucket }}/{{ .key }}" "R2:$R2_BUCKET/{{ .key }}" \
+  run copyto "{{ .remote }}:{{ .bucket }}/{{ .key }}" "{{ $.dest }}/{{ .key }}" \
     --ignore-times --header-upload "Cache-Control: public, max-age=60"
 else
-  run delete "R2:$R2_BUCKET" --include /{{ .key }}
+  run delete "{{ $.dest }}" --include /{{ .key }}
 fi
 {{- end }}
 {{- end -}}
 
 {{- define "factory-library.mirror" -}}
 {{- $public := .public | default dict -}}
-{{- include "factory-library.keys" (dict "path" "public bucket" "value" $public "allowed" (list "r2Bucket" "schedule" "itemPath" "image" "suspend" "manifestName" "copyKeys")) -}}
+{{- include "factory-library.keys" (dict "path" "public bucket" "value" $public "allowed" (list "r2Bucket" "schedule" "itemPath" "image" "suspend" "manifestName" "copyKeys" "sources")) -}}
 {{- if and (hasKey $public "suspend") (not (kindIs "bool" $public.suspend)) -}}{{- fail "factory-library: public.suspend must be a boolean" -}}{{- end -}}
 {{- $manifest := get $public "manifestName" | default "manifest.json" -}}
 {{- if not (has $manifest (list "manifest.json" "latest.json")) -}}{{- fail "factory-library: public.manifestName must be manifest.json or latest.json" -}}{{- end -}}
@@ -80,9 +90,47 @@ fi
 {{- $r2Bucket := required "factory-library: public.r2Bucket is required" $public.r2Bucket -}}
 {{- include "factory-library.name" $r2Bucket -}}
 {{- if lt (len $r2Bucket) 3 -}}{{- fail "factory-library: public.r2Bucket must be at least 3 characters" -}}{{- end -}}
+{{/* Each source is a Garage bucket of another chart. This release mirrors it
+under its own prefix, so no other namespace holds the R2 credential. A prefix
+is one path segment, so a source cannot reach above or beside it. */}}
+{{- $sources := $public.sources | default (list) -}}
+{{- if not (kindIs "slice" $sources) -}}{{- fail "factory-library: public.sources must be a list" -}}{{- end -}}
+{{- $segment := "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" -}}
+{{- $prefixes := list -}}
+{{- $seenSources := dict -}}
+{{- range $source := $sources -}}
+{{- if not (kindIs "map" $source) -}}{{- fail "factory-library: public.sources entries must be maps" -}}{{- end -}}
+{{- include "factory-library.keys" (dict "path" "public.sources entry" "value" $source "allowed" (list "bucket" "r2Prefix" "manifestName" "schedule" "suspend")) -}}
+{{- if not (hasKey $source "bucket") -}}{{- fail "factory-library: public.sources bucket is required" -}}{{- end -}}
+{{- $from := $source.bucket -}}
+{{- if or (not (kindIs "string" $from)) (not (regexMatch "^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$" $from)) (eq $from $.bucket) (hasKey $seenSources (printf "bucket/%s" $from)) -}}{{- fail "factory-library: public.sources buckets must be unique Garage bucket names other than the mirrored bucket" -}}{{- end -}}
+{{- $_ := set $seenSources (printf "bucket/%s" $from) true -}}
+{{- if not (hasKey $source "r2Prefix") -}}{{- fail "factory-library: public.sources r2Prefix is required" -}}{{- end -}}
+{{- $prefix := $source.r2Prefix -}}
+{{- if or (not (kindIs "string" $prefix)) (not (regexMatch $segment $prefix)) -}}{{- fail "factory-library: public.sources r2Prefix must be one path segment of lowercase letters, digits and -" -}}{{- end -}}
+{{- if hasKey $seenSources (printf "prefix/%s" $prefix) -}}{{- fail "factory-library: public.sources r2Prefix values must be unique" -}}{{- end -}}
+{{- $_ := set $seenSources (printf "prefix/%s" $prefix) true -}}
+{{- if and (hasKey $source "suspend") (not (kindIs "bool" $source.suspend)) -}}{{- fail "factory-library: public.sources suspend must be a boolean" -}}{{- end -}}
+{{- if not (has (get $source "manifestName" | default "manifest.json") (list "manifest.json" "latest.json")) -}}{{- fail "factory-library: public.sources manifestName must be manifest.json or latest.json" -}}{{- end -}}
+{{- $prefixes = append $prefixes $prefix -}}
+{{- end -}}
 {{- $path := required "factory-library: public.itemPath is required" $public.itemPath -}}
 {{- if not (regexMatch "^vaults/[^/]+/items/[^/]+$" $path) -}}{{- fail "factory-library: public.itemPath must be vaults/<vault>/items/<item>" -}}{{- end -}}
-{{- $name := printf "%s-mirror" .base -}}
+{{/* rclone 1.76.0, upstream multi-platform index; see README for provenance. */}}
+{{- $image := $public.image | default (dict "repository" "docker.io/rclone/rclone" "digest" "sha256:7cbeec24a44f206067597c0368be4de90ae19a64d5113c7d1938bd737a81e466") -}}
+{{- include "factory-library.keys" (dict "path" "mirror image" "value" $image "allowed" (list "repository" "digest")) -}}
+{{- if ne $image.repository "docker.io/rclone/rclone" -}}{{- fail "factory-library: mirror image.repository must be docker.io/rclone/rclone" -}}{{- end -}}
+{{/* The root sync excludes every source prefix, so it never deletes their objects. */}}
+{{ include "factory-library.mirrorJob" (dict "root" .root "name" (printf "%s-mirror" .base) "bucket" .bucket "r2Bucket" $r2Bucket "prefix" "" "excludePrefixes" $prefixes "itemPath" $path "image" $image "manifestName" $manifest "copy" $copy "copySecrets" $copySecrets "schedule" $public.schedule "suspend" $public.suspend) }}
+{{- range $source := $sources }}
+{{ include "factory-library.mirrorJob" (dict "root" $.root "name" (printf "%s-%s-mirror" $.root.Release.Name $source.r2Prefix) "bucket" $source.bucket "r2Bucket" $r2Bucket "prefix" $source.r2Prefix "excludePrefixes" (list) "itemPath" $path "image" $image "manifestName" (get $source "manifestName" | default "manifest.json") "copy" (list) "copySecrets" (dict) "schedule" $source.schedule "suspend" $source.suspend) }}
+{{- end }}
+{{- end -}}
+
+{{/* One CronJob with its own read-only Garage key, R2 Secret and admission
+guard. Its R2 writes go to the bucket root, or only under .prefix. */}}
+{{- define "factory-library.mirrorJob" -}}
+{{- $name := .name -}}
 {{- $r2Secret := printf "%s-r2" $name -}}
 {{- $garageSecret := printf "%s-s3" $name -}}
 {{- include "factory-library.name" $name -}}
@@ -91,18 +139,16 @@ fi
 {{- range $secret := list $r2Secret $garageSecret -}}
 {{- if hasKey ($.root.Values.secrets | default dict) $secret -}}{{- fail (printf "factory-library: reserved mirror secret name %s" $secret) -}}{{- end -}}
 {{- end -}}
-{{/* rclone 1.76.0, upstream multi-platform index; see README for provenance. */}}
-{{- $image := $public.image | default (dict "repository" "docker.io/rclone/rclone" "digest" "sha256:7cbeec24a44f206067597c0368be4de90ae19a64d5113c7d1938bd737a81e466") -}}
-{{- include "factory-library.keys" (dict "path" "mirror image" "value" $image "allowed" (list "repository" "digest")) -}}
-{{- if ne $image.repository "docker.io/rclone/rclone" -}}{{- fail "factory-library: mirror image.repository must be docker.io/rclone/rclone" -}}{{- end -}}
+{{- $dest := "R2:$R2_BUCKET" -}}
+{{- if .prefix -}}{{- $dest = printf "R2:$R2_BUCKET/%s" .prefix -}}{{- end -}}
 {{- $env := list -}}
-{{- range $key, $value := dict "GARAGE_BUCKET" .bucket "R2_BUCKET" $r2Bucket "R2_HOST" (include "factory-library.r2Host" .) "RCLONE_CONFIG_GARAGE_TYPE" "s3" "RCLONE_CONFIG_GARAGE_PROVIDER" "Other" "RCLONE_CONFIG_GARAGE_FORCE_PATH_STYLE" "true" "RCLONE_CONFIG_R2_TYPE" "s3" "RCLONE_CONFIG_R2_PROVIDER" "Cloudflare" "RCLONE_CONFIG_R2_REGION" "auto" "RCLONE_CONFIG_R2_FORCE_PATH_STYLE" "true" -}}
+{{- range $key, $value := dict "GARAGE_BUCKET" .bucket "R2_BUCKET" .r2Bucket "R2_HOST" (include "factory-library.r2Host" .) "RCLONE_CONFIG_GARAGE_TYPE" "s3" "RCLONE_CONFIG_GARAGE_PROVIDER" "Other" "RCLONE_CONFIG_GARAGE_FORCE_PATH_STYLE" "true" "RCLONE_CONFIG_R2_TYPE" "s3" "RCLONE_CONFIG_R2_PROVIDER" "Cloudflare" "RCLONE_CONFIG_R2_REGION" "auto" "RCLONE_CONFIG_R2_FORCE_PATH_STYLE" "true" -}}
 {{- $env = append $env (dict "name" $key "value" $value) -}}
 {{- end -}}
 {{- range $key, $field := dict "ACCESS_KEY_ID" "AWS_ACCESS_KEY_ID" "SECRET_ACCESS_KEY" "AWS_SECRET_ACCESS_KEY" "ENDPOINT" "AWS_ENDPOINT_URL" "REGION" "AWS_REGION" -}}
 {{- $env = append $env (dict "name" (printf "RCLONE_CONFIG_GARAGE_%s" $key) "valueFrom" (dict "secretKeyRef" (dict "name" $garageSecret "key" $field))) -}}
 {{- end -}}
-{{- range $from, $remote := $copySecrets -}}
+{{- range $from, $remote := .copySecrets -}}
 {{- $copySecret := printf "%s-%s-s3" $name $from -}}
 {{- range $key, $value := dict "TYPE" "s3" "PROVIDER" "Other" "FORCE_PATH_STYLE" "true" -}}
 {{- $env = append $env (dict "name" (printf "RCLONE_CONFIG_%s_%s" $remote $key) "value" $value) -}}
@@ -114,9 +160,9 @@ fi
 {{- range $key, $field := dict "ACCESS_KEY_ID" "access-key-id" "SECRET_ACCESS_KEY" "secret-access-key" "ENDPOINT" "s3-api-endpoint" -}}
 {{- $env = append $env (dict "name" (printf "RCLONE_CONFIG_R2_%s" $key) "valueFrom" (dict "secretKeyRef" (dict "name" $r2Secret "key" $field))) -}}
 {{- end -}}
-{{- $workload := dict "kind" "CronJob" "schedule" ($public.schedule | default "* * * * *") "concurrencyPolicy" "Forbid" "backoffLimit" 1 "image" $image "containerName" "mirror" "resources" (dict "requests" (dict "cpu" "10m" "memory" "64Mi") "limits" (dict "memory" "256Mi")) "command" (list "/bin/sh" "-c" (include "factory-library.mirrorScript" (dict "manifestName" $manifest "copyKeys" $copy))) "env" $env "writablePaths" (list (dict "name" "tmp" "mountPath" "/tmp" "sizeLimit" "64Mi")) "network" (dict "egress" (list (dict "peer" "garage" "port" 3900) (dict "peer" "r2-s3" "fqdn" (include "factory-library.r2Host" .) "port" 443))) -}}
+{{- $workload := dict "kind" "CronJob" "schedule" (.schedule | default "* * * * *") "concurrencyPolicy" "Forbid" "backoffLimit" 1 "image" .image "containerName" "mirror" "resources" (dict "requests" (dict "cpu" "10m" "memory" "64Mi") "limits" (dict "memory" "256Mi")) "command" (list "/bin/sh" "-c" (include "factory-library.mirrorScript" (dict "manifestName" .manifestName "copyKeys" .copy "dest" $dest "prefix" .prefix "excludePrefixes" .excludePrefixes))) "env" $env "writablePaths" (list (dict "name" "tmp" "mountPath" "/tmp" "sizeLimit" "64Mi")) "network" (dict "egress" (list (dict "peer" "garage" "port" 3900) (dict "peer" "r2-s3" "fqdn" (include "factory-library.r2Host" .) "port" 443))) -}}
 {{ include "factory-library.bucketSecret" (dict "root" .root "name" $garageSecret "bucket" .bucket "access" "read") }}
-{{- range $from, $remote := $copySecrets }}
+{{- range $from, $remote := .copySecrets }}
 {{ include "factory-library.bucketSecret" (dict "root" $.root "name" (printf "%s-%s-s3" $name $from) "bucket" $from "access" "read") }}
 {{- end }}
 {{ include "factory-library.mirrorAdmission" (dict "root" .root "name" $name "secret" $r2Secret) }}
@@ -130,6 +176,6 @@ metadata:
     argocd.argoproj.io/sync-wave: "-2"
 type: Opaque
 spec:
-  itemPath: {{ $path }}
-{{ include "factory-library.cronjob" (dict "root" .root "name" $name "workload" $workload "mirror" true "suspend" ($public.suspend | default false)) }}
+  itemPath: {{ .itemPath }}
+{{ include "factory-library.cronjob" (dict "root" .root "name" $name "workload" $workload "mirror" true "suspend" (.suspend | default false)) }}
 {{- end -}}

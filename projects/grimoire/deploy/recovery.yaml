@@ -1,0 +1,48 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: grimoire-recovered
+  namespace: grimoire
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
+  primaryUpdateStrategy: unsupervised
+  smartShutdownTimeout: 15
+  enableSuperuserAccess: false
+  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: required
+    topologyKey: kubernetes.io/hostname
+  storage:
+    size: 32Gi
+    storageClass: local-path
+  resources:
+    requests:
+      cpu: 50m
+      memory: 320Mi
+    limits:
+      memory: 1Gi
+  postgresql:
+    extensions:
+    - name: vector
+      image:
+        reference: ghcr.io/cloudnative-pg/pgvector:0.8.2-202604021427-18-trixie
+  bootstrap:
+    recovery:
+      source: grimoire-v1
+  externalClusters:
+  - name: grimoire-v1
+    barmanObjectStore:
+      destinationPath: s3://grimoire-backups/
+      serverName: grimoire-v1
+      endpointURL: http://garage.garage.svc:3900
+      s3Credentials:
+        accessKeyId:
+          name: grimoire-recovery-s3
+          key: AWS_ACCESS_KEY_ID
+        secretAccessKey:
+          name: grimoire-recovery-s3
+          key: AWS_SECRET_ACCESS_KEY
+        region:
+          name: grimoire-recovery-s3
+          key: AWS_REGION

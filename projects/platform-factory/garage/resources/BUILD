@@ -18,7 +18,10 @@ filegroup(
         "garage_init.py",
         "network-policy.yaml",
     ],
-    visibility = ["//projects/platform-factory/authentik/resources:__pkg__"],
+    visibility = [
+        "//projects/platform-factory/authentik/resources:__pkg__",
+        "//projects/platform-factory/grimoire-data:__pkg__",
+    ],
 )
 
 py_test(

@@ -27,10 +27,11 @@ def test_writer_schedules_and_credentials():
         and doc["metadata"].get("labels", {}).get("factory.jomcgi.dev/garage-claim")
         == "true"
     }
-    assert claims == {
-        "hikes-hikes-s3": ("hikes", "readwrite"),
-        "hikes-hikes-mirror-s3": ("hikes", "read"),
-    }
+    # The factory-public release mirrors the bucket (HOME-492). This
+    # namespace holds no R2 credential and runs no mirror.
+    assert claims == {"hikes-hikes-s3": ("hikes", "readwrite")}
+    assert "R2_BUCKET" not in result
+    assert "factory-r2-public-mirror" not in result
     jobs = {
         d["metadata"]["name"]: d["spec"] for d in documents if d["kind"] == "CronJob"
     }

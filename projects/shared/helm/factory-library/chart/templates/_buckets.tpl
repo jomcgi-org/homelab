@@ -82,6 +82,18 @@ subjects:
 {{- if not (has $copySecret $names) -}}{{- $names = append $names $copySecret -}}{{- end -}}
 {{- end -}}
 {{- end -}}
+{{/* A source mirror is named after its prefix. The mirror validates each
+source and refuses a repeated prefix. */}}
+{{- $sources := (.public | default dict).sources | default (list) -}}
+{{- $prefixes := dict -}}
+{{- if kindIs "slice" $sources -}}
+{{- range $sources -}}
+{{- if and (kindIs "map" .) (kindIs "string" .r2Prefix) (not (hasKey $prefixes (toString .r2Prefix))) -}}
+{{- $_ := set $prefixes .r2Prefix true -}}
+{{- $names = concat $names (list (printf "%s-%s-mirror-s3" $.Release.Name .r2Prefix) (printf "%s-%s-mirror-r2" $.Release.Name .r2Prefix)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- $destination := required "factory-library: public.r2Bucket is required" (.public | default dict).r2Bucket -}}
 {{- if hasKey $destinations $destination -}}{{- fail "factory-library: each R2 bucket must have only one mirror" -}}{{- end -}}
 {{- $_ := set $destinations $destination true -}}

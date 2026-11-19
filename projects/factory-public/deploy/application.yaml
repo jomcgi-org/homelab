@@ -12,7 +12,7 @@ spec:
   source:
     repoURL: ghcr.io/jomcgi/homelab/charts
     chart: factory-public
-    targetRevision: 0.11.5
+    targetRevision: 0.13.1
     helm:
       releaseName: factory-public
   destination:
@@ -35,6 +35,14 @@ spec:
     - group: ""
       kind: Secret
       name: factory-public-factory-public-mirror-factory-health-s3
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      name: factory-public-stars-forecast-mirror-s3
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      name: factory-public-hikes-mirror-s3
       jsonPointers: [/data]
   syncPolicy:
     automated:
