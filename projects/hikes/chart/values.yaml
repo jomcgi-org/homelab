@@ -8,7 +8,8 @@ buckets:
       r2Bucket: hikes
       manifestName: latest.json
       itemPath: vaults/k8s-homelab/items/hikes-r2-public-mirror
-      suspend: false
+      suspend: true
+suspendWriters: true
 jobs:
   catalogue: "0 0 1 1 *"
   refresh: "20 */2 * * *"

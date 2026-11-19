@@ -267,8 +267,8 @@ func hmacSHA256(key []byte, data string) []byte {
 	return h.Sum(nil)
 }
 
-// Put writes a JSON object, optionally conditional on the prior generation.
-func (c *Client) Put(ctx context.Context, bucket, key string, body io.Reader, size int64, digest, cache, prior string) error {
+// Put writes a JSON object.
+func (c *Client) Put(ctx context.Context, bucket, key string, body io.Reader, size int64, digest, cache string) error {
 	u := *c.endpoint
 	u.Path = "/" + bucket + "/" + key
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u.String(), body)
@@ -278,11 +278,7 @@ func (c *Client) Put(ctx context.Context, bucket, key string, body io.Reader, si
 	req.ContentLength = size
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cache-Control", cache)
-	if prior == "*" {
-		req.Header.Set("If-None-Match", "*")
-	} else if prior != "" {
-		req.Header.Set("If-Match", prior)
-	}
+
 	date := c.now().UTC().Format("20060102T150405Z")
 	req.Header.Set("X-Amz-Date", date)
 	req.Header.Set("X-Amz-Content-Sha256", digest)

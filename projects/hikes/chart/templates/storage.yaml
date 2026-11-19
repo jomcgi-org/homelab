@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hikes-writer-lock
+spec:
+  storageClassName: local-path
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Mi
+---
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: ghcr-imagepull-secret
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+type: kubernetes.io/dockerconfigjson
+spec:
+  itemPath: vaults/k8s-homelab/items/ghcr-read-permissions

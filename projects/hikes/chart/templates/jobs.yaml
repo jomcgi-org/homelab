@@ -12,9 +12,18 @@
 {{- end }}
 {{- $workload := dict "writablePaths" (list (dict "name" "tmp" "mountPath" "/tmp" "sizeLimit" "128Mi")) "schedule" $schedule "args" (list $mode) "env" $env "resources" (dict "requests" (dict "cpu" "50m" "memory" "64Mi") "limits" (dict "memory" "256Mi")) "network" (dict "egress" $egress) }}
 {{- $render := include "factory-library.cronjob" (dict "root" $ "name" (printf "hikes-%s" $mode) "workload" $workload) }}
-{{- if eq $mode "catalogue" }}
-{{ $render | replace "  schedule:" "  suspend: true\n  schedule:" }}
-{{- else }}
-{{ $render }}
+{{- range splitList "\n---" $render }}
+{{- $resource := fromYaml . }}
+{{- if $resource.kind }}
+{{- if eq $resource.kind "CronJob" }}
+{{- $_ := set $resource.spec "suspend" (or (eq $mode "catalogue") $.Values.suspendWriters) }}
+{{- $pod := $resource.spec.jobTemplate.spec.template.spec }}
+{{- $_ := set $pod "volumes" (append $pod.volumes (dict "name" "writer-lock" "persistentVolumeClaim" (dict "claimName" "hikes-writer-lock"))) }}
+{{- $container := first $pod.containers }}
+{{- $_ := set $container "volumeMounts" (append $container.volumeMounts (dict "name" "writer-lock" "mountPath" "/var/lock/hikes" "readOnly" true)) }}
+{{- end }}
+---
+{{ toYaml $resource }}
+{{- end }}
 {{- end }}
 {{- end }}
