@@ -17,7 +17,7 @@ MIRRORS = [
 
 def test_public_consumer():
     config = yaml.safe_load((HERE / "values.yaml").read_text())
-    assert list(config) == ["buckets", "workloads", "secrets"]
+    assert list(config) == ["buckets", "workloads", "secrets", "healthAlertTest"]
     assert [b["name"] for b in config["buckets"]] == [
         "factory-public",
         "factory-health",
@@ -156,7 +156,7 @@ def test_public_consumer():
     )
 
 
-def render():
+def render(*args):
     result = subprocess.run(
         [
             os.environ["HELM_BIN"],
@@ -165,6 +165,7 @@ def render():
             str(HERE),
             "--namespace",
             "factory-public",
+            *args,
         ],
         check=True,
         capture_output=True,
@@ -191,8 +192,6 @@ def test_health_publisher_holds_no_factory_public_credential():
         for e in container["env"]
         if "valueFrom" in e
     }
-    # The HOME-415 alert check is off.
-    assert {"name": "ALERT_TEST", "value": "false"} in container["env"]
     # Its Garage key covers factory-health only, never factory-public.
     assert set(refs) == {
         "factory-public-factory-health-s3",
@@ -224,6 +223,18 @@ def test_health_publisher_holds_no_factory_public_credential():
             "verbs": ["get"],
         }
     ]
+
+
+def test_alert_test_renders_each_setting():
+    # The HOME-415 alert check (README "Alert check"). Each setting renders
+    # its own value; deploy/application.yaml sets it for the check.
+    for setting in ("true", "false"):
+        job = render("--set", f"healthAlertTest={setting}")["CronJob", "health"]
+        pod = job["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+        env = pod["containers"][0]["env"]
+        assert [e for e in env if e["name"] == "ALERT_TEST"] == [
+            {"name": "ALERT_TEST", "value": setting}
+        ]
 
 
 def test_mirror_publishes_only_health_json_from_the_health_bucket():

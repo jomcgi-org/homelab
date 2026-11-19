@@ -1,2 +1,5 @@
 {{- $_ := set .Values.workloads.health "args" (list (required "factory health script is missing" (.Files.Get "files/health.py"))) -}}
+{{- /* The HOME-415 alert check: ALERT_TEST is "true" only when healthAlertTest is true. */ -}}
+{{- $alertTest := ternary "true" "false" (eq (toString .Values.healthAlertTest) "true") -}}
+{{- $_ = set .Values.workloads.health "env" (append .Values.workloads.health.env (dict "name" "ALERT_TEST" "value" $alertTest)) -}}
 {{ include "factory-library.all" . }}
