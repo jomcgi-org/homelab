@@ -274,7 +274,8 @@ test("the files are valid and import the live Monolith rule completely", () => {
   assert.equal(ROUTES.zone, RULES.zone);
   checkRules(RULES.rules);
   // The zone held one rule. Apart from Cloudflare's metadata, the file's
-  // copy has exactly its settings, so the first PUT drops nothing.
+  // copy has exactly its settings, so the first PUT drops nothing, except
+  // respect_strong_etags (HOME-437, below).
   assert.equal(LIVE.length, 1);
   assert.deepEqual(
     Object.keys(LIVE[0])
@@ -282,7 +283,20 @@ test("the files are valid and import the live Monolith rule completely", () => {
       .sort(),
     ["id", "last_updated", "ref", "version"],
   );
-  assert.ok(sameRule(LIVE[0], RULES.rules[0]));
+  const { respect_strong_etags, ...imported } = LIVE[0].action_parameters;
+  assert.equal(respect_strong_etags, true);
+  assert.ok(
+    sameRule({ ...LIVE[0], action_parameters: imported }, RULES.rules[0]),
+  );
+});
+
+test("no rule keeps strong ETags, so Cloudflare compresses the site", () => {
+  // Cloudflare does not compress a response whose strong ETag it keeps, so
+  // with this setting every jomcgi.dev page and script went out uncompressed.
+  for (const rule of RULES.rules)
+    assert.ok(!rule.action_parameters.respect_strong_etags, rule.description);
+  // The import turned it on, so the first run after this change writes.
+  assert.ok(!sameRule(LIVE[0], RULES.rules[0]));
 });
 
 test("creates missing routes, deletes stale ones, and leaves other Workers alone", async () => {
@@ -470,20 +484,32 @@ test("overwrites a setting added in the dashboard to a known rule", async () => 
 
 test("a live rule with an unknown top-level setting is a difference", () => {
   assert.ok(
-    !sameRule({ ...LIVE[0], logging: { enabled: true } }, RULES.rules[0]),
+    !sameRule({ ...MONOLITH, logging: { enabled: true } }, RULES.rules[0]),
   );
   assert.ok(
-    sameRule({ ...LIVE[0], logging: { enabled: false } }, RULES.rules[0]),
+    sameRule({ ...MONOLITH, logging: { enabled: false } }, RULES.rules[0]),
   );
 });
 
-test("registering prod with routes off on today's zone writes nothing", async () => {
-  // cache-rules.json equals the live entrypoint (LIVE), and routes are off,
-  // so the first prod sync needs no write permission at all.
-  const zone = fakeZone({ rules: LIVE });
+test("routes off on a zone that matches the files writes nothing", async () => {
+  // The live rules equal cache-rules.json and routes are off, so the sync
+  // needs no write permission at all.
+  const zone = fakeZone({ rules: [MONOLITH] });
   const log = await apply(zone.call, ROUTES, RULES, { serveRoutes: false });
   assert.deepEqual(zone.state.writes, []);
   assert.deepEqual(log, ["no change", "read-back matches the files"]);
+});
+
+test("the imported rule with strong ETags is rewritten in place", async () => {
+  // Same description and expression, so the rule is known: one PUT turns
+  // strong ETags off, and the read-back matches.
+  const zone = fakeZone({ rules: LIVE });
+  const log = await apply(zone.call, ROUTES, RULES, { serveRoutes: false });
+  assert.deepEqual(zone.state.writes, [
+    "PUT /zones/z1/rulesets/phases/http_request_cache_settings/entrypoint",
+  ]);
+  assert.ok(log.includes("read-back matches the files"));
+  assert.ok(!zone.state.rules[0].action_parameters.respect_strong_etags);
 });
 
 test("writes the rules when the entrypoint does not exist yet", async () => {

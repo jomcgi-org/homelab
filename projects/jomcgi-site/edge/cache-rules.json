@@ -10,7 +10,6 @@
         "edge_ttl": {
           "mode": "bypass_by_default"
         },
-        "respect_strong_etags": true,
         "serve_stale": {
           "disable_stale_while_updating": false
         }

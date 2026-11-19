@@ -59,7 +59,10 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
   still applies, and then the edge Job fails and names what it skipped. Only
   the prod stage runs the edge Job (`edge.enabled`), because zone config is
   not per stage. The chart refuses prod without it, because only the edge Job
-  deletes the Worker's routes.
+  deletes the Worker's routes. The "Monolith" rule must not set
+  `respect_strong_etags`: Cloudflare does not compress a response whose strong
+  ETag it keeps, so every page, script and data file on jomcgi.dev went out
+  uncompressed, and the prod site-check failed the JS budget (HOME-437).
 - **Pre-render.** `build.mjs` runs the Vite build, then renders each page
   with React at build time into its HTML entry, in place of `<!--ssr-->`.
   A page reads fully, with its preview tags, before any script runs, and the
