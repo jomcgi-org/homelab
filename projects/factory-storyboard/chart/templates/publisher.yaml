@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: factory-storyboard
+automountServiceAccountToken: false
+{{- range $doc := splitList "\n---" (include "factory-library.all" .) }}
+{{- if trim $doc }}
+{{- $resource := fromYaml $doc }}
+{{- if eq $resource.kind "CronJob" }}
+{{- $_ := set $resource.spec.jobTemplate.spec.template.spec "serviceAccountName" "factory-storyboard" }}
+{{- end }}
+---
+{{ toYaml $resource }}
+{{- end }}
+{{- end }}

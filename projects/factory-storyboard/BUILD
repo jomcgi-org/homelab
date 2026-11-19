@@ -1,4 +1,7 @@
 load("@aspect_rules_js//js:defs.bzl", "js_library", "js_test")
+load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+load("//bazel/tools/oci:py3_image.bzl", "py3_image")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 # Hand-maintained snapshot contract, fixtures and their conformance test.
@@ -80,4 +83,56 @@ py_test(
         "delivery_stats_test.py",
     ],
     deps = ["@pip//pytest"],
+)
+
+py_venv_binary(
+    name = "runtime",
+    srcs = [
+        "connector_source.py",
+        "delivery_stats.py",
+        "publisher.py",
+        "runtime.py",
+        "session_history.py",
+    ],
+    imports = ["."],
+    main = "runtime.py",
+    deps = [
+        "@pip//boto3",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+    ],
+)
+
+pkg_tar(
+    name = "scanner",
+    srcs = ["@gitleaks_linux_amd64//:gitleaks"],
+    mode = "0755",
+    package_dir = "/usr/local/bin",
+)
+
+py3_image(
+    name = "image",
+    binary = ":runtime",
+    env = {
+        "PYTHONPATH": "/projects/factory-storyboard/runtime.runfiles/_main/projects/factory-storyboard",
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+    },
+    tars = [":scanner"],
+)
+
+py_test(
+    name = "runtime_test",
+    srcs = [
+        "connector_source.py",
+        "delivery_stats.py",
+        "publisher.py",
+        "runtime.py",
+        "runtime_test.py",
+        "session_history.py",
+    ],
+    data = [":schema"],
+    deps = [
+        "@pip//jsonschema",
+        "@pip//pytest",
+    ],
 )

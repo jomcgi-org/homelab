@@ -1,0 +1,56 @@
+image:
+  repository: ghcr.io/jomcgi/homelab/projects/factory-storyboard
+  digest: ""
+buckets:
+  - name: factory-public
+    access: write
+workloads:
+  factory-storyboard:
+    kind: CronJob
+    schedule: "*/5 * * * *"
+    concurrencyPolicy: Forbid
+    backoffLimit: 0
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits: {memory: 512Mi}
+    network:
+      egress:
+        - {peer: factory-db, port: 5432}
+        - {peer: itsaplan-api, port: 3000}
+        - {peer: kagent-controller, port: 8083}
+    env:
+      - {name: PUBLIC_PROJECT, value: HOME}
+      - {name: ITSAPLAN_URL, value: "http://factory-itsaplan-api.factory.svc:3000"}
+      - {name: KAGENT_URL, value: "http://kagent-controller.kagent.svc:8083"}
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef: {name: factory-storyboard-factory-public-s3, key: AWS_ACCESS_KEY_ID}
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef: {name: factory-storyboard-factory-public-s3, key: AWS_SECRET_ACCESS_KEY}
+      - name: AWS_ENDPOINT_URL
+        valueFrom:
+          secretKeyRef: {name: factory-storyboard-factory-public-s3, key: AWS_ENDPOINT_URL}
+      - name: AWS_REGION
+        valueFrom:
+          secretKeyRef: {name: factory-storyboard-factory-public-s3, key: AWS_REGION}
+      - name: BUCKET
+        valueFrom:
+          secretKeyRef: {name: factory-storyboard-factory-public-s3, key: BUCKET}
+      - name: DATABASE_URL
+        valueFrom:
+          secretKeyRef: {name: factory-storyboard-db, key: DATABASE_URL}
+      - name: ITSAPLAN_KEY
+        valueFrom:
+          secretKeyRef: {name: factory-storyboard-readers, key: ITSAPLAN_KEY}
+      - name: KAGENT_BEARER
+        valueFrom:
+          secretKeyRef: {name: factory-storyboard-readers, key: KAGENT_BEARER}
+      - name: SESSION_SHARES
+        valueFrom:
+          secretKeyRef: {name: factory-storyboard-readers, key: SESSION_SHARES}
+secrets:
+  factory-storyboard-readers:
+    workload: factory-storyboard
+    onePassword:
+      itemPath: vaults/k8s-homelab/items/factory-storyboard-readers

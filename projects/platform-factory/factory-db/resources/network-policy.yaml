@@ -33,6 +33,9 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory
             app.kubernetes.io/name: factory-broker
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-storyboard
         # The connector (delivery plan step 9).
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory

@@ -23,5 +23,12 @@ The independent schema test validates the fixtures with draft-07 JSON Schema,
 checks their hashes and cross-links, and exercises rejected inputs. The
 [README](README.md) describes fixture updates and the future Worker contract.
 
-The publisher, Garage-to-R2 mirror and narrative agent are later slices of
-[HOME-65](https://factory-plan.jomcgi.dev/factory/issue/HOME-65).
+| Component | Role |
+| --- | --- |
+| schema | Defines the versioned public documents shared with the site. |
+
+The publisher joins the configured itsaplan project to connector delivery
+records. It reads completed tasks through owner-shared kagent sessions.
+Every five minutes it commits immutable objects and then the manifest to
+Garage. The existing mirror copies them to R2. The site checks each hash
+before it copies the object into its deployment.

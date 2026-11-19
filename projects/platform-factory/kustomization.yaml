@@ -35,6 +35,7 @@ resources:
   - ../stars-forecast/deploy
   - ../factory-public/deploy # Garage factory-public and its R2 mirror (HOME-243)
   - ../hikes/deploy
+  - ../factory-storyboard/deploy
   - ../factory-explore/deploy
   - ../factory-landing/deploy # Static operator tools at factory.jomcgi.dev
   - ../factory-explore-site/deploy # Publishes the explorer Worker on sync

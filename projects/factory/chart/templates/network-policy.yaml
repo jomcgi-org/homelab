@@ -37,6 +37,9 @@ spec:
             k8s:io.kubernetes.pod.namespace: {{ $np.edge.namespace }}
             {{- toYaml $np.edge.matchLabels | nindent 12 }}
         - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-storyboard
+        - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ $np.connector.namespace }}
             {{- toYaml $np.connector.matchLabels | nindent 12 }}
         {{- if .Values.reviewer.enabled }}
