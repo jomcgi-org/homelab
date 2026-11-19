@@ -87,9 +87,12 @@ def request(base, method, path, token=None, body=None, headers=None):
 class MCP:
     """A minimal streamable-HTTP MCP client: initialize, then JSON-RPC calls."""
 
-    def __init__(self, base, path, token):
+    def __init__(self, base, path, token, headers=None):
         self.base, self.path, self.token, self.next_id = base, path, token, 1
-        self.headers = {"Accept": "application/json, text/event-stream"}
+        self.headers = {
+            "Accept": "application/json, text/event-stream",
+            **(headers or {}),
+        }
         status, headers, _ = self.post("initialize", initialize_params())
         self.status = status
         session = {k.lower(): v for k, v in headers.items()}.get("mcp-session-id")
@@ -172,6 +175,12 @@ def server():
             if time.monotonic() > deadline:
                 pytest.fail(f"hindsight did not start:\n{log.read_text()[-4000:]}")
             time.sleep(2)
+        # Production provisions homelab before a coder uses it. The embedded
+        # database starts empty, and recall requires an existing bank.
+        status, _, body = request(
+            base, "PUT", "/v1/default/banks/homelab", TENANT_KEY, {}
+        )
+        assert status == 200, body
         yield base
     finally:
         proc.terminate()
@@ -205,8 +214,7 @@ def test_mcp_takes_only_the_mcp_token(server, token):
     ids=["bank-path", "multi-bank"],
 )
 def test_mcp_registers_only_recall_and_retain(server, path, headers):
-    client = MCP(server, path, MCP_TOKEN)
-    client.headers.update(headers)
+    client = MCP(server, path, MCP_TOKEN, headers)
     assert client.status == 200
     tools = client.call("tools/list")["result"]["tools"]
     assert sorted(tool["name"] for tool in tools) == ["recall", "retain"]
@@ -304,8 +312,7 @@ def test_binding_denies_tool(server, path, token, name, args):
     [("recall", {"query": "boundary"}), ("retain", {"content": "boundary"})],
 )
 def test_explicit_tool_bank_cannot_override_binding(server, name, arguments):
-    client = MCP(server, "/mcp/", MCP_TOKEN)
-    client.headers["X-Bank-Id"] = "homelab"
+    client = MCP(server, "/mcp/", MCP_TOKEN, {"X-Bank-Id": "homelab"})
     reply = client.call(
         "tools/call", {"name": name, "arguments": {**arguments, "bank_id": "other"}}
     )
