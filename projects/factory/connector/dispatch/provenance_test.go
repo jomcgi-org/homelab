@@ -332,6 +332,12 @@ func TestTrialArmRounds(t *testing.T) {
 				t.Fatal(initial)
 			}
 			session := v.work(101).SessionID
+			// Drain the trial and restart before rework. Re-selecting by weight
+			// would now send the item to control one or two rounds too early.
+			b.Arms[0].Weight = 0
+			b.Arms = append(b.Arms, provenance.Arm{Name: "control", Model: b.Runtime.Model, ReasoningEffort: b.Runtime.ReasoningEffort, Weight: 1})
+			v.e.Release()
+			v.e = v.engine("draining-trial")
 			for i := 1; i <= tc.limit; i++ {
 				head := fmt.Sprintf("%040x", i)
 				v.gh.push("factory/HL-7", head, "fix: issue")
@@ -356,6 +362,38 @@ func TestTrialArmRounds(t *testing.T) {
 				if rounds[i-1].Provenance.Arm != want || wi.FirstArm != "luna" || wi.Escalated != (i == tc.limit) || (wi.SessionID != session) != (i == tc.limit) {
 					t.Fatalf("round %d: work=%+v run=%+v", i, wi, rounds[i-1])
 				}
+			}
+		})
+	}
+}
+
+// These issue keys exercise all three buckets in the Homelab allocation.
+// Read each run back from Postgres and compare it with the actual Send target.
+func TestWeightedCoderRunColumns(t *testing.T) {
+	arms := []provenance.Arm{
+		{Name: "control", Model: "gpt-6.2-astra", ReasoningEffort: "xhigh", Weight: 70},
+		{Name: "astra-high", Model: "gpt-6.2-astra", ReasoningEffort: "high", Weight: 15},
+		{Name: "luna", Model: "gpt-6-luna", ReasoningEffort: "xhigh", Weight: 15},
+	}
+	for i, key := range []string{"HL-1", "HL-3", "HL-9"} {
+		t.Run(key, func(t *testing.T) {
+			v := provenanceEnv(t)
+			b := &v.cfg.Bindings[0]
+			b.Arms = arms
+			b.Runtime.Model, b.Runtime.ReasoningEffort = arms[0].Model, arms[0].ReasoningEffort
+			v.e.Release()
+			v.e = v.engine("weighted")
+			v.its.add(1, "coder", 101, key, "Fix the issue.")
+			v.tick(v.e)
+			got := v.run(1).Provenance
+			want := arms[i]
+			agent := b.KagentAgent
+			if i != 0 {
+				agent += "-" + want.Name
+			}
+			sends := v.kg.Sends()
+			if len(sends) != 1 || sends[0].agent.Name != agent || got.Arm != want.Name || got.Model != want.Model || got.ReasoningEffort != want.ReasoningEffort {
+				t.Fatalf("sends=%v run=%+v want agent=%s arm=%+v", sends, got, agent, want)
 			}
 		})
 	}
