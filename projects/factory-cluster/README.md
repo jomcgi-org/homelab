@@ -383,6 +383,16 @@ KUBECONFIG=~/.kube/factory.yaml kubectl -n prometheus port-forward svc/prometheu
 
 ### Alerts
 
+The Runbook link opens a read-only page at `factory-runbooks.jomcgi.dev`.
+Without a session, Envoy redirects the browser to Authentik before serving
+the page. After sign-in, Envoy checks the verified token’s `groups` claim.
+Only members of `authentik Admins` can read a runbook. An authenticated
+user outside that group receives HTTP 403. The runbook HTTPRoute attaches
+to the edge Gateway and inherits its default-deny SecurityPolicy. See the
+[runbook route](../platform-factory/grafana/resources/runbooks-route.yaml),
+[gateway policy](../platform-factory/edge/chart/templates/security-policy.yaml)
+and [group authorization rule](../platform-factory/edge/chart/templates/_oidc.tpl).
+
 Prometheus evaluates `resources/rules.yml` and sends firing alerts to one
 Alertmanager (`resources/alertmanager.yaml`), which forwards them to alert-relay. The relay queries Prometheus for a graph
 and posts it to the homelab Discord channel. Select a firing alert’s title

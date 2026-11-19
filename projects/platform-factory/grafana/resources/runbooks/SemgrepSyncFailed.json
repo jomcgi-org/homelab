@@ -1,7 +1,7 @@
 {
   "graph": "kube_job_failed{namespace=~@namespace,job_name=~@job_name,condition=\"true\"}",
-  "check": "(kube_job_failed{namespace=~@namespace,job_name=~@job_name,job_name=~\"intsec-sync-[0-9]+\",condition=\"true\"} and on (namespace, job_name) (kube_job_status_start_time == on (namespace) group_left max by (namespace) (kube_job_status_start_time{namespace=~@namespace,job_name=~\"intsec-sync-[0-9]+\"}))) or on (namespace) (0 * max by (namespace) (kube_job_status_start_time{namespace=~@namespace,job_name=~\"intsec-sync-[0-9]+\"}))",
+  "check": "(kube_job_failed{namespace=~@namespace,job_name=~\"intsec-sync-[0-9]+\",condition=\"true\"} and on (namespace, job_name) (kube_job_status_start_time == on (namespace) group_left max by (namespace) (kube_job_status_start_time{namespace=~@namespace,job_name=~\"intsec-sync-[0-9]+\"}))) or on (namespace) (0 * max by (namespace) (kube_job_status_start_time{namespace=~@namespace,job_name=~\"intsec-sync-[0-9]+\"}))",
   "condition": "lt",
   "limit": 1.0,
-  "steps": "With the factory kubeconfig, run `kubectl -n <namespace> logs job/<job_name>`\nusing the namespace and Job name in the alert summary. The alert clears when a\nnewer sync Job starts unless that Job also fails."
+  "steps": "The check shows the newest sync in this namespace. The graph shows the Job that triggered this link. For a failed check, use its job_name and namespace to inspect the logs:\n\nkubectl -n <namespace> logs job/<job_name>"
 }
