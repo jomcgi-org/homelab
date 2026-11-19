@@ -13,6 +13,8 @@ tests:
   # evaluation, and the alert always names a down component.
   - interval: 37s
     input_series:
+      - series: 'up{job="factory-health",instance="health-exporter:8080"}'
+        values: "1x40"
       - series: 'factory_health_healthy'
         values: "0x30 1x9"
       - series: 'factory_health_component_up{component="factory-cluster"}'
@@ -92,3 +94,38 @@ tests:
               runbook: "https://factory-runbooks.jomcgi.dev/FactoryHealthUnhealthy"
               summary: "Factory health is unhealthy, down: alert-test (healthy flag 0, minimum 1)"
               description: 'https://factory-data.jomcgi.dev/health.json reports status unhealthy. Runbook: projects/factory-cluster/README.md, "Alerts".'
+
+  # relay is down from the start. Prometheus cannot scrape the exporter at
+  # 6m10s and 7m24s (up 0), and each failed scrape marks every series stale.
+  # The scrape at 6m47s reads unhealthy; the scrape at 8m01s reads healthy.
+  # The alert stays through each gap and clears at the next evaluation after
+  # the healthy scrape.
+  - interval: 37s
+    input_series:
+      - series: 'up{job="factory-health",instance="health-exporter:8080"}'
+        values: "1x9 0 1 0 1x5"
+      - series: 'factory_health_healthy'
+        values: "0x9 stale 0 stale 1x5"
+      - series: 'factory_health_component_up{component="factory-cluster"}'
+        values: "1x9 stale 1 stale 1x5"
+      - series: 'factory_health_component_up{component="relay"}'
+        values: "0x9 stale 0 stale 1x5"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: *relay_down
+      - eval_time: 6m30s
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: *relay_down
+      - eval_time: 7m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: *relay_down
+      - eval_time: 7m30s
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: *relay_down
+      - eval_time: 8m
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: *relay_down
+      - eval_time: 8m30s
+        alertname: FactoryHealthUnhealthy
+        exp_alerts: []
