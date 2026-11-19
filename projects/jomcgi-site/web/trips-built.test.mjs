@@ -108,7 +108,10 @@ test("export -> snapshot -> individual HTML entries, hydration data, redirects, 
     const scripts = [...html.matchAll(/<script[^>]*src="([^"]+)"/g)].map(
       (m) => m[1],
     );
-    assert.equal(scripts.length, 1);
+    // One app script, plus the analytics beacon every page ships (HOME-382).
+    const beacon = "https://static.cloudflareinsights.com/beacon.min.js";
+    assert.equal(scripts.filter((src) => src === beacon).length, 1);
+    assert.equal(scripts.filter((src) => src !== beacon).length, 1);
     assert.ok(!html.includes("trips-map"));
     assert.ok(!html.includes("maplibre"));
   }
