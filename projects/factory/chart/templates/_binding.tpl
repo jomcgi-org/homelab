@@ -122,6 +122,13 @@ metadata:
     argocd.argoproj.io/sync-wave: "2"
 spec:
   {{ $a.harness }}: {}
+  {{- if $r.codexCodeMode }}
+  {{- if ne $a.harness "codex" }}
+  {{- fail "codexCodeModeImage requires a Codex harness" }}
+  {{- end }}
+  workload:
+    image: {{ required "codexCodeMode requires codexCodeModeImage" $r.codexCodeModeImage | quote }}
+  {{- end }}
   env:
     # git sends a placeholder Authorization to GitHub; the egress gateway
     # replaces it from github-git (EgressPolicy github-git). No credential

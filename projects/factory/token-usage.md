@@ -208,3 +208,35 @@ The itsaplan query must return one row, with input and output totals equal
 to the connector's. Record the run ID, totals and deployed revision on
 HOME-195. A pushed branch or passing unit test does not satisfy this live
 acceptance step.
+
+## Code mode experiment (HOME-506)
+
+The deployed kagent fork writes the actor's `$CODEX_HOME/config.toml` in
+`go/harness/codex/internal/adapter/adapter.go` and launches Codex app-server
+with strict config. The experimental image layers `/etc/codex/config.toml`
+onto that same digest, setting `features.code_mode_only = true`. Publish
+`projects/factory/codex-code-mode/Dockerfile` with its directory as the build
+context, then set one repository's `codexCodeModeImage` to the digest and
+`codexCodeMode` to true. The model catalog can override the feature selection.
+
+Two fresh app-server threads in the factory Codex 0.169.1 actor used the same
+adapter-generated provider config, checkout, model and prompt. For both runs
+the test removed only the gpt-6.2-astra entry's built-in `tool_mode` selector
+from a copy of the bundled catalog and disabled web search (the relay rejected
+the direct-mode web tool schema). The test passed the feature override on the
+command line. Both threads received this prompt:
+
+> Run exactly the shell command 'seq 1 900' once. If using JavaScript to call the shell tool, return only the final output line to context. Report that last number.
+
+| code_mode_only | App-server thread                    | Input  | Output | Total  |
+| -------------- | ------------------------------------ | ------ | ------ | ------ |
+| false          | 01a1f590-f599-7db2-909a-205dad1be6d8 | 23,105 | 57     | 23,162 |
+| true           | 01a1f591-0b3c-7831-a52d-6232209c6ec0 | 26,222 | 67     | 26,289 |
+
+Both returned 900. The direct call requested a 40-token output limit. The V8
+call split the shell output and emitted its final line. App-server's cumulative
+thread usage was 3,127 tokens higher with code mode on this task. A separate
+code-mode thread (01a1f590-c88d-7303-83c8-0bc478298e6c) called the binding's
+memory MCP server. These measurements cover local app-server threads inside
+the actor. A connector-dispatched pair on the published image is still needed
+for per-delivery accounting.
