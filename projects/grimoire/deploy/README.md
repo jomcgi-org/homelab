@@ -47,8 +47,9 @@ inference endpoint adds that exact peer to `grimoire-api` and
 The `grimoire-db-grants` PostSync Job runs
 [grants.sql](../../platform-factory/grimoire-data/resources/grants.sql) as
 `grimoire_restore` after every sync. The runtime logins read and write rows
-and use sequences. They own nothing and cannot create objects. The Job
-replaces a grant made by hand, so change a grant in `grants.sql`.
+and call `nextval`. They cannot call `setval`, own nothing and cannot create
+objects. The Job replaces a grant made by hand, so change a grant in
+`grants.sql`.
 
 ### Restore a dump
 
@@ -113,11 +114,15 @@ The `grimoire` Cluster archives WAL to `s3://grimoire-backups/grimoire-v1`.
 
 1. Stop the Grimoire writers.
 2. Wait for a completed Backup after the last write. Record its name.
-3. Add [recovery.yaml](recovery.yaml) to the `grimoire-data` resources in a one-shot change.
+3. In a one-shot change, add `recovery.yaml` to `resources` in
+   [kustomization.yaml](kustomization.yaml). The `grimoire-data` resources
+   include this directory, so the Application deploys
+   [recovery.yaml](recovery.yaml).
 4. Wait until Cluster `grimoire-recovered` is healthy. It reads backups with the read-only `grimoire-recovery-s3` key.
 5. From a pod that runs as `grimoire-restore`, run `inventory.sql` on `grimoire` and on `grimoire-recovered`.
 6. Compare the two outputs. They must match.
-7. Remove `recovery.yaml` in the next change. The Application prunes `grimoire-recovered`.
+7. In the next change, remove `recovery.yaml` from that `resources` list.
+   The Application prunes `grimoire-recovered`.
 
 ## Troubleshooting
 
