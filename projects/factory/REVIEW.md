@@ -54,8 +54,8 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   of the issue's one "Done when" or "Acceptance criteria" list, only when
   the issue text has a trusted author and editor, and the valid answer
   must number the same count. A numbering gap or any other ambiguity
-  counts nothing, as does any HTML comment, code fence or HTML block in the
-  issue: those can hide or fake list items. An issue with a diagram keeps
+  counts nothing, as does an issue with any `<`, triple backtick or triple
+  tilde: comments, code fences and HTML can hide or fake list items. An issue with a diagram keeps
   main's rules. So does a thematic break, a setext underline, or an item
   with no words on its marker line. An indented heading is code, not a
   heading. History replay
