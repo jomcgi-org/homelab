@@ -51,22 +51,34 @@ CLAIM_WAIT = (
 
 
 class Feed:
-    """A local AISStream stand-in that hands each subscribed socket to the test."""
+    """A local AISStream stand-in that hands each subscribed socket to the test.
+
+    It counts the subscribed sockets that are open and records the peak count.
+    """
 
     def __init__(self):
         self.sockets = Queue()
+        self.lock = threading.Lock()
+        self.open = 0
+        self.peak = 0
         self.server = serve(self._connected, "127.0.0.1", 0)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"ws://127.0.0.1:{self.server.socket.getsockname()[1]}"
 
     def _connected(self, ws):
         ws.recv(timeout=10)  # The writer subscribes before the feed sends.
+        with self.lock:
+            self.open += 1
+            self.peak = max(self.peak, self.open)
         self.sockets.put(ws)
         try:
             for _ in ws:
                 pass
         except ConnectionClosed:
             pass
+        finally:
+            with self.lock:
+                self.open -= 1
 
     def accept(self, timeout=45):
         return self.sockets.get(timeout=timeout)
@@ -77,6 +89,7 @@ def feed():
     stand_in = Feed()
     yield stand_in
     stand_in.server.shutdown()
+    assert stand_in.peak <= 1, "the feed had two subscribed sockets open at once"
 
 
 @pytest.fixture
@@ -445,9 +458,12 @@ def test_lease_loss_during_apply_keeps_each_report_once(pg, feed, writers):
         finally:
             leader.send_signal(signal.SIGCONT)
 
-    # The leader commits or rolls back its apply. Either way the standby
-    # applies the inbox before it subscribes, and each report is in history once.
+    # The leader commits or rolls back its apply, which releases the claimed
+    # row. The resumed leader cannot confirm its lease and closes its socket.
+    # The standby applies the inbox and waits 10 seconds before it subscribes.
+    until(lambda: feed.open == 0, timeout=10)
     ws = feed.accept()
+    assert feed.peak == 1
     assert scalar(factory, history) == 2
     assert scalar(
         factory,
@@ -463,6 +479,34 @@ def test_lease_loss_during_apply_keeps_each_report_once(pg, feed, writers):
         factory,
         "select count(*) = count(distinct recorded_at) from ships.positions",
     )
+
+
+def test_lease_loss_with_empty_inbox_closes_the_old_socket_first(pg, feed, writers):
+    factory, dsn = factory_database(pg, "ships_fence")
+    base = datetime.now(UTC) - timedelta(hours=1)
+    history = "select count(*) from ships.positions"
+    writers(dsn, feed.url)
+    ws = feed.accept()
+    ws.send(position(321, base, 48.0, -123.0, 3))
+    until(lambda: scalar(factory, history) == 1)
+    assert scalar(factory, "select count(*) from ships.inbox") == 0
+
+    # PostgreSQL ends only the lease session of the running leader. A standby
+    # that starts at once takes the free lease while the leader's socket is open.
+    pid = scalar(factory, LEASE_PID)
+    assert scalar(factory, f"select pg_terminate_backend({pid})")
+    until(lambda: scalar(factory, LEASE_PID) != pid)
+    writers(dsn, feed.url)
+
+    # The leader's next ping fails, and it closes its socket at once. The next
+    # lease holder subscribes 10 seconds after its apply.
+    until(lambda: feed.open == 0, timeout=5)
+    ws = feed.accept()
+    assert feed.peak == 1
+    ws.send(position(321, base + timedelta(seconds=10), 48.01, -123.0, 3))
+    until(lambda: scalar(factory, history) == 2)
+    assert latest(factory, "321") == (base + timedelta(seconds=10), 48.01)
+    assert feed.peak == 1
 
 
 def test_writer_survives_default_rows_future_and_refused_reports(

@@ -29,6 +29,16 @@ const (
 	maxClockSkew = 5 * time.Minute
 	// After SIGTERM the writer has this long to commit the frames it received.
 	stopGrace = 10 * time.Second
+	// The writer pings its lease connection every leaseCheck. A ping that
+	// succeeds confirms the lease for leaseTimeout from the moment the writer
+	// sent it. When the confirmation expires or a ping fails, the writer closes
+	// its feed socket.
+	leaseCheck   = time.Second
+	leaseTimeout = 5 * time.Second
+	// After a writer takes the lease and applies the inbox, it waits leaseGrace
+	// before it subscribes. A running writer that lost the lease closes its
+	// socket less than leaseTimeout after the loss, so one socket is open.
+	leaseGrace = 2 * leaseTimeout
 )
 
 var (
@@ -39,6 +49,9 @@ var (
 
 // errAhead marks a report dated too far ahead. The applier drops and counts it.
 var errAhead = errors.New("report dated too far ahead")
+
+// errLeaseLost ends a session that cannot confirm its lease.
+var errLeaseLost = errors.New("lease not confirmed")
 
 func logCounters(event string, last time.Time) {
 	log.Printf("%s: malformed=%d ahead=%d refused=%d last_apply=%v", event, malformed.Load(), ahead.Load(), refused.Load(), last)
@@ -279,6 +292,66 @@ func applyChunk(ctx context.Context, c *sql.Conn, isolate bool) (int, error) {
 	return len(frames), nil
 }
 
+// lease is the advisory lock (409, 1). Its connection runs only the lock and
+// the pings that confirm it, so a blocked write cannot delay a ping.
+type lease struct {
+	conn  *sql.Conn
+	until atomic.Pointer[time.Time] // The lease is confirmed until this time.
+}
+
+func acquire(ctx context.Context, db *sql.DB) (*lease, error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sent := time.Now()
+	var held bool
+	if err = conn.QueryRowContext(ctx, "select pg_try_advisory_lock(409,1)").Scan(&held); err == nil && !held {
+		err = errors.New("database lease unavailable")
+	}
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	l := &lease{conn: conn}
+	l.confirm(sent)
+	return l, nil
+}
+
+// confirm records a query that succeeded on the lease connection. The
+// confirmation counts from the moment the writer sent the query, before
+// PostgreSQL ran it, so it ends less than leaseTimeout after a loss.
+func (l *lease) confirm(sent time.Time) {
+	until := sent.Add(leaseTimeout)
+	l.until.Store(&until)
+}
+
+func (l *lease) held() bool { return time.Now().Before(*l.until.Load()) }
+
+// keep pings the lease connection every leaseCheck until ctx ends. It calls
+// lost when a ping fails or when the confirmation expires. A timer calls lost
+// at expiry, so a ping that hangs on a dead connection cannot delay it.
+func (l *lease) keep(ctx context.Context, lost func()) {
+	expiry := time.AfterFunc(time.Until(*l.until.Load()), lost)
+	defer expiry.Stop()
+	tick := time.NewTicker(leaseCheck)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		sent := time.Now()
+		if l.conn.PingContext(ctx) != nil {
+			lost()
+			return
+		}
+		l.confirm(sent)
+		expiry.Reset(time.Until(*l.until.Load()))
+	}
+}
+
 //go:embed maintenance.sql
 var maintenanceSQL string
 
@@ -302,14 +375,16 @@ func maintain(ctx context.Context, c *sql.Conn) error {
 }
 
 // read sends each frame that decodes with an MMSI to the queue. It returns
-// when the feed fails or ctx ends, and closes the queue.
-func read(ctx context.Context, ws *websocket.Conn, queue chan<- []byte) {
+// when the feed fails, ctx ends or held reports false, and closes the queue.
+func read(ctx context.Context, ws *websocket.Conn, queue chan<- []byte, held func() bool) {
 	defer close(queue)
 	for {
 		readCtx, cancel := context.WithTimeout(ctx, readTimeout)
 		_, raw, err := ws.Read(readCtx)
 		cancel()
-		if err != nil {
+		// A frame read after the lease confirmation expires can also reach the
+		// next lease holder, so the reader drops it.
+		if err != nil || !held() {
 			return
 		}
 		var f frame
@@ -345,12 +420,11 @@ func spoolLoop(ctx context.Context, c *sql.Conn, queue <-chan []byte, spooled ch
 			closed = !open
 		case <-ticker.C:
 		}
-		var err error
-		if len(batch) == 0 {
-			err = c.PingContext(ctx)
-		} else if err = spool(ctx, c, batch); err != nil {
-			log.Printf("inbox write failed: lost_frames=%d", len(batch))
-		} else {
+		if len(batch) > 0 {
+			if err := spool(ctx, c, batch); err != nil {
+				log.Printf("inbox write failed: lost_frames=%d", len(batch))
+				return err
+			}
 			clear(batch)
 			batch = batch[:0]
 			select {
@@ -358,8 +432,8 @@ func spoolLoop(ctx context.Context, c *sql.Conn, queue <-chan []byte, spooled ch
 			default: // The applier has an unread signal.
 			}
 		}
-		if err != nil || closed {
-			return err
+		if closed {
+			return nil
 		}
 	}
 }
@@ -393,21 +467,22 @@ func ingest(ctx context.Context, db *sql.DB, key string) error {
 	work, cancelWork := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelWork()
 	defer context.AfterFunc(ctx, func() { time.AfterFunc(stopGrace, cancelWork) })()
-	// The lease connection holds the advisory lock and commits frames to the
-	// inbox. The history connection applies them, so a blocked history write
-	// does not stop inbox commits.
-	lease, err := db.Conn(work)
+	l, err := acquire(work, db)
 	if err != nil {
 		return err
 	}
-	defer lease.Close()
-	var held bool
-	if err = lease.QueryRowContext(work, "select pg_try_advisory_lock(409,1)").Scan(&held); err != nil {
+	defer l.conn.Close()
+	// The session ends when the lease is lost, and its end closes the socket.
+	session, endSession := context.WithCancelCause(ctx)
+	defer endSession(nil)
+	go l.keep(session, func() { endSession(errLeaseLost) })
+	// The inbox connection commits received frames. The history connection
+	// applies them, so a blocked history write does not stop inbox commits.
+	inbox, err := db.Conn(work)
+	if err != nil {
 		return err
 	}
-	if !held {
-		return errors.New("database lease unavailable")
-	}
+	defer inbox.Close()
 	history, err := db.Conn(work)
 	if err != nil {
 		return err
@@ -420,41 +495,47 @@ func ingest(ctx context.Context, db *sql.DB, key string) error {
 	if err = apply(work, history); err != nil {
 		return err
 	}
-	if ctx.Err() != nil {
-		return ctx.Err()
+	// A writer that lost the lease can still have its socket open for
+	// leaseTimeout, so this writer waits longer before it subscribes.
+	select {
+	case <-session.Done():
+		return context.Cause(session)
+	case <-time.After(leaseGrace):
 	}
 	url := os.Getenv("AISSTREAM_URL")
 	if url == "" {
 		url = "wss://stream.aisstream.io/v0/stream"
 	}
-	ws, _, err := websocket.Dial(ctx, url, nil)
+	ws, _, err := websocket.Dial(session, url, nil)
 	if err != nil {
 		return err
 	}
 	defer ws.CloseNow()
+	// The socket closes as soon as the session ends, before the history
+	// connection finishes its apply.
+	defer context.AfterFunc(session, func() { ws.CloseNow() })()
 	sub, err := json.Marshal(map[string]any{"APIKey": key, "BoundingBoxes": [][][]float64{{{46.876152, -129.552155}, {51.413769, -121.213531}}}, "FilterMessageTypes": []string{"PositionReport", "ShipStaticData"}})
 	if err != nil {
 		return err
 	}
-	if err = ws.Write(ctx, websocket.MessageText, sub); err != nil {
+	if err = ws.Write(session, websocket.MessageText, sub); err != nil {
 		return err
 	}
 	ws.SetReadLimit(readLimit)
-	session, endSession := context.WithCancel(ctx)
-	defer endSession()
 	queue := make(chan []byte, batchSize)
-	go read(session, ws, queue)
+	go read(session, ws, queue, l.held)
 	spooled := make(chan struct{}, 1)
 	applied := make(chan error, 1)
 	var committed time.Time
 	go func() {
 		applyErr := applyLoop(work, history, spooled, &committed)
 		if applyErr != nil {
-			endSession() // The reader stops and the spooler commits what it holds.
+			endSession(nil) // The reader stops and the spooler commits what it holds.
 		}
 		applied <- applyErr
 	}()
-	err = spoolLoop(work, lease, queue, spooled)
+	err = spoolLoop(work, inbox, queue, spooled)
+	endSession(nil) // The socket closes now, while the applier finishes.
 	if err != nil {
 		cancelWork() // A blocked apply returns, and the inbox keeps its frames.
 	}
@@ -465,6 +546,9 @@ func ingest(ctx context.Context, db *sql.DB, key string) error {
 	logCounters("session ended", committed)
 	if err != nil {
 		return err
+	}
+	if cause := context.Cause(session); errors.Is(cause, errLeaseLost) {
+		return cause
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
