@@ -1,5 +1,9 @@
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
+# The runbook server ships in a ConfigMap, not as a Bazel binary. Keep
+# Gazelle from making runbooks/ a package, which would break the labels below.
+# gazelle:exclude runbooks
+
 exports_files(["runbooks-route.yaml"])
 
 py_test(
