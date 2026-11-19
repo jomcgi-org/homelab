@@ -8,6 +8,9 @@ route:
   group_interval: 5m
   repeat_interval: 12h
   routes:
+    - matchers: ['alertname=~"Semgrep(NewSecret|AuthenticationFailed)"']
+      receiver: relay-no-resolved
+      group_by: ["..."]
     - matchers: ['alertname="AlertRelayDown"']
       receiver: discord
     # Each suspend timeout is its own alert (label timeouts) and its own

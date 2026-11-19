@@ -871,11 +871,11 @@ tests:
 
   - interval: 1m
     input_series:
-      - series: 'kube_job_failed{namespace="factory",job_name="intsec-sync-10",condition="true"}'
+      - series: 'kube_job_failed{namespace="factory",job_name="factory-semgrep-sync-10",condition="true"}'
         values: "1x3"
-      - series: 'kube_job_status_start_time{namespace="factory",job_name="intsec-sync-10"}'
+      - series: 'kube_job_status_start_time{namespace="factory",job_name="factory-semgrep-sync-10"}'
         values: "10x3"
-      - series: 'kube_job_status_start_time{namespace="factory",job_name="intsec-sync-20"}'
+      - series: 'kube_job_status_start_time{namespace="factory",job_name="factory-semgrep-sync-20"}'
         values: "_ _ 20x1"
     alert_rule_test:
       - eval_time: 1m
@@ -884,14 +884,14 @@ tests:
           - exp_labels:
               severity: warning
               namespace: factory
-              job_name: intsec-sync-10
+              job_name: factory-semgrep-sync-10
               condition: "true"
             exp_annotations:
               action: "Inspect the failed sync Job's logs."
-              graph: 'kube_job_failed{namespace="factory",job_name="intsec-sync-10",condition="true"}'
+              graph: 'kube_job_failed{namespace="factory",job_name="factory-semgrep-sync-10",condition="true"}'
               threshold: "1"
               runbook: "https://factory-runbooks.jomcgi.dev/SemgrepSyncFailed"
-              summary: "Latest Semgrep to INTSEC sync factory/intsec-sync-10 failed (failure flag 1, threshold 1)"
+              summary: "Latest Semgrep to INTSEC sync factory/factory-semgrep-sync-10 failed (failure flag 1, threshold 1)"
       - eval_time: 3m
         alertname: SemgrepSyncFailed
         exp_alerts: []
