@@ -174,7 +174,7 @@ The slices are filed under [HOME-178](https://factory-plan.jomcgi.dev/factory/is
 
 ### Provision factory data and private runtime
 
-Tracked in [HOME-394](https://factory-plan.jomcgi.dev/factory/issue/HOME-394). The real hub dump, the private object copy with checksums and the rehearsal on real data moved to [HOME-484](https://factory-plan.jomcgi.dev/factory/issue/HOME-484).
+Tracked in [HOME-394](https://factory-plan.jomcgi.dev/factory/issue/HOME-394). [HOME-484](https://factory-plan.jomcgi.dev/factory/issue/HOME-484) adds the hub migration run. A suspended hub CronWorkflow writes the dump, a copy of the bucket's objects and `SHA256SUMS` under `migration/` of the private R2 bucket `grimoire`. The factory restore and a checksum Job read the newest complete run with a read-only R2 key. The key is staged off until its 1Password item exists. The rehearsal on real data follows [the runbook](deploy/README.md#the-hub-migration-run).
 
 1. A restore Job restores a dump into the factory database, keeping identity relationships and pgvector indexes. CI restores a synthetic dump with pgvector data and checks both. The Job's network policy allows the DNS and database egress it needs.
 2. API and worker service accounts reach only required stores and inference endpoints. Their network policies allow DNS and only those peers, and the chart grants their database access. Backups are configured, and the runbook says how to restore one.

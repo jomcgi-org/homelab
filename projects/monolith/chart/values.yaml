@@ -1985,6 +1985,28 @@ grimoire:
   # default; that is pre-existing and harmless, but it is why the default is
   # the number that actually matters here.
   extractConcurrency: ""
+  # The on-demand copy for the factory migration (HOME-484,
+  # templates/grimoire-migration-dump.yaml). It renders when grimoire.enabled
+  # and sharedS3.enabled are true. The CronWorkflow is always suspended.
+  migrationDump:
+    # Comma-separated schemas for pg_dump and the source inventory.
+    schemas: "grimoire"
+    # Each run goes under this prefix of s3Bucket. No route serves it.
+    prefix: "migration/"
+    # The factory restore's image. pg_dump must be at least the source's
+    # major version, and the restore's pg_restore reads what it writes.
+    postgresImage: "ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185"
+    activeDeadlineSeconds: 14400
+    # The emptyDir that holds the dump until the upload.
+    workSizeLimit: 16Gi
+    resources:
+      requests:
+        cpu: 250m
+        memory: 1Gi
+        ephemeral-storage: 4Gi
+      limits:
+        memory: 1Gi
+        ephemeral-storage: 16Gi
 
 # ADR 036 orchestrator: a host-side call that decides chat versus session.
 # It does not generate a task brief or plan. Disabled

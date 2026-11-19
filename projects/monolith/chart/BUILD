@@ -15,6 +15,16 @@ filegroup(
     ],
 )
 
+# The factory restore test runs the hub's Grimoire migration dump against a
+# synthetic source, then restores its output.
+exports_files(
+    [
+        "files/grimoire-inventory.sql",
+        "files/grimoire-migration-dump.sh",
+    ],
+    visibility = ["//projects/grimoire/deploy:__pkg__"],
+)
+
 filegroup(
     name = "docfix_review_test_data",
     srcs = [
@@ -550,6 +560,35 @@ py_test(
     ]),
     env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
     deps = ["@pip//pyyaml"],
+)
+
+py_test(
+    name = "grimoire_migration_dump_test",
+    srcs = ["grimoire_migration_dump_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/grimoire/deploy:inventory.sql",
+        "//projects/grimoire/deploy:restore-cronjob.yaml",
+        "//projects/monolith/deploy:deploy_values",
+        "//projects/monolith/deploy:gke_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "files/**/*",
+        "migrations/**/*",
+    ]),
+    env = {
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
+        "GKE_VALUES": "$(rootpath //projects/monolith/deploy:gke_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
 
 py_test(

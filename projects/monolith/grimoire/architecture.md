@@ -608,6 +608,27 @@ Batch commands in `app/jobs_main.py` invoke the domain jobs:
 The jobs are discrete read, compute, and write stages with recorded provenance.
 Bad inputs fail or dead-letter without partially publishing a book.
 
+## Factory migration dump
+
+The suspended `grimoire-migration-dump` CronWorkflow copies Grimoire's data
+for the factory migration (HOME-484). Joe submits each run by hand.
+
+```mermaid
+flowchart LR
+  pg[(monolith-pg)] -->|pg_dump and inventory, one snapshot| dump[pg-dump init container]
+  dump -->|emptyDir /work| upload[grimoire-migration-dump]
+  upload -->|upload, copy, read back| r2[R2 grimoire/migration/run id/]
+  bucket[R2 grimoire, outside migration/] -->|server-side copy| r2
+```
+
+The init container runs `chart/files/grimoire-migration-dump.sh` in the
+factory restore's Postgres image. `grimoire/migration.py` uploads the dump
+files and copies every bucket object. Then it writes the referenced locations
+that the copy lacks, and `SHA256SUMS` last. Each digest comes from the
+object as stored in R2. The run stays in the private bucket, because it holds
+copyrighted book text. The factory side, its read key and its checks are in
+`projects/grimoire/deploy/README.md`.
+
 ## Manual entity verification
 
 `grimoire-verify-entities` is a private-tier CronWorkflow, suspended with an

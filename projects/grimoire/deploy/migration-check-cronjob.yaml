@@ -1,0 +1,91 @@
+# On-demand check of the newest hub migration run in the private R2 bucket.
+# It reads every object of the run and compares it with the run's SHA256SUMS.
+# The CronJob stays suspended and its schedule never occurs, so a sync starts
+# nothing. An operator starts one run with `kubectl create job --from`
+# (README.md). The pod has no database login: the grimoire-migration-check
+# policy allows DNS and the R2 endpoint on 443, and nothing else.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: grimoire-migration-check
+  namespace: grimoire
+spec:
+  suspend: true
+  # 31 February: never, even if the CronJob is resumed.
+  schedule: "0 0 31 2 *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 14400
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: grimoire-migration-check
+        spec:
+          serviceAccountName: grimoire-migration-check
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: check
+              image: docker.io/rclone/rclone@sha256:7cbeec24a44f206067597c0368be4de90ae19a64d5113c7d1938bd737a81e466
+              command: [/bin/sh, /scripts/migration.sh, check]
+              env:
+                - name: R2_BUCKET
+                  value: grimoire
+                - name: MIGRATION_PREFIX
+                  value: migration/
+                - name: RCLONE_CONFIG_R2_TYPE
+                  value: s3
+                - name: RCLONE_CONFIG_R2_PROVIDER
+                  value: Cloudflare
+                - name: RCLONE_CONFIG_R2_REGION
+                  value: auto
+                - name: RCLONE_CONFIG_R2_FORCE_PATH_STYLE
+                  value: "true"
+                # The grimoire-migration-check policy allows this host only.
+                - name: RCLONE_CONFIG_R2_ENDPOINT
+                  value: https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+                - name: RCLONE_CONFIG_R2_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: grimoire-migration-r2
+                      key: access-key-id
+                - name: RCLONE_CONFIG_R2_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: grimoire-migration-r2
+                      key: secret-access-key
+                - name: HOME
+                  value: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+              resources:
+                requests:
+                  cpu: 250m
+                  memory: 256Mi
+                limits:
+                  memory: 256Mi
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: scripts
+              configMap:
+                name: grimoire-restore-script
+            - name: tmp
+              emptyDir:
+                sizeLimit: 256Mi

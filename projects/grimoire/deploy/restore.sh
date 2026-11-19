@@ -60,3 +60,15 @@ if [[ $keys != "$want_keys" || $indexes != "$want_indexes" ]]; then
 	exit 1
 fi
 echo "restored with $keys valid foreign keys and $indexes valid pgvector indexes"
+
+# With SOURCE_INVENTORY, the inventory of the target must match the source's.
+# The lines hold names, counts and digests, never row text.
+if [[ -n ${SOURCE_INVENTORY:-} ]]; then
+	: "${INVENTORY_SQL:?}"
+	psql -XqAt -v ON_ERROR_STOP=1 -f "$INVENTORY_SQL" >"$tmp/inventory"
+	if ! diff "$SOURCE_INVENTORY" "$tmp/inventory" >&2; then
+		echo "the restored database differs from the source inventory (lines above)" >&2
+		exit 1
+	fi
+	echo "the restored database matches the source inventory"
+fi

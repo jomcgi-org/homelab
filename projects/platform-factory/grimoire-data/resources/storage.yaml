@@ -132,3 +132,19 @@ data:
   secretName: grimoire-worker-s3
   bucket: grimoire-private
   access: readwrite
+---
+# The read-only R2 key for the hub migration runs under migration/ of the
+# private R2 bucket grimoire (HOME-484). Joe creates the R2 API token with
+# Object Read only on that one bucket, and stores its S3 keys in this item as
+# access-key-id and secret-access-key. The operator writes them into Secret
+# grimoire-migration-r2. Only the restore's fetch container and the migration
+# check read it.
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: grimoire-migration-r2
+  namespace: grimoire
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  itemPath: "vaults/k8s-homelab/items/grimoire-migration-r2"

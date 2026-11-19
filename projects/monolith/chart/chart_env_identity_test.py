@@ -1226,10 +1226,12 @@ def test_connector_snapshot_setting_reaches_real_stars_refresh(tmp_path):
 
 def test_shared_s3_probe_jobs_positive_then_omission(tmp_path):
     true_docs, false_docs = _probe_renders(tmp_path)
+    # The Grimoire migration dump writes to R2, so only shared S3 renders it.
     assert set(true_docs) == {
         "probe-s3-job",
         "probe-grimoire-job",
         "snapshot-merged-prs",
+        "grimoire-migration-dump",
     }
     assert set(false_docs) == {
         "probe-s3-job",

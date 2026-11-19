@@ -83,6 +83,28 @@ CREATE INDEX note_marked ON grimoire.note (account_id) WHERE body <> 'first
  FOREIGN KEY x NOT VALID;
 last';
 """
+# The hub database: the Grimoire schema beside a schema that stays on the hub,
+# with its own pgvector index and foreign key.
+HUB_SOURCE = (
+    SOURCE
+    + """
+CREATE SCHEMA knowledge;
+CREATE TABLE knowledge.note (id bigserial PRIMARY KEY, body text NOT NULL);
+CREATE TABLE knowledge.chunk (
+  note_id bigint REFERENCES knowledge.note (id),
+  embedding vector(3) NOT NULL);
+INSERT INTO knowledge.note (body) VALUES ('stays on the hub');
+INSERT INTO knowledge.chunk VALUES (1, '[1,0,0]');
+CREATE INDEX chunk_hnsw ON knowledge.chunk USING hnsw (embedding vector_l2_ops);
+"""
+)
+# Runs in place of pg_dump during the hub dump. It writes a row after the dump,
+# before the inventory reads the source.
+PG_DUMP_SHIM = """#!/bin/sh
+"$REAL_PG_DUMP" "$@" || exit
+exec psql -XAtq -d "$DATABASE_URL" -c \
+  "INSERT INTO grimoire.campaign_member VALUES (2, 1, 'player')"
+"""
 ROLES = """
 CREATE ROLE grimoire_restore LOGIN;
 CREATE ROLE grimoire_api LOGIN NOINHERIT;
@@ -223,7 +245,7 @@ def inventory(env, database):
     return psql(env, database, "-f", runfile("INVENTORY_SQL")).stdout
 
 
-def restore(env, private_dump, metadata, database="grimoire"):
+def restore(env, private_dump, metadata, database="grimoire", **extra):
     return subprocess.run(
         ["bash", runfile("RESTORE_SH")],
         env=dict(
@@ -232,6 +254,7 @@ def restore(env, private_dump, metadata, database="grimoire"):
             PGDATABASE=database,
             PRIVATE_DUMP=str(private_dump),
             VECTOR_METADATA=str(metadata),
+            **extra,
         ),
         capture_output=True,
         text=True,
@@ -489,3 +512,91 @@ def test_restore_refuses_other_pgvector_metadata(restored):
     result = restore(env, tmp / "grimoire.dump", other)
     assert result.returncode != 0
     assert "differ" in result.stdout + result.stderr
+
+
+def test_restore_accepts_the_hub_dump_and_matches_its_inventory(restored):
+    env, tmp, _, _ = restored
+    pg_bin = Path(shutil.which("pg_dump", path=env["PATH"])).parent
+    psql(env, "postgres", "-c", "CREATE DATABASE hub")
+    psql(env, "hub", "-c", HUB_SOURCE)
+    shim = tmp / "shim"
+    shim.mkdir()
+    (shim / "pg_dump").write_text(PG_DUMP_SHIM)
+    (shim / "pg_dump").chmod(0o755)
+    work = tmp / "hub-work"
+    work.mkdir()
+    result = subprocess.run(
+        ["bash", runfile("HUB_DUMP_SH")],
+        env=dict(
+            env,
+            PATH=f"{shim}:{env['PATH']}",
+            REAL_PG_DUMP=str(pg_bin / "pg_dump"),
+            DATABASE_URL=f"postgresql://test@{env['PGHOST']}:{env['PGPORT']}/hub",
+            GRIMOIRE_SCHEMAS="grimoire",
+            WORK=str(work),
+            INVENTORY_SQL=str(runfile("HUB_INVENTORY_SQL")),
+        ),
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "dumped schemas grimoire: " in result.stdout
+    source = (work / "source.inventory").read_text()
+    assert "grimoire.campaign_member" in source
+    assert "knowledge." not in source
+    # The row written after the dump is live, but the inventory reads the
+    # dump's snapshot.
+    live = psql(env, "hub", "-v", "schemas=grimoire", "-f", runfile("INVENTORY_SQL"))
+    assert live.stdout != source
+    # The restore pod compares the target with source.inventory.
+    compare = {
+        "SOURCE_INVENTORY": str(work / "source.inventory"),
+        "INVENTORY_SQL": str(runfile("INVENTORY_SQL")),
+    }
+    create_target(env, "from_hub")
+    result = restore(
+        env, work / "grimoire.dump", work / "vector.metadata", "from_hub", **compare
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "5 valid foreign keys and 2 valid pgvector indexes" in result.stdout
+    assert "the restored database matches the source inventory" in result.stdout
+    assert inventory(env, "from_hub") == source
+
+    # A source inventory that differs fails the run and names the lines.
+    assert "grimoire.account|3|" in source
+    tampered = tmp / "tampered.inventory"
+    tampered.write_text(source.replace("grimoire.account|3|", "grimoire.account|4|"))
+    create_target(env, "from_hub_tampered")
+    result = restore(
+        env,
+        work / "grimoire.dump",
+        work / "vector.metadata",
+        "from_hub_tampered",
+        **dict(compare, SOURCE_INVENTORY=str(tampered)),
+    )
+    assert result.returncode != 0
+    assert "differs from the source inventory" in result.stderr
+    assert "grimoire.account|4|" in result.stderr
+
+
+def test_hub_dump_refuses_a_schema_that_does_not_exist(restored):
+    env, tmp, _, _ = restored
+    work = tmp / "missing-work"
+    work.mkdir()
+    result = subprocess.run(
+        ["bash", runfile("HUB_DUMP_SH")],
+        env=dict(
+            env,
+            DATABASE_URL=f"postgresql://test@{env['PGHOST']}:{env['PGPORT']}/source",
+            GRIMOIRE_SCHEMAS="grimoire,absent",
+            WORK=str(work),
+            INVENTORY_SQL=str(runfile("HUB_INVENTORY_SQL")),
+        ),
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode != 0
+    assert "no matching schemas were found" in result.stderr
+    assert not (work / "source.inventory").exists()

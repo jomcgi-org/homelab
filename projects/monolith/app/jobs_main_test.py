@@ -104,6 +104,7 @@ def test_grimoire_verifier_cannot_dispatch_mutation(options):
         ("campsites-refresh", "campsites.jobs.refresh_handler"),
         ("grimoire-load-chunks", "grimoire.jobs.grimoire_load_chunks"),
         ("grimoire-extract-entities", "grimoire.jobs.grimoire_extract_entities"),
+        ("grimoire-migration-dump", "grimoire.migration.grimoire_migration_dump"),
         ("hikes-scrape-walks", "hikes.jobs.scrape_walks_handler"),
         ("hikes-refresh-forecasts", "hikes.jobs.refresh_forecasts_handler"),
         ("hikes-prune-windows", "hikes.jobs.prune_windows_handler"),

@@ -2,7 +2,8 @@
 # (projects/platform-factory/network-policy/). Each Job and runtime identity
 # states its own DNS rule, the same CoreDNS allowance as the baseline, so its
 # policy lists every peer it can reach. No identity has inference egress yet:
-# the runtime chart that configures an endpoint adds that exact peer.
+# the runtime chart that configures an endpoint adds that exact peer. Only the
+# restore and the migration check reach outside the cluster, to R2.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -147,8 +148,10 @@ spec:
             - port: "3900"
               protocol: TCP
 ---
-# The owner identity (restore and grants Jobs): DNS and the two database
-# clusters. grimoire-recovered exists only during a backup restore check.
+# The owner identity (restore and grants Jobs): DNS, the two database
+# clusters and the R2 endpoint. grimoire-recovered exists only during a backup
+# restore check. The restore's fetch container reads the hub migration runs
+# from R2. Its only R2 credential is a read-only key for bucket grimoire.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -180,6 +183,44 @@ spec:
       toPorts:
         - ports:
             - port: "5432"
+              protocol: TCP
+    - toFQDNs:
+        - matchName: 7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+# The migration check reads the hub migration runs from R2. It has no
+# database login and no database peer.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+  name: grimoire-migration-check
+  namespace: grimoire
+spec:
+  endpointSelector:
+    matchLabels:
+      io.cilium.k8s.policy.serviceaccount: grimoire-migration-check
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
+    - toFQDNs:
+        - matchName: 7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+      toPorts:
+        - ports:
+            - port: "443"
               protocol: TCP
 ---
 # grimoire-db-init reads and writes its Secrets and nothing else.
