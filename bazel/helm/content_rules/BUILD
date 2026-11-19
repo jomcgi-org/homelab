@@ -17,6 +17,7 @@ APPLICATIONS = [
     "factory-explore-site",
     "factory-landing",
     "factory-public",
+    "hikes",
     "jomcgi-site",
     "scotland-connector",
     "stars-forecast",
