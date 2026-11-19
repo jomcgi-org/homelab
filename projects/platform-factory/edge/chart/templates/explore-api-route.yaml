@@ -1,0 +1,100 @@
+{{- $issuer := printf "https://%s/application/o/factory-explore/" .Values.authentik.hostname }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: explore-api
+  namespace: {{ .Release.Namespace }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+  hostnames:
+    - factory-explore-api.jomcgi.dev
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      # The proxy ends streaming requests at the explorer window boundary.
+      timeouts:
+        request: "0s"
+        backendRequest: "0s"
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: explore-proxy
+          namespace: factory-explore
+          port: 8080
+          weight: 1
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: explore-api-authentik-jwt
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: explore-api
+  jwt:
+    providers:
+      - name: authentik
+        issuer: {{ $issuer }}
+        audiences:
+          - factory-explore
+        remoteJWKS:
+          uri: {{ printf "%sjwks/" $issuer }}
+          # Envoy Gateway's default. Set here so ArgoCD sees no drift.
+          cacheDuration: 300s
+  cors:
+    allowOrigins:
+      - https://factory-explore.jomcgi.dev
+    allowMethods: [GET, POST, OPTIONS]
+    allowHeaders: [Authorization, Content-Type, Accept]
+    exposeHeaders: [X-Explore-Window-End, X-Explore-Next-Window, Retry-After, Warning]
+    maxAge: 600s
+  authorization:
+    defaultAction: Deny
+    rules:
+      - name: explorers
+        action: Allow
+        principal:
+          jwt:
+            provider: authentik
+            claims:
+              - name: iss
+                valueType: String
+                values:
+                  - {{ $issuer }}
+---
+# Keep the grant with the route, so both reconcile in the edge Application.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: edge-explore-api
+  namespace: factory-explore
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: {{ .Release.Namespace }}
+  to:
+    - group: ""
+      kind: Service
+      name: explore-proxy
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: explore-api
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: explore-api
+  circuitBreaker:
+    maxParallelRequests: 300
+    maxConnections: 300

@@ -29,6 +29,11 @@ boundary: a rule below broken on them is critical.
     `chart_posture_test.py` in `projects/scotland-connector/chart` pins both
     ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-259#comment-3908)).
 
+  - `explore-api-authentik-jwt` admits tokens from the factory-explore client
+    to explore-proxy. `test_explore_api_requires_explorer_token` pins its
+    provider, route, grant, CORS and circuit breaker.
+    [Joe’s decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-352#comment-3461).
+
   In `projects/platform-factory/edge/chart/edge_test.py`,
   `test_only_kagent_forwards_the_access_token` pins the edge chart policies,
   and `test_kube_api_requires_an_authentik_token_from_a_kube_group` pins the

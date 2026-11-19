@@ -1,7 +1,6 @@
 """Every application signs in; only kagent receives the edge access token.
 
-kubectl's route is the one bearer route: Envoy checks an Authentik ID token
-there instead of running the browser sign-in."""
+The kube and explorer API routes validate their respective bearer tokens."""
 
 import os
 from pathlib import Path
@@ -134,6 +133,7 @@ def test_only_kagent_forwards_the_access_token(docs):
         "authentik-no-gateway-oidc",
         "kagent-authentik-oidc",
         "kube-api-authentik-jwt",
+        "explore-api-authentik-jwt",
     }
     assert {p["metadata"]["namespace"] for p in policies.values()} == {"edge"}
     gateway = policies["edge-authentik-oidc"]["spec"]
@@ -338,7 +338,11 @@ def test_kagent_hostname_is_owned_and_published():
         "!object.spec.hostnames.exists(h, h == 'factory.jomcgi.dev')",
         "message": "Only edge and factory-landing may route factory.jomcgi.dev.",
     } in validations
-    for host in ("factory-agents.jomcgi.dev", "factory-kube.jomcgi.dev"):
+    for host in (
+        "factory-agents.jomcgi.dev",
+        "factory-kube.jomcgi.dev",
+        "factory-explore-api.jomcgi.dev",
+    ):
         assert {
             "expression": "request.namespace == 'edge' || "
             "!has(object.spec.hostnames) || "
@@ -362,9 +366,11 @@ def test_kagent_hostname_is_owned_and_published():
     )
     route = yaml.safe_load(tunnel.read_text())
     assert route["metadata"]["namespace"] == "edge"
-    assert {"factory-agents.jomcgi.dev", "factory-kube.jomcgi.dev"} <= set(
-        route["spec"]["hostnames"]
-    )
+    assert {
+        "factory-agents.jomcgi.dev",
+        "factory-kube.jomcgi.dev",
+        "factory-explore-api.jomcgi.dev",
+    } <= set(route["spec"]["hostnames"])
     assert route["spec"]["rules"] == [
         {
             "matches": [{"path": {"type": "PathPrefix", "value": "/"}}],
@@ -379,3 +385,88 @@ def test_kagent_hostname_is_owned_and_published():
             ],
         }
     ]
+
+
+def test_explore_api_requires_explorer_token(docs):
+    group = "gateway.networking.k8s.io"
+    target = [{"group": group, "kind": "HTTPRoute", "name": "explore-api"}]
+    service = {"group": "", "kind": "Service", "name": "explore-proxy"}
+    route = docs["HTTPRoute", "explore-api"]
+    assert route["metadata"]["namespace"] == "edge"
+    assert route["spec"] == {
+        "parentRefs": [{"group": group, "kind": "Gateway", "name": "edge"}],
+        "hostnames": ["factory-explore-api.jomcgi.dev"],
+        "rules": [
+            {
+                "matches": [{"path": {"type": "PathPrefix", "value": "/"}}],
+                "timeouts": {"request": "0s", "backendRequest": "0s"},
+                "backendRefs": [
+                    {
+                        **service,
+                        "namespace": "factory-explore",
+                        "port": 8080,
+                        "weight": 1,
+                    }
+                ],
+            }
+        ],
+    }
+    grant = docs["ReferenceGrant", "edge-explore-api"]
+    assert grant["metadata"]["namespace"] == "factory-explore"
+    assert grant["spec"] == {
+        "from": [{"group": group, "kind": "HTTPRoute", "namespace": "edge"}],
+        "to": [service],
+    }
+    issuer = "https://factory-auth.jomcgi.dev/application/o/factory-explore/"
+    assert docs["SecurityPolicy", "explore-api-authentik-jwt"]["spec"] == {
+        "targetRefs": target,
+        "jwt": {
+            "providers": [
+                {
+                    "name": "authentik",
+                    "issuer": issuer,
+                    "audiences": ["factory-explore"],
+                    "remoteJWKS": {"uri": issuer + "jwks/", "cacheDuration": "300s"},
+                }
+            ]
+        },
+        "authorization": {
+            "defaultAction": "Deny",
+            "rules": [
+                {
+                    "name": "explorers",
+                    "action": "Allow",
+                    "principal": {
+                        "jwt": {
+                            "provider": "authentik",
+                            "claims": [
+                                {
+                                    "name": "iss",
+                                    "valueType": "String",
+                                    "values": [issuer],
+                                }
+                            ],
+                        }
+                    },
+                }
+            ],
+        },
+        "cors": {
+            "allowOrigins": ["https://factory-explore.jomcgi.dev"],
+            "allowMethods": ["GET", "POST", "OPTIONS"],
+            "allowHeaders": ["Authorization", "Content-Type", "Accept"],
+            "exposeHeaders": [
+                "X-Explore-Window-End",
+                "X-Explore-Next-Window",
+                "Retry-After",
+                "Warning",
+            ],
+            "maxAge": "600s",
+        },
+    }
+    breaker = docs["BackendTrafficPolicy", "explore-api"]
+    assert breaker["metadata"]["namespace"] == "edge"
+    assert breaker["spec"] == {
+        "targetRefs": target,
+        "circuitBreaker": {"maxParallelRequests": 300, "maxConnections": 300},
+    }

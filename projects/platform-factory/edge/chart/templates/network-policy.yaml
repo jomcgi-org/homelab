@@ -143,6 +143,15 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
+    # Explorer API at factory-explore-api.jomcgi.dev.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-explore
+            app: explore-proxy
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
     # The Kubernetes API behind factory-kube.jomcgi.dev: the kubernetes
     # Service's endpoints are the API server port on each node.
     - toEntities: [kube-apiserver]
