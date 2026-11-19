@@ -1366,3 +1366,33 @@ def test_codex_admin_route_follows_broker_chart():
         policy["oidc"]["redirectURL"]
         == "https://factory.jomcgi.dev/admin/codex/oauth2/callback"
     )
+
+
+def test_extra_mcp_server() -> None:
+    namespace = "factory-r-homelab"
+    assert not any(
+        d["kind"] == "RemoteMCPServer" and d["metadata"]["name"] == "grafana"
+        for d in _render()
+    )
+    docs = _render(
+        [
+            "repositories[0].mcpServers[0].name=grafana",
+            "repositories[0].mcpServers[0].url=http://grafana:8000/mcp",
+            "repositories[0].mcpServers[0].secret=grafana-mcp",
+            "repositories[0].mcpServers[0].tools={query_prometheus,search_dashboards}",
+        ]
+    )
+    server = _in(docs, "RemoteMCPServer", namespace, "grafana")
+    assert server["metadata"]["labels"]["kagent.dev/discovery"] == "disabled"
+    assert server["spec"]["headersFrom"][0]["valueFrom"] == {
+        "type": "Secret",
+        "name": "grafana-mcp",
+        "key": "token",
+    }
+    inline = _in(docs, "Agent", namespace, "homelab-codex")["spec"]["template"][
+        "inline"
+    ]
+    assert inline["tools"][-1]["mcp"] == {
+        "server": {"kind": "RemoteMCPServer", "name": "grafana"},
+        "tools": ["query_prometheus", "search_dashboards"],
+    }

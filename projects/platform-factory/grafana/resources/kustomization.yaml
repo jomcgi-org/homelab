@@ -8,11 +8,16 @@ resources:
   - network-policy.yaml
   - oidc.yaml
   - grafana.yaml
+  - mcp-grafana.yaml
   - route.yaml
   - runbooks.yaml
   - runbooks-route.yaml
 
 configMapGenerator:
+  - name: grafana-viewer-script
+    namespace: grafana
+    files:
+      - provision_viewer.py
   - name: grafana-config
     namespace: grafana
     files:

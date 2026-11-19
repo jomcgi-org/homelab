@@ -337,6 +337,11 @@ agents:
 # Secret must exist first: kagent rejects the Agent while it is missing.
 # Omit codexCodeMode for ordinary bindings. Explicit false and true select
 # direct and code mode respectively on the same published trial image.
+# mcpServers:
+#   - name: grafana
+#     url: http://mcp-grafana.grafana.svc.cluster.local:8000/mcp
+#     secret: grafana-mcp
+#     tools: [query_prometheus, search_dashboards, get_dashboard_summary, alerting_rules_read]
 repositories: []
 
 # The Substrate worker image for binding WorkerPools, matching Substrate's

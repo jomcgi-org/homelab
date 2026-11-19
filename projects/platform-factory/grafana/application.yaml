@@ -26,6 +26,14 @@ spec:
       kind: Secret
       name: grafana-oidc
       jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      name: mcp-grafana-viewer
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      name: mcp-grafana-caller
+      jsonPointers: [/data]
   syncPolicy:
     automated:
       prune: true
