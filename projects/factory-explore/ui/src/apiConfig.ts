@@ -39,7 +39,7 @@ async function closeWindow(next?: number) {
   await userManager.removeUser();
 }
 
-function tick() {
+export function updateClock() {
   clearTimeout(timer);
   if (nextWindow.value !== null) return;
   const now = Date.now();
@@ -54,7 +54,7 @@ function tick() {
       Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0");
   }
   if (Number.isFinite(deadline))
-    timer = setTimeout(tick, Math.min(deadline - now, 1000));
+    timer = setTimeout(updateClock, Math.min(deadline - now, 1000));
 }
 
 export async function restart() {
@@ -72,7 +72,7 @@ export async function getIdToken() {
     tokenEnd = user.expired
       ? 0
       : Math.min(user.profile.exp ?? 0, user.expires_at ?? Infinity) * 1000;
-  tick();
+  updateClock();
   if (nextWindow.value !== null) throw new Error("Explorer session ended");
   if (!user?.id_token) {
     await userManager.signinRedirect();
@@ -95,7 +95,7 @@ export async function read(path: string, accept: string, signal?: AbortSignal) {
   else if (Number.isFinite(end)) {
     windowEnd = end;
     sessionStorage.setItem(endKey, String(end));
-    tick();
+    updateClock();
   }
   session.signal.throwIfAborted();
   if (!response.ok)

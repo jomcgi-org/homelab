@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import App from "./App.vue";
-import { ref, onMounted } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
 import {
   userManager,
   getIdToken,
   completeSignin,
+  updateClock,
   nextWindow,
   restart,
 } from "./apiConfig";
@@ -28,11 +29,18 @@ onMounted(async () => {
       message.value = "Logged out";
     } else {
       await getIdToken();
+      // A suspended tab can resume before its overdue timeout fires.
+      document.addEventListener("visibilitychange", updateClock);
+      window.addEventListener("pageshow", updateClock);
       oidcCompleted.value = true;
     }
   } catch (error) {
     message.value = String(error);
   }
+});
+onUnmounted(() => {
+  document.removeEventListener("visibilitychange", updateClock);
+  window.removeEventListener("pageshow", updateClock);
 });
 </script>
 
