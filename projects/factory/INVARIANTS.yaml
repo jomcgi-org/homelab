@@ -67,3 +67,9 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-13
+  statement: Original issue fields take their author from the creation event. Edited fields require a matching latest edit snapshot.
+  mechanism:
+  - projects/factory/connector/itsaplan/review.go
+  test: //projects/factory/connector/itsaplan:itsaplan_test
+  state: live

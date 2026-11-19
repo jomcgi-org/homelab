@@ -116,7 +116,9 @@ func TestIssueTextAuthorsRequireMatchingImmutableSnapshots(t *testing.T) {
 	for _, tc := range []struct {
 		name, items, wantTitle, wantDescription string
 	}{
-		{"creation has no text", `{"kind":"activity","action":"created","actorUserId":"joe"}`, "", ""},
+		{"both fields original", `{"kind":"activity","action":"created","actorUserId":"joe"}`, "joe", "joe"},
+		{"original title by agent", `{"kind":"activity","action":"description","actorUserId":"sessions","payload":{"to":{"value":"Criteria"}}},{"kind":"activity","action":"created","actorUserId":"agent"}`, "agent", "sessions"},
+		{"original title by joe", `{"kind":"activity","action":"description","actorUserId":"sessions","payload":{"to":{"value":"Criteria"}}},{"kind":"activity","action":"created","actorUserId":"joe"}`, "joe", "sessions"},
 		{"trusted edits", `{"kind":"activity","action":"title","actorUserId":"joe","payload":{"to":{"value":"Goal"}}},{"kind":"activity","action":"description","actorUserId":"sessions","payload":{"to":{"value":"Criteria"}}}`, "joe", "sessions"},
 		{"later edit wins", `{"kind":"activity","action":"description","actorUserId":"agent","payload":{"to":{"value":"Criteria"}}},{"kind":"activity","action":"description","actorUserId":"joe","payload":{"to":{"value":"Criteria"}}}`, "", "agent"},
 		{"snapshot mismatch", `{"kind":"activity","action":"title","actorUserId":"joe","payload":{"to":{"value":"Old goal"}}}`, "", ""},

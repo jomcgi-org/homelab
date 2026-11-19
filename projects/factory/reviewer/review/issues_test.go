@@ -379,6 +379,21 @@ func TestResumedTaskMustHaveReviewedItsIssueEvidence(t *testing.T) {
 	}
 }
 
+func TestOriginalTitleAndEditedDescriptionTrust(t *testing.T) {
+	for _, tc := range []struct {
+		creator string
+		trusted bool
+	}{{"human", true}, {"bot", false}} {
+		e, b, api, pr := issueSetup()
+		api.author = tc.creator
+		api.textAuthors = []string{tc.creator, "sessions"}
+		in := e.issueContext(context.Background(), b, pr, nil)
+		if in.Issue == nil || in.Issue.Trusted != tc.trusted {
+			t.Fatalf("creator %q: issue = %+v", tc.creator, in.Issue)
+		}
+	}
+}
+
 func TestTrustedCreatorDoesNotAuthenticateEditedIssueText(t *testing.T) {
 	for _, authors := range [][]string{nil, {"", ""}, {"human", "bot"}, {"admin", "human"}} {
 		e, b, api, pr := issueSetup()
