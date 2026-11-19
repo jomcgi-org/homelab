@@ -140,7 +140,7 @@ def test_agent_token_is_injectable_and_never_in_the_pod_as_the_tenant_key():
         "name": "hindsight-keys",
         "key": "tenant-api-key",
     }
-    assert ref("HINDSIGHT_API_MCP_AUTH_TOKEN") == {
+    assert ref("HOMELAB_MCP_TOKEN") == {
         "name": "hindsight-keys",
         "key": "mcp-token",
     }
@@ -249,6 +249,7 @@ def test_the_script_configmap_names_are_not_role_resource_names():
     (kustomization,) = read("resources/kustomization.yaml")
     generators = {g["name"] for g in kustomization["configMapGenerator"]}
     assert generators == {
+        "hindsight-bindings",
         "hindsight-bank-template",
         "hindsight-keys-script",
         "hindsight-preflight-script",

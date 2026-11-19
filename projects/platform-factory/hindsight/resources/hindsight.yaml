@@ -89,7 +89,11 @@ spec:
             # The REST API takes only the tenant key, which nothing outside
             # this pod holds.
             - name: HINDSIGHT_API_TENANT_EXTENSION
-              value: hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension
+              value: bindings:BindingTenant
+            - name: HINDSIGHT_API_OPERATION_VALIDATOR_EXTENSION
+              value: bindings:BindingValidator
+            - name: PYTHONPATH
+              value: /etc/hindsight/extensions
             - name: HINDSIGHT_API_TENANT_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -97,7 +101,9 @@ spec:
                   key: tenant-api-key
             # MCP takes the agents' token instead, and registers only these
             # tools, so the token can neither reach REST nor delete memories.
-            - name: HINDSIGHT_API_MCP_AUTH_TOKEN
+            - name: MCP_BINDINGS
+              value: '{"HOMELAB_MCP_TOKEN":{"bank":"homelab","tools":["recall","retain"]}}'
+            - name: HOMELAB_MCP_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: hindsight-keys
@@ -187,9 +193,15 @@ spec:
             limits:
               memory: 3Gi
           volumeMounts:
+            - name: bindings
+              mountPath: /etc/hindsight/extensions
+              readOnly: true
             - name: tmp
               mountPath: /tmp
       volumes:
+        - name: bindings
+          configMap:
+            name: hindsight-bindings
         - name: tmp
           emptyDir:
             sizeLimit: 1Gi

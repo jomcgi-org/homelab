@@ -13,6 +13,10 @@ resources:
 # the Secret, and the key Jobs waited on a 403 (HOME-161). keys_test keeps the
 # names apart.
 configMapGenerator:
+  - name: hindsight-bindings
+    namespace: hindsight
+    files:
+      - bindings.py
   - name: hindsight-keys-script
     namespace: hindsight
     files:

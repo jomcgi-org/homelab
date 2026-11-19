@@ -148,6 +148,11 @@ def server():
         "HINDSIGHT_API_PORT": str(port),
         "HINDSIGHT_API_SKIP_LLM_VERIFICATION": "true",
     }
+    env["PYTHONPATH"] = str(ROOT / "resources")
+    policies = json.loads(env["MCP_BINDINGS"])
+    policies["TEST_READER_TOKEN"] = {"bank": "homelab", "tools": ["recall"]}
+    env["MCP_BINDINGS"] = json.dumps(policies)
+    env["TEST_READER_TOKEN"] = "r" * 64
     log = Path(home) / "hindsight.log"
     with log.open("w") as out:
         proc = subprocess.Popen([str(HINDSIGHT)], env=env, stdout=out, stderr=out)
@@ -217,6 +222,8 @@ def test_recall_works_with_the_mcp_token(server):
     )
     assert "error" not in reply, reply
     assert reply["result"].get("isError") is not True, reply
+    payload = json.loads(reply["result"]["content"][0]["text"])
+    assert "results" in payload and "error" not in payload, payload
 
 
 def test_new_banks_get_the_schema(server):
@@ -274,3 +281,32 @@ def test_each_fact_consolidates_in_its_one_projects_scope():
         [["app:platform-factory/hindsight"]],
         [],
     ]
+
+
+@pytest.mark.parametrize(
+    "path,token,name,args",
+    [
+        ("/mcp/other/", MCP_TOKEN, "recall", {"query": "boundary"}),
+        ("/mcp/homelab/", "r" * 64, "retain", {"content": "boundary"}),
+    ],
+)
+def test_binding_denies_tool(server, path, token, name, args):
+    client = MCP(server, path, token)
+    listed = client.call("tools/list")["result"]["tools"]
+    expected = ["recall"] if name == "retain" else []
+    assert [tool["name"] for tool in listed] == expected
+    reply = client.call("tools/call", {"name": name, "arguments": args})
+    assert "error" in reply or reply["result"].get("isError") is True, reply
+
+
+@pytest.mark.parametrize(
+    "name,arguments",
+    [("recall", {"query": "boundary"}), ("retain", {"content": "boundary"})],
+)
+def test_explicit_tool_bank_cannot_override_binding(server, name, arguments):
+    client = MCP(server, "/mcp/", MCP_TOKEN)
+    client.headers["X-Bank-Id"] = "homelab"
+    reply = client.call(
+        "tools/call", {"name": name, "arguments": {**arguments, "bank_id": "other"}}
+    )
+    assert "Operation outside MCP binding" in json.dumps(reply)

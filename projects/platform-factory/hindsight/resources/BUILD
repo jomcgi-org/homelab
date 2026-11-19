@@ -1,6 +1,7 @@
 # keys.py runs inside the hindsight-keys Jobs (secrets.yaml mounts it from a
 # ConfigMap), and preflight.py inside the hindsight-preflight Sync hook
 # (hindsight.yaml). Neither is a Bazel target.
+# gazelle:exclude bindings.py
 # gazelle:exclude keys.py
 # gazelle:exclude preflight.py
 # apply_template.py runs inside the hindsight-bank-template PostSync Job.
@@ -22,6 +23,7 @@ filegroup(
     srcs = [
         "apply_template.py",
         "bank-template.json",
+        "bindings.py",
         "hindsight.yaml",
         "keys.py",
         "kustomization.yaml",
