@@ -17,6 +17,8 @@ import (
 
 	"github.com/lib/pq"
 	"nhooyr.io/websocket"
+
+	"github.com/jomcgi/homelab/projects/ships/publish"
 )
 
 const (
@@ -561,6 +563,11 @@ func ingest(ctx context.Context, db *sql.DB, key string) error {
 }
 
 func main() {
+	// The publisher CronJob runs the same image with one argument.
+	if len(os.Args) == 2 && os.Args[1] == "publish" {
+		publish.Main()
+		return
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 	key, dsn := os.Getenv("AISSTREAM_API_KEY"), os.Getenv("DATABASE_URL")

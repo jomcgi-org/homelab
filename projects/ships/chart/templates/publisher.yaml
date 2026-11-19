@@ -1,0 +1,36 @@
+{{- /* The Garage bucket claim and its kept key Secret. */ -}}
+{{ include "factory-library.buckets" . }}
+{{- $secret := printf "%s-ships-s3" .Release.Name }}
+{{- $env := list }}
+{{- range list "AWS_ENDPOINT_URL" "AWS_REGION" "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "BUCKET" }}
+{{- $env = append $env (dict "name" . "valueFrom" (dict "secretKeyRef" (dict "name" $secret "key" .))) }}
+{{- end }}
+{{- /* The publisher runs only read-only transactions. */ -}}
+{{- $env = append $env (dict "name" "DATABASE_URL" "valueFrom" (dict "secretKeyRef" (dict "name" "ships-db-app" "key" "uri"))) }}
+{{- $workload := dict "schedule" .Values.publisher.schedule "backoffLimit" 0 "args" (list "publish") "env" $env "resources" .Values.publisher.resources }}
+{{- $render := include "factory-library.cronjob" (dict "root" $ "name" "ships-publish" "workload" $workload) }}
+{{- range splitList "\n---" $render }}
+{{- $resource := fromYaml . }}
+{{- if $resource.kind }}
+{{- if eq $resource.kind "CronJob" }}
+{{- $_ := set $resource.spec "suspend" $.Values.publisher.suspend }}
+{{- end }}
+---
+{{ toYaml $resource }}
+{{- end }}
+{{- end }}
+---
+# The library policy allows Garage. This one adds the ships database.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ships-publish-db
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: ships-publish
+  egress:
+    - toEndpoints:
+        - matchLabels: { cnpg.io/cluster: ships-db }
+      toPorts:
+        - ports: [{ port: "5432", protocol: TCP }]

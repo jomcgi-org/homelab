@@ -1,7 +1,10 @@
 """The chart owns the public bucket and mirror, and the health publisher."""
 
+import hashlib
+import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
 import yaml
@@ -12,6 +15,7 @@ MIRRORS = [
     "factory-public-factory-public-mirror",
     "factory-public-stars-forecast-mirror",
     "factory-public-hikes-mirror",
+    "factory-public-ships-mirror",
 ]
 
 
@@ -97,6 +101,12 @@ def test_public_consumer():
             "factory-public",
             "factory-public-hikes-mirror-s3",
             "hikes",
+            "read",
+        ),
+        (
+            "factory-public",
+            "factory-public-ships-mirror-s3",
+            "ships",
             "read",
         ),
     }
@@ -232,6 +242,7 @@ def test_mirror_publishes_only_health_json_from_the_health_bucket():
     # The sources own these prefixes; the root sync keeps them.
     assert "  --exclude '/stars-forecast/**' \\\n" in script
     assert "  --exclude '/hikes/**' \\\n" in script
+    assert "  --exclude '/ships/**' \\\n" in script
     assert (
         'copyto "SRC0:factory-health/health.json" "R2:$R2_BUCKET/health.json" \\\n'
         '    --ignore-times --header-upload "Cache-Control: public, max-age=60"'
@@ -240,10 +251,10 @@ def test_mirror_publishes_only_health_json_from_the_health_bucket():
 
 def test_sources_mirror_writer_buckets_under_their_prefixes():
     docs = render()
-    for prefix in ("stars-forecast", "hikes"):
+    for prefix in ("stars-forecast", "hikes", "ships"):
         name = f"factory-public-{prefix}-mirror"
         job = docs["CronJob", name]["spec"]
-        # HOME-478 (Stars) and HOME-477 (Hikes) unsuspend them.
+        # HOME-478 (Stars), HOME-477 (Hikes) and HOME-516 (Ships) unsuspend them.
         assert job["suspend"] is True
         assert job["schedule"] == "* * * * *"
         container = job["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
@@ -262,3 +273,161 @@ def test_sources_mirror_writer_buckets_under_their_prefixes():
         assert item["spec"]["itemPath"] == (
             "vaults/k8s-homelab/items/factory-r2-public-mirror"
         )
+
+
+# A stand-in for rclone that keeps Garage and R2 as directories. Each object
+# appears only when its copy completes, as on S3. With FAKE_INTERRUPT_AFTER=N,
+# sync stops with an error after N transfers, before it deletes anything.
+FAKE_RCLONE = r"""
+import json, os, shutil, sys
+
+args = sys.argv[1:]
+assert args[:3] == ["--config", "/dev/null", "--s3-no-check-bucket"], args
+command, rest = args[3], args[4:]
+roots = {"GARAGE": os.environ["FAKE_GARAGE"], "R2": os.environ["FAKE_R2"]}
+
+
+def local(path):
+    remote, sep, name = path.partition(":")
+    return os.path.join(roots[remote], name) if sep and remote in roots else path
+
+
+def flag(name):
+    return [rest[i + 1] for i, arg in enumerate(rest) if arg == name]
+
+
+def files(root):
+    out = set()
+    for base, _, names in os.walk(root):
+        for name in names:
+            if not name.startswith("."):
+                out.add(os.path.relpath(os.path.join(base, name), root))
+    return out
+
+
+def copy(source, target, headers):
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    shutil.copyfile(source, target + ".part")
+    os.replace(target + ".part", target)
+    log = os.path.join(os.environ["FAKE_R2"], ".headers.json")
+    seen = json.load(open(log)) if os.path.exists(log) else {}
+    seen[os.path.relpath(target, os.environ["FAKE_R2"])] = headers
+    json.dump(seen, open(log, "w"))
+
+
+if command == "lsf":
+    root = local(rest[0])
+    for pattern in flag("--include"):
+        if os.path.isfile(os.path.join(root, pattern.lstrip("/"))):
+            print(pattern.lstrip("/"))
+elif command == "cat":
+    sys.stdout.buffer.write(open(local(rest[0]), "rb").read())
+elif command == "sync":
+    source, target = local(rest[0]), local(rest[1])
+    excluded = {e.lstrip("/") for e in flag("--exclude")}
+    wanted = sorted(files(source) - excluded)
+    budget = int(os.environ.get("FAKE_INTERRUPT_AFTER", "-1"))
+    for name in wanted:
+        dest = os.path.join(target, name)
+        if os.path.exists(dest) and open(dest, "rb").read() == open(os.path.join(source, name), "rb").read():
+            continue
+        if budget == 0:
+            sys.exit("interrupted")
+        budget -= 1
+        copy(os.path.join(source, name), dest, flag("--header-upload"))
+    for name in files(target) - set(wanted) - excluded if os.path.isdir(target) else []:
+        os.remove(os.path.join(target, name))
+elif command == "copyto":
+    copy(local(rest[0]), local(rest[1]), flag("--header-upload"))
+elif command == "delete":
+    for pattern in flag("--include"):
+        path = os.path.join(local(rest[0]), pattern.lstrip("/"))
+        if os.path.exists(path):
+            os.remove(path)
+else:
+    sys.exit("unexpected command " + command)
+"""
+
+
+def payload(root, name, value):
+    """Write a payload the way the Ships publisher does: its digest in its key."""
+    body = json.dumps(value).encode()
+    key = f"{name}-{hashlib.sha256(body).hexdigest()}.json"
+    path = root / key
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body)
+    return key
+
+
+def generation(root, lat):
+    track = payload(root, "tracks/111", {"mmsi": "111", "track": [{"lat": lat}]})
+    heat = payload(root, "heat", {"cells": [[1, 2, 3]]})
+    snapshot = payload(root, "snapshot", {"vessels": [{"mmsi": "111", "track": track}]})
+    (root / "latest.json").write_text(json.dumps({"snapshot": snapshot, "heat": heat}))
+    return {snapshot, heat, track}
+
+
+def resolve(prefix):
+    """Read the generation that a public reader of the prefix sees."""
+    manifest = json.loads((prefix / "latest.json").read_text())
+    keys = {manifest["snapshot"], manifest["heat"]}
+    snapshot = json.loads((prefix / manifest["snapshot"]).read_bytes())
+    keys |= {v["track"] for v in snapshot["vessels"]}
+    for key in keys:
+        digest = key.rsplit("-", 1)[1].removesuffix(".json")
+        assert hashlib.sha256((prefix / key).read_bytes()).hexdigest() == digest, key
+    return keys
+
+
+def test_ships_mirror_survives_an_interrupted_copy(tmp_path):
+    job = render()["CronJob", "factory-public-ships-mirror"]
+    container = job["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
+    garage, r2 = tmp_path / "garage", tmp_path / "r2"
+    bucket, prefix = garage / "ships", r2 / "factory-public" / "ships"
+    bucket.mkdir(parents=True)
+    prefix.mkdir(parents=True)
+    binary = tmp_path / "bin" / "rclone"
+    binary.parent.mkdir()
+    binary.write_text("#!" + shutil.which("python3") + "\n" + FAKE_RCLONE)
+    binary.chmod(0o755)
+    env = {
+        **os.environ,
+        **{var["name"]: var["value"] for var in container["env"] if "value" in var},
+        "FAKE_GARAGE": str(garage),
+        "FAKE_R2": str(r2),
+        "PATH": str(binary.parent) + os.pathsep + os.environ["PATH"],
+    }
+    env["RCLONE_CONFIG_R2_ENDPOINT"] = "https://" + env["R2_HOST"]
+
+    def mirror(interrupt_after=-1):
+        run_env = dict(env, FAKE_INTERRUPT_AFTER=str(interrupt_after))
+        return subprocess.run(container["command"], env=run_env, capture_output=True)
+
+    first = generation(bucket, 48.5)
+    assert mirror().returncode == 0
+    assert resolve(prefix) == first
+
+    # The writer publishes a second generation and keeps the first one's
+    # objects. The mirror stops after one transfer.
+    second = generation(bucket, 48.6)
+    result = mirror(interrupt_after=1)
+    assert result.returncode != 0
+    # Readers still get the first generation, every object complete.
+    assert resolve(prefix) == first
+
+    # A long outage: the writer's grace period ends and it removes the
+    # objects that only the first generation names.
+    for key in first - second:
+        (bucket / key).unlink()
+    assert mirror().returncode == 0
+    assert resolve(prefix) == second
+    stored = {p.relative_to(prefix).as_posix() for p in prefix.rglob("*.json")}
+    assert stored == second | {"latest.json"}
+    headers = json.loads((r2 / ".headers.json").read_text())
+    assert headers["factory-public/ships/latest.json"] == [
+        "Cache-Control: public, max-age=60"
+    ]
+    for key in second:
+        assert headers[f"factory-public/ships/{key}"] == [
+            "Cache-Control: public, max-age=31536000, immutable"
+        ]

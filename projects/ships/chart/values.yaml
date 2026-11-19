@@ -14,3 +14,21 @@ resources:
 database:
   storage: ""
   resources: {}
+# The publisher writes the snapshot, heat and track products here. The
+# factory-public release mirrors this bucket to R2 under ships/ (HOME-492,
+# HOME-410). This chart holds no R2 credential.
+buckets:
+  - name: ships
+    access: readwrite
+# The publisher CronJob (templates/publisher.yaml). HOME-516 sets suspend to
+# false when it turns the ingester on, with the factory-public ships source.
+publisher:
+  suspend: true
+  schedule: "*/2 * * * *"
+  # Trial allocations. HOME-516 measures a run and sets the budget.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi

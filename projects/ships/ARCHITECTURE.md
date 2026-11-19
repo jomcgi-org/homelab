@@ -23,21 +23,39 @@ HOME-483 collects a 24-hour hub baseline before it sizes production. Count recei
 
 ## Publication contract
 
-AISStream.io publishes no terms of service or data license (checked 2026-11-18). Its site links only a [privacy policy](https://aisstream.io/privacypolicy), which says nothing about redistribution. Its [documentation](https://aisstream.io/documentation#limits) sets only operational limits, and tells apps to serve clients through their own server with only the data each client needs. So no published grant covers public position files. With no terms to link, this plan links the pages checked ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-256#comment-4186)). An inquiry in AISStream’s issue tracker asks specifically about public redistribution. Another reports that the usual terms URLs returned 404. Both are requests from users of the service. Neither supplies a license. [Redistribution inquiry](https://github.com/aisstream/issues/issues/223) · [Terms lookup report](https://github.com/aisstream/issues/issues/299)
+Ships data is public. [Joe decided](https://factory-plan.jomcgi.dev/factory/issue/HOME-256#comment-4484) that the factory publishes the snapshot, heat and track products as public files through the cluster to R2 sink. This replaces the earlier plan to keep them in private storage until a license covered redistribution. Anonymous readers get every product under `https://factory-data.jomcgi.dev/ships/`. No product has a private copy or an authenticated endpoint.
 
-Keep all three products in private Garage storage until the applicable terms or written permission covers the intended redistribution. Serve private data only to authorized readers through an authenticated endpoint with private, no-store caching. Keep the public static page in an unavailable state in that mode. Do not assume aggregation or delay grants redistribution rights. [AISStream](https://aisstream.io/)
+AISStream.io publishes no terms of service or data license (checked 2026-11-18). Its site links only a [privacy policy](https://aisstream.io/privacypolicy), which says nothing about redistribution, and its [documentation](https://aisstream.io/documentation#limits) sets only operational limits. Two user reports in its issue tracker ask about redistribution and the missing terms. Neither supplies a license. [Redistribution inquiry](https://github.com/aisstream/issues/issues/223) · [Terms lookup report](https://github.com/aisstream/issues/issues/299)
 
-If cleared, copy only the approved prefix through the HOME-137 Garage-to-R2 mirror. The following sizes are uncompressed JSON planning targets, except for the reported snapshot size. Measure actual byte distributions before cutover.
+```mermaid
+flowchart LR
+  db[(ships-db)] -->|read-only view, every 2 minutes| publisher[ships-publish CronJob]
+  publisher -->|tracks, heat, snapshot, then latest.json| garage[(Garage ships)]
+  garage -->|read-only key, every minute| mirror[factory-public ships mirror]
+  mirror -->|payloads, then latest.json| r2[(R2 factory-public, prefix ships)]
+  r2 -->|anonymous GET| reader[Ships page]
+```
 
-| Key under ships/v1/ | Contents and size | Publish interval | Public Cache-Control |
+| Key under `ships/` | Contents | Changes when | Cache-Control |
 | --- | --- | --- | --- |
-| snapshot.json | Latest position and metadata per vessel, roughly 2.9 MB | 120 seconds | public, max-age=0, s-maxage=120 |
-| heat.json | Occupied cells, live plus banked vessel-days and legend stops, target 1 MB | Hourly after rollup | public, max-age=300, s-maxage=3600 |
-| tracks/{mmsi}.json | Latest 1,000 retained points in map order, target 150 KB per vessel | Changed tracks every 120 seconds | public, max-age=0, s-maxage=120 |
+| `latest.json` | `schema_version`, `generated_at` and the keys of the snapshot and heat grid | Every run | `public, max-age=60` |
+| `snapshot-<sha256>.json` | `schema_version`, `generated_at` and the hub snapshot fields of each vessel. Each vessel adds `track`: its track key, or null without retained history | Every run | `public, max-age=31536000, immutable` |
+| `tracks/<mmsi>-<sha256>.json` | The hub track: up to 1,000 retained positions, newest first | A newer report, or the hourly rebuild | `public, max-age=31536000, immutable` |
+| `heat-<sha256>.json` | The hub heat grid and colour stops, and `computed_at` of the newest rollup | An hourly rollup | `public, max-age=31536000, immutable` |
 
-Public rollout requires a change to the HOME-137 mirror. Its [upload template](../shared/helm/factory-library/chart/templates/_mirror.tpl) currently gives every payload except the root manifest a one-year immutable lifetime. Add opt-in per-key header rules for the three mutable Ships keys. Before routing readers to R2, replace a fixture at each kind of key, read it through the edge with an existing browser cache, and verify both the table’s Cache-Control value and that the replacement becomes visible within its TTL.
+A reader fetches `latest.json` and the snapshot it names. It fetches the heat grid when it enters heat mode and one track when it selects a marker. It resolves each key `k` as `https://factory-data.jomcgi.dev/ships/k`. Timestamps use the hub format: UTC, ISO 8601 and `+00:00`. The page reads from a different host than the site, so HOME-411 checks that R2 allows reads from the site origin.
 
-Replace each key with a complete object and include a generation timestamp. Publish changed tracks before the snapshot, retry failed copies with the same body, and propagate expiry of tracks that age out even when no new reports arrive. Verify headers and ETags at the public edge. Keep bucket listing disabled. The browser fetches the snapshot on load and revalidates every two minutes, fetches heat on entering heat mode and one track on marker selection. Preserve map state and display the last successful timestamp on a failed refresh. A missing track leaves the selected vessel visible. Allow reads from the site origin if the mirror uses a separate hostname.
+The `ships-publish` CronJob runs `ships publish` every 2 minutes. It reads the database in one read-only REPEATABLE READ transaction, so the products come from one view. `generated_at` is the time of that view. It connects with the owner URI from `ships-db-app`. Its network policies allow only Garage on 3900 and the database on 5432.
+
+The publisher rebuilds the track of each vessel whose latest position changed after the previous generation. A 2-minute margin covers an ingester transaction that committed after that view. The first run of each UTC hour rebuilds every track. That run picks up a report older than the latest position, and history that retention dropped. A payload key holds the SHA-256 of its bytes, so the publisher skips a key that the bucket already holds. It writes tracks, heat and the snapshot, then `latest.json` last.
+
+A replaced object stays in Garage for 30 minutes. Each object belongs to a series: the snapshot, the heat grid or one vessel's track. The publisher deletes an object only when a newer object of its series is more than 30 minutes old. It never deletes what the current or previous generation names. The mirror then deletes the object from R2.
+
+If a run or a mirror copy stops part way, `latest.json` still names the previous generation, and every object it names is complete. The publisher writes the manifest last, and the mirror copies the manifest only after a complete sync. The next run catches up. After a mirror outage longer than 30 minutes, the first sync deletes the old objects before it copies the new manifest. Readers can then miss objects for up to a minute, until the old manifest leaves their cache. `publish/publish_test.go` and `projects/factory-public/chart/public_test.py` test these cases. `publish_test.py` compares each product with the hub API on the same database.
+
+Each run logs one line with `vessels`, `tracks`, `rebuilt`, `full`, `puts`, `put_bytes` and `deletes`: the bytes and object writes of the cycle. The hub page on 2026-11-19 had 7,843 vessels in a 2.7 MB snapshot. 135 of them had a report in the 2 minutes before the read, and 1,234 in the 7 days before it. So a run writes about 135 tracks, the snapshot and the manifest. HOME-516 replaces these estimates with measurements.
+
+The CronJob and the `factory-public` source `ships` stay suspended, so the publisher and its network policies are staged off. HOME-516 sets `publisher.suspend: false` in `chart/values.yaml` and `suspend: false` on the source when it turns the ingester on. It then checks schema, timestamps, freshness, headers and expiry at the reader endpoint.
 
 ## Follow-up HOME issues
 
@@ -64,13 +82,13 @@ Tracked in [HOME-483](https://factory-plan.jomcgi.dev/factory/issue/HOME-483). I
 
 ### Garage sink and R2 mirror
 
-Tracked in [HOME-410](https://factory-plan.jomcgi.dev/factory/issue/HOME-410).
+Tracked in [HOME-410](https://factory-plan.jomcgi.dev/factory/issue/HOME-410). The publisher, its Garage bucket and the suspended `factory-public` source `ships` are in place ([Publication contract](#publication-contract)).
 
 Done when
 
-1. Record the dated terms permalink and redistribution grant or implement the private delivery path. Verify anonymous access matches that decision for every product.
-2. Measure bytes and object writes per cycle and verify schema, timestamps, freshness, headers and expiry at the reader endpoint.
-3. Interrupt a copy and verify readers retain complete objects and the mirror catches up after recovery.
+1. The redistribution decision is linked, and anonymous access matches it for every product.
+2. After HOME-516 turns the ingester on: bytes and object writes per cycle are measured, and schema, timestamps, freshness, headers and expiry are correct at the reader endpoint.
+3. An interrupted copy leaves readers with complete objects, and the mirror catches up after recovery.
 
 ### Ships page
 
@@ -107,6 +125,7 @@ Done when
 | Component | Responsibility |
 | --- | --- |
 | cmd | Holds the database lease on its own connection, and commits received frames to `ships.inbox` on a second connection. A third connection claims them, applies them to history, latest positions and vessels, and runs partition maintenance and the heat refresh. |
+| publish | Runs as `ships publish` in the `ships-publish` CronJob. Reads one database view and writes the public products to Garage bucket `ships` ([Publication contract](#publication-contract)). |
 
 ```mermaid
 flowchart LR

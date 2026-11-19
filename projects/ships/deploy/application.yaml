@@ -18,6 +18,12 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: ships
+  # garage-init owns credential bytes in the kept claim Secret.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: ships-ships-s3
+      jsonPointers: [/data]
   syncPolicy:
     automated:
       prune: true
@@ -25,6 +31,7 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
+      - RespectIgnoreDifferences=true
     retry:
       limit: 5
       backoff:

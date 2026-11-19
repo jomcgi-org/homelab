@@ -22,8 +22,9 @@ release holds its R2 token. Each source mirror writes and deletes only under
 its prefix, and the root sync excludes every source prefix. The
 [library rule](../projects/shared/helm/factory-library/README.md#one-public-r2-bucket)
 and a content rule enforce this. Stars publishes at
-`https://factory-data.jomcgi.dev/stars-forecast/latest.json` and Hikes at
-`https://factory-data.jomcgi.dev/hikes/latest.json`.
+`https://factory-data.jomcgi.dev/stars-forecast/latest.json`, Hikes at
+`https://factory-data.jomcgi.dev/hikes/latest.json` and Ships at
+`https://factory-data.jomcgi.dev/ships/latest.json`.
 
 The [mirror template](../projects/shared/helm/factory-library/chart/templates/_mirror.tpl)
 excludes exactly `/latest.json` from the immutable payload transfer and
