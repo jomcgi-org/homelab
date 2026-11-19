@@ -19,10 +19,20 @@ def test_writer_schedules_and_credentials():
         ],
         text=True,
     )
+    documents = [doc for doc in yaml.safe_load_all(result) if doc]
+    claims = {
+        doc["data"]["secretName"]: (doc["data"]["bucket"], doc["data"]["access"])
+        for doc in documents
+        if doc["kind"] == "ConfigMap"
+        and doc["metadata"].get("labels", {}).get("factory.jomcgi.dev/garage-claim")
+        == "true"
+    }
+    assert claims == {
+        "hikes-hikes-s3": ("hikes", "readwrite"),
+        "hikes-hikes-mirror-s3": ("hikes", "read"),
+    }
     jobs = {
-        d["metadata"]["name"]: d["spec"]
-        for d in yaml.safe_load_all(result)
-        if d and d["kind"] == "CronJob"
+        d["metadata"]["name"]: d["spec"] for d in documents if d["kind"] == "CronJob"
     }
     assert all(job["suspend"] for job in jobs.values())
     assert jobs["hikes-refresh"]["schedule"] == "20 */2 * * *"
