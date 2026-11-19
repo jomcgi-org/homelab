@@ -1360,30 +1360,6 @@ func TestCitedPullRequest(t *testing.T) {
 	}
 }
 
-func TestActivationTrailerRequiresOneFinalTrailer(t *testing.T) {
-	for _, tc := range []struct {
-		message, want string
-	}{
-		{"fix: ship\n\nActivation: none", "none"},
-		{"fix: ship\r\n\r\nActivation: enable\r\n after the migration", "enable after the migration"},
-		{"fix: ship", ""},
-		{"fix: ship\n\nActivation: ", ""},
-		{"fix: ship\n\nActivation: none\nActivation: enable", ""},
-		{"fix: ship\n\nActivation: none\n  Activation: enable", ""},
-		{"fix: ship\n\nActivation: none\n\nMore prose.", ""},
-		{"fix: ship\n\nActivation: none\nSigned-off-by: author", ""},
-		{"fix: ship\n\nCo-Authored-By: A <a@example.com>\nSigned-off-by: B\nActivation: none", "none"},
-		{"fix: ship\n\nCo-Authored-By: A\nActivation: enable\n after the migration", "enable after the migration"},
-		{"fix: ship\n\nActivation: none\nCo-Authored-By: A\nActivation: none", ""},
-		{"fix: ship\n\nSee the notes.\nActivation: none", ""},
-		{"fix: ship\n\n continued\nActivation: none", ""},
-	} {
-		if got, ok := ActivationTrailer(tc.message); got != tc.want || ok != (tc.want != "") {
-			t.Errorf("trailer(%q) = %q, %v; want %q", tc.message, got, ok, tc.want)
-		}
-	}
-}
-
 func TestRevertedMergeWindow(t *testing.T) {
 	start := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	end := start.Add(7 * 24 * time.Hour)
@@ -1477,5 +1453,44 @@ func TestRevertedMergeForms(t *testing.T) {
 				t.Fatalf("revert = %v, err = %v, want match %t", got, err, tc.match)
 			}
 		})
+	}
+}
+
+func TestActivationTrailerRequiresOneFinalTrailer(t *testing.T) {
+	for _, tc := range []struct {
+		message, want string
+	}{
+		{"fix: ship\n\nActivation: none", "none"},
+		{"fix: ship\r\n\r\nActivation: enable\r\n after the migration", "enable after the migration"},
+		{"fix: ship", ""},
+		{"fix: ship\n\nActivation: ", ""},
+		{"fix: ship\n\nActivation: none\nActivation: enable", ""},
+		{"fix: ship\n\nActivation: none\n  Activation: enable", ""},
+		{"fix: ship\n\nActivation: none\n\nMore prose.", ""},
+		{"fix: ship\n\nActivation: none\nSigned-off-by: author", ""},
+		{"fix: ship\n\nCo-Authored-By: A <a@example.com>\nSigned-off-by: B\nActivation: none", "none"},
+		{"fix: ship\n\nCo-Authored-By: A\nActivation: enable\n after the migration", "enable after the migration"},
+		{"fix: ship\n\nActivation: none\nCo-Authored-By: A\nActivation: none", ""},
+		{"fix: ship\n\nSee the notes.\nActivation: none", ""},
+		{"fix: ship\n\n continued\nActivation: none", ""},
+	} {
+		if got, ok := ActivationTrailer(tc.message); got != tc.want || ok != (tc.want != "") {
+			t.Errorf("trailer(%q) = %q, %v; want %q", tc.message, got, ok, tc.want)
+		}
+	}
+}
+
+// A PR's own merge commit is in the scan window. A squash subject that looks
+// like a revert of its own number must not mark the PR reverted.
+func TestRevertedMergeSkipsTheMergeCommitItself(t *testing.T) {
+	merged := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `[{"sha":"aaaa1111","commit":{"message":"Revert \"old change\" (#7)","committer":{"date":%q}}}]`, merged.Format(time.RFC3339))
+	}))
+	defer srv.Close()
+	client := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+	got, err := client.RevertedMerge(context.Background(), "org/repo", "main", "aaaa1111", 7, merged, merged.Add(time.Hour), func(int) error { return nil })
+	if err != nil || got != nil {
+		t.Fatalf("revert = %v, err = %v; the merge commit counted as its own revert", got, err)
 	}
 }

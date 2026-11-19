@@ -43,7 +43,7 @@ go_library(
         "20261119080000_reaper_deletions.sql",
         "20261119090000_activation.sql",
         "20261119100000_storyboard_tasks.sql",
-        "20261119090000_delivery_outcomes.sql",
+        "20261119110000_delivery_outcomes.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],
