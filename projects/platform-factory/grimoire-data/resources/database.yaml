@@ -1,3 +1,7 @@
+# Grimoire's private database: three instances, one per node, with WAL
+# archiving and daily base backups to the private grimoire-backups bucket.
+# grimoire_restore owns the database and every restored object. The two
+# runtime logins own nothing; grants.sql gives them their row access.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
@@ -33,24 +37,46 @@ spec:
   bootstrap:
     initdb:
       database: grimoire
+      # The operator writes this login's password to grimoire-app.
       owner: grimoire_restore
+      # Creating vector needs a superuser, so the owner cannot restore it.
       postInitApplicationSQL:
         - CREATE EXTENSION vector
         - REVOKE CREATE ON SCHEMA public FROM PUBLIC
   managed:
+    # Each login's password is its Secret's (setup.yaml). The attributes are
+    # stated so a list item matches the defaulted live one in ArgoCD's diff.
     roles:
       - name: grimoire_api
+        ensure: present
         login: true
+        inherit: false
+        superuser: false
+        createdb: false
+        createrole: false
+        replication: false
+        bypassrls: false
+        connectionLimit: 16
         passwordSecret:
           name: grimoire-api-login
       - name: grimoire_worker
+        ensure: present
         login: true
+        inherit: false
+        superuser: false
+        createdb: false
+        createrole: false
+        replication: false
+        bypassrls: false
+        connectionLimit: 16
         passwordSecret:
           name: grimoire-worker-login
   backup:
     retentionPolicy: "14d"
     barmanObjectStore:
       destinationPath: s3://grimoire-backups/
+      # One prefix per incarnation. recovery.yaml in projects/grimoire/deploy
+      # restores from it.
       serverName: grimoire-v1
       endpointURL: http://garage.garage.svc:3900
       s3Credentials:
@@ -76,6 +102,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "1"
 spec:
+  # After factory-db's and kagent-pg's. One base backup at creation, then daily.
   schedule: "0 15 3 * * *"
   immediate: true
   backupOwnerReference: self

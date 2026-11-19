@@ -16,6 +16,8 @@ _PG_BINARIES = [
     "usr/lib/postgresql/16/bin/pg_isready",
     "usr/lib/postgresql/16/bin/pg_ctl",
     "usr/lib/postgresql/16/bin/psql",
+    "usr/lib/postgresql/16/bin/pg_dump",
+    "usr/lib/postgresql/16/bin/pg_restore",
 ]
 
 # pgvector extension files
@@ -353,7 +355,7 @@ def _create_pg_wrappers(rctx):
                        'exec "$ROOT/{ld}" --library-path "$ROOT/usr/lib/x86_64-linux-gnu:$ROOT/usr/lib/postgresql/16/lib:$ROOT/usr/lib" "$SCRIPT_DIR/{binary}.bin" "$@"\n'
 
     # Rename each binary and create wrapper
-    binaries = ["postgres", "initdb", "pg_isready", "pg_ctl", "psql"]
+    binaries = ["postgres", "initdb", "pg_isready", "pg_ctl", "psql", "pg_dump", "pg_restore"]
     for binary in binaries:
         bin_path = _child_path(bin_dir, binary)
         real_path = _child_path(bin_dir, binary + ".bin")

@@ -1,7 +1,18 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - database.yaml
+  - policy.yaml
   - storage.yaml
   - runtime.yaml
-  - policy.yaml
+  - setup.yaml
+  - database.yaml
+
+configMapGenerator:
+  - name: grimoire-db-setup
+    namespace: grimoire
+    files:
+      - secret_init.py
+      - grants.sql
+    options:
+      annotations:
+        argocd.argoproj.io/sync-wave: "-2"

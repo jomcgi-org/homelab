@@ -1,11 +1,18 @@
+# The grimoire namespace's allowlist under the cluster-wide default-deny
+# (projects/platform-factory/network-policy/). Each Job and runtime identity
+# states its own DNS rule, the same CoreDNS allowance as the baseline, so its
+# policy lists every peer it can reach. No identity has inference egress yet:
+# the runtime chart that configures an endpoint adds that exact peer.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
   annotations:
+    # Before the Cluster (wave 0), whose instances need the API server.
     argocd.argoproj.io/sync-wave: "-3"
   name: grimoire
   namespace: grimoire
 spec:
+  # The instances and the operator's initdb and join Jobs.
   endpointSelector:
     matchLabels:
       cnpg.io/cluster: grimoire
@@ -17,15 +24,18 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: grimoire
             io.cilium.k8s.policy.serviceaccount: grimoire-worker
+        # The owner identity: the restore and grants Jobs.
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: grimoire
             io.cilium.k8s.policy.serviceaccount: grimoire-restore
+        # Replication and pg_basebackup between instances.
         - matchLabels:
             cnpg.io/cluster: grimoire
       toPorts:
         - ports:
             - port: "5432"
               protocol: TCP
+    # The instance manager: the operator, and peers during failover.
     - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: cnpg-system
@@ -47,6 +57,7 @@ spec:
               protocol: TCP
             - port: "8000"
               protocol: TCP
+    # WAL archives and base backups in grimoire-backups.
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: garage
@@ -56,9 +67,12 @@ spec:
             - port: "3900"
               protocol: TCP
 ---
+# The API reads the database and grimoire-private (read-only key).
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
   name: grimoire-api
   namespace: grimoire
 spec:
@@ -68,17 +82,15 @@ spec:
   egress:
     - toEndpoints:
         - matchLabels:
-            k8s:io.kubernetes.pod.namespace: inference
-            app.kubernetes.io/name: inference
-            app.kubernetes.io/component: inference
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: inference
-            app.kubernetes.io/name: inference
-            app.kubernetes.io/component: embeddings
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
       toPorts:
         - ports:
-            - port: "8080"
-              protocol: TCP
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
     - toEndpoints:
         - matchLabels:
             cnpg.io/cluster: grimoire
@@ -95,9 +107,12 @@ spec:
             - port: "3900"
               protocol: TCP
 ---
+# Workers read and write the database and grimoire-private.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
   name: grimoire-worker
   namespace: grimoire
 spec:
@@ -107,17 +122,15 @@ spec:
   egress:
     - toEndpoints:
         - matchLabels:
-            k8s:io.kubernetes.pod.namespace: inference
-            app.kubernetes.io/name: inference
-            app.kubernetes.io/component: inference
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: inference
-            app.kubernetes.io/name: inference
-            app.kubernetes.io/component: embeddings
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
       toPorts:
         - ports:
-            - port: "8080"
-              protocol: TCP
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
     - toEndpoints:
         - matchLabels:
             cnpg.io/cluster: grimoire
@@ -134,9 +147,13 @@ spec:
             - port: "3900"
               protocol: TCP
 ---
+# The owner identity (restore and grants Jobs): DNS and the two database
+# clusters. grimoire-recovered exists only during a backup restore check.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
   name: grimoire-restore
   namespace: grimoire
 spec:
@@ -146,6 +163,17 @@ spec:
   egress:
     - toEndpoints:
         - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
+    - toEndpoints:
+        - matchLabels:
             cnpg.io/cluster: grimoire
         - matchLabels:
             cnpg.io/cluster: grimoire-recovered
@@ -153,15 +181,34 @@ spec:
         - ports:
             - port: "5432"
               protocol: TCP
+---
+# grimoire-db-init reads and writes its Secrets and nothing else.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+  name: grimoire-db-setup
+  namespace: grimoire
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: grimoire-db-setup
+  egress:
     - toEndpoints:
         - matchLabels:
-            k8s:io.kubernetes.pod.namespace: garage
-            app.kubernetes.io/name: garage
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
       toPorts:
         - ports:
-            - port: "3900"
-              protocol: TCP
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
+    - toEntities: [kube-apiserver]
 ---
+# The backup restore check (projects/grimoire/deploy/recovery.yaml).
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -205,6 +252,7 @@ spec:
               protocol: TCP
             - port: "8000"
               protocol: TCP
+    # Reads the base backup and WAL from grimoire-backups.
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: garage

@@ -1,79 +1,101 @@
-# Private restore rehearsal
+# Grimoire private data
 
-Use the factory grimoire namespace. The database owner credential is in the
-CNPG-generated grimoire-app Secret. Reserve that login for restore operations.
-Provide grimoire-api-login and grimoire-worker-login as basic-auth Secrets
-with usernames grimoire_api and grimoire_worker and separate generated
-passwords. Runtime pods use their corresponding service account, database
-login and S3 Secret. Bind inference egress to the selected private backend
-and port when that endpoint is available.
+The [grimoire-data](../../platform-factory/grimoire-data/) Application runs
+Grimoire's private database, object keys and runtime identities on the factory
+cluster. Design and reasons: [ARCHITECTURE.md](../ARCHITECTURE.md).
 
-Stage a consistent custom-format dump from the restricted, scoped rehearsal
-database described in ARCHITECTURE.md. Include the referenced identity rows,
-sequences and job checkpoints. Retain the source row counts, membership
-pairs, vector index definitions and a representative nearest-neighbor result
-from the same snapshot. Keep these artifacts in restricted storage.
+## Quickstart
 
-Record the extension version and schema on the quiescent scoped source
-alongside the dump, using the same query and output format as restore.sh.
-
-```sh
-PGSERVICE=scoped-source psql -XAtq -v ON_ERROR_STOP=1 -c "SELECT extversion, nspname FROM pg_extension JOIN pg_namespace ON pg_namespace.oid = extnamespace WHERE extname = 'vector'" > vector.metadata
+```bash
+ci test -- //projects/grimoire/deploy:restore_test   # restore a synthetic pgvector dump
+ci test -- //projects/platform-factory/grimoire-data:provisioning_test   # pin peers, keys and logins
 ```
 
-After staging grimoire-rehearsal-snapshot, include restore-job.yaml in a
-one-shot GitOps overlay with a grimoire-restore-script configMapGenerator
-containing restore.sh. Run the transfer from a pod in namespace grimoire with
-serviceAccountName grimoire-restore. Mount the staged snapshot read-only.
-Configure its rehearsal libpq service for grimoire-rw.grimoire.svc:5432,
-database grimoire, user grimoire_restore, with TLS required. Supply the
-password from grimoire-app only to the restore pod. Use grimoire-restore-s3
-for the private destination. Stage source objects on a restricted volume
-before transfer. The restore identity can reach Garage and the two database
-clusters. Run restore.sh against a fresh rehearsal database.
+## Identities and peers
 
-```sh
-PGSERVICE=grimoire-rehearsal PRIVATE_DUMP=/snapshot/grimoire.dump \
-  VECTOR_METADATA=/snapshot/vector.metadata ./restore.sh
+```mermaid
+flowchart LR
+  api[grimoire-api] -->|5432| db[(grimoire)]
+  worker[grimoire-worker] -->|5432| db
+  api -->|3900, read key| private[grimoire-private]
+  worker -->|3900, readwrite key| private
+  owner[grimoire-restore] -->|5432| db
+  owner -->|5432| recovered[(grimoire-recovered)]
+  db -->|3900, WAL and base backups| backups[grimoire-backups]
+  recovered -->|3900, read key| backups
 ```
 
-Apply reviewed table and sequence grants to the runtime logins after import.
-Compare the saved counts, identity pairs, sequence heads and vector query
-results against the target. Check that the vector indexes are valid in
-pg_index and that their definitions match the recorded source definitions.
+The three service accounts also have DNS to CoreDNS and nothing else. The restore and grants
+Jobs run as `grimoire-restore`. Both buckets are in Garage, and neither has a
+public mirror. No identity has inference egress: the chart that configures an
+inference endpoint adds that exact peer to `grimoire-api` and
+`grimoire-worker`.
 
-Use rclone remotes restricted to the private source snapshot and the private
-Garage bucket. Run from a protected directory with umask 077. Keep the
-source checksum file with the dump. Verify the full key set as well as
-downloaded bytes, including objects without an S3 content hash.
+## Inputs
 
-```sh
-rclone hashsum SHA256 /snapshot/books > source.sha256
-rclone copy /snapshot/books factory-private:grimoire-private
-rclone check --download /snapshot/books factory-private:grimoire-private
-rclone checksum SHA256 source.sha256 factory-private:grimoire-private --download
-```
+| Input | Where it comes from | Used for |
+| --- | --- | --- |
+| `grimoire-app` | The operator, at initdb | The owner login `grimoire_restore` |
+| `grimoire-api-login`, `grimoire-worker-login` | `grimoire-db-init` generates each password once | The runtime logins; the operator sets each role's password |
+| `grimoire-*-s3` | garage-init, from the claims in `storage.yaml` | One scoped Garage key for each user |
+| `grimoire.dump`, `vector.metadata` | The source database ([HOME-484](https://factory-plan.jomcgi.dev/factory/issue/HOME-484)) | The restore |
 
-After validation, trigger a CNPG Backup and record its completed backup ID.
-Once the backup completes and WAL archiving catches up, deploy recovery.yaml
-as a one-shot GitOps change. It creates grimoire-recovered in the grimoire
-namespace and uses grimoire-recovery-s3 to read the backup. Point the recovery
-libpq service at grimoire-recovered-rw.grimoire.svc:5432 and use the owner
-password from the backed-up database. Repeat the database comparisons against that cluster with hub access
-closed. Repeat the checksum test against an independently restored private
-object copy. Record backup ID, counts, comparison outcomes and runtime
-access probes internally. Exercise allowed DB, S3 and inference calls and
-denied bucket, backup and unrelated endpoint calls as each runtime identity
-before accepting the rehearsal.
+## Operate
 
-Run the inventory on the quiescent scoped source, the restored rehearsal
-database and the backup recovery database. Keep the outputs private and
-require both comparisons to succeed.
+### Change a grant
 
-```sh
-for service in scoped-source grimoire-rehearsal grimoire-recovered; do
-  PGSERVICE="$service" psql -XqAt -v ON_ERROR_STOP=1 -f inventory.sql > "$service.inventory" || exit 1
-done
-diff -q scoped-source.inventory grimoire-rehearsal.inventory &&
-  diff -q scoped-source.inventory grimoire-recovered.inventory
-```
+The `grimoire-db-grants` PostSync Job runs
+[grants.sql](../../platform-factory/grimoire-data/resources/grants.sql) as
+`grimoire_restore` after every sync. The runtime logins read and write rows
+and use sequences. They own nothing and cannot create objects. The Job
+replaces a grant made by hand, so change a grant in `grants.sql`.
+
+### Restore a dump
+
+[restore.sh](restore.sh) refuses a database that has tables. It restores the
+dump as `grimoire_restore` in one transaction, then counts the valid foreign
+keys and pgvector indexes against the dump. CI runs it on a synthetic dump.
+HOME-484 owns the real hub dump, the private object copy with checksums and
+the rehearsal on real data.
+
+1. On the source, record the pgvector version and schema in `vector.metadata`:
+
+   ```sh
+   psql -XAtq -v ON_ERROR_STOP=1 -c "SELECT extversion, nspname FROM pg_extension JOIN pg_namespace ON pg_namespace.oid = extnamespace WHERE extname = 'vector'" > vector.metadata
+   ```
+
+2. Take a custom-format dump of the scoped source: `pg_dump -Fc -f grimoire.dump`.
+3. Put both files on the PVC `grimoire-restore-snapshot` in namespace `grimoire`.
+4. Add [restore-job.yaml](restore-job.yaml) to a one-shot GitOps change.
+5. In the same change, generate ConfigMap `grimoire-restore-script` from `restore.sh`.
+6. Sync it. Read the log line `restored with N valid foreign keys and M valid pgvector indexes`.
+7. Run [inventory.sql](inventory.sql) on the source and on `grimoire`, then compare:
+
+   ```sh
+   psql -XqAt -v ON_ERROR_STOP=1 -f inventory.sql > grimoire.inventory
+   diff -q source.inventory grimoire.inventory
+   ```
+
+8. Remove the Job in the next change.
+
+### Restore a backup
+
+The `grimoire` Cluster archives WAL to `s3://grimoire-backups/grimoire-v1`.
+`grimoire-daily` takes a base backup at 03:15 UTC. The retention is 14 days.
+
+1. Stop the Grimoire writers.
+2. Wait for a completed Backup after the last write. Record its name.
+3. Add [recovery.yaml](recovery.yaml) to the `grimoire-data` resources in a one-shot change.
+4. Wait until Cluster `grimoire-recovered` is healthy. It reads backups with the read-only `grimoire-recovery-s3` key.
+5. From a pod that runs as `grimoire-restore`, run `inventory.sql` on `grimoire` and on `grimoire-recovered`.
+6. Compare the two outputs. They must match.
+7. Remove `recovery.yaml` in the next change. The Application prunes `grimoire-recovered`.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `grimoire-db-init` waits, then the sync fails | garage-init has not filled `grimoire-backup-s3` | Check CronJob `garage/garage-bootstrap`, then sync `grimoire` again |
+| `grimoire-db-grants` fails: role does not exist | The operator has not created the managed roles yet | The Job retries. Read the role errors in the Cluster status |
+| `restore only into an empty database` | The target has tables | Restore into a new database |
+| `cmp` reports that the metadata files differ | The target's pgvector version or schema differs from the source | Change the operator's pgvector image to match the source |
