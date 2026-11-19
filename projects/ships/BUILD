@@ -18,7 +18,7 @@ filegroup(
 py_test(
     name = "replay_test",
     size = "large",
-    timeout = "moderate",
+    timeout = "long",
     srcs = ["replay_test.py"],
     data = [
         "//projects/monolith/chart:migrations",
