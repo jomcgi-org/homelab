@@ -191,6 +191,16 @@ spec:
     matchLabels:
       app.kubernetes.io/name: {{ $name }}-bootstrap
   egress:
+    {{- if .Values.connector.enabled }}
+    {{- with $i.database.endpoints }}
+    - toEndpoints:
+        {{- toYaml . | nindent 8 }}
+      toPorts:
+        - ports:
+            - port: {{ $i.database.port | quote }}
+              protocol: TCP
+    {{- end }}
+    {{- end }}
     - toEntities: [kube-apiserver]
     - toEndpoints:
         - matchLabels:

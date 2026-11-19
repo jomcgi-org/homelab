@@ -511,3 +511,94 @@ func TestKeyFuncIsAskedPerCall(t *testing.T) {
 		t.Fatal("claim without a key succeeded")
 	}
 }
+
+func TestBackoffAfterItsaplanFailure(t *testing.T) {
+	for _, status := range []int{429, 500} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(status) }))
+			defer srv.Close()
+			c := Client{BaseURL: srv.URL, Coordinator: "coord", Keys: map[string]string{"coord": "test"}, Limits: &RequestLimits{}}
+			for i := 0; i < 2; i++ {
+				if _, err := c.GetIssue(context.Background(), 1); !IsUnavailable(err) {
+					t.Fatalf("error = %v", err)
+				}
+			}
+			if calls != 1 {
+				t.Fatalf("sent %d requests during cooldown", calls)
+			}
+		})
+	}
+}
+
+// Model the coordinator key at the incident boundary. The counter resets only
+// after a quiet second. The planner maps the underlying 429 to HTTP 500.
+func TestCoordinatorRecoversFromExhaustedKeyAndKeepsServing(t *testing.T) {
+	count := 100
+	var last time.Time
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		now := time.Now()
+		if !last.IsZero() && now.Sub(last) > time.Second {
+			count = 0
+		}
+		last = now
+		count++
+		if count > 100 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, `{"id":%d}`, count)
+	}))
+	defer srv.Close()
+	limits := &RequestLimits{}
+	client := func() *Client {
+		return &Client{BaseURL: srv.URL, Coordinator: "coord", Keys: map[string]string{"coord": "test"}, Limits: limits}
+	}
+	dispatch, status := client(), client()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := dispatch.GetIssue(ctx, 1); !IsUnavailable(err) {
+		t.Fatalf("expected exhausted key, got %v", err)
+	}
+	for {
+		_, err := status.GetIssue(ctx, 1)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, ErrBackoff) {
+			t.Fatalf("recovery probe: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for i := 0; i < 30; i++ {
+		c := dispatch
+		if i%2 == 0 {
+			c = status
+		}
+		issue, err := c.GetIssue(ctx, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if issue.ID > 12 {
+			t.Fatalf("server observed %d requests without an idle second", issue.ID)
+		}
+	}
+}
+
+func TestAdmissionDeadlineAfterServerAcceptsRequest(t *testing.T) {
+	received := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(received); <-r.Context().Done() }))
+	defer srv.Close()
+	c := Client{BaseURL: srv.URL, Coordinator: "coord", Keys: map[string]string{"coord": "key"}, Limits: &RequestLimits{}}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_, err := c.GetIssue(ctx, 1)
+	select {
+	case <-received:
+	default:
+		t.Fatal("server did not receive the request")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) || !IsUnavailable(err) {
+		t.Fatalf("deadline lost outage classification: %v", err)
+	}
+}

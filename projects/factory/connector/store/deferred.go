@@ -37,7 +37,7 @@ func (s *Store) EnqueueDeferred(ctx context.Context, tx *sql.Tx, dedupe string, 
 		INSERT INTO outbox (kind, dedupe_key, payload, next_attempt_at, deferred_stop_generation)
 		VALUES ('deferred_start', $1, $2, $3, $4)
 		ON CONFLICT (dedupe_key) DO UPDATE
-		SET abandoned_at = NULL, last_error = NULL, next_attempt_at = EXCLUDED.next_attempt_at
+		SET abandoned_at = NULL, unavailable_since = NULL, last_error = NULL, next_attempt_at = EXCLUDED.next_attempt_at
 		WHERE outbox.kind = 'deferred_start' AND outbox.delivered_at IS NULL
 			AND outbox.abandoned_at IS NOT NULL
 			AND outbox.last_error = 'unknown kind deferred_start'
@@ -62,7 +62,7 @@ func (s *Store) AdmitDeferred(ctx context.Context, tx *sql.Tx, id, issueID int64
 		// Legacy timestamps cannot prove commit order across a stop.
 		// Keep uncertainty recoverable and tell the operator how to
 		// authorize a new schedule.
-		if _, err := tx.ExecContext(ctx, `UPDATE outbox SET last_error = 'deferred stop order unknown',
+		if _, err := tx.ExecContext(ctx, `UPDATE outbox SET unavailable_since = NULL, last_error = 'deferred stop order unknown',
 			next_attempt_at = $2 WHERE id = $1`, id, s.now().Add(time.Hour)); err != nil {
 			return false, err
 		}
@@ -87,7 +87,7 @@ func (s *Store) AdmitDeferred(ctx context.Context, tx *sql.Tx, id, issueID int64
 // DeferredWait keeps the same receipt key pending while Todo is full. A WIP
 // refusal proves that the server rolled back, so it consumes no error retry.
 func (s *Store) DeferredWait(ctx context.Context, q Querier, id int64, next time.Time) error {
-	_, err := q.ExecContext(ctx, `UPDATE outbox SET last_error = 'wip_limit_exceeded', next_attempt_at = $2 WHERE id = $1`, id, next)
+	_, err := q.ExecContext(ctx, `UPDATE outbox SET unavailable_since = NULL, last_error = 'wip_limit_exceeded', next_attempt_at = $2 WHERE id = $1`, id, next)
 	return err
 }
 

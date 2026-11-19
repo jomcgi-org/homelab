@@ -6,20 +6,21 @@ import "github.com/prometheus/client_golang/prometheus"
 
 // Metrics is the connector's metric set.
 type Metrics struct {
-	Claims          *prometheus.CounterVec // agent, outcome
-	Sends           *prometheus.CounterVec // kind, outcome
-	Heartbeats      *prometheus.CounterVec // outcome
-	Results         *prometheus.CounterVec // status
-	Blocked         *prometheus.CounterVec // class
-	Retries         *prometheus.CounterVec // class
-	Cancellations   *prometheus.CounterVec // reason, state
-	Events          *prometheus.CounterVec // outcome
-	DeferredStarted prometheus.Counter
-	Reassignments   prometheus.Counter
-	WriterEpoch     prometheus.Gauge
-	TickErrors      *prometheus.CounterVec // phase
-	HeldRuns        prometheus.Gauge
-	OldestHold      prometheus.Gauge
+	Claims              *prometheus.CounterVec // agent, outcome
+	Sends               *prometheus.CounterVec // kind, outcome
+	Heartbeats          *prometheus.CounterVec // outcome
+	Results             *prometheus.CounterVec // status
+	Blocked             *prometheus.CounterVec // class
+	Retries             *prometheus.CounterVec // class
+	Cancellations       *prometheus.CounterVec // reason, state
+	Events              *prometheus.CounterVec // outcome
+	DeferredStarted     prometheus.Counter
+	Reassignments       prometheus.Counter
+	WriterEpoch         prometheus.Gauge
+	ItsaplanUnavailable *prometheus.GaugeVec
+	TickErrors          *prometheus.CounterVec // phase
+	HeldRuns            prometheus.Gauge
+	OldestHold          prometheus.Gauge
 
 	PullRequests      *prometheus.CounterVec // outcome
 	ReviewEvents      *prometheus.CounterVec // kind, disposition
@@ -92,6 +93,9 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name: "factory_connector_writer_epoch",
 			Help: "The writer epoch this process holds, 0 when it is not the writer.",
 		}),
+		ItsaplanUnavailable: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "factory_connector_itsaplan_unavailable", Help: "One while a dispatch phase is failing on itsaplan.",
+		}, []string{"phase"}),
 		TickErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_tick_errors_total",
 			Help: "Errors by dispatch phase (heartbeats, deferred, claims, quota, admissions, runs, cancellations, delivery, outbox, sessions, admission_metrics).",
@@ -154,7 +158,7 @@ func New(reg prometheus.Registerer) *Metrics {
 	}
 	if reg != nil {
 		reg.MustRegister(m.Claims, m.Sends, m.Heartbeats, m.Results, m.Blocked, m.Retries,
-			m.DeferredStarted, m.Cancellations, m.Events, m.Reassignments, m.WriterEpoch, m.TickErrors,
+			m.DeferredStarted, m.Cancellations, m.Events, m.Reassignments, m.WriterEpoch, m.ItsaplanUnavailable, m.TickErrors,
 			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.RebaseRounds, m.SplitRounds, m.IdleRounds, m.MergeQueue, m.CILogReads, m.GoalReasonReads, m.SessionRecoveries, m.SessionsDeleted, m.StuckTurns, m.CredentialRefusals,
 			m.HeldRuns, m.OldestHold)
 	}

@@ -3203,3 +3203,40 @@ func TestDeliveryOutcomeLifecycle(t *testing.T) {
 		}
 	})
 }
+
+func TestDoneMoveOutageSurvivesIdleOutboxTicks(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.mergedAtWIPLimit()
+	// The first retry is due after 512 seconds. The next waits ten minutes.
+	if _, err := v.st.DB.Exec("UPDATE outbox SET tries = 9 WHERE kind = $1", store.OutboxIssueDone); err != nil {
+		t.Fatal(err)
+	}
+	failure := &itsaplan.HTTPError{Status: 500}
+	v.its.moveErr = []error{failure, failure}
+	alarms := 0
+	v.e.NotifyOutage = func(_ context.Context, phase string) error {
+		if phase == "outbox" {
+			alarms++
+		}
+		return nil
+	}
+	v.clk.Advance(2 * time.Second)
+	v.tick(v.e)
+	v.clk.Advance(512 * time.Second)
+	v.tick(v.e)
+	v.clk.Advance(28 * time.Second)
+	v.tick(v.e)
+	if alarms != 0 || testutil.ToFloat64(v.m.ItsaplanUnavailable.WithLabelValues("outbox")) != 1 {
+		t.Fatal("retry wait interrupted outage evidence")
+	}
+	v.clk.Advance(time.Minute)
+	v.tick(v.e)
+	if alarms != 1 {
+		t.Fatalf("outbox alarms after ten minutes = %d", alarms)
+	}
+	v.clk.Advance(10 * time.Minute)
+	v.tick(v.e)
+	if len(v.its.Moves()) != 1 || testutil.ToFloat64(v.m.ItsaplanUnavailable.WithLabelValues("outbox")) != 0 {
+		t.Fatal("successful Done move did not clear outage")
+	}
+}

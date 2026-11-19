@@ -11,9 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -91,6 +93,7 @@ type RunStatus struct {
 
 // Client calls one itsaplan API with a set of agent keys.
 type Client struct {
+	Limits  *RequestLimits
 	BaseURL string
 	HTTP    *http.Client
 	// Keys maps an agent key name to the itsaplan API key that acts as it.
@@ -100,6 +103,75 @@ type Client struct {
 	KeyFunc func(agent string) (string, error)
 	// Coordinator names the key used for run lookups and comments.
 	Coordinator string
+}
+
+// RequestLimits is shared by every client using the same agent credentials.
+type (
+	RequestLimits struct{ agents sync.Map }
+	keyWindow     struct {
+		turn   chan struct{}
+		burst  int
+		resume time.Time
+		failed bool
+		delay  time.Duration
+	}
+)
+
+func (l *RequestLimits) enter(ctx context.Context, agent string) (*keyWindow, error) {
+	v, _ := l.agents.LoadOrStore(agent, &keyWindow{turn: make(chan struct{}, 1)})
+	w := v.(*keyWindow)
+	select {
+	case w.turn <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if wait := time.Until(w.resume); wait > 0 {
+		if w.failed {
+			<-w.turn
+			return nil, ErrBackoff
+		}
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			<-w.turn
+			return nil, ctx.Err()
+		}
+	}
+	return w, nil
+}
+
+func (w *keyWindow) finish(status int) {
+	defer func() { <-w.turn }()
+	w.burst++
+	if status == 0 || status == 429 || status >= 500 {
+		w.failed = true
+		w.delay = min(time.Minute, max(2*time.Second, 2*w.delay))
+		w.resume = time.Now().Add(w.delay/2 + time.Duration(rand.Int64N(int64(w.delay/2))))
+		w.burst = 0
+		return
+	}
+	w.delay = 0
+	w.failed = false
+	// better-auth resets after an idle interval, even at modest throughput.
+	if w.burst >= 12 {
+		w.burst = 0
+		w.resume = time.Now().Add(1100 * time.Millisecond)
+	}
+}
+
+// ErrBackoff means no request was sent during the cooldown.
+var ErrBackoff = fmt.Errorf("%w: backing off", errUnavailable)
+
+func IsUnavailable(err error) bool {
+	return errors.Is(err, errUnavailable)
+}
+
+var errUnavailable = errors.New("itsaplan unavailable")
+
+func (e *HTTPError) Is(target error) bool {
+	return target == errUnavailable && (e.Status == 429 || e.Status >= 500)
 }
 
 func (c *Client) key(agent string) (string, error) {
@@ -142,14 +214,33 @@ func (c *Client) do(ctx context.Context, agent, method, path string, body, out a
 	if hc == nil {
 		hc = &http.Client{Timeout: 30 * time.Second}
 	}
-	resp, err := hc.Do(req)
-	if err != nil {
+	status := 0
+	if c.Limits != nil {
+		window, err := c.Limits.enter(ctx, agent)
+		if err != nil {
+			return err
+		}
+		defer func() { window.finish(status) }()
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return ctx.Err()
+		}
+		return errors.Join(errUnavailable, err)
+	}
+	status = resp.StatusCode
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return err
+		status = 0
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return ctx.Err()
+		}
+		return errors.Join(errUnavailable, err)
 	}
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
