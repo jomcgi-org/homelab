@@ -298,3 +298,11 @@ filegroup(
     srcs = ["charts/kagent-1.0.1.tgz"],
     visibility = ["//projects/factory/harness/claude:__pkg__"],
 )
+
+py_test(
+    name = "leaderboard_test",
+    srcs = ["leaderboard_test.py"],
+    data = ["files/leaderboard.py"],
+    env = {"SCRIPT": "$(rootpath files/leaderboard.py)"},
+    deps = ["@pip//pytest"],
+)

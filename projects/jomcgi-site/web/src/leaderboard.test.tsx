@@ -1,3 +1,5 @@
+import snapshot from "./factory-outcomes.json";
+import { FactoryOutcomes } from "./factory-outcomes";
 import axe from "axe-core";
 import { readFileSync } from "node:fs";
 import { act } from "react";
@@ -125,7 +127,7 @@ it("copies the hub introduction, captions and source link verbatim", () => {
   const lead = hub.match(/<div class="lead">([\s\S]*?)<\/div>/)![1]!;
   const original = new DOMParser().parseFromString(lead, "text/html");
   for (const tag of ["h1", "p"]) {
-    expect(normalize(host.querySelector(".lead " + tag)!.textContent!)).toBe(
+    expect(normalize(host.querySelector(".lead > " + tag)!.textContent!)).toBe(
       normalize(original.querySelector(tag)!.textContent!),
     );
   }
@@ -296,4 +298,51 @@ describe.each([
     );
     expect(container.innerHTML).not.toMatch(/NaN|Infinity/);
   });
+});
+
+it("keeps only public aggregate fields in the committed factory snapshot", () => {
+  type Row = NonNullable<Parameters<typeof FactoryOutcomes>[0]["arms"]>[number];
+  for (const row of snapshot as Row[]) {
+    expect(Object.keys(row).sort()).toEqual([
+      "arm",
+      "median_minutes",
+      "median_rounds",
+      "merge_rate",
+      "n",
+      "revert_rate",
+    ]);
+    expect(typeof row.arm).toBe("string");
+    expect(Number.isSafeInteger(row.n) && row.n > 0).toBe(true);
+    for (const median of [row.median_minutes, row.median_rounds]) {
+      expect(median === null || Number.isFinite(median)).toBe(true);
+    }
+    for (const rate of [
+      row.merge_rate,
+      ...(row.revert_rate === null ? [] : [row.revert_rate]),
+    ]) {
+      expect(Object.keys(rate).sort()).toEqual(["high", "low", "value"]);
+      expect(Object.values(rate).every(Number.isFinite)).toBe(true);
+    }
+  }
+});
+
+it("marks small factory samples and shows merge uncertainty", () => {
+  const arm = {
+    arm: "control",
+    merge_rate: { value: 0.5, low: 0.2, high: 0.8 },
+    revert_rate: null,
+    median_minutes: null,
+    median_rounds: 1,
+  };
+  render(
+    <FactoryOutcomes
+      arms={[
+        { ...arm, n: 9 },
+        { ...arm, arm: "trial", n: 10 },
+      ]}
+    />,
+  );
+  expect(screen.getAllByText(/insufficient data/)).toHaveLength(1);
+  expect(screen.getByText("9 · insufficient data")).toBeTruthy();
+  expect(screen.getAllByText("50.0% (20.0%–80.0%)")).toHaveLength(2);
 });
