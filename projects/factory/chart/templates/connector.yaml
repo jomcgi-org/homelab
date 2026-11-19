@@ -208,9 +208,15 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        {{- if .Values.runbookRevert.enabled }}
+        fsGroup: 65532
+        {{- end }}
         seccompProfile:
           type: RuntimeDefault
       containers:
+        {{- if .Values.runbookRevert.enabled }}
+        {{- include "runbook.ownerContainer" (dict "root" . "owner" "factory-connector") | nindent 8 }}
+        {{- end }}
         - name: connector
           image: {{ include "factory.connectorImage" . | quote }}
           imagePullPolicy: {{ $c.image.pullPolicy }}
@@ -306,6 +312,9 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
+        {{- if .Values.runbookRevert.enabled }}
+        {{- include "runbook.ownerVolumes" (dict "root" . "owner" "factory-connector") | nindent 8 }}
+        {{- end }}
         {{- if $c.notify.enabled }}
         - name: notify-password
           secret:

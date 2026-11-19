@@ -26,15 +26,12 @@ go_library(
         "@com_github_prometheus_client_golang//prometheus",
         "@com_github_prometheus_client_golang//prometheus/collectors",
         "@com_github_prometheus_client_golang//prometheus/promhttp",
-        "@io_k8s_api//authentication/v1:authentication",
+        "@io_k8s_api//core/v1:core",
         "@io_k8s_apimachinery//pkg/api/errors",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
         "@io_k8s_apimachinery//pkg/types",
         "@io_k8s_client_go//kubernetes/typed/core/v1:core",
         "@io_k8s_client_go//rest",
-        "@org_golang_google_grpc//:grpc",
-        "@org_golang_google_grpc//credentials/insecure",
-        "@org_golang_google_grpc//metadata",
     ],
 )
 
@@ -54,9 +51,8 @@ go_test(
     deps = [
         "//projects/factory/connector/kagent",
         "//projects/factory/connector/store",
+        "@io_k8s_api//core/v1:core",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
-        "@io_k8s_client_go//kubernetes/typed/core/v1:core",
-        "@io_k8s_client_go//rest",
-        "@org_golang_google_grpc//metadata",
+        "@io_k8s_client_go//kubernetes/fake",
     ],
 )

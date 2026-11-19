@@ -834,17 +834,27 @@ def test_runbook_revert_permissions():
         assert binding["kind"] == "RoleBinding"
         ns = binding["metadata"]["namespace"]
         assert binding["roleRef"]["kind"] == "Role"
-        grants[ns] = _in(docs, "Role", ns, binding["roleRef"]["name"])["rules"]
+        grants.setdefault(ns, []).extend(
+            _in(docs, "Role", ns, binding["roleRef"]["name"])["rules"]
+        )
     workers = [{"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "delete"]}]
+    journals = [
+        {
+            "apiGroups": [""],
+            "resources": ["configmaps"],
+            "resourceNames": ["runbook-revert-" + owner],
+            "verbs": ["get", "update"],
+        }
+        for owner in ("factory-connector", "factory-reviewer")
+    ]
     assert grants == {
+        "grafana": journals,
         "factory-r-homelab": workers,
         "factory-r-homelab-review": workers,
-        "factory": [
-            {
-                "apiGroups": [""],
-                "resources": ["serviceaccounts/token"],
-                "verbs": ["create"],
-                "resourceNames": ["factory-connector", "factory-reviewer"],
-            }
-        ],
     }
+    for owner in ("factory-connector", "factory-reviewer"):
+        binding = _in(docs, "RoleBinding", "grafana", "runbook-revert-" + owner)
+        assert binding["subjects"] == [
+            subject,
+            {"kind": "ServiceAccount", "name": owner, "namespace": "factory"},
+        ]

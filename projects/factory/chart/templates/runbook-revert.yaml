@@ -123,12 +123,6 @@ spec:
         - ports: [{port: "443", protocol: TCP}]
     - toEndpoints:
         - matchLabels:
-            k8s:io.kubernetes.pod.namespace: kagent
-            {{- include "factory.kagentSelector" (dict "root" . "component" "controller") | nindent 12 }}
-      toPorts:
-        - ports: [{port: "8083", protocol: TCP}]
-    - toEndpoints:
-        - matchLabels:
             k8s:io.kubernetes.pod.namespace: prometheus
             app.kubernetes.io/name: prometheus
       toPorts:
@@ -167,21 +161,50 @@ apiVersion: onepassword.com/v1
 kind: OnePasswordItem
 metadata: {name: runbook-discord, namespace: grafana}
 spec: {itemPath: vaults/k8s-homelab/items/factory-alerts-discord}
+{{- range $owner := list "factory-connector" "factory-reviewer" }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
-metadata: {name: runbook-kagent-revert, namespace: factory}
+metadata:
+  name: runbook-revert-observer
+  namespace: {{ if eq $owner "factory-connector" }}factory-r-homelab{{ else }}factory-r-homelab-review{{ end }}
 rules:
   - apiGroups: [""]
-    resources: ["serviceaccounts/token"]
-    verbs: ["create"]
-    resourceNames: ["factory-connector", "factory-reviewer"]
+    resources: ["pods"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: {name: runbook-kagent-revert, namespace: factory}
-subjects: [{kind: ServiceAccount, name: runbook-kagent-revert, namespace: grafana}]
-roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: runbook-kagent-revert}
+metadata:
+  name: runbook-revert-observer
+  namespace: {{ if eq $owner "factory-connector" }}factory-r-homelab{{ else }}factory-r-homelab-review{{ end }}
+subjects: [{kind: ServiceAccount, namespace: factory, name: {{ $owner }}}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: runbook-revert-observer}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runbook-revert-{{ $owner }}
+  namespace: grafana
+  annotations: {argocd.argoproj.io/sync-options: "Prune=false,Delete=false", argocd.argoproj.io/sync-wave: "-2"}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: runbook-revert-{{ $owner }}, namespace: grafana}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["runbook-revert-{{ $owner }}"]
+    verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: runbook-revert-{{ $owner }}, namespace: grafana}
+subjects:
+  - {kind: ServiceAccount, name: runbook-kagent-revert, namespace: grafana}
+  - {kind: ServiceAccount, name: {{ $owner }}, namespace: factory}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: runbook-revert-{{ $owner }}}
+{{- end }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
@@ -190,12 +213,9 @@ metadata:
   annotations: {argocd.argoproj.io/sync-wave: "-2"}
 spec:
   failurePolicy: Fail
+  paramKind: {apiVersion: v1, kind: ConfigMap}
   matchConstraints:
     resourceRules:
-      - apiGroups: [""]
-        apiVersions: ["v1"]
-        operations: ["CREATE"]
-        resources: ["serviceaccounts/token"]
       - apiGroups: [""]
         apiVersions: ["v1"]
         operations: ["DELETE"]
@@ -205,23 +225,80 @@ spec:
       expression: request.userInfo.username == 'system:serviceaccount:grafana:runbook-kagent-revert'
   validations:
     - expression: >-
-        request.operation != 'CREATE' ||
-        (object.spec.audiences == ['kagent-invocation'] && object.spec.expirationSeconds <= 600)
-      message: Only short-lived kagent invocation tokens are permitted.
-    - expression: >-
         request.operation != 'DELETE' ||
         ((request.namespace == 'factory-r-homelab' && request.name.matches('^homelab-codex-[0-9a-f]{8,10}-[a-z0-9]{5}$') ||
           request.namespace == 'factory-r-homelab-review' && request.name.matches('^homelab-reviewer-[0-9a-f]{8,10}-[a-z0-9]{5}$')) &&
-          has(request.options.preconditions) && request.options.preconditions.uid == oldObject.metadata.uid)
+          has(params.data) && params.data.phase == 'deleting' && params.data['namespace'] == request.namespace &&
+          params.data.pod == request.name && params.data.uid == oldObject.metadata.uid)
       message: Only UID-fenced worker deletes are permitted.
+{{- range $owner := list "factory-connector" "factory-reviewer" }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
 metadata:
-  name: runbook-revert-credentials
+  name: runbook-delete-{{ $owner }}
   annotations: {argocd.argoproj.io/sync-wave: "-1"}
 spec:
   policyName: runbook-revert-credentials
+  paramRef: {name: runbook-revert-{{ $owner }}, namespace: grafana, parameterNotFoundAction: Deny}
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ if eq $owner "factory-connector" }}factory-r-homelab{{ else }}factory-r-homelab-review{{ end }}
+  validationActions: [Deny]
+{{- end }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: runbook-recovery-journal
+  annotations: {argocd.argoproj.io/sync-wave: "-2"}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["configmaps"]
+  matchConditions:
+    - name: journal
+      expression: request.namespace == 'grafana' && request.name in ['runbook-revert-factory-connector','runbook-revert-factory-reviewer']
+    - name: recovery-writer
+      expression: request.userInfo.username in ['system:serviceaccount:grafana:runbook-kagent-revert','system:serviceaccount:factory:factory-connector','system:serviceaccount:factory:factory-reviewer']
+  variables:
+    - name: front
+      expression: request.userInfo.username == 'system:serviceaccount:grafana:runbook-kagent-revert'
+    - name: prev
+      expression: "has(oldObject.data) && 'phase' in oldObject.data ? oldObject.data.phase : ''"
+    - name: next
+      expression: object.data.phase
+  validations:
+    - expression: >-
+        variables.next == 'confirmed' && variables.prev in ['', 'delivered'] ||
+        (object.data.id == oldObject.data.id && object.data.user == oldObject.data.user &&
+         ['session','executor','namespace','pod','uid','creator','deadline'].all(k,object.data[k] == oldObject.data[k]))
+      message: The confirmed identity and targets are immutable for the lifetime of an operation.
+    - expression: >-
+        variables.front ?
+        (variables.next == 'confirmed' && variables.prev in ['', 'delivered'] ||
+         variables.next == 'deleting' && variables.prev in ['authorized','deleting'] ||
+         variables.next == 'gone' && variables.prev == 'deleting' ||
+         variables.next == 'audit' && variables.prev in ['confirmed','authorized','deleting','gone','reverting'] ||
+         variables.next == 'delivered' && variables.prev == 'audit') :
+        (request.name == 'runbook-revert-' + request.userInfo.username.split(':')[3] &&
+         (variables.next == 'authorized' && variables.prev == 'confirmed' ||
+          variables.next == 'reverting' && variables.prev in ['gone','reverting'] ||
+          variables.next == 'audit' && variables.prev in ['confirmed','gone','reverting']))
+      message: Only the creator may authorize a session and claim its revert.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: runbook-recovery-journal
+  annotations: {argocd.argoproj.io/sync-wave: "-1"}
+spec:
+  policyName: runbook-recovery-journal
   validationActions: [Deny]
 {{- if .Values.imagePullSecret.enabled }}
 ---

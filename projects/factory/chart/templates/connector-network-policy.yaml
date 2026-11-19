@@ -23,6 +23,21 @@ spec:
     matchLabels:
       {{- include "factory.connectorSelector" . | nindent 6 }}
   egress:
+    {{- if .Values.runbookRevert.enabled }}
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: ate-system
+            app: postgres
+      toPorts:
+        - ports: [{port: "5432", protocol: TCP}]
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: prometheus
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports: [{port: "9090", protocol: TCP}]
+    {{- end }}
     {{- if $c.notify.enabled }}
     # Cloudflare-fronted MCP and Authentik, for this connector's pods only.
     - toFQDNs:

@@ -27,6 +27,12 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: grafana
             app.kubernetes.io/name: runbook-kagent-revert
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-connector
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-reviewer
       toPorts:
         - ports:
             - port: "9090"

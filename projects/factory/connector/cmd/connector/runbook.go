@@ -15,15 +15,16 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/internal/reaper"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
-	auth "k8s.io/api/authentication/v1"
+
+	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -42,10 +43,8 @@ type (
 	}
 	revertAction struct {
 		targets func(context.Context) ([]revertTarget, error)
-		execute func(context.Context, revertTarget) error
-		audit   func(string, revertTarget, string) error
+		submit  func(context.Context, string, revertTarget) error
 		mu      sync.Mutex
-		serial  sync.Mutex
 		tickets map[string]preview
 	}
 )
@@ -106,41 +105,19 @@ func (a *revertAction) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Preview again", 409)
 			return
 		}
-		// Finish and audit a confirmed operation even if the browser disconnects.
-		run, stop := context.WithTimeout(context.WithoutCancel(ctx), 4*time.Minute)
-		defer stop()
-		a.serial.Lock()
-		defer a.serial.Unlock()
-		result := "target changed"
-		targets, err := a.targets(run)
-		if err != nil {
-			result = "discovery failed"
-		}
-		for _, t := range targets {
-			if err == nil && t == p.Target {
-				if err = a.execute(run, t); err != nil {
-					result = err.Error()
-				} else {
-					result = "reverted"
-				}
-				break
-			}
-		}
-		if a.audit(user, p.Target, result) != nil {
-			http.Error(w, "Discord audit failed: "+result, 502)
+		if err := a.submit(ctx, user, p.Target); err != nil {
+			http.Error(w, "Recovery queue unavailable or busy; preview again", 409)
 			return
 		}
-		if result != "reverted" {
-			http.Error(w, result, 409)
-			return
-		}
-		fmt.Fprintln(w, result)
+		w.WriteHeader(http.StatusAccepted)
+		fmt.Fprintln(w, "Recovery recorded. The result will be logged and sent to Discord.")
 	default:
 		w.WriteHeader(405)
 	}
 }
 
 type revertBackend struct {
+	discover func(context.Context) ([]revertTarget, error)
 	actors   *sql.DB
 	pods     core.CoreV1Interface
 	sessions interface {
@@ -201,53 +178,215 @@ func (b revertBackend) targets(ctx context.Context) ([]revertTarget, error) {
 	return out, nil
 }
 
-func (b revertBackend) execute(ctx context.Context, t revertTarget) error {
-	ttl := int64(600)
-	tok, err := b.pods.ServiceAccounts("factory").CreateToken(ctx, t.Creator, &auth.TokenRequest{Spec: auth.TokenRequestSpec{Audiences: []string{"kagent-invocation"}, ExpirationSeconds: &ttl}}, meta.CreateOptions{})
-	if err != nil {
-		return errors.New("creator credential unavailable")
+// Each creator has a pre-provisioned journal slot. resourceVersion is the
+// writer fence: every transition must replace exactly the version observed.
+type operation struct {
+	ID, User, Phase, Result string
+	Target                  revertTarget
+	Deadline, LeaseUntil    time.Time
+	Epoch                   uint64
+}
+
+func journalName(owner string) string { return "runbook-revert-" + owner }
+func (b revertBackend) save(ctx context.Context, cm *v1.ConfigMap, op operation) error {
+	t := op.Target
+	cm.Data = map[string]string{
+		"session": t.Session, "executor": t.Executor, "namespace": t.Namespace, "pod": t.Pod, "uid": t.UID, "creator": t.Creator,
+		"id": op.ID, "user": op.User, "phase": op.Phase, "result": op.Result,
+		"deadline": op.Deadline.Format(time.RFC3339Nano), "lease": op.LeaseUntil.Format(time.RFC3339Nano), "epoch": strconv.FormatUint(op.Epoch, 10),
 	}
-	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+tok.Status.Token)
-	principal, err := kagent.TokenPrincipal(tok.Status.Token, os.Getenv("KAGENT_AUTHORITY"))
-	if err != nil {
-		return errors.New("invalid creator credential")
-	}
-	session, err := b.sessions.GetSession(ctx, t.Session)
-	if err != nil || session.ID != t.Session || session.Creator != principal {
-		return errors.New("creator cannot read session")
-	}
-	uid := types.UID(t.UID)
-	pods := b.pods.Pods(t.Namespace)
-	if err = pods.Delete(ctx, t.Pod, meta.DeleteOptions{Preconditions: &meta.Preconditions{UID: &uid}}); err != nil {
-		return errors.New("worker deletion refused")
-	}
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return errors.New("worker deletion requested; recovery timed out")
-		case <-ticker.C:
+	_, err := b.pods.ConfigMaps("grafana").Update(ctx, cm, meta.UpdateOptions{})
+	return err
+}
+
+func (b revertBackend) load(ctx context.Context, owner string) (*v1.ConfigMap, operation, error) {
+	cm, err := b.pods.ConfigMaps("grafana").Get(ctx, journalName(owner), meta.GetOptions{})
+	var op operation
+	if err == nil && len(cm.Data) > 0 {
+		d := cm.Data
+		op.ID, op.User, op.Phase, op.Result = d["id"], d["user"], d["phase"], d["result"]
+		op.Target = revertTarget{Session: d["session"], Executor: d["executor"], Namespace: d["namespace"], Pod: d["pod"], UID: d["uid"], Creator: d["creator"]}
+		if op.Deadline, err = time.Parse(time.RFC3339Nano, d["deadline"]); err != nil {
+			return nil, op, err
 		}
-		p, err := pods.Get(ctx, t.Pod, meta.GetOptions{})
+		if op.LeaseUntil, err = time.Parse(time.RFC3339Nano, d["lease"]); err != nil {
+			return nil, op, err
+		}
+		op.Epoch, err = strconv.ParseUint(d["epoch"], 10, 64)
+	}
+	return cm, op, err
+}
+
+func (b revertBackend) submit(ctx context.Context, user string, t revertTarget) error {
+	cm, prev, err := b.load(ctx, t.Creator)
+	if err != nil {
+		return err
+	}
+	if prev.Phase != "" && prev.Phase != "delivered" {
+		return errors.New("busy")
+	}
+	return b.save(ctx, cm, operation{ID: rand.Text(), User: user, Target: t, Phase: "confirmed", Deadline: time.Now().Add(6 * time.Minute)})
+}
+
+type auditSink func(string, revertTarget, string) error
+
+func (b revertBackend) advance(ctx context.Context, owner string, credential *kagent.TokenSource, audit auditSink) error {
+	cm, op, err := b.load(ctx, owner)
+	if err != nil {
+		return err
+	}
+	if op.Phase == "" || op.Phase == "delivered" || op.Target.Creator != owner {
+		return nil
+	}
+	t := op.Target
+	finish := func(result string) error { op.Result = result; op.Phase = "audit"; return b.save(ctx, cm, op) }
+	if op.Phase == "audit" {
+		if audit == nil {
+			return nil
+		}
+		if err := audit(op.User, t, op.Result); err != nil {
+			return err
+		}
+		op.Phase = "delivered"
+		return b.save(ctx, cm, op)
+	}
+	if time.Now().Before(op.LeaseUntil) {
+		return nil
+	}
+	if time.Now().After(op.Deadline) && (op.Phase == "confirmed" || op.Phase == "authorized") {
+		if audit != nil {
+			return finish("recovery deadline exceeded during " + op.Phase)
+		}
+		return nil
+	}
+	// A fresh CAS before each external mutation records a new writer epoch.
+	// Bound the RPC deadline inside the lease so another process cannot race it.
+	claim := func(phase string) error {
+		op.Phase = phase
+		op.Epoch++
+		op.LeaseUntil = time.Now().Add(160 * time.Second)
+		if err := b.save(ctx, cm, op); err != nil {
+			return err
+		}
+		var current operation
+		cm, current, err = b.load(ctx, owner)
+		if err != nil {
+			return err
+		}
+		if current.ID != op.ID || current.Epoch != op.Epoch || current.Phase != phase {
+			return errors.New("lost recovery lease")
+		}
+		op.LeaseUntil = time.Time{}
+		return nil
+	}
+	if credential != nil {
+		if op.Phase != "confirmed" && op.Phase != "gone" && op.Phase != "reverting" {
+			return nil
+		}
+		token, err := credential.Token()
+		if err != nil {
+			return err
+		}
+		principal, err := kagent.TokenPrincipal(token, os.Getenv("KAGENT_AUTHORITY"))
+		if err != nil {
+			return err
+		}
+		session, err := b.sessions.GetSession(ctx, t.Session)
+		if err != nil {
+			return err
+		}
+		if session.Creator != principal || session.ID != t.Session {
+			return finish("creator mismatch")
+		}
+		if !workerName.MatchString(t.Pod) || t.UID == "" || !(owner == "factory-connector" && t.Namespace == "factory-r-homelab" && strings.HasPrefix(t.Pod, "homelab-codex-") || owner == "factory-reviewer" && t.Namespace == "factory-r-homelab-review" && strings.HasPrefix(t.Pod, "homelab-reviewer-")) {
+			return finish("invalid worker assignment")
+		}
+		if op.Phase == "confirmed" {
+			targets, err := b.discover(ctx)
+			if err != nil {
+				return err
+			}
+			if !slices.Contains(targets, t) {
+				return finish("target changed")
+			}
+			op.Phase = "authorized"
+			return b.save(ctx, cm, op)
+		}
+		pod, err := b.pods.Pods(t.Namespace).Get(ctx, t.Pod, meta.GetOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
-			return errors.New("worker deletion requested; inspection failed")
+			return err
 		}
-		if err == nil && p.UID == uid {
-			continue
+		if err == nil && string(pod.UID) == t.UID {
+			return finish("confirmed worker still present")
 		}
-		s, err := b.sessions.GetSession(ctx, t.Session)
-		if err != nil || !s.Crashed() {
-			continue
+		if op.Phase == "reverting" && session.State == kagent.RuntimeReady {
+			return finish("reverted")
+		}
+		if !session.Crashed() {
+			if time.Now().After(op.Deadline) {
+				return finish("worker gone; session no longer awaiting revert")
+			}
+			return nil
+		}
+		if err := claim("reverting"); err != nil {
+			return err
 		}
 		restored, err := b.sessions.RevertSession(ctx, t.Session)
 		if err != nil {
-			return errors.New("worker gone; revert failed")
+			return errors.New("revert outcome pending")
 		}
 		if restored.ID != t.Session || restored.State != kagent.RuntimeReady {
-			return errors.New("worker gone; session readiness unconfirmed")
+			return finish("session readiness unconfirmed")
 		}
+		return finish("reverted")
+	}
+	if op.Phase != "authorized" && op.Phase != "deleting" {
 		return nil
+	}
+	pods := b.pods.Pods(t.Namespace)
+	pod, err := pods.Get(ctx, t.Pod, meta.GetOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	if apierrors.IsNotFound(err) || string(pod.UID) != t.UID {
+		if op.Phase != "deleting" {
+			return finish("target changed")
+		}
+		op.Phase = "gone"
+		return b.save(ctx, cm, op)
+	}
+	if pod.DeletionTimestamp != nil {
+		return nil
+	}
+	if time.Now().After(op.Deadline) {
+		return finish("worker still present; confirmation expired")
+	}
+	targets, err := b.discover(ctx)
+	if err != nil {
+		return err
+	}
+	if !slices.Contains(targets, t) {
+		return finish("target changed")
+	}
+	if err := claim("deleting"); err != nil {
+		return err
+	}
+	uid := types.UID(t.UID)
+	if err := pods.Delete(ctx, t.Pod, meta.DeleteOptions{Preconditions: &meta.Preconditions{UID: &uid}}); err != nil {
+		return err
+	}
+	return b.save(ctx, cm, op)
+}
+
+func (b revertBackend) poll(owner string, source *kagent.TokenSource, audit auditSink, log *slog.Logger) {
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
+		err := b.advance(ctx, owner, source, audit)
+		cancel()
+		if err != nil {
+			log.Warn("runbook recovery retry", "creator", owner, "error", err)
+		}
+		time.Sleep(3 * time.Second)
 	}
 }
 
@@ -265,12 +404,20 @@ func runRevert(log *slog.Logger) error {
 		return err
 	}
 	defer db.Close()
-	conn, err := grpc.NewClient("kagent-controller.kagent.svc:8083", grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return err
+	if owner := os.Getenv("RUNBOOK_OWNER"); owner != "" {
+		source := &kagent.TokenSource{Path: "/var/run/secrets/kagent/token"}
+		sessions, err := kagent.DialSessions("kagent-controller.kagent.svc:8083", source)
+		if err != nil {
+			return err
+		}
+		defer sessions.Close()
+		backend := revertBackend{actors: db, pods: pods, sessions: sessions}
+		backend.discover = backend.targets
+		backend.poll(owner, source, nil, log)
+		return nil
 	}
-	defer conn.Close()
-	b := revertBackend{db, pods, kagent.NewSessions(conn)}
+	b := revertBackend{actors: db, pods: pods}
+	b.discover = b.targets
 	audit := func(user string, t revertTarget, result string) error {
 		log.Info("runbook action", "action", "kagent-revert", "user", user, "target", t, "result", result)
 		msg := fmt.Sprintf("kagent-revert by %s: session %s executor %s worker %s/%s UID %s as factory/%s: %s", user, t.Session, t.Executor, t.Namespace, t.Pod, t.UID, t.Creator, result)
@@ -286,6 +433,9 @@ func runRevert(log *slog.Logger) error {
 		}
 		return nil
 	}
-	srv := http.Server{Addr: ":8080", ReadTimeout: 10 * time.Second, Handler: &revertAction{targets: b.targets, execute: b.execute, audit: audit, tickets: map[string]preview{}}}
+	for _, owner := range []string{"factory-connector", "factory-reviewer"} {
+		go b.poll(owner, nil, audit, log)
+	}
+	srv := http.Server{Addr: ":8080", ReadTimeout: 10 * time.Second, Handler: &revertAction{targets: b.targets, submit: b.submit, tickets: map[string]preview{}}}
 	return srv.ListenAndServe()
 }

@@ -85,6 +85,9 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       containers:
+        {{- if .Values.runbookRevert.enabled }}
+        {{- include "runbook.ownerContainer" (dict "root" . "owner" "factory-reviewer") | nindent 8 }}
+        {{- end }}
         - name: reviewer
           image: {{ include "factory.reviewerImage" . | quote }}
           imagePullPolicy: {{ $c.image.pullPolicy }}
@@ -133,6 +136,9 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
+        {{- if .Values.runbookRevert.enabled }}
+        {{- include "runbook.ownerVolumes" (dict "root" . "owner" "factory-reviewer") | nindent 8 }}
+        {{- end }}
         - name: goal-audit
           persistentVolumeClaim:
             claimName: {{ $name }}-goal-audit
