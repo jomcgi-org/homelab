@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
@@ -513,15 +514,17 @@ func testClaimAuthorization(t *testing.T, ctx context.Context, admin dynamic.Int
 	}
 	// Deliberately grant the attacker stronger RBAC than a consumer has in
 	// production. Admission must still reject writes in Garage's namespace.
+	// The garbage collector gets the same rights it has in production.
 	create(object("Role", "claim-editors", "garage", map[string]interface{}{"rules": []interface{}{map[string]interface{}{
 		"apiGroups": []interface{}{""}, "resources": []interface{}{"configmaps"},
-		"verbs": []interface{}{"create", "update", "delete"},
+		"verbs": []interface{}{"create", "update", "patch", "delete"},
 	}}}))
 	create(object("RoleBinding", "claim-editors", "garage", map[string]interface{}{
 		"roleRef": map[string]interface{}{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "claim-editors"},
 		"subjects": []interface{}{
 			map[string]interface{}{"kind": "User", "name": attacker, "apiGroup": "rbac.authorization.k8s.io"},
 			map[string]interface{}{"kind": "User", "name": argoController, "apiGroup": "rbac.authorization.k8s.io"},
+			map[string]interface{}{"kind": "User", "name": garbageCollector, "apiGroup": "rbac.authorization.k8s.io"},
 		},
 	}))
 	for _, o := range readObjects(t, "GARAGE_CLAIM_GUARD") {
@@ -554,17 +557,17 @@ func testClaimAuthorization(t *testing.T, ctx context.Context, admin dynamic.Int
 						t.Fatal(err)
 					}
 				}
-				for _, user := range []string{attacker, argoController} {
+				for _, user := range []string{attacker, garbageCollector, argoController} {
 					_, err := resource(clients[user], update).Update(ctx, update, metav1.UpdateOptions{DryRun: []string{metav1.DryRunAll}})
-					if user == attacker && !policyDenial(err, policy, refusal) || user == argoController && err != nil {
+					if user != argoController && !policyDenial(err, policy, refusal) || user == argoController && err != nil {
 						t.Fatalf("%s update: %v", user, err)
 					}
 				}
 			})
 		}
-		for _, user := range []string{attacker, argoController} {
+		for _, user := range []string{attacker, garbageCollector, argoController} {
 			err := resource(clients[user], original).Delete(ctx, original.GetName(), metav1.DeleteOptions{DryRun: []string{metav1.DryRunAll}})
-			if user == attacker && !policyDenial(err, policy, refusal) || user == argoController && err != nil {
+			if user != argoController && !policyDenial(err, policy, refusal) || user == argoController && err != nil {
 				t.Fatalf("%s delete authorization: %v", user, err)
 			}
 		}
@@ -588,12 +591,110 @@ func testClaimAuthorization(t *testing.T, ctx context.Context, admin dynamic.Int
 			_ = unstructured.SetNestedField(o.Object, "factory-db-backups", "data", "bucket")
 			_ = unstructured.SetNestedField(o.Object, "readwrite", "data", "access")
 		}
-		for _, user := range []string{attacker, argoController} {
+		for _, user := range []string{attacker, garbageCollector, argoController} {
 			_, err := resource(clients[user], o).Create(ctx, o, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}})
 			allowed := user == argoController || variant == "unrelated" || variant == "consumer"
 			if allowed && err != nil || !allowed && !policyDenial(err, policy, refusal) {
 				t.Fatalf("%s create %s: %v", user, variant, err)
 			}
 		}
+	}
+	t.Run("garbage-collection", func(t *testing.T) {
+		testClaimGarbageCollection(t, ctx, admin, clients, claim)
+	})
+}
+
+// ArgoCD prunes with foreground propagation. The API server then keeps the
+// claim with the foregroundDeletion finalizer until the garbage collector
+// removes it (HOME-492). The collector may remove finalizers from a claim
+// that is being deleted, and change nothing else.
+func testClaimGarbageCollection(t *testing.T, ctx context.Context, admin dynamic.Interface, clients map[string]dynamic.Interface, claim *unstructured.Unstructured) {
+	const policy = "garage-claim-authorizations"
+	const refusal = "Only ArgoCD may change Garage claim authorizations."
+	dryRun := metav1.UpdateOptions{DryRun: []string{metav1.DryRunAll}}
+	pruned := claim.DeepCopy()
+	pruned.SetResourceVersion("")
+	pruned.SetUID("")
+	pruned.SetManagedFields(nil)
+	_ = unstructured.SetNestedField(pruned.Object, "pruned-s3", "data", "secretName")
+	pruned.SetName(fmt.Sprintf("garage-claim-%x", sha256.Sum256([]byte(namespace+"/pruned-s3"))))
+	argo := resource(clients[argoController], pruned)
+	if _, err := argo.Create(ctx, pruned, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	foreground := metav1.DeletePropagationForeground
+	if err := argo.Delete(ctx, pruned.GetName(), metav1.DeleteOptions{PropagationPolicy: &foreground}); err != nil {
+		t.Fatal(err)
+	}
+	// envtest runs no garbage collector, so the finalizer stays.
+	deleting, err := resource(admin, pruned).Get(ctx, pruned.GetName(), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleting.GetDeletionTimestamp() == nil || len(deleting.GetFinalizers()) != 1 || deleting.GetFinalizers()[0] != metav1.FinalizerDeleteDependents {
+		t.Fatalf("want a deleting claim with only the foregroundDeletion finalizer, got %v", deleting.GetFinalizers())
+	}
+	removal := func(edit func(*unstructured.Unstructured)) *unstructured.Unstructured {
+		o := deleting.DeepCopy()
+		o.SetFinalizers(nil)
+		if edit != nil {
+			edit(o)
+		}
+		return o
+	}
+	edits := map[string]func(*unstructured.Unstructured){
+		"data": func(o *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(o.Object, "factory-db-backups", "data", "bucket")
+		},
+		"binaryData": func(o *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(o.Object, "eA==", "binaryData", "extra")
+		},
+		"labels": func(o *unstructured.Unstructured) { o.SetLabels(nil) },
+		"added-label": func(o *unstructured.Unstructured) {
+			labels := o.GetLabels()
+			if labels == nil {
+				labels = map[string]string{}
+			}
+			labels["extra"] = "x"
+			o.SetLabels(labels)
+		},
+		"annotations": func(o *unstructured.Unstructured) { o.SetAnnotations(map[string]string{"gc": "metadata"}) },
+	}
+	for field, edit := range edits {
+		_, err := resource(clients[garbageCollector], deleting).Update(ctx, removal(edit), dryRun)
+		if !policyDenial(err, policy, refusal) {
+			t.Fatalf("garbage collector changed %s of a deleting claim: %v", field, err)
+		}
+	}
+	for _, user := range []string{attacker, argoController} {
+		_, err := resource(clients[user], deleting).Update(ctx, removal(nil), dryRun)
+		if user == attacker && !policyDenial(err, policy, refusal) || user == argoController && err != nil {
+			t.Fatalf("%s finalizer removal: %v", user, err)
+		}
+	}
+	// A claim that is not being deleted stays ArgoCD-only for the collector.
+	live, err := resource(admin, claim).Get(ctx, claim.GetName(), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	live.SetFinalizers([]string{"factory.jomcgi.dev/hold"})
+	if _, err := resource(clients[garbageCollector], live).Update(ctx, live, dryRun); !policyDenial(err, policy, refusal) {
+		t.Fatalf("garbage collector updated a live claim: %v", err)
+	}
+	// Send the patch that the garbage collector sends to remove a finalizer.
+	patch := fmt.Sprintf(`{"metadata":{"resourceVersion":%q,"finalizers":null}}`, deleting.GetResourceVersion())
+	if _, err := resource(clients[garbageCollector], deleting).Patch(ctx, deleting.GetName(), types.MergePatchType, []byte(patch), metav1.PatchOptions{}); err != nil {
+		t.Fatalf("garbage collector finalizer removal: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		_, err := resource(admin, pruned).Get(ctx, pruned.GetName(), metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("deleting claim must go away after finalizer removal: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

@@ -2,6 +2,13 @@
 # A consumer's ConfigMap permissions must not authorize Garage bucket grants.
 # Only the trusted GitOps controller may write declarations in garage. Match
 # the reserved name as well as old/new labels, including removal and deletion.
+#
+# One exception: the Kubernetes garbage collector may update a claim that is
+# already being deleted, if data, binaryData, labels, annotations and name
+# stay the same. When ArgoCD prunes a claim with foreground propagation, the
+# claim keeps the foregroundDeletion finalizer until the garbage collector
+# removes it. Without the exception, the claim never goes away and the
+# ArgoCD sync waits on it forever (HOME-492).
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -26,8 +33,24 @@ spec:
           (has(object.metadata.labels) && "factory.jomcgi.dev/garage-claim" in object.metadata.labels))) ||
         (oldObject != null && (oldObject.metadata.name.startsWith("garage-claim-") ||
           (has(oldObject.metadata.labels) && "factory.jomcgi.dev/garage-claim" in oldObject.metadata.labels)))
+  variables:
+    - name: argocd
+      expression: request.userInfo.username == "system:serviceaccount:argocd:argocd-application-controller"
+    # k3s runs controllers with --use-service-account-credentials=true.
+    - name: finalizerRemoval
+      expression: >-
+        request.operation == "UPDATE" &&
+        request.userInfo.username == "system:serviceaccount:kube-system:generic-garbage-collector" &&
+        has(oldObject.metadata.deletionTimestamp) &&
+        object.metadata.name == oldObject.metadata.name &&
+        (has(object.data) ? object.data : {}) == (has(oldObject.data) ? oldObject.data : {}) &&
+        (has(object.binaryData) ? object.binaryData : {}) == (has(oldObject.binaryData) ? oldObject.binaryData : {}) &&
+        (has(object.metadata.labels) ? object.metadata.labels : {}) ==
+          (has(oldObject.metadata.labels) ? oldObject.metadata.labels : {}) &&
+        (has(object.metadata.annotations) ? object.metadata.annotations : {}) ==
+          (has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {})
   validations:
-    - expression: request.userInfo.username == "system:serviceaccount:argocd:argocd-application-controller"
+    - expression: variables.argocd || variables.finalizerRemoval
       message: Only ArgoCD may change Garage claim authorizations.
 ---
 apiVersion: admissionregistration.k8s.io/v1

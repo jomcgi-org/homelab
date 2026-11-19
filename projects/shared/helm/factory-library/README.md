@@ -234,9 +234,14 @@ resources in both the consumer and `garage` namespaces.
 The Garage application installs `garage-claim-authorizations`, a kept admission
 policy and Deny binding. Only the authenticated ArgoCD application controller may
 create, update or delete these declarations. The guard matches the reserved name
-prefix and old/new claim labels, so stripping labels cannot bypass it. Consumer
-namespace writers cannot edit this trusted declaration; choosing a ServiceAccount
-on a Pod does not change the authenticated caller.
+prefix and old/new claim labels, so stripping labels cannot bypass it.
+The Kubernetes garbage collector has one exception: it may update a declaration
+that is already being deleted, if data, binaryData, labels, annotations and name
+stay the same. ArgoCD prunes with foreground propagation, so the API server keeps
+a pruned declaration until the garbage collector removes its `foregroundDeletion`
+finalizer. Without the exception, the declaration and the ArgoCD sync wait forever.
+Consumer namespace writers cannot edit this trusted declaration; choosing a
+ServiceAccount on a Pod does not change the authenticated caller.
 
 Discovery lists ConfigMaps only in `garage`, with no namespace enumeration or
 consumer ConfigMap access. Consumer ConfigMaps and Secret labels are never grant
