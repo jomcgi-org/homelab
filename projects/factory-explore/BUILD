@@ -8,6 +8,7 @@ go_image(
 filegroup(
     name = "repo_docs",
     srcs = [
+        "ARCHITECTURE.md",
         "README.md",
         "REVIEW.md",
     ],
