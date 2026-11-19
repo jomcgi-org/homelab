@@ -128,7 +128,7 @@ func TestApplyGoalOwnsGoalFindings(t *testing.T) {
 			{ID: "x.go:goal", Status: StatusJustified, Note: "Owned by HOME-60"},
 		},
 	}
-	applyGoal(r, prior, "HOME", "HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}, {3, goalLive}}})
+	applyGoal(r, prior, "HOME", "HOME-58", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}, {3, goalLive}}, Counted: 3})
 	a := Assess(r, prior)
 	blocking := map[string]string{}
 	for _, b := range a.Blocking {
@@ -192,7 +192,7 @@ func TestApplyGoalKeepsEarlierBlockersUntilResolved(t *testing.T) {
 			"HOME-58:goal:criterion-2=medium", "HOME-58:goal HOME-58:goal:unavailable",
 		},
 		"no issue":    {"", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}}, all, ""},
-		"other issue": {"HOME-59", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}}, "", ""},
+		"other issue": {"HOME-59", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}}, Counted: 1}, "", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := &Report{Previous: []Previous{{ID: "HOME-58:goal", Status: StatusFixed, Note: "Model says done"}}}
@@ -713,7 +713,7 @@ func TestGoalBlockersMayClear(t *testing.T) {
 		}
 	})
 	t.Run("PR moves issue", func(t *testing.T) {
-		a := run("HOME-213", &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{}})
+		a := run("HOME-213", &GoalCheck{Overall: goalMet, Criteria: goalVerdicts(1, goalMet), Counted: 1})
 		if len(a.Withdrawn) != 16 || len(a.Blocking) != 0 {
 			t.Fatalf("withdrawn %d blocking %v", len(a.Withdrawn), ids(a.Blocking))
 		}
@@ -733,7 +733,7 @@ func TestIssueCriteriaCount(t *testing.T) {
 		"Done when:\n1. a\n3. not the next number":                                    0,
 		"Done when:\n1. a\n2. b\n\nOut of scope:\n- c":                                0,
 		"Done when:\n1. a\n2. b\n\nOut of scope: c":                                   2,
-		"Example:\n```\nDone when:\n1. x\n```\nDone when:\n1. a\n2. b":                2,
+		"Example:\n```\nDone when:\n1. x\n```\nDone when:\n1. a\n2. b":                0,
 		"Done when:\n1. a\n```\n2. b\n```":                                            0,
 		"Done when:\n```\n1. a\n```":                                                  0,
 		"Done when:\r\n1. a\r\n2.\r\n   b\r\n":                                        2,
@@ -812,10 +812,15 @@ func TestGoalMoveIgnoresCountAndReplayWithdrawsNothing(t *testing.T) {
 	if a := Assess(r, prior); len(a.Withdrawn) != 0 {
 		t.Fatalf("unavailable answer withdrew %+v", a.Withdrawn)
 	}
-	// A valid answer that agrees, or an issue with no countable list, does.
+	// An issue with no countable list withdraws nothing.
+	r = &Report{}
+	applyGoal(r, prior, "HOME", "HOME-2", &GoalCheck{Overall: goalMet, Criteria: goalVerdicts(1, goalMet)})
+	if a := Assess(r, prior); len(a.Withdrawn) != 0 {
+		t.Fatalf("uncounted answer withdrew %+v", a.Withdrawn)
+	}
+	// A valid answer that numbers the counted criteria does.
 	for _, g := range []*GoalCheck{
 		{Overall: goalMet, Criteria: goalVerdicts(2, goalMet), Counted: 2},
-		{Overall: goalMet, Criteria: goalVerdicts(1, goalMet)},
 	} {
 		r = &Report{}
 		applyGoal(r, prior, "HOME", "HOME-2", g)
