@@ -136,10 +136,11 @@ actions:
                 git add -- "$@"
               fi
               # Keep the head's Activation trailer: the connector reads it
-              # as the last entry of the head commit's final trailer block,
-              # so copy from its line to the end of that block.
+              # as the last entry of the head commit's final trailer block.
+              # Copy from the first Activation line to the end of that block,
+              # so a duplicate stays visible and the connector still rejects it.
               activation_trailer=$(git log -1 --format=%B | awk 'BEGIN { RS = "" } { last = $0 } END { print last }' |
-                awk '/^Activation:/ { buf = ""; on = 1 } on { buf = buf (buf == "" ? "" : "\n") $0 } END { if (on) print buf }')
+                awk '/^Activation:/ { on = 1 } on { buf = buf (buf == "" ? "" : "\n") $0 } END { if (on) print buf }')
               case "$activation_trailer" in
                 Activation:*) git commit -m "$format_commit_subject" -m "$activation_trailer" ;;
                 *) git commit -m "$format_commit_subject" ;;

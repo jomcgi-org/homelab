@@ -427,12 +427,12 @@ connector recovery confirm-fenced HOLD_ID --fingerprint HASH --action retry \
 current head, enqueue with GraphQL `enqueuePullRequest` and
 `expectedHeadOid` set to that head. The reviewer is the binding's reviewer
 check, or without one a trusted reviewer's approval of the head; a trusted
-reviewer's standing change request blocks either way. A pending `Activation:`
-trailer also needs the reviewer's assessment ([activation](activation.md)). A PR
+reviewer's standing change request blocks either way. The head's final trailer
+is `Activation:` ([activation](activation.md)); a pending one also needs its assessment. A PR
 in the queue is never enqueued twice; one against another base never is. On an
 observed merge, the connector comments the issue, run, session, PR and merge
 links on the issue and moves it to the project's first `completed` column
-(or `doneColumn`), or to started for a pending step. A refused move, such as
+(or `doneColumn`), or to started with a blocking follow-up. A refused move, such as
 a hard WIP limit, is reported and retried with backoff. A move the connector
 gives up on is also reported, unless a person canceled the issue since then.
 

@@ -31,5 +31,5 @@ creates `Activate HOME-N: <title>` in the first unstarted column with the
 Markers recover lost creates; an ambiguous create is never resent. The parent
 completes only while it is still started and linked: stops, cancellation,
 takeover and unlinking prevent it. With no conditional PATCH, a late change can
-race. This policy ships with `Activation: none`; the render lock changes only
-the coding Agent prompt.
+race. This policy ships with `Activation: none`, cited from `git log`
+([restated](https://factory-plan.jomcgi.dev/factory/issue/HOME-150#comment-4576)).
