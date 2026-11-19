@@ -18,6 +18,9 @@ spec:
             k8s:io.kubernetes.pod.namespace: grimoire
             io.cilium.k8s.policy.serviceaccount: grimoire-worker
         - matchLabels:
+            k8s:io.kubernetes.pod.namespace: grimoire
+            io.cilium.k8s.policy.serviceaccount: grimoire-restore
+        - matchLabels:
             cnpg.io/cluster: grimoire
       toPorts:
         - ports:
@@ -121,6 +124,86 @@ spec:
       toPorts:
         - ports:
             - port: "5432"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: garage
+            app.kubernetes.io/name: garage
+      toPorts:
+        - ports:
+            - port: "3900"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: grimoire-restore
+  namespace: grimoire
+spec:
+  endpointSelector:
+    matchLabels:
+      io.cilium.k8s.policy.serviceaccount: grimoire-restore
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            cnpg.io/cluster: grimoire
+        - matchLabels:
+            cnpg.io/cluster: grimoire-recovered
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: garage
+            app.kubernetes.io/name: garage
+      toPorts:
+        - ports:
+            - port: "3900"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+  name: grimoire-recovered
+  namespace: grimoire
+spec:
+  endpointSelector:
+    matchLabels:
+      cnpg.io/cluster: grimoire-recovered
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: grimoire
+            io.cilium.k8s.policy.serviceaccount: grimoire-restore
+        - matchLabels:
+            cnpg.io/cluster: grimoire-recovered
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: cnpg-system
+            app.kubernetes.io/name: cloudnative-pg
+        - matchLabels:
+            cnpg.io/cluster: grimoire-recovered
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP
+  egress:
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            cnpg.io/cluster: grimoire-recovered
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+            - port: "8000"
               protocol: TCP
     - toEndpoints:
         - matchLabels:

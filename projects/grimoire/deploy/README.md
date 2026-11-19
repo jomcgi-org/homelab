@@ -14,14 +14,27 @@ sequences and job checkpoints. Retain the source row counts, membership
 pairs, vector index definitions and a representative nearest-neighbor result
 from the same snapshot. Keep these artifacts in restricted storage.
 
-Run the following from the authorized restore environment, with libpq service
-entries for the empty target and later the recovered database. Use a fresh
-database for each attempt. Restore the schema, data and post-data constraints
-in one transaction. A failed foreign key or index build aborts the restore.
+Record the extension version and schema on the quiescent scoped source
+alongside the dump, using the same query and output format as restore.sh.
 
 ```sh
-PGSERVICE=grimoire-rehearsal pg_restore --exit-on-error --single-transaction \
-  --no-owner --no-acl --dbname=service=grimoire-rehearsal "$PRIVATE_DUMP"
+PGSERVICE=scoped-source psql -XAtq -v ON_ERROR_STOP=1 -c "SELECT extversion, nspname FROM pg_extension JOIN pg_namespace ON pg_namespace.oid = extnamespace WHERE extname = 'vector'" > vector.metadata
+```
+
+After staging grimoire-rehearsal-snapshot, include restore-job.yaml in a
+one-shot GitOps overlay with a grimoire-restore-script configMapGenerator
+containing restore.sh. Run the transfer from a pod in namespace grimoire with
+serviceAccountName grimoire-restore. Mount the staged snapshot read-only.
+Configure its rehearsal libpq service for grimoire-rw.grimoire.svc:5432,
+database grimoire, user grimoire_restore, with TLS required. Supply the
+password from grimoire-app only to the restore pod. Use grimoire-restore-s3
+for the private destination. Stage source objects on a restricted volume
+before transfer. The restore identity can reach Garage and the two database
+clusters. Run restore.sh against a fresh rehearsal database.
+
+```sh
+PGSERVICE=grimoire-rehearsal PRIVATE_DUMP=/snapshot/grimoire.dump \
+  VECTOR_METADATA=/snapshot/vector.metadata ./restore.sh
 ```
 
 Apply reviewed table and sequence grants to the runtime logins after import.
@@ -35,18 +48,18 @@ source checksum file with the dump. Verify the full key set as well as
 downloaded bytes, including objects without an S3 content hash.
 
 ```sh
-rclone hashsum SHA256 --download private-source:books > source.sha256
-rclone copy private-source:books factory-private:grimoire-private
-rclone check --download private-source:books factory-private:grimoire-private
+rclone hashsum SHA256 /snapshot/books > source.sha256
+rclone copy /snapshot/books factory-private:grimoire-private
+rclone check --download /snapshot/books factory-private:grimoire-private
 rclone checksum SHA256 source.sha256 factory-private:grimoire-private --download
 ```
 
 After validation, trigger a CNPG Backup and record its completed backup ID.
-In a separate recovery namespace create a fresh CNPG Cluster with the same
-Postgres and vector images, bootstrap.recovery.source pointing to an
-externalClusters entry for grimoire-v1, and the source barmanObjectStore
-settings with a read-only backup credential. Permit recovery traffic to
-Garage. Repeat the database comparisons against that cluster with hub access
+Once the backup completes and WAL archiving catches up, deploy recovery.yaml
+as a one-shot GitOps change. It creates grimoire-recovered in the grimoire
+namespace and uses grimoire-recovery-s3 to read the backup. Point the recovery
+libpq service at grimoire-recovered-rw.grimoire.svc:5432 and use the owner
+password from the backed-up database. Repeat the database comparisons against that cluster with hub access
 closed. Repeat the checksum test against an independently restored private
 object copy. Record backup ID, counts, comparison outcomes and runtime
 access probes internally. Exercise allowed DB, S3 and inference calls and

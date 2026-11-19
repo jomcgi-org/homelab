@@ -1,0 +1,49 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: grimoire-rehearsal-restore
+  namespace: grimoire
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: grimoire-restore
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      containers:
+        - name: pg-restore
+          image: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
+          command: [bash, /scripts/restore.sh]
+          env:
+            - name: PGDATABASE
+              value: grimoire
+            - name: PGHOST
+              value: grimoire-rw.grimoire.svc
+            - name: PGUSER
+              value: grimoire_restore
+            - name: PGSSLMODE
+              value: require
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grimoire-app
+                  key: password
+            - name: PRIVATE_DUMP
+              value: /snapshot/grimoire.dump
+            - name: VECTOR_METADATA
+              value: /snapshot/vector.metadata
+          volumeMounts:
+            - name: snapshot
+              mountPath: /snapshot
+              readOnly: true
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: snapshot
+          persistentVolumeClaim:
+            claimName: grimoire-rehearsal-snapshot
+            readOnly: true
+        - name: scripts
+          configMap:
+            name: grimoire-restore-script
