@@ -36,6 +36,13 @@ build as Worker static assets; publishing is staged off (`publishEnabled`).
 **Why.** Joe chose a Sparkles fork over a custom UI
 ([record](https://factory-plan.jomcgi.dev/factory/issue/HOME-352#comment-3461)).
 
+The UI shows a countdown from the latest authenticated `X-Explore-Window-End`.
+At the deadline, on token expiry or on a window 403, it ends the session and
+shows a time's-up page with the next opening time when it knows one. It shows
+no time when it never learned a window end, and it ignores the window header
+on a 401, because the proxy sets that header before it checks the token
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-361#comment-4585)).
+
 ## cmd
 
 `explore-proxy` verifies the token's issuer, audience and signature against
@@ -60,7 +67,7 @@ It holds no credential of its own.
 | --- | --- | --- |
 | Route factory-explore-api.jomcgi.dev through the edge to the proxy | HOME-358 | designed |
 | Publish the UI at factory-explore.jomcgi.dev | HOME-388 | staged off behind `publishEnabled` |
-| End sessions in the UI when the window closes | HOME-361 | designed |
+| End sessions in the UI when the window closes | HOME-361 | in review (#8312) |
 
 ## Decision history
 
@@ -68,3 +75,4 @@ It holds no credential of its own.
 | --- | --- | --- |
 | Explorers get 10 minutes an hour through a Sparkles fork | 2026-11-18 | [HOME-352](https://factory-plan.jomcgi.dev/factory/issue/HOME-352#comment-3461) |
 | Publishing the UI waits for the API route | 2026-11-18 | [HOME-360](https://factory-plan.jomcgi.dev/factory/issue/HOME-360#comment-3945) |
+| The time's-up page omits unknown next windows and 401 window headers | 2026-11-19 | [HOME-361](https://factory-plan.jomcgi.dev/factory/issue/HOME-361#comment-4585) |
