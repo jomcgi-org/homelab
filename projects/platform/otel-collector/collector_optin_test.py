@@ -1386,7 +1386,7 @@ def test_gke_container_metrics_pipeline():
 
 
 # ---------------------------------------------------------------------------
-# Factory home cluster: node and cluster agents, no gateway.
+# Factory home cluster: node and cluster agents and the trace gateway.
 # ---------------------------------------------------------------------------
 CLUSTER = f"{RELEASE}-cluster"
 
@@ -1399,12 +1399,21 @@ def test_gateway_is_on_by_default_in_hub_overlays():
         assert ("Deployment", CLUSTER) not in kinds
 
 
-def test_factory_renders_no_gateway():
-    kinds = {
-        (d["kind"], d["metadata"]["name"]) for d in _render_overlay("values-factory")
-    }
+def test_factory_renders_gateway():
+    docs = _render_overlay("values-factory")
+    config = _named_collector_config(docs, RELEASE)
+    pipeline = config["service"]["pipelines"]["traces"]
+    assert "metrics" not in config["service"]["pipelines"]
+    assert pipeline["receivers"] == ["otlp"]
+    assert pipeline["exporters"] == ["otlphttp/honeycomb"]
+    assert pipeline["processors"].index("filter/allowlist") < pipeline[
+        "processors"
+    ].index("tail_sampling")
+    policies = config["processors"]["tail_sampling"]["policies"]
+    assert {p["type"] for p in policies} == {"status_code", "latency", "probabilistic"}
+    kinds = {(d["kind"], d["metadata"]["name"]) for d in docs}
     for kind in ("Deployment", "Service", "ConfigMap", "ServiceAccount"):
-        assert (kind, RELEASE) not in kinds
+        assert (kind, RELEASE) in kinds
     assert ("DaemonSet", LOGS) in kinds
     assert ("Deployment", CLUSTER) in kinds
 
@@ -1862,3 +1871,102 @@ def test_factory_audit_export_after_offline_rotation(tmp_path):
     assert exported.count(path) == 3
     for event_id in ("audit-first", "audit-offline", "audit-current"):
         assert exported.count(event_id) == 1
+
+
+def test_factory_trace_content_removed_before_sampling(tmp_path):
+    config = _named_collector_config(_render_overlay("values-factory"), RELEASE)
+    processors = config["service"]["pipelines"]["traces"]["processors"]
+    clean = processors[1 : processors.index("tail_sampling")]
+    assert clean == [
+        "filter/allowlist",
+        "transform/trace_content",
+        "resource/environment",
+    ]
+    source = tmp_path / "input.json"
+    output = tmp_path / "export.json"
+    marker = "private-test-content"
+    sensitive = [
+        {"key": key, "value": {"stringValue": marker}}
+        for key in [
+            "gen_ai.prompt",
+            "gen_ai.prompt.0.content",
+            "gen_ai.completion",
+            "gen_ai.input.messages",
+            "gen_ai.output.messages",
+            "gen_ai.system_instructions",
+            "gen_ai.tool.call.arguments",
+            "gen_ai.tool.call.result",
+        ]
+    ]
+    kept_attrs = [
+        {"key": "gen_ai.usage.input_tokens", "value": {"intValue": "42"}},
+        {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-test"}},
+        {"key": "gen_ai.tool.name", "value": {"stringValue": "shell"}},
+        {"key": "factory.pr.number", "value": {"intValue": "8351"}},
+    ]
+    span = {
+        "traceId": "1" * 32,
+        "spanId": "2" * 16,
+        "name": "review",
+        "attributes": [*sensitive, *kept_attrs],
+        "events": [
+            {
+                "name": "state",
+                "attributes": [
+                    *sensitive,
+                    {"key": "factory.round", "value": {"intValue": "2"}},
+                ],
+            }
+        ],
+    }
+    service = {"key": "service.name", "value": {"stringValue": "factory-reviewer"}}
+    resource = {"attributes": [service]}
+    scoped = {"scope": {}, "spans": [span]}
+    batch = {"resourceSpans": [{"resource": resource, "scopeSpans": [scoped]}]}
+    source.write_text(json.dumps(batch) + "\n")
+    conf = tmp_path / "config.yaml"
+    conf.write_text(
+        yaml.safe_dump(
+            {
+                "receivers": {
+                    "otlp_json_file": {
+                        "include": [str(source)],
+                        "start_at": "beginning",
+                    }
+                },
+                "processors": {name: config["processors"][name] for name in clean},
+                "exporters": {"file": {"path": str(output)}},
+                "service": {
+                    "telemetry": {"metrics": {"level": "none"}},
+                    "pipelines": {
+                        "traces": {
+                            "receivers": ["otlp_json_file"],
+                            "processors": clean,
+                            "exporters": ["file"],
+                        }
+                    },
+                },
+            }
+        )
+    )
+    proc = subprocess.Popen([os.environ["OTELCOL_BIN"], "--config", str(conf)])
+    try:
+        for _ in range(100):
+            assert proc.poll() is None
+            if output.exists() and output.read_text().endswith("\n"):
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("timed out waiting for sanitized span")
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+    exported = output.read_text()
+    assert marker not in exported
+    (kept,) = json.loads(exported)["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    # The file receiver adds log.file.name to every span it reads.
+    attrs = [a for a in kept["attributes"] if a["key"] != "log.file.name"]
+    assert attrs == kept_attrs
+    (event,) = kept["events"]
+    assert event["name"] == "state"
+    assert event["attributes"] == [{"key": "factory.round", "value": {"intValue": "2"}}]

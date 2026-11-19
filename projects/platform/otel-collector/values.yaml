@@ -103,6 +103,12 @@ cfIngress:
 #
 # Adding a service is a one-line edit that shows up in a PR diff.
 allowedServices: []
+otlpMetrics: true
+# Delete gen_ai content attributes (prompt, completion, messages, system
+# instructions, tool call arguments and results) from spans and span events
+# before sampling. Token counts, model and tool names remain.
+sanitizeTraceAttributes: false
+traceContentPattern: '^gen_ai[.](prompt|completion|input[.]messages|output[.]messages|system_instructions|tool[.]call[.](arguments|result))([.].*)?$'
 
 # Tail sampling. Only rendered when allowedServices is non-empty.
 sampling:
