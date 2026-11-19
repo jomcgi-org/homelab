@@ -2,6 +2,7 @@
 import { onMounted, onBeforeUnmount, ref } from "vue";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { parseArguments } from "./parseArguments";
 import { loadKubectl } from "./kubectl";
 import { getIdToken, observeResponse } from "./apiConfig";
 const props = defineProps<{ initial: string }>();
@@ -21,11 +22,17 @@ function finish() {
   term.write("$ ");
 }
 async function execute() {
-  const command = line.trim();
+  const command = line;
   line = "";
   term.writeln("");
-  if (!command) return finish();
-  const args = command.split(/\s+/);
+  if (!command.trim()) return finish();
+  let args: string[];
+  try {
+    args = parseArguments(command);
+  } catch {
+    term.writeln("Complete the quote or escape before running kubectl.");
+    return finish();
+  }
   if (
     args.shift() !== "kubectl" ||
     args.some(
