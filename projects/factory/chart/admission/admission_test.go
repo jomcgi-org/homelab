@@ -164,30 +164,37 @@ func TestActionPermissions(t *testing.T) {
 		}
 	}
 
-	// RBAC scopes deletion to two namespaces; admission narrows it to the
-	// reviewed worker name and UID within them. Wait for policy cache propagation.
-	ns := "factory-r-homelab"
-	_, err = client.CoreV1().ServiceAccounts(ns).Create(ctx, &v1.ServiceAccount{ObjectMeta: meta.ObjectMeta{Name: "default"}}, meta.CreateOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	userCfg := rest.CopyConfig(cfg)
-	userCfg.Impersonate = rest.ImpersonationConfig{UserName: front, Groups: []string{"system:authenticated"}}
+	userCfg.Impersonate = rest.ImpersonationConfig{UserName: front, Groups: []string{"system:authenticated", "system:serviceaccounts", "system:serviceaccounts:grafana"}}
 	user, err := kubernetes.NewForConfig(userCfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	journal, err := client.CoreV1().ConfigMaps("grafana").Create(ctx, &v1.ConfigMap{ObjectMeta: meta.ObjectMeta{Name: "runbook-revert-factory-connector", Namespace: "grafana"}, Data: map[string]string{"phase": "confirmed"}}, meta.CreateOptions{})
+	for _, pool := range []struct{ owner, namespace, prefix string }{
+		{"factory-connector", "factory-r-homelab", "homelab-codex-"},
+		{"factory-reviewer", "factory-r-homelab-review", "homelab-reviewer-"},
+	} {
+		t.Run(pool.owner, func(t *testing.T) { testWorkerScope(t, client, user, pool.owner, pool.namespace, pool.prefix) })
+	}
+}
+
+func testWorkerScope(t *testing.T, client, user kubernetes.Interface, owner, ns, prefix string) {
+	ctx := t.Context()
+	_, err := client.CoreV1().ServiceAccounts(ns).Create(ctx, &v1.ServiceAccount{ObjectMeta: meta.ObjectMeta{Name: "default"}}, meta.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"unrelated", "homelab-codex-12345678-abcde"} {
+	journal, err := client.CoreV1().ConfigMaps("grafana").Create(ctx, &v1.ConfigMap{ObjectMeta: meta.ObjectMeta{Name: "runbook-revert-" + owner, Namespace: "grafana"}, Data: map[string]string{"phase": "confirmed"}}, meta.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"unrelated", prefix + "12345678-abcde"} {
 		pod, err := client.CoreV1().Pods(ns).Create(ctx, &v1.Pod{ObjectMeta: meta.ObjectMeta{Name: name}, Spec: v1.PodSpec{Containers: []v1.Container{{Name: "worker", Image: "pause"}}}}, meta.CreateOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if name != "unrelated" {
-			journal.Data = map[string]string{"deadline": time.Now().Add(time.Minute).Format(time.RFC3339Nano), "id": "recovery-1", "user": "joe", "session": "session-1", "executor": "executor-1", "creator": "factory-connector", "phase": "deleting", "namespace": ns, "pod": name, "uid": string(pod.UID)}
+			journal.Data = map[string]string{"deadline": time.Now().Add(time.Minute).Format(time.RFC3339Nano), "id": "recovery-1", "user": "joe", "session": "session-1", "executor": "executor-1", "creator": owner, "phase": "deleting", "namespace": ns, "pod": name, "uid": string(pod.UID)}
 			if journal, err = client.CoreV1().ConfigMaps("grafana").Update(ctx, journal, meta.UpdateOptions{}); err != nil {
 				t.Fatal(err)
 			}
@@ -196,7 +203,7 @@ func TestActionPermissions(t *testing.T) {
 		deadline := time.Now().Add(10 * time.Second)
 		for {
 			err = user.CoreV1().Pods(ns).Delete(ctx, name, opts)
-			if name == "unrelated" && err != nil && strings.Contains(err.Error(), "Only UID-fenced worker deletes") || name != "unrelated" && err == nil {
+			if name == "unrelated" && err != nil && (strings.Contains(err.Error(), "Only UID-fenced worker deletes") || strings.Contains(err.Error(), "worker authorization mismatch")) || name != "unrelated" && err == nil {
 				break
 			}
 			if time.Now().After(deadline) {
@@ -205,6 +212,25 @@ func TestActionPermissions(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 		}
 		if name != "unrelated" {
+			// A second, correctly named worker in the same pool has the same
+			// RBAC grant. The confirmed journal must confine the action to one UID.
+			other, err := client.CoreV1().Pods(ns).Create(ctx, &v1.Pod{ObjectMeta: meta.ObjectMeta{Name: prefix + "87654321-abcde"}, Spec: pod.Spec}, meta.CreateOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			otherOpts := opts.DeepCopy()
+			otherOpts.Preconditions.UID = &other.UID
+			err = user.CoreV1().Pods(ns).Delete(ctx, other.Name, *otherOpts)
+			if err == nil || !(strings.Contains(err.Error(), "Only UID-fenced worker deletes") || strings.Contains(err.Error(), "worker authorization mismatch")) {
+				t.Fatalf("delete unconfirmed sibling: %v", err)
+			}
+			changed := journal.DeepCopy()
+			changed.Data["pod"] = other.Name
+			changed.Data["uid"] = string(other.UID)
+			_, err = user.CoreV1().ConfigMaps("grafana").Update(ctx, changed, meta.UpdateOptions{DryRun: []string{meta.DryRunAll}})
+			if err == nil || !strings.Contains(err.Error(), "confirmed identity and targets are immutable") {
+				t.Fatalf("retarget confirmed operation: %v", err)
+			}
 			// Keep the same pod UID and the same deleting phase. Expiry alone must deny it.
 			journal.Data["deadline"] = time.Now().Add(-time.Second).Format(time.RFC3339Nano)
 			if journal, err = client.CoreV1().ConfigMaps("grafana").Update(ctx, journal, meta.UpdateOptions{}); err != nil {

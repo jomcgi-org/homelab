@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -204,5 +205,50 @@ func testConfirmedRecovery(t *testing.T, target revertTarget) {
 		if err != nil || op.Phase != "delivered" {
 			t.Fatal(op, err)
 		}
+	}
+}
+
+// Evaluate the production query against scrapes. Prometheus lookback can
+// return one old sample at multiple evaluation times.
+func TestLockedClaimDiscovery(t *testing.T) {
+	tool := os.Getenv("PROMTOOL")
+	if tool == "" {
+		var err error
+		tool, err = exec.LookPath("promtool")
+		if err != nil {
+			t.Skip("promtool is supplied by the Bazel target")
+		}
+	}
+	if !filepath.IsAbs(tool) && os.Getenv("TEST_SRCDIR") != "" {
+		tool = filepath.Join(os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"), tool)
+	}
+	labels := `job="cnpg",namespace="kagent-pg",cluster="kagent-pg"`
+	suite := fmt.Sprintf(`evaluation_interval: 30s
+tests:
+- interval: 30s
+  input_series:
+  - series: 'cnpg_quiescence_pending{%[1]s,session="locked",executor="one"}'
+    values: '1 1 1 1 1'
+  - series: 'cnpg_quiescence_pending{%[1]s,session="new",executor="one"}'
+    values: '_ _ _ _ 1'
+  - series: 'cnpg_quiescence_pending{%[1]s,session="changed",executor="old"}'
+    values: '1 1 stale _ _'
+  - series: 'cnpg_quiescence_pending{%[1]s,session="changed",executor="new"}'
+    values: '_ _ _ 1 1'
+  - series: 'cnpg_quiescence_pending{%[1]s,session="missing",executor="one"}'
+    values: '_ 1 _ _ _'
+  promql_expr_test:
+  - expr: '%[2]s'
+    eval_time: 2m
+    exp_samples:
+    - labels: '{%[1]s,session="locked",executor="one"}'
+      value: 0
+`, labels, lockedClaimQuery())
+	file := filepath.Join(t.TempDir(), "claims.yml")
+	if err := os.WriteFile(file, []byte(suite), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command(tool, "test", "rules", file).CombinedOutput(); err != nil {
+		t.Fatalf("promtool: %v: %s", err, output)
 	}
 }

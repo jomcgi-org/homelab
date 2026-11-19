@@ -49,7 +49,9 @@ go_test(
         "recovery_test.go",
         "runbook_test.go",
     ],
+    data = ["@promtool_3_15_1_linux_amd64//:binary"],
     embed = [":connector_lib"],
+    env = {"PROMTOOL": "$(rootpath @promtool_3_15_1_linux_amd64//:binary)"},
     deps = [
         "//projects/factory/connector/kagent",
         "//projects/factory/connector/store",
