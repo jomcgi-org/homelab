@@ -4,6 +4,7 @@
 package r2
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -118,6 +119,52 @@ func (c *Client) Get(ctx context.Context, bucket, key, ifNoneMatch string, maxBy
 	return Object{Body: body, ETag: etag}, nil
 }
 
+// Put replaces a JSON object in the scoped bucket.
+func (c *Client) Put(ctx context.Context, bucket, key string, body []byte, cache string) error {
+	return c.PutReader(ctx, bucket, key, bytes.NewReader(body), int64(len(body)), fmt.Sprintf("%x", sha256.Sum256(body)), cache)
+}
+
+// PutReader uploads an object with an already computed length and SHA-256.
+func (c *Client) PutReader(ctx context.Context, bucket, key string, body io.Reader, size int64, digest, cache string) error {
+	return c.put(ctx, bucket, key, body, size, digest, cache, "")
+}
+
+// Replace updates a cached shard only if its generation is still current.
+func (c *Client) Replace(ctx context.Context, bucket, key string, body []byte, etag string) error {
+	return c.put(ctx, bucket, key, bytes.NewReader(body), int64(len(body)), fmt.Sprintf("%x", sha256.Sum256(body)), "private", etag)
+}
+
+func (c *Client) put(ctx context.Context, bucket, key string, body io.Reader, size int64, digest, cache, etag string) error {
+	u := *c.endpoint
+	u.Path = "/" + bucket + "/" + key
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u.String(), body)
+	if err != nil {
+		return err
+	}
+	if etag != "" {
+		req.Header.Set("If-Match", etag)
+	}
+	req.ContentLength = size
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cache-Control", cache)
+	date := c.now().UTC().Format("20060102T150405Z")
+	req.Header.Set("X-Amz-Date", date)
+	req.Header.Set("X-Amz-Content-Sha256", digest)
+	req.Header.Set("Authorization", authorization(req, []string{"host", "x-amz-content-sha256", "x-amz-date"}, date, c.region, c.creds))
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if etag != "" && resp.StatusCode == http.StatusPreconditionFailed {
+		return nil
+	}
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("put %s/%s: %s", bucket, key, resp.Status)
+	}
+	return nil
+}
+
 // sign adds SigV4 headers for an empty-payload request. Only host,
 // x-amz-content-sha256, x-amz-date and any range header are signed; other
 // headers (If-None-Match) travel unsigned, which S3 permits.
@@ -152,7 +199,7 @@ func authorization(req *http.Request, signed []string, amzDate, region string, c
 		canonicalQuery(req.URL.Query()),
 		headers.String(),
 		signedHeaders,
-		emptyPayloadHash,
+		req.Header.Get("X-Amz-Content-Sha256"),
 	}, "\n")
 
 	date := amzDate[:8]

@@ -77,6 +77,8 @@ multirun(
         "//projects/platform-factory/prometheus/resources/alert-relay/chart:chart.push",
         "//projects/scotland-connector/chart:chart.push",
         "//projects/scotland-connector/image:image.push",
+        "//projects/stars-forecast/chart:chart.push",
+        "//projects/stars-forecast:image.push",
     ],
     jobs = 0,  # 0 means unlimited parallelism
     visibility = ["//visibility:public"],
@@ -104,6 +106,7 @@ multirun(
         "//projects/operators/oci-model-cache/helm/oci-model-cache-operator:chart.push",
         "//projects/platform-factory/prometheus/resources/alert-relay/chart:chart.push",
         "//projects/scotland-connector/chart:chart.push",
+        "//projects/stars-forecast/chart:chart.push",
     ],
     jobs = 0,  # 0 means unlimited parallelism
     visibility = ["//visibility:public"],

@@ -1,0 +1,191 @@
+refreshEnabled: false
+image:
+  repository: ghcr.io/jomcgi/homelab/projects/stars-forecast
+  digest: ''
+buckets:
+- name: stars-state
+  access: readwrite
+- name: stars-forecast
+  access: write
+  public:
+    r2Bucket: stars-forecast
+    itemPath: vaults/k8s-homelab/items/stars-forecast-r2-mirror
+    manifestName: latest.json
+    suspend: true
+workloads:
+  refresh:
+    writablePaths:
+      - {name: spool, mountPath: /tmp, sizeLimit: 256Mi}
+    kind: CronJob
+    schedule: 0 */3 * * *
+    backoffLimit: 0
+    command:
+    - /opt/app
+    args:
+    - refresh
+    resources:
+      requests:
+        cpu: 250m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+    env:
+    - name: STATE_AWS_ENDPOINT_URL
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-state-s3
+          key: AWS_ENDPOINT_URL
+    - name: STATE_AWS_REGION
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-state-s3
+          key: AWS_REGION
+    - name: STATE_AWS_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-state-s3
+          key: AWS_ACCESS_KEY_ID
+    - name: STATE_AWS_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-state-s3
+          key: AWS_SECRET_ACCESS_KEY
+    - name: STATE_BUCKET
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-state-s3
+          key: BUCKET
+    - name: PUBLIC_AWS_ENDPOINT_URL
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-forecast-s3
+          key: AWS_ENDPOINT_URL
+    - name: PUBLIC_AWS_REGION
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-forecast-s3
+          key: AWS_REGION
+    - name: PUBLIC_AWS_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-forecast-s3
+          key: AWS_ACCESS_KEY_ID
+    - name: PUBLIC_AWS_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-forecast-s3
+          key: AWS_SECRET_ACCESS_KEY
+    - name: PUBLIC_BUCKET
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-forecast-s3
+          key: BUCKET
+    network:
+      egress:
+      - peer: met-no
+        fqdn: api.met.no
+        port: 443
+  grid:
+    kind: CronJob
+    schedule: 0 */6 * * *
+    backoffLimit: 0
+    command:
+    - /opt/app
+    args:
+    - grid
+    resources:
+      requests:
+        cpu: 250m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+    env:
+    - name: STATE_AWS_ENDPOINT_URL
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-state-s3
+          key: AWS_ENDPOINT_URL
+    - name: STATE_AWS_REGION
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-state-s3
+          key: AWS_REGION
+    - name: STATE_AWS_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-state-s3
+          key: AWS_ACCESS_KEY_ID
+    - name: STATE_AWS_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-state-s3
+          key: AWS_SECRET_ACCESS_KEY
+    - name: STATE_BUCKET
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-state-s3
+          key: BUCKET
+    - name: SOURCE_AWS_ENDPOINT_URL
+      value: https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+    - name: SOURCE_BUCKET
+      value: stars
+    - name: SOURCE_AWS_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: stars-input
+          key: access-key-id
+    - name: SOURCE_AWS_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: stars-input
+          key: secret-access-key
+    network:
+      egress:
+      - peer: stars-source
+        fqdn: 7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+        port: 443
+  prune:
+    kind: CronJob
+    schedule: 50 * * * *
+    backoffLimit: 0
+    command:
+    - /opt/app
+    args:
+    - prune
+    resources:
+      requests:
+        cpu: 250m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+    env:
+    - name: STATE_AWS_ENDPOINT_URL
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-state-s3
+          key: AWS_ENDPOINT_URL
+    - name: STATE_AWS_REGION
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-state-s3
+          key: AWS_REGION
+    - name: STATE_AWS_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-state-s3
+          key: AWS_ACCESS_KEY_ID
+    - name: STATE_AWS_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-state-s3
+          key: AWS_SECRET_ACCESS_KEY
+    - name: STATE_BUCKET
+      valueFrom:
+        secretKeyRef:
+          name: stars-forecast-stars-state-s3
+          key: BUCKET
+secrets:
+  stars-input:
+    workload: grid
+    onePassword:
+      itemPath: vaults/k8s-homelab/items/r2-s3-public-read
