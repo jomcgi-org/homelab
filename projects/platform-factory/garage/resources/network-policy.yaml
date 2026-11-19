@@ -62,6 +62,15 @@ spec:
             k8s:io.kubernetes.pod.namespace: factory
             app.kubernetes.io/name: factory-itsaplan
             app.kubernetes.io/component: worker
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: grimoire
+            io.cilium.k8s.policy.serviceaccount: grimoire-api
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: grimoire
+            io.cilium.k8s.policy.serviceaccount: grimoire-worker
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: grimoire
+            cnpg.io/cluster: grimoire
         # The connector's evidence (factory chart).
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory
