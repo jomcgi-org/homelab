@@ -116,7 +116,9 @@ def test_edge_guards(docs):
     assert policy["targetRefs"] == [
         {"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": "edge"}
     ]
-    assert policy["oidc"]["provider"]["issuer"].startswith("https://factory-auth.jomcgi.dev/")
+    assert policy["oidc"]["provider"]["issuer"].startswith(
+        "https://factory-auth.jomcgi.dev/"
+    )
     runbook_auth = policy["authorization"]
     assert runbook_auth["defaultAction"] == "Deny"
     assert [
