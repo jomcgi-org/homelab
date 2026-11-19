@@ -6,3 +6,9 @@ sh_test(
     args = ["$(location :restore.sh)"],
     data = ["restore.sh"],
 )
+
+filegroup(
+    name = "repo_docs",
+    srcs = ["README.md"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
