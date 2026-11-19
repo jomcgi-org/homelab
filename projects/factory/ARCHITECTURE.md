@@ -1,28 +1,54 @@
 # Factory architecture
 
-The reusable software factory that runs on the factory home cluster
-(`projects/factory-cluster/`). This file records the design for steps 2
-and 3 of #7817: installing the foundation and delivering the first reviewed
-change. Labels: **[V]** verified in upstream source, docs or live state;
+The factory runs on the home cluster and delivers reviewed changes for maintainers who delegate repository work in itsaplan.
+The connector dispatches the work to a kagent coding session and opens the pull request.
+The broker supplies credentials, the independent reviewer reports its verdict, and GitHub enforces the checks before merge.
+
+```mermaid
+flowchart LR
+  subgraph cluster["Factory home cluster"]
+    itsaplan["itsaplan · untrusted issue text"]
+    connector["connector · agent keys"]
+    kagent["kagent · isolated sessions"]
+    broker["broker · OAuth grant and both App keys"]
+    reviewer["reviewer · scoped token"]
+  end
+  itsaplan -->|delegated run| connector
+  connector -->|coding task| kagent
+  kagent -->|actor requests via egress gateway| broker
+  connector -->|open PR and enqueue| github["GitHub · untrusted diff"]
+  github -->|PR head| reviewer
+  reviewer -->|review task| kagent
+  broker -->|scoped token| reviewer
+  reviewer -->|PR comment request| broker
+  broker -->|post with separate comment token| github
+  reviewer -->|head-bound check| github
+  connector -->|run result| itsaplan
+```
+
+| Component | Role | Code | Pin | Untrusted input | Credentials held |
+| --- | --- | --- | --- | --- | --- |
+| itsaplan | Owns requests and run history | `chart/templates/itsaplan.yaml` | Community 1.10.0 | Issues and comments | Database, S3 and OIDC secrets |
+| connector | Claims runs and reconciles delivery | `connector/` | Built from this repo | Issue text, agent output and PR state | itsaplan agent keys, projected tokens and short-lived author App token |
+| kagent | Owns agents and sessions | `chart/Chart.yaml`, `deploy/values.yaml` | Charts 1.0.1, controller fork e3d14ee3dd62 | Tasks and session messages | Controller ServiceAccount |
+| Agent Substrate | Isolates actors and injects credentials at egress | `../platform-factory/substrate/` | Fork charts 1.0.1, source `7ce6f439` | Workspace traffic | Actor identity and credentials scoped by policy |
+| toolchain | Installs local checks for the coding binding | `toolchain/` | Built from this repo | Tool downloads | None |
+| Codex CLI | Edits and checks the bound repository | `deploy/values.yaml`, `toolchain/` | 0.169.1 | Task and checkout | Gateway placeholders |
+| codex-code-mode | Runs the Codex tool-mode trial | `codex-code-mode/` | Built from this repo | Task and checkout | Gateway placeholders |
+| Claude Code | Claude harness supported by the staged relay | Upstream kagent harness | 2.1.285 | Session messages | Gateway placeholder |
+| broker | Relays model calls and mints repository credentials | `broker/` | Built from this repo | Actor requests | Codex OAuth grant, both App private keys and optional Claude OAuth token |
+| reviewer | Publishes the independent required check | `reviewer/` | Built from this repo | PR content and review replies | Projected ServiceAccount token and scoped reviewer installation token |
+| GitHub | Owns PRs, checks and the merge queue | External service | Hosted | Branches and PRs | GitHub App installations |
+| Hindsight | Stores reusable coding lessons | `../platform-factory/hindsight/` | 1.2.1 | Recalled and retained text | Database and model credentials |
+| discord | Routes mentions to Bosun | `discord/` | Built from this repo | Discord messages | Bot token and Discord memory access |
+| alert-relay | Forwards Alertmanager notifications to Discord | `alert-relay/` | Built from this repo | Alertmanager webhooks | Discord webhook URL |
+
+Component paths are relative to `projects/factory/`. Labels in the findings: **[V]** verified in upstream source, docs or live state;
 **[I]** inferred, to confirm in the PR that depends on it.
 
 <a id="connector"></a>
 
 See the [connector architecture](connector/ARCHITECTURE.md) for the [run lifecycle](connector/ARCHITECTURE.md#run-lifecycle), [revision rounds](connector/ARCHITECTURE.md#review-rounds) and [liveness lease](connector/ARCHITECTURE.md#liveness-lease). The move keeps the reviewed text without a claim-by-claim source audit ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-265#comment-3955)).
-
-## Components and ownership
-
-| Responsibility | Component | Pin |
-| --- | --- | --- |
-| Work requests, assignment, work feed, run queue | itsaplan Community | v1.10.0 (`ghcr.io/croffasia/itsaplan-{api,web,worker}`), by digest |
-| Agent definitions, execution, sessions | kagent | v1.0.1 charts `oci://ghcr.io/kagent-dev/kagent/helm/{kagent-crds,kagent}` |
-| Isolated workspaces (actors) | Agent Substrate, kagent-dev fork | v1.0.1 |
-| Coding harness | Codex CLI | 0.169.1, from the `jomcgi-org/kagent` fork build (branch `jomcgi/codex-6.2`, which also carries kagent#3653) |
-| Repository, PR, CI, merge queue | GitHub | |
-| Provider and GitHub credentials | `projects/factory/broker` | this repo |
-| Codex tool-mode trial runtime | `projects/factory/codex-code-mode` | this repo |
-| Relationships between itsaplan, kagent and GitHub | [Connector architecture](connector/ARCHITECTURE.md) | this repo |
-| Agents' shared long-term memory | Hindsight (`projects/platform-factory/hindsight`) | 1.2.1 (`ghcr.io/vectorize-io/hindsight-api`), by digest |
 
 itsaplan owns the request and its run history, kagent owns execution and
 session state, GitHub owns PR, check, review and merge state. The connector
