@@ -23,7 +23,7 @@ flowchart LR
 
 ## Run lifecycle
 
-A delegated run enters through `HandleClaim`. When its coding turn ends, the connector tracks the resulting PR on the work item through review, queueing and merge. [Dispatch](dispatch/engine.go) · [PR delivery](dispatch/delivery.go)
+A delegated run enters through `HandleClaim`. When its coding turn ends, the connector tracks the resulting PR on the work item through review, queueing and merge. [Dispatch](dispatch/engine.go) · [PR delivery](dispatch/delivery.go) · [Delivery outcomes](delivery-outcomes.md)
 
 ```mermaid
 stateDiagram-v2
@@ -597,40 +597,3 @@ rarely worth a day of it.
 | Decision | Date | Record |
 | --- | --- | --- |
 | Keep stopped sessions for one hour | 2026-11-16 | [HOME-136](https://factory-plan.jomcgi.dev/factory/issue/HOME-136#comment-1045) |
-
-### Delivery outcomes
-
-Read the connector PostgreSQL database for the results of delivered and stopped PRs.
-
-```sql
-SELECT * FROM arm_delivery_results ORDER BY arm, task_class, guidance_version;
-```
-
-The first coder run supplies the arm, task class and guidance checkout (base SHA).
-Historical runs without provenance form a NULL cohort. The underlying
-`pr_delivery_results` view reads the metrics stored for each terminal PR. At closure the connector
-assigns outstanding coder runs to that outcome. Replacement PRs inherit the first
-coder arm and receive only the remaining runs. Late token receipts update the
-outcome that owns the run. Minutes measure first send to finish per attempt.
-Time held sums completed admission holds and observed PR hold-label intervals since the migration.
-Stopped items without a PR contribute an abandoned outcome until delivery resumes.
-Tokens per merge divides total coder input and output across the cohort by its
-merge count. Missing token receipts leave that metric NULL.
-Revert detection scans base-branch commits for standard Git revert trailers
-naming the merge SHA during the first 168 hours after merge. Recent merges
-can still change the revert rate.
-
-After rollout, check that every merged PR in the connector database has a
-merged outcome. Each returned row identifies a PR to investigate. An empty
-result means every recorded merge has a matching outcome.
-
-```sql
-SELECT pr.node_id, pr.number, pr.work_item_id
-FROM pull_request pr
-WHERE pr.merged_at IS NOT NULL
-  AND NOT EXISTS (
-      SELECT 1 FROM pr_delivery_results outcome
-      WHERE outcome.node_id = pr.node_id AND outcome.merged
-  )
-ORDER BY pr.node_id;
-```
