@@ -425,9 +425,12 @@ connector recovery confirm-fenced HOLD_ID --fingerprint HASH --action retry \
 ## Merge queue
 
 **Merge and activation ([HOME-150](https://factory-plan.jomcgi.dev/factory/issue/HOME-150)).**
-The coding binding requires exactly one final trailer: `Activation: none`, or
-`Activation: <remaining step and its precondition>`. Review bindings do not.
-The connector reads the full commit message matched to `headRefOid`.
+The coding binding requires exactly one `Activation:` trailer, as the last
+entry of the head commit's final trailer block: `Activation: none`, or
+`Activation: <remaining step and its precondition>`. Other trailers, such as
+`Co-Authored-By`, may precede it. Review bindings do not need it. The
+connector reads the full commit message matched to `headRefOid`, and a CI
+format commit copies the entry.
 Missing, empty or duplicate trailers request a revision under the existing round
 limit. When the required checks and the trusted reviewer succeed on the
 current head, enqueue with GraphQL `enqueuePullRequest` and
@@ -459,7 +462,9 @@ The follow-up holds the step that the reviewer assessed
 Only the reviewer's authenticated check on the head supplies a delegable step;
 human review bodies cannot, even with an approval. Commit text never reaches the
 tracker: without that assessment, the merge comment and an undelegated follow-up
-carry a fixed pending status and a link to the delivered head.
+carry a fixed pending status and a link to the delivered head. A squash merge
+has another SHA, so the head link names the commit to assess. The handoff
+comment keeps the follow-up undelegated until someone assesses that head.
 
 The merge transaction records the comment and one activation outbox item. After
 verifying the coordinator's HOME-106 permissions, the connector creates
@@ -481,7 +486,9 @@ a change after the final ownership read can race.
 **Why.** Merged code and operational acceptance differ. Remaining activation
 becomes tracked work. This policy does not verify rollouts or live probes (HOME-4).
 The render lock changes only the coding Agent prompt; chart publication and the
-normal pin advance deploy it. Source checks do not prove a live rollout.
+normal pin advance deploy it. Source checks do not prove a live rollout. The
+change that adds this policy is delivered with `Activation: none`: the
+lifecycle runs when the connector restarts on the new chart.
 
 A PR that leaves the queue unmerged, after a second read confirms it did
 not merge, starts a revision in the mapped session, counting against

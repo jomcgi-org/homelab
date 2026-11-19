@@ -1372,6 +1372,11 @@ func TestActivationTrailerRequiresOneFinalTrailer(t *testing.T) {
 		{"fix: ship\n\nActivation: none\n  Activation: enable", ""},
 		{"fix: ship\n\nActivation: none\n\nMore prose.", ""},
 		{"fix: ship\n\nActivation: none\nSigned-off-by: author", ""},
+		{"fix: ship\n\nCo-Authored-By: A <a@example.com>\nSigned-off-by: B\nActivation: none", "none"},
+		{"fix: ship\n\nCo-Authored-By: A\nActivation: enable\n after the migration", "enable after the migration"},
+		{"fix: ship\n\nActivation: none\nCo-Authored-By: A\nActivation: none", ""},
+		{"fix: ship\n\nSee the notes.\nActivation: none", ""},
+		{"fix: ship\n\n continued\nActivation: none", ""},
 	} {
 		if got, ok := ActivationTrailer(tc.message); got != tc.want || ok != (tc.want != "") {
 			t.Errorf("trailer(%q) = %q, %v; want %q", tc.message, got, ok, tc.want)
