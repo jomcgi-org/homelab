@@ -83,10 +83,8 @@ describe("engineering page", () => {
       ).toEqual(project.facts.map((fact) => fact.v));
       const links = record.queryAllByRole("link");
       expect(links.map((link) => link.getAttribute("href"))).toEqual(
-        project.links.map((link) =>
-          link.href === "/app/trips"
-            ? "/trips"
-            : new URL(link.href, "https://jomcgi.dev").href,
+        project.links.map(
+          (link) => new URL(link.href, "https://jomcgi.dev").href,
         ),
       );
       for (const [index, link] of links.entries()) {
@@ -114,14 +112,14 @@ describe("engineering page", () => {
     expect(container.querySelector("[style]")).toBeNull();
   });
 
-  it("opens migrated trips on the preview and keeps notes on the hub", () => {
+  it("keeps unmigrated app links on jomcgi.dev when opened from the preview", () => {
     const preview = new DOMParser().parseFromString(
       prerender("engineering.html"),
       "text/html",
     );
     for (const [label, destination] of [
       ["Browse the notes", "https://jomcgi.dev/app/notes"],
-      ["Live trips", "https://next.jomcgi.dev/trips"],
+      ["Live trips", "https://jomcgi.dev/app/trips"],
     ]) {
       const link = within(preview.body).getByRole("link", { name: label });
       expect(

@@ -316,15 +316,29 @@ function filesUnder(root, prefix = "") {
 const publishedFreshness = JSON.parse(
   readFileSync(new URL("freshness.json", import.meta.url)),
 );
+const publishedSources = JSON.parse(
+  readFileSync(new URL("../data/sources.json", import.meta.url)),
+);
+
+/** The sections the deploy snapshots. A disabled one has no /data files. */
+export function enabledSections(sources) {
+  return new Set(
+    Object.entries(sources.sections)
+      .filter(([, config]) => config.enabled !== false)
+      .map(([name]) => name),
+  );
+}
 
 export async function tier1({
   origin,
   dist,
   preview,
   freshness = publishedFreshness,
+  sources = publishedSources,
   get,
   scope = scopeFor("dev"),
 }) {
+  const enabled = enabledSections(sources);
   const rules = releaseHeaderRules(dist);
   const files = htmlPages(dist);
   assert.ok(files.includes("index.html"), "missing homepage");
@@ -336,7 +350,11 @@ export async function tier1({
     "trip-timeline.html",
   ]);
   const expectedTrips = new Map();
-  if (files.includes("trips.html") && scope.owns("/trips")) {
+  if (
+    files.includes("trips.html") &&
+    enabled.has("trips") &&
+    scope.owns("/trips")
+  ) {
     const readJson = async (url) => {
       const response = await get(url);
       assert.equal(response.status, 200, url);
@@ -420,7 +438,19 @@ export async function tier1({
     );
   }
   await checkLinks(get, links);
-  for (const entry of freshness.filter((entry) => scope.owns(entry.path))) {
+  // A disabled section publishes no /data files, so skip only its entries.
+  const disabled = (path) => {
+    const section = /^\/data\/([^/]+)\//.exec(path)?.[1];
+    return (
+      section !== undefined &&
+      Object.hasOwn(sources.sections, section) &&
+      !enabled.has(section)
+    );
+  };
+  const checked = freshness.filter(
+    (entry) => scope.owns(entry.path) && !disabled(entry.path),
+  );
+  for (const entry of checked) {
     assert.match(
       entry.path,
       /^\/.*\/latest\.json$/,

@@ -80,6 +80,11 @@ export async function snapshot(
 ) {
   const log = [];
   for (const [section, config] of Object.entries(sources.sections)) {
+    // A disabled section has no source objects yet (trips, HOME-452).
+    if (config.enabled === false) {
+      log.push(`${section}: disabled, not snapshotted`);
+      continue;
+    }
     const { bucket, files } = config;
     if (config.format === "trips") {
       const data = await snapshotTrips(config, get, out);
