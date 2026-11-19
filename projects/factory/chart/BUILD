@@ -1,11 +1,6 @@
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
-exports_files(
-    ["Chart.yaml"],
-    visibility = ["//projects/factory/chart/admission:__pkg__"],
-)
-
 # files/ holds scripts the chart mounts from ConfigMaps; they are not Bazel
 # targets, and a BUILD file there would take them out of :chart.
 # gazelle:exclude files
