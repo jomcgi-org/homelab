@@ -26,13 +26,14 @@ const maxGoalReasons = 4000
 // GoalReasons is the newest goal check reply for one head: the reasons
 // before its JSON answer, with the issue and evidence digest it judged.
 type GoalReasons struct {
-	Repository  string `json:"repository"`
-	PullRequest int    `json:"pullRequest"`
-	Head        string `json:"head"`
-	Issue       string `json:"issue"`
-	Digest      string `json:"digest"`
-	Phase       string `json:"phase"`
-	Reasons     string `json:"reasons"`
+	Repository  string   `json:"repository"`
+	PullRequest int      `json:"pullRequest"`
+	Head        string   `json:"head"`
+	Issue       string   `json:"issue"`
+	Digest      string   `json:"digest"`
+	Phase       string   `json:"phase"`
+	Findings    []string `json:"findings,omitempty"`
+	Reasons     string   `json:"reasons"`
 }
 
 var (
@@ -74,8 +75,25 @@ func (s *FileGoalAudit) Reasons(repo string, pr int, head string) (GoalReasons, 
 	if reasons == "" {
 		return GoalReasons{}, false
 	}
+	var findings []string
+	if answer, err := ParseGoal(best.Reply); err == nil {
+		for _, c := range answer.Criteria {
+			if c.Verdict != "not_met" {
+				continue
+			}
+			prefix := "Criterion " + strconv.Itoa(c.Criterion) + ": "
+			reason := "The implementation does not demonstrate this criterion."
+			for _, line := range strings.Split(reasons, "\n") {
+				if detail, ok := strings.CutPrefix(strings.TrimSpace(line), prefix); ok && detail != "" {
+					reason = clip(detail, 160)
+					break
+				}
+			}
+			findings = append(findings, prefix+reason)
+		}
+	}
 	return GoalReasons{
-		Repository: best.Repository, PullRequest: best.PullRequest, Head: best.Head,
+		Findings: findings, Repository: best.Repository, PullRequest: best.PullRequest, Head: best.Head,
 		Issue: best.Issue, Digest: best.Digest, Phase: best.Phase, Reasons: clip(reasons, maxGoalReasons),
 	}, true
 }

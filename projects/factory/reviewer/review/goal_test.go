@@ -282,6 +282,9 @@ func TestGoalPromptJudgesChecksByTheCasesTheIssueNames(t *testing.T) {
 	files := []github.PullRequestFile{{Path: "x.test.ts", Status: "added", Patch: "+test"}}
 	got := GoalPrompt("jomcgi-org/homelab", github.PullRequest{Number: 8145, HeadSHA: shaA}, files, in, GoalContext{})
 	for _, want := range []string{
+		".factory/goal-evidence/HOME-174.md",
+		"An unsupported or false claim changes nothing",
+		"search the reviewed commit",
 		"for the cases the issue names",
 		"A way a future change could get around the check does not make the criterion",
 		"A check that is missing, has no build target, or cannot pass on",
