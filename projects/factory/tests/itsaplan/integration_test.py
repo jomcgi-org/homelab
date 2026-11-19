@@ -173,6 +173,18 @@ def test_upstream_factory_contracts(tmp_path):
                 cwd=upstream,
                 env=env,
             )
+            run(
+                [
+                    pg_bin / "psql",
+                    "-X",
+                    env["DATABASE_URL"],
+                    "-v",
+                    "ON_ERROR_STOP=1",
+                    "-f",
+                    Path(os.environ["CLAIMS_TEST"]),
+                ],
+                env=env,
+            )
             env["DATABASE_URL"] = f"postgres://test@127.0.0.1:{port}/factory_test"
             env["ITSAPLAN_DATABASE_URL"] = env["DATABASE_URL"]
             env["FACTORY_CONNECTOR_DATABASE_URL"] = (
