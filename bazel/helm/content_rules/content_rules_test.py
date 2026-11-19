@@ -1,5 +1,6 @@
 # invariant: PLAT-13
 # invariant: LIB-6
+# invariant: LIB-8
 """Each content rule passes a good manifest and fails a bad one (HOME-350)."""
 
 import copy
@@ -493,3 +494,47 @@ def test_replicationcontroller_create_fails():
         ],
     }
     assert any("creates workloads" in p for p in check([role], NS))
+
+
+def public_r2_item(namespace=NS):
+    return {
+        "apiVersion": "onepassword.com/v1",
+        "kind": "OnePasswordItem",
+        "metadata": {"name": "app-mirror-r2", "namespace": namespace},
+        "spec": {"itemPath": "vaults/k8s-homelab/items/factory-r2-public-mirror"},
+    }
+
+
+def r2_mirror(bucket):
+    env = [{"name": "R2_BUCKET", "value": bucket}]
+    doc = deployment(pod={"containers": [container(env=env)]})
+    doc["kind"] = "CronJob"
+    doc["apiVersion"] = "batch/v1"
+    doc["spec"] = {"jobTemplate": {"spec": doc["spec"]}, "schedule": "* * * * *"}
+    return doc
+
+
+def test_public_r2_token_outside_factory_public_fails():
+    assert check([public_r2_item()], NS) == [
+        "OnePasswordItem/app-mirror-r2: holds the factory-public R2 token; "
+        "declare the Garage bucket as a public.sources entry of the "
+        "factory-public release"
+    ]
+
+
+def test_mirror_into_factory_public_outside_its_namespace_fails():
+    assert check([r2_mirror("factory-public")], NS) == [
+        "CronJob/app: container app mirrors into R2 factory-public; declare the "
+        "Garage bucket as a public.sources entry of the factory-public release"
+    ]
+
+
+def test_factory_public_release_holds_its_own_token():
+    docs = [public_r2_item("factory-public"), r2_mirror("factory-public")]
+    for doc in docs:
+        doc["metadata"]["namespace"] = "factory-public"
+    assert check(docs, "factory-public") == []
+
+
+def test_mirror_into_another_r2_bucket_passes():
+    assert check([r2_mirror("elsewhere")], NS) == []

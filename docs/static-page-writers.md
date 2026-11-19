@@ -1,11 +1,12 @@
 # Publishing factory data for static pages
 
 A factory-cluster writer declares a Garage bucket claim in its chart with
-`access: write` and a public mirror. The mirror sets `public.r2Bucket: factory-public`,
-its own `public.r2Prefix` and `public.manifestName: latest.json`. The writer uses only the
-claim's scoped Garage S3 credential. The platform provisions the bucket and
-runs the mirror with its own destination credential. Writers create no buckets
-and hold no R2 admin credentials. Only place public data in a mirrored bucket.
+`access: write` and no `public` block. The writer uses only the claim's scoped
+Garage S3 credential. To publish the bucket, add a `public.sources` entry with
+the bucket, its own `r2Prefix` and `manifestName: latest.json` to
+`projects/factory-public/chart/values.yaml`. The `factory-public` release
+then mirrors the bucket with a read-only Garage key. Writers create no buckets
+and hold no R2 credentials. Only place public data in a mirrored bucket.
 See the [factory library bucket example](../projects/shared/helm/factory-library/README.md).
 
 Hash the exact bytes of each payload and include the digest in its object key,
@@ -16,11 +17,13 @@ complete generation and `Cache-Control: public, max-age=60`. Give each
 independent writer its own Garage bucket and R2 prefix so publishers cannot overwrite each other's index.
 
 All writers share one R2 bucket, `factory-public`, public at
-`https://factory-data.jomcgi.dev` (HOME-492). `rclone sync` deletes what its
-Garage bucket lacks, so each mirror writes and deletes only under its prefix.
-The root mirror excludes every prefix. The
+`https://factory-data.jomcgi.dev` (HOME-492). Only the `factory-public`
+release holds its R2 token. Each source mirror writes and deletes only under
+its prefix, and the root sync excludes every source prefix. The
 [library rule](../projects/shared/helm/factory-library/README.md#one-public-r2-bucket)
-and its repository test enforce this.
+and a content rule enforce this. Stars publishes at
+`https://factory-data.jomcgi.dev/stars-forecast/latest.json` and Hikes at
+`https://factory-data.jomcgi.dev/hikes/latest.json`.
 
 The [mirror template](../projects/shared/helm/factory-library/chart/templates/_mirror.tpl)
 excludes exactly `/latest.json` from the immutable payload transfer and

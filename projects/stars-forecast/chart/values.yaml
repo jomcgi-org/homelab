@@ -5,15 +5,10 @@ image:
 buckets:
 - name: stars-state
   access: readwrite
+# The factory-public release mirrors this bucket to R2 (HOME-492). This
+# chart holds no R2 credential.
 - name: stars-forecast
   access: write
-  public:
-    # One public R2 bucket, one prefix for each writer (HOME-492).
-    r2Bucket: factory-public
-    r2Prefix: stars-forecast
-    itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
-    manifestName: latest.json
-    suspend: true
 workloads:
   refresh:
     writablePaths:

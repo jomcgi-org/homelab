@@ -7,6 +7,12 @@ import subprocess
 import yaml
 
 HERE = Path(__file__).resolve().parent
+# The root mirror, then one mirror for each public.sources entry (HOME-492).
+MIRRORS = [
+    "factory-public-factory-public-mirror",
+    "factory-public-stars-forecast-mirror",
+    "factory-public-hikes-mirror",
+]
 
 
 def test_public_consumer():
@@ -80,8 +86,21 @@ def test_public_consumer():
             "factory-health",
             "read",
         ),
+        # The source mirrors read the writers' buckets and write none (HOME-492).
+        (
+            "factory-public",
+            "factory-public-stars-forecast-mirror-s3",
+            "stars-forecast",
+            "read",
+        ),
+        (
+            "factory-public",
+            "factory-public-hikes-mirror-s3",
+            "hikes",
+            "read",
+        ),
     }
-    # Only the mirror's ServiceAccount may mount the R2 Secret: one denying
+    # Only each mirror's ServiceAccount may mount its R2 Secret: one denying
     # policy each for Pods, Jobs and CronJobs, each with its binding.
     policies = [d for d in docs if d["kind"] == "ValidatingAdmissionPolicy"]
     bindings = {
@@ -91,17 +110,22 @@ def test_public_consumer():
     }
     assert set(bindings) == {p["metadata"]["name"] for p in policies}
     assert all(actions == ["Deny"] for actions in bindings.values())
-    assert sorted(
-        resource
-        for p in policies
-        for rule in p["spec"]["matchConstraints"]["resourceRules"]
-        for resource in rule["resources"]
-    ) == ["cronjobs", "jobs", "pods", "pods/ephemeralcontainers"]
-    assert all(
-        '"factory-public-factory-public-mirror"' in v["expression"]
-        for p in policies
-        for v in p["spec"]["validations"]
-    )
+    for mirror in MIRRORS:
+        own = [
+            p
+            for p in policies
+            if p["metadata"]["name"].startswith(f"factory-public-{mirror}-r2")
+        ]
+        assert sorted(
+            resource
+            for p in own
+            for rule in p["spec"]["matchConstraints"]["resourceRules"]
+            for resource in rule["resources"]
+        ) == ["cronjobs", "jobs", "pods", "pods/ephemeralcontainers"]
+        assert all(
+            f'"{mirror}"' in p["spec"]["validations"][0]["expression"] for p in own
+        )
+    assert len(policies) == 3 * len(MIRRORS)
     policy = by_name["CiliumNetworkPolicy", "factory-public-factory-public-mirror"][
         "spec"
     ]
@@ -205,10 +229,36 @@ def test_mirror_publishes_only_health_json_from_the_health_bucket():
         "command"
     ][2]
     assert "--exclude /health.json" in script
-    # Other charts mirror into these prefixes; the root sync keeps them.
-    assert "  --exclude '/hikes/**' \\\n" in script
+    # The sources own these prefixes; the root sync keeps them.
     assert "  --exclude '/stars-forecast/**' \\\n" in script
+    assert "  --exclude '/hikes/**' \\\n" in script
     assert (
         'copyto "SRC0:factory-health/health.json" "R2:$R2_BUCKET/health.json" \\\n'
         '    --ignore-times --header-upload "Cache-Control: public, max-age=60"'
     ) in script
+
+
+def test_sources_mirror_writer_buckets_under_their_prefixes():
+    docs = render()
+    for prefix in ("stars-forecast", "hikes"):
+        name = f"factory-public-{prefix}-mirror"
+        job = docs["CronJob", name]["spec"]
+        # HOME-478 (Stars) and HOME-477 (Hikes) unsuspend them.
+        assert job["suspend"] is True
+        assert job["schedule"] == "* * * * *"
+        container = job["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
+        env = {e["name"]: e.get("value") for e in container["env"]}
+        assert (env["GARAGE_BUCKET"], env["R2_BUCKET"]) == (prefix, "factory-public")
+        script = container["command"][2]
+        assert (
+            f'run sync "GARAGE:$GARAGE_BUCKET" "R2:$R2_BUCKET/{prefix}" \\\n' in script
+        )
+        assert f'"R2:$R2_BUCKET/{prefix}/latest.json"' in script
+        # Every R2 path in the script stays under the prefix.
+        assert script.count('"R2:$R2_BUCKET') == script.count(
+            f'"R2:$R2_BUCKET/{prefix}'
+        )
+        item = docs["OnePasswordItem", f"{name}-r2"]
+        assert item["spec"]["itemPath"] == (
+            "vaults/k8s-homelab/items/factory-r2-public-mirror"
+        )

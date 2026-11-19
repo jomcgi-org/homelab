@@ -27,26 +27,15 @@ def test_writer_schedules_and_credentials():
         and doc["metadata"].get("labels", {}).get("factory.jomcgi.dev/garage-claim")
         == "true"
     }
-    assert claims == {
-        "hikes-hikes-s3": ("hikes", "readwrite"),
-        "hikes-hikes-mirror-s3": ("hikes", "read"),
-    }
+    # The factory-public release mirrors the bucket (HOME-492). This
+    # namespace holds no R2 credential and runs no mirror.
+    assert claims == {"hikes-hikes-s3": ("hikes", "readwrite")}
+    assert "R2_BUCKET" not in result
+    assert "factory-r2-public-mirror" not in result
     jobs = {
         d["metadata"]["name"]: d["spec"] for d in documents if d["kind"] == "CronJob"
     }
     assert all(job["suspend"] for job in jobs.values())
-    # One prefix of the shared public R2 bucket (HOME-492).
-    mirror = jobs["hikes-hikes-mirror"]["jobTemplate"]["spec"]["template"]["spec"]
-    env = {e["name"]: e.get("value") for e in mirror["containers"][0]["env"]}
-    assert (env["R2_BUCKET"], env["R2_PREFIX"]) == ("factory-public", "hikes")
-    items = {
-        d["metadata"]["name"]: d["spec"]["itemPath"]
-        for d in documents
-        if d["kind"] == "OnePasswordItem"
-    }
-    assert items["hikes-hikes-mirror-r2"] == (
-        "vaults/k8s-homelab/items/factory-r2-public-mirror"
-    )
     assert jobs["hikes-refresh"]["schedule"] == "20 */2 * * *"
     assert jobs["hikes-prune"]["schedule"] == "40 * * * *"
     for mode in ("catalogue", "refresh", "prune"):
