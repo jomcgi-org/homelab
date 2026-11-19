@@ -149,6 +149,7 @@ entries:
             user = request.context["pending_user"]
             if not user.all_groups().filter(name="bosun-member").exists():
                 user.groups.add(Group.objects.get(name="bosun-applicants"))
+            request.context["flow_plan"].context["redirect"] = "/bosun/application-complete"
         return True
   - model: authentik_policies.policybinding
     identifiers:

@@ -115,8 +115,8 @@ def finish_setup(browser, url, challenge):
         digits=int(query.get("digits", ["6"])[0]),
         step=int(query.get("period", ["30"])[0]),
     )
-    submit_code(browser, url, challenge["component"], device)
-    return device
+    completed = submit_code(browser, url, challenge["component"], device)
+    return device, completed
 
 
 def exercise():
@@ -151,7 +151,7 @@ def exercise():
         challenge = advance(browser, browser.get(url))
         assert challenge["component"] == "ak-stage-authenticator-totp"
         assert sessions("discord-42") == 0
-    device = finish_setup(browser, url, challenge)
+    device, _ = finish_setup(browser, url, challenge)
     user = User.objects.get(username="discord-42")
     assert sessions("discord-42") == 1
     user.groups.remove(viewers)
@@ -187,7 +187,9 @@ def exercise_application():
         if flow == "enrollment":
             assert challenge["to"] == start["to"]
     assert challenge["component"] == "ak-stage-authenticator-totp"
-    finish_setup(browser, executor("authentication"), challenge)
+    _, completed = finish_setup(browser, executor("authentication"), challenge)
+    assert completed["final_redirect"]
+    assert completed["to"] == "/bosun/application-complete"
     user = User.objects.get(username="discord-44")
     assert sessions(user.username) == 1
     assert list(user.all_groups().values_list("name", flat=True)) == [

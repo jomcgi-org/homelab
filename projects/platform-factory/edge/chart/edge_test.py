@@ -162,6 +162,16 @@ def test_edge_guards(docs):
     )
 
 
+def test_bosun_completion_page(docs):
+    rules = docs["HTTPRoute", "authentik"]["spec"]["rules"]
+    match = {"path": {"type": "Exact", "value": "/bosun/application-complete"}}
+    (rule,) = [r for r in rules if match in r["matches"]]
+    ref = rule["filters"][0]["extensionRef"]
+    response = docs[ref["kind"], ref["name"]]["spec"]["directResponse"]
+    assert response["statusCode"] == 200
+    assert "Bosun sign-up complete" in response["body"]["inline"]
+
+
 def test_only_kagent_forwards_the_access_token(docs):
     policies = {
         name: doc for (kind, name), doc in docs.items() if kind == "SecurityPolicy"
