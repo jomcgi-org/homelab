@@ -114,6 +114,17 @@ def test_edge_guards(docs):
     assert route["spec"]["parentRefs"] == [
         {**policy["targetRefs"][0], "namespace": "edge"}
     ]
+    assert policy["targetRefs"] == [
+        {"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": "edge"}
+    ]
+    assert policy["oidc"]["provider"]["issuer"].startswith("https://factory-auth.jomcgi.dev/")
+    runbook_auth = policy["authorization"]
+    assert runbook_auth["defaultAction"] == "Deny"
+    assert [
+        (rule["action"], claim["name"], claim["values"])
+        for rule in runbook_auth["rules"]
+        for claim in rule["principal"]["jwt"]["claims"]
+    ] == [("Allow", "groups", ["authentik Admins"])]
     for (kind, _), doc in docs.items():
         if kind == "SecurityPolicy":
             assert all(
