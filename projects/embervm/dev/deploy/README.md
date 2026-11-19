@@ -29,13 +29,18 @@ HOME-476 merge. Set `HUB_CONTEXT` to the hub's kubectl context.
 2. Delete the `embervm-dev` namespace.
 
    ```sh
-   kubectl --context "$HUB_CONTEXT" -n embervm-dev get deployments,workloads,pvc
+   kubectl --context "$HUB_CONTEXT" -n embervm-dev get deployments,pvc
+   if kubectl --context "$HUB_CONTEXT" get crd workloads.embervm.dev >/dev/null 2>&1; then
+     kubectl --context "$HUB_CONTEXT" -n embervm-dev get workloads.embervm.dev
+   fi
    kubectl --context "$HUB_CONTEXT" delete namespace embervm-dev --timeout=10m
    kubectl --context "$HUB_CONTEXT" get pv -o jsonpath='{range .items[?(@.spec.claimRef.namespace=="embervm-dev")]}{.metadata.name}{"\n"}{end}'
    ```
 
-   The first command lists the dev Deployments, Workloads and the 1Gi
-   `embervm-dev-embervm-oplog` PVC. The namespace delete removes all of them,
+   The first command lists the dev Deployments and the 1Gi
+   `embervm-dev-embervm-oplog` PVC. The second lists the dev Workloads only if
+   the `workloads.embervm.dev` CRD still exists: the `embervm` cascade may
+   already have deleted it (step 4). The namespace delete removes all of them,
    with the PVC's `standard-rwo` disk. Joe allowed the op-log disposal
    ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-476#comment-5552)).
    The `get pv` command must print nothing. If the namespace stays
