@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import App from "./App.vue";
 import { ref, onMounted } from "vue";
-import { userManager, getIdToken } from "./apiConfig";
+import {
+  userManager,
+  getIdToken,
+  completeSignin,
+  nextWindow,
+  restart,
+} from "./apiConfig";
 
 const oidcCompleted = ref(false);
 const message = ref("Handling OIDC authentication...");
@@ -15,6 +21,7 @@ onMounted(async () => {
     const path = window.location.pathname.replace(base, "");
     if (path === "/oidc/callback") {
       await userManager.signinRedirectCallback();
+      completeSignin();
       window.location.replace("/");
     } else if (path === "/oidc/logout") {
       await userManager.removeUser();
@@ -30,7 +37,15 @@ onMounted(async () => {
 </script>
 
 <template>
-  <App v-if="oidcCompleted" />
+  <main v-if="nextWindow !== null">
+    <h1>Time’s up</h1>
+    <p v-if="nextWindow">
+      Your next window opens at {{ new Date(nextWindow).toLocaleString() }}.
+    </p>
+    <p v-else>Your explorer session has expired.</p>
+    <button type="button" @click="restart">Sign in again</button>
+  </main>
+  <App v-else-if="oidcCompleted" />
   <div v-else>
     {{ message }}
   </div>
