@@ -451,11 +451,8 @@ GitHub's `CONFLICTING` mergeability asks the agent to rebase on the bound
 `origin/<base>` and resolve. This stays one ejection round against the review
 bound and consumes the head's conflict event, so an unchanged head cannot
 start another rebase round on a later review poll. If the review bound is
-already exhausted, the ejection fences the head's conflict trigger as
-`round_limit` in the same transaction and waits for a person, even if GitHub
-reports `UNKNOWN` or `MERGEABLE` at that time. A later `CONFLICTING` result
-on that head cannot switch to the separate rebase budget. A new head remains
-eligible for that budget. A CI infrastructure flake
+already exhausted, the next review poll handles a conflicting head against
+the separate rebase bound. A CI infrastructure flake
 may be repaired by rebasing and re-pushing the same change; the new head needs
 the usual checks and independent review.
 
