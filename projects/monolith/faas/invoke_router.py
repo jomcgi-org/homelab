@@ -40,6 +40,7 @@ Response mapping (EmberVM ``?wait=true`` semantics, from
   fallback, NOT a guest response). Mapped to 504 for the caller.
 - A read timeout reaching us before EmberVM answers (``EmberVMTimeout``): 504.
 - A connect failure (``EmberVMTransportError``): 502.
+- No ``EMBERVM_URL`` (EmberVM retired, HOME-472): 503 before any relay.
 """
 
 from __future__ import annotations
@@ -84,7 +85,12 @@ async def invoke_function(
     404 if the function is unknown OR not yet smoke-passed (invisible): the two
     are deliberately indistinguishable to the caller (do not leak existence of an
     un-smoked function).
+
+    503 before any lookup or relay when EMBERVM_URL is unset: EmberVM is
+    retired (HOME-472), so there is no runtime to relay to.
     """
+    if not embervm_client.EMBERVM_URL:
+        return _json(503, {"error": "function invocation is disabled"})
     fn = get_visible_function(session, name)
     if fn is None:
         return _json(404, {"error": "function not found"})

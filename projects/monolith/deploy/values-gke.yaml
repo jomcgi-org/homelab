@@ -15,8 +15,9 @@ agentSessions:
 frontend:
   qwenApiBase: "http://inference-bridge-freetoken.tailscale.svc.cluster.local:8090"
 
-semgrep:
-  embervmUrl: ""
+# HOME-472: semgrep.embervmUrl keeps its deploy/values.yaml value until the
+# hub runs a backend that answers 503 for function invocation and refuses
+# registration without it. Empty it after that.
 
 rbac:
   # HOME-472: rbac.faas stays on until the hub runs a backend that refuses

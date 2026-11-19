@@ -96,6 +96,7 @@ def submitted(monkeypatch):
             raise state["raises"]
         return state["response"]
 
+    monkeypatch.setattr(mod.embervm_client, "EMBERVM_URL", "http://embervm.test")
     monkeypatch.setattr(mod.embervm_client, "submit", _submit)
     return state
 
@@ -130,6 +131,20 @@ def test_unknown_function_is_404(client, session, submitted):
     assert resp.status_code == 404
     assert resp.json() == {"error": "function not found"}
     assert submitted["calls"] == []  # never submitted
+
+
+@pytest.mark.parametrize("name", ["echo", "nope"])
+def test_disabled_invocation_never_relays(
+    client, session, submitted, monkeypatch, name
+):
+    # HOME-472: without EMBERVM_URL the router answers 503 before any lookup
+    # or relay, for a registered function and an unknown name alike.
+    _add_function(session, "echo", visible=True)
+    monkeypatch.setattr(embervm_client, "EMBERVM_URL", "")
+    resp = client.post(f"/functions/{name}/render", content=b"x")
+    assert resp.status_code == 503
+    assert resp.json() == {"error": "function invocation is disabled"}
+    assert submitted["calls"] == []
 
 
 def test_invisible_function_is_404(client, session, submitted):

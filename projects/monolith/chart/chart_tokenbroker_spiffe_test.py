@@ -227,7 +227,10 @@ def test_hub_has_no_embervm_consumers() -> None:
     pod = deployment["spec"]["template"]["spec"]
     env = _env(_container(deployment, "backend"))
 
-    assert "EMBERVM_URL" not in env
+    # EMBERVM_URL stays until the hub runs the backend that answers 503 for
+    # function invocation and refuses registration without it (HOME-472
+    # activation).
+    assert env["EMBERVM_URL"] == "http://embervm-embervm.embervm.svc.cluster.local:8080"
     assert "embervm" not in env["CD_HEALTH_KARGO_APPS"]
     assert all(c["name"] != "tokenbroker-spiffe-helper" for c in pod["containers"])
     grants = {
