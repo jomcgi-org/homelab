@@ -275,11 +275,11 @@ func issueCriteria(in *IssueContext) int {
 	items, state, style := 0, 0, "" // state: 0 before the heading, 1 in the list, 2 after it
 	text := strings.ReplaceAll(strings.ReplaceAll(in.Issue.Description, "\r\n", "\n"), "\r", "\n")
 	// Comments, code blocks and HTML can hide or fake list items, anywhere
-	// in a line. Rather than parse them, count nothing when the issue has a
-	// "<", "```" or "~~~". Such an issue, for example one with a diagram,
-	// keeps main's rules.
+	// in a line. Rather than parse them, count nothing when the issue has an
+	// HTML tag start, "```" or "~~~". Such an issue, for example one with a
+	// diagram, keeps main's rules. A comparison such as "< 200 ms" counts.
 	// Thematic breaks and setext underlines change what nearby lines mean.
-	if strings.ContainsAny(text, "<") || strings.Contains(text, "```") || strings.Contains(text, "~~~") || ruleLine.MatchString(text) {
+	if htmlStart.MatchString(text) || strings.Contains(text, "```") || strings.Contains(text, "~~~") || ruleLine.MatchString(text) {
 		return 0
 	}
 	for raw := range strings.SplitSeq(text, "\n") {
@@ -338,6 +338,8 @@ var (
 	// listMarker is anything Markdown could read as a list item, at any
 	// indent, including an empty one.
 	listMarker = regexp.MustCompile(`^[ \t]*(?:[0-9]{1,9}[.)]|[-*+])(?:[ \t]|$)`)
+	// htmlStart is the start of an HTML tag, comment or declaration.
+	htmlStart = regexp.MustCompile(`<[A-Za-z/!?]`)
 	// ruleLine is a line of only rule characters: a thematic break or a
 	// setext heading underline.
 	ruleLine = regexp.MustCompile(`(?m)^[ \t]*(?:[-*_=][ \t]*){3,}$`)
