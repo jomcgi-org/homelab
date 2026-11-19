@@ -27,7 +27,7 @@ cookieConfig:
   sameSite: Lax
 # No refresh: when the access token expires (10 minutes, set on the
 # factory-edge provider) Envoy sends the browser back to Authentik, which
-# re-checks the authentik Admins binding. Removing someone from the group
+# re-checks the group bindings. Removing someone from both operator groups
 # ends their edge access within that window; an active Authentik session
 # makes the round trip invisible to everyone else.
 refreshToken: false
@@ -61,4 +61,5 @@ authorization:
               valueType: StringArray
               values:
                 - authentik Admins
+                - factory-operators
 {{- end -}}

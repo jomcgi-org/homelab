@@ -5,7 +5,7 @@ metadata:
     blueprints.goauthentik.io/description: |
       kubectl for the factory home cluster at factory-kube.jomcgi.dev. A public
       client signs people in with kubelogin; the Envoy edge and the API server
-      both check its ID token. authentik Admins get cluster-admin, and
+      both check its ID token. Both operator groups get cluster-admin, and
       factory-kube-viewers get read-only access to the namespaces RBAC names
       (projects/platform-factory/kube-access/).
 entries:
@@ -98,6 +98,15 @@ entries:
       target: !KeyOf kubectl-app
       group: !Find [authentik_core.group, [name, authentik Admins]]
       order: 0
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf kubectl-app
+      group: !Find [authentik_core.group, [name, factory-operators]]
+      order: 5
     attrs:
       enabled: true
       negate: false

@@ -195,11 +195,15 @@ func TestAdminSubject(t *testing.T) {
 	idp.Publish(key)
 	now := time.Now()
 	v := newVerifier(t, idp, &clock{now: now})
-	for field, bad := range map[string]any{"valid": nil, "iss": "other", "aud": "other", "groups": []string{"users"}, "exp": now.Unix()} {
+	for field, bad := range map[string]any{"valid": nil, "operator": nil, "iss": "other", "aud": "other", "groups": []string{"users"}, "exp": now.Unix()} {
 		claims := map[string]any{"iss": idp.URL, "aud": audience, "sub": "operator", "exp": now.Add(time.Minute).Unix(), "groups": []string{"authentik Admins"}}
-		claims[field] = bad
+		if field == "operator" {
+			claims["groups"] = []string{"factory-operators"}
+		} else {
+			claims[field] = bad
+		}
 		subject, err := v.AdminSubject(context.Background(), key.Sign(t, claims))
-		if (field == "valid") != (err == nil && subject == "operator") {
+		if (field == "valid" || field == "operator") != (err == nil && subject == "operator") {
 			t.Fatalf("%s: subject %q, err %v", field, subject, err)
 		}
 	}

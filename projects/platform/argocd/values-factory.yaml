@@ -86,11 +86,12 @@ argo-cd:
           - profile
           - email
     rbac:
-      # Authentik's groups claim; the provider admits only authentik Admins
+      # Authentik's groups claim; the provider admits both factory operator groups
       # (projects/platform/authentik/factory-blueprints/).
       scopes: "[groups]"
       policy.default: ""
       policy.csv: |
         g, authentik Admins, role:admin
+        g, factory-operators, role:admin
     params:
       server.insecure: "true"

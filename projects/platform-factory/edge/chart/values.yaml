@@ -87,6 +87,7 @@ kubeAPI:
   # projects/platform-factory/kube-access/ decides what each group may do.
   groups:
     - authentik Admins
+    - factory-operators
     - factory-kube-viewers
 
 proxy:

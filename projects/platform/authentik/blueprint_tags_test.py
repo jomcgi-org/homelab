@@ -325,6 +325,7 @@ def test_factory_explore_sign_in():
     # Admins keep access while the explorer group starts empty.
     assert bindings == {
         "0": ["authentik_core.group", ["name", "authentik Admins"]],
+        "5": ["authentik_core.group", ["name", "factory-operators"]],
         "10": group["id"],
     }
     (provider,) = (

@@ -55,7 +55,7 @@ entries:
       provider: !KeyOf explore-provider
       policy_engine_mode: any
 
-  # Who may sign in. With policy_engine_mode any, either group admits.
+  # Who may sign in. With policy_engine_mode any, any bound group admits.
   # Joe keeps access through authentik Admins. factory-explorer-users starts
   # empty; members are added by hand as explorers are invited.
   - model: authentik_policies.policybinding
@@ -63,6 +63,15 @@ entries:
       target: !KeyOf explore-app
       group: !Find [authentik_core.group, [name, authentik Admins]]
       order: 0
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf explore-app
+      group: !Find [authentik_core.group, [name, factory-operators]]
+      order: 5
     attrs:
       enabled: true
       negate: false

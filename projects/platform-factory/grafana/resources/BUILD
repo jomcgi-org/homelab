@@ -20,3 +20,9 @@ py_test(
         "@platforms//os:linux",
     ],
 )
+
+py_test(
+    name = "oauth_test",
+    srcs = ["oauth_test.py"],
+    data = ["grafana.ini"],
+)

@@ -4,8 +4,8 @@ metadata:
   labels:
     blueprints.goauthentik.io/description: |
       itsaplan's own OIDC client at factory-plan.jomcgi.dev, behind the edge
-      Gateway's sign-in. Like the edge and ArgoCD clients it admits only the
-      authentik Admins group, and every sign-in needs a second factor.
+      Gateway's sign-in. Like the edge and ArgoCD clients it admits
+      factory-operators and authentik Admins, and every sign-in needs a second factor.
 entries:
   # itsaplan runs the authorization-code flow as a confidential client. Its
   # bootstrap Job (projects/factory/chart/templates/itsaplan-jobs.yaml) sets
@@ -68,6 +68,7 @@ entries:
       slug: factory-itsaplan
     attrs:
       name: Factory plan
+      policy_engine_mode: any
       provider: !KeyOf itsaplan-provider
       meta_launch_url: https://factory-plan.jomcgi.dev/
       meta_description: itsaplan, the factory's work requests and run queue.
@@ -77,6 +78,15 @@ entries:
       target: !KeyOf itsaplan-app
       group: !Find [authentik_core.group, [name, authentik Admins]]
       order: 0
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf itsaplan-app
+      group: !Find [authentik_core.group, [name, factory-operators]]
+      order: 5
     attrs:
       enabled: true
       negate: false
