@@ -19,8 +19,8 @@ semgrep:
   embervmUrl: ""
 
 rbac:
-  faas:
-    enabled: false
+  # HOME-472: rbac.faas stays on until the hub runs a backend that refuses
+  # function registration before any archive write. Turn it off after that.
   kargoPromote:
     namespaces:
       - kargo-monolith

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -56,6 +57,21 @@ _READY_TIMEOUT_S = 180
 _SMOKE_READ_TIMEOUT = 35.0
 
 
+# The chart sets this from rbac.faas.enabled, the grant that lets the backend
+# write Workload CRs. Unset counts as off.
+_WORKLOADS_ENABLED_ENV = "FAAS_WORKLOADS_ENABLED"
+
+
+def _registration_enabled() -> bool:
+    """Report whether a registration can create its Workload and smoke it.
+
+    EmberVM is retired (HOME-472). Without the Workload grant or EMBERVM_URL a
+    registration cannot finish, so it must refuse before it writes an archive.
+    """
+    flag = os.environ.get(_WORKLOADS_ENABLED_ENV, "").strip().lower()
+    return flag == "true" and bool(embervm_client.EMBERVM_URL)
+
+
 def _parse_requirements(raw: str | None) -> list[str]:
     """Split a comma/newline-separated requirements field into top-level names."""
     if not raw:
@@ -76,6 +92,8 @@ async def register_function(
     session: Session = Depends(get_session),
 ) -> dict:
     """Register a function: validate, upload, build, smoke-gate, then make visible."""
+    if not _registration_enabled():
+        raise HTTPException(status_code=503, detail="function registration is disabled")
     created_by = verified_email(request) or "api"
 
     # --- Validation chain (no side effects persisted before this passes) ---
