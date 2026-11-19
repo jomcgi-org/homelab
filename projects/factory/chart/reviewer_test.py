@@ -517,6 +517,42 @@ def test_review_binding_gets_isolated_agent_and_egress_credentials() -> None:
         ]
 
 
+def test_only_the_review_harness_takes_the_workload_image() -> None:
+    # Deploy values leave it empty: every Harness keeps kagent's image.
+    assert yaml.safe_load(_DEPLOY.read_text())["reviewer"].get("harnessImage", "") == ""
+    for docs in (_render(), _render(_TWO_REPOSITORIES)):
+        harnesses = [d for d in docs if d["kind"] == "Harness"]
+        assert harnesses
+        assert all("workload" not in h["spec"] for h in harnesses)
+    image = "ghcr.io/jomcgi/homelab/projects/factory/reviewer/harness@sha256:" + "d" * 64
+    docs = _render(_TWO_REPOSITORIES + ["reviewer.harnessImage=" + image])
+    workloads = {
+        h["metadata"]["namespace"]: h["spec"].get("workload")
+        for h in docs
+        if h["kind"] == "Harness"
+    }
+    assert workloads == {
+        "factory-r-homelab": None,
+        "factory-r-second": None,
+        "factory-r-homelab-review": {"image": image},
+        "factory-r-second-review": {"image": image},
+    }
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        "reviewer.harnessImage=ghcr.io/x/y:latest",
+        "reviewer.harnessImage=ghcr.io/x/y@sha256:abc",
+        # A coding binding cannot take a workload image.
+        "repositories[0].workloadImage=ghcr.io/x/y@sha256:" + "d" * 64,
+    ],
+)
+def test_only_a_pinned_review_harness_image_is_accepted(override: str) -> None:
+    with pytest.raises(RuntimeError, match="schema"):
+        _render([override])
+
+
 def test_broker_keeps_apps_subjects_and_secret_writes_separate() -> None:
     docs = _render()
     config = _config(docs, "factory-broker")

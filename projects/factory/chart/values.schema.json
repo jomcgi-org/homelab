@@ -552,6 +552,10 @@
           "type": "string",
           "pattern": "^[^\\s/]*$"
         },
+        "harnessImage": {
+          "type": "string",
+          "pattern": "^(|[^\\s@]+@sha256:[0-9a-f]{64})$"
+        },
         "concurrency": {
           "type": "integer",
           "minimum": 1

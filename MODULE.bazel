@@ -456,6 +456,17 @@ private_oci_layer(
     visibility_to = ["//bazel/tools/mandoline:__pkg__"],
 )
 
+# Base of the private reviewer harness image (projects/factory/reviewer/harness).
+# Keep the digest equal to kagent.config.harnessImages.codex in
+# projects/factory/deploy/values.yaml; harness_image_test checks it.
+oci.pull(
+    name = "codex_harness",
+    digest = "sha256:51d92a9c9b5e819325e89491a80678539fc60dc7713a6e4e4b150ff9adc0a3cb",
+    image = "ghcr.io/jomcgi-org/kagent/codex-harness",
+    platforms = ["linux/amd64"],
+)
+use_repo(oci, "codex_harness", "codex_harness_linux_amd64")
+
 #########################
 # PostgreSQL test fixtures — extract PG16 + pgvector binaries from OCI
 postgres = use_extension("//bazel/tools/postgres:extensions.bzl", "postgres")
