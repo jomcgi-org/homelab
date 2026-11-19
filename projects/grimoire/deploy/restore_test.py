@@ -327,6 +327,100 @@ def test_runtime_logins_get_rows_but_no_ddl(restored):
         assert "permission denied for schema grimoire" in ddl.stderr
 
 
+def sequence_privileges(env, sequence):
+    # (USAGE, UPDATE) for each runtime login.
+    query = (
+        "SELECT string_agg(has_sequence_privilege(login, '{0}', 'USAGE')::text"
+        " || '/' || has_sequence_privilege(login, '{0}', 'UPDATE')::text, ' ' ORDER BY login)"
+        " FROM unnest(ARRAY['grimoire_api', 'grimoire_worker']) login"
+    ).format(sequence)
+    return psql(env, "grimoire", "-c", query).stdout.split()
+
+
+def test_runtime_logins_draw_but_cannot_set_sequence_values(restored):
+    env = restored[0]
+    sequences = {
+        # A GENERATED ALWAYS identity, and a bigserial default that calls
+        # nextval with the login's privileges.
+        "grimoire.account": "grimoire.account_id_seq",
+        "grimoire.campaign": "grimoire.campaign_id_seq",
+    }
+    for login in ("grimoire_api", "grimoire_worker"):
+        psql(
+            env,
+            "grimoire",
+            "-c",
+            f"INSERT INTO grimoire.account (subject) VALUES ('{login}-sequence')",
+            "-c",
+            f"INSERT INTO grimoire.campaign (owner_id, name) VALUES (1, '{login}')",
+            user=login,
+        )
+        for table, sequence in sequences.items():
+            assert (
+                psql(
+                    env,
+                    "grimoire",
+                    "-c",
+                    f"SELECT pg_get_serial_sequence('{table}', 'id')",
+                ).stdout.strip()
+                == sequence
+            )
+            rewind = psql(
+                env,
+                "grimoire",
+                "-c",
+                f"SELECT setval('{sequence}', 1)",
+                user=login,
+                check=False,
+            )
+            assert rewind.returncode != 0
+            name = sequence.split(".")[1]
+            assert f"permission denied for sequence {name}" in rewind.stderr
+    for sequence in sequences.values():
+        assert sequence_privileges(env, sequence) == ["true/false", "true/false"]
+
+
+def test_grants_revoke_a_sequence_update_grant(restored):
+    env = restored[0]
+    # The grants that the first grants.sql made, on live and on later sequences.
+    psql(
+        env,
+        "grimoire",
+        "-c",
+        "GRANT UPDATE ON ALL SEQUENCES IN SCHEMA grimoire TO grimoire_api, grimoire_worker",
+        "-c",
+        "ALTER DEFAULT PRIVILEGES FOR ROLE grimoire_restore"
+        " GRANT UPDATE ON SEQUENCES TO grimoire_api, grimoire_worker",
+        user="grimoire_restore",
+    )
+    assert sequence_privileges(env, "grimoire.campaign_id_seq") == [
+        "true/true",
+        "true/true",
+    ]
+    grants(env, "grimoire")
+    assert sequence_privileges(env, "grimoire.campaign_id_seq") == [
+        "true/false",
+        "true/false",
+    ]
+    # A sequence that the restore owner makes later gets the default privileges.
+    psql(
+        env, "grimoire", "-c", "CREATE SEQUENCE grimoire.later", user="grimoire_restore"
+    )
+    try:
+        assert sequence_privileges(env, "grimoire.later") == [
+            "true/false",
+            "true/false",
+        ]
+    finally:
+        psql(
+            env,
+            "grimoire",
+            "-c",
+            "DROP SEQUENCE grimoire.later",
+            user="grimoire_restore",
+        )
+
+
 def test_grants_replace_a_hand_grant(restored):
     env = restored[0]
     has_truncate = (

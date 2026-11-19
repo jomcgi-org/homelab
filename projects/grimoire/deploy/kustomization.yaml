@@ -1,6 +1,7 @@
 # The on-demand restore. The grimoire-data resources include this directory,
 # so the grimoire Application deploys the suspended CronJob and the script it
-# mounts, generated from restore.sh.
+# mounts, generated from restore.sh. To restore a backup, add recovery.yaml
+# to resources in a one-shot change (README.md, "Restore a backup").
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

@@ -70,27 +70,43 @@ def by_kind(docs, kind):
     return {doc["metadata"]["name"]: doc for doc in docs if doc["kind"] == kind}
 
 
-@pytest.fixture(scope="module")
-def rendered(tmp_path_factory):
-    """The grimoire Application's manifests, as Argo CD builds them."""
-    # Materialize runfiles: Kustomize's load restriction rejects symlinks that
-    # resolve outside a resource directory in a Bazel sandbox.
+APPLICATION_ROOT = "projects/platform-factory/grimoire-data/resources"
+DEPLOY = "projects/grimoire/deploy"
+
+
+def materialize(tmp_path_factory):
+    """Copy the Application's source tree out of the runfiles."""
+    # Kustomize's load restriction rejects symlinks that resolve outside a
+    # resource directory in a Bazel sandbox.
     root = tmp_path_factory.mktemp("kustomize")
-    for directory in (
-        "projects/platform-factory/grimoire-data/resources",
-        "projects/grimoire/deploy",
-    ):
+    for directory in (APPLICATION_ROOT, DEPLOY):
         shutil.copytree(REPO / directory, root / directory)
-    result = subprocess.run(
+    return root
+
+
+def kustomize_build(root):
+    return subprocess.run(
         [
             os.environ.get("KUSTOMIZE_BIN", "kustomize"),
             "build",
-            root / "projects/platform-factory/grimoire-data/resources",
+            root / APPLICATION_ROOT,
         ],
-        check=True,
         capture_output=True,
         text=True,
     )
+
+
+def add_resource(kustomization, entry):
+    doc = yaml.safe_load(kustomization.read_text())
+    doc["resources"].append(entry)
+    kustomization.write_text(yaml.safe_dump(doc))
+
+
+@pytest.fixture(scope="module")
+def rendered(tmp_path_factory):
+    """The grimoire Application's manifests, as Argo CD builds them."""
+    result = kustomize_build(materialize(tmp_path_factory))
+    assert result.returncode == 0, result.stderr
     return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
 
 
@@ -277,13 +293,37 @@ def test_backups_are_scheduled_and_restorable():
     store = by_kind(docs, "Cluster")["grimoire"]["spec"]["backup"]["barmanObjectStore"]
     scheduled = by_kind(docs, "ScheduledBackup")["grimoire-daily"]["spec"]
     assert scheduled["cluster"]["name"] == "grimoire"
-    recovery = read("projects/grimoire/deploy/recovery.yaml")[0]["spec"]
+    recovery = read(f"{DEPLOY}/recovery.yaml")[0]["spec"]
     source = recovery["externalClusters"][0]["barmanObjectStore"]
     assert recovery["bootstrap"]["recovery"]["source"] == source["serverName"]
     for key in ("destinationPath", "serverName", "endpointURL"):
         assert source[key] == store[key]
     assert source["s3Credentials"]["accessKeyId"]["name"] == "grimoire-recovery-s3"
     assert "backup" not in recovery
+
+
+def test_application_deploys_recovery_from_the_runbook_step(tmp_path_factory):
+    # README.md "Restore a backup", step 3: the child kustomization lists it.
+    root = materialize(tmp_path_factory)
+    add_resource(root / DEPLOY / "kustomization.yaml", "recovery.yaml")
+    result = kustomize_build(root)
+    assert result.returncode == 0, result.stderr
+    docs = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+    clusters = by_kind(docs, "Cluster")
+    assert set(clusters) == {"grimoire", "grimoire-recovered"}
+    assert clusters["grimoire-recovered"] == read(f"{DEPLOY}/recovery.yaml")[0]
+
+
+def test_application_root_cannot_list_recovery_directly(tmp_path_factory):
+    # The load restriction keeps files outside the Application's root out.
+    root = materialize(tmp_path_factory)
+    add_resource(
+        root / APPLICATION_ROOT / "kustomization.yaml",
+        "../../../grimoire/deploy/recovery.yaml",
+    )
+    result = kustomize_build(root)
+    assert result.returncode != 0
+    assert "is not in or below" in result.stderr
 
 
 class FakeAPI:
