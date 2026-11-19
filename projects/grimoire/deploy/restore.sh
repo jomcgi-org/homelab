@@ -2,7 +2,7 @@
 set -euo pipefail
 umask 077
 : "${PRIVATE_DUMP:?}" "${VECTOR_METADATA:?}"
-tmp=$(mktemp -d)
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/grimoire-restore.XXXXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 psql -XAtq -v ON_ERROR_STOP=1 -c "SELECT extversion, nspname FROM pg_extension JOIN pg_namespace ON pg_namespace.oid = extnamespace WHERE extname = 'vector'" >"$tmp/vector"
 test -s "$tmp/vector"
