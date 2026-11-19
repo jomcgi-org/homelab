@@ -129,6 +129,20 @@ else
 	fail "single-quoted digest pins" "$out"
 fi
 
+# Only the enclosing pair of quotes is removed: an apostrophe inside a
+# double-quoted pin stays, so the malformed pin fails.
+setup quote-inside-pin
+candidate_values "\"${STALE_DIGEST}\"" >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
+final_values "\"${INDEX_DIGEST}'\"" >"$CASE_DIR/final.values"
+printf '%s\tpushed\t%s\t%s\t%s\n' "$RUN" '//projects/demo:image.push' "$REPO" "$INDEX_DIGEST" >"$CASE_DIR/results"
+if out=$(run_case); then
+	fail "apostrophe inside a double-quoted pin" "expected non-zero"
+elif [[ "$out" == *"observed=${INDEX_DIGEST}'"* && "$out" == *"published pin does not match pushed manifest"* ]]; then
+	pass "an apostrophe inside a double-quoted pin is kept and fails"
+else
+	fail "apostrophe inside a double-quoted pin diagnostics" "$out"
+fi
+
 # A stale final pin fails even when it equals the candidate's desired input.
 setup stale-pin
 candidate_values "$STALE_DIGEST" >"$CASE_DIR/bazel-bin/projects/demo/chart/chart.package.tgz"
