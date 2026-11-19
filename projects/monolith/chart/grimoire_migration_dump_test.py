@@ -151,6 +151,13 @@ def test_runs_go_to_a_prefix_of_the_private_grimoire_bucket(production):
 def test_the_configmap_ships_the_repository_scripts(production):
     data = find(production, "ConfigMap")["data"]
     assert data["dump.sh"] == (CHART / "files/grimoire-migration-dump.sh").read_text()
+    assert (
+        data["references.sql"] == (CHART / "files/grimoire-references.sql").read_text()
+    )
+    spec = find(production, "CronWorkflow")["spec"]["workflowSpec"]
+    (dump,) = spec["templates"][0]["initContainers"]
+    assert env(dump)["REFERENCES_SQL"]["value"] == "/scripts/references.sql"
+    assert env(dump)["INVENTORY_SQL"]["value"] == "/scripts/inventory.sql"
     # The source inventory and the factory's target inventory run one query.
     restore_inventory = (REPO / "projects/grimoire/deploy/inventory.sql").read_text()
     assert data["inventory.sql"] == restore_inventory

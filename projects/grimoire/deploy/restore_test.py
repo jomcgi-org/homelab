@@ -5,6 +5,7 @@ operator's superuser installed pgvector, and grants.sql ran before the
 restore, as the grimoire-db-grants Job does after every sync.
 """
 
+import csv
 import os
 from pathlib import Path
 import pwd
@@ -83,11 +84,29 @@ CREATE INDEX note_marked ON grimoire.note (account_id) WHERE body <> 'first
  FOREIGN KEY x NOT VALID;
 last';
 """
+# The hub's object references. Only a chunk image and an uploaded handout image
+# reference an object (chart/files/grimoire-references.sql).
+OLD_IMAGE = "s3://grimoire/books/phb/raw/img/old.png"
+NEW_IMAGE = "s3://grimoire/books/phb/raw/img/new.png"
+UPLOAD_KEY = 'campaigns/c1/handouts/map, "one".png'
 # The hub database: the Grimoire schema beside a schema that stays on the hub,
 # with its own pgvector index and foreign key.
 HUB_SOURCE = (
     SOURCE
-    + """
+    + f"""
+ALTER TABLE grimoire.knowledge_chunk ADD COLUMN image_ref text;
+UPDATE grimoire.knowledge_chunk SET image_ref = '{OLD_IMAGE}'
+  WHERE id = md5('1')::uuid;
+CREATE TABLE grimoire.session_event (
+  id bigserial PRIMARY KEY,
+  kind text NOT NULL,
+  body jsonb NOT NULL DEFAULT '{{}}');
+INSERT INTO grimoire.session_event (kind, body) VALUES
+  ('handout', '{{"image": {{"source": "upload", "key": "campaigns/c1/handouts/map, \\"one\\".png"}}}}'),
+  ('handout', '{{"image": {{"source": "upload", "key": 7}}}}'),
+  ('handout', '{{"image": {{"source": "chunk", "chunk_id": "x"}}}}'),
+  ('handout', '{{"title": "no image"}}'),
+  ('narration', '{{"image": {{"source": "upload", "key": "ignored"}}}}');
 CREATE SCHEMA knowledge;
 CREATE TABLE knowledge.note (id bigserial PRIMARY KEY, body text NOT NULL);
 CREATE TABLE knowledge.chunk (
@@ -98,12 +117,14 @@ INSERT INTO knowledge.chunk VALUES (1, '[1,0,0]');
 CREATE INDEX chunk_hnsw ON knowledge.chunk USING hnsw (embedding vector_l2_ops);
 """
 )
-# Runs in place of pg_dump during the hub dump. It writes a row after the dump,
-# before the inventory reads the source.
-PG_DUMP_SHIM = """#!/bin/sh
+# Runs in place of pg_dump during the hub dump. After the dump, before the
+# references and the inventory read the source, it writes a row and points the
+# chunk image at another object, as a re-ingest does.
+PG_DUMP_SHIM = f"""#!/bin/sh
 "$REAL_PG_DUMP" "$@" || exit
 exec psql -XAtq -d "$DATABASE_URL" -c \
-  "INSERT INTO grimoire.campaign_member VALUES (2, 1, 'player')"
+  "INSERT INTO grimoire.campaign_member VALUES (2, 1, 'player')" -c \
+  "UPDATE grimoire.knowledge_chunk SET image_ref = '{NEW_IMAGE}' WHERE image_ref IS NOT NULL"
 """
 ROLES = """
 CREATE ROLE grimoire_restore LOGIN;
@@ -535,6 +556,7 @@ def test_restore_accepts_the_hub_dump_and_matches_its_inventory(restored):
             GRIMOIRE_SCHEMAS="grimoire",
             WORK=str(work),
             INVENTORY_SQL=str(runfile("HUB_INVENTORY_SQL")),
+            REFERENCES_SQL=str(runfile("HUB_REFERENCES_SQL")),
         ),
         capture_output=True,
         text=True,
@@ -549,6 +571,13 @@ def test_restore_accepts_the_hub_dump_and_matches_its_inventory(restored):
     # dump's snapshot.
     live = psql(env, "hub", "-v", "schemas=grimoire", "-f", runfile("INVENTORY_SQL"))
     assert live.stdout != source
+    # The references also come from the dump's snapshot. The live row points at
+    # the new image, but the restored row points at the old one.
+    with (work / "references.csv").open(newline="", encoding="utf-8") as handle:
+        references = sorted(csv.reader(handle))
+    assert references == [["image_ref", OLD_IMAGE], ["upload", UPLOAD_KEY]]
+    query = "SELECT image_ref FROM grimoire.knowledge_chunk WHERE image_ref IS NOT NULL"
+    assert psql(env, "hub", "-c", query).stdout == f"{NEW_IMAGE}\n"
     # The restore pod compares the target with source.inventory.
     compare = {
         "SOURCE_INVENTORY": str(work / "source.inventory"),
@@ -592,6 +621,7 @@ def test_hub_dump_refuses_a_schema_that_does_not_exist(restored):
             GRIMOIRE_SCHEMAS="grimoire,absent",
             WORK=str(work),
             INVENTORY_SQL=str(runfile("HUB_INVENTORY_SQL")),
+            REFERENCES_SQL=str(runfile("HUB_REFERENCES_SQL")),
         ),
         capture_output=True,
         text=True,
@@ -600,3 +630,4 @@ def test_hub_dump_refuses_a_schema_that_does_not_exist(restored):
     assert result.returncode != 0
     assert "no matching schemas were found" in result.stderr
     assert not (work / "source.inventory").exists()
+    assert not (work / "references.csv").exists()

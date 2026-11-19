@@ -21,6 +21,7 @@ exports_files(
     [
         "files/grimoire-inventory.sql",
         "files/grimoire-migration-dump.sh",
+        "files/grimoire-references.sql",
     ],
     visibility = ["//projects/grimoire/deploy:__pkg__"],
 )
