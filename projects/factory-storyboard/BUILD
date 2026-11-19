@@ -72,3 +72,12 @@ py_test(
     env = {"GITLEAKS_BIN": "$(rootpath @gitleaks_linux_amd64//:gitleaks)"},
     deps = ["@pip//pytest"],
 )
+
+py_test(
+    name = "delivery_stats_test",
+    srcs = [
+        "delivery_stats.py",
+        "delivery_stats_test.py",
+    ],
+    deps = ["@pip//pytest"],
+)
