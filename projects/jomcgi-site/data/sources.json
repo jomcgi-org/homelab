@@ -1,7 +1,10 @@
 {
   "endpoint": "https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com",
   "httpsManifests": {
-    "factory": "https://factory-data.jomcgi.dev/manifest.json"
+    "factory": {
+      "url": "https://factory-data.jomcgi.dev/manifest.json",
+      "enabled": false
+    }
   },
   "sections": {
     "stars": {

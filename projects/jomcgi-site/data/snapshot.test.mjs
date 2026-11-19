@@ -1,7 +1,14 @@
 // Tests for snapshot.mjs. Run: node snapshot.test.mjs
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
@@ -350,4 +357,30 @@ test("hikes follows the upstream manifest and keeps its index on digest failure"
   body = Buffer.from("{}");
   await assert.rejects(snapshot(sources, get, out), /Digest mismatch/);
   assert.equal(await readFile(file, "utf8"), first);
+});
+
+test("a staged HTTPS manifest makes no requests or data directory", async () => {
+  const out = await mkdtemp(join(tmpdir(), "staged-manifest-"));
+  try {
+    await snapshot(
+      {
+        sections: {},
+        httpsManifests: {
+          factory: {
+            enabled: false,
+            url: "https://factory-data.jomcgi.dev/manifest.json",
+          },
+        },
+      },
+      null,
+      out,
+      undefined,
+      () => {
+        throw new Error("unexpected manifest fetch");
+      },
+    );
+    assert.deepEqual(await readdir(out), []);
+  } finally {
+    await rm(out, { recursive: true, force: true });
+  }
 });

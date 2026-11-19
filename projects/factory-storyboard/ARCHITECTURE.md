@@ -28,7 +28,10 @@ checks their hashes and cross-links, and exercises rejected inputs. The
 | schema | Defines the versioned public documents shared with the site. |
 
 The publisher joins the configured itsaplan project to connector delivery
-records. It reads completed tasks through owner-shared kagent sessions.
+records. Its task reader authenticates the publisher and checks exact
+owner grants against completed kagent tasks. Only fingerprints for approved
+assistant text cross this boundary. A separate owner-approved export supplies
+the public text and retains it after connector cleanup.
 Every five minutes it commits immutable objects and then the manifest to
 Garage. The existing mirror copies them to R2. The site checks each hash
 before it copies the object into its deployment.

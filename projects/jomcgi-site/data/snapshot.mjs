@@ -174,7 +174,11 @@ export async function snapshot(
         await writeFile(page, stampSummary(html, summary));
     }
   }
-  for (const [section, url] of Object.entries(sources.httpsManifests ?? {})) {
+  for (const [section, source] of Object.entries(
+    sources.httpsManifests ?? {},
+  )) {
+    if (source.enabled === false) continue;
+    const url = typeof source === "string" ? source : source.url;
     if (new URL(url).protocol !== "https:") throw new Error("HTTPS required");
     const read = async (location) => {
       const response = await fetchImpl(location, {

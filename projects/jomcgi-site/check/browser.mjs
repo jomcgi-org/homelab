@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -7,6 +8,9 @@ import chrome, { inflate } from "@sparticuz/chromium";
 import axe from "axe-core";
 import { chromium } from "playwright-core";
 
+const sources = JSON.parse(
+  readFileSync(new URL("../data/sources.json", import.meta.url)),
+);
 const NOT_FOUND =
   /^Failed to load resource: the server responded with a status of 404 \(.*\)$/;
 
@@ -78,9 +82,18 @@ export function isEdgeBeaconCsp(entry) {
 
 export async function checkPage(
   browser,
-  { url, status = 200, colorScheme = "light", width = 1280, checkMap = false },
+  {
+    url,
+    status = 200,
+    colorScheme = "light",
+    width = 1280,
+    checkMap = false,
+    factoryEnabled = sources.httpsManifests.factory.enabled !== false,
+  },
 ) {
   const origin = new URL(url).origin;
+  const stagedManifest = (location) =>
+    !factoryEnabled && location === origin + "/data/factory/manifest.json";
   const context = await browser.newContext({
     colorScheme,
     viewport: { width, height: 900 },
@@ -142,8 +155,8 @@ export async function checkPage(
       // Suppress only that exact network message; every app error still fails.
       if (
         NOT_FOUND.test(message.text()) &&
-        status === 404 &&
-        message.location().url === url
+        ((status === 404 && message.location().url === url) ||
+          stagedManifest(message.location().url))
       )
         return;
       errors.push(`console: ${message.text()}`);
@@ -160,7 +173,8 @@ export async function checkPage(
       if (mapActive && isVectorTile(response)) tiles++;
       if (
         response.status() >= 400 &&
-        !(response.url() === url && response.status() === status)
+        !(response.url() === url && response.status() === status) &&
+        !(response.status() === 404 && stagedManifest(response.url()))
       ) {
         errors.push(`HTTP ${response.status()}: ${response.url()}`);
       }
