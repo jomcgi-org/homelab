@@ -314,10 +314,18 @@ func TestRefusedCoderRetryBudgetKeepsFirstAcceptedProvenance(t *testing.T) {
 }
 
 func TestTrialArmRounds(t *testing.T) {
+	// Each case lists the round kinds and the round that escalates. Review
+	// and CI fix rounds count against separate thresholds.
 	for _, tc := range []struct {
 		name  string
+		kinds []string
 		limit int
-	}{{"review", 3}, {"ci", 2}} {
+	}{
+		{"review", []string{"review", "review", "review"}, 3},
+		{"ci", []string{"ci", "ci"}, 2},
+		{"two reviews and a CI fix", []string{"review", "review", "ci", "ci"}, 4},
+		{"a CI fix and three reviews", []string{"ci", "review", "review", "review"}, 4},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := provenanceEnv(t)
 			b := &v.cfg.Bindings[0]
@@ -344,7 +352,7 @@ func TestTrialArmRounds(t *testing.T) {
 				v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Pushed.", nil)
 				v.clk.Advance(5 * time.Second)
 				v.tick(v.e)
-				if tc.name == "ci" {
+				if tc.kinds[i-1] == "ci" {
 					v.gh.check(head, "test", 100, "failure")
 				} else {
 					v.gh.review(1, "CHANGES_REQUESTED", "reviewer", head, "Fix the timeout.")
