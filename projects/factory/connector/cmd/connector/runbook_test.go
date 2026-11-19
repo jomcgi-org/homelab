@@ -19,7 +19,9 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	v1 "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func TestRevertConfirmation(t *testing.T) {
@@ -130,11 +132,21 @@ func testConfirmedRecovery(t *testing.T, target revertTarget) {
 	if response.Code != 202 {
 		t.Fatal(response.Body.String())
 	}
+	// The front action must not read pods; only the creator observes them.
+	front := false
+	client.PrependReactor("get", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if front {
+			t.Fatal("front action read a pod")
+		}
+		return false, nil, nil
+	})
+	auditIDs := []string{}
 	auditCount := 0
-	audit := func(user string, got revertTarget, result string) error {
+	audit := func(id, user string, got revertTarget, result string) error {
 		if user != "joe" || got != target || result != "reverted" {
 			t.Fatal(user, got, result)
 		}
+		auditIDs = append(auditIDs, id)
 		auditCount++
 		if auditCount == 1 {
 			return errors.New("Discord offline")
@@ -144,6 +156,8 @@ func testConfirmedRecovery(t *testing.T, target revertTarget) {
 	step := func(token *kagent.TokenSource, phase string) {
 		t.Helper()
 		b := backend()
+		front = token == nil
+		defer func() { front = false }()
 		if err := b.advance(ctx, target.Creator, token, audit); err != nil {
 			t.Fatal(err)
 		}
@@ -154,7 +168,9 @@ func testConfirmedRecovery(t *testing.T, target revertTarget) {
 	}
 	step(source, "authorized")
 	step(nil, "deleting")
-	step(nil, "gone")
+	// The delete landed: the front waits for the creator to observe it.
+	step(nil, "deleting")
+	step(source, "gone")
 	if err := backend().advance(ctx, target.Creator, source, nil); err == nil {
 		t.Fatal("expected lost response")
 	}
@@ -168,12 +184,27 @@ func testConfirmedRecovery(t *testing.T, target revertTarget) {
 		t.Fatal(err)
 	}
 	step(source, "audit")
+	front = true
 	if err := backend().advance(ctx, target.Creator, nil, audit); err == nil {
 		t.Fatal("expected delivery failure")
 	}
+	front = false
+	// The failed send holds a fenced claim; no writer resends until it expires.
+	cm, sent, err := backend().load(ctx, target.Creator)
+	if err != nil || sent.Phase != "auditing" || sent.LeaseUntil.IsZero() {
+		t.Fatal(sent, err)
+	}
+	step(nil, "auditing")
+	if auditCount != 1 {
+		t.Fatal("resent during the claim", auditCount)
+	}
+	sent.LeaseUntil = time.Now().Add(-time.Second)
+	if err := backend().save(ctx, cm, sent); err != nil {
+		t.Fatal(err)
+	}
 	step(nil, "delivered")
-	if sessions.reverts != 1 || auditCount != 2 {
-		t.Fatal(sessions.reverts, auditCount)
+	if sessions.reverts != 1 || auditCount != 2 || auditIDs[0] != pending.ID || auditIDs[1] != pending.ID {
+		t.Fatal(sessions.reverts, auditCount, auditIDs)
 	}
 	for _, phase := range []string{"gone", "reverting"} {
 		if err := backend().submit(ctx, "joe", target); err != nil {
@@ -192,7 +223,7 @@ func testConfirmedRecovery(t *testing.T, target revertTarget) {
 		if err := backend().advance(ctx, target.Creator, source, nil); err != nil {
 			t.Fatal(err)
 		}
-		sink := func(user string, got revertTarget, result string) error {
+		sink := func(_, user string, got revertTarget, result string) error {
 			if result != "session missing or unrecoverable" || user != "joe" || got != target {
 				t.Fatal(result, user, got)
 			}
