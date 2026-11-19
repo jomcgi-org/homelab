@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: factory-explore
+  annotations:
+    # The edge Application installs its ReferenceGrant here in wave 3.
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: Delete=false,Prune=false
