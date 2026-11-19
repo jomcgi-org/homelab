@@ -315,6 +315,63 @@ func TestGoalEvidenceReadAtHeadWhenPatchOmitted(t *testing.T) {
 	}
 }
 
+// Replay the transition from the disputed #8260 finding to the read-only
+// review of the same implementation with only HOME-351.md added. The model
+// response is recorded; CI exercises the service, not model inference.
+func TestGoalCheck8260EvidenceOnlyRevision(t *testing.T) {
+	const original = "25ef1eb37693d9bc418a17c12946f881d241d0e6"
+	const revision = "d1ad28c41c6ac49f3e76bfe18d21481c8a504d34"
+	const path = ".factory/goal-evidence/HOME-351.md"
+	const evidence = `1. projects/platform/authentik/BUILD loads py_test from //bazel/tools/pytest:defs.bzl for factory_group_binding_test.
+2. projects/platform/authentik/factory_group_binding_test.py discovers the applications in factory-blueprints/*.yaml.
+3. test_removing_group_bindings_denies_application calls the same per-application check after removing the bindings.
+`
+	h, api := issueHarness(t)
+	api.issue.Identifier = "HOME-351"
+	api.issue.Description = "Done when:\n1. A CI test requires a group gate on every factory app.\n2. Current apps pass the test.\n3. Removing group bindings for any app makes the test fail."
+	h.gh.withLock(func() {
+		pr := h.gh.prs[7]
+		pr.Body = "Refs HOME-351"
+		pr.Head, pr.Heads = original, []string{original}
+		pr.Files = []github.PullRequestFile{{Path: "projects/platform/authentik/factory_group_binding_test.py", Status: "added"}}
+	})
+	h.k.goal = "Criterion 1: pytest never runs.\n" + goalReply(`{"criteria":[{"criterion":1,"verdict":"not_met"},{"criterion":2,"verdict":"not_met"},{"criterion":3,"verdict":"not_met"}],"overall":"not_met"}`)
+	engine, ctx, _ := h.start()
+	run := func(head string) State {
+		t.Helper()
+		h.k.finish(runReview(t, h, engine, ctx, 7, head), kagent.StateCompleted, report(t, passing))
+		engine.Wait()
+		state, _ := LoadState(h.gh.check(head).Text)
+		if state.Goal == nil {
+			t.Fatal("missing goal verdict on", head)
+		}
+		return state
+	}
+	if g := run(original); g.Goal.Overall != goalNotMet || len(g.Blocking) != 4 {
+		t.Fatalf("initial verdict = %+v", g)
+	}
+	h.gh.push(7, revision)
+	h.gh.withLock(func() {
+		pr := h.gh.prs[7]
+		pr.Files = append(pr.Files, github.PullRequestFile{Path: path, Status: "added"})
+		h.gh.headFiles = map[string]string{revision + ":" + path: evidence}
+		h.gh.compares = map[string]map[string]any{original + "..." + revision: {"status": "ahead", "files": []github.PullRequestFile{{Path: path, Status: "added"}}}}
+	})
+	h.k.goal = goalReply(`{"criteria":[{"criterion":1,"verdict":"met"},{"criterion":2,"verdict":"met"},{"criterion":3,"verdict":"met"}],"overall":"met"}`)
+	got := run(revision)
+	texts := goalTexts(h)
+	last := texts[len(texts)-1]
+	for _, want := range []string{original, revision, "pytest never runs", "> " + strings.TrimSpace(strings.SplitN(evidence, "\n", 2)[0]), "even if no implementation changed"} {
+		if !strings.Contains(last, want) {
+			t.Fatalf("replay prompt missing %q", want)
+		}
+	}
+	if got.Goal.Overall != goalMet || !slices.Equal(got.Goal.Criteria, []GoalVerdict{{1, goalMet}, {2, goalMet}, {3, goalMet}}) ||
+		len(got.Blocking) != 0 {
+		t.Fatalf("evidence revision left goal findings: %+v", got)
+	}
+}
+
 // Replay the HOME-120/#8122 failure with a synthetic diff and recorded-form
 // replies. This checks the prompt contract and service behavior without a
 // live model call. The human gate still requires approval.

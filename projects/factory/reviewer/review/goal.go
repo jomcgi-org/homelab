@@ -730,7 +730,7 @@ func GoalPrompt(repo string, pr github.PullRequest, files []github.PullRequestFi
 			writeQuoted(&b, "earlier", pr.HeadSHA, clip(history.Reasons, maxHistoryReply))
 		}
 		b.WriteString("Start from these verdicts. Keep each one unless a change since that head affects its criterion, or you can name " +
-			"the error in the earlier reasons. A met or after_rollout verdict does not become unclear: give unclear only for a " +
+			"the error in the earlier reasons. An evidence-only revision can identify that error: when a cited unchanged definition contradicts a prior finding, verify it at this head and correct the verdict even if no implementation changed. A met or after_rollout verdict does not become unclear: give unclear only for a " +
 			"criterion nothing settled before. When you change a verdict, say in your reasoning which change or which error caused it.\n\n")
 	}
 
