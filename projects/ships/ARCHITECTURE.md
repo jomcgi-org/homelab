@@ -70,7 +70,7 @@ Done when
 Tracked in [HOME-516](https://factory-plan.jomcgi.dev/factory/issue/HOME-516) and [HOME-537](https://factory-plan.jomcgi.dev/factory/issue/HOME-537). Joe chose a direct cutover on the same AISStream key, with no overlap and no hub baseline ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-516#comment-5531)). The requirement is that the key never has two concurrent AISStream subscriptions. The factory app can sync a published chart before the hub rollout finishes, so the cutover has two steps:
 
 1. HOME-516 sets `marine.enabled=false` in the hub values. In this chart it sets the starting budgets and storage, and keeps `enabled=false`. Argo CD syncs the hub values from Git at merge. The factory app syncs after CI publishes this chart and advances the pin in `deploy/application.yaml`. CNPG then creates `ships-db`, and the ingester has zero replicas.
-2. HOME-537 sets `enabled=true`, which gives the ingester one replica. It merges only after the hub-stop check below passes.
+2. HOME-537 sets `enabled=true`, which gives the ingester one replica. It merges only after the hub-stop check and the freshness check below both pass.
 
 ```mermaid
 sequenceDiagram
@@ -94,7 +94,22 @@ sequenceDiagram
 
 History has a gap between the hub stop and the first factory subscription, which Joe accepted. Positions from both ingesters can share a UTC date, but their subscriptions never overlap. The hub keeps serving its stored Ships data until HOME-411 and HOME-412.
 
-**Hub-stop check (HOME-516).** Run this command after the hub backend rollout. The Cloudflare cache can serve a stale page for up to 24 hours (`stale-if-error=86400`), so a unique query string bypasses it. The script prints the age of the newest vessel `updated_at` at or before now. It also prints the count of vessels updated in the last 10 minutes.
+**Hub-stop check (HOME-516).** The primary check reads the hub's pods. A hub backend pod whose database writes stall could still hold its AISStream socket, so data freshness alone cannot prove the socket closed. Run this against the hub (`homelab-hub`) after the hub backend rollout:
+
+```sh
+kubectl -n monolith get pods -l app.kubernetes.io/name=monolith,app.kubernetes.io/component=app -o json | python3 -c '
+import json, sys
+pods = json.load(sys.stdin)["items"]
+for p in pods:
+    env = [e["name"] for c in p["spec"]["containers"] for e in c.get("env", [])]
+    print(p["metadata"]["name"], p["metadata"]["ownerReferences"][0]["name"], p["status"]["phase"], "AISSTREAM_API_KEY" in env)
+'
+kubectl -n monolith get rs -l app.kubernetes.io/name=monolith,app.kubernetes.io/component=app
+```
+
+The hub has stopped when every listed backend pod prints `False` (no `AISSTREAM_API_KEY`), all of them belong to the newest ReplicaSet, and no older ReplicaSet has a ready or terminating pod. Before the cutover, at 22:24Z on 2026-11-19, both pods of ReplicaSet `monolith-6cdbb5f47d` still had `AISSTREAM_API_KEY`.
+
+**Freshness check (supplement).** After the pod check passes, the public page confirms that no hub process still writes positions. The Cloudflare cache can serve a stale page for up to 24 hours (`stale-if-error=86400`), so a unique query string bypasses it. The script prints the age of the newest vessel `updated_at` at or before now. It also prints the count of vessels updated in the last 10 minutes.
 
 ```sh
 curl -fsS "https://jomcgi.dev/app/ships?check=$(date +%s)" | python3 -c '
@@ -108,7 +123,7 @@ print("updated in 10 min:", sum(t > now - timedelta(minutes=10) for t in past))
 '
 ```
 
-The hub has stopped when the newest age is more than 10 minutes and the count is 0. Before the cutover, at 22:13Z on 2026-11-19, the newest was 12 s old and 441 vessels updated in the last 10 minutes.
+Both checks pass when, in addition, the newest age is more than 10 minutes and the count is 0. Before the cutover, at 22:13Z on 2026-11-19, the newest was 12 s old and 441 vessels updated in the last 10 minutes.
 
 **Factory checks (HOME-537).** Run these with `KUBECONFIG=~/.kube/factory.yaml` after the factory app syncs one ingester:
 
