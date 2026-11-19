@@ -1,0 +1,3 @@
+{{- if eq .Values.publishEnabled true }}
+{{ include "factory-library.all" . }}
+{{- end }}

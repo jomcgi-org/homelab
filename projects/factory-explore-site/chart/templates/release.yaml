@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: factory-explore-release
+  labels:
+    app.kubernetes.io/name: factory-explore
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  publishEnabled: {{ .Values.publishEnabled | toString | quote }}
+  chart: {{ .Chart.Version | quote }}
+  image: {{ printf "%s@%s" .Values.image.repository .Values.image.digest | quote }}

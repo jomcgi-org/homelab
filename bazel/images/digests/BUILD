@@ -27,6 +27,7 @@ oci_digest_manifest(
         "//projects/embervm/tokenbroker/image:image.info": "//projects/embervm/tokenbroker/image:image.push",
         "//projects/embervm/xds/image:image.info": "//projects/embervm/xds/image:image.push",
         "//projects/factory-explore:image.info": "//projects/factory-explore:image.push",
+        "//projects/factory-explore-site:image.info": "//projects/factory-explore-site:image.push",
         "//projects/factory-landing:image.info": "//projects/factory-landing:image.push",
         "//projects/factory/alert-relay/image:image.info": "//projects/factory/alert-relay/image:image.push",
         "//projects/factory/broker/image:image.info": "//projects/factory/broker/image:image.push",

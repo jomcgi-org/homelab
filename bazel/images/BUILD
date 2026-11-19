@@ -40,6 +40,8 @@ multirun(
         "//projects/embervm/xds/image:image.push",
         "//projects/factory-explore/chart:chart.push",
         "//projects/factory-explore:image.push",
+        "//projects/factory-explore-site/chart:chart.push",
+        "//projects/factory-explore-site:image.push",
         "//projects/factory-landing/chart:chart.push",
         "//projects/factory-landing:image.push",
         "//projects/factory-public/chart:chart.push",
@@ -91,6 +93,7 @@ multirun(
     commands = [
         "//projects/embervm/chart:chart.push",
         "//projects/factory-explore/chart:chart.push",
+        "//projects/factory-explore-site/chart:chart.push",
         "//projects/factory-landing/chart:chart.push",
         "//projects/factory-public/chart:chart.push",
         "//projects/factory/chart:chart.push",

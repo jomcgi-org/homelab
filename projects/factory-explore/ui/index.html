@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content"
+    />
+    <link rel="icon" href="/favicon.svg" />
+    <title>Sparkles</title>
+    <script>
+      const dns1123LabelFmt = "[a-z0-9]([-a-z0-9]*[a-z0-9])?";
+      const dns1123SubdomainFmt = `${dns1123LabelFmt}(\\.${dns1123LabelFmt})*`;
+      const rfc6335ServiceName = "[a-zA-Z](-?[a-zA-Z0-9])*";
+      const schemeNamePort = `((https?|):)?${dns1123SubdomainFmt}(:(${rfc6335ServiceName}|[0-9]+))?`;
+      const apiserverProxyRegex = new RegExp(
+        `^/api/v1/namespaces/${dns1123SubdomainFmt}/(pods|services)/${schemeNamePort}/proxy/`,
+      );
+      const m = window.location.pathname.match(apiserverProxyRegex);
+      window.__base_url = m === null ? "%BASE_URL%" : m[0];
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

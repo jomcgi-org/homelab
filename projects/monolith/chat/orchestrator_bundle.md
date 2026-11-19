@@ -85,6 +85,7 @@ Top-level projects/ directories:
 - factory
 - factory-cluster
 - factory-explore
+- factory-explore-site
 - factory-landing
 - factory-public
 - factory-storyboard

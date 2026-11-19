@@ -13,5 +13,8 @@ js_image_layer(
     name = "layers",
     binary = ":wrangler",
     root = "/app",
-    visibility = ["//projects/jomcgi-site:__pkg__"],
+    visibility = [
+        "//projects/factory-explore-site:__pkg__",
+        "//projects/jomcgi-site:__pkg__",
+    ],
 )
