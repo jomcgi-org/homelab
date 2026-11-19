@@ -5,10 +5,12 @@ package grant
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -315,13 +317,14 @@ func (m *Manager) Check(ctx context.Context) {
 }
 
 // AdminHandler serves the device login and forced refresh. Callers wrap it
-// with TokenReview authorization.
+// with operator authorization.
 //
 //	POST /admin/codex/login    start a device login (returns the user code)
 //	GET  /admin/codex/login    login and grant state
 //	POST /admin/codex/refresh  refresh now
 func (m *Manager) AdminHandler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /admin/codex/{$}", loginPage)
 	mux.HandleFunc("POST /admin/codex/login", m.startLogin)
 	mux.HandleFunc("GET /admin/codex/login", m.loginStatus)
 	mux.HandleFunc("POST /admin/codex/refresh", m.refreshNow)
@@ -363,6 +366,9 @@ func (m *Manager) startLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"state": "failed", "reason": "device_code_failed"})
 		return
 	}
+	if code.ExpiresIn <= 0 || code.ExpiresIn > 900 {
+		code.ExpiresIn = 900
+	}
 	m.setLogin(loginState{state: "pending", detail: "approval required", code: &code})
 	m.opts.Logger.Info("codex device login started", "grant", m.opts.Grant, "by", auth.User(r.Context()))
 	go m.completeLogin(code)
@@ -370,7 +376,7 @@ func (m *Manager) startLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Manager) completeLogin(code provider.DeviceCodeResponse) {
-	ctx, cancel := context.WithTimeout(m.opts.Context, 16*time.Minute)
+	ctx, cancel := context.WithTimeout(m.opts.Context, 15*time.Minute)
 	defer cancel()
 	m.finishLogin(m.exchange(ctx, code))
 }
@@ -438,6 +444,15 @@ func (m *Manager) loginStatus(w http.ResponseWriter, r *http.Request) {
 		resp["grant_state"] = "refresh_blocked"
 		resp["recovery"] = "Await a stored replacement or complete a new device login."
 	case g.TokenBundle.RefreshToken != "":
+		resp["account"] = g.TokenBundle.AccountID
+		parts := strings.Split(g.TokenBundle.IDToken, ".")
+		if len(parts) == 3 {
+			payload, _ := base64.RawURLEncoding.DecodeString(parts[1])
+			var identity struct{ Email string }
+			if json.Unmarshal(payload, &identity) == nil && identity.Email != "" {
+				resp["account"] = identity.Email
+			}
+		}
 		resp["grant_state"] = "present"
 		resp["expires_at"] = g.TokenBundle.ExpiresAt.UTC().Format(time.RFC3339)
 		resp["last_refresh"] = g.LastRefresh.UTC().Format(time.RFC3339)
@@ -462,4 +477,36 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func loginPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Frame-Options", "DENY")
+	_, _ = w.Write([]byte(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex login</title>
+<h1>Codex login</h1><button id="start">Start</button><p id="state" role="status"></p>
+<a id="verify" target="_blank" rel="noreferrer"></a> <strong id="code"></strong>
+<script>
+async function update() {
+  try {
+    const data = await (await fetch('login')).json();
+    state.textContent = [data.login, data.detail, data.account].filter(Boolean).join(' · ');
+    if (data.login !== 'pending') { verify.textContent = ''; code.textContent = ''; }
+  } catch { state.textContent = 'Could not read login status.'; }
+}
+start.onclick = async () => {
+  start.disabled = true;
+  try {
+    const response = await fetch('login', {method:'POST',headers:{'X-Codex-Login':'start'}});
+    const data = await response.json();
+    if (!response.ok && response.status !== 409) throw Error();
+    if (data.verification_url && new URL(data.verification_url).protocol === 'https:') {
+      verify.href = data.verification_url; verify.textContent = data.verification_url;
+      code.textContent = data.user_code;
+    }
+    await update();
+  } catch { state.textContent = 'Could not start login.'; }
+  finally { start.disabled = false; }
+};
+update(); setInterval(update, 5000);
+</script>`))
 }

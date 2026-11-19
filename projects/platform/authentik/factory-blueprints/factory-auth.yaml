@@ -38,10 +38,12 @@ entries:
           authentik_crypto.certificatekeypair,
           [name, authentik Self-signed Certificate],
         ]
-      # One entry per hostname published through the edge Gateway.
+      # Register the exact callback for each edge OIDC policy.
       redirect_uris:
         - matching_mode: strict
           url: https://factory.jomcgi.dev/oauth2/callback
+        - matching_mode: strict
+          url: https://factory.jomcgi.dev/admin/codex/oauth2/callback
         - matching_mode: strict
           url: https://factory-argocd.jomcgi.dev/oauth2/callback
         - matching_mode: strict

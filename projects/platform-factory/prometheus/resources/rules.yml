@@ -113,7 +113,7 @@ groups:
           # 100% lists every window's reset instead.
           description: >-
             Coder turns fail until then.
-            {{ $full := query (printf `max by (window) (factory_broker_grant_quota_used_percent{grant=%q}) >= 100` $labels.grant) }}{{ if $full }}{{ range $full }}{{ $w := .Labels.window }}{{ with query (printf `max(factory_broker_quota_resets_at_seconds{provider="codex",window=%q})` $w) }}The {{ $w }} window resets at {{ . | first | value | humanizeTimestamp }}. {{ else }}The {{ $w }} window has no reset time. {{ end }}{{ end }}{{ else }}{{ range query `max by (window) (factory_broker_quota_resets_at_seconds{provider="codex"})` }}The {{ .Labels.window }} window resets at {{ .Value | humanizeTimestamp }}. {{ end }}{{ end }}Runbook: projects/factory-cluster/README.md, "Alerts".
+            {{ $full := query (printf `max by (window) (factory_broker_grant_quota_used_percent{grant=%q}) >= 100` $labels.grant) }}{{ if $full }}{{ range $full }}{{ $w := .Labels.window }}{{ with query (printf `max(factory_broker_quota_resets_at_seconds{provider="codex",window=%q})` $w) }}The {{ $w }} window resets at {{ . | first | value | humanizeTimestamp }}. {{ else }}The {{ $w }} window has no reset time. {{ end }}{{ end }}{{ else }}{{ range query `max by (window) (factory_broker_quota_resets_at_seconds{provider="codex"})` }}The {{ .Labels.window }} window resets at {{ .Value | humanizeTimestamp }}. {{ end }}{{ end }}Runbook: projects/factory-cluster/README.md, "Alerts". Codex login: https://factory.jomcgi.dev/admin/codex/
       # Grouped by grant only, so a move between not-ready states keeps the
       # 10 min timer; the summary names the current state.
       - alert: FactoryCodexGrantNotReady
@@ -129,7 +129,8 @@ groups:
           summary: "Codex grant {{ $labels.grant }} is {{ range query (printf `max by (state) (factory_broker_codex_grant_state{grant=%q,state!=\"ready\"}) == 1` $labels.grant) }}{{ .Labels.state }}{{ end }} (non-ready flag {{ $value }} of 1)"
           description: >-
             The broker cannot relay Codex turns with this grant. Runbook:
-            projects/factory-cluster/README.md, "Alerts".
+            projects/factory-cluster/README.md, "Alerts". Codex login:
+            https://factory.jomcgi.dev/admin/codex/
       # The alerts above use this reading; a stale or missing one would hide
       # them. The broker exports one reading time per provider; the newest
       # across broker pods counts, so a terminating pod does not fire this.

@@ -1,0 +1,92 @@
+{{- if and .Values.broker.enabled .Values.codexAdminRouteEnabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: codex-admin
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  namespace: edge
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+  hostnames:
+    - factory.jomcgi.dev
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /admin/codex
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: factory-broker
+          namespace: {{ .Values.broker.namespace }}
+          port: {{ .Values.broker.adminPort }}
+          weight: 1
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: codex-admin-authentik-oidc
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  namespace: edge
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: codex-admin
+  oidc:
+    provider:
+      issuer: https://factory-auth.jomcgi.dev/application/o/factory-edge/
+      authorizationEndpoint: https://factory-auth.jomcgi.dev/application/o/authorize/
+      tokenEndpoint: https://factory-auth.jomcgi.dev/application/o/token/
+      endSessionEndpoint: https://factory-auth.jomcgi.dev/application/o/factory-edge/end-session/
+    clientID: factory-edge
+    clientSecret:
+      name: edge-oidc-client
+    scopes: [openid, email, profile]
+    redirectURL: https://factory.jomcgi.dev/admin/codex/oauth2/callback
+    logoutPath: /admin/codex/logout
+    cookieConfig:
+      sameSite: Lax
+    refreshToken: false
+    forwardAccessToken: true
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: edge-factory-broker
+  namespace: {{ .Values.broker.namespace }}
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: edge
+  to:
+    - group: ""
+      kind: Service
+      name: factory-broker
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: codex-admin-backend
+  namespace: edge
+spec:
+  endpointSelector:
+    matchLabels:
+      gateway.envoyproxy.io/owning-gateway-name: edge
+      gateway.envoyproxy.io/owning-gateway-namespace: edge
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.broker.namespace }}
+            app.kubernetes.io/name: factory-broker
+      toPorts:
+        - ports:
+            - port: {{ .Values.broker.adminPort | quote }}
+              protocol: TCP
+{{- end }}
