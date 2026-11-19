@@ -154,13 +154,25 @@ To stop the trial, set both trial weights to zero and retain their definitions
 on the arm-capable release. New work goes to control. Assigned work continues
 with its Agent, ModelConfig and broker effort endpoint. Trial resources carry
 ArgoCD prune protection. Keep the compatible connector and broker running
-while any assigned trial session or unfinished work remains. Check the connector
-database before removing the definitions or lowering the chart pin:
+while sessions are draining. Before considering a pre-support pin, stop new
+admissions and let in-flight sends settle. Check every coder session, including
+original control assignments, escalations, and replaced sessions awaiting
+deletion. The connector does not store the relay URL on the attempt, so this
+check conservatively includes sessions created before arm activation.
 
 ```sql
-SELECT issue_key, state, session_id FROM work_item
-WHERE first_arm <> 'control' AND NOT escalated
-  AND (state <> 'done' OR session_id IS NOT NULL);
+SELECT issue_key, first_arm, escalated, state, session_id FROM work_item
+WHERE session_id IS NOT NULL
+   OR (first_arm <> 'control' AND NOT escalated);
+
+SELECT DISTINCT w.issue_key, a.kagent_namespace, a.context_id, a.state
+FROM delivery_attempt a
+JOIN run r ON r.id = a.run_id
+JOIN work_item w ON w.id = r.work_item_id
+WHERE a.state IN ('sending', 'ambiguous', 'accepted')
+   OR (a.context_id IS NOT NULL AND NOT EXISTS (
+       SELECT 1 FROM session_deletion d
+       WHERE d.context_id = a.context_id AND d.confirmed_at IS NOT NULL));
 ```
 
 Keep the zero-weight definitions available for completed items that may reopen.
