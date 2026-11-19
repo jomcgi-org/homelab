@@ -5,6 +5,7 @@ load("@aspect_rules_js//js:defs.bzl", "js_library", "js_run_binary")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@npm//:defs.bzl", "npm_link_all_packages")
 load("@npm//projects/factory-explore/ui:vite/package_json.bzl", vite_bin = "bin")
+load("@npm//projects/factory-explore/ui:vitest/package_json.bzl", vitest_bin = "bin")
 
 npm_link_all_packages(name = "node_modules")
 
@@ -46,4 +47,20 @@ js_run_binary(
 build_test(
     name = "build_test",
     targets = [":build"],
+)
+
+vitest_bin.vitest_test(
+    name = "test",
+    args = [
+        "run",
+        "--mode",
+        "production",
+    ],
+    chdir = package_name(),
+    data = [
+        "session.test.ts",
+        ":node_modules/happy-dom",
+        ":node_modules/vitest",
+        ":src",
+    ],
 )

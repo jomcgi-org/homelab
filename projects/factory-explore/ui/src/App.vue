@@ -11,7 +11,7 @@ import {
   VSelect,
   VTextField,
 } from "vuetify/components";
-import { read } from "./apiConfig";
+import { read, countdown } from "./apiConfig";
 
 import {
   discoveryV2ContentType,
@@ -115,6 +115,7 @@ watch(
   <VApp>
     <VAppBar
       ><VAppBarTitle>Sparkles · Factory Explorer</VAppBarTitle
+      ><span v-if="countdown">{{ countdown }} left</span
       ><VBtn href="/oidc/logout">Log out</VBtn></VAppBar
     >
     <VMain
