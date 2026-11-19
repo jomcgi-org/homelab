@@ -2,9 +2,13 @@ package store_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -529,11 +533,75 @@ func TestStoryboardDeliveryPrivileges(t *testing.T) {
 	if err != nil || !projection {
 		t.Fatalf("unexpected storyboard task projection: %t (%v)", projection, err)
 	}
+	// Journals as the connector writes them: chunked content, an artifact,
+	// U+0000 next to a literal "\u0000", and a journal with no events.
+	journal := func(events ...map[string]string) []byte {
+		b, err := json.Marshal(map[string]any{"events": events, "historyEvents": len(events)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	content := func(id, delta string) map[string]string {
+		return map[string]string{"type": "TEXT_MESSAGE_CONTENT", "messageId": id, "delta": delta}
+	}
+	for _, j := range []struct {
+		attempt int
+		task    string
+		state   []byte
+	}{
+		{1, "finished", journal(
+			map[string]string{"type": "TEXT_MESSAGE_START", "messageId": "m1", "role": "assistant"},
+			content("m1", "Approved "),
+			content("artifact/x", "Private artifact"),
+			content("m2", "a\x00b\\u0000"),
+			content("m1", "update"),
+			map[string]string{"type": "TEXT_MESSAGE_END", "messageId": "m1"},
+		)},
+		{2, "finished", []byte(`{"events":null}`)},
+		{1, "waiting", journal(content("m3", "Waiting reply"))},
+		{1, "stale", journal(content("m4", "Old session reply"))},
+	} {
+		if _, err := st.DB.Exec(`INSERT INTO task_transcript (run_id, attempt, task_id, base_offset, state)
+			VALUES (414, $1, $2, 0, $3)`, j.attempt, j.task, j.state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := reader.Query(`SELECT itsaplan_project, issue_id, session_id, task_id, text_sha256
+		FROM public.storyboard_task_messages ORDER BY text_sha256`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digests []string
+	for rows.Next() {
+		var project, session, task, digest string
+		var issue int
+		if err := rows.Scan(&project, &issue, &session, &task, &digest); err != nil {
+			t.Fatal(err)
+		}
+		if project != "HOME" || issue != 213 || session != "session" || task != "finished" {
+			t.Fatalf("unexpected message row: %s %d %s %s", project, issue, session, task)
+		}
+		digests = append(digests, digest)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		fmt.Sprintf("%x", sha256.Sum256([]byte("Approved update"))),
+		fmt.Sprintf("%x", sha256.Sum256([]byte("a�b\\u0000"))),
+	}
+	slices.Sort(want)
+	if !slices.Equal(digests, want) {
+		t.Fatalf("message digests = %v, want %v", digests, want)
+	}
 	unrelated := pgtest.AsRole(t, st.DB, "factory_reaper")
-	_, err = unrelated.Exec("SELECT * FROM public.storyboard_tasks")
 	var refusal interface{ SQLState() string }
-	if !errors.As(err, &refusal) || refusal.SQLState() != "42501" {
-		t.Fatalf("unrelated role read: %v", err)
+	for _, view := range []string{"storyboard_tasks", "storyboard_task_messages"} {
+		_, err = unrelated.Exec("SELECT * FROM public." + view)
+		if !errors.As(err, &refusal) || refusal.SQLState() != "42501" {
+			t.Fatalf("unrelated role read of %s: %v", view, err)
+		}
 	}
 	for _, query := range []string{
 		"SELECT prompt FROM public.run",

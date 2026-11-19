@@ -4,9 +4,13 @@ import hashlib
 import json
 from pathlib import Path
 from jsonschema import Draft7Validator
+import pytest
 
 import runtime
-from task_reader import approved_messages
+
+
+def digest(text):
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def test_private_issues_filtered_before_connector_or_session_read(monkeypatch):
@@ -36,33 +40,23 @@ def test_private_issues_filtered_before_connector_or_session_read(monkeypatch):
             for session in ("shared", "unshared")
         ]
 
-    def task(task_id):
-        assert task_id == "task"
-        return approved_messages(
-            {
-                "history": [
-                    {
-                        "role": "ROLE_USER",
-                        "parts": [{"text": "Private revision goal reasons"}],
-                    },
-                    {
-                        "role": "ROLE_AGENT",
-                        "parts": [
-                            {"text": "Unapproved reply with private goal reasons"}
-                        ],
-                    },
-                    {
-                        "role": "ROLE_AGENT",
-                        "parts": [{"text": "Update from private-user"}],
-                    },
-                ]
-            },
-            [hashlib.sha256(b"Update from private-user").hexdigest()],
-        )
+    # The connector view returns digests only, never transcript text.
+    journal = [
+        ("shared", "Unapproved reply with private goal reasons"),
+        ("shared", "Update from private-user"),
+        ("unshared", "Another session reply"),
+    ]
+
+    def messages(cursor, project, issue_id):
+        assert (project, issue_id) == ("HOME", 4)
+        return [
+            dict(session_id=session, task_id="task", text_sha256=digest(text))
+            for session, text in journal
+        ]
 
     original_turn = runtime.public_turn
     monkeypatch.setattr(runtime, "session_tasks", references)
-    monkeypatch.setattr(runtime, "confirmed_messages", task)
+    monkeypatch.setattr(runtime, "task_messages", messages)
     monkeypatch.setattr(
         runtime,
         "public_turn",
@@ -98,9 +92,13 @@ def test_private_issues_filtered_before_connector_or_session_read(monkeypatch):
         }
     }
     result = runtime.documents(None, "HOME", project, board, archive)
-    assert "Private revision goal reasons" not in json.dumps(result)
     assert "Unapproved reply" not in json.dumps(result)
     assert queried == [4]
+    # A digest from another session or a changed message refuses the cycle.
+    journal[1] = ("unshared", "Update from private-user")
+    with pytest.raises(ValueError, match="differs from completed task"):
+        runtime.documents(None, "HOME", project, board, archive)
+    journal[1] = ("shared", "Update from private-user")
     queried.clear()
     monkeypatch.setattr(runtime, "session_tasks", lambda *args: [])
     assert runtime.documents(None, "HOME", project, board, archive) == result
@@ -127,77 +125,3 @@ def test_private_issues_filtered_before_connector_or_session_read(monkeypatch):
     validator = Draft7Validator(schema)
     for doc in [story, *goals.values(), *issues.values(), *sessions.values()]:
         validator.validate(doc)
-
-
-def test_task_reader_checks_identity_and_limits_upstream_reads(monkeypatch):
-    from http.server import ThreadingHTTPServer
-    from threading import Thread
-    from urllib.error import HTTPError
-    from urllib.request import Request, urlopen
-
-    import pytest
-    import task_reader
-
-    text = "Approved update"
-    digest = hashlib.sha256(text.encode()).hexdigest()
-    grant = dict(
-        namespace="factory",
-        agent="coder",
-        session="session",
-        task="task",
-        share="owner-share",
-        approvedHashes=[digest],
-    )
-    address = hashlib.sha256(b"task").hexdigest()
-    calls = []
-
-    def completed(*args):
-        calls.append(args)
-        return {
-            "history": [
-                {"role": "ROLE_AGENT", "parts": [{"text": text}]},
-                {"role": "ROLE_USER", "parts": [{"text": "Private goal reasons"}]},
-            ]
-        }
-
-    monkeypatch.setenv("UPSTREAM_BEARER", "upstream")
-    monkeypatch.setattr(task_reader, "completed_task", completed)
-    with ThreadingHTTPServer(("127.0.0.1", 0), task_reader.Handler) as server:
-        server.authorization = "Bearer reader"
-        server.grants = {address: grant}
-        thread = Thread(target=server.serve_forever)
-        thread.start()
-        try:
-
-            def read(path, bearer, method="GET"):
-                req = Request(
-                    f"http://127.0.0.1:{server.server_port}{path}",
-                    method=method,
-                    headers={"Authorization": bearer},
-                )
-                with urlopen(req, timeout=5) as response:
-                    return json.load(response)
-
-            path = "/tasks/" + address
-            for target, token, method, expected in [
-                (path, "Bearer other", "GET", 403),
-                ("/tasks/" + "0" * 64, "Bearer reader", "GET", 404),
-                (path, "Bearer reader", "POST", 501),
-            ]:
-                with pytest.raises(HTTPError) as exc:
-                    read(target, token, method)
-                assert exc.value.code == expected
-            assert not calls
-            assert read(path, "Bearer reader") == [digest]
-            assert calls == [
-                (
-                    "http://kagent-controller.kagent.svc:8083/agents/factory/coder",
-                    "session",
-                    "task",
-                    "upstream",
-                    "owner-share",
-                )
-            ]
-        finally:
-            server.shutdown()
-            thread.join()

@@ -16,7 +16,9 @@ func TestTranscriptByteMigrationPreservesExistingJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Recreate the previous schema with a persisted journal, then migrate it.
+	// That schema had no storyboard view over the journal.
 	if _, err := st.DB.ExecContext(ctx, `
+		DROP VIEW public.storyboard_task_messages;
 		ALTER TABLE task_transcript ALTER COLUMN state TYPE jsonb USING convert_from(state, 'UTF8')::jsonb;
 		DELETE FROM schema_migrations WHERE version = '20261115210000_transcript_bytes';
 		INSERT INTO task_transcript (run_id, attempt, task_id, base_offset, state)

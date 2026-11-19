@@ -3,17 +3,14 @@
 import hashlib
 import json
 import os
-import sys
 from collections import Counter
 from datetime import datetime, timezone
 from urllib.parse import quote
-from urllib.request import Request, build_opener
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from connector_source import delivery, session_tasks
+from connector_source import delivery, session_tasks, task_messages
 from delivery_stats import delivery_statistics
 from publisher import public_issue, public_turn, publish, redact
-from session_history import _NoRedirect
-from task_reader import serve
 
 STATES = {
     "active": "Working",
@@ -37,6 +34,12 @@ def timestamp(value):
     )
 
 
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # The itsaplan key belongs only to the configured API.
+        return None
+
+
 def read_board(key):
     base = os.environ["ITSAPLAN_URL"] + "/projects/" + quote(key, safe="")
 
@@ -54,16 +57,6 @@ def read_board(key):
     ):
         raise ValueError("publisher requires a read-only itsaplan identity")
     return project, get("/issues/board")["issues"]
-
-
-def confirmed_messages(task_id):
-    address = hashlib.sha256(task_id.encode()).hexdigest()
-    request = Request(
-        "http://storyboard-task-reader.factory.svc:8080/tasks/" + address,
-        headers={"Authorization": "Bearer " + os.environ["READER_TOKEN"]},
-    )
-    with build_opener(_NoRedirect()).open(request, timeout=35) as response:
-        return json.load(response)
 
 
 def documents(cursor, key, project, board, archive):
@@ -106,25 +99,28 @@ def documents(cursor, key, project, board, archive):
             dict(kind="opened", at=timestamp(item["createdAt"]), text="Issue opened")
         ]
         approved = approval.get("tasks", [])
-        current = (
-            {
+        current, confirmed = set(), set()
+        if approved:
+            # Fingerprints of the connector's kagent task journal; the
+            # publisher never reads private transcript text.
+            current = {
                 (r["session_id"], r["task_id"])
                 for r in session_tasks(cursor, key, item["id"])
             }
-            if approved
-            else set()
-        )
+            confirmed = {
+                (r["session_id"], r["task_id"], r["text_sha256"])
+                for r in task_messages(cursor, key, item["id"])
+            }
         for record in approved:
             sid = record["session"]
             task_id = record["task"]
             texts = record["assistantTexts"]
-            if (sid, task_id) in current:
-                confirmed = confirmed_messages(task_id)
-                if any(
-                    hashlib.sha256(text.encode()).hexdigest() not in confirmed
-                    for text in texts
-                ):
-                    raise ValueError("approved transcript differs from shared task")
+            if (sid, task_id) in current and any(
+                (sid, task_id, hashlib.sha256(text.encode()).hexdigest())
+                not in confirmed
+                for text in texts
+            ):
+                raise ValueError("approved transcript differs from completed task")
             public_id = "session-" + hashlib.sha256(sid.encode()).hexdigest()
             session = sessions.setdefault(
                 public_id,
@@ -250,7 +246,4 @@ def main():
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] == ["serve-tasks"]:
-        serve()
-    else:
-        main()
+    main()

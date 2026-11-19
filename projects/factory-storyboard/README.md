@@ -90,29 +90,30 @@ fixtures at those paths in development and tests; production builds contain none
 
 The factory-storyboard CronJob runs in the factory namespace every five
 minutes. Its ServiceAccount uses the read-only connector database login and
-a Garage write claim for factory-public. The publisher has no controller ingress grant.
-The separate storyboard-task-reader verifies a publisher-specific bearer and
-accepts GET requests for individually granted tasks. It uses its own upstream
-identity and each owner's share. It returns only approved assistant-message
-fingerprints confirmed in the completed task.
+a Garage write claim for factory-public. Its egress allows only factory-db,
+the itsaplan API and Garage. No storyboard pod can reach the kagent
+controller, because its trusted-proxy listener accepts unverified bearer
+tokens (`projects/factory/ARCHITECTURE.md` finding 5).
 
-Provision two 1Password items before sync:
+The publisher reads kagent session history through the connector store. The
+connector journals each task's history in `task_transcript`. The
+`storyboard_task_messages` view returns only the SHA-256 of each assistant
+message in a completed task of the current session. The digest covers the
+message text as the itsaplan run trace shows it. Artifact text is excluded.
+A review round has no journal, so the publisher cannot confirm its text.
 
-- `factory-storyboard-readers` holds the project-scoped read-only
-  `ITSAPLAN_KEY`, a random `READER_TOKEN` of at least 32 characters and
-  `APPROVED_HISTORY`. The latter is a JSON object keyed by issue key. Each
-  entry can contain an approved literal title and description and a `tasks`
-  array. Each task records its `session`, `task`, UTC completion time `at`,
-  and the exact owner-reviewed assistant messages in `assistantTexts`.
-  Keep these approved exports after connector cleanup. Follow the withdrawal
-  procedure below when an owner removes an approval.
-  An empty object publishes issue keys and metrics only.
-- `storyboard-owner-shares` holds the reader's `UPSTREAM_BEARER` and
-  `OWNER_GRANTS`, a JSON array. Each grant contains `namespace`, `agent`,
-  `session`, `task`, the owner's `share`, and `approvedHashes` (SHA-256 of
-  each approved assistant message's UTF-8 text). A session share grants
-  read access. A separate explicit publication approval is required before
-  adding any prose to either item.
+Provision the 1Password item `factory-storyboard-readers` before sync. It
+holds the project-scoped read-only `ITSAPLAN_KEY` and `APPROVED_HISTORY`.
+`APPROVED_HISTORY` is a JSON object keyed by issue key. Each entry can
+contain an approved literal title and description and a `tasks` array. Each
+task records its `session`, `task`, UTC completion time `at`, and the exact
+owner-reviewed assistant messages in `assistantTexts`. Copy each message
+from the itsaplan run trace. If the task is a completed task of the current
+session, every approved message must match a digest in the view. Otherwise
+the publisher stops the cycle. Keep these approved exports after connector
+cleanup. Follow the withdrawal procedure below when an owner removes an
+approval. An empty object publishes issue keys and metrics only. A separate
+explicit publication approval is required before you add prose to the item.
 
 After publisher rollout, run
 `node projects/factory-storyboard/verify-rollout.mjs --mirror-only`
@@ -127,11 +128,9 @@ to check the seven-minute limit and every object on the preview site.
 1. Record the affected issue key, session ID in the public manifest, and old
    object paths from both the mirror and preview manifests. Include previous
    versions that carry the withdrawn text. Keep this inventory private.
-   Remove the text from `APPROVED_HISTORY` and its fingerprint from the
-   reader's `approvedHashes`. For a whole-session withdrawal, remove its
-   archive entry and grants, and revoke the owner's share. Wait for both
-   Kubernetes Secrets to reconcile. Roll the reader Deployment so it reloads
-   its grants. Wait for a successful publisher Job started with the new Secret.
+   Remove the text from `APPROVED_HISTORY`. For a whole-session
+   withdrawal, remove its archive entry. Wait for the Kubernetes Secret to
+   reconcile. Wait for a successful publisher Job started with the new Secret.
 2. Fetch `https://factory-data.jomcgi.dev/manifest.json`. Record its
    `generatedAt`. For a whole session, check that its ID has disappeared
    from the session index and its events from the current issue timeline.
@@ -178,7 +177,7 @@ KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db exec factory-db-1 -c postg
 ```
 
 The second command must print 0. Use the primary's pod name if
-`factory-db-1` is not the primary. The
-`storyboard_delivery` view and its grant stay, so a later redeploy works
-without a new migration. To remove the grant as well, add a forward
-migration that revokes it.
+`factory-db-1` is not the primary. The `storyboard_delivery`,
+`storyboard_tasks` and `storyboard_task_messages` views and their grants
+stay, so a later redeploy works without a new migration. To remove the
+grants as well, add a forward migration that revokes them.

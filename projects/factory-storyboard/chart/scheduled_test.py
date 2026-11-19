@@ -1,12 +1,13 @@
-import json
 import os
 from pathlib import Path
 import subprocess
 
 import yaml
 
+WORKLOADS = {"Pod", "Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob"}
 
-def test_scheduled_writer():
+
+def render():
     manifests = subprocess.check_output(
         [
             os.getenv("HELM_BIN", "helm"),
@@ -19,8 +20,12 @@ def test_scheduled_writer():
             "image.digest=sha256:" + "0" * 64,
         ]
     )
-    docs = list(yaml.safe_load_all(manifests))
-    jobs = [d for d in docs if d and d["kind"] == "CronJob"]
+    return [d for d in yaml.safe_load_all(manifests) if d]
+
+
+def test_scheduled_writer():
+    docs = render()
+    jobs = [d for d in docs if d["kind"] == "CronJob"]
     assert len(jobs) == 1
     job = jobs[0]["spec"]
     assert job["schedule"] == "*/5 * * * *"
@@ -29,8 +34,7 @@ def test_scheduled_writer():
     assert pod["serviceAccountName"] == "factory-storyboard"
     assert pod["automountServiceAccountToken"] is False
     assert any(
-        d
-        and d["kind"] == "ServiceAccount"
+        d["kind"] == "ServiceAccount"
         and d["metadata"]["name"] == pod["serviceAccountName"]
         for d in docs
     )
@@ -44,27 +48,32 @@ def test_scheduled_writer():
         "factory-storyboard-readers",
         "factory-storyboard-db",
     }
-    reader = next(
-        d
-        for d in docs
-        if d
-        and d["kind"] == "Deployment"
-        and d["metadata"]["name"] == "storyboard-task-reader"
-    )
-    reader_env = {
-        v["name"] for v in reader["spec"]["template"]["spec"]["containers"][0]["env"]
-    }
-    assert reader_env == {"READER_TOKEN", "OWNER_GRANTS", "UPSTREAM_BEARER"}
-    publisher_env = {v["name"] for v in pod["containers"][0]["env"]}
-    assert publisher_env.isdisjoint({"UPSTREAM_BEARER", "OWNER_GRANTS"})
-    policies = [
-        d["spec"]
-        for d in docs
-        if d
-        and d["kind"] == "CiliumNetworkPolicy"
-        and d["spec"]["endpointSelector"]["matchLabels"].get("app.kubernetes.io/name")
-        == "factory-storyboard"
+
+
+def test_no_pod_reaches_the_kagent_controller():
+    # kagent's trusted-proxy listener (:8083) trusts unverified bearer JWTs
+    # (projects/factory/ARCHITECTURE.md finding 5). Task history comes from
+    # the connector's journal in factory-db, so the chart runs one pod whose
+    # default-deny egress allows only factory-db, itsaplan and Garage.
+    docs = render()
+    workloads = [(d["kind"], d["metadata"]["name"]) for d in docs]
+    assert [w for w in workloads if w[0] in WORKLOADS] == [
+        ("CronJob", "factory-storyboard")
     ]
-    assert policies
-    assert "kagent-controller" not in str(policies)
-    assert '"8083"' not in json.dumps(policies)
+    assert not [w for w in workloads if w[0] == "Service"]
+    (policy,) = [d["spec"] for d in docs if d["kind"] == "CiliumNetworkPolicy"]
+    assert policy["endpointSelector"] == {
+        "matchLabels": {"app.kubernetes.io/name": "factory-storyboard"}
+    }
+    assert policy["enableDefaultDeny"] == {"egress": True, "ingress": True}
+    assert "ingress" not in policy
+    peers = set()
+    for rule in policy["egress"]:
+        assert set(rule) == {"toEndpoints", "toPorts"}
+        ports = [p["port"] for r in rule["toPorts"] for p in r["ports"]]
+        for endpoint in rule["toEndpoints"]:
+            labels = endpoint["matchLabels"]
+            peers.update(
+                (labels["k8s:io.kubernetes.pod.namespace"], port) for port in ports
+            )
+    assert peers == {("factory-db", "5432"), ("factory", "3000"), ("garage", "3900")}
