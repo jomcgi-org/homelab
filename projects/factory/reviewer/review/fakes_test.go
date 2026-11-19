@@ -97,6 +97,7 @@ type fakeGitHub struct {
 	baseHead string
 	// baseFiles are the base branch's files at baseHead.
 	baseFiles map[string]string
+	headFiles map[string]string // ref:path -> file at an immutable PR head
 	// compares override the compare answer for "base...head".
 	compares map[string]map[string]any
 	queue    []github.MergeQueueEntry
@@ -639,7 +640,10 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p := strings.TrimPrefix(path, "/contents/")
 		f.contentRefs = append(f.contentRefs, q.Get("ref")+":"+p)
 		content, ok := f.baseFiles[p]
-		if !ok || q.Get("ref") != f.baseHead {
+		if q.Get("ref") != f.baseHead {
+			content, ok = f.headFiles[q.Get("ref")+":"+p]
+		}
+		if !ok {
 			http.NotFound(w, r)
 			return
 		}

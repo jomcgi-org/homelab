@@ -15,3 +15,17 @@
    `projects/factory/reviewer/review/goal_test.go` checks the numbered private
    reason from the internal API and searches the public check, state, and
    comment for its private marker.
+
+The omitted-patch regression is `TestGoalEvidenceReadAtHeadWhenPatchOmitted`.
+It supplies the macro citation only through the immutable head file API and
+checks its quoted representation in the outbound goal session. The separate
+`TestGoalPromptQuotesEveryUntrustedLine` exercises hostile delimiter text.
+
+In the read-only model replay of the #8260 source snapshot, the three
+per-criterion verdicts were pass, pass, pass. For the first, the reviewer
+followed the target to `pytest_main = True`. For the second, it identified
+qualifying bindings for Edge, ArgoCD, Grafana, itsaplan, Explorer and
+kubectl. For the third, it traced removal of each app's group bindings to
+the assertion naming that app. It kept the missing-registration finding
+open in the counterfactual with a nonexistent macro. This was a snapshot
+replay outside the deployed reviewer.
