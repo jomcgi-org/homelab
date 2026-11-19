@@ -93,7 +93,7 @@ kagent:
         serviceAccount:
           authority: factory-home
 
-# The Codex agent's model: gpt-6.2-astra, the frontier model, at the broker's
+# The control coder's model: gpt-6.2-astra, the frontier model, at the broker's
 # xhigh reasoning effort (Joe, 2026-11-14; 6.2 on 2026-11-17:
 # https://github.com/jomcgi-org/homelab/pull/8193#issuecomment-6963828989). Codex (0.169.1, from the
 # kagent fork above) gives a model its apply_patch edit tool only when it is
@@ -126,7 +126,7 @@ agents:
   # which Codex 0.169.1 has in its
   # catalogue; before that it ran gpt-6.1-terra to spend less of the Codex
   # quota (https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6881930021).
-  # The broker's reasoningEffort (xhigh) applies to it as to the coder.
+  # Reviews use the broker default effort (xhigh).
   reviewer:
     model: gpt-6.2-sol
     # One worker per concurrent review (reviewer.concurrency).
@@ -202,6 +202,10 @@ connector:
       concurrency: 7
   bindings:
     homelab:
+      arms:
+        - { name: control, model: gpt-6.2-astra, reasoningEffort: xhigh, weight: 70 }
+        - { name: astra-high, model: gpt-6.2-astra, reasoningEffort: high, weight: 15 }
+        - { name: luna, model: gpt-6-luna, reasoningEffort: xhigh, weight: 15 }
       itsaplanProject: HOME
       agents: [homelab-codex]
       # The factory-reviewer's check is the review: the connector enqueues a

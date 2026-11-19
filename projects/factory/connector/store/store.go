@@ -431,6 +431,8 @@ const (
 
 // WorkItem is one issue delivered through one kagent session.
 type WorkItem struct {
+	FirstArm           string
+	Escalated          bool
 	ID                 int64
 	BindingName        string
 	IssueID            int64
@@ -463,14 +465,14 @@ const workCols = `id, binding_name, issue_id, issue_key, branch, agent_key, kage
 	coalesce(session_id, ''), session_generation, epoch, engineering_retries, state,
 	coalesce(blocked_class, ''), coalesce(blocked_reason, ''), review_rounds, rebase_rounds, split_rounds,
 	coalesce(turn_attempt_id, 0), coalesce(synced_attempt_id, 0), coalesce(stopped_reason, ''),
-	coalesce(caller_identity, '')`
+	coalesce(caller_identity, ''), first_arm, escalated`
 
 func scanWork(row interface{ Scan(...any) error }) (*WorkItem, error) {
 	w := &WorkItem{}
 	err := row.Scan(&w.ID, &w.BindingName, &w.IssueID, &w.IssueKey, &w.Branch, &w.AgentKey,
 		&w.KagentNamespace, &w.KagentAgent, &w.SessionID, &w.SessionGeneration, &w.Epoch,
 		&w.EngineeringRetries, &w.State, &w.BlockedClass, &w.BlockedReason, &w.ReviewRounds, &w.RebaseRounds, &w.SplitRounds,
-		&w.TurnAttemptID, &w.SyncedAttemptID, &w.StoppedReason, &w.CallerIdentity)
+		&w.TurnAttemptID, &w.SyncedAttemptID, &w.StoppedReason, &w.CallerIdentity, &w.FirstArm, &w.Escalated)
 	return w, err
 }
 
@@ -529,6 +531,7 @@ func (s *Store) WorkItemByIssue(ctx context.Context, issueID int64) (*WorkItem, 
 
 // NewWorkItem describes the work item a run creates.
 type NewWorkItem struct {
+	FirstArm string
 	Binding  Binding
 	IssueID  int64
 	IssueKey string
@@ -567,11 +570,15 @@ func (s *Store) ResolveWorkItem(ctx context.Context, runID int64, n NewWorkItem)
 		}
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
+			armAgent := n.Binding.KagentAgent
+			if n.FirstArm != "" && n.FirstArm != "control" {
+				armAgent += "-" + n.FirstArm
+			}
 			w, err = scanWork(tx.QueryRowContext(ctx, `
-				INSERT INTO work_item (binding_name, issue_id, issue_key, branch, agent_key, kagent_namespace, kagent_agent)
-				VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING `+workCols,
+				INSERT INTO work_item (binding_name, issue_id, issue_key, branch, agent_key, kagent_namespace, kagent_agent, first_arm)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, coalesce(nullif($8,''),'control')) RETURNING `+workCols,
 				n.Binding.Name, n.IssueID, n.IssueKey, n.Binding.BranchPrefix+n.IssueKey, n.AgentKey,
-				n.Binding.KagentNamespace, n.Binding.KagentAgent))
+				n.Binding.KagentNamespace, armAgent, n.FirstArm))
 			if err != nil {
 				return err
 			}

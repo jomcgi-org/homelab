@@ -3,6 +3,7 @@ package provenance
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,7 +14,6 @@ import (
 )
 
 // Runtime comes from the same Helm values as the Agent and the broker relay.
-// Arm is descriptive; selecting experiment arms is a separate concern.
 type Runtime struct {
 	Model           string `json:"model" yaml:"model"`
 	ReasoningEffort string `json:"reasoningEffort" yaml:"reasoningEffort"`
@@ -26,6 +26,33 @@ func (r *Runtime) Validate() error {
 		return errors.New("run provenance requires model, reasoningEffort and arm")
 	}
 	return nil
+}
+
+type Arm struct {
+	Name            string `yaml:"name"`
+	Model           string `yaml:"model"`
+	ReasoningEffort string `yaml:"reasoningEffort"`
+	Weight          uint32 `yaml:"weight"`
+}
+
+// SelectArm maps each issue to a stable weighted bucket.
+func SelectArm(key string, arms []Arm) string {
+	var total uint64
+	for _, arm := range arms {
+		total += uint64(arm.Weight)
+	}
+	if total == 0 {
+		return "control"
+	}
+	sum := sha256.Sum256([]byte(key))
+	bucket := binary.BigEndian.Uint64(sum[:8]) % total
+	for _, arm := range arms {
+		if bucket < uint64(arm.Weight) {
+			return arm.Name
+		}
+		bucket -= uint64(arm.Weight)
+	}
+	panic("unreachable weighted bucket")
 }
 
 type Record struct {

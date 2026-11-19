@@ -717,7 +717,7 @@ def test_binding_relays_through_the_broker_with_an_actor_jwt() -> None:
         "provider": "OpenAI",
         "model": "gpt-6.2-astra",
         "openAI": {
-            "baseUrl": "http://factory-broker.factory.svc.cluster.local/v1",
+            "baseUrl": "http://factory-broker.factory.svc.cluster.local/v1/effort/xhigh",
             "apiFormat": "responses",
         },
         "actorJwt": {"audiences": ["factory-broker"]},
@@ -725,6 +725,19 @@ def test_binding_relays_through_the_broker_with_an_actor_jwt() -> None:
     agent = _in(docs, "Agent", ns, "homelab-codex")["spec"]
     assert agent["harnessRef"] == {"name": "codex"}
     assert agent["template"]["inline"]["modelConfig"] == {"name": "codex"}
+    for suffix, model, effort in [
+        ("astra-high", "gpt-6.2-astra", "high"),
+        ("luna", "gpt-6-luna", "xhigh"),
+    ]:
+        config = _in(docs, "ModelConfig", ns, f"codex-{suffix}")["spec"]
+        assert config["model"] == model
+        assert config["openAI"]["baseUrl"].endswith(f"/v1/effort/{effort}")
+        trial = _in(docs, "Agent", ns, f"homelab-codex-{suffix}")["spec"]
+        assert trial["template"]["inline"]["modelConfig"] == {"name": f"codex-{suffix}"}
+        assert (
+            trial["template"]["inline"]["systemPrompt"]
+            == agent["template"]["inline"]["systemPrompt"]
+        )
     # Deploy values enable the homelab toolchain's download origins.
     assert agent["egressPolicyRefs"] == [
         {"name": "github-git"},

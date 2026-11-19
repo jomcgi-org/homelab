@@ -153,6 +153,13 @@ var routes = map[string]route{
 
 func match(r *http.Request) (route, bool) {
 	path := strings.TrimPrefix(r.URL.Path, "/v1")
+	if rest, ok := strings.CutPrefix(path, "/effort/"); ok {
+		effort, suffix, ok := strings.Cut(rest, "/")
+		if !ok || !slices.Contains([]string{"low", "medium", "high", "xhigh"}, effort) {
+			return route{}, false
+		}
+		path = suffix
+	}
 	rt, ok := routes[strings.TrimPrefix(path, "/")]
 	if !ok || r.Method != rt.method {
 		return route{}, false
@@ -268,7 +275,16 @@ func (rl *Relay) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 		}
 	}
 	if rt.suffix == "responses" {
-		body = rl.withEffort(r, body)
+		effort := rl.ReasoningEffort
+		if rest, ok := strings.CutPrefix(r.URL.Path, "/v1/effort/"); ok {
+			effort, _, _ = strings.Cut(rest, "/")
+			body, err = modelBody(body, strings.Join(r.Header.Values("Content-Encoding"), ","), rl.maxRequestBytes())
+			if err != nil || !json.Valid(body) {
+				return writeError(w, http.StatusBadRequest, "bad_request", "bad_request", nil)
+			}
+			r.Header.Del("Content-Encoding")
+		}
+		body = withEffort(r, body, effort)
 	}
 	// The server's ReadTimeout bounds the body upload only. net/http
 	// already clears the read deadline when the body reaches EOF (its
@@ -423,8 +439,8 @@ func modelBody(body []byte, encoding string, limit int64) ([]byte, error) {
 // kagent's Codex harness configures no effort, so without this every turn
 // runs at the model's default. A compressed or non-object body is forwarded
 // as sent.
-func (rl *Relay) withEffort(r *http.Request, body []byte) []byte {
-	if rl.ReasoningEffort == "" {
+func withEffort(r *http.Request, body []byte, selected string) []byte {
+	if selected == "" {
 		return body
 	}
 	if enc := r.Header.Get("Content-Encoding"); enc != "" && !strings.EqualFold(enc, "identity") {
@@ -442,7 +458,7 @@ func (rl *Relay) withEffort(r *http.Request, body []byte) []byte {
 			reasoning = map[string]json.RawMessage{}
 		}
 	}
-	effort, _ := json.Marshal(rl.ReasoningEffort)
+	effort, _ := json.Marshal(selected)
 	reasoning["effort"] = effort
 	encoded, err := json.Marshal(reasoning)
 	if err != nil {

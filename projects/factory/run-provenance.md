@@ -17,10 +17,18 @@ flowchart LR
     R --> K
 ```
 
-The chart renders each dispatch runtime from the Agent model and system prompt
-and the broker effort setting. The arm is `control`; this change does not route
-experiments. A coder continuation retains the model, arm and system prompt
-recorded for its session. The broker applies the current effort to every call.
+The connector seeds weighted coder assignment with the issue key and stores the
+assignment in `work_item.first_arm`. Weight zero closes an arm to new items.
+Each coder Agent shares the binding's guidance and harness. Its ModelConfig
+selects the model and the broker endpoint for its effort. The default binding
+has one control arm and uses the broker's default effort. The reviewer uses its
+own fixed Agent.
+
+On the third review round or second CI fix round a trial item starts a fresh
+control session on its existing work branch. For outcome attribution, group
+work items by `first_arm` and count `escalated`. Join runs on `work_item_id`
+to see the arm that actually handled each round.
+
 A session without an earlier snapshot can use current settings only if kagent
 confirms its pinned revision is still current. Otherwise the connector records
 a recovery hold. The existing operator fencing attestation permits a fresh

@@ -31,10 +31,23 @@ func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.
 		return text, nil
 	}
 	runtime := *b.Runtime
+	if !wi.Escalated && wi.FirstArm != "" && wi.FirstArm != "control" {
+		found := false
+		for _, arm := range b.Arms {
+			if arm.Name == wi.FirstArm {
+				runtime.Arm, runtime.Model, runtime.ReasoningEffort = arm.Name, arm.Model, arm.ReasoningEffort
+				found = true
+				break
+			}
+		}
+		if !found {
+			return "", fmt.Errorf("assigned coder arm %q missing from binding", wi.FirstArm)
+		}
+	}
 	var sessionBase string
 	var err error
 	if a.ContextID != "" {
-		runtime, sessionBase, err = e.st.SessionRuntime(ctx, a.KagentNamespace, a.ContextID, runtime)
+		runtime, sessionBase, err = e.st.SessionRuntime(ctx, a.KagentNamespace, a.ContextID, runtime, len(b.Arms) > 0)
 		if errors.Is(err, sql.ErrNoRows) {
 			err = e.verifyLegacyRuntime(ctx, r, wi, a)
 		}

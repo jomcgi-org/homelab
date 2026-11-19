@@ -2,6 +2,7 @@ package provenance
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -43,5 +44,27 @@ func TestGuidanceHashIncludesRenderedSystemAndTaskPrompts(t *testing.T) {
 	r.SystemPrompt += " changed"
 	if p.PromptHash == New(r, p.BaseSHA, "rendered task", "unclassified").PromptHash {
 		t.Fatal("system guidance change lost")
+	}
+}
+
+func TestWeightedAssignment(t *testing.T) {
+	if SelectArm("HOME-1", nil) != "control" {
+		t.Fatal("default assignment")
+	}
+	arms := []Arm{{Name: "control", Weight: 70}, {Name: "high", Weight: 15}, {Name: "luna", Weight: 15}, {Name: "disabled"}}
+	counts := map[string]int{}
+	for i := 0; i < 10000; i++ {
+		key := "HOME-" + strconv.Itoa(i)
+		arm := SelectArm(key, arms)
+		if arm != SelectArm(key, arms) {
+			t.Fatal("unstable assignment")
+		}
+		counts[arm]++
+	}
+	for _, arm := range arms {
+		delta := counts[arm.Name] - int(arm.Weight)*100
+		if delta < -200 || delta > 200 || (arm.Weight == 0 && delta != 0) {
+			t.Fatalf("assignment counts: %v", counts)
+		}
 	}
 }

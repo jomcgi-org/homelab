@@ -962,7 +962,14 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 			case split:
 				round, err = e.startSplitRound(ctx, tx, wi, b, pr, d, prompt)
 			default:
-				round, err = e.startReviewRound(ctx, tx, wi, b, pr, d, prompt)
+				ciFix := false
+				for _, c := range acting {
+					if (c.ev.Kind == store.EventCheckFailed || c.ev.Kind == store.EventStatusFailed) && (p.ReviewerCheck == nil || c.ev.Source != p.ReviewerCheck.Name) {
+						ciFix = true
+						break
+					}
+				}
+				round, err = e.startReviewRound(ctx, tx, wi, b, pr, d, prompt, ciFix)
 			}
 			if err != nil {
 				return err
@@ -1065,16 +1072,21 @@ func (e *Engine) startSplitRound(ctx context.Context, tx *sql.Tx, wi *store.Work
 // startReviewRound records the run and its announcement together with the
 // event that prompted it. Callers check the issue and round bound first.
 func (e *Engine) startReviewRound(ctx context.Context, tx *sql.Tx, wi *store.WorkItem, b *Binding,
-	pr *store.PullRequest, d *github.PullRequestDetail, prompt string,
+	pr *store.PullRequest, d *github.PullRequestDetail, prompt string, ciFix bool,
 ) (*store.Run, error) {
 	round, err := e.st.StartRound(ctx, tx, wi, prompt, d.HeadSHA)
 	if err != nil {
 		return nil, err
 	}
+	if wi.FirstArm != "control" && !wi.Escalated {
+		if err := e.st.RouteReviewRound(ctx, tx, wi.ID, b.KagentAgent, ciFix); err != nil {
+			return nil, err
+		}
+	}
 	err = e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/round/%d/%d", wi.ID, wi.ReviewRounds+1), round.ID, "",
 		commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
-			"The factory started review round %d of %d for %s on PR #%d (%s) at %s, in kagent session %s.",
-			wi.ReviewRounds+1, b.Review.MaxReviewRounds, wi.IssueKey, pr.Number, pr.URL, short(d.HeadSHA), wi.SessionID)})
+			"The factory started review round %d of %d for %s on PR #%d (%s) at %s.",
+			wi.ReviewRounds+1, b.Review.MaxReviewRounds, wi.IssueKey, pr.Number, pr.URL, short(d.HeadSHA))})
 	return round, err
 }
 
@@ -1429,7 +1441,7 @@ func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr
 				return err
 			}
 		case prompt != "":
-			if round, err = e.startReviewRound(ctx, tx, wi, b, pr, latest, prompt); err != nil {
+			if round, err = e.startReviewRound(ctx, tx, wi, b, pr, latest, prompt, false); err != nil {
 				return err
 			}
 			if ciFailure {

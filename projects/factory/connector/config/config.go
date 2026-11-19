@@ -127,6 +127,7 @@ type Binding struct {
 	// an explicit empty string disables the integration for a binding.
 	HumanGateAssignee *string `yaml:"humanGateAssignee"`
 
+	Arms    []provenance.Arm    `yaml:"arms"`
 	Runtime *provenance.Runtime `yaml:"runtime"`
 }
 
