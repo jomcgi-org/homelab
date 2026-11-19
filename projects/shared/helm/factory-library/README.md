@@ -235,11 +235,14 @@ The Garage application installs `garage-claim-authorizations`, a kept admission
 policy and Deny binding. Only the authenticated ArgoCD application controller may
 create, update or delete these declarations. The guard matches the reserved name
 prefix and old/new claim labels, so stripping labels cannot bypass it.
-The Kubernetes garbage collector has one exception: it may update a declaration
-that is already being deleted, if data, binaryData, labels, annotations and name
-stay the same. ArgoCD prunes with foreground propagation, so the API server keeps
-a pruned declaration until the garbage collector removes its `foregroundDeletion`
-finalizer. Without the exception, the declaration and the ArgoCD sync wait forever.
+The Kubernetes garbage collector has one exception: it may remove the
+`foregroundDeletion` finalizer from a declaration that is already being deleted.
+That update must remove only `foregroundDeletion` and keep the other finalizers
+in their order. Name, data, binaryData, immutable, labels, annotations and
+ownerReferences must stay the same. ArgoCD prunes with foreground propagation,
+so the API server keeps a pruned declaration until the garbage collector removes
+its `foregroundDeletion` finalizer. Without the exception, the declaration and
+the ArgoCD sync wait forever.
 Consumer namespace writers cannot edit this trusted declaration; choosing a
 ServiceAccount on a Pod does not change the authenticated caller.
 
