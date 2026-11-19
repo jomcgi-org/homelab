@@ -76,6 +76,12 @@ subjects:
 {{- $names := list $secret -}}
 {{- if hasKey . "public" -}}
 {{- $names = concat $names (list (printf "%s-mirror-s3" $base) (printf "%s-mirror-r2" $base)) -}}
+{{- range ((.public | default dict).copyKeys | default (list)) -}}
+{{- if and (kindIs "map" .) (kindIs "string" .bucket) -}}
+{{- $copySecret := printf "%s-mirror-%s-s3" $base .bucket -}}
+{{- if not (has $copySecret $names) -}}{{- $names = append $names $copySecret -}}{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- $destination := required "factory-library: public.r2Bucket is required" (.public | default dict).r2Bucket -}}
 {{- if hasKey $destinations $destination -}}{{- fail "factory-library: each R2 bucket must have only one mirror" -}}{{- end -}}
 {{- $_ := set $destinations $destination true -}}

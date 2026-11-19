@@ -7,3 +7,61 @@ buckets:
       suspend: false
       r2Bucket: factory-public
       itemPath: vaults/k8s-homelab/items/factory-r2-public-mirror
+      # The mirror copies only this key from factory-health, with a 60-second
+      # cache (HOME-260). The sync leaves it out.
+      copyKeys:
+        - {bucket: factory-health, key: health.json}
+  # The health publisher's own bucket: its write key covers nothing in
+  # factory-public (HOME-260).
+  - name: factory-health
+    access: write
+
+workloads:
+  # Factory health as static data (HOME-260): the public reader never calls
+  # the cluster. templates/buckets.yaml supplies files/health.py as the script.
+  health:
+    kind: CronJob
+    schedule: "*/2 * * * *"
+    backoffLimit: 0
+    kubernetesApi: true
+    image:
+      repository: docker.io/library/python
+      digest: sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
+    command: [python3, -B, -c]
+    resources:
+      requests: {cpu: 10m, memory: 32Mi}
+      limits: {memory: 96Mi}
+    env:
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef: {name: factory-public-factory-health-s3, key: AWS_ACCESS_KEY_ID}
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef: {name: factory-public-factory-health-s3, key: AWS_SECRET_ACCESS_KEY}
+      - name: AWS_ENDPOINT_URL
+        valueFrom:
+          secretKeyRef: {name: factory-public-factory-health-s3, key: AWS_ENDPOINT_URL}
+      - name: AWS_REGION
+        valueFrom:
+          secretKeyRef: {name: factory-public-factory-health-s3, key: AWS_REGION}
+      - name: BUCKET
+        valueFrom:
+          secretKeyRef: {name: factory-public-factory-health-s3, key: BUCKET}
+      # Read-only Workers token (README "Factory health"). Optional: until the
+      # item exists, the Worker entry is down.
+      - name: CLOUDFLARE_API_TOKEN
+        valueFrom:
+          secretKeyRef: {name: factory-health-cloudflare, key: api-token, optional: true}
+      - name: CLOUDFLARE_ACCOUNT_ID
+        valueFrom:
+          secretKeyRef: {name: factory-health-cloudflare, key: account-id, optional: true}
+    network:
+      egress:
+        - {peer: kube-apiserver, port: 6443}
+        - {peer: cloudflare-api, fqdn: api.cloudflare.com, port: 443}
+
+secrets:
+  factory-health-cloudflare:
+    workload: health
+    onePassword:
+      itemPath: vaults/k8s-homelab/items/factory-health-cloudflare

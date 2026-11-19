@@ -529,3 +529,132 @@ def test_mirror_refuses_endpoint_outside_policy_before_running_rclone(chart):
     )
     assert result.returncode == 1
     assert result.stderr.strip() == "R2 endpoint does not match the declared egress"
+
+
+def copy_config():
+    config = bucket_config()
+    config["buckets"][0]["public"]["copyKeys"] = [
+        {"bucket": "factory-health", "key": "health.json"}
+    ]
+    config["buckets"].append({"name": "factory-health", "access": "write"})
+    return config
+
+
+def test_copied_key_has_its_own_read_claim(chart):
+    docs = objects(render(chart, copy_config()))
+    claims = {
+        d["data"]["secretName"]: (d["data"]["bucket"], d["data"]["access"])
+        for d in docs.values()
+        if d["kind"] == "ConfigMap"
+    }
+    # The writer's key covers only its own bucket; the mirror reads it.
+    assert claims == {
+        "consumer-factory-public-s3": ("factory-public", "write"),
+        "consumer-factory-public-mirror-s3": ("factory-public", "read"),
+        "consumer-factory-public-mirror-factory-health-s3": ("factory-health", "read"),
+        "consumer-factory-health-s3": ("factory-health", "write"),
+    }
+    env = {
+        var["name"]: var.get("value") or var["valueFrom"]["secretKeyRef"]["name"]
+        for var in mirror_container(docs)["env"]
+        if var["name"].startswith("RCLONE_CONFIG_SRC0_")
+    }
+    assert env["RCLONE_CONFIG_SRC0_PROVIDER"] == "Other"
+    assert env["RCLONE_CONFIG_SRC0_ACCESS_KEY_ID"] == (
+        "consumer-factory-public-mirror-factory-health-s3"
+    )
+
+
+@pytest.mark.parametrize("present,last", [("health.json", "copyto"), ("", "delete")])
+def test_mirror_copies_only_the_named_key_with_a_short_cache(
+    chart, tmp_path, present, last
+):
+    container = mirror_container(objects(render(chart, copy_config())))
+    env = {
+        **os.environ,
+        **{var["name"]: var["value"] for var in container["env"] if "value" in var},
+    }
+    env.update(
+        RCLONE_CONFIG_R2_ENDPOINT="https://" + env["R2_HOST"],
+        FAKE_PRESENT=present,
+        FAKE_LOG=str(tmp_path / "calls.jsonl"),
+    )
+    binary = tmp_path / "rclone"
+    binary.write_text(
+        "#!" + shutil.which("python3") + "\n"
+        "import json, os, sys\n"
+        "args = sys.argv[1:]\n"
+        "with open(os.environ['FAKE_LOG'], 'a') as out:\n"
+        "    out.write(json.dumps(args) + '\\n')\n"
+        "if args[3] == 'lsf' and args[4].startswith('SRC0:'):\n"
+        "    print(os.environ['FAKE_PRESENT'])\n"
+    )
+    binary.chmod(0o755)
+    env["PATH"] = str(tmp_path) + os.pathsep + env["PATH"]
+    result = subprocess.run(container["command"], env=env, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    calls = [
+        json.loads(line) for line in Path(env["FAKE_LOG"]).read_text().splitlines()
+    ]
+    # The sync leaves the copied key alone, so it never deletes it from R2.
+    assert calls[0][4:10] == [
+        "GARAGE:factory-public",
+        "R2:factory-public",
+        "--exclude",
+        "/manifest.json",
+        "--exclude",
+        "/health.json",
+    ]
+    assert calls[-2][3:] == [
+        "lsf",
+        "SRC0:factory-health",
+        "--files-only",
+        "--max-depth",
+        "1",
+        "--include",
+        "/health.json",
+    ]
+    if last == "copyto":
+        assert calls[-1][3:] == [
+            "copyto",
+            "SRC0:factory-health/health.json",
+            "R2:factory-public/health.json",
+            "--ignore-times",
+            "--header-upload",
+            "Cache-Control: public, max-age=60",
+        ]
+    else:
+        assert calls[-1][3:] == [
+            "delete",
+            "R2:factory-public",
+            "--include",
+            "/health.json",
+        ]
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"bucket": "factory-public", "key": "health.json"},
+        {"bucket": "elsewhere", "key": "health.json"},
+        {"bucket": "factory-health", "key": "manifest.json"},
+        {"bucket": "factory-health", "key": "dir/health.json"},
+        {"bucket": "factory-health", "key": "health.txt"},
+        {"bucket": "factory-health", "key": "health.json", "extra": 1},
+        "health.json",
+    ],
+)
+def test_copy_keys_name_another_bucket_and_a_root_json_key(chart, entry):
+    config = copy_config()
+    config["buckets"][0]["public"]["copyKeys"] = [entry]
+    result = render(chart, config)
+    assert result.returncode != 0
+    assert "copyKeys" in result.stderr
+
+
+def test_copy_keys_are_unique(chart):
+    config = copy_config()
+    config["buckets"][0]["public"]["copyKeys"] *= 2
+    result = render(chart, config)
+    assert result.returncode != 0
+    assert "copyKeys" in result.stderr

@@ -322,6 +322,14 @@ the destination manifest. Payload deletions use rclone sync's normal deletion.
 Set `public.manifestName: latest.json` for static-page writers. The default is
 `manifest.json` for existing publishers.
 
+`public.copyKeys` lists keys that another bucket of the same chart holds, for
+example `[{bucket: factory-health, key: health.json}]`. The writer of that key
+then needs no access to the mirrored bucket. Each key is a root `*.json` name
+other than the manifest. The mirror gets a separate read-only Garage key for
+each named bucket. The sync leaves these keys out. After the manifest step,
+each key is copied from its bucket with the manifest's 60-second cache, or
+removed from R2 when its bucket lacks it.
+
 The publisher must write immutable objects before replacing its manifest.
 Keep objects referenced by a current or cached manifest until those readers
 expire; the mirror does not provide a transaction across concurrent writes.
