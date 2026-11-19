@@ -112,6 +112,30 @@ authentik ships no CRDs. Declarative configuration is done with blueprints,
 mounted through `blueprints.configMaps` or `blueprints.secrets` and applied by
 the worker, which is the GitOps path for adding providers and applications.
 
+### Roll back factory operator access
+
+1. Revert HOME-501 and sync the factory releases. Inspect the
+   `authentik-mcp-blueprints` ConfigMap and the blueprints mounted in the
+   Authentik worker. Confirm the reverted files contain no
+   `factory-operators` bindings before deleting stored bindings. Authentik
+   keeps bindings in its database when their entries disappear from a blueprint.
+2. Use the [factory Authentik port-forward](../../factory-cluster/README.md#authentik-first-run)
+   to sign in as the break-glass administrator. Under **Applications → Applications**,
+   open each of `factory-edge`, `factory-argocd`, `factory-grafana`,
+   `factory-itsaplan`, `factory-kubectl`, and `factory-explore`. In each
+   application's policy bindings, delete the binding whose group is
+   `factory-operators`. Refresh each list and verify the operator binding is
+   gone and the `authentik Admins` binding remains. Verify the kubectl viewer
+   and Explorer user bindings also remain on their respective applications.
+3. In a fresh private browser session, use the Explorer authorization request
+   in the next section. Complete sign-in and MFA with a non-superuser account
+   whose only factory grant is `factory-operators`. Confirm Authentik denies
+   that account authorization and issues no callback code to exchange for a
+   fresh token. A login prompt, unknown-client error, or network failure is
+   inconclusive. Repeat in a separate fresh session with an admitted Explorer
+   user and confirm the callback receives a code. Previously issued Explorer
+   tokens can continue to work until their ten-minute expiry.
+
 ### Roll back factory explorer sign-in
 
 1. Revert the addition of `factory-blueprints/factory-explore.yaml` and sync
