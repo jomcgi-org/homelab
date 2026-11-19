@@ -275,7 +275,7 @@ var ErrNotReview = errors.New("store: work item is no longer in review")
 // StopWork stops delivery for a work item, persists the stop on its admitted
 // runs and queues the announcement in one transaction. Dispatch then cancels
 // those runs even if a new admission resumes the work item first. stopped is
-// false when it was already stopped or is done.
+// false when it was already stopped or has no delivery/activation left to stop.
 func (s *Store) StopWork(ctx context.Context, workID int64, reason, by string) (stopped bool, err error) {
 	err = s.Tx(ctx, func(tx *sql.Tx) error {
 		stopped, err = s.stopWork(ctx, tx, workID, reason, by)
@@ -291,7 +291,12 @@ func (s *Store) stopWork(ctx context.Context, tx *sql.Tx, workID int64, reason, 
 	err := tx.QueryRowContext(ctx, `
 		UPDATE work_item SET state = 'stopped', stopped_reason = $2, stopped_by = $3, stops = stops + 1,
 			updated_at = now()
-		WHERE id = $1 AND state NOT IN ('stopped', 'done')
+		WHERE id = $1 AND state <> 'stopped' AND (state <> 'done' OR EXISTS (
+			SELECT 1 FROM outbox WHERE kind = 'activation' AND (
+				payload->>'workId' = work_item.id::text OR
+				payload->>'followupId' = work_item.issue_id::text OR
+				payload#>>'{complete,activationChild}' = work_item.issue_id::text)
+			AND delivered_at IS NULL AND (abandoned_at IS NULL OR last_error = 'unknown kind activation')))
 		RETURNING issue_id, issue_key, stops`, workID, reason, by).Scan(&issueID, &key, &n)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -368,6 +373,17 @@ func (s *Store) StopIssue(ctx context.Context, issueKey, reason, by string) (Iss
 			return err
 		}
 		if id == 0 {
+			// An undelegated activation issue has no work item yet. Its parent
+			// owns provisioning and observation, so stop that work as well.
+			err = tx.QueryRowContext(ctx, `SELECT work_item_id FROM activation_followup
+				WHERE issue_key = $1`, issueKey).Scan(&id)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if id != 0 {
+				out.WorkItem, err = s.stopWork(ctx, tx, id, reason, by)
+				return err
+			}
 			if out.HeldRuns == 0 {
 				return fmt.Errorf("no work item or held run for %s", issueKey)
 			}

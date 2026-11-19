@@ -152,8 +152,8 @@ of ownership and quiescence before a new retry can establish ownership.
 ## Credential refusal retries
 
 The connector rereads its itsaplan key on each call. After HTTP 401 or 403,
-claims, heartbeats and events retry next pass. Outbox results, comments and
-Done moves back off for up to 12 attempts (about 27 minutes). The issue read
+claims, heartbeats and events retry next pass. Outbox results, comments,
+Done moves and activation items back off for up to 12 attempts (about 27 minutes). The issue read
 before a Done move waits until it succeeds.
 
 Run-state reads track continuous refusals in memory per attempt. After 30
@@ -191,8 +191,9 @@ fails the poll without advancing the transcript or reporting completion
 
 After a turn completes, delivery compares the branch to the base. If it has
 commits, the connector finds or opens one PR and links the issue, session and
-attempt. A turn with no commits reports that on the issue. Only an observed
-merge moves the issue to Done.
+attempt. A turn with no commits reports that on the issue. Done requires the
+observed merge and `Activation: none`, or completion of its recorded
+activation follow-up ("Merge queue").
 
 A credential or quota failure pauses work sharing the grant. The connector
 can resume a quota-blocked run after a usable broker reading without spending
@@ -423,18 +424,64 @@ connector recovery confirm-fenced HOLD_ID --fingerprint HASH --action retry \
 
 ## Merge queue
 
-**Merge.** When the required checks and the trusted reviewer succeed on the
+**Merge and activation ([HOME-150](https://factory-plan.jomcgi.dev/factory/issue/HOME-150)).**
+The coding binding requires exactly one final trailer: `Activation: none`, or
+`Activation: <remaining step and its precondition>`. Review bindings do not.
+The connector reads the full commit message matched to `headRefOid`.
+Missing, empty or duplicate trailers request a revision under the existing round
+limit. When the required checks and the trusted reviewer succeed on the
 current head, enqueue with GraphQL `enqueuePullRequest` and
 `expectedHeadOid` set to that head. The reviewer is the binding's reviewer
 check, or without one a trusted reviewer's approval of the head; a trusted
-reviewer's standing change request blocks either way. A PR already in the
-queue is recorded as enqueued, never enqueued twice. A PR against another
-base branch is never enqueued. When the merge is observed, the connector comments the issue, run, session, PR and merge
-links on the issue and moves it to the project's first `completed` column
-(or `doneColumn`); a move itsaplan refuses, such as a full column at a hard
-WIP limit, is reported on the issue and retried with backoff. A move the
-connector gives up on is also reported on the issue, unless a person
-canceled the issue since the merge.
+reviewer's standing change request blocks either way. A pending activation
+also needs the configured reviewer's assessment of the head: a trusted human
+approval alone does not enqueue it. A PR already in the queue is recorded as
+enqueued, never enqueued twice. A PR against another base branch is never
+enqueued. When the merge is observed, the connector comments the issue, run,
+session, PR and merge links on the issue. With `none` it moves the issue to the
+project's first `completed` column (or `doneColumn`); with a pending step it
+moves the issue to the first started column.
+
+```mermaid
+flowchart TD
+  Head[PR head] -->|Missing trailer| Revision[Bounded revision]
+  Head -->|Checks and review pass| Merge[Observed merge]
+  Merge -->|Activation: none| Done[Comment then Done]
+  Merge -->|Pending step| Started[Comment then first started column]
+  Started --> Follow[Create and finalize blocking follow-up]
+  Follow -->|Reviewer assessed the step| Delegate[Delegate to original agent]
+  Follow -->|No assessment| Hold[Undelegated, fixed status and head link]
+  Delegate -->|Follow-up completes| Parent[Complete still-started parent]
+```
+
+The follow-up holds the step that the reviewer assessed
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-408#comment-4482)).
+Only the reviewer's authenticated check on the head supplies a delegable step;
+human review bodies cannot, even with an approval. Commit text never reaches the
+tracker: without that assessment, the merge comment and an undelegated follow-up
+carry a fixed pending status and a link to the delivered head.
+
+The merge transaction records the comment and one activation outbox item. After
+verifying the coordinator's HOME-106 permissions, the connector creates
+`Activate HOME-N: <original title>` (trimmed to 255 characters) in the first
+unstarted column. Its description starts "Put `Refs HOME-<new>` in the commit
+message." and holds the step, the original issue, the merged PR and the head.
+The connector then adds an outward `blocks` link and delegates to the original
+agent. Send and issue markers recover lost create responses; an ambiguous create
+is never resent, and delegation counts only once run history shows it. A move
+itsaplan refuses, such as a full column at a hard WIP limit, is reported on the
+issue and retried with backoff. A move the connector gives up on is also
+reported on the issue, unless a person canceled the issue since the merge.
+
+A follow-up merged with `none`, or completed in the tracker, completes its
+parent only while the parent is still started and linked. Stops, cancellation,
+takeover and unlinking prevent completion. The API has no conditional PATCH, so
+a change after the final ownership read can race.
+
+**Why.** Merged code and operational acceptance differ. Remaining activation
+becomes tracked work. This policy does not verify rollouts or live probes (HOME-4).
+The render lock changes only the coding Agent prompt; chart publication and the
+normal pin advance deploy it. Source checks do not prove a live rollout.
 
 A PR that leaves the queue unmerged, after a second read confirms it did
 not merge, starts a revision in the mapped session, counting against

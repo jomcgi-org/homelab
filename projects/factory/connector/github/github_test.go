@@ -528,6 +528,7 @@ func TestPullRequestDetailAndEnqueue(t *testing.T) {
 			"id":"PR_5","number":5,"url":"https://github.com/example-org/homelab/pull/5","state":"MERGED","merged":true,
 			"mergedAt":"2026-11-14T12:00:00Z","headRefOid":"b","headRefName":"factory/HL-1","baseRefName":"main","baseRefOid":"base-sha",
 			"author":{"login":"jomcgi-factory"},"mergeCommit":{"oid":"m"},"mergeQueueEntry":null,
+			"commits":{"nodes":[{"commit":{"oid":"b","message":"fix: ship\n\nActivation: none"}}]},
 			"labels":{"nodes":[{"name":"human"},{"name":"factory"}]},
 			"reviews":{"nodes":[
 				{"id":"R_2","state":"APPROVED","submittedAt":"2026-11-14T11:00:00Z","author":{"login":"reviewer"},"commit":{"oid":"b"}},
@@ -546,6 +547,9 @@ func TestPullRequestDetailAndEnqueue(t *testing.T) {
 	}
 	if d.BaseSHA != "base-sha" || !d.Merged || d.State != "closed" || d.MergeCommitSHA != "m" || d.MergeQueueState != "" || d.HeadSHA != "b" || d.Author != "jomcgi-factory" {
 		t.Fatalf("detail = %+v", d.PullRequest)
+	}
+	if d.HeadMessage != "fix: ship\n\nActivation: none" {
+		t.Fatalf("head message = %q", d.HeadMessage)
 	}
 	if strings.Join(d.Labels, ",") != "human,factory" {
 		t.Fatalf("labels = %v", d.Labels)
@@ -1353,5 +1357,24 @@ func TestCitedPullRequest(t *testing.T) {
 				t.Fatalf("got %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestActivationTrailerRequiresOneFinalTrailer(t *testing.T) {
+	for _, tc := range []struct {
+		message, want string
+	}{
+		{"fix: ship\n\nActivation: none", "none"},
+		{"fix: ship\r\n\r\nActivation: enable\r\n after the migration", "enable after the migration"},
+		{"fix: ship", ""},
+		{"fix: ship\n\nActivation: ", ""},
+		{"fix: ship\n\nActivation: none\nActivation: enable", ""},
+		{"fix: ship\n\nActivation: none\n  Activation: enable", ""},
+		{"fix: ship\n\nActivation: none\n\nMore prose.", ""},
+		{"fix: ship\n\nActivation: none\nSigned-off-by: author", ""},
+	} {
+		if got, ok := ActivationTrailer(tc.message); got != tc.want || ok != (tc.want != "") {
+			t.Errorf("trailer(%q) = %q, %v; want %q", tc.message, got, ok, tc.want)
+		}
 	}
 }

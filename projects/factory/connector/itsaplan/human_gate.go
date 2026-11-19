@@ -18,8 +18,13 @@ type Project struct {
 	} `json:"project"`
 	Permissions struct {
 		WorkItems struct {
+			Read   bool `json:"read"`
 			Create bool `json:"create"`
+			Edit   bool `json:"edit"`
 		} `json:"work_items"`
+		AIAgents struct {
+			Read bool `json:"read"`
+		} `json:"ai_agents"`
 	} `json:"permissions"`
 	Labels []struct {
 		ID   int64  `json:"id"`
@@ -27,6 +32,13 @@ type Project struct {
 	} `json:"labels"`
 	Columns   []Column   `json:"columns"`
 	Assignees []Assignee `json:"assignees"`
+}
+
+// CanActivate verifies the bootstrap grant is effective for this coordinator
+// before the connector changes an issue or starts an activation follow-up.
+func (p *Project) CanActivate() bool {
+	return p.Permissions.WorkItems.Read && p.Permissions.WorkItems.Create &&
+		p.Permissions.WorkItems.Edit && p.Permissions.AIAgents.Read
 }
 
 type Assignee struct {

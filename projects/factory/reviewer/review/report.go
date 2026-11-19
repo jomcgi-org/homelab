@@ -46,12 +46,16 @@ const (
 	StatusOpen      = "open"
 )
 
-// Report is the reviewer agent's answer: findings only. The service decides
-// the conclusion from them; any verdict the agent declares is ignored.
+// Report is the reviewer agent's findings and optional activation assessment.
+// The service decides the conclusion; any verdict the agent declares is ignored.
 type Report struct {
-	Summary  string     `json:"summary"`
-	Findings []Finding  `json:"findings"`
-	Previous []Previous `json:"previous"`
+	Summary string `json:"summary"`
+	// Activation is independently assessed text, never an instruction copied
+	// blindly from the commit. ActivationHead is set only by the service.
+	Activation     string     `json:"activation,omitempty"`
+	ActivationHead string     `json:"-"`
+	Findings       []Finding  `json:"findings"`
+	Previous       []Previous `json:"previous"`
 }
 
 // Finding is one review finding with an ID that stays stable across
@@ -986,8 +990,8 @@ const (
 	gateOnlyMarker      = markerStart + "human-gate-only -->"
 	duplicateHeadMarker = markerStart + "duplicate-head -->"
 	labelHistoryMarker  = markerStart + "label-history-unavailable -->"
-	statePrefix         = markerStart + "state v2 "
-	stateSuffix         = " -->"
+	statePrefix         = github.ReviewStatePrefix
+	stateSuffix         = github.ReviewStateSuffix
 )
 
 const incompleteStateMessage = "The complete prior review state is unavailable. Known findings still require accounting, and this check stays blocked. A full review cannot clear missing history. Recovery requires complete history with original reports or verifiably lossless legacy records. If the history cannot be recovered, no review or approval clears this check: open a new PR from commits no review has seen, for example rebased or squashed onto main."
@@ -998,10 +1002,11 @@ var stateRE = regexp.MustCompile(`<!-- factory-review:state v([12]) ([A-Za-z0-9+
 // findings and human gate on the completed check. The next round must
 // account for the findings; only a person clears the human gate.
 type State struct {
-	InvariantBase string        `json:"invariant_base,omitempty"`
-	Semgrep       *SemgrepStamp `json:"semgrep,omitempty"`
-	Blocking      []Finding     `json:"blocking"`
-	Cleared       []Cleared     `json:"cleared,omitempty"`
+	InvariantBase string                       `json:"invariant_base,omitempty"`
+	Semgrep       *SemgrepStamp                `json:"semgrep,omitempty"`
+	Activation    *github.ActivationAssessment `json:"activation,omitempty"`
+	Blocking      []Finding                    `json:"blocking"`
+	Cleared       []Cleared                    `json:"cleared,omitempty"`
 	// ClearedPartial marks a cleared record that has lost entries, on this
 	// head or an earlier one, so it cannot show every fixed finding.
 	ClearedPartial bool  `json:"cleared_partial,omitempty"`
@@ -1140,6 +1145,9 @@ func render(a Assessment, r *Report, gate *Gate, footer string, state *State) Ou
 		out.WriteString(clip(sum, maxAgentSummary))
 		out.WriteString("\n\n")
 	}
+	if r != nil && r.ActivationHead != "" && r.Activation != "" {
+		out.WriteString("### Activation\n\n" + r.Activation + "\n\n")
+	}
 	if len(a.Blocking) > 0 {
 		out.WriteString("### Blocking\n\n")
 		listed := 0
@@ -1267,6 +1275,9 @@ func loweredNote(f Finding) string {
 func stateOf(a Assessment, r *Report, gate *Gate) State {
 	cleared, partial := clearedOf(a, r)
 	st := State{Blocking: []Finding{}, Cleared: cleared, ClearedPartial: partial || a.EarlierPartial, Gate: gate, Decisions: a.decisions(), Incomplete: a.Incomplete, Overflow: a.Overflow, TaskID: a.TaskID, IssueDigest: a.IssueDigest, Goal: a.Goal, GoalKey: a.GoalKey}
+	if r != nil && r.ActivationHead != "" && r.Activation != "" {
+		st.Activation = &github.ActivationAssessment{HeadSHA: r.ActivationHead, Text: r.Activation}
+	}
 	for _, b := range a.Blocking {
 		if isGate(b.Finding) {
 			continue

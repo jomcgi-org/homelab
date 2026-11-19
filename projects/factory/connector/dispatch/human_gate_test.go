@@ -23,10 +23,15 @@ func (f *fakeItsaplan) GetProject(_ context.Context, project string) (*itsaplan.
 	if f.beforeGateRead != nil {
 		f.beforeGateRead("project", project)
 	}
-	return &itsaplan.Project{
+	p := &itsaplan.Project{
 		Columns:   append(append([]itsaplan.Column(nil), f.columns...), itsaplan.Column{ID: 5, Name: "Backlog", StateType: "backlog"}),
-		Assignees: []itsaplan.Assignee{{UserID: "joe-id", Username: "joe", Kind: "member"}},
-	}, f.columnsErr
+		Assignees: []itsaplan.Assignee{{UserID: "joe-id", Username: "joe", Kind: "member"}, {UserID: "coder-user", Username: "coder", Kind: "agent"}},
+	}
+	p.Permissions.WorkItems.Read = !f.activationMissingPermissions
+	p.Permissions.WorkItems.Create = !f.activationMissingPermissions
+	p.Permissions.WorkItems.Edit = !f.activationMissingPermissions
+	p.Permissions.AIAgents.Read = !f.activationMissingPermissions
+	return p, f.columnsErr
 }
 
 func (f *fakeItsaplan) SearchGateIssues(_ context.Context, _, marker string) ([]itsaplan.Issue, error) {
