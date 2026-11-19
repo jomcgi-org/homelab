@@ -52,9 +52,11 @@ replaces a grant made by hand, so change a grant in `grants.sql`.
 
 ### Restore a dump
 
-[restore.sh](restore.sh) refuses a database that has tables. It restores the
-dump as `grimoire_restore` in one transaction, then counts the valid foreign
-keys and pgvector indexes against the dump. CI runs it on a synthetic dump.
+[restore.sh](restore.sh) refuses a database that has tables. It also refuses
+a dump with a NOT VALID foreign key before it imports anything, so the target
+stays empty for a retry. It restores the dump as `grimoire_restore` in one
+transaction, then counts the valid foreign keys and pgvector indexes against
+the dump. CI runs it on a synthetic dump.
 HOME-484 owns the real hub dump, the private object copy with checksums and
 the rehearsal on real data.
 
@@ -98,4 +100,5 @@ The `grimoire` Cluster archives WAL to `s3://grimoire-backups/grimoire-v1`.
 | `grimoire-db-init` waits, then the sync fails | garage-init has not filled `grimoire-backup-s3` | Check CronJob `garage/garage-bootstrap`, then sync `grimoire` again |
 | `grimoire-db-grants` fails: role does not exist | The operator has not created the managed roles yet | The Job retries. Read the role errors in the Cluster status |
 | `restore only into an empty database` | The target has tables | Restore into a new database |
+| `NOT VALID foreign keys in the dump` | The source has a foreign key that was never validated | Fix the orphan rows, run `ALTER TABLE ... VALIDATE CONSTRAINT` on the source, then dump again |
 | `cmp` reports that the metadata files differ | The target's pgvector version or schema differs from the source | Change the operator's pgvector image to match the source |
