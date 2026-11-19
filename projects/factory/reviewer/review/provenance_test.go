@@ -131,7 +131,7 @@ func TestGoalProvenanceRecoversOriginalTaskAfterInputsChange(t *testing.T) {
 	in := &inputs{issues: &IssueContext{Issue: &IssueEvidence{Key: "HOME-245"}, taskClass: `["old"]`}}
 	e := h.engine()
 	e.tasks = tasks
-	if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "same goal text", "initial", e.log); g != nil {
+	if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "same goal text", nil, e.log); g != nil {
 		t.Fatal("unexpected verdict with failed audit")
 	}
 	if len(recorder.runs) != 1 || len(h.k.sends) != 1 {
@@ -150,7 +150,7 @@ func TestGoalProvenanceRecoversOriginalTaskAfterInputsChange(t *testing.T) {
 	e = h.engine() // restart has no cached verdict or runtime snapshot
 	e.tasks = tasks
 	tasks.nextReadErr = errors.New("temporary own-task read failure")
-	if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "same goal text", "initial", e.log); g == nil || g.Overall != goalMet {
+	if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "same goal text", nil, e.log); g == nil || g.Overall != goalMet {
 		t.Fatal("existing goal did not recover")
 	}
 	if len(recorder.runs) != 1 || recorder.runs[0] != before || len(h.k.sends) != 1 || audit.MessageID != before.MessageID {
@@ -174,7 +174,7 @@ func TestGoalProvenanceRecoversAmbiguousSendAfterRestart(t *testing.T) {
 	pr := github.PullRequest{Number: 7, HeadSHA: shaA}
 	in := &inputs{issues: &IssueContext{Issue: &IssueEvidence{Key: "HOME-245"}, taskClass: "unclassified"}}
 	e := h.engine()
-	if g := e.goalCall(ctx, &e.cfg.Bindings[0], pr, in, "same goal text", "initial", e.log); g != nil {
+	if g := e.goalCall(ctx, &e.cfg.Bindings[0], pr, in, "same goal text", nil, e.log); g != nil {
 		t.Fatal("lost send response unexpectedly produced a verdict")
 	}
 	if len(recorder.runs) != 1 || h.k.executions != 1 {
@@ -191,7 +191,7 @@ func TestGoalProvenanceRecoversAmbiguousSendAfterRestart(t *testing.T) {
 	e = h.engine()
 	tasks := &isolatedGoalTasks{Tasks: h.k}
 	e.tasks = tasks
-	if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "same goal text", "initial", e.log); g == nil {
+	if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "same goal text", nil, e.log); g == nil {
 		t.Fatal("lost send did not recover by its own message ID")
 	}
 	if len(recorder.runs) != 1 || h.k.executions != 1 || len(h.k.sends) != 1 || tasks.lists != 1 || tasks.sessions[0] != h.k.sends[0].ContextID {
@@ -233,12 +233,12 @@ func TestPreparedGoalReusesSessionAfterLostCreationResponse(t *testing.T) {
 	pr := github.PullRequest{Number: 7, HeadSHA: shaA}
 	in := &inputs{}
 	e := h.engine()
-	if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", "initial", e.log); g != nil || len(h.k.sends) != 0 || len(h.k.created) != 1 {
+	if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", nil, e.log); g != nil || len(h.k.sends) != 0 || len(h.k.created) != 1 {
 		t.Fatal("expected one prepared session without a task")
 	}
 	h.cfg.GoalSessions = h.k
 	e = h.engine()
-	if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", "initial", e.log); g == nil || len(h.k.created) != 1 || h.k.executions != 1 {
+	if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", nil, e.log); g == nil || len(h.k.created) != 1 || h.k.executions != 1 {
 		t.Fatal("retry did not recover the idempotent session creation")
 	}
 	if len(recorder.runs) != 2 || recorder.runs[0] != recorder.runs[1] {
@@ -272,7 +272,7 @@ func TestPreparedGoalRechecksInputsAfterRestart(t *testing.T) {
 				pr := github.PullRequest{Number: 7, HeadSHA: shaA}
 				in := &inputs{issues: &IssueContext{Issue: &IssueEvidence{Key: "HOME-245"}, taskClass: "unclassified"}}
 				e := h.engine()
-				if g := e.goalCall(ctx, &e.cfg.Bindings[0], pr, in, "goal text", "initial", e.log); g != nil || h.k.executions != 0 || saved.State != goalPrepared {
+				if g := e.goalCall(ctx, &e.cfg.Bindings[0], pr, in, "goal text", nil, e.log); g != nil || h.k.executions != 0 || saved.State != goalPrepared {
 					t.Fatal("expected a prepared, unexecuted dispatch")
 				}
 				before := saved
@@ -296,7 +296,7 @@ func TestPreparedGoalRechecksInputsAfterRestart(t *testing.T) {
 				}
 				h.k.afterSend = nil
 				e = h.engine()
-				if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", "initial", e.log); g == nil || h.k.executions != 1 {
+				if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", nil, e.log); g == nil || h.k.executions != 1 {
 					t.Fatal("prepared dispatch did not resume")
 				}
 				last := h.k.sends[len(h.k.sends)-1]
@@ -329,7 +329,7 @@ func TestIssuedGoalWithoutTaskCannotExecuteOnRestart(t *testing.T) {
 		pr := github.PullRequest{Number: 7, HeadSHA: shaA}
 		in := &inputs{}
 		e := h.engine()
-		e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", "initial", e.log)
+		e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", nil, e.log)
 		if issued.ContextID == "" || len(h.k.sends) != 0 || len(recorder.runs) != 1 {
 			t.Fatal("expected an uncertain dispatch with no send")
 		}
@@ -342,7 +342,7 @@ func TestIssuedGoalWithoutTaskCannotExecuteOnRestart(t *testing.T) {
 		h.cfg.GoalTasks = index
 		h.cfg.Bindings[0].Runtime.Model, h.cfg.Bindings[0].Runtime.ReasoningEffort = "new", "xhigh"
 		e = h.engine()
-		if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", "initial", e.log); g != nil || len(h.k.sends) != 0 || len(recorder.runs) != 1 {
+		if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", nil, e.log); g != nil || len(h.k.sends) != 0 || len(recorder.runs) != 1 {
 			t.Fatal("uncertain dispatch was treated as permission to execute")
 		}
 		if legacy {
@@ -352,7 +352,7 @@ func TestIssuedGoalWithoutTaskCannotExecuteOnRestart(t *testing.T) {
 			ID: "foreign", ContextID: issued.ContextID,
 			History: []*kagent.Message{{MessageID: "another-message"}},
 		}}
-		if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", "initial", e.log); g != nil || len(h.k.sends) != 0 {
+		if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", nil, e.log); g != nil || len(h.k.sends) != 0 {
 			t.Fatal("adopted a task without the original opening message")
 		}
 		delete(h.k.tasks, "foreign")
@@ -362,7 +362,7 @@ func TestIssuedGoalWithoutTaskCannotExecuteOnRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", "initial", e.log); g == nil || len(h.k.sends) != 1 || len(recorder.runs) != 1 {
+		if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", nil, e.log); g == nil || len(h.k.sends) != 1 || len(recorder.runs) != 1 {
 			t.Fatal("late accepted task did not recover read-only")
 		}
 	}
@@ -408,7 +408,7 @@ func TestGoalIndexFailureKeepsDispatchRecoverable(t *testing.T) {
 			pr := github.PullRequest{Number: 7, HeadSHA: shaA}
 			in := &inputs{}
 			e := h.engine()
-			if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "same goal text", "initial", e.log); g != nil {
+			if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "same goal text", nil, e.log); g != nil {
 				t.Fatal("index failure produced a verdict")
 			}
 			if (operation == "load" || operation == "message") && len(h.k.sends) != 0 {
@@ -419,7 +419,7 @@ func TestGoalIndexFailureKeepsDispatchRecoverable(t *testing.T) {
 			}
 			h.cfg.GoalTasks = index
 			e = h.engine()
-			if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "same goal text", "initial", e.log); g == nil || h.k.executions != 1 {
+			if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "same goal text", nil, e.log); g == nil || h.k.executions != 1 {
 				t.Fatal("index recovery failed or repeated execution")
 			}
 		})
@@ -437,7 +437,7 @@ func TestGoalProvenanceAllocatesNewReceiptForChangedInputs(t *testing.T) {
 			pr := github.PullRequest{Number: 7, HeadSHA: shaA}
 			in := &inputs{issues: &IssueContext{Issue: &IssueEvidence{Key: "HOME-245"}, taskClass: "unclassified"}}
 			e := h.engine()
-			e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "same goal text", "initial", e.log)
+			e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "same goal text", nil, e.log)
 			if len(recorder.runs) != 1 || len(h.k.sends) != 0 {
 				t.Fatal("expected a receipt without a task")
 			}
@@ -456,7 +456,7 @@ func TestGoalProvenanceAllocatesNewReceiptForChangedInputs(t *testing.T) {
 			}
 			recorder.err = nil
 			e = h.engine()
-			if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "same goal text", "initial", e.log); g == nil {
+			if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "same goal text", nil, e.log); g == nil {
 				t.Fatal("new goal stalled on old receipt")
 			}
 			if len(recorder.runs) != 2 || recorder.runs[0].MessageID == recorder.runs[1].MessageID || len(h.k.sends) != 1 {
@@ -504,7 +504,7 @@ func TestGoalReviewRequiresProvenanceBeforeSending(t *testing.T) {
 	h.gh.baseHead = strings.Repeat("b", 40)
 	e := h.engine()
 	pr := github.PullRequest{Number: 7, HeadSHA: shaA}
-	if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, &inputs{}, "goal prompt", "initial", e.log); g != nil {
+	if g := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, &inputs{}, "goal prompt", nil, e.log); g != nil {
 		t.Fatal("goal call succeeded without provenance")
 	}
 	if len(recorder.runs) != 1 || !strings.Contains(recorder.runs[0].MessageID, "/goal/") {

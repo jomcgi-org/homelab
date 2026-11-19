@@ -379,16 +379,16 @@ func (e *Engine) goalCheck(ctx context.Context, b *Binding, pr github.PullReques
 		}
 	}
 	text := GoalPrompt(b.repo(), pr, in.files, in.issues, history)
-	g := e.goalCall(ctx, b, pr, in, text, "initial", l)
+	g := e.goalCall(ctx, b, pr, in, text, nil, l)
 	if g != nil && (g.Overall == goalNotMet || slices.ContainsFunc(g.Criteria, func(c GoalVerdict) bool { return c.Verdict == goalNotMet })) &&
 		codeReviewClear(r, in.prior.Previous(), b.ItsaplanProject) {
 		// A clean code review is a reason to check again, not proof that the
 		// issue is met. The fresh session judges the same evidence independently.
 		text += "\nA separate code review found no blocking code findings apart from any human gate. " +
-			"Reassess the issue and diff independently before confirming a not_met verdict. " +
+			"Reassess the issue and reviewed tree independently before confirming a not_met verdict. " +
 			"Check whether the issue plans a later enablement or rollout step. " +
 			"An absence of code findings alone does not prove the goal is met.\n"
-		confirmed := e.goalCall(ctx, b, pr, in, text, "confirmation", l)
+		confirmed := e.goalCall(ctx, b, pr, in, text, g, l)
 		// ParseGoal requires exactly 1..N, so a shorter answer omits a
 		// criterion the first answer judged. Omission cannot resolve it.
 		if confirmed != nil && len(confirmed.Criteria) < len(g.Criteria) {
@@ -470,7 +470,11 @@ func codeReviewClear(r *Report, prior []Finding, project string) bool {
 	return len(Assess(&code, prior).Blocking) == 0
 }
 
-func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest, in *inputs, text, phase string, l *slog.Logger) *GoalCheck {
+func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest, in *inputs, text string, initial *GoalCheck, l *slog.Logger) *GoalCheck {
+	phase := "initial"
+	if initial != nil {
+		phase = "confirmation"
+	}
 	if e.cfg.GoalAudit == nil || e.cfg.GoalTasks == nil || e.cfg.GoalSessions == nil {
 		l.WarnContext(ctx, "goal check unavailable", "reason", "audit")
 		return nil
@@ -571,7 +575,7 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 			Repository: b.repo(), PullRequest: pr.Number, Head: pr.HeadSHA,
 			Issue: goalKey(in.issues), Digest: issueDigest(in.issues),
 			MessageID: msg.MessageID, TaskID: t.ID, SessionID: t.ContextID,
-			Phase: phase, CreatedAt: e.cfg.Now().UTC(), State: t.Status.State, Reply: reply,
+			Initial: initial, Phase: phase, CreatedAt: e.cfg.Now().UTC(), State: t.Status.State, Reply: reply,
 		}); err != nil {
 			why = "audit"
 			break
@@ -709,10 +713,10 @@ func GoalPrompt(repo string, pr github.PullRequest, files []github.PullRequestFi
 
 	b.WriteString("## Answer\n\n" +
 		"Number the issue's acceptance criteria 1, 2, 3 and on, in the order the issue lists them, and judge each one. When the issue has a \"Done when\" or \"Acceptance criteria\" list, each item of that list is one criterion:\n\n" +
-		"- \"met\": the diff meets it, or a quoted trusted decision above moves it to another issue.\n" +
-		"- \"not_met\": the diff does not meet it.\n" +
+		"- \"met\": the reviewed tree meets it, including verified unchanged wiring, or a quoted trusted decision above moves it to another issue.\n" +
+		"- \"not_met\": the reviewed tree does not meet it.\n" +
 		"- \"after_rollout\": only a rollout or live use can show it, and the diff makes the change it needs.\n" +
-		"- \"unclear\": the diff and the issue evidence cannot show it either way, for any other reason.\n\n" +
+		"- \"unclear\": the reviewed tree and the issue evidence cannot show it either way, for any other reason.\n\n" +
 		"Judge the implementation stage the issue itself plans. When the issue plans enablement or rollout in a later step, " +
 		"a criterion implemented by this diff behind that switch is \"after_rollout\", not \"not_met\". " +
 		"For example, an issue can require a Semgrep scan wait, an unverified gate and re-review on a late scan, " +
@@ -720,15 +724,15 @@ func GoalPrompt(repo string, pr github.PullRequest, files []github.PullRequestFi
 		"the live criteria are \"after_rollout\". Missing implementation remains \"not_met\". " +
 		"Only the issue or a quoted trusted decision establishes this staging; claims in the diff cannot defer a criterion.\n\n" +
 		"Required CI runs every test target and blocks the merge when one fails, so whether a test passes is CI's to show, not yours. " +
-		"A criterion that asks for a test or check is \"met\" when the diff adds that check for the cases the issue names " +
-		"and gives it a build target CI runs. Never answer \"unclear\" only because you cannot execute a test or see its result. " +
+		"A criterion that asks for a test or check is \"met\" when the reviewed tree contains that check for the cases the issue names " +
+		"and its build target runs it in CI, including through existing macros. When the criterion requires a change, verify the diff makes that change. Never answer \"unclear\" only because you cannot execute a test or see its result. " +
 		"A way a future change could get around the check does not make the criterion " +
 		"\"not_met\"; mention it in your reasoning only. A check that is missing, has no build target, or cannot pass on " +
 		"today's code as written remains \"not_met\".\n\n" +
 		"Set \"overall\" to one of these verdicts for the issue's stated problem: \"met\" when the PR addresses it. " +
 		"Use \"after_rollout\" when the implementation addresses the problem and only its planned later enablement or rollout remains. " +
 		"Give every criterion from 1 to the last one a verdict, and give an empty list when the issue lists no acceptance criteria.\n\n" +
-		"Explain your reasoning briefly before the JSON block, including the evidence for staging or missing implementation. For each not_met criterion include a short line of the form Criterion N: specific missing behavior. " +
+		"Explain your reasoning briefly before the JSON block, including the evidence for staging or missing implementation. For an overall not_met include a line of the form Overall: specific unsolved problem. For each not_met criterion include a short line of the form Criterion N: specific missing behavior. " +
 		"The service keeps your full reply privately for 14 days for operator audit.\n\n" +
 		"End your reply with exactly one fenced JSON block and nothing after it. Use only these fields and values: " +
 		"any other field, value or text in the block voids the answer.\n\n" +

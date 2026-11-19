@@ -325,7 +325,7 @@ func TestGoalCheckStagedSemgrepReplay(t *testing.T) {
 	texts := goalTexts(h)
 	if len(texts) != 2 || !strings.Contains(texts[0], "Config and rollout") || !strings.Contains(texts[0], "semgrep: null") ||
 		!strings.Contains(texts[0], `a criterion implemented by this diff behind that switch is "after_rollout", not "not_met"`) ||
-		!strings.Contains(texts[1], "Reassess the issue and diff independently") {
+		!strings.Contains(texts[1], "Reassess the issue and reviewed tree independently") {
 		t.Fatal("staged replay lost the rollout rule, evidence or independent confirmation")
 	}
 	c := h.gh.check(shaA)
@@ -467,7 +467,7 @@ func TestGoalCheckPublishesOnlyServiceWording(t *testing.T) {
 	cleaner := &fakeCleaner{}
 	h.cfg.Cleaner = cleaner
 	api.issue.Description = "1. PRIVATE-ONE\n2. PRIVATE-TWO\n3. PRIVATE-THREE"
-	h.k.goal = "PRIVATE-TWO is missing.\n\n```json\n" +
+	h.k.goal = "Criterion 2: PRIVATE-TWO is missing.\n\n```json\n" +
 		`{"criteria": [{"criterion": 1, "verdict": "met"}, {"criterion": 2, "verdict": "not_met"}, {"criterion": 3, "verdict": "unclear"}], "overall": "met"}` + "\n```"
 	e, ctx, _ := h.start()
 	task := runReview(t, h, e, ctx, 7, shaA)
@@ -482,6 +482,10 @@ func TestGoalCheckPublishesOnlyServiceWording(t *testing.T) {
 		if strings.Contains(m.MessageID, "/goal/") && strings.Contains(m.MessageID, hex.EncodeToString(sum[:16])) {
 			t.Fatal("the goal message ID carries an unkeyed hash of the issue text")
 		}
+	}
+	private, ok := h.cfg.GoalAudit.(*FileGoalAudit).Reasons(h.cfg.Bindings[0].repo(), 7, shaA)
+	if !ok || len(private.Findings) != 1 || private.Findings[0] != "Criterion 2: PRIVATE-TWO is missing." {
+		t.Fatalf("private feedback = %+v", private)
 	}
 	out := published(t, h)
 	if strings.Contains(out, "PRIVATE") || !strings.Contains(out, "HOME-58 criterion 2: not met") || !strings.Contains(out, "HOME-58 criterion 3: unverified") {
