@@ -23,7 +23,8 @@ def main():
         )
         return urlopen(request, timeout=10)
 
-    password = Path("/run/grafana/admin-password").read_text()
+    # Match Grafana's $__file provider, including for newline-terminated files.
+    password = Path("/run/grafana/admin-password").read_text().strip()
     with api("/login", {"user": "admin", "password": password}) as response:
         cookies = SimpleCookie()
         for cookie in response.headers.get_all("Set-Cookie", []):
