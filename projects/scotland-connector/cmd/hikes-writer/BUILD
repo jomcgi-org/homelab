@@ -28,3 +28,9 @@ go_test(
     srcs = ["writer_test.go"],
     embed = [":hikes_writer_lib"],
 )
+
+go_test(
+    name = "hikes-writer_test",
+    srcs = ["writer_test.go"],
+    embed = [":hikes-writer_lib"],
+)
