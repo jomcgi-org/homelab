@@ -89,6 +89,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [pods/portforward]
+    resourceNames: [factory-itsaplan-session-forward-0]
     verbs: [create]
   - apiGroups: [""]
     resources: [secrets]

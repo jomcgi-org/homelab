@@ -161,8 +161,10 @@ Use the node-1 session identity in the Authentik group `factory-kube-sessions`.
 The operator adds membership in the Authentik admin UI. The admin certificate
 in `~/.kube/factory.yaml` is for break-glass use only.
 
+Use a dedicated non-admin account. Install the [factory kubelogin configuration](../../projects/factory-cluster/README.md#kubectl-through-authentik) as `~/.kube/factory-sessions.yaml`. Give its exec plugin a separate `--token-cache-dir` on node-1. Confirm the expected account and groups with `kubectl auth whoami` using this kubeconfig before opening the tunnel.
+
 - Port-forward the API: `KUBECONFIG=~/.kube/factory-sessions.yaml kubectl -n factory
-  port-forward svc/factory-itsaplan-api 13000:3000`.
+  port-forward pod/factory-itsaplan-session-forward-0 13000:3000`.
 - Sign in with `POST /api/auth/sign-in/email`, using fields `email` and
   `password` from Secret `factory/factory-itsaplan-joe-sessions`, read with
   `KUBECONFIG=~/.kube/factory-sessions.yaml`. Keep the values and session cookie out of
@@ -210,10 +212,10 @@ it there, and close its PR: a closed PR cannot merge, and reopening it is the
 new owner's choice. Changing the assignee or removing the delegate stops nothing. Wait
 for the stop to settle before anyone else touches the work. The connector's
 database covers itsaplan runs and its own review rounds, which itsaplan has no
-record of. An operator with database exec access checks it:
+record of. Use the operator’s factory OIDC kubeconfig with the factory context and an identity authorized for database exec:
 
 ```sh
-kubectl -n factory-db exec factory-db-1 \
+KUBECONFIG=~/.kube/factory-operator.yaml kubectl --context=factory -n factory-db exec factory-db-1 \
   -c postgres -- psql -At -d factory_connector -c "
   SELECT w.state,
     (SELECT count(*) FROM run r WHERE r.work_item_id = w.id
