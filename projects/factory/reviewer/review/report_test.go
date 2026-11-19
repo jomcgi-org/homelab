@@ -1471,3 +1471,17 @@ func TestInvariantScopeNoticesStayOutsideFindingLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestInvariantScopeNoticesNeverHideBlockingFindings(t *testing.T) {
+	a := Assessment{Blocking: []Blocked{{Finding: Finding{ID: "a.go:correctness", Severity: SeverityHigh, Path: "a.go", Title: "blocking defect"}}}}
+	for i := range 5000 {
+		a.Advisories = append(a.Advisories, InvariantScopeAnswer{Path: fmt.Sprintf("pkg/new%d.go", i), Uncovered: true, Reason: strings.Repeat("r", 200)})
+	}
+	body := findingsSection(a, &Report{Summary: "s"})
+	if !strings.Contains(body, "blocking defect") {
+		t.Fatal("notices pushed the blocking finding out of the comment")
+	}
+	if len(body) > maxFindings {
+		t.Fatalf("findings section is %d bytes, over %d", len(body), maxFindings)
+	}
+}
