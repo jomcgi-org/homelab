@@ -105,6 +105,7 @@ projects/               # Services, operators and sites, each with its deploy co
 ├── factory-landing/    #   Private landing page at factory.jomcgi.dev
 ├── factory-public/     #   Garage bucket and R2 mirror for public factory data
 ├── factory-storyboard/ #   Public factory snapshot schema and invented fixtures
+├── hikes/              #   Factory jobs that publish WalkHighlands routes and daylight forecasts
 ├── jomcgi-site/        #   Public jomcgi.dev: static Astryx pages on a Cloudflare Worker
 ├── platform/           #   Shared charts (ArgoCD, Envoy Gateway, OTel collector, Renovate)
 ├── monolith/           #   Knowledge graph, Discord bot, Grimoire, private and public apps
