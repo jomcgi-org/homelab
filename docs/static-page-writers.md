@@ -33,6 +33,46 @@ by cached manifests. If a referenced object is temporarily unavailable, retry
 and keep serving the last complete snapshot. Verify the bytes and both cache
 policies at the public endpoint before switching readers.
 
+## met.no budget
+
+The [met.no terms](https://api.met.no/doc/TermsOfService) allow 20 requests
+per second for each application, in total. Each request must send an
+identifying User-Agent. Until HOME-522 retires the hub jobs, the hub and the
+factory fetch the same Stars sites and Hikes walks. Each job below stays
+under 20 requests/s, but two together do not. Thus the schedules (UTC) keep
+the jobs apart.
+
+| Job | Schedule | Rate limit | Expected run |
+| --- | --- | --- | --- |
+| Hub `stars-refresh` | `0 */3 * * *` | 15 in flight, 1/15 s pause after each; about 15/s seen | 15 to 18 min, about 14,000 sites |
+| Factory Stars `refresh` | `50 */3 * * *` | 15 starts/s, 15 in flight | about 16 min |
+| Hub `hikes-refresh-forecasts` | `20 */2 * * *` | 10 in flight | 2 to 3 min, about 1,600 walks |
+| Factory `hikes-refresh` | `40 1-23/2 * * *` | 1 start per 60 ms (16.7/s), 8 in flight | about 2 min |
+| Hub `stars-aurora` | suspended | 1/s, at most 64 sites | none |
+
+The pattern repeats every six hours:
+
+| Start | Job | Gap from its expected end to the next start |
+| --- | --- | --- |
+| 00:00 | Hub Stars | 2 min |
+| 00:20 | Hub Hikes | 27 min |
+| 00:50 | Factory Stars | 34 min |
+| 01:40 | Factory Hikes | 38 min |
+| 02:20 | Hub Hikes | 37 min |
+| 03:00 | Hub Stars | 22 min |
+| 03:40 | Factory Hikes | 8 min |
+| 03:50 | Factory Stars | 14 min |
+| 04:20 | Hub Hikes | 77 min |
+| 05:40 | Factory Hikes | 18 min |
+
+Run times come from the hub chart comments, or from the site or walk count
+divided by the rate limit. The factory jobs add no overlap at these times.
+The smallest gap after a factory job is 8 minutes, at 03:40. If a hub Stars
+run takes more than 40 minutes, it overlaps the 03:40 Factory Hikes run.
+The two jobs together then reach about 30 requests/s, and met.no can answer
+429 to some requests. Each job keeps the last good data of a site or walk
+whose fetch fails.
+
 ## Hub inventory and port issues (HOME-258)
 
 The [deploy source list](../projects/jomcgi-site/data/sources.json) names the

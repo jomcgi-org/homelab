@@ -1,23 +1,57 @@
 {{ include "factory-library.buckets" . }}
-{{- range $mode, $schedule := .Values.jobs }}
-{{- $env := list }}
+{{- $garage := list }}
 {{- range list "AWS_ENDPOINT_URL" "AWS_REGION" "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "BUCKET" }}
-{{- $env = append $env (dict "name" . "valueFrom" (dict "secretKeyRef" (dict "name" "hikes-hikes-s3" "key" .))) }}
+{{- $garage = append $garage (dict "name" . "valueFrom" (dict "secretKeyRef" (dict "name" "hikes-hikes-s3" "key" .))) }}
 {{- end }}
+{{- $walkhighlands := dict "peer" "walkhighlands" "fqdn" "www.walkhighlands.co.uk" "port" 443 }}
+{{- $resources := dict "requests" (dict "cpu" "50m" "memory" "64Mi") "limits" (dict "memory" "256Mi") }}
+{{- $writers := dict }}
+{{- range $mode, $schedule := .Values.jobs }}
 {{- $egress := list }}
 {{- if eq $mode "catalogue" }}
-{{- $egress = list (dict "peer" "walkhighlands" "fqdn" "www.walkhighlands.co.uk" "port" 443) }}
+{{- $egress = list $walkhighlands }}
 {{- else if eq $mode "refresh" }}
 {{- $egress = list (dict "peer" "met-no" "fqdn" "api.met.no" "port" 443) }}
 {{- end }}
-{{- $workload := dict "writablePaths" (list (dict "name" "tmp" "mountPath" "/tmp" "sizeLimit" "128Mi")) "schedule" $schedule "args" (list $mode) "env" $env "resources" (dict "requests" (dict "cpu" "50m" "memory" "64Mi") "limits" (dict "memory" "256Mi")) "network" (dict "egress" $egress) }}
-{{- $render := include "factory-library.cronjob" (dict "root" $ "name" (printf "hikes-%s" $mode) "workload" $workload) }}
+{{- $workload := dict "writablePaths" (list (dict "name" "tmp" "mountPath" "/tmp" "sizeLimit" "128Mi")) "schedule" $schedule "args" (list $mode) "env" $garage "resources" $resources "network" (dict "egress" $egress) }}
+{{- $_ := set $writers (printf "hikes-%s" $mode) (include "factory-library.cronjob" (dict "root" $ "name" (printf "hikes-%s" $mode) "workload" $workload)) }}
+{{- end }}
+{{- if not .Values.suspendWriters }}
+{{- /* Argo CD runs this Sync hook on every sync, in wave 0 with its network
+policy and the lock claim. While Garage has no generation, it seeds from the
+hub snapshot and runs the first catalogue as one publication. The CronJobs
+sync in wave 1, after it succeeds. */}}
+{{- $source := list (dict "name" "SOURCE_AWS_ENDPOINT_URL" "value" .Values.seed.endpoint) (dict "name" "SOURCE_BUCKET" "value" .Values.seed.bucket) (dict "name" "SOURCE_KEY" "value" .Values.seed.key) }}
+{{- range $name, $key := dict "SOURCE_AWS_ACCESS_KEY_ID" "access-key-id" "SOURCE_AWS_SECRET_ACCESS_KEY" "secret-access-key" }}
+{{- $source = append $source (dict "name" $name "valueFrom" (dict "secretKeyRef" (dict "name" "hikes-seed" "key" $key))) }}
+{{- end }}
+{{- $seedHost := (urlParse .Values.seed.endpoint).host }}
+{{- $workload := dict "kind" "Job" "hook" "Sync" "hookWave" 0 "backoffLimit" 0 "writablePaths" (list (dict "name" "tmp" "mountPath" "/tmp" "sizeLimit" "128Mi")) "args" (list "bootstrap") "env" (concat $garage $source) "resources" $resources "network" (dict "egress" (list $walkhighlands (dict "peer" "hub-walks" "fqdn" $seedHost "port" 443))) }}
+{{- $_ := set $writers "hikes-bootstrap" (include "factory-library.job" (dict "root" $ "name" "hikes-bootstrap" "workload" $workload)) }}
+---
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: hikes-seed
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+type: Opaque
+spec:
+  itemPath: {{ .Values.seed.itemPath }}
+{{- end }}
+{{- range $name, $render := $writers }}
 {{- range splitList "\n---" $render }}
 {{- $resource := fromYaml . }}
 {{- if $resource.kind }}
+{{- if has $resource.kind (list "CronJob" "Job") }}
+{{- $pod := dict }}
 {{- if eq $resource.kind "CronJob" }}
-{{- $_ := set $resource.spec "suspend" (or (eq $mode "catalogue") $.Values.suspendWriters) }}
-{{- $pod := $resource.spec.jobTemplate.spec.template.spec }}
+{{- $_ := set $resource.spec "suspend" $.Values.suspendWriters }}
+{{- $_ := set $resource.metadata "annotations" (merge ($resource.metadata.annotations | default dict) (dict "argocd.argoproj.io/sync-wave" "1")) }}
+{{- $pod = $resource.spec.jobTemplate.spec.template.spec }}
+{{- else }}
+{{- $pod = $resource.spec.template.spec }}
+{{- end }}
 {{- $_ := set $pod "volumes" (append $pod.volumes (dict "name" "writer-lock" "persistentVolumeClaim" (dict "claimName" "hikes-writer-lock"))) }}
 {{- $container := first $pod.containers }}
 {{- $_ := set $container "volumeMounts" (append $container.volumeMounts (dict "name" "writer-lock" "mountPath" "/var/lock/hikes" "readOnly" true)) }}

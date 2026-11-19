@@ -243,8 +243,8 @@ def test_sources_mirror_writer_buckets_under_their_prefixes():
     for prefix in ("stars-forecast", "hikes"):
         name = f"factory-public-{prefix}-mirror"
         job = docs["CronJob", name]["spec"]
-        # HOME-478 (Stars) and HOME-477 (Hikes) unsuspend them.
-        assert job["suspend"] is True
+        # HOME-478 (Stars) and HOME-477 (Hikes) turned them on.
+        assert job["suspend"] is False
         assert job["schedule"] == "* * * * *"
         container = job["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
         env = {e["name"]: e.get("value") for e in container["env"]}

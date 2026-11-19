@@ -49,7 +49,72 @@ func fetch(url string, consume func(io.Reader) error) error {
 	return consume(io.LimitReader(res.Body, 16<<20))
 }
 
+// connect reads PREFIX+AWS_* credentials. The writer bucket has no prefix;
+// the bootstrap's hub snapshot source uses SOURCE_.
+func connect(prefix string) (*r2.Client, error) {
+	val := func(k string) string { return os.Getenv(prefix + k) }
+	return r2.New(val("AWS_ENDPOINT_URL"), val("AWS_REGION"), r2.Credentials{AccessKeyID: val("AWS_ACCESS_KEY_ID"), SecretAccessKey: val("AWS_SECRET_ACCESS_KEY")}, nil)
+}
+
+// seed reads the hub's schema-v2 walk snapshot. Its walk IDs and last-good
+// forecasts stay for routes that the first catalogue cannot fetch.
+func seed(ctx context.Context, c *r2.Client, bucket, key string) (snapshot, error) {
+	var data snapshot
+	obj, err := c.Get(ctx, bucket, key, "", 128<<20)
+	if err != nil {
+		return data, err
+	}
+	if err = json.Unmarshal(obj.Body, &data); err != nil {
+		return data, err
+	}
+	if data.Version != 2 || len(data.Walks) == 0 {
+		return data, fmt.Errorf("seed %s/%s: need schema version 2 with walks, got version %d with %d walks", bucket, key, data.Version, len(data.Walks))
+	}
+	log.Printf("seed %s/%s: sha256 %x, %d walks", bucket, key, sha256.Sum256(obj.Body), len(data.Walks))
+	return data, nil
+}
+
+// merge applies catalogue metadata by walk ID. A known walk keeps its
+// forecast, and a walk absent from the updates stays unchanged.
+func merge(data *snapshot, updates []walk) {
+	index := map[string]int{}
+	for i, w := range data.Walks {
+		index[w.ID] = i
+	}
+	added := 0
+	for _, w := range updates {
+		if i, ok := index[w.ID]; ok {
+			w.Fetched = data.Walks[i].Fetched
+			w.Hours = data.Walks[i].Hours
+			data.Walks[i] = w
+		} else {
+			index[w.ID] = len(data.Walks)
+			data.Walks = append(data.Walks, w)
+			added++
+		}
+	}
+	log.Printf("catalogue: %d routes, %d updated, %d added, %d walks", len(updates), len(updates)-added, added, len(data.Walks))
+}
+
 func run(mode string) error {
+	ctx := context.Background()
+	c, err := connect("")
+	if err != nil {
+		return err
+	}
+	bucket := os.Getenv("BUCKET")
+	if mode == "bootstrap" {
+		// Argo CD runs this hook on every sync. After the first generation
+		// it stops here, without the lock, so a sync never waits on a writer.
+		_, err := c.Get(ctx, bucket, "latest.json", "", 4096)
+		if err == nil {
+			log.Print("bootstrap: a generation exists")
+			return nil
+		}
+		if !errors.Is(err, r2.ErrNotFound) {
+			return err
+		}
+	}
 	// All writer pods mount the same local-path directory. Linux releases its
 	// advisory lock when the process exits, including on pod termination.
 	lock, err := os.Open("/var/lock/hikes")
@@ -59,19 +124,6 @@ func run(mode string) error {
 	defer lock.Close()
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
 		return err
-	}
-	ctx := context.Background()
-	c, err := r2.New(os.Getenv("AWS_ENDPOINT_URL"), os.Getenv("AWS_REGION"), r2.Credentials{AccessKeyID: os.Getenv("AWS_ACCESS_KEY_ID"), SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY")}, nil)
-	if err != nil {
-		return err
-	}
-	bucket := os.Getenv("BUCKET")
-	var updates []walk
-	if mode == "catalogue" {
-		updates, err = catalogue()
-		if err != nil {
-			return err
-		}
 	}
 	var data snapshot
 	obj, err := c.Get(ctx, bucket, "latest.json", "", 4096)
@@ -93,25 +145,33 @@ func run(mode string) error {
 		if data.Version != 2 {
 			return fmt.Errorf("unsupported version %d", data.Version)
 		}
-	} else if !errors.Is(err, r2.ErrNotFound) || mode != "catalogue" {
+	} else if !errors.Is(err, r2.ErrNotFound) {
 		return err
+	} else if mode == "bootstrap" {
+		// Seed and first catalogue publish as one generation, so a failed
+		// catalogue leaves the bucket empty and the next sync retries both.
+		source, err := connect("SOURCE_")
+		if err != nil {
+			return err
+		}
+		if data, err = seed(ctx, source, os.Getenv("SOURCE_BUCKET"), os.Getenv("SOURCE_KEY")); err != nil {
+			return err
+		}
+	} else if mode != "catalogue" {
+		return err
+	}
+	// The scrape is the longest step, so it starts only after the state and
+	// seed reads succeed.
+	var updates []walk
+	if mode == "catalogue" || mode == "bootstrap" {
+		if updates, err = catalogue(); err != nil {
+			return err
+		}
 	}
 	now := time.Now().UTC()
 	switch mode {
-	case "catalogue":
-		index := map[string]int{}
-		for i, w := range data.Walks {
-			index[w.ID] = i
-		}
-		for _, w := range updates {
-			if i, ok := index[w.ID]; ok {
-				w.Fetched = data.Walks[i].Fetched
-				w.Hours = data.Walks[i].Hours
-				data.Walks[i] = w
-			} else {
-				data.Walks = append(data.Walks, w)
-			}
-		}
+	case "catalogue", "bootstrap":
+		merge(&data, updates)
 	case "refresh":
 		var successes atomic.Int64
 		jobs := make(chan *walk)
@@ -204,7 +264,7 @@ func encode(out io.Writer, data snapshot, now time.Time) error {
 
 func main() {
 	if len(os.Args) != 2 {
-		log.Fatal("expected catalogue, refresh or prune")
+		log.Fatal("expected bootstrap, catalogue, refresh or prune")
 	}
 	if err := run(os.Args[1]); err != nil {
 		log.Fatal(err)

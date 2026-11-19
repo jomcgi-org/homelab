@@ -2,13 +2,56 @@
 
 The [architecture](ARCHITECTURE.md) describes the inputs, forecast state and publication order.
 
-## Activation
+## Jobs
 
-1. Sync the chart and verify that the six-hour grid loader can read the existing Stars R2 bucket and write the private Garage bucket. Run the grid CronJob template once with its argument changed from `grid` to `climatology`. Repeat that manual import after a CERRA backfill. Verify both input counts against the hub.
-2. The `factory-public` release mirrors the Garage bucket `stars-forecast` to prefix `stars-forecast/` of R2 bucket `factory-public` (HOME-492). It needs no new R2 bucket or 1Password item, and this chart holds no R2 credential. Coordinate the three-hour weather schedule with the hub so the two jobs together stay within the provider request budget. Enable `refreshEnabled` to start refresh with inline pruning. For a parallel comparison, replay captured weather responses instead of fetching the same grid twice.
-3. Verify the Garage generation before you unsuspend the mirror: set the `stars-forecast` entry of `public.sources` in `projects/factory-public/chart/values.yaml` to `suspend: false` (HOME-478). Grant the site snapshot credential read access to R2 bucket `factory-public` while retaining Hikes access. Resolve all three keys from `https://factory-data.jomcgi.dev/stars-forecast/latest.json`: each key `k` is at `stars-forecast/k`. Verify the digests and cache headers, and compare scores, history and timestamps with a hub generation from identical inputs. The site snapshot resolves manifest keys from the bucket root: change it to resolve them under the manifest's prefix. Exercise the site snapshot using the new bucket and manifest.
-4. Set the Stars section in `projects/jomcgi-site/data/sources.json` to bucket `factory-public` and add `"manifest": "stars-forecast/latest.json"`. Keep the logical file names. Check the published page. Roll back by restoring the previous Stars section.
-5. The Scotland connector still reads the old bucket. Account for its sites, history and optional uncapped feed, the hub public Stars endpoints and the shared grid used by aurora before retiring their input, refresh or prune jobs. Keep the separate Hikes writer and its walks object.
+| Job | Runs | Does |
+| --- | --- | --- |
+| `inputs` | Argo CD Sync hook, wave 0, on every sync | Imports `grid.json` and `climatology.json` from R2 bucket `stars` into Garage `stars-state`. |
+| `grid` | `0 */6 * * *` | Imports `grid.json` between syncs. |
+| `refresh` | `50 */3 * * *`, wave 1 | Fetches met.no, prunes elapsed hours in each shard and publishes a generation. |
+
+The refresh schedule follows the [met.no budget](../../docs/static-page-writers.md#metno-budget): it starts 50 minutes after the hub's `stars-refresh`, so the two do not overlap at expected run times. A CERRA climatology backfill reaches Garage at the next sync of the Application.
+
+## Activation (HOME-478)
+
+`refreshEnabled: true` turned on the refresh and the `inputs` hook. In wave 0, the hook imports both inputs with the read-only token `r2-s3-public-read`. If an import fails, the sync fails and the refresh CronJob does not sync. In wave 1, Argo CD syncs the refresh CronJob, so its first run finds both inputs.
+
+The `factory-public` release mirrors the Garage bucket `stars-forecast` to prefix `stars-forecast/` of R2 bucket `factory-public` (HOME-492). Its `stars-forecast` source runs since HOME-478. This chart holds no R2 write credential.
+
+## Live check
+
+After the first refresh:
+
+1. Argo CD shows `stars-forecast` Synced and Healthy. No `inputs` Job stays, because Argo CD deletes a successful hook. The refresh log shows `fetched forecasts for N/M sites` with N close to M.
+2. Check the public generation. Each key `k` in the manifest is at `stars-forecast/k`:
+
+   ```bash
+   base=https://factory-data.jomcgi.dev/stars-forecast
+   curl -sSI "$base/latest.json" | grep -i '^cache-control'  # public, max-age=60
+   for k in $(curl -sS "$base/latest.json" | jq -r '.files[]'); do
+     curl -sSI "$base/$k" | grep -i '^HTTP\|^cache-control'   # 200, public, max-age=31536000, immutable
+     echo "$k $(curl -sS "$base/$k" | sha256sum)"            # digest equals the one in $k
+   done
+   ```
+
+   Only the factory writer writes Garage `stars-forecast`, and the hub writes no `stars/sites-<sha256>.json` key. A key under `stars-forecast/` is thus a factory generation. The sites dataset has a `fetched_at` later than the rollout.
+3. Compare scores, history and timestamps with a hub generation from the same inputs.
+
+## Reader switch and hub retirement
+
+HOME-521 switches the readers:
+
+1. Grant the site snapshot credential read access to R2 bucket `factory-public` while retaining Hikes access. The site snapshot resolves manifest keys from the bucket root: change it to resolve them under the manifest's prefix.
+2. Set the Stars section in `projects/jomcgi-site/data/sources.json` to bucket `factory-public` and add `"manifest": "stars-forecast/latest.json"`. Keep the logical file names. Check the published page. Roll back by restoring the previous Stars section.
+
+HOME-522 retires the hub jobs. The Scotland connector still reads the old bucket. Account for its sites, history and optional uncapped feed, the hub public Stars endpoints and the shared grid used by aurora before retiring their input, refresh or prune jobs. Keep the separate Hikes writer and its walks object.
+
+## Rollback
+
+1. To stop the refresh, set `refreshEnabled: false`. Argo CD removes the refresh CronJob and the `inputs` hook.
+2. To stop the mirror, set the `stars-forecast` source in `projects/factory-public/chart/values.yaml` to `suspend: true`. R2 keeps what it has.
+
+Readers use the hub until HOME-521, so neither step changes a public page.
 
 ## Same-input scoring measurement
 

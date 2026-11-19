@@ -1,4 +1,19 @@
 {{- if not .Values.refreshEnabled }}
 {{- $_ := unset .Values.workloads "refresh" }}
+{{- $_ := unset .Values.workloads "inputs" }}
 {{- end }}
-{{ include "factory-library.all" . }}
+{{- range splitList "\n---" (include "factory-library.all" .) }}
+{{- $resource := fromYaml . }}
+{{- if and $resource.kind (eq $resource.kind "CronJob") (eq $resource.metadata.name "refresh") }}
+{{- /* The inputs hook and its network policy sync in wave 0. Refresh
+waits for them, so its first run finds grid and climatology in Garage. */}}
+{{- $annotations := $resource.metadata.annotations | default dict }}
+{{- $_ := set $annotations "argocd.argoproj.io/sync-wave" "1" }}
+{{- $_ := set $resource.metadata "annotations" $annotations }}
+---
+{{ toYaml $resource }}
+{{- else if trim . }}
+---
+{{ trim . }}
+{{- end }}
+{{- end }}

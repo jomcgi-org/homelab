@@ -3,11 +3,29 @@ image:
   digest: ""
 buckets:
   # The factory-public release mirrors this bucket to R2 (HOME-492). This
-  # chart holds no R2 credential.
+  # chart holds no R2 write credential.
   - name: hikes
     access: readwrite
-suspendWriters: true
+# Off since HOME-477. True suspends every CronJob and removes the bootstrap
+# hook and its seed credential.
+suspendWriters: false
+# The bootstrap hook reads the hub's schema-v2 walk snapshot once, only while
+# Garage has no generation. The token is read-only.
+seed:
+  endpoint: https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+  bucket: stars
+  key: walks.json
+  itemPath: vaults/k8s-homelab/items/r2-s3-public-read
+# UTC. met.no allows 20 requests/s for each application. Each refresh job
+# starts up to about 15/s, so no two may overlap. See "met.no budget" in
+# docs/static-page-writers.md.
 jobs:
-  catalogue: "0 0 1 1 *"
-  refresh: "20 */2 * * *"
-  prune: "40 * * * *"
+  # Monthly, after the 05:40 refresh. The scrape does not use met.no. If it
+  # holds the lock at 07:40, that refresh waits. The next met.no job after
+  # 07:40 starts at 08:20.
+  catalogue: "45 5 1 * *"
+  # Odd hours at minute 40: clear of the hub's hikes refresh (even hours at
+  # minute 20) and of both Stars refreshes (minutes 0 and 50, every three
+  # hours).
+  refresh: "40 1-23/2 * * *"
+  prune: "10 * * * *"

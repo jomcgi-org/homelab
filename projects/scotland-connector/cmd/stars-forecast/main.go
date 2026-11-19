@@ -219,21 +219,31 @@ func run(ctx context.Context, mode string) error {
 	if err != nil {
 		return err
 	}
-	if mode == "grid" || mode == "climatology" {
+	if mode == "grid" || mode == "climatology" || mode == "inputs" {
 		source, err := connect("SOURCE_")
 		if err != nil {
 			return err
 		}
-		key := mode + ".json"
-		var rows []json.RawMessage
-		if err := source.read(ctx, key, &rows); err != nil {
-			return err
+		// The inputs sync hook imports both before the refresh CronJob syncs.
+		names := []string{mode}
+		if mode == "inputs" {
+			names = []string{"grid", "climatology"}
 		}
-		if len(rows) == 0 {
-			return fmt.Errorf("empty %s input", mode)
+		for _, name := range names {
+			key := name + ".json"
+			var rows []json.RawMessage
+			if err := source.read(ctx, key, &rows); err != nil {
+				return err
+			}
+			if len(rows) == 0 {
+				return fmt.Errorf("empty %s input", name)
+			}
+			if _, err = state.write(ctx, key, rows); err != nil {
+				return err
+			}
+			log.Printf("imported %d %s rows", len(rows), name)
 		}
-		_, err = state.write(ctx, key, rows)
-		return err
+		return nil
 	}
 
 	if mode != "refresh" {
@@ -375,7 +385,7 @@ func run(ctx context.Context, mode string) error {
 
 func main() {
 	if len(os.Args) != 2 {
-		log.Fatal("expected grid, climatology, or refresh")
+		log.Fatal("expected grid, climatology, inputs, or refresh")
 	}
 	if err := run(context.Background(), os.Args[1]); err != nil {
 		log.Fatal(err)
