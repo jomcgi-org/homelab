@@ -3,13 +3,20 @@ package runbookadmission_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"encoding/pem"
 	"io"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/factory/connector/runbookadmission"
+
+	registration "k8s.io/api/admissionregistration/v1"
 
 	auth "k8s.io/api/authorization/v1"
 	v1 "k8s.io/api/core/v1"
@@ -38,7 +45,7 @@ func input(t *testing.T, key string) string {
 // Exercise the API server's RBAC authorizer against the actual chart grants.
 func TestActionPermissions(t *testing.T) {
 	ctx := context.Background()
-	rendered, err := exec.Command(input(t, "HELM_BIN"), "template", "factory", filepath.Dir(input(t, "FACTORY_CHART")), "-s", "templates/runbook-revert.yaml", "--set", "runbookRevert.enabled=true", "-f", input(t, "DEPLOY_VALUES")).Output()
+	rendered, err := exec.Command(input(t, "HELM_BIN"), "template", "factory", filepath.Dir(input(t, "FACTORY_CHART")), "-s", "templates/runbook-revert.yaml", "-s", "templates/runbook-deadline.yaml", "--set", "runbookRevert.enabled=true", "-f", input(t, "DEPLOY_VALUES")).Output()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +79,8 @@ func TestActionPermissions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	server := httptest.NewTLSServer(runbookadmission.Handler{Journals: client.CoreV1().ConfigMaps("grafana")})
+	defer server.Close()
 	decoder := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(rendered), 4096)
 	for {
 		var obj unstructured.Unstructured
@@ -81,6 +90,23 @@ func TestActionPermissions(t *testing.T) {
 		}
 		if err != nil {
 			t.Fatal(err)
+		}
+		if obj.GetKind() == "ValidatingWebhookConfiguration" {
+			var config registration.ValidatingWebhookConfiguration
+			data, err := obj.MarshalJSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(data, &config); err != nil {
+				t.Fatal(err)
+			}
+			for i := range config.Webhooks {
+				config.Webhooks[i].ClientConfig = registration.WebhookClientConfig{URL: &server.URL, CABundle: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})}
+			}
+			if _, err = client.AdmissionregistrationV1().ValidatingWebhookConfigurations().Create(ctx, &config, meta.CreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			continue
 		}
 		plural := map[string]string{"Role": "roles", "RoleBinding": "rolebindings", "ValidatingAdmissionPolicy": "validatingadmissionpolicies", "ValidatingAdmissionPolicyBinding": "validatingadmissionpolicybindings"}[obj.GetKind()]
 		if plural == "" {
@@ -106,6 +132,9 @@ func TestActionPermissions(t *testing.T) {
 		{front, "create", "factory", "serviceaccounts", "token", "factory-reviewer", false},
 		{front, "get", "grafana", "secrets", "", "runbook-discord", false},
 		{front, "update", "grafana", "configmaps", "", "unrelated", false},
+		{"system:serviceaccount:grafana:runbook-deadline", "get", "grafana", "configmaps", "", "runbook-revert-factory-connector", true},
+		{"system:serviceaccount:grafana:runbook-deadline", "update", "grafana", "configmaps", "", "runbook-revert-factory-connector", false},
+		{"system:serviceaccount:grafana:runbook-deadline", "delete", "factory-r-homelab", "pods", "", "worker", false},
 		{"system:serviceaccount:factory:factory-connector", "update", "grafana", "configmaps", "", "runbook-revert-factory-reviewer", false},
 		{"system:serviceaccount:factory:factory-reviewer", "update", "grafana", "configmaps", "", "runbook-revert-factory-reviewer", true},
 	} {
@@ -148,8 +177,8 @@ func TestActionPermissions(t *testing.T) {
 			t.Fatal(err)
 		}
 		if name != "unrelated" {
-			journal.Data = map[string]string{"phase": "deleting", "namespace": ns, "pod": name, "uid": string(pod.UID)}
-			if _, err = client.CoreV1().ConfigMaps("grafana").Update(ctx, journal, meta.UpdateOptions{}); err != nil {
+			journal.Data = map[string]string{"deadline": time.Now().Add(time.Minute).Format(time.RFC3339Nano), "id": "recovery-1", "user": "joe", "session": "session-1", "executor": "executor-1", "creator": "factory-connector", "phase": "deleting", "namespace": ns, "pod": name, "uid": string(pod.UID)}
+			if journal, err = client.CoreV1().ConfigMaps("grafana").Update(ctx, journal, meta.UpdateOptions{}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -165,5 +194,35 @@ func TestActionPermissions(t *testing.T) {
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
+		if name != "unrelated" {
+			// Keep the same pod UID and the same deleting phase. Expiry alone must deny it.
+			journal.Data["deadline"] = time.Now().Add(-time.Second).Format(time.RFC3339Nano)
+			if journal, err = client.CoreV1().ConfigMaps("grafana").Update(ctx, journal, meta.UpdateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			until := time.Now().Add(10 * time.Second)
+			for {
+				err = user.CoreV1().Pods(ns).Delete(ctx, name, opts)
+				if err != nil && strings.Contains(err.Error(), "worker authorization expired") {
+					break
+				}
+				if time.Now().After(until) {
+					t.Fatalf("expired deletion: %v", err)
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			journal.Data["phase"] = "authorized"
+			journal, err = client.CoreV1().ConfigMaps("grafana").Update(ctx, journal, meta.UpdateOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			journal.Data["phase"] = "deleting"
+			_, err = user.CoreV1().ConfigMaps("grafana").Update(ctx, journal, meta.UpdateOptions{DryRun: []string{meta.DryRunAll}})
+			if err == nil || !strings.Contains(err.Error(), "worker authorization expired") {
+				t.Fatalf("expired journal transition: %v", err)
+			}
+
+		}
+
 	}
 }
