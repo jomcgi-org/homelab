@@ -2,6 +2,7 @@
 
 import json
 import os
+from contextvars import ContextVar
 from hmac import compare_digest
 from typing import NamedTuple
 
@@ -31,6 +32,9 @@ def load_bindings():
 
 
 BINDINGS = load_bindings()
+# The MCP transport authenticates, then resolves the bank alias in the same
+# request task with a fresh RequestContext that carries only the credential.
+_pending_alias_binding = ContextVar("pending_alias_binding", default=None)
 
 
 def binding_for(context):
@@ -50,12 +54,18 @@ class BindingTenant(ApiKeyTenantExtension):
         binding = binding_for(context)
         if binding is None:
             raise AuthenticationError("Invalid MCP token")
+        _pending_alias_binding.set(binding.name)
         context.api_key_id = binding.name
         return TenantContext(schema_name=get_config().database_schema)
 
     async def authenticate(self, context):
         # Hindsight propagates this transport-set ID to engine calls.
         binding = binding_for(context)
+        pending = _pending_alias_binding.get()
+        if pending is not None:
+            _pending_alias_binding.set(None)
+            if binding and pending == binding.name and context.api_key_id is None:
+                context.api_key_id = pending
         if binding and context.api_key_id == binding.name:
             return TenantContext(schema_name=get_config().database_schema)
         return await super().authenticate(context)

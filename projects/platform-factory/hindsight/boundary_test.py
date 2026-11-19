@@ -181,6 +181,14 @@ def server():
             base, "PUT", "/v1/default/banks/homelab", TENANT_KEY, {}
         )
         assert status == 200, body
+        status, _, body = request(
+            base,
+            "POST",
+            "/v1/default/banks/homelab/aliases",
+            TENANT_KEY,
+            {"alias": "coder-memory"},
+        )
+        assert status == 201, body
         yield base
     finally:
         proc.terminate()
@@ -223,8 +231,19 @@ def test_mcp_registers_only_recall_and_retain(server, path, headers):
         assert "error" in reply or reply["result"].get("isError") is True, reply
 
 
-def test_recall_works_with_the_mcp_token(server):
-    client = MCP(server, "/mcp/homelab/", MCP_TOKEN)
+@pytest.mark.parametrize(
+    "path,headers",
+    [
+        ("/mcp/homelab/", {}),
+        ("/mcp/coder-memory/", {}),
+        ("/mcp/", {"X-Bank-Id": "coder-memory"}),
+    ],
+    ids=["canonical", "alias-path", "alias-header"],
+)
+def test_recall_works_with_the_mcp_token(server, path, headers):
+    client = MCP(server, path, MCP_TOKEN, headers)
+    tools = client.call("tools/list")["result"]["tools"]
+    assert sorted(tool["name"] for tool in tools) == ["recall", "retain"]
     reply = client.call(
         "tools/call", {"name": "recall", "arguments": {"query": "failing checks"}}
     )
