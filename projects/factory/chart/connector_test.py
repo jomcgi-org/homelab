@@ -880,9 +880,9 @@ def test_runbook_revert_permissions():
     journals = readers | {
         (ns, resource, name, "update") for ns, resource, name, _ in readers
     }
-    workers = {
-        (ns, "pods", "*", verb) for ns in owners.values() for verb in ("get", "delete")
-    }
+    # Delete only: the action reads no pods, so it cannot list or read
+    # unrelated pods in the worker namespaces.
+    workers = {(ns, "pods", "*", "delete") for ns in owners.values()}
     assert permissions("grafana", "runbooks") == set()
     assert permissions("grafana", "runbook-deadline") == readers
     assert permissions("grafana", "runbook-kagent-revert") == journals | workers

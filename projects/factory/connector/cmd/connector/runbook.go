@@ -231,7 +231,9 @@ func (b revertBackend) submit(ctx context.Context, user string, t revertTarget) 
 	return b.save(ctx, cm, operation{ID: rand.Text(), User: user, Target: t, Phase: "confirmed", Deadline: time.Now().Add(6 * time.Minute)})
 }
 
-type auditSink func(string, revertTarget, string) error
+// auditSink sends one outcome. The first argument is the journal operation
+// ID, so a resend after a lost response carries the same identity.
+type auditSink func(id, user string, t revertTarget, result string) error
 
 func (b revertBackend) advance(ctx context.Context, owner string, credential *kagent.TokenSource, audit auditSink) error {
 	cm, op, err := b.load(ctx, owner)
@@ -243,26 +245,7 @@ func (b revertBackend) advance(ctx context.Context, owner string, credential *ka
 	}
 	t := op.Target
 	finish := func(result string) error { op.Result = result; op.Phase = "audit"; return b.save(ctx, cm, op) }
-	if op.Phase == "audit" {
-		if audit == nil {
-			return nil
-		}
-		if err := audit(op.User, t, op.Result); err != nil {
-			return err
-		}
-		op.Phase = "delivered"
-		return b.save(ctx, cm, op)
-	}
-	if time.Now().Before(op.LeaseUntil) {
-		return nil
-	}
-	if time.Now().After(op.Deadline) && (op.Phase == "confirmed" || op.Phase == "authorized") {
-		if audit != nil {
-			return finish("recovery deadline exceeded during " + op.Phase)
-		}
-		return nil
-	}
-	// A fresh CAS before each external mutation records a new writer epoch.
+	// A fresh CAS before each external call records a new writer epoch.
 	// Bound the RPC deadline inside the lease so another process cannot race it.
 	claim := func(phase string) error {
 		op.Phase = phase
@@ -282,8 +265,32 @@ func (b revertBackend) advance(ctx context.Context, owner string, credential *ka
 		op.LeaseUntil = time.Time{}
 		return nil
 	}
+	if time.Now().Before(op.LeaseUntil) {
+		return nil
+	}
+	if op.Phase == "audit" || op.Phase == "auditing" {
+		// Only the front sends audits. It claims the journal before each send,
+		// so one writer holds each attempt and a retry waits for the lease.
+		if audit == nil {
+			return nil
+		}
+		if err := claim("auditing"); err != nil {
+			return err
+		}
+		if err := audit(op.ID, op.User, t, op.Result); err != nil {
+			return err
+		}
+		op.Phase = "delivered"
+		return b.save(ctx, cm, op)
+	}
+	if time.Now().After(op.Deadline) && (op.Phase == "confirmed" || op.Phase == "authorized") {
+		if audit != nil {
+			return finish("recovery deadline exceeded during " + op.Phase)
+		}
+		return nil
+	}
 	if credential != nil {
-		if op.Phase != "confirmed" && op.Phase != "gone" && op.Phase != "reverting" {
+		if op.Phase != "confirmed" && op.Phase != "deleting" && op.Phase != "gone" && op.Phase != "reverting" {
 			return nil
 		}
 		token, err := credential.Token()
@@ -321,11 +328,24 @@ func (b revertBackend) advance(ctx context.Context, owner string, credential *ka
 			op.Phase = "authorized"
 			return b.save(ctx, cm, op)
 		}
+		// The creator observes its own worker pod. The front action reads no
+		// pods, so its ServiceAccount holds only fenced deletes.
 		pod, err := b.pods.Pods(t.Namespace).Get(ctx, t.Pod, meta.GetOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
-		if err == nil && string(pod.UID) == t.UID {
+		present := err == nil && string(pod.UID) == t.UID
+		if op.Phase == "deleting" {
+			if !present {
+				op.Phase = "gone"
+				return b.save(ctx, cm, op)
+			}
+			if pod.DeletionTimestamp == nil && time.Now().After(op.Deadline) {
+				return finish("worker still present; confirmation expired")
+			}
+			return nil
+		}
+		if present {
 			return finish("confirmed worker still present")
 		}
 		if op.Phase == "reverting" && session.State == kagent.RuntimeReady {
@@ -355,36 +375,34 @@ func (b revertBackend) advance(ctx context.Context, owner string, credential *ka
 	if op.Phase != "authorized" && op.Phase != "deleting" {
 		return nil
 	}
-	pods := b.pods.Pods(t.Namespace)
-	pod, err := pods.Get(ctx, t.Pod, meta.GetOptions{})
-	if err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
-	if apierrors.IsNotFound(err) || string(pod.UID) != t.UID {
-		if op.Phase != "deleting" {
-			return finish("target changed")
-		}
-		op.Phase = "gone"
-		return b.save(ctx, cm, op)
-	}
-	if pod.DeletionTimestamp != nil {
+	// The front deletes without reading the pod. The UID precondition and the
+	// admission fence keep the delete on the confirmed worker. The creator
+	// observes the result and moves the journal to gone, or audits a worker
+	// still present at the deadline. In the deleting phase a cleared lease
+	// means the delete landed; an expired lease means an attempt may not have
+	// landed, and deleting a terminating pod again is harmless.
+	if time.Now().After(op.Deadline) || op.Phase == "deleting" && op.LeaseUntil.IsZero() {
 		return nil
 	}
-	if time.Now().After(op.Deadline) {
-		return finish("worker still present; confirmation expired")
+	if op.Phase == "authorized" {
+		targets, err := b.discover(ctx)
+		if err != nil {
+			return err
+		}
+		if !slices.Contains(targets, t) {
+			return finish("target changed")
+		}
 	}
-	targets, err := b.discover(ctx)
-	if err != nil {
-		return err
-	}
-	if !slices.Contains(targets, t) {
-		return finish("target changed")
-	}
+	first := op.Phase == "authorized"
 	if err := claim("deleting"); err != nil {
 		return err
 	}
 	uid := types.UID(t.UID)
-	if err := pods.Delete(ctx, t.Pod, meta.DeleteOptions{Preconditions: &meta.Preconditions{UID: &uid}}); err != nil {
+	err = b.pods.Pods(t.Namespace).Delete(ctx, t.Pod, meta.DeleteOptions{Preconditions: &meta.Preconditions{UID: &uid}})
+	if first && (apierrors.IsNotFound(err) || apierrors.IsConflict(err)) {
+		return finish("target changed")
+	}
+	if err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
 		return err
 	}
 	return b.save(ctx, cm, op)
@@ -430,9 +448,9 @@ func runRevert(log *slog.Logger) error {
 	}
 	b := revertBackend{actors: db, pods: pods}
 	b.discover = b.targets
-	audit := func(user string, t revertTarget, result string) error {
-		log.Info("runbook action", "action", "kagent-revert", "user", user, "target", t, "result", result)
-		msg := fmt.Sprintf("kagent-revert by %s: session %s executor %s worker %s/%s UID %s as factory/%s: %s", user, t.Session, t.Executor, t.Namespace, t.Pod, t.UID, t.Creator, result)
+	audit := func(id, user string, t revertTarget, result string) error {
+		log.Info("runbook action", "action", "kagent-revert", "operation", id, "user", user, "target", t, "result", result)
+		msg := fmt.Sprintf("kagent-revert %s by %s: session %s executor %s worker %s/%s UID %s as factory/%s: %s", id, user, t.Session, t.Executor, t.Namespace, t.Pod, t.UID, t.Creator, result)
 		payload, _ := json.Marshal(map[string]any{"content": msg, "allowed_mentions": map[string]any{"parse": []string{}}})
 		client := http.Client{Timeout: 10 * time.Second}
 		resp, err := client.Post(os.Getenv("DISCORD_WEBHOOK"), "application/json", bytes.NewReader(payload))

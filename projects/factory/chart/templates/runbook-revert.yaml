@@ -12,9 +12,11 @@ metadata:
   name: runbook-kagent-revert
   namespace: {{ $ns }}
 rules:
+  # Delete only, fenced by the runbook-revert-credentials policy and the
+  # deadline webhook. The creator, not this action, reads its worker pods.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "delete"]
+    verbs: ["delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -283,13 +285,14 @@ spec:
         variables.front ?
         (variables.next == 'confirmed' && variables.prev in ['', 'delivered'] ||
          variables.next == 'deleting' && variables.prev in ['authorized','deleting'] ||
-         variables.next == 'gone' && variables.prev == 'deleting' ||
          variables.next == 'audit' && variables.prev in ['confirmed','authorized','deleting','gone','reverting'] ||
-         variables.next == 'delivered' && variables.prev == 'audit') :
+         variables.next == 'auditing' && variables.prev in ['audit','auditing'] ||
+         variables.next == 'delivered' && variables.prev == 'auditing') :
         (request.name == 'runbook-revert-' + request.userInfo.username.split(':')[3] &&
          (variables.next == 'authorized' && variables.prev == 'confirmed' ||
+          variables.next == 'gone' && variables.prev == 'deleting' ||
           variables.next == 'reverting' && variables.prev in ['gone','reverting'] ||
-          variables.next == 'audit' && variables.prev in ['confirmed','gone','reverting']))
+          variables.next == 'audit' && variables.prev in ['confirmed','deleting','gone','reverting']))
       message: Only the creator may authorize a session and claim its revert.
 ---
 apiVersion: admissionregistration.k8s.io/v1
