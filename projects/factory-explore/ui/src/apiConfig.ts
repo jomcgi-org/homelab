@@ -88,6 +88,7 @@ export async function read(path: string, accept: string, signal?: AbortSignal) {
     signal: signal ? AbortSignal.any([signal, session.signal]) : session.signal,
   });
   session.signal.throwIfAborted();
+  if (response.status === 401) throw new Error("401 Unauthorized");
   const end = Date.parse(response.headers.get("X-Explore-Window-End") ?? "");
   const next = Date.parse(response.headers.get("X-Explore-Next-Window") ?? "");
   if (response.status === 403 && Number.isFinite(next)) await closeWindow(next);

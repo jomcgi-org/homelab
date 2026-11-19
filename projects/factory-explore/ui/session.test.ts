@@ -87,3 +87,43 @@ test.each(["deadline", "expired token", "window denial"])(
     app.unmount();
   },
 );
+
+test("a rejected token leaves the last authenticated deadline intact", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-01-01T12:00:00Z"));
+  const { read, userManager, countdown, nextWindow } =
+    await import("./src/apiConfig");
+  const exp = Date.now() / 1000 + 600;
+  vi.spyOn(userManager, "getUser").mockResolvedValue(
+    new User({
+      id_token: "rejected-token",
+      access_token: "access-token",
+      token_type: "Bearer",
+      profile: { exp },
+      expires_at: exp,
+    }),
+  );
+  const fetchApi = vi
+    .fn()
+    .mockResolvedValueOnce(
+      new Response("{}", {
+        headers: { "X-Explore-Window-End": "2026-01-01T12:05:00Z" },
+      }),
+    )
+    .mockResolvedValueOnce(
+      new Response(null, {
+        status: 401,
+        headers: { "X-Explore-Window-End": new Date().toISOString() },
+      }),
+    );
+  vi.stubGlobal("fetch", fetchApi);
+  await read("/api", "application/json");
+  await expect(read("/apis", "application/json")).rejects.toThrow(
+    "401 Unauthorized",
+  );
+  expect(countdown.value).toBe("5:00");
+  expect(nextWindow.value).toBeNull();
+  expect(sessionStorage.getItem("explore.windowEnd")).toBe(
+    String(Date.parse("2026-01-01T12:05:00Z")),
+  );
+});
