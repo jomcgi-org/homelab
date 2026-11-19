@@ -92,6 +92,18 @@ type: kubernetes.io/basic-auth
 stringData:
   username: factory_storyboard
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: factory-db-reaper-login
+  namespace: factory-db
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: kubernetes.io/basic-auth
+stringData:
+  username: factory_reaper
+---
 # factory-db's Garage key, filled by garage-init
 # (projects/platform-factory/garage). factory-db-init holds the Cluster back
 # until it is filled: an instance that starts without it never picks it up,
@@ -161,6 +173,7 @@ rules:
       - factory-db-discord-hindsight-login
       - factory-db-broker-accounting-login
       - factory-db-storyboard-login
+      - factory-db-reaper-login
     verbs: [get, update]
   - apiGroups: [""]
     resources: [secrets]

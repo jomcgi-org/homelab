@@ -592,6 +592,9 @@ connector:
   # startup). `endpoints` are Cilium selectors for the connector's egress.
   database:
     secretName: factory-connector-db
+    # The worker reaper's own login: attempt lookup and worker-fence writes
+    # only, never the connector's owner credential.
+    reaperSecretName: factory-reaper-db
     endpoints: []
     port: 5432
   # Metrics and /healthz.

@@ -722,3 +722,40 @@ def test_landing_status_access() -> None:
     for resource in (status_service, status_policy):
         options = resource["metadata"]["annotations"]["argocd.argoproj.io/sync-options"]
         assert "Prune=false" in options.split(",")
+
+
+def test_reaper_uses_its_own_database_login():
+    # The connector's login owns factory_connector; the reaper gets a login
+    # limited to attempt lookup and worker-fence writes.
+    docs = _render()
+    reaper = _in(docs, "Deployment", "factory", "factory-reaper")
+    refs = [
+        env["valueFrom"]["secretKeyRef"]["name"]
+        for c in reaper["spec"]["template"]["spec"]["containers"]
+        for env in c.get("env", [])
+        if "secretKeyRef" in env.get("valueFrom", {})
+    ]
+    assert refs == ["factory-reaper-db"]
+
+
+def test_reaper_pod_permissions():
+    docs = _render()
+    namespaces = {"factory-r-homelab", "factory-r-homelab-review"}
+    roles = [d for d in docs if d["metadata"]["name"] == "factory-reaper"]
+    for kind in ["Role", "RoleBinding"]:
+        assert {
+            d["metadata"]["namespace"] for d in roles if d["kind"] == kind
+        } == namespaces
+    for role in (d for d in roles if d["kind"] == "Role"):
+        assert role["rules"] == [
+            {
+                "apiGroups": [""],
+                "resources": ["pods"],
+                "verbs": ["get", "list", "watch", "delete"],
+            }
+        ]
+    assert not any(d["kind"].startswith("ClusterRole") for d in roles)
+    connector = _in(docs, "Deployment", "factory", "factory-connector")
+    assert (
+        connector["spec"]["template"]["spec"]["automountServiceAccountToken"] is False
+    )

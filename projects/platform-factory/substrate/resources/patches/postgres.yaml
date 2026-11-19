@@ -37,6 +37,21 @@ spec:
                       --set=substrate_readwrite_user=substrate_readwrite_user \
                       --set=substrate_readwrite_password= \
                       -f /etc/postgresql-setup/setup.sql >/dev/null
+                    psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER}" -d atepg <<'SQL'
+                    BEGIN;
+                    DO $$ BEGIN
+                      IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='factory_reaper') THEN
+                        CREATE ROLE factory_reaper LOGIN;
+                      END IF;
+                    END $$;
+                    SET LOCAL check_function_bodies = off;
+                    CREATE OR REPLACE FUNCTION public.reaper_actors() RETURNS TABLE(name text, proto bytea)
+                      LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog
+                      AS $$SELECT a.name::text, a.proto FROM substrate.actors a WHERE a.name LIKE 'session-%'$$;
+                    REVOKE ALL ON FUNCTION public.reaper_actors() FROM PUBLIC;
+                    GRANT EXECUTE ON FUNCTION public.reaper_actors() TO factory_reaper;
+                    COMMIT;
+                    SQL
           # Upstream sizes this for a dedicated node (2 CPU request, 16 limit);
           # the kind overlay's CPU request, with room to burst on a 12-core
           # node. Memory peaked at 111Mi over two days (2026-11-16), so the

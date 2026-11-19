@@ -1110,3 +1110,46 @@ Each step is its own PR with live evidence recorded on #7817.
 
 Everything except live Codex runs, agent pushes and required review can be
 built and trialled before these arrive.
+
+### Worker reaper
+
+The reaper reads Substrate's actor assignments from atepg and records the worker
+namespace, pod UID and session against the connector attempt. Every 15 seconds it
+checks the Kubernetes API for that UID. On disappearance the reaper records the actor UID and
+version. The connector expires that attempt's lease immediately and checks the
+task's outcome. A completed turn proceeds to result delivery. For a running
+turn, the connector journals a force deletion of its session. Only confirmation that the session is deleted
+or absent releases the attempt for a fresh-session retry. That fence covers a
+replacement worker assigned after the observed revision. API errors
+leave the attempt open. The reaper can also delete a worker whose actor has
+remained SUSPENDING for five minutes, using the assigned UID as a delete
+precondition. Each deletion first checks the reaper's own writer epoch (an
+advisory lock and the `reaper_writer` row) and is journaled in
+`worker_deletion` under a stable operation ID, so it never repeats. The
+reaper connects as `factory_reaper`, which can read open attempts and write
+only its fence and deletion tables. The connector retains ownership of
+session recovery calls.
+[Joe's scoped reaper decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-320#comment-2891).
+If Substrate clears an assignment before the reaper first reads it, the
+reaper has no pod UID, and the attempt recovers through the ordinary
+liveness lease.
+[Joe deferred that case](https://factory-plan.jomcgi.dev/factory/issue/HOME-320#comment-4033).
+A pod that is gone while Substrate already shows a replacement assignment
+is superseded by the replacement, so a turn stuck on the old pod also waits
+for the lease.
+[Joe deferred that case too](https://factory-plan.jomcgi.dev/factory/issue/HOME-320#comment-4256).
+The release also waits for kagent to confirm the session deletion, which
+normally takes seconds; if kagent cannot confirm, the lease frees the run.
+[Joe deferred that dependency](https://factory-plan.jomcgi.dev/factory/issue/HOME-320#comment-4259).
+
+The deployment pins Substrate v1.0.1 at `7ce6f439`. Its certificate controller
+parses the repeatable `--postgres-client` flag and appends the extra identity
+to the existing PostgreSQL clients. [Flag and startup wiring](https://github.com/kagent-dev/substrate/blob/7ce6f439239c568285f6d897aaa4afd47752c775/cmd/podcertcontroller/main.go#L89-L105),
+[signer client list](https://github.com/kagent-dev/substrate/blob/7ce6f439239c568285f6d897aaa4afd47752c775/cmd/podcertcontroller/internal/postgressigner/postgressigner.go#L88-L97).
+
+The reaper decodes Actor metadata and status from this release. Suspend writes
+SUSPENDING through UpdateActor, and the store stamps each update with its time.
+Five minutes since the latest mutation therefore gives a lower bound on time
+spent in that state. [Wire schema](https://github.com/kagent-dev/substrate/blob/7ce6f439239c568285f6d897aaa4afd47752c775/api/ateapi/v1/ateapi.proto#L412-L1015),
+[suspend transition](https://github.com/kagent-dev/substrate/blob/7ce6f439239c568285f6d897aaa4afd47752c775/cmd/ateapi/internal/controlapi/workflow_suspend.go#L182-L191),
+[update timestamp](https://github.com/kagent-dev/substrate/blob/7ce6f439239c568285f6d897aaa4afd47752c775/cmd/ateapi/internal/store/atepg/atepg.go#L438-L450).

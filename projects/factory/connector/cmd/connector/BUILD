@@ -4,6 +4,7 @@ go_library(
     name = "connector_lib",
     srcs = [
         "main.go",
+        "reaper.go",
         "recovery.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/cmd/connector",
@@ -13,6 +14,7 @@ go_library(
         "//projects/factory/connector/config",
         "//projects/factory/connector/dispatch",
         "//projects/factory/connector/github",
+        "//projects/factory/connector/internal/reaper",
         "//projects/factory/connector/itsaplan",
         "//projects/factory/connector/kagent",
         "//projects/factory/connector/metrics",
@@ -23,6 +25,8 @@ go_library(
         "@com_github_prometheus_client_golang//prometheus",
         "@com_github_prometheus_client_golang//prometheus/collectors",
         "@com_github_prometheus_client_golang//prometheus/promhttp",
+        "@io_k8s_client_go//kubernetes/typed/core/v1:core",
+        "@io_k8s_client_go//rest",
     ],
 )
 

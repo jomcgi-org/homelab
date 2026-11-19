@@ -874,9 +874,10 @@
         "database": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["secretName"],
+          "required": ["secretName", "reaperSecretName"],
           "properties": {
             "secretName": { "type": "string", "minLength": 1 },
+            "reaperSecretName": { "type": "string", "minLength": 1 },
             "endpoints": { "$ref": "#/definitions/endpointSelectors" },
             "port": { "$ref": "#/definitions/port" }
           }

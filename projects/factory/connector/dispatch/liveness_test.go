@@ -10,8 +10,12 @@ import (
 	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
+	"github.com/jomcgi/homelab/projects/factory/connector/internal/reaper"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 // forced reads a session's force-delete record: requests, RevertSession
@@ -350,5 +354,102 @@ func TestHungKagentFreesEverySlotWithinTheBound(t *testing.T) {
 	}
 	if beats := v.its.Run(1).beats; beats < 25 {
 		t.Fatalf("run 1 heartbeats = %d while kagent hung", beats)
+	}
+}
+
+func TestGoneWorkerRetriesBusyTurnWithinFiveMinutes(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	a := v.latest(1)
+	v.kg.tool(a.TaskID, "ci-1", kagent.PartToolCall)
+	// Snapshot a running Substrate actor (revision 18) on a real connector
+	// attempt, then clear its assignment as Substrate does on crash (revision 19).
+	// The fixtures encode ateapi.v1.Actor metadata, state and worker_assignment.
+	_, err := v.st.DB.Exec(`CREATE TABLE actor_fixture(name text, proto bytea);
+		CREATE FUNCTION public.reaper_actors() RETURNS TABLE(name text, proto bytea)
+		LANGUAGE sql AS $$ SELECT name, proto FROM actor_fixture $$`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = v.st.DB.Exec(`INSERT INTO actor_fixture VALUES ($1, decode($2,'hex'))`,
+		"session-"+a.ContextID, "0a151a116163746f722d696e6361726e6174696f6e20122a37080212330a11666163746f72792d722d686f6d656c61621a14686f6d656c61622d636f6465782d776f726b657222086f726967696e616c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "factory-r-homelab", Name: "homelab-codex-worker", UID: "original",
+	}}
+	pods := fake.NewSimpleClientset(pod).CoreV1()
+	lease, err := reaper.TryLease(v.ctx, v.st.DB)
+	if err != nil || lease == nil {
+		t.Fatalf("lease=%v err=%v", lease, err)
+	}
+	t.Cleanup(func() { lease.Close() })
+	scan := func() {
+		t.Helper()
+		if err := reaper.Scan(v.ctx, v.st.DB, v.st.DB, pods, lease); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scan()
+	if err := pods.Pods(pod.Namespace).Delete(v.ctx, pod.Name, metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	start := v.clk.Now()
+	if _, err := v.st.DB.Exec(`UPDATE actor_fixture SET proto=decode($1,'hex')`, "0a151a116163746f722d696e6361726e6174696f6e20132a020805"); err != nil {
+		t.Fatal(err)
+	}
+	v.clk.Advance(15 * time.Second)
+	scan()
+	// A replacement is still running after the observed revision. Evidence
+	// alone cannot authorize a second send while its session refuses deletion.
+	v.kg.forceErr = errors.New("session still running")
+	v.clk.Advance(30 * time.Second)
+	v.tick(v.e)
+	if requests, _, _, confirmed, ok := v.forced(a.ContextID); !ok || requests != 1 || confirmed {
+		t.Fatal("expected a pending journaled fence for the original session")
+	}
+	if !v.latest(1).Open() || v.latest(1).ID != a.ID {
+		t.Fatal("abandoned before authoritative session fence")
+	}
+	v.kg.forceErr = nil
+	v.tickUntil(30*time.Second, 9, func() bool {
+		next := v.latest(1)
+		return next.ID != a.ID && next.State == store.AttemptAccepted && next.ContextID != a.ContextID
+	})
+	if elapsed := v.clk.Now().Sub(start); elapsed > 5*time.Minute {
+		t.Fatalf("retry took %s after pod deletion", elapsed)
+	}
+	var held bool
+	if err := v.st.DB.QueryRow(`SELECT EXISTS(SELECT 1 FROM recovery_hold WHERE target_attempt_id=$1)`, a.ID).Scan(&held); err != nil || held {
+		t.Fatalf("worker-loss recovery created an operator hold: held=%t err=%v", held, err)
+	}
+	if _, _, _, confirmed, _ := v.forced(a.ContextID); !confirmed {
+		t.Fatal("retry started before session deletion was confirmed")
+	}
+}
+
+func (v *env) recordWorkerLoss(a *store.Attempt) {
+	v.t.Helper()
+	_, err := v.st.DB.Exec(`INSERT INTO worker_fence(attempt_id,session_id,namespace,pod,uid,gone_at,actor_uid,actor_version)
+		VALUES ($1,$2,'factory-r-homelab','homelab-codex-a','original',now(),'actor',19)`, a.ID, a.ContextID)
+	if err != nil {
+		v.t.Fatal(err)
+	}
+}
+
+func TestCompletedTurnSurvivesWorkerLoss(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	a := v.latest(1)
+	v.kg.finish(a.TaskID, kagent.StateCompleted, "Pushed the fix.", nil)
+	v.recordWorkerLoss(a)
+	v.tickUntil(5*time.Second, 4, func() bool { return len(v.its.Run(1).results) > 0 })
+	got := v.its.Run(1).results
+	if len(got) != 1 || got[0].Status != "success" || got[0].Output != "Pushed the fix." ||
+		v.latest(1).ID != a.ID || len(v.kg.Forced()) != 0 || v.work(101).EngineeringRetries != 0 {
+		t.Fatalf("worker loss discarded the completed turn: results=%+v forced=%v", got, v.kg.Forced())
 	}
 }
