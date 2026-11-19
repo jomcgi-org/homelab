@@ -181,7 +181,11 @@ def test_upstream_factory_contracts(tmp_path):
                     "-v",
                     "ON_ERROR_STOP=1",
                     "-f",
-                    Path(os.environ["CLAIMS_TEST"]),
+                    os.environ.get(
+                        "CLAIMS_TEST",
+                        connector.parents[1]
+                        / "platform-factory/kagent-postgres/resources/claims_test.sql",
+                    ),
                 ],
                 env=env,
             )
