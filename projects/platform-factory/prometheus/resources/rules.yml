@@ -185,3 +185,17 @@ groups:
           threshold: "1"
           runbook: "https://factory-runbooks.jomcgi.dev/AlertRelayDown"
           summary: "Alert relay has {{ $value }} available replicas (minimum 1)"
+
+  - name: factory-connector
+    rules:
+      - alert: FactoryItsaplanOutage
+        expr: max by (phase) (factory_connector_itsaplan_unavailable{job="factory-connector"}) == 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          action: "Inspect connector logs for the affected dispatch phase and check the coordinator key counter."
+          graph: 'max(factory_connector_itsaplan_unavailable{job="factory-connector",phase={{ printf "%q" $labels.phase }}})'
+          threshold: "1"
+          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory/deploy/notify.md#home-385-rollout-verification"
+          summary: "Factory {{ $labels.phase }} has been failing on itsaplan for ten minutes"

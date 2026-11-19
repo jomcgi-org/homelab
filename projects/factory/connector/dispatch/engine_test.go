@@ -3701,3 +3701,30 @@ func TestResultNotFoundIsTerminal(t *testing.T) {
 		t.Fatalf("%d itsaplan calls after the terminal 404", extra)
 	}
 }
+
+func TestAdmissionOutageNotifiesAfterTenMinutes(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.setIssueErr(&itsaplan.HTTPError{Status: 500})
+	alarms := 0
+	v.e.NotifyOutage = func(_ context.Context, phase string) error {
+		if phase == "admissions" {
+			alarms++
+		}
+		return nil
+	}
+	v.tick(v.e)
+	if reason := v.run(1).HoldReason; !strings.Contains(reason, "itsaplan to recover") {
+		t.Fatalf("outage hold: %q", reason)
+	}
+	v.clk.Advance(9 * time.Minute)
+	v.tick(v.e)
+	if alarms != 0 {
+		t.Fatal("early outage alarm")
+	}
+	v.clk.Advance(time.Minute)
+	v.tick(v.e)
+	if alarms != 1 {
+		t.Fatalf("got %d admission alarms", alarms)
+	}
+}

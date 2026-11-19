@@ -322,7 +322,13 @@ def test_sessions_secret_is_accessible_only_to_bootstrap() -> None:
         d["metadata"]["name"] for d in _ours(docs) if d["kind"] == "RoleBinding"
     } == {"factory-itsaplan-bootstrap", "factory-itsaplan-secret-init"}
     bootstrap = _one(docs, "Job", "factory-itsaplan-bootstrap")
-    env = bootstrap["spec"]["template"]["spec"]["containers"][0]["env"]
+    pod = bootstrap["spec"]["template"]["spec"]
+    limit = pod["containers"][0]
+    assert limit["name"] == "coordinator-limit"
+    assert (
+        "rate_limit_time_window = 1000, rate_limit_max = 1000\n" in limit["command"][-1]
+    )
+    env = pod["initContainers"][0]["env"]
     assert {e["name"]: e.get("value") for e in env}["SESSIONS_SECRET"] == name
     # No pod, SandboxTemplate, credential mapping or injected environment
     # references the Secret. Bootstrap reads it via its Kubernetes Role.

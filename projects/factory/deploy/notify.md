@@ -11,6 +11,38 @@ The sink calls the private monolith's `monolith_agent_notify` wire tool
 and that account's app password. No operator or Ember agent credential belongs
 in the factory's Secret.
 
+## HOME-385 rollout verification
+
+Joe owns provisioning the notify credential below. The factory delivery owner
+owns sink activation through the reviewed deployment values and confirmation
+in Discord. The platform factory Prometheus rule `FactoryItsaplanOutage` also sends sustained
+phase failures to the homelab Discord channel through Alertmanager, using
+the existing `factory-alerts-discord` credential.
+
+The connector's notify sink ships disabled in the deploy values, so its
+outage callback sends nothing until activation. The activation step below
+turns it on after the `factory-notify` app password exists. Joe accepted this
+staging ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-385#comment-5528)).
+
+The HOME-385 local replay used 22 ms HTTP latency, twenty held issues with one
+shared open blocker, one deferred board and two PR checks. Counts are
+coordinator HTTP requests per simulated sweep.
+
+| Revision | Deferred | Admissions | Delivery | Total | Requests/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Before pacing | 2 | 60 | 4 | 66 | 42.52 |
+| With pacing and shared blocker reads | 2 | 41 | 4 | 47 | 10.63 |
+
+After rollout the delivery owner samples
+`select request_count, last_request from apikey where name='agent:Factory coordinator'`
+several times over one minute during normal sweeps and records the readings on
+HOME-385. The acceptance threshold is below 300. The chart's PostSync bootstrap sets
+the verified or re-minted coordinator key to 1,000 requests per 1,000 ms.
+A rollback to an older chart keeps that ceiling: the old bootstrap does not
+set key limits, and the unpaced connector has run on 1,000 since the
+2026-11-18 22:05Z stopgap. The upstream 100 ceiling is what caused the
+outage, so no hook lowers it.
+
 ## Credential task for Joe
 
 Owner: @joe. This worker has no Authentik administration or 1Password write
@@ -67,7 +99,7 @@ Empty configuration disables the client; partial settings fail. Levels are
 | Field | Allowed value |
 | --- | --- |
 | Key | 1–256 bytes; hashed, never displayed |
-| Title | `Factory notify sink is live`, `Scheduled agent digest`, `Scheduled agent alert` |
+| Title | `Factory notify sink is live`, `Factory itsaplan outage`, `Scheduled agent digest`, `Scheduled agent alert` |
 | Status | Empty, `succeeded`, `failed`, `blocked`, `running` |
 | Count | 0–9999; zero omitted |
 | Link | Optional canonical homelab GitHub issue/PR or factory-plan issue URL, numeric/UUID ID, no query, fragment, userinfo or arbitrary host/path |

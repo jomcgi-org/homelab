@@ -242,7 +242,11 @@ spec:
       restartPolicy: OnFailure
       securityContext:
         {{- include "factory.itsaplanPodSecurity" . | nindent 8 }}
+      {{- if .Values.connector.enabled }}
+      initContainers:
+      {{- else }}
       containers:
+      {{- end }}
         - name: bootstrap
           image: {{ $i.images.jobs }}
           command: [python3, -I, -u, /scripts/bootstrap.py]
@@ -273,6 +277,38 @@ spec:
             - name: scripts
               mountPath: /scripts
               readOnly: true
+      {{- if .Values.connector.enabled }}
+      containers:
+        - name: coordinator-limit
+          image: {{ $i.images.api }}
+          command:
+            - sh
+            - -ec
+            - |
+              psql "$DATABASE_URL" -Xq -v ON_ERROR_STOP=1 -v agent_id="$AGENT_ID" <<'SQL'
+              BEGIN;
+              UPDATE apikey SET rate_limit_enabled = true, rate_limit_time_window = 1000, rate_limit_max = 1000
+              WHERE reference_id = (SELECT user_id FROM ai_agent WHERE id = :'agent_id'::integer);
+              -- Fail and roll back if the verified key did not match exactly once.
+              SELECT 1 / (:'ROW_COUNT'::integer = 1)::integer;
+              COMMIT;
+              SQL
+          env:
+            - name: AGENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "factory.itsaplanAgentSecret" .Values.connector.coordinator }}
+                  key: agentId
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $i.database.secretName }}
+                  key: DATABASE_URL
+          securityContext:
+            {{- include "factory.itsaplanContainerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml $i.resources.jobs | nindent 12 }}
+      {{- end }}
       volumes:
         - name: scripts
           configMap:

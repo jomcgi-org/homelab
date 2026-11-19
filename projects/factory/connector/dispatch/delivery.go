@@ -121,7 +121,7 @@ func (e *Engine) stepDelivery(ctx context.Context) error {
 	if e.gh == nil {
 		return nil
 	}
-	items, err := e.st.DeliveryWork(ctx)
+	items, err := e.st.DeliveryWork(ctx, e.cfg.Now().Add(-e.cfg.ReviewPoll))
 	if err != nil {
 		return err
 	}

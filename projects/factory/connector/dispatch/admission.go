@@ -22,6 +22,8 @@ type (
 	admissionLockKey  struct{}
 )
 
+type blockerCacheKey struct{}
+
 type admissionLock struct{ unlock func() }
 
 var errAdmissionChanged = errors.New("run changed while reading admission evidence")
@@ -35,6 +37,7 @@ func (e *Engine) stepAdmissions(ctx context.Context) error {
 	if e.admissionDone != nil {
 		select {
 		case previous = <-e.admissionDone:
+			e.observePhase(ctx, "admissions", previous)
 			e.admissionDone = nil
 			if fatal(previous) {
 				return previous
@@ -51,6 +54,7 @@ func (e *Engine) stepAdmissions(ctx context.Context) error {
 		done := make(chan error, 1)
 		e.admissionDone = done
 		go func() {
+			ctx := context.WithValue(e.admissionCtx, blockerCacheKey{}, map[int64]*itsaplan.Issue{})
 			var errs []error
 			defer func() { done <- errors.Join(errs...) }()
 			for _, r := range runs {
@@ -70,7 +74,7 @@ func (e *Engine) stepAdmissions(ctx context.Context) error {
 				if a != nil {
 					continue
 				}
-				if err := e.stepAdmission(e.admissionCtx, r.ID); err != nil {
+				if err := e.stepAdmission(ctx, r.ID); err != nil {
 					errs = append(errs, fmt.Errorf("run %d: %w", r.ID, err))
 					if fatal(err) {
 						return
@@ -83,6 +87,7 @@ func (e *Engine) stepAdmissions(ctx context.Context) error {
 	defer timer.Stop()
 	select {
 	case err := <-e.admissionDone:
+		e.observePhase(ctx, "admissions", err)
 		e.admissionDone = nil
 		return errors.Join(previous, err)
 	case <-timer.C:
@@ -242,6 +247,7 @@ func (e *Engine) admit(ctx context.Context, r *store.Run) (bool, error) {
 	graph := map[int64][]int64{}
 	var waiting []string
 	var notices []admissionNotice
+	cache, _ := ctx.Value(blockerCacheKey{}).(map[int64]*itsaplan.Issue)
 	var visit func(*itsaplan.Issue) error
 	visit = func(is *itsaplan.Issue) error {
 		if _, seen := graph[is.ID]; seen {
@@ -261,7 +267,13 @@ func (e *Engine) admit(ctx context.Context, r *store.Run) (bool, error) {
 					return errors.New("dependency graph exceeds 256 issues")
 				}
 				var err error
-				blocker, err = e.admissionIssue(ctx, r, link.Issue.ID)
+				blocker = cache[link.Issue.ID]
+				if blocker == nil {
+					blocker, err = e.admissionIssue(ctx, r, link.Issue.ID)
+					if err == nil && cache != nil {
+						cache[blocker.ID] = blocker
+					}
+				}
 				if err != nil {
 					return err
 				}
@@ -417,6 +429,12 @@ func (e *Engine) admissionFailure(ctx context.Context, r *store.Run, reason stri
 	}
 	if fatal(err) {
 		return err
+	}
+	if itsaplan.IsUnavailable(err) {
+		reason = "Waiting for itsaplan to recover from an API failure."
+		for i := range notices {
+			notices[i].body = fmt.Sprintf("The factory is holding %s run %d while itsaplan is failing. Admission will retry automatically.", r.IssueKey, r.ID)
+		}
 	}
 	return errors.Join(err, e.holdAdmission(ctx, r, reason, notices))
 }

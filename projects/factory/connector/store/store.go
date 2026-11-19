@@ -1499,10 +1499,19 @@ func (s *Store) OutboxSendCleared(ctx context.Context, id int64) error {
 }
 
 // OutboxFailed records a failed delivery and when to try again.
-func (s *Store) OutboxFailed(ctx context.Context, id int64, msg string, next time.Time) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE outbox SET tries = tries + 1, last_error = $2, next_attempt_at = $3 WHERE id = $1`,
-		id, msg, next)
+func (s *Store) OutboxFailed(ctx context.Context, id int64, msg string, next time.Time, unavailableSince *time.Time) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE outbox SET tries = tries + 1, last_error = $2, next_attempt_at = $3,
+		unavailable_since = CASE WHEN $4::timestamptz IS NULL THEN NULL ELSE coalesce(unavailable_since, $4) END WHERE id = $1`,
+		id, msg, next, unavailableSince)
 	return err
+}
+
+// PendingOutage includes failed operations waiting for their next retry.
+func (s *Store) PendingOutage(ctx context.Context) (sql.NullTime, error) {
+	var since sql.NullTime
+	err := s.DB.QueryRowContext(ctx, `SELECT min(unavailable_since) FROM outbox
+		WHERE unavailable_since IS NOT NULL AND delivered_at IS NULL AND abandoned_at IS NULL`).Scan(&since)
+	return since, err
 }
 
 // OutboxAbandon gives up on an item whose target no longer accepts it.

@@ -159,17 +159,19 @@ func MinDispatchWindow(callTimeout time.Duration) time.Duration {
 
 // Engine runs dispatch.
 type Engine struct {
-	cfg      Config
-	st       *store.Store
-	its      Itsaplan
-	tasks    Tasks
-	sessions Sessions
-	gh       GitHub
-	m        *metrics.Metrics
-	log      *slog.Logger
-	w        *store.Writer
-	locks    sync.Map   // run ID -> *sync.Mutex
-	starts   sync.Mutex // serialize slot checks and starts across admission and delivery
+	NotifyOutage  func(context.Context, string) error
+	phaseFailures map[string]time.Time
+	cfg           Config
+	st            *store.Store
+	its           Itsaplan
+	tasks         Tasks
+	sessions      Sessions
+	gh            GitHub
+	m             *metrics.Metrics
+	log           *slog.Logger
+	w             *store.Writer
+	locks         sync.Map   // run ID -> *sync.Mutex
+	starts        sync.Mutex // serialize slot checks and starts across admission and delivery
 	// checked holds when each running attempt's session was last checked.
 	checked         sync.Map // attempt ID -> sessionCheck
 	admissionPolled sync.Map // run ID -> wall time; oldest admission is polled first
@@ -409,7 +411,11 @@ func (e *Engine) Tick(ctx context.Context) error {
 		{"admission_metrics", e.admissionMetrics},
 	}
 	for _, p := range phases {
-		if err := p.fn(ctx); err != nil {
+		err := p.fn(ctx)
+		if p.name != "admissions" && p.name != "outbox" {
+			e.observePhase(ctx, p.name, err)
+		}
+		if err != nil {
 			if fatal(err) {
 				return err
 			}
@@ -418,6 +424,33 @@ func (e *Engine) Tick(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (e *Engine) observePhase(ctx context.Context, phase string, err error) {
+	if !itsaplan.IsUnavailable(err) {
+		e.m.ItsaplanUnavailable.DeleteLabelValues(phase)
+		delete(e.phaseFailures, phase)
+		return
+	}
+	now := e.cfg.Now()
+	if e.phaseFailures == nil {
+		e.phaseFailures = map[string]time.Time{}
+	}
+	since, ok := e.phaseFailures[phase]
+	if !ok {
+		e.m.ItsaplanUnavailable.WithLabelValues(phase).Set(1)
+		e.phaseFailures[phase] = now
+		return
+	}
+	e.notifyPhase(ctx, phase, since)
+}
+
+func (e *Engine) notifyPhase(ctx context.Context, phase string, since time.Time) {
+	if e.cfg.Now().Sub(since) >= 10*time.Minute && e.NotifyOutage != nil {
+		if err := e.NotifyOutage(ctx, phase); err != nil {
+			e.log.ErrorContext(ctx, "itsaplan outage notification failed", "phase", phase, "error", err)
+		}
+	}
 }
 
 // checkQuota reads the broker's quota while a quota block stands or a
@@ -1737,6 +1770,9 @@ type commentPayload struct {
 // as a 401 or 403 while a coordinator key rotates. A 5xx or a lost response
 // proves neither.
 func notCreated(err error) bool {
+	if errors.Is(err, itsaplan.ErrBackoff) {
+		return true
+	}
 	var op *net.OpError
 	if errors.As(err, &op) && op.Op == "dial" {
 		return true
@@ -2534,10 +2570,26 @@ func (e *Engine) flushOutbox(ctx context.Context) error {
 				}
 			} else {
 				backoff := min(time.Duration(1<<min(it.Tries, 10))*time.Second, 10*time.Minute)
-				_ = e.st.OutboxFailed(ctx, it.ID, clip(err.Error(), maxErrorText), e.cfg.Now().Add(backoff))
+				now := e.cfg.Now()
+				var since *time.Time
+				if itsaplan.IsUnavailable(err) {
+					since = &now
+				}
+				if saveErr := e.st.OutboxFailed(ctx, it.ID, clip(err.Error(), maxErrorText), now.Add(backoff), since); saveErr != nil {
+					return errors.Join(err, saveErr)
+				}
 			}
 			errs = append(errs, fmt.Errorf("outbox %d: %w", it.ID, err))
 		}
+	}
+	since, readErr := e.st.PendingOutage(ctx)
+	if readErr != nil {
+		errs = append(errs, readErr)
+	} else if since.Valid {
+		e.m.ItsaplanUnavailable.WithLabelValues("outbox").Set(1)
+		e.notifyPhase(ctx, "outbox", since.Time)
+	} else {
+		e.m.ItsaplanUnavailable.DeleteLabelValues("outbox")
 	}
 	return errors.Join(errs...)
 }
@@ -2738,7 +2790,7 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 				return err
 			}
 			if !gone {
-				return e.st.OutboxFailed(ctx, it.ID, "result not accepted; run still pending", e.cfg.Now().Add(e.cfg.Heartbeat))
+				return e.st.OutboxFailed(ctx, it.ID, "result not accepted; run still pending", e.cfg.Now().Add(e.cfg.Heartbeat), nil)
 			}
 			r, err = e.st.GetRun(ctx, it.RunID)
 			if err != nil || r.State == store.RunStale {

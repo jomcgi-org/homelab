@@ -196,7 +196,8 @@ func run(log *slog.Logger) error {
 
 	// Keys are read per call, so a key the bootstrap rotates takes effect
 	// without a restart.
-	its := &itsaplan.Client{BaseURL: cfg.ItsaplanURL, KeyFunc: keys.Key, Coordinator: cfg.File.Coordinator.Key}
+	limits := &itsaplan.RequestLimits{}
+	its := &itsaplan.Client{Limits: limits, BaseURL: cfg.ItsaplanURL, KeyFunc: keys.Key, Coordinator: cfg.File.Coordinator.Key}
 	tokens := &kagent.TokenSource{Path: cfg.KagentTokenFile}
 	a2a := &kagent.A2A{BaseURL: cfg.KagentURL, Tokens: tokens}
 	sessions, err := kagent.DialSessions(cfg.KagentGRPCTarget, tokens)
@@ -263,6 +264,10 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
+	eng.NotifyOutage = func(ctx context.Context, phase string) error {
+		return notifier.Notify(ctx, "error", notify.Text{Key: "itsaplan-outage/" + phase, Title: "Factory itsaplan outage", Status: "failed"})
+	}
+
 	// Wait for the writer lock: during a Recreate rollout the old pod may
 	// still hold it.
 	for {
@@ -305,6 +310,7 @@ func run(log *slog.Logger) error {
 		},
 	}}
 	statusPlan := &itsaplan.Client{
+		Limits:  limits,
 		BaseURL: cfg.ItsaplanURL, KeyFunc: keys.Key,
 		Coordinator: cfg.File.Coordinator.Key, HTTP: statusHTTP,
 	}

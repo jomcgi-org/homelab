@@ -1106,3 +1106,20 @@ func TestCrashAfterHoldCommentAcceptanceDoesNotDuplicate(t *testing.T) {
 		t.Fatal("comment acceptance replay duplicated the comment or started work")
 	}
 }
+
+func TestAdmissionSweepSharesBlockerReads(t *testing.T) {
+	v := newEnv(t)
+	v.its.add(1, "coder", 101, "HL-1", "First")
+	v.its.add(2, "coder-b", 102, "HL-2", "Second")
+	v.dependency(101, 103, "HL-3", 1)
+	v.dependency(102, 103, "HL-3", 1)
+	for i := 0; i < 2; i++ {
+		before := v.its.issueCalls
+		v.tick(v.e)
+		v.held(1)
+		v.held(2)
+		if got := v.its.issueCalls - before; got != 3 {
+			t.Fatalf("sweep %d read %d issues, want two roots and one shared blocker", i, got)
+		}
+	}
+}

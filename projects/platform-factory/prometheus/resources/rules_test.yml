@@ -529,3 +529,27 @@ tests:
       - eval_time: 3m
         alertname: SemgrepSyncFailed
         exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'factory_connector_itsaplan_unavailable{job="factory-connector",phase="admissions"}'
+        values: "1x10 stale"
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: FactoryItsaplanOutage
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: FactoryItsaplanOutage
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              phase: admissions
+            exp_annotations:
+              action: "Inspect connector logs for the affected dispatch phase and check the coordinator key counter."
+              graph: 'max(factory_connector_itsaplan_unavailable{job="factory-connector",phase="admissions"})'
+              threshold: "1"
+              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory/deploy/notify.md#home-385-rollout-verification"
+              summary: "Factory admissions has been failing on itsaplan for ten minutes"
+      - eval_time: 11m
+        alertname: FactoryItsaplanOutage
+        exp_alerts: []

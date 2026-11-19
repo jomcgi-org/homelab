@@ -30,13 +30,17 @@ func (s *Store) MarkSynced(ctx context.Context, q Querier, workID, attemptID int
 // DeliveryWork lists work items whose PR the connector follows: in review or
 // in the merge queue, merged ones with a turn it has not looked at, and
 // stopped ones whose PR is open, to dequeue it and observe a merge.
-func (s *Store) DeliveryWork(ctx context.Context) ([]*WorkItem, error) {
+func (s *Store) DeliveryWork(ctx context.Context, due time.Time) ([]*WorkItem, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT `+workCols+` FROM work_item w
-		WHERE state IN ('review', 'merging')
+		WHERE (state IN ('review', 'merging') AND
+			(turn_attempt_id IS DISTINCT FROM synced_attempt_id OR EXISTS (
+				SELECT 1 FROM pull_request p WHERE p.work_item_id = w.id
+				AND (p.polled_at IS NULL OR p.polled_at <= $1))))
 			OR (state = 'done' AND turn_attempt_id IS DISTINCT FROM synced_attempt_id)
 			OR (state = 'stopped' AND EXISTS (
-				SELECT 1 FROM pull_request p WHERE p.work_item_id = w.id AND p.state = 'open'))
-		ORDER BY id`)
+				SELECT 1 FROM pull_request p WHERE p.work_item_id = w.id AND p.state = 'open'
+				AND (p.polled_at IS NULL OR p.polled_at <= $1)))
+		ORDER BY id`, due)
 	if err != nil {
 		return nil, err
 	}
