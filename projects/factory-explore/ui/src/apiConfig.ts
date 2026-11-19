@@ -44,8 +44,9 @@ export function updateClock() {
   const deadline = Math.min(windowEnd || Infinity, tokenEnd);
   if (deadline <= now) {
     // The proxy starts a new hour 50 minutes after the ten-minute window ends.
-    const windowElapsed = windowEnd > 0 && windowEnd <= now;
-    void closeWindow(windowElapsed ? windowEnd + 50 * 60_000 : undefined);
+    // A token that expires first still ends the session, and the next window
+    // still opens 50 minutes after the known window end.
+    void closeWindow(windowEnd > 0 ? windowEnd + 50 * 60_000 : undefined);
     return;
   }
   if (windowEnd) {
@@ -92,6 +93,9 @@ export async function read(path: string, accept: string, signal?: AbortSignal) {
     signal: signal ? AbortSignal.any([signal, session.signal]) : session.signal,
   });
   session.signal.throwIfAborted();
+  // explore-proxy sets X-Explore-Window-End to the current time before it
+  // authenticates the token, and a 401 returns that placeholder. It is not
+  // the caller's window, so a 401 keeps the latest authenticated window end.
   if (response.status === 401) throw new Error("401 Unauthorized");
   const end = Date.parse(response.headers.get("X-Explore-Window-End") ?? "");
   const next = Date.parse(response.headers.get("X-Explore-Next-Window") ?? "");
