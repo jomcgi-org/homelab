@@ -7,5 +7,8 @@ exports_files(
 
 exports_files(
     ["values.yaml"],
-    visibility = ["//projects/scotland-connector/deploy:__pkg__"],
+    visibility = [
+        "//projects/scotland-connector/chart:__pkg__",
+        "//projects/scotland-connector/deploy:__pkg__",
+    ],
 )

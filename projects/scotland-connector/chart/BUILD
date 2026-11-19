@@ -47,10 +47,12 @@ py_test(
         "//projects/platform/cloudflare-gateway:gateway_test_inputs",
         "//projects/scotland-connector/deploy:deploy_values",
         "//projects/scotland-connector/factory:resources/route.yaml",
+        "//projects/scotland-connector/factory:values.yaml",
         "@multitool//tools/helm",
     ] + glob(["templates/**/*"]),
     env = {
         "DEPLOY_VALUES": "$(rootpath //projects/scotland-connector/deploy:deploy_values)",
+        "FACTORY_VALUES": "$(rootpath //projects/scotland-connector/factory:values.yaml)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "MONOLITH_PUBLIC_VALUES": "$(rootpath //projects/monolith-public/chart:chart_values)",
     },

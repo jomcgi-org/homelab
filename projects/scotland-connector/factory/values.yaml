@@ -1,3 +1,8 @@
+# Layered on deploy/values.yaml, which retires the hub copy (HOME-475). The
+# factory copy keeps the chart's autoscaler and its fallback count.
+replicas: 2
+autoscaling:
+  enabled: true
 createNamespace: false
 config:
   publicBaseURL: https://scotland-mcp.jomcgi.dev

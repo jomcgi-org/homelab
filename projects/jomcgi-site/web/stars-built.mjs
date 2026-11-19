@@ -93,7 +93,7 @@ try {
   // The whole file, in order, so that an extra rule fails.
   assert.equal(
     redirects,
-    "/factory /factory/ 200\n/factory/* /factory/ 200\n/app/llm-leaderboard /llm-leaderboard 301\n/app/llm-leaderboard/* /llm-leaderboard 301\n/app/hikes /hikes 301\n/app/hikes/* /hikes 301\n/app/stars /stars 301\n/app/stars/* /stars 301\n",
+    "/factory /factory/ 200\n/factory/* /factory/ 200\n/app/llm-leaderboard /llm-leaderboard 301\n/app/llm-leaderboard/* /llm-leaderboard 301\n/app/hikes /hikes 301\n/app/hikes/* /hikes 301\n/app/stars /stars 301\n/app/stars/* /stars 301\n/scotland/mcp https://scotland-mcp.jomcgi.dev/mcp 308\n/scotland/v1/* https://scotland-mcp.jomcgi.dev/v1/:splat 308\n",
   );
   // Page scripts stay disabled; only the test's axe source is evaluated.
   window.eval(axe.source);

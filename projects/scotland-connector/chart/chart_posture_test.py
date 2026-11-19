@@ -17,6 +17,9 @@ _CHART_DIR = Path(__file__).resolve().parent
 _DEPLOY_VALUES = Path(
     os.environ.get("DEPLOY_VALUES", _CHART_DIR.parent / "deploy" / "values.yaml")
 )
+_FACTORY_VALUES = Path(
+    os.environ.get("FACTORY_VALUES", _CHART_DIR.parent / "factory" / "values.yaml")
+)
 _MONOLITH_PUBLIC_VALUES = Path(
     os.environ.get(
         "MONOLITH_PUBLIC_VALUES",
@@ -45,7 +48,9 @@ def test_aurora_is_enabled_in_deploy_and_has_explicit_enabled_wiring() -> None:
         assert env["STARS_BUCKET"] == "stars"
 
 
-def _render(overrides: list[str] | None = None) -> list[dict[str, Any]]:
+def _render(
+    overrides: list[str] | None = None, values: list[Path] | None = None
+) -> list[dict[str, Any]]:
     argv = [
         os.environ.get("HELM_BIN", "helm"),
         "template",
@@ -53,9 +58,9 @@ def _render(overrides: list[str] | None = None) -> list[dict[str, Any]]:
         str(_CHART_DIR),
         "--namespace",
         "scotland-connector",
-        "--values",
-        str(_DEPLOY_VALUES),
     ]
+    for path in values or [_DEPLOY_VALUES]:
+        argv += ["--values", str(path)]
     for override in overrides or []:
         argv += ["--set", override]
     result = subprocess.run(argv, check=False, capture_output=True, text=True)
@@ -256,8 +261,10 @@ def test_image_deploys_by_digest_when_stamped() -> None:
     )
 
 
-def test_hpa_owns_replicas_with_a_floor_of_two() -> None:
-    docs = _render()
+def test_factory_hpa_owns_replicas_with_a_floor_of_two() -> None:
+    # The factory copy serves the connector, with the values its Application
+    # layers.
+    docs = _render(values=[_DEPLOY_VALUES, _FACTORY_VALUES])
     hpa = _one(docs, "HorizontalPodAutoscaler")
     assert hpa["spec"]["minReplicas"] >= 2
     assert (
@@ -265,6 +272,15 @@ def test_hpa_owns_replicas_with_a_floor_of_two() -> None:
         == _one(docs, "Deployment")["metadata"]["name"]
     )
     assert _one(docs, "PodDisruptionBudget")["spec"]["maxUnavailable"] == 1
+
+
+def test_hub_copy_runs_no_pods_and_claims_no_route() -> None:
+    # HOME-475 retired the hub copy. The jomcgi-site Worker answers its URLs.
+    docs = _render()
+    assert _one(docs, "Deployment")["spec"]["replicas"] == 0
+    kinds = {d["kind"] for d in docs}
+    assert "HorizontalPodAutoscaler" not in kinds
+    assert "HTTPRoute" not in kinds
 
 
 def test_gateway_raises_the_routes_descriptor_cap() -> None:

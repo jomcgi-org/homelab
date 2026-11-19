@@ -28,9 +28,16 @@ const SCOTLAND_AND_SLOP_PATHS = [
   "/scotland/marketplace.json",
   "/slop",
 ];
+// HOME-475 retired the hub copy of the Scotland connector. These patterns
+// send its old URLs to the Worker, and web/public/_redirects answers them
+// with a 308 to the same path on scotland-mcp.jomcgi.dev.
+const RETIRED_CONNECTOR = [
+  "jomcgi.dev/scotland/mcp*",
+  "jomcgi.dev/scotland/v1*",
+];
 
 // A Worker route's * can span path separators. Check intersection with the
-// whole protected subtree, including endpoints added to the connector later.
+// whole protected subtree, including descendants added later.
 function canMatchPrefix(pattern, prefix) {
   const seen = new Set();
   function visit(p, s) {
@@ -45,16 +52,18 @@ function canMatchPrefix(pattern, prefix) {
   return visit(0, 0);
 }
 
-test("Scotland and slop own only exact static URLs", () => {
+test("Scotland and slop own exact static URLs and the retired connector paths", () => {
   for (const path of SCOTLAND_AND_SLOP_PATHS)
     assert.ok(ROUTES.patterns.includes(`jomcgi.dev${path}`));
+  for (const pattern of RETIRED_CONNECTOR)
+    assert.ok(ROUTES.patterns.includes(pattern), pattern);
   for (const pattern of ROUTES.patterns) {
     const route = pattern.replace(/^https?:\/\//, "");
-    for (const prefix of [
-      "jomcgi.dev/scotland/mcp",
-      "jomcgi.dev/scotland/v1",
-      "jomcgi.dev/slop/factory",
-    ]) {
+    const prefixes = ["jomcgi.dev/slop/factory"];
+    // Only the retired connector patterns reach the old connector paths.
+    if (!RETIRED_CONNECTOR.includes(pattern))
+      prefixes.push("jomcgi.dev/scotland/mcp", "jomcgi.dev/scotland/v1");
+    for (const prefix of prefixes) {
       assert.ok(
         !canMatchPrefix(route, prefix),
         `${pattern} could intercept ${prefix}`,
@@ -160,8 +169,6 @@ const STAYS_ON_THE_HUB = [
   // The hub home answers query-string root URLs (the "/" route is exact) and
   // polls this, so Notes retires with the catch-all route (HOME-261).
   "jomcgi.dev/app/notes/stats",
-  "jomcgi.dev/scotland/mcp",
-  "jomcgi.dev/scotland/v1/walks",
   "jomcgi.dev/health",
   "jomcgi.dev/img/x/thumb/plain/s3://monolith-trips/a.jpg",
   "jomcgi.dev/functions/og-image",
@@ -220,6 +227,10 @@ test("routed pages are served with and without a query string", () => {
     "/app/firecracker",
     "/artifact/abc",
     "/assets/index-x.js",
+    // HOME-475: the Worker redirects these to scotland-mcp.jomcgi.dev.
+    "/scotland/mcp",
+    "/scotland/v1/plan",
+    "/scotland/v1/openapi.json",
   ]) {
     assert.ok(served(`jomcgi.dev${path}`), path);
     assert.ok(served(`jomcgi.dev${path}?ref=x`), `${path}?ref=x`);
@@ -231,8 +242,8 @@ test("routed pages are served with and without a query string", () => {
 
 test("a pattern without a wildcard says why, since a query string bypasses it", () => {
   // Exact patterns miss `?query` URLs. Use one only where a wildcard would
-  // catch a path that must stay elsewhere (the root, or /scotland beside the
-  // connector's /scotland/mcp), and give the reason in routes.json.
+  // catch a path that must stay elsewhere (the root, or /scotland beside its
+  // descendants on the hub), and give the reason in routes.json.
   const exact = ROUTES.patterns.filter((p) => !p.endsWith("*"));
   assert.deepEqual(
     exact.filter((p) => !ROUTES.exactBecause?.[p]),
@@ -620,7 +631,6 @@ test("home and machine-readable routes are exact and leave unmigrated paths on t
   for (const path of [
     "/app/grimoire",
     "/slop/factory",
-    "/scotland/mcp",
     "/api/home/observability/stats",
     "/robots.txt/extra",
   ]) {
