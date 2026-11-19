@@ -58,15 +58,26 @@ CREATE INDEX embedding_hnsw ON grimoire.embedding USING hnsw (embedding vector_c
 CREATE INDEX embedding_ivfflat ON grimoire.embedding USING ivfflat (embedding vector_l2_ops)
   WITH (lists = 2);
 """
-TARGET = """
+# A foreign key added NOT VALID over an orphan row. It stays NOT VALID in the
+# target, so the restore must refuse the dump before it imports anything.
+NOT_VALID_SOURCE = """
+CREATE SCHEMA grimoire;
+CREATE TABLE grimoire.account (id bigint PRIMARY KEY);
+CREATE TABLE grimoire.note (account_id bigint);
+INSERT INTO grimoire.note VALUES (99);
+ALTER TABLE grimoire.note
+  ADD FOREIGN KEY (account_id) REFERENCES grimoire.account (id) NOT VALID;
+"""
+ROLES = """
 CREATE ROLE grimoire_restore LOGIN;
 CREATE ROLE grimoire_api LOGIN NOINHERIT;
 CREATE ROLE grimoire_worker LOGIN NOINHERIT;
-CREATE DATABASE grimoire OWNER grimoire_restore;
-\\connect grimoire
-CREATE EXTENSION vector;
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 """
+# Every object the restore makes belongs to grimoire_restore.
+OWNED = (
+    "SELECT (SELECT count(*) FROM pg_namespace WHERE nspowner = 'grimoire_restore'::regrole)"
+    " + (SELECT count(*) FROM pg_class WHERE relowner = 'grimoire_restore'::regrole)"
+)
 NEAREST = (
     "SELECT chunk_id FROM grimoire.embedding ORDER BY embedding <=> '[1,0,0]' LIMIT 3"
 )
@@ -164,11 +175,11 @@ def psql(env, database, *args, user="test", check=True):
     return result
 
 
-def grants(env):
+def grants(env, database):
     # The same flags as the grimoire-db-grants Job.
     psql(
         env,
-        "grimoire",
+        database,
         "--single-transaction",
         "-f",
         runfile("GRANTS_SQL"),
@@ -176,18 +187,35 @@ def grants(env):
     )
 
 
+def create_target(env, database):
+    # The operator creates the database and pgvector.
+    psql(env, "postgres", "-c", f"CREATE DATABASE {database} OWNER grimoire_restore")
+    psql(
+        env,
+        database,
+        "-c",
+        "CREATE EXTENSION vector; REVOKE CREATE ON SCHEMA public FROM PUBLIC",
+    )
+    # The PostSync Job runs before any restore, against the empty database.
+    grants(env, database)
+
+
+def dump(env, database, path):
+    subprocess.run(["pg_dump", "-Fc", "-d", database, "-f", path], env=env, check=True)
+
+
 def inventory(env, database):
     return psql(env, database, "-f", runfile("INVENTORY_SQL")).stdout
 
 
-def restore(env, tmp, metadata):
+def restore(env, private_dump, metadata, database="grimoire"):
     return subprocess.run(
         ["bash", runfile("RESTORE_SH")],
         env=dict(
             env,
             PGUSER="grimoire_restore",
-            PGDATABASE="grimoire",
-            PRIVATE_DUMP=str(tmp / "grimoire.dump"),
+            PGDATABASE=database,
+            PRIVATE_DUMP=str(private_dump),
             VECTOR_METADATA=str(metadata),
         ),
         capture_output=True,
@@ -201,19 +229,12 @@ def restored(server):
     env, tmp = server
     psql(env, "postgres", "-c", "CREATE DATABASE source")
     psql(env, "source", "-c", SOURCE)
-    subprocess.run(
-        ["pg_dump", "-Fc", "-d", "source", "-f", tmp / "grimoire.dump"],
-        env=env,
-        check=True,
-    )
+    dump(env, "source", tmp / "grimoire.dump")
     metadata = tmp / "vector.metadata"
     metadata.write_text(psql(env, "source", "-c", VECTOR_QUERY).stdout)
-    target = tmp / "target.sql"
-    target.write_text(TARGET)
-    psql(env, "postgres", "-f", target)
-    # The PostSync Job runs before any restore, against the empty database.
-    grants(env)
-    result = restore(env, tmp, metadata)
+    psql(env, "postgres", "-c", ROLES)
+    create_target(env, "grimoire")
+    result = restore(env, tmp / "grimoire.dump", metadata)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "5 valid foreign keys and 2 valid pgvector indexes" in result.stdout
     # Before any test writes to the target.
@@ -304,21 +325,37 @@ def test_grants_replace_a_hand_grant(restored):
         user="grimoire_restore",
     )
     assert psql(env, "grimoire", "-c", has_truncate).stdout.strip() == "t"
-    grants(env)
+    grants(env, "grimoire")
     assert psql(env, "grimoire", "-c", has_truncate).stdout.strip() == "f"
 
 
 def test_restore_refuses_a_database_with_tables(restored):
     env, tmp, metadata, _ = restored
-    result = restore(env, tmp, metadata)
+    result = restore(env, tmp / "grimoire.dump", metadata)
     assert result.returncode != 0
     assert "restore only into an empty database" in result.stderr
+
+
+def test_restore_refuses_a_not_valid_key_and_a_retry_succeeds(restored):
+    env, tmp, metadata, (source, _) = restored
+    psql(env, "postgres", "-c", "CREATE DATABASE not_valid")
+    psql(env, "not_valid", "-c", NOT_VALID_SOURCE)
+    dump(env, "not_valid", tmp / "not-valid.dump")
+    create_target(env, "retry")
+    result = restore(env, tmp / "not-valid.dump", metadata, "retry")
+    assert result.returncode != 0
+    assert "NOT VALID foreign keys in the dump: 1." in result.stderr
+    assert psql(env, "retry", "-c", OWNED).stdout.strip() == "0"
+    result = restore(env, tmp / "grimoire.dump", metadata, "retry")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "5 valid foreign keys and 2 valid pgvector indexes" in result.stdout
+    assert inventory(env, "retry") == source
 
 
 def test_restore_refuses_other_pgvector_metadata(restored):
     env, tmp, _, _ = restored
     other = tmp / "other.metadata"
     other.write_text("0.0.1|public\n")
-    result = restore(env, tmp, other)
+    result = restore(env, tmp / "grimoire.dump", other)
     assert result.returncode != 0
     assert "differ" in result.stdout + result.stderr
