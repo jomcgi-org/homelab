@@ -12,7 +12,7 @@ spec:
   source:
     repoURL: ghcr.io/jomcgi/homelab/charts
     chart: stars-forecast
-    targetRevision: 0.5.27
+    targetRevision: 0.6.3
     helm:
       releaseName: stars-forecast
   destination:

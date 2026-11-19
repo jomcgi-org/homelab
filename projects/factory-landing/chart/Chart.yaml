@@ -2,7 +2,7 @@ apiVersion: v2
 name: factory-landing
 description: Static Astryx operator tools landing page
 type: application
-version: 0.29.21
+version: 0.30.31
 appVersion: "1.0.0"
 dependencies:
   - name: factory-library
