@@ -58,6 +58,8 @@ func (f *FeedItem) OriginalComment() bool {
 	return string(f.EditedAt) == "null"
 }
 
+// invariant: FACT-13
+//
 // IssueTextAuthors attributes original fields to the creator and edited fields
 // to the latest editor when the recorded snapshot matches the current value.
 func (c *Client) IssueTextAuthors(ctx context.Context, issue *Issue) ([]string, error) {

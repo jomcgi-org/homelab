@@ -112,6 +112,7 @@ func TestCommentFeedBound(t *testing.T) {
 	}
 }
 
+// invariant: FACT-13
 func TestIssueTextAuthorsRequireMatchingImmutableSnapshots(t *testing.T) {
 	for _, tc := range []struct {
 		name, items, wantTitle, wantDescription string
