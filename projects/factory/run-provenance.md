@@ -24,8 +24,9 @@ selects the model and the broker endpoint for its effort. The default binding
 has one control arm and uses the broker's default effort. The reviewer uses its
 own fixed Agent.
 
-On the third review round or second CI fix round a trial item starts a fresh
-control session on its existing work branch. For outcome attribution, group
+On the third review round that is not a CI fix, or on the second CI fix round,
+a trial item starts a fresh control session on its existing work branch. The
+two thresholds count separately. For outcome attribution, group
 work items by `first_arm` and count `escalated`. Join runs on `work_item_id`
 to see the arm that actually handled each round.
 
@@ -143,7 +144,9 @@ verification needs the deployed services and is a separate acceptance step.
 
 ### Activating and rolling back the Homelab trial
 
-The first release ships arm support with one active control. After the Application
+The first release ships arm support with one active control. The split stays
+off until HOME-444, after HOME-246's outcome data is correct
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-247#comment-4565)). After the Application
 pins that release and the broker and connector are healthy, copy the bindings
 from `chart/files/coder-trial-values.yaml` into both Homelab values files. The
 scoped chart tests render this overlay. Codex CLI 0.169.1 reports

@@ -402,13 +402,15 @@ func (s *Store) StopIssue(ctx context.Context, issueKey, reason, by string) (Iss
 
 // RouteReviewRound switches the next turn to a fresh control session in the
 // same transaction that records the round and its triggering review events.
+// review_rounds counts every round, CI fixes included, so the review
+// threshold counts only the rounds that were not CI fixes.
 func (s *Store) RouteReviewRound(ctx context.Context, q Querier, id int64, control string, ciFix bool) error {
 	_, err := q.ExecContext(ctx, `UPDATE work_item SET ci_fix_rounds=ci_fix_rounds+CASE WHEN $2 THEN 1 ELSE 0 END WHERE id=$1`, id, ciFix)
 	if err != nil {
 		return err
 	}
 	_, err = q.ExecContext(ctx, `UPDATE work_item SET escalated=true,kagent_agent=$2,session_id=NULL
- WHERE id=$1 AND (review_rounds >= 3 OR ci_fix_rounds >= 2)`, id, control)
+ WHERE id=$1 AND (review_rounds - ci_fix_rounds >= 3 OR ci_fix_rounds >= 2)`, id, control)
 	return err
 }
 

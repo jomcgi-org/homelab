@@ -112,7 +112,7 @@ The connector claims assignment, mention and delegation runs by agent key.
 Admission reads the issue and its inward dependency links. Unresolved blockers
 and missing briefs hold the run without taking a slot. A separate heartbeat
 renews the itsaplan lease while admission waits. A stop counter fences older
-delegations across restart and reassignment.
+delegations across restart and reassignment. A new work item gets a weighted coder arm ([trial arms](../run-provenance.md)); the homelab split ships off until HOME-444 ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-247#comment-4565)).
 
 For a new session the coordinator reads the issue and attachment names. The
 attempt stores a bounded brief with quoted issue text, checklists and links.
