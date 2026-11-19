@@ -876,17 +876,10 @@ func TestExternallyMergedUnassessedActivationIsTrackedWithoutDelegation(t *testi
 		if strings.Contains(c.body, "untrusted action") {
 			t.Fatal("untrusted commit text forwarded")
 		}
-		// A squash merge has another SHA, so the merge comment names the head.
-		if strings.Contains(c.body, "still needs activation") && strings.Contains(c.body, "Delivered head: ") &&
-			strings.Contains(c.body, "/commit/sha-1") {
-			merged = true
-		}
-		// The handoff keeps the follow-up undelegated until an assessment.
-		if strings.Contains(c.body, "has no reviewer assessment") && strings.Contains(c.body, "stays undelegated") &&
-			strings.Contains(c.body, "/commit/sha-1") && !strings.Contains(c.body, "then delegate it to") &&
-			!strings.Contains(c.body, "itsaplan was unavailable") {
-			handoff = true
-		}
+		head := strings.Contains(c.body, "/commit/sha-1") // a squash merge has another SHA
+		merged = merged || head && strings.Contains(c.body, "still needs activation.") && strings.Contains(c.body, "Delivered head: ")
+		handoff = handoff || head && strings.Contains(c.body, "has no reviewer assessment") && strings.Contains(c.body, "stays undelegated") &&
+			!strings.Contains(c.body, "then delegate it to") && !strings.Contains(c.body, "itsaplan was unavailable")
 	}
 	if !merged || !handoff {
 		t.Fatalf("merge comment with head=%v unassessed handoff=%v: %+v", merged, handoff, v.its.Comments())

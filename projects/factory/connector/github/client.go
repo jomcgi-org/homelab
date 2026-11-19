@@ -728,11 +728,9 @@ func truncate(s string, n int) string {
 	return s[:n]
 }
 
-// ActivationTrailer accepts one Activation entry as the last entry of the
-// message's final trailer block, including git's indented continuation lines.
-// Other trailers, such as Co-authored-by, may precede it in that block. Prose
-// mentions, empty values and duplicate trailers do not establish the
-// delivering agent's activation decision.
+// ActivationTrailer accepts one Activation entry, with git's indented
+// continuation lines, as the last entry of the final trailer block. Prose,
+// empty values and duplicates do not establish the agent's decision.
 func ActivationTrailer(message string) (string, bool) {
 	message = strings.TrimSpace(strings.ReplaceAll(message, "\r\n", "\n"))
 	i := strings.LastIndex(message, "\n\n")
@@ -749,7 +747,7 @@ func ActivationTrailer(message string) (string, bool) {
 			continue
 		}
 		if !trailerRE.MatchString(line) {
-			return "", false // a prose line: the final paragraph is no trailer block
+			return "", false // prose: the final paragraph is no trailer block
 		}
 		entries = append(entries, []string{line})
 	}
@@ -770,5 +768,4 @@ func ActivationTrailer(message string) (string, bool) {
 	return value, true
 }
 
-// trailerRE matches the first line of a git trailer entry.
 var trailerRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*:`)
