@@ -703,17 +703,27 @@ func TestSupersededHeadCancelsTheOldReview(t *testing.T) {
 			continue
 		}
 		var head, verdict string
+		counts := map[string]string{}
 		for _, attr := range span.Attributes {
-			switch attr.Key {
-			case "pr.head_sha":
+			switch key := string(attr.Key); {
+			case key == "pr.head_sha":
 				head = attr.Value.AsString()
-			case "review.verdict":
+			case key == "review.verdict":
 				verdict = attr.Value.AsString()
+			case strings.HasPrefix(key, "review.findings."):
+				counts[strings.TrimPrefix(key, "review.findings.")] = attr.Value.Emit()
 			}
 		}
-		if head == shaA && verdict == ConclusionCancelled {
-			return
+		if head != shaA || verdict != ConclusionCancelled {
+			continue
 		}
+		// Cancelled before a usable report: every severity count is zero.
+		for _, sev := range Severities {
+			if counts[sev] != "0" {
+				t.Errorf("cancelled review %s count = %q, want 0", sev, counts[sev])
+			}
+		}
+		return
 	}
 	t.Fatal("missing cancelled verdict on superseded review root")
 }
