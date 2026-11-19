@@ -1322,15 +1322,16 @@ func (e *Engine) waitForQuota(ctx context.Context, b *Binding, run *github.Check
 
 // inputs are what a review is judged with, read before its task is sent.
 type inputs struct {
-	invariantBase string
-	issues        *IssueContext
-	goal          *GoalCheck // the head's goal check, or nil
-	semgrep       *SemgrepEvidence
-	files         []github.PullRequestFile
-	size          DiffSize
-	gate          *Gate
-	prior         State
-	priorHead     string
+	invariantScopes map[string]*RuleFile
+	invariantBase   string
+	issues          *IssueContext
+	goal            *GoalCheck // the head's goal check, or nil
+	semgrep         *SemgrepEvidence
+	files           []github.PullRequestFile
+	size            DiffSize
+	gate            *Gate
+	prior           State
+	priorHead       string
 	// priorUnknown says why complete earlier review state could not be recovered.
 	priorUnknown string
 	// since is what changed since priorHead, once compared is set; nil
@@ -1745,7 +1746,18 @@ func (e *Engine) gather(ctx context.Context, b *Binding, pr github.PullRequest, 
 	if err != nil {
 		return nil, err
 	}
-	mechanisms, err := loadMechanisms(ctx, e.gh, b.repo(), base)
+	scopes := make(map[string]*RuleFile)
+	for _, f := range files {
+		if f.Status == "added" {
+			for dir := path.Dir(f.Path); ; dir = path.Dir(dir) {
+				scopes[path.Join(dir, invariantFile)] = nil
+				if dir == "." || dir == "/" {
+					break
+				}
+			}
+		}
+	}
+	mechanisms, err := readInvariantPolicy(ctx, e.gh, b.repo(), base, scopes)
 	if err != nil {
 		e.ghError(ctx, l, b, "invariants", err)
 		return nil, err
@@ -1758,7 +1770,7 @@ func (e *Engine) gather(ctx context.Context, b *Binding, pr github.PullRequest, 
 		gate.inherit(prior.Gate)
 	}
 	return &inputs{
-		invariantBase: base, issues: e.issueContext(ctx, b, pr, files),
+		invariantScopes: scopes, invariantBase: base, issues: e.issueContext(ctx, b, pr, files),
 		files: files, size: measure(b, files), gate: gate,
 		prior: prior, priorHead: head, priorUnknown: unknown,
 	}, nil
@@ -2404,7 +2416,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		Previous: in.prior.Previous(), Cleared: joeDecisions(b, pr, comments).Revalidate(in.prior.Cleared), PreviousHead: in.priorHead, Interdiff: interdiff, Scope: scope, PreviousUnknown: in.priorUnknown,
 		Resumed: plan.resume != nil, RulesHeld: plan.resume != nil && plan.rules != "" && plan.resume.Rules == plan.rules,
 		Comments: comments, DroppedComments: dropped, Cited: cited, Commits: &commits, Gate: in.gate, Attempt: attempt,
-		CheckName: e.cfg.CheckName, Semgrep: in.semgrep,
+		InvariantScopes: in.invariantScopes, InvariantBase: in.invariantBase, CheckName: e.cfg.CheckName, Semgrep: in.semgrep,
 	})
 	id, contextID := AttemptMessageID(repo, pr.Number, pr.HeadSHA, run.ID, attempt), ""
 	if plan.resume != nil {

@@ -1424,3 +1424,28 @@ func TestOverflowCheckpointKeepsTaskAndServiceGate(t *testing.T) {
 		"overflow dropped the service gate's sticky hold or approval baseline")
 	failIf(t, len(got.Gate.Findings) != 0, "overflow kept model gate findings that recovery replays")
 }
+
+func TestInvariantScopeAnswerIsAdvisory(t *testing.T) {
+	for _, findings := range []string{`[]`, `[{"id":"a:correctness","severity":"high","title":"broken"}]`, `[{"id":"a:human-gate","severity":"high","title":"decision"}]`} {
+		var baseline Assessment
+		for _, yes := range []bool{false, true} {
+			reply := fmt.Sprintf("```json\n"+`{"summary":"s","findings":%s,"invariant_scopes":[{"path":"new.go","uncovered":%t,"reason":"new mechanism"}]}`+"\n```", findings, yes)
+			r, err := ParseReport(reply)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := Assess(r, nil)
+			if !yes {
+				baseline = a
+				continue
+			}
+			if len(a.Optional) != 1 || a.Optional[0].Severity != SeverityLow || a.Optional[0].Path != "new.go" {
+				t.Fatalf("optional findings %v", a.Optional)
+			}
+			a.Optional = nil
+			if !reflect.DeepEqual(a, baseline) {
+				t.Fatalf("answer changed assessment: %+v vs %+v", a, baseline)
+			}
+		}
+	}
+}

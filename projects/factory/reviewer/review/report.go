@@ -46,10 +46,17 @@ const (
 	StatusOpen      = "open"
 )
 
+type InvariantScopeAnswer struct {
+	Path      string `json:"path"`
+	Uncovered bool   `json:"uncovered"`
+	Reason    string `json:"reason"`
+}
+
 // Report is the reviewer agent's findings and optional activation assessment.
 // The service decides the conclusion; any verdict the agent declares is ignored.
 type Report struct {
-	Summary string `json:"summary"`
+	InvariantScopes []InvariantScopeAnswer `json:"invariant_scopes,omitempty"`
+	Summary         string                 `json:"summary"`
 	// Activation is independently assessed text, never an instruction copied
 	// blindly from the commit. ActivationHead is set only by the service.
 	Activation     string     `json:"activation,omitempty"`
@@ -716,6 +723,11 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 	a.Conclusion = ConclusionSuccess
 	if len(a.Blocking) > 0 {
 		a.Conclusion = ConclusionFailure
+	}
+	for _, answer := range r.InvariantScopes {
+		if answer.Uncovered {
+			a.Optional = append(a.Optional, Finding{ID: answer.Path + ":invariant-scope", Severity: SeverityLow, Path: answer.Path, Title: "Invariant scope may be uncovered", Detail: answer.Reason})
+		}
 	}
 	return a
 }
