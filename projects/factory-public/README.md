@@ -38,15 +38,19 @@ also lists the Garage buckets `stars-forecast` and `hikes` in
 - an admission rule for each mirror that lets only its ServiceAccount mount
   its R2 Secret.
 
-Each root run syncs every object except `manifest.json`, `health.json`,
+Each root run copies every object except `manifest.json`, `health.json`,
 `stars-forecast/` and `hikes/` with
-`Cache-Control: public, max-age=31536000, immutable`, then copies
-`manifest.json` with `Cache-Control: public, max-age=60`.
+`Cache-Control: public, max-age=31536000, immutable`. Then it uploads the
+`manifest.json` that it saved before the copy, with
+`Cache-Control: public, max-age=60`. Only then does it delete the R2 objects
+that Garage held at neither of its two listings
+([library steps](../shared/helm/factory-library/README.md#buckets-and-public-mirrors)).
+Each source mirror uses the same steps under its prefix.
 
 The publisher gets write access through its own `buckets:` entry without
 `public:`. Only this namespace holds the R2 token (HOME-492). Each source
-mirror syncs one writer's Garage bucket under its prefix of R2
-`factory-public`, and the library adds that prefix to the root sync's
+mirror copies one writer's Garage bucket under its prefix of R2
+`factory-public`, and the library adds that prefix to the root mirror's
 excludes ([library rule](../shared/helm/factory-library/README.md#one-public-r2-bucket)):
 
 | Source bucket | Writer chart | Public manifest | Activated by |

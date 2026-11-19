@@ -173,6 +173,7 @@ CronJob/consumer-factory-public-mirror:
     suspend: false
     jobTemplate:
       spec:
+        activeDeadlineSeconds: 900
         backoffLimit: 1
         template:
           metadata:
