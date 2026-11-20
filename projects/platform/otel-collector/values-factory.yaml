@@ -35,6 +35,8 @@ gateway:
 sanitizeTraceAttributes: true
 otlpMetrics: false
 allowedServices:
+  # The Codex runtime defaults service.name to the compiled Agent name.
+  - homelab-codex
   - factory-connector
   - factory-broker
   - factory-reviewer
