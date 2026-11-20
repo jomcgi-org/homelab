@@ -49,6 +49,7 @@ type GitHub interface {
 	UpdateCheckRun(ctx context.Context, repo string, id int64, w github.CheckRunWrite) (*github.CheckRun, error)
 	PullRequestFiles(ctx context.Context, repo string, number int) ([]github.PullRequestFile, error)
 	PullRequestHeads(ctx context.Context, repo string, number int, f github.CheckRunFilter) (*github.HeadHistory, error)
+	PullRequestHeadsPage(ctx context.Context, repo string, number int, f github.CheckRunFilter, before string, last int) (*github.HeadHistory, error)
 	PullRequestReviews(ctx context.Context, repo string, number int) ([]github.PullRequestReview, error)
 	HeadRefActivity(ctx context.Context, repo, branch string) ([]github.RefActivity, error)
 	HeadRefChangedAt(ctx context.Context, repo, branch, head string) (time.Time, error)
@@ -100,6 +101,8 @@ type Binding struct {
 	startupBefore          *time.Time
 	closedScanDone         bool
 	closedScanSince        time.Time
+	closedPages            map[int]string
+	closedFinished         map[int]bool
 	Name                   string
 	Owner                  string
 	Repo                   string
@@ -365,6 +368,8 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 		b := &cfg.Bindings[i]
 		b.startupBefore = nil
 		b.closedScanDone = false
+		b.closedPages = make(map[int]string)
+		b.closedFinished = make(map[int]bool)
 		b.closedScanSince = cfg.Now().Add(-24 * time.Hour)
 		if b.MaxDiffLines <= 0 {
 			b.MaxDiffLines = 2500
@@ -1941,31 +1946,33 @@ func (e *Engine) endClosedReviews(ctx context.Context, b *Binding) bool {
 	done := true
 	seen := map[int]bool{}
 	for _, pr := range slices.Backward(prs) {
-		if seen[pr.Number] {
+		if b.closedFinished[pr.Number] || seen[pr.Number] {
 			continue
 		}
 		seen[pr.Number] = true
 		if pr.State != "closed" || pr.BaseRef != b.BaseBranch || pr.UpdatedAt.Before(b.closedScanSince) {
 			continue
 		}
-		hist, err := e.gh.PullRequestHeads(ctx, b.repo(), pr.Number, github.CheckRunFilter{Name: e.cfg.CheckName, AppID: e.cfg.AppID})
+		cursor := b.closedPages[pr.Number]
+		hist, err := e.gh.PullRequestHeadsPage(ctx, b.repo(), pr.Number, github.CheckRunFilter{Name: e.cfg.CheckName, AppID: e.cfg.AppID}, cursor, maxPreviousLookups)
 		if err != nil {
 			e.ghError(ctx, e.prLog(b, pr.PullRequest), b, "pull_request_heads", err)
 			done = false
 			continue
 		}
 		seenHeads := map[string]bool{}
-		for _, head := range slices.Backward(append(hist.Heads, github.Head{SHA: pr.HeadSHA})) {
+		if cursor == "" {
+			hist.Heads = append(hist.Heads, github.Head{SHA: pr.HeadSHA})
+		}
+		pageOK := true
+		for _, head := range slices.Backward(hist.Heads) {
 			if seenHeads[head.SHA] {
 				continue
 			}
 			seenHeads[head.SHA] = true
-			if len(seenHeads) > maxPreviousLookups {
-				break
-			}
 			run, err := e.reviewCheck(ctx, b, head.SHA)
 			if err != nil {
-				done = false
+				pageOK = false
 				continue
 			}
 			if _, ok := resumedTrace(run); !ok || run.Status != "in_progress" || run.ExternalID != MessageID(b.repo(), pr.Number, head.SHA) {
@@ -1974,8 +1981,16 @@ func (e *Engine) endClosedReviews(ctx context.Context, b *Binding) bool {
 			if !e.complete(ctx, b, run, Outcome{Conclusion: ConclusionCancelled, Output: github.CheckRunOutput{
 				Title: "Review cancelled", Summary: "The pull request closed.",
 			}}, e.prLog(b, pr.PullRequest)) {
-				done = false
+				pageOK = false
 			}
+		}
+		if pageOK && !hist.Truncated {
+			b.closedFinished[pr.Number] = true
+			continue
+		}
+		done = false
+		if pageOK {
+			b.closedPages[pr.Number] = hist.StartCursor
 		}
 	}
 	return done

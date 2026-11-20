@@ -546,11 +546,11 @@ func (c *Client) MergeQueueEntries(ctx context.Context, repo, branch string) ([]
 	return entries, nil
 }
 
-const pullRequestHeadsQuery = `query($owner: String!, $name: String!, $number: Int!, $appId: Int!, $check: String!) {
+const pullRequestHeadsQuery = `query($owner: String!, $name: String!, $number: Int!, $appId: Int!, $check: String!, $before: String, $last: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      timelineItems(last: 100, itemTypes: [PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT]) {
-        pageInfo { hasPreviousPage }
+      timelineItems(last: $last, before: $before, itemTypes: [PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT]) {
+        pageInfo { hasPreviousPage startCursor }
         nodes {
           __typename
           ... on PullRequestCommit { commit { ...checked } }
@@ -585,8 +585,9 @@ type Head struct {
 // HeadHistory lists a PR's possible heads, oldest first. Truncated is set
 // when its timeline holds older events than were read.
 type HeadHistory struct {
-	Heads     []Head
-	Truncated bool
+	Heads       []Head
+	Truncated   bool
+	StartCursor string
 }
 
 // PullRequestHeads lists commits that may have been a PR's head, oldest
@@ -595,6 +596,11 @@ type HeadHistory struct {
 // carries a completed check run matching f, newest runs first. One GraphQL
 // read finds the checked heads, however many commits each push added.
 func (c *Client) PullRequestHeads(ctx context.Context, repo string, number int, f CheckRunFilter) (*HeadHistory, error) {
+	return c.PullRequestHeadsPage(ctx, repo, number, f, "", 100)
+}
+
+// PullRequestHeadsPage reads one page of possible heads before the cursor.
+func (c *Client) PullRequestHeadsPage(ctx context.Context, repo string, number int, f CheckRunFilter, before string, last int) (*HeadHistory, error) {
 	owner, name, _ := strings.Cut(repo, "/")
 	type commit struct {
 		OID         string `json:"oid"`
@@ -623,7 +629,8 @@ func (c *Client) PullRequestHeads(ctx context.Context, repo string, number int, 
 			PullRequest *struct {
 				TimelineItems struct {
 					PageInfo struct {
-						HasPreviousPage bool `json:"hasPreviousPage"`
+						StartCursor     string `json:"startCursor"`
+						HasPreviousPage bool   `json:"hasPreviousPage"`
 					} `json:"pageInfo"`
 					Nodes []struct {
 						Type         string  `json:"__typename"`
@@ -636,6 +643,10 @@ func (c *Client) PullRequestHeads(ctx context.Context, repo string, number int, 
 		} `json:"repository"`
 	}
 	vars := map[string]any{"owner": owner, "name": name, "number": number, "appId": f.AppID, "check": f.Name}
+	vars["last"] = last
+	if before != "" {
+		vars["before"] = before
+	}
 	if err := c.graphql(ctx, repo, pullRequestHeadsQuery, vars, &out); err != nil {
 		return nil, err
 	}
@@ -643,7 +654,7 @@ func (c *Client) PullRequestHeads(ctx context.Context, repo string, number int, 
 	if p == nil {
 		return nil, ErrNotFound
 	}
-	h := &HeadHistory{Truncated: p.TimelineItems.PageInfo.HasPreviousPage}
+	h := &HeadHistory{StartCursor: p.TimelineItems.PageInfo.StartCursor, Truncated: p.TimelineItems.PageInfo.HasPreviousPage}
 	for _, n := range p.TimelineItems.Nodes {
 		for _, cm := range []*commit{n.Commit, n.BeforeCommit, n.AfterCommit} {
 			if cm == nil || cm.OID == "" {

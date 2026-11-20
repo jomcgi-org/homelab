@@ -674,12 +674,20 @@ func TestRestartAfterCloseEndsPausedRootOnce(t *testing.T) {
 		t.Fatal("invalid persisted trace context")
 	}
 	stop()
+	for n := range maxPreviousLookups {
+		h.gh.push(7, fmt.Sprintf("%040x", n+1))
+	}
 	h.gh.withLock(func() { h.gh.prs[7].Closed = true })
 	update := fmt.Sprintf("PATCH /repos/%s/check-runs/%d", testRepo, h.gh.check(shaA).ID)
 	h.gh.failWith(update, http.StatusBadGateway)
 	e, ctx, stop = h.start()
-	e.Tick(ctx)
-	if h.gh.check(shaA).Status != "in_progress" || len(reviewSpans(exporter)) != 0 {
+	writes := h.gh.countCalls(update)
+	e.Tick(ctx) // Newest page.
+	if h.gh.countCalls(update) != writes {
+		t.Fatal("cancelled an older page before following the cursor")
+	}
+	e.Tick(ctx) // Refused cancellation on the older page.
+	if h.gh.countCalls(update) != writes+1 || h.gh.check(shaA).Status != "in_progress" || len(reviewSpans(exporter)) != 0 {
 		t.Fatal("refused cancellation retired the review")
 	}
 	h.gh.failWith(update, 0)

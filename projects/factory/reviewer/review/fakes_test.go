@@ -892,7 +892,13 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 		appID, _ := req.Variables["appId"].(float64)
 		check, _ := req.Variables["check"].(string)
 		var nodes []map[string]any
-		for _, h := range pr.Heads {
+		end := len(pr.Heads)
+		if cursor, ok := req.Variables["before"].(string); ok {
+			end, _ = strconv.Atoi(cursor)
+		}
+		last := int(req.Variables["last"].(float64))
+		start := max(0, end-last)
+		for _, h := range pr.Heads[start:end] {
 			suites := map[int64][]map[string]any{}
 			for _, c := range f.checks {
 				if c.SHA == h && c.AppID == int64(appID) && c.Name == check && c.Status == "completed" {
@@ -908,7 +914,7 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 			}})
 		}
 		reply(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"timelineItems": map[string]any{
-			"pageInfo": map[string]any{"hasPreviousPage": pr.TimelineTruncated}, "nodes": nodes,
+			"pageInfo": map[string]any{"hasPreviousPage": pr.TimelineTruncated || start > 0, "startCursor": strconv.Itoa(start)}, "nodes": nodes,
 		}}}})
 	case strings.Contains(req.Query, "mergeQueueEntry"):
 		kind = "pull_request"
