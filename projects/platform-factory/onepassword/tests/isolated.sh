@@ -34,6 +34,7 @@ for _ in {1..60}; do
 	sleep 1
 done
 kubectl create namespace ships
+kubectl create namespace ate-system
 kubectl create namespace argocd
 tar xOzf projects/platform/onepassword/charts/connect-2.0.5.tgz connect/crds/onepassworditem-crd.yaml | kubectl create -f -
 kubectl wait --for=condition=Established crd/onepassworditems.onepassword.com
