@@ -864,3 +864,39 @@ func TestHumanGateUnreadyEvidenceCreatesNothing(t *testing.T) {
 		})
 	}
 }
+
+func TestHumanGateMergedLateCopy(t *testing.T) {
+	v := newHumanGateEnv(t)
+	v.readyGate("sha-1")
+	v.poll()
+	v.gh.merge(1, "merged-sha")
+	v.poll()
+	h := v.gateIssue(3, "sha-1")
+	v.lateGateCreate(301, v.clk.Now())
+	v.its.loseComment = true
+	v.poll()
+	v.clk.Advance(time.Hour)
+	v.poll()
+	moves, comments := v.gateCancels()
+	if moves[301] != 1 || comments[301] != 1 {
+		t.Fatalf("moves=%v comments=%v", moves, comments)
+	}
+	if _, err := v.st.DB.Exec(`UPDATE human_gate_attempt SET finished_at=now()-interval '25 hours' WHERE operation='update'`); err != nil {
+		t.Fatal(err)
+	}
+	items, err := v.st.HumanGateWork(context.Background())
+	if err != nil || len(items) != 0 {
+		t.Fatalf("expired gate %d: items=%v err=%v", h.ID, items, err)
+	}
+}
+
+func TestHumanGateLateCreateResponseAfterAdoption(t *testing.T) {
+	v := newHumanGateEnv(t)
+	v.readyGate("sha-1")
+	v.poll()
+	h := v.gateIssue(1, "sha-1")
+	err := v.st.FinishHumanGateWrite(context.Background(), h, "factory-human-gate/jomcgi-org/homelab/1/create", 301, false)
+	if err == nil || v.gateIssue(1, "sha-1").IssueID != h.IssueID {
+		t.Fatal("late response replaced the adopted issue")
+	}
+}
