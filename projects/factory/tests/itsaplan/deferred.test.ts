@@ -84,6 +84,10 @@ async function fixture() {
 test("run phases are bound to the current attempt and its agent", async () => {
   const { id, coder, coordinator, owner, send } = await fixture();
   expect((await send()).status).toBe(200);
+  await db
+    .update(agentRun)
+    .set({ nextAttemptAt: new Date(0) })
+    .where(eq(agentRun.issueId, id));
   const runner = apiKeyApi(coder.apiKey!);
   const run = (await runner["agent-runs"].claim.post()).data!.run!;
   const phase = (key: string, attempt: number) =>
