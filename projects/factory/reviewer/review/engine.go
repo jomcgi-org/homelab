@@ -1934,6 +1934,7 @@ func (e *Engine) previousState(ctx context.Context, b *Binding, pr github.PullRe
 
 type rootScan struct{ head, before string }
 
+// invariant: FACT-13
 // recoverRoots advances at most one page per open PR per poll. An empty
 // cursor on a recorded head marks its history as fully examined.
 func (e *Engine) recoverRoots(ctx context.Context, b *Binding, prs []github.PullRequest, complete bool) {
