@@ -98,8 +98,8 @@ durable lessons. Factory prompts choose the work and its sequence.
   lowering a deployment pin remains the revert lever.
 - Secrets use the 1Password Operator. Git declares External Secrets Operator
   and the `factory-credentials` namespace to mint short-lived credentials
-  from them. On 2026-11-18 neither ran on the cluster (HOME-67). Internet
-  traffic uses Cloudflare.
+  from them. On 2026-11-18 External Secrets Operator was not running on
+  the cluster (HOME-67). Internet traffic uses Cloudflare.
   Preserve authentication and public/private data boundaries.
   [Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-67#comment-425).
 - `human` means human-owned; `needs-human` requests a decision. Explicit
