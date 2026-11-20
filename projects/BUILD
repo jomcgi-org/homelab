@@ -103,3 +103,8 @@ exports_files(
     ],
     visibility = ["//projects/platform-factory/network-policy/tests:__pkg__"],
 )
+
+exports_files(
+    ["platform-factory/substrate/render-upstream.sh"],
+    visibility = ["//projects/factory/chart:__pkg__"],
+)

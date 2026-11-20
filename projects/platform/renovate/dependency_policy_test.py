@@ -808,7 +808,7 @@ def test_overlays_are_scanned_and_python_regeneration_is_root_only(values_files)
         )
     assert config["kubernetes"]["managerFilePatterns"]
     tasks = [r for r in config["packageRules"] if "postUpgradeTasks" in r]
-    assert len(tasks) == 2
+    assert len(tasks) == 3
     assert tasks[0]["matchManagers"] == ["pep621", "pip_requirements"]
     assert tasks[0]["matchFileNames"] == [
         "pyproject.toml",
@@ -843,6 +843,7 @@ def test_overlays_are_scanned_and_python_regeneration_is_root_only(values_files)
     assert json.loads(env["RENOVATE_ALLOWED_COMMANDS"]["value"]) == [
         r"^bazel/tools/format/update-python-requirements\.sh$",
         r"^projects/platform-factory/substrate/render-upstream\.sh --refresh$",
+        r"^projects/platform-factory/cfgate/refresh-release\.sh$",
     ]
 
 

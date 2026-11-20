@@ -66,9 +66,9 @@ Renovate targets only `jomcgi-org/homelab`, requires the checked-in
 `renovate.json`, and disables autodiscovery and onboarding. Package lifecycle
 scripts and plugins are disabled. One allowlisted post-upgrade command,
 `bazel/tools/format/update-python-requirements.sh`, regenerates the root
-compiled Python locks. The other,
+compiled Python locks. A second command,
 `projects/platform-factory/substrate/render-upstream.sh --refresh`, updates
-the vendored manifests and release pins with the grouped kagent chart bump. Native uv artifact commands receive `UV_NO_BUILD=true`;
+the vendored manifests and release pins with the grouped kagent chart bump. The cfgate refresh command vendors the matching release manifest and updates its checksum with the image override. Native uv artifact commands receive `UV_NO_BUILD=true`;
 the compiler also refuses source builds. The existing `bazelModDeps`
 exception is retained for Bazel lock maintenance.
 
