@@ -1,3 +1,4 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/helm:defs.bzl", "argocd_app")
 
 argocd_app(
@@ -19,4 +20,14 @@ argocd_app(
 exports_files(
     ["application.yaml"],
     visibility = ["//projects/platform-factory/image-audit:__pkg__"],
+)
+
+# Requires kubectl and the synced factory cluster.
+sh_test(
+    name = "admission_test",
+    srcs = ["test-admission.sh"],
+    tags = [
+        "local",
+        "manual",
+    ],
 )

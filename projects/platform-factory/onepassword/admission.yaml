@@ -1,0 +1,99 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: onepassword-allowed-items
+  namespace: argocd
+data:
+  argocd: |-
+    vaults/k8s-homelab/items/argocd-ghcr-repo-creds
+  authentik: |-
+    vaults/k8s-homelab/items/factory-authentik-discord
+    vaults/k8s-homelab/items/factory-authentik-github
+    vaults/k8s-homelab/items/factory-authentik-google
+  cfgate-system: |-
+    vaults/k8s-homelab/items/factory-cloudflare-api-token
+  factory: |-
+    vaults/k8s-homelab/items/factory-gh-app
+    vaults/k8s-homelab/items/factory-review-gh-app
+    vaults/k8s-homelab/items/factory-storyboard-readers
+    vaults/k8s-homelab/items/ghcr-read-permissions
+  factory-discord: |-
+    vaults/k8s-homelab/items/factory-discord
+    vaults/k8s-homelab/items/ghcr-read-permissions
+  factory-discord-agent: |-
+    vaults/k8s-homelab/items/factory-discord-llm
+  factory-explore: |-
+    vaults/k8s-homelab/items/ghcr-read-permissions
+  factory-explore-site: |-
+    vaults/k8s-homelab/items/factory-explore-cloudflare
+    vaults/k8s-homelab/items/ghcr-read-permissions
+  factory-landing: |-
+    vaults/k8s-homelab/items/ghcr-read-permissions
+  factory-public: |-
+    vaults/k8s-homelab/items/factory-health-cloudflare
+    vaults/k8s-homelab/items/factory-r2-public-mirror
+  grimoire: |-
+    vaults/k8s-homelab/items/grimoire-migration-r2
+  hikes: |-
+    vaults/k8s-homelab/items/ghcr-read-permissions
+  hindsight: |-
+    vaults/k8s-homelab/items/factory-discord-llm
+    vaults/k8s-homelab/items/factory-hindsight
+  hindsight-discord: |-
+    vaults/k8s-homelab/items/factory-discord-llm
+  jomcgi-site-dev: |-
+    vaults/k8s-homelab/items/ghcr-read-permissions
+    vaults/k8s-homelab/items/jomcgi-site-cloudflare
+    vaults/k8s-homelab/items/r2-s3-public-read
+  jomcgi-site-prod: |-
+    vaults/k8s-homelab/items/ghcr-read-permissions
+    vaults/k8s-homelab/items/jomcgi-site-cloudflare
+    vaults/k8s-homelab/items/r2-s3-public-read
+  otel-collector: |-
+    vaults/k8s-homelab/items/honeycomb-ingest
+  prometheus: |-
+    vaults/k8s-homelab/items/factory-alerts-discord
+    vaults/k8s-homelab/items/ghcr-read-permissions
+  renovate: |-
+    vaults/k8s-homelab/items/factory-renovate-gh-app
+  scotland-connector: |-
+    vaults/k8s-homelab/items/r2-s3-public-read
+  ships: |-
+    vaults/k8s-homelab/items/ghcr-read-permissions
+    vaults/k8s-homelab/items/marine
+  stars-forecast: |-
+    vaults/k8s-homelab/items/ghcr-read-permissions
+    vaults/k8s-homelab/items/r2-s3-public-read
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: namespace-onepassword-items
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [onepassword.com]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [onepassworditems]
+  validations:
+    - expression: >-
+        request.namespace in params.data &&
+        object.spec.itemPath in params.data[request.namespace].split('\n')
+      message: OnePasswordItem itemPath is not assigned to this namespace
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: namespace-onepassword-items
+spec:
+  policyName: namespace-onepassword-items
+  validationActions: [Warn, Audit]
+  paramRef:
+    name: onepassword-allowed-items
+    namespace: argocd
+    parameterNotFoundAction: Deny

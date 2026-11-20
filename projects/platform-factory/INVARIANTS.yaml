@@ -134,3 +134,9 @@ invariants:
   - projects/platform-factory/priority/priority-class.yaml
   test: //projects/platform-factory/priority:priority_test
   state: live
+- id: PLAT-19
+  statement: OnePasswordItem creates and updates are checked against the requesting namespace's assigned item paths.
+  mechanism:
+  - projects/platform-factory/onepassword/admission.yaml
+  test: //projects/platform-factory/onepassword:admission_test
+  state: unproven
