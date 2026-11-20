@@ -19,10 +19,10 @@ can coexist with the HOME-356 API proxy in `factory-explore`.
 Publishing is staged ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-360#comment-3945)):
 this change keeps `publishEnabled: false`, and HOME-388 turns it on.
 Sequence the first publication after HOME-358 exposes the HOME-356 proxy
-at factory-explore-api.jomcgi.dev. The Application stages hostname management with publication disabled.
+at factory-explore-api.jomcgi.dev. Both hostname management and publication start disabled.
 Before enabling publication, verify CORS from the UI origin, an authenticated read, and
 server-side denial of anonymous reads and writes. Record Joe’s decision on serving the SPA before sign-in, or verify that the
-hostname requires sign-in at the edge. Provision the dedicated credential,
+hostname requires sign-in at the edge. Confirm image pull and dedicated credential access, including domain lookup and deletion. Enable hostname management on the withdrawal-capable pin, verify its Sync Job succeeds,
 then set the Application's Helm value `publishEnabled` to `true` through Git.
 After publication, verify
 sign-in and a resource listing from a fresh browser.
@@ -31,5 +31,5 @@ Keep `manageHostname: true` on the Application. Once the chart and publisher
 image containing the withdrawal command are pinned, reverting the publication
 override runs a Sync Job that detaches the explorer hostname. Verify from a
 fresh browser that the hostname no longer serves the explorer. If rollback
-must use an older chart, detach the custom domain in Cloudflare before
+must use an older chart, first sync the publication override to false on the current pin. Verify the withdrawal Job succeeded before
 lowering the pin.

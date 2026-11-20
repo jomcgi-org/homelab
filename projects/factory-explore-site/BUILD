@@ -1,5 +1,5 @@
 # gazelle:ignore
-load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_image_layer")
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_image_layer", "js_test")
 load("//bazel/tools/js:exec_filegroup.bzl", "exec_filegroup")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
@@ -30,6 +30,12 @@ genrule(
 js_binary(
     name = "withdraw",
     entry_point = "withdraw.mjs",
+)
+
+js_test(
+    name = "withdraw_test",
+    data = ["withdraw.mjs"],
+    entry_point = "withdraw.test.mjs",
 )
 
 js_image_layer(
