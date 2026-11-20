@@ -8,7 +8,11 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # container; tests/bootstrap.sh exercises it.
 # gazelle:exclude provision_viewer.py
 
-exports_files(["runbooks-route.yaml"])
+exports_files([
+    "dashboards/capacity-advisor.json",
+    "kustomization.yaml",
+    "runbooks-route.yaml",
+])
 
 py_test(
     name = "semgrep_runbook_test",
