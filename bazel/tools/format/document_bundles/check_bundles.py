@@ -179,6 +179,7 @@ def validate(config, files, documents):
                     p = PurePosixPath(
                         posixpath.normpath(directory / rule["table_row_in"])
                     )
+                    # invariant: BUNDLE-1
                     required_columns = {
                         rule["column"],
                         *config["format"][p.name]["table_columns"],
