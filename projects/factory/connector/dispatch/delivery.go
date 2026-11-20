@@ -856,10 +856,11 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 	for _, c := range cands {
 		ids = append(ids, c.ev.NodeID)
 	}
-	seen, err := e.st.SeenEvents(ctx, ids)
+	seen, err := e.st.SeenEvents(ctx, ids, d.HeadSHA, wi.ReviewRounds < p.MaxReviewRounds)
 	if err != nil {
 		return false, err
 	}
+	selected := make(map[[2]string]bool) // All acting candidates share the current head.
 	var record, acting []*candidate
 	var rebase bool
 	for i := range cands {
@@ -879,10 +880,12 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 			if err != nil {
 				return false, err
 			}
-			if done {
+			key := [2]string{c.ev.Kind, c.ev.Source}
+			if done || selected[key] {
 				c.ev.Disposition = store.EventDuplicate
 			} else {
 				c.ev.Disposition = store.EventActed
+				selected[key] = true
 				acting = append(acting, c)
 				rebase = rebase || c.ev.Kind == store.EventConflicting
 			}

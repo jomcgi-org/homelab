@@ -2124,20 +2124,21 @@ func TestEjectionDoesNotReadWhenItsAttemptCannotBeRecorded(t *testing.T) {
 
 func TestReviewRoundsAreBounded(t *testing.T) {
 	v := newDeliveryEnv(t)
+	v.cfg.Bindings[0].Review.MaxReviewRounds = 3
 	v.delivered()
-	for i := 1; i <= 3; i++ {
+	for i := 1; i <= 4; i++ {
 		head := fmt.Sprintf("sha-%d", i)
 		v.gh.review(1, "CHANGES_REQUESTED", "reviewer", head, fmt.Sprintf("Round %d feedback.", i))
 		v.poll()
-		if i <= 2 {
+		if i <= 3 {
 			v.gh.push("factory/HL-7", fmt.Sprintf("sha-%d", i+1), "fix: feedback")
 			v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
 			v.clk.Advance(5 * time.Second)
 			v.tick(v.e)
 		}
 	}
-	if n := len(v.rounds()); n != 2 {
-		t.Fatalf("rounds = %d, want the bound of 2", n)
+	if n := len(v.rounds()); n != 3 {
+		t.Fatalf("rounds = %d, want the bound of 3", n)
 	}
 	evs := v.events()
 	if last := evs[len(evs)-1]; last.Disposition != store.EventRoundLimit {
@@ -2145,13 +2146,26 @@ func TestReviewRoundsAreBounded(t *testing.T) {
 	}
 	var said bool
 	for _, c := range v.its.Comments() {
-		said = said || strings.Contains(c.body, "bound of 2 review rounds")
+		said = said || strings.Contains(c.body, "bound of 3 review rounds")
 	}
 	if !said {
 		t.Fatal("round bound not reported on the issue")
 	}
-	if w := v.work(101); w.State != store.WorkReview || w.ReviewRounds != 2 {
+	if w := v.work(101); w.State != store.WorkReview || w.ReviewRounds != 3 {
 		t.Fatalf("work item = %+v", w)
+	}
+	v.cfg.Bindings[0].Review.MaxReviewRounds = 6
+	v.poll()
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "No change.", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	v.poll()
+	after := v.events()
+	if len(after) != len(evs) || len(v.rounds()) != 4 || v.work(101).ReviewRounds != 4 {
+		t.Fatalf("events = %+v, rounds = %d", after, len(v.rounds()))
+	}
+	if last := after[len(after)-1]; last.NodeID != evs[len(evs)-1].NodeID || last.Disposition != store.EventActed || last.RoundRunID == 0 {
+		t.Fatalf("retried event = %+v", last)
 	}
 }
 

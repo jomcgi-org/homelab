@@ -67,3 +67,10 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-13
+  statement: Raising the review round bound allows previously limited current-head feedback to start one round while delivery remains active.
+  mechanism:
+  - projects/factory/connector/dispatch/delivery.go
+  - projects/factory/connector/store/delivery.go
+  test: //projects/factory/connector/dispatch:dispatch_test
+  state: live
