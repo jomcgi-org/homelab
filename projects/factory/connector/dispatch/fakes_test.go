@@ -513,6 +513,9 @@ func (f *fakeItsaplan) Comments() []fakeComment {
 // message ID, a session belongs to the Agent that created it and runs one
 // non-quiescent task at a time, and cancellation completes asynchronously.
 type fakeKagent struct {
+	onPromptRead    func()
+	createdRevision string
+	onPromptCreate  func(string)
 	servedPrompt    string
 	identity        kagent.CallerIdentity
 	identityErr     error

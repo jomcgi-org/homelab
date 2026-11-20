@@ -61,7 +61,17 @@ func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.
 		if err := e.beginAdmissionRead(ctx, r, "provenance-prompt", a.MessageID); err != nil {
 			return "", err
 		}
-		*sendContext, err = e.sessions.PinPromptSession(ctx, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, a.MessageID, a.ContextID, runtime.SystemPrompt)
+		*sendContext, err = kagent.PinPromptSession(ctx, e.sessions, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, a.MessageID, a.ContextID, runtime.SystemPrompt, func(ctx context.Context, agent kagent.AgentRef, key string) (*kagent.Session, error) {
+			if err := e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
+				return e.st.RecordAdmissionRead(ctx, tx, r, e.w.Epoch, key, "create-prompt-session", key)
+			}); err != nil {
+				return nil, err
+			}
+			if err := e.guard(ctx); err != nil {
+				return nil, err
+			}
+			return e.sessions.CreateSession(ctx, agent, key)
+		})
 		if err != nil {
 			return "", err
 		}
@@ -167,13 +177,13 @@ func (e *Engine) verifyLegacyRuntime(ctx context.Context, r *store.Run, wi *stor
 // A ready attempt has never been accepted. Retire its immutable receipt and
 // allocate a new message when runtime inputs change. AttemptTx fences stops,
 // cancellation, reassignment and writer takeover; ambiguous calls never enter.
-func (e *Engine) replaceRuntimeAttempt(ctx context.Context, r *store.Run, wi *store.WorkItem, b *Binding, a *store.Attempt) error {
+func (e *Engine) replaceRuntimeAttempt(ctx context.Context, r *store.Run, wi *store.WorkItem, b *Binding, a *store.Attempt, cause error) error {
 	if a.State != store.AttemptSending {
 		return store.ErrAttemptChanged
 	}
 	var next *store.Attempt
 	err := e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
-		if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, "runtime_changed", errRuntimeChanged.Error()); err != nil {
+		if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, "runtime_changed", cause.Error()); err != nil {
 			return err
 		}
 		var err error
@@ -183,5 +193,8 @@ func (e *Engine) replaceRuntimeAttempt(ctx context.Context, r *store.Run, wi *st
 	if err != nil {
 		return err
 	}
+	if errors.Is(cause, kagent.ErrCreatedRevisionMismatch) {
+		return nil
+	} // Retry the replacement on the next poll.
 	return e.issue(ctx, r, wi, b, next)
 }

@@ -1291,17 +1291,6 @@ func (s *fakeSessions) PromptRevision(ctx context.Context, a kagent.AgentRef, pr
 	return s.AgentRevision(ctx, a)
 }
 
-func (s *fakeSessions) PinPromptSession(ctx context.Context, a kagent.AgentRef, id, existing, prompt string) (string, error) {
-	if existing != "" {
-		return existing, nil
-	}
-	sess, err := s.k.CreateSession(ctx, a, fmt.Sprintf("%x", sha256.Sum256([]byte(id))))
-	if err != nil {
-		return "", err
-	}
-	return sess.ContextID, nil
-}
-
 // AgentRevision answers the fake kagent's current revision.
 func (s *fakeSessions) AgentRevision(_ context.Context, agent kagent.AgentRef) (string, error) {
 	s.mu.Lock()
