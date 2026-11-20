@@ -20,8 +20,5 @@ py_test(
         "KUSTOMIZE_BIN": "$(rootpath @multitool//tools/kustomize)",
         "PROVIDER_DIGEST": "$(rootpath //projects/platform-factory/substrate/credential-provider:image_digest)",
     },
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
+    deps = ["@pip//pyyaml"],
 )
