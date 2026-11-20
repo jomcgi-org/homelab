@@ -48,6 +48,7 @@ go_library(
         "20261119130000_outbox_outages.sql",
         "20261119215000_storyboard_messages.sql",
         "20261120010000_review_merges.sql",
+        "20261120183000_pending_merge_review.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],

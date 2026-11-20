@@ -1108,8 +1108,10 @@ func TestUntrackedMergedReviewUsesPRIdentity(t *testing.T) {
 			c.ExternalID = fmt.Sprintf("factory-review/jomcgi-org/homelab/%d/shared", number)
 			c.Text = github.ReviewStatePrefix + base64.StdEncoding.EncodeToString(data) + github.ReviewStateSuffix
 			if number == 42 {
+				c.Status = "in_progress"
 				v.gh.checks["shared"][i] = c
 			} else {
+				c.Status = "completed"
 				v.gh.checks["shared"] = append(v.gh.checks["shared"], c)
 			}
 		}
@@ -1119,6 +1121,29 @@ func TestUntrackedMergedReviewUsesPRIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	v.poll()
+	if v.its.activationCreates != 0 {
+		t.Fatal("in-progress review filed a follow-up")
+	}
+	v.e.Release()
+	v.e = v.engine("review-restart")
+	v.gh.mergedListing = nil
+	for i, c := range v.gh.checks["shared"] {
+		if c.ID == 42 {
+			v.gh.checks["shared"][i].Status = "completed"
+		}
+	}
+	v.poll()
+	for id, want := range map[string]int{
+		"merged-reviews/list/jomcgi-org/homelab/main/1":                2,
+		"merged-reviews/checks/jomcgi-org/homelab/42/shared":           2,
+		"review-followup/jomcgi-org/homelab/42/f/ProjectColumns":       1,
+		"review-followup/jomcgi-org/homelab/42/f/CreateReviewFollowup": 1,
+	} {
+		var attempts int
+		if err := v.st.DB.QueryRow("SELECT attempts FROM status_read WHERE message_id=$1 AND writer_epoch=(SELECT epoch FROM writer WHERE id=1)", id).Scan(&attempts); err != nil || attempts != want {
+			t.Fatalf("%s attempts=%d want=%d err=%v", id, attempts, want, err)
+		}
+	}
 	is, err := v.its.GetIssue(v.ctx, 1001)
 	if err != nil || is.Title != "42" || v.its.activationCreates != 1 {
 		t.Fatalf("issue=%+v err=%v", is, err)

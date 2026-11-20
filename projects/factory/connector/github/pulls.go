@@ -1178,10 +1178,13 @@ func (c *Client) RevertedMerge(ctx context.Context, repo, branch, sha string, nu
 
 // MergedSince walks recently updated closed PRs, including merges the connector
 // did not enqueue. An older update cannot contain a more recent merge.
-func (c *Client) MergedSince(ctx context.Context, repo, base string, since time.Time) ([]PullRequest, error) {
+func (c *Client) MergedSince(ctx context.Context, repo, base string, since time.Time, before func(int) error) ([]PullRequest, error) {
 	var merged []PullRequest
 	for page := 1; ; page++ {
 		q := url.Values{"base": {base}, "state": {"closed"}, "sort": {"updated"}, "direction": {"desc"}, "per_page": {strconv.Itoa(MaxListed)}, "page": {strconv.Itoa(page)}}
+		if err := before(page); err != nil {
+			return nil, err
+		}
 		var pulls []restPull
 		if err := c.do(ctx, repo, http.MethodGet, repoPath(repo)+"/pulls?"+q.Encode(), nil, &pulls); err != nil {
 			return nil, err

@@ -613,7 +613,7 @@ func (e *Engine) deliverReviewFollowup(ctx context.Context, it *store.OutboxItem
 	if err := json.Unmarshal(it.Payload, &p); err != nil {
 		return err
 	}
-	if err := e.beginActivationCall(ctx, it, p.WorkID, "ProjectColumns", p.Project); err != nil {
+	if err := e.BeginStatusRead(ctx, it.DedupeKey+"/ProjectColumns"); err != nil {
 		return err
 	}
 	columns, err := e.its.ProjectColumns(ctx, p.Project)
@@ -624,7 +624,7 @@ func (e *Engine) deliverReviewFollowup(ctx context.Context, it *store.OutboxItem
 	if backlog == nil {
 		return errors.New("project has no backlog column")
 	}
-	if err := e.beginActivationCall(ctx, it, p.WorkID, "CreateIssue", p.Project); err != nil {
+	if err := e.BeginStatusRead(ctx, it.DedupeKey+"/CreateReviewFollowup"); err != nil {
 		return err
 	}
 	f := p.Finding
