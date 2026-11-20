@@ -1742,7 +1742,7 @@ func TestDecisionRecoveryKeepsFindingIdentitiesAcrossRestart(t *testing.T) {
 				}
 				next := AssessDecided(&accepted, recovered.Previous(), d)
 				for _, id := range ids {
-					failIf(t, !slices.ContainsFunc(next.Blocking, func(f Finding) bool { return f.ID == id && f.ReauthorizeAfter == comment.ID }), "replayed blocker %s accepted the old comment or lost its cutoff", id)
+					failIf(t, !slices.ContainsFunc(next.Blocking, func(f Blocked) bool { return f.ID == id && f.ReauthorizeAfter == comment.ID }), "replayed blocker %s accepted the old comment or lost its cutoff", id)
 				}
 				return
 			}
