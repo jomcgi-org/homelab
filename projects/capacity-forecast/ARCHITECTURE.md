@@ -1,7 +1,10 @@
 # Capacity forecast architecture
 
-```text
-Prometheus history → Timestral worker → Prometheus scrape → Grafana
+```mermaid
+flowchart LR
+    history[Prometheus history] --> worker[Timestral worker]
+    worker --> scrape[Prometheus scrape]
+    scrape --> grafana[Grafana]
 ```
 
 The worker requests up to seven days of reviewer memory at five-minute
@@ -18,3 +21,15 @@ CI publishes the image and chart before Argo CD can deploy the chart.
 After rollout, verify that Prometheus scrapes the worker and receives all
 six Timestral horizons. Check the 30-minute comparison after its first
 target observation arrives.
+
+## Trust boundaries
+
+| Component | Untrusted input | Credentials held |
+| --- | --- | --- |
+| Forecast worker | Prometheus memory samples | None |
+
+## Direction
+
+| Direction | Tracks | State |
+| --- | --- | --- |
+| Compare reviewer forecasts with observed memory. | [HOME-570](https://factory-plan.jomcgi.dev/factory/issue/HOME-570) | Pending rollout |
