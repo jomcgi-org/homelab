@@ -1,3 +1,4 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
@@ -41,6 +42,16 @@ argocd_app(
         "values.yaml",
         "values-gke.yaml",
     ],
+)
+
+sh_test(
+    name = "config_validator_test",
+    srcs = ["config_validator_test.sh"],
+    args = ["$(rootpath //:renovate.json)"],
+    data = ["//:renovate.json"],
+    exec_properties = {
+        "test.container-image": "docker://ghcr.io/renovatebot/renovate:44.14.10",
+    },
 )
 
 # Policy fixtures include the rendered maintenance assets and real Node publisher.
