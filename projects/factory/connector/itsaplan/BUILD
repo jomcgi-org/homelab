@@ -17,6 +17,7 @@ go_library(
     name = "itsaplan",
     srcs = [
         "client.go",
+        "decision.go",
         "deferred.go",
         "human_gate.go",
         "renovate.go",
@@ -31,6 +32,7 @@ go_test(
     name = "itsaplan_test",
     srcs = [
         "client_test.go",
+        "decision_test.go",
         "deferred_test.go",
         "review_test.go",
         "status_test.go",

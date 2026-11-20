@@ -247,15 +247,21 @@ def test_tokens_are_bound_to_kagent_and_the_broker() -> None:
         for v in _pod(docs)["spec"]["volumes"]:
             for s in v.get("projected", {}).get("sources", []):
                 if "serviceAccountToken" in s:
-                    out[v["name"]] = s["serviceAccountToken"]["audience"]
+                    out[v["name"]] = s["serviceAccountToken"].get(
+                        "audience", "apiserver"
+                    )
         return out
 
     # Without the GitHub App the broker mints nothing, so delivery is off.
     docs = _render(["broker.githubApp.enabled=false"])
-    assert audiences(docs) == {"kagent-token": "kagent-invocation"}
+    assert audiences(docs) == {
+        "decision-api": "apiserver",
+        "kagent-token": "kagent-invocation",
+    }
     assert "FACTORY_CONNECTOR_BROKER_URL" not in _env(docs)
     docs = _render(["broker.githubApp.enabled=true"])
     assert audiences(docs) == {
+        "decision-api": "apiserver",
         "kagent-token": "kagent-invocation",
         "broker-token": "factory-broker",
     }
@@ -479,6 +485,7 @@ def test_policy_egress_only_to_its_peers() -> None:
     peers = [
         (r.get("toEndpoints"), r.get("toFQDNs"), r["toPorts"][0]["ports"][0]["port"])
         for r in spec["egress"]
+        if r != {"toEntities": ["kube-apiserver"]}
     ]
     assert peers == [
         (
@@ -539,7 +546,9 @@ def test_policy_egress_only_to_its_peers() -> None:
     ]
     spec = policy(_render(["broker.githubApp.enabled=true"]))
     peers = [
-        (r.get("toFQDNs"), r["toPorts"][0]["ports"][0]["port"]) for r in spec["egress"]
+        (r.get("toFQDNs"), r["toPorts"][0]["ports"][0]["port"])
+        for r in spec["egress"]
+        if r != {"toEntities": ["kube-apiserver"]}
     ]
     assert (None, "8081") in peers
     assert ([{"matchName": "api.github.com"}], "443") in peers
@@ -808,7 +817,13 @@ def test_landing_status_access() -> None:
                             "k8s:io.kubernetes.pod.namespace": "factory-landing",
                             "app.kubernetes.io/name": "factory-landing",
                         }
-                    }
+                    },
+                    {
+                        "matchLabels": {
+                            "k8s:io.kubernetes.pod.namespace": "factory-discord",
+                            "io.cilium.k8s.policy.serviceaccount": "discord-bridge",
+                        }
+                    },
                 ],
                 "toPorts": ports,
             }
@@ -893,6 +908,12 @@ def test_runbook_revert_permissions():
             role = roles[
                 ref["kind"], ns if ref["kind"] == "Role" else None, ref["name"]
             ]
+            if (ref["kind"], ref["name"]) == (
+                "ClusterRole",
+                "factory-connector-decide",
+            ):
+                # The decision API's TokenReview grant; pinned below.
+                continue
             for rule in role["rules"]:
                 assert rule["apiGroups"] == [""]
                 grants.extend(
@@ -903,6 +924,13 @@ def test_runbook_revert_permissions():
                 )
         return set(grants)
 
+    assert roles["ClusterRole", None, "factory-connector-decide"]["rules"] == [
+        {
+            "apiGroups": ["authentication.k8s.io"],
+            "resources": ["tokenreviews"],
+            "verbs": ["create"],
+        }
+    ]
     owners = {
         "factory-connector": "factory-r-homelab",
         "factory-reviewer": "factory-r-homelab-review",

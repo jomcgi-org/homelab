@@ -74,7 +74,7 @@ func (fakePlan) NeedsYou(_ context.Context, project, username string) ([]itsapla
 	if project != "HOME" || username != "joe" {
 		return nil, errors.New("wrong task filter")
 	}
-	return []itsaplan.IssueSummary{{ID: 20, Identifier: "HOME-20", Title: "Decision", CreatedAt: "2026-11-14T10:00:00Z"}}, nil
+	return []itsaplan.IssueSummary{{ID: 20, Identifier: "HOME-20", Title: "Decision", Choices: []string{"Ship", "Wait"}, ChoiceRevision: "displayed-revision", CreatedAt: "2026-11-14T10:00:00Z"}}, nil
 }
 
 func (fakePlan) GetIssueSummary(_ context.Context, id int64) (*itsaplan.IssueSummary, error) {
@@ -114,7 +114,10 @@ func TestHandlerFieldsContainOnlySummaries(t *testing.T) {
 	}
 	assertFields(t, body, "needsYou", "inFlight", "shipped", "generatedAt")
 	need := body["needsYou"].([]any)[0].(map[string]any)
-	assertFields(t, need, "key", "title", "priority", "url", "createdAt")
+	assertFields(t, need, "key", "title", "priority", "url", "createdAt", "choices", "choiceRevision")
+	if need["choiceRevision"] != "displayed-revision" || need["choices"].([]any)[1] != "Wait" {
+		t.Fatal(need)
+	}
 	if need["url"] != "https://factory-plan.jomcgi.dev/issue/20" {
 		t.Fatal(need)
 	}

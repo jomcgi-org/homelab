@@ -12,6 +12,7 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/cmd/connector",
     visibility = ["//visibility:private"],
     deps = [
+        "//projects/factory/broker/auth",
         "//projects/factory/connector/buildbuddy",
         "//projects/factory/connector/config",
         "//projects/factory/connector/dispatch",
@@ -33,6 +34,7 @@ go_library(
         "@io_k8s_apimachinery//pkg/api/errors",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
         "@io_k8s_apimachinery//pkg/types",
+        "@io_k8s_client_go//kubernetes",
         "@io_k8s_client_go//kubernetes/typed/core/v1:core",
         "@io_k8s_client_go//rest",
     ],
@@ -47,6 +49,7 @@ go_binary(
 go_test(
     name = "connector_test",
     srcs = [
+        "decision_test.go",
         "recovery_test.go",
         "runbook_test.go",
     ],
@@ -56,6 +59,7 @@ go_test(
     deps = [
         "//projects/factory/connector/kagent",
         "//projects/factory/connector/store",
+        "@io_k8s_api//authentication/v1:authentication",
         "@io_k8s_api//core/v1:core",
         "@io_k8s_apimachinery//pkg/api/errors",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",

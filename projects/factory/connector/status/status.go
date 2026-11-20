@@ -27,11 +27,13 @@ const (
 )
 
 type NeedsYou struct {
-	Key       string  `json:"key"`
-	Title     string  `json:"title"`
-	Priority  *string `json:"priority"`
-	URL       string  `json:"url"`
-	CreatedAt string  `json:"createdAt"`
+	ChoiceRevision string   `json:"choiceRevision,omitempty"`
+	Choices        []string `json:"choices,omitempty"`
+	Key            string   `json:"key"`
+	Title          string   `json:"title"`
+	Priority       *string  `json:"priority"`
+	URL            string   `json:"url"`
+	CreatedAt      string   `json:"createdAt"`
 }
 
 type InFlight struct {
@@ -104,7 +106,7 @@ func (s *Source) Load(ctx context.Context) (*Snapshot, error) {
 			link := strings.NewReplacer("{issueId}", strconv.FormatInt(issue.ID, 10),
 				"{issue}", url.PathEscape(issue.Identifier)).Replace(s.IssueURL)
 			out.NeedsYou = append(out.NeedsYou, NeedsYou{
-				Key: issue.Identifier, Title: issue.Title,
+				Key: issue.Identifier, Title: issue.Title, Choices: issue.Choices, ChoiceRevision: issue.ChoiceRevision,
 				Priority: issue.Priority, URL: link, CreatedAt: issue.CreatedAt,
 			})
 		}
