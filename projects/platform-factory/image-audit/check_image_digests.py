@@ -40,7 +40,14 @@ def violations(doc):
         name == addon or name.startswith(addon + "-") for addon in K3S_ADDONS
     ):
         return
-    for image in images(doc.get("spec", {})):
+    spec = doc.get("spec", {})
+    if (
+        doc.get("apiVersion") == "postgresql.cnpg.io/v1"
+        and doc.get("kind") == "Cluster"
+        and not spec.get("imageName")
+    ):
+        yield f"{namespace}/{name}: missing spec.imageName"
+    for image in images(spec):
         if not DIGEST.search(image):
             yield f"{namespace}/{name}: {image}"
 

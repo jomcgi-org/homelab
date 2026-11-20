@@ -54,3 +54,19 @@ def test_factory_platform_images(component):
             for msg in violations(doc)
         ]
     ), missing
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        "factory-db/resources/cluster.yaml",
+        "grimoire-data/resources/database.yaml",
+        "kagent-postgres/resources/cluster.yaml",
+    ],
+)
+def test_postgres_operand_image(manifest):
+    docs = list(yaml.safe_load_all((HERE / manifest).read_text()))
+    assert any(doc and doc["kind"] == "Cluster" for doc in docs)
+    assert not (missing := [msg for doc in docs if doc for msg in violations(doc)]), (
+        missing
+    )

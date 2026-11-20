@@ -21,3 +21,8 @@ filegroup(
     ],
     visibility = ["//projects/platform-factory/grimoire-data:__pkg__"],
 )
+
+exports_files(
+    ["database.yaml"],
+    visibility = ["//projects/platform-factory/image-audit:__pkg__"],
+)

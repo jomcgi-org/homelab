@@ -12,3 +12,8 @@ filegroup(
     ],
     visibility = ["//projects/platform-factory/factory-db:__pkg__"],
 )
+
+exports_files(
+    ["cluster.yaml"],
+    visibility = ["//projects/platform-factory/image-audit:__pkg__"],
+)
