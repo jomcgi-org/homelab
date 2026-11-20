@@ -790,6 +790,8 @@ func patchHunks(patch string) []lineRange {
 	return out
 }
 
+// invariant: FACT-13
+
 // LaterScope is the scope of a head reviewed after since, or nil when there
 // is none to enforce: a first review, or an interdiff that is missing,
 // truncated or spans a rebase (RebasedScope covers a rebase).
