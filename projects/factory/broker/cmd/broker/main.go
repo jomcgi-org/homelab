@@ -4,6 +4,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -109,7 +110,7 @@ func run(logger *slog.Logger) error {
 		mux.HandleFunc("GET /healthz", healthz)
 		mux.Handle("GET /metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 		d.registerReview(mux, cfg)
-		listeners = map[string]http.Handler{cfg.AdminListenAddr: mux}
+		listeners = map[string]http.Handler{cmp.Or(cfg.AdminListenAddr, cfg.ListenAddr): mux}
 	} else {
 		if dsn := os.Getenv("BROKER_USAGE_DATABASE_URL"); dsn != "" {
 			db, err := sql.Open("postgres", dsn)
