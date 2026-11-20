@@ -190,7 +190,7 @@ type fakeComment struct {
 }
 
 func newFakeItsaplan(now func() time.Time) *fakeItsaplan {
-	return &fakeItsaplan{now: now, lease: 300 * time.Second, maxTries: 3, columns: []itsaplan.Column{
+	return &fakeItsaplan{issues: make(map[int64]*itsaplan.Issue), now: now, lease: 300 * time.Second, maxTries: 3, columns: []itsaplan.Column{
 		{ID: 1, Name: "Todo", StateType: "unstarted"},
 		{ID: 2, Name: "In progress", StateType: "started", Position: 1},
 		{ID: 3, Name: "Done", StateType: "completed", Position: 2},
@@ -202,9 +202,6 @@ func (f *fakeItsaplan) add(id int64, agent string, issueID int64, key, prompt st
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	iid := issueID
-	if f.issues == nil {
-		f.issues = map[int64]*itsaplan.Issue{}
-	}
 	if f.issues[issueID] == nil {
 		f.issues[issueID] = &itsaplan.Issue{
 			ID: issueID, Identifier: key, ColumnID: 2,
