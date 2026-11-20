@@ -380,7 +380,6 @@ pip.parse(
     python_version = "3.13",
     requirements_lock = "//bazel/requirements:all.txt",
 )
-
 use_repo(pip, "pip")
 
 # Wheel contents for Gazelle only. The Linux pip hub cannot resolve these
@@ -412,7 +411,6 @@ http_file(
     sha256 = "8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8",
     urls = ["https://files.pythonhosted.org/packages/de/3d/8161f7711c017e01ac9f008dfddd9410dff3674334c233bde66e7ba65bbf/pywin32_ctypes-0.2.3-py3-none-any.whl"],
 )
-
 
 oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
 
