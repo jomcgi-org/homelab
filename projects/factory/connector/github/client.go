@@ -529,7 +529,10 @@ func (c *Client) graphql(ctx context.Context, repo, query string, vars map[strin
 	return json.Unmarshal(resp.Data, out)
 }
 
-const pullRequestQuery = `query PullRequestDetail($owner: String!, $name: String!, $number: Int!) {
+const pullRequestQuery = `query PullRequestDetail($owner: String!, $name: String!, $number: Int!, $limited: [ID!]!) {
+  limited: nodes(ids: $limited) {
+    ... on PullRequestReview { id state body submittedAt author { login } commit { oid } pullRequest { id } }
+  }
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       id number url state merged mergedAt isDraft title headRefOid headRefName headRepository { nameWithOwner } baseRefName baseRefOid mergeable
@@ -539,7 +542,6 @@ const pullRequestQuery = `query PullRequestDetail($owner: String!, $name: String
       mergeQueueEntry { state headCommit { oid } }
       labels(first: 100) { nodes { name } }
       reviews(last: 100) {
-        pageInfo { hasPreviousPage }
         nodes { id state body submittedAt author { login } commit { oid } }
       }
       reviewThreads(last: 100) {
@@ -563,9 +565,22 @@ type oid struct {
 
 // PullRequestDetail reads a PR's state, merge queue entry, labels, reviews
 // and review threads with GraphQL.
-func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int) (*PullRequestDetail, error) {
+func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int, limited ...string) (*PullRequestDetail, error) {
 	owner, name, _ := strings.Cut(repo, "/")
+	type reviewNode struct {
+		ID          string     `json:"id"`
+		State       string     `json:"state"`
+		Body        string     `json:"body"`
+		SubmittedAt *time.Time `json:"submittedAt"`
+		Author      *login     `json:"author"`
+		Commit      *oid       `json:"commit"`
+		PullRequest *struct{ ID string }
+	}
+	if limited == nil {
+		limited = []string{}
+	}
 	var out struct {
+		Limited    []reviewNode
 		Repository struct {
 			PullRequest *struct {
 				ID             string     `json:"id"`
@@ -604,17 +619,7 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 					} `json:"nodes"`
 				} `json:"labels"`
 				Reviews struct {
-					PageInfo struct {
-						HasPreviousPage bool `json:"hasPreviousPage"`
-					} `json:"pageInfo"`
-					Nodes []struct {
-						ID          string     `json:"id"`
-						State       string     `json:"state"`
-						Body        string     `json:"body"`
-						SubmittedAt *time.Time `json:"submittedAt"`
-						Author      *login     `json:"author"`
-						Commit      *oid       `json:"commit"`
-					} `json:"nodes"`
+					Nodes []reviewNode `json:"nodes"`
 				} `json:"reviews"`
 				ReviewThreads struct {
 					Nodes []struct {
@@ -637,7 +642,7 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 			} `json:"pullRequest"`
 		} `json:"repository"`
 	}
-	if err := c.graphql(ctx, repo, pullRequestQuery, map[string]any{"owner": owner, "name": name, "number": number}, &out); err != nil {
+	if err := c.graphql(ctx, repo, pullRequestQuery, map[string]any{"owner": owner, "name": name, "number": number, "limited": limited}, &out); err != nil {
 		return nil, err
 	}
 	p := out.Repository.PullRequest
@@ -676,28 +681,27 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 	for _, l := range p.Labels.Nodes {
 		d.Labels = append(d.Labels, l.Name)
 	}
-	if p.Reviews.PageInfo.HasPreviousPage {
-		reviews, err := c.PullRequestReviews(ctx, repo, number)
-		if err != nil {
-			return nil, err
+	seen := make(map[string]bool)
+	for _, r := range p.Reviews.Nodes {
+		seen[r.ID] = true
+	}
+	for _, r := range out.Limited {
+		if r.PullRequest != nil && r.PullRequest.ID == p.ID && r.State == "CHANGES_REQUESTED" && !seen[r.ID] {
+			p.Reviews.Nodes = append(p.Reviews.Nodes, r)
 		}
-		for _, r := range reviews {
-			d.Reviews = append(d.Reviews, Review{NodeID: r.NodeID, CommitSHA: r.CommitSHA, Author: r.Author, State: r.State, Body: r.Body, SubmittedAt: r.SubmittedAt})
+	}
+	for _, r := range p.Reviews.Nodes {
+		rv := Review{NodeID: r.ID, State: r.State, Body: r.Body}
+		if r.Author != nil {
+			rv.Author = r.Author.Login
 		}
-	} else {
-		for _, r := range p.Reviews.Nodes {
-			rv := Review{NodeID: r.ID, State: r.State, Body: r.Body}
-			if r.Author != nil {
-				rv.Author = r.Author.Login
-			}
-			if r.Commit != nil {
-				rv.CommitSHA = r.Commit.OID
-			}
-			if r.SubmittedAt != nil {
-				rv.SubmittedAt = *r.SubmittedAt
-			}
-			d.Reviews = append(d.Reviews, rv)
+		if r.Commit != nil {
+			rv.CommitSHA = r.Commit.OID
 		}
+		if r.SubmittedAt != nil {
+			rv.SubmittedAt = *r.SubmittedAt
+		}
+		d.Reviews = append(d.Reviews, rv)
 	}
 	sort.SliceStable(d.Reviews, func(i, j int) bool { return d.Reviews[i].SubmittedAt.Before(d.Reviews[j].SubmittedAt) })
 	for _, t := range p.ReviewThreads.Nodes {

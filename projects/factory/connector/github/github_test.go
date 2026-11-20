@@ -503,24 +503,26 @@ func TestPullRequestDetailQueueEvidence(t *testing.T) {
 }
 
 func TestPullRequestDetailIncludesOlderReviews(t *testing.T) {
+	calls := 0
 	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/graphql":
-			_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"id":"PR1","reviews":{"pageInfo":{"hasPreviousPage":true}}}}}}`))
-		case "/repos/example-org/homelab/pulls/5/reviews":
-			_, _ = w.Write([]byte(`[{"node_id":"old","state":"CHANGES_REQUESTED","commit_id":"head","body":"older feedback","user":{"login":"reviewer"}}]`))
-		default:
-			http.NotFound(w, r)
+		calls++
+		var req struct {
+			Query     string
+			Variables struct{ Limited []string }
 		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || r.URL.Path != "/graphql" || len(req.Variables.Limited) != 2 || !strings.Contains(req.Query, "nodes(ids: $limited)") {
+			t.Errorf("unexpected request to %s: %+v, %v", r.URL.Path, req, err)
+		}
+		_, _ = w.Write([]byte(`{"data":{"limited":[{"id":"old","state":"CHANGES_REQUESTED","pullRequest":{"id":"pr"},"commit":{"oid":"head"}},{"id":"dismissed","state":"DISMISSED","pullRequest":{"id":"pr"}}],"repository":{"pullRequest":{"id":"pr"}}}}`))
 	}))
 	defer gh.Close()
 	c := &Client{BaseURL: gh.URL, Tokens: fixedTokens{}}
-	d, err := c.PullRequestDetail(context.Background(), "example-org/homelab", 5)
+	d, err := c.PullRequestDetail(context.Background(), "example-org/homelab", 5, "old", "dismissed")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(d.Reviews) != 1 || d.Reviews[0].NodeID != "old" || d.Reviews[0].Body != "older feedback" {
-		t.Fatalf("reviews = %+v", d.Reviews)
+	if calls != 1 || len(d.Reviews) != 1 || d.Reviews[0].NodeID != "old" || d.Reviews[0].CommitSHA != "head" {
+		t.Fatalf("calls=%d reviews=%+v", calls, d.Reviews)
 	}
 }
 
