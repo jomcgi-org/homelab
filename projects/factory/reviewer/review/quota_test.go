@@ -613,7 +613,9 @@ func TestRestartThenPushEndsOldRootOnce(t *testing.T) {
 		failRead bool
 		failOnce bool
 		shared   bool
+		hidden   bool
 	}{
+		{name: "hold added while head stays shared", pushes: []string{sha40('b')}, shared: true, hidden: true},
 		{name: "shared head then incomplete listing", pushes: []string{sha40('b')}, shared: true},
 		{name: "failed read with newer completed hold", pushes: many[:21], failRead: true},
 		{name: "one push", pushes: []string{sha40('b')}},
@@ -653,16 +655,29 @@ func TestRestartThenPushEndsOldRootOnce(t *testing.T) {
 				if c := h.gh.check(shaA); c.Status != "in_progress" || len(reviewSpans(exporter)) != 0 {
 					t.Fatal("shared or unconfirmed head was cancelled")
 				}
-				h.gh.push(8, sha40('c'))
+				if tc.hidden {
+					h.gh.addCheck(shaA, "factory review", testAppID, ConclusionFailure)
+					e.recoverRoots(ctx, &e.cfg.Bindings[0], prs, true)
+					e.recoverRoots(ctx, &e.cfg.Bindings[0], prs, true)
+					if h.gh.check(shaA).Conclusion != ConclusionFailure {
+						t.Fatal("newer hold changed")
+					}
+				} else {
+					h.gh.push(8, sha40('c'))
+				}
 			}
-			e.Tick(ctx)
+			if !tc.hidden {
+				e.Tick(ctx)
+			}
 			if tc.failOnce || tc.failRead {
 				if c := h.gh.checksOn(shaA)[0]; c.Status == "completed" || len(reviewSpans(exporter)) != 0 {
 					t.Fatal("old root completed despite the refused request")
 				}
 				h.gh.failWith(update, 0)
 			}
-			e.Tick(ctx)
+			if !tc.hidden {
+				e.Tick(ctx)
+			}
 			stop()
 			if tc.failRead && h.gh.check(shaA).Conclusion != ConclusionFailure {
 				t.Fatal("recovery changed the newer completed check")

@@ -1934,7 +1934,7 @@ func (e *Engine) previousState(ctx context.Context, b *Binding, pr github.PullRe
 
 type rootScan struct {
 	head, before string
-	shared       map[string]bool
+	revisit      bool
 }
 
 // invariant: FACT-13
@@ -1953,15 +1953,8 @@ func (e *Engine) recoverRoots(ctx context.Context, b *Binding, prs []github.Pull
 		key := prKey{b.Name, pr.Number}
 		listed[key] = true
 		scan := e.rootScans[key]
-		// Rescan when a formerly shared head becomes eligible for cancellation.
-		for sha := range scan.shared {
-			if !openHeads[sha] {
-				scan = rootScan{}
-				break
-			}
-		}
-		if scan.head != pr.HeadSHA {
-			scan = rootScan{head: pr.HeadSHA, shared: map[string]bool{}}
+		if scan.head != pr.HeadSHA || (scan.before == "" && scan.revisit) {
+			scan = rootScan{head: pr.HeadSHA}
 		} else if scan.before == "" {
 			continue
 		}
@@ -1970,7 +1963,7 @@ func (e *Engine) recoverRoots(ctx context.Context, b *Binding, prs []github.Pull
 			e.ghError(ctx, e.prLog(b, pr), b, "pull_request_heads", err)
 			continue
 		}
-		if !e.endPreviousHead(ctx, b, pr, page, openHeads, scan.shared) {
+		if !e.endPreviousHead(ctx, b, pr, page, openHeads, &scan) {
 			continue
 		}
 		scan.before = ""
@@ -1992,7 +1985,7 @@ func (e *Engine) recoverRoots(ctx context.Context, b *Binding, prs []github.Pull
 // wait and pushes that replaced the head before the restart: complete ends
 // each recorded root once. Only heads flagged by the filtered check query need a REST read.
 // A refused read or completion leaves the page eligible for retry.
-func (e *Engine) endPreviousHead(ctx context.Context, b *Binding, pr github.PullRequest, hist *github.HeadHistory, openHeads, shared map[string]bool) bool {
+func (e *Engine) endPreviousHead(ctx context.Context, b *Binding, pr github.PullRequest, hist *github.HeadHistory, openHeads map[string]bool, scan *rootScan) bool {
 	readAll := true
 	seen := map[string]bool{pr.HeadSHA: true}
 	for i := len(hist.Heads) - 1; i >= 0; i-- {
@@ -2001,13 +1994,19 @@ func (e *Engine) endPreviousHead(ctx context.Context, b *Binding, pr github.Pull
 			continue
 		}
 		seen[prev] = true
-		if openHeads[prev] {
-			shared[prev] = true
-			continue
-		}
 		key := headKey{b.Name, prev}
 		if e.isRunning(key) {
+			scan.revisit = true
 			continue
+		}
+		var current *github.CheckRun
+		if openHeads[prev] {
+			var err error
+			current, err = e.reviewCheck(ctx, b, prev)
+			if err != nil || current == nil {
+				readAll = false
+				continue
+			}
 		}
 		l := e.log.With("binding", b.Name, "repo", b.repo(), "pr", pr.Number, "sha", prev)
 		runs, err := e.gh.ListCheckRuns(ctx, b.repo(), prev, github.CheckRunFilter{Name: e.cfg.CheckName, AppID: e.cfg.AppID, All: true, Status: "in_progress"})
@@ -2022,6 +2021,12 @@ func (e *Engine) endPreviousHead(ctx context.Context, b *Binding, pr github.Pull
 				continue
 			}
 			if _, ok := resumedTrace(run); !ok {
+				continue
+			}
+			// A shared SHA still uses the latest check. An older run hidden
+			// beneath it can finish without changing the visible check.
+			if current != nil && run.ID >= current.ID {
+				scan.revisit = true
 				continue
 			}
 			if !e.complete(ctx, b, run, Outcome{Conclusion: ConclusionCancelled, Output: github.CheckRunOutput{Title: "Review cancelled", Summary: "A newer head of the PR replaced this one."}}, l) {
@@ -3303,13 +3308,15 @@ func (e *Engine) complete(ctx context.Context, b *Binding, run *github.CheckRun,
 		// A check completed outside its review worker (for example a
 		// superseded head) ends that review's parked root.
 		key := headKey{b.Name, run.HeadSHA}
-		if !e.endParked(func(p *parkedRoot) bool { return p.key == key }, o.Conclusion) {
-			if ts, ok := resumedTrace(run); ok {
-				// An earlier process stopped during this review.
-				_, root := restoreRoot(ctx, ts, github.PullRequest{Number: ts.PR, HeadSHA: run.HeadSHA})
-				root.SetAttributes(attribute.String("review.verdict", o.Conclusion))
-				root.End()
-			}
+		ts, recorded := resumedTrace(run)
+		ended := e.endParked(func(p *parkedRoot) bool {
+			return p.key == key && (!recorded || formatParent(p.usage.span.SpanContext()) == ts.Parent)
+		}, o.Conclusion)
+		if !ended && recorded {
+			// An earlier process stopped during this review.
+			_, root := restoreRoot(ctx, ts, github.PullRequest{Number: ts.PR, HeadSHA: run.HeadSHA})
+			root.SetAttributes(attribute.String("review.verdict", o.Conclusion))
+			root.End()
 		}
 	}
 	e.m.ReviewsCompleted.WithLabelValues(b.Name, o.Conclusion).Inc()
