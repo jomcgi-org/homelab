@@ -4,7 +4,7 @@ CREATE DATABASE claims_test;
 CREATE ROLE kagent_owner;
 CREATE ROLE kagent_readwrite;
 CREATE ROLE kagent_owner_user LOGIN NOINHERIT IN ROLE kagent_owner;
-GRANT CREATE ON DATABASE claims_test TO kagent_owner;
+CREATE SCHEMA kagent AUTHORIZATION kagent_owner;
 SET SESSION AUTHORIZATION kagent_owner_user;
 BEGIN;
 \ir setup.psql

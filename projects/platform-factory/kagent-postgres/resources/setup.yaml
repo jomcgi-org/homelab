@@ -1,5 +1,5 @@
 # invariant: KAGENT-PG-1
-# The setup Job connects as the database owner and the migration login.
+# The setup Job connects with the migration login.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -165,19 +165,11 @@ spec:
           # The instances' image, for a matching psql.
           image: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
           command:
-            - sh
-            - -ec
-            - |
-              revoke_create() {
-                psql -Xv ON_ERROR_STOP=1 -c 'REVOKE CREATE ON DATABASE kagent FROM kagent_owner'
-              }
-              psql -Xv ON_ERROR_STOP=1 -c 'REVOKE CREATE ON SCHEMA public FROM PUBLIC' \
-                -c 'GRANT CREATE ON DATABASE kagent TO kagent_owner'
-              trap revoke_create EXIT
-              PGUSER=kagent_owner_user PGPASSWORD="$KAGENT_OWNER_PASSWORD" \
-                psql -Xv ON_ERROR_STOP=1 --single-transaction -f /scripts/setup.psql
-              revoke_create
-              trap - EXIT
+            - psql
+            - --no-psqlrc
+            - --set=ON_ERROR_STOP=1
+            - --single-transaction
+            - --file=/scripts/setup.psql
           env:
             - name: PGHOST
               value: kagent-pg-rw
@@ -186,16 +178,8 @@ spec:
             - name: PGSSLMODE
               value: require
             - name: PGUSER
-              valueFrom:
-                secretKeyRef:
-                  name: kagent-pg-app
-                  key: username
+              value: kagent_owner_user
             - name: PGPASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: kagent-pg-app
-                  key: password
-            - name: KAGENT_OWNER_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: kagent-pg-logins
