@@ -347,7 +347,6 @@ cmd_test() {
 
 	local -a test_flags=(
 		--config=ci
-		--deleted_packages=bazel/tools/python
 	)
 	local -a remote_args=()
 	if [[ ${#targets[@]} -eq 0 ]]; then
@@ -370,7 +369,7 @@ cmd_test() {
 	source "$ROOT/bazel/tools/ci/runner-resources.env"
 	: "${CI_RUNNER_DISK:?missing runner disk}" "${CI_RUNNER_CPU:?missing runner cpu}" "${CI_RUNNER_MEMORY:?missing runner memory}"
 	#
-	# Parity with CI was previously argv-only: targets, --config, --deleted_packages
+	# Parity with CI was previously argv-only: targets and --config
 	# and --test_tag_filters all matched, but resource requests live in the YAML
 	# rather than the bazel command line, so they were never mirrored and this path
 	# silently took the much smaller default runner disk. //... pulls an external

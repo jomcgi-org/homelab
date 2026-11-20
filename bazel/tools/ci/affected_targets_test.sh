@@ -471,7 +471,7 @@ git config user.name "T"
 setup_args
 log="$TMP/args.log"
 rm -f "$log"
-BAZEL="$FAKE_BAZEL" BAZEL_LOG_FILE="$log" "$SCRIPT" "origin/main" "HEAD" -- --config=ci --deleted_packages=bazel/tools/python >/dev/null 2>&1 || true
+BAZEL="$FAKE_BAZEL" BAZEL_LOG_FILE="$log" "$SCRIPT" "origin/main" "HEAD" -- --config=ci >/dev/null 2>&1 || true
 grep -q "\-\-config=ci" "$log" && pass "args_passthrough" || fail "args_passthrough" "args missing"
 
 # base -- args form (no explicit head) must not take "--" as the head ref

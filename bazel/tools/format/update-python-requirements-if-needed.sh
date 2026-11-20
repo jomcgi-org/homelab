@@ -9,9 +9,8 @@ if bazel test //bazel/requirements:runtime_test 2>/dev/null; then
 fi
 
 echo "Python requirements out of sync, regenerating..."
-bazel run //bazel/requirements:runtime
-bazel run //bazel/requirements:requirements.all
+"$(dirname "$0")/update-python-requirements.sh"
 
 # Stage the updated lock files
-git add bazel/requirements/*.txt 2>/dev/null || true
+git add bazel/requirements/*.txt bazel/tools/python/gazelle_python.yaml
 echo "✓ Python requirements updated and staged"
