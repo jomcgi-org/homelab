@@ -175,10 +175,11 @@ func TestChoicesItemIndentation(t *testing.T) {
 		items string
 		want  int
 	}{
+		{"1. Ship (Recommended)\n2. Hold", 2},
 		{"1. Ship (Recommended)\n   2. Hold", 0},
-		{"1. Ship (Recommended)\n  2. Hold", 2},
-		{" 1. Ship (Recommended)\n   2. Hold", 2},
-		{"1.  Ship (Recommended)\n   2. Hold", 2},
+		{"1. Ship (Recommended)\n  2. Hold", 0},
+		{" 1. Ship (Recommended)\n   2. Hold", 0},
+		{"1.  Ship (Recommended)\n   2. Hold", 0},
 	} {
 		if got := len(parseChoices("## Choices\n" + tc.items)); got != tc.want {
 			t.Errorf("%q: got %d choices, want %d", tc.items, got, tc.want)
