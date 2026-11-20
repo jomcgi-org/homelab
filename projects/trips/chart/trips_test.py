@@ -50,3 +50,9 @@ def test_enabled_workloads_keep_private_and_public_capabilities_separate():
     ]
     ingest = docs["Deployment", "trips-ingest"]["spec"]["template"]["spec"]
     assert "envFrom" not in ingest["containers"][0]
+
+
+def test_namespace_policy():
+    docs = render_trips("--namespace", "trips")
+    for kind in ("ResourceQuota", "LimitRange"):
+        assert docs[kind, "trips"]["metadata"]["namespace"] == "trips"
