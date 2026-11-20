@@ -879,3 +879,34 @@ kubectl_deps.gazelle_override(
 use_repo(kubectl_deps, wasm_cli = "io_k8s_cli_runtime", wasm_client = "io_k8s_client_go", wasm_cobra = "com_github_spf13_cobra", wasm_kubectl = "io_k8s_kubectl", wasm_repo_config = "bazel_gazelle_go_repository_config")
 
 use_repo(go_sdk, wasm_go_sdk = "main___download_0_linux_amd64")
+
+# CPU-only forecasting dependencies stay out of the shared Python hub.
+pip.parse(
+    hub_name = "capacity_forecast_pip",
+    python_version = "3.13",
+    requirements_lock = "//projects/capacity-forecast:requirements.txt",
+)
+use_repo(pip, "capacity_forecast_pip")
+
+http_archive(
+    name = "timestral_source",
+    build_file = "//projects/capacity-forecast:timestral.BUILD",
+    sha256 = "be734f502f88e95b138558d765f3ad3b3ac8d2662270f9cf8b03138359828150",
+    strip_prefix = "timestral-a534bdbd244d64f3d9d743f46c7bf6fc330ed4ff",
+    type = "tar.gz",
+    urls = ["https://codeload.github.com/mistralai/timestral/tar.gz/a534bdbd244d64f3d9d743f46c7bf6fc330ed4ff"],
+)
+
+[
+    http_file(
+        name = name,
+        downloaded_file_path = filename,
+        sha256 = sha256,
+        urls = ["https://huggingface.co/mistralai/Timestral-5M/resolve/bdd20cfc15a3fea0e4cb5ccef37f8d3ca7aa335f/" + filename],
+    )
+    for name, filename, sha256 in [
+        ("timestral_config", "config.json", "b5f27f61513f8fd1a3aa996f3720d3679cb40bce5bcb08eb3dc320ce726e7c2f"),
+        ("timestral_weights", "model.safetensors", "7ace108c4987e7f2a99a75a445240019d1d31c2117139d1bd05ffdfd25aca738"),
+        ("timestral_license", "LICENSE", "648194727930df730890e9f9affdbcc5c930d406d6829559b25ca3d5a973fc8c"),
+    ]
+]
