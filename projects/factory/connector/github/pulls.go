@@ -1155,7 +1155,7 @@ func (c *Client) RevertedMerge(ctx context.Context, repo, branch, sha string, nu
 				Committer struct{ Date time.Time }
 			}
 		}
-		if err := c.send(ctx, repo, http.MethodGet, repoPath(repo)+"/commits?"+q.Encode(), nil, &commits, false, func() error { return before(page) }); err != nil {
+		if err := c.send(ctx, repo, http.MethodGet, repoPath(repo)+"/commits?"+q.Encode(), nil, &commits, false, sendPolicy{before: func() error { return before(page) }}); err != nil {
 			return nil, err
 		}
 		for _, commit := range commits {

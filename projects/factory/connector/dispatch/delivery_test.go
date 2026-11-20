@@ -357,7 +357,17 @@ func (g *fakeGitHub) Compare(_ context.Context, _, _, head string) (*github.Comp
 	return &github.Comparison{AheadBy: b.ahead, HeadSHA: b.head, HeadSubject: b.subject}, nil
 }
 
-func (g *fakeGitHub) PullRequestDetail(_ context.Context, _ string, number int, limited ...string) (*github.PullRequestDetail, error) {
+func (g *fakeGitHub) PullRequestDetail(ctx context.Context, repo string, number int) (*github.PullRequestDetail, error) {
+	return g.PullRequestDetailWithReviews(ctx, repo, number, nil, nil)
+}
+
+func (g *fakeGitHub) PullRequestDetailWithReviews(_ context.Context, _ string, number int, limited []string, before func() error) (*github.PullRequestDetail, error) {
+	if before != nil {
+		if err := before(); err != nil {
+			return nil, err
+		}
+	}
+
 	if g.onRead != nil {
 		g.onRead("detail", fmt.Sprint(number))
 	}

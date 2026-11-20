@@ -228,28 +228,33 @@ func (c *Client) base() string {
 // do sends one call with the repository's token. A 401 drops the cached
 // token and tries once more with a fresh one.
 func (c *Client) do(ctx context.Context, repo, method, path string, body, out any) error {
-	return c.send(ctx, repo, method, path, body, out, true, nil)
+	return c.send(ctx, repo, method, path, body, out, true, sendPolicy{})
 }
 
 // doUncached is do without the ETag cache, for large reads of immutable
 // resources that would only crowd it.
 func (c *Client) doUncached(ctx context.Context, repo, method, path string, body, out any) error {
-	return c.send(ctx, repo, method, path, body, out, false, nil)
+	return c.send(ctx, repo, method, path, body, out, false, sendPolicy{})
 }
 
-func (c *Client) send(ctx context.Context, repo, method, path string, body, out any, cache bool, before func() error) error {
+type sendPolicy struct {
+	before         func() error
+	retryForbidden bool
+}
+
+func (c *Client) send(ctx context.Context, repo, method, path string, body, out any, cache bool, policy sendPolicy) error {
 	for try := 0; ; try++ {
 		if err := c.RateLimit.check(path); err != nil {
 			return err
 		}
-		if before != nil {
-			if err := before(); err != nil {
+		if policy.before != nil {
+			if err := policy.before(); err != nil {
 				return err
 			}
 		}
 		err := c.once(ctx, repo, method, path, body, out, cache)
 		var h *HTTPError
-		if try == 0 && errors.As(err, &h) && h.Status == http.StatusUnauthorized {
+		if try == 0 && errors.As(err, &h) && (h.Status == http.StatusUnauthorized || (policy.retryForbidden && h.Status == http.StatusForbidden)) {
 			c.Tokens.Invalidate(repo)
 			continue
 		}
@@ -512,11 +517,15 @@ type gqlError struct {
 }
 
 func (c *Client) graphql(ctx context.Context, repo, query string, vars map[string]any, out any) error {
+	return c.graphqlWithPolicy(ctx, repo, query, vars, out, sendPolicy{})
+}
+
+func (c *Client) graphqlWithPolicy(ctx context.Context, repo, query string, vars map[string]any, out any, policy sendPolicy) error {
 	var resp struct {
 		Data   json.RawMessage `json:"data"`
 		Errors []gqlError      `json:"errors"`
 	}
-	if err := c.do(ctx, repo, http.MethodPost, "/graphql", map[string]any{"query": query, "variables": vars}, &resp); err != nil {
+	if err := c.send(ctx, repo, http.MethodPost, "/graphql", map[string]any{"query": query, "variables": vars}, &resp, false, policy); err != nil {
 		return err
 	}
 	if len(resp.Errors) > 0 {
@@ -565,7 +574,14 @@ type oid struct {
 
 // PullRequestDetail reads a PR's state, merge queue entry, labels, reviews
 // and review threads with GraphQL.
-func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int, limited ...string) (*PullRequestDetail, error) {
+func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int) (*PullRequestDetail, error) {
+	return c.PullRequestDetailWithReviews(ctx, repo, number, nil, nil)
+}
+
+func (c *Client) PullRequestDetailWithReviews(ctx context.Context, repo string, number int, limited []string, before func() error) (*PullRequestDetail, error) {
+	if len(limited) > 0 && before == nil {
+		return nil, errors.New("targeted review read requires an attempt callback")
+	}
 	owner, name, _ := strings.Cut(repo, "/")
 	type reviewNode struct {
 		ID          string     `json:"id"`
@@ -642,7 +658,7 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int,
 			} `json:"pullRequest"`
 		} `json:"repository"`
 	}
-	if err := c.graphql(ctx, repo, pullRequestQuery, map[string]any{"owner": owner, "name": name, "number": number, "limited": limited}, &out); err != nil {
+	if err := c.graphqlWithPolicy(ctx, repo, pullRequestQuery, map[string]any{"owner": owner, "name": name, "number": number, "limited": limited}, &out, sendPolicy{before: before, retryForbidden: len(limited) > 0}); err != nil {
 		return nil, err
 	}
 	p := out.Repository.PullRequest
