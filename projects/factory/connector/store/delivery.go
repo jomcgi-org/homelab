@@ -230,6 +230,8 @@ type ReviewEvent struct {
 	RoundRunID  int64
 }
 
+// invariant: FACT-13
+
 // SeenEvents returns recorded node IDs, excluding retryable events on the current head.
 func (s *Store) SeenEvents(ctx context.Context, nodeIDs []string, head string, retryLimited bool) (map[string]bool, error) {
 	seen := map[string]bool{}
