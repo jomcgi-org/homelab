@@ -129,7 +129,7 @@ after dispatch begins, not a guarantee of delivery.
 ## FactoryConnectorStalled
 
 Check connector logs for admission, send and tick errors. Compare
-`factory_connector_dispatched_runs` by agent with the configured concurrency.
+`factory_connector_busy_runs` by agent with the configured concurrency.
 If all slots are occupied, inspect those runs' task progress and lease
 deadlines. If slots are free, inspect the oldest runnable run and its latest
 send outcome. An accepted send or an empty runnable queue clears the alert.
