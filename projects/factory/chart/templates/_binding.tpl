@@ -235,7 +235,7 @@ spec:
     - name: Authorization
       valueFrom:
         type: Secret
-        name: {{ $server.secret | quote }}
+        name: {{ ternary "hindsight-recall" $server.secret (and (eq $server.name "memory") (eq $r.name "homelab") (eq $server.secret "hindsight-mcp")) | quote }}
         key: token
 {{- end }}
 {{- $ctx := . }}
@@ -327,7 +327,7 @@ spec:
             server:
               kind: RemoteMCPServer
               name: {{ ternary "memory" ($server.name | quote) (eq $server.name "memory") }}
-            tools: {{ $server.tools | toJson }}
+            tools: {{ ternary (list "recall") $server.tools (eq $server.name "memory") | toJson }}
         {{- end }}
       {{- end }}
   harnessRef:
