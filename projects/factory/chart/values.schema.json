@@ -1115,7 +1115,7 @@
                 "type": "array",
                 "minItems": 1,
                 "uniqueItems": true,
-                "items": { "enum": ["recall", "retain"] }
+                "items": { "enum": ["recall"] }
               }
             }
           },

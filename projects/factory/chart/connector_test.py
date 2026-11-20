@@ -498,6 +498,18 @@ def test_policy_egress_only_to_its_peers() -> None:
             [
                 {
                     "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "hindsight",
+                        "app.kubernetes.io/name": "hindsight",
+                    }
+                }
+            ],
+            None,
+            "8888",
+        ),
+        (
+            [
+                {
+                    "matchLabels": {
                         "k8s:io.kubernetes.pod.namespace": "factory",
                         "app.kubernetes.io/name": "factory-itsaplan",
                         "app.kubernetes.io/instance": "factory",

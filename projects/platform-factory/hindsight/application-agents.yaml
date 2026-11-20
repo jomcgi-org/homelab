@@ -29,6 +29,10 @@ spec:
       kind: Secret
       name: hindsight-mcp
       jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      name: hindsight-connector
+      jsonPointers: [/data]
   syncPolicy:
     automated:
       prune: true

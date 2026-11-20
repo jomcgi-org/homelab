@@ -2074,6 +2074,9 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 				return err
 			}
 			if state == kagent.StateCompleted {
+				if err := saveLesson(ctx, tx, wi.ID, res.Output); err != nil {
+					return err
+				}
 				// The turn finished; delivery opens or updates the PR from the
 				// pushed branch. The issue is Done only once the merge is seen.
 				if err := e.st.FinishTurn(ctx, tx, wi.ID, a.ID); err != nil {
@@ -2769,6 +2772,8 @@ func (e *Engine) refused(ctx context.Context, it *store.OutboxItem, err error) b
 
 func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 	switch it.Kind {
+	case "retain":
+		return e.retainLesson(ctx, it)
 	case store.OutboxDeferredStart:
 		return e.deliverDeferred(ctx, it)
 	case store.OutboxComment:

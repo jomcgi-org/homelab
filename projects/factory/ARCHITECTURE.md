@@ -153,9 +153,9 @@ the endpoint and read tools.
 
 `repositories[].memory` binds one coding binding's Agent to Hindsight
 (`projects/platform-factory/hindsight`) as RemoteMCPServer `memory`, limited
-to `recall` and `retain`, and adds `chart/files/memory-prompt.txt` to its
-prompt: recall before planning, retain lessons with their issue, PR or commit
-and supporting evidence, and revalidate recalled claims against current code. Review bindings do not inherit it. The
+to `recall`. Hindsight wraps recalled text in an untrusted block. The memory prompt asks
+the coder for an optional lesson and head SHA in its final result. On observing
+that head merge, the connector queues the lesson with issue and PR tags. Review bindings do not inherit it. The
 `homelab` coding binding uses bank `homelab`
 ([HOME-185](https://factory-plan.jomcgi.dev/factory/issue/HOME-185)).
 
@@ -241,8 +241,8 @@ the next sync. `POST .../import?dry_run=true` validates a manifest without
 changing anything. A new project needs a new `app` value.
 
 Two keys separate the callers. The REST API takes only the tenant key, which
-only namespace `hindsight` holds: the API pod, and the Jobs that create the
-key and apply the bank template. MCP maps the homelab binding token to the homelab bank and registers only `recall` and `retain`
+the Hindsight workloads and the connector hold. MCP maps the homelab
+binding token to the homelab bank and registers only `recall`
 (`HINDSIGHT_API_MCP_ENABLED_TOOLS`), so a caller with the token can neither
 reach REST nor list, delete or reflect. The `hindsight-keys` Jobs generate both
 keys once and copy the token into the binding's `hindsight-mcp` Secret, which

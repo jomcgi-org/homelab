@@ -1071,7 +1071,7 @@ _MEMORY = [
     "repositories[0].memory.url="
     "http://hindsight-api.hindsight.svc.cluster.local:8888/mcp/homelab/",
     "repositories[0].memory.secret=hindsight-mcp",
-    "repositories[0].memory.tools={recall,retain}",
+    "repositories[0].memory.tools={recall}",
 ]
 
 
@@ -1108,14 +1108,14 @@ def test_memory_is_opt_in_and_binds_only_the_named_tools(tmp_path: Path) -> None
         {
             "mcp": {
                 "server": {"kind": "RemoteMCPServer", "name": "memory"},
-                "tools": ["recall", "retain"],
+                "tools": ["recall"],
             }
         }
     ]
     prompt = (_CHART_DIR / "files" / "memory-prompt.txt").read_text()
     assert inline["systemPrompt"].endswith("\n" + prompt)
     with pytest.raises(RuntimeError, match="memory"):
-        _render([*_MEMORY, "repositories[0].memory.tools={recall,reflect}"])
+        _render([*_MEMORY, "repositories[0].memory.tools={recall,retain}"])
 
 
 def test_memory_stays_off_the_review_binding() -> None:

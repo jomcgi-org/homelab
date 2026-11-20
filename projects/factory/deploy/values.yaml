@@ -162,7 +162,7 @@ repositories:
     memory:
       url: http://hindsight-api.hindsight.svc.cluster.local:8888/mcp/homelab/
       secret: hindsight-mcp
-      tools: [recall, retain]
+      tools: [recall]
 
 # itsaplan at factory-plan.jomcgi.dev, behind the edge's Authentik sign-in.
 # Its database is factory-db (projects/platform-factory/factory-db), whose

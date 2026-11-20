@@ -1,14 +1,18 @@
+// invariant: FACT-13
 // invariant: FACT-10
 // invariant: FACT-11
 package dispatch
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -1845,6 +1849,26 @@ func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 			commentPayload{IssueID: wi.IssueID, Body: body}); err != nil {
 			return err
 		}
+		if b.repo() == os.Getenv("FACTORY_MEMORY_REPO") {
+			var lesson string
+			err := tx.QueryRowContext(ctx, `SELECT lesson FROM merge_lesson WHERE work_item_id=$1 AND head_sha=$2`, wi.ID, d.HeadSHA).Scan(&lesson)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if lesson != "" {
+				doc := b.repo() + "#" + strconv.Itoa(pr.Number)
+				item := map[string]any{
+					"content":     lesson,
+					"document_id": doc,
+					"update_mode": "replace",
+					"tags":        []string{"issue:" + wi.IssueKey, "pr:" + doc},
+				}
+				payload := map[string]any{"async": true, "items": []any{item}}
+				if err := e.st.Enqueue(ctx, tx, "retain", "retain/"+doc, 0, "", payload); err != nil {
+					return err
+				}
+			}
+		}
 		if activation != "none" {
 			return e.st.Enqueue(ctx, tx, store.OutboxActivation, fmt.Sprintf("activation/%d", wi.ID), 0, "",
 				activationPayload{
@@ -2258,4 +2282,45 @@ func (e *Engine) startQueueAction(ctx context.Context, wi *store.WorkItem, pr *s
 		tracing.Finish(span, result, action)
 	}
 	return actionCtx, span, finish
+}
+
+var lessonHead = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+func saveLesson(ctx context.Context, tx *sql.Tx, workID int64, output string) error {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	var field struct{ Head, Lesson string }
+	if json.Unmarshal([]byte(lines[len(lines)-1]), &field) != nil || !lessonHead.MatchString(field.Head) {
+		return nil
+	}
+	field.Lesson = strings.TrimSpace(field.Lesson)
+	if field.Lesson == "" || len(field.Lesson) > 4096 || strings.ContainsRune(field.Lesson, 0) {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO merge_lesson(work_item_id,head_sha,lesson) VALUES($1,$2,$3) ON CONFLICT(work_item_id,head_sha) DO UPDATE SET lesson=excluded.lesson`, workID, field.Head, field.Lesson)
+	return err
+}
+
+func (e *Engine) retainLesson(ctx context.Context, it *store.OutboxItem) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, os.Getenv("FACTORY_MEMORY_URL"), bytes.NewReader(it.Payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("FACTORY_MEMORY_KEY"))
+	req.Header.Set("Content-Type", "application/json")
+	if err := e.st.OutboxSendStarted(ctx, it.ID); err != nil {
+		return err
+	}
+	if err := e.guard(ctx); err != nil {
+		return err
+	}
+	client := http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("retain lesson: HTTP %d", resp.StatusCode)
+	}
+	return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)
 }

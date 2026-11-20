@@ -59,6 +59,18 @@ spec:
             - port: "443"
               protocol: TCP
     {{- end }}
+    {{- range .Values.repositories }}
+    {{- if and .memory (eq .name "homelab") }}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: hindsight
+            app.kubernetes.io/name: hindsight
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
+    {{- end }}
+    {{- end }}
     # itsaplan's runner and coordinator routes.
     - toEndpoints:
         - matchLabels:

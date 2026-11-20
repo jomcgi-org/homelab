@@ -223,6 +223,19 @@ spec:
           image: {{ include "factory.connectorImage" . | quote }}
           imagePullPolicy: {{ $c.image.pullPolicy }}
           env:
+            {{- range .Values.repositories }}
+            {{- if and .memory (eq .name "homelab") }}
+            - name: FACTORY_MEMORY_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-connector
+                  key: token
+            - name: FACTORY_MEMORY_REPO
+              value: {{ printf "%s/%s" .owner .repo | quote }}
+            - name: FACTORY_MEMORY_URL
+              value: http://hindsight-api.hindsight.svc.cluster.local:8888/v1/default/banks/homelab/memories
+            {{- end }}
+            {{- end }}
             {{- with $c.traceEndpoint }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ . | quote }}
