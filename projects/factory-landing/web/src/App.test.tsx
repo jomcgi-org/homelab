@@ -220,6 +220,11 @@ it("confirms a displayed choice once and returns from an emptied last page", asy
   try {
     renderApp();
     fireEvent.click(await screen.findByRole("button", { name: "Next" }));
+    expect(
+      screen
+        .getByRole("link", { name: "Open HOME-6 in itsaplan" })
+        .getAttribute("href"),
+    ).toBe(status.needsYou[0]!.url);
     fireEvent.click(screen.getByRole("button", { name: /HOME-6/ }));
     const recommended = screen.getByRole("button", {
       name: "Keep (Recommended)",
@@ -241,5 +246,38 @@ it("confirms a displayed choice once and returns from an emptied last page", asy
     expect(screen.getByRole("button", { name: /HOME-1/ })).toBeTruthy();
   } finally {
     confirm.mockRestore();
+  }
+});
+
+it("offers the same choices again after the issue leaves Needs you", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));
+  const item = {
+    ...status.needsYou[0],
+    choices: ["Proceed"],
+    choiceRevision: "b".repeat(64),
+  };
+  const snapshot = (needsYou: (typeof item)[]) =>
+    Response.json({ ...status, needsYou });
+  vi.mocked(fetch)
+    .mockResolvedValueOnce(snapshot([item]))
+    .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    .mockResolvedValueOnce(snapshot([item]))
+    .mockResolvedValueOnce(snapshot([]))
+    .mockResolvedValueOnce(snapshot([item]));
+  await act(async () => {
+    renderApp();
+  });
+  fireEvent.click(screen.getByRole("button", { name: /HOME-20/ }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /Recommended/ }));
+  });
+  for (const expected of [false, false, true]) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(Boolean(screen.queryByRole("button", { name: /HOME-20/ }))).toBe(
+      expected,
+    );
   }
 });

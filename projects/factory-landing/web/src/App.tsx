@@ -75,6 +75,18 @@ export function App() {
         if (!response.ok) throw new Error("Status unavailable");
         const next = parseStatus(await response.json());
         if (active && !request.signal.aborted) {
+          if (next.needsYou) {
+            const revisions = new Map(
+              next.needsYou.map((item) => [item.key, item.choiceRevision]),
+            );
+            setAnswered((previous) =>
+              Object.fromEntries(
+                Object.entries(previous).filter(
+                  ([key, revision]) => revisions.get(key) === revision,
+                ),
+              ),
+            );
+          }
           setStatus(next);
           setFailed(false);
         }
@@ -147,7 +159,8 @@ export function App() {
                           }
                         >
                           <span className="key">{item.key}:</span> {item.title}
-                        </button>
+                        </button>{" "}
+                        <a href={item.url}>Open {item.key} in itsaplan</a>
                         {expanded === item.key && (
                           <div className="decision-choices">
                             {item.choices.map((choice, index) => (
