@@ -400,6 +400,8 @@ discord:
       current facts, and say when you are not sure. You have no other tools:
       you cannot run code, change anything, moderate or ping anyone.
   bridge:
+    # Enable after all eligible bridge nodes redact Authorization in Hubble.
+    enforceAgentPath: false
     # The gateway connection. Turn it on only after the bot token exists and
     # the hub monolith's bot is off, so no message gets two replies.
     enabled: false
