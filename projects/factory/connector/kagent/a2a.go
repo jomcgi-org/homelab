@@ -240,7 +240,7 @@ type rpcError struct {
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
-func sendNotAccepted(data json.RawMessage) bool {
+func hasSendReason(data json.RawMessage, reason string) bool {
 	var details []struct {
 		Type     string            `json:"@type"`
 		Domain   string            `json:"domain"`
@@ -250,7 +250,7 @@ func sendNotAccepted(data json.RawMessage) bool {
 		return false
 	}
 	for _, d := range details {
-		if d.Type == "type.googleapis.com/google.rpc.ErrorInfo" && d.Domain == "a2a-protocol.org" && d.Metadata["reason"] == "KAGENT_SEND_NOT_ACCEPTED" {
+		if d.Type == "type.googleapis.com/google.rpc.ErrorInfo" && d.Domain == "a2a-protocol.org" && d.Metadata["reason"] == reason {
 			return true
 		}
 	}
@@ -351,9 +351,9 @@ func (c *A2A) callProjected(ctx context.Context, agent AgentRef, method string, 
 	}
 	if r.Error != nil {
 		switch {
-		case method == "SendMessage" && r.Error.Code == -32004 && sendNotAccepted(r.Error.Data):
+		case method == "SendMessage" && r.Error.Code == -32004 && hasSendReason(r.Error.Data, "KAGENT_WORKER_CAPACITY"):
 			return fmt.Errorf("%w: %s", ErrPlacementWait, r.Error.Message)
-		case method == "SendMessage" && r.Error.Code == -32603 && sendNotAccepted(r.Error.Data):
+		case method == "SendMessage" && r.Error.Code == -32603 && hasSendReason(r.Error.Data, "KAGENT_SEND_NOT_ACCEPTED"):
 			return fmt.Errorf("%w: %s", ErrNotAccepted, r.Error.Message)
 		case r.Error.Code == -32001:
 			return fmt.Errorf("%w: %s", ErrTaskNotFound, r.Error.Message)
