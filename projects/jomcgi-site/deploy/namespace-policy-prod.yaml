@@ -1,0 +1,30 @@
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: jomcgi-site-prod
+  namespace: jomcgi-site-prod
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  hard:
+    limits.memory: 8Gi
+    pods: "20"
+    requests.cpu: "2"
+    requests.memory: 4Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: jomcgi-site-prod
+  namespace: jomcgi-site-prod
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      default:
+        memory: 512Mi

@@ -9,9 +9,12 @@
    `projects/scotland-connector/factory/resources`. The Grimoire data
    Application syncs its pair from
    `projects/platform-factory/grimoire-data/resources/kustomization.yaml`.
+   The factory root syncs the production site pair through
+   `projects/jomcgi-site/deploy/kustomization.yaml` at wave 5, after the
+   production Application at wave 4. Its chart values disable the helper so
+   the root retains ownership across Worker promotions.
    The other application namespaces receive the pair from their Helm releases.
-   After publication and dev verification, promote the same jomcgi-site chart
-   through `projects/jomcgi-site/deploy/application-prod.yaml`. After sync,
+   After the root and the affected chart releases sync,
    run the following for factory-explore, factory-explore-site, factory-landing,
    factory-public, grimoire, hikes, jomcgi-site-dev, jomcgi-site-prod,
    scotland-connector, ships and stars-forecast. Check controller events since

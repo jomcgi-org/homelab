@@ -376,3 +376,21 @@ review/listing outcomes.
 No claim is made about account eligibility, directory approval or live
 availability. The audit's findings can inform that work without changing
 this receipt's repository-only acceptance.
+
+## Roll back the factory namespace quota and defaults
+
+Remove `projects/scotland-connector/factory/resources/namespace-policy.yaml`
+through a revert PR. After merge, refresh the factory Application and confirm
+that only the two named policies below are selected for removal. The
+Application keeps automated pruning disabled to protect its Namespace.
+
+```sh
+argocd app get scotland-connector --refresh
+argocd app sync scotland-connector --prune \
+  --resource ':ResourceQuota:scotland-connector/scotland-connector' \
+  --resource ':LimitRange:scotland-connector/scotland-connector'
+kubectl -n scotland-connector get resourcequota/scotland-connector limitrange/scotland-connector --ignore-not-found
+kubectl get namespace scotland-connector
+```
+
+The policy lookup should return no objects and the namespace should remain Active.
