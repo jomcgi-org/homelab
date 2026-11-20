@@ -67,7 +67,7 @@ func run(logger *slog.Logger) error {
 
 	ln, err := listenVsock(vsockproto.GuestHTTPPort)
 	if err != nil {
-		return err // nosemgrep: no-bare-error-return
+		return err
 	}
 	logger.Info("shim HTTP server listening", "port", vsockproto.GuestHTTPPort)
 
@@ -81,7 +81,7 @@ func run(logger *slog.Logger) error {
 		shim.WithClock(func(epochMs int64) error {
 			if err := setWallClock(epochMs); err != nil {
 				logger.Warn("guest clock resync failed", "epoch_ms", epochMs, "err", err)
-				return err // nosemgrep: no-bare-error-return
+				return err
 			}
 			logger.Info("guest clock resynced", "epoch_ms", epochMs)
 			return nil
@@ -99,7 +99,7 @@ func run(logger *slog.Logger) error {
 		<-serveErr
 		return nil
 	case err := <-serveErr:
-		return err // nosemgrep: no-bare-error-return
+		return err
 	}
 }
 

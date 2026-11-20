@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from sqlmodel import Field, SQLModel
 
 
-class Function(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class Function(SQLModel, table=True):
     __tablename__ = "function"
     __table_args__ = {"schema": "faas", "extend_existing": True}
 

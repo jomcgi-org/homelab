@@ -20,7 +20,7 @@ from sqlmodel import Field, SQLModel
 _JSONB = JSONB().with_variant(JSON(), "sqlite")
 
 
-class ChatSession(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class ChatSession(SQLModel, table=True):
     """An anonymous public-chat session. The row, not the cookie, is the budget
     authority (ADR 005 layer 1+4)."""
 
@@ -51,7 +51,7 @@ class ChatSession(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without
     rolling_summary: str | None = Field(default=None)
 
 
-class ChatMessage(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class ChatMessage(SQLModel, table=True):
     """One transcript message. Server-authoritative: the browser never sends
     history, so this table is the sole record of the conversation."""
 
@@ -80,9 +80,7 @@ class ChatMessage(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without
     created_at: datetime = Field(default_factory=_utcnow)
 
 
-class ChatResponseCache(
-    SQLModel, table=True
-):  # nosemgrep: sqlmodel-datetime-without-factory
+class ChatResponseCache(SQLModel, table=True):
     """A durable, cross-pod cache of public-chat answers (ADR 005 follow-up).
 
     A simple key/value row: ``cache_key`` is a hash of
@@ -108,9 +106,7 @@ class ChatResponseCache(
     hit_count: int = Field(default=0)
 
 
-class ChatSnapshot(
-    SQLModel, table=True
-):  # nosemgrep: sqlmodel-datetime-without-factory
+class ChatSnapshot(SQLModel, table=True):
     """An opt-in, read-only, immutable share of a chat transcript (ADR 005
     follow-up, "share this chat").
 

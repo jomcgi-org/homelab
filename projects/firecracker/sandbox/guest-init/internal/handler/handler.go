@@ -112,7 +112,7 @@ func Handle(ctx context.Context, r *shim.Request, spec Spec) (*shim.Response, er
 	if err != nil {
 		return nil, fmt.Errorf("handler: create workdir: %w", err)
 	}
-	defer os.RemoveAll(workdir) // nosemgrep: no-bare-error-return
+	defer os.RemoveAll(workdir)
 
 	// Ownership of workdir and everything written into it is fixed up in one
 	// chownTree pass after all files exist (below), so the subprocess,
@@ -362,7 +362,7 @@ func collectOutputFiles(workdir string, inputs map[string]inputRecord, excludeOu
 		}
 		rel, relErr := filepath.Rel(workdir, path)
 		if relErr != nil {
-			return nil // nosemgrep: no-bare-error-return
+			return nil
 		}
 		rel = filepath.ToSlash(rel)
 		if _, ok := excluded[rel]; ok {
@@ -389,7 +389,7 @@ func collectOutputFiles(workdir string, inputs map[string]inputRecord, excludeOu
 		}
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
-			return nil // nosemgrep: no-bare-error-return
+			return nil
 		}
 		total += int64(len(data))
 		files = append(files, ExecFile{Path: rel, ContentB64: base64.StdEncoding.EncodeToString(data)})

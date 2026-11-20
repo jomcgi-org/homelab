@@ -1193,7 +1193,7 @@ class OpenRouterClient:
         for attempt in range(EXTRACT_MAX_RETRIES):
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
-                    resp = await client.post(  # nosemgrep: tainted-fastapi-http-request-httpx (self.base_url is a config value, not user input)
+                    resp = await client.post(  # self.base_url is a config value, not user input
                         self.base_url,
                         json=payload,
                         headers=headers,

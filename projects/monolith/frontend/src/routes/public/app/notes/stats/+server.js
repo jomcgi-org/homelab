@@ -9,7 +9,6 @@ import {
 
 // The localhost fallback is the established convention across every public
 // proxy (ships/stars/notes/graph/body); prod sets API_BASE via values.yaml.
-// nosemgrep: sveltekit-server-hardcoded-api-base-fallback
 const API_BASE = process.env.API_BASE || "http://localhost:8000";
 
 // Same-origin proxy for the public cluster stats snapshot, the exact payload

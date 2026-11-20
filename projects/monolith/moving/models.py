@@ -54,7 +54,7 @@ def _uuid() -> str:
     return str(uuid.uuid4())
 
 
-class Task(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class Task(SQLModel, table=True):
     __tablename__ = "tasks"
     __table_args__ = {"schema": "moving", "extend_existing": True}
 
@@ -97,7 +97,7 @@ class Task(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
     )
 
 
-class Milestone(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class Milestone(SQLModel, table=True):
     __tablename__ = "milestones"
     __table_args__ = {"schema": "moving", "extend_existing": True}
 
