@@ -34,6 +34,7 @@ go_test(
     embed = [":reaper"],
     deps = [
         "//projects/factory/connector/internal/pgtest",
+        "//projects/factory/connector/migrations",
         "@com_github_prometheus_client_golang//prometheus",
         "@com_github_prometheus_client_golang//prometheus/testutil",
         "@io_k8s_api//core/v1:core",
