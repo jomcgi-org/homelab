@@ -1,5 +1,6 @@
 """Audit workloads rendered with the factory Applications' Helm values."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -8,7 +9,7 @@ import yaml
 
 from check_image_digests import violations
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).absolute().parents[1]
 ROOT = HERE.parents[1]
 
 
@@ -33,7 +34,9 @@ def test_factory_platform_images(component):
     )
     helm = chart.get("helm", {})
     command = [
-        "helm",
+        str(Path(os.environ["HELM_BIN"]).absolute())
+        if "HELM_BIN" in os.environ
+        else "helm",
         "template",
         helm.get("releaseName", component),
         ".",

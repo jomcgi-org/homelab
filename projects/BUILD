@@ -90,3 +90,13 @@ filegroup(
     srcs = ["embervm/STPA.md"] + glob(["embervm/stpa/*.json"]),
     visibility = ["//:__pkg__"],
 )
+
+exports_files(
+    [
+        "platform-factory/authentik/application.yaml",
+        "platform-factory/cert-manager/application.yaml",
+        "platform-factory/edge/application.yaml",
+        "platform-factory/kargo/application.yaml",
+    ],
+    visibility = ["//projects/platform-factory/image-audit:__pkg__"],
+)
