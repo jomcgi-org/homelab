@@ -358,8 +358,8 @@ func TestHumanGateReopenedPRKeepsItsIssueAfterRestart(t *testing.T) {
 	if v.work(101).State != store.WorkStopped {
 		t.Fatal("gate polling resumed stopped delivery")
 	}
-	if work, err := v.st.HumanGateWork(v.ctx); err != nil || len(work) != 0 {
-		t.Fatalf("acknowledged merge still eligible: %+v, %v", work, err)
+	if work, err := v.st.HumanGateWork(v.ctx); err != nil || len(work) != 1 || work[0].WorkItemID != v.work(101).ID {
+		t.Fatalf("expected merged gate to remain eligible for late-copy cleanup: %+v, %v", work, err)
 	}
 }
 
