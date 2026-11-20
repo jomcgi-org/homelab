@@ -17,6 +17,7 @@ that matches no object fails, so the list only shrinks.
 
 import hashlib
 import json
+import os
 import re
 import sys
 
@@ -207,6 +208,11 @@ def library_owned(doc, namespace, policies):
 def rule_namespace(doc, namespace, policies=frozenset()):
     if library_owned(doc, namespace, policies):
         return []
+    return strict_namespace(doc, namespace)
+
+
+# invariant: PLAT-15
+def strict_namespace(doc, namespace):
     if not namespaced(doc):
         return [
             f"{_name(doc)}: {doc.get('apiVersion')} {doc.get('kind')} is cluster-scoped "
@@ -371,7 +377,7 @@ RULES = [
 ]
 
 
-def check(docs, namespace, exempt=()):
+def check(docs, namespace, exempt=(), restricted=False):
     docs = [d for d in docs if isinstance(d, dict) and d.get("kind")]
     policies = {
         (d.get("metadata") or {}).get("name")
@@ -383,7 +389,9 @@ def check(docs, namespace, exempt=()):
     out = []
     for doc in docs:
         for rule in RULES:
-            if rule is rule_namespace:
+            if rule is rule_namespace and restricted:
+                found = strict_namespace(doc, namespace)
+            elif rule is rule_namespace:
                 found = rule(doc, namespace, policies)
                 # An exemption covers a namespaced object in another
                 # namespace, never a cluster-scoped or unclassified kind.
@@ -402,7 +410,16 @@ def main(argv):
     if len(argv) < 2:
         print(__doc__.strip().splitlines()[2], file=sys.stderr)
         return 2
-    problems = check(list(yaml.safe_load_all(sys.stdin)), argv[1], argv[2:])
+    restricted = False
+    if path := os.getenv("ARGOCD_APPLICATION"):
+        with open(path) as f:
+            spec = yaml.safe_load(f)["spec"]
+        restricted = spec["project"] == "apps"
+        if restricted and spec["destination"]["namespace"] != argv[1]:
+            sys.exit(
+                "Helm render namespace differs from the apps Application destination"
+            )
+    problems = check(yaml.safe_load_all(sys.stdin), argv[1], argv[2:], restricted)
     for p in problems:
         print(f"content rule: {p}")
     return 1 if problems else 0
