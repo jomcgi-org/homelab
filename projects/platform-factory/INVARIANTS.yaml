@@ -114,3 +114,9 @@ invariants:
   - projects/platform-factory/prometheus/resources/rules.yml
   test: //projects/platform-factory/prometheus/resources:rules_test
   state: live
+- id: PLAT-19
+  statement: The CNPG retention alert fires after one hour above three days of backup age for kagent-pg or sixteen days for factory-db and authentik-pg.
+  mechanism:
+  - projects/platform-factory/prometheus/resources/rules.yml
+  test: //projects/platform-factory/prometheus/resources:rules_test
+  state: live
