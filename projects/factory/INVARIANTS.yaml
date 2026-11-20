@@ -80,3 +80,10 @@ invariants:
   - projects/factory/connector/store/store.go
   test: //projects/factory/connector/dispatch:dispatch_test
   state: live
+- id: FACT-14
+  statement: The connector preserves the adopted human-gate issue, searches for late copies for 24 hours after acknowledging Done, and posts each duplicate explanation at most once.
+  mechanism:
+  - projects/factory/connector/store/human_gate.go
+  - projects/factory/connector/dispatch/human_gate.go
+  test: //projects/factory/connector/dispatch:dispatch_test
+  state: live

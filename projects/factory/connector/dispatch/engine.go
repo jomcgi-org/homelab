@@ -2897,6 +2897,11 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 		if err := e.guard(ctx); err != nil {
 			return err
 		}
+		// Older duplicate explanations have no send marker. A previous
+		// writer may already have posted one before it lost the response.
+		if !p.Once && strings.HasPrefix(it.DedupeKey, "comment/factory-human-gate/") && strings.Contains(it.DedupeKey, "/duplicate/") {
+			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "legacy duplicate explanation has unknown send history")
+		}
 		if p.Once {
 			if it.SendStarted {
 				return e.st.OutboxAbandon(ctx, e.st.DB, it.ID,
