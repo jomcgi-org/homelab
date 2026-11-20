@@ -18,6 +18,10 @@ REST access to every bank in this process. The bridge must enforce channel
 access and supply strict tag filters; tags alone do not authorize a caller.
 MCP is disabled.
 
+Hindsight stores retained image bytes in the private Garage bucket `discord-media`,
+once per bank by content hash. `factory-db` holds no image bytes. GPT-4.1 mini
+reads images through the dedicated OpenRouter credential.
+
 The 1Password operator syncs `factory-discord-llm` into
 `hindsight-discord/hindsight-openrouter`. Its `api-key` and `base-url` fields
 set the LLM credential and endpoint (`https://openrouter.ai/api/v1`). HOME-163
@@ -55,7 +59,7 @@ The factory Hindsight's `rollback_test` proves these steps in this image, and
 The API permits ingress only from pods in `factory-discord` labelled
 `app.kubernetes.io/name: factory-discord-bridge`, the bridge's label, and
 egress only to
-`factory-db:5432` and `openrouter.ai:443`. The cluster baseline also permits
+`factory-db:5432`, `garage.garage.svc:3900` and `openrouter.ai:443`. The cluster baseline also permits
 DNS through CoreDNS. Key Jobs have separate labels and API-server egress.
 The consumer Application creates the namespace, Secret placeholder, writer
 Role and client egress rule before the bridge exists.

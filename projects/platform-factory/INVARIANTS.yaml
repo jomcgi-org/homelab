@@ -74,3 +74,10 @@ invariants:
   - bazel/helm/helm-template-test.sh
   test: //bazel/helm/content_rules:content_rules_test
   state: live
+- id: PLAT-14
+  statement: Discord Hindsight retains image bytes in the private discord-media Garage bucket with vision enabled.
+  mechanism:
+  - projects/platform-factory/hindsight-discord/resources/hindsight.yaml
+  - projects/platform-factory/hindsight-discord/resources/storage.yaml
+  test: //projects/platform-factory/hindsight-discord:keys_test
+  state: unproven
