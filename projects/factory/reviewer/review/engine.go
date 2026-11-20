@@ -236,11 +236,13 @@ type headKey struct {
 
 // waitingHead tracks uninterrupted eligibility for a PR head.
 type waitingHead struct {
-	sha      string
-	since    time.Time
-	dated    bool
-	held     bool
-	unlisted int
+	sha        string
+	since      time.Time
+	observed   time.Time
+	arrival    time.Time
+	readySince time.Time
+	held       bool
+	unlisted   int
 }
 
 type heldContext struct {
@@ -474,7 +476,8 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			continue
 		}
 		if w := e.waiting[prKey{b.Name, pr.Number}]; w != nil && w.held {
-			w.since, w.held, w.dated = e.cfg.Now(), false, true
+			w.observed = e.cfg.Now()
+			w.since, w.readySince, w.held = w.observed, w.observed, false
 		}
 		if b.skipped(&pr) || e.isRunning(headKey{b.Name, pr.HeadSHA}) {
 			delete(e.waiting, prKey{b.Name, pr.Number})
@@ -754,7 +757,7 @@ func (e *Engine) noteWaiting(b *Binding, prs []github.PullRequest, complete bool
 		}
 		key := prKey{b.Name, pr.Number}
 		if e.waiting[key] == nil {
-			e.waiting[key] = &waitingHead{sha: pr.HeadSHA, since: now}
+			e.waiting[key] = &waitingHead{sha: pr.HeadSHA, since: now, observed: now}
 		}
 	}
 }
@@ -766,26 +769,29 @@ func (e *Engine) dateWaiting(ctx context.Context, b *Binding, start []candidate)
 		w := e.waiting[prKey{b.Name, pr.Number}]
 		// A completed review needing another pass joins at its new observation,
 		// rather than inheriting the age of a head that already had a slot.
-		if w.dated || c.run != nil || pr.HeadRepo == "" || pr.HeadRef == "" {
+		if c.run != nil || pr.HeadRepo == "" || pr.HeadRef == "" {
 			continue
 		}
-		since, err := e.gh.HeadRefChangedAt(ctx, b.repo(), pr.HeadRepo, pr.HeadRef, pr.HeadSHA)
-		if err != nil || since.IsZero() || since.After(w.since) {
-			continue
+		if w.arrival.IsZero() {
+			arrival, err := e.gh.HeadRefChangedAt(ctx, b.repo(), pr.HeadRepo, pr.HeadRef, pr.HeadSHA)
+			if err != nil || arrival.IsZero() {
+				continue
+			}
+			w.arrival = arrival
 		}
-		// Push time alone can predate readiness, removal of a skip label,
-		// reopening or a change of base. Recover those boundaries on restart.
+		// The same SHA can return from draft between two ready listings.
+		// Backdate only with a current readiness read.
+		w.since = w.observed
 		ready, err := e.gh.PullRequestReadySince(ctx, b.repo(), pr, b.SkipLabels)
-		if err != nil || ready.IsZero() || ready.After(w.since) {
-			continue
+		if err == nil && !ready.IsZero() {
+			w.since = w.arrival
+			if ready.After(w.readySince) {
+				w.readySince = ready
+			}
 		}
-		if ready.After(since) {
-			since = ready
+		if w.readySince.After(w.since) {
+			w.since = w.readySince
 		}
-		if since.Before(w.since) {
-			w.since = since
-		}
-		w.dated = true
 	}
 }
 

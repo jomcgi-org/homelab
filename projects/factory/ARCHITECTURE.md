@@ -974,8 +974,10 @@ from reviewer App 5758326 alongside `pr-checks`.
   Git commit dates and PR `UpdatedAt` do not set queue order. Observation is
   recorded before check and recovery reads, even while slots are full, and
   kept while history reads retry.
-  Failed reads and metadata updates preserve the wait; a changed head or a
-  successful start resets it. A completed review needing another pass joins
+  The reviewer caches ref arrival and refreshes readiness before ordering
+  starts. A failed readiness read falls back to observation time, bounded
+  by the latest known readiness transition. A changed head or a successful
+  start resets the wait. A completed review needing another pass joins
   at its new observation. PR number breaks equal arrival times.
   This prevents later updates from repeatedly overtaking an untouched head
   ([HOME-220](https://factory-plan.jomcgi.dev/factory/issue/HOME-220)).

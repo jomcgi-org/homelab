@@ -1018,6 +1018,15 @@ func TestEligibilityTransitionStartsANewWaitAcrossRestart(t *testing.T) {
 }
 
 func TestOlderForkFirstListedLaterStartsBeforeRepositoryHead(t *testing.T) {
+	testForkWaitAcrossPolls(t, false)
+}
+
+func TestSameHeadReadyAgainBetweenPollsStartsAfterContinuousWait(t *testing.T) {
+	testForkWaitAcrossPolls(t, true)
+}
+
+func testForkWaitAcrossPolls(t *testing.T, readyAgain bool) {
+	t.Helper()
 	h := newHarness(t)
 	h.cfg.Concurrency, h.cfg.Timeout = 1, time.Hour
 	h.cfg.Bindings[0].EnqueueAuthors = nil
@@ -1039,12 +1048,22 @@ func TestOlderForkFirstListedLaterStartsBeforeRepositoryHead(t *testing.T) {
 	for range 3 {
 		e.Tick(ctx)
 	}
-	if !e.waiting[prKey{"homelab", 1}].dated {
-		t.Fatal("fixture did not recover the repository head's older timestamp")
+	if !e.waiting[prKey{"homelab", 20}].since.Before(e.waiting[prKey{"homelab", 1}].since) {
+		t.Fatal("expected the later-listed fork to have the older recovered wait")
+	}
+	if readyAgain {
+		// Both listings see ready. Only the timeline records the intervening transition.
+		h.gh.withLock(func() {
+			h.gh.prs[20].EligibilityEvents = []map[string]any{{"__typename": "ReadyForReviewEvent", "createdAt": now}}
+		})
 	}
 	h.k.finish(running, kagent.StateCompleted, report(t, passing))
 	eventually(t, "a free slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
 	e.Tick(ctx)
+	if readyAgain {
+		eventually(t, "the continuously ready repository head", func() bool { return h.taskOn(1, local, 1) != "" })
+		return
+	}
 	eventually(t, "the waiting fork", func() bool { return h.taskOn(20, fork, 1) != "" })
 	if h.gh.check(local) != nil {
 		t.Fatal("a recovered timestamp overtook a waiting fork")
