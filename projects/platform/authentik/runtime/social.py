@@ -64,12 +64,13 @@ def sessions(username):
     return AuthenticatedSession.objects.filter(user__username=username).count()
 
 
-def callback(browser, identifier, email="friend@example.org"):
+def callback(browser, identifier, email="friend@example.org", provider="discord"):
     profile = {
         "id": identifier,
         "username": "friend",
         "email": email,
-        "verified": True,
+        "verified_email" if provider == "google" else "verified": True,
+        "name": "Friend",
     }
     with (
         patch.object(
@@ -77,7 +78,7 @@ def callback(browser, identifier, email="friend@example.org"):
         ),
         patch.object(OAuth2Client, "get_profile_info", return_value=profile),
     ):
-        return browser.get("/source/oauth/callback/discord/")
+        return browser.get(f"/source/oauth/callback/{provider}/")
 
 
 def executor(flow):
@@ -174,6 +175,29 @@ def exercise():
 
 
 exercise()
+
+
+def exercise_competing_enrollments():
+    first = Client(HTTP_HOST="localhost")
+    second = Client(HTTP_HOST="localhost")
+    email = "race@example.org"
+    assert callback(first, "51", email).status_code == 302
+    assert callback(second, "52", email.upper(), "google").status_code == 302
+    accounts = User.objects.filter(email__iexact=email)
+    assert not accounts.exists()
+
+    url = executor("enrollment")
+    assert advance(first, first.get(url))["to"] == "/source/oauth/login/discord/"
+    winner = accounts.get(username="discord-51")
+    denied = advance(second, second.get(url))
+    assert denied["component"] == "ak-stage-access-denied"
+    assert denied["error_message"] == (
+        "An account already uses this email. Sign in with that account instead."
+    )
+    assert accounts.get().pk == winner.pk
+
+
+exercise_competing_enrollments()
 
 
 def exercise_application():
