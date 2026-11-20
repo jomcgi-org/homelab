@@ -1991,8 +1991,7 @@ func (e *Engine) recoverRoots(ctx context.Context, b *Binding, prs []github.Pull
 // this process holds it. This covers a process that stopped during a quota
 // wait and pushes that replaced the head before the restart: complete ends
 // each recorded root once. Only heads flagged by the filtered check query need a REST read.
-// When GitHub refuses a completion,
-// the restored root parks, and endSuperseded retries it on the next poll.
+// A refused read or completion leaves the page eligible for retry.
 func (e *Engine) endPreviousHead(ctx context.Context, b *Binding, pr github.PullRequest, hist *github.HeadHistory, openHeads, shared map[string]bool) bool {
 	readAll := true
 	seen := map[string]bool{pr.HeadSHA: true}
@@ -2010,32 +2009,25 @@ func (e *Engine) endPreviousHead(ctx context.Context, b *Binding, pr github.Pull
 		if e.isRunning(key) {
 			continue
 		}
-		run, err := e.reviewCheck(ctx, b, prev)
+		l := e.log.With("binding", b.Name, "repo", b.repo(), "pr", pr.Number, "sha", prev)
+		runs, err := e.gh.ListCheckRuns(ctx, b.repo(), prev, github.CheckRunFilter{Name: e.cfg.CheckName, AppID: e.cfg.AppID, All: true, Status: "in_progress"})
 		if err != nil {
+			e.ghError(ctx, l, b, "check_runs", err)
 			readAll = false
 			continue
 		}
-		if run == nil || run.ExternalID != MessageID(b.repo(), pr.Number, prev) {
-			continue
+		for i := range runs {
+			run := &runs[i]
+			if run.HeadSHA != prev || run.AppID != e.cfg.AppID || run.Name != e.cfg.CheckName || run.ExternalID != MessageID(b.repo(), pr.Number, prev) {
+				continue
+			}
+			if _, ok := resumedTrace(run); !ok {
+				continue
+			}
+			if !e.complete(ctx, b, run, Outcome{Conclusion: ConclusionCancelled, Output: github.CheckRunOutput{Title: "Review cancelled", Summary: "A newer head of the PR replaced this one."}}, l) {
+				readAll = false
+			}
 		}
-		ts, ok := resumedTrace(run)
-		if !ok {
-			continue
-		}
-		// Without the new review's usage, complete ends the old root, not this one.
-		octx := context.WithValue(ctx, reviewUsageKey{}, nil)
-		l := e.log.With("binding", b.Name, "repo", b.repo(), "pr", pr.Number, "sha", prev)
-		if e.complete(octx, b, run, Outcome{Conclusion: ConclusionCancelled, Output: github.CheckRunOutput{
-			Title: "Review cancelled", Summary: "A newer head of the PR replaced this one.",
-		}}, l) {
-			continue
-		}
-		e.mu.Lock()
-		if _, parked := e.parked[key]; !parked {
-			rctx, _ := restoreRoot(ctx, ts, github.PullRequest{Number: ts.PR, HeadSHA: prev})
-			e.parked[key] = &parkedRoot{key: key, usage: rctx.Value(reviewUsageKey{}).(*spanUsage), since: e.cfg.Now()}
-		}
-		e.mu.Unlock()
 	}
 	return readAll
 }

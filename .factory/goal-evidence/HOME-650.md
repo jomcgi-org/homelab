@@ -1,0 +1,7 @@
+Criterion 1. In projects/factory/reviewer/review/engine.go, recoverRoots advances one timeline page per open PR per poll. endPreviousHead lists the app's in-progress runs on candidate commits and matches the review's external ID. projects/factory/connector/github/checks.go sends both filter=all and status=in_progress so a later completed check cannot hide an active run.
+
+Criterion 2. Engine.begin in projects/factory/reviewer/review/engine.go saves the root identity on the existing check before starting the reattached worker. TestTracingEnabledDuringReview in projects/factory/reviewer/review/quota_test.go compares the exported root identity with that checkpoint after another restart.
+
+Criterion 3. TestRestartThenPushEndsOldRootOnce in projects/factory/reviewer/review/quota_test.go covers 21 pushes and a separate 121-push paginated timeline. It checks the original review conclusion and counts the cancelled roots. TestTracingEnabledDuringReview checks for one successful root.
+
+Criterion 4. The “failed read with newer completed hold” case of TestRestartThenPushEndsOldRootOnce injects a 502 on the old commit's check-run listing. It checks that the original check remains in progress, clears the read error, polls again and checks the original cancellation, the newer check's preserved conclusion and the single exported root. The “cancellation refused once” case exercises a separate failed write. Both run in //projects/factory/reviewer/review:review_test.

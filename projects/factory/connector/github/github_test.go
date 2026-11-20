@@ -1299,6 +1299,9 @@ func TestTreeHeadsAndTruncatedCompare(t *testing.T) {
 	if fmt.Sprint(h.Heads) != fmt.Sprint(want) || !h.Truncated || gql["appId"] != float64(5758326) || gql["check"] != "factory review" {
 		t.Fatalf("heads = %+v, truncated %v, vars %v", h.Heads, h.Truncated, gql)
 	}
+	if !strings.Contains(query, "checkType: ALL, status: IN_PROGRESS") {
+		t.Fatal("active check lookup must include earlier runs")
+	}
 	if !strings.Contains(query, "checkRuns(last: 5,") {
 		t.Fatalf("the query does not read the newest check runs:\n%s", query)
 	}

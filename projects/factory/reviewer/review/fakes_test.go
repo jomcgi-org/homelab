@@ -446,7 +446,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		sha := strings.TrimSuffix(strings.TrimPrefix(path, "/commits/"), "/check-runs")
 		latest := map[string]*fakeCheck{}
 		for _, c := range f.checks {
-			if c.SHA != sha || (q.Get("check_name") != "" && c.Name != q.Get("check_name")) ||
+			if c.SHA != sha || (q.Get("status") != "" && c.Status != q.Get("status")) || (q.Get("check_name") != "" && c.Name != q.Get("check_name")) ||
 				(!f.ignoreAppFilter && q.Get("app_id") != "" && strconv.FormatInt(c.AppID, 10) != q.Get("app_id")) {
 				continue
 			}

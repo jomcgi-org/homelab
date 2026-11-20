@@ -610,10 +610,12 @@ func TestRestartThenPushEndsOldRootOnce(t *testing.T) {
 		// pushes are the heads pushed while the reviewer is offline.
 		pushes []string
 		// failOnce makes GitHub refuse the first cancellation of head A.
+		failRead bool
 		failOnce bool
 		shared   bool
 	}{
 		{name: "shared head then incomplete listing", pushes: []string{sha40('b')}, shared: true},
+		{name: "failed read with newer completed hold", pushes: many[:21], failRead: true},
 		{name: "one push", pushes: []string{sha40('b')}},
 		{name: "21 pushes", pushes: many[:21]},
 		{name: "older timeline page", pushes: many},
@@ -635,7 +637,11 @@ func TestRestartThenPushEndsOldRootOnce(t *testing.T) {
 				h.gh.push(7, sha)
 			}
 			update := fmt.Sprintf("PATCH /repos/%s/check-runs/%d", testRepo, h.gh.check(shaA).ID)
-			if tc.failOnce {
+			if tc.failRead {
+				h.gh.addCheck(shaA, "factory review", testAppID, ConclusionFailure)
+				update = "GET /repos/" + testRepo + "/commits/" + shaA + "/check-runs"
+			}
+			if tc.failOnce || tc.failRead {
 				h.gh.failWith(update, 502)
 			}
 			e, ctx, stop = h.start()
@@ -650,15 +656,18 @@ func TestRestartThenPushEndsOldRootOnce(t *testing.T) {
 				h.gh.push(8, sha40('c'))
 			}
 			e.Tick(ctx)
-			if tc.failOnce {
-				if c := h.gh.check(shaA); c.Status == "completed" {
-					t.Fatal("old head's check completed despite the refused write")
+			if tc.failOnce || tc.failRead {
+				if c := h.gh.checksOn(shaA)[0]; c.Status == "completed" || len(reviewSpans(exporter)) != 0 {
+					t.Fatal("old root completed despite the refused request")
 				}
 				h.gh.failWith(update, 0)
 			}
 			e.Tick(ctx)
 			stop()
-			if c := h.gh.check(shaA); c.Status != "completed" || c.Conclusion != ConclusionCancelled {
+			if tc.failRead && h.gh.check(shaA).Conclusion != ConclusionFailure {
+				t.Fatal("recovery changed the newer completed check")
+			}
+			if c := h.gh.checksOn(shaA)[0]; c.Status != "completed" || c.Conclusion != ConclusionCancelled {
 				t.Fatalf("old head's check = %s %s", c.Status, c.Conclusion)
 			}
 			var old []map[string]string

@@ -567,7 +567,7 @@ fragment checked on Commit {
     pageInfo { hasNextPage }
     nodes {
       app { databaseId }
-      active: checkRuns(first: 1, filterBy: {checkName: $check, status: IN_PROGRESS}) { totalCount }
+      active: checkRuns(first: 1, filterBy: {checkName: $check, checkType: ALL, status: IN_PROGRESS}) { totalCount }
       checkRuns(last: 5, filterBy: {checkName: $check, status: COMPLETED}) { pageInfo { hasPreviousPage } nodes { name conclusion } }
     }
   }
