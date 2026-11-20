@@ -1592,217 +1592,81 @@ def test_cluster_agent_requires_a_source():
 
 
 # ---------------------------------------------------------------------------
-# Log redaction: the rendered OTTL rules, run with Python's re.
-# ---------------------------------------------------------------------------
-_OTTL_STRING = r'"((?:[^"\\]|\\.)*)"'
-_OTTL_BODY_RULE = re.compile(
-    rf"^replace_pattern\(log\.body, {_OTTL_STRING}, {_OTTL_STRING}\)"
-)
-_OTTL_ATTRIBUTE_RULE = re.compile(
-    rf'^replace_all_patterns\(log\.attributes, "value", {_OTTL_STRING}, {_OTTL_STRING}\)$'
-)
-_OTTL_DELETE = re.compile(rf"^delete_matching_keys\(log\.attributes, {_OTTL_STRING}\)$")
-
-
-def _ottl_literal(text: str) -> str:
-    """Undo OTTL string escaping and the collector's $$ escape."""
-    return re.sub(r"\\(.)", r"\1", text).replace("$$", "$")
-
-
-def _redaction_statements() -> list[str]:
-    config = _named_collector_config(_render_overlay("values-factory"), LOGS)
-    return config["processors"]["transform/redact"]["log_statements"][0]["statements"]
-
-
-def _rules(kind: re.Pattern) -> list[tuple[str, str]]:
-    """(pattern, replacement) pairs in statement order. The rules use only
-    syntax RE2 and Python's re read alike; ${1} becomes \\g<1>."""
-    rules = []
-    for statement in _redaction_statements():
-        match = kind.match(statement)
-        if match:
-            rules.append(
-                (
-                    _ottl_literal(match.group(1)),
-                    _ottl_literal(match.group(2)).replace("${1}", r"\g<1>"),
-                )
-            )
-    return rules
-
-
-def _redact(line: str) -> str:
-    """Apply the body rules in order, as replace_pattern does."""
-    for pattern, replacement in _rules(_OTTL_BODY_RULE):
-        line = re.sub(pattern, replacement, line)
-    return line
-
-
-def _flatten(value, prefix: str = "") -> dict:
-    """OTTL flatten(): nested maps join keys with '.', arrays use the index."""
-    if isinstance(value, dict):
-        items = value.items()
-    elif isinstance(value, list):
-        items = ((str(i), v) for i, v in enumerate(value))
-    else:
-        return {prefix: value}
-    flat = {}
-    for key, child in items:
-        flat.update(_flatten(child, f"{prefix}.{key}" if prefix else key))
-    return flat
-
-
-def _redact_attributes(attributes: dict) -> dict:
-    """flatten, every attribute rule on every string value, then the key
-    deletion, in the order the statements run."""
-    statements = _redaction_statements()
-    flatten = statements.index("flatten(log.attributes)")
-    attribute_rules = [
-        i for i, s in enumerate(statements) if _OTTL_ATTRIBUTE_RULE.match(s)
-    ]
-    (delete,) = [i for i, s in enumerate(statements) if _OTTL_DELETE.match(s)]
-    assert flatten < min(attribute_rules) and max(attribute_rules) < delete
-
-    flat = _flatten(attributes)
-    for pattern, replacement in _rules(_OTTL_ATTRIBUTE_RULE):
-        flat = {
-            k: re.sub(pattern, replacement, v) if isinstance(v, str) else v
-            for k, v in flat.items()
-        }
-    key_pattern = re.compile(
-        _ottl_literal(_OTTL_DELETE.match(statements[delete]).group(1))
-    )
-    return {k: v for k, v in flat.items() if not key_pattern.match(k)}
-
-
 PEM = (
     "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAsecretkeymaterial\n"
     "-----END RSA PRIVATE KEY-----"
 )
 
 
-@pytest.mark.parametrize(
-    "line,secret",
-    [
-        ("connecting to postgres://app:s3cr3tpw@db:5432/app", "s3cr3tpw"),
-        ("redis://:r3dispw@cache:6379/0", "r3dispw"),
-        ("ALTER ROLE app WITH LOGIN PASSWORD 'hunter2'", "hunter2"),
-        ("CREATE USER x PASSWORD 'it''s-quoted'", "it''s-quoted"),
-        ("push with ghp_" + "a" * 36, "ghp_" + "a" * 36),
-        ("auth gho_" + "B1" * 18 + " ok", "gho_" + "B1" * 18),
-        ("ghs_" + "c" * 36, "ghs_" + "c" * 36),
-        ("token github_pat_11ABCDEFG0" + "x" * 40, "github_pat_11ABCDEFG0"),
-        ("gitlab glpat-" + "g" * 20, "glpat-" + "g" * 20),
-        ("aws key AKIAIOSFODNN7EXAMPLE used", "AKIAIOSFODNN7EXAMPLE"),
-        ("session key ASIAIOSFODNN7EXAMPLE used", "ASIAIOSFODNN7EXAMPLE"),
-        ("key sk-ant-api03-" + "Z" * 40, "sk-ant-api03-"),
-        ("openai sk-proj-" + "q" * 30, "sk-proj-"),
-        ("honeycomb hcaik_01" + "k" * 40, "hcaik_01"),
-        (
-            "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJqb2UifQ.c2lnbmF0dXJlLXBhcnQ",
-            "c2lnbmF0dXJlLXBhcnQ",
-        ),
-        ("loaded key " + PEM, "secretkeymaterial"),
-        ("-----BEGIN PRIVATE KEY----- MIIEvQIBADANsecret", "MIIEvQIBADANsecret"),
-        ("Cookie: session=abc123; csrftoken=def456", "abc123"),
-        ("Set-Cookie: id=a3fWa; Expires=Wed, 21 Oct 2026 07:28:00 GMT", "a3fWa"),
-        (
-            'headers={"Authorization":["Basic dXNlcjpwYXNz"],"Cookie":["session=abc123"]}',
-            "dXNlcjpwYXNz",
-        ),
-        (
-            'headers={"Authorization":["Basic dXNlcjpwYXNz"],"Cookie":["session=abc123"]}',
-            "abc123",
-        ),
-        ("header map[Authorization:[Bearer t0ken.v4lue] Accept:[*/*]]", "t0ken.v4lue"),
-        ("X-Api-Key: k3y-v4lue", "k3y-v4lue"),
-        ("x-auth-token: aut4-v4lue", "aut4-v4lue"),
-        ("Private-Token: pr1v-v4lue", "pr1v-v4lue"),
-        ("x-honeycomb-team: hcteam-v4lue", "hcteam-v4lue"),
-        ("run psql --password s3cret-flag -h db", "s3cret-flag"),
-        ("run cli --api-key=flagk3y", "flagk3y"),
-        ("api_key: yamlk3yv4lue", "yamlk3yv4lue"),
-        ("  token: yamlt0ken", "yamlt0ken"),
-        ('payload {\\"user\\":\\"joe\\",\\"password\\":\\"pa55w0rd\\"}', "pa55w0rd"),
-        ('payload {\\"password\\":\\"pa\\\\\\"55tail\\"}', "55tail"),
-        ('{"client_secret":"cs-value","user":"joe"}', "cs-value"),
-        ('{"password":"pa\\"ss-tail","user":"joe"}', "ss-tail"),
-        ("Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
-        ("Authorization: Bearer abc.DEF-123", "abc.DEF-123"),
-        ("GET /cb?code=1&access_token=tok123&x=1", "tok123"),
-        ("password=hunter2 user=joe", "hunter2"),
-        ("retry with password: pw456", "pw456"),
-    ],
-)
-def test_redaction_masks(line, secret):
-    redacted = _redact(line)
-    assert secret not in redacted, redacted
-    assert "[REDACTED" in redacted
-
-
-@pytest.mark.parametrize(
-    "line",
-    [
-        "Secret: ns/name not found",
-        'secret "monolith/db-credentials" not found',
-        "failed to refresh token: context canceled",
-        "failed to set cookie: invalid domain example.com",
-        "token: refresh failed after 3 attempts",
-        "max_tokens=4096 temperature=0",
-        "dial tcp 10.0.0.1:5432: connect: connection refused",
-        "GET http://argocd-server:8080/api/v1/applications@latest",
-        "task-runner-controller-manager restarted",
-        "user=joe action=login result=ok",
-        "--password-stdin given; reading from stdin",
-    ],
-)
-def test_redaction_leaves_ordinary_lines_alone(line):
-    assert _redact(line) == line
-
-
-def test_redaction_keeps_context_around_masked_values():
-    assert (
-        _redact('payload {\\"user\\":\\"joe\\",\\"password\\":\\"x-y\\"}')
-        == 'payload {\\"user\\":\\"joe\\",\\"password\\":\\"[REDACTED]\\"}'
-    )
-    assert (
-        _redact("postgres://app:pw@db:5432/app?sslmode=require")
-        == "postgres://app:[REDACTED]@db:5432/app?sslmode=require"
-    )
-    assert (
-        _redact('headers={"Authorization":["Basic dXNlcjpwYXNz"],"Accept":["*/*"]}')
-        == 'headers={"Authorization":["Basic [REDACTED]"],"Accept":["*/*"]}'
-    )
-    assert _redact("Cookie: a=1; b=2") == "Cookie: [REDACTED]"
-
-
-def test_redaction_covers_nested_attributes():
-    redacted = _redact_attributes(
-        {
-            "record": {
-                "message": "c9 password=nestedpw rejected",
-                "user_name": "app",
-                "password": "plainnested",
-            },
-            "headers": {
-                "Authorization": ["Basic dXNlcjpwYXNz"],
-                "Cookie": ["session=abc123"],
-                "X-Api-Key": ["k3y"],
-                "Accept": ["*/*"],
-            },
-            "client_secret": "cs",
-            "detail": "retry with password: pw456",
-            "secretName": "db-credentials",
-            "max_tokens": 4096,
-        }
-    )
-    assert redacted == {
-        "record.message": "c9 password=[REDACTED] rejected",
-        "record.user_name": "app",
-        "headers.Accept.0": "*/*",
-        "detail": "retry with password: [REDACTED]",
-        "secretName": "db-credentials",
-        "max_tokens": 4096,
-    }
+MASKED_LINES = [
+    ("connecting to postgres://app:s3cr3tpw@db:5432/app", "s3cr3tpw"),
+    ("redis://:r3dispw@cache:6379/0", "r3dispw"),
+    ("ALTER ROLE app WITH LOGIN PASSWORD 'hunter2'", "hunter2"),
+    ("CREATE USER x PASSWORD 'it''s-quoted'", "it''s-quoted"),
+    ("push with ghp_" + "a" * 36, "ghp_" + "a" * 36),
+    ("auth gho_" + "B1" * 18 + " ok", "gho_" + "B1" * 18),
+    ("ghs_" + "c" * 36, "ghs_" + "c" * 36),
+    ("token github_pat_11ABCDEFG0" + "x" * 40, "github_pat_11ABCDEFG0"),
+    ("gitlab glpat-" + "g" * 20, "glpat-" + "g" * 20),
+    ("aws key AKIAIOSFODNN7EXAMPLE used", "AKIAIOSFODNN7EXAMPLE"),
+    ("session key ASIAIOSFODNN7EXAMPLE used", "ASIAIOSFODNN7EXAMPLE"),
+    ("key sk-ant-api03-" + "Z" * 40, "sk-ant-api03-"),
+    ("openai sk-proj-" + "q" * 30, "sk-proj-"),
+    ("honeycomb hcaik_01" + "k" * 40, "hcaik_01"),
+    (
+        "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJqb2UifQ.c2lnbmF0dXJlLXBhcnQ",
+        "c2lnbmF0dXJlLXBhcnQ",
+    ),
+    ("loaded key " + PEM, "secretkeymaterial"),
+    ("-----BEGIN PRIVATE KEY----- MIIEvQIBADANsecret", "MIIEvQIBADANsecret"),
+    ("Cookie: session=abc123; csrftoken=def456", "abc123"),
+    ("Set-Cookie: id=a3fWa; Expires=Wed, 21 Oct 2026 07:28:00 GMT", "a3fWa"),
+    (
+        'headers={"Authorization":["Basic dXNlcjpwYXNz"],"Cookie":["session=abc123"]}',
+        "dXNlcjpwYXNz",
+    ),
+    (
+        'headers={"Authorization":["Basic dXNlcjpwYXNz"],"Cookie":["session=abc123"]}',
+        "abc123",
+    ),
+    ("header map[Authorization:[Bearer t0ken.v4lue] Accept:[*/*]]", "t0ken.v4lue"),
+    ("X-Api-Key: k3y-v4lue", "k3y-v4lue"),
+    ("x-auth-token: aut4-v4lue", "aut4-v4lue"),
+    ("Private-Token: pr1v-v4lue", "pr1v-v4lue"),
+    ("x-honeycomb-team: hcteam-v4lue", "hcteam-v4lue"),
+    ("run psql --password s3cret-flag -h db", "s3cret-flag"),
+    ("run cli --api-key=flagk3y", "flagk3y"),
+    ("api_key: yamlk3yv4lue", "yamlk3yv4lue"),
+    ("  token: yamlt0ken", "yamlt0ken"),
+    ('payload {\\"user\\":\\"joe\\",\\"password\\":\\"pa55w0rd\\"}', "pa55w0rd"),
+    ('payload {\\"password\\":\\"pa\\\\\\"55tail\\"}', "55tail"),
+    ('{"client_secret":"cs-value","user":"joe"}', "cs-value"),
+    ('{"password":"pa\\"ss-tail","user":"joe"}', "ss-tail"),
+    ("Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"),
+    ("Authorization: Bearer abc.DEF-123", "abc.DEF-123"),
+    ("GET /cb?code=1&access_token=tok123&x=1", "tok123"),
+    ("password=hunter2 user=joe", "hunter2"),
+    ("retry with password: pw456", "pw456"),
+]
+ORDINARY_LINES = [
+    "Secret: ns/name not found",
+    'secret "monolith/db-credentials" not found',
+    "failed to refresh token: context canceled",
+    "failed to set cookie: invalid domain example.com",
+    "token: refresh failed after 3 attempts",
+    "max_tokens=4096 temperature=0",
+    "dial tcp 10.0.0.1:5432: connect: connection refused",
+    "GET http://argocd-server:8080/api/v1/applications@latest",
+    "task-runner-controller-manager restarted",
+    "user=joe action=login result=ok",
+    "--password-stdin given; reading from stdin",
+]
+CONTEXT_EXPECTED = {
+    'payload {\\"user\\":\\"joe\\",\\"password\\":\\"x-y\\"}': 'payload {\\"user\\":\\"joe\\",\\"password\\":\\"[REDACTED]\\"}',
+    "postgres://app:pw@db:5432/app?sslmode=require": "postgres://app:[REDACTED]@db:5432/app?sslmode=require",
+    'headers={"Authorization":["Basic dXNlcjpwYXNz"],"Accept":["*/*"]}': 'headers={"Authorization":["Basic [REDACTED]"],"Accept":["*/*"]}',
+    "Cookie: a=1; b=2": "Cookie: [REDACTED]",
+}
 
 
 def test_redaction_is_off_in_hub_overlays():
@@ -1896,8 +1760,6 @@ def test_factory_trace_content_removed_before_sampling(tmp_path):
         "transform/trace_content",
         "resource/environment",
     ]
-    source = tmp_path / "input.json"
-    output = tmp_path / "export.json"
     marker = "private-test-content"
     sensitive = [
         {"key": key, "value": {"stringValue": marker}}
@@ -1937,6 +1799,22 @@ def test_factory_trace_content_removed_before_sampling(tmp_path):
     resource = {"attributes": [service]}
     scoped = {"scope": {}, "spans": [span]}
     batch = {"resourceSpans": [{"resource": resource, "scopeSpans": [scoped]}]}
+    exported = _replay_otlp(
+        tmp_path, "traces", batch, {name: config["processors"][name] for name in clean}
+    )
+    assert marker not in exported
+    (kept,) = json.loads(exported)["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    # The file receiver adds log.file.name to every span it reads.
+    attrs = [a for a in kept["attributes"] if a["key"] != "log.file.name"]
+    assert attrs == kept_attrs
+    (event,) = kept["events"]
+    assert event["name"] == "state"
+    assert event["attributes"] == [{"key": "factory.round", "value": {"intValue": "2"}}]
+
+
+def _replay_otlp(tmp_path, signal, batch, processors):
+    source = tmp_path / "input.json"
+    output = tmp_path / "export.json"
     source.write_text(json.dumps(batch) + "\n")
     conf = tmp_path / "config.yaml"
     conf.write_text(
@@ -1948,14 +1826,14 @@ def test_factory_trace_content_removed_before_sampling(tmp_path):
                         "start_at": "beginning",
                     }
                 },
-                "processors": {name: config["processors"][name] for name in clean},
+                "processors": processors,
                 "exporters": {"file": {"path": str(output)}},
                 "service": {
                     "telemetry": {"metrics": {"level": "none"}},
                     "pipelines": {
-                        "traces": {
+                        signal: {
                             "receivers": ["otlp_json_file"],
-                            "processors": clean,
+                            "processors": list(processors),
                             "exporters": ["file"],
                         }
                     },
@@ -1971,16 +1849,107 @@ def test_factory_trace_content_removed_before_sampling(tmp_path):
                 break
             time.sleep(0.1)
         else:
-            pytest.fail("timed out waiting for sanitized span")
+            pytest.fail("timed out waiting for collector export")
     finally:
         proc.terminate()
         proc.wait(timeout=10)
-    exported = output.read_text()
-    assert marker not in exported
-    (kept,) = json.loads(exported)["resourceSpans"][0]["scopeSpans"][0]["spans"]
-    # The file receiver adds log.file.name to every span it reads.
-    attrs = [a for a in kept["attributes"] if a["key"] != "log.file.name"]
-    assert attrs == kept_attrs
-    (event,) = kept["events"]
-    assert event["name"] == "state"
-    assert event["attributes"] == [{"key": "factory.round", "value": {"intValue": "2"}}]
+    return output.read_text()
+
+
+# invariant: OTEL-1
+@pytest.mark.parametrize("mutation", [None, "body_guard", "delete_attribute"])
+def test_rendered_redaction_in_collector(tmp_path, mutation):
+    docs = _render_default(
+        ["--set", "logs.enabled=true,logs.redact=true,logs.namespaces={fixture}"]
+    )
+    processor = _named_collector_config(docs, LOGS)["processors"]["transform/redact"]
+    statements = processor["log_statements"][0]["statements"]
+    if mutation == "body_guard":
+        (index,) = [
+            i
+            for i, statement in enumerate(statements)
+            if statement.startswith("replace_pattern(log.body")
+            and "PRIVATE KEY" in statement
+        ]
+        statements[index] = statements[index].rsplit(" where ", 1)[0] + " where false"
+    elif mutation == "delete_attribute":
+        (delete,) = [
+            statement
+            for statement in statements
+            if statement.startswith("delete_matching_keys(")
+        ]
+        statements.remove(delete)
+
+    lines = [line for line, _ in MASKED_LINES] + ORDINARY_LINES + list(CONTEXT_EXPECTED)
+    records = [{"body": _otlp_value(line)} for line in lines]
+    attributes = {
+        "record": {
+            "message": "c9 password=nestedpw rejected",
+            "user_name": "app",
+            "password": "plainnested",
+        },
+        "headers": {
+            "Authorization": ["Basic dXNlcjpwYXNz"],
+            "Cookie": ["session=abc123"],
+            "X-Api-Key": ["k3y"],
+            "Accept": ["*/*"],
+        },
+        "client_secret": "cs",
+        "detail": "retry with password: pw456",
+        "secretName": "db-credentials",
+        "max_tokens": 4096,
+    }
+    records[0]["attributes"] = _otlp_attributes(attributes)
+    records.append({"body": _otlp_value(17)})
+    batch = {"resourceLogs": [{"scopeLogs": [{"logRecords": records}]}]}
+    exported = _replay_otlp(tmp_path, "logs", batch, {"transform/redact": processor})
+    logs = json.loads(exported)["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+    assert logs[-1]["body"] == _otlp_value(17)
+    bodies = [record["body"]["stringValue"] for record in logs[:-1]]
+    assert len(bodies) == len(lines)
+    for body, (line, secret) in zip(bodies, MASKED_LINES):
+        if mutation == "body_guard" and "PRIVATE KEY-----" in line:
+            assert body == line
+        else:
+            assert secret not in body
+            assert "[REDACTED" in body
+    assert bodies[len(MASKED_LINES) :] == ORDINARY_LINES + list(
+        CONTEXT_EXPECTED.values()
+    )
+    expected = {
+        "record.message": "c9 password=[REDACTED] rejected",
+        "record.user_name": "app",
+        "headers.Accept.0": "*/*",
+        "detail": "retry with password: [REDACTED]",
+        "secretName": "db-credentials",
+        "max_tokens": 4096,
+    }
+    if mutation == "delete_attribute":
+        expected.update(
+            {
+                "record.password": "plainnested",
+                "headers.Authorization.0": "Basic dXNlcjpwYXNz",
+                "headers.Cookie.0": "session=abc123",
+                "headers.X-Api-Key.0": "k3y",
+                "client_secret": "cs",
+            }
+        )
+    assert {
+        a["key"]: a["value"]
+        for a in logs[0]["attributes"]
+        if a["key"] != "log.file.name"
+    } == {key: _otlp_value(value) for key, value in expected.items()}
+
+
+def _otlp_value(value):
+    if isinstance(value, dict):
+        return {"kvlistValue": {"values": _otlp_attributes(value)}}
+    if isinstance(value, list):
+        return {"arrayValue": {"values": [_otlp_value(item) for item in value]}}
+    if isinstance(value, int):
+        return {"intValue": str(value)}
+    return {"stringValue": value}
+
+
+def _otlp_attributes(values):
+    return [{"key": key, "value": _otlp_value(value)} for key, value in values.items()]
