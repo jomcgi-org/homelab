@@ -310,7 +310,8 @@ func TestLegacyRunRetryRecordsOnlyAttemptProvenance(t *testing.T) {
 	}
 }
 
-func TestLegacySessionProvenanceUsesFencedReplacement(t *testing.T) {
+func legacyProvenanceEnv(t *testing.T) (*env, string, string) {
+	t.Helper()
 	v := provenanceEnv(t)
 	v.its.add(1, "coder", 101, "HL-7", "Fix it.")
 	v.tick(v.e)
@@ -327,6 +328,32 @@ func TestLegacySessionProvenanceUsesFencedReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := v.work(101).SessionID
+	return v, head, session
+}
+
+func TestLegacyPinnedSessionReadIsJournaled(t *testing.T) {
+	v, head, session := legacyProvenanceEnv(t)
+	checked := false
+	v.kg.onPromptRead = func() {
+		v.kg.onSessionRead = func(id string) {
+			var exists bool
+			err := v.st.DB.QueryRow("SELECT EXISTS (SELECT 1 FROM admission_read WHERE operation='provenance-pinned-session' AND resource=$1)", id).Scan(&exists)
+			if err != nil || !exists || id != session {
+				t.Errorf("pin read %s journaled=%v error=%v", id, exists, err)
+			}
+			checked = true
+			v.kg.onSessionRead = nil
+		}
+	}
+	v.gh.review(1, "CHANGES_REQUESTED", "reviewer", head, "Handle timeout.")
+	v.poll()
+	if !checked || len(v.kg.Sends()) != 2 {
+		t.Fatal("legacy continuation did not dispatch through the journaled read")
+	}
+}
+
+func TestLegacySessionProvenanceUsesFencedReplacement(t *testing.T) {
+	v, head, session := legacyProvenanceEnv(t)
 	v.kg.sessions[session].PreparedRevision = "older"
 	v.gh.review(1, "CHANGES_REQUESTED", "reviewer", head, "Handle timeout.")
 	v.poll()
