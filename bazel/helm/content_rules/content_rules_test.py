@@ -538,3 +538,9 @@ def test_factory_public_release_holds_its_own_token():
 
 def test_mirror_into_another_r2_bucket_passes():
     assert check([r2_mirror("elsewhere")], NS) == []
+
+
+# invariant: PLAT-14
+@pytest.mark.parametrize("doc", [policy(), binding(), claim(LABEL)])
+def test_apps_project_rejects_library_namespace_exceptions(doc):
+    assert check([doc], NS, restricted=True)

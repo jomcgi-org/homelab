@@ -31,6 +31,7 @@ genrule(
 # keep
 argocd_app(
     name = "jomcgi-site-prod",
+    application_file = "application-prod.yaml",
     chart = "projects/jomcgi-site/chart",
     chart_files = "//projects/jomcgi-site/chart:chart",
     content_rules = True,

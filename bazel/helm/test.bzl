@@ -2,7 +2,7 @@
 
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
-def helm_template_test(name, chart, release_name, namespace, values_files, chart_files, content_rules = False, content_rules_exceptions = [], **kwargs):
+def helm_template_test(name, chart, release_name, namespace, values_files, chart_files, content_rules = False, content_rules_exceptions = [], application_file = "application.yaml", **kwargs):
     """Creates a cacheable test that validates Helm chart renders with given values.
 
     This test runs helm template with the full values hierarchy from an ArgoCD
@@ -16,6 +16,7 @@ def helm_template_test(name, chart, release_name, namespace, values_files, chart
         namespace: Kubernetes namespace for rendering
         values_files: List of values file labels in order (e.g., ["//charts/todo:values.yaml", "values.yaml"])
         chart_files: Label for chart's all_files filegroup (e.g., "//charts/todo:all_files")
+        application_file: Application manifest supplying the project and destination for content rules
         content_rules: If True, also check the render with //bazel/helm/content_rules
         content_rules_exceptions: "Kind/namespace/name" objects exempt from the namespace rule
         **kwargs: Additional arguments passed to sh_test
@@ -33,8 +34,9 @@ def helm_template_test(name, chart, release_name, namespace, values_files, chart
         data = [
             "@multitool//tools/helm",
             chart_files,
-        ] + values_files + ([checker] if content_rules else []),
+        ] + values_files + ([checker, application_file] if content_rules else []),
         env = {
+            "ARGOCD_APPLICATION": "$(rootpath {})".format(application_file),
             "CONTENT_RULES": "$(rootpath {})".format(checker),
             "CONTENT_RULES_EXCEPTIONS": " ".join(sorted(content_rules_exceptions)),
         } if content_rules else {},
