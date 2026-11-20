@@ -2,8 +2,10 @@ package itsaplan
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -112,11 +114,19 @@ func TestCommentFeedBound(t *testing.T) {
 	}
 }
 
+// invariant: FACT-13
 func TestIssueTextAuthorsRequireMatchingImmutableSnapshots(t *testing.T) {
+	creationPayload := func(originalDescription string) string {
+		return fmt.Sprintf(`,"payload":{"subject":{"value":"factory-creation-sha256-v1"},"from":{"value":"%x"},"to":{"value":"%x"}}}`, sha256.Sum256([]byte("Goal")), sha256.Sum256([]byte(originalDescription)))
+	}
 	for _, tc := range []struct {
 		name, items, wantTitle, wantDescription string
 	}{
-		{"creation has no text", `{"kind":"activity","action":"created","actorUserId":"joe"}`, "", ""},
+		{"both fields original", `{"kind":"activity","action":"created","actorUserId":"joe"` + creationPayload("Criteria"), "joe", "joe"},
+		{"original title by agent", `{"kind":"activity","action":"description","actorUserId":"sessions","payload":{"to":{"value":"Criteria"}}},{"kind":"activity","action":"created","actorUserId":"agent"` + creationPayload("Criteria"), "agent", "sessions"},
+		{"original title by joe", `{"kind":"activity","action":"description","actorUserId":"sessions","payload":{"to":{"value":"Criteria"}}},{"kind":"activity","action":"created","actorUserId":"joe"` + creationPayload("Criteria"), "joe", "sessions"},
+		{"legacy creation without snapshot", `{"kind":"activity","action":"created","actorUserId":"joe"}`, "", ""},
+		{"attachment stripped without a description event", `{"kind":"activity","action":"created","actorUserId":"joe"` + creationPayload("Criteria ![file](/attachments/123)"), "joe", ""},
 		{"trusted edits", `{"kind":"activity","action":"title","actorUserId":"joe","payload":{"to":{"value":"Goal"}}},{"kind":"activity","action":"description","actorUserId":"sessions","payload":{"to":{"value":"Criteria"}}}`, "joe", "sessions"},
 		{"later edit wins", `{"kind":"activity","action":"description","actorUserId":"agent","payload":{"to":{"value":"Criteria"}}},{"kind":"activity","action":"description","actorUserId":"joe","payload":{"to":{"value":"Criteria"}}}`, "", "agent"},
 		{"snapshot mismatch", `{"kind":"activity","action":"title","actorUserId":"joe","payload":{"to":{"value":"Old goal"}}}`, "", ""},

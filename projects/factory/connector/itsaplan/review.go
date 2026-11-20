@@ -2,8 +2,10 @@ package itsaplan
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -37,6 +39,14 @@ func (c *Client) FindIssue(ctx context.Context, identifier string) (*Issue, erro
 	return &out[0], nil
 }
 
+type activitySide struct {
+	Value *string `json:"value"`
+}
+
+func (s *activitySide) matchesHash(text string) bool {
+	return s != nil && s.Value != nil && *s.Value == fmt.Sprintf("%x", sha256.Sum256([]byte(text)))
+}
+
 type FeedItem struct {
 	ID          int64           `json:"id"`
 	IssueID     int64           `json:"issueId"`
@@ -46,9 +56,9 @@ type FeedItem struct {
 	Body        string          `json:"body"`
 	EditedAt    json.RawMessage `json:"editedAt"`
 	Payload     struct {
-		To *struct {
-			Value *string `json:"value"`
-		} `json:"to"`
+		Subject *activitySide `json:"subject"`
+		From    *activitySide `json:"from"`
+		To      *activitySide `json:"to"`
 	} `json:"payload"`
 }
 
@@ -58,10 +68,10 @@ func (f *FeedItem) OriginalComment() bool {
 	return string(f.EditedAt) == "null"
 }
 
-// IssueTextAuthors authenticates current text against immutable change-log
-// snapshots, never against the issue's creator. Creation events have no text;
-// absence of a snapshot therefore grants no authority. Read newest first so an
-// older trusted value cannot mask a later untrusted edit of the same field.
+// invariant: FACT-13
+//
+// IssueTextAuthors attributes original fields to the creator and edited fields
+// to the latest editor when the recorded snapshot matches the current value.
 func (c *Client) IssueTextAuthors(ctx context.Context, issue *Issue) ([]string, error) {
 	q := url.Values{"filter": {"history"}, "order": {"desc"}, "limit": {"100"}}
 	want := map[string]string{"title": issue.Title, "description": issue.Description}
@@ -74,8 +84,23 @@ func (c *Client) IssueTextAuthors(ctx context.Context, issue *Issue) ([]string, 
 			return nil, err
 		}
 		for _, item := range out.Items {
+			if item.Kind != "activity" || item.IssueID != issue.ID {
+				continue
+			}
+			if item.Action == "created" {
+				snapshot := item.Payload
+				if snapshot.Subject != nil && snapshot.Subject.Value != nil && *snapshot.Subject.Value == "factory-creation-sha256-v1" {
+					if !seen["title"] && snapshot.From.matchesHash(issue.Title) {
+						authors["title"] = item.ActorUserID
+					}
+					if !seen["description"] && snapshot.To.matchesHash(issue.Description) {
+						authors["description"] = item.ActorUserID
+					}
+				}
+				return []string{authors["title"], authors["description"]}, nil
+			}
 			value, relevant := want[item.Action]
-			if !relevant || seen[item.Action] || item.Kind != "activity" || item.IssueID != issue.ID {
+			if !relevant || seen[item.Action] {
 				continue
 			}
 			seen[item.Action] = true

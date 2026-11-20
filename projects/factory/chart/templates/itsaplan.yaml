@@ -240,6 +240,22 @@ spec:
               mountPath: /tmp
             - name: backups
               mountPath: /backups
+        - name: creation-snapshot
+          image: {{ $i.images.api }}
+          command:
+            - bun
+            - -e
+            - |
+              {{- .Files.Get "files/itsaplan/creation-snapshot.mjs" | nindent 14 }}
+            - /app/apps/api/src/modules/issues/service.ts
+            - /snapshot/service.ts
+          securityContext:
+            {{- include "factory.itsaplanContainerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml $i.resources.api | nindent 12 }}
+          volumeMounts:
+            - name: snapshot
+              mountPath: /snapshot
       containers:
         - name: api
           image: {{ $i.images.api }}
@@ -272,6 +288,10 @@ spec:
           resources:
             {{- toYaml $i.resources.api | nindent 12 }}
           volumeMounts:
+            - name: snapshot
+              mountPath: /app/apps/api/src/modules/issues/service.ts
+              subPath: service.ts
+              readOnly: true
             {{- range $file, $path := $mounts }}
             - name: deferred
               mountPath: {{ $path }}
@@ -283,6 +303,8 @@ spec:
             - name: backups
               mountPath: /backups
       volumes:
+        - name: snapshot
+          emptyDir: {}
         - name: deferred
           configMap:
             name: {{ $name }}-deferred
