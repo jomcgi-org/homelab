@@ -136,21 +136,9 @@ func TestGatewayIdentifiesDispatchesAndStopsOnAFatalCode(t *testing.T) {
 	}
 }
 
-type deleter struct {
-	mu  sync.Mutex
-	ids []string
-}
-
-func (d *deleter) DeleteSession(_ context.Context, id string) (*kagent.Session, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.ids = append(d.ids, id)
-	return &kagent.Session{ID: id}, nil
-}
-
 // A turn sends one message with an ID from the Discord message, waits for
-// the task, returns the answer and deletes the session.
-func TestKagentTurnAnswersAndDeletesItsSession(t *testing.T) {
+// the task, returns the answer.
+func TestKagentTurnAnswers(t *testing.T) {
 	var sent kagent.Message
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/agents/factory-discord-agent/discord" || r.Header.Get("Authorization") != "Bearer kagent-token" {
@@ -183,12 +171,10 @@ func TestKagentTurnAnswersAndDeletesItsSession(t *testing.T) {
 	if err := os.WriteFile(tokenFile, []byte("kagent-token"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := &deleter{}
 	k := &Kagent{
-		A2A:      &kagent.A2A{BaseURL: srv.URL, Tokens: &kagent.TokenSource{Path: tokenFile}},
-		Sessions: d,
-		Agent:    kagent.AgentRef{Namespace: "factory-discord-agent", Name: "discord"},
-		Poll:     10 * time.Millisecond,
+		A2A:   &kagent.A2A{BaseURL: srv.URL, Tokens: &kagent.TokenSource{Path: tokenFile}},
+		Agent: kagent.AgentRef{Namespace: "factory-discord-agent", Name: "discord"},
+		Poll:  10 * time.Millisecond,
 	}
 	answer, err := k.Turn(context.Background(), "m1", "prompt")
 	if err != nil || answer != "heron" {
@@ -196,9 +182,6 @@ func TestKagentTurnAnswersAndDeletesItsSession(t *testing.T) {
 	}
 	if sent.MessageID != "discord-m1" || sent.Parts[0].Text != "prompt" {
 		t.Errorf("sent %+v", sent)
-	}
-	if len(d.ids) != 1 || d.ids[0] != "ctx1" {
-		t.Errorf("deleted sessions = %v", d.ids)
 	}
 }
 

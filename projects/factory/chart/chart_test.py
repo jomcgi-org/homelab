@@ -1265,6 +1265,16 @@ def test_discord_bridge_reaches_only_discord_its_memory_and_its_agent() -> None:
         for rule in egress["egress"]
     ]
     assert ports == [["443"], ["8888"], ["8082"], ["8083"]]
+    assert egress["egress"][3]["toPorts"] == [
+        {
+            "ports": [{"port": "8083", "protocol": "TCP"}],
+            "rules": {
+                "http": [
+                    {"method": "POST", "path": "^/agents/factory-discord-agent/bosun$"}
+                ]
+            },
+        }
+    ]
     controller = _in(docs, "CiliumNetworkPolicy", "kagent", "kagent-controller")
     admitted = [
         m["matchLabels"] for m in controller["spec"]["ingress"][0]["fromEndpoints"]

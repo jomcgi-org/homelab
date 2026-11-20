@@ -58,11 +58,11 @@ func env(name string) (string, error) {
 }
 
 func run(log *slog.Logger) error {
-	var cfg struct{ policy, token, hindsightURL, hindsightKey, kagentURL, kagentGRPC, kagentToken, agent, health string }
+	var cfg struct{ policy, token, hindsightURL, hindsightKey, kagentURL, kagentToken, agent, health string }
 	for name, dst := range map[string]*string{
 		"DISCORD_POLICY_FILE": &cfg.policy, "DISCORD_TOKEN_FILE": &cfg.token,
 		"HINDSIGHT_URL": &cfg.hindsightURL, "HINDSIGHT_KEY_FILE": &cfg.hindsightKey,
-		"KAGENT_URL": &cfg.kagentURL, "KAGENT_GRPC": &cfg.kagentGRPC, "KAGENT_TOKEN_FILE": &cfg.kagentToken,
+		"KAGENT_URL": &cfg.kagentURL, "KAGENT_TOKEN_FILE": &cfg.kagentToken,
 		"KAGENT_AGENT": &cfg.agent, "HEALTH_ADDR": &cfg.health,
 	} {
 		v, err := env(name)
@@ -84,21 +84,14 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("KAGENT_AGENT %q is not namespace/name", cfg.agent)
 	}
 	tokens := &kagent.TokenSource{Path: cfg.kagentToken}
-	sessions, err := kagent.DialSessions(cfg.kagentGRPC, tokens)
-	if err != nil {
-		return err
-	}
-	defer sessions.Close()
 
 	botToken := fileValue(cfg.token)
 	rest := &discord.REST{Token: botToken}
 	bridge := &discord.Bridge{
 		Config: policy,
 		Agent: &discord.Kagent{
-			A2A:      &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens},
-			Sessions: sessions,
-			Agent:    kagent.AgentRef{Namespace: ns, Name: name},
-			Log:      log,
+			A2A:   &kagent.A2A{BaseURL: strings.TrimSuffix(cfg.kagentURL, "/"), Tokens: tokens},
+			Agent: kagent.AgentRef{Namespace: ns, Name: name},
 		},
 		Memory:  &discord.Hindsight{BaseURL: strings.TrimSuffix(cfg.hindsightURL, "/"), Key: fileValue(cfg.hindsightKey), RecallTokens: 2000},
 		Replies: rest,

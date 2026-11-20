@@ -86,6 +86,16 @@ certgen:
 
 hubble:
   enabled: true
+  # Keep bearer credentials out of HTTP flow records.
+  redact:
+    enabled: true
+    http:
+      headers:
+        deny:
+          - Authorization
+          - Proxy-Authorization
+          - Cookie
+          - Set-Cookie
   # The default 4095-flow ring fills within seconds on a busy node, so flow
   # lookups (and the connectivity test's flow checks) miss events.
   eventBufferCapacity: "32767"

@@ -292,8 +292,6 @@ spec:
               value: /var/run/secrets/hindsight/tenant-api-key
             - name: KAGENT_URL
               value: {{ printf "http://%s" (include "factory.kagentControllerAddress" .) | quote }}
-            - name: KAGENT_GRPC
-              value: {{ include "factory.kagentControllerAddress" . | quote }}
             - name: KAGENT_TOKEN_FILE
               value: /var/run/secrets/kagent/token
             - name: KAGENT_AGENT
@@ -391,7 +389,7 @@ spec:
         - ports:
             - port: "8082"
               protocol: TCP
-    # A2A and SessionService share the controller's listener.
+    # Both A2A operations POST to the same JSON-RPC endpoint.
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ include "factory.kagentNamespace" . }}
@@ -400,6 +398,10 @@ spec:
         - ports:
             - port: {{ .Values.kagent.controller.service.ports.targetPort | default 8083 | quote }}
               protocol: TCP
+          rules:
+            http:
+              - method: POST
+                path: {{ printf "^/agents/%s/%s$" (regexQuoteMeta $d.agent.namespace) (regexQuoteMeta $d.agent.name) | quote }}
 {{- end }}
 {{- end }}
 {{- if and $d.bridge.enabled $d.import.enabled }}

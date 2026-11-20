@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -16,22 +15,12 @@ type Agent interface {
 	Turn(ctx context.Context, messageID, prompt string) (string, error)
 }
 
-// SessionDeleter deletes a finished turn's kagent session.
-type SessionDeleter interface {
-	DeleteSession(ctx context.Context, id string) (*kagent.Session, error)
-}
-
-// Kagent runs each turn on one fixed kagent Agent in a fresh session, then
-// deletes the session: continuity comes from Hindsight recall, so sessions
-// stay short and a stuck one never stops the bot (HOME-162 "Short
-// sessions"). Message text never chooses the Agent.
+// Kagent runs each turn on one fixed Agent in a fresh session.
 type Kagent struct {
-	A2A      *kagent.A2A
-	Sessions SessionDeleter
-	Agent    kagent.AgentRef
-	Poll     time.Duration
-	Timeout  time.Duration
-	Log      *slog.Logger
+	A2A     *kagent.A2A
+	Agent   kagent.AgentRef
+	Poll    time.Duration
+	Timeout time.Duration
 }
 
 // ErrTurnFailed is a turn that ended in a state other than completed.
@@ -60,9 +49,6 @@ func (k *Kagent) Turn(ctx context.Context, messageID, prompt string) (string, er
 	if err != nil {
 		return "", err
 	}
-	if task.ContextID != "" && k.Sessions != nil {
-		defer k.deleteSession(task.ContextID)
-	}
 	for !kagent.Terminal(task.Status.State) {
 		if err := sleep(ctx, poll); err != nil {
 			return "", err
@@ -80,25 +66,6 @@ func (k *Kagent) Turn(ctx context.Context, messageID, prompt string) (string, er
 		return "", fmt.Errorf("%w: %s", ErrTurnFailed, task.Status.State)
 	}
 	return AnswerText(task), nil
-}
-
-// deleteSession runs after the turn on its own deadline, so a cancelled
-// turn still cleans up. kagent refuses while the turn settles, so it retries.
-func (k *Kagent) deleteSession(id string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	for {
-		_, err := k.Sessions.DeleteSession(ctx, id)
-		if err == nil || errors.Is(err, kagent.ErrSessionNotFound) {
-			return
-		}
-		if sleep(ctx, 5*time.Second) != nil {
-			if k.Log != nil {
-				k.Log.Warn("kagent session not deleted", "session", id, "error", err)
-			}
-			return
-		}
-	}
 }
 
 // AnswerText is the agent's final answer: its status message, else its last
