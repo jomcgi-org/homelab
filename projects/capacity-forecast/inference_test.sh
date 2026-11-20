@@ -24,14 +24,20 @@ awk 'BEGIN {
     printf "%s[%d,\"%d\"]", (t == 0 ? "" : ","), t, 600000000 + (t % 7200) * 1000
   }
   print "]}]}}"
-}' | unshare -Urmpf bash -euc '
+}' >"$TEST_TMPDIR/history.json"
+
+replay() {
+	unshare -Urmpf bash -euc '
 	root=$1
 	shift
 	mount --bind /dev/null "$root/dev/null"
 	mount --bind /dev/urandom "$root/dev/urandom"
 	mount -t proc proc "$root/proc"
 	exec /usr/sbin/chroot "$root" /usr/bin/env -i "$@"
-' bash "$root" "${image_env[@]}" "${entrypoint[@]}" --replay >"$TEST_TMPDIR/metrics"
+' bash "$root" "${image_env[@]}" "${entrypoint[@]}" --replay "$@" <"$TEST_TMPDIR/history.json"
+}
+
+replay >"$TEST_TMPDIR/metrics"
 
 for policy in baseline timestral; do
 	for horizon in 300 600 900 1200 1500 1800; do
@@ -40,3 +46,10 @@ for policy in baseline timestral; do
 		grep -Fxq "capacity_forecast_target_timestamp_seconds{$labels} $((604800 + horizon))" "$TEST_TMPDIR/metrics"
 	done
 done
+
+replay 605100 >"$TEST_TMPDIR/after-first-target"
+if grep -q 'horizon_seconds="300"' "$TEST_TMPDIR/after-first-target"; then
+	echo "Forecasts at their target time must expire" >&2
+	exit 1
+fi
+grep -q 'horizon_seconds="600"' "$TEST_TMPDIR/after-first-target"
