@@ -2849,13 +2849,100 @@ func TestCompletedPassRechecksChangedInvariantBase(t *testing.T) {
 	h.gh.mu.Lock()
 	h.gh.baseHead = "base-2"
 	h.gh.baseFiles["policy/INVARIANTS.yaml"] = "invariants:\n  - mechanism: [projects/old/y.go]"
+	h.gh.compares = map[string]map[string]any{"base-2..." + shaA: {"merge_base_commit": map[string]string{"sha": "base-1"}}}
 	h.gh.mu.Unlock()
 	e.Tick(ctx)
 	c := h.gh.check(shaA)
 	st, _ := LoadState(c.Text)
+	if c.Conclusion != ConclusionSuccess || st.InvariantBase != "base-1" || st.Gate.Needed() {
+		t.Fatalf("base branch advanced past merge base: %s, state = %+v", c.Conclusion, st)
+	}
+	h.gh.mu.Lock()
+	h.gh.baseHead = "base-3"
+	h.gh.mu.Unlock()
+	e.Tick(ctx)
+	c = h.gh.check(shaA)
+	st, _ = LoadState(c.Text)
 	// A new mechanism on base gets normal review, not the human gate (HOME-755).
-	if c.Conclusion != ConclusionSuccess || st.Gate.Needed() {
+	if c.Conclusion != ConclusionSuccess || st.InvariantBase != "base-3" || st.Gate.Needed() {
 		t.Fatalf("reconciled check = %s, state = %+v", c.Conclusion, st)
+	}
+}
+
+// HOME-389: the initial review reads invariant policy at the merge base,
+// not at the base branch tip.
+func TestInitialReviewReadsInvariantPolicyAtMergeBase(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	h.gh.mu.Lock()
+	h.gh.baseHead = "base-2"
+	h.gh.compares = map[string]map[string]any{"base-2..." + shaA: {"status": "ahead", "merge_base_commit": map[string]string{"sha": "base-1"}}}
+	h.gh.mu.Unlock()
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	eventually(t, "completed review", func() bool { return h.gh.check(shaA).Status == "completed" })
+	if st, _ := LoadState(h.gh.check(shaA).Text); st.InvariantBase != "base-1" {
+		t.Fatalf("invariant policy read at %q, want the merge base base-1", st.InvariantBase)
+	}
+}
+
+// HOME-389: no merge base, no review. A failed compare or a comparison
+// without a merge base holds the head before any review task starts.
+func TestInitialReviewWithoutMergeBaseFailsClosed(t *testing.T) {
+	compare := "GET /repos/" + testRepo + "/compare/base-1..." + shaA
+	for name, setup := range map[string]func(*harness){
+		"compare fails": func(h *harness) { h.gh.failWith(compare, 502) },
+		"empty merge base": func(h *harness) {
+			h.gh.mu.Lock()
+			defer h.gh.mu.Unlock()
+			h.gh.compares = map[string]map[string]any{"base-1..." + shaA: {"status": "ahead"}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			setup(h)
+			e, ctx, _ := h.start()
+			e.Tick(ctx)
+			eventually(t, "two merge base reads", func() bool { return h.gh.countCalls(compare) >= 2 })
+			if len(h.k.sent()) != 0 {
+				t.Fatal("a review task started without a merge base")
+			}
+			if c := h.gh.check(shaA); c != nil && c.Conclusion == ConclusionSuccess {
+				t.Fatalf("check passed without a merge base: %+v", c)
+			}
+		})
+	}
+}
+
+// HOME-389: reconciliation without a merge base holds a saved pass.
+func TestReconcileWithoutMergeBaseWaitsForPolicy(t *testing.T) {
+	compare := "GET /repos/" + testRepo + "/compare/base-2..." + shaA
+	for name, setup := range map[string]func(*harness){
+		"compare fails": func(h *harness) { h.gh.failWith(compare, 502) },
+		"empty merge base": func(h *harness) {
+			h.gh.mu.Lock()
+			defer h.gh.mu.Unlock()
+			h.gh.compares = map[string]map[string]any{"base-2..." + shaA: {"status": "ahead"}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			e, ctx, _ := h.start()
+			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+			eventually(t, "completed review", func() bool {
+				return h.gh.check(shaA).Conclusion == ConclusionSuccess && testutil.ToFloat64(h.m.InFlight) == 0
+			})
+			setup(h)
+			h.gh.mu.Lock()
+			h.gh.baseHead = "base-2"
+			h.gh.mu.Unlock()
+			e.Tick(ctx)
+			if c := h.gh.check(shaA); c.Conclusion != ConclusionFailure || !strings.Contains(c.Title+c.Summary, "Waiting for invariant policy") {
+				t.Fatalf("check = %s %q:\n%s", c.Conclusion, c.Title, c.Summary)
+			}
+		})
 	}
 }
 

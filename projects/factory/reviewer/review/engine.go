@@ -1,4 +1,5 @@
 // invariant: HOME-175-1
+// invariant: FACT-9
 // invariant: FACT-10
 // invariant: FACT-20
 // Package review is the factory reviewer's loop. It polls each binding's
@@ -2226,6 +2227,21 @@ func (e *Engine) sleep(ctx context.Context, d time.Duration) {
 	}
 }
 
+// invariantMergeBase resolves the common ancestor of the PR snapshot's two commits.
+func (e *Engine) invariantMergeBase(ctx context.Context, b *Binding, pr github.PullRequest) (string, error) {
+	if pr.BaseSHA == "" || pr.HeadSHA == "" {
+		return "", errors.New("missing pull request commit for invariant policy")
+	}
+	comparison, err := e.gh.CompareCommits(ctx, b.repo(), pr.BaseSHA, pr.HeadSHA)
+	if err != nil {
+		return "", err
+	}
+	if comparison.MergeBase == "" {
+		return "", errors.New("comparison missing merge base for invariant policy")
+	}
+	return comparison.MergeBase, nil
+}
+
 // gather reads the PR's changed files and the previous round's state.
 func (e *Engine) gather(ctx context.Context, b *Binding, pr github.PullRequest, l *slog.Logger) (*inputs, error) {
 	files, err := e.gh.PullRequestFiles(ctx, b.repo(), pr.Number)
@@ -2240,10 +2256,7 @@ func (e *Engine) gather(ctx context.Context, b *Binding, pr github.PullRequest, 
 	if unknown != "" {
 		l.WarnContext(ctx, "previous review state is incomplete; retaining the hold and asking for a full review", "reason", unknown)
 	}
-	// Invariant policy is read at the base branch tip, not the merge base.
-	// HOME-389 moves it to the merge base
-	// (decision: https://factory-plan.jomcgi.dev/factory/issue/HOME-346#comment-3947).
-	base, err := e.gh.BranchHead(ctx, b.repo(), b.BaseBranch)
+	base, err := e.invariantMergeBase(ctx, b, pr)
 	if err != nil {
 		return nil, err
 	}
@@ -3609,9 +3622,9 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 	}
 	// Recompute the path decision against current base policy before trusting a saved pass.
 	const policyWait = "Waiting for invariant policy"
-	base, err := e.gh.BranchHead(ctx, b.repo(), b.BaseBranch)
+	base, err := e.invariantMergeBase(ctx, b, pr)
 	pathsChanged := false
-	if err == nil && (base == "" || st.InvariantBase != base) {
+	if err == nil && st.InvariantBase != base {
 		var policy invariantPolicy
 		policy, err = loadInvariantPolicy(ctx, e.gh, b.repo(), base)
 		var files []github.PullRequestFile
