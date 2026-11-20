@@ -26,6 +26,7 @@ type GoalSessionCreator interface {
 // An unused session from earlier settings must never pin a changed receipt.
 func (e *Engine) prepareGoalDispatch(ctx context.Context, b *Binding, in *inputs, base, prefix string, key []byte, d *GoalTask, msg *kagent.Message) error {
 	msg.MessageID = prefix
+	var revision string
 	var record provenance.ReviewerRun
 	if e.cfg.Runs != nil {
 		var err error
@@ -33,9 +34,15 @@ func (e *Engine) prepareGoalDispatch(ctx context.Context, b *Binding, in *inputs
 		if err != nil {
 			return err
 		}
+		revision, err = e.cfg.Sessions.PromptRevision(ctx, b.Agent, b.Runtime.SystemPrompt)
+		if err != nil {
+			return err
+		}
 		data, _ := json.Marshal(record)
 		mac := hmac.New(sha256.New, key)
 		mac.Write(data)
+		mac.Write([]byte{0})
+		mac.Write([]byte(revision))
 		msg.MessageID += "/inputs/" + hex.EncodeToString(mac.Sum(nil)[:16])
 	}
 	// A completed dispatch may have had its session deleted. A persisted
@@ -63,7 +70,8 @@ func (e *Engine) prepareGoalDispatch(ctx context.Context, b *Binding, in *inputs
 			return err
 		}
 		if s == nil || !contextIDPattern.MatchString(s.ContextID) || s.ID != s.ContextID ||
-			s.AgentNamespace != b.Agent.Namespace || s.AgentName != b.Agent.Name || s.Gone() || s.Crashed() {
+			s.AgentNamespace != b.Agent.Namespace || s.AgentName != b.Agent.Name || s.Gone() || s.Crashed() ||
+			(revision != "" && s.PreparedRevision != revision) {
 			return errors.New("goal session unavailable")
 		}
 		d.ContextID = s.ContextID
@@ -109,6 +117,10 @@ func (e *Engine) recordProvenance(ctx context.Context, b *Binding, in *inputs, m
 		return nil
 	}
 	record, err := reviewProvenance(b, in, msg, base)
+	if err != nil {
+		return err
+	}
+	msg.ContextID, err = e.cfg.Sessions.PinPromptSession(ctx, b.Agent, msg.MessageID, msg.ContextID, b.Runtime.SystemPrompt)
 	if err != nil {
 		return err
 	}

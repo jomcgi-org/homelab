@@ -2,6 +2,7 @@ package kagent
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"time"
@@ -13,6 +14,8 @@ import (
 	"google.golang.org/grpc/mem"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // Session runtime states and operations (kagent.api.v1 RuntimeState and
@@ -261,25 +264,7 @@ func sessionIDRequest(id string) []byte {
 // AgentService.GetAgent: the revision kagent pins a new session to, and the
 // one its Agent Card describes. It is empty when the Agent has none.
 func (s *Sessions) AgentRevision(ctx context.Context, agent AgentRef) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, GetSessionTimeout)
-	defer cancel()
-	// GetAgentRequest: ResourceReference ref = 1.
-	req := rawMessage(protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), encodeRef(agent)))
-	var resp rawMessage
-	if err := s.conn.Invoke(ctx, "/kagent.api.v1.AgentService/GetAgent", &req, &resp, grpc.ForceCodecV2(rawCodec{})); err != nil {
-		return "", err
-	}
-	// GetAgentResponse { Agent agent = 1 { StructuredObject resource = 2 {
-	// google.protobuf.Struct value = 3 } } }, the Agent CR as JSON.
-	a, err := field(resp, 1)
-	if err != nil {
-		return "", err
-	}
-	res, err := field(a, 2)
-	if err != nil {
-		return "", err
-	}
-	cr, err := field(res, 3)
+	cr, err := s.agentResource(ctx, agent)
 	if err != nil {
 		return "", err
 	}
@@ -288,6 +273,78 @@ func (s *Sessions) AgentRevision(ctx context.Context, agent AgentRef) (string, e
 		return "", err
 	}
 	return structString(status, "latestSuccessfulRevision")
+}
+
+func (s *Sessions) agentResource(ctx context.Context, agent AgentRef) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, GetSessionTimeout)
+	defer cancel()
+	// GetAgentRequest: ResourceReference ref = 1.
+	req := rawMessage(protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), encodeRef(agent)))
+	var resp rawMessage
+	if err := s.conn.Invoke(ctx, "/kagent.api.v1.AgentService/GetAgent", &req, &resp, grpc.ForceCodecV2(rawCodec{})); err != nil {
+		return nil, err
+	}
+	// GetAgentResponse { Agent agent = 1 { StructuredObject resource = 2 {
+	// google.protobuf.Struct value = 3 } } }, the Agent CR as JSON.
+	a, err := field(resp, 1)
+	if err != nil {
+		return nil, err
+	}
+	res, err := field(a, 2)
+	if err != nil {
+		return nil, err
+	}
+	return field(res, 3)
+}
+
+// PromptRevision returns the reconciled revision whose inline prompt matches the receipt.
+func (s *Sessions) PromptRevision(ctx context.Context, agent AgentRef, prompt string) (string, error) {
+	raw, err := s.agentResource(ctx, agent)
+	if err != nil {
+		return "", err
+	}
+	return servedPromptRevision(raw, prompt)
+}
+
+func servedPromptRevision(raw []byte, prompt string) (string, error) {
+	var cr structpb.Struct
+	if err := proto.Unmarshal(raw, &cr); err != nil {
+		return "", err
+	}
+	meta := cr.Fields["metadata"].GetStructValue().GetFields()
+	status := cr.Fields["status"].GetStructValue().GetFields()
+	spec := cr.Fields["spec"].GetStructValue().GetFields()
+	inline := spec["template"].GetStructValue().GetFields()["inline"].GetStructValue().GetFields()
+	served, ok := inline["systemPrompt"].GetKind().(*structpb.Value_StringValue)
+	rev := status["latestSuccessfulRevision"].GetStringValue()
+	gen := meta["generation"].GetNumberValue()
+	if !ok || served.StringValue != prompt || gen <= 0 || status["observedGeneration"].GetNumberValue() != gen || rev == "" || status["desiredRevision"].GetStringValue() != rev {
+		return "", errors.New("waiting for kagent to serve the expected prompt")
+	}
+	return rev, nil
+}
+
+// PinPromptSession reads one reconciled Agent snapshot and pins the message to
+// that revision, including when reconciliation races session creation.
+func (s *Sessions) PinPromptSession(ctx context.Context, agent AgentRef, id, existing, prompt string) (string, error) {
+	rev, err := s.PromptRevision(ctx, agent, prompt)
+	if err != nil {
+		return "", err
+	}
+	var sess *Session
+	if existing == "" {
+		key := fmt.Sprintf("%x", sha256.Sum256([]byte(id+"\x00"+rev)))
+		sess, err = s.CreateSession(ctx, agent, key)
+	} else {
+		sess, err = s.GetSession(ctx, existing)
+	}
+	if err != nil {
+		return "", err
+	}
+	if sess == nil || sess.ContextID == "" || sess.ID != sess.ContextID || (existing != "" && existing != sess.ContextID) || sess.AgentNamespace != agent.Namespace || sess.AgentName != agent.Name || sess.PreparedRevision != rev {
+		return "", errors.New("session has not pinned the verified prompt revision")
+	}
+	return sess.ContextID, nil
 }
 
 // google.protobuf.Value kinds the reviewer reads.

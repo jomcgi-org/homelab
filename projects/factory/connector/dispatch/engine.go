@@ -64,6 +64,7 @@ type Tasks interface {
 
 // Sessions is the subset of the kagent session client dispatch uses.
 type Sessions interface {
+	PinPromptSession(context.Context, kagent.AgentRef, string, string, string) (string, error)
 	GetSession(ctx context.Context, id string) (*kagent.Session, error)
 	RevertSession(ctx context.Context, id string) (*kagent.Session, error)
 	ListSessions(ctx context.Context, agent kagent.AgentRef, pageToken string) ([]*kagent.Session, string, error)
@@ -1591,7 +1592,8 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 	if err := e.guardAttempt(ctx, a, wi); err != nil {
 		return err
 	}
-	text, err := e.prepareProvenance(ctx, r, wi, b, a)
+	sendContext := a.ContextID
+	text, err := e.prepareProvenance(ctx, r, wi, b, a, &sendContext)
 	if errors.Is(err, errLegacyRuntime) {
 		return e.recoverHeld(ctx, r, wi, a, recoveryLifecycle)
 	}
@@ -1606,7 +1608,7 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 	}
 	task, err := e.tasks.Send(ctx, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, kagent.Message{
 		MessageID: a.MessageID,
-		ContextID: a.ContextID,
+		ContextID: sendContext,
 		Parts:     []kagent.Part{{Text: text}},
 		Metadata: map[string]any{
 			"factory.jomcgi.dev/run":        r.ID,
