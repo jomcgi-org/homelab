@@ -73,3 +73,9 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: The reaper associates actor evidence with an attempt by its atespace and session actor name.
+  mechanism:
+  - projects/factory/connector/internal/reaper/reaper.go
+  test: //projects/factory/connector/internal/reaper:reaper_test
+  state: live

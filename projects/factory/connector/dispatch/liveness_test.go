@@ -367,8 +367,8 @@ func TestGoneWorkerRetriesBusyTurnWithinFiveMinutes(t *testing.T) {
 	// attempt, then clear its assignment as Substrate does on crash (revision 19).
 	// The fixtures encode ateapi.v1.Actor metadata, state and worker_assignment.
 	_, err := v.st.DB.Exec(`CREATE TABLE actor_fixture(name text, proto bytea);
-		CREATE FUNCTION public.reaper_actors() RETURNS TABLE(name text, proto bytea)
-		LANGUAGE sql AS $$ SELECT name, proto FROM actor_fixture $$`)
+		CREATE FUNCTION public.reaper_actors() RETURNS TABLE(atespace text, name text, proto bytea)
+		LANGUAGE sql AS $$ SELECT 'factory-homelab'::text, name, proto FROM actor_fixture $$`)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -45,9 +45,10 @@ spec:
                       END IF;
                     END $$;
                     SET LOCAL check_function_bodies = off;
-                    CREATE OR REPLACE FUNCTION public.reaper_actors() RETURNS TABLE(name text, proto bytea)
+                    DROP FUNCTION IF EXISTS public.reaper_actors();
+                    CREATE FUNCTION public.reaper_actors() RETURNS TABLE(atespace text, name text, proto bytea)
                       LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog
-                      AS $$SELECT a.name::text, a.proto FROM substrate.actors a WHERE a.name LIKE 'session-%'$$;
+                      AS $$SELECT a.atespace::text, a.name::text, a.proto FROM substrate.actors a WHERE a.name LIKE 'session-%'$$;
                     REVOKE ALL ON FUNCTION public.reaper_actors() FROM PUBLIC;
                     GRANT EXECUTE ON FUNCTION public.reaper_actors() TO factory_reaper;
                     COMMIT;
