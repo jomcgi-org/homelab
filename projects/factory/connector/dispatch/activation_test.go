@@ -1038,3 +1038,117 @@ func TestActivationRunConfirmationPaginatesAndRetriesCredentialErrors(t *testing
 		})
 	}
 }
+
+func TestDeferredMergeFollowups(t *testing.T) {
+	for _, count := range []int{0, 2} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.delivered()
+			v.gh.green("sha-1")
+			findings := []github.DeferredFinding{{ID: "F1", Title: "First", Detail: "first detail"}, {ID: "F2", Title: "Second", Detail: "second detail"}}[:count]
+			data, _ := json.Marshal(map[string]any{"deferred": findings})
+			for i, c := range v.gh.checks["sha-1"] {
+				if c.Name == "semgrep-review" {
+					v.gh.checks["sha-1"][i].ExternalID = "factory-review/jomcgi-org/homelab/1/sha-1"
+					v.gh.checks["sha-1"][i].Text = github.ReviewStatePrefix + base64.StdEncoding.EncodeToString(data) + github.ReviewStateSuffix
+				}
+			}
+			v.its.columns = append(v.its.columns, itsaplan.Column{ID: 91, StateType: "backlog", Position: -1})
+			v.its.loseActivationCreate = true
+			v.gh.merge(1, "merged-sha")
+			v.poll()
+			v.e.Release()
+			v.e = v.engine("restart")
+			v.poll()
+			v.poll()
+			var delivered int
+			if err := v.st.DB.QueryRow("SELECT count(*) FROM outbox WHERE kind = $1 AND delivered_at IS NOT NULL", store.OutboxReviewFollowup).Scan(&delivered); err != nil || delivered != count {
+				t.Fatalf("delivered %d, want %d: %v", delivered, count, err)
+			}
+			if v.its.activationCreates != count {
+				t.Fatalf("created %d, want %d", v.its.activationCreates, count)
+			}
+			for i, f := range findings {
+				is, err := v.its.GetIssue(v.ctx, int64(1001+i))
+				if err != nil || is.Title != f.Title || is.ColumnID != 91 || is.DelegateUserID != nil || !strings.Contains(is.Description, f.Detail) || !strings.Contains(is.Description, f.ID) || !strings.Contains(is.Description, "https://github.com/example-org/homelab/pull/1") {
+					t.Fatalf("issue=%+v err=%v", is, err)
+				}
+			}
+		})
+	}
+}
+
+func (f *fakeItsaplan) CreateReviewFollowup(ctx context.Context, project, key string, n itsaplan.NewIssue) error {
+	if f.reviewReceipts[key] {
+		return nil
+	}
+	if f.reviewReceipts == nil {
+		f.reviewReceipts = map[string]bool{}
+	}
+	before := f.activationCreates
+	_, err := f.CreateIssue(ctx, project, n)
+	if f.activationCreates > before {
+		f.reviewReceipts[key] = true
+	}
+	return err
+}
+
+func TestUntrackedMergedReviewUsesPRIdentity(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.gh.green("shared")
+	pr := github.PullRequest{Number: 42, HeadSHA: "shared", URL: "https://github.com/example-org/homelab/pull/42"}
+	v.gh.listedMergeTime = v.clk.Now()
+	for i, c := range v.gh.checks["shared"] {
+		if c.Name != "semgrep-review" {
+			continue
+		}
+		for _, number := range []int{42, 43} {
+			data, _ := json.Marshal(map[string]any{"deferred": []github.DeferredFinding{{ID: "f", Title: fmt.Sprint(number), Detail: "details"}}})
+			c.ID = int64(number)
+			c.ExternalID = fmt.Sprintf("factory-review/jomcgi-org/homelab/%d/shared", number)
+			c.Text = github.ReviewStatePrefix + base64.StdEncoding.EncodeToString(data) + github.ReviewStateSuffix
+			if number == 42 {
+				c.Status = "in_progress"
+				v.gh.checks["shared"][i] = c
+			} else {
+				c.Status = "completed"
+				v.gh.checks["shared"] = append(v.gh.checks["shared"], c)
+			}
+		}
+	}
+	v.its.columns = append(v.its.columns, itsaplan.Column{ID: 91, StateType: "backlog", Position: -1})
+	if _, err := v.st.DB.Exec("UPDATE repo_binding SET review_merges_since='2000-01-01'"); err != nil {
+		t.Fatal(err)
+	}
+	v.poll() // GitHub has not listed the merge yet.
+	v.gh.mergedListing = []github.PullRequest{pr}
+	v.poll()
+	if v.its.activationCreates != 0 {
+		t.Fatal("in-progress review filed a follow-up")
+	}
+	v.e.Release()
+	v.e = v.engine("review-restart")
+
+	for i, c := range v.gh.checks["shared"] {
+		if c.ID == 42 {
+			v.gh.checks["shared"][i].Status = "completed"
+		}
+	}
+	v.poll()
+	v.poll() // A completed merge in the overlap must not start another lookup.
+	for id, want := range map[string]int{
+		"merged-reviews/list/jomcgi-org/homelab/main/1":                4,
+		"merged-reviews/checks/jomcgi-org/homelab/42/shared/1":         2,
+		"review-followup/jomcgi-org/homelab/42/f/ProjectColumns":       1,
+		"review-followup/jomcgi-org/homelab/42/f/CreateReviewFollowup": 1,
+	} {
+		var attempts int
+		if err := v.st.DB.QueryRow("SELECT attempts FROM status_read WHERE message_id=$1 AND writer_epoch=(SELECT epoch FROM writer WHERE id=1)", id).Scan(&attempts); err != nil || attempts != want {
+			t.Fatalf("%s attempts=%d want=%d err=%v", id, attempts, want, err)
+		}
+	}
+	is, err := v.its.GetIssue(v.ctx, 1001)
+	if err != nil || is.Title != "42" || v.its.activationCreates != 1 {
+		t.Fatalf("issue=%+v err=%v", is, err)
+	}
+}

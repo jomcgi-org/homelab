@@ -1,3 +1,4 @@
+// invariant: FACT-13
 // Narrow, authenticated extension to the pinned itsaplan v1.10.0 API. Use the
 // upstream services so activity, status history, notifications, schedules and
 // webhook outboxes retain the same behavior as its ordinary routes.
@@ -9,6 +10,7 @@ import { guards, entityGuard } from "./shared/guards";
 import { authContext } from "./shared/auth-context";
 import { HttpError, errorAnswer } from "./shared/lib";
 import {
+  createIssue,
   getIssue,
   getIssueProjectId,
   updateIssue,
@@ -29,6 +31,14 @@ if (pkg.version !== "1.10.0") {
 // init container. No additional database credential is given to the connector.
 await db.transaction(async (tx) => {
   await tx.execute(sql`select pg_advisory_xact_lock(118, 118)`);
+  await tx.execute(sql`
+    create table if not exists factory_review_followup (
+      project_id integer not null,
+      finding_key text not null,
+      issue_id integer not null,
+      primary key (project_id, finding_key)
+    )
+  `);
   await tx.execute(sql`
     create table if not exists factory_deferred_start (
       issue_id integer not null references issue(id) on delete cascade,
@@ -158,6 +168,49 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
       getIssueProjectId(Number(p.issueId)),
     ),
   })
+  .post(
+    "/projects/:projectKey/factory-review-followups",
+    async ({ project, user, body }) =>
+      factoryTransaction(async () => {
+        const coordinator = process.env.FACTORY_COORDINATOR;
+        const actor = user!.id;
+        if (!coordinator)
+          throw new HttpError(403, "Factory coordinator is not configured");
+        const authorized = await db.execute(sql`
+          select a.user_id from ai_agent a join project p on p.team_id = a.team_id
+          where p.id = ${project.id} and a.username = ${coordinator} and a.user_id = ${actor}
+        `);
+        if (!authorized.length)
+          throw new HttpError(
+            403,
+            "Only the configured coordinator can file review follow-ups",
+          );
+        const { key, ...input } = body;
+        await db.execute(
+          sql`select pg_advisory_xact_lock(${project.id}::integer, hashtext(${key}))`,
+        );
+        const rows = await db.execute<{ id: number }>(sql`
+        select issue_id as id from factory_review_followup
+        where project_id = ${project.id} and finding_key = ${key}
+      `);
+        if (rows[0]) return rows[0];
+        const created = await createIssue(project, input, user!.id);
+        await db.execute(sql`
+        insert into factory_review_followup (project_id, finding_key, issue_id)
+        values (${project.id}, ${key}, ${created.id})
+      `);
+        return { id: created.id };
+      }),
+    {
+      permission: ["work_items", "create"],
+      body: t.Object({
+        key: t.String({ minLength: 1, maxLength: 2048 }),
+        title: t.String({ minLength: 1 }),
+        description: t.String(),
+        columnId: t.Integer({ minimum: 1 }),
+      }),
+    },
+  )
   .post(
     "/issues/:issueId/factory-deferred-start",
     async ({ params, body, user, projectId }) => {

@@ -1485,3 +1485,14 @@ func TestInvariantScopeNoticesNeverHideBlockingFindings(t *testing.T) {
 		t.Fatalf("findings section is %d bytes, over %d", len(body), maxFindings)
 	}
 }
+
+func TestDeferredDetailsFitPassingState(t *testing.T) {
+	var a Assessment
+	for i := range 5 {
+		a.Deferred = append(a.Deferred, Finding{ID: fmt.Sprint(i), Title: "Deferred", Detail: strings.Repeat("x", 8192)})
+	}
+	state, ok := LoadState(encodeState(stateOf(a, &Report{}, nil)))
+	if !ok || state.Incomplete || len(state.Deferred) != 5 {
+		t.Fatalf("lost deferred findings: %+v", state)
+	}
+}

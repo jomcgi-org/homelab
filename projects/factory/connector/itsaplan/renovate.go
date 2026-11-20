@@ -51,3 +51,20 @@ func (c *Client) SearchIssues(ctx context.Context, project, marker string) ([]Is
 	}
 	return out, nil
 }
+
+func (c *Client) CreateReviewFollowup(ctx context.Context, project, key string, issue NewIssue) error {
+	request := struct {
+		NewIssue
+		Key string `json:"key"`
+	}{issue, key}
+	var receipt struct {
+		ID int64 `json:"id"`
+	}
+	if err := c.do(ctx, c.Coordinator, http.MethodPost, "/projects/"+url.PathEscape(project)+"/factory-review-followups", request, &receipt); err != nil {
+		return err
+	}
+	if receipt.ID <= 0 {
+		return errors.New("missing review follow-up receipt")
+	}
+	return nil
+}
