@@ -452,10 +452,11 @@ type Decisions struct {
 // hash of its text then: an edit or a deletion revokes it. Severity is the
 // finding's severity then; a stamp without one is high.
 type DecisionStamp struct {
-	Finding  string `json:"finding,omitempty"`
-	ID       int64  `json:"id"`
-	Hash     string `json:"hash"`
-	Severity string `json:"severity,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+	Finding   string `json:"finding,omitempty"`
+	ID        int64  `json:"id"`
+	Hash      string `json:"hash"`
+	Severity  string `json:"severity,omitempty"`
 }
 
 // severity is the severity a revoked decision restores its finding at.
@@ -493,8 +494,8 @@ func (d Decisions) decided(note, id, severity string) *DecisionStamp {
 			continue
 		}
 		for _, c := range d.Comments {
-			if c.ID == cid && namesID(c.Body, id) {
-				return &DecisionStamp{Finding: id, ID: cid, Hash: bodyHash(c.Body), Severity: severity}
+			if c.UpdatedAt != "" && c.ID == cid && namesID(c.Body, id) {
+				return &DecisionStamp{Finding: id, ID: cid, UpdatedAt: c.UpdatedAt, Hash: bodyHash(c.Body), Severity: severity}
 			}
 		}
 	}
@@ -504,7 +505,7 @@ func (d Decisions) decided(note, id, severity string) *DecisionStamp {
 // holds reports that Joe's comment still exists with the text it had.
 func (d Decisions) holds(st DecisionStamp) bool {
 	for _, c := range d.Comments {
-		if st.ID > 0 && c.ID == st.ID && st.Hash != "" && bodyHash(c.Body) == st.Hash {
+		if st.UpdatedAt != "" && st.ID > 0 && c.ID == st.ID && c.UpdatedAt == st.UpdatedAt && st.Hash != "" && bodyHash(c.Body) == st.Hash {
 			return true
 		}
 	}
@@ -572,6 +573,9 @@ func (a Assessment) decisions() []DecisionStamp {
 		add(b.Decision)
 	}
 	for _, c := range a.Earlier {
+		if slices.ContainsFunc(a.Fixed, func(f Finding) bool { return f.ID == c.ID }) {
+			continue
+		}
 		add(c.Decision)
 	}
 	for i := range a.Carried {
@@ -650,6 +654,10 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 	revoked := map[string]string{}
 	for _, st := range d.Carried {
 		switch {
+		case status[st.Finding].Status == StatusFixed && !slices.ContainsFunc(r.Findings, func(f Finding) bool { return f.ID == st.Finding }):
+			if _, was := priorByID[st.Finding]; !was {
+				a.Fixed = append(a.Fixed, Finding{ID: st.Finding, Severity: st.severity()})
+			}
 		case d.holds(st):
 			a.Carried = append(a.Carried, st)
 		case st.Finding != "":
@@ -1074,6 +1082,7 @@ type State struct {
 	PendingResolutions map[string]string            `json:"pending_resolutions,omitempty"`
 	OptionalIDs        []string                     `json:"optional_ids,omitempty"`
 	Round              int                          `json:"round,omitempty"`
+	PromptVersions     []DecisionStamp              `json:"prompt_versions,omitempty"`
 	DecisionComment    int64                        `json:"decision_comment,omitempty"` // Highest approver comment ID handled on this head.
 	InvariantBase      string                       `json:"invariant_base,omitempty"`
 	Semgrep            *SemgrepStamp                `json:"semgrep,omitempty"`
