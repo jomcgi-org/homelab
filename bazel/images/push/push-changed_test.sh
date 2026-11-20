@@ -71,6 +71,10 @@ BUILD
 # `query` answers with STUB_LAYERS (one label per line) only for the image
 # named in STUB_LAYERED_IMAGE, and `build` records what it was asked to fetch.
 if [ "${1:-}" = "query" ]; then
+	echo "query $2" >>"$STUB_ORDER_LOG"
+	if [ -n "${STUB_QUERY_FAIL:-}" ] && [[ "$2" == *"deps(${STUB_QUERY_FAIL%.push},"* ]]; then
+		exit 1
+	fi
 	if [ -n "${STUB_LAYERED_IMAGE:-}" ] && [[ "$2" == *"deps(${STUB_LAYERED_IMAGE%.push},"* ]]; then
 		printf '%s\n' "$STUB_LAYERS"
 	fi
@@ -78,6 +82,7 @@ if [ "${1:-}" = "query" ]; then
 fi
 if [ "${1:-}" = "build" ] && [[ "$*" == *"--remote_download_toplevel"* ]]; then
 	echo "$*" >>"$STUB_ORDER_LOG"
+	[ -z "${STUB_LAYER_BUILD_FAIL:-}" ] || exit 1
 	exit 0
 fi
 if [ "${1:-}" = "run" ]; then
@@ -421,7 +426,9 @@ teardown
 setup "$MANIFEST_3" "ghcr.io/jomcgi/homelab/alpha@sha256:aaa"
 OUT=$(run_script)
 EXPECTED=$(printf '%s\n' \
+	"query labels(tars, deps(//projects/beta:image, 3))" \
 	"check //projects/beta:image.push" \
+	"query labels(tars, deps(//projects/gamma:image, 3))" \
 	"check //projects/gamma:image.push" \
 	"push //projects/beta:image.push" \
 	"push //projects/gamma:image.push" \
@@ -454,6 +461,7 @@ export STUB_LAYERED_IMAGE="//projects/beta:image.push"
 export STUB_LAYERS="//bazel/tools/image:prettier_tar"
 OUT=$(run_script)
 EXPECTED=$(printf '%s\n' \
+	"query labels(tars, deps(//projects/beta:image, 3))" \
 	"build --config=ci --stamp --experimental_check_output_files --remote_download_toplevel //bazel/tools/image:prettier_tar" \
 	"check //projects/beta:image.push" \
 	"push //projects/beta:image.push" \
@@ -483,6 +491,47 @@ if grep -E -- "^run //bazel/images:push_charts .*--experimental_check_output_fil
 	pass "chart push re-checks remote outputs"
 else
 	fail "chart push re-checks remote outputs" "$(cat "$STUB_ARGV_LOG")"
+fi
+teardown
+
+# A query failure defers to the layout check. When alpha is readable,
+# fail beta's layout so the log shows how far preflight got before aborting.
+alpha="//projects/alpha:image.push"
+beta="//projects/beta:image.push"
+alpha_query="query labels(tars, deps(//projects/alpha:image, 3))"
+beta_query="query labels(tars, deps(//projects/beta:image, 3))"
+for unreadable in "$alpha" "$beta"; do
+	setup "$MANIFEST_3" ""
+	tools_version_alpha
+	EXPECTED=$(printf '%s\n' "$alpha_query" "check $alpha")
+	if [ "$unreadable" = "$beta" ]; then
+		EXPECTED+=$(printf '\n%s\n%s' "$beta_query" "check $beta")
+	fi
+	if OUT=$(STUB_QUERY_FAIL="$alpha" STUB_PREFLIGHT_FAIL="$unreadable" run_script); then
+		fail "unreadable $unreadable stops publication after a query failure" "$OUT"
+	elif grep -qF "WARNING: could not list layer tars for $alpha" <<<"$OUT" &&
+		[ "$(cat "$STUB_ORDER_LOG")" = "$EXPECTED" ] && [ ! -s "$STUB_RUN_LOG" ] && [ ! -s "$STUB_TAG_LOG" ]; then
+		pass "failed query checks layouts through $unreadable before aborting"
+	else
+		fail "failed query checks layouts through $unreadable before aborting" "$OUT
+$(cat "$STUB_ORDER_LOG" "$STUB_TAG_LOG")"
+	fi
+	teardown
+done
+
+# Alpha is ready, but a failed download for beta must abort before its check.
+setup "$MANIFEST_3" ""
+tools_version_alpha
+layer="//bazel/tools/image:prettier_tar"
+EXPECTED=$(printf '%s\n' "$alpha_query" "check $alpha" "$beta_query" \
+	"build --config=ci --stamp --experimental_check_output_files --remote_download_toplevel $layer")
+if OUT=$(STUB_LAYERED_IMAGE="$beta" STUB_LAYERS="$layer" STUB_LAYER_BUILD_FAIL=1 run_script); then
+	fail "failed layer download stops publication" "$OUT"
+elif [ "$(cat "$STUB_ORDER_LOG")" = "$EXPECTED" ] && [ ! -s "$STUB_RUN_LOG" ] && [ ! -s "$STUB_TAG_LOG" ]; then
+	pass "failed layer download stops publication after an earlier layout passed"
+else
+	fail "failed layer download stops publication after an earlier layout passed" "$OUT
+$(cat "$STUB_ORDER_LOG" "$STUB_TAG_LOG")"
 fi
 teardown
 
