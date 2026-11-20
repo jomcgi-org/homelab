@@ -35,6 +35,16 @@ spec:
     - group: ""
       kind: Secret
       namespace: kagent-pg
+      name: kagent-pg-owner-login
+      jsonPointers: [/data/password]
+    - group: ""
+      kind: Secret
+      namespace: kagent-pg
+      name: kagent-pg-readwrite-login
+      jsonPointers: [/data/password]
+    - group: ""
+      kind: Secret
+      namespace: kagent-pg
       name: kagent-pg-s3
       jsonPointers: [/data]
   syncPolicy:

@@ -1,20 +1,14 @@
--- Runs kagent's role and schema setup (setup.sql, copied unchanged from
--- kagent v1.0.1 go/core/pkg/postgressetup/setup.sql) with the names the
--- factory chart expects. The passwords come from the environment, so they
--- never appear in the command line. kagent-pg-setup runs this file with
--- --single-transaction, as setup.sql requires.
-\set kagent_schema kagent
-\set kagent_owner_role kagent_owner
-\set kagent_owner_user kagent_owner_user
-\set kagent_readwrite_role kagent_readwrite
-\set kagent_readwrite_user kagent_readwrite_user
-\getenv kagent_owner_password KAGENT_OWNER_PASSWORD
-\getenv kagent_readwrite_password KAGENT_READWRITE_PASSWORD
-\ir setup.sql
+SET LOCAL ROLE kagent_owner;
+CREATE SCHEMA IF NOT EXISTS kagent AUTHORIZATION kagent_owner;
+REVOKE ALL ON SCHEMA kagent FROM PUBLIC;
+GRANT USAGE ON SCHEMA kagent TO kagent_readwrite;
+ALTER DEFAULT PRIVILEGES IN SCHEMA kagent GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO kagent_readwrite;
+ALTER DEFAULT PRIVILEGES IN SCHEMA kagent GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO kagent_readwrite;
+ALTER DEFAULT PRIVILEGES IN SCHEMA kagent GRANT EXECUTE ON ROUTINES TO kagent_readwrite;
+ALTER DEFAULT PRIVILEGES IN SCHEMA kagent GRANT USAGE ON TYPES TO kagent_readwrite;
 
 -- CNPG's metrics collector uses pg_monitor. Expose only the claim pairs,
 -- including on a fresh install where kagent has not migrated its tables yet.
-SET LOCAL ROLE kagent_owner;
 CREATE OR REPLACE FUNCTION kagent.pending_claims()
 RETURNS TABLE(session_id text, executor_id text)
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
