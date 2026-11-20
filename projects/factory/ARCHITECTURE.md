@@ -350,189 +350,27 @@ The broker mounts the author and reviewer App private keys and holds the Codex g
 
 The author App uses the 1Password SSH Key item `k8s-homelab/factory-gh-app`. Its `private key` field maps to the Kubernetes Secret key `private-key`. The text fields `app-id` and `installation-id` keep their names.
 
-#### Claude Code relay
+#### Provider relays
 
-- **Configuration (HOME-232).** `broker.claude.enabled` defaults to
-  false. When enabled, the broker accepts only `POST /anthropic/v1/messages`
-  and `POST /anthropic/v1/messages/count_tokens`. It forwards them to
-  `https://api.anthropic.com/v1/messages` and its `count_tokens` endpoint.
-  SSE bytes flush as they arrive. The broker adds `Authorization: Bearer`
-  with Joe's Claude Code OAuth token and `anthropic-beta: oauth-2025-04-20`.
-  It preserves the client's other beta flags, API version and Claude Code
-  headers. It drops inbound credentials and cookies, and refuses redirects.
+The Substrate gateway replaces the actor’s placeholder credential with an actor JWT. The Codex relay verifies the JWT and uses the broker’s grant to call the provider. It bounds request bodies, concurrent requests and stream idle time. Quota readings come from response headers and the provider usage endpoint.
 
-  ```mermaid
-  flowchart LR
-    C[Claude Code actor] -->|placeholder x-api-key| G[Substrate gateway]
-    G -->|actor JWT, audience factory-broker| B[Broker Claude relay]
-    P[1Password factory-claude-cvp token] -->|broker-only Secret mount| B
-    B -->|OAuth Bearer, Messages API| A[Anthropic]
-    A -->|SSE| B
-    B -->|SSE| C
-  ```
+The Claude relay is staged off. When enabled, it authenticates the actor, checks the requested model against that subject’s allowlist and reads the subscription token from a broker-only Secret. It forwards Messages and token-count requests. The relay tests exercise these paths against a fixture provider. [Relay implementation and tests](broker/relay/)
 
-  The chart syncs `k8s-homelab/factory-claude-cvp`, field `token`, into the
-  broker namespace. Only the broker mounts it, at
-  `/etc/factory-claude-cvp/token`, without `subPath`. Each permitted request
-  rereads the file to pick up Secret rotation. The Secret has no Substrate
-  injection label or actor binding. This relay supports no API keys, refresh
-  flow or quota reading.
+```mermaid
+flowchart LR
+  C[Claude Code actor] -->|placeholder x-api-key| G[Substrate gateway]
+  G -->|actor JWT, audience factory-broker| B[Broker Claude relay]
+  P[1Password factory-claude-cvp token] -->|broker-only Secret mount| B
+  B -->|OAuth Bearer, Messages API| A[Anthropic]
+  A -->|SSE| B
+  B -->|SSE| C
+```
 
-  `broker.claude.modelAllowlist` maps exact verified JWT subjects,
-  `actor/<atespace>/<actorName>`, to exact model IDs. An empty map, missing
-  actor or unlisted model denies the request with 403 `claude_model_denied`.
-  Configure only Claude Code actors; requests also need `User-Agent:
-  claude-cli/...` and `x-app: cli`. These client markers do not replace JWT
-  verification or the allowlist. kagent's
-  [actor name](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/substrate/client.go#L284)
-  is `session-<lowercase-session-ID>`. Allowlist entries must name the actual
-  actors, including each new session.
-  The existing `actorJwt.allowedAtespaces` restriction also applies.
-  JSON bodies are bounded, inspected and re-encoded before forwarding;
-  compressed bodies are refused. Limits default to 32 MiB, 64 concurrent
-  calls and a five-minute stream idle timeout. The listener's two-minute
-  request read timeout also applies.
+#### Broker permissions
 
-  Local failures use `factory_error`: `actor_unauthenticated` (401),
-  `claude_code_required` or `claude_model_denied` (403),
-  `claude_token_unavailable` (503), and `claude_upstream_unreachable` (502).
-  An upstream 401 becomes `claude_login_required` (401), without a retry;
-  replace the 1Password token. Upstream 429 status, body and `Retry-After`
-  pass through. Other upstream errors use `claude_upstream_error`, preserving
-  the status; redirects become 502. Logs exclude credentials and bodies.
-  The chart renders no Claude configuration, token mount, 1Password item or
-  Anthropic egress rule by default. Deployment values leave it disabled.
+The relay listener admits Substrate’s egress gateway. A separate listener serves connector and reviewer token requests. Operators can use a port-forward with a projected ServiceAccount token for device login and grant refresh. The optional browser login route is staged off.
 
-  **kagent compatibility.** Its
-  [Claude compiler](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/translator/claude/compiler.go#L182)
-  accepts `ModelConfig.spec.anthropic.baseUrl` and sets `ANTHROPIC_BASE_URL`.
-  Use the broker Service URL ending in `/anthropic`, without `/v1`, and
-  `actorJwt.audiences: [factory-broker]` with `provider: Anthropic`.
-  Its [credential target](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/core/internal/translator/credentials.go#L259)
-  injects the JWT into `x-api-key` without a prefix. The broker verifies that
-  header or a Bearer JWT and rejects requests containing both. The sandbox
-  holds only the `ANTHROPIC_API_KEY` placeholder. The
-  [harness pin](https://github.com/kagent-dev/kagent/blob/558e3d761d8ed2b0d23bfef1867a9d1915210121/go/harness/claude/config/config.go#L25)
-  identifies the CLI in the component table. Its published package confirms the OAuth beta and
-  client headers. [V] Live subscription acceptance and Mythos entitlement
-  remain untested; this change does not enable the relay or add an audit binding.
-
-  **Verification.** The broker contract uses a local TLS identity provider,
-  signed actor JWTs and a fake Anthropic server; it needs no provider credential.
-  `TestClaudeCodeSubscriptionRelayThroughBroker` loads the file configuration
-  and runs the production builder, verifier and relay listener. It sends the
-  harness's `x-api-key` JWT and checks that only the broker's fixture token
-  reaches the provider, as OAuth Bearer with the beta header. It checks both
-  endpoint paths, actor and model denial, upstream 401/429 and receipt of an
-  SSE event while the provider still holds the rest of the response.
-
-  | Contract | Registered test evidence |
-  | --- | --- |
-  | Configuration through provider request, including credential replacement | `//projects/factory/broker/cmd/broker:broker_test`, `TestClaudeCodeSubscriptionRelayThroughBroker` in [main_test.go](broker/cmd/broker/main_test.go) |
-  | JWT authentication and default-deny allowlist | `TestClaudeAuthenticatesAndDefaultsToDeny` and `TestClaudeValidatesModelAndRoutesBeforeUpstream` in [claude_test.go](broker/relay/claude_test.go) |
-  | Incremental SSE and upstream 401/429 | `TestClaudeStreamsBeforeCompletion` and `TestClaudeUpstreamErrors` in the same relay test file |
-  | Secret isolation and disabled chart default | Claude tests in [chart_test.py](chart/chart_test.py) |
-
-  The relay tests are registered in
-  `//projects/factory/broker/relay:relay_test`; PR CI runs the Go targets.
-  The chart tests render manifests with Helm. These fixtures establish the
-  broker's protocol and credential boundary. A later enabled audit binding
-  must check live subscription acceptance and the chosen Mythos model ID.
-
-#### Relay limits and grant refresh
-
-- **Limits.** Request bodies up to 32 MiB read within 2 minutes, at most 64
-  requests in flight, and any upstream response silent for 5 minutes is cut.
-  Each verified actor subject can hold up to eight slots by default
-  (`codex.maxConcurrentRequestsPerActor`). Excess requests receive 429
-  `relay_actor_busy` with `Retry-After: 5`. When `codex.allowedModels` is
-  non-empty, both response endpoints require a listed JSON model or return
-  400 `model_not_allowed`. An empty list permits all models.
-  The body watchdog starts at response headers for each attempt. Initial
-  and retried 401 drains and 429 inspection each read at most 64 KiB within
-  `StreamIdleTimeout` (5 minutes by default), even if bytes keep arriving.
-  A timed-out 401 drain still permits the one token refresh and retry;
-  two stalled 401 bodies spend at most twice that limit reading bodies,
-  plus the separately bounded refresh and response-header waits. A stalled
-  429 returns `codex_upstream_unreachable` (502) unless quota exhaustion is
-  already known. Other responses reset the idle deadline as bytes arrive,
-  so active SSE has no overall time limit. Actor cancellation aborts body
-  reads immediately; completion or failure releases the concurrency slot.
-  Quota observations are committed off the request path, latest only.
-- **Quota reading.** A reading comes from relayed `x-codex-*` headers or
-  from `GET chatgpt.com/backend-api/wham/usage`. It expires 30 minutes after
-  it arrives, or at its first window reset if that is sooner. Every minute
-  the broker checks the stored reading and reads the usage endpoint once it
-  has expired, so relayed traffic defers the read. A failed read keeps the
-  old reading and retries after 5 minutes; one read runs at a time.
-- **Refresh.** One grant, `codex-primary`, from the broker's own device
-  login: `POST /admin/codex/login` returns the user code, `GET` reports
-  state, `POST /admin/codex/refresh` forces a refresh. For ServiceAccount access these require a
-  projected ServiceAccount token (audience `factory-broker`) whose TokenReview
-  username is in `tokenReview.adminSubjects`. `broker.operatorServiceAccount`
-  creates a ServiceAccount for operators and adds it there; they mint a
-  short-lived token for it, and a ValidatingAdmissionPolicy keeps any Pod
-  from running as it. The grant refreshes when under
-  24 h from expiry or 7 days old, single-flight, written to the Secret
-  before use, checked every 10 minutes without traffic. When a refresh fails
-  but the stored access token is still valid, the relay keeps serving it and
-  the grant state metric reports the failure. The chart pre-creates the
-  empty grant Secret: the store only updates it, so a missing Secret is a
-  deployment fault (state `missing`, 503) that a login cannot fix. ActorJWT
-  leaves no relay key to rotate.
-  Once a device code has been exchanged, installing the login waits for any
-  active refresh and retries persistence five times with a 10 s deadline per
-  attempt. Cancellation of the device flow does not cancel these writes.
-  Exhaustion reports `persistence_pending`; POST the login endpoint again to
-  save the retained bundle without exchanging the code again. This recovery
-  state is in memory and does not survive a broker restart.
-
-#### Reviewer credentials
-
-- **Reviewer App.** `githubReview` configures the reviewer App
-  (`jomcgi-factory-review`) independently of the author App. The broker mints a read-only (`contents: read`) `github-git` Secret
-  in each `reviewBindings` namespace, which must not be a coding binding's,
-  and serves `GET /github/reviewer-token?repository=` to `reviewerSubjects`
-  only, with checks and merge queues write, pull requests, contents and
-  statuses read. The reviewer's PR comment needs a separate token with
-  `issues: write` and `pull_requests: write`
-  (`githubReview.commentPermissions`).
-  `pull_requests: write` could approve, so that token never leaves the
-  broker. `/github/reviewer-comments` (`github.CommentProxy`), for the same
-  subjects only, does three things with it: finds the oldest comment
-  matching the requested prefix that `githubReview.commentAuthor` wrote on a PR
-  (reading up to 10,000 comments a page at a time and stopping at the first
-  match, so the reviewer makes one request), creates a comment on a pull
-  request (an issue number is refused), and edits a comment on a pull
-  request that the bot login wrote. Lookup has a five-minute budget in both
-  the reviewer and its broker client. The comment write gets a fresh
-  30-second budget after lookup. It serves
-  nothing else, and runs only when that login is set. An App without those
-  permissions fails only the comment. The check token keeps its narrower scope.
-
-#### Network and Kubernetes permissions
-
-- **Listeners.** The relay port admits only Substrate's egress gateway; a
-  second port serves the admin endpoints, connector tokens, the connector's
-  quota read and metrics, and
-  admits the connector and, when enabled, the reviewer, so no actor can reach
-  them. Operators use a port-forward. The optional browser login route is staged off (HOME-405). Cilium L7 rules could split one port instead, but Hubble
-  would then record each relayed request's actor JWT.
-- **RBAC** the chart grants the broker: `create` on `tokenreviews`; in its
-  own namespace `get`/`update` on the grant Secret and the quota ConfigMap
-  by `resourceNames`; in each binding namespace `create` on Secrets (RBAC
-  cannot restrict `create` by name) and `get`/`update` on `github-git` by
-  `resourceNames`. A ValidatingAdmissionPolicy closes the `create` gap: the
-  broker's ServiceAccount may write only its grant Secret and Opaque
-  `github-git` Secrets in binding namespaces, so it cannot mint a
-  ServiceAccount token. Its image, like every first-party image, is private
-  on GHCR; the chart syncs `k8s-homelab/ghcr-read-permissions` into the
-  factory namespace as a pull secret.
-- **Metrics** (`factory_broker_*`): grant state and expiry, refresh checks
-  and the shared refresh counters, relay requests by outcome and status
-  class, actor JWT rejections by reason, GitHub mints by kind, binding and
-  outcome, usage endpoint reads by outcome, and the shared quota gauges.
-  Labels come only from fixed sets or configuration.
+The broker writes a read-only Git credential in each review binding. The reviewer receives a separate installation token for checks. Its comment requests go through the broker’s comment proxy, which holds the token with issues and pull requests write access. The chart restricts Secret writes through RBAC and admission policy.
 
 ### Identities
 
@@ -787,7 +625,7 @@ records how they relate and routes results and feedback between them.
 2. The Substrate gateway replaces credentials in outgoing headers. The broker supplies the account header and authorization that Codex model calls require.
 3. The homelab coding binding uses the broker’s ChatGPT subscription. The broker keeps the OAuth grant outside the actors.
 4. The chart renders itsaplan Secrets separately from the application workloads so that secret-init can generate missing values and preserve existing ones.
-5. kagent trusted-proxy authentication relies on the edge to validate human access tokens. The connector authenticates separately through Kubernetes TokenReview.
+5. In trusted-proxy mode kagent decodes human bearer JWTs without verifying their signatures. The edge validates them. The controller listener admits only the edge, kagent UI, connector, controller itself (for its kagent-api RemoteMCPServer), Substrate’s atenet-egress gateway and, when enabled, the reviewer and Discord bridge. [Controller ingress policy](chart/templates/network-policy.yaml) The connector authenticates separately through Kubernetes TokenReview.
 6. A Kubernetes ServiceAccount principal includes its UID. Replacing the connector account changes its kagent identity even if its name stays the same.
 7. The connector renews itsaplan's run lease during execution. It correlates the run with a kagent A2A task and session in its own store.
 8. kagent exposes task dispatch and polling over A2A. The connector uses the session service for recovery.

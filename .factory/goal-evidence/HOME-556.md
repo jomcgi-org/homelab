@@ -1,0 +1,3 @@
+- Criteria 1–3 and 5. Inspect the headings and component table in `projects/factory/ARCHITECTURE.md`. Run `python3 bazel/tools/format/document_bundles/check_bundles.py` for the document shape and length.
+- Criterion 4. Compare the Direction table with `projects/factory/deploy/values.yaml` and `projects/factory/chart/values.yaml`. Six rows retain the GitHub records from the reference branch pending tracker verification.
+- Criterion 6. Measure the patch with `git diff 74fdd6846719 HEAD | wc -c`. Compare decision links in that diff.
