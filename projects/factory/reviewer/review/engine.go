@@ -201,6 +201,7 @@ type Engine struct {
 	mu           sync.Mutex
 	inflight     map[headKey]*running
 	parked       map[headKey]*parkedRoot // under mu
+	retired      map[string]bool         // traceparents of abandoned roots, under mu
 	pendingHolds map[headKey]*github.CheckRun
 	contexts     map[string]*heldContext
 	recoveries   map[prKey]recovery
@@ -378,7 +379,7 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 	}
 	return &Engine{
 		cfg: cfg, gh: gh, tasks: tasks, m: m, log: log, rules: rules, epoch: rand.Text(),
-		inflight: map[headKey]*running{}, parked: map[headKey]*parkedRoot{}, pendingHolds: map[headKey]*github.CheckRun{}, contexts: map[string]*heldContext{}, recoveries: map[prKey]recovery{},
+		inflight: map[headKey]*running{}, parked: map[headKey]*parkedRoot{}, retired: map[string]bool{}, pendingHolds: map[headKey]*github.CheckRun{}, contexts: map[string]*heldContext{}, recoveries: map[prKey]recovery{},
 		groups: map[string]string{}, enqueueAfter: map[string]time.Time{}, waiting: map[prKey]*waitingHead{},
 		heads: map[prKey]string{}, comments: map[prKey]*commentState{}, commentLimits: map[prKey]bool{}, commentReplays: map[prKey]int64{},
 		swept: map[string]time.Time{}, sweeping: map[string]bool{},
@@ -418,13 +419,7 @@ func (e *Engine) Wait() {
 // under ctx.
 func (e *Engine) Tick(ctx context.Context) {
 	now := e.cfg.Now()
-	expired := func(p *parkedRoot) bool { return now.Sub(p.since) > parkedLimit }
-	e.endParked(func(p *parkedRoot) bool { return expired(p) && !p.usage.persisted }, "abandoned")
-	// A root that its check state holds is not exported here: the check's
-	// completion, or the worker that resumes it, restores it (restoreRoot).
-	e.mu.Lock()
-	maps.DeleteFunc(e.parked, func(_ headKey, p *parkedRoot) bool { return expired(p) })
-	e.mu.Unlock()
+	e.expireParked(ctx, now)
 	for i := range e.cfg.Bindings {
 		if ctx.Err() != nil {
 			return
@@ -1138,7 +1133,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		root = p.usage.span
 		root.AddEvent("review resumed")
 		ctx = context.WithValue(trace.ContextWithSpan(ctx, root), reviewUsageKey{}, p.usage)
-	} else if ts, ok := resumedTrace(run); ok {
+	} else if ts, ok := resumedTrace(run); ok && !e.retired[ts.Parent] {
 		// An earlier process stopped during this review without exporting
 		// its root. Continue that root span with its recorded usage.
 		ctx, root = restoreRoot(ctx, ts, pr)
@@ -2704,7 +2699,7 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 		}
 		findings, verdict := codeReviewResult(r, in.prior.Previous(), b.ItsaplanProject)
 		recordFindings(code, findings)
-		code.SetAttributes(attribute.String("review.verdict", verdict))
+		code.SetAttributes(attribute.String("review.verdict", verdict), attribute.String("review.outcome", "assessed"))
 		code.AddEvent("report parsed")
 		code.End()
 		// Only a usable code review starts the goal check, which costs a
@@ -3185,7 +3180,7 @@ func (e *Engine) complete(ctx context.Context, b *Binding, run *github.CheckRun,
 		// superseded head) ends that review's parked root.
 		key := headKey{b.Name, run.HeadSHA}
 		if !e.endParked(func(p *parkedRoot) bool { return p.key == key }, o.Conclusion) {
-			if ts, ok := resumedTrace(run); ok {
+			if ts, ok := e.unretired(run); ok {
 				// An earlier process stopped during this review.
 				_, root := restoreRoot(ctx, ts, github.PullRequest{Number: ts.PR, HeadSHA: run.HeadSHA})
 				root.SetAttributes(attribute.String("review.verdict", o.Conclusion))
@@ -3534,6 +3529,69 @@ func (e *Engine) release(ctx context.Context, key headKey, usage *spanUsage) {
 	e.parked[key] = &parkedRoot{key: key, usage: usage, since: e.cfg.Now()}
 }
 
+// expireParked ends every root parked for longer than parkedLimit as
+// abandoned. It removes a root's record from its in-progress check state,
+// so no later worker or process restores and exports that root again.
+func (e *Engine) expireParked(ctx context.Context, now time.Time) {
+	e.mu.Lock()
+	var expired []*parkedRoot
+	for k, p := range e.parked {
+		if now.Sub(p.since) > parkedLimit {
+			expired = append(expired, p)
+			delete(e.parked, k)
+		}
+	}
+	for _, p := range expired {
+		if p.usage.persisted {
+			e.retired[formatParent(p.usage.span.SpanContext())] = true
+		}
+	}
+	e.mu.Unlock()
+	for _, p := range expired {
+		p.usage.span.SetAttributes(attribute.String("review.verdict", "abandoned"))
+		p.usage.span.End()
+		if p.usage.persisted {
+			e.retireTrace(ctx, p)
+		}
+	}
+}
+
+// retireTrace removes an abandoned root's record from its check state. The
+// retired set covers this process if the write fails.
+func (e *Engine) retireTrace(ctx context.Context, p *parkedRoot) {
+	i := slices.IndexFunc(e.cfg.Bindings, func(b Binding) bool { return b.Name == p.key.binding })
+	if i < 0 {
+		return
+	}
+	b := &e.cfg.Bindings[i]
+	run, err := e.reviewCheck(ctx, b, p.key.sha)
+	if err != nil || run == nil || run.Status == "completed" {
+		return
+	}
+	st, ok := LoadState(run.Text)
+	if !ok || st.Trace == nil || st.Trace.Parent != formatParent(p.usage.span.SpanContext()) {
+		return
+	}
+	st.Trace = nil
+	if _, err := e.gh.UpdateCheckRun(ctx, b.repo(), run.ID, github.CheckRunWrite{
+		ExternalID: run.ExternalID,
+		Output:     &github.CheckRunOutput{Title: run.Title, Summary: run.Summary, Text: encodeState(st)},
+	}); err != nil {
+		e.ghError(ctx, e.log.With("binding", b.Name, "repo", b.repo(), "sha", p.key.sha), b, "update_check", err)
+	}
+}
+
+// unretired is resumedTrace without a root that this process retired.
+func (e *Engine) unretired(run *github.CheckRun) (*TraceState, bool) {
+	ts, ok := resumedTrace(run)
+	if !ok {
+		return nil, false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return ts, !e.retired[ts.Parent]
+}
+
 // endParked ends every parked root that match selects, with verdict. It
 // reports whether it ended any.
 func (e *Engine) endParked(match func(*parkedRoot) bool, verdict string) bool {
@@ -3596,9 +3654,13 @@ func newTraceState(root trace.Span, pr int) *TraceState {
 		return nil
 	}
 	return &TraceState{
-		Parent: fmt.Sprintf("00-%s-%s-%s", sc.TraceID(), sc.SpanID(), sc.TraceFlags()),
+		Parent: formatParent(sc),
 		Start:  time.Now().UTC(), PR: pr,
 	}
+}
+
+func formatParent(sc trace.SpanContext) string {
+	return fmt.Sprintf("00-%s-%s-%s", sc.TraceID(), sc.SpanID(), sc.TraceFlags())
 }
 
 // resumedTrace reads the root of the review that an in-progress check run

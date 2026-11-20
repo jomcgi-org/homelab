@@ -380,7 +380,7 @@ func TestRestartedReviewKeepsOneRoot(t *testing.T) {
 	}
 }
 
-// A quota wait longer than the parked-root limit exports no root. The
+// A long quota wait inside the parked-root limit exports no root. The
 // resumed worker continues the same root, so the review exports it once.
 func TestLongQuotaWaitKeepsOneRoot(t *testing.T) {
 	exporter := captureReviewSpans(t)
@@ -397,12 +397,12 @@ func TestLongQuotaWaitKeepsOneRoot(t *testing.T) {
 	h.k.finish(task, kagent.StateFailed, "insufficient_quota")
 	rec := waitForQuotaCheck(t, h)
 	clockMu.Lock()
-	now = now.Add(parkedLimit + time.Hour)
+	now = now.Add(parkedLimit - time.Hour)
 	clockMu.Unlock()
 	e.Tick(ctx)
 	e.wg.Wait()
 	if spans := reviewSpans(exporter); len(spans) != 0 {
-		t.Fatalf("expiry exported a root that its check still holds: %v", spans)
+		t.Fatalf("a poll inside the limit exported the parked root: %v", spans)
 	}
 	q.set(github.QuotaReading{ReceivedAt: rec.QuotaSince.Add(time.Second)}, nil)
 	e.Tick(ctx)
@@ -541,5 +541,54 @@ func TestCheckStateSavesReviewRound(t *testing.T) {
 	st, _ := LoadState(h.gh.check(shaA).Text)
 	if st.Trace == nil || st.Trace.Round != 1 || st.Trace.PR != 7 {
 		t.Fatalf("trace state = %+v", st.Trace)
+	}
+}
+
+// A superseded head's review that waits for quota past the parked-root
+// limit exports its root once, as abandoned, and its check state no longer
+// records the root, so no later worker or process exports it again.
+func TestSupersededParkedRootExpiresOnce(t *testing.T) {
+	exporter := captureReviewSpans(t)
+	h := newHarness(t)
+	addPR7(h)
+	h.cfg.Quota = &fakeQuota{}
+	var clockMu sync.Mutex
+	now := time.Now()
+	h.cfg.Now = func() time.Time { clockMu.Lock(); defer clockMu.Unlock(); return now }
+	e, ctx, stop := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	h.k.finish(task, kagent.StateFailed, "insufficient_quota")
+	waitForQuotaCheck(t, h)
+	shaB := sha40('b')
+	h.gh.push(7, shaB)
+	e.Tick(ctx)
+	var newer string
+	eventually(t, "the new head's task", func() bool { newer = h.taskOn(7, shaB, 1); return newer != "" })
+	h.k.finish(newer, kagent.StateFailed, "insufficient_quota")
+	eventually(t, "the new head's quota wait", func() bool {
+		c := h.gh.check(shaB)
+		return c != nil && c.Title == "Waiting for Codex quota" && testutil.ToFloat64(h.m.InFlight) == 0
+	})
+	clockMu.Lock()
+	now = now.Add(parkedLimit + time.Hour)
+	clockMu.Unlock()
+	e.Tick(ctx)
+	e.wg.Wait()
+	stop()
+	e, ctx, stop = h.start()
+	e.Tick(ctx)
+	e.wg.Wait()
+	stop()
+	var old []map[string]string
+	for _, span := range reviewSpans(exporter) {
+		if span["pr.head_sha"] == shaA {
+			old = append(old, span)
+		}
+	}
+	if len(old) != 1 || old[0]["root"] != "true" || old[0]["review.verdict"] != "abandoned" {
+		t.Fatalf("old head's review spans = %v, want one abandoned root", old)
+	}
+	if st, _ := LoadState(h.gh.check(shaA).Text); st.Trace != nil {
+		t.Fatalf("old head's check state still records the root: %+v", st.Trace)
 	}
 }
