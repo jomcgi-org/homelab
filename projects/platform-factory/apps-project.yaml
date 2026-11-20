@@ -1,0 +1,20 @@
+# invariant: PLAT-15
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: apps
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  sourceRepos:
+    - https://github.com/jomcgi-org/homelab.git
+    - ghcr.io/jomcgi/homelab/charts
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: factory-explore
+    - server: https://kubernetes.default.svc
+      namespace: factory-explore-site
+    - server: https://kubernetes.default.svc
+      namespace: factory-landing
+  clusterResourceWhitelist: []

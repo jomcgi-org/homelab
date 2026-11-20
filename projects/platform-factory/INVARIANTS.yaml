@@ -81,3 +81,10 @@ invariants:
   - projects/platform-factory/hindsight-discord/resources/storage.yaml
   test: //projects/platform-factory/hindsight-discord:keys_test
   state: unproven
+- id: PLAT-15
+  statement: Charts in the apps AppProject render only namespaced resources in their Application destination.
+  mechanism:
+  - projects/platform-factory/apps-project.yaml
+  - bazel/helm/content_rules/content_rules.py
+  test: //projects/factory-explore/deploy:template_test
+  state: unproven
