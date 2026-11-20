@@ -1067,6 +1067,9 @@ type State struct {
 	// Overflow marks a checkpoint that dropped this review's own findings to
 	// fit. Only a replay of its task clears it.
 	Overflow bool `json:"overflow,omitempty"`
+	// Trace is the W3C traceparent of the review's root span. A worker that
+	// reattaches to the in-progress check after a restart continues it.
+	Trace string `json:"trace,omitempty"`
 }
 
 // ClearedComplete reports whether the cleared record still holds every
