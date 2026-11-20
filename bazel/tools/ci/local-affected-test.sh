@@ -9,6 +9,7 @@ fi
 base_ref="${1:-${CI_BASE_REF:-origin/main}}"
 query_args=(
 	--config=ci
+	--deleted_packages=bazel/tools/python
 )
 test_args=(
 	"${query_args[@]}"
