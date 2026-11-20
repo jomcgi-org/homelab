@@ -105,10 +105,14 @@ def test_factory_social_flows_and_application_grants():
         source = by_id[slug]
         assert source["user_matching_mode"] == "identifier"
         assert stages(source["enrollment_flow"]) == [
+            "duplicate-email-deny",
             "social-write",
             "duplicate-email-deny",
         ]
         assert stages(source["authentication_flow"]) == ["validate", "social-login"]
+    assert by_id["social-write"]["user_creation_mode"] == "never_create"
+    assert by_id["reserve-email-binding"]["evaluate_on_plan"] == "false"
+    assert by_id["reserve-email-binding"]["re_evaluate_policies"] == "true"
     assert by_id["validate"]["not_configured_action"] == "configure"
     assert by_id["social-write"]["create_users_group"] == "null"
     assert any(

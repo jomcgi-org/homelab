@@ -43,7 +43,7 @@ entries:
     identifiers:
       name: factory-social-create-user
     attrs:
-      user_creation_mode: always_create
+      user_creation_mode: never_create
       user_type: external
       create_users_group: null
       user_path_template: factory/social
@@ -85,6 +85,49 @@ entries:
       name: factory-social-deny-duplicate-email
     attrs:
       deny_message: An account already uses this email. Sign in with that account instead.
+  - model: authentik_flows.flowstagebinding
+    id: reserve-email-binding
+    identifiers:
+      target: !KeyOf social-enrollment
+      stage: !KeyOf duplicate-email-deny
+      order: 5
+    attrs:
+      evaluate_on_plan: false
+      re_evaluate_policies: true
+  - model: authentik_policies_expression.expressionpolicy
+    id: reserve-email
+    identifiers:
+      name: factory-social-create-with-verified-email
+    attrs:
+      expression: |
+        from django.db import connection, transaction
+        from authentik.core.models import User, UserTypes
+        from authentik.stages.password import BACKEND_INBUILT
+        plan = request.context["flow_plan"]
+        data = plan.context["prompt_data"]
+        email = data["email"].strip()
+        with transaction.atomic():
+            with connection.cursor() as cursor:
+                # Match the PostgreSQL UPPER comparison used by email__iexact.
+                cursor.execute("SELECT pg_try_advisory_xact_lock(hashtextextended(upper(%s), 427))", [email])
+                if not cursor.fetchone()[0]:
+                    return True
+            if User.objects.filter(email__iexact=email).exists():
+                return True
+            user = User.objects.create_user(username=data["username"], email=email,
+                                            path="factory/social", type=UserTypes.EXTERNAL)
+        # The native write stage applies the source profile to this account.
+        data["email"] = email
+        plan.context["pending_user"] = user
+        plan.context["user_backend"] = BACKEND_INBUILT
+        return False
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf reserve-email-binding
+      policy: !KeyOf reserve-email
+      order: 0
+    attrs:
+      failure_result: true
   - model: authentik_flows.flowstagebinding
     id: duplicate-email-binding
     identifiers:
