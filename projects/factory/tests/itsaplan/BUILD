@@ -20,6 +20,7 @@ py_test(
         "token-usage.test.ts",
         "//projects/factory/chart:deferred_adapter",
         "//projects/factory/connector/itsaplan:delivered_usage_report",
+        "//projects/factory/connector/itsaplan:ops/recover-creation-snapshot.sh",
         "//projects/factory/connector/migrations:sql",
         "//projects/platform-factory/kagent-postgres/resources:claims_test.sql",
         "//projects/platform-factory/kagent-postgres/resources:claims_test_files",

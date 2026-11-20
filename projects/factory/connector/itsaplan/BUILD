@@ -13,6 +13,11 @@ filegroup(
     visibility = ["//projects/factory/tests/itsaplan:__pkg__"],
 )
 
+exports_files(
+    ["ops/recover-creation-snapshot.sh"],
+    visibility = ["//projects/factory/tests/itsaplan:__pkg__"],
+)
+
 go_library(
     name = "itsaplan",
     srcs = [

@@ -46,6 +46,56 @@ def pg_user():
         os.setuid(nobody.pw_uid)
 
 
+def check_legacy_recovery(tmp_path, pg_bin, port, script):
+    services = tmp_path / "pg_service.conf"
+    services.write_text(
+        "".join(
+            f"[{name}]\nhost=127.0.0.1\nport={port}\nuser=test\ndbname=postgres\noptions=-csearch_path={name}\n"
+            for name in ("restored", "live")
+        )
+    )
+    env = {
+        **os.environ,
+        "PGSERVICEFILE": str(services),
+        "PATH": f"{pg_bin}:{os.environ['PATH']}",
+    }
+    psql = [pg_bin / "psql", "service=live", "-XqAt", "-v", "ON_ERROR_STOP=1"]
+    run(
+        psql,
+        env=env,
+        input="""
+        CREATE SCHEMA restored;
+        CREATE SCHEMA live;
+        CREATE TABLE restored.issue(id int, project_id int, sequence_number int,
+                                    created_at timestamptz, title text, description text);
+        INSERT INTO restored.issue VALUES (12, 1, 9, now(), 'Original title', 'Original description');
+        CREATE TABLE live.issue AS SELECT * FROM restored.issue;
+        UPDATE live.issue SET description = 'Edited description';
+        CREATE TABLE live.issue_activity(id int, issue_id int, kind text, action text, payload jsonb);
+        INSERT INTO live.issue_activity VALUES (1, 12, 'activity', 'created', '{}');
+    """,
+    )
+    xid = run([*psql, "-c", "SELECT xmin FROM restored.issue"], env=env).stdout.strip()
+    recover = [script, "restored", "live", "12"]
+    bad = subprocess.run([*recover, "0"], env=env, capture_output=True, check=False)
+    assert bad.returncode and b"insert version" in bad.stderr
+    for _ in range(2):
+        run([*recover, xid], env=env)
+    assert (
+        run(
+            psql,
+            env=env,
+            input="""
+        SELECT payload->'subject'->>'value' = 'factory-creation-sha256-v1'
+           AND payload->'from'->>'value' = encode(sha256(convert_to('Original title','UTF8')),'hex')
+           AND payload->'to'->>'value' = encode(sha256(convert_to('Original description','UTF8')),'hex')
+        FROM live.issue_activity;
+    """,
+        ).stdout.strip()
+        == "t"
+    )
+
+
 def test_upstream_factory_contracts(tmp_path):
     bun = Path(os.environ["BUN_BIN"]).resolve()
     archive = Path(os.environ["ITSAPLAN_ARCHIVE"]).resolve()
@@ -141,6 +191,12 @@ def test_upstream_factory_contracts(tmp_path):
                     log.seek(0)
                     pytest.fail(log.read(), pytrace=False)
                 time.sleep(0.1)
+            check_legacy_recovery(
+                tmp_path,
+                pg_bin,
+                port,
+                connector / "itsaplan/ops/recover-creation-snapshot.sh",
+            )
             # Always use this private database and synthetic auth credentials.
             env = {
                 **os.environ,
