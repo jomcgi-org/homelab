@@ -5,3 +5,25 @@ objectStore:
   region: us-east-1
   pathStyle: true
   credentialsSecret: snapshot-store-credentials
+
+# Private ghcr.io pulls (HOME-539). The atelet pulls actor and workload images
+# itself, so pod imagePullSecrets do not apply. It runs this kubelet exec
+# credential plugin, which reads the GHCR read login from the
+# ghcr-imagepull-secret mount (credential-provider/). The chart mounts the
+# plugin directory from the host; resources/kustomization.yaml replaces that
+# with an emptyDir filled by an init container, so nothing is installed on the
+# nodes and the bin path below is never used on the host.
+atelet:
+  imageCredentialProviderConfigYAML: |
+    apiVersion: kubelet.config.k8s.io/v1
+    kind: CredentialProviderConfig
+    providers:
+      - name: ghcr-credential-provider
+        apiVersion: credentialprovider.kubelet.k8s.io/v1
+        matchImages:
+          - ghcr.io
+        defaultCacheDuration: 5m
+        env:
+          - name: DOCKER_CONFIG_FILE
+            value: /run/ghcr-pull/.dockerconfigjson
+  imageCredentialProviderBinDir: /var/lib/ate-image-credential-provider/bin
