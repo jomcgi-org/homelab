@@ -119,6 +119,8 @@ func (m *Manager) Grant() string { return m.opts.Grant }
 
 var discardRefreshLogs = slog.New(slog.DiscardHandler)
 
+// invariant: FACT-13
+//
 // Grant diagnostics contain provider errors. Only a fixed event goes on the span.
 func (m *Manager) diagnostics(ctx context.Context) (context.Context, *slog.Logger, func()) {
 	span := trace.SpanFromContext(ctx)
