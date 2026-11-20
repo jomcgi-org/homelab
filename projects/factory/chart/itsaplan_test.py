@@ -840,3 +840,24 @@ def test_semgrep_sync_schedule_and_token():
     assert _one(docs, "OnePasswordItem", name)["spec"]["itemPath"] == (
         "vaults/k8s-homelab/items/factory-semgrep-sync"
     )
+
+
+def test_semgrep_sync_key_limit_without_connector():
+    docs = _render(
+        [
+            "semgrepSync.enabled=true",
+            "connector.enabled=false",
+            "reviewer.goalReasons.enabled=false",
+        ]
+    )
+    bootstrap = _one(docs, "Job", "factory-itsaplan-bootstrap")
+    pod = bootstrap["spec"]["template"]["spec"]
+    assert pod["initContainers"][0]["name"] == "bootstrap"
+    (limit,) = pod["containers"]
+    assert limit["name"] == "semgrep-sync-limit"
+    assert "rate_limit_time_window = 1000, rate_limit_max = 1000" in limit["command"][-1]
+    (agent,) = [entry for entry in limit["env"] if entry["name"] == "AGENT_ID"]
+    assert agent["valueFrom"]["secretKeyRef"] == {
+        "name": "factory-itsaplan-agent-intsec-sync",
+        "key": "agentId",
+    }
