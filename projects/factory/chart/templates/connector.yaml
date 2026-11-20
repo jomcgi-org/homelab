@@ -55,7 +55,11 @@ GitHub tokens the broker mints for that ServiceAccount.
 {{- fail (printf "connector.agents: %s is listed twice or is the coordinator" .username) }}
 {{- end }}
 {{- $keys = append $keys .username }}
-{{- $agents = append $agents (dict "key" .username "apiKeyFile" (include "factory.connectorKeyPath" .username) "concurrency" (.concurrency | default 1 | int)) }}
+{{- $concurrency := .concurrency | default 1 }}
+{{- if eq (toString $concurrency) "codexWorkers" }}
+{{- $concurrency = $.Values.agents.codex.concurrency }}
+{{- end }}
+{{- $agents = append $agents (dict "key" .username "apiKeyFile" (include "factory.connectorKeyPath" .username) "concurrency" (int $concurrency)) }}
 {{- end }}
 {{- range $keys }}
 {{- if not (has . $itsaplanAgents) }}
