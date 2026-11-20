@@ -1245,7 +1245,7 @@ tests:
   - interval: 1m
     input_series:
       - series: 'factory_connector_runnable_runs{job="factory-connector"}'
-        values: "1x32"
+        values: "0x1 1x30"
       - series: 'factory_connector_sends_total{job="factory-connector",kind="initial",outcome="accepted"}'
         values: "0x30 1x1"
     alert_rule_test:
@@ -1258,11 +1258,11 @@ tests:
           - exp_labels:
               severity: critical
             exp_annotations:
-              action: "Check connector logs for dispatch errors and compare dispatched runs by agent with its concurrency limit."
+              action: "Check connector logs for dispatch errors and compare occupied scheduler slots by agent with its concurrency limit."
               graph: 'max(factory_connector_runnable_runs{job="factory-connector"})'
               threshold: "0"
               runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory/deploy/notify.md#factoryconnectorstalled"
-              summary: "Runnable factory runs have waited 30 minutes without a successful send."
+              summary: "Runnable factory runs have waited 28 minutes without a successful send."
       - eval_time: 31m
         alertname: FactoryConnectorStalled
         exp_alerts: []

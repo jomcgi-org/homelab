@@ -1,0 +1,2 @@
+1. See TestReclaimedHeldRunWaitsForAFreeSlot in projects/factory/connector/dispatch/admission_test.go and TestAgentReassignmentKeepsSessionAfterConfirmedCancel in projects/factory/connector/dispatch/engine_test.go.
+2. //projects/platform-factory/prometheus/resources:rules_test covers a delayed first runnable sample, the notification deadline, dispatch recovery and held-only work. projects/platform-factory/prometheus/stack/alertmanager.yml routes this alert immediately to relay-no-resolved.
