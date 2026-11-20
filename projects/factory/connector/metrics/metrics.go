@@ -19,9 +19,6 @@ type Metrics struct {
 	WriterEpoch         prometheus.Gauge
 	ItsaplanUnavailable *prometheus.GaugeVec
 	TickErrors          *prometheus.CounterVec // phase
-	BusyRuns            *prometheus.GaugeVec
-	DispatchedRuns      *prometheus.GaugeVec
-	RunnableRuns        prometheus.Gauge
 	HeldRuns            prometheus.Gauge
 	OldestHold          prometheus.Gauge
 
@@ -41,12 +38,24 @@ type Metrics struct {
 	CredentialRefusals *prometheus.CounterVec // role, kind
 }
 
-// New registers the metrics with reg; a nil reg leaves them unregistered.
-func New(reg prometheus.Registerer) *Metrics {
-	m := &Metrics{
+// DispatchSnapshot holds the queue gauges for a single scrape.
+type DispatchSnapshot struct {
+	BusyRuns       *prometheus.GaugeVec
+	DispatchedRuns *prometheus.GaugeVec
+	RunnableRuns   prometheus.Gauge
+}
+
+func NewDispatchSnapshot() *DispatchSnapshot {
+	return &DispatchSnapshot{
 		BusyRuns:       prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "factory_connector_busy_runs", Help: "Runs occupying scheduler slots by agent."}, []string{"agent"}),
 		DispatchedRuns: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "factory_connector_dispatched_runs", Help: "Runs currently dispatched by agent."}, []string{"agent"}),
 		RunnableRuns:   prometheus.NewGauge(prometheus.GaugeOpts{Name: "factory_connector_runnable_runs", Help: "Queued runs without an admission, work item or grant block."}),
+	}
+}
+
+// New registers the metrics with reg; a nil reg leaves them unregistered.
+func New(reg prometheus.Registerer) *Metrics {
+	m := &Metrics{
 		HeldRuns: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "factory_connector_held_runs",
 			Help: "Runs waiting for admission (issue brief or dependencies).",
@@ -169,7 +178,7 @@ func New(reg prometheus.Registerer) *Metrics {
 		reg.MustRegister(m.Claims, m.Sends, m.Heartbeats, m.Results, m.Blocked, m.Retries,
 			m.DeferredStarted, m.Cancellations, m.Events, m.Reassignments, m.WriterEpoch, m.ItsaplanUnavailable, m.TickErrors,
 			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.RebaseRounds, m.SplitRounds, m.IdleRounds, m.MergeQueue, m.CILogReads, m.GoalReasonReads, m.SessionRecoveries, m.SessionsDeleted, m.StuckTurns, m.CredentialRefusals,
-			m.BusyRuns, m.DispatchedRuns, m.RunnableRuns, m.HeldRuns, m.OldestHold)
+			m.HeldRuns, m.OldestHold)
 	}
 	return m
 }

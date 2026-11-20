@@ -27,16 +27,17 @@ import (
 func TestMain(m *testing.M) { os.Exit(pgtest.Main(m)) }
 
 type env struct {
-	t   *testing.T
-	ctx context.Context
-	st  *store.Store
-	clk *clock
-	its *fakeItsaplan
-	kg  *fakeKagent
-	gh  *fakeGitHub
-	cfg dispatch.Config
-	m   *metrics.Metrics
-	e   *dispatch.Engine
+	t        *testing.T
+	ctx      context.Context
+	st       *store.Store
+	clk      *clock
+	its      *fakeItsaplan
+	kg       *fakeKagent
+	gh       *fakeGitHub
+	cfg      dispatch.Config
+	snapshot *metrics.DispatchSnapshot
+	m        *metrics.Metrics
+	e        *dispatch.Engine
 
 	plan dispatch.Itsaplan // Optional client override, retained across writer restarts.
 
@@ -55,7 +56,7 @@ func newEnv(t *testing.T) *env {
 	st.Now = clk.Now
 	v := &env{
 		t: t, ctx: context.Background(), st: st, clk: clk, its: newFakeItsaplan(clk.Now), kg: newFakeKagent(clk.Now),
-		m: metrics.New(nil),
+		m: metrics.New(nil), snapshot: metrics.NewDispatchSnapshot(),
 	}
 	v.cfg = dispatch.Config{
 		Caller: v.kg,
@@ -497,10 +498,10 @@ func TestHeartbeat404OnCancelThenConfirmedCancellation(t *testing.T) {
 	if r := v.run(1); r.State != store.RunCanceling {
 		t.Fatalf("run state = %s, want canceling", r.State)
 	}
-	if err := v.e.RefreshDispatchMetrics(v.ctx); err != nil {
+	if err := v.e.RefreshDispatchMetrics(v.ctx, v.snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if testutil.ToFloat64(v.m.BusyRuns.WithLabelValues("coder")) != 1 || testutil.ToFloat64(v.m.DispatchedRuns.WithLabelValues("coder")) != 0 {
+	if testutil.ToFloat64(v.snapshot.BusyRuns.WithLabelValues("coder")) != 1 || testutil.ToFloat64(v.snapshot.DispatchedRuns.WithLabelValues("coder")) != 0 {
 		t.Fatal("canceling run should occupy a scheduler slot after dispatch ends")
 	}
 
@@ -921,10 +922,10 @@ func TestAgentReassignmentKeepsSessionAfterConfirmedCancel(t *testing.T) {
 	if cs := v.pendingCancellations(); len(cs) != 1 || cs[0].Reason != store.CancelReassignment {
 		t.Fatalf("cancellations = %+v", cs)
 	}
-	if err := v.e.RefreshDispatchMetrics(v.ctx); err != nil {
+	if err := v.e.RefreshDispatchMetrics(v.ctx, v.snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if got := testutil.ToFloat64(v.m.RunnableRuns); got != 0 {
+	if got := testutil.ToFloat64(v.snapshot.RunnableRuns); got != 0 {
 		t.Fatalf("runnable runs during reassignment cancellation = %v, want zero", got)
 	}
 	if n := len(v.kg.Sends()); n != 1 {

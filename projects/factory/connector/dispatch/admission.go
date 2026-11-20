@@ -13,6 +13,7 @@ import (
 
 	"github.com/jomcgi/homelab/projects/factory/connector/internal/tracing"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
+	"github.com/jomcgi/homelab/projects/factory/connector/metrics"
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -544,18 +545,18 @@ func (e *Engine) postAdmission(ctx context.Context, r *store.Run) (bool, error) 
 // RefreshDispatchMetrics samples committed run state independently of the writer tick.
 //
 // invariant: FACT-13
-func (e *Engine) RefreshDispatchMetrics(ctx context.Context) error {
+func (e *Engine) RefreshDispatchMetrics(ctx context.Context, snapshot *metrics.DispatchSnapshot) error {
 	total := 0
 	for _, agent := range e.cfg.Agents {
 		dispatched, runnable, busy, err := e.st.DispatchCounts(ctx, agent.Key)
 		if err != nil {
 			return err
 		}
-		e.m.BusyRuns.WithLabelValues(agent.Key).Set(float64(busy))
-		e.m.DispatchedRuns.WithLabelValues(agent.Key).Set(float64(dispatched))
+		snapshot.BusyRuns.WithLabelValues(agent.Key).Set(float64(busy))
+		snapshot.DispatchedRuns.WithLabelValues(agent.Key).Set(float64(dispatched))
 		total += runnable
 	}
-	e.m.RunnableRuns.Set(float64(total))
+	snapshot.RunnableRuns.Set(float64(total))
 	return nil
 }
 

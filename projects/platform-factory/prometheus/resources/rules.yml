@@ -339,6 +339,9 @@ groups:
           threshold: "1"
           runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory/deploy/notify.md#home-385-rollout-verification"
           summary: "Factory {{ $labels.phase }} has been failing on itsaplan for ten minutes"
+  - name: factory-dispatch
+    interval: 10s
+    rules:
       - record: factory_connector:runnable_runs:max
         expr: max(factory_connector_runnable_runs{job="factory-connector"})
       # invariant: FACT-13
