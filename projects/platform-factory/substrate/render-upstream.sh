@@ -17,7 +17,7 @@
 # Generated key material comes from projects/factory-cluster/bootstrap-substrate.sh.
 #
 # Rerun after changing VERSION, COMMIT or a chart digest; review the diff of
-# upstream/. Needs git, helm and crane.
+# upstream/. Use --refresh to resolve new release pins. Needs git, helm, curl and Python 3.
 set -euo pipefail
 
 # Keep VERSION in step with SUBSTRATE_VERSION in
@@ -35,17 +35,29 @@ declare -A CHART_DIGEST=(
 )
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUT="${HERE}/resources/upstream"
+target="${HERE}/resources/upstream"
 VALUES="${HERE}/values"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
 
+OUT="${tmp}/upstream"
+refresh="${1:-}"
 render() { # chart namespace values-file...
 	local chart="$1" namespace="$2"
 	shift 2
 	local pulled
-	pulled="$(helm pull "${CHARTS}/${chart}" --version "${VERSION}" --untar --untardir "${tmp}/charts" 2>&1)"
+	pulled="$(helm pull "${CHARTS}/${chart}" --version "${VERSION}" --untar --untardir "${tmp}/charts" 2>&1)" || {
+		echo "${pulled}" >&2
+		return 1
+	}
+	if [[ "${refresh}" == --refresh ]]; then
+		local digest
+		digest="$(sed -nE 's/^Digest: (sha256:[a-f0-9]{64})$/\1/p' <<<"${pulled}")"
+		[[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]]
+		sed -i "s/${CHART_DIGEST[${chart}]}/${digest}/" "${tmp}/renderer"
+		CHART_DIGEST[${chart}]="${digest}"
+	fi
 	if ! grep -qx "Digest: ${CHART_DIGEST[${chart}]}" <<<"${pulled}"; then
 		echo "${chart} ${VERSION} is not ${CHART_DIGEST[${chart}]}:" >&2
 		echo "${pulled}" >&2
@@ -68,7 +80,7 @@ render() { # chart namespace values-file...
 	done
 }
 
-rm -rf "${OUT}"
+cp "${BASH_SOURCE[0]}" "${tmp}/renderer"
 mkdir -p "${OUT}"
 render substrate-crds ate-system
 render substrate-podcert podcertificate-controller-system "${VALUES}/podcert.yaml"
@@ -79,7 +91,13 @@ render substrate ate-system "${VALUES}/common.yaml" "${VALUES}/substrate.yaml"
 # its digest. Third-party images (agentgateway) arrive digest-pinned.
 declare -A pinned
 while read -r ref; do
-	pinned[${ref}]="${ref}@$(crane digest "${ref}")"
+	# GHCR's public registry serves the same manifest index by tag or digest.
+	repo="${ref#ghcr.io/}"
+	tag="${repo##*:}"
+	repo="${repo%:*}"
+	token="$(curl -fsSL "https://ghcr.io/token?service=ghcr.io&scope=repository:${repo}:pull" | python3 -c 'import json, sys; print(json.load(sys.stdin)["token"])')"
+	curl -fsSL -H "Authorization: Bearer ${token}" -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' "https://ghcr.io/v2/${repo}/manifests/${tag}" >"${tmp}/manifest"
+	pinned[${ref}]="${ref}@sha256:$(sha256sum "${tmp}/manifest" | cut -d' ' -f1)"
 done < <(grep -rhoE "${IMAGES}/[a-z0-9-]+:v${VERSION}\$" "${OUT}" | sort -u)
 for ref in "${!pinned[@]}"; do
 	grep -rlE "${ref}\$" "${OUT}" | xargs sed -i -E "s#${ref}\$#${pinned[${ref}]}#"
@@ -92,6 +110,15 @@ fi
 # The bundled PostgreSQL and its role and schema setup, from the same release.
 git -c advice.detachedHead=false clone --quiet --depth 1 --branch "v${VERSION}" \
 	https://github.com/kagent-dev/substrate.git "${tmp}/src"
+if [[ "${refresh}" == --refresh ]]; then
+	next_commit="$(git -C "${tmp}/src" rev-parse HEAD)"
+	sed -i "s/${COMMIT}/${next_commit}/" "${tmp}/renderer"
+	COMMIT="${next_commit}"
+	bootstrap="${HERE}/../../factory-cluster/bootstrap-substrate.sh"
+	curl -fsSL "https://github.com/kagent-dev/substrate/releases/download/v${VERSION}/kubectl-ate-linux-amd64" >"${tmp}/kubectl-ate"
+	checksum="$(sha256sum "${tmp}/kubectl-ate" | cut -d' ' -f1)"
+	sed -E "s/^SUBSTRATE_VERSION=.*/SUBSTRATE_VERSION=\"v${VERSION}\"/; s/^KUBECTL_ATE_SHA256=.*/KUBECTL_ATE_SHA256=\"${checksum}\"/" "${bootstrap}" >"${tmp}/bootstrap"
+fi
 if [[ "$(git -C "${tmp}/src" rev-parse HEAD)" != "${COMMIT}" ]]; then
 	echo "tag v${VERSION} is not commit ${COMMIT}" >&2
 	exit 1
@@ -106,4 +133,10 @@ fi
 	echo "-- (${COMMIT}) pkg/postgressetup/setup.sql. Do not edit."
 	cat "${tmp}/src/pkg/postgressetup/setup.sql"
 } >"${OUT}/postgres-setup.sql"
-echo "rendered $(find "${OUT}" -name '*.yaml' | wc -l) manifests and postgres-setup.sql into ${OUT}"
+if [[ "${refresh}" == --refresh ]]; then
+	mv "${tmp}/renderer" "${BASH_SOURCE[0]}"
+	cat "${tmp}/bootstrap" >"${bootstrap}"
+fi
+rm -rf "${target}"
+mv "${OUT}" "${target}"
+echo "rendered $(find "${target}" -name '*.yaml' | wc -l) manifests and postgres-setup.sql into ${target}"
