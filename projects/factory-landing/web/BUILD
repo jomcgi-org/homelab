@@ -86,7 +86,7 @@ typescript_bin.tsc_test(
     include_transitive_types = True,
 )
 
-filegroup(
+js_library(
     name = "paging",
     srcs = ["src/paging.mjs"],
     visibility = ["//projects/factory-landing:__pkg__"],
