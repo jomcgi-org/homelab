@@ -926,6 +926,7 @@ def test_toolchain_is_opt_in_and_grants_only_public_download_origins(
         in prompt
     )
     assert "For example, `fix(factory): retry failed deliveries`." in prompt
+    assert "literal public trailer Assess: 3d issue" in prompt
     assert "End the trailer block with Activation: none" in prompt
     assert "its precondition" in prompt
     assert "delegated activation issue" in prompt
