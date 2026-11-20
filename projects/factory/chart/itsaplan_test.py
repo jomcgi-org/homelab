@@ -175,6 +175,7 @@ def test_generated_secrets_are_kept_and_never_rendered() -> None:
         "factory-itsaplan-agent-factory-coordinator",
         "factory-itsaplan-agent-factory-storyboard",
         "factory-itsaplan-agent-factory-reviewer",
+        "factory-itsaplan-agent-intsec-sync",
     }
     for s in secrets:
         assert "data" not in s and "stringData" not in s
@@ -277,6 +278,7 @@ def test_job_roles_name_only_their_secrets() -> None:
         "factory-itsaplan-agent-factory-coordinator",
         "factory-itsaplan-agent-factory-storyboard",
         "factory-itsaplan-agent-factory-reviewer",
+        "factory-itsaplan-agent-intsec-sync",
     ]
     assert bootstrap[1]["verbs"] == ["get", "update"]
 
@@ -350,6 +352,7 @@ def test_bootstrap_config_lists_the_agents() -> None:
         "factory-coordinator",
         "factory-storyboard",
         "factory-reviewer",
+        "intsec-sync",
     ]
     read_only = {a["username"] for a in config["agents"] if a.get("readOnly")}
     assert read_only == {"factory-storyboard", "factory-reviewer"}
