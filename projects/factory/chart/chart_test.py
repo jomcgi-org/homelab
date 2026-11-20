@@ -1340,8 +1340,10 @@ def test_discord_import_runs_once_per_run_id_with_the_bridge_boundary() -> None:
 
 
 def test_codex_admin_route_follows_broker_chart():
-    assert not any(d["metadata"]["name"] == "codex-admin" for d in _render())
-    docs = _render(["codexAdminRouteEnabled=true"])
+    assert not any(
+        d["metadata"]["name"] == "codex-admin" for d in _render(binding=False)
+    )
+    docs = _render()
     route = _in(docs, "HTTPRoute", "edge", "codex-admin")["spec"]
     assert route["hostnames"] == ["factory.jomcgi.dev"]
     (rule,) = route["rules"]
