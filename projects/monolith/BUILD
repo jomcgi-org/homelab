@@ -265,6 +265,7 @@ filegroup(
         "//projects/platform/spire:repo_docs",
         "//projects/scotland-connector/internal/httpapi:repo_docs",
         "//projects/scotland-connector/plugin:repo_docs",
+        "//projects/trips:repo_docs",
     ],
     visibility = [
         "//projects/jomcgi-site/web:__pkg__",
