@@ -892,23 +892,35 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 		appID, _ := req.Variables["appId"].(float64)
 		check, _ := req.Variables["check"].(string)
 		var nodes []map[string]any
-		for _, h := range pr.Heads {
-			suites := map[int64][]map[string]any{}
+		end := len(pr.Heads)
+		if before, ok := req.Variables["before"].(string); ok {
+			end, _ = strconv.Atoi(before)
+		}
+		start := max(0, end-100)
+		for _, h := range pr.Heads[start:end] {
+			active := 0
+			var runs []map[string]any
 			for _, c := range f.checks {
-				if c.SHA == h && c.AppID == int64(appID) && c.Name == check && c.Status == "completed" {
-					suites[c.AppID] = append(suites[c.AppID], map[string]any{"name": c.Name, "conclusion": strings.ToUpper(c.Conclusion)})
+				if c.SHA != h || c.AppID != int64(appID) || c.Name != check {
+					continue
+				}
+				switch c.Status {
+				case "in_progress":
+					active++
+				case "completed":
+					runs = append(runs, map[string]any{"name": c.Name, "conclusion": strings.ToUpper(c.Conclusion)})
 				}
 			}
 			var sn []map[string]any
-			for app, runs := range suites {
-				sn = append(sn, map[string]any{"app": map[string]any{"databaseId": app}, "checkRuns": map[string]any{"nodes": runs}})
+			if active > 0 || len(runs) > 0 {
+				sn = append(sn, map[string]any{"app": map[string]any{"databaseId": appID}, "active": map[string]any{"totalCount": active}, "checkRuns": map[string]any{"nodes": runs}})
 			}
 			nodes = append(nodes, map[string]any{"__typename": "PullRequestCommit", "commit": map[string]any{
 				"oid": h, "checkSuites": map[string]any{"nodes": sn},
 			}})
 		}
 		reply(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"timelineItems": map[string]any{
-			"pageInfo": map[string]any{"hasPreviousPage": pr.TimelineTruncated}, "nodes": nodes,
+			"pageInfo": map[string]any{"hasPreviousPage": pr.TimelineTruncated || start > 0, "startCursor": strconv.Itoa(start)}, "nodes": nodes,
 		}}}})
 	case strings.Contains(req.Query, "mergeQueueEntry"):
 		kind = "pull_request"

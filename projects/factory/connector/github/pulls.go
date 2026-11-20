@@ -546,11 +546,11 @@ func (c *Client) MergeQueueEntries(ctx context.Context, repo, branch string) ([]
 	return entries, nil
 }
 
-const pullRequestHeadsQuery = `query($owner: String!, $name: String!, $number: Int!, $appId: Int!, $check: String!) {
+const pullRequestHeadsQuery = `query($owner: String!, $name: String!, $number: Int!, $appId: Int!, $check: String!, $before: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      timelineItems(last: 100, itemTypes: [PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT]) {
-        pageInfo { hasPreviousPage }
+      timelineItems(last: 100, before: $before, itemTypes: [PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT]) {
+        pageInfo { hasPreviousPage startCursor }
         nodes {
           __typename
           ... on PullRequestCommit { commit { ...checked } }
@@ -567,6 +567,7 @@ fragment checked on Commit {
     pageInfo { hasNextPage }
     nodes {
       app { databaseId }
+      active: checkRuns(first: 1, filterBy: {checkName: $check, status: IN_PROGRESS}) { totalCount }
       checkRuns(last: 5, filterBy: {checkName: $check, status: COMPLETED}) { pageInfo { hasPreviousPage } nodes { name conclusion } }
     }
   }
@@ -580,13 +581,15 @@ fragment checked on Commit {
 type Head struct {
 	SHA     string
 	Checked bool
+	Active  bool
 }
 
 // HeadHistory lists a PR's possible heads, oldest first. Truncated is set
 // when its timeline holds older events than were read.
 type HeadHistory struct {
-	Heads     []Head
-	Truncated bool
+	Heads       []Head
+	Truncated   bool
+	StartCursor string
 }
 
 // PullRequestHeads lists commits that may have been a PR's head, oldest
@@ -595,6 +598,11 @@ type HeadHistory struct {
 // carries a completed check run matching f, newest runs first. One GraphQL
 // read finds the checked heads, however many commits each push added.
 func (c *Client) PullRequestHeads(ctx context.Context, repo string, number int, f CheckRunFilter) (*HeadHistory, error) {
+	return c.PullRequestHeadsBefore(ctx, repo, number, f, "")
+}
+
+// PullRequestHeadsBefore reads one page of timeline events preceding before.
+func (c *Client) PullRequestHeadsBefore(ctx context.Context, repo string, number int, f CheckRunFilter, before string) (*HeadHistory, error) {
 	owner, name, _ := strings.Cut(repo, "/")
 	type commit struct {
 		OID         string `json:"oid"`
@@ -606,6 +614,7 @@ func (c *Client) PullRequestHeads(ctx context.Context, repo string, number int, 
 				App *struct {
 					DatabaseID int64 `json:"databaseId"`
 				} `json:"app"`
+				Active    struct{ TotalCount int }
 				CheckRuns struct {
 					PageInfo struct {
 						HasPreviousPage bool `json:"hasPreviousPage"`
@@ -623,6 +632,7 @@ func (c *Client) PullRequestHeads(ctx context.Context, repo string, number int, 
 			PullRequest *struct {
 				TimelineItems struct {
 					PageInfo struct {
+						StartCursor     string
 						HasPreviousPage bool `json:"hasPreviousPage"`
 					} `json:"pageInfo"`
 					Nodes []struct {
@@ -636,6 +646,9 @@ func (c *Client) PullRequestHeads(ctx context.Context, repo string, number int, 
 		} `json:"repository"`
 	}
 	vars := map[string]any{"owner": owner, "name": name, "number": number, "appId": f.AppID, "check": f.Name}
+	if before != "" {
+		vars["before"] = before
+	}
 	if err := c.graphql(ctx, repo, pullRequestHeadsQuery, vars, &out); err != nil {
 		return nil, err
 	}
@@ -643,17 +656,18 @@ func (c *Client) PullRequestHeads(ctx context.Context, repo string, number int, 
 	if p == nil {
 		return nil, ErrNotFound
 	}
-	h := &HeadHistory{Truncated: p.TimelineItems.PageInfo.HasPreviousPage}
+	h := &HeadHistory{StartCursor: p.TimelineItems.PageInfo.StartCursor, Truncated: p.TimelineItems.PageInfo.HasPreviousPage}
 	for _, n := range p.TimelineItems.Nodes {
 		for _, cm := range []*commit{n.Commit, n.BeforeCommit, n.AfterCommit} {
 			if cm == nil || cm.OID == "" {
 				continue
 			}
-			head := Head{SHA: cm.OID, Checked: cm.CheckSuites.PageInfo.HasNextPage}
+			head := Head{Active: cm.CheckSuites.PageInfo.HasNextPage, SHA: cm.OID, Checked: cm.CheckSuites.PageInfo.HasNextPage}
 			for _, s := range cm.CheckSuites.Nodes {
 				if s.App == nil || s.App.DatabaseID != f.AppID {
 					continue
 				}
+				head.Active = head.Active || s.Active.TotalCount > 0
 				if s.CheckRuns.PageInfo.HasPreviousPage {
 					head.Checked = true
 				}

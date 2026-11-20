@@ -49,6 +49,7 @@ type GitHub interface {
 	UpdateCheckRun(ctx context.Context, repo string, id int64, w github.CheckRunWrite) (*github.CheckRun, error)
 	PullRequestFiles(ctx context.Context, repo string, number int) ([]github.PullRequestFile, error)
 	PullRequestHeads(ctx context.Context, repo string, number int, f github.CheckRunFilter) (*github.HeadHistory, error)
+	PullRequestHeadsBefore(ctx context.Context, repo string, number int, f github.CheckRunFilter, before string) (*github.HeadHistory, error)
 	PullRequestReviews(ctx context.Context, repo string, number int) ([]github.PullRequestReview, error)
 	HeadRefActivity(ctx context.Context, repo, branch string) ([]github.RefActivity, error)
 	HeadRefChangedAt(ctx context.Context, repo, branch, head string) (time.Time, error)
@@ -206,6 +207,7 @@ type Engine struct {
 	parked       map[headKey]*parkedRoot // under mu
 	pendingHolds map[headKey]*github.CheckRun
 	contexts     map[string]*heldContext
+	rootScans    map[prKey]rootScan
 	recoveries   map[prKey]recovery
 	wg           sync.WaitGroup
 
@@ -381,7 +383,7 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 	}
 	return &Engine{
 		cfg: cfg, gh: gh, tasks: tasks, m: m, log: log, rules: rules, epoch: rand.Text(),
-		inflight: map[headKey]*running{}, parked: map[headKey]*parkedRoot{}, pendingHolds: map[headKey]*github.CheckRun{}, contexts: map[string]*heldContext{}, recoveries: map[prKey]recovery{},
+		inflight: map[headKey]*running{}, parked: map[headKey]*parkedRoot{}, pendingHolds: map[headKey]*github.CheckRun{}, contexts: map[string]*heldContext{}, recoveries: map[prKey]recovery{}, rootScans: map[prKey]rootScan{},
 		groups: map[string]string{}, enqueueAfter: map[string]time.Time{}, waiting: map[prKey]*waitingHead{},
 		heads: map[prKey]string{}, comments: map[prKey]*commentState{}, commentLimits: map[prKey]bool{}, commentReplays: map[prKey]int64{},
 		swept: map[string]time.Time{}, sweeping: map[string]bool{},
@@ -463,6 +465,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 	}
 	e.supersede(b, prs, complete)
 	e.endSuperseded(ctx, b, prs, complete)
+	e.recoverRoots(ctx, b, prs, complete)
 	e.noteHeads(b, prs, complete)
 	e.sweepSessions(ctx, b, prs, complete, bl)
 	e.noteWaiting(b, prs, complete)
@@ -1210,6 +1213,10 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		gate, changed := e.recoveryGate(b, pr, st.Gate)
 		gate, retained := e.retainGate(b, pr, gate, false)
 		changed = changed || retained
+		if usage != nil && !usage.persisted {
+			st.Trace = newTraceState(root, pr.Number)
+			changed = changed || st.Trace != nil
+		}
 		if changed {
 			st.Gate = gate
 			updated, err := e.gh.UpdateCheckRun(ctx, b.repo(), run.ID, github.CheckRunWrite{Output: &github.CheckRunOutput{
@@ -1224,6 +1231,9 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 				return false
 			}
 			run = updated
+			if usage != nil && st.Trace != nil {
+				usage.persisted = true
+			}
 		}
 		l.InfoContext(ctx, "re-attaching to an in-progress review", "check_run", run.ID)
 	}
@@ -1919,34 +1929,73 @@ func (e *Engine) previousState(ctx context.Context, b *Binding, pr github.PullRe
 		e.ghError(ctx, e.prLog(b, pr), b, "pull_request_heads", err)
 		return State{}, "", "", err
 	}
-	e.endPreviousHead(ctx, b, pr, hist)
 	return e.previousStateFrom(ctx, b, pr, hist)
+}
+
+type rootScan struct{ head, before string }
+
+// recoverRoots advances at most one page per open PR per poll. An empty
+// cursor on a recorded head marks its history as fully examined.
+func (e *Engine) recoverRoots(ctx context.Context, b *Binding, prs []github.PullRequest, complete bool) {
+	listed := map[prKey]bool{}
+	for _, pr := range prs {
+		key := prKey{b.Name, pr.Number}
+		listed[key] = true
+		scan := e.rootScans[key]
+		if scan.head != pr.HeadSHA {
+			scan = rootScan{head: pr.HeadSHA}
+		} else if scan.before == "" {
+			continue
+		}
+		page, err := e.gh.PullRequestHeadsBefore(ctx, b.repo(), pr.Number, github.CheckRunFilter{Name: e.cfg.CheckName, AppID: e.cfg.AppID}, scan.before)
+		if err != nil {
+			e.ghError(ctx, e.prLog(b, pr), b, "pull_request_heads", err)
+			continue
+		}
+		if !e.endPreviousHead(ctx, b, pr, page) {
+			continue
+		}
+		scan.before = ""
+		if page.Truncated {
+			scan.before = page.StartCursor
+		}
+		e.rootScans[key] = scan
+	}
+	if complete {
+		for key := range e.rootScans {
+			if key.binding == b.Name && !listed[key] {
+				delete(e.rootScans, key)
+			}
+		}
+	}
 }
 
 // endPreviousHead completes the PR's in-progress checks on its earlier
 // heads as cancelled when a check records a review root and no worker in
 // this process holds it. This covers a process that stopped during a quota
 // wait and pushes that replaced the head before the restart: complete ends
-// each recorded root once. The walk reads at most maxPreviousLookups
-// earlier heads, newest first, so a review paused on head A is still found
-// after offline pushes to B and then C. When GitHub refuses a completion,
+// each recorded root once. Only heads flagged by the filtered check query need a REST read.
+// When GitHub refuses a completion,
 // the restored root parks, and endSuperseded retries it on the next poll.
-func (e *Engine) endPreviousHead(ctx context.Context, b *Binding, pr github.PullRequest, hist *github.HeadHistory) {
+func (e *Engine) endPreviousHead(ctx context.Context, b *Binding, pr github.PullRequest, hist *github.HeadHistory) bool {
+	readAll := true
 	seen := map[string]bool{pr.HeadSHA: true}
-	looked := 0
-	for i := len(hist.Heads) - 1; i >= 0 && looked < maxPreviousLookups; i-- {
+	for i := len(hist.Heads) - 1; i >= 0; i-- {
 		prev := hist.Heads[i].SHA
-		if seen[prev] {
+		if !hist.Heads[i].Active || seen[prev] {
 			continue
 		}
 		seen[prev] = true
-		looked++
 		key := headKey{b.Name, prev}
 		if e.isRunning(key) {
 			continue
 		}
 		run, err := e.reviewCheck(ctx, b, prev)
-		if err != nil || run == nil || run.ExternalID != MessageID(b.repo(), pr.Number, prev) {
+		if err != nil {
+			readAll = false
+			continue
+		}
+		if run == nil || run.ExternalID != MessageID(b.repo(), pr.Number, prev) {
 			continue
 		}
 		ts, ok := resumedTrace(run)
@@ -1968,6 +2017,7 @@ func (e *Engine) endPreviousHead(ctx context.Context, b *Binding, pr github.Pull
 		}
 		e.mu.Unlock()
 	}
+	return readAll
 }
 
 func (e *Engine) previousStateFrom(ctx context.Context, b *Binding, pr github.PullRequest, hist *github.HeadHistory) (st State, head, unknown string, err error) {
