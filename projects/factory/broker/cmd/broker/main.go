@@ -15,6 +15,11 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
 	"github.com/jomcgi/homelab/projects/factory/broker/actorjwt"
 	"github.com/jomcgi/homelab/projects/factory/broker/auth"
 	"github.com/jomcgi/homelab/projects/factory/broker/config"
@@ -46,6 +51,21 @@ func main() {
 func run(logger *slog.Logger) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" || os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") != "" {
+		exporter, err := otlptracegrpc.New(ctx)
+		if err != nil {
+			return fmt.Errorf("initialize trace exporter: %w", err)
+		}
+		provider := sdktrace.NewTracerProvider(sdktrace.WithResource(resource.Default()), sdktrace.WithBatcher(exporter))
+		otel.SetTracerProvider(provider)
+		defer func() {
+			flush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := provider.Shutdown(flush); err != nil {
+				logger.Error("trace shutdown failed", "err", err)
+			}
+		}()
+	}
 	cfg, err := config.Load(os.Getenv("BROKER_CONFIG"), os.Getenv)
 	if err != nil {
 		return err

@@ -26,8 +26,10 @@ import (
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/store"
 	"github.com/klauspost/compress/zstd"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -460,23 +462,29 @@ func TestRelayRejectedGrantDiagnostics(t *testing.T) {
 			h := newHarness(t, true)
 			h.backend.set(func(b *backend) { b.accepts = func(string) bool { return false } })
 			h.auth.FailTransiently(true)
-			req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5"}`))
-			req.Header.Set("Authorization", "Bearer "+h.actorJWT())
+			recorder := tracetest.NewSpanRecorder()
+			sampler := sdktrace.NeverSample()
 			if tracing {
-				ctx, span := sdktrace.NewTracerProvider().Tracer("test").Start(req.Context(), "relay")
-				defer span.End()
-				req = req.WithContext(ctx)
-				defer func() {
-					s := span.(sdktrace.ReadOnlySpan)
-					if events := s.Events(); len(events) != 1 || events[0].Name != "grant.failure" || s.Status().Code != codes.Error {
-						t.Errorf("grant diagnostics: %v, status %v", events, s.Status())
-					}
-				}()
+				sampler = sdktrace.AlwaysSample()
 			}
-			w := httptest.NewRecorder()
-			h.handler.ServeHTTP(w, req)
-			if w.Code != http.StatusServiceUnavailable || h.auth.RefreshCalls() != 1 {
-				t.Fatalf("status %d, refreshes %d", w.Code, h.auth.RefreshCalls())
+			provider := sdktrace.NewTracerProvider(sdktrace.WithSampler(sampler), sdktrace.WithSpanProcessor(recorder))
+			previous := otel.GetTracerProvider()
+			otel.SetTracerProvider(provider)
+			t.Cleanup(func() { otel.SetTracerProvider(previous); _ = provider.Shutdown(context.Background()) })
+			resp := h.post("/v1/responses", h.actorJWT())
+			if factoryError(t, resp)["factory_error"] != ErrGrantUnavailable || resp.StatusCode != http.StatusServiceUnavailable || h.auth.RefreshCalls() != 1 {
+				t.Fatalf("status %d, refreshes %d", resp.StatusCode, h.auth.RefreshCalls())
+			}
+			h.relay.Close()
+			if tracing {
+				spans := recorder.Ended()
+				if len(spans) != 1 {
+					t.Fatalf("ended spans = %d", len(spans))
+				}
+				s := spans[0]
+				if events := s.Events(); s.Name() != "codex.relay" || len(events) != 1 || events[0].Name != "grant.failure" || s.Status().Code != codes.Error {
+					t.Errorf("grant diagnostics: %v, status %v", events, s.Status())
+				}
 			}
 			for _, message := range []string{"codex grant refresh after backend 401 failed", "tokenbroker refresh failed"} {
 				if strings.Contains(h.logs.String(), message) == tracing {
