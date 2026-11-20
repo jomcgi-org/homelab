@@ -73,3 +73,10 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: A continuously runnable factory queue with no successful dispatch for 30 minutes raises one connector stall alert.
+  mechanism:
+  - projects/factory/connector/dispatch/admission.go
+  - projects/platform-factory/prometheus/resources/rules.yml
+  test: //projects/platform-factory/prometheus/resources:rules_test
+  state: live

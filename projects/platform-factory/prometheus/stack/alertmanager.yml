@@ -11,6 +11,9 @@ route:
     - matchers: ['alertname=~"Semgrep(NewSecret|AuthenticationFailed)"']
       receiver: relay-no-resolved
       group_by: ["..."]
+    - matchers: ['alertname="FactoryConnectorStalled"']
+      receiver: relay-no-resolved
+      group_wait: 0s
     - matchers: ['alertname="AlertRelayDown"']
       receiver: discord
     # Each suspend timeout is its own alert (label timeouts) and its own

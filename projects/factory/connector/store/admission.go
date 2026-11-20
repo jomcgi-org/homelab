@@ -62,3 +62,15 @@ func (s *Store) AdmissionHolds(ctx context.Context, now time.Time) (count int, o
 		FROM run WHERE hold_since IS NOT NULL AND state IN ('claimed', 'waiting')`, now).Scan(&count, &oldestSeconds)
 	return
 }
+
+// DispatchCounts reads the queue and dispatched runs together for one configured agent.
+func (s *Store) DispatchCounts(ctx context.Context, agent string) (dispatched, runnable int, err error) {
+	err = s.DB.QueryRowContext(ctx, `
+ SELECT count(*) FILTER (WHERE r.state = 'dispatched'),
+        count(*) FILTER (WHERE r.state IN ('claimed','waiting') AND r.hold_reason = ''
+           AND r.stopped_reason IS NULL AND w.state IS DISTINCT FROM 'blocked' AND g.scope IS NULL)
+ FROM run r LEFT JOIN work_item w ON w.id = r.work_item_id
+ LEFT JOIN grant_block g ON g.scope = 'kagent:' || w.kagent_namespace || '/' || w.kagent_agent AND g.cleared_at IS NULL
+ WHERE r.agent_key = $1 AND r.state IN ('dispatched','claimed','waiting')`, agent).Scan(&dispatched, &runnable)
+	return
+}
