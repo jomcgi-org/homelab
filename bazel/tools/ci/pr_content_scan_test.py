@@ -1,9 +1,10 @@
+import os
+from pathlib import Path
 import subprocess
+import sys
 
-from pr_content_scan import scan
 
-
-def test_pr_scope_and_redaction(tmp_path, monkeypatch, capsys):
+def test_pr_scope_and_redaction(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     def git(*args):
@@ -21,8 +22,22 @@ def test_pr_scope_and_redaction(tmp_path, monkeypatch, capsys):
     marker = "service" + ".internal"
     file.write_text(untouched + "\n" + token + "\n")
     git("commit", "-am", marker)
-    scan("HEAD^", "HEAD")
-    output = capsys.readouterr().out
+    root = Path(os.environ.get("TEST_SRCDIR", "")) / os.environ.get(
+        "TEST_WORKSPACE", ""
+    )
+    if not os.environ.get("TEST_SRCDIR"):
+        root = Path(__file__).resolve().parents[3]
+    result = subprocess.run(
+        [sys.executable, root / "bazel/tools/ci/pr_content_scan.py", "HEAD^", "HEAD"],
+        env={
+            **os.environ,
+            "PYTHONPATH": str(root / "projects/monolith/knowledge/tools"),
+        },
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    output = result.stdout + result.stderr
     assert "'example': GitHub token" in output
     assert "'commit " in output and ".internal hostname" in output
     assert "AWS access key" not in output
