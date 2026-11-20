@@ -233,14 +233,15 @@ type ReviewEvent struct {
 // invariant: FACT-13
 
 // SeenEvents returns recorded node IDs, excluding retryable events on the current head.
-func (s *Store) SeenEvents(ctx context.Context, nodeIDs []string, head string, retryLimited bool) (map[string]bool, error) {
+func (s *Store) SeenEvents(ctx context.Context, nodeIDs []string, head string, retryReview, retryRebase bool) (map[string]bool, error) {
 	seen := map[string]bool{}
 	if len(nodeIDs) == 0 {
 		return seen, nil
 	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT github_node_id FROM review_event WHERE github_node_id = ANY($1)
-		AND NOT ($2 AND commit_sha = $3 AND disposition = 'round_limit')`,
-		pq.Array(nodeIDs), retryLimited, head)
+		AND NOT (commit_sha = $2 AND disposition = 'round_limit'
+			AND CASE WHEN kind = 'conflicting' THEN $4::boolean ELSE $3::boolean END)`,
+		pq.Array(nodeIDs), head, retryReview, retryRebase)
 	if err != nil {
 		return nil, err
 	}

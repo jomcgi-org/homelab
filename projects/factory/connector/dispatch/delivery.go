@@ -988,12 +988,12 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 		ids = append(ids, c.ev.NodeID)
 	}
 	// invariant: FACT-13
-	seen, err := e.st.SeenEvents(ctx, ids, d.HeadSHA, wi.ReviewRounds < p.MaxReviewRounds)
+	seen, err := e.st.SeenEvents(ctx, ids, d.HeadSHA, wi.ReviewRounds < p.MaxReviewRounds, wi.RebaseRounds < p.MaxRebaseRounds)
 	if err != nil {
 		return false, err
 	}
 	selected := make(map[[2]string]bool) // All acting candidates share the current head.
-	var record, acting []*candidate
+	var record, acting, sameSource []*candidate
 	var rebase bool
 	for i := range cands {
 		c := &cands[i]
@@ -1013,7 +1013,10 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 				return false, err
 			}
 			key := [2]string{c.ev.Kind, c.ev.Source}
-			if done || selected[key] {
+			if done {
+				c.ev.Disposition = store.EventDuplicate
+			} else if selected[key] {
+				sameSource = append(sameSource, c)
 				c.ev.Disposition = store.EventDuplicate
 			} else {
 				c.ev.Disposition = store.EventActed
@@ -1036,7 +1039,7 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 		limited = wi.SplitRounds >= p.MaxSplitRounds
 	}
 	if limited {
-		for _, c := range acting {
+		for _, c := range append(acting, sameSource...) {
 			c.ev.Disposition = store.EventRoundLimit
 		}
 	}
