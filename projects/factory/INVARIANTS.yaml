@@ -80,6 +80,13 @@ invariants:
   - projects/factory/reviewer/review/gate.go
   - projects/factory/connector/dispatch/delivery.go
   state: unproven
+- id: FACT-19
+  statement: Raising the review round bound allows previously limited current-head feedback to start one round while delivery remains active.
+  mechanism:
+  - projects/factory/connector/dispatch/delivery.go
+  - projects/factory/connector/store/delivery.go
+  test: //projects/factory/connector/dispatch:dispatch_test
+  state: live
 - id: FACT-12
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
