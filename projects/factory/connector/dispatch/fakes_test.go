@@ -513,6 +513,7 @@ func (f *fakeItsaplan) Comments() []fakeComment {
 // message ID, a session belongs to the Agent that created it and runs one
 // non-quiescent task at a time, and cancellation completes asynchronously.
 type fakeKagent struct {
+	onSessionRead   func(string)
 	onPromptRead    func()
 	createdRevision string
 	onPromptCreate  func(string)
@@ -862,6 +863,9 @@ func (k *fakeKagent) CancelTask(_ context.Context, agent kagent.AgentRef, id str
 }
 
 func (k *fakeKagent) GetSession(_ context.Context, id string) (*kagent.Session, error) {
+	if k.onSessionRead != nil {
+		k.onSessionRead(id)
+	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.calls++

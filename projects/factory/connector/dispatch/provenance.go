@@ -61,7 +61,16 @@ func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.
 		if err := e.beginAdmissionRead(ctx, r, "provenance-prompt", a.MessageID); err != nil {
 			return "", err
 		}
-		*sendContext, err = kagent.PinPromptSession(ctx, e.sessions, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, a.MessageID, a.ContextID, runtime.SystemPrompt, func(ctx context.Context, agent kagent.AgentRef, key string) (*kagent.Session, error) {
+		reader := kagent.PromptSessionReader{
+			PromptRevision: e.sessions.PromptRevision,
+			GetSession: func(ctx context.Context, id string) (*kagent.Session, error) {
+				if err := e.beginAdmissionRead(ctx, r, "provenance-pinned-session", id); err != nil {
+					return nil, err
+				}
+				return e.sessions.GetSession(ctx, id)
+			},
+		}
+		*sendContext, err = kagent.PinPromptSession(ctx, reader, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, a.MessageID, a.ContextID, runtime.SystemPrompt, func(ctx context.Context, agent kagent.AgentRef, key string) (*kagent.Session, error) {
 			if err := e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
 				return e.st.RecordAdmissionRead(ctx, tx, r, e.w.Epoch, key, "create-prompt-session", key)
 			}); err != nil {

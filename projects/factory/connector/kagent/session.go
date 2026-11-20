@@ -329,9 +329,9 @@ func servedPromptRevision(raw []byte, prompt string) (string, error) {
 // pinned to a known, different revision. Its request ID must be retired.
 var ErrCreatedRevisionMismatch = errors.New("created session pinned a different Agent revision")
 
-type PromptSessionReader interface {
-	PromptRevision(context.Context, AgentRef, string) (string, error)
-	GetSession(context.Context, string) (*Session, error)
+type PromptSessionReader struct {
+	PromptRevision func(context.Context, AgentRef, string) (string, error)
+	GetSession     func(context.Context, string) (*Session, error)
 }
 
 // PinPromptSession reads one reconciled Agent snapshot and pins the message to

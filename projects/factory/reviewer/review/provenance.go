@@ -146,7 +146,7 @@ func (e *Engine) recordProvenance(ctx context.Context, b *Binding, in *inputs, m
 			requestID = cursor.MessageID
 		}
 	}
-	msg.ContextID, err = kagent.PinPromptSession(ctx, e.cfg.Sessions, b.Agent, requestID, msg.ContextID, b.Runtime.SystemPrompt, e.cfg.GoalSessions.CreateSession)
+	msg.ContextID, err = kagent.PinPromptSession(ctx, kagent.PromptSessionReader{PromptRevision: e.cfg.Sessions.PromptRevision, GetSession: e.cfg.Sessions.GetSession}, b.Agent, requestID, msg.ContextID, b.Runtime.SystemPrompt, e.cfg.GoalSessions.CreateSession)
 	if errors.Is(err, kagent.ErrCreatedRevisionMismatch) {
 		next := sha256.Sum256([]byte(requestID))
 		if saveErr := e.cfg.GoalTasks.SaveGoalTask(GoalTask{Key: key, MessageID: hex.EncodeToString(next[:]), CreatedAt: e.cfg.Now().UTC()}); saveErr != nil {
