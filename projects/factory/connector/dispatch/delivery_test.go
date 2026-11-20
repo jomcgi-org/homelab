@@ -4500,7 +4500,10 @@ func TestLessonRetainedOnlyAfterMatchingMerge(t *testing.T) {
 	}
 }
 
-func (g *fakeGitHub) MergedSince(context.Context, string, string, time.Time) ([]github.PullRequest, error) {
+func (g *fakeGitHub) MergedSince(_ context.Context, _, _ string, _ time.Time, before func(int) error) ([]github.PullRequest, error) {
+	if err := before(1); err != nil {
+		return nil, err
+	}
 	return g.mergedListing, nil
 }
 

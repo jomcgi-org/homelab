@@ -50,6 +50,7 @@ go_library(
         "20261120010000_review_merges.sql",
         "20261120090000_planner.sql",
         "20261120100000_planner_schedule_config.sql",
+        "20261120183000_pending_merge_review.sql",
         "20261121000000_issue_reviewing.sql",
         "20261121125100_storyboard_artifact_prose.sql",
         "20261122000000_run_provenance_opt_in.sql",
