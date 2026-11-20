@@ -1762,7 +1762,7 @@ func TestDecisionRecoveryKeepsFindingIdentitiesAcrossRestart(t *testing.T) {
 			}
 			ids := []string{prefix + ":first", prefix + ":second"}
 			original := []Finding{finding(ids[0], SeverityHigh), finding(ids[1], SeverityHigh)}
-			comment := github.Comment{ID: 42, Author: "jomcgi", Body: "Decision: accept `" + ids[0] + "` and `" + ids[1] + "`; verify delivery after rollout."}
+			comment := github.Comment{ID: 42, UpdatedAt: "2026-11-18T10:00:00Z", Author: "jomcgi", Body: "Decision: accept `" + ids[0] + "` and `" + ids[1] + "`; verify delivery after rollout."}
 			h.gh.prs[7].Comments = []github.Comment{comment}
 			note := "decision: https://github.com/" + testRepo + "/pull/7#issuecomment-42"
 			previous := []Previous{{ID: ids[0], Status: StatusJustified, Note: note}, {ID: ids[1], Status: StatusJustified, Note: note}}
@@ -2217,7 +2217,7 @@ func TestJoesDecisionJustifiesAHighFinding(t *testing.T) {
 	}
 	h.gh.withLock(func() {
 		h.gh.prs[7].Comments = append(h.gh.prs[7].Comments,
-			github.Comment{ID: 42, Author: "jomcgi", Body: "Decision: accept `a.yaml:rollout`; check delivery after rollout."},
+			github.Comment{ID: 42, UpdatedAt: "2026-11-18T10:00:00Z", Author: "jomcgi", Body: "Decision: accept `a.yaml:rollout`; check delivery after rollout."},
 			github.Comment{ID: 43, Author: "someone", Body: "Decision: accept `b.yaml:rollout`."},
 			github.Comment{ID: 44, Author: "helper-bot", Body: "Decision: accept `d.yaml:rollout`."},
 		)
@@ -2273,7 +2273,7 @@ func TestMediumDecisionOnTheNextHead(t *testing.T) {
 	eventually(t, "the first check", func() bool { return h.gh.check(shaA).Conclusion == ConclusionFailure })
 	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
 	h.gh.withLock(func() {
-		h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 42, Author: "jomcgi", Body: "Decision: accept `a.yaml:live` on the rollout log; check delivery after rollout."})
+		h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 42, UpdatedAt: "2026-11-18T10:00:00Z", Author: "jomcgi", Body: "Decision: accept `a.yaml:live` on the rollout log; check delivery after rollout."})
 	})
 	shaB := strings.Repeat("b", 40)
 	h.gh.push(7, shaB)
@@ -2376,7 +2376,7 @@ func TestRevokedDecisionWithdrawsAPass(t *testing.T) {
 	eventually(t, "the first check", func() bool { return h.gh.check(shaA).Conclusion == ConclusionFailure })
 	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
 	h.gh.withLock(func() {
-		h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 42, Author: "jomcgi", Body: "Decision: accept `a.yaml:rollout` on the Secret evidence; check delivery after rollout."})
+		h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 42, UpdatedAt: "2026-11-18T10:00:00Z", Author: "jomcgi", Body: "Decision: accept `a.yaml:rollout` on the Secret evidence; check delivery after rollout."})
 	})
 	shaB := strings.Repeat("b", 40)
 	h.gh.push(7, shaB)
@@ -2403,7 +2403,8 @@ func TestRevokedDecisionWithdrawsAPass(t *testing.T) {
 	h.gh.withLock(func() {
 		for i, c := range h.gh.prs[7].Comments {
 			if c.ID == 42 {
-				h.gh.prs[7].Comments[i].Body = "Revoked: do not accept `a.yaml:rollout`."
+				// Joe edited and restored the text between polls.
+				h.gh.prs[7].Comments[i].UpdatedAt = "2026-11-19T10:00:00Z"
 			}
 		}
 	})
@@ -4353,7 +4354,7 @@ const ciDecisionBody = " \n<!-- helm-manifest-diff -->\nDecision: accept `a.yaml
 
 func TestMachineCommentCannotDecideFinding(t *testing.T) {
 	h := newHarness(t)
-	d := joeDecisions(&h.cfg.Bindings[0], github.PullRequest{Number: 7}, []github.Comment{{ID: 42, Author: "jomcgi", Body: ciDecisionBody}})
+	d := joeDecisions(&h.cfg.Bindings[0], github.PullRequest{Number: 7}, []github.Comment{{ID: 42, UpdatedAt: "2026-11-18T10:00:00Z", Author: "jomcgi", Body: ciDecisionBody}})
 	if d.decided("decision: https://github.com/"+testRepo+"/pull/7#issuecomment-42", "a.yaml:rollout", "high") != nil {
 		t.Fatal("CI comment cleared the finding")
 	}
@@ -4879,5 +4880,46 @@ func TestReadySinceCacheIsBounded(t *testing.T) {
 	_, _ = e.readySince(context.Background(), b, github.PullRequest{Number: 1, HeadSHA: shaA})
 	if stub.calls != 1 {
 		t.Fatalf("reads = %d, want 1 (only the evicted entry)", stub.calls)
+	}
+}
+
+func TestEditedPromptDecision(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restart=%t", restart), func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			e, ctx, stop := h.start()
+			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []Finding{finding("a.yaml:rollout", SeverityHigh)}}))
+			eventually(t, "initial blocker", func() bool {
+				return h.gh.check(shaA).Conclusion == ConclusionFailure && testutil.ToFloat64(h.m.InFlight) == 0
+			})
+			h.gh.withLock(func() {
+				h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 42, Author: "jomcgi", Body: "Accept a.yaml:rollout", UpdatedAt: "2026-11-18T10:00:00Z"})
+			})
+			sha := strings.Repeat("b", 40)
+			h.gh.push(7, sha)
+			task := runReview(t, h, e, ctx, 7, sha)
+			eventually(t, "prompt versions checkpointed", func() bool { st, ok := LoadState(h.gh.check(sha).Text); return ok && len(st.PromptVersions) == 1 })
+			if restart {
+				stop()
+			}
+			h.gh.withLock(func() {
+				for i, c := range h.gh.prs[7].Comments {
+					if c.ID == 42 {
+						h.gh.prs[7].Comments[i].Body += " after rollout"
+						h.gh.prs[7].Comments[i].UpdatedAt = "2026-11-19T10:00:00Z"
+					}
+				}
+			})
+			if restart {
+				e, ctx, _ = h.start()
+				e.Tick(ctx)
+			}
+			h.k.finish(task, kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []Finding{}, "previous": []Previous{{ID: "a.yaml:rollout", Status: StatusJustified, Note: "decision: https://github.com/" + testRepo + "/pull/7#issuecomment-42"}}}))
+			eventually(t, "edited decision blocked", func() bool {
+				st, ok := LoadState(h.gh.check(sha).Text)
+				return h.gh.check(sha).Conclusion == ConclusionFailure && ok && len(st.Blocking) == 1 && st.Blocking[0].ID == "a.yaml:rollout"
+			})
+		})
 	}
 }
