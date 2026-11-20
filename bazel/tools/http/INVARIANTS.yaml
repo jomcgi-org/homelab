@@ -1,0 +1,7 @@
+invariants:
+- id: HTTP-1
+  statement: An executable archive member selected by extract_path remains executable through the raw binary target and is packaged with mode 0755.
+  mechanism:
+  - bazel/tools/http/multiarch_http_file.bzl
+  test: //bazel/tools/http/test:archive_mode_test
+  state: live
