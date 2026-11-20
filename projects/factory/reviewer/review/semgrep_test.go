@@ -548,8 +548,9 @@ func TestSemgrepTriageAfterVerdict(t *testing.T) {
 					if i > 1 {
 						payload += ","
 					}
-					payload += fmt.Sprintf(`{"id":%d,"status":"open","ref":"refs/heads/test","repository":{"name":%q},"location":{"file_path":"file","line":%d,"commit":%q}}`, i, b.repo(), i, shaA)
+					payload += fmt.Sprintf(`{"id":%d,"review_comments":[{"external_discussion_id":"%d"}],"status":"open","ref":"refs/heads/test","repository":{"name":%q},"location":{"file_path":"file","line":%d}}`, i, i, b.repo(), i)
 				}
+				payload += fmt.Sprintf(`,{"id":999,"review_comments":[{"external_discussion_id":"999"}],"status":"open","ref":"test","repository":{"name":%q},"location":{"file_path":"file","line":1}}`, b.repo())
 				payload = `{"findings":[` + payload + `]}`
 			case "/api/v1/deployments/test/triage":
 				writes++
@@ -557,11 +558,12 @@ func TestSemgrepTriageAfterVerdict(t *testing.T) {
 				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 					t.Fatal(err)
 				}
-				want := map[string]any{"issue_ids": []any{float64(1)}, "new_triage_state": "ignored", "new_ignored_reason": "false positive", "new_note": "validated upstream"}
+				want := map[string]any{"issue_type": "sast", "limit": float64(1), "issue_ids": []any{float64(1)}, "new_triage_state": "ignored", "new_triage_reason": "false_positive", "new_note": "validated upstream"}
 				if req.Method != "POST" || !reflect.DeepEqual(body, want) {
 					t.Fatalf("unexpected triage %v", body)
 				}
 				code = status
+				payload = `{"num_triaged":1,"triaged_issues":[1]}`
 			default:
 				t.Fatalf("unexpected endpoint %s", req.URL.Path)
 			}
@@ -575,9 +577,25 @@ func TestSemgrepTriageAfterVerdict(t *testing.T) {
 			s.Comments = append(s.Comments, github.AppComment{Kind: "pulls", ID: int64(i + 1), Path: "file", Line: i + 1, CommitSHA: shaA, Outdated: &current})
 			r.SemgrepDecisions = append(r.SemgrepDecisions, semgrepDecision{CommentID: int64(i + 1), Reason: reason, Note: "validated upstream"})
 		}
-		o := Outcome{Conclusion: ConclusionFailure, Comment: &CommentUpdate{}}
-		e.triageSemgrep(context.Background(), b, github.PullRequest{HeadSHA: shaA, HeadRef: "test"}, s, r, &o)
-		if writes != 1 || o.Conclusion != ConclusionFailure || strings.Contains(o.Output.Summary, "Ignored in Semgrep: 1.") != (status == 200) || strings.Contains(o.Comment.Note, "Ignored in Semgrep: 1.") != (status == 200) {
+		pr := github.PullRequest{HeadSHA: shaA, HeadRef: "test"}
+		o := Outcome{Conclusion: ConclusionFailure, Comment: &CommentUpdate{Verdict: VerdictHuman}}
+		e.triageSemgrep(context.Background(), b, pr, s, r, &o)
+		o.Conclusion = ConclusionSuccess
+		e.triageSemgrep(context.Background(), b, pr, s, r, &o)
+		o.Comment.Verdict = VerdictApproved
+		r.Findings = []Finding{{Path: "file", Line: 1}}
+		e.triageSemgrep(context.Background(), b, pr, s, r, &o)
+		r.Findings = nil
+		s.Comments[0].ID = 42
+		r.SemgrepDecisions[0].CommentID = 42
+		e.triageSemgrep(context.Background(), b, pr, s, r, &o)
+		if writes != 0 {
+			t.Fatal("triage without an approved, unambiguous withdrawal")
+		}
+		s.Comments[0].ID = 1
+		r.SemgrepDecisions[0].CommentID = 1
+		e.triageSemgrep(context.Background(), b, pr, s, r, &o)
+		if writes != 1 || o.Conclusion != ConclusionSuccess || strings.Contains(o.Output.Summary, "Ignored in Semgrep: 1.") != (status == 200) || strings.Contains(o.Comment.Note, "Ignored in Semgrep: 1.") != (status == 200) {
 			t.Fatalf("wrong triage outcome for %d: %+v", status, o)
 		}
 	}

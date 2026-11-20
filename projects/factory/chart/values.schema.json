@@ -548,6 +548,7 @@
           "type": "string",
           "minLength": 1
         },
+        "semgrepTriageEnabled": { "type": "boolean" },
         "semgrep": {
           "type": ["object", "null"],
           "additionalProperties": false,

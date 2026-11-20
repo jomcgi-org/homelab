@@ -719,6 +719,8 @@ reviewer:
   # Semgrep evidence and service-side triage. Unset is off; enabling follows chart write-back.
   # semgrep: {appId: 4746654, checkName: semgrep-cloud-platform/scan, wait: 10m}
   semgrep: null
+  # Enable only when Semgrep can confine an ignore to the selected finding ID.
+  semgrepTriageEnabled: false
   concurrency: 2
   enqueueAuthors: [jomcgi]
   humanApprovers: [jomcgi]

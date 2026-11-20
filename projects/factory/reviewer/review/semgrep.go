@@ -208,15 +208,19 @@ type semgrepDecision struct {
 	Note      string `json:"note"`
 }
 
+type semgrepReviewComment struct {
+	Discussion string `json:"external_discussion_id"`
+}
+
 type semgrepRow struct {
+	Comments   []semgrepReviewComment `json:"review_comments"`
 	ID         int64
 	Ref        string
 	Status     string
 	Repository struct{ Name string }
 	Location   struct {
-		Commit string
-		Path   string `json:"file_path"`
-		Line   int
+		Path string `json:"file_path"`
+		Line int
 	}
 }
 
@@ -250,7 +254,7 @@ func semgrepTargets(ctx context.Context, client *http.Client, key, repo, ref str
 		return "", nil, fmt.Errorf("ambiguous Semgrep deployment")
 	}
 	org := url.PathEscape(orgs.Deployments[0].Slug)
-	q := url.Values{"repos": {repo}, "ref": {ref}, "page_size": {"100"}}
+	q := url.Values{"issue_type": {"sast"}, "repos": {repo}, "ref": {ref}, "page_size": {"100"}}
 	var rows []semgrepRow
 	for page := 0; page < 50; page++ {
 		q.Set("page", strconv.Itoa(page))
@@ -267,7 +271,7 @@ func semgrepTargets(ctx context.Context, client *http.Client, key, repo, ref str
 }
 
 func (e *Engine) triageSemgrep(ctx context.Context, b *Binding, pr github.PullRequest, s *SemgrepEvidence, r *Report, o *Outcome) {
-	if s == nil || s.Unavailable != "" || len(s.Comments) != len(r.SemgrepDecisions) {
+	if o.Conclusion != ConclusionSuccess || o.Comment == nil || o.Comment.Verdict != VerdictApproved || e.cfg.Semgrep == nil || e.cfg.Semgrep.APIKey == "" || s == nil || s.Unavailable != "" || len(s.Comments) != len(r.SemgrepDecisions) {
 		return
 	}
 	var names []string
@@ -283,9 +287,10 @@ func (e *Engine) triageSemgrep(ctx context.Context, b *Binding, pr github.PullRe
 		if d.CommentID != cm.ID || cm.Kind != "pulls" || cm.CommitSHA != pr.HeadSHA || cm.Outdated == nil || *cm.Outdated || (d.Reason != "false positive" && d.Reason != "acceptable risk") || strings.TrimSpace(d.Note) == "" {
 			continue
 		}
-		// Separate comments at the same location cannot distinguish the rows.
-		if cm.Line <= 0 || cm.Path == "" || slices.ContainsFunc(s.Comments, func(other github.AppComment) bool {
-			return other.ID != cm.ID && other.Path == cm.Path && other.Line == cm.Line && other.CommitSHA == cm.CommitSHA
+		// A current report entry on the same path can contradict an advisory
+		// disposition, including an optional finding on a successful verdict.
+		if cm.ID <= 0 || cm.Line <= 0 || cm.Path == "" || slices.ContainsFunc(r.Findings, func(f Finding) bool {
+			return f.Path == "" || f.Path == cm.Path || strings.HasPrefix(f.ID, cm.Path+":")
 		}) {
 			continue
 		}
@@ -301,7 +306,15 @@ func (e *Engine) triageSemgrep(ctx context.Context, b *Binding, pr github.PullRe
 		}
 		var id int64
 		for _, row := range rows {
-			if (row.Ref == pr.HeadRef || row.Ref == "refs/heads/"+pr.HeadRef) && row.Repository.Name == b.repo() && row.Location.Commit == pr.HeadSHA && row.Location.Path == cm.Path && row.Location.Line == cm.Line {
+			if (row.Ref == pr.HeadRef || row.Ref == "refs/heads/"+pr.HeadRef) && row.Repository.Name == b.repo() && row.Location.Path == cm.Path && row.Location.Line == cm.Line {
+				// Multiple associated comments can carry conflicting dispositions.
+				if len(row.Comments) != 1 {
+					continue
+				}
+				discussion := row.Comments[0].Discussion
+				if discussion != strconv.FormatInt(cm.ID, 10) && (cm.NodeID == "" || discussion != cm.NodeID) {
+					continue
+				}
 				if id != 0 || !strings.EqualFold(row.Status, "open") || row.ID <= 0 {
 					id = 0
 					break
@@ -331,7 +344,7 @@ func ignoreSemgrep(ctx context.Context, client *http.Client, key, org string, id
 	if key == "" {
 		return false
 	}
-	body, _ := json.Marshal(map[string]any{"issue_ids": []int64{id}, "new_triage_state": "ignored", "new_ignored_reason": d.Reason, "new_note": d.Note})
+	body, _ := json.Marshal(map[string]any{"issue_type": "sast", "limit": 1, "issue_ids": []int64{id}, "new_triage_state": "ignored", "new_triage_reason": strings.ReplaceAll(d.Reason, " ", "_"), "new_note": d.Note})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://semgrep.dev/api/v1/deployments/"+org+"/triage", bytes.NewReader(body))
 	if err != nil {
 		return false
@@ -343,5 +356,9 @@ func ignoreSemgrep(ctx context.Context, client *http.Client, key, org string, id
 		return false
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode >= 200 && resp.StatusCode < 300
+	var updated struct {
+		Count int     `json:"num_triaged"`
+		IDs   []int64 `json:"triaged_issues"`
+	}
+	return resp.StatusCode >= 200 && resp.StatusCode < 300 && json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&updated) == nil && updated.Count == 1 && len(updated.IDs) == 1 && updated.IDs[0] == id
 }

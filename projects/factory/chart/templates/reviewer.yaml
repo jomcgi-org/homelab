@@ -4,7 +4,7 @@
 {{- $ns := .Values.broker.namespace }}
 {{- $name := include "factory.reviewerName" . }}
 {{- $configYAML := include "factory.reviewerConfig" . }}
-{{- if $c.semgrep }}
+{{- if and $c.semgrep $c.semgrepTriageEnabled }}
 apiVersion: onepassword.com/v1
 kind: OnePasswordItem
 metadata:
@@ -109,7 +109,7 @@ spec:
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ . | quote }}
             {{- end }}
-            {{- if $c.semgrep }}
+            {{- if and $c.semgrep $c.semgrepTriageEnabled }}
             - name: SEMGREP_API_KEY
               valueFrom:
                 secretKeyRef: {name: reviewer-semgrep, key: API_KEY, optional: true}

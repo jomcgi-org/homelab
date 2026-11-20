@@ -976,7 +976,9 @@ def test_semgrep_key_is_scoped_to_opted_in_reviewer_service() -> None:
         "reviewer.semgrep.checkName=semgrep-cloud-platform/scan",
         "reviewer.semgrep.wait=2m",
     ]
-    docs = _render(overrides)
+    evidence_only = _render(overrides)
+    assert "reviewer-semgrep" not in json.dumps(_pod(evidence_only, "factory-reviewer"))
+    docs = _render([*overrides, "reviewer.semgrepTriageEnabled=true"])
     assert _config(docs, "factory-reviewer")["semgrep"] == {
         "appId": 4746654,
         "checkName": "semgrep-cloud-platform/scan",
