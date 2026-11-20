@@ -8,12 +8,10 @@ projects/embervm/ARCHITECTURE.md: missing component row for scratch-prep
 projects/embervm/ARCHITECTURE.md: missing component row for tokenbroker
 projects/embervm/ARCHITECTURE.md: missing component row for xds
 projects/embervm/ARCHITECTURE.md: opening_fence: mermaid
-projects/embervm/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
 projects/embervm/QUICKSTART.md: outside allowed_names
 projects/factory-landing/ARCHITECTURE.md: missing component row for web
 projects/factory-public/ARCHITECTURE.md: missing file or link from projects/factory-public/README.md to projects/*/ARCHITECTURE.md
 projects/factory-storyboard/ARCHITECTURE.md: heading: Direction
-projects/factory-storyboard/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
 projects/factory-storyboard/README.md: link_if_present: ARCHITECTURE.md
 projects/factory/ARCHITECTURE.md: max_lines: 600
 projects/factory/README.md: missing required file
@@ -170,5 +168,4 @@ projects/scotland-connector/README.md: missing required file
 projects/scotland-connector/plugin/skills/scotland-trips/SKILL.md: outside allowed_names
 projects/ships/ARCHITECTURE.md: heading: Direction
 projects/ships/ARCHITECTURE.md: opening_fence: mermaid
-projects/ships/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
 projects/ships/README.md: missing required file

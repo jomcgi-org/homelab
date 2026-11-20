@@ -100,9 +100,8 @@ The Format stage of `pr-checks` and local `ci lint` both run
 It reads [the bundle rules](templates/bundles.yaml) and reports the path and
 missing document or required part. Keep the rules in the JSON subset of YAML
 so the check runs with the Python standard library on every workstation.
-The check reads the component table rows and columns separately; a
-same-table check is deferred by
-[Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-269#comment-4037).
+Each required component must appear in the `Component` column of a table
+that also has the `Untrusted input` and `Credentials held` columns.
 
 Each file type answers one question. Text that answers a different question
 moves to the file that owns it. To create a file, copy its template or

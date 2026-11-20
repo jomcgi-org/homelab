@@ -214,3 +214,17 @@ def test_unmatched_code_span_is_fast():
     start = time.monotonic()
     links(path, ["`a " + "``" * 2000 + " b"])
     assert time.monotonic() - start < 1
+
+
+# invariant: BUNDLE-1
+def test_component_row_in_separate_table_is_rejected():
+    split = (
+        GOOD.replace("| worker |", "| other |")
+        + "\n\n| Component |\n| --- |\n| worker |"
+    )
+    docs = {ARCH: split, README: "[design](ARCHITECTURE.md)"}
+    files = set(docs) | {
+        ARCH.parent / "worker/main.go",
+        ARCH.parent / "chart/Chart.yaml",
+    }
+    assert validate(RULES, files, docs) == {ARCH: ["missing component row for worker"]}

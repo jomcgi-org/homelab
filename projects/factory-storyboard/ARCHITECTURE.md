@@ -23,9 +23,9 @@ The independent schema test validates the fixtures with draft-07 JSON Schema,
 checks their hashes and cross-links, and exercises rejected inputs. The
 [README](README.md) describes fixture updates and the future Worker contract.
 
-| Component | Role |
-| --- | --- |
-| schema | Defines the versioned public documents shared with the site. |
+| Component | Role | Untrusted input | Credentials held |
+| --- | --- | --- | --- |
+| schema | Defines the versioned public documents shared with the site. | Public snapshot documents | None |
 
 The publisher joins the configured itsaplan project to connector delivery
 records and publishes session text by default. Joe chose this on 2026-11-19
