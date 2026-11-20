@@ -346,3 +346,9 @@ invariants:
   - projects/factory/connector/store/store.go
   test: //projects/factory/connector/dispatch:dispatch_test
   state: live
+- id: HOME-423-1
+  statement: A failed prior review state read defers review until a later poll and preserves the saved check state.
+  mechanism:
+  - projects/factory/reviewer/review/engine.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live
