@@ -27,6 +27,7 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/connector/metrics"
+	"github.com/jomcgi/homelab/projects/factory/connector/planner"
 	"github.com/jomcgi/homelab/projects/factory/connector/provenance"
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
 )
@@ -148,6 +149,8 @@ type Config struct {
 	AdmissionBudget time.Duration
 	// AdmissionReadTimeout bounds one request, not a whole dependency graph.
 	AdmissionReadTimeout time.Duration
+
+	PlannerSchedules []planner.Schedule
 }
 
 // QuotaSource reads the broker's quota reading for its Codex grant.
@@ -267,6 +270,10 @@ func (e *Engine) Acquire(ctx context.Context) (bool, error) {
 			w.Release()
 			return false, fmt.Errorf("record binding %s: %w", b.Name, err)
 		}
+	}
+	if err := w.SyncPlannerSchedules(ctx, e.cfg.PlannerSchedules); err != nil {
+		w.Release()
+		return false, fmt.Errorf("record planner schedules: %w", err)
 	}
 	e.w = w
 	e.admissionCtx, e.admissionCancel = context.WithCancel(ctx)

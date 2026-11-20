@@ -80,6 +80,7 @@ go_test(
         "//projects/factory/connector/itsaplan",
         "//projects/factory/connector/kagent",
         "//projects/factory/connector/metrics",
+        "//projects/factory/connector/planner",
         "//projects/factory/connector/provenance",
         "//projects/factory/connector/store",
         "@com_github_prometheus_client_golang//prometheus/testutil",

@@ -275,6 +275,8 @@ func run(log *slog.Logger) error {
 		Links:           dispatch.Links(cfg.File.Links),
 		CILogs:          ciLogs,
 		GoalReasons:     goalReasons,
+
+		PlannerSchedules: cfg.File.PlannerSchedules,
 	}, st, its, a2a, sessions, gh, m, log)
 	notifier, err := notify.New(notify.Config{
 		URL: cfg.NotifyURL, TokenURL: cfg.NotifyTokenURL, AppPasswordFile: cfg.NotifyPasswordFile,

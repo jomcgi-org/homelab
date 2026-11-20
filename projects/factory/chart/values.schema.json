@@ -777,6 +777,37 @@
             }
           }
         },
+        "plannerSchedules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "namespace",
+              "ceiling",
+              "minInterval",
+              "cooldown",
+              "perRun",
+              "issueTitle",
+              "instructions"
+            ],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "namespace": {
+                "type": "string",
+                "pattern": "^[a-z0-9._/-]+:[a-z0-9._/-]+$",
+                "maxLength": 252
+              },
+              "ceiling": { "type": "string" },
+              "minInterval": { "type": "string", "minLength": 1 },
+              "cooldown": { "type": "string", "minLength": 1 },
+              "perRun": { "type": "integer", "minimum": 1, "maximum": 4 },
+              "issueTitle": { "type": "string", "minLength": 1 },
+              "instructions": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
         "bindings": {
           "description": "Per repository binding, by its repositories name.",
           "type": "object",

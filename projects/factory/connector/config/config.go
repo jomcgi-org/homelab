@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/planner"
 	"github.com/jomcgi/homelab/projects/factory/connector/provenance"
 	"gopkg.in/yaml.v3"
 )
@@ -46,6 +47,8 @@ type File struct {
 	Agents      []Agent     `yaml:"agents"`
 	Bindings    []Binding   `yaml:"bindings"`
 	Links       Links       `yaml:"links"`
+
+	PlannerSchedules []planner.Schedule `yaml:"plannerSchedules"`
 	// BuildBuddy, when set, names a failed CI status's targets and tests in
 	// revision prompts.
 	BuildBuddy *BuildBuddy `yaml:"buildbuddy"`
@@ -253,6 +256,16 @@ func Parse(b []byte) (*File, error) {
 	dec.KnownFields(true)
 	if err := dec.Decode(&f); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
+	}
+	names := make(map[string]bool, len(f.PlannerSchedules))
+	for _, schedule := range f.PlannerSchedules {
+		if err := schedule.Validate(); err != nil {
+			return nil, fmt.Errorf("config: planner schedule %q: %w", schedule.Name, err)
+		}
+		if names[schedule.Name] {
+			return nil, fmt.Errorf("config: duplicate planner schedule %q", schedule.Name)
+		}
+		names[schedule.Name] = true
 	}
 	if f.Intervals.Poll == 0 {
 		f.Intervals.Poll = Duration(5 * time.Second)

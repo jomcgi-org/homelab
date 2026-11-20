@@ -3,7 +3,8 @@ DECLARE
     run text;
     streak integer;
 BEGIN
-    INSERT INTO planner_schedule VALUES ('smoke', 'homelab:docs', 'backlog', interval '1 hour', interval '1 day', 1, 0);
+    INSERT INTO planner_schedule(name, namespace, ceiling, min_interval, cooldown, per_run, low_yield, enabled)
+        VALUES ('smoke', 'homelab:docs', 'backlog', interval '1 hour', interval '1 day', 1, 0, true);
     FOR i IN 1..4 LOOP
         run := 'smoke-' || i;
         IF NOT admit_planner_run('smoke', run) THEN
@@ -33,7 +34,8 @@ $$;
 
 DO $$
 BEGIN
-    INSERT INTO planner_schedule VALUES ('positive', 'homelab:docs', 'backlog', interval '1 hour', interval '1 day', 1, 3);
+    INSERT INTO planner_schedule(name, namespace, ceiling, min_interval, cooldown, per_run, low_yield, enabled)
+        VALUES ('positive', 'homelab:docs', 'backlog', interval '1 hour', interval '1 day', 1, 3, true);
     PERFORM admit_planner_run('positive', 'useful');
     INSERT INTO planner_proposal(run_id, fingerprint, disposition, issue_key, reproducible)
         VALUES ('useful', 'homelab:docs:guide:missing', 'backlog', 'HOME-100', true);
@@ -67,7 +69,8 @@ DO $$
 DECLARE
     streak integer;
 BEGIN
-    INSERT INTO planner_schedule VALUES ('replay', 'homelab:docs', 'backlog', interval '1 hour', interval '1 day', 1, 0);
+    INSERT INTO planner_schedule(name, namespace, ceiling, min_interval, cooldown, per_run, low_yield, enabled)
+        VALUES ('replay', 'homelab:docs', 'backlog', interval '1 hour', interval '1 day', 1, 0, true);
     PERFORM pg_temp.replay_run('p1', NULL);
     PERFORM pg_temp.replay_run('p2', 'HOME-300');
     PERFORM pg_temp.replay_run('p3', NULL);
@@ -116,7 +119,8 @@ $$;
 DO $$
 BEGIN
     DELETE FROM planner_proposal;
-    INSERT INTO planner_schedule VALUES ('limits', 'homelab:code', 'delegate', interval '1 minute', interval '7 days', 2, 0);
+    INSERT INTO planner_schedule(name, namespace, ceiling, min_interval, cooldown, per_run, low_yield, enabled)
+        VALUES ('limits', 'homelab:code', 'delegate', interval '1 minute', interval '7 days', 2, 0, true);
     PERFORM pg_temp.next_run('l1');
     PERFORM pg_temp.expect(reserve_planner_proposal('l1', 'homelab:code:a:x', 'agent'), 'delegate', 'first delegation');
     PERFORM pg_temp.expect(reserve_planner_proposal('l1', 'homelab:code:a:x', 'agent'), NULL, 'same run duplicate');

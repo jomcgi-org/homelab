@@ -588,6 +588,10 @@ connector:
   agents:
     - username: homelab-codex
       concurrency: 1
+  # Reviewed planner jobs. Each entry sets name, namespace (the first two
+  # fingerprint segments), ceiling, minInterval, cooldown, perRun (1–4),
+  # issueTitle and instructions. An unknown ceiling routes to Backlog.
+  plannerSchedules: []
   # Per repository binding, by its `repositories` name; every binding needs
   # one. Owner, repository, base branch and the kagent Agent come from the
   # binding. Keys: itsaplanProject and agents (required); branchPrefix
