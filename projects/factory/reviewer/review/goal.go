@@ -738,7 +738,7 @@ func GoalPrompt(repo string, pr github.PullRequest, files []github.PullRequestFi
 		"Number the issue's acceptance criteria 1, 2, 3 and on, in the order the issue lists them, and judge each one. When the issue has a \"Done when\" or \"Acceptance criteria\" list, each item of that list is one criterion:\n\n" +
 		"- \"met\": the reviewed tree meets it, including verified unchanged wiring, or a quoted trusted decision above moves it to another issue.\n" +
 		"- \"not_met\": the reviewed tree does not meet it.\n" +
-		"- \"after_rollout\": only a rollout or live use can show it, and the diff makes the change it needs.\n" +
+		"- \"after_rollout\": only a rollout, live use or state outside the repository (a live cluster, a secret store, a token's scopes, an outside account) can show it, and the diff makes the change it needs.\n" +
 		"- \"unclear\": the reviewed tree and the issue evidence cannot show it either way, for any other reason.\n\n" +
 		"Judge the implementation stage the issue itself plans. When the issue plans enablement or rollout in a later step, " +
 		"a criterion implemented by this diff behind that switch is \"after_rollout\", not \"not_met\". " +
