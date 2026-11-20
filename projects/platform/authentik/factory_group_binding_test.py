@@ -118,7 +118,7 @@ def test_bosun_apply_discord():
     assert 'user.groups.add(Group.objects.get(name="bosun-applicants"))' in expression
 
 
-def test_factory_operator_apps_require_admins():
+def test_factory_operator_apps_keep_operator_group_bindings():
     expected = {"factory-edge", "factory-argocd", "factory-itsaplan", "factory-grafana"}
     seen = set()
     for param in _applications():
@@ -126,13 +126,17 @@ def test_factory_operator_apps_require_admins():
         slug = app["identifiers"]["slug"]
         if slug in expected:
             seen.add(slug)
-            (binding,) = [fields for _, fields in _binding_entries_for(app, entries)]
-            group = binding["group"]
-            assert group.tag == "!Find"
-            model, lookup = group.value
-            assert model.value == "authentik_core.group"
-            assert [node.value for node in lookup.value] == ["name", "authentik Admins"]
-            assert binding.get("enabled", True) and not binding.get("negate")
+            names = []
+            for _, binding in _binding_entries_for(app, entries):
+                group = binding["group"]
+                assert group.tag == "!Find"
+                model, lookup = group.value
+                assert model.value == "authentik_core.group"
+                field, name = lookup.value
+                assert field.value == "name"
+                assert binding.get("enabled", True) and not binding.get("negate")
+                names.append(name.value)
+            assert sorted(names) == ["authentik Admins", "factory-operators"]
     assert seen == expected
 
 
