@@ -178,7 +178,7 @@ func TestScanWorkerDisappearance(t *testing.T) {
 	_, err = db.Exec(`DROP TABLE scoped_worker_fence;
 		INSERT INTO worker_fence(attempt_id,session_id,namespace,pod,uid)
 		SELECT id,context_id,'factory-r-homelab','homelab-codex-worker','foreign-worker' FROM delivery_attempt;
-		DELETE FROM schema_migrations WHERE version='20261120000000_reaper_atespace'`)
+		DELETE FROM schema_migrations WHERE version='20261121010000_reaper_atespace'`)
 	if err != nil {
 		t.Fatal(err)
 	}
