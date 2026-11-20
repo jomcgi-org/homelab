@@ -1126,6 +1126,13 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		root = p.usage.span
 		root.AddEvent("review resumed")
 		ctx = context.WithValue(trace.ContextWithSpan(ctx, root), reviewUsageKey{}, p.usage)
+	} else if parent, ok := resumedTrace(run); ok {
+		// An earlier process ended this review's root when it stopped. The
+		// new span continues that trace, so the review stays one trace.
+		ctx, root = otel.Tracer("factory-reviewer").Start(trace.ContextWithRemoteSpanContext(ctx, parent), "review", reviewAttributes(pr, 1))
+		root.AddEvent("review resumed")
+		recordFindings(root, nil)
+		ctx = withUsage(ctx, root)
 	} else {
 		ctx, root = otel.Tracer("factory-reviewer").Start(ctx, "review", trace.WithNewRoot(), reviewAttributes(pr, 1))
 		// Zero counts until a report replaces them, so a review that ends
@@ -1162,6 +1169,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		}
 		st.Gate, _ = e.recoveryGate(b, pr, st.Gate)
 		st.Gate, _ = e.retainGate(b, pr, st.Gate, false)
+		st.Trace = traceParent(root.SpanContext())
 		created, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
 			Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
 			Status: "in_progress", StartedAt: &now,
@@ -1655,7 +1663,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			return
 		case err == nil && kagent.Quiescent(t.Status.State):
 			// Record the usage kagent reported before revalidation, which
-			// can return early. The root counts each task once.
+			// can return early. Each span counts each task once.
 			recordUsage(ctx, t)
 			current, err := e.gh.PullRequestQueue(ctx, b.repo(), pr.Number)
 			if err != nil {
@@ -3400,9 +3408,10 @@ type spanUsage struct {
 	parent *spanUsage
 	span   trace.Span
 	total  Usage
-	// On the root only: tasks already counted, and whether the review's
-	// check run completed.
-	counted   map[string]bool
+	// counted holds the tasks this span already counted. Each span keeps
+	// its own set, so a task that a later span resumes still reaches it.
+	counted map[string]bool
+	// On the root only: whether the review's check run completed.
 	completed bool
 }
 
@@ -3486,19 +3495,49 @@ func recordUsage(ctx context.Context, t *kagent.Task) {
 	if !ok {
 		return
 	}
-	root := s.root()
-	if t.ID != "" {
-		if root.counted[t.ID] {
-			return
-		}
-		if root.counted == nil {
-			root.counted = map[string]bool{}
-		}
-		root.counted[t.ID] = true
-	}
 	for ; s != nil; s = s.parent {
+		if t.ID != "" {
+			if s.counted[t.ID] {
+				continue
+			}
+			if s.counted == nil {
+				s.counted = map[string]bool{}
+			}
+			s.counted[t.ID] = true
+		}
 		s.add(u)
 	}
+}
+
+// traceParent formats sc as a W3C traceparent, or "" when it is invalid.
+func traceParent(sc trace.SpanContext) string {
+	if !sc.IsValid() {
+		return ""
+	}
+	return fmt.Sprintf("00-%s-%s-%s", sc.TraceID(), sc.SpanID(), sc.TraceFlags())
+}
+
+// resumedTrace reads the trace of the review that an in-progress check
+// run belongs to. A worker that reattaches to that check continues it.
+func resumedTrace(run *github.CheckRun) (trace.SpanContext, bool) {
+	if run == nil || run.Status == "completed" || issuesPending(run) {
+		return trace.SpanContext{}, false
+	}
+	st, _ := LoadState(run.Text)
+	parts := strings.Split(st.Trace, "-")
+	if len(parts) != 4 || parts[0] != "00" {
+		return trace.SpanContext{}, false
+	}
+	tid, err := trace.TraceIDFromHex(parts[1])
+	if err != nil {
+		return trace.SpanContext{}, false
+	}
+	sid, err := trace.SpanIDFromHex(parts[2])
+	if err != nil {
+		return trace.SpanContext{}, false
+	}
+	sc := trace.NewSpanContext(trace.SpanContextConfig{TraceID: tid, SpanID: sid, TraceFlags: trace.FlagsSampled, Remote: true})
+	return sc, sc.IsValid()
 }
 
 func reviewAttributes(pr github.PullRequest, round int) trace.SpanStartOption {
