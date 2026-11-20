@@ -1,0 +1,3 @@
+1. projects/factory/broker/cmd/broker/main.go installs the configured OTLP tracer provider. projects/factory/broker/relay/relay.go starts codex.relay in ServeHTTP and passes its context to both grant calls. projects/factory/broker/grant/manager.go records grant.failure and error status.
+2. projects/factory/broker/grant/manager.go selects the configured logger when the span does not record. projects/shared/go/tokenbroker/broker/broker.go preserves the fixed refresh-token reuse warning through a successful retry.
+3. TestRelayRejectedGrantDiagnostics in //projects/factory/broker/relay:relay_test sends HTTP requests with tracing on and off and checks the completed relay span and refresh diagnostics.

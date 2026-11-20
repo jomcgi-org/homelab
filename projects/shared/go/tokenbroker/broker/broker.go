@@ -271,7 +271,7 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 		result, err = refresher.RefreshToken(ctx, grant.TokenBundle.RefreshToken)
 		if err != nil && errors.Is(err, provider.ErrRefreshTokenReused) {
 			b.metrics.ReusedRetries.Inc()
-			logger.Warn("tokenbroker refresh_token_reused, rereading durable grant and retrying once")
+			b.logger.Warn("tokenbroker refresh_token_reused, rereading durable grant and retrying once")
 			var stored store.Grant
 			stored, err = b.loadGrant(ctx, grantName)
 			if err == nil {
