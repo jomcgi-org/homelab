@@ -34,6 +34,7 @@ import (
 
 // Itsaplan is the subset of the itsaplan client dispatch uses.
 type Itsaplan interface {
+	HasComment(ctx context.Context, issueID int64, body string) (bool, error)
 	Project(context.Context, string) (*itsaplan.Project, error)
 	ProjectIssues(context.Context, string) ([]itsaplan.Issue, error)
 	StartDeferred(context.Context, int64, itsaplan.DeferredRequest) (*itsaplan.DeferredReceipt, error)
@@ -2892,7 +2893,14 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 		// Older duplicate explanations have no send marker. A previous
 		// writer may already have posted one before it lost the response.
 		if !p.Once && strings.HasPrefix(it.DedupeKey, "comment/factory-human-gate/") && strings.Contains(it.DedupeKey, "/duplicate/") {
-			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "legacy duplicate explanation has unknown send history")
+			found, err := e.its.HasComment(ctx, p.IssueID, p.Body)
+			if err != nil {
+				return err
+			}
+			if found {
+				return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)
+			}
+			p.Once = true
 		}
 		if p.Once {
 			if it.SendStarted {

@@ -128,6 +128,19 @@ func (c *Client) IssueAuthor(ctx context.Context, id int64) (string, error) {
 // comments (including replies) can only be read through their issue's feed.
 // Missing comments and exhaustion both return no evidence.
 func (c *Client) LinkedComment(ctx context.Context, issueID, commentID int64) (*FeedItem, error) {
+	item, err := c.findComment(ctx, issueID, func(item FeedItem) bool { return item.ID == commentID })
+	if item == nil && err == nil {
+		return nil, ErrNotFound
+	}
+	return item, err
+}
+
+func (c *Client) HasComment(ctx context.Context, issueID int64, body string) (bool, error) {
+	item, err := c.findComment(ctx, issueID, func(item FeedItem) bool { return item.Body == body })
+	return item != nil, err
+}
+
+func (c *Client) findComment(ctx context.Context, issueID int64, matches func(FeedItem) bool) (*FeedItem, error) {
 	q := url.Values{"filter": {"comments"}, "order": {"desc"}, "limit": {"100"}}
 	for range 10 {
 		var out feedPage
@@ -136,12 +149,12 @@ func (c *Client) LinkedComment(ctx context.Context, issueID, commentID int64) (*
 			return nil, err
 		}
 		for _, item := range out.Items {
-			if item.ID == commentID && item.IssueID == issueID && item.Kind == "comment" {
+			if item.IssueID == issueID && item.Kind == "comment" && matches(item) {
 				return &item, nil
 			}
 		}
 		if out.NextCursor == nil {
-			return nil, ErrNotFound
+			return nil, nil
 		}
 		// Cursor timestamps come from the API, never from the PR.
 		cursor, err := json.Marshal(out.NextCursor)
