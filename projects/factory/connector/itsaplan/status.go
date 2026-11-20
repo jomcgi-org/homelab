@@ -182,9 +182,15 @@ func parseChoices(description string) []string {
 		marker := strings.TrimRight(strings.TrimLeft(raw, " "), " \t\r")
 		// A setext underline completes the preceding top-level paragraph.
 		// A thematic break also closes the paragraph, including after a list.
+		container := containerStart
+		if para && setextEligible {
+			// Only a nonempty list item can interrupt a paragraph. An
+			// ordered item must also start at one.
+			container = interruptingContainer
+		}
 		setext := para && setextEligible && setextUnderline.MatchString(marker)
 		para = line != "" && !strings.HasPrefix(line, "#") && !setext && !thematicBreak.MatchString(marker)
-		setextEligible = para && !containerStart.MatchString(marker)
+		setextEligible = para && !container.MatchString(marker)
 		if line == "## Choices" {
 			if found {
 				return nil
@@ -221,9 +227,10 @@ func parseChoices(description string) []string {
 }
 
 var (
-	containerStart  = regexp.MustCompile(`^(?:>|(?:[-+*]|[0-9]{1,9}[.)])(?:[ \t]|$))`)
-	setextUnderline = regexp.MustCompile(`^(?:-+|=+)$`)
-	thematicBreak   = regexp.MustCompile(`^(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$`)
+	containerStart        = regexp.MustCompile(`^(?:>|(?:[-+*]|[0-9]{1,9}[.)])(?:[ \t]|$))`)
+	interruptingContainer = regexp.MustCompile(`^(?:>|(?:[-+*]|0{0,8}1[.)])[ \t]+[^ \t])`)
+	setextUnderline       = regexp.MustCompile(`^(?:-+|=+)$`)
+	thematicBreak         = regexp.MustCompile(`^(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$`)
 )
 
 // indentWidth counts leading columns, with a tab advancing to the next

@@ -153,6 +153,7 @@ func TestChoicesIgnoreCodeAndHTMLBlocks(t *testing.T) {
 		"<span class=\"x\">\n## Choices\n1. Ship (Recommended)\n2. Hold",
 		"Title\n---\n<span>\n## Choices\n1. Ship (Recommended)\n2. Hold",
 		"Title\n===\n<span>\n## Choices\n1. Ship (Recommended)\n2. Hold",
+		"Intro\n2. More text\n===\n<span>\n## Choices\n1. Ship (Recommended)\n2. Hold",
 		"- Background\n---\n<span>\n## Choices\n1. Ship (Recommended)\n2. Hold",
 		"---\n<span>\n## Choices\n1. Ship (Recommended)\n2. Hold",
 		"***\n<span>\n## Choices\n1. Ship (Recommended)\n2. Hold",
