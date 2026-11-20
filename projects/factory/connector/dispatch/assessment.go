@@ -16,7 +16,7 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
 )
 
-var assessmentWindow = regexp.MustCompile(`^([0-9]+)d(\s|$)`)
+var assessmentReference = regexp.MustCompile(`^([1-9][0-9]*d )?issue$`)
 
 func assessmentTrailer(message string) (int, string) {
 	if _, ok := github.ActivationTrailer(message); !ok {
@@ -45,12 +45,15 @@ func assessmentTrailer(message string) (int, string) {
 	if measure == "" {
 		return 0, ""
 	}
-	window := assessmentWindow.FindStringSubmatch(measure)
+	window := assessmentReference.FindStringSubmatch(measure)
 	if window == nil {
+		return 0, ""
+	}
+	if window[1] == "" {
 		return 3, measure
 	}
-	days, err := strconv.ParseInt(window[1], 10, 32)
-	if err != nil || days < 1 || strings.TrimSpace(measure[len(window[0]):]) == "" {
+	days, err := strconv.ParseInt(strings.TrimSuffix(window[1], "d "), 10, 32)
+	if err != nil {
 		return 0, ""
 	}
 	return int(days), measure
@@ -198,8 +201,13 @@ func (e *Engine) deliverAssessment(ctx context.Context, it *store.OutboxItem) er
 		if !inProject(original, j.Project) {
 			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "assessment parent left project")
 		}
-		spec := assessmentSpecification(original, trailer, j.Days)
-		description := fmt.Sprintf("Put `Refs %s` in the commit message.\n\nCompare the following original issue specification over %d days before and after rollout.\n%s\nWindow start: %s\nOriginal issue: %s\nMerged PR: %s\n\nReport observations and name confounders. Finish without commits with a single Verdict: accepted, Verdict: regressed or Verdict: inconclusive line. The recorded verdict is final.\n\n%s", child.Identifier, j.Days, spec, j.Anchor.Format(time.RFC3339Nano), mdLink(j.Key, j.IssueURL), j.PRURL, marker)
+		spec := assessmentSpecification(original)
+		// Jobs saved by earlier connectors may contain free-form commit text.
+		// Render those with the same opaque reference as new jobs.
+		if !assessmentReference.MatchString(trailer) {
+			trailer = fmt.Sprintf("%dd issue", j.Days)
+		}
+		description := fmt.Sprintf("Put `Refs %s` in the commit message.\n\nAssess: %s\nCompare the following original issue specification over %d days before and after rollout.\nWindow start: %s\nOriginal issue: %s\nMerged PR: %s\n\nReport observations and name confounders. Finish without commits with a single Verdict: accepted, Verdict: regressed or Verdict: inconclusive line. The recorded verdict is final.\n\n%s\n\n%s", child.Identifier, trailer, j.Days, j.Anchor.Format(time.RFC3339Nano), mdLink(j.Key, j.IssueURL), j.PRURL, spec, marker)
 
 		if err = before("UpdateIssue", child.ID); err != nil {
 			return err
@@ -211,46 +219,12 @@ func (e *Engine) deliverAssessment(ctx context.Context, it *store.OutboxItem) er
 	return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)
 }
 
-// Only tracker issue text supplies prose. If the trailer names an entire
-// specification line in that text, quote the authorized line directly.
-func assessmentSpecification(original *itsaplan.Issue, trailer string, days int) string {
-	want := strings.TrimSpace(assessmentWindow.ReplaceAllString(trailer, ""))
-	var fields []string
-	corroborated := false
-	for _, line := range strings.Split(original.Description, "\n") {
-		label, value, ok := strings.Cut(strings.TrimSpace(line), ":")
-		value = strings.TrimSpace(value)
-		if !ok || value == "" {
-			continue
-		}
-		switch strings.ToLower(label) {
-		case "success measure", "measure", "assess":
-			if value == want || value == trailer {
-				corroborated = true
-				if value == trailer && assessmentWindow.MatchString(value) {
-					line = "Assess: " + value
-				} else {
-					line = fmt.Sprintf("Assess: %dd %s", days, value)
-				}
-			}
-		case "source", "baseline":
-		default:
-			continue
-		}
-		fields = append(fields, strings.TrimSpace(line))
-	}
-	const limit = 6000
-	if corroborated {
-		return clipBriefField(strings.Join(fields, "\n"), limit, "specification")
-	}
-	// Preserve free-form measures and checklist baselines in the original
-	// issue-data format. Prioritize labeled fields when clipping a long brief.
-	record := itsaplan.Issue{Title: original.Title, Description: original.Description, Checklists: original.Checklists}
-	brief := renderIssueBrief("Original issue specification", original.Identifier, &record, nil)
-	if len(brief) > limit && len(fields) > 0 {
-		brief = strings.Join(fields, "\n") + "\n\n" + brief
-	}
-	return clipBriefField(brief, limit, "specification")
+// The public trailer names the original issue. Its private description and
+// checklists supply the measurement, regardless of their labels or wording.
+func assessmentSpecification(original *itsaplan.Issue) string {
+	return renderIssueBrief("Original issue specification", original.Identifier, &itsaplan.Issue{
+		Title: original.Title, Description: original.Description, Checklists: original.Checklists,
+	}, nil)
 }
 
 // Match the named columns the deferred sweep admits.

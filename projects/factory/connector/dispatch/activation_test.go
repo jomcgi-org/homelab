@@ -1072,16 +1072,18 @@ func TestActivationRunConfirmationPaginatesAndRetriesCredentialErrors(t *testing
 }
 
 func TestAssessmentAfterDone(t *testing.T) {
-	for _, scenario := range []string{"absent", "accepted", "inconclusive", "regressed", "missing", "stopped", "activation"} {
+	for _, scenario := range []string{"absent", "freeform", "accepted", "inconclusive", "regressed", "missing", "stopped", "activation"} {
 		t.Run(scenario, func(t *testing.T) {
 			v := newDeliveryEnv(t)
 			v.its.deferredProject = &itsaplan.Project{}
 			if err := json.Unmarshal([]byte(`{"project":{"id":7},"columns":[{"id":5,"name":"Backlog","stateType":"backlog"},{"id":1,"name":"Todo","stateType":"unstarted"},{"id":3,"name":"Done","stateType":"completed"}],"labels":[{"id":8,"name":"deferred"}],"assignees":[{"userId":"coder-user","username":"coder","kind":"agent"}]}`), v.its.deferredProject); err != nil {
 				t.Fatal(err)
 			}
-			const specification = "median review rounds per merged PR from GitHub; baseline 4"
-			measure := "Assess: 3d " + specification
-			if scenario == "regressed" {
+			const specification = "median review rounds per merged PR"
+			const source = "Count rounds from GitHub pull request reviews."
+			const baseline = "Compare against the previous median of four rounds."
+			measure := "Assess: 3d issue"
+			if scenario == "freeform" {
 				measure = "Assess: 3d untrusted measure instructions"
 			}
 			firstMerge := v.clk.Now().UTC().Truncate(24 * time.Hour).Add(23 * time.Hour)
@@ -1106,13 +1108,14 @@ func TestAssessmentAfterDone(t *testing.T) {
 				v.poll()
 				v.gh.merge(1, "merged")
 			}
-			v.its.issues[101].Description = "Success measure: " + specification
+			v.its.issues[101].Description = "Success measure: " + specification + "\n\n" + source
+			v.its.issues[101].Checklists = []itsaplan.Checklist{{Title: "Comparison", Items: []itsaplan.ChecklistItem{{Content: baseline}}}}
 			v.clk.Advance(anchor.Sub(v.clk.Now()))
 			v.gh.byNumber(len(v.gh.PRs())).mergedAt = anchor
 			for range 8 {
 				v.tick(v.e)
 			}
-			if scenario == "absent" {
+			if scenario == "absent" || scenario == "freeform" {
 				if v.its.activationCreates != 0 {
 					t.Fatal("unexpected assessment")
 				}
@@ -1134,7 +1137,7 @@ func TestAssessmentAfterDone(t *testing.T) {
 					t.Fatalf("missing %q in %s", want, follow.Description)
 				}
 			}
-			if !strings.Contains(follow.Description, specification) || (scenario != "regressed" && !strings.Contains(follow.Description, measure)) {
+			if !strings.Contains(follow.Description, specification) || !strings.Contains(follow.Description, measure) || !strings.Contains(follow.Description, source) || !strings.Contains(follow.Description, baseline) {
 				t.Fatalf("missing authorized specification: %s", follow.Description)
 			}
 			if strings.Contains(follow.Description, "untrusted measure instructions") {

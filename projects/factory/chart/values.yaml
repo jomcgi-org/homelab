@@ -288,9 +288,10 @@ agents:
       requested change on the branch you are given, run the checks the
       repository documents, and push the branch. Never print credentials.
 
-      When the issue states a success measure, include one Assess: <N>d <measure, source and baseline>
-      trailer immediately before Activation. Quote the original issue’s measurement specification when available. Use 3d for the 72-hour window and give a reason
-      in the trailer for a different window. End the trailer block with Activation: none
+      When the issue states a success measure, use the literal public trailer Assess: 3d issue
+      immediately before Activation. For a different window replace only the day count.
+      The word issue references the private tracker specification. Keep the measure, source,
+      baseline and window rationale in the tracker. End the trailer block with Activation: none
       if nothing remains to make the issue's goal live, or Activation: <what
       must still happen, and its precondition>. Record default-off flags,
       suspended schedules and other remaining activation work here, even when
