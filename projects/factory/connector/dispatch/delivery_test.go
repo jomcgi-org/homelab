@@ -2133,6 +2133,19 @@ func TestEjectionDoesNotReadWhenItsAttemptCannotBeRecorded(t *testing.T) {
 	}
 }
 
+func TestLimitedConflictAllowsFreshReview(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.cfg.Bindings[0].Review.MaxRebaseRounds = 0
+	v.delivered()
+	v.gh.conflict(1)
+	v.poll()
+	v.gh.review(1, "CHANGES_REQUESTED", "reviewer", "sha-1", "Fix the review finding.")
+	v.poll()
+	if rounds := v.rounds(); len(rounds) != 1 || rounds[0].Trigger != "review" || !strings.Contains(rounds[0].Prompt, "Fix the review finding.") {
+		t.Fatalf("expected a fresh review round, got %+v", rounds)
+	}
+}
+
 func TestReviewRoundsAreBounded(t *testing.T) {
 	v := newDeliveryEnv(t)
 	v.cfg.Bindings[0].Review.MaxReviewRounds = 3
@@ -2140,6 +2153,9 @@ func TestReviewRoundsAreBounded(t *testing.T) {
 	for i := 1; i <= 4; i++ {
 		head := fmt.Sprintf("sha-%d", i)
 		v.gh.review(1, "CHANGES_REQUESTED", "reviewer", head, fmt.Sprintf("Round %d feedback.", i))
+		if i == 4 {
+			v.gh.review(1, "CHANGES_REQUESTED", "reviewer", head, "Surviving feedback.")
+		}
 		v.poll()
 		if i <= 3 {
 			v.gh.push("factory/HL-7", fmt.Sprintf("sha-%d", i+1), "fix: feedback")
@@ -2165,6 +2181,10 @@ func TestReviewRoundsAreBounded(t *testing.T) {
 	if w := v.work(101); w.State != store.WorkReview || w.ReviewRounds != 3 {
 		t.Fatalf("work item = %+v", w)
 	}
+	v.gh.mu.Lock()
+	reviews := v.gh.byNumber(1).reviews
+	reviews[len(reviews)-2].State = "DISMISSED"
+	v.gh.mu.Unlock()
 	v.cfg.Bindings[0].Review.MaxReviewRounds = 6
 	v.poll()
 	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "No change.", nil)

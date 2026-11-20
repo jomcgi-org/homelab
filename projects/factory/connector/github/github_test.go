@@ -502,6 +502,28 @@ func TestPullRequestDetailQueueEvidence(t *testing.T) {
 	}
 }
 
+func TestPullRequestDetailIncludesOlderReviews(t *testing.T) {
+	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/graphql":
+			_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"id":"PR1","reviews":{"pageInfo":{"hasPreviousPage":true}}}}}}`))
+		case "/repos/example-org/homelab/pulls/5/reviews":
+			_, _ = w.Write([]byte(`[{"node_id":"old","state":"CHANGES_REQUESTED","commit_id":"head","body":"older feedback","user":{"login":"reviewer"}}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer gh.Close()
+	c := &Client{BaseURL: gh.URL, Tokens: fixedTokens{}}
+	d, err := c.PullRequestDetail(context.Background(), "example-org/homelab", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Reviews) != 1 || d.Reviews[0].NodeID != "old" || d.Reviews[0].Body != "older feedback" {
+		t.Fatalf("reviews = %+v", d.Reviews)
+	}
+}
+
 func TestPullRequestDetailAndEnqueue(t *testing.T) {
 	var mu sync.Mutex
 	var enqueued map[string]any
