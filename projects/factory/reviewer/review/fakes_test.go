@@ -434,7 +434,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"updated_at": pr.Updated.UTC().Format(time.RFC3339),
 				"created_at": pr.Created.UTC().Format(time.RFC3339),
 				"head":       map[string]any{"ref": headRef, "sha": pr.Head, "repo": map[string]string{"full_name": pr.HeadRepo}},
-				"base":       map[string]string{"ref": pr.Base},
+				"base":       map[string]string{"ref": pr.Base, "sha": f.baseHead},
 			})
 		}
 		served := page(out, q)
@@ -609,6 +609,10 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				pr = p
 			}
 		}
+		if pr != nil && base == f.baseHead {
+			f.get(w, r, map[string]any{"merge_base_commit": map[string]string{"sha": base}})
+			return
+		}
 		if pr == nil || !slices.Contains(pr.Heads, base) {
 			http.NotFound(w, r)
 			return
@@ -740,7 +744,7 @@ func (f *fakeGitHub) pullJSON(pr *fakePR) map[string]any {
 	}
 	return map[string]any{
 		"number": pr.Number, "state": state, "draft": pr.Draft, "created_at": pr.Created, "updated_at": updated, "closed_at": closed,
-		"head": map[string]any{"sha": pr.Head}, "base": map[string]string{"ref": pr.Base},
+		"head": map[string]any{"sha": pr.Head}, "base": map[string]string{"ref": pr.Base, "sha": f.baseHead},
 	}
 }
 
@@ -882,7 +886,7 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 			state = "CLOSED"
 		}
 		reply(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
-			"createdAt": pr.Created, "headRefOid": pr.Head, "baseRefName": pr.Base, "isDraft": pr.Draft, "state": state,
+			"createdAt": pr.Created, "headRefOid": pr.Head, "baseRefName": pr.Base, "baseRefOid": f.baseHead, "isDraft": pr.Draft, "state": state,
 			"labels":        map[string]any{"nodes": labels, "pageInfo": map[string]bool{"hasNextPage": false}},
 			"timelineItems": map[string]any{"nodes": events, "pageInfo": map[string]bool{"hasPreviousPage": pr.EligibilityTruncated}},
 		}}})
@@ -931,7 +935,7 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 		}
 		reply(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
 			"id": fmt.Sprintf("PR_%d", number), "state": state, "isDraft": pr.Draft, "headRefOid": head,
-			"baseRefName": pr.Base, "mergeQueueEntry": entry,
+			"baseRefName": pr.Base, "baseRefOid": f.baseHead, "mergeQueueEntry": entry,
 			"labels": map[string]any{"nodes": labels, "pageInfo": map[string]bool{"hasNextPage": false}},
 		}}})
 		if after := f.afterQueueRead; after != nil {

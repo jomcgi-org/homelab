@@ -46,8 +46,9 @@ invariants:
   - projects/factory/chart/templates/broker-admission.yaml
   state: unproven
 - id: FACT-9
-  statement: The reviewer reads rules and context documents from the base commit.
+  statement: The reviewer reads rules and context documents from the base commit. Initial review and reconciliation read invariant policy at the PR merge base.
   mechanism:
+  - projects/factory/reviewer/review/engine.go
   - projects/factory/reviewer/review/rules.go
   test: //projects/factory/reviewer/review:review_test
   state: live
