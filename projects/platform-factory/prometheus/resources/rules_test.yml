@@ -964,3 +964,21 @@ tests:
       - expr: 'capacity:workload_pod_memory_budget_exceeded{policy="timestral"}'
         eval_time: 1h5m
         exp_samples: []
+
+  # Evaluate four minutes after each wall-clock boundary. The later lookup
+  # sees the next batch, so the scored budget must come from the earlier one.
+  - start_timestamp: 1970-01-01T00:04:00Z
+    interval: 1m
+    input_series:
+      - series: 'container_memory_working_set_bytes{job="kubelet-resource",namespace="factory-r-homelab-review",pod="homelab-reviewer-a",container="worker"}'
+        values: '100x65'
+      - series: 'capacity_forecast_memory_budget_bytes{job="capacity-forecast",namespace="factory-r-homelab-review",workload="homelab-reviewer",policy="timestral",horizon_seconds="1800"}'
+        values: '_x26 90x4 110x4'
+      - series: 'capacity_forecast_target_timestamp_seconds{job="capacity-forecast",namespace="factory-r-homelab-review",workload="homelab-reviewer",policy="timestral",horizon_seconds="1800"}'
+        values: '_x26 3600x4 3900x4'
+    promql_expr_test:
+      - expr: 'capacity:workload_pod_memory_budget_exceeded{policy="timestral"}'
+        eval_time: 1h
+        exp_samples:
+          - labels: 'capacity:workload_pod_memory_budget_exceeded{namespace="factory-r-homelab-review",workload="homelab-reviewer",policy="timestral"}'
+            value: 1
