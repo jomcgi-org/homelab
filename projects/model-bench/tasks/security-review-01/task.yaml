@@ -964,8 +964,8 @@ verifier:
     - id: storage-key-traversal
       file: shotter/s3.py
       lines:
-      - 143
-      - 145
+      - 140
+      - 142
     - id: ssrf-redirect-rebinding
       file: shotter/watch.py
       lines:
