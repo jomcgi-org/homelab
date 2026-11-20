@@ -167,11 +167,17 @@ func (b *Broker) state(name string) (*grantState, error) {
 	return s, nil
 }
 
-type refreshLoggerKey struct{}
+type (
+	refreshDiagnosticsKey struct{}
+	refreshDiagnostics    struct {
+		logger  *slog.Logger
+		onReuse func()
+	}
+)
 
-// WithRefreshLogger routes synchronous refresh diagnostics to the caller's logger.
-func WithRefreshLogger(ctx context.Context, logger *slog.Logger) context.Context {
-	return context.WithValue(ctx, refreshLoggerKey{}, logger)
+// WithRefreshDiagnostics routes synchronous refresh logs and token reuse notifications to the caller.
+func WithRefreshDiagnostics(ctx context.Context, logger *slog.Logger, onReuse func()) context.Context {
+	return context.WithValue(ctx, refreshDiagnosticsKey{}, refreshDiagnostics{logger, onReuse})
 }
 
 func (b *Broker) RefreshAccessToken(grantName string, ctx context.Context) (string, time.Time, error) {
@@ -213,8 +219,9 @@ func (b *Broker) RefreshAccessToken(grantName string, ctx context.Context) (stri
 }
 
 func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Time, error) {
-	logger, ok := ctx.Value(refreshLoggerKey{}).(*slog.Logger)
-	if !ok {
+	d, _ := ctx.Value(refreshDiagnosticsKey{}).(refreshDiagnostics)
+	logger := d.logger
+	if logger == nil {
 		logger = b.logger
 	}
 
@@ -271,7 +278,11 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 		result, err = refresher.RefreshToken(ctx, grant.TokenBundle.RefreshToken)
 		if err != nil && errors.Is(err, provider.ErrRefreshTokenReused) {
 			b.metrics.ReusedRetries.Inc()
-			b.logger.Warn("tokenbroker refresh_token_reused, rereading durable grant and retrying once")
+			if d.onReuse != nil {
+				d.onReuse()
+			} else {
+				logger.Warn("tokenbroker refresh_token_reused, rereading durable grant and retrying once")
+			}
 			var stored store.Grant
 			stored, err = b.loadGrant(ctx, grantName)
 			if err == nil {
