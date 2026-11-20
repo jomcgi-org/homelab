@@ -599,33 +599,59 @@ func TestSupersededParkedRootEndsOnce(t *testing.T) {
 // head before the next process starts. The new head's review completes the
 // old check as cancelled and ends the old head's recorded root once.
 func TestRestartThenPushEndsOldRootOnce(t *testing.T) {
-	exporter := captureReviewSpans(t)
-	h := newHarness(t)
-	addPR7(h)
-	q := &fakeQuota{}
-	h.cfg.Quota = q
-	e, ctx, stop := h.start()
-	task := runReview(t, h, e, ctx, 7, shaA)
-	h.k.finish(task, kagent.StateFailed, "insufficient_quota")
-	waitForQuotaCheck(t, h)
-	stop()
-	shaB := sha40('b')
-	h.gh.push(7, shaB)
-	e, ctx, stop = h.start()
-	e.Tick(ctx)
-	eventually(t, "the new head's task", func() bool { return h.taskOn(7, shaB, 1) != "" })
-	e.Tick(ctx)
-	stop()
-	if c := h.gh.check(shaA); c.Status != "completed" || c.Conclusion != ConclusionCancelled {
-		t.Fatalf("old head's check = %s %s", c.Status, c.Conclusion)
-	}
-	var old []map[string]string
-	for _, span := range reviewSpans(exporter) {
-		if span["pr.head_sha"] == shaA {
-			old = append(old, span)
-		}
-	}
-	if len(old) != 1 || old[0]["root"] != "true" || old[0]["review.verdict"] != ConclusionCancelled {
-		t.Fatalf("old head's review spans = %v, want one cancelled root", old)
+	for _, tc := range []struct {
+		name string
+		// pushes are the heads pushed while the reviewer is offline.
+		pushes []string
+		// failOnce makes GitHub refuse the first cancellation of head A.
+		failOnce bool
+	}{
+		{name: "one push", pushes: []string{sha40('b')}},
+		{name: "two pushes", pushes: []string{sha40('b'), sha40('c')}},
+		{name: "cancellation refused once", pushes: []string{sha40('b')}, failOnce: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exporter := captureReviewSpans(t)
+			h := newHarness(t)
+			addPR7(h)
+			q := &fakeQuota{}
+			h.cfg.Quota = q
+			e, ctx, stop := h.start()
+			task := runReview(t, h, e, ctx, 7, shaA)
+			h.k.finish(task, kagent.StateFailed, "insufficient_quota")
+			waitForQuotaCheck(t, h)
+			stop()
+			for _, sha := range tc.pushes {
+				h.gh.push(7, sha)
+			}
+			head := tc.pushes[len(tc.pushes)-1]
+			update := fmt.Sprintf("PATCH /repos/%s/check-runs/%d", testRepo, h.gh.check(shaA).ID)
+			if tc.failOnce {
+				h.gh.failWith(update, 502)
+			}
+			e, ctx, stop = h.start()
+			e.Tick(ctx)
+			eventually(t, "the new head's task", func() bool { return h.taskOn(7, head, 1) != "" })
+			if tc.failOnce {
+				if c := h.gh.check(shaA); c.Status == "completed" {
+					t.Fatal("old head's check completed despite the refused write")
+				}
+				h.gh.failWith(update, 0)
+			}
+			e.Tick(ctx)
+			stop()
+			if c := h.gh.check(shaA); c.Status != "completed" || c.Conclusion != ConclusionCancelled {
+				t.Fatalf("old head's check = %s %s", c.Status, c.Conclusion)
+			}
+			var old []map[string]string
+			for _, span := range reviewSpans(exporter) {
+				if span["pr.head_sha"] == shaA {
+					old = append(old, span)
+				}
+			}
+			if len(old) != 1 || old[0]["root"] != "true" || old[0]["review.verdict"] != ConclusionCancelled {
+				t.Fatalf("old head's review spans = %v, want one cancelled root", old)
+			}
+		})
 	}
 }
