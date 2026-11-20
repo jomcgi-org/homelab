@@ -134,7 +134,8 @@ STUB
 	cat >"$WORK/bin/verifier" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >"$STUB_VERIFY_ARGV"
-cp "$2" "$STUB_VERIFY_RESULTS"
+cp "$2" "$STUB_VERIFY_RESULTS" || exit 1
+exit "${STUB_VERIFY_STATUS:-0}"
 STUB
 
 	chmod +x "$WORK/bin/bazel" "$WORK/bin/crane" "$WORK/bin/verifier"
@@ -352,6 +353,19 @@ if grep -qxF "ghcr.io/jomcgi/homelab/alpha@sha256:aaa main" "$STUB_TAG_LOG"; the
 	pass "stale floating tools tag is moved to the published digest on the skip path"
 else
 	fail "stale floating tools tag is moved to the published digest on the skip path" "$OUT
+tag.log: $(cat "$STUB_TAG_LOG")"
+fi
+teardown
+
+# With the same stale tag, verifier rejection must stop the publisher.
+setup "$MANIFEST_3" "$ALL_PUBLISHED"
+tools_version_alpha
+if OUT=$(STUB_TOOLS_TAG_DIGEST=sha256:old STUB_VERIFY_STATUS=1 run_script); then
+	fail "rejected chart verification fails the publisher" "$OUT"
+elif [ -s "$STUB_VERIFY_RESULTS" ] && [ ! -s "$STUB_TAG_LOG" ]; then
+	pass "rejected chart verification leaves the stale floating tag alone"
+else
+	fail "rejected chart verification leaves the stale floating tag alone" "$OUT
 tag.log: $(cat "$STUB_TAG_LOG")"
 fi
 teardown
