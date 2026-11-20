@@ -3466,3 +3466,79 @@ func TestLostEnqueueResponseEmitsEnqueueSpan(t *testing.T) {
 		t.Fatalf("enqueues = %v; the PR was already queued", v.gh.enqueues)
 	}
 }
+
+func pollEvents(exporter *tracetest.InMemoryExporter, from int, name string) []map[string]string {
+	var out []map[string]string
+	for _, span := range exporter.GetSpans()[from:] {
+		if span.Name != "factory.poll" {
+			continue
+		}
+		for _, event := range span.Events {
+			if event.Name != name {
+				continue
+			}
+			fields := map[string]string{}
+			for _, a := range event.Attributes {
+				fields[string(a.Key)] = a.Value.Emit()
+			}
+			out = append(out, fields)
+		}
+	}
+	return out
+}
+
+// A poll that only finds the PR still queued keeps the work on its root.
+func TestQueuedPollObservesPR(t *testing.T) {
+	exporter := captureWorkSpans(t)
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.green("sha-1")
+	v.poll()
+	if w := v.work(101); w.State != store.WorkMerging {
+		t.Fatalf("work item = %s, want merging", w.State)
+	}
+	v.gh.mu.Lock()
+	v.gh.byNumber(1).queue = "QUEUED"
+	v.gh.mu.Unlock()
+	before := len(exporter.GetSpans())
+	v.poll()
+	events := pollEvents(exporter, before, "pr observed")
+	if len(events) != 1 {
+		t.Fatalf("pr observed events = %v, want one", events)
+	}
+	for key, want := range map[string]string{
+		"issue.key": "HL-7", "run.id": "1", "pr.number": "1", "head.sha": "sha-1", "round": "0",
+		"state.from": store.WorkMerging, "state.to": store.WorkMerging, "outcome": "checked",
+	} {
+		if got := events[0][key]; got != want {
+			t.Errorf("pr observed %s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+// A new itsaplan run that dispatch links to a work item with a PR carries
+// that PR on its first run event.
+func TestLinkedRunObservesPR(t *testing.T) {
+	exporter := captureWorkSpans(t)
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.its.add(2, "coder", 101, "HL-7", "Fix it again.")
+	before := len(exporter.GetSpans())
+	v.tick(v.e)
+	if r := v.run(2); r.WorkItemID == 0 {
+		t.Fatalf("run 2 was not linked: %+v", r)
+	}
+	var first map[string]string
+	for _, fields := range pollEvents(exporter, before, "run observed") {
+		if fields["run.id"] == "2" {
+			first = fields
+			break
+		}
+	}
+	if first == nil {
+		t.Fatal("no run observed event for run 2")
+	}
+	if first["pr.number"] != "1" || first["head.sha"] != "sha-1" || first["round"] == "" {
+		t.Errorf("linked run event lacks PR, head or round: %v", first)
+	}
+}
