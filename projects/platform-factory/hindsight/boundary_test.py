@@ -336,7 +336,7 @@ def test_binding_denies_tool(server, path, token, name, args):
 
 @pytest.mark.parametrize(
     "name,arguments",
-    [("recall", {"query": "boundary"})],
+    [("recall", {"query": "boundary"}), ("retain", {"content": "boundary"})],
 )
 def test_explicit_tool_bank_cannot_override_binding(server, name, arguments):
     client = MCP(server, "/mcp/", MCP_TOKEN, {"X-Bank-Id": "homelab"})
