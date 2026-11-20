@@ -19,8 +19,11 @@ access and supply strict tag filters; tags alone do not authorize a caller.
 MCP is disabled.
 
 Hindsight stores retained image bytes in the private Garage bucket `discord-media`,
-once per bank by content hash. `factory-db` holds no image bytes. GPT-4.1 mini
-reads images through the dedicated OpenRouter credential.
+by document and content hash. `factory-db` holds no image bytes. GPT-4.1 mini
+reads images through the dedicated OpenRouter credential. This backend accepts
+multimodal retain requests. The Discord bridge currently sends text, and its history
+importer records attachment filenames. HOME-580 activates Discord image intake
+by sending supported image bytes from tagged messages as multimodal retain items.
 
 The 1Password operator syncs `factory-discord-llm` into
 `hindsight-discord/hindsight-openrouter`. Its `api-key` and `base-url` fields
@@ -127,3 +130,18 @@ that both Jobs mount the generated script ConfigMap. `boundary_test.py` runs
 the pinned image in PR CI with dummy credentials and LLM verification disabled
 only in the test process.
 It checks REST authentication, recall and both disabled MCP routes.
+
+### Validate image retention after rollout
+
+With the pinned Hindsight 1.2.1 deployment Ready, Garage credentials reconciled,
+and the vision model available, run this from the repository root with scoped
+cluster access:
+
+```sh
+kubectl -n hindsight-discord exec -i deploy/hindsight -c api -- /app/api/.venv/bin/python - < projects/platform-factory/hindsight-discord/validation/image_probe.py
+```
+
+The probe writes a synthetic sign in a fresh bank. It compares the Garage object
+with the submitted PNG and checks recalled facts for the random code shown only
+in the pixels. It prints the bank ID for cleanup if interrupted and deletes the
+probe bank after the checks.
