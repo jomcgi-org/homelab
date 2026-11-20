@@ -554,6 +554,7 @@ tests:
         alertname: FactoryItsaplanOutage
         exp_alerts: []
 
+  # invariant: PLAT-14
   - name: kagent-pg backup age exceeds 3 days for one hour
     start_timestamp: 2026-11-20T00:00:00Z
     interval: 1m

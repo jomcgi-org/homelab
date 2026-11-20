@@ -200,6 +200,7 @@ groups:
           runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory/deploy/notify.md#home-385-rollout-verification"
           summary: "Factory {{ $labels.phase }} has been failing on itsaplan for ten minutes"
 
+  # invariant: PLAT-14
   - name: cnpg-backups
     rules:
       - alert: CNPGBackupRetentionExceeded
