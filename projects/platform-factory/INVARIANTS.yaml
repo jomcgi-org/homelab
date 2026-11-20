@@ -108,7 +108,7 @@ invariants:
   statement: Renovate tracks factory manifest images directly and updates the generated Substrate manifests
     through their chart release together with the kagent charts.
   mechanism:
-  - renovate.json
+  - projects/platform/renovate/dependency_policy_test.py
   - projects/platform-factory/substrate/render-upstream.sh
   test: //projects/platform/renovate:dependency_policy_test
   state: live
