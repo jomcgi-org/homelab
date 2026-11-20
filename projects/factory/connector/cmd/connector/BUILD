@@ -53,6 +53,7 @@ go_test(
     srcs = [
         "atedb_test.go",
         "decision_test.go",
+        "main_test.go",
         "recovery_test.go",
         "runbook_test.go",
     ],
@@ -61,7 +62,9 @@ go_test(
     env = {"PROMTOOL": "$(rootpath @promtool_3_15_1_linux_amd64//:binary)"},
     deps = [
         "//projects/factory/connector/kagent",
+        "//projects/factory/connector/metrics",
         "//projects/factory/connector/store",
+        "@com_github_prometheus_client_golang//prometheus",
         "@io_k8s_api//authentication/v1:authentication",
         "@io_k8s_api//core/v1:core",
         "@io_k8s_apimachinery//pkg/api/errors",
