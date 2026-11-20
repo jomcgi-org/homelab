@@ -47,7 +47,14 @@ argocd_app(
 sh_test(
     name = "config_validator_test",
     srcs = ["config_validator_test.sh"],
-    args = ["$(rootpath //:renovate.json)"],
+    # Invoke the packaged renovate-config-validator CLI directly. The image's
+    # shell wrapper also initializes containerbase tools in /tmp.
+    args = [
+        "$(rootpath //:renovate.json)",
+        "/usr/local/renovate/node",
+        "--use-openssl-ca",
+        "/usr/local/renovate/dist/config-validator.js",
+    ],
     data = ["//:renovate.json"],
     exec_properties = {
         "test.container-image": "docker://ghcr.io/renovatebot/renovate:44.14.10",
