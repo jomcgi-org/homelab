@@ -244,7 +244,7 @@ func TestIssueRunHistoryUsesCoordinatorAndCursor(t *testing.T) {
 	c := server(t, 200, `{"items":[{"id":12,"username":"coder","trigger":"delegation","status":"success","prompt":"not decoded"}],"nextCursor":12}`, &got)
 	page, err := c.IssueRuns(context.Background(), 42, 20)
 	query, _ := url.ParseQuery(got.query)
-	if err != nil || len(page.Items) != 1 || page.Items[0].ID != 12 || page.Items[0].Username != "coder" || page.Items[0].Trigger != "delegation" || page.NextCursor == nil || *page.NextCursor != 12 ||
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != 12 || page.Items[0].Username != "coder" || page.Items[0].Trigger != "delegation" || page.Items[0].Status != "success" || page.NextCursor == nil || *page.NextCursor != 12 ||
 		got.method != "GET" || got.path != "/issues/42/agent-runs" || got.key != "k-coord" || query.Get("before") != "20" || query.Get("limit") != "50" {
 		t.Fatalf("page=%+v request=%+v err=%v", page, got, err)
 	}

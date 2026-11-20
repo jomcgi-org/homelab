@@ -6,30 +6,79 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/planner"
 )
 
+func fingerprintMarker(fp string) string { return "<!-- factory-planner-fingerprint: " + fp + " -->" }
+
+func (e *Engine) plannerDuplicate(ctx context.Context, fp string) (bool, error) {
+	var existing bool
+	if err := e.st.DB.QueryRowContext(ctx, "SELECT EXISTS(SELECT FROM planner_existing_issue WHERE fingerprint=$1)", fp).Scan(&existing); err != nil || existing {
+		return existing, err
+	}
+	hits, err := e.its.SearchIssues(ctx, "HOME", fp)
+	if err != nil || len(hits) == 0 {
+		return false, err
+	}
+	project, err := e.its.GetProject(ctx, "HOME")
+	if err != nil {
+		return false, err
+	}
+	for _, hit := range hits {
+		is, err := e.its.GetIssue(ctx, hit.ID)
+		if err != nil {
+			return false, err
+		}
+		if !inProject(is, "HOME") || is.ArchivedAt != nil || !strings.Contains("\n"+is.Description+"\n", "\n"+fingerprintMarker(fp)+"\n") {
+			continue
+		}
+		for _, c := range project.Columns {
+			if c.ID == is.ColumnID && c.StateType != "completed" && c.StateType != "canceled" {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 // Consume each final message once in the same transaction as its reservations.
 // Only the schedule supplies the title and instructions.
 func (e *Engine) preparePlannerResult(ctx context.Context) error {
-	return e.w.Tx(ctx, func(tx *sql.Tx) error {
-		var run, message, namespace, title, instructions string
-		err := tx.QueryRowContext(ctx, `SELECT r.run_id,r.final_message,s.namespace,s.issue_title,s.instructions
+	var run, message, namespace, title, instructions string
+	err := e.st.DB.QueryRowContext(ctx, `SELECT r.run_id,r.final_message,s.namespace,s.issue_title,s.instructions
  FROM planner_run r JOIN planner_schedule s ON s.name=r.schedule
  WHERE r.final_message IS NOT NULL AND NOT processed AND finished_at IS NULL
- AND s.issue_title <> '' AND s.instructions <> '' ORDER BY started_at LIMIT 1 FOR UPDATE`).Scan(&run, &message, &namespace, &title, &instructions)
+ AND s.issue_title <> '' AND s.instructions <> '' ORDER BY started_at LIMIT 1`).Scan(&run, &message, &namespace, &title, &instructions)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	items, dropped, parseErr := planner.Parse([]byte(message), namespace)
+	if parseErr != nil {
+		dropped++
+	}
+	duplicates := make(map[string]bool, len(items))
+	for _, p := range items {
+		duplicate, err := e.plannerDuplicate(ctx, p.Fingerprint)
+		if err != nil {
+			return err
+		}
+		duplicates[p.Fingerprint] = duplicate
+	}
+	return e.w.Tx(ctx, func(tx *sql.Tx) error {
+		var claimed string
+		err := tx.QueryRowContext(ctx, `UPDATE planner_run SET processed=true WHERE run_id=$1 AND NOT processed AND finished_at IS NULL AND final_message=$2 RETURNING run_id`, run, message).Scan(&claimed)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
-		}
-		items, dropped, parseErr := planner.Parse([]byte(message), namespace)
-		if parseErr != nil {
-			dropped++
 		}
 		for _, p := range items {
 			description, fits := p.Description(instructions)
@@ -37,6 +86,13 @@ func (e *Engine) preparePlannerResult(ctx context.Context) error {
 				dropped++
 				continue
 			}
+			if duplicates[p.Fingerprint] {
+				if _, err := tx.ExecContext(ctx, "UPDATE planner_run SET deduplicated=deduplicated+1 WHERE run_id=$1", run); err != nil {
+					return err
+				}
+				continue
+			}
+			description += "\n\n" + fingerprintMarker(p.Fingerprint)
 			var route sql.NullString
 			if err := tx.QueryRowContext(ctx, "SELECT reserve_planner_proposal($1,$2,$3)", run, p.Fingerprint, p.Fix).Scan(&route); err != nil {
 				return err
@@ -44,12 +100,12 @@ func (e *Engine) preparePlannerResult(ctx context.Context) error {
 			if !route.Valid {
 				continue
 			}
-			_, err := tx.ExecContext(ctx, `UPDATE planner_proposal SET title=$3,description=$4,priority=$5 WHERE run_id=$1 AND fingerprint=$2`, run, p.Fingerprint, title, description, p.Priority)
+			_, err = tx.ExecContext(ctx, `UPDATE planner_proposal SET title=$3,description=$4,priority=$5 WHERE run_id=$1 AND fingerprint=$2`, run, p.Fingerprint, title, description, p.Priority)
 			if err != nil {
 				return err
 			}
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE planner_run SET final_message=NULL,processed=true,dropped=dropped+$2 WHERE run_id=$1`, run, dropped)
+		_, err = tx.ExecContext(ctx, `UPDATE planner_run SET final_message=NULL,dropped=dropped+$2 WHERE run_id=$1`, run, dropped)
 		return err
 	})
 }
@@ -225,4 +281,73 @@ func (c *plannerTrackerCall) result(ctx context.Context, result error) error {
 		return err
 	}
 	return result
+}
+
+func (e *Engine) syncPlannerOutcome(ctx context.Context) error {
+	var key, route string
+	err := e.w.Tx(ctx, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `UPDATE planner_proposal SET next_attempt=now()+interval '5 minutes'
+ WHERE issue_key=(SELECT issue_key FROM planner_proposal JOIN planner_run USING(run_id)
+ WHERE issue_key IS NOT NULL AND finished_at IS NOT NULL AND closed_at IS NULL AND next_attempt<=now()
+ ORDER BY next_attempt,issue_key LIMIT 1) RETURNING issue_key,disposition`).Scan(&key, &route)
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	n, err := strconv.ParseInt(strings.TrimPrefix(key, "HOME-"), 10, 64)
+	if err != nil {
+		return err
+	}
+	is, err := e.its.GetIssueByNumber(ctx, "HOME", n)
+	if err != nil {
+		return err
+	}
+	project, err := e.its.GetProject(ctx, "HOME")
+	if err != nil {
+		return err
+	}
+	done := is.ColumnID > 0 && is.ColumnID == columnNamed(project, "Done")
+	if !done {
+		if route != "delegate" {
+			return nil
+		}
+		rejected, err := e.plannerDelegationRejected(ctx, is.ID)
+		if err != nil || !rejected {
+			return err
+		}
+	}
+	return e.w.Tx(ctx, func(tx *sql.Tx) error {
+		if done {
+			if _, err := tx.ExecContext(ctx, "SELECT mark_planner_reproducible($1)", key); err != nil {
+				return err
+			}
+		}
+		_, err := tx.ExecContext(ctx, "UPDATE planner_proposal SET closed_at=now() WHERE issue_key=$1 AND closed_at IS NULL", key)
+		return err
+	})
+}
+
+func (e *Engine) plannerDelegationRejected(ctx context.Context, id int64) (bool, error) {
+	var before int64
+	for {
+		page, err := e.its.IssueRuns(ctx, id, before)
+		if err != nil {
+			return false, err
+		}
+		for _, r := range page.Items {
+			if r.Username == "homelab-codex" && r.Trigger == "delegation" && (r.Status == "failed" || r.Status == "canceled") {
+				return true, nil
+			}
+		}
+		if page.NextCursor == nil {
+			return false, nil
+		}
+		if *page.NextCursor <= 0 || (before != 0 && *page.NextCursor >= before) {
+			return false, errors.New("invalid planner run cursor")
+		}
+		before = *page.NextCursor
+	}
 }
