@@ -119,8 +119,9 @@ attempt stores a bounded brief with quoted issue text, checklists and links.
 Resends reuse the recorded prompt. [Issue brief decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-126#comment-841)
 
 Before sending to kagent the connector records the attempt and deterministic
-message ID. A definite refusal allows a bounded retry. An ambiguous response
-is reconciled by message ID under the current writer epoch.
+message ID. The 90-second send deadline lets the router finish its 60-second placement wait.
+When kagent confirms the input was never accepted, a capacity wait preserves the retry budget.
+After settlement kagent suspends the actor to a volume snapshot for the next turn. [Session lifecycle](https://github.com/jomcgi-org/kagent/blob/e3d14ee3dd623471c1ea411f5427881fca134b32/go/core/internal/service/session/quiescence.go)
 
 ## Task reconciliation
 

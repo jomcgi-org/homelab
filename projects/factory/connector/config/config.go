@@ -87,9 +87,9 @@ type Intervals struct {
 	ForceDelete   Duration `yaml:"forceDelete"`
 }
 
-// MinDispatchWindow covers the 60 s A2A call timeout (kagent.DefaultTimeout),
+// MinDispatchWindow covers the 90 s coder send timeout (kagent.CoderSendTimeout),
 // kagent's two-minute dispatch reservation and 30 s of clock skew.
-const MinDispatchWindow = 210 * time.Second
+const MinDispatchWindow = 240 * time.Second
 
 // Coordinator is the itsaplan agent that reads runs and comments.
 type Coordinator struct {

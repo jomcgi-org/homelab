@@ -204,7 +204,7 @@ func New(cfg Config, st *store.Store, its Itsaplan, tasks Tasks, sessions Sessio
 		cfg.ReissueInterval = 15 * time.Second
 	}
 	if cfg.DispatchWindow == 0 {
-		cfg.DispatchWindow = MinDispatchWindow(kagent.DefaultTimeout)
+		cfg.DispatchWindow = MinDispatchWindow(kagent.CoderSendTimeout)
 	}
 	if cfg.MaxIssues == 0 {
 		cfg.MaxIssues = 20
@@ -1692,11 +1692,12 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 		return e.unresolved(ctx, r, wi, a)
 	}
 	if a.Issues > 0 {
-		if a.Issues >= e.cfg.MaxIssues {
+		budgeted := a.Issues - a.PlacementWaits
+		if budgeted >= e.cfg.MaxIssues {
 			if now.Sub(a.SentAt) < e.cfg.DispatchWindow {
 				return nil
 			}
-			if a.Issues >= e.cfg.MaxIssues+e.cfg.FinalLookups {
+			if budgeted >= e.cfg.MaxIssues+e.cfg.FinalLookups {
 				return e.engineeringFailure(ctx, r, wi, a, "kagent definitively refused every send")
 			}
 		} else if now.Sub(a.SentAt) < e.cfg.ReissueInterval {
@@ -1748,6 +1749,9 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 	case err == nil:
 		e.m.Sends.WithLabelValues(a.Kind, "accepted").Inc()
 		return e.attach(ctx, a, wi, task)
+	case errors.Is(err, kagent.ErrPlacementWait):
+		e.m.Sends.WithLabelValues(a.Kind, "placement_wait").Inc()
+		return e.st.MarkPlacementWait(ctx, a)
 	case errors.Is(err, kagent.ErrNotAccepted):
 		// Only ready attempts reach Send. Every previous call was also
 		// definitively unaccepted, so this refusal can safely permit retry.
