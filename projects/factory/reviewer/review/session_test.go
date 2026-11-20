@@ -357,6 +357,34 @@ func (s *stalledSessionListing) ListTasks(ctx context.Context, agent kagent.Agen
 	}
 }
 
+func TestCleanupFailuresRejoinBehindWaitingChecks(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Concurrency = 1
+	e := h.engine()
+	b := &e.cfg.Bindings[0]
+	ids := []string{"session-one", "session-two", "session-three"}
+	for _, id := range ids[:2] {
+		h.sessions.answer(id, nil, errors.New("unavailable"))
+	}
+	// Visit the same three checks in the same order. Finish each probe
+	// between polls. The third session is gone and can proceed.
+	for poll := 0; poll < 4; poll++ {
+		for i, id := range ids {
+			pr := github.PullRequest{Number: i + 1, HeadSHA: sessionShaB}
+			ref := &SessionRef{Binding: b.Name, Agent: agentName(b.Agent), PR: pr.Number, Head: shaA, ContextID: id}
+			ready := e.cleanupReady(b, pr, int64(pr.Number), ref, 1)
+			if want := poll == 3 && i == 2; ready != want {
+				t.Fatalf("poll %d check %d ready = %v, want %v", poll, pr.Number, ready, want)
+			}
+		}
+		e.startCleanupProbes(context.Background())
+		e.Wait()
+	}
+	if reads := h.sessions.reads(); !slices.Equal(reads, []string{ids[0], ids[1], ids[2], ids[0]}) {
+		t.Fatalf("cleanup order = %v", reads)
+	}
+}
+
 func TestStalledCleanupLeavesPollerFree(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.Concurrency = 1
