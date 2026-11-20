@@ -73,3 +73,9 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: A new human approver comment naming a blocking finding on a failed review triggers one review of that head.
+  mechanism:
+  - projects/factory/reviewer/review/engine.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live

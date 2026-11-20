@@ -2234,6 +2234,56 @@ func TestMediumDecisionOnTheNextHead(t *testing.T) {
 	})
 }
 
+func TestMediumDecisionOnTheSameHead(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{
+		map[string]any{"id": "a.yaml:live", "severity": "medium", "path": "a.yaml", "title": "Rollout unverified"},
+	}}))
+	eventually(t, "the first check", func() bool { return h.gh.check(shaA).Conclusion == ConclusionFailure })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	before := h.gh.check(shaA).ID
+	h.gh.withLock(func() {
+		h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 41, Author: "jomcgi", Body: "rollout confirmed"})
+	})
+	e.Tick(ctx)
+	if h.gh.check(shaA).ID != before {
+		t.Fatal("unrelated comment started a review")
+	}
+	h.gh.withLock(func() {
+		h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 42, Author: "jomcgi", Body: "Still investigating a.yaml:live."})
+	})
+	retry := runReview(t, h, e, ctx, 7, shaA)
+	h.k.finish(retry, kagent.StateCompleted, report(t, map[string]any{"summary": "still blocked", "findings": []any{}}))
+	eventually(t, "the retry to finish", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	failed := h.gh.check(shaA)
+	e.Tick(ctx)
+	if failed.Conclusion != ConclusionFailure || failed.ID == before || h.gh.check(shaA).ID != failed.ID {
+		t.Fatal("the same comment should start exactly one failed retry")
+	}
+	h.gh.withLock(func() {
+		h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 43, Author: "jomcgi", Body: "Decision: accept `a.yaml:live` on the rollout log; check delivery after rollout."})
+	})
+	task := runReview(t, h, e, ctx, 7, shaA)
+	link := "https://github.com/" + testRepo + "/pull/7#issuecomment-43"
+	if prompt := h.k.sent()[len(h.k.sent())-1].Parts[0].Text; !strings.Contains(prompt, "jomcgi wrote in "+link+":\n\n> Decision: accept `a.yaml:live`") {
+		t.Fatalf("the prompt does not show the decision's link:\n%s", prompt)
+	}
+	h.k.finish(task, kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{}, "previous": []any{
+		map[string]any{"id": "a.yaml:live", "status": "justified", "note": "decision: " + link + " accepts the rollout log."},
+	}}))
+	eventually(t, "the decided pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	st, ok := LoadState(h.gh.check(shaA).Text)
+	if !ok || len(st.Decisions) != 1 || st.Decisions[0].ID != 43 || st.Decisions[0].Severity != SeverityMedium {
+		t.Fatalf("state decisions = %+v", st.Decisions)
+	}
+	if len(st.Cleared) != 1 || st.Cleared[0].ID != "a.yaml:live" || st.Cleared[0].Decision == nil || st.Cleared[0].Decision.ID != 43 {
+		t.Fatalf("cleared record = %+v", st.Cleared)
+	}
+}
+
 // TestRevokedDecisionWithdrawsAPass: a head passes on Joe's decision, and
 // a later head passes while carrying it. When Joe edits the comment, the
 // next poll fails the later head's check and reviews it again.

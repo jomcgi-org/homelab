@@ -1031,12 +1031,13 @@ var stateRE = regexp.MustCompile(`<!-- factory-review:state v([12]) ([A-Za-z0-9+
 // findings and human gate on the completed check. The next round must
 // account for the findings; only a person clears the human gate.
 type State struct {
-	Round         int                          `json:"round,omitempty"`
-	InvariantBase string                       `json:"invariant_base,omitempty"`
-	Semgrep       *SemgrepStamp                `json:"semgrep,omitempty"`
-	Activation    *github.ActivationAssessment `json:"activation,omitempty"`
-	Blocking      []Finding                    `json:"blocking"`
-	Cleared       []Cleared                    `json:"cleared,omitempty"`
+	Round           int                          `json:"round,omitempty"`
+	DecisionComment int64                        `json:"decision_comment,omitempty"` // Highest approver comment ID handled on this head.
+	InvariantBase   string                       `json:"invariant_base,omitempty"`
+	Semgrep         *SemgrepStamp                `json:"semgrep,omitempty"`
+	Activation      *github.ActivationAssessment `json:"activation,omitempty"`
+	Blocking        []Finding                    `json:"blocking"`
+	Cleared         []Cleared                    `json:"cleared,omitempty"`
 	// ClearedPartial marks a cleared record that has lost entries, on this
 	// head or an earlier one, so it cannot show every fixed finding.
 	ClearedPartial bool  `json:"cleared_partial,omitempty"`

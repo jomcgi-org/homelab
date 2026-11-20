@@ -231,9 +231,8 @@ again for evidence you cannot read: name the check after rollout instead.
 At either severity, the service checks the author, the link, the finding
 ID and that the text is unchanged. An edit or a deletion of the comment
 revokes the decision and restores the finding at the severity it was
-decided at. The decision takes effect when the next head is reviewed:
-after Joe's comment, the PR's delivery owner pushes a new head, and an
-empty commit is enough. A critical finding, and every other high finding,
+decided at. When Joe's comment names a blocking finding on a failed review,
+the reviewer reviews the same head again. A critical finding, and every other high finding,
 clears no other way.
 
 ## Later heads

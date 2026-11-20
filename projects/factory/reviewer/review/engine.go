@@ -503,7 +503,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			continue
 		}
 		reviews[pr.Number] = run
-		revoked, unread := e.decisionsChanged(ctx, b, pr, run)
+		revoked, trigger, unread := e.decisionsChanged(ctx, b, pr, run)
 		foreign := run != nil && run.ExternalID != MessageID(repo, pr.Number, pr.HeadSHA)
 		recovered := e.recoverPR(ctx, b, pr, scan)
 		switch {
@@ -550,6 +550,14 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			}
 			reviews[pr.Number] = nil
 			start = append(start, candidate{pr, run})
+		case trigger > 0:
+			// Persist the consumed comment with the new check, so scheduling
+			// retries remain possible until a slot and check actually exist.
+			next := *run
+			st, _ := LoadState(run.Text)
+			st.DecisionComment = trigger
+			next.Text = encodeState(st)
+			start = append(start, candidate{pr, &next})
 		case e.semgrepChanged(ctx, b, pr, run):
 			// Withdraw a stale pass even when all review slots are occupied.
 			if run.Conclusion == ConclusionSuccess {
@@ -2121,20 +2129,35 @@ func mergeFindings(list, more []Finding) []Finding {
 // decisionsChanged re-checks the decisions of Joe's that a completed run's
 // review relied on (State.Decisions). unread is a failed read: the pass
 // cannot be confirmed on this poll.
-func (e *Engine) decisionsChanged(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (changed, unread bool) {
+func (e *Engine) decisionsChanged(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (changed bool, trigger int64, unread bool) {
 	if run == nil || run.Status != "completed" {
-		return false, false
+		return false, 0, false
 	}
 	st, ok := LoadState(run.Text)
-	if !ok || len(st.Decisions) == 0 {
-		return false, false
+	failed := run.Conclusion == ConclusionFailure && len(st.Blocking) > 0 && run.Title != "No review report"
+	if !ok || (!failed && len(st.Decisions) == 0) {
+		return false, 0, false
 	}
 	comments, _, err := e.trustedComments(ctx, b, pr)
 	if err != nil {
 		e.ghError(ctx, e.prLog(b, pr), b, "comments", err)
-		return false, true
+		return false, 0, len(st.Decisions) > 0
 	}
-	return !joeDecisions(b, pr, comments).Hold(st.Decisions), false
+	d := joeDecisions(b, pr, comments)
+	if failed {
+		for _, c := range d.Comments {
+			if c.ID <= st.DecisionComment {
+				continue
+			}
+			for _, f := range st.Blocking {
+				if namesID(c.Body, f.ID) {
+					trigger = max(trigger, c.ID)
+					break
+				}
+			}
+		}
+	}
+	return !d.Hold(st.Decisions), trigger, false
 }
 
 func machineComment(body string) bool {
@@ -2847,6 +2870,13 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 			}
 		}
 		st := stateOf(a, r, gate)
+		// Comments shown in this review already had their opportunity.
+		if in.priorHead == pr.HeadSHA {
+			st.DecisionComment = in.prior.DecisionComment
+		}
+		for _, c := range decisions.Comments {
+			st.DecisionComment = max(st.DecisionComment, c.ID)
+		}
 		if in.semgrep != nil {
 			// The goal check can run another model task after the code review.
 			// Check scan freshness after both tasks, before saving the verdict.
