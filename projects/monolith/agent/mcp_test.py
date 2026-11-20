@@ -33,11 +33,12 @@ async def test_all_agent_tools_registered():
     missing = EXPECTED_TOOLS - registered
     assert not missing, f"Missing agent tools: {missing}"
     assert "monolith_agent_check_orphan_jobs" not in registered
+    assert "monolith_agent_notify" not in registered
 
 
-def test_expected_tool_count_is_twelve():
+def test_expected_tool_count_is_eleven():
     """Guard against silently dropping a tool from EXPECTED_TOOLS."""
-    assert len(EXPECTED_TOOLS) == 12
+    assert len(EXPECTED_TOOLS) == 11
 
 
 def test_admission_api_import_does_not_require_private_operator_module(monkeypatch):
