@@ -1,3 +1,4 @@
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 exports_files(["fixture.tar.bz2"])
@@ -13,4 +14,11 @@ sh_test(
         "@http_archive_fixture//:binary",
         "@http_archive_fixture//:tar",
     ],
+)
+
+bzl_library(
+    name = "fixture",
+    srcs = ["fixture.bzl"],
+    visibility = ["//visibility:public"],
+    deps = ["//bazel/tools/http:multiarch_http_file"],
 )
