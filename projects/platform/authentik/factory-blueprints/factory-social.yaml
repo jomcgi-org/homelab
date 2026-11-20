@@ -94,6 +94,7 @@ entries:
     attrs:
       evaluate_on_plan: false
       re_evaluate_policies: true
+  # invariant: AUTHENTIK-1
   - model: authentik_policies_expression.expressionpolicy
     id: duplicate-email-check
     identifiers:
