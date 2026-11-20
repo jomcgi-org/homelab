@@ -649,6 +649,37 @@ func TestRestartReattachesWithoutASecondTask(t *testing.T) {
 	}
 }
 
+func TestReattachedTaskLeavesLaterDecisionForNextReview(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	h.gh.withLock(func() {
+		h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 41, Author: "jomcgi", Body: "Checking rollout."})
+	})
+	e, ctx, stop := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	eventually(t, "the dispatched prompt watermark", func() bool {
+		rec := RecordedTask(h.gh.check(shaA).Summary)
+		return rec.ID == task && rec.DecisionComment == 41
+	})
+	stop()
+	h.gh.withLock(func() {
+		h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 42, Author: "jomcgi", Body: "Decision: accept a.yaml:live."})
+	})
+	e, ctx, _ = h.start()
+	e.Tick(ctx)
+	h.k.finish(task, kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{
+		map[string]any{"id": "a.yaml:live", "severity": "medium", "path": "a.yaml", "title": "Rollout unverified"},
+	}}))
+	eventually(t, "the failed review", func() bool { return h.gh.check(shaA).Conclusion == ConclusionFailure })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	st, _ := LoadState(h.gh.check(shaA).Text)
+	if st.DecisionComment != 41 {
+		t.Fatalf("completed watermark = %d, want 41", st.DecisionComment)
+	}
+	e.Tick(ctx)
+	eventually(t, "a review for the later decision", func() bool { return len(h.k.sent()) == 2 })
+}
+
 // TestReattachWithoutRecordedTaskResendsTheMessage covers a restart between
 // the send and recording its task: the same message finds the same task.
 func TestReattachWithoutRecordedTaskResendsTheMessage(t *testing.T) {
