@@ -1506,6 +1506,7 @@ const (
 	OutboxIssueDone      = "issue_done"
 	OutboxIssueReviewing = "issue_reviewing"
 	OutboxDeferredStart  = "deferred_start"
+	OutboxReviewFollowup = "review_followup"
 	OutboxActivation     = "activation"
 )
 
