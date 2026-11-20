@@ -69,8 +69,8 @@ func TestScanDeletesOnlyCurrentSuspendingRevision(t *testing.T) {
 		t.Cleanup(func() { db.Close() })
 		_, err = db.Exec(`CREATE TABLE revisions (id int PRIMARY KEY, proto bytea);
 			CREATE SEQUENCE reads;
-			CREATE FUNCTION public.reaper_actors() RETURNS TABLE(name text, proto bytea)
-			LANGUAGE sql VOLATILE AS $$SELECT 'session-held'::text,r.proto FROM revisions r
+			CREATE FUNCTION public.reaper_actors() RETURNS TABLE(atespace text, name text, proto bytea)
+			LANGUAGE sql VOLATILE AS $$SELECT 'ns'::text,'session-held'::text,r.proto FROM revisions r
 			WHERE r.id=(SELECT least(nextval('reads'),2))$$`)
 		if err != nil {
 			t.Fatal(err)
@@ -163,21 +163,22 @@ func TestScanWorkerDisappearance(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	_, err = db.Exec(`CREATE TABLE actor_fixture(proto bytea);
-	CREATE FUNCTION public.reaper_actors() RETURNS TABLE(name text, proto bytea)
-	LANGUAGE sql AS $$ SELECT 'session-held'::text, proto FROM actor_fixture $$;
+	_, err = db.Exec(`CREATE TABLE actor_fixture(space text, proto bytea);
+	CREATE FUNCTION public.reaper_actors() RETURNS TABLE(atespace text, name text, proto bytea)
+	LANGUAGE sql AS $$ SELECT space, 'session-held'::text, proto FROM actor_fixture ORDER BY space $$;
 	INSERT INTO run(id,agent_key,trigger,prompt,system_prompt,attempt,state) VALUES(1,'coder','issue','','',1,'dispatched');
 	INSERT INTO delivery_attempt(run_id,seq,run_attempt,work_item_epoch,decision_id,kind,message_id,kagent_namespace,kagent_agent,context_id,state,writer_epoch)
 	VALUES(1,1,1,1,'decision','initial','msg','ns','coder','held','accepted',1)`)
 	if err != nil {
 		t.Fatal(err)
 	}
+	journal := pgtest.AsRole(t, db, "factory_reaper")
 	running := func(uid string) []byte { return actorFixture(uid, 2, time.Now()) }
-	if _, err = db.Exec("INSERT INTO actor_fixture VALUES($1)", running("original")); err != nil {
+	if _, err = db.Exec("INSERT INTO actor_fixture VALUES('foreign',$1),('ns',$2),('other',$3)", running("original"), running("original"), running("foreign-worker")); err != nil {
 		t.Fatal(err)
 	}
 	for _, replacement := range []bool{true, false} {
-		if _, err = db.Exec("UPDATE actor_fixture SET proto=$1", running("original")); err != nil {
+		if _, err = db.Exec("UPDATE actor_fixture SET proto=$1 WHERE space='ns'", running("original")); err != nil {
 			t.Fatal(err)
 		}
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +186,7 @@ func TestScanWorkerDisappearance(t *testing.T) {
 				t.Errorf("unexpected method %s", r.Method)
 			}
 			if replacement {
-				if _, err := db.Exec("UPDATE actor_fixture SET proto=$1", running("replacement")); err != nil {
+				if _, err := db.Exec("UPDATE actor_fixture SET proto=$1 WHERE space='ns'", running("replacement")); err != nil {
 					t.Error(err)
 				}
 			}
@@ -201,7 +202,7 @@ func TestScanWorkerDisappearance(t *testing.T) {
 		if err != nil || lease == nil {
 			t.Fatalf("lease=%v err=%v", lease, err)
 		}
-		err = Scan(context.Background(), db, db, client, lease)
+		err = Scan(context.Background(), db, journal, client, lease)
 		lease.Close()
 		server.Close()
 		if err != nil {
