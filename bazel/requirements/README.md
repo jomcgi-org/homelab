@@ -26,7 +26,10 @@ cannot move a runtime pin.
 
    It runs `//bazel/requirements:runtime` then
    `//bazel/requirements:requirements.all`. Both need internet access and are
-   tagged `no-remote`.
+   tagged `no-remote`. The script then runs
+   `//bazel/tools/python:gazelle_python_manifest.update` to refresh Gazelle’s
+   import mapping. When updating Windows or Emscripten dependencies, update
+   their matching manifest wheel pins in `MODULE.bazel`.
 
 3. Reference the package as `@pip//package_name`: underscores in Bazel,
    hyphens on PyPI. `requirement()` is not used in this repo.

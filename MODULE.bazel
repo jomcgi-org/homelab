@@ -380,7 +380,39 @@ pip.parse(
     python_version = "3.13",
     requirements_lock = "//bazel/requirements:all.txt",
 )
+
 use_repo(pip, "pip")
+
+# Wheel contents for Gazelle only. The Linux pip hub cannot resolve these
+# platform-specific lock entries. Keep hashes in sync with all.txt.
+http_file(
+    name = "manifest_colorama",
+    downloaded_file_path = "colorama-0.4.6-py2.py3-none-any.whl",
+    sha256 = "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6",
+    urls = ["https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl"],
+)
+
+http_file(
+    name = "manifest_httpx2_jsfetch",
+    downloaded_file_path = "httpx2_jsfetch-1.0-py3-none-any.whl",
+    sha256 = "cb916b707601e69a07721aabc8f3f6659be3a6893bc1ff5c6f9e02241df2da32",
+    urls = ["https://files.pythonhosted.org/packages/9b/43/832f631d32e4f1211caa2ba368317739fe71f0b8530e4c9d15dc454bac2a/httpx2_jsfetch-1.0-py3-none-any.whl"],
+)
+
+http_file(
+    name = "manifest_pywin32",
+    downloaded_file_path = "pywin32-311-cp313-cp313-win_amd64.whl",
+    sha256 = "718a38f7e5b058e76aee1c56ddd06908116d35147e133427e59a3983f703a20d",
+    urls = ["https://files.pythonhosted.org/packages/e3/28/e0a1909523c6890208295a29e05c2adb2126364e289826c0a8bc7297bd5c/pywin32-311-cp313-cp313-win_amd64.whl"],
+)
+
+http_file(
+    name = "manifest_pywin32_ctypes",
+    downloaded_file_path = "pywin32_ctypes-0.2.3-py3-none-any.whl",
+    sha256 = "8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8",
+    urls = ["https://files.pythonhosted.org/packages/de/3d/8161f7711c017e01ac9f008dfddd9410dff3674334c233bde66e7ba65bbf/pywin32_ctypes-0.2.3-py3-none-any.whl"],
+)
+
 
 oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
 
