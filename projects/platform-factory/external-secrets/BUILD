@@ -9,9 +9,12 @@ exports_files(
     visibility = ["//projects/platform-factory/external-secrets:__subpackages__"],
 )
 
-# This package boundary excludes the README from //projects:repo_docs.
+# This package boundary excludes these READMEs from //projects:repo_docs.
 filegroup(
     name = "repo_docs",
-    srcs = ["README.md"],
+    srcs = [
+        "README.md",
+        "resources/upstream/README.md",
+    ],
     visibility = ["//projects/monolith:__pkg__"],
 )
