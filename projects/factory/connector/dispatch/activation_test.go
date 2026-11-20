@@ -41,6 +41,9 @@ func (f *fakeItsaplan) CreateIssue(_ context.Context, project string, n itsaplan
 		Title: n.Title, Description: n.Description, ColumnID: n.ColumnID,
 		AssigneeUserID: f.activationAutoAssignee,
 	}
+	if f.deferredProject != nil {
+		is.ProjectID = f.deferredProject.Project.ID
+	}
 	f.issues[id] = is
 	if f.loseActivationCreate {
 		f.loseActivationCreate = false
@@ -1121,7 +1124,17 @@ func TestAssessmentAfterDone(t *testing.T) {
 			if scenario == "missing" {
 				answer = "No measurement available."
 			}
-			v.its.add(20, "coder", id, follow.Identifier, follow.Description)
+			start, err := time.Parse(time.DateOnly, follow.StartDate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			v.clk.Advance(start.Sub(v.clk.Now()))
+			v.tick(v.e)
+			receipt := v.its.deferredReceipt
+			if receipt == nil || v.its.issues[id].ColumnID != 1 || v.its.issues[id].DelegateUserID == nil {
+				t.Fatalf("deferred assessment did not start: %+v", v.its.issues[id])
+			}
+			v.its.add(receipt.RunID, "coder", id, follow.Identifier, follow.Description)
 			v.tick(v.e)
 			v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, answer, nil)
 			v.clk.Advance(5 * time.Second)
