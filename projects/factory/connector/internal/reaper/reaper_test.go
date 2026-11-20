@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/internal/pgtest"
+	"github.com/jomcgi/homelab/projects/factory/connector/migrations"
 	"google.golang.org/protobuf/encoding/protowire"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	core "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -172,6 +173,22 @@ func TestScanWorkerDisappearance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Recreate a pre-upgrade observation supplied by the same-name foreign
+	// actor. With no current local placement, its pod loss cannot be used.
+	_, err = db.Exec(`ALTER TABLE scoped_worker_fence RENAME TO worker_fence;
+		INSERT INTO worker_fence(attempt_id,session_id,namespace,pod,uid)
+		SELECT id,context_id,'factory-r-homelab','homelab-codex-worker','foreign-worker' FROM delivery_attempt;
+		DELETE FROM schema_migrations WHERE version='20261120000000_reaper_atespace'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migrations.Apply(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	var legacy bool
+	if err := db.QueryRow("SELECT EXISTS (SELECT FROM scoped_worker_fence)").Scan(&legacy); err != nil || legacy {
+		t.Fatalf("legacy fence survived upgrade: exists=%t err=%v", legacy, err)
+	}
 	journal := pgtest.AsRole(t, db, "factory_reaper")
 	running := func(uid string) []byte { return actorFixture(uid, 2, time.Now()) }
 	if _, err = db.Exec("INSERT INTO actor_fixture VALUES('foreign',$1),('ns',$2),('other',$3)", running("original"), running("original"), running("foreign-worker")); err != nil {
@@ -209,7 +226,7 @@ func TestScanWorkerDisappearance(t *testing.T) {
 			t.Fatal(err)
 		}
 		var gone bool
-		if err = db.QueryRow("SELECT gone_at IS NOT NULL AND actor_uid='actor-incarnation' AND actor_version=19 FROM worker_fence WHERE session_id='held' AND uid='original'").Scan(&gone); err != nil || gone == replacement {
+		if err = db.QueryRow("SELECT gone_at IS NOT NULL AND actor_uid='actor-incarnation' AND actor_version=19 FROM scoped_worker_fence WHERE session_id='held' AND uid='original'").Scan(&gone); err != nil || gone == replacement {
 			t.Fatalf("replacement=%t gone=%t err=%v", replacement, gone, err)
 		}
 	}

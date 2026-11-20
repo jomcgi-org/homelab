@@ -107,10 +107,10 @@ func Scan(ctx context.Context, actors, journal *sql.DB, pods core.PodsGetter, le
 		}
 		session := strings.TrimPrefix(key.name, "session-")
 		for _, id := range currentAttempts[key] {
-			_, err := journal.ExecContext(ctx, `INSERT INTO worker_fence(attempt_id,session_id,namespace,pod,uid)
+			_, err := journal.ExecContext(ctx, `INSERT INTO scoped_worker_fence(attempt_id,session_id,namespace,pod,uid)
     SELECT id,context_id,$2,$3,$4 FROM delivery_attempt WHERE id=$5 AND context_id=$1 AND state IN ('accepted','ambiguous')
     ON CONFLICT(attempt_id) DO UPDATE SET namespace=excluded.namespace,pod=excluded.pod,uid=excluded.uid
-    WHERE worker_fence.gone_at IS NULL AND worker_fence.uid<>excluded.uid`, session, p.namespace, p.pod, p.uid, id)
+    WHERE scoped_worker_fence.gone_at IS NULL AND scoped_worker_fence.uid<>excluded.uid`, session, p.namespace, p.pod, p.uid, id)
 			if err != nil {
 				errs = append(errs, err)
 			}
@@ -148,7 +148,7 @@ func Scan(ctx context.Context, actors, journal *sql.DB, pods core.PodsGetter, le
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	evidence, err := journal.QueryContext(ctx, `SELECT f.attempt_id,a.kagent_namespace,f.session_id,f.namespace,f.pod,f.uid FROM worker_fence f JOIN delivery_attempt a ON a.id=f.attempt_id WHERE f.gone_at IS NULL AND a.state IN ('accepted','ambiguous')`)
+	evidence, err := journal.QueryContext(ctx, `SELECT f.attempt_id,a.kagent_namespace,f.session_id,f.namespace,f.pod,f.uid FROM scoped_worker_fence f JOIN delivery_attempt a ON a.id=f.attempt_id WHERE f.gone_at IS NULL AND a.state IN ('accepted','ambiguous')`)
 	if err != nil {
 		return err
 	}
@@ -182,7 +182,7 @@ func Scan(ctx context.Context, actors, journal *sql.DB, pods core.PodsGetter, le
 			if actorUID == "" || version <= 0 {
 				continue
 			}
-			_, err = journal.ExecContext(ctx, `UPDATE worker_fence SET gone_at=now(), actor_uid=$3, actor_version=$4 WHERE attempt_id=$1 AND uid=$2 AND gone_at IS NULL`, id, p.uid, actorUID, version)
+			_, err = journal.ExecContext(ctx, `UPDATE scoped_worker_fence SET gone_at=now(), actor_uid=$3, actor_version=$4 WHERE attempt_id=$1 AND uid=$2 AND gone_at IS NULL`, id, p.uid, actorUID, version)
 		}
 		if err != nil {
 			errs = append(errs, err)
