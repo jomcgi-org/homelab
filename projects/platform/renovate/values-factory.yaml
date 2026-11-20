@@ -12,3 +12,7 @@ onepassword:
 githubApp:
   enabled: true
   username: jomcgi-factory-renovate[bot]
+
+image:
+  repository: ghcr.io/renovatebot/renovate
+  tag: "44.14.10-full"

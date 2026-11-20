@@ -255,3 +255,7 @@ clusterAgent:
       - apiGroups: [""]
         resources: [pods]
         verbs: [get, list, watch]
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+  tag: "0.159.0"
