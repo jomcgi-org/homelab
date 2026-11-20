@@ -33,6 +33,7 @@ cookieConfig:
 refreshToken: false
 {{- end -}}
 
+{{- /* invariant: LANDING-1 */ -}}
 {{- define "edge.operatorAuthorization" -}}
 {{- $issuer := printf "https://%s/application/o/%s/" .Values.authentik.hostname .Values.authentik.oidc.applicationSlug -}}
 jwt:
