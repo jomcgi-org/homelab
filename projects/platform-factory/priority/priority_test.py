@@ -7,12 +7,17 @@ import pytest
 import yaml
 
 
-ROOT = Path(__file__).parent
+WORKSPACE = (
+    Path(os.environ["TEST_SRCDIR"]) / os.environ["TEST_WORKSPACE"]
+    if "TEST_SRCDIR" in os.environ
+    else Path(__file__).resolve().parents[3]
+)
+FACTORY = WORKSPACE / "projects/platform-factory"
 CLASS = "factory-platform"
 
 
 def test_platform_priority_class():
-    resource = yaml.safe_load((ROOT / "priority-class.yaml").read_text())
+    resource = yaml.safe_load((FACTORY / "priority/priority-class.yaml").read_text())
     assert resource["kind"] == "PriorityClass"
     assert resource["metadata"]["name"] == CLASS
     assert resource["value"] == 100000
@@ -45,7 +50,7 @@ def test_platform_priority_class():
     ],
 )
 def test_platform_workload_priority(source, release, kind, name, path):
-    source = ROOT.parent / source
+    source = FACTORY / source
     if release:
         command = [os.environ.get("HELM_BIN", "helm"), "template", release, str(source)]
         if release != "edge":
