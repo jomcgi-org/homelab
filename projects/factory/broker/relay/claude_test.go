@@ -460,3 +460,31 @@ func TestClaudeTrace(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeBodyBudget(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	h := newClaudeHarness(t, func(http.ResponseWriter, *http.Request) { close(entered); <-release })
+	done := make(chan struct{})
+	defer func() { close(release); <-done }()
+	r := h.request(t, "/anthropic/v1/messages", claudeBody)
+	r.ContentLength = -1 // Chunked callers reserve the full possible body.
+	go func() { defer close(done); h.ServeHTTP(httptest.NewRecorder(), r) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request never reached upstream")
+	}
+	next := h.request(t, "/anthropic/v1/messages/count_tokens", claudeBody)
+	next.Body = nil // Any attempted read panics.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, next)
+	claudeError(t, rec, 503, ErrRelayBusy)
+}
+
+func TestClaudeRequestModelIgnoresNestedKeys(t *testing.T) {
+	body := []byte(`{"items":[{"model":"other","text":"},\"model\""}],"m\u006fdel":"allowed"}`)
+	model, ambiguous := claudeRequestModel(body)
+	if model != "allowed" || ambiguous {
+		t.Fatalf("model = %q, ambiguous = %v", model, ambiguous)
+	}
+}

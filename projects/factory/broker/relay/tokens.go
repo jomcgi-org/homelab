@@ -60,6 +60,11 @@ func (o *tokenObserver) write(p []byte) {
 	if o.recorded {
 		return
 	}
+	limit := maxUsageEvent
+	if o.claudeSpan != nil {
+		// Claude observes usage for tracing on up to 64 concurrent streams.
+		limit = 64 << 10
+	}
 	if !o.sse && !o.sniffed {
 		for _, c := range p {
 			if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
@@ -71,7 +76,7 @@ func (o *tokenObserver) write(p []byte) {
 		}
 	}
 	if !o.sse {
-		if len(o.data)+len(p) > maxUsageEvent {
+		if len(o.data)+len(p) > limit {
 			o.overflow = true
 			o.data = nil
 		}
@@ -115,7 +120,7 @@ func (o *tokenObserver) write(p []byte) {
 		if i > 0 {
 			o.lastByte = p[i-1]
 		}
-		if len(o.line)+len(o.data)+i > maxUsageEvent {
+		if len(o.line)+len(o.data)+i > limit {
 			o.overflow = true
 			o.line = nil
 			o.data = nil
