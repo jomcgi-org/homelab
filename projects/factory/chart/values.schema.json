@@ -349,6 +349,7 @@
       ],
       "additionalProperties": false,
       "properties": {
+        "otlpEndpoint": { "type": "string" },
         "accounting": {
           "type": "object",
           "additionalProperties": false,

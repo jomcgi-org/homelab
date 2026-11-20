@@ -11,11 +11,15 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/jomcgi/homelab/projects/factory/broker/actorjwt"
 	"github.com/jomcgi/homelab/projects/factory/broker/internal/fakes"
@@ -221,10 +225,17 @@ func TestClaudeForwardsOnlyProviderCredentialAndRotatesFile(t *testing.T) {
 			r.Header.Del("X-Api-Key")
 			r.Header.Set("Authorization", "Bearer "+jwt)
 		}
+		exporter := traceExporter(t)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, r)
 		if rec.Code != 200 || rec.Body.String() != `{"input_tokens":8}` || rec.Header().Get("Set-Cookie") != "" || rec.Header().Get("Authorization") != "" {
 			t.Fatalf("count_tokens response = %d %s", rec.Code, rec.Body)
+		}
+		if spans := exporter.GetSpans(); len(spans) != 1 || !slices.Contains(spans[0].Attributes, attribute.String("actor.subject", claudeSubject)) {
+			t.Fatal("missing actor attribution on the relay span")
+		}
+		if strings.Contains(h.logs.String(), claudeSubject) {
+			t.Fatal("relay logged per-request attribution")
 		}
 		for _, secret := range []string{jwt, claudeToken, wantToken, "private prompt", "sandbox-cookie"} {
 			if strings.Contains(h.logs.String(), secret) {
@@ -413,5 +424,39 @@ func TestClaudeIdleTimeoutCancellationAndConcurrency(t *testing.T) {
 	}
 	if h.calls.Load() != 2 {
 		t.Fatal("slot was not released")
+	}
+}
+
+func TestClaudeTrace(t *testing.T) {
+	exporter := traceExporter(t)
+	h := newClaudeHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: "+`{"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":5,"output_tokens":1}}}`+"\n\n")
+		io.WriteString(w, "data: "+`{"type":"message_delta","usage":{"output_tokens":8}}`+"\n\n")
+	})
+	req := h.request(t, "/anthropic/v1/messages", claudeBody)
+	parent, endParent := requestParent(req)
+	defer endParent()
+	req = req.WithContext(parent)
+	req.Header.Set("Session_id", "private-client-session")
+
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	spans := exporter.GetSpans()
+	if len(spans) != 1 || spans[0].Parent.IsValid() || spans[0].SpanContext.TraceID() == trace.SpanContextFromContext(parent).TraceID() {
+		t.Fatal("expected one root span")
+	}
+	attrs := attribute.NewSet(spans[0].Attributes...)
+	for key, want := range map[string]string{"grant.name": "claude", "binding.namespace": "factory-intsec", "quota.state": "unmanaged", "http.response.status_code": "200", "gen_ai.request.model": claudeModel, "gen_ai.usage.input_tokens": "15", "gen_ai.usage.cache_read.input_tokens": "5", "gen_ai.usage.output_tokens": "8"} {
+		v, ok := attrs.Value(attribute.Key(key))
+		if !ok || v.Emit() != want {
+			t.Errorf("incorrect attribute %s", key)
+		}
+	}
+	for _, attr := range spans[0].Attributes {
+		for _, secret := range []string{req.Header.Get("X-Api-Key"), claudeToken, "private prompt", "private-client-session"} {
+			if strings.Contains(attr.Value.Emit(), secret) {
+				t.Fatal("credential or payload in span")
+			}
+		}
 	}
 }
