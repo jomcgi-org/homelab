@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/klauspost/compress/zstd"
@@ -209,6 +211,10 @@ func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	result := rl.serve(w, r.WithContext(ctx), &id, &upstreamID)
 	rl.Metrics.RelayRequests.WithLabelValues(result.name, metrics.StatusClass(result.status)).Inc()
 	if span.IsRecording() {
+		span.SetAttributes(attribute.String("relay.outcome", result.name), attribute.Int("http.response.status_code", result.status), attribute.String("upstream_request_id", upstreamID), attribute.String("actor.subject", id.Subject), attribute.String("actor.uid", id.ActorUID), attribute.String("binding.namespace", id.Atespace))
+		if result.name != "ok" {
+			span.SetStatus(codes.Error, result.name)
+		}
 		return
 	}
 	// Never log credentials: the actor JWT, access token and request body

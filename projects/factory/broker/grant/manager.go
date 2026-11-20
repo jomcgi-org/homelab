@@ -127,7 +127,11 @@ func (m *Manager) diagnostics(ctx context.Context) (context.Context, *slog.Logge
 	if !span.IsRecording() {
 		return ctx, m.opts.Logger, func() {}
 	}
-	return broker.WithRefreshLogger(ctx, discardRefreshLogs), discardRefreshLogs, func() {
+	ctx = broker.WithRefreshDiagnostics(ctx, discardRefreshLogs, func() {
+		span.AddEvent("grant.refresh_token_reused")
+		span.SetStatus(codes.Error, "refresh token reused")
+	})
+	return ctx, discardRefreshLogs, func() {
 		span.AddEvent("grant.failure")
 		span.SetStatus(codes.Error, "grant failure")
 	}

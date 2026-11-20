@@ -19,6 +19,8 @@ go_library(
         "//projects/shared/go/tokenbroker/quota",
         "@com_github_klauspost_compress//zstd",
         "@io_opentelemetry_go_otel//:otel",
+        "@io_opentelemetry_go_otel//attribute",
+        "@io_opentelemetry_go_otel//codes",
         "@io_opentelemetry_go_otel_trace//:trace",
     ],
 )
