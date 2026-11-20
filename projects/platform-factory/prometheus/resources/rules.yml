@@ -314,14 +314,14 @@ groups:
       - record: capacity:workload_pod_memory_due_budget_bytes
         expr: |
           max by (namespace, workload, policy) (
-            capacity_forecast_memory_budget_bytes{job="capacity-forecast",policy="timestral",horizon_seconds="1800"} offset 28m
+            capacity_forecast_memory_budget_bytes{job="capacity-forecast",pod="",policy="timestral",horizon_seconds="1800"} offset 28m
             and
-            (capacity_forecast_target_timestamp_seconds{job="capacity-forecast",policy="timestral",horizon_seconds="1800"} offset 28m
+            (capacity_forecast_target_timestamp_seconds{job="capacity-forecast",pod="",policy="timestral",horizon_seconds="1800"} offset 28m
               == time() - (time() % 300))
             or
-            capacity_forecast_memory_budget_bytes{job="capacity-forecast",policy="timestral",horizon_seconds="1800"} offset 31m
+            capacity_forecast_memory_budget_bytes{job="capacity-forecast",pod="",policy="timestral",horizon_seconds="1800"} offset 31m
             and
-            (capacity_forecast_target_timestamp_seconds{job="capacity-forecast",policy="timestral",horizon_seconds="1800"} offset 31m
+            (capacity_forecast_target_timestamp_seconds{job="capacity-forecast",pod="",policy="timestral",horizon_seconds="1800"} offset 31m
               == time() - (time() % 300))
           )
         labels:

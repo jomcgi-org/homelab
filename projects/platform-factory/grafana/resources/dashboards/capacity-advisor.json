@@ -134,6 +134,42 @@
           "range": true
         }
       ]
+    },
+    {
+      "id": 5,
+      "title": "Codex pod memory and 30-minute forecast",
+      "description": "Timestral p90 at issue time and current pod memory. Each series is a running Codex pod.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 24,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (pod) (pod_memory_working_set_bytes{job=\"kubelet-resource\",namespace=\"factory-r-homelab\",pod=~\"homelab-codex-.*\"})",
+          "legendFormat": "{{pod}} observed",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "expr": "capacity_forecast_memory_budget_bytes{job=\"capacity-forecast\",namespace=\"factory-r-homelab\",workload=\"homelab-codex\",policy=\"timestral\",horizon_seconds=\"1800\"}",
+          "legendFormat": "{{pod}} forecast",
+          "range": true
+        }
+      ]
     }
   ]
 }

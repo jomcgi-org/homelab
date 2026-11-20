@@ -40,6 +40,8 @@ spec:
           env:
             - name: PROMETHEUS_URL
               value: http://prometheus.prometheus.svc:9090
+            - name: FORECAST_PROFILES
+              value: {{ .Values.profiles | toJson | quote }}
             - name: PYTHONDONTWRITEBYTECODE
               value: "1"
           ports:

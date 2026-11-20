@@ -1,3 +1,19 @@
 image:
   repository: ghcr.io/jomcgi/homelab/projects/capacity-forecast
   digest: ""
+
+# Each target returns one workload series or one series per pod. Optional
+# observed signals use the same pod label, or no pod label for a shared signal.
+profiles:
+  - namespace: factory-r-homelab-review
+    workload: homelab-reviewer
+    target: >-
+      max by (namespace) (sum by (namespace, pod) (max by (namespace, pod, container)
+      (container_memory_working_set_bytes{job="kubelet-resource",namespace="factory-r-homelab-review",pod=~"homelab-reviewer-.*",container!=""})))
+  - namespace: factory-r-homelab
+    workload: homelab-codex
+    target: >-
+      max by (pod) (pod_memory_working_set_bytes{job="kubelet-resource",namespace="factory-r-homelab",pod=~"homelab-codex-.*"})
+    past_covariates:
+      - >-
+        max by (pod) (rate(pod_cpu_usage_seconds_total{job="kubelet-resource",namespace="factory-r-homelab",pod=~"homelab-codex-.*"}[5m]))
