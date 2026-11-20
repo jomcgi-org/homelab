@@ -90,3 +90,8 @@ filegroup(
     srcs = ["embervm/STPA.md"] + glob(["embervm/stpa/*.json"]),
     visibility = ["//:__pkg__"],
 )
+
+exports_files(
+    ["platform-factory/substrate/render-upstream.sh"],
+    visibility = ["//projects/factory/chart:__pkg__"],
+)

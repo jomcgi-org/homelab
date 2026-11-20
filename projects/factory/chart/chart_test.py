@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import subprocess
 import tarfile
 import tempfile
@@ -115,7 +116,20 @@ def test_binding_codex_code_mode_image() -> None:
 
 
 def test_crds_match_vendored_chart() -> None:
-    with tarfile.open(_CHART_DIR / "charts" / "kagent-crds-1.0.1.tgz") as tgz:
+    renderer = Path(
+        os.environ.get(
+            "SUBSTRATE_RENDERER",
+            _CHART_DIR.parents[1] / "platform-factory/substrate/render-upstream.sh",
+        )
+    )
+    version = re.search(r'^VERSION="([^"]+)"$', renderer.read_text(), re.M).group(1)
+    charts = yaml.safe_load((_CHART_DIR / "Chart.yaml").read_text())["dependencies"]
+    assert {
+        d["name"]: d["version"]
+        for d in charts
+        if d["name"] in ("kagent", "kagent-crds")
+    } == {"kagent": version, "kagent-crds": version}
+    with tarfile.open(_CHART_DIR / "charts" / f"kagent-crds-{version}.tgz") as tgz:
         vendored = {
             Path(m.name).name: tgz.extractfile(m).read()  # type: ignore[union-attr]
             for m in tgz.getmembers()

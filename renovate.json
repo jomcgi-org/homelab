@@ -164,9 +164,11 @@
         "/^projects/platform-factory/substrate/render-upstream\\.sh$/"
       ],
       "matchStrings": ["(?:^|\\n)VERSION=\"(?<currentValue>[^\"]+)\""],
-      "datasourceTemplate": "docker",
+      "datasourceTemplate": "github-releases",
       "depNameTemplate": "ghcr.io/kagent-dev/substrate/helm/substrate",
-      "versioningTemplate": "semver"
+      "versioningTemplate": "semver",
+      "packageNameTemplate": "kagent-dev/substrate",
+      "extractVersionTemplate": "^v(?<version>.+)$"
     },
     {
       "customType": "regex",
@@ -431,6 +433,33 @@
       ],
       "matchDepNames": ["ghcr.io/cfgate/cfgate"],
       "enabled": false
+    },
+    {
+      "description": "Keep the release-age window where the OCI registry supplies a timestamp.",
+      "matchDatasources": ["docker"],
+      "matchFileNames": [
+        "projects/platform-factory/**",
+        "projects/factory/chart/Chart.yaml"
+      ],
+      "matchPackageNames": [
+        "ghcr.io/**",
+        "quay.io/**",
+        "registry.k8s.io/**",
+        "cr.agentgateway.dev/**"
+      ],
+      "minimumReleaseAgeBehaviour": "timestamp-optional"
+    },
+    {
+      "description": "Vendor the matching cfgate CRDs and controller with its image update.",
+      "matchFileNames": [
+        "projects/platform-factory/cfgate/resources/kustomization.yaml"
+      ],
+      "matchDepNames": ["ghcr.io/cfgate/cfgate"],
+      "postUpgradeTasks": {
+        "commands": ["projects/platform-factory/cfgate/refresh-release.sh"],
+        "fileFilters": ["projects/platform-factory/cfgate/resources/**"],
+        "executionMode": "branch"
+      }
     }
   ],
   "automergeType": "pr",
