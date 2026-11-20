@@ -524,8 +524,8 @@ func (c *Client) graphql(ctx context.Context, repo, query string, vars map[strin
 const pullRequestQuery = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      id number url state merged mergedAt isDraft title headRefOid headRefName baseRefName baseRefOid mergeable
-      author { login }
+      id number url state merged mergedAt isDraft title headRefOid headRefName headRepository { nameWithOwner } baseRefName baseRefOid mergeable
+      author { __typename login }
       mergeCommit { oid }
       commits(last: 1) { nodes { commit { oid message } } }
       mergeQueueEntry { state headCommit { oid } }
@@ -544,6 +544,7 @@ const pullRequestQuery = `query($owner: String!, $name: String!, $number: Int!) 
 }`
 
 type login struct {
+	Type  string `json:"__typename"`
 	Login string `json:"login"`
 }
 
@@ -558,21 +559,24 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 	var out struct {
 		Repository struct {
 			PullRequest *struct {
-				ID              string     `json:"id"`
-				Number          int        `json:"number"`
-				URL             string     `json:"url"`
-				State           string     `json:"state"`
-				Merged          bool       `json:"merged"`
-				MergedAt        *time.Time `json:"mergedAt"`
-				IsDraft         bool       `json:"isDraft"`
-				Title           string     `json:"title"`
-				HeadRefOid      string     `json:"headRefOid"`
-				HeadRefName     string     `json:"headRefName"`
-				BaseRefName     string     `json:"baseRefName"`
-				BaseRefOid      string     `json:"baseRefOid"`
-				Mergeable       string     `json:"mergeable"`
-				Author          *login     `json:"author"`
-				MergeCommit     *oid       `json:"mergeCommit"`
+				ID             string     `json:"id"`
+				Number         int        `json:"number"`
+				URL            string     `json:"url"`
+				State          string     `json:"state"`
+				Merged         bool       `json:"merged"`
+				MergedAt       *time.Time `json:"mergedAt"`
+				IsDraft        bool       `json:"isDraft"`
+				Title          string     `json:"title"`
+				HeadRefOid     string     `json:"headRefOid"`
+				HeadRepository struct {
+					NameWithOwner string `json:"nameWithOwner"`
+				} `json:"headRepository"`
+				HeadRefName     string `json:"headRefName"`
+				BaseRefName     string `json:"baseRefName"`
+				BaseRefOid      string `json:"baseRefOid"`
+				Mergeable       string `json:"mergeable"`
+				Author          *login `json:"author"`
+				MergeCommit     *oid   `json:"mergeCommit"`
 				MergeQueueEntry *struct {
 					State      string `json:"state"`
 					HeadCommit *oid   `json:"headCommit"`
@@ -630,11 +634,14 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 	}
 	d := &PullRequestDetail{PullRequest: PullRequest{
 		Number: p.Number, NodeID: p.ID, URL: p.URL, State: strings.ToLower(p.State), Merged: p.Merged,
-		Draft: p.IsDraft, Title: p.Title, HeadSHA: p.HeadRefOid, HeadRef: p.HeadRefName, BaseRef: p.BaseRefName, BaseSHA: p.BaseRefOid,
+		HeadRepo: p.HeadRepository.NameWithOwner, Draft: p.IsDraft, Title: p.Title, HeadSHA: p.HeadRefOid, HeadRef: p.HeadRefName, BaseRef: p.BaseRefName, BaseSHA: p.BaseRefOid,
 	}}
 	d.Mergeable = p.Mergeable
 	if p.Author != nil {
-		d.Author = p.Author.Login // an App's login has no [bot] suffix here
+		d.Author = p.Author.Login
+		if p.Author.Type == "Bot" {
+			d.Author = strings.TrimSuffix(d.Author, "[bot]") + "[bot]"
+		}
 	}
 	if n := p.Commits.Nodes; len(n) == 1 && n[0].Commit.OID == p.HeadRefOid {
 		d.HeadMessage = n[0].Commit.Message

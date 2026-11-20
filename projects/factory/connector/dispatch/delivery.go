@@ -150,7 +150,9 @@ func (e *Engine) deliverWork(ctx context.Context, wi *store.WorkItem) error {
 		return e.followUp(ctx, wi, b, pr)
 	}
 	if wi.State != store.WorkStopped && wi.TurnAttemptID != 0 && wi.TurnAttemptID != wi.SyncedAttemptID {
-		if pr, err = e.syncPR(ctx, wi, b, pr); err != nil {
+		if pr, err = e.syncPR(ctx, wi, b, pr); errors.Is(err, errDeliverySource) {
+			return e.stopWork(ctx, wi, err.Error())
+		} else if err != nil {
 			return err
 		}
 	}
@@ -185,6 +187,12 @@ func (e *Engine) syncPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	if pr != nil {
 		// Only the body changes. A PR a person closed stays closed: the
 		// connector never reopens it against their decision.
+		if err := e.guard(ctx); err != nil {
+			return nil, err
+		}
+		if _, err := e.deliveryDetail(ctx, repo, pr.Number); err != nil {
+			return nil, err
+		}
 		if err := e.guard(ctx); err != nil {
 			return nil, err
 		}
@@ -344,7 +352,7 @@ func (e *Engine) checkRound(ctx context.Context, r *store.Run) error {
 			if err := e.guard(ctx); err != nil {
 				return err
 			}
-			d, err := e.gh.PullRequestDetail(ctx, b.repo(), pr.Number)
+			d, err := e.deliveryDetail(ctx, b.repo(), pr.Number)
 			if err != nil {
 				return err
 			}
@@ -390,7 +398,7 @@ func (e *Engine) checkPRClosed(ctx context.Context, r *store.Run) error {
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
-	d, err := e.gh.PullRequestDetail(ctx, b.repo(), pr.Number)
+	d, err := e.deliveryDetail(ctx, b.repo(), pr.Number)
 	switch {
 	case err != nil || d.State == "open":
 		return err
@@ -459,6 +467,9 @@ func (e *Engine) findOrOpenPR(ctx context.Context, repo string, wi *store.WorkIt
 		Title: title, Head: wi.Branch, Base: b.BaseBranch, Body: body,
 	})
 	if err == nil {
+		if err := e.checkDeliverySource(ctx, repo, created); err != nil {
+			return nil, err
+		}
 		e.m.PullRequests.WithLabelValues("created").Inc()
 		return created, nil
 	}
@@ -473,10 +484,36 @@ func (e *Engine) findOrOpenPR(ctx context.Context, repo string, wi *store.WorkIt
 	return e.adoptPR(ctx, repo, b, found, body)
 }
 
+var errDeliverySource = errors.New("refused PR delivery source")
+
+// deliveryDetail revalidates recorded PRs, including rows adopted by older connectors.
+func (e *Engine) deliveryDetail(ctx context.Context, repo string, number int) (*github.PullRequestDetail, error) {
+	d, err := e.gh.PullRequestDetail(ctx, repo, number)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.checkDeliverySource(ctx, repo, &d.PullRequest); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+func (e *Engine) checkDeliverySource(ctx context.Context, repo string, pr *github.PullRequest) error {
+	if strings.EqualFold(pr.Author, "jomcgi-factory[bot]") && strings.EqualFold(pr.HeadRepo, repo) {
+		return nil
+	}
+	e.m.PullRequests.WithLabelValues("refused_source").Inc()
+	e.log.WarnContext(ctx, "refused PR delivery source", "repo", repo, "pr", pr.Number, "author", pr.Author, "head_repo", pr.HeadRepo)
+	return fmt.Errorf("%w for %s pull request #%d", errDeliverySource, repo, pr.Number)
+}
+
 // adoptPR takes a PR the connector did not just open: an open one against
 // the binding's base gets the current body. A merged, closed or foreign one
 // is returned as found, for settlePR to judge.
 func (e *Engine) adoptPR(ctx context.Context, repo string, b *Binding, pr *github.PullRequest, body string) (*github.PullRequest, error) {
+	if err := e.checkDeliverySource(ctx, repo, pr); err != nil {
+		return nil, err
+	}
 	e.m.PullRequests.WithLabelValues("adopted").Inc()
 	if pr.Merged || pr.State != "open" || (pr.BaseRef != "" && pr.BaseRef != b.BaseBranch) {
 		return pr, nil
@@ -582,7 +619,7 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
-	d, err := e.gh.PullRequestDetail(ctx, repo, pr.Number)
+	d, err := e.deliveryDetail(ctx, repo, pr.Number)
 	if err != nil {
 		return err
 	}
@@ -622,7 +659,7 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		if err := e.beginEjectionRead(ctx, pr, "confirm-entry", strconv.Itoa(pr.Number)); err != nil {
 			return err
 		}
-		again, err := e.gh.PullRequestDetail(ctx, repo, pr.Number)
+		again, err := e.deliveryDetail(ctx, repo, pr.Number)
 		switch {
 		case err != nil:
 			return err
@@ -1397,7 +1434,7 @@ func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr
 	if err := e.beginEjectionRead(ctx, pr, "confirm-revision", strconv.Itoa(pr.Number)); err != nil {
 		return err
 	}
-	latest, err := e.gh.PullRequestDetail(ctx, b.repo(), pr.Number)
+	latest, err := e.deliveryDetail(ctx, b.repo(), pr.Number)
 	if err != nil {
 		return err
 	}
@@ -2087,7 +2124,7 @@ func (e *Engine) replacementContext(ctx context.Context, wi *store.WorkItem, b *
 	if err := e.guard(ctx); err != nil {
 		return "", err
 	}
-	d, err := e.gh.PullRequestDetail(ctx, repo, pr.Number)
+	d, err := e.deliveryDetail(ctx, repo, pr.Number)
 	if err != nil {
 		return "", err
 	}
