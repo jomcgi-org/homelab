@@ -483,11 +483,6 @@ func issuesPending(run *github.CheckRun) bool {
 // marker, as the duplicate-head hold does: no revision round can clear the
 // wait, so the connector starts none.
 func (e *Engine) holdIssues(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, st State, pending []Finding) *github.CheckRun {
-	if audit, ok := e.cfg.GoalAudit.(*FileGoalAudit); ok {
-		if err := audit.clearSelection(b.repo(), pr.Number, pr.HeadSHA); err != nil {
-			e.prLog(b, pr).WarnContext(ctx, "could not clear goal reasons")
-		}
-	}
 	st.IssuesPending = true
 	// The hold replaces the summary that holds a legacy report's task
 	// reference. Keep the reference in the state, so recovery can replay it.

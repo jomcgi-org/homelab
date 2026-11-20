@@ -1,6 +1,7 @@
 package review
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -9,7 +10,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // The goal reasons API gives the delivery owner the goal check's private
@@ -44,61 +44,32 @@ var (
 	repoName  = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 )
 
-// selectGoal binds the head and evidence to the parsed reply used by the check.
-func (s *FileGoalAudit) selectGoal(repo string, pr int, head, digest, id string, now time.Time) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.write(s.selectionName(repo, pr, head), goalSelection{digest, id}, now)
-}
-
-func (s *FileGoalAudit) clearSelection(repo string, pr int, head string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	err := os.Remove(s.selectionName(repo, pr, head))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	return s.sync()
-}
-
-type goalSelection struct{ Digest, ID string }
-
-func (s *FileGoalAudit) selectionName(repo string, pr int, head string) string {
-	return filepath.Join(s.dir, "goal-selected-"+auditID(repo, strconv.Itoa(pr)+"/"+head)+".json")
-}
-
 // invariant: FACT-13
-func (s *FileGoalAudit) Reasons(repo string, pr int, head string) (GoalReasons, bool) {
+func (s *FileGoalAudit) reasons(repo string, pr int, head, issue string, selected *GoalCheck) (GoalReasons, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	data, err := os.ReadFile(s.selectionName(repo, pr, head))
-	var selected goalSelection
-	if err != nil || json.Unmarshal(data, &selected) != nil || !auditHash.MatchString(selected.ID) || selected.Digest == "" {
-		return GoalReasons{}, false
+	if !auditHash.MatchString(selected.AuditID) || selected.Digest == "" {
+		return GoalReasons{}, false, nil
 	}
-	data, err = os.ReadFile(filepath.Join(s.dir, selected.ID+".json"))
+	data, err := os.ReadFile(filepath.Join(s.dir, selected.AuditID+".json"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if _, dirErr := os.Stat(s.dir); dirErr == nil {
+				return GoalReasons{}, false, nil
+			}
+		}
+		return GoalReasons{}, false, err
+	}
 	var best GoalAuditRecord
-	if err != nil || json.Unmarshal(data, &best) != nil || best.Repository != repo || best.PullRequest != pr || best.Head != head || best.Digest != selected.Digest || auditID(best.MessageID, best.TaskID) != selected.ID {
-		return GoalReasons{}, false
+	if json.Unmarshal(data, &best) != nil || best.Repository != repo || best.PullRequest != pr || best.Head != head || best.Issue != issue || best.Digest != selected.Digest || auditID(best.MessageID, best.TaskID) != selected.AuditID {
+		return GoalReasons{}, false, nil
 	}
-	reasons := strings.TrimSpace(replyReasons(best.Reply))
+	reasons := strings.TrimSpace(best.Ownership + replyReasons(best.Reply))
 	if reasons == "" {
-		return GoalReasons{}, false
+		return GoalReasons{}, false, nil
 	}
 	var findings []string
-	answer, err := ParseGoal(best.Reply)
-	if err != nil {
-		return GoalReasons{}, false
-	}
-
-	effective := &GoalCheck{Criteria: answer.Criteria, Overall: answer.Overall}
-	if best.Initial != nil {
-		effective = confirmOnly(best.Initial, effective)
-	}
-	if effective.Overall == goalNotMet {
+	if selected.Overall == goalNotMet {
 		for _, line := range strings.Split(reasons, "\n") {
 			if strings.HasPrefix(strings.TrimSpace(line), "Overall: ") {
 				findings = append(findings, clip(strings.TrimSpace(line), 400))
@@ -115,7 +86,7 @@ func (s *FileGoalAudit) Reasons(repo string, pr int, head string) (GoalReasons, 
 			}
 		}
 	}
-	for _, c := range effective.Criteria {
+	for _, c := range selected.Criteria {
 		if c.Verdict != "not_met" {
 			continue
 		}
@@ -132,7 +103,7 @@ func (s *FileGoalAudit) Reasons(repo string, pr int, head string) (GoalReasons, 
 	return GoalReasons{
 		Findings: findings, Repository: best.Repository, PullRequest: best.PullRequest, Head: best.Head,
 		Issue: best.Issue, Digest: best.Digest, Phase: best.Phase, Reasons: clip(reasons, maxGoalReasons),
-	}, true
+	}, true, nil
 }
 
 // replyReasons is a reply without its last fenced block, the answer.
@@ -146,7 +117,7 @@ func replyReasons(reply string) string {
 
 // GoalReasonsSource is what the API reads.
 type GoalReasonsSource interface {
-	Reasons(repo string, pr int, head string) (GoalReasons, bool)
+	Reasons(ctx context.Context, repo string, pr int, head string) (GoalReasons, bool, error)
 }
 
 // GoalReasonsHandler serves GET GoalReasonsPath?repository=o/r&pullRequest=N&head=SHA.
@@ -165,7 +136,11 @@ func GoalReasonsHandler(src GoalReasonsSource) http.Handler {
 			http.Error(w, "bad query", http.StatusBadRequest)
 			return
 		}
-		got, ok := src.Reasons(repo, pr, head)
+		got, ok, err := src.Reasons(r.Context(), repo, pr, head)
+		if err != nil {
+			http.Error(w, "goal reasons unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		if !ok {
 			http.NotFound(w, r)
 			return

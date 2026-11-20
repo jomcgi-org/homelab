@@ -182,8 +182,8 @@ func TestGoalPromptStartsFromTheEarlierHead(t *testing.T) {
 	got := GoalPrompt("o/r", pr, files, in, history)
 	for _, want := range []string{
 		"## Earlier goal check", "- criterion 1: met\n- criterion 2: not_met\n", "Files changed since prevhead (1):",
-		"> Criterion 2 misses the retry.", "A met or after_rollout verdict does not become unclear",
-		"say in your reasoning which change or which error caused it",
+		"> Criterion 2 misses the retry.", "Give unclear when the reviewed head cannot settle it",
+		"Use earlier verdicts as context",
 		"whether a test passes is CI's to show",
 	} {
 		if !strings.Contains(got, want) {

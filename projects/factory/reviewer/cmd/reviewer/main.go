@@ -112,20 +112,6 @@ func run(log *slog.Logger) error {
 		defer cancel()
 		_ = srv.Shutdown(sctx)
 	}()
-	if cfg.GoalReasonsAddr != "" {
-		// Apart from /metrics: the network policy admits only the connector.
-		goal := &http.Server{Addr: cfg.GoalReasonsAddr, Handler: review.GoalReasonsHandler(audit), ReadHeaderTimeout: 5 * time.Second}
-		go func() {
-			if err := goal.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Error("goal reasons server", "error", err)
-			}
-		}()
-		defer func() {
-			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = goal.Shutdown(sctx)
-		}()
-	}
 
 	gh := &github.Client{
 		BaseURL: cfg.GitHubURL,
@@ -224,6 +210,21 @@ func run(log *slog.Logger) error {
 		GoalTasks:     audit,
 		GoalSessions:  sessions,
 	}, gh, a2a, m, log)
+	if cfg.GoalReasonsAddr != "" {
+		// Apart from /metrics: the network policy admits only the connector.
+		goal := &http.Server{Addr: cfg.GoalReasonsAddr, Handler: review.GoalReasonsHandler(eng), ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			if err := goal.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("goal reasons server", "error", err)
+			}
+		}()
+		defer func() {
+			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = goal.Shutdown(sctx)
+		}()
+	}
+
 	log.Info("reviewer started", "bindings", names, "check", cfg.CheckName, "app_id", cfg.AppID, "comment_author", cfg.CommentAuthor,
 		"concurrency", cfg.Concurrency, "poll", time.Duration(cfg.Intervals.Poll).String())
 	return eng.Run(ctx, time.Duration(cfg.Intervals.Poll))
