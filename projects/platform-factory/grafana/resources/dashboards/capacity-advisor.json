@@ -104,6 +104,36 @@
           "range": true
         }
       ]
+    },
+    {
+      "id": 4,
+      "title": "Timestral forecast points at issue time",
+      "description": "Each line is a different lead time. The comparison above scores the 30-minute point against the observation at its target time.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "capacity_forecast_memory_budget_bytes{job=\"capacity-forecast\",namespace=\"factory-r-homelab-review\",workload=\"homelab-reviewer\",policy=\"timestral\"}",
+          "legendFormat": "{{horizon_seconds}} s",
+          "range": true
+        }
+      ]
     }
   ]
 }

@@ -946,3 +946,21 @@ tests:
       - expr: capacity:workload_pod_memory_budget_exceeded
         eval_time: 6h35m
         exp_samples: []
+
+  - interval: 1m
+    input_series:
+      - series: 'container_memory_working_set_bytes{job="kubelet-resource",namespace="factory-r-homelab-review",pod="homelab-reviewer-a",container="worker"}'
+        values: '100x65'
+      - series: 'capacity_forecast_memory_budget_bytes{job="capacity-forecast",namespace="factory-r-homelab-review",workload="homelab-reviewer",policy="timestral",horizon_seconds="1800"}'
+        values: '_x31 90x10'
+      - series: 'capacity_forecast_target_timestamp_seconds{job="capacity-forecast",namespace="factory-r-homelab-review",workload="homelab-reviewer",policy="timestral",horizon_seconds="1800"}'
+        values: '_x31 3600x10'
+    promql_expr_test:
+      - expr: 'capacity:workload_pod_memory_budget_exceeded{policy="timestral"}'
+        eval_time: 1h
+        exp_samples:
+          - labels: 'capacity:workload_pod_memory_budget_exceeded{namespace="factory-r-homelab-review",workload="homelab-reviewer",policy="timestral"}'
+            value: 1
+      - expr: 'capacity:workload_pod_memory_budget_exceeded{policy="timestral"}'
+        eval_time: 1h5m
+        exp_samples: []
