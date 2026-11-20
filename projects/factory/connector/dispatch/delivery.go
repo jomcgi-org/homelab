@@ -1784,19 +1784,23 @@ func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	defer func() { finish(result) }()
 	activation, valid := github.ActivationTrailer(d.HeadMessage)
 	step := ""
+	var checks []github.CheckRun
+	if b.Review.ReviewerCheck != nil && b.Review.ReviewerCheck.AppID != 0 {
+		if err := e.beginEjectionRead(ctx, pr, "activation-assessment", d.HeadSHA); err != nil {
+			return err
+		}
+		var err error
+		checks, err = e.gh.CheckRuns(ctx, b.repo(), d.HeadSHA)
+		if err != nil {
+			return err // PR polls retry reads without holding a run slot, including 401/403
+		}
+	}
+	var findings []github.DeferredFinding
+	if check := mergedReviewerCheck(&b.Review, d, checks); check != nil {
+		findings = github.ReviewedDeferred(check.Text)
+	}
 	if !valid || activation != "none" {
 		activation = activationPending
-		var checks []github.CheckRun
-		if b.Review.ReviewerCheck != nil && b.Review.ReviewerCheck.AppID != 0 {
-			if err := e.beginEjectionRead(ctx, pr, "activation-assessment", d.HeadSHA); err != nil {
-				return err
-			}
-			var err error
-			checks, err = e.gh.CheckRuns(ctx, b.repo(), d.HeadSHA)
-			if err != nil {
-				return err // PR polls retry reads without holding a run slot, including 401/403
-			}
-		}
 		step = reviewedActivation(&b.Review, d, checks)
 		if step != "" {
 			activation = step
@@ -1833,6 +1837,12 @@ func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		done, err := e.st.MarkMerged(ctx, tx, pr, merge, at)
 		if err != nil {
 			return err
+		}
+		for _, f := range findings {
+			key := fmt.Sprintf("review-followup/%s/%d/%s", b.repo(), pr.Number, f.ID)
+			if err := e.st.Enqueue(ctx, tx, store.OutboxReviewFollowup, key, 0, "", reviewFollowup{wi.ID, b.ItsaplanProject, pr.URL, f}); err != nil {
+				return err
+			}
 		}
 		if !done {
 			// Delivery was stopped: the person's decision on the issue stands.

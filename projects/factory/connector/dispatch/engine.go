@@ -2872,6 +2872,9 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 	if it.Kind == store.OutboxIssueDone {
 		return e.deliverIssueDone(ctx, it)
 	}
+	if it.Kind == store.OutboxReviewFollowup {
+		return e.deliverReviewFollowup(ctx, it)
+	}
 	if it.Kind == store.OutboxActivation {
 		return e.deliverActivation(ctx, it)
 	}

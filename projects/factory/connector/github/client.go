@@ -188,22 +188,42 @@ func (a *ActivationAssessment) Valid(head string) bool {
 // ReviewedActivation reads only an unambiguous, bounded assessment for head.
 // It does not establish trust in the check that carried it.
 func ReviewedActivation(text, head string) *ActivationAssessment {
-	if len(text) > 65535 || strings.Count(text, ReviewStatePrefix) != 1 {
+	var state struct {
+		Activation *ActivationAssessment `json:"activation"`
+	}
+	if !decodeReviewState(text, &state) || !state.Activation.Valid(head) {
 		return nil
+	}
+	return state.Activation
+}
+
+type DeferredFinding struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Detail string `json:"detail"`
+}
+
+func ReviewedDeferred(text string) []DeferredFinding {
+	var state struct {
+		Deferred []DeferredFinding `json:"deferred"`
+	}
+	if !decodeReviewState(text, &state) {
+		return nil
+	}
+	return state.Deferred
+}
+
+func decodeReviewState(text string, state any) bool {
+	if len(text) > 65535 || strings.Count(text, ReviewStatePrefix) != 1 {
+		return false
 	}
 	_, rest, _ := strings.Cut(text, ReviewStatePrefix)
 	encoded, _, ok := strings.Cut(rest, ReviewStateSuffix)
 	if !ok {
-		return nil
+		return false
 	}
 	data, err := base64.StdEncoding.DecodeString(encoded)
-	var state struct {
-		Activation *ActivationAssessment `json:"activation"`
-	}
-	if err != nil || json.Unmarshal(data, &state) != nil || !state.Activation.Valid(head) {
-		return nil
-	}
-	return state.Activation
+	return err == nil && json.Unmarshal(data, state) == nil
 }
 
 // Status is a commit status, the latest per context.

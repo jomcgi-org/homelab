@@ -1029,6 +1029,7 @@ var stateRE = regexp.MustCompile(`<!-- factory-review:state v([12]) ([A-Za-z0-9+
 // findings and human gate on the completed check. The next round must
 // account for the findings; only a person clears the human gate.
 type State struct {
+	Deferred      []github.DeferredFinding     `json:"deferred,omitempty"`
 	InvariantBase string                       `json:"invariant_base,omitempty"`
 	Semgrep       *SemgrepStamp                `json:"semgrep,omitempty"`
 	Activation    *github.ActivationAssessment `json:"activation,omitempty"`
@@ -1306,6 +1307,9 @@ func loweredNote(f Finding) string {
 func stateOf(a Assessment, r *Report, gate *Gate) State {
 	cleared, partial := clearedOf(a, r)
 	st := State{Blocking: []Finding{}, Cleared: cleared, ClearedPartial: partial || a.EarlierPartial, Gate: gate, Decisions: a.decisions(), Incomplete: a.Incomplete, Overflow: a.Overflow, TaskID: a.TaskID, IssueDigest: a.IssueDigest, Goal: a.Goal, GoalKey: a.GoalKey}
+	for _, f := range a.Deferred {
+		st.Deferred = append(st.Deferred, github.DeferredFinding{ID: f.ID, Title: f.Title, Detail: f.Detail})
+	}
 	if r != nil && r.ActivationHead != "" && r.Activation != "" {
 		st.Activation = &github.ActivationAssessment{HeadSHA: r.ActivationHead, Text: r.Activation}
 	}

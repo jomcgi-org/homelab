@@ -1038,3 +1038,41 @@ func TestActivationRunConfirmationPaginatesAndRetriesCredentialErrors(t *testing
 		})
 	}
 }
+
+func TestDeferredMergeFollowups(t *testing.T) {
+	for _, count := range []int{0, 2} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.delivered()
+			v.gh.green("sha-1")
+			findings := []github.DeferredFinding{{ID: "F1", Title: "First", Detail: "first detail"}, {ID: "F2", Title: "Second", Detail: "second detail"}}[:count]
+			data, _ := json.Marshal(map[string]any{"deferred": findings})
+			for i, c := range v.gh.checks["sha-1"] {
+				if c.Name == "semgrep-review" {
+					v.gh.checks["sha-1"][i].Text = github.ReviewStatePrefix + base64.StdEncoding.EncodeToString(data) + github.ReviewStateSuffix
+				}
+			}
+			v.its.columns = append(v.its.columns, itsaplan.Column{ID: 91, StateType: "backlog", Position: -1})
+			v.its.loseActivationCreate = true
+			v.gh.merge(1, "merged-sha")
+			v.poll()
+			v.e.Release()
+			v.e = v.engine("restart")
+			v.poll()
+			v.poll()
+			var delivered int
+			if err := v.st.DB.QueryRow("SELECT count(*) FROM outbox WHERE kind = $1 AND delivered_at IS NOT NULL", store.OutboxReviewFollowup).Scan(&delivered); err != nil || delivered != count {
+				t.Fatalf("delivered %d, want %d: %v", delivered, count, err)
+			}
+			if v.its.activationCreates != count {
+				t.Fatalf("created %d, want %d", v.its.activationCreates, count)
+			}
+			for i, f := range findings {
+				is, err := v.its.GetIssue(v.ctx, int64(1001+i))
+				if err != nil || is.Title != f.Title || is.ColumnID != 91 || is.DelegateUserID != nil || !strings.Contains(is.Description, f.Detail) || !strings.Contains(is.Description, f.ID) || !strings.Contains(is.Description, "https://github.com/example-org/homelab/pull/1") {
+					t.Fatalf("issue=%+v err=%v", is, err)
+				}
+			}
+		})
+	}
+}

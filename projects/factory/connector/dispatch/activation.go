@@ -27,6 +27,16 @@ var (
 )
 
 func reviewedActivation(p *ReviewPolicy, d *github.PullRequestDetail, checks []github.CheckRun) string {
+	latest := mergedReviewerCheck(p, d, checks)
+	if latest != nil && latest.Conclusion == "success" {
+		if a := github.ReviewedActivation(latest.Text, d.HeadSHA); a != nil {
+			return a.Text
+		}
+	}
+	return ""
+}
+
+func mergedReviewerCheck(p *ReviewPolicy, d *github.PullRequestDetail, checks []github.CheckRun) *github.CheckRun {
 	if p.ReviewerCheck != nil && p.ReviewerCheck.AppID != 0 {
 		var latest *github.CheckRun
 		for i := range checks {
@@ -36,15 +46,11 @@ func reviewedActivation(p *ReviewPolicy, d *github.PullRequestDetail, checks []g
 				latest = c
 			}
 		}
-		if latest != nil && latest.Status == "completed" && latest.Conclusion == "success" {
-			if a := github.ReviewedActivation(latest.Text, d.HeadSHA); a != nil {
-				return a.Text
-			}
+		if latest != nil && latest.Status == "completed" {
+			return latest
 		}
 	}
-	// Review bodies have no authenticated edit provenance on this read path.
-	// Even a trusted author's approval cannot supply activation instructions.
-	return ""
+	return nil
 }
 
 type activationPayload struct {
@@ -261,7 +267,7 @@ func (e *Engine) activate(ctx context.Context, it *store.OutboxItem, p activatio
 		return err
 	}
 	if id == 0 {
-		follow, err := e.findActivation(ctx, it, p)
+		follow, err := e.findFollowup(ctx, it, p.WorkID, p.Project, p.marker())
 		if err != nil {
 			return err
 		}
@@ -457,28 +463,28 @@ func (e *Engine) confirmActivationDelegation(ctx context.Context, it *store.Outb
 	return errors.New("activation run history may be truncated")
 }
 
-func (e *Engine) findActivation(ctx context.Context, it *store.OutboxItem, p activationPayload) (*itsaplan.Issue, error) {
-	if err := e.beginActivationCall(ctx, it, p.WorkID, "SearchIssues", fmt.Sprint(p.Project)); err != nil {
+func (e *Engine) findFollowup(ctx context.Context, it *store.OutboxItem, workID int64, project, marker string) (*itsaplan.Issue, error) {
+	if err := e.beginActivationCall(ctx, it, workID, "SearchIssues", fmt.Sprint(project)); err != nil {
 		return nil, err
 	}
-	hits, err := e.its.SearchIssues(ctx, p.Project, p.marker())
+	hits, err := e.its.SearchIssues(ctx, project, marker)
 	if err != nil {
 		return nil, err
 	}
 	var found *itsaplan.Issue
 	for _, hit := range hits {
-		if err := e.beginActivationCall(ctx, it, p.WorkID, "GetIssue", fmt.Sprint(hit.ID)); err != nil {
+		if err := e.beginActivationCall(ctx, it, workID, "GetIssue", fmt.Sprint(hit.ID)); err != nil {
 			return nil, err
 		}
 		is, err := e.its.GetIssue(ctx, hit.ID)
 		if err != nil {
 			return nil, err
 		}
-		if !inProject(is, p.Project) || !strings.Contains(is.Description, p.marker()) {
+		if !inProject(is, project) || !strings.Contains(is.Description, marker) {
 			continue
 		}
 		if found != nil {
-			return nil, errors.New("multiple activation issues have the same work item marker")
+			return nil, errors.New("multiple issues have the same follow-up marker")
 		}
 		found = is
 	}
@@ -594,4 +600,56 @@ func (e *Engine) completeIssue(ctx context.Context, it *store.OutboxItem, p issu
 		}
 		return e.st.OutboxDelivered(ctx, tx, it.ID)
 	})
+}
+
+type reviewFollowup struct {
+	WorkID         int64
+	Project, PRURL string
+	Finding        github.DeferredFinding
+}
+
+func (e *Engine) deliverReviewFollowup(ctx context.Context, it *store.OutboxItem) error {
+	var p reviewFollowup
+	if err := json.Unmarshal(it.Payload, &p); err != nil {
+		return err
+	}
+	marker := fmt.Sprintf("<!-- factory-review-followup %d -->", it.ID)
+	if it.SendStarted {
+		issue, err := e.findFollowup(ctx, it, p.WorkID, p.Project, marker)
+		if err != nil {
+			return err
+		}
+		if issue == nil {
+			return errors.New("review follow-up create outcome unknown")
+		}
+		return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)
+	}
+	if err := e.beginActivationCall(ctx, it, p.WorkID, "ProjectColumns", p.Project); err != nil {
+		return err
+	}
+	columns, err := e.its.ProjectColumns(ctx, p.Project)
+	if err != nil {
+		return err
+	}
+	backlog := firstColumn(columns, "backlog")
+	if backlog == nil {
+		return errors.New("project has no backlog column")
+	}
+	if err := e.beginActivationCall(ctx, it, p.WorkID, "CreateIssue", p.Project); err != nil {
+		return err
+	}
+	if err := e.st.OutboxSendStarted(ctx, it.ID); err != nil {
+		return err
+	}
+	f := p.Finding
+	_, err = e.its.CreateIssue(ctx, p.Project, itsaplan.NewIssue{ColumnID: backlog.ID, Title: f.Title, Description: fmt.Sprintf("Merged PR: %s\nFinding: %s\n\n%s\n\n%s", p.PRURL, f.ID, f.Detail, marker)})
+	if err != nil {
+		if notCreated(err) {
+			if clearErr := e.st.OutboxSendCleared(ctx, it.ID); clearErr != nil {
+				return clearErr
+			}
+		}
+		return err
+	}
+	return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)
 }
