@@ -18,7 +18,7 @@ spec:
   sources:
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: alert-relay
-      targetRevision: 0.11.20
+      targetRevision: 0.12.18
       helm:
         releaseName: alert-relay
     - repoURL: https://github.com/jomcgi-org/homelab.git
