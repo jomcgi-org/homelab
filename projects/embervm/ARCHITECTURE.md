@@ -184,6 +184,10 @@ The edge Envoy tier is the Gateway API ingress in front of node Envoy.
 **Division of labour** (each responsibility placed where it is cheapest to
 make correct):
 
+| Component | Untrusted input | Credentials held |
+| --- | --- | --- |
+| noded | Control-plane RPCs and guest vsock traffic | Control-plane bearer token and configured object-store credentials |
+
 | Component | Owns | Never does |
 | --------- | ---- | ---------- |
 | Control plane (Elixir) | Coordination facts: queue, placement, fairness, backpressure, lifecycle decisions, xDS publication, op-log appends | Carry steady-state payloads; sit on the serving hit path |
