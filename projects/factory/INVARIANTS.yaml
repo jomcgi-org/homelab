@@ -308,11 +308,14 @@ invariants:
   - projects/platform-factory/hindsight/resources/hindsight.yaml
   test: //projects/factory/connector/dispatch:dispatch_test
   state: live
-- id: FACT-19
+- id: HOME-640-1
   statement: Each deferred finding ID on a merged reviewed head files one undelegated Backlog issue per pull request.
   mechanism:
   - projects/factory/reviewer/review/report.go
   - projects/factory/connector/dispatch/delivery.go
   - projects/factory/connector/dispatch/activation.go
+  - projects/factory/connector/migrations/20261124000200_review_merges.sql
+  - projects/factory/connector/migrations/20261124000300_pending_merge_review.sql
+  - projects/factory/chart/files/itsaplan/factory.ts
   test: //projects/factory/connector/dispatch:dispatch_test
   state: live

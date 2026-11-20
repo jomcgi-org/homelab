@@ -671,7 +671,7 @@ type reviewFollowup struct {
 	Finding        github.DeferredFinding
 }
 
-// invariant: FACT-13
+// invariant: HOME-640-1
 
 func (e *Engine) deliverReviewFollowup(ctx context.Context, it *store.OutboxItem) error {
 	var p reviewFollowup
