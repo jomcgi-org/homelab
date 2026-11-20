@@ -855,7 +855,9 @@ def test_semgrep_sync_key_limit_without_connector():
     assert pod["initContainers"][0]["name"] == "bootstrap"
     (limit,) = pod["containers"]
     assert limit["name"] == "semgrep-sync-limit"
-    assert "rate_limit_time_window = 1000, rate_limit_max = 1000" in limit["command"][-1]
+    assert (
+        "rate_limit_time_window = 1000, rate_limit_max = 1000" in limit["command"][-1]
+    )
     (agent,) = [entry for entry in limit["env"] if entry["name"] == "AGENT_ID"]
     assert agent["valueFrom"]["secretKeyRef"] == {
         "name": "factory-itsaplan-agent-intsec-sync",
