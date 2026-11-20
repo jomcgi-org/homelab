@@ -573,6 +573,11 @@ func (e *Engine) lastItsaplanRun(ctx context.Context, workID int64) int64 {
 // pollPR reads the PR and acts on what changed: the merge, a merge queue
 // ejection, review events on the head, or a head ready to enqueue.
 func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest) (result error) {
+	if trace.SpanFromContext(ctx).IsRecording() {
+		// Every PR check is on the poll root, also one that changes nothing or fails.
+		workID, source := wi.ID, wi.State
+		defer func() { e.observePR(ctx, workID, wi.IssueKey, source, pr, result) }()
+	}
 	repo := b.repo()
 	if wi.State != store.WorkStopped {
 		// The issue decides first: a person who canceled it in itsaplan must
@@ -604,11 +609,6 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	pr.HeadSHA, pr.State, pr.MergeQueueState = d.HeadSHA, state, d.MergeQueueState
 	if d.MergeGroupSHA != "" {
 		pr.MergeGroupSHA = d.MergeGroupSHA
-	}
-	if trace.SpanFromContext(ctx).IsRecording() {
-		// Every PR check is on the poll root, also one that changes nothing.
-		workID, source := wi.ID, wi.State
-		defer func() { e.observePR(ctx, workID, wi.IssueKey, source, pr, result) }()
 	}
 	if wi.State == store.WorkStopped {
 		return e.stoppedPR(ctx, wi, b, pr, d)
