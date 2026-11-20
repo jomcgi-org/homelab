@@ -18,13 +18,15 @@ import {
 import { signUpTestUser } from "./__tests__/helpers/auth";
 import { createAgent, setAgentProjectRole } from "./__tests__/helpers/agents";
 import { resetDb } from "./__tests__/helpers/db";
+import { removeAttachmentEmbeds } from "./modules/attachments/service";
+import { createHash } from "node:crypto";
 import { factoryRoutes } from "./factory";
 import { setSubtaskAutomationSettings } from "./modules/projects/service";
 
 app.use(factoryRoutes);
 beforeEach(resetDb);
 
-async function fixture() {
+async function fixture(description = "") {
   const owner = await signUpTestUser();
   const client = authedApi(owner.cookie);
   expect(
@@ -57,6 +59,7 @@ async function fixture() {
   ).data!;
   const created = await client.projects({ projectKey: "HOME" }).issues.post({
     title: "Deferred assessment",
+    description,
     columnId: backlog.id,
     startDate: "2026-01-01",
     labelIds: [label.id],
@@ -96,6 +99,27 @@ async function effects(id: number) {
     ),
   };
 }
+
+test("attachment cleanup leaves the original creation snapshot intact", async () => {
+  const description = "Criteria ![file](/attachments/123)";
+  const { id } = await fixture(description);
+  await removeAttachmentEmbeds(id, "123");
+  expect((await effects(id)).issue.description).toBe("Criteria");
+  const history = await db
+    .select()
+    .from(issueActivity)
+    .where(eq(issueActivity.issueId, id));
+  expect(history.filter((item) => item.action === "description")).toHaveLength(
+    0,
+  );
+  expect(history.find((item) => item.action === "created")?.payload).toEqual({
+    subject: { value: "factory-creation-sha256-v1" },
+    from: {
+      value: createHash("sha256").update("Deferred assessment").digest("hex"),
+    },
+    to: { value: createHash("sha256").update(description).digest("hex") },
+  });
+});
 
 test("real coordinator delegation queues one run and concurrent replays reuse it", async () => {
   const f = await fixture();

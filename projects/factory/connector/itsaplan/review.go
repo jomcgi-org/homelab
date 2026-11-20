@@ -2,8 +2,10 @@ package itsaplan
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -37,6 +39,14 @@ func (c *Client) FindIssue(ctx context.Context, identifier string) (*Issue, erro
 	return &out[0], nil
 }
 
+type activitySide struct {
+	Value *string `json:"value"`
+}
+
+func (s *activitySide) matchesHash(text string) bool {
+	return s != nil && s.Value != nil && *s.Value == fmt.Sprintf("%x", sha256.Sum256([]byte(text)))
+}
+
 type FeedItem struct {
 	ID          int64           `json:"id"`
 	IssueID     int64           `json:"issueId"`
@@ -46,9 +56,9 @@ type FeedItem struct {
 	Body        string          `json:"body"`
 	EditedAt    json.RawMessage `json:"editedAt"`
 	Payload     struct {
-		To *struct {
-			Value *string `json:"value"`
-		} `json:"to"`
+		Subject *activitySide `json:"subject"`
+		From    *activitySide `json:"from"`
+		To      *activitySide `json:"to"`
 	} `json:"payload"`
 }
 
@@ -78,9 +88,13 @@ func (c *Client) IssueTextAuthors(ctx context.Context, issue *Issue) ([]string, 
 				continue
 			}
 			if item.Action == "created" {
-				for field := range want {
-					if !seen[field] {
-						authors[field] = item.ActorUserID
+				snapshot := item.Payload
+				if snapshot.Subject != nil && snapshot.Subject.Value != nil && *snapshot.Subject.Value == "factory-creation-sha256-v1" {
+					if !seen["title"] && snapshot.From.matchesHash(issue.Title) {
+						authors["title"] = item.ActorUserID
+					}
+					if !seen["description"] && snapshot.To.matchesHash(issue.Description) {
+						authors["description"] = item.ActorUserID
 					}
 				}
 				return []string{authors["title"], authors["description"]}, nil

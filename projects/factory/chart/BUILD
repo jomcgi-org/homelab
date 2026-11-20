@@ -9,6 +9,7 @@ filegroup(
     name = "deferred_adapter",
     srcs = [
         "files/itsaplan/client.ts",
+        "files/itsaplan/creation-snapshot.mjs",
         "files/itsaplan/deferred.ts",
         "files/itsaplan/factory.ts",
         "files/itsaplan/transaction.ts",

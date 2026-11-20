@@ -53,6 +53,8 @@ def test_upstream_factory_contracts(tmp_path):
     with tarfile.open(archive) as fixture:
         fixture.extractall(upstream, filter="data")
     adapter = Path(__file__).resolve().parents[2] / "chart/files/itsaplan"
+    service = upstream / "apps/api/src/modules/issues/service.ts"
+    run([bun, adapter / "creation-snapshot.mjs", service, service])
     for src, dest in {
         "client.ts": "packages/db/src/client.ts",
         "transaction.ts": "packages/db/src/factory-transaction.ts",
