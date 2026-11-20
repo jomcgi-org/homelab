@@ -42,6 +42,8 @@ tar(
 
 py3_image(
     name = "image",
+    # Ubuntu already resolves /bin/bash through /bin -> /usr/bin.
+    bash_symlink = False,
     binary = ":worker",
     env = {"TIMESTRAL_MODEL_DIR": "/model"},
     tars = [":model"],
@@ -57,12 +59,10 @@ sh_test(
     name = "inference_test",
     srcs = ["inference_test.sh"],
     args = [
-        "$(rootpath :worker)",
-        "$(rootpath :model)",
+        "$(rootpath :image_image)",
     ],
     data = [
-        ":model",
-        ":worker",
+        ":image_image",
     ],
     target_compatible_with = [
         "@platforms//cpu:x86_64",

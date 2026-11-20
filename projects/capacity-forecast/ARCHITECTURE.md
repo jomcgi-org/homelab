@@ -35,4 +35,5 @@ target observation arrives.
 
 | Direction | Tracks | State |
 | --- | --- | --- |
+| Package and verify the Timestral worker. | [HOME-670](https://factory-plan.jomcgi.dev/factory/issue/HOME-670) | In review |
 | Compare reviewer forecasts with observed memory. | [HOME-669](https://factory-plan.jomcgi.dev/factory/issue/HOME-669) | Pending rollout |
