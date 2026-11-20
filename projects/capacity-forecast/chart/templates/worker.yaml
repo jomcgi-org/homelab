@@ -1,3 +1,13 @@
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+type: kubernetes.io/dockerconfigjson
+metadata:
+  name: ghcr-imagepull-secret
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  itemPath: vaults/k8s-homelab/items/ghcr-read-permissions
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -15,6 +25,8 @@ spec:
         app.kubernetes.io/name: capacity-forecast
     spec:
       automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ghcr-imagepull-secret
       nodeSelector:
         kubernetes.io/arch: amd64
       securityContext:
