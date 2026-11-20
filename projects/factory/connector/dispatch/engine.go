@@ -2906,7 +2906,9 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 			if found {
 				return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)
 			}
-			p.Once = true
+			reason := fmt.Sprintf("manual reconciliation required for issue %d: legacy duplicate explanation absent from feed, original send outcome unknown", p.IssueID)
+			e.log.WarnContext(ctx, reason, "outbox", it.ID)
+			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, reason)
 		}
 		if p.Once {
 			if it.SendStarted {

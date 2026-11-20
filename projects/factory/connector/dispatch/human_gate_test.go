@@ -934,6 +934,19 @@ func TestLegacyDuplicateExplanation(t *testing.T) {
 			}
 			v.clk.Advance(10 * time.Minute)
 			v.poll()
+			if !posted {
+				var reason string
+				err := v.st.DB.QueryRow(`SELECT last_error FROM outbox WHERE dedupe_key=$1 AND abandoned_at IS NOT NULL AND delivered_at IS NULL`,
+					"comment/factory-human-gate/jomcgi-org/homelab/1/duplicate/301").Scan(&reason)
+				if err != nil || !strings.Contains(reason, "manual reconciliation required for issue 301") {
+					t.Fatalf("missing reconciliation record: reason=%q err=%v", reason, err)
+				}
+				// The original POST commits after the lookup that found no comment.
+				if err := v.its.Comment(v.ctx, 301, body); err != nil {
+					t.Fatal(err)
+				}
+				v.poll()
+			}
 			_, comments := v.gateCancels()
 			if comments[301] != 1 {
 				t.Fatalf("comments=%v", comments)
