@@ -34,7 +34,7 @@ import (
 
 // Itsaplan is the subset of the itsaplan client dispatch uses.
 type Itsaplan interface {
-	HasComment(ctx context.Context, issueID int64, body string) (bool, error)
+	HasComment(ctx context.Context, issueID int64, body string, beforePage func(int) error) (bool, error)
 	Project(context.Context, string) (*itsaplan.Project, error)
 	ProjectIssues(context.Context, string) ([]itsaplan.Issue, error)
 	StartDeferred(context.Context, int64, itsaplan.DeferredRequest) (*itsaplan.DeferredReceipt, error)
@@ -1892,7 +1892,8 @@ type commentPayload struct {
 	Body    string `json:"body"`
 	// Once posts the comment at most once: itsaplan comments have no
 	// idempotency key, so a send whose outcome is unknown is not repeated.
-	Once bool `json:"once,omitempty"`
+	Once           bool `json:"once,omitempty"`
+	LegacySettling bool `json:"legacySettling,omitempty"`
 }
 
 // notCreated reports an error that proves itsaplan created nothing: the
@@ -2901,7 +2902,12 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 		// Older duplicate explanations have no send marker. A previous
 		// writer may already have posted one before it lost the response.
 		if !p.Once && strings.HasPrefix(it.DedupeKey, "comment/factory-human-gate/") && strings.Contains(it.DedupeKey, "/duplicate/") {
-			found, err := e.its.HasComment(ctx, p.IssueID, p.Body)
+			if !p.LegacySettling {
+				return e.st.SettleLegacyGateComment(ctx, e.w, it.ID, e.cfg.Now().Add(humanGateSettle))
+			}
+			found, err := e.its.HasComment(ctx, p.IssueID, p.Body, func(page int) error {
+				return e.w.RecordStatusRead(ctx, fmt.Sprintf("%s/read/feed/%d", it.DedupeKey, page))
+			})
 			if err != nil {
 				return err
 			}

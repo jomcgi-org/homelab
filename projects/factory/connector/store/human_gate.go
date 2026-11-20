@@ -175,3 +175,12 @@ func (s *Store) FinishHumanGateCancel(ctx context.Context, messageID string, iss
 		return s.Enqueue(ctx, tx, OutboxComment, "comment/"+messageID, 0, "", map[string]any{"issueId": issueID, "body": comment, "once": true})
 	})
 }
+
+// SettleLegacyGateComment delays the first feed lookup after takeover. Save
+// the deadline with the row so a restart cannot skip the settling period.
+func (s *Store) SettleLegacyGateComment(ctx context.Context, w *Writer, id int64, next time.Time) error {
+	return w.Tx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE outbox SET payload=payload || '{"legacySettling":true}'::jsonb, next_attempt_at=$2 WHERE id=$1`, id, next)
+		return err
+	})
+}

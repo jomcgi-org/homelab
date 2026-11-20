@@ -901,7 +901,10 @@ func TestHumanGateLateCreateResponseAfterAdoption(t *testing.T) {
 	}
 }
 
-func (f *fakeItsaplan) HasComment(_ context.Context, issueID int64, body string) (bool, error) {
+func (f *fakeItsaplan) HasComment(_ context.Context, issueID int64, body string, beforePage func(int) error) (bool, error) {
+	if err := beforePage(0); err != nil {
+		return false, err
+	}
 	for _, c := range f.Comments() {
 		if c.issueID == issueID && c.body == body {
 			return true, nil
@@ -915,15 +918,21 @@ func TestLegacyDuplicateExplanation(t *testing.T) {
 		t.Run(fmt.Sprint(posted), func(t *testing.T) {
 			v := newHumanGateEnv(t)
 			const body = "Duplicate of HL-201"
+			err := v.st.Enqueue(v.ctx, v.st.DB, store.OutboxComment, "comment/factory-human-gate/jomcgi-org/homelab/1/duplicate/301", 0, "", map[string]any{"issueId": 301, "body": body})
+			if err != nil {
+				t.Fatal(err)
+			}
+			v.poll()
+			_, early := v.gateCancels()
+			if early[301] != 0 {
+				t.Fatal("replacement sent before settlement")
+			}
 			if posted {
 				if err := v.its.Comment(v.ctx, 301, body); err != nil {
 					t.Fatal(err)
 				}
 			}
-			err := v.st.Enqueue(v.ctx, v.st.DB, store.OutboxComment, "comment/factory-human-gate/jomcgi-org/homelab/1/duplicate/301", 0, "", map[string]any{"issueId": 301, "body": body})
-			if err != nil {
-				t.Fatal(err)
-			}
+			v.clk.Advance(10 * time.Minute)
 			v.poll()
 			_, comments := v.gateCancels()
 			if comments[301] != 1 {
