@@ -160,8 +160,8 @@ func (c *Claude) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 		return writeError(w, http.StatusBadRequest, "bad_request", "bad_request", nil)
 	}
 	body = body[:n]
-	model, ambiguous := claudeRequestModel(body)
-	if ambiguous {
+	model, denied := claudeRequestModel(body, c.ModelAllowlist[id.Subject])
+	if denied {
 		return writeError(w, http.StatusForbidden, ErrClaudeModelDenied, "model_denied", nil)
 	}
 	if model == "" {
@@ -216,7 +216,7 @@ func (c *Claude) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 
 // Walk validated JSON in place so large prompts and wide objects do not
 // require a decoded object graph or a second serialized body.
-func claudeRequestModel(body []byte) (string, bool) {
+func claudeRequestModel(body []byte, allowed []string) (string, bool) {
 	if !json.Valid(body) {
 		return "", false
 	}
@@ -264,6 +264,15 @@ func claudeRequestModel(body []byte) (string, bool) {
 					wantModel = true
 				}
 			} else if wantModel {
+				// Each byte of an allowed UTF-8 name needs at most six
+				// bytes as a JSON escape, plus the surrounding quotes.
+				longest := 0
+				for _, name := range allowed {
+					longest = max(longest, len(name))
+				}
+				if (len(raw)-2+5)/6 > longest {
+					return "", true
+				}
 				if json.Unmarshal(raw, &model) != nil || model == "" {
 					return "", false
 				}
