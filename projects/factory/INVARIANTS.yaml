@@ -94,3 +94,9 @@ invariants:
   - projects/factory/connector/store/provenance.go
   test: //projects/factory/connector/store:store_test
   state: live
+- id: FACT-18
+  statement: After a definitive refusal of the first goal send, the next poll prepares a fresh session.
+  mechanism:
+  - projects/factory/reviewer/review/goal.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live
