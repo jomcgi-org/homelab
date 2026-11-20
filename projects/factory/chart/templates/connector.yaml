@@ -233,7 +233,7 @@ spec:
             - name: FACTORY_MEMORY_REPO
               value: {{ printf "%s/%s" .owner .repo | quote }}
             - name: FACTORY_MEMORY_URL
-              value: http://hindsight-api.hindsight.svc.cluster.local:8888/v1/default/banks/homelab/memories
+              value: http://hindsight-api.hindsight.svc.cluster.local:8888/ext/connector/retain
             {{- end }}
             {{- end }}
             {{- with $c.traceEndpoint }}

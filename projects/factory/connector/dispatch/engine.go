@@ -2068,13 +2068,14 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 	state := t.Status.State
 	switch state {
 	case kagent.StateCompleted, kagent.StateInputRequired:
-		res := itsaplan.Result{Status: "success", Output: Output(t)}
+		answer := taskAnswer(t)
+		res := itsaplan.Result{Status: "success", Output: clip(itsaplanText(answer), maxOutput)}
 		return e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
 			if err := e.st.CompleteTask(ctx, tx, a.ID, state); err != nil {
 				return err
 			}
 			if state == kagent.StateCompleted {
-				if err := saveLesson(ctx, tx, wi.ID, res.Output); err != nil {
+				if err := saveLesson(ctx, tx, wi.ID, answer); err != nil {
 					return err
 				}
 				// The turn finished; delivery opens or updates the PR from the

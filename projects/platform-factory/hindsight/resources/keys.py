@@ -3,10 +3,10 @@
 Two modes, both safe to rerun:
 
   init    Before the Deployment: fill hindsight-keys with a tenant API key
-          (the REST API) and an MCP token, each only
-          when absent.
+          and separate legacy MCP, recall and connector retain tokens.
+          Fill only missing keys.
   agents  After every sync: copy the MCP token into the coding binding's
-          hindsight-mcp Secret and the tenant key into the connector Secret.
+          hindsight-mcp Secret and the retain token into the connector Secret.
 
 hindsight-keys is the source of truth, and a rerun never rotates a key. Uses
 only the standard library and the pod's service account token.
@@ -35,9 +35,10 @@ KEYS = "hindsight-keys"
 # Source key in hindsight-keys -> destination namespace and Secret.
 CONSUMERS = {
     "mcp-token": ("factory-r-homelab", "hindsight-mcp"),
-    "tenant-api-key": ("factory", "hindsight-connector"),
+    "recall-token": ("factory-r-homelab", "hindsight-recall"),
+    "retain-token": ("factory", "hindsight-connector"),
 }
-FIELDS = ("tenant-api-key", "mcp-token")
+FIELDS = ("tenant-api-key", "mcp-token", "retain-token", "recall-token")
 
 
 def call(method, path, body=None):

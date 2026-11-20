@@ -1115,7 +1115,8 @@
                 "type": "array",
                 "minItems": 1,
                 "uniqueItems": true,
-                "items": { "enum": ["recall"] }
+                "contains": { "const": "recall" },
+                "items": { "enum": ["recall", "retain"] }
               }
             }
           },

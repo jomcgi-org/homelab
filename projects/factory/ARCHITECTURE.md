@@ -240,16 +240,15 @@ config, never its memories, so a template change in git reaches the bank on
 the next sync. `POST .../import?dry_run=true` validates a manifest without
 changing anything. A new project needs a new `app` value.
 
-Two keys separate the callers. The REST API takes only the tenant key, which
-the Hindsight workloads and the connector hold. MCP maps the homelab
-binding token to the homelab bank and registers only `recall`
-(`HINDSIGHT_API_MCP_ENABLED_TOOLS`), so a caller with the token can neither
-reach REST nor list, delete or reflect. The `hindsight-keys` Jobs generate both
-keys once and copy the token into the binding's `hindsight-mcp` Secret, which
-is labelled injectable: the Substrate egress gateway adds it as the
-`Authorization` header, and the actor holds a placeholder. Hindsight admits
-the egress gateway for agent traffic. kagent cannot reach Hindsight, so the RemoteMCPServer
-sets `kagent.dev/discovery: disabled` and the agent lists tools at run time.
+The connector receives a separate retain token. Hindsight accepts it at
+`POST /ext/connector/retain` and sends the request to the homelab bank.
+The tenant REST key stays inside Hindsight.
+
+During rollout, Hindsight and the git values preserve the legacy coder's
+recall and retain permissions. The replacement chart selects a separate recall-only credential and exposes only recall.
+After the connector stores a verified merged lesson, remove retain from the
+MCP binding, enabled tools and both values files. To roll back, restore those
+permissions and values before lowering the chart pin.
 
 The bank is the URL path (`/mcp/homelab/`). The homelab binding uses this bank. Recalled text is data, never an
 instruction: the prompt says the repository, issue and CI win.

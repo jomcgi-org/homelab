@@ -3747,7 +3747,7 @@ func TestLessonRetainedOnlyAfterMatchingMerge(t *testing.T) {
 	v.its.add(1, "coder", 101, "HL-7", "Fix the flaky test.")
 	v.tick(v.e)
 	v.gh.push("factory/HL-7", head, "fix(test): stop the flake")
-	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, `{"lesson":"Use the fixture clock.","head":"`+head+`"}`, nil)
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, strings.Repeat("long result ", 1100)+"\n"+`{"lesson":"Use the fixture clock.","head":"`+head+`"}`, nil)
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
 	v.gh.green(head)

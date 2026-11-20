@@ -2287,9 +2287,10 @@ func (e *Engine) startQueueAction(ctx context.Context, wi *store.WorkItem, pr *s
 var lessonHead = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 func saveLesson(ctx context.Context, tx *sql.Tx, workID int64, output string) error {
-	lines := strings.Split(strings.TrimSpace(output), "\n")
+	output = strings.TrimSpace(output)
+	lastLine := output[strings.LastIndexByte(output, '\n')+1:]
 	var field struct{ Head, Lesson string }
-	if json.Unmarshal([]byte(lines[len(lines)-1]), &field) != nil || !lessonHead.MatchString(field.Head) {
+	if json.Unmarshal([]byte(lastLine), &field) != nil || !lessonHead.MatchString(field.Head) {
 		return nil
 	}
 	field.Lesson = strings.TrimSpace(field.Lesson)

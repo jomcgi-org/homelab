@@ -81,7 +81,7 @@ def keys(monkeypatch):
         spec.loader.exec_module(script)
     api = SecretAPI()
     monkeypatch.setattr(script, "call", api.call)
-    values = iter(["a" * 64, "b" * 64])
+    values = iter(["a" * 64, "b" * 64, "c" * 64, "d" * 64])
     monkeypatch.setattr(
         script.secrets, "token_hex", Mock(side_effect=lambda _: next(values))
     )
@@ -94,17 +94,22 @@ def test_init_fills_both_keys_once_and_never_rotates(keys, capsys):
     data = api.secrets[KEYS]["data"]
     assert decode(data["tenant-api-key"]) == "a" * 64
     assert decode(data["mcp-token"]) == "b" * 64
+    assert decode(data["retain-token"]) == "c" * 64
     assert api.writes == [KEYS]
     assert api.secrets[AGENT_TOKEN]["data"] == {}
 
     api.writes.clear()
     script.main("init")
     script.main("agents")
-    assert api.writes == [AGENT_TOKEN, ("factory", "hindsight-connector")]
+    assert api.writes == [
+        AGENT_TOKEN,
+        ("factory-r-homelab", "hindsight-recall"),
+        ("factory", "hindsight-connector"),
+    ]
     api.writes.clear()
     script.main("agents")
     assert api.writes == []
-    assert script.secrets.token_hex.call_count == 2
+    assert script.secrets.token_hex.call_count == 4
     output = capsys.readouterr().out
     assert "a" * 64 not in output and "b" * 64 not in output
 
@@ -113,6 +118,9 @@ def test_agents_get_only_the_mcp_token(keys):
     script, api = keys
     script.main("agents")
     shared = api.secrets[AGENT_TOKEN]["data"]
+    assert api.secrets[("factory", "hindsight-connector")]["data"] == {
+        "token": api.secrets[KEYS]["data"]["retain-token"]
+    }
     assert shared == {"token": api.secrets[KEYS]["data"]["mcp-token"]}
     assert shared["token"] != api.secrets[KEYS]["data"]["tenant-api-key"]
 
@@ -149,7 +157,7 @@ def test_agent_token_is_injectable_and_never_in_the_pod_as_the_tenant_key():
         "key": "mcp-token",
     }
     # The agents' token reaches MCP only, and MCP registers only these.
-    assert env["HINDSIGHT_API_MCP_ENABLED_TOOLS"] == "recall"
+    assert env["HINDSIGHT_API_MCP_ENABLED_TOOLS"] == "recall,retain"
     assert env["HF_HUB_OFFLINE"] == "1"
     assert deployment["spec"]["template"]["spec"]["enableServiceLinks"] is False
 

@@ -33,6 +33,10 @@ spec:
       kind: Secret
       name: hindsight-connector
       jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      name: hindsight-recall
+      jsonPointers: [/data]
   syncPolicy:
     automated:
       prune: true

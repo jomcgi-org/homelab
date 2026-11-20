@@ -1100,7 +1100,7 @@ def test_memory_is_opt_in_and_binds_only_the_named_tools(tmp_path: Path) -> None
     assert server["spec"]["headersFrom"] == [
         {
             "name": "Authorization",
-            "valueFrom": {"type": "Secret", "name": "hindsight-mcp", "key": "token"},
+            "valueFrom": {"type": "Secret", "name": "hindsight-recall", "key": "token"},
         }
     ]
     inline = _in(docs, "Agent", ns, "homelab-codex")["spec"]["template"]["inline"]
@@ -1115,7 +1115,7 @@ def test_memory_is_opt_in_and_binds_only_the_named_tools(tmp_path: Path) -> None
     prompt = (_CHART_DIR / "files" / "memory-prompt.txt").read_text()
     assert inline["systemPrompt"].endswith("\n" + prompt)
     with pytest.raises(RuntimeError, match="memory"):
-        _render([*_MEMORY, "repositories[0].memory.tools={recall,retain}"])
+        _render([*_MEMORY, "repositories[0].memory.tools={recall,reflect}"])
 
 
 def test_memory_stays_off_the_review_binding() -> None:

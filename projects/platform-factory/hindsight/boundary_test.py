@@ -23,7 +23,12 @@ ROOT = Path(__file__).resolve().parent
 HINDSIGHT = Path("/app/api/.venv/bin/hindsight-api")
 TENANT_KEY = "t" * 64
 MCP_TOKEN = "m" * 64
-SECRET_VALUES = {"tenant-api-key": TENANT_KEY, "mcp-token": MCP_TOKEN}
+SECRET_VALUES = {
+    "tenant-api-key": TENANT_KEY,
+    "recall-token": "r" * 64,
+    "retain-token": "w" * 64,
+    "mcp-token": MCP_TOKEN,
+}
 
 
 def deployed_env():
@@ -152,10 +157,6 @@ def server():
         "HINDSIGHT_API_SKIP_LLM_VERIFICATION": "true",
     }
     env["PYTHONPATH"] = str(ROOT / "resources")
-    policies = json.loads(env["MCP_BINDINGS"])
-    policies["TEST_READER_TOKEN"] = {"bank": "homelab", "tools": ["recall"]}
-    env["MCP_BINDINGS"] = json.dumps(policies)
-    env["TEST_READER_TOKEN"] = "r" * 64
     log = Path(home) / "hindsight.log"
     with log.open("w") as out:
         proc = subprocess.Popen([str(HINDSIGHT)], env=env, stdout=out, stderr=out)
@@ -221,12 +222,12 @@ def test_mcp_takes_only_the_mcp_token(server, token):
     [("/mcp/homelab/", {}), ("/mcp/", {"X-Bank-Id": "homelab"})],
     ids=["bank-path", "multi-bank"],
 )
-def test_mcp_registers_only_recall(server, path, headers):
+def test_mcp_registers_legacy_tools(server, path, headers):
     client = MCP(server, path, MCP_TOKEN, headers)
     assert client.status == 200
     tools = client.call("tools/list")["result"]["tools"]
-    assert sorted(tool["name"] for tool in tools) == ["recall"]
-    for name in ("retain", "delete_bank", "clear_memories", "list_memories", "reflect"):
+    assert sorted(tool["name"] for tool in tools) == ["recall", "retain"]
+    for name in ("delete_bank", "clear_memories", "list_memories", "reflect"):
         reply = client.call("tools/call", {"name": name, "arguments": {}})
         assert "error" in reply or reply["result"].get("isError") is True, reply
 
@@ -241,7 +242,7 @@ def test_mcp_registers_only_recall(server, path, headers):
     ids=["canonical", "alias-path", "alias-header"],
 )
 def test_recall_works_with_the_mcp_token(server, path, headers):
-    client = MCP(server, path, MCP_TOKEN, headers)
+    client = MCP(server, path, SECRET_VALUES["recall-token"], headers)
     tools = client.call("tools/list")["result"]["tools"]
     assert sorted(tool["name"] for tool in tools) == ["recall"]
     reply = client.call(
@@ -343,3 +344,28 @@ def test_explicit_tool_bank_cannot_override_binding(server, name, arguments):
         "tools/call", {"name": name, "arguments": {**arguments, "bank_id": "other"}}
     )
     assert "Operation outside MCP binding" in json.dumps(reply)
+
+
+def test_connector_token_only_reaches_fixed_retain_route(server):
+    token = SECRET_VALUES["retain-token"]
+    assert request(server, "GET", "/v1/default/banks", token)[0] == 401
+    assert request(server, "DELETE", "/v1/default/banks/homelab", token)[0] == 401
+    assert MCP(server, "/mcp/homelab/", token).status == 401
+    assert (
+        request(
+            server,
+            "POST",
+            "/v1/default/banks/other/memories",
+            token,
+            {"items": [{"content": "fixture"}]},
+        )[0]
+        == 401
+    )
+    payload = {"async": True, "items": [{"content": "fixture lesson"}]}
+    assert (
+        request(server, "POST", "/ext/connector/retain", MCP_TOKEN, payload)[0] == 401
+    )
+    assert request(server, "POST", "/ext/connector/retain", token, payload)[0] in (
+        200,
+        202,
+    )

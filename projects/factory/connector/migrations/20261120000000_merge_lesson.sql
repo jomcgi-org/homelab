@@ -1,3 +1,4 @@
+/* invariant: FACT-13 */
 CREATE TABLE merge_lesson (
     work_item_id bigint NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
     head_sha text NOT NULL,

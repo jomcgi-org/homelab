@@ -101,18 +101,30 @@ spec:
                   key: tenant-api-key
             # MCP takes the agents' token instead, and registers only these
             # tools, so the token can neither reach REST nor delete memories.
+            - name: HINDSIGHT_API_HTTP_EXTENSION
+              value: bindings:ConnectorRetain
+            - name: CONNECTOR_RETAIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-keys
+                  key: retain-token
             - name: HINDSIGHT_API_MCP_EXTENSION
               value: bindings:MemoryTools
             # invariant: FACT-13
             - name: MCP_BINDINGS
-              value: '{"HOMELAB_MCP_TOKEN":{"bank":"homelab","tools":["recall"]}}'
+              value: '{"HOMELAB_MCP_TOKEN":{"bank":"homelab","tools":["recall","retain"]},"HOMELAB_RECALL_TOKEN":{"bank":"homelab","tools":["recall"]}}'
+            - name: HOMELAB_RECALL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-keys
+                  key: recall-token
             - name: HOMELAB_MCP_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: hindsight-keys
                   key: mcp-token
             - name: HINDSIGHT_API_MCP_ENABLED_TOOLS
-              value: recall
+              value: recall,retain
             # Schema v1 for every new bank (HOME-183): the retain mission and
             # the app and kind labels, which extraction turns into tags.
             # Hindsight applies it only when it creates a bank; change an
