@@ -70,9 +70,18 @@ func (e *Engine) prepareGoalDispatch(ctx context.Context, b *Binding, in *inputs
 			return err
 		}
 		if s == nil || !contextIDPattern.MatchString(s.ContextID) || s.ID != s.ContextID ||
-			s.AgentNamespace != b.Agent.Namespace || s.AgentName != b.Agent.Name || s.Gone() || s.Crashed() ||
-			(revision != "" && s.PreparedRevision != revision) {
+			s.AgentNamespace != b.Agent.Namespace || s.AgentName != b.Agent.Name || s.Gone() || s.Crashed() {
 			return errors.New("goal session unavailable")
+		}
+		if revision != "" && s.PreparedRevision != revision {
+			if s.PreparedRevision != "" {
+				next := sha256.Sum256([]byte(d.Nonce + "\x00" + s.ID))
+				d.Nonce = hex.EncodeToString(next[:16])
+				if err := e.cfg.GoalTasks.SaveGoalTask(*d); err != nil {
+					return err
+				}
+			}
+			return errors.New("goal session pinned a different revision")
 		}
 		d.ContextID = s.ContextID
 		if err := e.cfg.GoalTasks.SaveGoalTask(*d); err != nil {
@@ -120,7 +129,24 @@ func (e *Engine) recordProvenance(ctx context.Context, b *Binding, in *inputs, m
 	if err != nil {
 		return err
 	}
-	msg.ContextID, err = e.cfg.Sessions.PinPromptSession(ctx, b.Agent, msg.MessageID, msg.ContextID, b.Runtime.SystemPrompt)
+	requestID := msg.MessageID
+	key := "review-session/" + msg.MessageID
+	if msg.ContextID == "" {
+		cursor, err := e.cfg.GoalTasks.LoadGoalTask(key)
+		if err != nil {
+			return err
+		}
+		if cursor != nil {
+			requestID = cursor.MessageID
+		}
+	}
+	msg.ContextID, err = kagent.PinPromptSession(ctx, e.cfg.Sessions, b.Agent, requestID, msg.ContextID, b.Runtime.SystemPrompt, e.cfg.GoalSessions.CreateSession)
+	if errors.Is(err, kagent.ErrCreatedRevisionMismatch) {
+		next := sha256.Sum256([]byte(requestID))
+		if saveErr := e.cfg.GoalTasks.SaveGoalTask(GoalTask{Key: key, MessageID: hex.EncodeToString(next[:]), CreatedAt: e.cfg.Now().UTC()}); saveErr != nil {
+			return saveErr
+		}
+	}
 	if err != nil {
 		return err
 	}

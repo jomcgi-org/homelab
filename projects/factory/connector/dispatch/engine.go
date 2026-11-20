@@ -64,7 +64,8 @@ type Tasks interface {
 
 // Sessions is the subset of the kagent session client dispatch uses.
 type Sessions interface {
-	PinPromptSession(context.Context, kagent.AgentRef, string, string, string) (string, error)
+	PromptRevision(context.Context, kagent.AgentRef, string) (string, error)
+	CreateSession(context.Context, kagent.AgentRef, string) (*kagent.Session, error)
 	GetSession(ctx context.Context, id string) (*kagent.Session, error)
 	RevertSession(ctx context.Context, id string) (*kagent.Session, error)
 	ListSessions(ctx context.Context, agent kagent.AgentRef, pageToken string) ([]*kagent.Session, string, error)
@@ -1597,8 +1598,8 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 	if errors.Is(err, errLegacyRuntime) {
 		return e.recoverHeld(ctx, r, wi, a, recoveryLifecycle)
 	}
-	if errors.Is(err, errRuntimeChanged) {
-		return e.replaceRuntimeAttempt(ctx, r, wi, b, a)
+	if errors.Is(err, errRuntimeChanged) || errors.Is(err, kagent.ErrCreatedRevisionMismatch) {
+		return e.replaceRuntimeAttempt(ctx, r, wi, b, a, err)
 	}
 	if err != nil {
 		return err
