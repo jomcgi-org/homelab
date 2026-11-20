@@ -231,15 +231,19 @@ func messageText(m *kagent.Message) string {
 // Output is the turn's final answer: the status message, else the last agent
 // message, else the artifacts' text.
 func Output(t *kagent.Task) string {
+	return clip(itsaplanText(taskAnswer(t)), maxOutput)
+}
+
+func taskAnswer(t *kagent.Task) string {
 	if t.Status.Message != nil {
 		if s := messageText(t.Status.Message); s != "" {
-			return clip(itsaplanText(s), maxOutput)
+			return s
 		}
 	}
 	for i := len(t.History) - 1; i >= 0; i-- {
 		if m := t.History[i]; m != nil && m.Role != "ROLE_USER" {
 			if s := messageText(m); s != "" {
-				return clip(itsaplanText(s), maxOutput)
+				return s
 			}
 		}
 	}
@@ -252,7 +256,7 @@ func Output(t *kagent.Task) string {
 			b.WriteString(p.Text)
 		}
 	}
-	return clip(itsaplanText(b.String()), maxOutput)
+	return b.String()
 }
 
 // StatusText is the task's status message text, for error classification.

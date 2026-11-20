@@ -1,3 +1,4 @@
+/* invariant: FACT-18 */
 CREATE TABLE merge_lesson (
     work_item_id bigint NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
     head_sha text NOT NULL,
@@ -6,4 +7,4 @@ CREATE TABLE merge_lesson (
 );
 ALTER TABLE outbox DROP CONSTRAINT outbox_kind_check;
 ALTER TABLE outbox ADD CONSTRAINT outbox_kind_check
-    CHECK (kind IN ('result', 'comment', 'issue_done', 'deferred_start', 'activation', 'retain'));
+    CHECK (kind IN ('result', 'comment', 'issue_done', 'deferred_start', 'activation', 'issue_reviewing', 'retain'));
