@@ -8,6 +8,7 @@ package publish
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -114,20 +115,28 @@ type publisher struct {
 	stats stats
 	// objects maps each key in the bucket to its last-modified time.
 	objects map[string]time.Time
+	// previousKeys maps a content address to its key in the previous manifest.
+	previousKeys map[string]string
+	incarnation  string
 }
 
-// write puts a payload unless the bucket already holds its key. The key holds
-// the digest, so an existing key already has these bytes.
-func (p *publisher) write(ctx context.Context, key string, body []byte) error {
-	if _, ok := p.objects[key]; ok {
-		return nil
+// write reuses a key only while the previous generation names it. A
+// retired key may have a DELETE in flight from a publisher that lost its
+// database session. Republishing the same bytes gives them a fresh key.
+func (p *publisher) write(ctx context.Context, name string, body []byte) (string, error) {
+	contentKey := address(name, body)
+	if key, ok := p.previousKeys[contentKey]; ok {
+		if _, exists := p.objects[key]; exists {
+			return key, nil
+		}
 	}
+	key := contentKey[:len(contentKey)-len(".json")] + "-" + p.incarnation + ".json"
 	if err := p.store.put(ctx, key, body, immutable); err != nil {
-		return err
+		return "", err
 	}
 	p.stats.puts++
 	p.stats.putBytes += int64(len(body))
-	return nil
+	return key, nil
 }
 
 // errLocked reports that another run holds the writer lock.
@@ -165,6 +174,15 @@ func (p *publisher) run(ctx context.Context, src source) error {
 	}
 	if err != nil {
 		return err
+	}
+	p.incarnation = rand.Text()
+	p.previousKeys = make(map[string]string)
+	if prev != nil {
+		for key := range prev.refs() {
+			if parts := digestKey.FindStringSubmatch(key); parts != nil {
+				p.previousKeys[parts[1]+"-"+parts[2]+".json"] = key
+			}
+		}
 	}
 	retired := readRetired(ctx, p.store, p.objects, prev)
 	r, err := src.open(ctx)
@@ -208,8 +226,8 @@ func (p *publisher) run(ctx context.Context, src source) error {
 			if err != nil {
 				return err
 			}
-			key := address(trackName(mmsi), body)
-			if err := p.write(ctx, key, body); err != nil {
+			key, err := p.write(ctx, trackName(mmsi), body)
+			if err != nil {
 				return err
 			}
 			vessels[index[mmsi]].Track = &key
@@ -236,7 +254,7 @@ func (p *publisher) run(ctx context.Context, src source) error {
 		return err
 	}
 	cur := &generation{
-		manifest: manifest{Version: schemaVersion, GeneratedAt: stamp{at}, Snapshot: address("snapshot", snapBody), Heat: address("heat", heatBody)},
+		manifest: manifest{Version: schemaVersion, GeneratedAt: stamp{at}},
 		vessels:  map[string]vessel{},
 	}
 	for _, v := range vessels {
@@ -247,10 +265,10 @@ func (p *publisher) run(ctx context.Context, src source) error {
 	}
 	// Tracks first, then heat and the snapshot, then the manifest: every
 	// key that a manifest names exists before the manifest does.
-	if err := p.write(ctx, cur.manifest.Heat, heatBody); err != nil {
+	if cur.manifest.Heat, err = p.write(ctx, "heat", heatBody); err != nil {
 		return err
 	}
-	if err := p.write(ctx, cur.manifest.Snapshot, snapBody); err != nil {
+	if cur.manifest.Snapshot, err = p.write(ctx, "snapshot", snapBody); err != nil {
 		return err
 	}
 	top, err := json.Marshal(cur.manifest)
