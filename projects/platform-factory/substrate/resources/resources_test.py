@@ -9,7 +9,9 @@ from pathlib import Path
 import yaml
 
 _HERE = Path(__file__).resolve().parent
-_IMAGE = "ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/credential-provider"
+_IMAGE = (
+    "ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/credential-provider"
+)
 
 
 def _docs() -> list[dict]:
@@ -33,9 +35,13 @@ def _atelet(docs: list[dict]) -> dict:
 
 def test_plugin_directory_is_an_emptydir_filled_from_the_pinned_image() -> None:
     pod = _atelet(_docs())
-    (bin_volume,) = [v for v in pod["volumes"] if v["name"] == "image-credential-provider-bin"]
+    (bin_volume,) = [
+        v for v in pod["volumes"] if v["name"] == "image-credential-provider-bin"
+    ]
     assert bin_volume == {"name": "image-credential-provider-bin", "emptyDir": {}}
-    (install,) = [c for c in pod["initContainers"] if c["name"] == "install-credential-provider"]
+    (install,) = [
+        c for c in pod["initContainers"] if c["name"] == "install-credential-provider"
+    ]
     digest = Path(os.environ["PROVIDER_DIGEST"]).read_text().strip()
     assert install["image"] == f"{_IMAGE}@{digest}"
     assert install["args"] == ["install", "/plugins/ghcr-credential-provider"]
@@ -64,7 +70,9 @@ def test_only_the_atelet_container_mounts_the_login() -> None:
 def test_plugin_config_names_the_installed_binary_and_the_login() -> None:
     docs = _docs()
     config = yaml.safe_load(
-        _one(docs, "ConfigMap", "atelet-image-credential-provider")["data"]["config.yaml"]
+        _one(docs, "ConfigMap", "atelet-image-credential-provider")["data"][
+            "config.yaml"
+        ]
     )
     (provider,) = config["providers"]
     assert provider["name"] == "ghcr-credential-provider"
@@ -75,4 +83,6 @@ def test_plugin_config_names_the_installed_binary_and_the_login() -> None:
     item = _one(docs, "OnePasswordItem", "ghcr-imagepull-secret")
     assert item["type"] == "kubernetes.io/dockerconfigjson"
     assert item["metadata"]["namespace"] == "ate-system"
-    assert item["spec"] == {"itemPath": "vaults/k8s-homelab/items/ghcr-read-permissions"}
+    assert item["spec"] == {
+        "itemPath": "vaults/k8s-homelab/items/ghcr-read-permissions"
+    }
