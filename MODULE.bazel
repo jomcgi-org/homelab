@@ -203,6 +203,7 @@ http_file(
 
 # BuildBuddy RBE toolchain for remote build execution (80 cores on free tier)
 buildbuddy = use_extension("@toolchains_buildbuddy//:extensions.bzl", "buildbuddy")
+
 # Remote actions use Ubuntu 22.04. Local fallback on the Ubuntu 24.04
 # workflow runner also needs the GCC 13 compiler's builtin header directory.
 buildbuddy.gcc_toolchain(
