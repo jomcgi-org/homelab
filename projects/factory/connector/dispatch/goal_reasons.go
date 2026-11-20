@@ -155,37 +155,37 @@ func (e *Engine) goalReasons(ctx context.Context, b *Binding, wi *store.WorkItem
 	return g, err
 }
 
-// readGoalReasons is goalReasons that also gives the read's class: "off",
-// "none", "error", "other_issue" or "ok". A later poll can retry an "error".
-func (e *Engine) readGoalReasons(ctx context.Context, b *Binding, wi *store.WorkItem, pr *store.PullRequest, sha string) (*GoalReasons, string, error) {
+// readGoalReasons is goalReasons that also reports a failed read, which a
+// later poll can retry.
+func (e *Engine) readGoalReasons(ctx context.Context, b *Binding, wi *store.WorkItem, pr *store.PullRequest, sha string) (*GoalReasons, bool, error) {
 	if e.cfg.GoalReasons == nil {
-		return nil, "off", nil
+		return nil, false, nil
 	}
 	if err := e.guard(ctx); err != nil {
-		return nil, "", err
+		return nil, false, err
 	}
 	messageID := fmt.Sprintf("goal/%d/%s/reasons", pr.ID, sha)
 	if err := e.st.RecordDeliveryRead(ctx, pr.ID, e.w.Epoch, messageID, "goal-reasons", sha); err != nil {
-		return nil, "", err
+		return nil, false, err
 	}
 	if err := e.guard(ctx); err != nil {
-		return nil, "", err
+		return nil, false, err
 	}
 	g, err := e.cfg.GoalReasons.GoalReasons(ctx, b.repo(), pr.Number, sha)
 	switch {
 	case errors.Is(err, ErrNoGoalReasons):
 		e.m.GoalReasonReads.WithLabelValues("none").Inc()
-		return nil, "none", nil
+		return nil, false, nil
 	case err != nil:
 		e.m.GoalReasonReads.WithLabelValues("error").Inc()
 		e.log.WarnContext(ctx, "goal reasons read failed", "pr", pr.Number, "head", sha)
-		return nil, "error", nil
+		return nil, true, nil
 	case g.Issue != wi.IssueKey:
 		e.m.GoalReasonReads.WithLabelValues("other_issue").Inc()
-		return nil, "other_issue", nil
+		return nil, false, nil
 	}
 	e.m.GoalReasonReads.WithLabelValues("ok").Inc()
-	return g, "ok", nil
+	return g, false, nil
 }
 
 // enqueueGoalReasons posts a head's reasons on the issue once.
@@ -202,9 +202,7 @@ const ownedFinding = "owned by a follow-up"
 // the reviewer's check passes, so no revision round carries its reasons.
 // The public check names no key; the reasons, which do, go to the work
 // item's issue once per head. A failed read gives wait, so the PR stays out
-// of the queue and the next poll reads again. When the reviewer no longer
-// keeps the reasons, for example after its audit retention, a fixed comment
-// tells the issue that a follow-up owns a criterion, so the PR does not stall.
+// of the queue and the next poll reads again.
 func (e *Engine) ownershipFeedback(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, head string, checks []github.CheckRun) (wait bool, err error) {
 	r := b.Review.ReviewerCheck
 	if r == nil || r.AppID == 0 {
@@ -215,27 +213,12 @@ func (e *Engine) ownershipFeedback(ctx context.Context, wi *store.WorkItem, b *B
 			!goalFinding(c.Summary, wi.IssueKey) || !strings.Contains(c.Summary, ownedFinding) {
 			continue
 		}
-		g, class, err := e.readGoalReasons(ctx, b, wi, pr, head)
-		key := fmt.Sprintf("comment/goal-reasons/%d/%s", wi.ID, head)
-		switch {
-		case err != nil || class == "error":
-			return class == "error", err
-		case class == "none":
-			return false, e.st.Enqueue(ctx, e.st.DB, store.OutboxComment, key, 0, "",
-				commentPayload{IssueID: wi.IssueID, Once: true, Body: ownedWithoutReasons(pr, head)})
-		case g == nil:
-			return false, nil
+		g, failed, err := e.readGoalReasons(ctx, b, wi, pr, head)
+		if err != nil || g == nil {
+			return failed, err
 		}
-		return false, e.st.Enqueue(ctx, e.st.DB, store.OutboxComment, key, 0, "",
+		return false, e.st.Enqueue(ctx, e.st.DB, store.OutboxComment, fmt.Sprintf("comment/goal-reasons/%d/%s", wi.ID, g.Head), 0, "",
 			commentPayload{IssueID: wi.IssueID, Once: true, Body: goalReasonsComment(wi, pr, g)})
 	}
 	return false, nil
-}
-
-// ownedWithoutReasons is the fixed comment for an owned criterion whose
-// private reasons the reviewer no longer keeps.
-func ownedWithoutReasons(pr *store.PullRequest, head string) string {
-	return fmt.Sprintf("The reviewer passed PR #%d (%s) at head %s with a criterion of this issue owned by a follow-up. "+
-		"The reviewer no longer keeps the reasons that name the follow-up. Find it in this issue's links, "+
-		"or push a new head to run the goal check again.", pr.Number, pr.URL, head)
 }
