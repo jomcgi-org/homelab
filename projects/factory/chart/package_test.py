@@ -19,7 +19,7 @@ _APPLICATION = Path(
 )
 _DEPLOY = Path(os.environ.get("DEPLOY_VALUES", _CHART.parent / "deploy/values.yaml"))
 _LOCK = Path(os.environ.get("RENDER_LOCK", _CHART.parent / "deploy/render.sha256"))
-_IMAGES = ("broker", "codexTrial", "connector", "reviewer")
+_IMAGES = ("broker", "codexTrial", "connector", "discordRender", "reviewer")
 
 
 @pytest.fixture(scope="module")
@@ -143,12 +143,16 @@ def test_packaged_render_matches_the_lock_with_published_images(
     rendered = _render(archive, values / "values-homelab.yaml", *pinned)
     assert rendered == _render(_CHART, _DEPLOY, *overrides)
     docs = [doc for doc in yaml.safe_load_all(rendered) if doc]
-    for service in ("broker", "connector", "reviewer"):
+    for service, name in (
+        ("broker", "factory-broker"),
+        ("connector", "factory-connector"),
+        ("reviewer", "factory-reviewer"),
+        ("discordRender", "factory-discord-render"),
+    ):
         (deployment,) = [
             doc
             for doc in docs
-            if doc["kind"] == "Deployment"
-            and doc["metadata"]["name"] == f"factory-{service}"
+            if doc["kind"] == "Deployment" and doc["metadata"]["name"] == name
         ]
         (container,) = deployment["spec"]["template"]["spec"]["containers"]
         image = published[service]["image"]

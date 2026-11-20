@@ -34,6 +34,7 @@ oci_digest_manifest(
         "//projects/factory/broker/image:image.info": "//projects/factory/broker/image:image.push",
         "//projects/factory/codex-code-mode:image.info": "//projects/factory/codex-code-mode:image.push",
         "//projects/factory/connector/image:image.info": "//projects/factory/connector/image:image.push",
+        "//projects/factory/discord/render:image.info": "//projects/factory/discord/render:image.push",
         "//projects/factory/reviewer/harness:image.info": "//projects/factory/reviewer/harness:image.push",
         "//projects/factory/reviewer/image:image.info": "//projects/factory/reviewer/image:image.push",
         "//projects/firecracker/sandbox/elixir:image.info": "//projects/firecracker/sandbox/elixir:image.push",

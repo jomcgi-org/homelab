@@ -67,3 +67,15 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-13
+  statement: The Discord renderer denies all egress and admits only the bridge on TCP 8080.
+  mechanism:
+  - projects/factory/chart/templates/discord-render.yaml
+  test: //projects/factory/chart:chart_test
+  state: live
+- id: FACT-14
+  statement: The renderer rejects external data, Mermaid links and specs larger than 65536 bytes before launching a converter.
+  mechanism:
+  - projects/factory/discord/render/src/main.rs
+  test: //projects/factory/discord/render:input_test
+  state: live

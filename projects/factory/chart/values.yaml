@@ -353,6 +353,12 @@ workers:
   # Harness snapshots go to <prefix><namespace>/ in Substrate's snapshot store.
   snapshotLocationPrefix: s3://ate-snapshots/
 
+discordRender:
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/factory/discord/render
+    tag: latest
+    digest: ""
+
 # The Discord bot (HOME-162): a kagent Agent in its own namespace, and the
 # bridge (projects/factory/discord) that connects it to Discord. Discord
 # content is untrusted data from people other than Joe: it reaches only this
