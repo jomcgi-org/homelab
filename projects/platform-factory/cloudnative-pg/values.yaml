@@ -7,3 +7,7 @@ resources:
   requests:
     cpu: 10m
     memory: 96Mi
+
+image:
+  repository: ghcr.io/cloudnative-pg/cloudnative-pg
+  tag: "1.30.0@sha256:a2701eb97cdd2a34b1fdb2cb51987f544b706e40bec72ae7146cd8580efefebb"
