@@ -849,22 +849,24 @@ func (c *Client) PullRequestLabelEvents(ctx context.Context, repo string, number
 
 // Comment is a PR conversation comment.
 type Comment struct {
-	ID     int64
-	Author string
-	Body   string
+	UpdatedAt string
+	ID        int64
+	Author    string
+	Body      string
 }
 
 type restComment struct {
-	ID   int64  `json:"id"`
-	User login  `json:"user"`
-	Body string `json:"body"`
-	App  *struct {
+	UpdatedAt string `json:"updated_at"`
+	ID        int64  `json:"id"`
+	User      login  `json:"user"`
+	Body      string `json:"body"`
+	App       *struct {
 		ID int64 `json:"id"`
 	} `json:"performed_via_github_app"`
 }
 
 func (cm restComment) comment() Comment {
-	return Comment{ID: cm.ID, Author: cm.User.Login, Body: cm.Body}
+	return Comment{UpdatedAt: cm.UpdatedAt, ID: cm.ID, Author: cm.User.Login, Body: cm.Body}
 }
 
 // PullRequestComments lists the first 100 conversation comments on a PR,

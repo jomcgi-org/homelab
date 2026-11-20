@@ -73,3 +73,10 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: A finding decision binds to the prompt comment's body hash and updated_at until a review reports the finding fixed.
+  mechanism:
+  - projects/factory/reviewer/review/engine.go
+  - projects/factory/reviewer/review/report.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live
