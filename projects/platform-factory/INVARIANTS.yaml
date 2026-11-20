@@ -128,3 +128,9 @@ invariants:
   - projects/platform/kargo/values-factory.yaml
   test: //projects/platform/kargo:promotion_gate_test
   state: live
+- id: PLAT-20
+  statement: Factory databases, Garage, the edge controller and proxy, and the 1Password operator outrank default-priority pods.
+  mechanism:
+  - projects/platform-factory/priority/priority-class.yaml
+  test: //projects/platform-factory/priority:priority_test
+  state: live

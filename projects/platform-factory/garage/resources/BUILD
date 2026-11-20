@@ -56,3 +56,8 @@ filegroup(
     ),
     visibility = ["//projects/platform-factory/image-audit:__pkg__"],
 )
+
+exports_files(
+    ["garage.yaml"],
+    visibility = ["//projects/platform-factory/priority:__pkg__"],
+)

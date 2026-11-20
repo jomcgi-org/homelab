@@ -120,6 +120,7 @@ spec:
       labels:
         app.kubernetes.io/name: garage
     spec:
+      priorityClassName: factory-platform
       serviceAccountName: garage
       affinity:
         podAntiAffinity:

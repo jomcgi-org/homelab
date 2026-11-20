@@ -35,6 +35,7 @@ spec:
       envoyDeployment:
         replicas: {{ .Values.proxy.replicas }}
         pod:
+          priorityClassName: factory-platform
           topologySpreadConstraints:
             - maxSkew: 1
               topologyKey: kubernetes.io/hostname

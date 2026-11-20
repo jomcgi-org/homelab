@@ -24,6 +24,7 @@ connect:
     # The operator's chart tag, pinned by digest (HOME-287). The chart
     # renders imageRepository:version, so the digest rides on the version.
     version: "1.9.1@sha256:d644aa2bcb9a6b12e986d377f5780f7b9d6519486aa7e38e79d12c30c219d1d4"
+    priorityClassName: factory-platform
     resources:
       requests:
         memory: 64Mi
