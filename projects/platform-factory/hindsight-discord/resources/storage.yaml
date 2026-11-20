@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: discord-media-s3
+  namespace: hindsight-discord
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: Opaque
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: garage-init
+  namespace: hindsight-discord
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [discord-media-s3]
+    verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: garage-init
+  namespace: hindsight-discord
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: garage-init
+subjects:
+  - kind: ServiceAccount
+    name: garage-init
+    namespace: garage
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: garage-claim-f61e073dbd3fef03fd161e2b11111dc7ff5eafdf2ef4c734b775b838df84a186
+  namespace: garage
+  labels:
+    factory.jomcgi.dev/garage-claim: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+data:
+  namespace: hindsight-discord
+  secretName: discord-media-s3
+  bucket: discord-media
+  access: readwrite

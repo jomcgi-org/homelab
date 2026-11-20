@@ -30,6 +30,14 @@ spec:
         - ports:
             - port: "5432"
               protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: garage
+            app.kubernetes.io/name: garage
+      toPorts:
+        - ports:
+            - port: "3900"
+              protocol: TCP
     - toFQDNs:
         - matchName: openrouter.ai
       toPorts:

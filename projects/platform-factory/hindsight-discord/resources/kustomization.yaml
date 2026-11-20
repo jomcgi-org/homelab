@@ -5,6 +5,7 @@ kind: Kustomization
 resources:
   - network-policy.yaml
   - secrets.yaml
+  - storage.yaml
   - hindsight.yaml
 
 # Keep the script ConfigMap distinct from the tenant Secret. Kustomize also
