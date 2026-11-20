@@ -165,7 +165,7 @@ def test_deploy_values_enable_the_reviewer() -> None:
     assert deploy["reviewer"]["bindings"]["homelab"]["enqueueAuthors"] == []
     # The reviewer keeps one comment on each PR, written as its App's bot.
     assert deploy["reviewer"]["commentAuthor"] == "jomcgi-factory-review[bot]"
-    # Revision rounds quote the goal check's private reasons (HOME-251).
+    # Private feedback waits for the corrected chart and reviewer rollout.
     assert deploy["reviewer"]["goalReasons"]["enabled"] is False
     assert deploy["connector"]["bindings"]["homelab"]["reviewerCheck"] == {
         "name": "factory review",
