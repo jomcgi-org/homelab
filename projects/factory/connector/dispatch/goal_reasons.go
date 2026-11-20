@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
 )
 
@@ -184,4 +185,32 @@ func (e *Engine) goalReasons(ctx context.Context, b *Binding, wi *store.WorkItem
 func (e *Engine) enqueueGoalReasons(ctx context.Context, tx *sql.Tx, wi *store.WorkItem, pr *store.PullRequest, round *store.Run, g *GoalReasons) error {
 	return e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/goal-reasons/%d/%s", wi.ID, g.Head), round.ID, "",
 		commentPayload{IssueID: wi.IssueID, Once: true, Body: goalReasonsComment(wi, pr, g)})
+}
+
+// ownedFinding is the reviewer's fixed title end for a criterion that a
+// verified follow-up issue owns.
+const ownedFinding = "owned by a follow-up"
+
+// ownershipFeedback delivers the follow-up key of an owned criterion when
+// the reviewer's check passes, so no revision round carries its reasons.
+// The public check names no key; the reasons, which do, go to the work
+// item's issue once per head.
+func (e *Engine) ownershipFeedback(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, head string, checks []github.CheckRun) error {
+	r := b.Review.ReviewerCheck
+	if r == nil || r.AppID == 0 {
+		return nil
+	}
+	for _, c := range checks {
+		if c.HeadSHA != head || c.Name != r.Name || c.AppID != r.AppID || c.Status != "completed" || failedConclusion(c.Conclusion) ||
+			!goalFinding(c.Summary, wi.IssueKey) || !strings.Contains(c.Summary, ownedFinding) {
+			continue
+		}
+		g, err := e.goalReasons(ctx, b, wi, pr, head)
+		if err != nil || g == nil {
+			return err
+		}
+		return e.st.Enqueue(ctx, e.st.DB, store.OutboxComment, fmt.Sprintf("comment/goal-reasons/%d/%s", wi.ID, g.Head), 0, "",
+			commentPayload{IssueID: wi.IssueID, Once: true, Body: goalReasonsComment(wi, pr, g)})
+	}
+	return nil
 }

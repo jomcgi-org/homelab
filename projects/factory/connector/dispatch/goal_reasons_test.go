@@ -178,3 +178,52 @@ func TestGoalReasonsClientChecksTheAnswer(t *testing.T) {
 		t.Fatalf("500 = %v", err)
 	}
 }
+
+// TestOwnedCriterionReachesTheIssueOnAPassingReview reads the reasons for a
+// passing review with an owned criterion and posts them, which name the
+// follow-up key, on the work item's issue once. No round starts and the PR
+// still enters the queue.
+func TestOwnedCriterionReachesTheIssueOnAPassingReview(t *testing.T) {
+	v := newDeliveryEnv(t)
+	goal := &fakeGoalReasons{issue: "HL-7", reasons: "Criterion 2 is owned by HL-9."}
+	v.cfg.GoalReasons = goal
+	v.e.Release()
+	v.e = v.engine("connector-a")
+	v.delivered()
+	v.gh.green("sha-1")
+	v.gh.summarize("sha-1", "semgrep-review", "s\n\n### Optional\n\n- **low** HL-7 criterion 2: owned by a follow-up (`HL-7:goal:criterion-2`): An open follow-up owns criterion 2 of HL-7.")
+	v.poll()
+	v.poll()
+	if n := len(v.rounds()); n != 0 {
+		t.Fatalf("rounds = %d, want none for a passing review", n)
+	}
+	if len(v.gh.Enqueues()) != 1 {
+		t.Fatal("a passing review with an owned criterion did not enqueue")
+	}
+	posted := 0
+	for _, c := range v.its.Comments() {
+		if strings.Contains(c.body, "Criterion 2 is owned by HL-9.") {
+			posted++
+		}
+	}
+	if posted != 1 || goal.calls() == 0 {
+		t.Fatalf("ownership comments = %d, reads = %d", posted, goal.calls())
+	}
+}
+
+// TestPassingReviewWithoutOwnershipReadsNoReasons keeps the read to reviews
+// that name an owned criterion.
+func TestPassingReviewWithoutOwnershipReadsNoReasons(t *testing.T) {
+	v := newDeliveryEnv(t)
+	goal := &fakeGoalReasons{issue: "HL-7", reasons: "private"}
+	v.cfg.GoalReasons = goal
+	v.e.Release()
+	v.e = v.engine("connector-a")
+	v.delivered()
+	v.gh.green("sha-1")
+	v.gh.summarize("sha-1", "semgrep-review", "s\n\n### Optional\n\n- **low** HL-7 criterion 4: to check after rollout (`HL-7:goal:criterion-4`): Check after rollout.")
+	v.poll()
+	if goal.calls() != 0 || len(v.gh.Enqueues()) != 1 {
+		t.Fatalf("reads = %d, enqueues = %d", goal.calls(), len(v.gh.Enqueues()))
+	}
+}

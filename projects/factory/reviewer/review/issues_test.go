@@ -911,3 +911,31 @@ func TestOwnershipRejectsPartialSourceCriterion(t *testing.T) {
 		t.Fatal("the source still lists one criterion")
 	}
 }
+
+// An indented code example in a follow-up is not a task, so it cannot
+// take ownership of a criterion.
+func TestOwnershipRejectsIndentedCodeExample(t *testing.T) {
+	for name, followUp := range map[string]string{
+		"spaces after marker":    "Done when\n1.     Ship telemetry",
+		"tab after marker":       "Done when\n1.\tShip telemetry",
+		"code under an item":     "Done when\n1. Example:\n\n       Ship telemetry",
+		"code under a bullet":    "Done when\n- Example:\n      Ship telemetry",
+		"plain item (control) ✓": "Done when\n1. Ship telemetry",
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := &IssueContext{
+				Issue:     &IssueEvidence{Key: "HOME-1", Trusted: true, Description: "Done when\n1. Ship telemetry"},
+				FollowUps: map[string]string{"HOME-58": followUp},
+			}
+			a := goalAnswer{Criteria: []GoalVerdict{{1, goalOwned}}, followUps: map[int]string{1: "HOME-58"}}
+			a.verifyOwnership(in)
+			want := goalNotMet
+			if strings.HasSuffix(name, "✓") {
+				want = goalOwned
+			}
+			if a.Criteria[0].Verdict != want {
+				t.Fatalf("verdict = %q, want %q", a.Criteria[0].Verdict, want)
+			}
+		})
+	}
+}
