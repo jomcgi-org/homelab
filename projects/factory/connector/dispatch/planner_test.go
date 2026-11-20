@@ -1,7 +1,9 @@
 package dispatch_test
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -186,5 +188,69 @@ func TestPlannerDropsOversizeEvidence(t *testing.T) {
 	var dropped, proposals int
 	if err := v.st.DB.QueryRow(`SELECT dropped,(SELECT count(*) FROM planner_proposal) FROM planner_run WHERE run_id='r'`).Scan(&dropped, &proposals); err != nil || dropped != 1 || proposals != 0 || v.its.activationCreates != 0 {
 		t.Fatalf("dropped %d, proposals %d, creates %d: %v", dropped, proposals, v.its.activationCreates, err)
+	}
+}
+
+func (f *fakeItsaplan) GetIssueByNumber(ctx context.Context, project string, n int64) (*itsaplan.Issue, error) {
+	for _, is := range f.issues {
+		if is.Identifier == fmt.Sprintf("%s-%d", project, n) {
+			return f.GetIssue(ctx, is.ID)
+		}
+	}
+	return nil, itsaplan.ErrNotFound
+}
+
+func TestPlannerOpenFingerprint(t *testing.T) {
+	v := plannerFixture(t)
+	v.its.issues = map[int64]*itsaplan.Issue{44: {ID: 44, Identifier: "HOME-44", ColumnID: 5, Description: "<!-- factory-planner-fingerprint: homelab:docs:file:missing -->"}}
+	v.tick(v.e)
+	var duplicates int
+	if err := v.st.DB.QueryRow("SELECT deduplicated FROM planner_run WHERE run_id='r'").Scan(&duplicates); err != nil || duplicates != 1 || v.its.activationCreates != 0 {
+		t.Fatalf("duplicates %d creates %d: %v", duplicates, v.its.activationCreates, err)
+	}
+}
+
+func TestPlannerFiledOutcomes(t *testing.T) {
+	for _, outcome := range []string{"Done", "failed", "canceled"} {
+		t.Run(outcome, func(t *testing.T) {
+			v := plannerFixture(t)
+			v.tick(v.e)
+			v.tick(v.e)
+			is := v.its.issues[1001]
+			if !strings.Contains(is.Description, "<!-- factory-planner-fingerprint: homelab:docs:file:missing -->") {
+				t.Fatal("missing fingerprint")
+			}
+			if outcome == "Done" {
+				is.ColumnID = 3
+			} else {
+				v.its.activationRunPages = map[int64]*itsaplan.IssueRunPage{0: {Items: []itsaplan.IssueRun{{ID: 50, Username: "homelab-codex", Trigger: "delegation", Status: outcome}}}}
+			}
+			if _, err := v.st.DB.Exec("UPDATE planner_proposal SET disposition='delegate',next_attempt=now()"); err != nil {
+				t.Fatal(err)
+			}
+			v.tick(v.e)
+			var closed, proven bool
+			if err := v.st.DB.QueryRow("SELECT closed_at IS NOT NULL,reproducible FROM planner_proposal WHERE issue_key='HOME-1001'").Scan(&closed, &proven); err != nil || !closed || proven != (outcome == "Done") {
+				t.Fatalf("closed %v reproducible %v: %v", closed, proven, err)
+			}
+		})
+	}
+}
+
+func TestPlannerExistingIdeas(t *testing.T) {
+	for n := 4; n <= 11; n++ {
+		v := plannerFixture(t)
+		fp := fmt.Sprintf("homelab:planner:home-%d:scheduled-agent", n)
+		if _, err := v.st.DB.Exec("UPDATE planner_schedule SET namespace='homelab:planner'"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := v.st.DB.Exec("UPDATE planner_run SET final_message=replace(final_message,'homelab:docs:file:missing',$1)", fp); err != nil {
+			t.Fatal(err)
+		}
+		v.tick(v.e)
+		var count int
+		if err := v.st.DB.QueryRow("SELECT deduplicated FROM planner_run WHERE run_id='r'").Scan(&count); err != nil || count != 1 || v.its.activationCreates != 0 {
+			t.Fatalf("HOME-%d duplicates %d: %v", n, count, err)
+		}
 	}
 }

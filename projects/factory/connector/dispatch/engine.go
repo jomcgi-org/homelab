@@ -43,6 +43,7 @@ type Itsaplan interface {
 	Result(ctx context.Context, agent string, runID int64, r itsaplan.Result) error
 	GetRun(ctx context.Context, runID int64) (*itsaplan.RunStatus, error)
 	Comment(ctx context.Context, issueID int64, body string) error
+	GetIssueByNumber(context.Context, string, int64) (*itsaplan.Issue, error)
 	GetIssue(ctx context.Context, issueID int64) (*itsaplan.Issue, error)
 	GetAttachments(ctx context.Context, issueID int64) ([]itsaplan.Attachment, error)
 	ProjectColumns(ctx context.Context, projectKey string) ([]itsaplan.Column, error)
@@ -422,6 +423,7 @@ func (e *Engine) Tick(ctx context.Context) (result error) {
 		{"activation recovery", e.st.RecoverActivation},
 		{"human_gates", e.stepHumanGates},
 		{"planner", e.stepPlanner},
+		{"planner_outcome", e.syncPlannerOutcome},
 		{"outbox", e.flushOutbox},
 		{"sessions", e.sweepSessions},
 		{"admission_metrics", e.admissionMetrics},
