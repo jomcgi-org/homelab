@@ -9,6 +9,19 @@ description matching. Open one only when:
 2. a "Where to look next" row in `docs/agents/reference.md` names the file, or
 3. a task spec or routine prompt names it.
 
+## Operational runbook stages
+
+1. **Start with a minimal runbook.** State when to use it, how to check the
+   problem, what to do, and how to verify recovery.
+2. **Follow up with interactive steps.** File a HOME issue for useful links,
+   checks, or action buttons. Show the target and planned change before an
+   operator confirms an action that changes state.
+3. **Evaluate automated remediation.** If the case is unclear, defer a HOME
+   issue until two weeks after the interactive steps go live. Review how often
+   operators used the action, how often it worked, and what went wrong.
+   Automate when the evidence shows that the trigger and recovery are reliable
+   and the action saves enough operator time.
+
 ## Index
 
 One row per procedure: a file in this directory, or a named section of a
