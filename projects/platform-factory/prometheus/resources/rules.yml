@@ -341,14 +341,13 @@ groups:
           summary: "Factory {{ $labels.phase }} has been failing on itsaplan for ten minutes"
       - record: factory_connector:runnable_runs:max
         expr: max(factory_connector_runnable_runs{job="factory-connector"})
-      # Reserve two minutes of the notification deadline for sampling, evaluation and relay.
       # invariant: FACT-13
       - alert: FactoryConnectorStalled
         expr: |
           factory_connector:runnable_runs:max > 0
-          and min_over_time(factory_connector:runnable_runs:max[28m]) > 0
-          and factory_connector:runnable_runs:max offset 28m > 0
-          unless sum(increase(factory_connector_sends_total{job="factory-connector",outcome="accepted"}[28m])) > 0
+          and min_over_time(factory_connector:runnable_runs:max[30m]) > 0
+          and factory_connector:runnable_runs:max offset 30m > 0
+          unless sum(increase(factory_connector_sends_total{job="factory-connector",outcome="accepted"}[30m])) > 0
         labels:
           severity: critical
         annotations:
@@ -356,7 +355,7 @@ groups:
           graph: 'max(factory_connector_runnable_runs{job="factory-connector"})'
           threshold: "0"
           runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory/deploy/notify.md#factoryconnectorstalled"
-          summary: "Runnable factory runs have waited 28 minutes without a successful send."
+          summary: "Runnable factory runs have waited 30 minutes without a successful send."
 
   - name: capacity-shadow
     interval: 5m

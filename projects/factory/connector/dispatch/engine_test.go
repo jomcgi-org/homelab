@@ -497,6 +497,9 @@ func TestHeartbeat404OnCancelThenConfirmedCancellation(t *testing.T) {
 	if r := v.run(1); r.State != store.RunCanceling {
 		t.Fatalf("run state = %s, want canceling", r.State)
 	}
+	if err := v.e.RefreshDispatchMetrics(v.ctx); err != nil {
+		t.Fatal(err)
+	}
 	if testutil.ToFloat64(v.m.BusyRuns.WithLabelValues("coder")) != 1 || testutil.ToFloat64(v.m.DispatchedRuns.WithLabelValues("coder")) != 0 {
 		t.Fatal("canceling run should occupy a scheduler slot after dispatch ends")
 	}
@@ -917,6 +920,9 @@ func TestAgentReassignmentKeepsSessionAfterConfirmedCancel(t *testing.T) {
 	}
 	if cs := v.pendingCancellations(); len(cs) != 1 || cs[0].Reason != store.CancelReassignment {
 		t.Fatalf("cancellations = %+v", cs)
+	}
+	if err := v.e.RefreshDispatchMetrics(v.ctx); err != nil {
+		t.Fatal(err)
 	}
 	if got := testutil.ToFloat64(v.m.RunnableRuns); got != 0 {
 		t.Fatalf("runnable runs during reassignment cancellation = %v, want zero", got)

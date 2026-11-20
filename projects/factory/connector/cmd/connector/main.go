@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -154,7 +155,20 @@ func run(log *slog.Logger) error {
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	m := metrics.New(reg)
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	var dispatchMetrics atomic.Pointer[dispatch.Engine]
+	metricsHandler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		if eng := dispatchMetrics.Load(); eng != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			defer cancel()
+			if err := eng.RefreshDispatchMetrics(ctx); err != nil {
+				log.Warn("read dispatch metrics", "error", err)
+				http.Error(w, "dispatch metrics unavailable", http.StatusServiceUnavailable)
+				return
+			}
+		}
+		metricsHandler.ServeHTTP(w, r)
+	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	srv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
@@ -310,6 +324,8 @@ func run(log *slog.Logger) error {
 		}
 	}
 	defer eng.Release()
+	dispatchMetrics.Store(eng)
+	defer dispatchMetrics.Store(nil)
 	log.Info("writer acquired", "epoch", eng.Epoch(), "holder", cfg.Holder)
 
 	// Leases are kept by their own loop so a slow call in a tick cannot let

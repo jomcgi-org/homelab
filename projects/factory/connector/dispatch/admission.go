@@ -541,8 +541,10 @@ func (e *Engine) postAdmission(ctx context.Context, r *store.Run) (bool, error) 
 	return e.sendEvents(postCtx, r, admissionTask, journal.Events, tr.Base)
 }
 
+// RefreshDispatchMetrics samples committed run state independently of the writer tick.
+//
 // invariant: FACT-13
-func (e *Engine) admissionMetrics(ctx context.Context) error {
+func (e *Engine) RefreshDispatchMetrics(ctx context.Context) error {
 	total := 0
 	for _, agent := range e.cfg.Agents {
 		dispatched, runnable, busy, err := e.st.DispatchCounts(ctx, agent.Key)
@@ -554,6 +556,10 @@ func (e *Engine) admissionMetrics(ctx context.Context) error {
 		total += runnable
 	}
 	e.m.RunnableRuns.Set(float64(total))
+	return nil
+}
+
+func (e *Engine) admissionMetrics(ctx context.Context) error {
 	n, age, err := e.st.AdmissionHolds(ctx, e.cfg.Now())
 	if err == nil {
 		e.m.HeldRuns.Set(float64(n))
