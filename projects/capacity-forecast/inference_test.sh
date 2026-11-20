@@ -2,18 +2,19 @@
 set -euo pipefail
 
 layout="$1"
+jq_bin="$2"
 root="$TEST_TMPDIR/rootfs"
 mkdir "$root"
-manifest=$(jq -r '.manifests[0].digest | split(":")[1]' "$layout/index.json")
+manifest=$("$jq_bin" -r '.manifests[0].digest | split(":")[1]' "$layout/index.json")
 manifest="$layout/blobs/sha256/$manifest"
 while IFS= read -r layer; do
 	tar -xf "$layout/blobs/sha256/$layer" -C "$root"
-done < <(jq -r '.layers[].digest | split(":")[1]' "$manifest")
+done < <("$jq_bin" -r '.layers[].digest | split(":")[1]' "$manifest")
 
-config=$(jq -r '.config.digest | split(":")[1]' "$manifest")
+config=$("$jq_bin" -r '.config.digest | split(":")[1]' "$manifest")
 config="$layout/blobs/sha256/$config"
-mapfile -t image_env < <(jq -r '.config.Env[]' "$config")
-mapfile -t entrypoint < <(jq -r '.config.Entrypoint[]' "$config")
+mapfile -t image_env < <("$jq_bin" -r '.config.Env[]' "$config")
+mapfile -t entrypoint < <("$jq_bin" -r '.config.Entrypoint[]' "$config")
 touch "$root/dev/null" "$root/dev/urandom"
 
 # A full regularly sampled context ending at Unix time 604800.
