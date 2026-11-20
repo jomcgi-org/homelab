@@ -170,14 +170,10 @@ sh_test(
 
 py_test(
     name = "pr_content_scan_test",
-    srcs = [
+    srcs = ["pr_content_scan_test.py"],
+    data = [
         "pr_content_scan.py",
-        "pr_content_scan_test.py",
         "//projects/monolith:knowledge/tools/public_content.py",
-    ],
-    imports = [
-        ".",
-        "../../../projects/monolith/knowledge/tools",
     ],
     deps = ["@pip//pytest"],
 )
