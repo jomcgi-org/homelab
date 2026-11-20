@@ -3652,3 +3652,76 @@ func TestAdmissionPassHasRoot(t *testing.T) {
 		t.Fatal("no admission root observed run 1")
 	}
 }
+
+// A heartbeat that reads a new head names that head and the round that
+// checked it.
+func TestHeartbeatPassObservesReadHeadAndRound(t *testing.T) {
+	exporter := captureWorkSpans(t)
+	v := newDeliveryEnv(t)
+	round, _ := v.startRound()
+	v.gh.push("factory/HL-7", "sha-2", "fix(test): address review")
+	v.clk.Advance(61 * time.Second)
+	if err := v.e.HeartbeatPass(v.ctx); err != nil {
+		t.Fatal(err)
+	}
+	var prs []map[string]string
+	for _, span := range exporter.GetSpans() {
+		if span.Name == "factory.heartbeat" {
+			prs = append(prs, spanEvents(span.Events, "pr observed")...)
+		}
+	}
+	if len(prs) != 1 {
+		t.Fatalf("pr observed events = %v, want one", prs)
+	}
+	for key, want := range map[string]string{"head.sha": "sha-2", "run.id": fmt.Sprint(round.ID), "outcome": "checked"} {
+		if got := prs[0][key]; got != want {
+			t.Errorf("heartbeat pr observed %s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+// An ejection root is only for an ejection that the final read confirms.
+func TestUnconfirmedEjectionEmitsNoEjectionSpan(t *testing.T) {
+	for _, state := range []string{"merged", "queued", "confirmed"} {
+		t.Run(state, func(t *testing.T) {
+			exporter := captureWorkSpans(t)
+			v := newDeliveryEnv(t)
+			v.delivered()
+			v.gh.green("sha-1")
+			v.poll()
+			v.gh.mergeGroup(1, "group-sha-1")
+			v.poll()
+			v.gh.check("group-sha-1", "test", 100, "failure")
+			v.gh.eject(1)
+			v.gh.onRead = func(operation, resource string) {
+				if operation != "statuses" || resource != "group-sha-1" {
+					return
+				}
+				switch state {
+				case "merged":
+					v.gh.merge(1, "merged-sha")
+				case "queued":
+					v.gh.mu.Lock()
+					v.gh.byNumber(1).queue = "QUEUED"
+					v.gh.mu.Unlock()
+				}
+			}
+			v.poll()
+			ejections := 0
+			for _, span := range exporter.GetSpans() {
+				for _, a := range span.Attributes {
+					if span.Name == "factory.merge_queue" && string(a.Key) == "action" && a.Value.AsString() == "ejection" {
+						ejections++
+					}
+				}
+			}
+			want := 0
+			if state == "confirmed" {
+				want = 1
+			}
+			if ejections != want {
+				t.Fatalf("ejection spans = %d, want %d", ejections, want)
+			}
+		})
+	}
+}

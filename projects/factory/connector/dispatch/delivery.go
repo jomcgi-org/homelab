@@ -349,9 +349,10 @@ func (e *Engine) checkRound(ctx context.Context, r *store.Run) (result error) {
 			return err
 		}
 		if pr != nil && pr.State != "merged" {
+			var head string // GitHub's head once read; the stored one if the read fails
 			if trace.SpanFromContext(ctx).IsRecording() {
-				workID, issue, source := wi.ID, wi.IssueKey, wi.State
-				defer func() { e.observePR(ctx, workID, issue, source, pr, result) }()
+				workID, run, issue, source := wi.ID, r.ID, wi.IssueKey, wi.State
+				defer func() { e.observePR(ctx, workID, run, issue, source, pr, head, result) }()
 			}
 			if err := e.guard(ctx); err != nil {
 				return err
@@ -360,6 +361,7 @@ func (e *Engine) checkRound(ctx context.Context, r *store.Run) (result error) {
 			if err != nil {
 				return err
 			}
+			head = d.HeadSHA
 			if d.Merged {
 				if err := e.st.SetHeartbeat(ctx, r.ID, now); err != nil {
 					return err
@@ -399,14 +401,18 @@ func (e *Engine) checkPRClosed(ctx context.Context, r *store.Run) (result error)
 	if b == nil || wi.State == store.WorkStopped || wi.State == store.WorkDone {
 		return nil
 	}
+	var head string // GitHub's head once read; the stored one if the read fails
 	if trace.SpanFromContext(ctx).IsRecording() {
-		workID, issue, source := wi.ID, wi.IssueKey, wi.State
-		defer func() { e.observePR(ctx, workID, issue, source, pr, result) }()
+		workID, run, issue, source := wi.ID, r.ID, wi.IssueKey, wi.State
+		defer func() { e.observePR(ctx, workID, run, issue, source, pr, head, result) }()
 	}
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
 	d, err := e.gh.PullRequestDetail(ctx, b.repo(), pr.Number)
+	if err == nil {
+		head = d.HeadSHA
+	}
 	switch {
 	case err != nil || d.State == "open":
 		return err
@@ -584,7 +590,7 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	if trace.SpanFromContext(ctx).IsRecording() {
 		// Every PR check is on the poll root, also one that changes nothing or fails.
 		workID, source := wi.ID, wi.State
-		defer func() { e.observePR(ctx, workID, wi.IssueKey, source, pr, result) }()
+		defer func() { e.observePR(ctx, workID, 0, wi.IssueKey, source, pr, "", result) }()
 	}
 	repo := b.repo()
 	if wi.State != store.WorkStopped {
@@ -1384,8 +1390,6 @@ func succeeded(c Check, head string, checks []github.CheckRun, statuses []github
 // ejected records the confirmed ejection and starts a bounded revision in
 // the mapped session. The rejected head stays barred from the merge queue.
 func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) (result error) {
-	ctx, _, finish := e.startQueueAction(ctx, wi, pr, d, "ejection")
-	defer func() { finish(result) }()
 	if hasHumanLabel(d.Labels) {
 		return e.stopWork(ctx, wi, "the queued PR is human-owned")
 	}
@@ -1453,6 +1457,9 @@ func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr
 	case latest.HeadSHA != pr.EnqueuedHeadSHA:
 		return e.queueHeadChanged(ctx, pr)
 	}
+	// Only the final read confirms the ejection; its root starts here.
+	ctx, _, finish := e.startQueueAction(ctx, wi, pr, latest, "ejection")
+	defer func() { finish(result) }()
 	held = held || b.Review.held(latest.Labels) != ""
 	var prompt string
 	if !limited && !held {
@@ -2199,10 +2206,18 @@ func (e *Engine) checkDeliveryReverts(ctx context.Context) error {
 	})
 }
 
-func (e *Engine) observePR(ctx context.Context, workID int64, issue, source string, pr *store.PullRequest, result error) {
+// observePR records one PR check on the poll or heartbeat root. A runID of
+// zero names the work item's latest itsaplan run; an empty head, the stored one.
+func (e *Engine) observePR(ctx context.Context, workID, runID int64, issue, source string, pr *store.PullRequest, head string, result error) {
+	if runID == 0 {
+		runID = e.lastItsaplanRun(ctx, workID)
+	}
+	if head == "" {
+		head = pr.HeadSHA
+	}
 	attrs := []attribute.KeyValue{
-		attribute.String("issue.key", issue), attribute.Int64("run.id", e.lastItsaplanRun(ctx, workID)),
-		attribute.Int("pr.number", pr.Number), attribute.String("head.sha", pr.HeadSHA),
+		attribute.String("issue.key", issue), attribute.Int64("run.id", runID),
+		attribute.Int("pr.number", pr.Number), attribute.String("head.sha", head),
 		attribute.String("state.from", source),
 	}
 	if current, err := e.st.GetWorkItem(ctx, workID); err == nil {
