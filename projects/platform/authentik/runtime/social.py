@@ -187,13 +187,21 @@ def exercise_competing_enrollments():
     assert not accounts.exists()
 
     url = executor("enrollment")
-    assert advance(first, first.get(url))["to"] == "/source/oauth/login/discord/"
+    # Each user-write stage redirects to the executor for the post-write check.
+    first_written = first.get(url)
+    assert first_written.status_code == 302
     winner = accounts.get(username="discord-51")
-    denied = advance(second, second.get(url))
+    second_written = second.get(url)
+    assert second_written.status_code == 302
+    assert accounts.get(username="google-52").pk > winner.pk
+    assert accounts.count() == 2
+
+    denied = advance(second, second_written)
     assert denied["component"] == "ak-stage-access-denied"
     assert denied["error_message"] == (
         "An account already uses this email. Sign in with that account instead."
     )
+    assert advance(first, first_written)["to"] == "/source/oauth/login/discord/"
     assert accounts.get().pk == winner.pk
 
 
