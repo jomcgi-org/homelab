@@ -1079,6 +1079,7 @@ type TraceState struct {
 	Parent string    `json:"parent"`
 	Start  time.Time `json:"start"`
 	PR     int       `json:"pr"`
+	Round  int       `json:"round,omitempty"`
 	// Usage and Tasks are the root's token totals and the tasks it counted.
 	Usage Usage    `json:"usage"`
 	Tasks []string `json:"tasks,omitempty"`

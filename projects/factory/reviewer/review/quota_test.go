@@ -500,4 +500,46 @@ func TestFailedRevalidationKeepsCodeSpanUsage(t *testing.T) {
 	if last := codes[len(codes)-1]; last["tokens.input"] != "5" || last["tokens.output"] != "1" {
 		t.Fatalf("resumed code span usage = %v", last)
 	}
+	// The span that the failed read ended has the task's report.
+	if len(codes) != 2 {
+		t.Fatalf("code spans = %v, want the failed read's span and the resumed one", codes)
+	}
+	first, last := codes[0], codes[1]
+	for _, k := range []string{"review.verdict", "review.findings.high", "review.findings.medium", "review.round", "tokens.input"} {
+		if first[k] == "" || first[k] != last[k] {
+			t.Errorf("%s = %q on the failed read's span, %q on the resumed span", k, first[k], last[k])
+		}
+	}
+	if first["review.outcome"] != "revalidation_failed" {
+		t.Errorf("failed read's span outcome = %q", first["review.outcome"])
+	}
+}
+
+// A root restored from its check state keeps the review round that the
+// state records.
+func TestRestoredRootKeepsRound(t *testing.T) {
+	exporter := captureReviewSpans(t)
+	ts := &TraceState{Parent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01", Start: time.Now(), PR: 7, Round: 3}
+	_, root := restoreRoot(context.Background(), ts, github.PullRequest{Number: 7, HeadSHA: shaA})
+	root.End()
+	spans := reviewSpans(exporter)
+	if len(spans) != 1 || spans[0]["review.round"] != "3" || spans[0]["id"] != "0123456789abcdef" {
+		t.Fatalf("restored root = %v", spans)
+	}
+}
+
+// The check state saves the round with the root, so a restart restores it.
+func TestCheckStateSavesReviewRound(t *testing.T) {
+	captureReviewSpans(t)
+	h := newHarness(t)
+	addPR7(h)
+	h.cfg.Quota = &fakeQuota{}
+	e, ctx, _ := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	h.k.finish(task, kagent.StateFailed, "insufficient_quota")
+	waitForQuotaCheck(t, h)
+	st, _ := LoadState(h.gh.check(shaA).Text)
+	if st.Trace == nil || st.Trace.Round != 1 || st.Trace.PR != 7 {
+		t.Fatalf("trace state = %+v", st.Trace)
+	}
 }

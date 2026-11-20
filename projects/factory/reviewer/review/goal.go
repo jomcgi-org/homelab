@@ -373,6 +373,8 @@ func (e *Engine) goalCheck(ctx context.Context, b *Binding, pr github.PullReques
 			traceFailure(span, "goal check unavailable")
 		} else if goalVerdict(answer.Overall) {
 			span.SetAttributes(attribute.String("review.verdict", answer.Overall))
+		} else {
+			span.SetAttributes(attribute.String("review.verdict", "unknown"))
 		}
 		span.End()
 	}()
