@@ -60,12 +60,13 @@ sh_test(
     srcs = ["inference_test.sh"],
     args = [
         "$(rootpath :image_image)",
+        "$(rootpath @jq_linux_amd64//:jq)",
     ],
     data = [
         ":image_image",
+        "@jq_linux_amd64//:jq",
     ],
-    # The smoke test needs the Linux runner's user namespaces, mount,
-    # chroot and jq. The remote execution image does not supply these.
+    # The smoke test uses the Linux runner's user namespaces, mount and chroot.
     tags = ["no-remote-exec"],
     target_compatible_with = [
         "@platforms//cpu:x86_64",
