@@ -120,7 +120,7 @@ Resends reuse the recorded prompt. [Issue brief decision](https://factory-plan.j
 
 Before sending to kagent the connector records the attempt and deterministic
 message ID. The 90-second send deadline lets the router finish its 60-second placement wait.
-When kagent confirms the input was never accepted, a capacity wait preserves the retry budget.
+Only the proposed gateway reason `KAGENT_WORKER_CAPACITY` discounts a refused send. The pinned gateway returns the bounded generic refusal.
 After settlement kagent suspends the actor to a volume snapshot for the next turn. [Session lifecycle](https://github.com/jomcgi-org/kagent/blob/e3d14ee3dd623471c1ea411f5427881fca134b32/go/core/internal/service/session/quiescence.go)
 
 ## Task reconciliation
