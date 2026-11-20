@@ -89,7 +89,7 @@ func Scan(ctx context.Context, actors, journal *sql.DB, pods core.PodsGetter, le
 	if err := attempts.Err(); err != nil {
 		return err
 	}
-	rows, err := actors.QueryContext(ctx, `SELECT atespace,name,proto FROM public.reaper_actors()`)
+	rows, err := actors.QueryContext(ctx, `SELECT atespace,name,proto FROM public.scoped_reaper_actors()`)
 	if err != nil {
 		return err
 	}
@@ -120,7 +120,7 @@ func Scan(ctx context.Context, actors, journal *sql.DB, pods core.PodsGetter, le
 			// Re-read the row immediately before acting. Both the state and the
 			// assignment must still be the revision that exceeded the deadline.
 			var current bool
-			err = actors.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM public.reaper_actors() WHERE atespace=$1 AND name=$2 AND proto=$3)`, key.atespace, key.name, proto).Scan(&current)
+			err = actors.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM public.scoped_reaper_actors() WHERE atespace=$1 AND name=$2 AND proto=$3)`, key.atespace, key.name, proto).Scan(&current)
 			if err == nil && current {
 				version := int64(intField(bytesField(proto, 1), 4))
 				op := fmt.Sprintf("%s/%s/%s/%d", p.namespace, p.pod, p.uid, version)
@@ -165,7 +165,7 @@ func Scan(ctx context.Context, actors, journal *sql.DB, pods core.PodsGetter, le
 			// The journal may outlive a worker assignment. A live replacement or
 			// a clean suspension supersedes the old pod's disappearance.
 			var latest []byte
-			err = actors.QueryRowContext(ctx, `SELECT proto FROM public.reaper_actors() WHERE atespace=$1 AND name=$2`, atespace, "session-"+session).Scan(&latest)
+			err = actors.QueryRowContext(ctx, `SELECT proto FROM public.scoped_reaper_actors() WHERE atespace=$1 AND name=$2`, atespace, "session-"+session).Scan(&latest)
 			if errors.Is(err, sql.ErrNoRows) {
 				continue
 			}
