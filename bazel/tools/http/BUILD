@@ -27,9 +27,3 @@ bzl_library(
     srcs = ["kata_firecracker_archive.bzl"],
     visibility = ["//visibility:public"],
 )
-
-bzl_library(
-    name = "multiarch_http_archive",
-    srcs = ["multiarch_http_archive.bzl"],
-    visibility = ["//visibility:public"],
-)

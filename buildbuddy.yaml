@@ -205,6 +205,10 @@ actions:
           fi
 
           # ---- 2. tests ---------------------------------------------------
+          if ! git diff --quiet "$base_ref" HEAD -- MODULE.bazel bazel/tools/http; then
+            bazel build --config=ci @goose//:amd64 @goose//:arm64 @goose//:tar_amd64 @goose//:tar_arm64
+            bazel test --config=ci //bazel/tools/http/test:archive_mode_test
+          fi
           if [ "$WRITE_BACK_ONLY" = true ]; then
             : # The publishing run already exercised this source tree.
           elif [[ "${GIT_BRANCH:-}" =~ ^gh-readonly-queue/ ]] || [ "${GIT_PR_NUMBER:-0}" = "0" ]; then
