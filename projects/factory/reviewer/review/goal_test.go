@@ -1,6 +1,7 @@
 package review
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/yuin/goldmark"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
@@ -926,41 +929,41 @@ func TestIssueCriteriaCount(t *testing.T) {
 		"## Done when\n- [ ] a\n- [x] b":                                              2,
 		"Acceptance criteria:\n* a\n* b\n* c":                                         3,
 		"No list here.":                                                               0,
-		"Done when:\n1. a\n3. not the next number":                                    0,
+		"Done when:\n1. a\n3. not the next number":                                    2,
 		"Done when:\n1. a\n2. b\n\nOut of scope:\n- c":                                0,
 		"Done when:\n1. a\n2. b\n\nOut of scope: c":                                   2,
-		"Example:\n```\nDone when:\n1. x\n```\nDone when:\n1. a\n2. b":                0,
-		"Done when:\n1. a\n```\n2. b\n```":                                            0,
+		"Example:\n```\nDone when:\n1. x\n```\nDone when:\n1. a\n2. b":                2,
+		"Done when:\n1. a\n```\n2. b\n```":                                            1,
 		"Done when:\n```\n1. a\n```":                                                  0,
 		"````\n```\nDone when:\n1. Example\n":                                         0,
 		"<!--\nDone when:\n1. A\n-->\nText.":                                          0,
-		"<!-- note -->\nDone when:\n1. a\n2. b":                                       0,
-		"```mermaid\nflowchart TD\n  A --> B\n```\n\nDone when:\n1. a\n2. b":          0,
-		"~~~\nDone when:\n1. x\n```\n~~~\nDone when:\n1. a":                           0,
-		"Done when:\n1. Show the literal `<!--`\n2. Verify the result":                0,
-		"Done when:\n1. a\n<div>\n2. b\n</div>":                                       0,
+		"<!-- note -->\nDone when:\n1. a\n2. b":                                       2,
+		"```mermaid\nflowchart TD\n  A --> B\n```\n\nDone when:\n1. a\n2. b":          2,
+		"~~~\nDone when:\n1. x\n```\n~~~\nDone when:\n1. a":                           1,
+		"Done when:\n1. Show the literal `<!--`\n2. Verify the result":                2,
+		"Done when:\n1. a\n<div>\n2. b\n</div>":                                       1,
 		"Done when:\n1. Use `code` here\n2. b":                                        2,
 		"Text:\n\n    Done when:\n\n1. unrelated\n2. list":                            0,
 		"\tDone when:\n1. a":                                                          0,
 		"Done when:\n* * *":                                                           0,
-		"Done when:\n- a\n- - -":                                                      0,
-		"Title\n===\nDone when:\n1. a":                                                0,
+		"Done when:\n- a\n- - -":                                                      1,
+		"Title\n===\nDone when:\n1. a":                                                1,
 		"Done when:\n1. 2\n2. b":                                                      2,
 		"Done when:\n1. 值\n2. é":                                                      2,
-		"Done when:\n1. ```go":                                                        0,
-		"Done when:\n1. a <b>\n2. c":                                                  0,
+		"Done when:\n1. ```go":                                                        1,
+		"Done when:\n1. a <b>\n2. c":                                                  2,
 		"Done when:\n1. Keep p95 latency < 200 ms.\n2. b":                             2,
-		"Title\n=\nDone when:\n1. a":                                                  0,
-		"Done when:\r\n1. a\r\n2.\r\n   b\r\n":                                        0,
+		"Title\n=\nDone when:\n1. a":                                                  1,
+		"Done when:\r\n1. a\r\n2.\r\n   b\r\n":                                        2,
 		"Done when:\n1. a\n2.\tb":                                                     2,
 		"Done when:\n1) a\n2) b":                                                      2,
 		"Done when:\n1. a\n2) b":                                                      0,
 		"Done when:\n- a\n  - nested":                                                 0,
 		"Done when:\n- a\n+ b":                                                        0,
-		"Done when:\n1. a\n2.":                                                        0,
+		"Done when:\n1. a\n2.":                                                        2,
 		"Done when:\n1. a\n   more text for a\n2. b":                                  2,
 		"Done when:\n1. a\n- mixed":                                                   0,
-		"Done when:\n1. a\nDone when:\n1. b":                                          0,
+		"Done when:\n1. a\nDone when:\n1. b":                                          2,
 		"Done when:\n   indented first":                                               0,
 		"Done when:\n1. ":                                                             0,
 	} {
@@ -1073,5 +1076,21 @@ func TestUncountedAnswerKeepsMainRules(t *testing.T) {
 	applyGoal(r, prior, "HOME", "HOME-7", &GoalCheck{Overall: goalUnclear, Criteria: []GoalVerdict{{1, goalMet}, {2, goalMet}, {3, goalMet}}})
 	if a := Assess(r, prior); len(a.Fixed) != 2 || len(a.Withdrawn) != 0 {
 		t.Fatalf("met verdicts: fixed %+v withdrawn %+v", a.Fixed, a.Withdrawn)
+	}
+}
+
+func TestGeneratedCriteriaMatchRenderer(t *testing.T) {
+	for _, prefix := range []string{"", "```mermaid\nA --> B\n```\n", "<!-- hidden -->\n", "---\n", "    code\n\n"} {
+		for _, body := range []string{"1. one\n2. two", "- one\n-", "* * *", "```\n- hidden\n```", "    code", "<!--\n- hidden\n-->"} {
+			desc := prefix + "Done when:\n" + body
+			var html bytes.Buffer
+			if err := goldmark.Convert([]byte(desc), &html); err != nil {
+				t.Fatal(err)
+			}
+			got := issueCriteria(&IssueContext{Issue: &IssueEvidence{Key: "HOME-1", Trusted: true, Description: desc}})
+			if want := strings.Count(html.String(), "<li>"); got != want {
+				t.Errorf("%q: counted %d, rendered %d", desc, got, want)
+			}
+		}
 	}
 }
