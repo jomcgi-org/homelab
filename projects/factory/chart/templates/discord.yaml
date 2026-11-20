@@ -1,3 +1,4 @@
+{{- /* invariant: FACT-13 */ -}}
 {{- /*
 The Discord bot (HOME-162). The Agent lives in its own namespace and
 atespace, apart from every factory binding; the bridge lives in
