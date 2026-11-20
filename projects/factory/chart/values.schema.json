@@ -804,6 +804,10 @@
       "required": ["enabled"],
       "additionalProperties": false,
       "properties": {
+        "memoryRetainURL": {
+          "type": "string",
+          "pattern": "^https?://[^/]+/.+"
+        },
         "traceEndpoint": { "type": "string" },
         "notify": {
           "type": "object",
