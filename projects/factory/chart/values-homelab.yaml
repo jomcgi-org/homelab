@@ -17,10 +17,6 @@ postgres:
           cnpg.io/cluster: kagent-pg
     port: 5432
 
-# Chart 0.87.11 ignores this profile, so lowering the pin removes the route.
-edge:
-  codexAdminRouteEnabled: true
-
 # The credential broker (projects/factory/broker): relays the Codex harness's
 # model calls with its own grant, and mints tokens from the jomcgi-factory
 # GitHub App (installed on jomcgi-org/homelab only). Its 1Password item is an
