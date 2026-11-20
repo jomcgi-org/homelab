@@ -262,3 +262,21 @@ groups:
           threshold: "1"
           runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory/deploy/notify.md#home-385-rollout-verification"
           summary: "Factory {{ $labels.phase }} has been failing on itsaplan for ten minutes"
+
+  # invariant: PLAT-14
+  - name: cnpg-backups
+    rules:
+      - alert: CNPGBackupRetentionExceeded
+        expr: |
+          ((time() - min by (namespace, cluster) (cnpg_collector_first_recoverability_point{job="cnpg",cluster="kagent-pg"} > 0)) / 86400 > 3)
+          or
+          ((time() - min by (namespace, cluster) (cnpg_collector_first_recoverability_point{job="cnpg",cluster=~"factory-db|authentik-pg"} > 0)) / 86400 > 16)
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          action: "Check the latest scheduled backup and its retention cleanup logs."
+          graph: '(time() - min(cnpg_collector_first_recoverability_point{job="cnpg",namespace={{ printf "%q" $labels.namespace }},cluster={{ printf "%q" $labels.cluster }}} > 0)) / 86400'
+          threshold: '{{ if eq $labels.cluster "kagent-pg" }}3{{ else }}16{{ end }}'
+          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#cnpgbackupretentionexceeded"
+          summary: '{{ $labels.cluster }} first recoverability point is {{ printf "%.2f" $value }} days old (threshold {{ if eq $labels.cluster "kagent-pg" }}3{{ else }}16{{ end }} days)'

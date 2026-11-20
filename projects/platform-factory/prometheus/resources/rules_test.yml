@@ -919,3 +919,85 @@ tests:
       - eval_time: 11m
         alertname: FactoryItsaplanOutage
         exp_alerts: []
+
+  # invariant: PLAT-14
+  - name: kagent-pg backup age exceeds 3 days for one hour
+    start_timestamp: 2026-11-20T00:00:00Z
+    interval: 1m
+    input_series:
+      - series: 'cnpg_collector_first_recoverability_point{job="cnpg",namespace="db",cluster="kagent-pg"}'
+        values: "1794873660x62"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: CNPGBackupRetentionExceeded
+        exp_alerts: []
+      - eval_time: 61m
+        alertname: CNPGBackupRetentionExceeded
+        exp_alerts: []
+      - eval_time: 62m
+        alertname: CNPGBackupRetentionExceeded
+        exp_alerts:
+          - exp_labels:
+              cluster: kagent-pg
+              namespace: db
+              severity: warning
+            exp_annotations:
+              action: "Check the latest scheduled backup and its retention cleanup logs."
+              graph: '(time() - min(cnpg_collector_first_recoverability_point{job="cnpg",namespace="db",cluster="kagent-pg"} > 0)) / 86400'
+              threshold: "3"
+              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#cnpgbackupretentionexceeded"
+              summary: "kagent-pg first recoverability point is 3.04 days old (threshold 3 days)"
+
+  - name: factory-db backup age exceeds 16 days for one hour
+    start_timestamp: 2026-11-20T00:00:00Z
+    interval: 1m
+    input_series:
+      - series: 'cnpg_collector_first_recoverability_point{job="cnpg",namespace="db",cluster="factory-db"}'
+        values: "1793750460x62"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: CNPGBackupRetentionExceeded
+        exp_alerts: []
+      - eval_time: 61m
+        alertname: CNPGBackupRetentionExceeded
+        exp_alerts: []
+      - eval_time: 62m
+        alertname: CNPGBackupRetentionExceeded
+        exp_alerts:
+          - exp_labels:
+              cluster: factory-db
+              namespace: db
+              severity: warning
+            exp_annotations:
+              action: "Check the latest scheduled backup and its retention cleanup logs."
+              graph: '(time() - min(cnpg_collector_first_recoverability_point{job="cnpg",namespace="db",cluster="factory-db"} > 0)) / 86400'
+              threshold: "16"
+              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#cnpgbackupretentionexceeded"
+              summary: "factory-db first recoverability point is 16.04 days old (threshold 16 days)"
+
+  - name: authentik-pg backup age exceeds 16 days for one hour
+    start_timestamp: 2026-11-20T00:00:00Z
+    interval: 1m
+    input_series:
+      - series: 'cnpg_collector_first_recoverability_point{job="cnpg",namespace="db",cluster="authentik-pg"}'
+        values: "1793750460x62"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: CNPGBackupRetentionExceeded
+        exp_alerts: []
+      - eval_time: 61m
+        alertname: CNPGBackupRetentionExceeded
+        exp_alerts: []
+      - eval_time: 62m
+        alertname: CNPGBackupRetentionExceeded
+        exp_alerts:
+          - exp_labels:
+              cluster: authentik-pg
+              namespace: db
+              severity: warning
+            exp_annotations:
+              action: "Check the latest scheduled backup and its retention cleanup logs."
+              graph: '(time() - min(cnpg_collector_first_recoverability_point{job="cnpg",namespace="db",cluster="authentik-pg"} > 0)) / 86400'
+              threshold: "16"
+              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory-cluster/README.md#cnpgbackupretentionexceeded"
+              summary: "authentik-pg first recoverability point is 16.04 days old (threshold 16 days)"
