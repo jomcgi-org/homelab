@@ -930,7 +930,7 @@ func TestIssueCriteriaCount(t *testing.T) {
 		"## Done when\n- [ ] a\n- [x] b":                                              2,
 		"Acceptance criteria:\n* a\n* b\n* c":                                         3,
 		"No list here.":                                                               0,
-		"Done when:\n1. a\n3. not the next number":                                    2,
+		"Done when:\n1. a\n3. not the next number":                                    0,
 		"Done when:\n1. a\n2. b\n\nOut of scope:\n- c":                                0,
 		"Done when:\n1. a\n2. b\n\nOut of scope: c":                                   2,
 		"Example:\n```\nDone when:\n1. x\n```\nDone when:\n1. a\n2. b":                2,
@@ -951,20 +951,20 @@ func TestIssueCriteriaCount(t *testing.T) {
 		"Title\n===\nDone when:\n1. a":                                                1,
 		"Done when:\n1. 2\n2. b":                                                      2,
 		"Done when:\n1. 值\n2. é":                                                      2,
-		"Done when:\n1. ```go":                                                        1,
+		"Done when:\n1. ```go":                                                        0,
 		"Done when:\n1. a <b>\n2. c":                                                  2,
 		"Done when:\n1. Keep p95 latency < 200 ms.\n2. b":                             2,
 		"Title\n=\nDone when:\n1. a":                                                  1,
-		"Done when:\r\n1. a\r\n2.\r\n   b\r\n":                                        2,
+		"Done when:\r\n1. a\r\n2.\r\n   b\r\n":                                        0,
 		"Done when:\n1. a\n2.\tb":                                                     2,
 		"Done when:\n1) a\n2) b":                                                      2,
 		"Done when:\n1. a\n2) b":                                                      0,
 		"Done when:\n- a\n  - nested":                                                 0,
 		"Done when:\n- a\n+ b":                                                        0,
-		"Done when:\n1. a\n2.":                                                        2,
+		"Done when:\n1. a\n2.":                                                        0,
 		"Done when:\n1. a\n   more text for a\n2. b":                                  2,
 		"Done when:\n1. a\n- mixed":                                                   0,
-		"Done when:\n1. a\nDone when:\n1. b":                                          2,
+		"Done when:\n1. a\nDone when:\n1. b":                                          0,
 		"Done when:\n   indented first":                                               0,
 		"Done when:\n1. ":                                                             0,
 	} {
@@ -1082,7 +1082,7 @@ func TestUncountedAnswerKeepsMainRules(t *testing.T) {
 
 func TestGeneratedCriteriaMatchRenderer(t *testing.T) {
 	for _, prefix := range []string{"", "```mermaid\nA --> B\n```\n", "<!-- hidden -->\n", "---\n", "    code\n\n"} {
-		for _, body := range []string{"1. one\n2. two", "- one\n-", "* * *", "```\n- hidden\n```", "    code", "<!--\n- hidden\n-->"} {
+		for _, body := range []string{"1. one\n2. two", "- one\n- two", "* * *", "```\n- hidden\n```", "    code", "<!--\n- hidden\n-->"} {
 			desc := prefix + "Done when:\n" + body
 			var html bytes.Buffer
 			if err := goldmark.Convert([]byte(desc), &html); err != nil {

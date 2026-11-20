@@ -2,6 +2,7 @@
 package review
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -375,13 +376,33 @@ func issueCriteria(in *IssueContext) int {
 			return 0
 		}
 		for item := list.FirstChild(); item != nil; item = item.NextSibling() {
+			count++
+			first := item.FirstChild()
+			if first == nil || (first.Kind() != ast.KindParagraph && first.Kind() != ast.KindTextBlock) || first.Lines().Len() == 0 {
+				return 0
+			}
+			// CommonMark renumbers ordered items when rendering. Check the
+			// author's marker before using that number to withdraw a blocker.
+			line := first.Lines().At(0)
+			start := bytes.LastIndexByte(source[:line.Start], '\n') + 1
+			marker := strings.TrimSpace(string(source[start:line.Start]))
+			want := string(list.Marker)
+			if list.IsOrdered() {
+				want = strconv.Itoa(count) + want
+			}
+			words := strings.TrimSpace(string(line.Value(source)))
+			for _, box := range []string{"[ ]", "[x]", "[X]"} {
+				words = strings.TrimPrefix(words, box)
+			}
+			if marker != want || !strings.ContainsFunc(words, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) {
+				return 0
+			}
 			for child := item.FirstChild(); child != nil; child = child.NextSibling() {
 				if child.Kind() == ast.KindList {
 					return 0
 				}
 			}
 		}
-		count = list.ChildCount()
 		block = list
 	}
 	return count
