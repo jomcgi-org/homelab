@@ -11,8 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/internal/tracing"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const admissionTask = "factory-admission"
@@ -55,8 +57,16 @@ func (e *Engine) stepAdmissions(ctx context.Context) error {
 		e.admissionDone = done
 		go func() {
 			ctx := context.WithValue(e.admissionCtx, blockerCacheKey{}, map[int64]*itsaplan.Issue{})
+			// A pass that admits a run gets its own root; an empty pass none.
+			var span trace.Span
 			var errs []error
-			defer func() { done <- errors.Join(errs...) }()
+			defer func() {
+				err := errors.Join(errs...)
+				if span != nil {
+					tracing.FinishPoll(ctx, span, err)
+				}
+				done <- err
+			}()
 			for _, r := range runs {
 				if r.Connector() || (r.State != store.RunClaimed && r.State != store.RunWaiting && r.State != store.RunDispatched) {
 					continue
@@ -73,6 +83,9 @@ func (e *Engine) stepAdmissions(ctx context.Context) error {
 				}
 				if a != nil {
 					continue
+				}
+				if span == nil {
+					ctx, span = tracing.StartAdmission(ctx)
 				}
 				if err := e.stepAdmission(ctx, r.ID); err != nil {
 					errs = append(errs, fmt.Errorf("run %d: %w", r.ID, err))

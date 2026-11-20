@@ -329,7 +329,7 @@ func (e *Engine) readIssueStopped(ctx context.Context, wi *store.WorkItem, b *Bi
 // delivery and its PR must be open, or delivery stops and the round is
 // canceled. The PR poll skips a work item while its turn runs, so a merge is
 // recorded here; step then stops the round (HOME-141).
-func (e *Engine) checkRound(ctx context.Context, r *store.Run) error {
+func (e *Engine) checkRound(ctx context.Context, r *store.Run) (result error) {
 	now := e.cfg.Now()
 	wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
 	if err != nil {
@@ -349,6 +349,10 @@ func (e *Engine) checkRound(ctx context.Context, r *store.Run) error {
 			return err
 		}
 		if pr != nil && pr.State != "merged" {
+			if trace.SpanFromContext(ctx).IsRecording() {
+				workID, issue, source := wi.ID, wi.IssueKey, wi.State
+				defer func() { e.observePR(ctx, workID, issue, source, pr, result) }()
+			}
 			if err := e.guard(ctx); err != nil {
 				return err
 			}
@@ -379,7 +383,7 @@ func (e *Engine) checkRound(ctx context.Context, r *store.Run) error {
 // checkPRClosed stops delivery when the PR of an itsaplan run's work item
 // was closed during the turn; dispatch then cancels the turn. A merge is
 // recorded, and step stops a run claimed before it (HOME-141).
-func (e *Engine) checkPRClosed(ctx context.Context, r *store.Run) error {
+func (e *Engine) checkPRClosed(ctx context.Context, r *store.Run) (result error) {
 	if e.gh == nil || r.WorkItemID == 0 {
 		return nil
 	}
@@ -394,6 +398,10 @@ func (e *Engine) checkPRClosed(ctx context.Context, r *store.Run) error {
 	b := e.binding(wi.BindingName)
 	if b == nil || wi.State == store.WorkStopped || wi.State == store.WorkDone {
 		return nil
+	}
+	if trace.SpanFromContext(ctx).IsRecording() {
+		workID, issue, source := wi.ID, wi.IssueKey, wi.State
+		defer func() { e.observePR(ctx, workID, issue, source, pr, result) }()
 	}
 	if err := e.guard(ctx); err != nil {
 		return err

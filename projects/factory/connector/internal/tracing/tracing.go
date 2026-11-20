@@ -59,7 +59,23 @@ type (
 )
 
 func StartPoll(ctx context.Context) (context.Context, trace.Span) {
-	ctx, span := Start(ctx, "factory.poll")
+	return startWork(ctx, "factory.poll")
+}
+
+// StartHeartbeat starts the root of one pass of the heartbeat loop, which
+// runs apart from the poll. FinishPoll ends it.
+func StartHeartbeat(ctx context.Context) (context.Context, trace.Span) {
+	return startWork(ctx, "factory.heartbeat")
+}
+
+// StartAdmission starts the root of one background admission pass, which
+// outlives the poll that starts it. FinishPoll ends it.
+func StartAdmission(ctx context.Context) (context.Context, trace.Span) {
+	return startWork(ctx, "factory.admission")
+}
+
+func startWork(ctx context.Context, name string) (context.Context, trace.Span) {
+	ctx, span := Start(ctx, name)
 	if span.IsRecording() {
 		ctx = context.WithValue(ctx, pollKey{}, &pollWork{span: span, values: make(map[attribute.Key]map[string]struct{})})
 	}

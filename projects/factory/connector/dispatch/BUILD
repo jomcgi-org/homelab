@@ -85,6 +85,7 @@ go_test(
         "@io_k8s_client_go//kubernetes/fake",
         "@io_opentelemetry_go_otel//:otel",
         "@io_opentelemetry_go_otel//attribute",
+        "@io_opentelemetry_go_otel//codes",
         "@io_opentelemetry_go_otel_sdk//trace",
         "@io_opentelemetry_go_otel_sdk//trace/tracetest",
     ],

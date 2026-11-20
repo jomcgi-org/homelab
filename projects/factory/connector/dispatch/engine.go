@@ -634,7 +634,7 @@ func (e *Engine) RunHeartbeats(ctx context.Context, every time.Duration) error {
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
-		if err := e.Heartbeats(ctx); err != nil {
+		if err := e.HeartbeatPass(ctx); err != nil {
 			if fatal(err) {
 				return err
 			}
@@ -646,6 +646,14 @@ func (e *Engine) RunHeartbeats(ctx context.Context, every time.Duration) error {
 		case <-t.C:
 		}
 	}
+}
+
+// HeartbeatPass is one pass of the heartbeat loop under its own root span,
+// so the runs and PRs it checks, and its failures, are on a trace.
+func (e *Engine) HeartbeatPass(ctx context.Context) (result error) {
+	ctx, span := tracing.StartHeartbeat(ctx)
+	defer func() { tracing.FinishPoll(ctx, span, result) }()
+	return e.Heartbeats(ctx)
 }
 
 // Heartbeats extends every held lease that is due.
@@ -676,7 +684,7 @@ func (e *Engine) Heartbeats(ctx context.Context) error {
 
 // heartbeatRun skips a run whose lock a slow step holds, so it does not
 // delay the other runs' heartbeats; the next pass tries again.
-func (e *Engine) heartbeatRun(ctx context.Context, id int64) error {
+func (e *Engine) heartbeatRun(ctx context.Context, id int64) (result error) {
 	unlock, ok := e.tryLockRun(id)
 	if !ok {
 		return nil
@@ -694,6 +702,18 @@ func (e *Engine) heartbeatRun(ctx context.Context, id int64) error {
 	now := e.cfg.Now()
 	if now.Sub(r.LastHeartbeatAt) < e.cfg.Heartbeat {
 		return nil
+	}
+	if trace.SpanFromContext(ctx).IsRecording() {
+		run, issue, state, workID := r.ID, r.IssueKey, r.State, r.WorkItemID
+		defer func() {
+			attrs := []attribute.KeyValue{attribute.Int64("run.id", run), attribute.String("issue.key", issue), attribute.String("state.from", state)}
+			attrs = append(attrs, e.workAttrs(ctx, workID)...)
+			outcome := "heartbeat"
+			if result != nil {
+				outcome = "error"
+			}
+			tracing.Observe(ctx, "run heartbeat", append(attrs, attribute.String("outcome", outcome))...)
+		}()
 	}
 	if r.Connector() {
 		// A review round has no itsaplan lease; its heartbeat is the check

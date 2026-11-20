@@ -14,6 +14,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	sdk "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -3327,7 +3328,8 @@ func TestWorkSpans(t *testing.T) {
 		if attrs["outcome"] == "" {
 			t.Errorf("%s missing outcome", span.Name)
 		}
-		if span.Name != "factory.poll" && attrs["issue.key"] != "HL-7" {
+		root := span.Name == "factory.poll" || span.Name == "factory.admission" || span.Name == "factory.heartbeat"
+		if !root && attrs["issue.key"] != "HL-7" {
 			t.Errorf("%s missing issue", span.Name)
 		}
 		switch span.Name {
@@ -3568,5 +3570,85 @@ func TestLinkedRunObservesPR(t *testing.T) {
 	}
 	if first["pr.number"] != "1" || first["head.sha"] != "sha-1" || first["round"] == "" {
 		t.Errorf("linked run event lacks PR, head or round: %v", first)
+	}
+}
+
+func spanEvents(events []sdk.Event, name string) []map[string]string {
+	var out []map[string]string
+	for _, event := range events {
+		if event.Name != name {
+			continue
+		}
+		fields := map[string]string{}
+		for _, a := range event.Attributes {
+			fields[string(a.Key)] = a.Value.Emit()
+		}
+		out = append(out, fields)
+	}
+	return out
+}
+
+// The heartbeat loop runs apart from the poll. Its PR check and a failed
+// PR read are on its own root, with the run and PR they concern.
+func TestHeartbeatPassObservesPR(t *testing.T) {
+	exporter := captureWorkSpans(t)
+	v := newDeliveryEnv(t)
+	round, _ := v.startRound()
+	v.gh.mu.Lock()
+	v.gh.detailErr = errors.New("github: 502")
+	v.gh.mu.Unlock()
+	v.clk.Advance(61 * time.Second)
+	if err := v.e.HeartbeatPass(v.ctx); err == nil {
+		t.Fatal("heartbeat pass hid the failed PR read")
+	}
+	var roots []tracetest.SpanStub
+	for _, span := range exporter.GetSpans() {
+		if span.Name == "factory.heartbeat" {
+			roots = append(roots, span)
+		}
+	}
+	if len(roots) != 1 {
+		t.Fatalf("heartbeat roots = %d, want one", len(roots))
+	}
+	root := roots[0]
+	if root.Status.Code != codes.Error {
+		t.Errorf("heartbeat root status = %v, want error", root.Status)
+	}
+	prs := spanEvents(root.Events, "pr observed")
+	if len(prs) != 1 {
+		t.Fatalf("pr observed events = %v, want one", prs)
+	}
+	for key, want := range map[string]string{"issue.key": "HL-7", "pr.number": "1", "head.sha": "sha-1", "outcome": "error"} {
+		if got := prs[0][key]; got != want {
+			t.Errorf("pr observed %s = %q, want %q", key, got, want)
+		}
+	}
+	runs := spanEvents(root.Events, "run heartbeat")
+	if len(runs) != 1 || runs[0]["run.id"] != fmt.Sprint(round.ID) || runs[0]["outcome"] != "error" || runs[0]["pr.number"] != "1" {
+		t.Errorf("run heartbeat events = %v, want round %d with error", runs, round.ID)
+	}
+}
+
+// A background admission pass steps runs outside the poll, under its own root.
+func TestAdmissionPassHasRoot(t *testing.T) {
+	exporter := captureWorkSpans(t)
+	v := newDeliveryEnv(t)
+	v.delivered()
+	found := false
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "factory.admission" {
+			continue
+		}
+		if span.Parent.IsValid() {
+			t.Error("admission span has a parent")
+		}
+		for _, fields := range spanEvents(span.Events, "run observed") {
+			if fields["run.id"] == "1" && fields["issue.key"] == "HL-7" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no admission root observed run 1")
 	}
 }
