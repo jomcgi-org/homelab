@@ -230,14 +230,15 @@ type ReviewEvent struct {
 	RoundRunID  int64
 }
 
-// SeenEvents returns which of the node IDs are already recorded.
-func (s *Store) SeenEvents(ctx context.Context, nodeIDs []string) (map[string]bool, error) {
+// SeenEvents returns recorded node IDs, excluding retryable events on the current head.
+func (s *Store) SeenEvents(ctx context.Context, nodeIDs []string, head string, retryLimited bool) (map[string]bool, error) {
 	seen := map[string]bool{}
 	if len(nodeIDs) == 0 {
 		return seen, nil
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT github_node_id FROM review_event WHERE github_node_id = ANY($1)`,
-		pq.Array(nodeIDs))
+	rows, err := s.DB.QueryContext(ctx, `SELECT github_node_id FROM review_event WHERE github_node_id = ANY($1)
+		AND NOT ($2 AND commit_sha = $3 AND disposition = 'round_limit')`,
+		pq.Array(nodeIDs), retryLimited, head)
 	if err != nil {
 		return nil, err
 	}
@@ -262,13 +263,14 @@ func (s *Store) ActedOn(ctx context.Context, prID int64, commit, kind, source st
 	return ok, err
 }
 
-// RecordEvent records an event once, by its GitHub node ID. inserted is false
-// for a node already recorded.
-func (s *Store) RecordEvent(ctx context.Context, q Querier, ev ReviewEvent) (inserted bool, err error) {
+// RecordEvent records a new event or resolves a previously round-limited event.
+func (s *Store) RecordEvent(ctx context.Context, q Querier, ev ReviewEvent) (changed bool, err error) {
 	res, err := q.ExecContext(ctx, `
 		INSERT INTO review_event (pull_request_id, github_node_id, commit_sha, author, kind, source, disposition, round_run_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, nullif($8, 0))
-		ON CONFLICT (github_node_id) DO NOTHING`,
+		ON CONFLICT (github_node_id) DO UPDATE SET
+			disposition = excluded.disposition, round_run_id = excluded.round_run_id
+		WHERE review_event.disposition = 'round_limit' AND excluded.disposition <> 'round_limit'`,
 		ev.PullRequestID, ev.NodeID, ev.CommitSHA, ev.Author, ev.Kind, ev.Source, ev.Disposition, ev.RoundRunID)
 	if err != nil {
 		return false, err
