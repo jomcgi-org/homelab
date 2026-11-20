@@ -19,6 +19,9 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+"github.com/yuin/goldmark"
+"github.com/yuin/goldmark/ast"
+"github.com/yuin/goldmark/text"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
@@ -347,18 +350,43 @@ func countedCriteria(g *GoalCheck) bool {
 	return g != nil && g.Counted > 0 && g.Counted == len(g.Criteria)
 }
 
-// issueCriteria counts the criteria in the issue's one "Done when" or
-// "Acceptance criteria" list. Only trusted issue text counts: an untrusted
-// edit must not shorten the list. Items are top-level "1." or "1)" lines
-// numbered in sequence, or top-level "-", "*" or "+" bullets (task boxes
-// allowed), one marker style per list; an indented line that is not a list
-// marker continues an item, and another top-level line ends the list. Any
-// line that could be a list marker but is not the next item (a gap, another
-// style, a nested list, an item after the list ended) or a second list
-// heading makes the list uncountable: 0, which withdraws nothing.
+// Count direct items of the one unambiguous list following the criteria label.
 func issueCriteria(in *IssueContext) int {
-	return len(criterionTexts(in, false))
+	if goalKey(in) == "" || !in.Issue.Trusted {
+		return 0
+	}
+	source := []byte(strings.ReplaceAll(strings.ReplaceAll(in.Issue.Description, "\r\n", "\n"), "\r", "\n"))
+	doc := goldmark.DefaultParser().Parse(text.NewReader(source))
+	count := 0
+	for block := doc.FirstChild(); block != nil; block = block.NextSibling() {
+		if block.Kind() == ast.KindList && count > 0 {
+			return 0
+		}
+		if block.Kind() != ast.KindParagraph && block.Kind() != ast.KindHeading {
+			continue
+		}
+		label := strings.ToLower(strings.TrimSpace(string(block.Lines().Value(source))))
+		if !criteriaLabel.MatchString(label) {
+			continue
+		}
+		list, ok := block.NextSibling().(*ast.List)
+		if count > 0 || !ok || list.ChildCount() > maxCriteria {
+			return 0
+		}
+		for item := list.FirstChild(); item != nil; item = item.NextSibling() {
+			for child := item.FirstChild(); child != nil; child = child.NextSibling() {
+				if child.Kind() == ast.KindList {
+					return 0
+				}
+			}
+		}
+		count = list.ChildCount()
+		block = list
+	}
+	return count
 }
+
+var criteriaLabel = regexp.MustCompile(`^(?:(?:done when|acceptance criteria):?|\*\*(?:done when|acceptance criteria):?\*\*:?)$`)
 
 func criterionTexts(in *IssueContext, ownership bool) []string {
 	if goalKey(in) == "" || !in.Issue.Trusted {
