@@ -7,6 +7,10 @@
 # argocd-server serves HTTP.
 argo-cd:
   global:
+    # Linux/amd64 manifest listed in the v3.3.18 release image SBOM.
+    image:
+      repository: quay.io/argoproj/argocd
+      tag: "v3.3.18@sha256:e2e36aad7bab58d8b1af0468d0cab4818900f18cc7c1f09eda52f5367f8a4f25"
     priorityClassName: system-cluster-critical
   server:
     replicas: 1
@@ -44,6 +48,9 @@ argo-cd:
       limits:
         memory: 1536Mi
   redis:
+    image:
+      repository: docker.io/library/redis
+      tag: "7.2.11-alpine@sha256:1a34bdba051ecd8a58ec8a3cc460acef697a1605e918149cc53d920673c1a0a7"
     resources:
       requests:
         cpu: 15m
