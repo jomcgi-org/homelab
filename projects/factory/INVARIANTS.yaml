@@ -123,3 +123,9 @@ invariants:
   - projects/factory/reviewer/review/goal.go
   test: //projects/factory/reviewer/review:review_test
   state: live
+- id: FACT-19
+  statement: Grant failures during a recording relay request set error status and add a fixed grant.failure event. Without a recording span, existing refresh failure logs are emitted.
+  mechanism:
+  - projects/factory/broker/grant/manager.go
+  test: //projects/factory/broker/relay:relay_test
+  state: live

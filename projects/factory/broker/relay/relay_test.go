@@ -34,6 +34,8 @@ import (
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/store"
 	"github.com/klauspost/compress/zstd"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -488,6 +490,39 @@ func TestRelayTransientRefreshFailureIsUnavailable(t *testing.T) {
 	}
 	if testutil.ToFloat64(h.metrics.GrantState.WithLabelValues("codex-primary", "login_required")) != 0 {
 		t.Fatal("a transient failure reported login_required")
+	}
+}
+
+func TestRelayRejectedGrantDiagnostics(t *testing.T) {
+	for _, tracing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("tracing=%t", tracing), func(t *testing.T) {
+			h := newHarness(t, true)
+			h.backend.set(func(b *backend) { b.accepts = func(string) bool { return false } })
+			h.auth.FailTransiently(true)
+			req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5"}`))
+			req.Header.Set("Authorization", "Bearer "+h.actorJWT())
+			if tracing {
+				ctx, span := sdktrace.NewTracerProvider().Tracer("test").Start(req.Context(), "relay")
+				defer span.End()
+				req = req.WithContext(ctx)
+				defer func() {
+					s := span.(sdktrace.ReadOnlySpan)
+					if events := s.Events(); len(events) != 1 || events[0].Name != "grant.failure" || s.Status().Code != codes.Error {
+						t.Errorf("grant diagnostics: %v, status %v", events, s.Status())
+					}
+				}()
+			}
+			w := httptest.NewRecorder()
+			h.handler.ServeHTTP(w, req)
+			if w.Code != http.StatusServiceUnavailable || h.auth.RefreshCalls() != 1 {
+				t.Fatalf("status %d, refreshes %d", w.Code, h.auth.RefreshCalls())
+			}
+			for _, message := range []string{"codex grant refresh after backend 401 failed", "tokenbroker refresh failed"} {
+				if strings.Contains(h.logs.String(), message) == tracing {
+					t.Errorf("unexpected log presence for %q", message)
+				}
+			}
+		})
 	}
 }
 

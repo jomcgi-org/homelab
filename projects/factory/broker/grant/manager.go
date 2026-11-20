@@ -20,6 +20,8 @@ import (
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/provider"
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/provider/codexchatgpt"
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/store"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -115,40 +117,63 @@ func New(opts Options) *Manager {
 // Grant is the managed grant's name.
 func (m *Manager) Grant() string { return m.opts.Grant }
 
+var discardRefreshLogs = slog.New(slog.DiscardHandler)
+
+// Grant diagnostics contain provider errors. Only a fixed event goes on the span.
+func (m *Manager) diagnostics(ctx context.Context) (context.Context, *slog.Logger, func()) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return ctx, m.opts.Logger, func() {}
+	}
+	return broker.WithRefreshLogger(ctx, discardRefreshLogs), discardRefreshLogs, func() {
+		span.AddEvent("grant.failure")
+		span.SetStatus(codes.Error, "grant failure")
+	}
+}
+
 // AccessToken returns a token the relay can use now. A grant due for refresh
 // is refreshed first, single-flight, and the rotated grant is written to its
 // Secret before the token is returned. When a refresh fails while the stored
 // access token is still valid, the stored token is served and the state
 // metric reports the failure.
-func (m *Manager) AccessToken(ctx context.Context) (Token, error) {
+func (m *Manager) AccessToken(ctx context.Context) (result Token, resultErr error) {
+	ctx, logger, report := m.diagnostics(ctx)
+	var refreshFailed bool
+	defer func() {
+		if resultErr != nil || refreshFailed {
+			report()
+		}
+	}()
+
 	grant := m.opts.Grant
 	if m.broker.NeedsLogin(grant) {
-		return m.cached(ctx, ErrLoginRequired)
+		return m.cached(ctx, logger, ErrLoginRequired)
 	}
 	if m.refreshBlocked() {
-		return m.cached(ctx, ErrUnavailable)
+		return m.cached(ctx, logger, ErrUnavailable)
 	}
 	m.mu.Lock()
 	backoff := !m.lastFailure.IsZero() && time.Since(m.lastFailure) < m.opts.RetryAfter
 	m.mu.Unlock()
 	if backoff {
-		return m.cached(ctx, ErrUnavailable)
+		return m.cached(ctx, logger, ErrUnavailable)
 	}
 	access, expiry, err := m.broker.GetAccessToken(grant, ctx)
 	if err == nil {
 		m.recordSuccess(expiry)
-		return m.token(access, expiry)
+		return m.token(logger, access, expiry)
 	}
+	refreshFailed = true
 	switch {
 	case errors.Is(err, broker.ErrNoGrant):
 		m.opts.Metrics.SetGrantState(grant, "login_required")
 		return Token{}, ErrLoginRequired
 	case m.broker.NeedsLogin(grant):
 		m.opts.Metrics.SetGrantState(grant, "login_required")
-		m.opts.Logger.Error("codex grant needs a new device login", "grant", grant)
-		return m.cached(ctx, ErrLoginRequired)
+		logger.Error("codex grant needs a new device login", "grant", grant)
+		return m.cached(ctx, logger, ErrLoginRequired)
 	case m.refreshBlocked():
-		return m.cached(ctx, ErrUnavailable)
+		return m.cached(ctx, logger, ErrUnavailable)
 	}
 	m.mu.Lock()
 	m.lastFailure = time.Now()
@@ -161,8 +186,8 @@ func (m *Manager) AccessToken(ctx context.Context) (Token, error) {
 		state = "missing"
 	}
 	m.opts.Metrics.SetGrantState(grant, state)
-	m.opts.Logger.Error("codex grant refresh failed", "grant", grant, "state", state, "err", err)
-	return m.cached(ctx, ErrUnavailable)
+	logger.Error("codex grant refresh failed", "grant", grant, "state", state, "err", err)
+	return m.cached(ctx, logger, ErrUnavailable)
 }
 
 // refreshBlocked exposes a consumed token as an operator recovery condition.
@@ -177,20 +202,20 @@ func (m *Manager) refreshBlocked() bool {
 }
 
 // cached serves the stored access token while it is valid, else fallback.
-func (m *Manager) cached(ctx context.Context, fallback error) (Token, error) {
+func (m *Manager) cached(ctx context.Context, logger *slog.Logger, fallback error) (Token, error) {
 	access, expiry, err := m.broker.CachedAccessToken(m.opts.Grant, ctx)
 	if err != nil {
 		return Token{}, fallback
 	}
-	return m.token(access, expiry)
+	return m.token(logger, access, expiry)
 }
 
-func (m *Manager) token(access string, expiry time.Time) (Token, error) {
+func (m *Manager) token(logger *slog.Logger, access string, expiry time.Time) (Token, error) {
 	account, ok := codexchatgpt.AccountID(access)
 	if !ok {
 		grant, err := m.store.LoadGrant(m.opts.Grant)
 		if err != nil || grant.TokenBundle.AccountID == "" {
-			m.opts.Logger.Error("codex access token has no ChatGPT account", "grant", m.opts.Grant)
+			logger.Error("codex access token has no ChatGPT account", "grant", m.opts.Grant)
 			return Token{}, ErrLoginRequired
 		}
 		account = grant.TokenBundle.AccountID
@@ -210,7 +235,14 @@ func (m *Manager) recordSuccess(expiry time.Time) {
 // holding the same refused token share one refresh: later callers wait for
 // it and then get the token it stored. It answers ErrLoginRequired only when
 // the refresh token is confirmed dead; anything else is ErrUnavailable.
-func (m *Manager) RefreshRejected(ctx context.Context, rejected string) (Token, error) {
+func (m *Manager) RefreshRejected(ctx context.Context, rejected string) (result Token, resultErr error) {
+	ctx, logger, report := m.diagnostics(ctx)
+	defer func() {
+		if resultErr != nil {
+			report()
+		}
+	}()
+
 	grant := m.opts.Grant
 	if m.broker.NeedsLogin(grant) {
 		return Token{}, ErrLoginRequired
@@ -225,7 +257,7 @@ func (m *Manager) RefreshRejected(ctx context.Context, rejected string) (Token, 
 		return Token{}, ErrUnavailable
 	}
 	if access, expiry, err := m.broker.CachedAccessToken(grant, ctx); err == nil && access != rejected {
-		return m.token(access, expiry)
+		return m.token(logger, access, expiry)
 	}
 	m.mu.Lock()
 	recent := !m.lastForced.IsZero() && time.Since(m.lastForced) < m.opts.ForceCooldown
@@ -247,11 +279,11 @@ func (m *Manager) RefreshRejected(ctx context.Context, rejected string) (Token, 
 		if !m.refreshBlocked() {
 			m.opts.Metrics.SetGrantState(grant, "error")
 		}
-		m.opts.Logger.Error("codex grant refresh after backend 401 failed", "grant", grant, "err", err)
+		logger.Error("codex grant refresh after backend 401 failed", "grant", grant, "err", err)
 		return Token{}, ErrUnavailable
 	}
 	m.recordSuccess(expiry)
-	return m.token(access, expiry)
+	return m.token(logger, access, expiry)
 }
 
 // ForceRefresh rotates the grant now, at most once per ForceCooldown, for
