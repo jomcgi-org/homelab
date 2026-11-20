@@ -2424,7 +2424,7 @@ heads:
 			stamp := decisions.decided(p.Note, p.ID, SeverityHigh)
 			if stamp != nil && !slices.ContainsFunc(r.stored.Decisions, func(old DecisionStamp) bool {
 				identity := old.Finding == p.ID || r.legacy && old.Finding == clip(p.ID, maxTitle)
-				return identity && old.ID == stamp.ID && old.Hash == stamp.Hash && old.UpdatedAt == stamp.UpdatedAt
+				return identity && old.ID == stamp.ID && decisions.holds(old)
 			}) {
 				report.Previous[i].Status = StatusOpen
 			}

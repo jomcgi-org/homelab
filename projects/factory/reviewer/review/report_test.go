@@ -219,10 +219,10 @@ func TestCarriedDecisions(t *testing.T) {
 		{ID: 43, Author: "jomcgi", Body: "Revoked."},
 	}, Carried: []DecisionStamp{
 		{Finding: "kept.go:x", ID: 42, UpdatedAt: "2026-11-18T10:00:00Z", Hash: bodyHash(kept)},
-		{Finding: "revoked.go:x", ID: 43, Hash: bodyHash(old)},
-		{Finding: "reported.go:x", ID: 43, Hash: bodyHash(old)},
-		{Finding: "lowered.go:x", ID: 43, Hash: bodyHash(old)},
-		{Finding: "revoked.go:x", ID: 43, Hash: bodyHash("another revoked stamp")},
+		{Finding: "revoked.go:x", ID: 43, UpdatedAt: "2026-11-18T10:00:00Z", Hash: bodyHash(old)},
+		{Finding: "reported.go:x", ID: 43, UpdatedAt: "2026-11-18T10:00:00Z", Hash: bodyHash(old)},
+		{Finding: "lowered.go:x", ID: 43, UpdatedAt: "2026-11-18T10:00:00Z", Hash: bodyHash(old)},
+		{Finding: "revoked.go:x", ID: 43, UpdatedAt: "2026-11-18T10:00:00Z", Hash: bodyHash("another revoked stamp")},
 	}}
 	r := &Report{Findings: []Finding{finding("reported.go:x", SeverityHigh), finding("lowered.go:x", SeverityLow)}}
 	a := AssessDecided(r, nil, d)
@@ -1496,5 +1496,40 @@ func TestFixedDecisionSurvivesDeletion(t *testing.T) {
 	next := AssessDecided(&Report{}, st.Previous(), Decisions{Carried: st.Decisions})
 	if len(st.Decisions) != 0 || len(st.Cleared) != 1 || st.Cleared[0].Status != StatusFixed || len(next.Blocking) != 0 {
 		t.Fatalf("fixed state %+v, next blockers %+v", st, next.Blocking)
+	}
+}
+
+func TestUpgradeHashOnlyDecisionCheckpoint(t *testing.T) {
+	const body = "Accept a.go:rollout."
+	const created = "2026-11-18T10:00:00Z"
+	raw := fmt.Sprintf(`{"blocking":[],"decisions":[{"finding":"a.go:rollout","id":42,"hash":"%s","severity":"high"}]}`, bodyHash(body))
+	st, ok := LoadState(statePrefix + base64.StdEncoding.EncodeToString([]byte(raw)) + stateSuffix)
+	if !ok || len(st.Decisions) != 1 {
+		t.Fatal("legacy checkpoint did not load")
+	}
+	c := github.Comment{ID: 42, Body: body, CreatedAt: created, UpdatedAt: created}
+	d := Decisions{Repo: "o/r", Number: 7, Comments: []github.Comment{c}, Carried: st.Decisions}
+	a := AssessDecided(&Report{}, nil, d)
+	if !d.Hold(st.Decisions) || len(a.Carried) != 1 || a.Carried[0].UpdatedAt != created {
+		t.Fatalf("unchanged creation version lost: %+v", a)
+	}
+	d.Comments[0].UpdatedAt = "2026-11-19T10:00:00Z"
+	if d.Hold(st.Decisions) {
+		t.Fatal("edited version held the legacy pass")
+	}
+	blocked := stateOf(AssessDecided(&Report{}, nil, d), &Report{}, nil)
+	prior := blocked.Previous()
+	if len(prior) != 1 || prior[0].ReauthorizeAfter != 42 {
+		t.Fatalf("missing reauthorization requirement: %+v", prior)
+	}
+	d.Carried = nil
+	r := &Report{Previous: []Previous{{ID: "a.go:rollout", Status: StatusJustified, Note: "decision: https://github.com/o/r/pull/7#issuecomment-42"}}}
+	if got := AssessDecided(r, prior, d); len(got.Blocking) != 1 {
+		t.Fatal("reusing the old comment cleared the finding")
+	}
+	d.Comments[0].ID = 43
+	r.Previous[0].Note = "decision: https://github.com/o/r/pull/7#issuecomment-43"
+	if got := AssessDecided(r, prior, d); len(got.Accepted) != 1 {
+		t.Fatal("fresh authorization failed")
 	}
 }

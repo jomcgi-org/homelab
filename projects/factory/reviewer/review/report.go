@@ -71,13 +71,15 @@ type Report struct {
 // Finding is one review finding with an ID that stays stable across
 // rounds: `<path>:<rule>` (REVIEW.md "Report").
 type Finding struct {
-	ID       string `json:"id"`
-	Severity string `json:"severity"`
-	Path     string `json:"path,omitempty"`
-	Line     int    `json:"line,omitempty"`
-	Title    string `json:"title"`
-	Detail   string `json:"detail,omitempty"`
-	Defer    bool   `json:"defer,omitempty"`
+	// ReauthorizeAfter is the newest unverifiable legacy decision comment ID.
+	ReauthorizeAfter int64  `json:"reauthorize_after,omitempty"`
+	ID               string `json:"id"`
+	Severity         string `json:"severity"`
+	Path             string `json:"path,omitempty"`
+	Line             int    `json:"line,omitempty"`
+	Title            string `json:"title"`
+	Detail           string `json:"detail,omitempty"`
+	Defer            bool   `json:"defer,omitempty"`
 	// Earlier is the agent's statement that a new finding on a later head
 	// is on code an earlier review covered and this head left alone (Scope).
 	// Left out, the finding keeps its severity.
@@ -290,6 +292,7 @@ func parseReport(reply string, legacy bool) (*Report, error) {
 				f.ID = clip(strings.ToLower(f.Path)+":"+slug, 120)
 			}
 		}
+		f.ReauthorizeAfter = 0 // Only persisted service state can require reauthorization.
 		f.Cause, f.Kind = strings.TrimSpace(f.Cause), ""
 		if !validID(f.ID) || ids[f.ID] {
 			return nil, fmt.Errorf("finding %d has an invalid or duplicate ID", i+1)
@@ -472,14 +475,24 @@ func (d Decisions) decided(note, id, severity string) *DecisionStamp {
 	return nil
 }
 
-// holds reports that Joe's comment still exists with the text it had.
-func (d Decisions) holds(st DecisionStamp) bool {
+// verified upgrades a hash-only checkpoint when GitHub still reports the
+// comment's creation version. A matching body alone could be an edit-and-restore.
+func (d Decisions) verified(st DecisionStamp) (DecisionStamp, bool) {
 	for _, c := range d.Comments {
-		if st.UpdatedAt != "" && st.ID > 0 && c.ID == st.ID && c.UpdatedAt == st.UpdatedAt && st.Hash != "" && bodyHash(c.Body) == st.Hash {
-			return true
+		if st.ID <= 0 || c.ID != st.ID || c.UpdatedAt == "" || bodyHash(c.Body) != st.Hash {
+			continue
+		}
+		if st.UpdatedAt == c.UpdatedAt || (st.UpdatedAt == "" && c.CreatedAt == c.UpdatedAt) {
+			st.UpdatedAt = c.UpdatedAt
+			return st, true
 		}
 	}
-	return false
+	return st, false
+}
+
+func (d Decisions) holds(st DecisionStamp) bool {
+	_, ok := d.verified(st)
+	return ok
 }
 
 // Hold reports that every decision a review relied on still holds.
@@ -497,8 +510,13 @@ func (d Decisions) Hold(stamps []DecisionStamp) bool {
 func (d Decisions) Revalidate(cleared []Cleared) []Cleared {
 	out := slices.Clone(cleared)
 	for i := range out {
-		if out[i].Decision != nil && !d.holds(*out[i].Decision) {
-			out[i].Decision = nil
+		if out[i].Decision != nil {
+			st, ok := d.verified(*out[i].Decision)
+			if ok {
+				out[i].Decision = &st
+			} else {
+				out[i].Decision = nil
+			}
 		}
 	}
 	return out
@@ -591,6 +609,15 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 	for _, p := range prior {
 		priorByID[p.ID] = p
 	}
+	reauthorizeAfter := map[string]int64{}
+	for _, p := range prior {
+		reauthorizeAfter[p.ID] = p.ReauthorizeAfter
+	}
+	for _, st := range d.Carried {
+		if st.UpdatedAt == "" && !d.holds(st) {
+			reauthorizeAfter[st.Finding] = max(reauthorizeAfter[st.Finding], st.ID)
+		}
+	}
 	// justified judges a justification by the finding's severity on this
 	// head, so a medium one raised to high needs Joe's decision. A note
 	// that claims Joe's decision is checked and stamped at any severity.
@@ -602,11 +629,11 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 			(severity != SeverityMedium && severity != SeverityHigh) {
 			return note, nil, false
 		}
-		if severity == SeverityMedium && !decisionNote(note) {
+		if severity == SeverityMedium && !decisionNote(note) && reauthorizeAfter[id] == 0 {
 			return note, nil, true
 		}
 		st := d.decided(note, id, severity)
-		return note, st, st != nil
+		return note, st, st != nil && st.ID > reauthorizeAfter[id]
 	}
 	cleared := func(id string) bool {
 		s, ok := status[id]
@@ -623,13 +650,14 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 	// severity it was decided at.
 	revoked := map[string]string{}
 	for _, st := range d.Carried {
+		verified, holds := d.verified(st)
 		switch {
 		case status[st.Finding].Status == StatusFixed && !slices.ContainsFunc(r.Findings, func(f Finding) bool { return f.ID == st.Finding }):
 			if _, was := priorByID[st.Finding]; !was {
 				a.Fixed = append(a.Fixed, Finding{ID: st.Finding, Severity: st.severity()})
 			}
-		case d.holds(st):
-			a.Carried = append(a.Carried, st)
+		case holds:
+			a.Carried = append(a.Carried, verified)
 		case st.Finding != "":
 			if cur, ok := revoked[st.Finding]; !ok || rank(st.severity()) < rank(cur) {
 				revoked[st.Finding] = st.severity()
@@ -744,6 +772,12 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 			},
 			Carried: true, Reason: "Joe's decision changed",
 		})
+	}
+	for i := range a.Blocking {
+		if cutoff := reauthorizeAfter[a.Blocking[i].ID]; cutoff > 0 {
+			a.Blocking[i].ReauthorizeAfter = cutoff
+			a.Blocking[i].Reason = "the original comment version cannot be verified; fix the finding or link a new decision comment from Joe"
+		}
 	}
 	sortBlocked(a.Blocking)
 	a.Conclusion = ConclusionSuccess
