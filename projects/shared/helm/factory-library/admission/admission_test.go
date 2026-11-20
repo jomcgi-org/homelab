@@ -333,6 +333,7 @@ func TestMirrorSecretAdmission(t *testing.T) {
 	decoder := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(output), 4096)
 	var policies []*unstructured.Unstructured
 	var authorizations []*unstructured.Unstructured
+	namespaceObjects := map[string]int{}
 	for {
 		var o unstructured.Unstructured
 		err := decoder.Decode(&o)
@@ -343,6 +344,11 @@ func TestMirrorSecretAdmission(t *testing.T) {
 			t.Fatal(err)
 		}
 		switch o.GetKind() {
+		case "ResourceQuota", "LimitRange":
+			if o.GetNamespace() != namespace {
+				t.Fatalf("%s rendered in namespace %q, want %q", o.GetKind(), o.GetNamespace(), namespace)
+			}
+			namespaceObjects[o.GetKind()]++
 		case "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding":
 			policies = append(policies, &o)
 		case "ConfigMap", "Secret", "Role", "RoleBinding":
@@ -354,6 +360,9 @@ func TestMirrorSecretAdmission(t *testing.T) {
 				authorizations = append(authorizations, stored)
 			}
 		}
+	}
+	if namespaceObjects["ResourceQuota"] != 1 || namespaceObjects["LimitRange"] != 1 {
+		t.Fatalf("want one quota and one limit range, got %v", namespaceObjects)
 	}
 	if len(policies) != 6 {
 		t.Fatalf("want three policy/binding pairs, got %d", len(policies))

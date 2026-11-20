@@ -16,6 +16,7 @@
 {{- fail (printf "factory-library: workload %s: unknown kind %s" $name $kind) }}
 {{- end }}
 {{- end }}
+{{ include "factory-library.namespacePolicy" . }}
 {{ include "factory-library.secrets" . }}
 {{ include "factory-library.buckets" . }}
 {{- end -}}
@@ -107,3 +108,32 @@ annotations:
   factory.jomcgi.dev/exceptions: {{ $exceptions | toJson | quote }}
 {{- end -}}
 {{- end -}}
+
+{{/* invariant: LIB-9 */}}
+{{- define "factory-library.namespacePolicy" -}}
+{{- $policy := (index .Values "factory-library").namespacePolicy }}
+{{- if $policy.enabled }}
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  hard:
+    {{- toYaml $policy.hard | nindent 4 }}
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        {{- toYaml $policy.defaultRequest | nindent 8 }}
+      default:
+        {{- toYaml $policy.default | nindent 8 }}
+{{- end }}
+{{- end }}

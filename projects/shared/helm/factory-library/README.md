@@ -526,3 +526,12 @@ canonical diff (resource order and YAML formatting are normalized):
 HELM_BIN="$(command -v helm)" python3 \
   projects/shared/helm/factory-library/render_landing_diff.py
 ```
+
+## Namespace resource policy
+
+The library emits one ResourceQuota and one LimitRange per release. Configure
+`factory-library.namespacePolicy.hard` for quota quantities, `defaultRequest`
+for container requests, and `default` for container limits. Helm merges partial
+overrides with the library defaults. Set `enabled: false` under the same key
+for a release deployed into a shared platform namespace. Charts invoking
+individual helpers should include `factory-library.namespacePolicy` once.
