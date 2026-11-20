@@ -1264,7 +1264,7 @@ func (s *Store) MarkNotAccepted(ctx context.Context, a *Attempt) error {
 }
 
 // MarkPlacementWait discounts a proven refusal while retaining the send for audit.
-// invariant: FACT-13
+// invariant: FACT-14
 func (s *Store) MarkPlacementWait(ctx context.Context, a *Attempt) error {
 	_, err := s.DB.ExecContext(ctx, `
 		UPDATE delivery_attempt SET state = 'sending', execution_possible = false,
