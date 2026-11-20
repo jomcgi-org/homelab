@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,13 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/jomcgi/homelab/projects/factory/broker/actorjwt"
 	"github.com/jomcgi/homelab/projects/factory/broker/grant"
@@ -80,11 +88,13 @@ func quotaHeaders(w http.ResponseWriter, used int, reset time.Time) {
 	w.Header().Set("x-codex-primary-reset-at", fmt.Sprint(reset.Unix()))
 }
 
+const testRequestID = "0f8e4c2a-6b1d-4e3a-9c7b-2d5f8a1e3b4c"
+
 // sse writes three events, waiting on gate (when set) after the first.
 func sse(w http.ResponseWriter, gate chan struct{}) {
 	quotaHeaders(w, 12, time.Now().Add(time.Hour))
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("X-Request-Id", "req-123")
+	w.Header().Set("X-Request-Id", testRequestID)
 	w.Header().Set("Set-Cookie", "session=upstream")
 	w.WriteHeader(http.StatusOK)
 	flusher := w.(http.Flusher)
@@ -212,6 +222,7 @@ func (h *harness) waitQuota(ok func(quota.View) bool) quota.View {
 func (h *harness) logText() string { h.logMu.Lock(); defer h.logMu.Unlock(); return h.logs.String() }
 
 func TestRelayStreamsWithGrantCredentials(t *testing.T) {
+	exporter := traceExporter(t)
 	h := newHarness(t, true)
 	gate := make(chan struct{})
 	h.backend.set(func(b *backend) { b.respond = func(w http.ResponseWriter, r *http.Request) { sse(w, gate) } })
@@ -256,8 +267,36 @@ func TestRelayStreamsWithGrantCredentials(t *testing.T) {
 	if strings.Contains(logs, h.access) || strings.Contains(logs, jwt) {
 		t.Fatal("a credential reached the logs")
 	}
-	if !strings.Contains(logs, `"actor":"actor/factory-homelab/session-1"`) || !strings.Contains(logs, `"upstream_request_id":"req-123"`) {
-		t.Fatalf("relay log lacks attribution: %s", logs)
+	if strings.Contains(logs, "actor/factory-homelab/session-1") {
+		t.Fatalf("relay logged per-request attribution: %s", logs)
+	}
+	attrs := attribute.NewSet(waitSpan(t, exporter).Attributes...)
+	if _, ok := attrs.Value("codex.upstream_request_id"); ok {
+		t.Error("the upstream request ID reached the span")
+	}
+	for key, want := range map[string]string{"actor.subject": "actor/factory-homelab/session-1", "relay.outcome": "ok", "http.response.status_code": "200"} {
+		if v, ok := attrs.Value(attribute.Key(key)); !ok || v.Emit() != want {
+			t.Errorf("relay span %s = %q, want %q", key, v.Emit(), want)
+		}
+	}
+}
+
+// waitSpan returns the one exported span. A relay served over HTTP ends its
+// span after the client has read the response.
+func waitSpan(t *testing.T, exporter *tracetest.InMemoryExporter) tracetest.SpanStub {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if spans := exporter.GetSpans(); len(spans) > 0 {
+			if len(spans) != 1 {
+				t.Fatalf("got %d spans, want 1", len(spans))
+			}
+			return spans[0]
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("relay span never ended")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -1030,6 +1069,314 @@ func TestCompressedModelAllowlist(t *testing.T) {
 					})
 				}
 			}
+		}
+	}
+}
+
+func TestRelayTrace(t *testing.T) {
+	exporter := traceExporter(t)
+	h := newHarness(t, true)
+	h.handler.AllowedModels = []string{"gpt-5"}
+	h.backend.set(func(b *backend) {
+		b.respond = func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, `{"id":"secret-response-id","usage":{"input_tokens":13,"input_tokens_details":{"cached_tokens":7},"output_tokens":3}}`)
+		}
+	})
+	jwt := h.actorJWT()
+	req := httptest.NewRequest("POST", "/v1/responses?secret-query", strings.NewReader(`{"model":"gpt-5","input":"secret-prompt"}`))
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	parent, endParent := requestParent(req)
+	defer endParent()
+	req = req.WithContext(parent)
+	req.Header.Set("Session_id", "private-client-session")
+
+	h.handler.ServeHTTP(httptest.NewRecorder(), req)
+	spans := exporter.GetSpans()
+	if len(spans) != 1 || spans[0].Parent.IsValid() || spans[0].SpanContext.TraceID() == trace.SpanContextFromContext(parent).TraceID() {
+		t.Fatal("expected one root span")
+	}
+	attrs := attribute.NewSet(spans[0].Attributes...)
+	for key, want := range map[string]string{"factory.session.id": "1", "grant.name": h.handler.Tokens.Grant(), "binding.namespace": "factory-homelab", "quota.state": "available", "http.response.status_code": "200", "gen_ai.request.model": "gpt-5", "gen_ai.usage.input_tokens": "13", "gen_ai.usage.cache_read.input_tokens": "7", "gen_ai.usage.output_tokens": "3"} {
+		v, ok := attrs.Value(attribute.Key(key))
+		if !ok || v.Emit() != want {
+			t.Errorf("incorrect attribute %s", key)
+		}
+	}
+	for _, attr := range spans[0].Attributes {
+		for _, secret := range []string{jwt, h.access, "private-client-session", "secret-response-id", "secret-query", "secret-prompt"} {
+			if strings.Contains(attr.Value.Emit(), secret) {
+				t.Fatal("credential or payload in span")
+			}
+		}
+	}
+}
+
+// With no AllowedModels list, the span records only a model named in
+// TraceModels. Any other name, even one shaped like a model ID, is "other",
+// so a caller cannot put request text into an exported attribute.
+func TestRelayTraceModelFromTrustedConfigOnly(t *testing.T) {
+	for model, want := range map[string]string{"gpt-6.2-astra": "gpt-6.2-astra", "gpt-6.2-unlisted": "other", "sk-secret-shaped-ABC123": "other", "secret prompt text": "other"} {
+		exporter := traceExporter(t)
+		h := newHarness(t, true)
+		h.handler.TraceModels = []string{"gpt-6.2-astra"}
+		body, _ := json.Marshal(map[string]string{"model": model})
+		req := httptest.NewRequest("POST", "/v1/responses", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+h.actorJWT())
+		h.handler.ServeHTTP(httptest.NewRecorder(), req)
+		spans := exporter.GetSpans()
+		if len(spans) != 1 {
+			t.Fatalf("model %q: got %d spans, want 1", model, len(spans))
+		}
+		attrs := attribute.NewSet(spans[0].Attributes...)
+		if v, ok := attrs.Value("gen_ai.request.model"); !ok || v.Emit() != want {
+			t.Errorf("model %q: recorded %q, want %q", model, v.Emit(), want)
+		}
+		if want == "other" {
+			for _, kv := range spans[0].Attributes {
+				if strings.Contains(kv.Value.Emit(), model) {
+					t.Errorf("model %q reached attribute %s", model, kv.Key)
+				}
+			}
+		}
+	}
+}
+
+// Backend response text never reaches the span: an unlisted model stays
+// "other" whatever the backend names, and the upstream request ID stays off.
+func TestRelayTraceIgnoresBackendResponseText(t *testing.T) {
+	for _, model := range []string{"gpt-6.2-unlisted", "sk-proj-abcdefghijklmnopqrstuvwxyz0123", "secret prompt text"} {
+		exporter := traceExporter(t)
+		h := newHarness(t, true)
+		h.handler.TraceModels = []string{"gpt-6.2-astra"}
+		event, _ := json.Marshal(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp1", "model": model, "usage": map[string]int{"input_tokens": 4, "output_tokens": 2}}})
+		h.backend.set(func(b *backend) {
+			b.respond = func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("X-Request-Id", testRequestID)
+				fmt.Fprintf(w, "event: response.completed\ndata: %s\n\n", event)
+			}
+		})
+		body, _ := json.Marshal(map[string]string{"model": model})
+		req := httptest.NewRequest("POST", "/v1/responses", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+h.actorJWT())
+		h.handler.ServeHTTP(httptest.NewRecorder(), req)
+		span := waitSpan(t, exporter)
+		attrs := attribute.NewSet(span.Attributes...)
+		if v, ok := attrs.Value("gen_ai.request.model"); !ok || v.Emit() != "other" {
+			t.Errorf("model %q: recorded %q, want other", model, v.Emit())
+		}
+		if v, _ := attrs.Value("gen_ai.usage.output_tokens"); v.Emit() != "2" {
+			t.Errorf("model %q: output tokens %q", model, v.Emit())
+		}
+		for _, kv := range span.Attributes {
+			if strings.Contains(kv.Value.Emit(), model) || strings.Contains(kv.Value.Emit(), testRequestID) {
+				t.Errorf("model %q: backend text reached attribute %s", model, kv.Key)
+			}
+		}
+	}
+}
+
+// Without a tracer provider no span records, so the relay keeps its
+// metadata-only completion line until trace export is enabled.
+func TestRelayLogsAttributionWithoutTracing(t *testing.T) {
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.NeverSample())))
+	t.Cleanup(func() { otel.SetTracerProvider(previous) })
+	h := newHarness(t, true)
+	resp := h.post("/v1/responses", h.actorJWT())
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(h.logText(), `"upstream_request_id":"`+testRequestID+`"`) {
+		if time.Now().After(deadline) {
+			t.Fatalf("untraced relay log lacks attribution: %s", h.logText())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !strings.Contains(h.logText(), `"actor":"actor/factory-homelab/session-1"`) {
+		t.Fatalf("untraced relay log lacks the actor: %s", h.logText())
+	}
+}
+
+func traceExporter(t *testing.T) *tracetest.InMemoryExporter {
+	t.Helper()
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() { otel.SetTracerProvider(previous) })
+	return exporter
+}
+
+func TestRejectedRelayTrace(t *testing.T) {
+	exporter := traceExporter(t)
+	h := newHarness(t, true)
+	req := httptest.NewRequest("POST", "/v1/responses", nil)
+	h.handler.ServeHTTP(httptest.NewRecorder(), req)
+	spans := exporter.GetSpans()
+	if len(spans) != 1 || spans[0].Parent.IsValid() || len(spans[0].Events) == 0 {
+		t.Fatal("expected one root span recording the rejection")
+	}
+	attrs := attribute.NewSet(spans[0].Attributes...)
+	for key, want := range map[string]string{"grant.name": h.handler.Tokens.Grant(), "binding.namespace": "", "quota.state": "unknown", "http.response.status_code": "401", "gen_ai.request.model": "unknown", "gen_ai.usage.input_tokens": "-1", "gen_ai.usage.cache_read.input_tokens": "-1", "gen_ai.usage.output_tokens": "-1"} {
+		v, ok := attrs.Value(attribute.Key(key))
+		if !ok || v.Emit() != want {
+			t.Errorf("incorrect rejection attribute %s", key)
+		}
+	}
+}
+
+func TestProviderStreamErrorTrace(t *testing.T) {
+	for _, provider := range []string{"claude", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			exporter := traceExporter(t)
+			var handler http.Handler
+			var req *http.Request
+			var stream string
+			respond := func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				io.WriteString(w, stream)
+			}
+			if provider == "claude" {
+				stream = "data: " + `{"type":"error","error":{"message":"private-provider-error"}}` + "\n\n"
+				h := newClaudeHarness(t, respond)
+				handler = h
+				req = h.request(t, "/anthropic/v1/messages", claudeBody)
+			} else {
+				stream = "data: " + `{"type":"response.failed","response":{"id":"resp1","error":{"message":"private-provider-error"},"usage":{"input_tokens":4,"output_tokens":2}}}` + "\n\n"
+				h := newHarness(t, true)
+				h.backend.set(func(b *backend) { b.respond = respond })
+				handler = h.handler
+				req = httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"gpt-5"}`))
+				req.Header.Set("Authorization", "Bearer "+h.actorJWT())
+			}
+			out := httptest.NewRecorder()
+			handler.ServeHTTP(out, req)
+			if out.Code != 200 || out.Body.String() != stream {
+				t.Fatal("stream response changed")
+			}
+			spans := exporter.GetSpans()
+			if len(spans) != 1 {
+				t.Fatalf("got %d spans", len(spans))
+			}
+			span := spans[0]
+			if span.Parent.IsValid() || span.Status.Code != codes.Error || span.Status.Description != "provider_stream_error" {
+				t.Fatal("expected root span with classified provider failure")
+			}
+			attrs := attribute.NewSet(span.Attributes...)
+			status, _ := attrs.Value("http.response.status_code")
+			if status.AsInt64() != 200 {
+				t.Fatal("trace lost the HTTP response status")
+			}
+			if provider == "codex" {
+				input, _ := attrs.Value("gen_ai.usage.input_tokens")
+				if input.AsInt64() != 4 {
+					t.Fatal("failed response lost token usage")
+				}
+			}
+			if len(span.Events) != 1 || span.Events[0].Name != "exception" {
+				t.Fatal("missing provider failure event")
+			}
+			eventAttrs := attribute.NewSet(span.Events[0].Attributes...)
+			message, ok := eventAttrs.Value("exception.message")
+			if !ok || message.AsString() != "provider_stream_error" || strings.Contains(fmt.Sprint(span), "private-provider-error") {
+				t.Fatal("expected sanitized failure details")
+			}
+		})
+	}
+}
+
+func requestParent(req *http.Request) (context.Context, func()) {
+	ctx, span := otel.Tracer("test").Start(req.Context(), "incoming")
+	return ctx, func() { span.End() }
+}
+
+type failingBegin struct{}
+
+func (failingBegin) Begin(context.Context, actorjwt.Identity) (int64, error) {
+	return 0, errors.New("unavailable")
+}
+
+func (failingBegin) Complete(context.Context, int64, TokenUsage) error { return nil }
+
+// With tracing on, a traced request's failures go on its span as events,
+// and no per-request log line repeats them (HOME-510 comment 7036). Without
+// tracing, the log lines stay.
+func TestTracedFailuresStayOffLogs(t *testing.T) {
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
+	cases := []struct {
+		name, event string
+		setup       func(h *harness, gate chan struct{})
+	}{
+		{"upstream request", "codex upstream request failed", func(h *harness, _ chan struct{}) {
+			h.handler.Upstream = closed.URL + "/backend-api/codex"
+		}},
+		{"stream read", "upstream stream ended early", func(h *harness, gate chan struct{}) {
+			h.handler.StreamIdleTimeout = 100 * time.Millisecond
+			h.backend.set(func(b *backend) {
+				b.respond = func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusOK)
+					w.(http.Flusher).Flush()
+					<-gate
+				}
+			})
+		}},
+		{"token accounting start", "codex token accounting start failed", func(h *harness, _ chan struct{}) {
+			h.handler.TokenUsage = failingBegin{}
+		}},
+		{"token accounting write", "codex token accounting write failed", func(h *harness, _ chan struct{}) {
+			h.handler.TokenUsage = &tokenSink{fail: true}
+			h.backend.set(func(b *backend) {
+				b.respond = func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, measuredResponse) }
+			})
+		}},
+	}
+	for _, tc := range cases {
+		for _, traced := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s traced=%v", tc.name, traced), func(t *testing.T) {
+				var exporter *tracetest.InMemoryExporter
+				if traced {
+					exporter = traceExporter(t)
+				} else {
+					previous := otel.GetTracerProvider()
+					otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.NeverSample())))
+					t.Cleanup(func() { otel.SetTracerProvider(previous) })
+				}
+				h := newHarness(t, true)
+				// The gate opens before the harness's servers close, so
+				// a stalled backend handler does not block their shutdown.
+				gate := make(chan struct{})
+				defer close(gate)
+				tc.setup(h, gate)
+				req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"gpt-5"}`))
+				req.Header.Set("Authorization", "Bearer "+h.actorJWT())
+				h.handler.ServeHTTP(httptest.NewRecorder(), req)
+				logged := strings.Contains(h.logText(), tc.event)
+				if !traced {
+					if !logged {
+						t.Fatalf("untraced failure not logged: %s", h.logText())
+					}
+					return
+				}
+				if logged {
+					t.Fatalf("traced failure logged: %s", h.logText())
+				}
+				spans := exporter.GetSpans()
+				if len(spans) != 1 {
+					t.Fatalf("got %d spans", len(spans))
+				}
+				found := false
+				for _, e := range spans[0].Events {
+					found = found || e.Name == tc.event
+				}
+				if !found {
+					t.Fatalf("span lacks event %q: %v", tc.event, spans[0].Events)
+				}
+				if spans[0].Status.Code != codes.Error {
+					t.Fatalf("span status = %v, want error so the collector keeps it", spans[0].Status)
+				}
+			})
 		}
 	}
 }

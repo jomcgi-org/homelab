@@ -37,6 +37,15 @@ type Identity struct {
 	ActorUID  string
 }
 
+// SessionID returns the lower-case kagent session ID encoded in a session actor's name.
+func (id Identity) SessionID() string {
+	session, ok := strings.CutPrefix(id.ActorName, "session-")
+	if !ok {
+		return ""
+	}
+	return strings.ToLower(session)
+}
+
 // Error is a rejected token. Reason is a small fixed set, safe as a metric
 // label; it never carries token bytes.
 type Error struct{ Reason string }

@@ -75,6 +75,8 @@ sends traffic directly to the collector's `health_check` extension on port
 
 Record work in code we write as spans with attributes describing the operation and its outcome. Use logs for startup, crashes and third-party components.
 
+The factory broker follows this rule. With tracing on, its relays write no per-request log line: the actor, status and outcome go on the relay span. The factory collector keeps every error trace, every trace of 10 s or longer and 0.1% of the rest, so most fast successful requests leave no per-request record. Joe accepted this ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-510#comment-7036)). Grant manager log lines written during a traced relay request, such as a failed refresh after a backend 401, move to HOME-649 ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-510#comment-7476)).
+
 ## Trace admission is deny-by-default
 
 `allowedServices` defaults to an empty list in `values.yaml`. Read

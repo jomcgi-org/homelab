@@ -14,6 +14,9 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/jomcgi/homelab/projects/factory/broker/actorjwt"
 	"github.com/jomcgi/homelab/projects/factory/broker/auth"
 	"github.com/jomcgi/homelab/projects/factory/broker/metrics"
@@ -71,13 +74,17 @@ func (c *Claude) init() {
 func (c *Claude) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c.init()
 	start := time.Now()
+	ctx, span := startRelaySpan(r.Context(), "claude.relay")
+	defer span.End()
+	span.SetAttributes(attribute.String("quota.state", "unmanaged"))
 	var id actorjwt.Identity
-	result := c.serve(w, r, &id)
+	result := c.serve(w, r.WithContext(ctx), &id)
+	finishSpan(span, "claude", id, result)
 	if c.Metrics != nil {
 		c.Metrics.ClaudeRelayRequests.WithLabelValues(result.name, metrics.StatusClass(result.status)).Inc()
 	}
 	// No headers, body, token, query, or upstream error text is logged.
-	c.Logger.Info("claude relay", "actor", id.Subject, "atespace", id.Atespace, "actor_uid", id.ActorUID,
+	logUntraced(span, c.Logger, slog.LevelInfo, "claude relay", "actor", id.Subject, "atespace", id.Atespace, "actor_uid", id.ActorUID,
 		"path", r.URL.Path, "status", result.status, "outcome", result.name,
 		"duration_ms", time.Since(start).Milliseconds())
 }
@@ -143,6 +150,7 @@ func (c *Claude) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 	if !slices.Contains(c.ModelAllowlist[id.Subject], model) {
 		return writeError(w, http.StatusForbidden, ErrClaudeModelDenied, "model_denied", nil)
 	}
+	trace.SpanFromContext(r.Context()).SetAttributes(attribute.String("gen_ai.request.model", model))
 	body, _ = json.Marshal(payload)
 	_ = http.NewResponseController(w).SetReadDeadline(time.Time{})
 
@@ -180,7 +188,11 @@ func (c *Claude) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 			delete(resp.Header, name)
 		}
 	}
-	return streamResponse(w, resp, c.Logger, "claude", c.StreamIdleTimeout, nil)
+	var observer *tokenObserver
+	if span := trace.SpanFromContext(r.Context()); span.IsRecording() && resp.StatusCode < 300 {
+		observer = &tokenObserver{claudeSpan: span, sse: isSSE(resp.Header.Get("Content-Type"))}
+	}
+	return streamResponse(w, resp, c.Logger, "claude", c.StreamIdleTimeout, observer)
 }
 
 // kagent v1.0.1 injects Anthropic actorJwt into x-api-key without a prefix.

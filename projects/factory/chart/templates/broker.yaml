@@ -35,7 +35,7 @@ and metrics. Provider and GitHub credentials exist only in this pod.
   "namespace" $ns
   "listenAddr" (printf ":%d" (int $b.relayPort))
   "adminListenAddr" (printf ":%d" (int $b.adminPort))
-  "codex" (dict "grant" $b.grant "secretPrefix" "factory-broker-grant-" "quotaConfigMap" (include "factory.brokerQuotaConfigMap" .))
+  "codex" (dict "traceModels" (list .Values.agents.codex.model .Values.agents.reviewer.model | uniq) "grant" $b.grant "secretPrefix" "factory-broker-grant-" "quotaConfigMap" (include "factory.brokerQuotaConfigMap" .))
   "actorJwt" (dict
     "issuer" .Values.kagent.config.substrate.actorJwtIssuer
     "audience" "factory-broker"
@@ -386,6 +386,12 @@ spec:
           image: {{ include "factory.brokerImage" . | quote }}
           imagePullPolicy: {{ $b.image.pullPolicy }}
           env:
+            - name: OTEL_SERVICE_NAME
+              value: factory-broker
+            {{- with $b.otlpEndpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
             - name: BROKER_CONFIG
               value: /etc/factory-broker/config.yaml
             {{- if .Values.connector.enabled }}
