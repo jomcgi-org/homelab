@@ -130,6 +130,7 @@ type TokenReview struct {
 }
 
 type GitHub struct {
+	ExpectedAppID      string `json:"expectedAppId"`
 	APIURL             string `json:"apiUrl"`
 	AppID              string `json:"appId"`
 	AppIDFile          string `json:"appIdFile"`
@@ -288,15 +289,16 @@ func Load(path string, getenv func(string) string) (Config, error) {
 
 func (c *Config) resolveFiles() error {
 	for _, f := range []struct {
-		value *string
-		file  string
+		value    *string
+		file     string
+		expected string
 	}{
-		{&c.GitHub.AppID, c.GitHub.AppIDFile},
-		{&c.GitHub.InstallationID, c.GitHub.InstallationIDFile},
-		{&c.GitHubReview.AppID, c.GitHubReview.AppIDFile},
-		{&c.GitHubReview.InstallationID, c.GitHubReview.InstallationIDFile},
+		{&c.GitHub.AppID, c.GitHub.AppIDFile, c.GitHub.ExpectedAppID},
+		{&c.GitHub.InstallationID, c.GitHub.InstallationIDFile, ""},
+		{&c.GitHubReview.AppID, c.GitHubReview.AppIDFile, c.GitHubReview.ExpectedAppID},
+		{&c.GitHubReview.InstallationID, c.GitHubReview.InstallationIDFile, ""},
 	} {
-		if *f.value != "" || f.file == "" {
+		if f.expected == "" && (*f.value != "" || f.file == "") {
 			continue
 		}
 		data, err := os.ReadFile(f.file)
@@ -304,6 +306,9 @@ func (c *Config) resolveFiles() error {
 			return fmt.Errorf("read %s: %w", f.file, err)
 		}
 		*f.value = strings.TrimSpace(string(data))
+		if f.expected != "" && *f.value != f.expected {
+			return errors.New("mounted GitHub App ID differs from expectedAppId")
+		}
 	}
 	return nil
 }

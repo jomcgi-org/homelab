@@ -716,7 +716,9 @@ def test_broker_keeps_apps_subjects_and_secret_writes_separate() -> None:
     }
     assert review["reviewBindings"] == config["reviewBindings"]
     assert "githubReview" not in config and "github" not in review
+    assert config["github"]["expectedAppId"] == "5757158"
     assert review["githubReview"] == {
+        "expectedAppId": "5758326",
         "appIdFile": "/etc/factory-review-github-app/app-id",
         "installationIdFile": "/etc/factory-review-github-app/installation-id",
         "privateKeyFile": "/etc/factory-review-github-app/private-key",
@@ -1194,3 +1196,8 @@ def test_review_cap_deferral_reaches_both_services() -> None:
     # The re-cut off switch passes the schema and reaches the connector.
     off = _render(["connector.bindings.homelab.maxRecuts=0"])
     assert _config(off, "factory-connector")["bindings"][0]["maxRecuts"] == 0
+
+
+def test_duplicate_broker_app_identity_is_rejected() -> None:
+    with pytest.raises(RuntimeError, match="author and reviewer App IDs must differ"):
+        _render(["broker.githubApp.appId=5758326"])
