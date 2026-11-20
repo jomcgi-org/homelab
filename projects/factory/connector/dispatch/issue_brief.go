@@ -14,7 +14,9 @@ const maxIssueBriefBytes = 8000
 
 const issueBriefIntro = "## Issue\nThis session has no itsaplan tools, so the issue is quoted here. The factory " +
 	"reports your final message on the issue and opens the pull request from the work branch once you " +
-	"push commits to it.\n"
+	"push commits to it.\n" +
+	"Use a Conventional Commit subject for every commit: `type(scope): description`. " +
+	"For example, `fix(factory): retry failed deliveries`.\n"
 
 // plannerEvidenceContract precedes an issue that quotes planner output, on
 // the first send and on a replacement session.

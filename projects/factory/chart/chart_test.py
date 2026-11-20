@@ -873,6 +873,11 @@ def test_toolchain_is_opt_in_and_grants_only_public_download_origins(
     prompt = agent["template"]["inline"]["systemPrompt"]
     assert "bash projects/factory/toolchain/bootstrap.sh" in prompt
     assert "ci lint, ci regen and ci ratchet" in prompt
+    assert (
+        "Use a Conventional Commit subject for every commit: `type(scope): description`."
+        in prompt
+    )
+    assert "For example, `fix(factory): retry failed deliveries`." in prompt
     assert "exactly one git trailer: Activation: none" in prompt
     assert "its precondition" in prompt
     assert "delegated activation issue" in prompt
