@@ -70,7 +70,7 @@ func TestScanDeletesOnlyCurrentSuspendingRevision(t *testing.T) {
 		t.Cleanup(func() { db.Close() })
 		_, err = db.Exec(`CREATE TABLE revisions (id int PRIMARY KEY, proto bytea);
 			CREATE SEQUENCE reads;
-			CREATE FUNCTION public.reaper_actors() RETURNS TABLE(atespace text, name text, proto bytea)
+			CREATE FUNCTION public.scoped_reaper_actors() RETURNS TABLE(atespace text, name text, proto bytea)
 			LANGUAGE sql VOLATILE AS $$SELECT 'ns'::text,'session-held'::text,r.proto FROM revisions r
 			WHERE r.id=(SELECT least(nextval('reads'),2))$$`)
 		if err != nil {
@@ -165,7 +165,7 @@ func TestScanWorkerDisappearance(t *testing.T) {
 	}
 	defer db.Close()
 	_, err = db.Exec(`CREATE TABLE actor_fixture(space text, proto bytea);
-	CREATE FUNCTION public.reaper_actors() RETURNS TABLE(atespace text, name text, proto bytea)
+	CREATE FUNCTION public.scoped_reaper_actors() RETURNS TABLE(atespace text, name text, proto bytea)
 	LANGUAGE sql AS $$ SELECT space, 'session-held'::text, proto FROM actor_fixture ORDER BY space $$;
 	INSERT INTO run(id,agent_key,trigger,prompt,system_prompt,attempt,state) VALUES(1,'coder','issue','','',1,'dispatched');
 	INSERT INTO delivery_attempt(run_id,seq,run_attempt,work_item_epoch,decision_id,kind,message_id,kagent_namespace,kagent_agent,context_id,state,writer_epoch)
