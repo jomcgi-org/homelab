@@ -13,6 +13,7 @@ bazel run //bazel/requirements:runtime -- --no-build
 # Regenerate all.txt (includes test dependencies)
 bazel run //bazel/requirements:requirements.all -- --no-build
 
+# invariant: PYTHON-MANIFEST-1
 bazel run //bazel/tools/python:gazelle_python_manifest.update
 
 echo "✅ Python requirements updated"
