@@ -7,11 +7,17 @@ flowchart LR
     scrape --> grafana[Grafana]
 ```
 
-The worker requests up to seven days of reviewer memory at five-minute
-intervals. It uses the largest pod working set at each observation. Each
-batch publishes six five-minute predictions and a rolling p90 baseline.
-The target timestamp identifies the observation that can score each point.
-Missing observations stay missing.
+The worker requests up to seven days of memory at five-minute intervals.
+A chart profile names a namespace and workload, a memory target query, and
+optional observed signals. A target can return one workload series or
+one series per pod. Signals join on pod name or apply to the whole
+workload when they have no pod label. Each query accepts up to 32 series.
+
+The reviewer profile tracks the largest pod. The Codex profile forecasts
+each pod using that pod's preceding CPU usage as an optional signal.
+Each batch publishes six five-minute p90 predictions and a rolling p90
+baseline. Missing observations stay missing. A missing or sparse optional
+signal leaves the memory-only prediction available.
 
 The CPU-only image contains pinned model weights and their license. The
 worker reads Prometheus and serves metrics over a cluster-local Service.
@@ -37,3 +43,4 @@ target observation arrives.
 | --- | --- | --- |
 | Package and verify the Timestral worker. | [HOME-670](https://factory-plan.jomcgi.dev/factory/issue/HOME-670) | In review |
 | Compare reviewer forecasts with observed memory. | [HOME-669](https://factory-plan.jomcgi.dev/factory/issue/HOME-669) | Pending rollout |
+| Forecast Codex memory per pod with an optional observed signal. | [HOME-673](https://factory-plan.jomcgi.dev/factory/issue/HOME-673) | In review |

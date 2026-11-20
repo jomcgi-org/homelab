@@ -23,7 +23,11 @@ awk 'BEGIN {
   for (t = 0; t <= 604800; t += 300) {
     printf "%s[%d,\"%d\"]", (t == 0 ? "" : ","), t, 600000000 + (t % 7200) * 1000
   }
-  print "]}]}}"
+  printf "]}]},\"past_covariates\":[["
+  for (t = 0; t <= 604800; t += 300) {
+    printf "%s[%d,\"%.2f\"]", (t == 0 ? "" : ","), t, (t % 7200) / 7200
+  }
+  print "]]}"
 }' >"$TEST_TMPDIR/history.json"
 
 replay() {
