@@ -179,9 +179,7 @@ func (s service) store(w http.ResponseWriter, r *http.Request, q url.Values, p *
 	} else if format == "png" {
 		err = verifyPNG(f)
 	} else if format == "jpeg" {
-		if _, err = f.Seek(0, io.SeekStart); err == nil {
-			err = verifyJPEG(f)
-		}
+		err = decodeJPEG(f)
 	}
 	if err != nil {
 		reject(w, 422, "not a valid image")
@@ -216,14 +214,15 @@ func (s service) store(w http.ResponseWriter, r *http.Request, q url.Values, p *
 		reject(w, 500, "trip timezone unavailable")
 		return
 	}
-	taken := time.Now()
 	stamp := c.DateTimeOriginal
 	if stamp == "" {
 		stamp = c.ModifyDate
 	}
 	// Like the hub, an unreadable camera time falls back to the upload time.
+	// NULL keeps the stored time of the same bytes, so a replay keeps approval.
+	var taken *time.Time
 	if parsed, err := time.ParseInLocation("2006:01:02 15:04:05", stamp, loc); err == nil {
-		taken = parsed
+		taken = &parsed
 	}
 	tags := []string{}
 	for _, tag := range strings.Split(q.Get("tags"), ",") {
@@ -287,18 +286,23 @@ func (s service) write(ctx context.Context, args ...any) error {
 	return tx.Commit()
 }
 
-// Elevation is derived later, so a replay that clears it keeps the approval.
+// Elevation depends only on the position. The upsert keeps it when the
+// position is unchanged and clears it only when lat or lng change, which
+// revokes the approval here. A NULL $5 means the upload has no camera time:
+// keep the stored time, or use the upload time for a new point.
 const revoke = `DELETE FROM trips.public_points a USING trips.points p
 WHERE a.trip_slug=$1 AND a.id=$2 AND p.trip_slug=a.trip_slug AND p.id=a.id
 AND (p.lat,p.lng,p.taken_at,p.image,p.source,p.tags,p.light_value,p.iso,p.shutter_speed,p.aperture,p.focal_length_35mm)
-IS DISTINCT FROM ($3::float8,$4::float8,$5::timestamptz,$6::text,$7::text,$8::text[],$9::float8,$10::int,$11::text,$12::float8,$13::int)`
+IS DISTINCT FROM ($3::float8,$4::float8,coalesce($5::timestamptz,p.taken_at),$6::text,$7::text,$8::text[],$9::float8,$10::int,$11::text,$12::float8,$13::int)`
 
 const upsert = `INSERT INTO trips.points
 (trip_slug,id,lat,lng,taken_at,image,source,tags,light_value,iso,shutter_speed,aperture,focal_length_35mm)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+VALUES ($1,$2,$3,$4,coalesce($5::timestamptz,now()),$6,$7,$8,$9,$10,$11,$12,$13)
 ON CONFLICT (trip_slug,id) DO UPDATE SET
-lat=excluded.lat,lng=excluded.lng,taken_at=excluded.taken_at,image=excluded.image,
-source=excluded.source,tags=excluded.tags,elevation=NULL,light_value=excluded.light_value,iso=excluded.iso,
+lat=excluded.lat,lng=excluded.lng,taken_at=coalesce($5::timestamptz,points.taken_at),image=excluded.image,
+source=excluded.source,tags=excluded.tags,
+elevation=CASE WHEN (points.lat,points.lng) IS NOT DISTINCT FROM (excluded.lat,excluded.lng) THEN points.elevation END,
+light_value=excluded.light_value,iso=excluded.iso,
 shutter_speed=excluded.shutter_speed,aperture=excluded.aperture,focal_length_35mm=excluded.focal_length_35mm`
 
 func main() {

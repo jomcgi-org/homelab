@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"image/jpeg"
 	"io"
 	"math"
 	"strings"
@@ -53,91 +54,29 @@ func jpegCamera(r io.Reader) (camera, error) {
 	}
 }
 
-// verifyJPEG walks every segment and entropy-coded scan up to the end marker
-// with a small buffer. A truncated upload, or one with no frame or scan, has no
-// usable raster. Bytes after the end marker are allowed, as cameras append data.
-func verifyJPEG(r io.Reader) error {
-	b := bufio.NewReader(r)
-	var sig [2]byte
-	if _, err := io.ReadFull(b, sig[:]); err != nil || sig != [2]byte{255, 216} {
-		return errors.New("not JPEG")
+// A JPEG raster may hold at most this many pixels. Decoding one needs about
+// 1.5 bytes per pixel, so four concurrent uploads stay below 1 GiB.
+const maxPixels = 100_000_000
+
+// decodeJPEG decodes the full raster within the pixel bound. A truncated scan,
+// even one followed by an end marker, fails to decode. Bytes after the end
+// marker are allowed, as cameras append data.
+func decodeJPEG(f io.ReadSeeker) error {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return err
 	}
-	frame, scanned, inScan := false, false, false
-	for {
-		// A scan ends on a marker whose 0xFF it has already read.
-		marker := byte(255)
-		if !inScan {
-			var err error
-			if marker, err = b.ReadByte(); err != nil {
-				return err
-			}
-		}
-		inScan = false
-		var err error
-		if marker != 255 {
-			return errors.New("invalid JPEG marker")
-		}
-		for marker == 255 {
-			if marker, err = b.ReadByte(); err != nil {
-				return err
-			}
-		}
-		switch {
-		case marker == 0xd9:
-			if !frame || !scanned {
-				return errors.New("JPEG has no raster")
-			}
-			return nil
-		case marker >= 0xd0 && marker <= 0xd7, marker == 0x01:
-			continue
-		}
-		if _, err := io.ReadFull(b, sig[:]); err != nil {
-			return err
-		}
-		size := int64(binary.BigEndian.Uint16(sig[:])) - 2
-		if size < 0 {
-			return errors.New("invalid JPEG segment")
-		}
-		if _, err := io.CopyN(io.Discard, b, size); err != nil {
-			return err
-		}
-		if marker >= 0xc0 && marker <= 0xcf && marker != 0xc4 && marker != 0xc8 && marker != 0xcc {
-			frame = true
-		}
-		if marker != 0xda {
-			continue
-		}
-		if !frame {
-			return errors.New("JPEG scan before frame")
-		}
-		// Skip entropy-coded data. 0xFF00 is a stuffed byte and RSTn markers
-		// stay inside the scan; any other marker ends it.
-		data := 0
-		for {
-			c, err := b.ReadByte()
-			if err != nil {
-				return err
-			}
-			if c != 255 {
-				data++
-				continue
-			}
-			next, err := b.Peek(1)
-			if err != nil {
-				return err
-			}
-			if next[0] == 0 || (next[0] >= 0xd0 && next[0] <= 0xd7) {
-				_, _ = b.ReadByte()
-				data++
-				continue
-			}
-			inScan = true
-			break
-		}
-		if data > 0 {
-			scanned = true
-		}
+	config, err := jpeg.DecodeConfig(f)
+	if err != nil {
+		return err
 	}
+	if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > maxPixels {
+		return errors.New("JPEG raster outside the pixel bound")
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	_, err = jpeg.Decode(bufio.NewReader(f))
+	return err
 }
 
 type field struct {

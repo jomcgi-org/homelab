@@ -141,6 +141,21 @@ func TestReplay(t *testing.T) {
 	if approved() != 1 {
 		t.Fatal("identical replay revoked the approval")
 	}
+	// A migrated point carries a derived elevation. An identical replay keeps
+	// both the elevation and the approval.
+	if _, err := db.Exec(`UPDATE trips.points SET elevation=345`); err != nil {
+		t.Fatal(err)
+	}
+	if status, _ = upload(t, s, "trip=yukon&tags=lake", photo); status != 201 {
+		t.Fatalf("replay with elevation: %d", status)
+	}
+	var elevation sql.NullFloat64
+	if err := db.QueryRow("SELECT elevation FROM trips.points").Scan(&elevation); err != nil || elevation.Float64 != 345 {
+		t.Fatalf("identical replay changed elevation to %v (%v)", elevation, err)
+	}
+	if approved() != 1 {
+		t.Fatal("identical replay of a point with elevation revoked the approval")
+	}
 	if status, _ = upload(t, s, "trip=yukon&tags=lake,private", photo); status != 201 {
 		t.Fatalf("changed replay: %d", status)
 	}
@@ -169,5 +184,23 @@ func TestMalformedCameraTime(t *testing.T) {
 	var taken time.Time
 	if err := db.QueryRow("SELECT taken_at FROM trips.points").Scan(&taken); err != nil || taken.Before(before) {
 		t.Fatalf("taken_at %v (%v), want upload time", taken, err)
+	}
+	// A replay of the same bytes keeps the stored time and the approval.
+	if _, err := db.Exec(`INSERT INTO trips.public_trips VALUES ('yukon')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO trips.public_points SELECT trip_slug,id FROM trips.points`); err != nil {
+		t.Fatal(err)
+	}
+	if status, out := upload(t, s, "trip=yukon", broken); status != 201 {
+		t.Fatalf("replay without camera time: %d %v", status, out)
+	}
+	var again time.Time
+	var approved int
+	if err := db.QueryRow("SELECT taken_at, (SELECT count(*) FROM trips.public_points) FROM trips.points").Scan(&again, &approved); err != nil {
+		t.Fatal(err)
+	}
+	if !again.Equal(taken) || approved != 1 {
+		t.Fatalf("replay without camera time: taken_at %v (was %v), %d approvals", again, taken, approved)
 	}
 }

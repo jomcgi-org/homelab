@@ -611,5 +611,8 @@ py_test(
 
 exports_files(
     ["migrations/20260615120000_trips_schema.sql"],
-    visibility = ["//projects/trips/ingest:__pkg__"],
+    visibility = [
+        "//projects/trips/export:__pkg__",
+        "//projects/trips/ingest:__pkg__",
+    ],
 )
