@@ -4483,7 +4483,7 @@ func TestAddedFileInvariantAnswerInCompletedCheck(t *testing.T) {
 func captureReviewSpans(t *testing.T) *tracetest.InMemoryExporter {
 	t.Helper()
 	exporter := tracetest.NewInMemoryExporter()
-	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter), sdktrace.WithIDGenerator(IDGenerator{}))
 	previous := otel.GetTracerProvider()
 	otel.SetTracerProvider(provider)
 	t.Cleanup(func() { otel.SetTracerProvider(previous) })

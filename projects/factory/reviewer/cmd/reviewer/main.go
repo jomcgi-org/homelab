@@ -92,7 +92,7 @@ func run(log *slog.Logger) error {
 		if err != nil {
 			return errors.New("initialize reviewer trace exporter")
 		}
-		provider := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithResource(resource.NewSchemaless(attribute.String("service.name", os.Getenv("OTEL_SERVICE_NAME")))))
+		provider := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithIDGenerator(review.IDGenerator{}), sdktrace.WithResource(resource.NewSchemaless(attribute.String("service.name", os.Getenv("OTEL_SERVICE_NAME")))))
 		otel.SetTracerProvider(provider)
 		defer func() {
 			flush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
