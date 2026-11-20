@@ -24,6 +24,7 @@ cat >"$tmp/bin/git" <<'EOF'
 set -eu
 printf 'git %s\n' "$*" >>"$LOG"
 case "$*" in
+    'diff --quiet frozen-base HEAD -- MODULE.bazel bazel/tools/http') exit "${HTTP_INPUTS_CHANGED:-0}" ;;
     'fetch origin main --quiet') ;;
     'merge-base origin/main HEAD')
         [[ "${MISSING_BASE:-0}" == 0 ]] || exit 8
@@ -62,6 +63,12 @@ if [[ "$1" == run ]]; then
     echo invariants >>"$LOG"
     exit "${INVARIANT_STATUS:-0}"
 fi
+case "$*" in
+    'build --config=ci @goose//:amd64 @goose//:arm64 @goose//:tar_amd64 @goose//:tar_arm64')
+        echo goose-build >>"$LOG"; exit "${GOOSE_BUILD_STATUS:-0}" ;;
+    'test --config=ci //bazel/tools/http/test:archive_mode_test')
+        echo archive-mode-test >>"$LOG"; exit 0 ;;
+esac
 if [[ "${2:-}" == '//...' ]]; then
     [[ "$*" == 'test //... --config=ci --deleted_packages=bazel/tools/python' ]]
     printf 'full //...\n' >>"$LOG"
@@ -88,9 +95,14 @@ run() {
 }
 export GIT_PR_NUMBER=7455 GIT_BRANCH=factory/test PATTERNS=//p:unit_test WRITE_BACK_ONLY=false
 run 0
-expected=$'git fetch origin main --quiet\ngit merge-base origin/main HEAD\nguard ./bazel/tools/ci/verification_genrule_guard.py .\nguard ./bazel/tools/ci/central_build_ratchet.py frozen-base HEAD\nguard ./bazel/tools/ci/chart_version_guard.py frozen-base HEAD\nguard ./bazel/tools/ci/source_ratchet.py frozen-base HEAD\ngit ls-files -z -- :(glob)**/INVARIANTS.yaml\ninvariants\ngit ls-files --others --exclude-standard\nselector frozen-base HEAD -- --config=ci --deleted_packages=bazel/tools/python\nsubset //p:unit_test\nreached'
+expected=$'git fetch origin main --quiet\ngit merge-base origin/main HEAD\nguard ./bazel/tools/ci/verification_genrule_guard.py .\nguard ./bazel/tools/ci/central_build_ratchet.py frozen-base HEAD\nguard ./bazel/tools/ci/chart_version_guard.py frozen-base HEAD\nguard ./bazel/tools/ci/source_ratchet.py frozen-base HEAD\ngit ls-files -z -- :(glob)**/INVARIANTS.yaml\ninvariants\ngit diff --quiet frozen-base HEAD -- MODULE.bazel bazel/tools/http\ngit ls-files --others --exclude-standard\nselector frozen-base HEAD -- --config=ci --deleted_packages=bazel/tools/python\nsubset //p:unit_test\nreached'
 [[ "$(cat "$LOG")" == "$expected" ]]
 echo 'PASS workflow PR frozen base, ordered guards and selective target-pattern file'
+HTTP_INPUTS_CHANGED=1 run 0
+[[ "$(cat "$LOG")" == *$'goose-build\narchive-mode-test\ngit ls-files --others --exclude-standard\nselector '* ]]
+HTTP_INPUTS_CHANGED=1 GOOSE_BUILD_STATUS=3 run 3
+[[ "$(tail -n 1 "$LOG")" == goose-build ]]
+echo 'PASS HTTP input changes build goose before checking archive mode'
 for guard in verification_genrule_guard.py central_build_ratchet.py chart_version_guard.py source_ratchet.py; do
 	FAIL_GUARD="$guard" run 7
 	[[ "$(tail -n 1 "$LOG")" == guard*"$guard"* ]]
