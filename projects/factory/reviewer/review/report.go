@@ -1490,7 +1490,7 @@ func stateOf(a Assessment, r *Report, gate *Gate) State {
 		}
 	}
 	for _, f := range a.Deferred {
-		st.Deferred = append(st.Deferred, github.DeferredFinding{ID: f.ID, Title: f.Title, Detail: f.Detail})
+		st.Deferred = append(st.Deferred, github.DeferredFinding{ID: f.ID, Title: storeText(f.Title, maxTitle), Detail: storeText(f.Detail, maxStoredDetail)})
 	}
 	if r != nil && r.ActivationHead != "" && r.Activation != "" {
 		st.Activation = &github.ActivationAssessment{HeadSHA: r.ActivationHead, Text: r.Activation}
@@ -1723,6 +1723,15 @@ func encodeState(st State) string {
 	out := enc(st)
 	if len(out) > maxState && len(st.OptionalIDs) > 0 {
 		st.OptionalIDs = nil
+		out = enc(st)
+	}
+	if len(out) > maxState && len(st.Deferred) > 0 {
+		compact := append([]github.DeferredFinding(nil), st.Deferred...)
+		for i := range compact {
+			compact[i].Title = clip(compact[i].Title, 80)
+			compact[i].Detail = clip(compact[i].Detail, 80)
+		}
+		st.Deferred = compact
 		out = enc(st)
 	}
 	if len(out) > maxState && len(st.Cleared) > 0 {

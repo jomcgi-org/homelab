@@ -1320,3 +1320,34 @@ func HasReviewCapMarker(body string) bool {
 	}
 	return n == 1 && strings.Count(body, ReviewCapMarker) == 1
 }
+
+// MergedSince walks recently updated closed PRs, including merges the connector
+// did not enqueue. An older update cannot contain a more recent merge.
+func (c *Client) MergedSince(ctx context.Context, repo, base string, since time.Time) ([]PullRequest, error) {
+	var merged []PullRequest
+	for page := 1; ; page++ {
+		q := url.Values{"base": {base}, "state": {"closed"}, "sort": {"updated"}, "direction": {"desc"}, "per_page": {strconv.Itoa(MaxListed)}, "page": {strconv.Itoa(page)}}
+		var pulls []restPull
+		if err := c.do(ctx, repo, http.MethodGet, repoPath(repo)+"/pulls?"+q.Encode(), nil, &pulls); err != nil {
+			return nil, err
+		}
+		for _, p := range pulls {
+			if p.UpdatedAt != nil && p.UpdatedAt.Before(since) {
+				return merged, nil
+			}
+			if p.MergedAt == nil {
+				continue
+			}
+			at, err := time.Parse(time.RFC3339, *p.MergedAt)
+			if err != nil {
+				return nil, err
+			}
+			if !at.Before(since) {
+				merged = append(merged, *p.pr())
+			}
+		}
+		if len(pulls) < MaxListed {
+			return merged, nil
+		}
+	}
+}
