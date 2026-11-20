@@ -96,7 +96,7 @@ def forecast_points(
     forecast = model.forecast(
         history,
         prediction_length=HORIZONS,
-        past_covariates=np.stack(past) if past else None,
+        past_covariates=np.stack(past)[None, :, :] if past else None,
     )
     baseline = np.nanpercentile(history[-288:], 90)
     points = []

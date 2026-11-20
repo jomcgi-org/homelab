@@ -43,7 +43,7 @@ def test_configured_target_joins_pod_and_shared_signals_on_the_time_grid():
     (observed,) = model.forecast.call_args.args
     np.testing.assert_array_equal(observed[-6:], [650] * 6)
     past = model.forecast.call_args.kwargs["past_covariates"]
-    np.testing.assert_equal(past[:, -6:], [[3, 3, 3, 3, np.nan, 3], [4] * 6])
+    np.testing.assert_equal(past[0, :, -6:], [[3, 3, 3, 3, np.nan, 3], [4] * 6])
     assert model.forecast.call_args.kwargs["prediction_length"] == 6
     assert len(points) == 12
     assert (

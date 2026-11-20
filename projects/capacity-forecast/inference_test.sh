@@ -27,6 +27,10 @@ awk 'BEGIN {
   for (t = 0; t <= 604800; t += 300) {
     printf "%s[%d,\"%.2f\"]", (t == 0 ? "" : ","), t, (t % 7200) / 7200
   }
+  printf "],["
+  for (t = 0; t <= 604800; t += 300) {
+    printf "%s[%d,\"%d\"]", (t == 0 ? "" : ","), t, (t % 3600) / 300
+  }
   print "]]}"
 }' >"$TEST_TMPDIR/history.json"
 
@@ -58,6 +62,6 @@ if grep -q 'horizon_seconds="300"' "$TEST_TMPDIR/after-first-target"; then
 fi
 grep -q 'horizon_seconds="600"' "$TEST_TMPDIR/after-first-target"
 
-"$jq_bin" '.data.result[0].values |= .[-6:] | .past_covariates[0] |= .[-6:] | .min_samples = 6' \
+"$jq_bin" '.data.result[0].values |= .[-6:] | .past_covariates[] |= .[-6:] | .min_samples = 6' \
 	"$TEST_TMPDIR/history.json" | replay >"$TEST_TMPDIR/cold-start"
 test "$(grep -c '^capacity_forecast_memory_budget_bytes{.*policy="timestral"' "$TEST_TMPDIR/cold-start")" -eq 6
