@@ -2878,8 +2878,8 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 		}
 		// A retained low finding can survive even when omitted from this report.
 		// Its identity may be absent from the bounded check output.
-		if !a.Incomplete && a.DroppedLow == 0 && len(a.Optional) == 0 && len(a.Deferred) == 0 {
-			e.triageSemgrep(ctx, b, pr, in.semgrep, r, &o)
+		if !a.Incomplete && a.DroppedLow == 0 {
+			e.triageSemgrep(ctx, b, pr, in.semgrep, r, &o, a.Optional, a.Deferred)
 		}
 		if in.priorUnknown != "" {
 			// Render left maxPreface for this note, so the summary's tail

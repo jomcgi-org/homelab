@@ -270,9 +270,13 @@ func semgrepTargets(ctx context.Context, client *http.Client, key, repo, ref str
 	return "", nil, fmt.Errorf("incomplete Semgrep listing")
 }
 
-func (e *Engine) triageSemgrep(ctx context.Context, b *Binding, pr github.PullRequest, s *SemgrepEvidence, r *Report, o *Outcome) {
+func (e *Engine) triageSemgrep(ctx context.Context, b *Binding, pr github.PullRequest, s *SemgrepEvidence, r *Report, o *Outcome, retained ...[]Finding) {
 	if o.Conclusion != ConclusionSuccess || o.Comment == nil || o.Comment.Verdict != VerdictApproved || e.cfg.Semgrep == nil || e.cfg.Semgrep.APIKey == "" || s == nil || s.Unavailable != "" || len(s.Comments) != len(r.SemgrepDecisions) {
 		return
+	}
+	open := slices.Clone(r.Findings)
+	for _, findings := range retained {
+		open = append(open, findings...)
 	}
 	var names []string
 	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -289,7 +293,7 @@ func (e *Engine) triageSemgrep(ctx context.Context, b *Binding, pr github.PullRe
 		}
 		// A current report entry on the same path can contradict an advisory
 		// disposition, including an optional finding on a successful verdict.
-		if cm.ID <= 0 || cm.Line <= 0 || cm.Path == "" || slices.ContainsFunc(r.Findings, func(f Finding) bool {
+		if cm.ID <= 0 || cm.Line <= 0 || cm.Path == "" || slices.ContainsFunc(open, func(f Finding) bool {
 			return f.Path == "" || f.Path == cm.Path || strings.HasPrefix(f.ID, cm.Path+":")
 		}) {
 			continue
