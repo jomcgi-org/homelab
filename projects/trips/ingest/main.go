@@ -268,15 +268,19 @@ func (s service) store(w http.ResponseWriter, r *http.Request, q url.Values, p *
 
 // An approval covers the published values it was given for. A replay that
 // changes any of them revokes the approval in the same transaction. The row
-// lock makes a concurrent approval wait for the new values.
+// lock makes a concurrent approval wait for the new values. Two uploads of a
+// new point find no row to lock, so the point key lock orders them first: the
+// second then reads the committed row and any approval given after it.
 func (s service) write(ctx context.Context, args ...any) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, "SELECT 1 FROM trips.points WHERE trip_slug=$1 AND id=$2 FOR UPDATE", args[:2]...); err != nil {
-		return err
+	for _, statement := range []string{lockPoint, "SELECT 1 FROM trips.points WHERE trip_slug=$1 AND id=$2 FOR UPDATE"} {
+		if _, err = tx.ExecContext(ctx, statement, args[:2]...); err != nil {
+			return err
+		}
 	}
 	for _, statement := range []string{revoke, upsert} {
 		if _, err = tx.ExecContext(ctx, statement, args...); err != nil {
@@ -285,6 +289,8 @@ func (s service) write(ctx context.Context, args ...any) error {
 	}
 	return tx.Commit()
 }
+
+const lockPoint = "SELECT pg_advisory_xact_lock(hashtextextended($1::text || '/' || $2::text, 0))"
 
 // Elevation depends only on the position. The upsert keeps it when the
 // position is unchanged and clears it only when lat or lng change, which

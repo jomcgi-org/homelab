@@ -63,11 +63,20 @@ cutover. The production hub routing stays in place until step 4.
 
 ## Local upload replay
 
-With four clients replaying 64 identical 4 MiB uploads, Go used 33.3 ms of
-process CPU per accepted image and reached 22.7 MiB sampled RSS. The hub
-FastAPI handler used 57.0 ms/image and reached 112.5 MiB. Both handled the
-same geotagged repository JPEG padded after its end marker. CPU is user plus
-system time from /proc, and RSS was sampled every 5 ms after warmup. Both
-used local PostgreSQL 17 and the same filesystem. The Python S3 write was
-replaced with a local write and fsync for this comparison. These figures
-exclude the gateway, database process and remote object-store latency.
+Measured on 2026-11-20 with the full JPEG raster decode in the Go handler.
+Four clients replayed 64 identical uploads to each handler. Each value is the
+median of three runs on a fresh server process. CPU is user plus system time
+from /proc per accepted image. Peak RSS was sampled every 5 ms after four
+warmup uploads.
+
+| Upload | Go CPU | Go peak RSS | Hub CPU | Hub peak RSS |
+| --- | --- | --- | --- | --- |
+| 16x16 repository JPEG padded to 4 MiB | 13.0 ms | 15.1 MiB | 29.2 ms | 105.0 MiB |
+| 4000x3000 JPEG with the same EXIF, 3.3 MiB | 183.4 ms | 152.6 MiB | 21.3 ms | 108.7 MiB |
+
+The Go handler decodes the full raster to reject a truncated scan. The hub
+runs only Pillow `verify()`. Thus Go uses more CPU and memory for a
+full-size photo. Both handlers used local PostgreSQL 17 and the same
+filesystem. The Python S3 write was replaced with a local write and fsync.
+These figures exclude the gateway, the database process and object-store
+latency. The authenticated replay in step 3 measures the deployed pods.

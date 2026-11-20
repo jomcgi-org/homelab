@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"mime/multipart"
@@ -11,6 +12,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/lib/pq"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/internal/pgtest"
 )
@@ -75,6 +78,10 @@ func fixture(t *testing.T, name string) []byte {
 func TestInvalidUploads(t *testing.T) {
 	s, db := setup(t)
 	photo := fixture(t, "geotagged.jpg")
+	scan := bytes.Index(photo, []byte{255, 0xda})
+	if scan < 0 {
+		t.Fatal("fixture has no scan")
+	}
 	cases := []struct {
 		name, query string
 		image       []byte
@@ -84,7 +91,9 @@ func TestInvalidUploads(t *testing.T) {
 		{"missing image", "trip=yukon", nil, 422},
 		{"too small", "trip=yukon", photo[:200], 422},
 		{"not an image", "trip=yukon", bytes.Repeat([]byte("not an image "), 40), 422},
-		{"truncated raster", "trip=yukon", photo[:len(photo)-2], 422},
+		{"no end marker", "trip=yukon", photo[:len(photo)-2], 422},
+		{"truncated raster", "trip=yukon", photo[:(scan+len(photo))/2], 422},
+		{"truncated raster with end marker", "trip=yukon", append(append([]byte{}, photo[:scan+16]...), 255, 0xd9), 422},
 		{"no GPS", "trip=yukon", fixture(t, "no_gps.jpg"), 422},
 		{"unknown trip", "trip=nowhere", photo, 500},
 	}
@@ -202,5 +211,58 @@ func TestMalformedCameraTime(t *testing.T) {
 	}
 	if !again.Equal(taken) || approved != 1 {
 		t.Fatalf("replay without camera time: taken_at %v (was %v), %d approvals", again, taken, approved)
+	}
+}
+
+// Two first uploads of one point run at the same time. The first commits its
+// row with an approval while the second waits. The second then changes a
+// published field, so it must revoke that approval.
+func TestConcurrentFirstUpload(t *testing.T) {
+	s, db := setup(t)
+	if _, err := db.Exec(`INSERT INTO trips.public_trips VALUES ('yukon')`); err != nil {
+		t.Fatal(err)
+	}
+	args := func(tag string) []any {
+		return []any{"yukon", "abc123", 50.6745, -120.0, nil, "img_abc123.jpg", "gopro", pq.Array([]string{tag}), nil, nil, nil, nil, nil}
+	}
+	first, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Rollback()
+	for _, statement := range []string{lockPoint, upsert, `INSERT INTO trips.public_points VALUES ($1,$2)`} {
+		a := args("lake")
+		if statement != upsert {
+			a = a[:2]
+		}
+		if _, err := first.Exec(statement, a...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.write(context.Background(), args("private")...) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for waiting := 0; waiting == 0; {
+		if time.Now().After(deadline) {
+			t.Fatal("second upload never waited for the first")
+		}
+		if err := db.QueryRow(`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND datname=current_database()`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := first.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var approved int
+	var tags pq.StringArray
+	if err := db.QueryRow(`SELECT tags, (SELECT count(*) FROM trips.public_points) FROM trips.points`).Scan(&tags, &approved); err != nil {
+		t.Fatal(err)
+	}
+	if len(tags) != 1 || tags[0] != "private" || approved != 0 {
+		t.Fatalf("second upload left tags %v with %d approvals", tags, approved)
 	}
 }
