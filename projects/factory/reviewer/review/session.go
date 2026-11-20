@@ -130,43 +130,42 @@ func agentName(a kagent.AgentRef) string { return a.Namespace + "/" + a.Name }
 func (e *Engine) resumable(ctx context.Context, b *Binding, pr github.PullRequest, in *inputs, attempt int, refused bool, l *slog.Logger) (*SessionRef, string) {
 	ref := in.prior.Session
 	switch {
-	case ref == nil || in.priorHead == "" || in.priorHead == pr.HeadSHA || in.prior.Incomplete:
+	case ref == nil || in.priorHead == "":
 		return nil, reasonNone
-	case e.cfg.Sessions == nil:
-		return nil, reasonDisabled
 	case !contextIDPattern.MatchString(ref.ContextID) || ref.Binding != b.Name || ref.Agent != agentName(b.Agent) ||
 		ref.PR != pr.Number || ref.Head != in.priorHead:
 		return nil, reasonForeign
-	case !ref.FilteredComments:
-		return nil, reasonCommentFilter
-	case ref.Bytes >= maxSessionBytes || len(ref.Tasks) >= maxSessionReviews:
-		return nil, reasonSize
-	case len(ref.Tasks) != ref.Reviews:
-		return nil, reasonUnaccounted
 	}
-	s, err := e.cfg.Sessions.GetSession(ctx, ref.ContextID)
-	switch {
-	case errors.Is(err, kagent.ErrSessionNotFound) || errors.Is(err, kagent.ErrSessionUnrecoverable):
-		return nil, reasonMissing
-	case err != nil || s == nil:
-		e.kagentError(ctx, l, b, "get_session", err)
-		return nil, reasonUnreadable
-	case s.Gone():
-		return nil, reasonDeleted
-	case s.Crashed():
-		return nil, reasonCrashed
-	case s.State == kagent.RuntimeFailed:
-		return nil, reasonFailed
-	case (s.ContextID != "" && s.ContextID != ref.ContextID) ||
-		(s.AgentNamespace != "" && (s.AgentNamespace != b.Agent.Namespace || s.AgentName != b.Agent.Name)):
-		return nil, reasonForeign
-	}
-	// kagent runs every turn of a session on the revision it pinned, so a
-	// model or prompt change reaches only new sessions.
-	rev, err := e.cfg.Sessions.AgentRevision(ctx, b.Agent)
-	if err != nil {
-		e.kagentError(ctx, l, b, "get_agent", err)
-		return nil, reasonUnreadable
+	var s *kagent.Session
+	var rev string
+	if e.cfg.Sessions != nil {
+		var err error
+		s, err = e.cfg.Sessions.GetSession(ctx, ref.ContextID)
+		switch {
+		case errors.Is(err, kagent.ErrSessionNotFound) || errors.Is(err, kagent.ErrSessionUnrecoverable):
+			return nil, reasonMissing
+		case err != nil || s == nil:
+			e.kagentError(ctx, l, b, "get_session", err)
+			return nil, reasonUnreadable
+		case s.State == kagent.RuntimeDeleting:
+			return nil, reasonUnsettled
+		case s.State == kagent.RuntimeDeleted:
+			return nil, reasonDeleted
+		case s.Crashed():
+			return nil, reasonCrashed
+		case s.State == kagent.RuntimeFailed:
+			return nil, reasonFailed
+		case (s.ContextID != "" && s.ContextID != ref.ContextID) ||
+			(s.AgentNamespace != "" && (s.AgentNamespace != b.Agent.Namespace || s.AgentName != b.Agent.Name)):
+			return nil, reasonForeign
+		}
+		// kagent runs every turn of a session on the revision it pinned, so a
+		// model or prompt change reaches only new sessions.
+		rev, err = e.cfg.Sessions.AgentRevision(ctx, b.Agent)
+		if err != nil {
+			e.kagentError(ctx, l, b, "get_agent", err)
+			return nil, reasonUnreadable
+		}
 	}
 	// A running turn may be on a later page. Inspect the complete listing
 	// before deciding whether a retry or fallback can start.
@@ -201,6 +200,16 @@ func (e *Engine) resumable(ctx context.Context, b *Binding, pr github.PullReques
 		}
 	}
 	switch {
+	case in.priorHead == pr.HeadSHA || in.prior.Incomplete:
+		return nil, reasonNone
+	case e.cfg.Sessions == nil:
+		return nil, reasonDisabled
+	case !ref.FilteredComments:
+		return nil, reasonCommentFilter
+	case ref.Bytes >= maxSessionBytes || len(ref.Tasks) >= maxSessionReviews:
+		return nil, reasonSize
+	case len(ref.Tasks) != ref.Reviews:
+		return nil, reasonUnaccounted
 	case attempt > 1:
 		return nil, reasonRetry
 	case refused:
@@ -217,10 +226,8 @@ func (e *Engine) resumable(ctx context.Context, b *Binding, pr github.PullReques
 	return ref, reasonResumed
 }
 
-// errUnsettledTurn holds a review back while a session turn no review
-// recorded may still run; the attempt builds its message again after
-// Reissue, which retries the cancellation.
-var errUnsettledTurn = errors.New("a session turn no review recorded is still running")
+// errUnsettledTurn defers dispatch until a poll confirms the prior session is settled.
+var errUnsettledTurn = errors.New("the prior review session has not been confirmed settled")
 
 // stopUnrecorded cancels the session's listed turns that no review recorded
 // and that still execute, such as a continuation kagent accepted before a

@@ -1110,6 +1110,13 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 	// This also handles checks that an older process paused before sizing.
 	if run != nil {
 		rec := RecordedTask(run.Summary)
+		if st, ok := LoadState(run.Text); ok && st.Cleanup != nil && run.Status == "in_progress" && rec.ID == "" {
+			prior := &inputs{priorHead: st.Cleanup.Head, prior: State{Session: st.Cleanup}}
+			_, reason := e.resumable(ctx, b, pr, prior, rec.Attempt, false, e.prLog(b, pr))
+			if reason == reasonUnreadable || reason == reasonUnsettled {
+				return false
+			}
+		}
 		if !rec.QuotaSince.IsZero() {
 			l := e.prLog(b, pr)
 			files, err := e.gh.PullRequestFiles(ctx, b.repo(), pr.Number)
@@ -1642,8 +1649,11 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 					msg, sends = m, 0
 				case errors.Is(err, errUnsettledTurn):
 					// invariant: FACT-13
-					e.sleep(ctx, e.cfg.Reissue)
-					continue
+					st, _ := LoadState(run.Text)
+					st.Cleanup = in.prior.Session
+					run.Text = encodeState(st)
+					e.recordProgress(ctx, b, run, in.gate, rec, "Waiting for the prior review session to settle.", l)
+					return
 				case late:
 					if next("the reviewer could not read the rules or the PR from GitHub.") {
 						return
@@ -2694,6 +2704,9 @@ func (e *Engine) laterScope(ctx context.Context, b *Binding, pr github.PullReque
 // message whose PR text may have changed.
 func (e *Engine) recordProgress(ctx context.Context, b *Binding, run *github.CheckRun, gate *Gate, rec recorded, note string, l *slog.Logger) {
 	st, _ := LoadState(run.Text)
+	if rec.ID != "" {
+		st.Cleanup = nil
+	}
 	if gate == nil {
 		gate = st.Gate
 	}
