@@ -40,6 +40,20 @@ def violations(doc):
         name == addon or name.startswith(addon + "-") for addon in K3S_ADDONS
     ):
         return
+    if doc.get("kind") == "ConfigMap" and "envoy-gateway.yaml" in doc.get("data", {}):
+        config = yaml.safe_load(doc["data"]["envoy-gateway.yaml"])
+        if config and config.get("kind") == "EnvoyGateway":
+            provider = config.get("provider", {}).get("kubernetes", {})
+            for role, container in (
+                ("shutdownManager", provider.get("shutdownManager", {})),
+                (
+                    "rateLimitDeployment",
+                    provider.get("rateLimitDeployment", {}).get("container", {}),
+                ),
+            ):
+                image = container.get("image", "")
+                if not DIGEST.search(image):
+                    yield f"{namespace}/{name}: {role}: {image or 'missing image'}"
     spec = doc.get("spec", {})
     if (
         doc.get("apiVersion") == "postgresql.cnpg.io/v1"
@@ -47,6 +61,16 @@ def violations(doc):
         and not spec.get("imageName")
     ):
         yield f"{namespace}/{name}: missing spec.imageName"
+    if (
+        doc.get("apiVersion") == "gateway.envoyproxy.io/v1alpha1"
+        and doc.get("kind") == "EnvoyProxy"
+        and spec.get("provider", {}).get("type") == "Kubernetes"
+    ):
+        provider = spec["provider"].get("kubernetes", {})
+        workload = provider.get("envoyDaemonSet", provider.get("envoyDeployment", {}))
+        image = workload.get("container", {}).get("image", "")
+        if not DIGEST.search(image):
+            yield f"{namespace}/{name}: EnvoyProxy container: {image or 'missing image'}"
     for image in images(spec):
         if not DIGEST.search(image):
             yield f"{namespace}/{name}: {image}"
