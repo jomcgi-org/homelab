@@ -64,6 +64,9 @@ sh_test(
     data = [
         ":image_image",
     ],
+    # The smoke test needs the Linux runner's user namespaces, mount,
+    # chroot and jq. The remote execution image does not supply these.
+    tags = ["no-remote-exec"],
     target_compatible_with = [
         "@platforms//cpu:x86_64",
         "@platforms//os:linux",
