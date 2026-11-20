@@ -121,14 +121,14 @@ def _in(
     return found[0]
 
 
-def _config(docs: list[dict[str, Any]], name: str) -> dict[str, Any]:
-    return yaml.safe_load(
-        _in(docs, "ConfigMap", "factory", name)["data"]["config.yaml"]
-    )
+def _config(
+    docs: list[dict[str, Any]], name: str, ns: str = "factory"
+) -> dict[str, Any]:
+    return yaml.safe_load(_in(docs, "ConfigMap", ns, name)["data"]["config.yaml"])
 
 
-def _pod(docs: list[dict[str, Any]], name: str) -> dict[str, Any]:
-    return _in(docs, "Deployment", "factory", name)["spec"]["template"]["spec"]
+def _pod(docs: list[dict[str, Any]], name: str, ns: str = "factory") -> dict[str, Any]:
+    return _in(docs, "Deployment", ns, name)["spec"]["template"]["spec"]
 
 
 def test_off_is_absent_and_renders_as_without_the_reviewer_templates() -> None:
@@ -180,14 +180,21 @@ def test_comments_are_off_unless_an_author_is_set() -> None:
     assert values["reviewer"]["commentAuthor"] == ""
     off_docs = _render(["reviewer.commentAuthor="])
     assert "commentAuthor" not in _config(off_docs, "factory-reviewer")
-    assert "commentAuthor" not in _config(off_docs, "factory-broker")["githubReview"]
+    assert (
+        "commentAuthor"
+        not in _config(off_docs, "factory-review-broker", "factory-review-broker")[
+            "githubReview"
+        ]
+    )
     bot = "jomcgi-factory-review[bot]"
     docs = _render([f"reviewer.commentAuthor={bot}"])
     assert _config(docs, "factory-reviewer")["commentAuthor"] == bot
     # The broker writes the comment, editing only the bot's, with its own
     # comment token from its code defaults, never from chart values that
     # could widen the check token.
-    broker = _config(docs, "factory-broker")["githubReview"]
+    broker = _config(docs, "factory-review-broker", "factory-review-broker")[
+        "githubReview"
+    ]
     assert broker["commentAuthor"] == bot
     assert "commentPermissions" not in broker
     assert "connectorPermissions" not in broker
@@ -282,6 +289,7 @@ def test_tokens_and_config_paths_match_the_pod() -> None:
             for v in other.get("volumes", [])
         )
     for name, audience, key in (
+        ("review-broker-token", "factory-review-broker", "reviewBrokerTokenFile"),
         ("broker-token", "factory-broker", "brokerTokenFile"),
         ("kagent-token", "kagent-invocation", "kagentTokenFile"),
     ):
@@ -309,6 +317,10 @@ def test_tokens_and_config_paths_match_the_pod() -> None:
     assert config["itsaplanKeyFile"] == mounts["itsaplan-key"]["mountPath"] + "/apiKey"
     assert config["itsaplanURL"] == "http://factory-itsaplan-api.factory.svc:3000"
     assert pod["securityContext"]["fsGroup"] == 65532
+    assert (
+        config["reviewBrokerURL"]
+        == "http://factory-review-broker.factory-review-broker.svc:8081"
+    )
     assert config["brokerURL"] == "http://factory-broker.factory.svc:8081"
     assert config["kagentURL"] == "http://kagent-controller.kagent.svc:8083"
     assert config["metricsAddr"] == ":9090"
@@ -580,15 +592,30 @@ def test_broker_keeps_apps_subjects_and_secret_writes_separate() -> None:
         _REVIEW_NS,
     }
     # The deploy values set the bot login, so the broker writes its comment.
-    assert config["githubReview"] == {
+    review = _config(docs, "factory-review-broker", "factory-review-broker")
+    assert review["tokenReview"] == {
+        "audience": "factory-review-broker",
+        "reviewerSubjects": [_SUBJECT],
+    }
+    assert review["reviewBindings"] == config["reviewBindings"]
+    assert "githubReview" not in config and "github" not in review
+    assert config["github"]["expectedAppId"] == "5757158"
+    assert review["githubReview"] == {
+        "expectedAppId": "5758326",
         "appIdFile": "/etc/factory-review-github-app/app-id",
         "installationIdFile": "/etc/factory-review-github-app/installation-id",
         "privateKeyFile": "/etc/factory-review-github-app/private-key",
         "commentAuthor": "jomcgi-factory-review[bot]",
     }
-    item = _in(docs, "OnePasswordItem", "factory", "factory-review-github-app")
+    item = _in(
+        docs, "OnePasswordItem", "factory-review-broker", "factory-review-github-app"
+    )
     assert item["spec"]["itemPath"] == "vaults/k8s-homelab/items/factory-review-gh-app"
-    pod = _pod(docs, "factory-broker")
+    assert "review-github-app" not in {
+        v["name"] for v in _pod(docs, "factory-broker")["volumes"]
+    }
+    pod = _pod(docs, "factory-review-broker", "factory-review-broker")
+    assert {v["name"] for v in pod["volumes"]} == {"config", "review-github-app"}
     volumes = {v["name"]: v for v in pod["volumes"]}
     assert volumes["review-github-app"]["secret"] == {
         "secretName": "factory-review-github-app"
@@ -616,15 +643,20 @@ def test_broker_keeps_apps_subjects_and_secret_writes_separate() -> None:
         "name": "factory-broker",
     }
     assert rb["subjects"] == [
-        {"kind": "ServiceAccount", "name": "factory-broker", "namespace": "factory"}
+        {
+            "kind": "ServiceAccount",
+            "name": "factory-review-broker",
+            "namespace": "factory-review-broker",
+        }
     ]
     # Review can run independently of author delivery.
     independent = _config(
         _render(["broker.githubApp.enabled=false", "connector.enabled=false"]),
-        "factory-broker",
+        "factory-review-broker",
+        "factory-review-broker",
     )
     assert "github" not in independent
-    assert independent["githubReview"] == config["githubReview"]
+    assert independent["githubReview"] == review["githubReview"]
 
 
 def test_only_declared_network_paths_and_peers_admit_the_pod() -> None:
@@ -634,11 +666,12 @@ def test_only_declared_network_paths_and_peers_admit_the_pod() -> None:
     spec = _in(docs, "CiliumNetworkPolicy", "factory", "factory-reviewer")["spec"]
     assert spec["endpointSelector"]["matchLabels"].items() <= labels.items()
     assert "ingress" not in spec
-    assert len(spec["egress"]) == 4
+    assert len(spec["egress"]) == 5
     for rule, ns, name, port in (
         (spec["egress"][0], "factory", "factory-broker", "8081"),
-        (spec["egress"][1], "kagent", "kagent-controller", "8083"),
-        (spec["egress"][2], "factory", "factory-itsaplan-api", "3000"),
+        (spec["egress"][1], "factory-review-broker", "factory-review-broker", "8081"),
+        (spec["egress"][2], "kagent", "kagent-controller", "8083"),
+        (spec["egress"][3], "factory", "factory-itsaplan-api", "3000"),
     ):
         assert rule["toPorts"] == [{"ports": [{"port": port, "protocol": "TCP"}]}]
         peer = _in(docs, "CiliumNetworkPolicy", ns, name)["spec"]
@@ -662,7 +695,7 @@ def test_only_declared_network_paths_and_peers_admit_the_pod() -> None:
             )
             for entry in peer["ingress"]
         )
-    assert spec["egress"][3] == {
+    assert spec["egress"][4] == {
         "toFQDNs": [{"matchName": "api.github.com"}],
         "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
     }
@@ -772,7 +805,7 @@ def test_service_identity_and_endpoints_follow_namespace_and_port_values() -> No
     ]["egress"]
     for rule, ns, port in (
         (rules[0], "other-factory", "8181"),
-        (rules[1], "other-kagent", "8183"),
+        (rules[2], "other-kagent", "8183"),
     ):
         assert (
             rule["toEndpoints"][0]["matchLabels"]["k8s:io.kubernetes.pod.namespace"]
@@ -973,3 +1006,8 @@ def test_codex_trial_stays_with_one_coding_binding() -> None:
         if doc["kind"] == "Harness" and "workload" in doc["spec"]
     ]
     assert trial_namespaces == ["factory-r-homelab"]
+
+
+def test_duplicate_broker_app_identity_is_rejected() -> None:
+    with pytest.raises(RuntimeError, match="author and reviewer App IDs must differ"):
+        _render(["broker.githubApp.appId=5758326"])

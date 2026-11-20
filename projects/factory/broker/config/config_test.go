@@ -58,25 +58,24 @@ bindings:
 
 func TestLoadRejects(t *testing.T) {
 	for name, content := range map[string]string{
-		"unknown field":      "namespace: f\nbogus: 1\n",
-		"no namespace":       "listenAddr: ':1'\n",
-		"bad repository":     "namespace: f\nbindings: [{name: a, namespace: n, repository: nope}]\n",
-		"dup namespace":      "namespace: f\nbindings: [{name: a, namespace: n, repository: o/a}, {name: b, namespace: n, repository: o/b}]\n",
-		"slow mint":          "namespace: f\ngithub: {mintInterval: 2h}\n",
-		"http issuer":        "namespace: f\nactorJwt: {issuer: 'http://idp'}\n",
-		"no app id":          "namespace: f\ngithub: {privateKeyFile: /k}\n",
-		"shared listen":      "namespace: f\nadminListenAddr: ':8080'\n",
-		"bad effort":         "namespace: f\ncodex: {reasoningEffort: huge}\n",
-		"review without key": "namespace: f\ntokenReview: {reviewerSubjects: [a]}\n",
-		"review same app":    "namespace: f\ngithub: {privateKeyFile: /k, appId: '1', installationId: '2'}\ngithubReview: {privateKeyFile: /r, appId: '1', installationId: '3'}\n",
-		"review writes":      "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', agentPermissions: {contents: write}}\n",
-		"review approves":    "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', connectorPermissions: {pull_requests: write}}\n",
-		"review pushes":      "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', connectorPermissions: {contents: write, checks: write}}\n",
-		"comment workflows":  "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', commentPermissions: {issues: write, workflows: write}}\n",
-		"comment pushes":     "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', commentPermissions: {contents: write}}\n",
-		"author comments":    "namespace: f\ngithub: {commentPermissions: {issues: write}}\n",
-		"review namespace":   "namespace: f\nbindings: [{name: a, namespace: n, repository: o/a}]\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3'}\nreviewBindings: [{name: a, namespace: n, repository: o/a}]\n",
-		"review subject":     "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3'}\ntokenReview: {connectorSubjects: [s], reviewerSubjects: [s]}\n",
+		"unknown field":     "namespace: f\nbogus: 1\n",
+		"no namespace":      "listenAddr: ':1'\n",
+		"bad repository":    "namespace: f\nbindings: [{name: a, namespace: n, repository: nope}]\n",
+		"dup namespace":     "namespace: f\nbindings: [{name: a, namespace: n, repository: o/a}, {name: b, namespace: n, repository: o/b}]\n",
+		"slow mint":         "namespace: f\ngithub: {mintInterval: 2h}\n",
+		"http issuer":       "namespace: f\nactorJwt: {issuer: 'http://idp'}\n",
+		"no app id":         "namespace: f\ngithub: {privateKeyFile: /k}\n",
+		"shared listen":     "namespace: f\nadminListenAddr: ':8080'\n",
+		"bad effort":        "namespace: f\ncodex: {reasoningEffort: huge}\n",
+		"two broker keys":   "namespace: f\ngithub: {privateKeyFile: /k, appId: '1', installationId: '2'}\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3'}\n",
+		"review writes":     "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', agentPermissions: {contents: write}}\n",
+		"review approves":   "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', connectorPermissions: {pull_requests: write}}\n",
+		"review pushes":     "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', connectorPermissions: {contents: write, checks: write}}\n",
+		"comment workflows": "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', commentPermissions: {issues: write, workflows: write}}\n",
+		"comment pushes":    "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3', commentPermissions: {contents: write}}\n",
+		"author comments":   "namespace: f\ngithub: {commentPermissions: {issues: write}}\n",
+		"review namespace":  "namespace: f\nbindings: [{name: a, namespace: n, repository: o/a}]\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3'}\nreviewBindings: [{name: a, namespace: n, repository: o/a}]\n",
+		"review subject":    "namespace: f\ngithubReview: {privateKeyFile: /r, appId: '9', installationId: '3'}\ntokenReview: {connectorSubjects: [s], reviewerSubjects: [s]}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Load(write(t, "c.yaml", content), func(string) string { return "" }); err == nil {
@@ -142,5 +141,22 @@ func TestClaudeConfigDefaultsAndValidation(t *testing.T) {
 				t.Fatal("accepted invalid Claude config")
 			}
 		})
+	}
+}
+
+func TestMountedAppIdentity(t *testing.T) {
+	path := write(t, "app-id", "5757158\n")
+	for _, tc := range []struct {
+		field, expected string
+		ok              bool
+	}{
+		{"github", "5757158", true},
+		{"githubReview", "5758326", false},
+	} {
+		data := "namespace: factory\n" + tc.field + ": {expectedAppId: '" + tc.expected + "', appIdFile: " + path + ", appId: '" + tc.expected + "', installationId: '1', privateKeyFile: /key}\n"
+		_, err := Load(write(t, "broker.yaml", data), func(string) string { return "" })
+		if (err == nil) != tc.ok {
+			t.Fatalf("%s: error = %v", tc.field, err)
+		}
 	}
 }

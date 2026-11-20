@@ -60,8 +60,8 @@ func TestHandlerAuthenticatesEveryCredentialRoute(t *testing.T) {
 		{http.MethodPost, "/admin/codex/login", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/connector-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/codex/quota", http.StatusUnauthorized, "unauthenticated"},
-		{http.MethodGet, "/github/reviewer-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
-		{http.MethodGet, "/github/reviewer-comments?repository=o/r&number=1&page=1", http.StatusUnauthorized, "unauthenticated"},
+		{http.MethodGet, "/github/reviewer-token?repository=o/r", http.StatusNotFound, ""},
+		{http.MethodGet, "/github/reviewer-comments?repository=o/r&number=1&page=1", http.StatusNotFound, ""},
 		{http.MethodPost, "/v1/responses", http.StatusUnauthorized, "actor_unauthenticated"},
 		{http.MethodPost, "/anthropic/v1/messages", http.StatusNotFound, "not_found"},
 		{http.MethodPost, "/anthropic/v1/messages/count_tokens", http.StatusNotFound, "not_found"},
@@ -300,8 +300,8 @@ func TestSplitListenersSeparateRoutes(t *testing.T) {
 		{http.MethodPost, "/admin/codex/login", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/github/connector-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
 		{http.MethodGet, "/codex/quota", http.StatusUnauthorized, "unauthenticated"},
-		{http.MethodGet, "/github/reviewer-token?repository=o/r", http.StatusUnauthorized, "unauthenticated"},
-		{http.MethodGet, "/github/reviewer-comments?repository=o/r&number=1&page=1", http.StatusUnauthorized, "unauthenticated"},
+		{http.MethodGet, "/github/reviewer-token?repository=o/r", http.StatusNotFound, ""},
+		{http.MethodGet, "/github/reviewer-comments?repository=o/r&number=1&page=1", http.StatusNotFound, ""},
 		{http.MethodPost, "/v1/responses", http.StatusNotFound, ""},
 		// The comment token is never served; the proxy writes with it.
 		{http.MethodGet, "/github/reviewer-comment-token?repository=o/r", http.StatusNotFound, ""},
@@ -351,7 +351,9 @@ func TestReviewerTokenAdmitsOnlyReviewerSubjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := d.adminHandler(cfg, http.NotFoundHandler())
+	admin := d.adminHandler(cfg, http.NotFoundHandler())
+	review := http.NewServeMux()
+	d.registerReview(review, cfg)
 	for _, tc := range []struct {
 		path, token string
 		status      int
@@ -373,7 +375,11 @@ func TestReviewerTokenAdmitsOnlyReviewerSubjects(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
 		req.Header.Set("Authorization", "Bearer "+tc.token)
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
+		if strings.HasPrefix(tc.path, "/github/reviewer-") {
+			review.ServeHTTP(rec, req)
+		} else {
+			admin.ServeHTTP(rec, req)
+		}
 		if rec.Code != tc.status {
 			t.Fatalf("%s with %s = %d, want %d", tc.path, tc.token, rec.Code, tc.status)
 		}

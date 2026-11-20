@@ -97,3 +97,8 @@ may expose the listener, so enabling it without them fails the render.
 {{- print "true" }}
 {{- end }}
 {{- end }}
+
+{{- define "factory.reviewBrokerSelector" -}}
+app.kubernetes.io/name: factory-review-broker
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}

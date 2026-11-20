@@ -130,6 +130,7 @@ type TokenReview struct {
 }
 
 type GitHub struct {
+	ExpectedAppID      string `json:"expectedAppId"`
 	APIURL             string `json:"apiUrl"`
 	AppID              string `json:"appId"`
 	AppIDFile          string `json:"appIdFile"`
@@ -288,15 +289,16 @@ func Load(path string, getenv func(string) string) (Config, error) {
 
 func (c *Config) resolveFiles() error {
 	for _, f := range []struct {
-		value *string
-		file  string
+		value    *string
+		file     string
+		expected string
 	}{
-		{&c.GitHub.AppID, c.GitHub.AppIDFile},
-		{&c.GitHub.InstallationID, c.GitHub.InstallationIDFile},
-		{&c.GitHubReview.AppID, c.GitHubReview.AppIDFile},
-		{&c.GitHubReview.InstallationID, c.GitHubReview.InstallationIDFile},
+		{&c.GitHub.AppID, c.GitHub.AppIDFile, c.GitHub.ExpectedAppID},
+		{&c.GitHub.InstallationID, c.GitHub.InstallationIDFile, ""},
+		{&c.GitHubReview.AppID, c.GitHubReview.AppIDFile, c.GitHubReview.ExpectedAppID},
+		{&c.GitHubReview.InstallationID, c.GitHubReview.InstallationIDFile, ""},
 	} {
-		if *f.value != "" || f.file == "" {
+		if f.expected == "" && (*f.value != "" || f.file == "") {
 			continue
 		}
 		data, err := os.ReadFile(f.file)
@@ -304,6 +306,9 @@ func (c *Config) resolveFiles() error {
 			return fmt.Errorf("read %s: %w", f.file, err)
 		}
 		*f.value = strings.TrimSpace(string(data))
+		if f.expected != "" && *f.value != f.expected {
+			return errors.New("mounted GitHub App ID differs from expectedAppId")
+		}
 	}
 	return nil
 }
@@ -413,14 +418,11 @@ func (c Config) Validate() error {
 // its own token subjects.
 func (c Config) validateReview() []error {
 	var errs []error
-	if !c.GitHubReviewEnabled() {
-		if len(c.ReviewBindings) > 0 || len(c.TokenReview.ReviewerSubjects) > 0 {
-			errs = append(errs, errors.New("reviewBindings and reviewerSubjects need githubReview.privateKeyFile"))
-		}
-		return errs
+	if c.GitHubEnabled() && c.GitHubReviewEnabled() {
+		errs = append(errs, errors.New("author and reviewer keys require separate brokers"))
 	}
 	r := c.GitHubReview
-	if r.AppID == "" || r.InstallationID == "" {
+	if c.GitHubReviewEnabled() && (r.AppID == "" || r.InstallationID == "") {
 		errs = append(errs, errors.New("githubReview appId and installationId are required with a private key"))
 	}
 	if r.AppID != "" && r.AppID == c.GitHub.AppID {

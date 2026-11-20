@@ -23,11 +23,11 @@ const DefaultCheckName = "factory review"
 type Config struct {
 	// Semgrep enables evidence from the Semgrep GitHub App; nil is off.
 	Semgrep *Semgrep `yaml:"semgrep"`
-	// BrokerURL is the credential broker's admin port; the reviewer's GitHub
-	// tokens come from its /github/reviewer-token, authenticated with the
-	// projected token (audience factory-broker) in BrokerTokenFile.
-	BrokerURL       string `yaml:"brokerURL"`
-	BrokerTokenFile string `yaml:"brokerTokenFile"`
+	// ReviewBrokerURL serves GitHub tokens and comments. BrokerURL serves quota and run accounting.
+	ReviewBrokerURL       string `yaml:"reviewBrokerURL"`
+	ReviewBrokerTokenFile string `yaml:"reviewBrokerTokenFile"`
+	BrokerURL             string `yaml:"brokerURL"`
+	BrokerTokenFile       string `yaml:"brokerTokenFile"`
 	// KagentURL is the kagent controller's A2A gateway, called with the
 	// projected token (audience kagent-invocation) in KagentTokenFile.
 	KagentURL       string `yaml:"kagentURL"`
@@ -207,6 +207,12 @@ func Parse(b []byte) (*Config, error) {
 	}
 	if c.AppID <= 0 {
 		return nil, fmt.Errorf("config: appId is required: only the reviewer App's check runs count")
+	}
+	if c.ReviewBrokerURL == "" {
+		c.ReviewBrokerURL = "http://factory-review-broker.factory-review-broker.svc:8081"
+	}
+	if c.ReviewBrokerTokenFile == "" {
+		c.ReviewBrokerTokenFile = "/var/run/secrets/factory-review-broker/token"
 	}
 	if c.BrokerTokenFile == "" {
 		c.BrokerTokenFile = "/var/run/secrets/factory-broker/token"

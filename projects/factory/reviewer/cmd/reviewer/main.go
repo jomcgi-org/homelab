@@ -130,7 +130,7 @@ func run(log *slog.Logger) error {
 	gh := &github.Client{
 		BaseURL: cfg.GitHubURL,
 		Tokens: &github.BrokerTokens{
-			URL: cfg.BrokerURL, Path: reviewerTokenPath, Bearer: fileToken(cfg.BrokerTokenFile),
+			URL: cfg.ReviewBrokerURL, Path: reviewerTokenPath, Bearer: fileToken(cfg.ReviewBrokerTokenFile),
 		},
 		ETags: &github.ETagCache{Observe: func(notModified bool) {
 			if notModified {
@@ -158,7 +158,7 @@ func run(log *slog.Logger) error {
 	var comments review.Comments
 	if cfg.CommentAuthor != "" {
 		comments = &github.BrokerComments{
-			URL: cfg.BrokerURL, Path: commentsPath, Prefix: review.CommentMarker, Bearer: fileToken(cfg.BrokerTokenFile),
+			URL: cfg.ReviewBrokerURL, Path: commentsPath, Prefix: review.CommentMarker, Bearer: fileToken(cfg.ReviewBrokerTokenFile),
 		}
 	}
 	var issues review.Itsaplan
