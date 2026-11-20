@@ -30,6 +30,9 @@ triggers (files/itsaplan/bootstrap.py, verify_read_only).
 {{- define "factory.itsaplanAgents" -}}
 {{- $agents := .Values.itsaplan.bootstrap.agents | default list -}}
 {{- range $agents -}}
+{{- if eq (lower .username) "homelab-planner" -}}
+{{- fail "homelab-planner is reserved for scheduled planning" -}}
+{{- end -}}
 {{- if eq (lower .username) "intsec-sync" -}}
 {{- fail "intsec-sync is reserved for Semgrep" -}}
 {{- end -}}
@@ -43,6 +46,7 @@ triggers (files/itsaplan/bootstrap.py, verify_read_only).
 {{- if .Values.reviewer.enabled -}}
 {{- $agents = append $agents (dict "username" "factory-reviewer" "name" "Factory reviewer" "triggerOnAssign" false "triggerOnMention" false "readOnly" true) -}}
 {{- end -}}
+{{- $agents = append $agents (dict "username" "homelab-planner" "name" "Homelab planner" "readOnly" true) -}}
 {{- if .Values.semgrepSync.enabled -}}
 {{- $agents = append $agents (dict "username" "intsec-sync" "name" "factory-semgrep-sync") -}}
 {{- end -}}

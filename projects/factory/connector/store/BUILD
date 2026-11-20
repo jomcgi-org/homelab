@@ -36,6 +36,7 @@ go_test(
     name = "store_test",
     srcs = [
         "deferred_test.go",
+        "planner_test.go",
         "provenance_test.go",
         "recovery_test.go",
         "renovate_test.go",
@@ -49,7 +50,10 @@ go_test(
     data = [
         "@postgres_test//:postgres",
     ],
-    embedsrcs = ["delivered_issue_usage.sql"],
+    embedsrcs = [
+        "delivered_issue_usage.sql",
+        "planner_breaker_test.sql",
+    ],
     deps = [
         ":store",
         "//projects/factory/broker/config",

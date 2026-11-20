@@ -414,6 +414,7 @@ func (e *Engine) Tick(ctx context.Context) (result error) {
 		{"delivery_reverts", e.checkDeliveryReverts},
 		{"activation recovery", e.st.RecoverActivation},
 		{"human_gates", e.stepHumanGates},
+		{"planner", e.stepPlanner},
 		{"outbox", e.flushOutbox},
 		{"sessions", e.sweepSessions},
 		{"admission_metrics", e.admissionMetrics},
