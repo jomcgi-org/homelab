@@ -1932,19 +1932,36 @@ func (e *Engine) previousState(ctx context.Context, b *Binding, pr github.PullRe
 	return e.previousStateFrom(ctx, b, pr, hist)
 }
 
-type rootScan struct{ head, before string }
+type rootScan struct {
+	head, before string
+	shared       map[string]bool
+}
 
 // invariant: FACT-13
 // recoverRoots advances at most one page per open PR per poll. An empty
 // cursor on a recorded head marks its history as fully examined.
 func (e *Engine) recoverRoots(ctx context.Context, b *Binding, prs []github.PullRequest, complete bool) {
+	if !complete {
+		return
+	}
+	openHeads := map[string]bool{}
+	for _, pr := range prs {
+		openHeads[pr.HeadSHA] = true
+	}
 	listed := map[prKey]bool{}
 	for _, pr := range prs {
 		key := prKey{b.Name, pr.Number}
 		listed[key] = true
 		scan := e.rootScans[key]
+		// Rescan when a formerly shared head becomes eligible for cancellation.
+		for sha := range scan.shared {
+			if !openHeads[sha] {
+				scan = rootScan{}
+				break
+			}
+		}
 		if scan.head != pr.HeadSHA {
-			scan = rootScan{head: pr.HeadSHA}
+			scan = rootScan{head: pr.HeadSHA, shared: map[string]bool{}}
 		} else if scan.before == "" {
 			continue
 		}
@@ -1953,7 +1970,7 @@ func (e *Engine) recoverRoots(ctx context.Context, b *Binding, prs []github.Pull
 			e.ghError(ctx, e.prLog(b, pr), b, "pull_request_heads", err)
 			continue
 		}
-		if !e.endPreviousHead(ctx, b, pr, page) {
+		if !e.endPreviousHead(ctx, b, pr, page, openHeads, scan.shared) {
 			continue
 		}
 		scan.before = ""
@@ -1962,11 +1979,9 @@ func (e *Engine) recoverRoots(ctx context.Context, b *Binding, prs []github.Pull
 		}
 		e.rootScans[key] = scan
 	}
-	if complete {
-		for key := range e.rootScans {
-			if key.binding == b.Name && !listed[key] {
-				delete(e.rootScans, key)
-			}
+	for key := range e.rootScans {
+		if key.binding == b.Name && !listed[key] {
+			delete(e.rootScans, key)
 		}
 	}
 }
@@ -1978,7 +1993,7 @@ func (e *Engine) recoverRoots(ctx context.Context, b *Binding, prs []github.Pull
 // each recorded root once. Only heads flagged by the filtered check query need a REST read.
 // When GitHub refuses a completion,
 // the restored root parks, and endSuperseded retries it on the next poll.
-func (e *Engine) endPreviousHead(ctx context.Context, b *Binding, pr github.PullRequest, hist *github.HeadHistory) bool {
+func (e *Engine) endPreviousHead(ctx context.Context, b *Binding, pr github.PullRequest, hist *github.HeadHistory, openHeads, shared map[string]bool) bool {
 	readAll := true
 	seen := map[string]bool{pr.HeadSHA: true}
 	for i := len(hist.Heads) - 1; i >= 0; i-- {
@@ -1987,6 +2002,10 @@ func (e *Engine) endPreviousHead(ctx context.Context, b *Binding, pr github.Pull
 			continue
 		}
 		seen[prev] = true
+		if openHeads[prev] {
+			shared[prev] = true
+			continue
+		}
 		key := headKey{b.Name, prev}
 		if e.isRunning(key) {
 			continue

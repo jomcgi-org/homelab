@@ -611,7 +611,9 @@ func TestRestartThenPushEndsOldRootOnce(t *testing.T) {
 		pushes []string
 		// failOnce makes GitHub refuse the first cancellation of head A.
 		failOnce bool
+		shared   bool
 	}{
+		{name: "shared head then incomplete listing", pushes: []string{sha40('b')}, shared: true},
 		{name: "one push", pushes: []string{sha40('b')}},
 		{name: "21 pushes", pushes: many[:21]},
 		{name: "older timeline page", pushes: many},
@@ -637,6 +639,16 @@ func TestRestartThenPushEndsOldRootOnce(t *testing.T) {
 				h.gh.failWith(update, 502)
 			}
 			e, ctx, stop = h.start()
+			if tc.shared {
+				h.gh.addPR(&fakePR{Number: 8, Head: shaA})
+				prs := []github.PullRequest{{Number: 7, HeadSHA: tc.pushes[0]}, {Number: 8, HeadSHA: shaA}}
+				e.recoverRoots(ctx, &e.cfg.Bindings[0], prs, true)
+				e.recoverRoots(ctx, &e.cfg.Bindings[0], prs[:1], false)
+				if c := h.gh.check(shaA); c.Status != "in_progress" || len(reviewSpans(exporter)) != 0 {
+					t.Fatal("shared or unconfirmed head was cancelled")
+				}
+				h.gh.push(8, sha40('c'))
+			}
 			e.Tick(ctx)
 			if tc.failOnce {
 				if c := h.gh.check(shaA); c.Status == "completed" {
