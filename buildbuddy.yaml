@@ -190,7 +190,7 @@ actions:
           fi
 
           if ! git diff --quiet "$base_ref" HEAD -- projects/platform-factory/onepassword projects/platform/onepassword; then
-            bash projects/platform-factory/onepassword/test-isolated.sh
+            bash projects/platform-factory/onepassword/tests/isolated.sh
           fi
 
           # Exercise the source flow in the pinned image on the Docker runner.
