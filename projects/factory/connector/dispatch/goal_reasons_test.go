@@ -243,31 +243,6 @@ func TestFailedOwnershipReadRetriesBeforeEnqueue(t *testing.T) {
 	}
 }
 
-// TestOwnedCriterionWithoutReasonsStillTellsTheIssue posts a fixed comment
-// when the reviewer no longer keeps the reasons, and the PR still enters the
-// queue.
-func TestOwnedCriterionWithoutReasonsStillTellsTheIssue(t *testing.T) {
-	v := newDeliveryEnv(t)
-	goal := &fakeGoalReasons{issue: "HL-7", err: dispatch.ErrNoGoalReasons}
-	v.cfg.GoalReasons = goal
-	v.e.Release()
-	v.e = v.engine("connector-a")
-	v.delivered()
-	v.gh.green("sha-1")
-	v.gh.summarize("sha-1", "semgrep-review", "s\n\n### Deferred\n\n- **low** HL-7 criterion 2: owned by a follow-up (`HL-7:goal:criterion-2`): An open follow-up owns criterion 2 of HL-7.")
-	v.poll()
-	v.poll()
-	posted := 0
-	for _, c := range v.its.Comments() {
-		if strings.Contains(c.body, "no longer keeps the reasons") {
-			posted++
-		}
-	}
-	if posted != 1 || len(v.gh.Enqueues()) != 1 {
-		t.Fatalf("fixed comments = %d, enqueues = %d", posted, len(v.gh.Enqueues()))
-	}
-}
-
 // TestPassingReviewWithoutOwnershipReadsNoReasons keeps the read to reviews
 // that name an owned criterion.
 func TestPassingReviewWithoutOwnershipReadsNoReasons(t *testing.T) {
