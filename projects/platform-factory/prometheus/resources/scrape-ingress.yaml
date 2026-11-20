@@ -105,3 +105,23 @@ spec:
         - ports:
             - port: "3903"
               protocol: TCP
+---
+# The factory-public chart's cloudflare-exporter (HOME-634).
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: prometheus-scrape-cloudflare-exporter
+spec:
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: factory-public
+      app.kubernetes.io/name: cloudflare-exporter
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: prometheus
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP

@@ -235,6 +235,85 @@ groups:
             Public readers see an old status. Runbook:
             projects/factory-cluster/README.md, "Alerts".
 
+  - name: cloudflare
+    rules:
+      # Every factory Cloudflare API token and R2 key accepts calls only from
+      # the home IPv4 address. At about 01:27Z on 2026-11-20 that address
+      # changed: every credential failed and the public data stayed 6 h old
+      # (HOME-634). cloudflare-exporter reads the address that Cloudflare
+      # sees (factory_egress_ip_info, label ip) and checks each API token
+      # every minute. It does not test the R2 keys: only the mirror CronJobs
+      # hold the R2 mirror key. An R2 refusal shows through this alert and
+      # FactoryHealthStale.
+      # The address is private and the repository is public, so no expected
+      # address is stored. The rule counts the addresses of the last hour: it
+      # fires at the first scrape of a new address and clears an hour later.
+      # CloudflareCredentialRefused stays on while an API token fails.
+      - alert: FactoryEgressIPChanged
+        expr: count(count by (ip) (last_over_time(factory_egress_ip_info[1h]))) > 1
+        labels:
+          severity: warning
+        annotations:
+          action: "Allow the new egress IP in the IP filter of each factory Cloudflare credential."
+          graph: "count(count by (ip) (last_over_time(factory_egress_ip_info[1h])))"
+          threshold: "1"
+          runbook: "https://factory-runbooks.jomcgi.dev/FactoryEgressIPChanged"
+          summary: >-
+            The factory egress IP changed to {{ range query `max by (ip) (factory_egress_ip_info)`
+            }}{{ .Labels.ip }}{{ else }}an unknown address{{ end }} from {{ range $i, $p := query
+            `count by (ip) (last_over_time(factory_egress_ip_info[1h])) unless on (ip) factory_egress_ip_info`
+            | sortByLabel `ip` }}{{ if $i }}, {{ end }}{{ $p.Labels.ip }}{{ end }} ({{ $value }} addresses in 1h, maximum 1)
+          description: >-
+            Each factory Cloudflare API token and R2 key fails until its IP
+            filter allows the new address. Runbook:
+            projects/factory-cluster/README.md, "Alerts".
+      # An API token that Cloudflare refuses with 401 or 403 at its read-only
+      # check, for 5 min of answered checks. After a check with no answer the
+      # exporter keeps the last answer and sets check_success to 0. So a
+      # pending alert needs check_success 1: one refusal followed by
+      # unanswered checks does not fire, and a gap restarts the 5 min. A
+      # firing alert stays on (its own ALERTS series, value 0) until a check
+      # accepts the token: unanswered checks and an exporter restart that
+      # drops auth_success do not clear it.
+      # With an address change, the IP filter is the likely cause; without
+      # one, a revoked or replaced token.
+      - alert: CloudflareCredentialRefused
+        expr: >-
+          (
+            max by (credential) (factory_cloudflare_credential_auth_success) == 0
+            and on (credential)
+            max by (credential) (factory_cloudflare_credential_check_success) == 1
+          )
+          or on (credential)
+          (
+            0 * max by (credential) (ALERTS{alertname="CloudflareCredentialRefused",alertstate="firing"})
+            unless on (credential)
+            max by (credential) (factory_cloudflare_credential_auth_success) == 1
+          )
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          action: "Allow the egress IP in this token's Cloudflare IP filter, or replace the token."
+          graph: "factory_cloudflare_credential_auth_success{credential={{ printf \"%q\" $labels.credential }}}"
+          threshold: "1"
+          runbook: "https://factory-runbooks.jomcgi.dev/CloudflareCredentialRefused"
+          # While the trace read fails, the text names the newest address
+          # Prometheus saw in the last 7 days, calls it "last known" and says
+          # why. That history also covers an exporter restart whose first
+          # read fails, when the exporter itself has no address.
+          summary: >-
+            Cloudflare refuses API token {{ $labels.credential }} from {{ with query
+            `max(factory_egress_ip_read_success) == 0` }}last known egress IP {{ range query
+            `topk(1, max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[7d])))`
+            }}{{ .Labels.ip }}{{ else }}unknown{{ end }} (the egress IP read is failing, so the address may be stale){{ else }}egress IP {{ range query
+            `max by (ip) (factory_egress_ip_info)` }}{{ .Labels.ip }}{{ else }}{{ range query
+            `topk(1, max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[7d])))`
+            }}{{ .Labels.ip }} (last known){{ else }}unknown{{ end }}{{ end }}{{ end }} (auth success {{ $value }}, minimum 1)
+          description: >-
+            Its read-only check gets HTTP 401 or 403. Runbook:
+            projects/factory-cluster/README.md, "Alerts".
+
   - name: relay
     rules:
       - alert: AlertRelayDown

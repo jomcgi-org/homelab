@@ -920,6 +920,264 @@ tests:
         alertname: FactoryItsaplanOutage
         exp_alerts: []
 
+  # The egress IP changes at 31 min: the old series goes stale and a new one
+  # starts. The alert fires at the first scrape of the new address, names
+  # both addresses, and clears when the old one leaves the 1 h window.
+  - interval: 1m
+    input_series:
+      - series: 'factory_egress_ip_info{job="cloudflare",instance="cloudflare-exporter:8080",ip="192.0.2.10"}'
+        values: "1x30 stale"
+      - series: 'factory_egress_ip_info{job="cloudflare",instance="cloudflare-exporter:8080",ip="198.51.100.20"}'
+        values: "_x31 1x90"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FactoryEgressIPChanged
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: FactoryEgressIPChanged
+        exp_alerts: &egress_changed
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              action: "Allow the new egress IP in the IP filter of each factory Cloudflare credential."
+              graph: "count(count by (ip) (last_over_time(factory_egress_ip_info[1h])))"
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryEgressIPChanged"
+              summary: "The factory egress IP changed to 198.51.100.20 from 192.0.2.10 (2 addresses in 1h, maximum 1)"
+              description: 'Each factory Cloudflare API token and R2 key fails until its IP filter allows the new address. Runbook: projects/factory-cluster/README.md, "Alerts".'
+      - eval_time: 89m
+        alertname: FactoryEgressIPChanged
+        exp_alerts: *egress_changed
+      - eval_time: 90m
+        alertname: FactoryEgressIPChanged
+        exp_alerts: []
+
+  # An exporter restart, or a new instance label, with the same address is
+  # no change.
+  - interval: 1m
+    input_series:
+      - series: 'factory_egress_ip_info{job="cloudflare",instance="a",ip="192.0.2.10"}'
+        values: "1x30 stale"
+      - series: 'factory_egress_ip_info{job="cloudflare",instance="b",ip="192.0.2.10"}'
+        values: "_x35 1x30"
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: FactoryEgressIPChanged
+        exp_alerts: []
+
+  # Cloudflare refuses the health token from 11 min to 30 min, and the site
+  # token for 4 min only. The alert fires for the health token after 5 min,
+  # names it and the current egress IP, and clears at the next accepted
+  # check.
+  - interval: 1m
+    input_series:
+      - series: 'factory_cloudflare_credential_auth_success{job="cloudflare",instance="cloudflare-exporter.factory-public.svc:8080",credential="factory-health-cloudflare"}'
+        values: "1x10 0x19 1x10"
+      - series: 'factory_cloudflare_credential_check_success{job="cloudflare",instance="cloudflare-exporter.factory-public.svc:8080",credential="factory-health-cloudflare"}'
+        values: "1x41"
+      - series: 'factory_cloudflare_credential_auth_success{job="cloudflare",instance="cloudflare-exporter.cfgate-system.svc:8080",credential="factory-cloudflare-api-token"}'
+        values: "1x40"
+      - series: 'factory_cloudflare_credential_check_success{job="cloudflare",instance="cloudflare-exporter.cfgate-system.svc:8080",credential="factory-cloudflare-api-token"}'
+        values: "1x40"
+      - series: 'factory_cloudflare_credential_auth_success{job="cloudflare",instance="cloudflare-exporter.jomcgi-site-prod.svc:8080",credential="jomcgi-site-cloudflare"}'
+        values: "1x5 0x3 1x31"
+      - series: 'factory_cloudflare_credential_check_success{job="cloudflare",instance="cloudflare-exporter.jomcgi-site-prod.svc:8080",credential="jomcgi-site-cloudflare"}'
+        values: "1x41"
+      - series: 'factory_egress_ip_info{job="cloudflare",instance="cloudflare-exporter:8080",ip="198.51.100.20"}'
+        values: "1x40"
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: CloudflareCredentialRefused
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: CloudflareCredentialRefused
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: CloudflareCredentialRefused
+        exp_alerts: &health_refused
+          - exp_labels:
+              severity: critical
+              credential: factory-health-cloudflare
+            exp_annotations:
+              action: "Allow the egress IP in this token's Cloudflare IP filter, or replace the token."
+              graph: 'factory_cloudflare_credential_auth_success{credential="factory-health-cloudflare"}'
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/CloudflareCredentialRefused"
+              summary: "Cloudflare refuses API token factory-health-cloudflare from egress IP 198.51.100.20 (auth success 0, minimum 1)"
+              description: &refused_description 'Its read-only check gets HTTP 401 or 403. Runbook: projects/factory-cluster/README.md, "Alerts".'
+      - eval_time: 30m
+        alertname: CloudflareCredentialRefused
+        exp_alerts: *health_refused
+      - eval_time: 31m
+        alertname: CloudflareCredentialRefused
+        exp_alerts: []
+
+  # A firing refusal stays on through unanswered checks and clears only
+  # when a check accepts the token.
+  - interval: 1m
+    input_series:
+      - series: 'factory_cloudflare_credential_auth_success{job="cloudflare",instance="cloudflare-exporter.factory-public.svc:8080",credential="factory-health-cloudflare"}'
+        values: "0x12 1x8"
+      - series: 'factory_cloudflare_credential_check_success{job="cloudflare",instance="cloudflare-exporter.factory-public.svc:8080",credential="factory-health-cloudflare"}'
+        values: "1x7 0x4 1x8"
+      - series: 'factory_egress_ip_info{job="cloudflare",instance="cloudflare-exporter:8080",ip="192.0.2.10"}'
+        values: "1x20"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: CloudflareCredentialRefused
+        exp_alerts: &held_refused
+          - exp_labels:
+              severity: critical
+              credential: factory-health-cloudflare
+            exp_annotations:
+              action: "Allow the egress IP in this token's Cloudflare IP filter, or replace the token."
+              graph: 'factory_cloudflare_credential_auth_success{credential="factory-health-cloudflare"}'
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/CloudflareCredentialRefused"
+              summary: "Cloudflare refuses API token factory-health-cloudflare from egress IP 192.0.2.10 (auth success 0, minimum 1)"
+              description: 'Its read-only check gets HTTP 401 or 403. Runbook: projects/factory-cluster/README.md, "Alerts".'
+      - eval_time: 10m
+        alertname: CloudflareCredentialRefused
+        exp_alerts: *held_refused
+      - eval_time: 14m
+        alertname: CloudflareCredentialRefused
+        exp_alerts: []
+
+  # A credential exporter restart during a firing refusal drops
+  # auth_success while its first probe goes unanswered. The alert stays on
+  # and clears only at an accepted check.
+  - interval: 1m
+    input_series:
+      - series: 'factory_cloudflare_credential_auth_success{job="cloudflare",instance="cloudflare-exporter.factory-public.svc:8080",credential="factory-health-cloudflare"}'
+        values: "0x7 stale _x5 1x6"
+      - series: 'factory_cloudflare_credential_check_success{job="cloudflare",instance="cloudflare-exporter.factory-public.svc:8080",credential="factory-health-cloudflare"}'
+        values: "1x7 0x6 1x6"
+      - series: 'factory_egress_ip_info{job="cloudflare",instance="cloudflare-exporter:8080",ip="192.0.2.10"}'
+        values: "1x20"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: CloudflareCredentialRefused
+        exp_alerts: &restart_refused
+          - exp_labels:
+              severity: critical
+              credential: factory-health-cloudflare
+            exp_annotations:
+              action: "Allow the egress IP in this token's Cloudflare IP filter, or replace the token."
+              graph: 'factory_cloudflare_credential_auth_success{credential="factory-health-cloudflare"}'
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/CloudflareCredentialRefused"
+              summary: "Cloudflare refuses API token factory-health-cloudflare from egress IP 192.0.2.10 (auth success 0, minimum 1)"
+              description: 'Its read-only check gets HTTP 401 or 403. Runbook: projects/factory-cluster/README.md, "Alerts".'
+      - eval_time: 12m
+        alertname: CloudflareCredentialRefused
+        exp_alerts: *restart_refused
+      - eval_time: 15m
+        alertname: CloudflareCredentialRefused
+        exp_alerts: []
+
+  # After an exporter restart whose first trace read fails, the exporter has
+  # no address. The newest address had one sample between five-minute steps.
+  - interval: 1m
+    input_series:
+      - series: 'factory_cloudflare_credential_auth_success{job="cloudflare",instance="cloudflare-exporter.factory-public.svc:8080",credential="factory-health-cloudflare"}'
+        values: "1x10 0x15"
+      - series: 'factory_cloudflare_credential_check_success{job="cloudflare",instance="cloudflare-exporter.factory-public.svc:8080",credential="factory-health-cloudflare"}'
+        values: "1x25"
+      - series: 'factory_egress_ip_info{job="cloudflare",instance="cloudflare-exporter:8080",ip="192.0.2.10"}'
+        values: "1x10 stale"
+      - series: 'factory_egress_ip_info{job="cloudflare",instance="cloudflare-exporter:8080",ip="198.51.100.20"}'
+        values: "_x10 1 stale"
+      - series: 'factory_egress_ip_observed_timestamp_seconds{ip="192.0.2.10"}'
+        values: "0+60x10 stale"
+      - series: 'factory_egress_ip_observed_timestamp_seconds{ip="198.51.100.20"}'
+        values: "_x10 660 stale"
+      - series: 'factory_egress_ip_read_success{job="cloudflare",instance="cloudflare-exporter:8080"}'
+        values: "1x10 0x15"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: CloudflareCredentialRefused
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              credential: factory-health-cloudflare
+            exp_annotations:
+              action: "Allow the egress IP in this token's Cloudflare IP filter, or replace the token."
+              graph: 'factory_cloudflare_credential_auth_success{credential="factory-health-cloudflare"}'
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/CloudflareCredentialRefused"
+              summary: "Cloudflare refuses API token factory-health-cloudflare from last known egress IP 198.51.100.20 (the egress IP read is failing, so the address may be stale) (auth success 0, minimum 1)"
+              description: 'Its read-only check gets HTTP 401 or 403. Runbook: projects/factory-cluster/README.md, "Alerts".'
+
+  # One refusal followed only by unanswered checks does not fire: the
+  # exporter keeps the refusal but sets check_success to 0.
+  - interval: 1m
+    input_series:
+      - series: 'factory_cloudflare_credential_auth_success{job="cloudflare",instance="cloudflare-exporter.factory-public.svc:8080",credential="factory-health-cloudflare"}'
+        values: "1x2 0x20"
+      - series: 'factory_cloudflare_credential_check_success{job="cloudflare",instance="cloudflare-exporter.factory-public.svc:8080",credential="factory-health-cloudflare"}'
+        values: "1x3 0x19"
+      - series: 'factory_egress_ip_info{job="cloudflare",instance="cloudflare-exporter:8080",ip="192.0.2.10"}'
+        values: "1x22"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: CloudflareCredentialRefused
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: CloudflareCredentialRefused
+        exp_alerts: []
+
+  # A refused credential while the egress IP read fails names the last
+  # address as last known and says that the read is failing.
+  - interval: 1m
+    input_series:
+      - series: 'factory_cloudflare_credential_auth_success{job="cloudflare",instance="cloudflare-exporter.factory-public.svc:8080",credential="factory-health-cloudflare"}'
+        values: "0x10"
+      - series: 'factory_cloudflare_credential_check_success{job="cloudflare",instance="cloudflare-exporter.factory-public.svc:8080",credential="factory-health-cloudflare"}'
+        values: "1x10"
+      - series: 'factory_egress_ip_info{job="cloudflare",instance="cloudflare-exporter:8080",ip="192.0.2.10"}'
+        values: "1x10"
+      - series: 'factory_egress_ip_observed_timestamp_seconds{ip="192.0.2.10"}'
+        values: "0x10"
+      - series: 'factory_egress_ip_read_success{job="cloudflare",instance="cloudflare-exporter:8080"}'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: CloudflareCredentialRefused
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              credential: factory-health-cloudflare
+            exp_annotations:
+              action: "Allow the egress IP in this token's Cloudflare IP filter, or replace the token."
+              graph: 'factory_cloudflare_credential_auth_success{credential="factory-health-cloudflare"}'
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/CloudflareCredentialRefused"
+              summary: "Cloudflare refuses API token factory-health-cloudflare from last known egress IP 192.0.2.10 (the egress IP read is failing, so the address may be stale) (auth success 0, minimum 1)"
+              description: 'Its read-only check gets HTTP 401 or 403. Runbook: projects/factory-cluster/README.md, "Alerts".'
+
+  # A refused credential with no egress IP read says that the address is
+  # unknown.
+  - interval: 1m
+    input_series:
+      - series: 'factory_cloudflare_credential_auth_success{job="cloudflare",instance="cloudflare-exporter.cfgate-system.svc:8080",credential="factory-cloudflare-api-token"}'
+        values: "0x10"
+      - series: 'factory_cloudflare_credential_check_success{job="cloudflare",instance="cloudflare-exporter.cfgate-system.svc:8080",credential="factory-cloudflare-api-token"}'
+        values: "1x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: CloudflareCredentialRefused
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              credential: factory-cloudflare-api-token
+            exp_annotations:
+              action: "Allow the egress IP in this token's Cloudflare IP filter, or replace the token."
+              graph: 'factory_cloudflare_credential_auth_success{credential="factory-cloudflare-api-token"}'
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/CloudflareCredentialRefused"
+              summary: "Cloudflare refuses API token factory-cloudflare-api-token from egress IP unknown (auth success 0, minimum 1)"
+              description: *refused_description
+
   - interval: 1m
     input_series:
       - series: 'container_memory_working_set_bytes{job="kubelet-resource",namespace="factory-r-homelab-review",pod="homelab-reviewer-a",container="worker"}'

@@ -97,6 +97,17 @@ scrape_configs:
     static_configs:
       - targets: [health-exporter:8080]
 
+  # The egress IP and the factory's Cloudflare credential checks (HOME-634):
+  # one cloudflare-exporter in this namespace and one in the namespace of each
+  # credential's Secret.
+  - job_name: cloudflare
+    static_configs:
+      - targets:
+          - cloudflare-exporter:8080
+          - cloudflare-exporter.cfgate-system.svc:8080
+          - cloudflare-exporter.jomcgi-site-prod.svc:8080
+          - cloudflare-exporter.factory-public.svc:8080
+
   # Cilium on the host network of each node: the agent, Hubble's flow and
   # drop counters, and both operator replicas.
   - job_name: cilium-agent
