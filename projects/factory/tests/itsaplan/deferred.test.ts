@@ -78,8 +78,49 @@ async function fixture() {
         body: JSON.stringify(body),
       }),
     );
-  return { id, body, send, backlog, todo, coder, coordinator };
+  return { id, body, send, backlog, todo, coder, coordinator, owner };
 }
+
+test("run phases are bound to the current attempt and its agent", async () => {
+  const { id, coder, coordinator, owner, send } = await fixture();
+  expect((await send()).status).toBe(200);
+  const runner = apiKeyApi(coder.apiKey!);
+  const run = (await runner["agent-runs"].claim.post()).data!.run!;
+  const phase = (key: string, attempt: number) =>
+    app.handle(
+      new Request(`http://localhost/agent-runs/${run.id}/factory-phase`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": key },
+        body: JSON.stringify({
+          attempt,
+          phase: "waiting",
+          reason: "Blocked by HOME-504",
+        }),
+      }),
+    );
+  const url = `http://localhost/issues/${id}/factory-run-phases`;
+  const read = () =>
+    app.handle(new Request(url, { headers: { cookie: owner.cookie } }));
+  expect((await phase(coordinator.apiKey!, run.attempts)).status).toBe(404);
+  expect((await phase(coder.apiKey!, run.attempts + 1)).status).toBe(404);
+  expect((await phase(coder.apiKey!, run.attempts)).status).toBe(200);
+  expect((await app.handle(new Request(url))).status).toBe(401);
+  const response = await read();
+  expect(response.status).toBe(200);
+  expect((await response.json()).items).toMatchObject([
+    {
+      runId: run.id,
+      attempt: run.attempts,
+      phase: "waiting",
+      reason: "Blocked by HOME-504",
+    },
+  ]);
+  await db
+    .update(agentRun)
+    .set({ attempts: run.attempts + 1 })
+    .where(eq(agentRun.id, run.id));
+  expect((await (await read()).json()).items).toEqual([]);
+});
 
 async function effects(id: number) {
   return {

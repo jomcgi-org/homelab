@@ -38,6 +38,7 @@ type Itsaplan interface {
 	StartDeferred(context.Context, int64, itsaplan.DeferredRequest) (*itsaplan.DeferredReceipt, error)
 	Claim(ctx context.Context, agent string) (*itsaplan.Run, error)
 	Heartbeat(ctx context.Context, agent string, runID int64, attempt int) error
+	PublishRunPhase(ctx context.Context, agent string, runID int64, attempt int, phase, reason string) error
 	Events(ctx context.Context, agent string, runID int64, attempt, offset int, events []itsaplan.Event) (int, error)
 	Result(ctx context.Context, agent string, runID int64, r itsaplan.Result) error
 	GetRun(ctx context.Context, runID int64) (*itsaplan.RunStatus, error)
@@ -682,6 +683,19 @@ func (e *Engine) Heartbeats(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+func clipRunPhaseReason(reason string) string {
+	const maxReasonBytes = 1024
+	if len(reason) <= maxReasonBytes {
+		return reason
+	}
+	for index := range reason {
+		if index >= maxReasonBytes-4 {
+			return reason[:index] + "…"
+		}
+	}
+	return reason
+}
+
 // heartbeatRun skips a run whose lock a slow step holds, so it does not
 // delay the other runs' heartbeats; the next pass tries again.
 func (e *Engine) heartbeatRun(ctx context.Context, id int64) (result error) {
@@ -729,6 +743,16 @@ func (e *Engine) heartbeatRun(ctx context.Context, id int64) (result error) {
 		e.m.Heartbeats.WithLabelValues("ok").Inc()
 		if err := e.st.SetHeartbeat(ctx, r.ID, now); err != nil {
 			return err
+		}
+		phase := r.State
+		if phase == store.RunClaimed {
+			phase = "admission"
+		}
+		phaseCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		err := e.its.PublishRunPhase(phaseCtx, r.AgentKey, r.ID, r.Attempt, phase, clipRunPhaseReason(r.HoldReason))
+		cancel()
+		if err != nil && !errors.Is(err, itsaplan.ErrNotFound) {
+			e.log.WarnContext(ctx, "publish run phase", "run", r.ID, "error", err)
 		}
 		// A PR closed during the turn stops delivery and cancels the turn.
 		return e.checkPRClosed(ctx, r)

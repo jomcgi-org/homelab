@@ -280,6 +280,13 @@ func (c *Client) Heartbeat(ctx context.Context, agent string, runID int64, attem
 		map[string]int{"attempt": attempt}, nil)
 }
 
+// PublishRunPhase updates the operational view of a leased run attempt.
+func (c *Client) PublishRunPhase(ctx context.Context, agent string, runID int64, attempt int, phase, reason string) error {
+	return c.do(ctx, agent, http.MethodPost, runPath(runID, "factory-phase"), map[string]any{
+		"attempt": attempt, "phase": phase, "reason": reason,
+	}, nil)
+}
+
 // Events appends a batch at offset and returns the next offset. A batch the
 // server already holds is acknowledged again; a gap is ErrConflict.
 func (c *Client) Events(ctx context.Context, agent string, runID int64, attempt, offset int, events []Event) (int, error) {

@@ -310,6 +310,10 @@ func (f *fakeItsaplan) Heartbeat(_ context.Context, agent string, id int64, atte
 	return nil
 }
 
+func (f *fakeItsaplan) PublishRunPhase(context.Context, string, int64, int, string, string) error {
+	return nil
+}
+
 func (f *fakeItsaplan) Events(_ context.Context, agent string, id int64, attempt, offset int, events []itsaplan.Event) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

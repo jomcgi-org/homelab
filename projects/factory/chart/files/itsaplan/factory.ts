@@ -6,6 +6,8 @@ import { and, eq, sql } from "drizzle-orm";
 import { db, agentRun, aiAgent, issue, label, projectColumn } from "@repo/db";
 import { factoryTransaction } from "../../../packages/db/src/client";
 import { guards, entityGuard } from "./shared/guards";
+import { assertPermission } from "./shared/access";
+import { runnerAuth } from "./modules/agents/runner-auth";
 import { authContext } from "./shared/auth-context";
 import { HttpError, errorAnswer } from "./shared/lib";
 import {
@@ -37,6 +39,15 @@ await db.transaction(async (tx) => {
       delegate_user_id text not null,
       run_id integer not null,
       primary key (issue_id, start_date)
+    )
+  `);
+  await tx.execute(sql`
+    create table if not exists factory_run_phase (
+      run_id integer primary key references agent_run(id) on delete cascade,
+      attempt integer not null,
+      phase text not null,
+      reason text not null,
+      observed_at timestamptz not null
     )
   `);
 });
@@ -148,6 +159,7 @@ const api = {
 export const factoryRoutes = new Elysia({ name: "factory-deferred" })
   .use(authContext)
   .use(guards)
+  .use(runnerAuth)
   .onError(({ code, error, set }) => {
     const answer = errorAnswer(code, error);
     set.status = answer.status;
@@ -158,6 +170,65 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
       getIssueProjectId(Number(p.issueId)),
     ),
   })
+  .post(
+    "/agent-runs/:runId/factory-phase",
+    async ({ agent, params, body }) => {
+      const rows = await db.execute(sql`
+        with active as (
+          select id, attempts from agent_run
+          where id = ${params.runId} and agent_id = ${agent.id}
+            and attempts = ${body.attempt} and status = 'pending'
+            and issue_id is not null and document_id is null
+            and next_attempt_at > now() and execution_started_at is not null
+          for update
+        )
+        insert into factory_run_phase (run_id, attempt, phase, reason, observed_at)
+        select id, attempts, ${body.phase}, ${body.reason}, now() from active
+        on conflict (run_id) do update
+        set attempt = excluded.attempt, phase = excluded.phase,
+          reason = excluded.reason, observed_at = excluded.observed_at
+        returning run_id
+      `);
+      if (!rows.length)
+        throw new HttpError(404, "Active run attempt not found");
+      return { recorded: true };
+    },
+    {
+      runnerAgent: true,
+      params: t.Object({ runId: t.Numeric({ minimum: 1 }) }),
+      body: t.Object({
+        attempt: t.Integer({ minimum: 1 }),
+        phase: t.Union([
+          t.Literal("admission"),
+          t.Literal("waiting"),
+          t.Literal("dispatched"),
+          t.Literal("finishing"),
+        ]),
+        reason: t.String({ maxLength: 1024 }),
+      }),
+    },
+  )
+  .get(
+    "/issues/:issueId/factory-run-phases",
+    async ({ params, projectId, user }) => {
+      await assertPermission(projectId, user, "ai_agents", "read");
+      const rows = await db.execute(sql`
+        select r.id as "runId", p.attempt, p.phase, p.reason, p.observed_at as "observedAt"
+        from factory_run_phase p join agent_run r on r.id = p.run_id
+        join issue i on i.id = r.issue_id and i.project_id = r.project_id
+        where r.issue_id = ${params.issueId} and r.project_id = ${projectId}
+          and r.status = 'pending' and r.attempts = p.attempt
+          and r.document_id is null
+          and r.next_attempt_at > now() and r.execution_started_at is not null
+        order by r.id
+      `);
+      return { items: Array.from(rows) };
+    },
+    {
+      workItem: "read",
+      params: t.Object({ issueId: t.Numeric({ minimum: 1 }) }),
+    },
+  )
   .post(
     "/issues/:issueId/factory-deferred-start",
     async ({ params, body, user, projectId }) => {
