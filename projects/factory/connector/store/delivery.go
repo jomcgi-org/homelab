@@ -64,7 +64,7 @@ type PullRequest struct {
 	NodeID          string
 	URL             string
 	HeadSHA         string
-	State           string // open | closed | merged
+	State           string // open | closed | merged | refused
 	MergeQueueState string
 	PolledAt        time.Time
 	EnqueuedHeadSHA string
@@ -291,6 +291,17 @@ func (s *Store) StopWork(ctx context.Context, workID int64, reason, by string) (
 		return err
 	})
 	return stopped, err
+}
+
+// StopRefusedPR stops delivery and retires the recorded PR from stopped-work polling.
+func (s *Store) StopRefusedPR(ctx context.Context, workID, prID int64, reason string) error {
+	return s.Tx(ctx, func(tx *sql.Tx) error {
+		if _, err := s.stopWork(ctx, tx, workID, reason, "connector"); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE pull_request SET state = 'refused', updated_at = now() WHERE id = $1 AND work_item_id = $2`, prID, workID)
+		return err
+	})
 }
 
 func (s *Store) stopWork(ctx context.Context, tx *sql.Tx, workID int64, reason, by string) (bool, error) {

@@ -154,16 +154,26 @@ func (e *Engine) deliverWork(ctx context.Context, wi *store.WorkItem) error {
 		return e.followUp(ctx, wi, b, pr)
 	}
 	if wi.State != store.WorkStopped && wi.TurnAttemptID != 0 && wi.TurnAttemptID != wi.SyncedAttemptID {
-		if pr, err = e.syncPR(ctx, wi, b, pr); errors.Is(err, errDeliverySource) {
+		synced, err := e.syncPR(ctx, wi, b, pr)
+		if errors.Is(err, errDeliverySource) {
+			if pr != nil {
+				return e.st.StopRefusedPR(ctx, wi.ID, pr.ID, err.Error())
+			}
 			return e.stopWork(ctx, wi, err.Error())
-		} else if err != nil {
+		}
+		if err != nil {
 			return err
 		}
+		pr = synced
 	}
 	if pr == nil || e.cfg.Now().Sub(pr.PolledAt) < e.cfg.ReviewPoll {
 		return nil
 	}
-	return e.pollPR(ctx, wi, b, pr)
+	err = e.pollPR(ctx, wi, b, pr)
+	if errors.Is(err, errDeliverySource) {
+		return e.st.StopRefusedPR(ctx, wi.ID, pr.ID, err.Error())
+	}
+	return err
 }
 
 // syncPR opens or updates the work item's one PR for its latest finished
@@ -188,9 +198,16 @@ func (e *Engine) syncPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	if pr != nil && pr.State == "merged" {
 		return pr, e.st.MarkSynced(ctx, e.st.DB, wi.ID, a.ID)
 	}
-	if pr != nil {
+	if pr != nil && pr.State != "refused" {
 		// Only the body changes. A PR a person closed stays closed: the
 		// connector never reopens it against their decision.
+		if err := e.guard(ctx); err != nil {
+			return nil, err
+		}
+		messageID := fmt.Sprintf("sync/%d/%d/detail", pr.ID, a.ID)
+		if err := e.st.RecordDeliveryRead(ctx, pr.ID, e.w.Epoch, messageID, "sync-detail", strconv.Itoa(pr.Number)); err != nil {
+			return nil, err
+		}
 		if err := e.guard(ctx); err != nil {
 			return nil, err
 		}

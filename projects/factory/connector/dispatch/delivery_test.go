@@ -2626,6 +2626,58 @@ func TestClosedPullRequestIsNotReopened(t *testing.T) {
 	}
 }
 
+func TestBodySyncJournalsPRReadBeforeRetry(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	w := v.work(101)
+	pr, err := v.st.PullRequestFor(v.ctx, w.ID)
+	if err != nil || pr == nil {
+		t.Fatalf("recorded PR: %v, %v", pr, err)
+	}
+	id := fmt.Sprintf("sync/%d/%d/detail", pr.ID, w.TurnAttemptID)
+	for want := 1; want <= 2; want++ {
+		if _, err := v.st.DB.Exec(`UPDATE work_item SET synced_attempt_id = NULL WHERE id = $1`, w.ID); err != nil {
+			t.Fatal(err)
+		}
+		seen := false
+		v.gh.onRead = func(operation, resource string) {
+			if operation != "detail" || seen {
+				return
+			}
+			seen = true
+			var attempts int
+			if err := v.st.DB.QueryRow(`SELECT attempts FROM delivery_read WHERE message_id = $1`, id).Scan(&attempts); err != nil || attempts != want {
+				t.Fatalf("before detail read: attempts=%d err=%v, want %d", attempts, err, want)
+			}
+		}
+		v.poll()
+		if !seen {
+			t.Fatal("missing detail read")
+		}
+	}
+}
+
+func TestRecordedForeignPullRequestStopsPolling(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.byNumber(1).pr.Author = "another-account"
+	v.poll()
+	w := v.work(101)
+	if w.State != store.WorkStopped || !strings.Contains(w.StoppedReason, "refused PR delivery source") {
+		t.Fatalf("unexpected work item: %+v", w)
+	}
+	pr, err := v.st.PullRequestFor(v.ctx, w.ID)
+	if err != nil || pr == nil || pr.State != "refused" {
+		t.Fatalf("recorded PR: %+v, %v", pr, err)
+	}
+	v.gh.onRead = func(operation, resource string) {
+		if operation == "detail" {
+			t.Errorf("polled refused PR %s", resource)
+		}
+	}
+	v.poll()
+}
+
 func TestPullRequestBranchCollisionIsRefused(t *testing.T) {
 	for _, tc := range []struct{ name, author, repo string }{
 		{"wrong author", "another-account", "jomcgi-org/homelab"},
