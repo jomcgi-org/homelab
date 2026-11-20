@@ -1,0 +1,7 @@
+invariants:
+  - id: OTEL-1
+    statement: With log redaction enabled, the collector masks supported credential forms in log bodies and nested attributes while preserving ordinary text and numeric values.
+    mechanism:
+      - projects/platform/otel-collector/templates/logs-configmap.yaml
+    test: //projects/platform/otel-collector:collector_optin_test
+    state: live

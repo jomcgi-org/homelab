@@ -223,6 +223,7 @@ data:
               - 'replace_pattern(log.body, "^PNC\\b", "PANIC") where IsString(log.body)'
       {{- end }}
       {{- if .Values.logs.redact }}
+      {{- /* invariant: OTEL-1 */}}
       {{- /*
       Each rule is a raw RE2 pattern and its replacement; the template escapes
       them for OTTL, YAML and the collector's ${...} expansion. Order matters
