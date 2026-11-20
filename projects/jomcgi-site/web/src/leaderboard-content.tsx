@@ -1,3 +1,4 @@
+import { FactoryOutcomes } from "./factory-outcomes";
 import { useEffect, useState } from "react";
 import { BarChart, Scatter, TaskMatrix } from "./leaderboard-charts";
 import { Selector } from "./leaderboard-selector";
@@ -131,6 +132,8 @@ export function LeaderboardContent({ data: lb }: { data: Leaderboard }) {
       <div className="frame">
         <div className="lead">
           <h1>LLM leaderboard</h1>
+          <FactoryOutcomes />
+          <h2>Frozen model-bench results</h2>
           <p>
             Models doing real tasks in my monorepos, graded by the repo's own
             tests.

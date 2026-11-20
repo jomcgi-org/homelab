@@ -141,6 +141,18 @@ spec:
         connectionLimit: 12
         passwordSecret:
           name: factory-db-trips-login
+      - name: factory_leaderboard
+        ensure: present
+        login: true
+        inherit: false
+        superuser: false
+        createdb: false
+        createrole: false
+        replication: false
+        bypassrls: false
+        connectionLimit: 4
+        passwordSecret:
+          name: factory-db-leaderboard-login
   backup:
     retentionPolicy: "14d"
     # The in-tree barman-cloud integration, as kagent-pg; CloudNativePG 1.31

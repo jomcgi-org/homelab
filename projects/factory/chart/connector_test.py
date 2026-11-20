@@ -953,3 +953,16 @@ def test_runbook_revert_permissions():
             ("grafana", "configmaps", "runbook-revert-" + owner, "get"),
             ("grafana", "configmaps", "runbook-revert-" + owner, "update"),
         }
+
+
+def test_leaderboard_uses_its_own_credentials_when_enabled():
+    docs = _render(["leaderboard.enabled=true"])
+    job = _in(docs, "CronJob", "factory", "factory-leaderboard")
+    pod = job["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["serviceAccountName"] == "factory-leaderboard"
+    _in(docs, "ServiceAccount", "factory", pod["serviceAccountName"])
+    assert pod["initContainers"][0]["env"][0]["valueFrom"]["secretKeyRef"] == {
+        "name": "factory-leaderboard-db",
+        "key": "DATABASE_URL",
+    }

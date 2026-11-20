@@ -42,12 +42,19 @@ LOGINS = [
     ),
     ("factory-db-reaper-login", "factory_reaper", "factory", "factory-reaper-db"),
     ("factory-db-trips-login", "factory_trips", "trips", "trips-postgres"),
+    (
+        "factory-db-leaderboard-login",
+        "factory_leaderboard",
+        "factory",
+        "factory-leaderboard-db",
+    ),
 ]
 # These logins share the connector database and own no database.
 DATABASES = {
     "factory_broker_accounting": "factory_connector",
     "factory_storyboard": "factory_connector",
     "factory_reaper": "factory_connector",
+    "factory_leaderboard": "factory_connector",
 }
 REVIEWER_LOGIN = ("factory-db", "factory-db-reviewer-login")
 REVIEWER_CONNECTION = ("factory", "factory-reviewer-db")

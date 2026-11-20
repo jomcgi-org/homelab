@@ -559,6 +559,9 @@ itsaplan:
 # delivers the pushed branch as a pull request through review and the merge
 # queue. One replica in the broker's namespace, as ServiceAccount
 # factory-connector, which the chart keeps.
+leaderboard:
+  enabled: false
+
 connector:
   # OTLP/gRPC URL of the factory trace receiver. Empty disables export.
   traceEndpoint: ""

@@ -337,6 +337,19 @@ func (d *deps) adminMux(cfg config.Config, metricsHandler http.Handler) *http.Se
 	}))
 	if d.minter != nil {
 		connector = d.minter.ConnectorHandler()
+		for _, binding := range d.minter.Bindings {
+			if binding.Repository == "jomcgi-org/homelab" {
+				publisher := &github.Minter{
+					App: d.minter.App, Bindings: []config.Binding{binding},
+					ConnectorPermissions: map[string]string{"contents": "write", "pull_requests": "write"},
+					ConnectorMinLife:     15 * time.Minute, TokenKind: "leaderboard",
+					Logger: d.minter.Logger, Metrics: d.minter.Metrics,
+				}
+				subject := "system:serviceaccount:" + cfg.Namespace + ":factory-leaderboard"
+				mux.Handle("/github/leaderboard-token", d.reviewer.Require([]string{subject}, publisher.ConnectorHandler()))
+				break
+			}
+		}
 	}
 	mux.Handle("/github/connector-token", d.reviewer.Require(cfg.TokenReview.ConnectorSubjects, connector))
 	// Both dispatchers pause work until the shared grant reads usable.

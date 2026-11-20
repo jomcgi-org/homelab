@@ -732,6 +732,26 @@ def _agentic_cell(
     )
 
 
+@pytest.mark.parametrize(
+    "target",
+    [
+        "monolith/frontend/src/lib/public/llm-leaderboard/leaderboard.json",
+        "jomcgi-site/web/src/factory-outcomes.json",
+    ],
+)
+@pytest.mark.parametrize("option", ["out", "json_out"])
+def test_report_protects_public_snapshots(target, option):
+    with pytest.raises(ValueError, match="Public leaderboard snapshots"):
+        _report(
+            argparse.Namespace(
+                **{
+                    "out": "report.md",
+                    option: Path(__file__).resolve().parents[2] / target,
+                }
+            )
+        )
+
+
 def test_write_leaderboard_json_shape_and_ranking(tmp_path):
     task = TaskSpec(
         id="worldcup-fixtures-guard-01",

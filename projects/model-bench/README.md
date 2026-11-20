@@ -1,5 +1,9 @@
 # model-bench
 
+Model-bench is frozen. Its historical results remain on
+`/llm-leaderboard` alongside reviewed factory delivery outcomes.
+
+
 model-bench is an internal Python CLI that screens OpenRouter LLM models against a curated pack of coding and config tasks drawn from this repo's real commits, to identify budget-tier models that clear the quality bar for offloadable work.
 
 ## Two run modes
@@ -555,7 +559,7 @@ tasks are flagged. Per role the index names the best model, plus the cheapest
 and the fastest model within `tolerance` of it. That pair is the routing
 question.
 
-`bench report` appends the index to the markdown and embeds it in the page
+`bench report` appends the index to the markdown and embeds it in the local report
 JSON under `index`. `bench index [--role implementer] [--json]` prints it on
 its own. Re-weighting is a YAML edit; no cell needs re-running.
 
@@ -614,7 +618,7 @@ Each run writes one JSON cell per (task, model) under a **durable per-user cache
 so a `git worktree remove` would delete them and force a full paid re-run. The cache is
 keyed on prompt + fixture + verifier + model + budget, so re-running skips unchanged
 cells; only the committed `reports/leaderboard.md` and the page's `leaderboard.json` are
-version-controlled. `bench report --json-out` writes the JSON; the committed copy the
+version-controlled. `bench report --json-out` writes a local report. The frozen snapshot the
 public page reads lives at
 `projects/monolith/frontend/src/lib/public/llm-leaderboard/leaderboard.json`.
 
