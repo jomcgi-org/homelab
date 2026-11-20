@@ -15,3 +15,5 @@ The [pod host access policy](pod-host-access/) warns and audits when application
 pods request host networking, host PID, hostPath volumes or privileged containers.
 
 The [image audit](image-audit/) checks rendered platform workloads for digest-pinned images.
+
+The [priority](priority/) directory defines the factory-platform PriorityClass.

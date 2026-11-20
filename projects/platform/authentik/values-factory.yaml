@@ -131,6 +131,7 @@ cnpg:
   image:
     repository: ghcr.io/cloudnative-pg/postgresql
     tag: "18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185"
+  priorityClassName: factory-platform
   instances: 3
   annotations:
     # After authentik-pg-wait-for-key (wave -1). Keeping the Cluster also

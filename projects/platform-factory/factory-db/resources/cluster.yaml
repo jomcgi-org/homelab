@@ -20,6 +20,7 @@ metadata:
     # operator deletes its PVCs with the Cluster.
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
+  priorityClassName: factory-platform
   instances: 3
   imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
   primaryUpdateStrategy: unsupervised

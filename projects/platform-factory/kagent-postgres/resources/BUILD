@@ -31,7 +31,10 @@ exports_files(
 
 exports_files(
     ["cluster.yaml"],
-    visibility = ["//projects/platform-factory/image-audit:__pkg__"],
+    visibility = [
+        "//projects/platform-factory/image-audit:__pkg__",
+        "//projects/platform-factory/priority:__pkg__",
+    ],
 )
 
 # The image audit renders this directory with kustomize

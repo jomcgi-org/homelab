@@ -15,6 +15,9 @@ spec:
   {{- with .Values.cnpg.image }}
   imageName: {{ printf "%s:%s" .repository .tag | quote }}
   {{- end }}
+  {{- with .Values.cnpg.priorityClassName }}
+  priorityClassName: {{ . | quote }}
+  {{- end }}
   instances: {{ .Values.cnpg.instances }}
   {{- with .Values.cnpg.affinity }}
   affinity:
