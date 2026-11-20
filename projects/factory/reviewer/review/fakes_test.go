@@ -337,6 +337,9 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	prefix := "/repos/" + testRepo
 	path := strings.TrimPrefix(r.URL.Path, prefix)
+	if r.URL.Path == "/repos/outside/fork/activity" {
+		path = "/activity"
+	}
 	q := r.URL.Query()
 	// The check token reads comments but cannot write them; the comment
 	// token reaches comments and verifies the PR exists before creating one.

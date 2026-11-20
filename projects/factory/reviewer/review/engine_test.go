@@ -1017,12 +1017,10 @@ func TestEligibilityTransitionStartsANewWaitAcrossRestart(t *testing.T) {
 	}
 }
 
-func TestWaitingForkPrecedesLaterDatedRepositoryHead(t *testing.T) {
+func TestOlderForkFirstListedLaterStartsBeforeRepositoryHead(t *testing.T) {
 	h := newHarness(t)
 	h.cfg.Concurrency, h.cfg.Timeout = 1, time.Hour
 	h.cfg.Bindings[0].EnqueueAuthors = nil
-	// Deliberately keep the observation clock fixed across polls: batch order
-	// must also work when timestamps are equal, or a clock moves backwards.
 	now := time.Now().UTC().Truncate(time.Second)
 	h.cfg.Now = func() time.Time { return now }
 	addPR7(h)
@@ -1030,16 +1028,13 @@ func TestWaitingForkPrecedesLaterDatedRepositoryHead(t *testing.T) {
 	running := runReview(t, h, e, ctx, 7, shaA)
 	fork, local := strings.Repeat("b", 40), strings.Repeat("c", 40)
 	h.gh.addPR(&fakePR{
-		Number: 20, Head: fork, HeadRepo: "outside/fork", HeadRef: "fork-branch", Created: now.Add(-2 * time.Hour),
-		Activity: []github.RefActivity{{ID: 20, Ref: "refs/heads/fork-branch", Type: "push", Before: "previous", After: fork, Timestamp: now.Add(-70 * time.Minute)}},
-	})
-	e.Tick(ctx)
-	// The token fake rejects unbound repositories, as the broker does. This
-	// head has readable history older than the fork's observation, but arrives
-	// at the scheduler on a later poll and must not overtake it.
-	h.gh.addPR(&fakePR{
 		Number: 1, Head: local, HeadRepo: testRepo, HeadRef: "factory/local", Created: now.Add(-2 * time.Hour),
 		Activity: []github.RefActivity{{ID: 1, Ref: "refs/heads/factory/local", Type: "push", Before: "previous", After: local, Timestamp: now.Add(-5 * time.Minute)}},
+	})
+	e.Tick(ctx)
+	h.gh.addPR(&fakePR{
+		Number: 20, Head: fork, HeadRepo: "outside/fork", HeadRef: "fork-branch", Created: now.Add(-2 * time.Hour),
+		Activity: []github.RefActivity{{ID: 20, Ref: "refs/heads/fork-branch", Type: "push", Before: "previous", After: fork, Timestamp: now.Add(-70 * time.Minute)}},
 	})
 	for range 3 {
 		e.Tick(ctx)
@@ -1054,6 +1049,36 @@ func TestWaitingForkPrecedesLaterDatedRepositoryHead(t *testing.T) {
 	if h.gh.check(local) != nil {
 		t.Fatal("a recovered timestamp overtook a waiting fork")
 	}
+}
+
+func TestDistinctHeadWaitingDuringSharedHoldStartsFirst(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Concurrency, h.cfg.Timeout = 1, time.Hour
+	h.cfg.Bindings[0].EnqueueAuthors = nil
+	var mu sync.Mutex
+	now := time.Now().UTC()
+	h.cfg.Now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	advance := func() { mu.Lock(); now = now.Add(time.Minute); mu.Unlock() }
+	addPR7(h)
+	e, ctx, _ := h.start()
+	running := runReview(t, h, e, ctx, 7, shaA)
+	shared, distinct := strings.Repeat("b", 40), strings.Repeat("c", 40)
+	h.gh.addPR(&fakePR{Number: 1, Head: shared})
+	h.gh.addPR(&fakePR{Number: 2, Head: shared})
+	e.Tick(ctx)
+	advance()
+	h.gh.addPR(&fakePR{Number: 20, Head: distinct})
+	e.Tick(ctx)
+	advance()
+	h.gh.withLock(func() { h.gh.prs[2].Closed = true })
+	h.k.finish(running, kagent.StateCompleted, report(t, passing))
+	eventually(t, "a free slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	e.Tick(ctx)
+	eventually(t, "the distinct head", func() bool { return h.taskOn(20, distinct, 1) != "" })
+	h.k.finish(h.taskOn(20, distinct, 1), kagent.StateCompleted, report(t, passing))
+	eventually(t, "a free slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	e.Tick(ctx)
+	eventually(t, "the remaining shared-head PR", func() bool { return h.taskOn(1, shared, 1) != "" })
 }
 
 func TestNewHeadResetsReviewWait(t *testing.T) {
