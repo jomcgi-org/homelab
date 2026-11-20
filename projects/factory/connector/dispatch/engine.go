@@ -38,7 +38,7 @@ type Itsaplan interface {
 	StartDeferred(context.Context, int64, itsaplan.DeferredRequest) (*itsaplan.DeferredReceipt, error)
 	Claim(ctx context.Context, agent string) (*itsaplan.Run, error)
 	Heartbeat(ctx context.Context, agent string, runID int64, attempt int) error
-	PublishRunPhase(ctx context.Context, agent string, runID int64, attempt int, phase, reason string) error
+	PublishRunPhase(ctx context.Context, agent string, runID int64, attempt int, phase, reason, epoch, sequence string) error
 	Events(ctx context.Context, agent string, runID int64, attempt, offset int, events []itsaplan.Event) (int, error)
 	Result(ctx context.Context, agent string, runID int64, r itsaplan.Result) error
 	GetRun(ctx context.Context, runID int64) (*itsaplan.RunStatus, error)
@@ -749,7 +749,14 @@ func (e *Engine) heartbeatRun(ctx context.Context, id int64) (result error) {
 			phase = "admission"
 		}
 		phaseCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		err := e.its.PublishRunPhase(phaseCtx, r.AgentKey, r.ID, r.Attempt, phase, clipRunPhaseReason(r.HoldReason))
+		sequence, err := e.w.RecordRunPhaseSend(phaseCtx, r.ID)
+		if err == nil {
+			err = e.guard(phaseCtx)
+		}
+		if err == nil {
+			err = e.its.PublishRunPhase(phaseCtx, r.AgentKey, r.ID, r.Attempt, phase,
+				clipRunPhaseReason(r.HoldReason), strconv.FormatInt(e.w.Epoch, 10), strconv.FormatInt(sequence, 10))
+		}
 		cancel()
 		if err != nil && !errors.Is(err, itsaplan.ErrNotFound) {
 			e.log.WarnContext(ctx, "publish run phase", "run", r.ID, "error", err)

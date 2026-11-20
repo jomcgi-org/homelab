@@ -22,6 +22,20 @@ func (w *Writer) RecordStatusRead(ctx context.Context, messageID string) error {
 	})
 }
 
+// RecordRunPhaseSend assigns an ordered identity under the active writer lock.
+func (w *Writer) RecordRunPhaseSend(ctx context.Context, runID int64) (int64, error) {
+	var sequence int64
+	err := w.Tx(ctx, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `
+			INSERT INTO run_phase_send (run_id, writer_epoch, sequence, attempted_at)
+			VALUES ($1, $2, 1, now())
+			ON CONFLICT (run_id) DO UPDATE
+			SET writer_epoch = EXCLUDED.writer_epoch, sequence = run_phase_send.sequence + 1, attempted_at = now()
+			RETURNING sequence`, runID, w.Epoch).Scan(&sequence)
+	})
+	return sequence, err
+}
+
 // StatusItem is the store's body-free projection for the landing page.
 type StatusItem struct {
 	BindingName  string

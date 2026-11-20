@@ -45,6 +45,8 @@ await db.transaction(async (tx) => {
     create table if not exists factory_run_phase (
       run_id integer primary key references agent_run(id) on delete cascade,
       attempt integer not null,
+      writer_epoch bigint not null,
+      sequence bigint not null,
       phase text not null,
       reason text not null,
       observed_at timestamptz not null
@@ -182,12 +184,19 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
             and next_attempt_at > now() and execution_started_at is not null
           for update
         )
-        insert into factory_run_phase (run_id, attempt, phase, reason, observed_at)
-        select id, attempts, ${body.phase}, ${body.reason}, now() from active
+        , written as (
+        insert into factory_run_phase (run_id, attempt, writer_epoch, sequence, phase, reason, observed_at)
+        select id, attempts, ${body.writerEpoch}::bigint, ${body.sequence}::bigint,
+          ${body.phase}, ${body.reason}, now() from active
         on conflict (run_id) do update
-        set attempt = excluded.attempt, phase = excluded.phase,
+        set attempt = excluded.attempt, writer_epoch = excluded.writer_epoch,
+          sequence = excluded.sequence, phase = excluded.phase,
           reason = excluded.reason, observed_at = excluded.observed_at
+        where (factory_run_phase.attempt, factory_run_phase.writer_epoch, factory_run_phase.sequence)
+          < (excluded.attempt, excluded.writer_epoch, excluded.sequence)
         returning run_id
+        )
+        select id from active
       `);
       if (!rows.length)
         throw new HttpError(404, "Active run attempt not found");
@@ -198,6 +207,8 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
       params: t.Object({ runId: t.Numeric({ minimum: 1 }) }),
       body: t.Object({
         attempt: t.Integer({ minimum: 1 }),
+        writerEpoch: t.String({ pattern: "^[1-9][0-9]{0,17}$" }),
+        sequence: t.String({ pattern: "^[1-9][0-9]{0,17}$" }),
         phase: t.Union([
           t.Literal("admission"),
           t.Literal("waiting"),

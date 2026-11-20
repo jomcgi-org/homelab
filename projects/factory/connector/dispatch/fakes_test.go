@@ -310,7 +310,7 @@ func (f *fakeItsaplan) Heartbeat(_ context.Context, agent string, id int64, atte
 	return nil
 }
 
-func (f *fakeItsaplan) PublishRunPhase(context.Context, string, int64, int, string, string) error {
+func (f *fakeItsaplan) PublishRunPhase(context.Context, string, int64, int, string, string, string, string) error {
 	return nil
 }
 

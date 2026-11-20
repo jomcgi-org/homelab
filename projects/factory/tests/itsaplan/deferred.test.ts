@@ -90,7 +90,13 @@ test("run phases are bound to the current attempt and its agent", async () => {
     .where(eq(agentRun.issueId, id));
   const runner = apiKeyApi(coder.apiKey!);
   const run = (await runner["agent-runs"].claim.post()).data!.run!;
-  const phase = (key: string, attempt: number) =>
+  const phase = (
+    key: string,
+    attempt: number,
+    writerEpoch = "2",
+    sequence = "1",
+    reason = "Blocked by HOME-504",
+  ) =>
     app.handle(
       new Request(`http://localhost/agent-runs/${run.id}/factory-phase`, {
         method: "POST",
@@ -98,7 +104,9 @@ test("run phases are bound to the current attempt and its agent", async () => {
         body: JSON.stringify({
           attempt,
           phase: "waiting",
-          reason: "Blocked by HOME-504",
+          reason,
+          writerEpoch,
+          sequence,
         }),
       }),
     );
@@ -108,6 +116,13 @@ test("run phases are bound to the current attempt and its agent", async () => {
   expect((await phase(coordinator.apiKey!, run.attempts)).status).toBe(404);
   expect((await phase(coder.apiKey!, run.attempts + 1)).status).toBe(404);
   expect((await phase(coder.apiKey!, run.attempts)).status).toBe(200);
+  expect(
+    (await phase(coder.apiKey!, run.attempts, "2", "1", "Repeated")).status,
+  ).toBe(200);
+  expect(
+    (await phase(coder.apiKey!, run.attempts, "1", "99", "Former writer"))
+      .status,
+  ).toBe(200);
   expect((await app.handle(new Request(url))).status).toBe(401);
   const response = await read();
   expect(response.status).toBe(200);

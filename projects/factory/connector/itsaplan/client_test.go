@@ -602,3 +602,25 @@ func TestAdmissionDeadlineAfterServerAcceptsRequest(t *testing.T) {
 		t.Fatalf("deadline lost outage classification: %v", err)
 	}
 }
+
+func TestRunPhaseFailureDoesNotBackOffHeartbeat(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/agent-runs/7/factory-phase":
+			w.WriteHeader(http.StatusInternalServerError)
+		case "/agent-runs/7/heartbeat":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	client := &Client{BaseURL: srv.URL, Keys: map[string]string{"coder": "key"}, Limits: &RequestLimits{}}
+	if err := client.PublishRunPhase(context.Background(), "coder", 7, 1, "waiting", "", "1", "1"); !IsUnavailable(err) {
+		t.Fatalf("phase error = %v, want unavailable", err)
+	}
+	if err := client.Heartbeat(context.Background(), "coder", 7, 1); err != nil {
+		t.Fatalf("heartbeat failed after advisory write: %v", err)
+	}
+}

@@ -142,18 +142,20 @@ func (l *RequestLimits) enter(ctx context.Context, agent string) (*keyWindow, er
 	return w, nil
 }
 
-func (w *keyWindow) finish(status int) {
+func (w *keyWindow) finish(status int, advisory bool) {
 	defer func() { <-w.turn }()
 	w.burst++
-	if status == 0 || status == 429 || status >= 500 {
+	if !advisory && (status == 0 || status == 429 || status >= 500) {
 		w.failed = true
 		w.delay = min(time.Minute, max(2*time.Second, 2*w.delay))
 		w.resume = time.Now().Add(w.delay/2 + time.Duration(rand.Int64N(int64(w.delay/2))))
 		w.burst = 0
 		return
 	}
-	w.delay = 0
-	w.failed = false
+	if !advisory {
+		w.delay = 0
+		w.failed = false
+	}
 	// better-auth resets after an idle interval, even at modest throughput.
 	if w.burst >= 12 {
 		w.burst = 0
@@ -190,6 +192,10 @@ func (c *Client) key(agent string) (string, error) {
 }
 
 func (c *Client) do(ctx context.Context, agent, method, path string, body, out any) error {
+	return c.request(ctx, agent, method, path, body, out, false)
+}
+
+func (c *Client) request(ctx context.Context, agent, method, path string, body, out any, advisory bool) error {
 	key, err := c.key(agent)
 	if err != nil {
 		return err
@@ -220,7 +226,7 @@ func (c *Client) do(ctx context.Context, agent, method, path string, body, out a
 		if err != nil {
 			return err
 		}
-		defer func() { window.finish(status) }()
+		defer func() { window.finish(status, advisory) }()
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -281,10 +287,10 @@ func (c *Client) Heartbeat(ctx context.Context, agent string, runID int64, attem
 }
 
 // PublishRunPhase updates the operational view of a leased run attempt.
-func (c *Client) PublishRunPhase(ctx context.Context, agent string, runID int64, attempt int, phase, reason string) error {
-	return c.do(ctx, agent, http.MethodPost, runPath(runID, "factory-phase"), map[string]any{
-		"attempt": attempt, "phase": phase, "reason": reason,
-	}, nil)
+func (c *Client) PublishRunPhase(ctx context.Context, agent string, runID int64, attempt int, phase, reason, epoch, sequence string) error {
+	return c.request(ctx, agent, http.MethodPost, runPath(runID, "factory-phase"), map[string]any{
+		"attempt": attempt, "phase": phase, "reason": reason, "writerEpoch": epoch, "sequence": sequence,
+	}, nil, true)
 }
 
 // Events appends a batch at offset and returns the next offset. A batch the
