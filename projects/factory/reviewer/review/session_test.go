@@ -552,6 +552,7 @@ func TestUnaccountedTurnStartsAFreshSession(t *testing.T) {
 // that no review recorded, as when kagent accepts a continuation and the
 // reviewer stops before recording its task: the next review cancels it and
 // starts fresh rather than running beside it.
+// invariant: FACT-13
 func TestUnrecordedRunningTurnIsCancelled(t *testing.T) {
 	h := newHarness(t)
 	addPR7(h)
