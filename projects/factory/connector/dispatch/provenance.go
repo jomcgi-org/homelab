@@ -25,9 +25,9 @@ var (
 
 func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.WorkItem, b *Binding, a *store.Attempt) (string, error) {
 	text := taskText(r, wi, b, a)
-	// Runtime is mandatory in production config. Old admitted runs retain NULL
-	// provenance; isolated engine fixtures may omit the runtime dependency.
-	if !r.ProvenanceRequired || b.Runtime == nil {
+	// Runtime is mandatory in production. The store checks run eligibility
+	// separately when it records the attempt.
+	if b.Runtime == nil {
 		return text, nil
 	}
 	runtime := *b.Runtime
