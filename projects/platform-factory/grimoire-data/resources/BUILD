@@ -13,6 +13,7 @@ filegroup(
         "database.yaml",
         "grants.sql",
         "kustomization.yaml",
+        "namespace-policy.yaml",
         "policy.yaml",
         "runtime.yaml",
         "secret_init.py",

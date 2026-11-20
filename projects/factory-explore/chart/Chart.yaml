@@ -2,3 +2,7 @@ apiVersion: v2
 name: factory-explore
 version: 0.20.0
 description: Enforces explorer access windows at the Kubernetes API
+dependencies:
+  - name: factory-library
+    version: "0.1.0"
+    repository: "file://../../shared/helm/factory-library/chart"
