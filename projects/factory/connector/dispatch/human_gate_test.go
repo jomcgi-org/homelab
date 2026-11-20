@@ -721,13 +721,8 @@ func TestHumanGateApprovalNamesTheRuleForThePR(t *testing.T) {
 	for _, tc := range []struct {
 		name, author, label, want string
 	}{
-		{name: "factory", author: "jomcgi-factory", want: factoryApproval + " ([rule](https://github.com/jomcgi-org/homelab/blob/main/REVIEW.md#joe-decides))"},
-		{name: "joe", author: "jomcgi", want: "To approve: the PR's `factory review` check says which approval it needs. " +
-			"For a PR authored by `jomcgi`, the reviewer's verified authorship waiver may apply " +
-			"([decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6891640540), [#8049 scope](https://github.com/jomcgi-org/homelab/issues/8049)). " +
-			"Holds such as a shared head or reviewer recovery always need an APPROVED review of this head by `jomcgi` " +
-			"([rule](https://github.com/jomcgi-org/homelab/blob/main/REVIEW.md#joe-decides))."},
-		{name: "held", author: "jomcgi", label: "Needs-Human", want: "explicit hold (`human` or `needs-human`), so only an APPROVED review of this head by `jomcgi` clears the gate"},
+		{name: "factory", author: "jomcgi-factory[bot]", want: factoryApproval + " ([rule](https://github.com/jomcgi-org/homelab/blob/main/REVIEW.md#joe-decides))"},
+		{name: "held", author: "jomcgi-factory[bot]", label: "Needs-Human", want: "explicit hold (`human` or `needs-human`), so only an APPROVED review of this head by `jomcgi` clears the gate"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := newHumanGateEnv(t)

@@ -298,7 +298,7 @@ func (g *fakeGitHub) FindPullRequest(_ context.Context, _, branch string) (*gith
 	return best, nil
 }
 
-func (g *fakeGitHub) CreatePullRequest(_ context.Context, _ string, n github.NewPullRequest) (*github.PullRequest, error) {
+func (g *fakeGitHub) CreatePullRequest(_ context.Context, repo string, n github.NewPullRequest) (*github.PullRequest, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.calls++
@@ -315,7 +315,7 @@ func (g *fakeGitHub) CreatePullRequest(_ context.Context, _ string, n github.New
 	num := len(g.prs) + 1
 	p := &fakePR{body: n.Body, pr: github.PullRequest{
 		Number: num, NodeID: fmt.Sprintf("PR_%d", num), URL: fmt.Sprintf("https://github.com/example-org/homelab/pull/%d", num),
-		State: "open", HeadSHA: b.head, HeadRef: n.Head, BaseRef: n.Base, Title: n.Title,
+		Author: "jomcgi-factory[bot]", HeadRepo: repo, State: "open", HeadSHA: b.head, HeadRef: n.Head, BaseRef: n.Base, Title: n.Title,
 	}}
 	g.prs = append(g.prs, p)
 	if g.loseCreate {
@@ -2626,6 +2626,36 @@ func TestClosedPullRequestIsNotReopened(t *testing.T) {
 	}
 }
 
+func TestPullRequestBranchCollisionIsRefused(t *testing.T) {
+	for _, tc := range []struct{ name, author, repo string }{
+		{"wrong author", "another-account", "jomcgi-org/homelab"},
+		{"fork", "jomcgi-factory[bot]", "another-account/homelab"},
+		{"missing head repository", "jomcgi-factory[bot]", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.its.add(1, "coder", 101, "HL-7", "Fix it.")
+			v.tick(v.e)
+			v.gh.push("factory/HL-7", "sha-1", "fix: one")
+			v.gh.prs = append(v.gh.prs, &fakePR{pr: github.PullRequest{
+				Number: 1, NodeID: "PR_1", URL: "https://github.com/example-org/homelab/pull/1", State: "open",
+				Author: tc.author, HeadRepo: tc.repo, HeadSHA: "sha-1", HeadRef: "factory/HL-7", BaseRef: "main",
+			}})
+			v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+			v.clk.Advance(5 * time.Second)
+			v.tick(v.e)
+			v.gh.green("sha-1")
+			v.poll()
+			if w := v.work(101); w.State != store.WorkStopped || !strings.Contains(w.StoppedReason, "refused PR delivery source") {
+				t.Fatalf("unexpected work item: %+v", w)
+			}
+			if len(v.gh.Enqueues()) != 0 || v.gh.creates != 0 || v.gh.PRs()[0].body != "" {
+				t.Fatal("a colliding PR was adopted")
+			}
+		})
+	}
+}
+
 func TestPullRequestAgainstAnotherBaseIsNotAdopted(t *testing.T) {
 	v := newDeliveryEnv(t)
 	v.its.add(1, "coder", 101, "HL-7", "Fix it.")
@@ -2633,7 +2663,7 @@ func TestPullRequestAgainstAnotherBaseIsNotAdopted(t *testing.T) {
 	v.gh.push("factory/HL-7", "sha-1", "fix: one")
 	v.gh.prs = append(v.gh.prs, &fakePR{pr: github.PullRequest{
 		Number: 1, NodeID: "PR_1", URL: "https://github.com/example-org/homelab/pull/1", State: "open",
-		HeadSHA: "sha-1", HeadRef: "factory/HL-7", BaseRef: "release",
+		Author: "jomcgi-factory[bot]", HeadRepo: "jomcgi-org/homelab", HeadSHA: "sha-1", HeadRef: "factory/HL-7", BaseRef: "release",
 	}})
 	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
 	v.clk.Advance(5 * time.Second)

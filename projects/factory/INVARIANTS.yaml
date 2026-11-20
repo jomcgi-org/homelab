@@ -62,6 +62,12 @@ invariants:
   - projects/factory/reviewer/review/engine.go
   - projects/factory/connector/dispatch/delivery.go
   state: unproven
+- id: FACT-19
+  statement: The connector delivers only factory App pull requests whose head repository matches the binding.
+  mechanism:
+  - projects/factory/connector/dispatch/delivery.go
+  test: //projects/factory/connector/dispatch:dispatch_test
+  state: live
 - id: FACT-11
   statement: A pass and an approval count only for the head commit they name.
   mechanism:

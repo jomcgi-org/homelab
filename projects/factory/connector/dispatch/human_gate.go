@@ -55,7 +55,7 @@ func (e *Engine) pollHumanGate(ctx context.Context, b *Binding, pr *store.PullRe
 	if err := e.beginHumanGateRead(ctx, b, pr, "pr", fmt.Sprint(pr.Number)); err != nil {
 		return err
 	}
-	d, err := e.gh.PullRequestDetail(ctx, b.repo(), pr.Number)
+	d, err := e.deliveryDetail(ctx, b.repo(), pr.Number)
 	if err != nil {
 		return err
 	}
@@ -93,7 +93,7 @@ func (e *Engine) pollHumanGate(ctx context.Context, b *Binding, pr *store.PullRe
 			if err := e.beginHumanGateRead(ctx, b, pr, "confirm-pr", fmt.Sprint(pr.Number)); err != nil {
 				return err
 			}
-			latest, err := e.gh.PullRequestDetail(ctx, b.repo(), pr.Number)
+			latest, err := e.deliveryDetail(ctx, b.repo(), pr.Number)
 			if err != nil {
 				return err
 			}
