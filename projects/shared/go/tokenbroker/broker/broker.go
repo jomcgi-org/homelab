@@ -167,6 +167,13 @@ func (b *Broker) state(name string) (*grantState, error) {
 	return s, nil
 }
 
+type refreshLoggerKey struct{}
+
+// WithRefreshLogger routes synchronous refresh diagnostics to the caller's logger.
+func WithRefreshLogger(ctx context.Context, logger *slog.Logger) context.Context {
+	return context.WithValue(ctx, refreshLoggerKey{}, logger)
+}
+
 func (b *Broker) RefreshAccessToken(grantName string, ctx context.Context) (string, time.Time, error) {
 	s, err := b.state(grantName)
 	if err != nil {
@@ -193,7 +200,7 @@ func (b *Broker) RefreshAccessToken(grantName string, ctx context.Context) (stri
 	s.mu.Unlock()
 	// The refresh must survive an HTTP caller disappearing after the provider has
 	// rotated the refresh token. Callers still wait for this shared round-trip.
-	refreshCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 	access, expiry, err := b.refresh(grantName, refreshCtx)
 	cancel()
 	s.mu.Lock()
@@ -206,6 +213,11 @@ func (b *Broker) RefreshAccessToken(grantName string, ctx context.Context) (stri
 }
 
 func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Time, error) {
+	logger, ok := ctx.Value(refreshLoggerKey{}).(*slog.Logger)
+	if !ok {
+		logger = b.logger
+	}
+
 	b.metrics.Refreshes.Inc()
 	grant, err := b.loadGrant(ctx, grantName)
 	if err != nil {
@@ -259,7 +271,7 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 		result, err = refresher.RefreshToken(ctx, grant.TokenBundle.RefreshToken)
 		if err != nil && errors.Is(err, provider.ErrRefreshTokenReused) {
 			b.metrics.ReusedRetries.Inc()
-			b.logger.Warn("tokenbroker refresh_token_reused, rereading durable grant and retrying once")
+			logger.Warn("tokenbroker refresh_token_reused, rereading durable grant and retrying once")
 			var stored store.Grant
 			stored, err = b.loadGrant(ctx, grantName)
 			if err == nil {
@@ -293,7 +305,7 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 			s.mu.Unlock()
 		}
 		b.metrics.RefreshFailures.Inc()
-		b.logger.Error("tokenbroker refresh failed", "grant", grantName, "err", err)
+		logger.Error("tokenbroker refresh failed", "grant", grantName, "err", err)
 		return "", time.Time{}, err
 	}
 	grant.Name = grantName
@@ -322,7 +334,7 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 			return stored.TokenBundle.AccessToken, stored.TokenBundle.ExpiresAt, nil
 		}
 		b.metrics.RefreshFailures.Inc()
-		b.logger.Error("tokenbroker rotated grant persistence failed", "grant", grantName, "err", err)
+		logger.Error("tokenbroker rotated grant persistence failed", "grant", grantName, "err", err)
 		return "", time.Time{}, err
 	}
 	b.ClearNeedsLogin(grantName)

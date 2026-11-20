@@ -67,3 +67,9 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-13
+  statement: Grant failures during a recording relay request set error status and add a fixed grant.failure event. Without a recording span, existing refresh failure logs are emitted.
+  mechanism:
+  - projects/factory/broker/grant/manager.go
+  test: //projects/factory/broker/relay:relay_test
+  state: live
