@@ -19,8 +19,8 @@ spec:
   ingress:
     - fromEndpoints:
         - matchLabels:
-            k8s:io.kubernetes.pod.namespace: {{ .Values.networkPolicy.connector.namespace }}
-            {{- toYaml .Values.networkPolicy.connector.matchLabels | nindent 12 }}
+            k8s:io.kubernetes.pod.namespace: {{ .Values.broker.namespace }}
+            {{- include "factory.connectorSelector" . | nindent 12 }}
       toPorts:
         - ports:
             - port: {{ .Values.reviewer.goalReasons.port | quote }}

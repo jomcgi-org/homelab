@@ -57,6 +57,7 @@ type goalAnswer struct {
 // GoalCheck is a validated answer for one head and evidence digest. It holds
 // only numbers and enum values, so the public State can keep it as a cache.
 type GoalCheck struct {
+	AuditID   string         `json:"audit_id,omitempty"`
 	followUps map[int]string // Private keys for combining answers before audit.
 	Head      string         `json:"head"`
 	Digest    string         `json:"digest"`
@@ -497,7 +498,7 @@ func (e *Engine) goalCheck(ctx context.Context, b *Binding, pr github.PullReques
 	if g != nil {
 		g.followUps = nil
 	} // Only the private audit retains ownership keys.
-	return keepEarlier(g, prev)
+	return g
 }
 
 // earlierGoal is the previous head's goal check when it judged the same
@@ -509,13 +510,8 @@ func earlierGoal(g *GoalCheck, head, digest string) *GoalCheck {
 	return g
 }
 
-// settled reports a verdict that says the diff makes the change it needs.
-func settled(v string) bool { return v == goalMet || v == goalLive }
-
-// confirmOnly takes from the confirmation call only the verdicts it
-// re-checked: the initial answer's not_met ones. The confirmation checks a
-// not_met against a clean code review; it is no second review of the
-// criteria the initial answer found met. A nil confirmation is unavailable.
+// confirmOnly rechecks initial negatives and retains any new negative
+// the independent confirmation found. A nil confirmation is unavailable.
 func confirmOnly(initial, confirmed *GoalCheck) *GoalCheck {
 	if confirmed == nil || len(confirmed.Criteria) < len(initial.Criteria) {
 		return nil
@@ -531,38 +527,13 @@ func confirmOnly(initial, confirmed *GoalCheck) *GoalCheck {
 		byNumber[c.Criterion] = c.Verdict
 	}
 	for i, c := range out.Criteria {
-		if v, ok := byNumber[c.Criterion]; ok && v != goalNotMet {
+		if v, ok := byNumber[c.Criterion]; ok && v != goalNotMet && c.Verdict != goalNotMet {
 			out.Criteria[i].Verdict = v
 			out.followUps[c.Criterion] = initial.followUps[c.Criterion]
 		}
 	}
-	if initial.Overall != goalNotMet {
+	if initial.Overall != goalNotMet && confirmed.Overall != goalNotMet {
 		out.Overall = initial.Overall
-	}
-	return &out
-}
-
-// keepEarlier keeps an earlier head's met or after_rollout verdict on the
-// same issue evidence where this answer is only unclear: an unclear verdict
-// shows no failure, so it does not reopen what an earlier head settled. A
-// not_met answer, a new criterion, or another verdict stands.
-func keepEarlier(g, prev *GoalCheck) *GoalCheck {
-	if g == nil || prev == nil || g.Digest != prev.Digest {
-		return g
-	}
-	out := *g
-	out.Criteria = slices.Clone(g.Criteria)
-	was := map[int]string{}
-	for _, c := range prev.Criteria {
-		was[c.Criterion] = c.Verdict
-	}
-	for i, c := range out.Criteria {
-		if v := was[c.Criterion]; c.Verdict == goalUnclear && settled(v) {
-			out.Criteria[i].Verdict = v
-		}
-	}
-	if out.Overall == goalUnclear && settled(prev.Overall) {
-		out.Overall = prev.Overall
 	}
 	return &out
 }
@@ -719,6 +690,7 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 			why = "answer"
 			break
 		}
+		g.AuditID = auditID(msg.MessageID, t.ID)
 		l.InfoContext(ctx, "goal check answered", "task", t.ID, "criteria", len(a.Criteria))
 		return g
 	}

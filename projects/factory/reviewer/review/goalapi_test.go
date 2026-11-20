@@ -10,10 +10,10 @@ import (
 	"time"
 )
 
-// TestGoalReasonsAPIServesTheNewestReplyForAHead returns a head's newest
+// TestGoalReasonsAPIServesTheSelectedReplyForAHead returns a head's selected
 // goal reply without its JSON answer, and nothing for another head, a bad
 // query or another method.
-func TestGoalReasonsAPIServesTheNewestReplyForAHead(t *testing.T) {
+func TestGoalReasonsAPIServesTheSelectedReplyForAHead(t *testing.T) {
 	a, err := OpenGoalAudit(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -36,6 +36,18 @@ func TestGoalReasonsAPIServesTheNewestReplyForAHead(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, ok := a.Reasons("o/r", 7, head); ok {
+		t.Fatal("unselected reply served")
+	}
+	if err := a.selectGoal("o/r", 7, head, "d2", auditID("m2", "t2"), now); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.Reasons("o/r", 7, head); ok {
+		t.Fatal("stale evidence served")
+	}
+	if err := a.selectGoal("o/r", 7, head, "d1", auditID("m2", "t2"), now); err != nil {
+		t.Fatal(err)
+	}
 	srv := httptest.NewServer(GoalReasonsHandler(a))
 	defer srv.Close()
 	get := func(method, query string) (*http.Response, GoalReasons) {
@@ -51,7 +63,7 @@ func TestGoalReasonsAPIServesTheNewestReplyForAHead(t *testing.T) {
 		return resp, g
 	}
 	resp, g := get(http.MethodGet, "repository=o/r&pullRequest=7&head="+head)
-	if resp.StatusCode != http.StatusOK || len(g.Findings) != 2 || g.Findings[0] != "Overall: retries fail." || g.Findings[1] != "Criterion 2: missing retry." || g.Phase != "confirmation" ||
+	if resp.StatusCode != http.StatusOK || len(g.Findings) != 3 || g.Findings[0] != "Overall: retries fail." || g.Findings[2] != "Criterion 2: missing retry." || g.Phase != "confirmation" ||
 		g.Issue != "HOME-1" || g.Digest != "d1" || g.Head != head || resp.Header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("answer = %d %+v", resp.StatusCode, g)
 	}

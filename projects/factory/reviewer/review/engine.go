@@ -1362,6 +1362,13 @@ type inputs struct {
 // sends the recorded attempt's message again. A quota refusal instead leaves
 // the check in progress, spends no attempt and releases the worker.
 func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, l *slog.Logger) {
+	audit, publishes := e.cfg.GoalAudit.(*FileGoalAudit)
+	if publishes {
+		if err := audit.clearSelection(b.repo(), pr.Number, pr.HeadSHA); err != nil {
+			l.WarnContext(ctx, "could not clear goal reasons")
+			return
+		}
+	}
 	local := *run
 	run = &local
 	rec := RecordedTask(run.Summary)
@@ -1690,6 +1697,11 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				}
 			}
 			if e.finish(ctx, b, currentPR, run, res.o, l) {
+				if publishes && in.goal != nil && in.goal.AuditID != "" {
+					if err := audit.selectGoal(b.repo(), pr.Number, currentPR.HeadSHA, issueDigest(in.issues), in.goal.AuditID, e.cfg.Now()); err != nil {
+						l.WarnContext(ctx, "could not save goal reasons")
+					}
+				}
 				e.observe(ctx, b, res.r, res.a, l)
 				e.observeSession(ctx, b, t, res.session, l)
 			}

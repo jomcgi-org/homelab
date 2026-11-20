@@ -946,7 +946,7 @@ func (s *Scope) Lower(r *Report, prior []Finding, cleared []Cleared) *Report {
 	for i := range out.Findings {
 		f := &out.Findings[i]
 		if f.Severity != SeverityMedium || isGate(*f) || known[f.ID] ||
-			strings.TrimSpace(f.Path) == "" || !lowerable(*f) || s.touched(f.Path, f.Line) {
+			f.Line <= 0 || strings.TrimSpace(f.Path) == "" || !lowerable(*f) || s.touched(f.Path, f.Line) {
 			continue
 		}
 		if !f.Earlier && s.explains(f.Cause) {

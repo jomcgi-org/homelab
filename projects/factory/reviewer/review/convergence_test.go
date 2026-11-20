@@ -1,6 +1,7 @@
 package review
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +34,7 @@ func TestScopeLowersUnchangedCodeInsideAnEditedFile(t *testing.T) {
 		at("edit.go:correctness:caller", SeverityMedium, "edit.go", 210, "fix() in edit.go now returns early, so this caller reads a nil value.", false),
 		at("edit.go:correctness:unrelated-cause", SeverityMedium, "edit.go", 220, "other.go changed.", false),
 		at("edit.go:correctness:marked", SeverityMedium, "edit.go", 230, "edit.go changed.", true),
-		at("edit.go:correctness:no-line", SeverityMedium, "edit.go", 0, "", false),
+		at("edit.go:correctness:no-line", SeverityMedium, "untouched.go", 0, "", false),
 		at("blob.bin:correctness", SeverityMedium, "blob.bin", 5, "", false),
 		at("other.go:correctness:caller", SeverityMedium, "pkg/other.go", 9, "The change to `edit.go` makes this call fail.", false),
 		at("other.go:security", SeverityCritical, "other.go", 9, "", false),
@@ -152,36 +153,14 @@ func TestBlockingEntriesSayKindCauseAndReopening(t *testing.T) {
 	}
 }
 
-// TestGoalVerdictsCarryAcrossHeads keeps a settled verdict from flipping to
-// unclear on the same issue evidence, and lets the confirmation call only
-// re-check the initial not_met verdicts.
-func TestGoalVerdictsCarryAcrossHeads(t *testing.T) {
-	prev := &GoalCheck{Head: "a", Digest: "d", Overall: goalMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalLive}, {3, goalMet}, {4, goalUnclear}}}
-	got := keepEarlier(&GoalCheck{
-		Head: "b", Digest: "d", Overall: goalUnclear,
-		Criteria: []GoalVerdict{{1, goalUnclear}, {2, goalUnclear}, {3, goalNotMet}, {4, goalUnclear}, {5, goalUnclear}},
-	}, prev)
-	want := []string{goalMet, goalLive, goalNotMet, goalUnclear, goalUnclear}
-	for i, c := range got.Criteria {
-		if c.Verdict != want[i] {
-			t.Errorf("criterion %d = %s, want %s", c.Criterion, c.Verdict, want[i])
-		}
-	}
-	if got.Overall != goalMet {
-		t.Errorf("overall = %s", got.Overall)
-	}
-	// Other issue evidence (an edit can renumber criteria) keeps nothing.
-	if g := keepEarlier(&GoalCheck{Digest: "e", Overall: goalUnclear, Criteria: []GoalVerdict{{1, goalUnclear}}}, prev); g.Criteria[0].Verdict != goalUnclear {
-		t.Error("a verdict on other evidence was kept")
-	}
-	if earlierGoal(prev, "b", "e") != nil || earlierGoal(prev, "a", "d") != nil || earlierGoal(prev, "b", "d") != prev {
-		t.Error("earlierGoal matched the wrong head or evidence")
-	}
-
+func TestGoalConfirmationKeepsNewNegative(t *testing.T) {
 	initial := &GoalCheck{Overall: goalNotMet, Criteria: []GoalVerdict{{1, goalMet}, {2, goalNotMet}}}
 	c := confirmOnly(initial, &GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalNotMet}, {2, goalMet}}})
-	if c.Criteria[0].Verdict != goalMet || c.Criteria[1].Verdict != goalMet || c.Overall != goalMet {
+	if c.Criteria[0].Verdict != goalNotMet || c.Criteria[1].Verdict != goalMet || c.Overall != goalMet {
 		t.Errorf("confirmation = %+v", c)
+	}
+	if findings := goalFindings("HOME-1", c); len(findings) != 1 || findings[0].Severity != SeverityMedium || findings[0].ID != "HOME-1:goal:criterion-1" {
+		t.Fatalf("confirmed failure did not block: %+v", findings)
 	}
 	if confirmOnly(initial, nil) != nil {
 		t.Error("a failed confirmation passed")
@@ -246,17 +225,14 @@ func TestGoalAuditFindsTheEarlierReply(t *testing.T) {
 	}
 }
 
-// TestGoalCheckOfALaterHeadKeepsSettledVerdicts runs two heads: the second
-// goal check reads the first one's reasons privately, an unclear answer
-// keeps the first head's met, a not_met stands, and no private text is
-// published.
-func TestGoalCheckOfALaterHeadKeepsSettledVerdicts(t *testing.T) {
+// The later head sees earlier reasons in its prompt and keeps its own verdicts.
+func TestGoalCheckOfALaterHeadKeepsItsOwnVerdicts(t *testing.T) {
 	h, _ := issueHarness(t)
 	withComments(h)
 	h.k.goalReplies = []string{
 		"PRIVATE-A: both criteria are met by x.go.\n\n```json\n" + `{"criteria":[{"criterion":1,"verdict":"met"},{"criterion":2,"verdict":"met"}],"overall":"met"}` + "\n```",
 		goalReply(`{"criteria":[{"criterion":1,"verdict":"unclear"},{"criterion":2,"verdict":"not_met"}],"overall":"met"}`),
-		goalReply(`{"criteria":[{"criterion":1,"verdict":"not_met"},{"criterion":2,"verdict":"not_met"}],"overall":"met"}`),
+		goalReply(`{"criteria":[{"criterion":1,"verdict":"unclear"},{"criterion":2,"verdict":"not_met"}],"overall":"met"}`),
 	}
 	e, ctx, _ := h.start()
 	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
@@ -274,14 +250,14 @@ func TestGoalCheckOfALaterHeadKeepsSettledVerdicts(t *testing.T) {
 		t.Fatalf("the second goal prompt lacks the earlier head's verdicts, reasons or changes:\n%s", texts[1])
 	}
 	st, _ := LoadState(h.gh.check(shaB).Text)
-	if st.Goal == nil || st.Goal.Criteria[0].Verdict != goalMet || st.Goal.Criteria[1].Verdict != goalNotMet {
+	if st.Goal == nil || st.Goal.Criteria[0].Verdict != goalUnclear || st.Goal.Criteria[1].Verdict != goalNotMet {
 		t.Fatalf("goal = %+v", st.Goal)
 	}
 	var ids []string
 	for _, f := range st.Blocking {
 		ids = append(ids, f.ID)
 	}
-	if strings.Join(ids, ",") != "HOME-58:goal:criterion-2" {
+	if len(ids) != 2 || !slices.Contains(ids, "HOME-58:goal:criterion-1") || !slices.Contains(ids, "HOME-58:goal:criterion-2") {
 		t.Fatalf("blocking = %v", ids)
 	}
 	if strings.Contains(published(t, h)+h.log.String(), "PRIVATE") {

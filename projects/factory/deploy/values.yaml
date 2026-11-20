@@ -249,7 +249,7 @@ reviewer:
   # The coder gets the goal check's private reasons in its next revision
   # round, posted on the issue by the connector (HOME-251).
   goalReasons:
-    enabled: true
+    enabled: false
   # The reviewer keeps one comment on each PR it reviews (verdict and
   # findings), written with the broker's Issues-write comment token.
   commentAuthor: jomcgi-factory-review[bot]
