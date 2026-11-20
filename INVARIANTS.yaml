@@ -23,3 +23,9 @@ invariants:
   - bazel/tools/previews/staged.py
   test: //bazel/tools/previews:staged_test
   state: live
+- id: ROOT-5
+  statement: PR content warnings scan added lines and PR commit messages and report rule labels without matched values.
+  mechanism:
+  - bazel/tools/ci/pr_content_scan.py
+  test: //bazel/tools/ci:pr_content_scan_test
+  state: live
