@@ -207,10 +207,10 @@ Done when
 
 ## Factory deployment
 
-| Component | Responsibility |
-| --- | --- |
-| cmd | Holds the database lease on its own connection, and commits received frames to `ships.inbox` on a second connection. A third connection claims them, applies them to history, latest positions and vessels, and runs partition maintenance and the heat refresh. |
-| publish | Runs as `ships publish` in the `ships-publish` CronJob. Reads one database view and writes the snapshot, heat and track products to Garage bucket `ships` ([Publication contract](#publication-contract)). A run holds the PostgreSQL advisory lock `(558, 1)` on the primary from before its bucket listing until it exits. A run that finds the lock held exits without a bucket request. A payload that returns after retirement gets a fresh key, so a delayed delete of the retired key cannot remove it. |
+| Component | Responsibility | Untrusted input | Credentials held |
+| --- | --- | --- | --- |
+| cmd | Holds the database lease on its own connection, and commits received frames to `ships.inbox` on a second connection. A third connection claims them, applies them to history, latest positions and vessels, and runs partition maintenance and the heat refresh. | Upstream AIS frames | Feed and database credentials |
+| publish | Runs as `ships publish` in the `ships-publish` CronJob. Reads one database view and writes the snapshot, heat and track products to Garage bucket `ships` ([Publication contract](#publication-contract)). A run holds the PostgreSQL advisory lock `(558, 1)` on the primary from before its bucket listing until it exits. A run that finds the lock held exits without a bucket request. A payload that returns after retirement gets a fresh key, so a delayed delete of the retired key cannot remove it. | Database records and Garage object listings | Database and Garage bucket credentials |
 
 ```mermaid
 flowchart LR
