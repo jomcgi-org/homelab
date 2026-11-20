@@ -1042,6 +1042,8 @@ type State struct {
 	// Session is the kagent session that reviewed the head, which the next
 	// head's review may resume (session.go).
 	Session *SessionRef `json:"session,omitempty"`
+	// Cleanup identifies the prior session to check before readmitting this review.
+	Cleanup *SessionRef `json:"cleanup,omitempty"`
 
 	// Decisions are Joe's comments this head's review relied on to accept
 	// a finding. Every poll checks they still hold (engine.go).
@@ -1584,7 +1586,7 @@ func encodeState(st State) string {
 			gate = &c
 		}
 		checkpoint := State{
-			Incomplete: true, Overflow: true, TaskID: st.TaskID, LegacyTask: st.LegacyTask,
+			Incomplete: true, Overflow: true, Cleanup: st.Cleanup, TaskID: st.TaskID, LegacyTask: st.LegacyTask,
 			IssueDigest: st.IssueDigest, IssuesPending: st.IssuesPending, Goal: st.Goal, GoalKey: st.GoalKey, Semgrep: st.Semgrep,
 			Decisions: st.Decisions, Gate: gate,
 		}
@@ -1597,7 +1599,7 @@ func encodeState(st State) string {
 		}
 		if len(out) > maxState {
 			// Malformed metadata is not a recoverable task checkpoint.
-			return enc(State{Incomplete: true, Overflow: true, Gate: gate})
+			return enc(State{Incomplete: true, Overflow: true, Cleanup: st.Cleanup, Gate: gate})
 		}
 		return out
 	}
