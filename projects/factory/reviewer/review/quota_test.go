@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -380,8 +381,9 @@ func TestRestartedReviewKeepsOneRoot(t *testing.T) {
 	}
 }
 
-// A long quota wait inside the parked-root limit exports no root. The
-// resumed worker continues the same root, so the review exports it once.
+// A quota wait on the current head past the parked-root limit exports no
+// root. The resumed worker continues the same root, so the review exports
+// it once.
 func TestLongQuotaWaitKeepsOneRoot(t *testing.T) {
 	exporter := captureReviewSpans(t)
 	h := newHarness(t)
@@ -397,12 +399,12 @@ func TestLongQuotaWaitKeepsOneRoot(t *testing.T) {
 	h.k.finish(task, kagent.StateFailed, "insufficient_quota")
 	rec := waitForQuotaCheck(t, h)
 	clockMu.Lock()
-	now = now.Add(parkedLimit - time.Hour)
+	now = now.Add(parkedLimit + time.Hour)
 	clockMu.Unlock()
 	e.Tick(ctx)
 	e.wg.Wait()
 	if spans := reviewSpans(exporter); len(spans) != 0 {
-		t.Fatalf("a poll inside the limit exported the parked root: %v", spans)
+		t.Fatalf("expiry exported a root that its check still holds: %v", spans)
 	}
 	q.set(github.QuotaReading{ReceivedAt: rec.QuotaSince.Add(time.Second)}, nil)
 	e.Tick(ctx)
@@ -544,23 +546,22 @@ func TestCheckStateSavesReviewRound(t *testing.T) {
 	}
 }
 
-// A superseded head's review that waits for quota past the parked-root
-// limit exports its root once, as abandoned, and its check state no longer
-// records the root, so no later worker or process exports it again.
-func TestSupersededParkedRootExpiresOnce(t *testing.T) {
+// A superseded head's review that waits for quota ends once: its check is
+// completed as cancelled, which ends the parked root. A failed check write
+// keeps the root parked, and the next poll ends it.
+func TestSupersededParkedRootEndsOnce(t *testing.T) {
 	exporter := captureReviewSpans(t)
 	h := newHarness(t)
 	addPR7(h)
 	h.cfg.Quota = &fakeQuota{}
-	var clockMu sync.Mutex
-	now := time.Now()
-	h.cfg.Now = func() time.Time { clockMu.Lock(); defer clockMu.Unlock(); return now }
 	e, ctx, stop := h.start()
 	task := runReview(t, h, e, ctx, 7, shaA)
 	h.k.finish(task, kagent.StateFailed, "insufficient_quota")
 	waitForQuotaCheck(t, h)
 	shaB := sha40('b')
 	h.gh.push(7, shaB)
+	patchOld := fmt.Sprintf("PATCH /repos/%s/check-runs/%d", testRepo, h.gh.check(shaA).ID)
+	h.gh.failWith(patchOld, http.StatusBadGateway)
 	e.Tick(ctx)
 	var newer string
 	eventually(t, "the new head's task", func() bool { newer = h.taskOn(7, shaB, 1); return newer != "" })
@@ -569,26 +570,27 @@ func TestSupersededParkedRootExpiresOnce(t *testing.T) {
 		c := h.gh.check(shaB)
 		return c != nil && c.Title == "Waiting for Codex quota" && testutil.ToFloat64(h.m.InFlight) == 0
 	})
-	clockMu.Lock()
-	now = now.Add(parkedLimit + time.Hour)
-	clockMu.Unlock()
-	e.Tick(ctx)
-	e.wg.Wait()
-	stop()
-	e, ctx, stop = h.start()
-	e.Tick(ctx)
-	e.wg.Wait()
-	stop()
-	var old []map[string]string
-	for _, span := range reviewSpans(exporter) {
-		if span["pr.head_sha"] == shaA {
-			old = append(old, span)
+	old := func() (spans []map[string]string) {
+		for _, span := range reviewSpans(exporter) {
+			if span["pr.head_sha"] == shaA {
+				spans = append(spans, span)
+			}
 		}
+		return spans
 	}
-	if len(old) != 1 || old[0]["root"] != "true" || old[0]["review.verdict"] != "abandoned" {
-		t.Fatalf("old head's review spans = %v, want one abandoned root", old)
+	if c := h.gh.check(shaA); c.Status != "in_progress" || len(old()) != 0 {
+		t.Fatalf("failed write: check %s, old head's spans %v", c.Status, old())
 	}
-	if st, _ := LoadState(h.gh.check(shaA).Text); st.Trace != nil {
-		t.Fatalf("old head's check state still records the root: %+v", st.Trace)
+	h.gh.failWith(patchOld, 0)
+	e.Tick(ctx)
+	e.wg.Wait()
+	e.Tick(ctx)
+	e.wg.Wait()
+	stop()
+	if c := h.gh.check(shaA); c.Conclusion != ConclusionCancelled {
+		t.Fatalf("old head's check = %s %s", c.Status, c.Conclusion)
+	}
+	if spans := old(); len(spans) != 1 || spans[0]["root"] != "true" || spans[0]["review.verdict"] != ConclusionCancelled {
+		t.Fatalf("old head's review spans = %v, want one cancelled root", spans)
 	}
 }
