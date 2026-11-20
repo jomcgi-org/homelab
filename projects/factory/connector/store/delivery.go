@@ -230,6 +230,26 @@ type ReviewEvent struct {
 	RoundRunID  int64
 }
 
+// LimitedReviews identifies refused reviews for a live state check in the PR poll.
+func (s *Store) LimitedReviews(ctx context.Context, prID int64, head string) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT github_node_id FROM review_event
+		WHERE pull_request_id = $1 AND commit_sha = $2 AND kind = 'changes_requested'
+		AND disposition = 'round_limit' ORDER BY id`, prID, head)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // invariant: FACT-13
 
 // SeenEvents returns recorded node IDs, excluding retryable events on the current head.
