@@ -13,6 +13,8 @@ type HumanGatePoll struct {
 	PolledAt   time.Time
 }
 
+// invariant: FACT-13
+
 // HumanGateWork includes active revisions and stopped deliveries. Canceled
 // gate issues stay eligible so reopening a PR is observed even after delivery
 // stops. Only an acknowledged merge can end gate polling.
