@@ -220,6 +220,7 @@ filegroup(
         "//bazel/tools/js:repo_docs",
         "//bazel/tools/oci:repo_docs",
         "//projects:repo_docs",
+        "//projects/capacity-forecast:repo_docs",
         "//projects/design-system:repo_docs",
         "//projects/embervm/deploy:repo_docs",
         "//projects/embervm/dev/apple:repo_docs",

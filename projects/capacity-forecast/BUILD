@@ -45,3 +45,9 @@ py3_image(
     env = {"TIMESTRAL_MODEL_DIR": "/model"},
     tars = [":model"],
 )
+
+filegroup(
+    name = "repo_docs",
+    srcs = glob(["*.md"]),
+    visibility = ["//projects/monolith:__pkg__"],
+)
