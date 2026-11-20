@@ -278,6 +278,7 @@ func TestQuotaPauseKeepsOneReviewRoot(t *testing.T) {
 	eventually(t, "review passes", func() bool {
 		return h.gh.check(shaA).Conclusion == ConclusionSuccess
 	})
+	awaitReviewRoot(t, exporter)
 	stop()
 	var roots []map[string]string
 	var events []string
@@ -305,6 +306,15 @@ func TestQuotaPauseKeepsOneReviewRoot(t *testing.T) {
 	if !slices.Contains(events, "review paused") || !slices.Contains(events, "review resumed") {
 		t.Errorf("root events = %v", events)
 	}
+}
+
+// awaitReviewRoot waits for the worker to end the review root. The check's
+// conclusion is visible before the worker ends the root, and a stop in that
+// gap cancels the worker's check write, which leaves the root to the next
+// process.
+func awaitReviewRoot(t *testing.T, exporter *tracetest.InMemoryExporter) {
+	t.Helper()
+	eventually(t, "the review root", func() bool { return len(reviewSpans(exporter)) > 0 })
 }
 
 // reviewSpans returns the attributes and events of each exported review
@@ -357,6 +367,7 @@ func TestRestartedReviewKeepsOneRoot(t *testing.T) {
 	eventually(t, "review passes", func() bool {
 		return h.gh.check(shaA).Conclusion == ConclusionSuccess
 	})
+	awaitReviewRoot(t, exporter)
 	stop()
 	spans := reviewSpans(exporter)
 	if len(spans) != 1 {
@@ -366,6 +377,49 @@ func TestRestartedReviewKeepsOneRoot(t *testing.T) {
 		if spans[0][k] != v {
 			t.Errorf("%s = %q, want %q", k, spans[0][k], v)
 		}
+	}
+}
+
+// A quota wait longer than the parked-root limit exports no root. The
+// resumed worker continues the same root, so the review exports it once.
+func TestLongQuotaWaitKeepsOneRoot(t *testing.T) {
+	exporter := captureReviewSpans(t)
+	h := newHarness(t)
+	addPR7(h)
+	q := &fakeQuota{}
+	h.cfg.Quota = q
+	var clockMu sync.Mutex
+	now := time.Now()
+	h.cfg.Now = func() time.Time { clockMu.Lock(); defer clockMu.Unlock(); return now }
+	e, ctx, _ := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	h.k.stamp(task, map[string]any{"inputTokens": float64(5), "outputTokens": float64(1)})
+	h.k.finish(task, kagent.StateFailed, "insufficient_quota")
+	rec := waitForQuotaCheck(t, h)
+	clockMu.Lock()
+	now = now.Add(parkedLimit + time.Hour)
+	clockMu.Unlock()
+	e.Tick(ctx)
+	e.wg.Wait()
+	if spans := reviewSpans(exporter); len(spans) != 0 {
+		t.Fatalf("expiry exported a root that its check still holds: %v", spans)
+	}
+	q.set(github.QuotaReading{ReceivedAt: rec.QuotaSince.Add(time.Second)}, nil)
+	e.Tick(ctx)
+	id := h.msgID(7, shaA, 1) + "/quota-1"
+	eventually(t, "resumed quota task", func() bool {
+		task = h.k.taskFor(id)
+		return task != ""
+	})
+	h.k.stamp(task, map[string]any{"inputTokens": float64(7), "outputTokens": float64(2)})
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	eventually(t, "review passes", func() bool {
+		return h.gh.check(shaA).Conclusion == ConclusionSuccess
+	})
+	e.wg.Wait()
+	spans := reviewSpans(exporter)
+	if len(spans) != 1 || spans[0]["root"] != "true" || spans[0]["review.verdict"] != ConclusionSuccess || spans[0]["tokens.input"] != "12" {
+		t.Fatalf("review spans = %v, want one root with the verdict and both tasks", spans)
 	}
 }
 
@@ -394,6 +448,7 @@ func TestRestartAfterFailedRevalidationCountsTaskOnce(t *testing.T) {
 	eventually(t, "review passes", func() bool {
 		return h.gh.check(shaA).Conclusion == ConclusionSuccess
 	})
+	awaitReviewRoot(t, exporter)
 	stop()
 	spans := reviewSpans(exporter)
 	if len(spans) != 1 || spans[0]["root"] != "true" || spans[0]["tokens.input"] != "5" || spans[0]["review.verdict"] != ConclusionSuccess {
@@ -424,6 +479,7 @@ func TestFailedRevalidationKeepsCodeSpanUsage(t *testing.T) {
 	eventually(t, "review passes", func() bool {
 		return h.gh.check(shaA).Conclusion == ConclusionSuccess
 	})
+	awaitReviewRoot(t, exporter)
 	stop()
 	var roots, codes []map[string]string
 	for _, span := range exporter.GetSpans() {

@@ -418,7 +418,13 @@ func (e *Engine) Wait() {
 // under ctx.
 func (e *Engine) Tick(ctx context.Context) {
 	now := e.cfg.Now()
-	e.endParked(func(p *parkedRoot) bool { return now.Sub(p.since) > parkedLimit }, "abandoned")
+	expired := func(p *parkedRoot) bool { return now.Sub(p.since) > parkedLimit }
+	e.endParked(func(p *parkedRoot) bool { return expired(p) && !p.usage.persisted }, "abandoned")
+	// A root that its check state holds is not exported here: the check's
+	// completion, or the worker that resumes it, restores it (restoreRoot).
+	e.mu.Lock()
+	maps.DeleteFunc(e.parked, func(_ headKey, p *parkedRoot) bool { return expired(p) })
+	e.mu.Unlock()
 	for i := range e.cfg.Bindings {
 		if ctx.Err() != nil {
 			return
