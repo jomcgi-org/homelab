@@ -196,6 +196,7 @@ func (e *Engine) recoverHeld(ctx context.Context, r *store.Run, wi *store.WorkIt
 		if !ok || b == nil {
 			return e.finishRun(ctx, tx, r, itsaplan.Result{Status: "failed", Error: "operator-attested recovery exhausted the engineering retry budget"})
 		}
+		nextWork.EngineeringRetries = n
 		next, err = e.recordNext(ctx, tx, r, &nextWork, n, background)
 		return err
 	})
