@@ -17,6 +17,7 @@ resources:
   - ./factory-edge # The factory cluster's Cloudflare Tunnel, its Gateway and DNS
   - ./substrate # Agent Substrate control plane; bootstrap-substrate.sh creates its key material
   - ./otel-collector # Node, Cilium, API server metrics, warning logs and events to Honeycomb
+  - ./pod-host-access
   - ./edge-admission # Admission policies guarding the edge, in every namespace
   - ./cloudnative-pg # Postgres operator; Authentik's database
   - ./cert-manager # Certificates from self-signed Issuers: Kargo's webhook certificate

@@ -97,3 +97,9 @@ invariants:
   - projects/platform-factory/network-policy
   test: //projects/platform-factory/network-policy/tests:policies_test
   state: live
+- id: PLAT-17
+  statement: Admission reports application pod requests for host networking, host PID, hostPath volumes or privileged containers.
+  mechanism:
+  - projects/platform-factory/pod-host-access/resources/policies.yaml
+  test: //projects/platform-factory/pod-host-access:host_access_test
+  state: unproven
