@@ -51,6 +51,8 @@ Component paths are relative to `projects/factory/`. [Deployment values](deploy/
 
 Argo CD installs the factory chart with the homelab binding in `deploy/values.yaml`. The chart renders itsaplan, the broker, connector and reviewer, plus kagent resources for each repository binding. Substrate, Authentik, the edge gateway, Postgres and Garage run as separate installations.
 
+Before removing the Git values source in #7909, render both the published cutover chart and its rollback target with each archive’s own `values-homelab.yaml`. A release without the bundled file cannot render after the switch.
+
 **Repository bindings.** kagent runs an Agent's actors in the atespace
 named after its namespace, so the binding namespace is also the atespace that
 Substrate's credential provider grants. A Harness needs a Substrate
@@ -153,13 +155,22 @@ do not spend Codex quota
 Agents rediscover the same failing checks and conventions on each run; a
 recalled lesson costs a few hundred tokens.
 
+**Why.** Joe chose a decision model with no local
+fallback ([his words, recorded from his account on #8147](https://github.com/jomcgi-org/homelab/pull/8147#issuecomment-6949878652);
+also HOME-130 comment 1498).
+Hindsight's own question decided the order of the top 30 Voyage 4 Large
+candidates for the same 32 graded questions. On candidates from
+embeddings and BM25 together, Jev 1.14 raised nDCG@10 by 0.079, in 0.29 s per
+recall ([HOME-182](https://factory-plan.jomcgi.dev/factory/issue/HOME-182)).
+Liquid `d1` made no significant difference; Cloudflare `clef` and Upstage
+`solar-decide-flash` made it worse.
+
 **Why.** On a 494-fact factory test set, Voyage 4 Large had the best
-nDCG@10 (0.781) of ten models, against 0.522 for a stand-in for the local embedding model. Its 1,024 dimensions fit pgvector's index limit
+nDCG@10 (0.781) of ten models, against 0.522 for a stand-in for the image's
+local `bge-small-en-v1.5`. Its 1,024 dimensions fit pgvector's index limit
 ([HOME-176](https://factory-plan.jomcgi.dev/factory/issue/HOME-176)). Joe
 chose one OpenRouter key for both instances
 ([HOME-130 comment 1439](https://factory-plan.jomcgi.dev/factory/issue/HOME-130#comment-1439)).
-
-**Why.** Joe chose a decision model without a local fallback. [Decision](https://github.com/jomcgi-org/homelab/pull/8147#issuecomment-6949878652) and [evaluation](https://factory-plan.jomcgi.dev/factory/issue/HOME-182).
 
 **Preflight.** Hindsight resizes an empty vector column at startup and
 refuses to start on a model with another dimension once rows exist. Each sync
@@ -195,7 +206,7 @@ deployed image without network, from 1,024-dimensional vectors, and
 
 #### Bank configuration
 
-Every new bank starts from
+**Schema v1.** Every new bank starts from
 `projects/platform-factory/hindsight/resources/bank-template.json`, which the
 Deployment passes as `HINDSIGHT_API_DEFAULT_BANK_TEMPLATE`
 ([HOME-183](https://factory-plan.jomcgi.dev/factory/issue/HOME-183)). Its
@@ -236,7 +247,8 @@ Discord memory has a separate process, database and REST tenant key under
 [`hindsight-discord`](../platform-factory/hindsight-discord/README.md)
 ([HOME-163](https://factory-plan.jomcgi.dev/factory/issue/HOME-163)). It calls
 DeepSeek through the dedicated OpenRouter credential. Its manifests disable
-MCP and admit only namespace `factory-discord`. The linked runbook records the boundary and rollout checks.
+MCP and admit only namespace `factory-discord`. The linked runbook records
+the boundary and rollout checks.
 
 ### Discord bot
 
