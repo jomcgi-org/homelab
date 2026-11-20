@@ -69,6 +69,7 @@ spec:
     - group: ""
       kind: Service
       name: factory-broker
+{{- if .Values.networkPolicy.cilium }}
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -89,4 +90,5 @@ spec:
         - ports:
             - port: {{ .Values.broker.adminPort | quote }}
               protocol: TCP
+{{- end }}
 {{- end }}
