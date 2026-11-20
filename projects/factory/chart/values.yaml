@@ -591,7 +591,40 @@ connector:
   # Reviewed planner jobs. Each entry sets name, namespace (the first two
   # fingerprint segments), ceiling, minInterval, cooldown, perRun (1–4),
   # issueTitle and instructions. An unknown ceiling routes to Backlog.
-  plannerSchedules: []
+  # The three pilots Joe approved (#7935, decision 6891325789).
+  plannerSchedules:
+    - name: delivery-health
+      namespace: homelab:delivery
+      ceiling: delegate
+      minInterval: 24h
+      cooldown: 168h
+      perRun: 2
+      issueTitle: Investigate a factory delivery failure
+      instructions: >-
+        Verify the cited failure on the current code and identify the affected
+        delivery stage. Fix its cause and validate the affected check or
+        rollout path.
+    - name: trust-drift
+      namespace: homelab:trust
+      ceiling: delegate
+      minInterval: 24h
+      cooldown: 168h
+      perRun: 1
+      issueTitle: Investigate drift in factory trust rules
+      instructions: >-
+        Compare the cited evidence with reviewed factory policy. Repair a
+        confirmed repository defect through review and preserve all required
+        checks and approval rules.
+    - name: documentation-drift
+      namespace: homelab:docs
+      ceiling: delegate
+      minInterval: 168h
+      cooldown: 720h
+      perRun: 2
+      issueTitle: Verify a stale homelab documentation claim
+      instructions: >-
+        Check the cited claim against current code or rollout evidence. Correct
+        the affected documentation and link the source that supports the change.
   # Per repository binding, by its `repositories` name; every binding needs
   # one. Owner, repository, base branch and the kagent Agent come from the
   # binding. Keys: itsaplanProject and agents (required); branchPrefix

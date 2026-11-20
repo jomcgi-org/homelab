@@ -128,6 +128,14 @@ def test_deploy_values_turn_the_connector_on() -> None:
     docs = _render(enable=False)
     assert _broker_subjects(docs) == [_SUBJECT]
     assert _config(docs) == _config(_render())
+    chart_values = yaml.safe_load((_CHART_DIR / "values.yaml").read_text())
+    schedules = _config(docs)["plannerSchedules"]
+    assert schedules == chart_values["connector"]["plannerSchedules"]
+    assert {job["name"]: job["ceiling"] for job in schedules} == {
+        "delivery-health": "delegate",
+        "trust-drift": "delegate",
+        "documentation-drift": "delegate",
+    }
     _in(docs, "ClusterRoleBinding", None, "kagent-kagent-invocation-auth")
 
 
@@ -156,7 +164,7 @@ def test_broker_accounting_secret_is_required() -> None:
         _render(["broker.accounting.secretName="])
 
 
-def test_reviewed_planner_schedule_reaches_the_connector() -> None:
+def test_reviewed_planner_schedule_reaches_the_connector(tmp_path: Path) -> None:
     schedule = {
         "name": "delivery-health",
         "namespace": "homelab:factory",
@@ -168,13 +176,13 @@ def test_reviewed_planner_schedule_reaches_the_connector() -> None:
         "instructions": "Verify the finding.",
     }
     baseline = _render()
-    configured = _render(
-        [
-            f"connector.plannerSchedules[0].{key}={value}"
-            for key, value in schedule.items()
-        ]
-    )
-    assert "plannerSchedules" not in _config(baseline)
+    override = tmp_path / "schedules.yaml"
+    override.write_text(yaml.safe_dump({"connector": {"plannerSchedules": [schedule]}}))
+    configured = [
+        d
+        for d in yaml.safe_load_all(_helm(_CHART_DIR, ["--values", str(override)]))
+        if d
+    ]
     assert _config(configured)["plannerSchedules"] == [schedule]
     assert (
         _pod(baseline)["metadata"]["annotations"]["checksum/config"]

@@ -1,8 +1,10 @@
 package planner
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestProposalBoundary(t *testing.T) {
@@ -73,5 +75,33 @@ func TestDescriptionBound(t *testing.T) {
 	p.Evidence[0] = "https://example.org/run"
 	if d, fits := p.Description("trusted"); !fits || !strings.HasSuffix(d, EvidenceClose) {
 		t.Fatalf("small description refused: %q", d)
+	}
+}
+
+func TestScheduleInstructionsLeaveRoomForEvidence(t *testing.T) {
+	schedule := Schedule{
+		Name: "delivery-health", Namespace: "homelab:delivery", Ceiling: "delegate",
+		MinInterval: 24 * time.Hour, Cooldown: 7 * 24 * time.Hour, PerRun: 2,
+		IssueTitle: "Check a delivery failure", Instructions: strings.Repeat("a", maxInstructionsBytes),
+	}
+	if err := schedule.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	p := Proposal{
+		Title: "delivery check failed", Body: "Details: ",
+		Evidence: []string{"https://example.org/run"}, Fingerprint: "homelab:delivery:test:failed",
+		Priority: "low", Fix: "agent",
+	}
+	quoted, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Body += strings.Repeat("a", reservedProposalBytes-len(quoted))
+	if d, fits := p.Description(schedule.Instructions); !fits || len(d) != MaxDescriptionBytes {
+		t.Fatalf("description length = %d, fits = %v", len(d), fits)
+	}
+	schedule.Instructions += "a"
+	if err := schedule.Validate(); err == nil {
+		t.Fatal("instructions that use reserved evidence space passed validation")
 	}
 }

@@ -19,6 +19,12 @@ type Schedule struct {
 	Instructions string        `yaml:"instructions"`
 }
 
+// Leave space for a proposal with a finding, fingerprint and evidence links.
+const (
+	reservedProposalBytes = 1024
+	maxInstructionsBytes  = MaxDescriptionBytes - len(evidencePrefix) - len(evidenceSuffix) - reservedProposalBytes
+)
+
 var scheduleNamespace = regexp.MustCompile(`^[a-z0-9._/-]+:[a-z0-9._/-]+$`)
 
 // Validate checks that a schedule can admit and file proposals.
@@ -34,8 +40,8 @@ func (s Schedule) Validate() error {
 		return fmt.Errorf("perRun must be between 1 and 4")
 	case strings.TrimSpace(s.IssueTitle) == "":
 		return fmt.Errorf("issueTitle is required")
-	case strings.TrimSpace(s.Instructions) == "" || len(s.Instructions) >= MaxDescriptionBytes:
-		return fmt.Errorf("instructions must be nonempty and leave room for the evidence block")
+	case strings.TrimSpace(s.Instructions) == "" || len(s.Instructions) > maxInstructionsBytes:
+		return fmt.Errorf("instructions must be nonempty and at most %d bytes", maxInstructionsBytes)
 	}
 	return nil
 }
