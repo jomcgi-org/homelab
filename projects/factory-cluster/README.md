@@ -437,6 +437,7 @@ curl -s -X POST -H 'Content-Type: application/json' http://localhost:9093/api/v2
 
 | Alert | Fires when |
 | --- | --- |
+| `CNPGBackupRetentionExceeded` | Oldest recoverable point exceeds 3 days for kagent-pg or 16 days for factory-db or authentik-pg for 1 hour |
 | `NodeDiskFilling` | A node's root filesystem is more than 75% full for 15 min. Image garbage collection starts at 85% and the kubelet evicts pods at 90% |
 | `KagentSuspendTimedOut` | A `SuspendActor` call passed kagent's fixed 30 s deadline. Each scrape (30 s) that shows more timeouts sends one message with the count, so two timeouts in one scrape give one message. The alert ends an hour later and sends nothing then |
 | `FactoryItsaplanOutage` | A connector dispatch phase has been failing on itsaplan for 10 min. Check the named phase in connector logs and sample the coordinator key counter using the [HOME-385 procedure](../factory/deploy/notify.md#home-385-rollout-verification). |
@@ -446,6 +447,15 @@ curl -s -X POST -H 'Content-Type: application/json' http://localhost:9093/api/v2
 | `FactoryCodexQuotaReadingStale` | The broker's newest Codex quota reading is more than 2 h old, or there is no reading at all, for 15 min, so the quota alerts could not fire |
 | `SemgrepSyncFailed` | The newest Semgrep to INTSEC sync Job in its namespace has failed |
 | `AlertRelayDown` | No ready relay replica for 5 min |
+
+#### CNPGBackupRetentionExceeded
+
+Check the latest scheduled backup for the named cluster. For kagent-pg,
+pruning follows the 02:30 UTC backup. Inspect the backup logs for retention
+cleanup errors and confirm the configured recovery window (1 day for
+kagent-pg, 14 days for factory-db and authentik-pg). After the next
+successful backup and prune, confirm the first recoverability point advances
+in Prometheus and the alert clears.
 
 #### Writing an alert
 
