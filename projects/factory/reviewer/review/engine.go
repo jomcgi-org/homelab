@@ -2788,15 +2788,20 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 		if b.ItsaplanProject != "" {
 			applyGoal(r, prior, b.ItsaplanProject, key, in.goal)
 		}
-		comments, _, err := e.trustedComments(ctx, b, pr)
-		if err != nil {
-			e.ghError(ctx, l, b, "comments", err)
-			return result{reason: "the reviewer could not verify the PR's trusted comments."}
+		var decisions Decisions
+		// Only conversation comments captured in the prompt can justify a
+		// finding. Approval reviews are read separately by the human gate.
+		if len(in.promptVersions) > 0 {
+			comments, err := e.gh.PullRequestComments(ctx, b.repo(), pr.Number)
+			if err != nil {
+				e.ghError(ctx, l, b, "comments", err)
+				return result{reason: "the reviewer could not verify the PR's trusted comments."}
+			}
+			decisions = joeDecisions(b, pr, comments)
+			decisions.Comments = slices.DeleteFunc(decisions.Comments, func(c github.Comment) bool {
+				return !containsFold(b.TrustedCommenters, c.Author) || !slices.Contains(in.promptVersions, DecisionStamp{ID: c.ID, Hash: bodyHash(c.Body), UpdatedAt: c.UpdatedAt})
+			})
 		}
-		decisions := joeDecisions(b, pr, comments)
-		decisions.Comments = slices.DeleteFunc(decisions.Comments, func(c github.Comment) bool {
-			return !slices.Contains(in.promptVersions, DecisionStamp{ID: c.ID, Hash: bodyHash(c.Body), UpdatedAt: c.UpdatedAt})
-		})
 		decisions.Carried = in.prior.Decisions
 		recordFindings(trace.SpanFromContext(ctx), r.Findings)
 		a := AssessDecided(r, prior, decisions)
