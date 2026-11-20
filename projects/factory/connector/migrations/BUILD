@@ -58,6 +58,7 @@ go_library(
         "20261124030000_reaper_atespace.sql",
         "20261124100000_leaderboard_reads.sql",
         "20261125000000_home756_recuts.sql",
+        "20261120000000_merge_lesson.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],

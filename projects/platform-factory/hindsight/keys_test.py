@@ -100,7 +100,7 @@ def test_init_fills_both_keys_once_and_never_rotates(keys, capsys):
     api.writes.clear()
     script.main("init")
     script.main("agents")
-    assert api.writes == [AGENT_TOKEN]
+    assert api.writes == [AGENT_TOKEN, ("factory", "hindsight-connector")]
     api.writes.clear()
     script.main("agents")
     assert api.writes == []
@@ -128,7 +128,11 @@ def test_agents_wait_for_the_other_application(keys, monkeypatch):
 
 
 def test_agent_token_is_injectable_and_never_in_the_pod_as_the_tenant_key():
-    (secret,) = [d for d in read("agents/secrets.yaml") if d["kind"] == "Secret"]
+    (secret,) = [
+        d
+        for d in read("agents/secrets.yaml")
+        if d["metadata"]["name"] == "hindsight-mcp"
+    ]
     assert secret["metadata"]["labels"] == {"substrate.ate.dev/injectable": "true"}
     (deployment,) = [
         d for d in read("resources/hindsight.yaml") if d["kind"] == "Deployment"
@@ -145,7 +149,7 @@ def test_agent_token_is_injectable_and_never_in_the_pod_as_the_tenant_key():
         "key": "mcp-token",
     }
     # The agents' token reaches MCP only, and MCP registers only these.
-    assert env["HINDSIGHT_API_MCP_ENABLED_TOOLS"] == "recall,retain"
+    assert env["HINDSIGHT_API_MCP_ENABLED_TOOLS"] == "recall"
     assert env["HF_HUB_OFFLINE"] == "1"
     assert deployment["spec"]["template"]["spec"]["enableServiceLinks"] is False
 
@@ -158,7 +162,7 @@ def test_only_the_egress_gateway_reaches_hindsight():
         for d in read("resources/network-policy.yaml")
         if d["metadata"]["name"] == "hindsight"
     )
-    gateway, template = policy["spec"]["ingress"]
+    gateway, connector, template = policy["spec"]["ingress"]
     assert gateway["fromEndpoints"] == [
         {
             "matchLabels": {
@@ -175,7 +179,7 @@ def test_only_the_egress_gateway_reaches_hindsight():
             }
         }
     ]
-    for rule in (gateway, template):
+    for rule in (gateway, connector, template):
         assert rule["toPorts"] == [{"ports": [{"port": "8888", "protocol": "TCP"}]}]
     fqdns = [f for r in policy["spec"]["egress"] for f in r.get("toFQDNs", [])]
     assert fqdns == [{"matchName": "api.anthropic.com"}, {"matchName": "openrouter.ai"}]

@@ -221,12 +221,12 @@ def test_mcp_takes_only_the_mcp_token(server, token):
     [("/mcp/homelab/", {}), ("/mcp/", {"X-Bank-Id": "homelab"})],
     ids=["bank-path", "multi-bank"],
 )
-def test_mcp_registers_only_recall_and_retain(server, path, headers):
+def test_mcp_registers_only_recall(server, path, headers):
     client = MCP(server, path, MCP_TOKEN, headers)
     assert client.status == 200
     tools = client.call("tools/list")["result"]["tools"]
-    assert sorted(tool["name"] for tool in tools) == ["recall", "retain"]
-    for name in ("delete_bank", "clear_memories", "list_memories", "reflect"):
+    assert sorted(tool["name"] for tool in tools) == ["recall"]
+    for name in ("retain", "delete_bank", "clear_memories", "list_memories", "reflect"):
         reply = client.call("tools/call", {"name": name, "arguments": {}})
         assert "error" in reply or reply["result"].get("isError") is True, reply
 
@@ -243,13 +243,20 @@ def test_mcp_registers_only_recall_and_retain(server, path, headers):
 def test_recall_works_with_the_mcp_token(server, path, headers):
     client = MCP(server, path, MCP_TOKEN, headers)
     tools = client.call("tools/list")["result"]["tools"]
-    assert sorted(tool["name"] for tool in tools) == ["recall", "retain"]
+    assert sorted(tool["name"] for tool in tools) == ["recall"]
     reply = client.call(
         "tools/call", {"name": "recall", "arguments": {"query": "failing checks"}}
     )
     assert "error" not in reply, reply
     assert reply["result"].get("isError") is not True, reply
-    payload = json.loads(reply["result"]["content"][0]["text"])
+    block = reply["result"]["content"][0]["text"]
+    assert block.startswith("<untrusted_memory>") and block.endswith(
+        "</untrusted_memory>"
+    )
+    assert reply["result"]["structuredContent"] == {"untrusted_memory": block}
+    payload = json.loads(
+        block.removeprefix("<untrusted_memory>").removesuffix("</untrusted_memory>")
+    )
     assert "results" in payload and "error" not in payload, payload
 
 
@@ -328,7 +335,7 @@ def test_binding_denies_tool(server, path, token, name, args):
 
 @pytest.mark.parametrize(
     "name,arguments",
-    [("recall", {"query": "boundary"}), ("retain", {"content": "boundary"})],
+    [("recall", {"query": "boundary"})],
 )
 def test_explicit_tool_bank_cannot_override_binding(server, name, arguments):
     client = MCP(server, "/mcp/", MCP_TOKEN, {"X-Bank-Id": "homelab"})
