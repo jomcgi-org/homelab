@@ -153,6 +153,7 @@ func TestChoicesIgnoreCodeAndHTMLBlocks(t *testing.T) {
 		"<span class=\"x\">\n## Choices\n1. Ship (Recommended)\n2. Hold",
 		"Title\n---\n<span>\n## Choices\n1. Ship (Recommended)\n2. Hold",
 		"Title\n===\n<span>\n## Choices\n1. Ship (Recommended)\n2. Hold",
+		"#tag\n===\n<span>\n## Choices\n1. Ship (Recommended)\n2. Hold",
 		"Intro\n2. More text\n===\n<span>\n## Choices\n1. Ship (Recommended)\n2. Hold",
 		"- Background\n---\n<span>\n## Choices\n1. Ship (Recommended)\n2. Hold",
 		"---\n<span>\n## Choices\n1. Ship (Recommended)\n2. Hold",
@@ -165,6 +166,22 @@ func TestChoicesIgnoreCodeAndHTMLBlocks(t *testing.T) {
 	} {
 		if got := parseChoices(desc); got != nil {
 			t.Errorf("code block parsed as choices: %q", got)
+		}
+	}
+}
+
+func TestChoicesItemIndentation(t *testing.T) {
+	for _, tc := range []struct {
+		items string
+		want  int
+	}{
+		{"1. Ship (Recommended)\n   2. Hold", 0},
+		{"1. Ship (Recommended)\n  2. Hold", 2},
+		{" 1. Ship (Recommended)\n   2. Hold", 2},
+		{"1.  Ship (Recommended)\n   2. Hold", 2},
+	} {
+		if got := len(parseChoices("## Choices\n" + tc.items)); got != tc.want {
+			t.Errorf("%q: got %d choices, want %d", tc.items, got, tc.want)
 		}
 	}
 }

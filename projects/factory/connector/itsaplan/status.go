@@ -132,6 +132,7 @@ func choiceRevision(choices []string) string {
 // invariant: FACT-13
 func parseChoices(description string) []string {
 	var choices []string
+	var itemContentColumn int
 	found, active := false, false
 	fence := ""
 	// html is set inside a raw HTML block: its closing marker, or "" for a
@@ -188,17 +189,18 @@ func parseChoices(description string) []string {
 			// ordered item must also start at one.
 			container = interruptingContainer
 		}
+		heading := atxHeading.MatchString(marker)
 		setext := para && setextEligible && setextUnderline.MatchString(marker)
-		para = line != "" && !strings.HasPrefix(line, "#") && !setext && !thematicBreak.MatchString(marker)
+		para = line != "" && !heading && !setext && !thematicBreak.MatchString(marker)
 		setextEligible = para && !container.MatchString(marker)
-		if line == "## Choices" {
+		if heading && line == "## Choices" {
 			if found {
 				return nil
 			}
 			found, active = true, true
 			continue
 		}
-		if strings.HasPrefix(line, "#") {
+		if heading {
 			active = false
 		}
 		if !active || line == "" {
@@ -210,8 +212,16 @@ func parseChoices(description string) []string {
 			return nil
 		}
 		label, ok := strings.CutPrefix(line, strconv.Itoa(len(choices)+1)+". ")
-		if !ok || len(choices) == 4 {
+		indent := indentWidth(raw)
+		if !ok || len(choices) == 4 || (len(choices) > 0 && indent >= itemContentColumn) {
 			return nil
+		}
+		// All supported markers are one digit and a period. CommonMark
+		// counts one to four columns of padding after the marker.
+		markerEnd := indent + 2
+		itemContentColumn = indentedColumn(markerEnd+1, label)
+		if itemContentColumn-markerEnd > 4 {
+			itemContentColumn = markerEnd + 1
 		}
 		label, recommended := strings.CutSuffix(label, "(Recommended)")
 		label = strings.TrimSpace(label)
@@ -227,6 +237,7 @@ func parseChoices(description string) []string {
 }
 
 var (
+	atxHeading            = regexp.MustCompile(`^#{1,6}(?:[ \t]|$)`)
 	containerStart        = regexp.MustCompile(`^(?:>|(?:[-+*]|[0-9]{1,9}[.)])(?:[ \t]|$))`)
 	interruptingContainer = regexp.MustCompile(`^(?:>|(?:[-+*]|0{0,8}1[.)])[ \t]+[^ \t])`)
 	setextUnderline       = regexp.MustCompile(`^(?:-+|=+)$`)
@@ -236,7 +247,10 @@ var (
 // indentWidth counts leading columns, with a tab advancing to the next
 // multiple of four as in CommonMark.
 func indentWidth(line string) int {
-	width := 0
+	return indentedColumn(0, line)
+}
+
+func indentedColumn(width int, line string) int {
 	for _, r := range line {
 		switch r {
 		case ' ':
