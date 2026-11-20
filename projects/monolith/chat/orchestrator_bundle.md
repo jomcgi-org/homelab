@@ -80,6 +80,7 @@ The goose route requires only `route`.
 ## Repo structure
 
 Top-level projects/ directories:
+- capacity-forecast
 - design-system
 - embervm
 - factory
