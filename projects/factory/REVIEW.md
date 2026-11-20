@@ -73,12 +73,11 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   drops a criterion, its finding is withdrawn: the service counts the items
   of the issue's one "Done when" or "Acceptance criteria" list, only when
   the issue text has a trusted author and editor, and the valid answer
-  must number the same count. A numbering gap or any other ambiguity
-  counts nothing, as does an issue with an HTML tag start, triple backtick or
-  triple tilde: comments, code fences and HTML can hide or fake list items. An issue with a diagram keeps
-  main's rules. So does a thematic break, a setext underline, or an item
-  with no words on its marker line. An indented heading is code, not a
-  heading. History replay
+  must number the same count. A numbering gap, an item without words on its marker line, or an
+  ambiguous criteria list counts nothing. The reviewer counts direct items
+  of a top-level CommonMark list. A diagram, HTML block, thematic break
+  or setext heading elsewhere in the issue can precede a valid list.
+  History replay
   withdraws nothing. A restated criterion gets a fresh verdict under the same
   ID. A missing issue reference, an uncounted list or a count the answer
   disagrees with withdraws nothing; a finding then clears only when a
