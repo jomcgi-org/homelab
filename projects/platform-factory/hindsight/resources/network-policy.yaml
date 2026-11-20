@@ -22,6 +22,14 @@ spec:
         - ports:
             - port: "8888"
               protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-connector
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
     # The hindsight-bank-template Job applies the schema through REST.
     - fromEndpoints:
         - matchLabels:

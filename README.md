@@ -10,7 +10,8 @@ flowchart LR
   J[Joe] -- "HOME issue" --> I[itsaplan]
   I -- "run" --> C[connector]
   C -- "task" --> K["coder agent<br/>(gVisor workspace)"]
-  K -- "recall and retain lessons" --> H[Hindsight]
+  K -- "recall lessons" --> H[Hindsight]
+  C -- "retain after merge" --> H
   K -- "branch and PR" --> G[GitHub PR]
   G --> T["pr-checks<br/>(BuildBuddy)"]
   G --> R["factory review<br/>(reviewer agent)"]
