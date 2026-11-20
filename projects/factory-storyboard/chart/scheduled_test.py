@@ -25,6 +25,13 @@ def render():
 
 def test_scheduled_writer():
     docs = render()
+    assert sorted(
+        d["kind"]
+        for d in docs
+        if d
+        and d["metadata"].get("namespace") == "factory"
+        and d["kind"] in {"ResourceQuota", "LimitRange"}
+    ) == ["LimitRange", "ResourceQuota"]
     jobs = [d for d in docs if d["kind"] == "CronJob"]
     assert len(jobs) == 1
     job = jobs[0]["spec"]

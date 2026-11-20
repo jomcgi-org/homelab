@@ -1,1 +1,12 @@
-{}
+namespacePolicy:
+  enabled: true
+  hard:
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    limits.memory: 8Gi
+    pods: "20"
+  defaultRequest:
+    cpu: 50m
+    memory: 64Mi
+  default:
+    memory: 512Mi

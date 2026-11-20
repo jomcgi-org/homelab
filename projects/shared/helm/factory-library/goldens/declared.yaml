@@ -129,3 +129,29 @@ Service/app:
       - name: "http"
         port: 8080
         targetPort: "http"
+ResourceQuota/consumer:
+  apiVersion: v1
+  kind: ResourceQuota
+  metadata:
+    name: consumer
+    namespace: test
+  spec:
+    hard:
+      requests.cpu: "2"
+      requests.memory: 4Gi
+      limits.memory: 8Gi
+      pods: "20"
+LimitRange/consumer:
+  apiVersion: v1
+  kind: LimitRange
+  metadata:
+    name: consumer
+    namespace: test
+  spec:
+    limits:
+      - type: Container
+        defaultRequest:
+          cpu: 50m
+          memory: 64Mi
+        default:
+          memory: 512Mi
