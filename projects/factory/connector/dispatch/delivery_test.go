@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -356,7 +357,7 @@ func (g *fakeGitHub) Compare(_ context.Context, _, _, head string) (*github.Comp
 	return &github.Comparison{AheadBy: b.ahead, HeadSHA: b.head, HeadSubject: b.subject}, nil
 }
 
-func (g *fakeGitHub) PullRequestDetail(_ context.Context, _ string, number int) (*github.PullRequestDetail, error) {
+func (g *fakeGitHub) PullRequestDetail(_ context.Context, _ string, number int, limited ...string) (*github.PullRequestDetail, error) {
 	if g.onRead != nil {
 		g.onRead("detail", fmt.Sprint(number))
 	}
@@ -379,11 +380,20 @@ func (g *fakeGitHub) PullRequestDetail(_ context.Context, _ string, number int) 
 		p.queue, p.pr.State, p.pr.Merged, p.mergeSHA, p.lagSHA = "", "closed", true, p.lagSHA, ""
 		return d, nil
 	}
+	reviews := p.reviews
+	if len(reviews) > 100 {
+		reviews = append([]github.Review(nil), reviews[len(reviews)-100:]...)
+		for _, review := range p.reviews[:len(p.reviews)-100] {
+			if slices.Contains(limited, review.NodeID) && review.State == "CHANGES_REQUESTED" {
+				reviews = append(reviews, review)
+			}
+		}
+	}
 	return &github.PullRequestDetail{
 		HeadMessage: g.branches[p.pr.HeadRef].message,
 		PullRequest: p.pr, MergedAt: p.mergedAt, MergeCommitSHA: p.mergeSHA, MergeQueueState: p.queue,
 		MergeGroupSHA: p.groupSHA, Mergeable: p.mergeable,
-		Reviews: append([]github.Review(nil), p.reviews...), Threads: append([]github.ReviewThread(nil), p.threads...),
+		Reviews: append([]github.Review(nil), reviews...), Threads: append([]github.ReviewThread(nil), p.threads...),
 	}, nil
 }
 
@@ -2185,6 +2195,9 @@ func TestReviewRoundsAreBounded(t *testing.T) {
 	reviews := v.gh.byNumber(1).reviews
 	reviews[len(reviews)-2].State = "DISMISSED"
 	v.gh.mu.Unlock()
+	for i := 0; i < 3001; i++ {
+		v.gh.review(1, "COMMENTED", "reader", "sha-4", "")
+	}
 	v.cfg.Bindings[0].Review.MaxReviewRounds = 6
 	v.poll()
 	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "No change.", nil)
