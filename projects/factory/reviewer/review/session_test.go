@@ -321,7 +321,10 @@ func TestSessionReadFailureWaits(t *testing.T) {
 			h.k.listErr = nil
 			h.k.mu.Unlock()
 			e.Tick(ctx)
-			eventually(t, "the review after recovery", func() bool { return h.taskOn(7, sessionShaB, 1) != "" })
+			eventually(t, "the review after recovery", func() bool {
+				e.Tick(ctx)
+				return h.taskOn(7, sessionShaB, 1) != ""
+			})
 			if _, cancels := h.k.state(); !slices.Contains(cancels, stray) {
 				t.Fatal("review started before cleanup of the unrecorded turn")
 			}
@@ -332,6 +335,80 @@ func TestSessionReadFailureWaits(t *testing.T) {
 			}
 		})
 	}
+}
+
+type stalledSessionListing struct {
+	Tasks
+	entered chan string
+	release chan struct{}
+}
+
+func (s *stalledSessionListing) ListTasks(ctx context.Context, agent kagent.AgentRef, id, state, token string) (*kagent.TaskPage, error) {
+	select {
+	case s.entered <- id:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case <-s.release:
+		return s.Tasks.ListTasks(ctx, agent, id, state, token)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestStalledCleanupLeavesPollerFree(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.Concurrency = 1
+	addPR7(h)
+	e, ctx, stop := h.start()
+	ref := stateOn(t, finishHead(t, h, e, ctx, shaA, blocking, nil)).Session
+	h.sessions.answer(ref.ContextID, nil, errors.New("unavailable"))
+	h.gh.push(7, sessionShaB)
+	e.Tick(ctx)
+	eventually(t, "persisted cleanup", func() bool {
+		c := h.gh.check(sessionShaB)
+		if c == nil {
+			return false
+		}
+		st, _ := LoadState(c.Text)
+		return st.Cleanup != nil && testutil.ToFloat64(h.m.InFlight) == 0
+	})
+	stop()
+	h.sessions.mu.Lock()
+	delete(h.sessions.errs, ref.ContextID)
+	h.sessions.mu.Unlock()
+	e, ctx, _ = h.start()
+	stall := &stalledSessionListing{Tasks: h.k, entered: make(chan string, 8), release: make(chan struct{})}
+	e.tasks = stall
+	polled := make(chan struct{})
+	defer func() {
+		close(stall.release)
+		<-polled
+	}()
+	go func() {
+		e.Tick(ctx)
+		close(polled)
+	}()
+	select {
+	case <-stall.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cleanup did not reach ListTasks")
+	}
+	select {
+	case <-polled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("poll waited for ListTasks")
+	}
+	h.gh.addPR(&fakePR{Number: 8, Title: "Independent review", Head: sessionShaC})
+	task := runReview(t, h, e, ctx, 8, sessionShaC)
+	if h.taskOn(7, sessionShaB, 1) != "" {
+		t.Fatal("blocked head dispatched during cleanup")
+	}
+	if len(stall.entered) != 0 {
+		t.Fatal("poll duplicated a pending cleanup probe")
+	}
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
 }
 
 // TestRetryAttemptStartsFresh resumes the first attempt on a later head; the
@@ -627,7 +704,11 @@ func TestUnrecordedRunningTurnIsCancelled(t *testing.T) {
 			h.k.mu.Unlock()
 			e.Tick(ctx)
 			var task string
-			eventually(t, "the review task once the turn stopped", func() bool { task = h.taskOn(7, sessionShaB, 1); return task != "" })
+			eventually(t, "the review task once the turn stopped", func() bool {
+				e.Tick(ctx)
+				task = h.taskOn(7, sessionShaB, 1)
+				return task != ""
+			})
 			if m := lastSend(h); m.ContextID == ref.ContextID {
 				t.Fatalf("resumed a session holding an unrecorded running turn")
 			}
