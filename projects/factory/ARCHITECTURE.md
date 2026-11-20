@@ -326,21 +326,11 @@ The connector uses separate identities to claim coding work and coordinate issue
 
 ### Credential broker
 
-`projects/factory/broker`, one replica with `Recreate`. It reuses the Codex
-OAuth code in `projects/shared/go/tokenbroker`, with the grant Secret prefix
-(`factory-broker-grant-`), metric prefix (`factory_broker_`) and refresh
-window configured per consumer; EmberVM keeps its defaults. No Lease: grant
-writes are newer-only and a `refresh_token_reused` answer rereads the Secret
-and retries once, using a newer durable grant when available. Repeated reuse
-stops further provider calls for that token and exposes `refresh_blocked` in
-the grant state metric and admin responses. Valid cached access tokens remain
-usable. The operator can await a pending writer or complete a new device login
-if the replacement was lost. Storage reads cannot distinguish a lost rotation
-from a successful rotation whose writes keep failing, so elapsed time never
-promotes this state to `login_required`. Relay failures remain recoverable 503s
-without causing the connector to persist a credential block. A newer stored
-grant with a different refresh token or a completed device login clears the
-reuse state, even after a prolonged persistence failure.
+The broker runs one replica with `Recreate`. It shares Codex OAuth code with EmberVM in `projects/shared/go/tokenbroker`. Each consumer configures its grant Secret prefix, metric prefix and refresh window. The factory uses `factory-broker-grant-` for Secrets and `factory_broker_` for metrics.
+
+Grant writes accept only newer values. On `refresh_token_reused`, the broker rereads the Secret and retries once with a newer durable grant if available. Repeated reuse stops provider calls for that token and reports `refresh_blocked` in metrics and admin responses. Cached access tokens remain usable until expiry.
+
+A missing rotation and a rotation whose writes keep failing look identical in storage. Elapsed time therefore cannot establish `login_required`. The relay returns a recoverable 503 and the connector keeps the credential eligible for retry. A newer stored refresh token or a completed device login clears the block.
 
 The broker mounts the author and reviewer App private keys and holds the Codex grant. It authenticates actor requests and scopes GitHub installation tokens to the bound repository. The connector authenticates to the broker with a projected ServiceAccount token. The reviewer uses its scoped installation token to publish checks. It sends PR comment requests to the broker, which posts them with a separate token kept inside the broker.
 
@@ -385,49 +375,15 @@ a connector memory cache cannot.
 
 The landing page reads the connector’s cached status snapshot. It shows work that needs Joe, active work and recent merges. A failed refresh makes the snapshot unavailable. The connector reads the 500 most recently updated issue titles per project, including archived issues, alongside GitHub with a two-second deadline for the title lists. It looks up missing displayed titles by issue ID. Concurrent GitHub batches across bindings supply check, review and queue state.
 
-Needs you entries with a valid `## Choices` section carry a `choices` array
-of labels in display order. The first is recommended. The parser follows
-CommonMark fenced code, indented code and HTML block starts, and it rejects
-choice lines that do not start at column 0. A section that CommonMark still
-renders differently from a flat top-level numbered list, such as a tag line
-right after a thematic break or setext underline, is a known gap that
-HOME-644 owns
-([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-439#comment-7511)). On the same port,
-`POST /decide` accepts `{"key":"HOME-42","choice":1}` with a one-based choice
-number. Send the status item's `choiceRevision` in double quotes in the
-`If-Match` header. An edited or reordered list returns 409. This endpoint
-is staged. HOME-440 wires the front page and HOME-441 wires the Discord bridge,
-including their token mounts and submission clients. Both callers require
-projected ServiceAccount tokens with audience `factory-decide` and subjects
-`system:serviceaccount:factory-landing:factory-landing` and
-`system:serviceaccount:factory-discord:discord-bridge`. The connector reads
-the current choices and the previous delegate, signs in as `joesessions`,
-comments and restores the delegate. A successful pick returns 204.
+Needs you entries expose top-level numbered choices in display order. The first is recommended. HOME-644 tracks remaining CommonMark parsing gaps. [Parser decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-439#comment-7511)
 
-**Why the revision check has a gap.** itsaplan comment and PATCH writes take
-no revision precondition. The connector reads the issue again right before
-each write, and a pick from an edited list replaces an older decision comment.
-An edit that lands between that read and the write can still apply a pick to
-the edited list. Joe accepted this gap
-([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-439#comment-7031)).
+The staged `POST /decide` endpoint takes the issue key, one-based choice and quoted `choiceRevision` in `If-Match`. An edited or reordered list returns 409. The connector authenticates the landing or Discord bridge ServiceAccount with a projected token for audience `factory-decide`. It rereads the choices and delegate, posts the choice as `joesessions`, restores the delegate and returns 204.
 
-A GraphQL query reads at most 25 PRs (75 connections, one
-[point](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#predicting-the-point-value-of-a-query)),
-at most four per refresh with one auth retry each: at most 960 of the
-5,000 points per hour. An over-budget refresh fails closed. The snapshot
-refreshes every 30 seconds (20-second deadline, eight concurrent reads, at
-most 100 live items and ten merges) and expires after 30 seconds. Above 100
-live items, it shows the latest 100 admissions and the exact total. A truncated
-upstream listing, a failed refresh or a stopped poller clears it, and
-`/status` returns 503. Each failed refresh logs `status refresh failed` with
-its stage (`needs_you`, `work_items`, `github_budget`, `github`, `titles` or
-`other`) and a timeout flag, but no upstream error text. Visitors trigger no
-upstream reads; the credential-free landing server proxies only this snapshot,
-with a two-second timeout.
+**Why.** itsaplan accepts comments and PATCH writes without a revision precondition. The connector rereads the issue before each write, but an intervening edit can still apply a pick to a changed list. [Decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-439#comment-7031)
 
-**Why.** The connector already has the store and coordinator read access. The
-factory chart owns the connector Service and its ingress policy. The edge's
-sign-in and route stay unchanged.
+The snapshot refreshes every 30 seconds with a 20-second deadline. It shows the latest 100 live admissions, the exact live total and up to ten recent merges. A failed refresh, truncated upstream listing or exceeded query budget clears the snapshot. The landing server proxies the cached response with a two-second timeout. After 30 seconds without a fresh snapshot, `/status` returns 503.
+
+**Why.** The connector already has the store and coordinator read access. The factory chart owns the connector Service and its ingress policy. The edge's sign-in and route stay unchanged.
 
 #### Authentication
 
@@ -591,6 +547,8 @@ version write-back.
 | Enable browser device login for the Codex grant after verifying the registered callback. | HOME-405 | staged off behind `codexAdminRouteEnabled` |
 | Enable the Semgrep sync and check its first run. | HOME-392 | staged off behind `semgrepSync.enabled` |
 | Handle unusual Markdown in the goal criteria counter. | HOME-436 | designed |
+| Wire decision submission on the front page and Discord bridge. | HOME-440 (front page), HOME-441 (bridge) | staged clients for `POST /decide` |
+| Finish CommonMark choice-list parsing. | HOME-644 | designed |
 | Verify the factory App author when adopting a PR. | [#7920](https://github.com/jomcgi-org/homelab/issues/7920) | designed |
 | Remove third-party Apps from the merge trust path. | [#7921](https://github.com/jomcgi-org/homelab/issues/7921) | designed |
 | Move CI and the registry into the cluster and scope the chart write-back identity. | [#7922](https://github.com/jomcgi-org/homelab/issues/7922) | designed |
