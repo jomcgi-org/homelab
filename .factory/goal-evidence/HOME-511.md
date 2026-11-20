@@ -6,4 +6,4 @@ Criterion 1. TestExhaustedRevisionAdvancesRound in projects/factory/reviewer/rev
 
 Criterion 1. After offline pushes, endPreviousHead walks back over at most 20 earlier heads and cancels each in-progress check that records a review root. A refused cancellation parks the restored root for endSuperseded to retry (TestRestartThenPushEndsOldRootOnce in quota_test.go: one push, two pushes, and a refused write). A paused review whose PR closes while the reviewer is offline moves to HOME-647 ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-511#comment-7415)).
 
-A paused review more than 20 earlier heads back, and a review in progress when export is first turned on, move to HOME-650 ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-511#comment-7483)).
+Any other path where a persisted root is not ended after a restart (scan bounds, temporary GitHub read failures, reviews in progress when export is first turned on) moves to HOME-650 ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-511#comment-7528)).
