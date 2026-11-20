@@ -79,6 +79,41 @@ entries:
       target: !KeyOf enrollment-write-binding
       policy: !KeyOf enrollment-return
       order: 0
+  - model: authentik_stages_deny.denystage
+    id: duplicate-email-deny
+    identifiers:
+      name: factory-social-deny-duplicate-email
+    attrs:
+      deny_message: An account already uses this email. Sign in with that account instead.
+  - model: authentik_flows.flowstagebinding
+    id: duplicate-email-binding
+    identifiers:
+      target: !KeyOf social-enrollment
+      stage: !KeyOf duplicate-email-deny
+      order: 15
+    attrs:
+      evaluate_on_plan: false
+      re_evaluate_policies: true
+  - model: authentik_policies_expression.expressionpolicy
+    id: duplicate-email-check
+    identifiers:
+      name: factory-social-remove-duplicate-email
+    attrs:
+      expression: |
+        from authentik.core.models import User
+        user = request.context["pending_user"]
+        if User.objects.filter(email__iexact=user.email, pk__lt=user.pk).exists():
+            user.delete()
+            return True
+        # Skip the deny stage and continue enrollment.
+        return False
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf duplicate-email-binding
+      policy: !KeyOf duplicate-email-check
+      order: 0
+    attrs:
+      failure_result: true
   - model: authentik_flows.flow
     id: social-authentication
     identifiers:

@@ -1,0 +1,7 @@
+invariants:
+  - id: AUTHENTIK-1
+    statement: Concurrent factory social enrollments for the same verified email keep only the account with the lower primary key.
+    mechanism:
+      - projects/platform/authentik/factory-blueprints/factory-social.yaml
+    test: //projects/platform/authentik:factory_resources_test
+    state: live

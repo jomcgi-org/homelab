@@ -104,7 +104,10 @@ def test_factory_social_flows_and_application_grants():
     for slug in ("github", "google", "discord"):
         source = by_id[slug]
         assert source["user_matching_mode"] == "identifier"
-        assert stages(source["enrollment_flow"]) == ["social-write"]
+        assert stages(source["enrollment_flow"]) == [
+            "social-write",
+            "duplicate-email-deny",
+        ]
         assert stages(source["authentication_flow"]) == ["validate", "social-login"]
     assert by_id["validate"]["not_configured_action"] == "configure"
     assert by_id["social-write"]["create_users_group"] == "null"
@@ -145,6 +148,14 @@ def test_factory_social_flows_and_application_grants():
             "social-enrollment-gate", request=request, ak_message=Mock()
         )
         users.objects.filter.assert_called_with(email__iexact="friend@example.org")
+
+        user = Mock(pk=2, email="friend@example.org")
+        request.context["pending_user"] = user
+        for duplicate in (False, True):
+            users.objects.filter.return_value.exists.return_value = duplicate
+            assert expression("duplicate-email-check", request=request) is duplicate
+            users.objects.filter.assert_called_with(email__iexact=user.email, pk__lt=2)
+            assert user.delete.call_count == int(duplicate)
 
     admins = ["authentik_core.group", ["name", "authentik Admins"]]
     operators = ["authentik_core.group", ["name", "factory-operators"]]
