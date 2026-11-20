@@ -21,8 +21,5 @@ py_test(
         "cluster.yaml",
         "setup.yaml",
     ],
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
+    deps = ["@pip//pyyaml"],
 )
