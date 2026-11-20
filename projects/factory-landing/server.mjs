@@ -39,6 +39,7 @@ export function createLandingServer({
       const pathname = decodeURIComponent(
         new URL(request.url, "http://static").pathname,
       );
+      // invariant: LANDING-1
       if (pathname === "/api/decide") {
         if (request.method !== "POST") {
           response.writeHead(405, { ...headers, Allow: "POST" }).end();
