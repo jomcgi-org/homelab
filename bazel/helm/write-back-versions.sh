@@ -80,21 +80,10 @@ _is_semver() {
 	[[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 }
 
-# Include all successfully published or content-verified reused versions, not
-# just the subset that will advance main. Preserve this snapshot across retries.
-PUBLICATION_TRAILERS=""
+# Capture the completed publication before retries change the checkout.
+PUBLICATION_TRAILERS="Chart-Source-Commit: ${PUBLISHED_SOURCE_COMMIT}"
 if [[ "$RECORD_PUBLICATION" == true ]]; then
-	PUBLICATION_TRAILERS="Chart-Publication-Complete: true"
-	for record in ${RECORDS[@]+"${RECORDS[@]}"}; do
-		if ! read -r receipt_chart receipt_version receipt_extra <"$record" ||
-			[[ ! "$receipt_chart" =~ ^projects/[A-Za-z0-9_./-]+$ ||
-				"/$receipt_chart/" == *"/../"* || -n "$receipt_extra" ||
-				! -f "$receipt_chart/Chart.yaml" ]] || ! _is_semver "$receipt_version"; then
-			echo "Invalid publication record: ${record}" >&2
-			exit 1
-		fi
-		PUBLICATION_TRAILERS+=$'\n'"Chart-Published: ${receipt_chart} ${receipt_version}"
-	done
+	PUBLICATION_TRAILERS=$(bash "${BASH_SOURCE[0]%/*}/publication-receipt.sh" "$RECORD_DIR" "$PUBLISHED_SOURCE_COMMIT")
 fi
 
 # Print the greater of two semvers.
@@ -219,7 +208,6 @@ $(printf '%s\n' ${SUMMARY[@]+"${SUMMARY[@]}"})
 
 Written back by write-back-versions.sh (ADR platform/009 decision 1).
 
-Chart-Source-Commit: ${PUBLISHED_SOURCE_COMMIT}
 ${PUBLICATION_TRAILERS}"
 
 	# `|| PUSH_RC=$?` keeps errexit from aborting on the very failure this loop

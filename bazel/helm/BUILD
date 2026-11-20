@@ -14,6 +14,7 @@ exports_files([
     "check-missed-bump.sh",
     "helm-template-test.sh",
     "lint.sh",
+    "publication-receipt.sh",
     "push.sh.tpl",
     "render.sh",
     "render-manifests.sh",
@@ -246,7 +247,10 @@ sh_test(
 sh_test(
     name = "write_back_versions_test",
     srcs = ["write-back-versions_test.sh"],
-    data = [":write-back-versions.sh"],
+    data = [
+        ":publication-receipt.sh",
+        ":write-back-versions.sh",
+    ],
 )
 
 sh_test(
