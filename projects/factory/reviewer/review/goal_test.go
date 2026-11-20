@@ -1095,3 +1095,25 @@ func TestGeneratedCriteriaMatchRenderer(t *testing.T) {
 		}
 	}
 }
+
+func TestWithdrawalCriteriaKeepsExcludedBlockers(t *testing.T) {
+	for _, desc := range []string{
+		"Done when:\n1. visible\n<div>\n2. hidden\n</div>",
+		"```mermaid\ngraph TD\n```\nDone when:\n1. visible",
+		"~~~\nexample\n~~~\nDone when:\n1. visible",
+		"***\nDone when:\n1. visible",
+		"Title\r=\rDone when:\r1. visible",
+		"Title\n--\nDone when:\n1. visible",
+	} {
+		in := &IssueContext{Issue: &IssueEvidence{Key: "HOME-1", Trusted: true, Description: desc}}
+		if got := issueCriteria(in); got != 1 {
+			t.Fatalf("%q: counted %d rendered items, want one", desc, got)
+		}
+		g := &GoalCheck{Counted: withdrawalCriteria(in), Criteria: goalVerdicts(1, goalMet)}
+		for _, id := range []string{"HOME-1:goal:criterion-2", "HOME-2:goal"} {
+			if note := goalWithdrawn(id, "HOME-1", g); note != "" {
+				t.Errorf("%q withdrew %s: %s", desc, id, note)
+			}
+		}
+	}
+}
