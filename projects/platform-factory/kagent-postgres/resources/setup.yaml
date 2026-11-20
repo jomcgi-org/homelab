@@ -1,3 +1,4 @@
+# invariant: KAGENT-PG-1
 # The setup Job connects as the database owner and the migration login.
 apiVersion: v1
 kind: Secret
