@@ -121,9 +121,13 @@ Ask for evidence of outside state only when a wrong fact exposes something:
 For these, a fact the reviewer cannot read is `unverified` at medium, and
 Joe's decision on the PR clears it ("Clearing a finding without a fix").
 Leave out every other unknown about outside state, or name its check after
-rollout in one low finding. For example, a token that lacks a scope fails
-loudly at rollout and is fixed then; a committed token or a new public
-ingress is not.
+rollout in one low finding. This includes a token's effective scopes and
+setup outside the repository, such as a secret, an account setting or a
+pull secret that must exist before rollout: neither side can read them, and
+a correctly configured rollout fails loudly without them and reverts
+([decision](https://github.com/jomcgi-org/homelab/pull/8431#issuecomment-7034223438)).
+A token that the diff itself grants wider than its use, a committed token or
+a new public ingress is still a finding.
 
 ## Severity
 
@@ -171,7 +175,7 @@ page checks, and none of them was a defect in the site
 | --- | --- | --- |
 | Critical | A committed secret. A route outside sign-in. A token wider than its use. Data loss, or a destructive change the issue does not authorize. A check removed, skipped or made non-failing. | Blocks. Joe is notified. |
 | High | A rollout that fails: a private image with no pull secret (#7914), values the pinned chart does not render (#7852). A crash or wrong result on a normal input. Something that works on `main` stops working. A test with no build target (#7914). An untested change to authorization, credentials, the merge gate, deletion or a migration. | Blocks until fixed. |
-| Medium | A failure on an edge input or a non-default path. A rare failure that passes silently or loses data. A dependency on code an open issue retires (#7914). A bug fix with no regression test. An error path that hides a failure. A documented command that does not work. Something a rule requires that neither the repository nor a stated outside fact shows. | Blocks until fixed or justified. |
+| Medium | A failure on an edge input or a non-default path. A rare failure that passes silently or loses data. A dependency on code an open issue retires (#7914). A bug fix with no regression test. An error path that hides a failure. A documented command that does not work. Something a rule requires that the repository does not show, or an exposure that "Facts outside the repository" lists with no evidence. | Blocks until fixed or justified. |
 | Low | Naming, wording, prose style, an optional refactor, a test for trivial code. A rare failure that is loud and recoverable (`defer`). | Never blocks. |
 
 A severity a scoped rule names covers a violation that needs no unusual
@@ -309,9 +313,10 @@ finding still blocks as before.
 - **Summary**: what was read. If part of the diff was not read, report
   `unreviewed` at high and name the paths. If a rule on the path, or a
   question whose wrong answer is high or critical, cannot be checked from the
-  repository or from a fact the PR states that "Facts outside the
-  repository" accepts, report `unverified` at medium and name the evidence
-  that settles it. Leave other unknowns out.
+  repository, report `unverified` at medium and name the evidence that
+  settles it. For state outside the repository, do this only for an
+  exposure that "Facts outside the repository" lists. Leave other unknowns
+  out.
 
 ## Dependency updates
 
