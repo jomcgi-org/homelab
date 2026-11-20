@@ -175,7 +175,7 @@ func TestScanWorkerDisappearance(t *testing.T) {
 	}
 	// Recreate a pre-upgrade observation supplied by the same-name foreign
 	// actor. With no current local placement, its pod loss cannot be used.
-	_, err = db.Exec(`ALTER TABLE scoped_worker_fence RENAME TO worker_fence;
+	_, err = db.Exec(`DROP TABLE scoped_worker_fence;
 		INSERT INTO worker_fence(attempt_id,session_id,namespace,pod,uid)
 		SELECT id,context_id,'factory-r-homelab','homelab-codex-worker','foreign-worker' FROM delivery_attempt;
 		DELETE FROM schema_migrations WHERE version='20261120000000_reaper_atespace'`)
@@ -185,11 +185,21 @@ func TestScanWorkerDisappearance(t *testing.T) {
 	if err := migrations.Apply(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
-	var legacy bool
-	if err := db.QueryRow("SELECT EXISTS (SELECT FROM scoped_worker_fence)").Scan(&legacy); err != nil || legacy {
-		t.Fatalf("legacy fence survived upgrade: exists=%t err=%v", legacy, err)
-	}
 	journal := pgtest.AsRole(t, db, "factory_reaper")
+	// A rolled-back reaper can finish its original observation, and its
+	// connector can read it without publishing it to the scoped reaper.
+	var uid string
+	err = journal.QueryRow(`UPDATE worker_fence SET gone_at=now(),actor_uid='foreign',actor_version=1
+		WHERE session_id='held' RETURNING uid`).Scan(&uid)
+	if err != nil || uid != "foreign-worker" {
+		t.Fatalf("legacy reaper update: uid=%q err=%v", uid, err)
+	}
+	var legacyGone, scoped bool
+	err = db.QueryRow(`SELECT EXISTS (SELECT FROM worker_fence WHERE session_id='held' AND gone_at IS NOT NULL),
+		EXISTS (SELECT FROM scoped_worker_fence)`).Scan(&legacyGone, &scoped)
+	if err != nil || !legacyGone || scoped {
+		t.Fatalf("rollback evidence: legacyGone=%t scoped=%t err=%v", legacyGone, scoped, err)
+	}
 	running := func(uid string) []byte { return actorFixture(uid, 2, time.Now()) }
 	if _, err = db.Exec("INSERT INTO actor_fixture VALUES('foreign',$1),('ns',$2),('other',$3)", running("original"), running("original"), running("foreign-worker")); err != nil {
 		t.Fatal(err)
