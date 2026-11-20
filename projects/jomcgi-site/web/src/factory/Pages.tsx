@@ -14,7 +14,8 @@ import type {
 import { states } from "../../../../factory-storyboard/schema/types";
 import type { Snapshot } from "./data";
 import { fillStats, formatNumber, paths } from "./data";
-import { BurnUp, Chart } from "./Charts";
+import { DashboardChart } from "../DashboardChart";
+import { BurnUp } from "./Charts";
 
 export const withheldMessage =
   "This turn was withheld because it matched the secret scan.";
@@ -152,26 +153,30 @@ export function StoryPage({
           ))}
         </dl>
         <div className="charts">
-          <Chart
+          <DashboardChart
+            formatValue={formatNumber}
             title="Shipped per week"
             unit="issues"
             points={story.charts.shippedPerWeek}
           />
-          <Chart
+          <DashboardChart
+            formatValue={formatNumber}
             title="Issue-to-merge time"
             unit="hours"
             points={story.charts.issueToMergeHours}
           />
-          <Chart
+          <DashboardChart
+            formatValue={formatNumber}
             title="Review rounds per PR"
             unit="rounds"
             points={story.charts.reviewRounds}
           />
-          <Chart
+          <DashboardChart
+            formatValue={formatNumber}
             title="First-pass review rate"
             unit="%"
             points={story.charts.firstPassReviewRate}
-            percent
+            maximum={100}
           />
         </div>
       </section>

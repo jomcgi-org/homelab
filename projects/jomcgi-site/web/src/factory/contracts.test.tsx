@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { Theme } from "@astryxdesign/core/theme";
 import { neutralTheme } from "@astryxdesign/theme-neutral/built";
 import axe from "axe-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { FactoryPage } from "../factory-page";
 import { SECTIONS } from "../sections";
 import { Pages } from "./Pages";
@@ -22,6 +22,32 @@ describe.each(["light", "dark"] as const)("%s theme", (mode) => {
     async (path, title) => {
       window.history.replaceState(null, "", path);
       mockFiles();
+      if (path === "/factory") {
+        await import("../DashboardPlot");
+        // Happy DOM has no layout. Supply a width so axe sees the rendered plots.
+        vi.stubGlobal(
+          "ResizeObserver",
+          class {
+            constructor(private readonly callback: ResizeObserverCallback) {}
+
+            observe(target: Element) {
+              this.callback(
+                [
+                  {
+                    target,
+                    contentRect: new DOMRect(0, 0, 360, 200),
+                  } as ResizeObserverEntry,
+                ],
+                this as unknown as ResizeObserver,
+              );
+            }
+
+          unobserve() {}
+
+            disconnect() {}
+          },
+        );
+      }
       const styles = [...document.querySelectorAll("style")];
       const { container } = render(
         <Theme theme={neutralTheme} mode={mode}>
@@ -29,6 +55,13 @@ describe.each(["light", "dark"] as const)("%s theme", (mode) => {
         </Theme>,
       );
       await screen.findByRole("heading", { level: 1, name: title });
+      if (path === "/factory") {
+        await waitFor(() =>
+          expect(
+            container.querySelectorAll(".dashboard-chart-plot svg"),
+          ).toHaveLength(4),
+        );
+      }
       // Include every chart table and tool call in the accessibility check.
       for (const details of container.querySelectorAll("details"))
         details.open = true;

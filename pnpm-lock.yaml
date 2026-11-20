@@ -30,6 +30,9 @@ overrides:
   brace-expansion: '>=5.0.6 <6'
 
 patchedDependencies:
+  '@astryxdesign/charts@0.7.17-canary.g12f81bd':
+    hash: f84904382a373fa9b3f9af57190bc4205abd2733eb1599f6d82c6e9006e0fbf0
+    path: bazel/patches/@astryxdesign__charts@0.7.17-canary.g12f81bd.patch
   '@sveltejs/kit':
     hash: f35513c93bdfe798a534e43824cf9bc7c123bf2464047ccc5d9ed9867c26f4e4
     path: bazel/patches/@sveltejs__kit.patch
@@ -174,12 +177,15 @@ importers:
 
   projects/jomcgi-site/web:
     dependencies:
+      '@astryxdesign/charts':
+        specifier: 0.7.17-canary.g12f81bd
+        version: 0.7.17-canary.g12f81bd(patch_hash=f84904382a373fa9b3f9af57190bc4205abd2733eb1599f6d82c6e9006e0fbf0)(@astryxdesign/core@0.7.17-canary.g12f81bd(@stylexjs/stylex@0.19.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@stylexjs/stylex@0.19.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@astryxdesign/core':
-        specifier: 0.7.11
-        version: 0.7.11(@stylexjs/stylex@0.19.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        specifier: 0.7.17-canary.g12f81bd
+        version: 0.7.17-canary.g12f81bd(@stylexjs/stylex@0.19.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@astryxdesign/theme-neutral':
-        specifier: 0.7.11
-        version: 0.7.11(@astryxdesign/core@0.7.11(@stylexjs/stylex@0.19.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@types/react@19.3.0)(react@19.3.1)
+        specifier: 0.7.17-canary.g12f81bd
+        version: 0.7.17-canary.g12f81bd(@astryxdesign/core@0.7.17-canary.g12f81bd(@stylexjs/stylex@0.19.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@types/react@19.3.0)(react@19.3.1)
       '@stylexjs/stylex':
         specifier: 0.19.1
         version: 0.19.1
@@ -375,6 +381,14 @@ packages:
   '@antfu/install-pkg@1.1.0':
     resolution: {integrity: sha512-MGQsmw10ZyI+EJo45CdSER4zEb+p31LpDAFp2Z3gkSd1yqVZGi0Ebx++YTEMonJy4oChEMLsxZ64j8FH6sSqtQ==}
 
+  '@astryxdesign/charts@0.7.17-canary.g12f81bd':
+    resolution: {integrity: sha512-EdCX7zCFw4QCuAqlf0Xm/OPeCxqqT4Hj42PyJJvDxQRDPu1BxezMnLWUF6jJApmk3un8Wy1dQyHnxAupLBaWjw==}
+    peerDependencies:
+      '@astryxdesign/core': 0.7.17-canary.g12f81bd
+      '@stylexjs/stylex': '>=0.10.0'
+      react: '>=19.0.0'
+      react-dom: '>=19.0.0'
+
   '@astryxdesign/cli@0.7.11':
     resolution: {integrity: sha512-nCmG4bvA2d/RazTHwRRD7gckrTh1GEj1NBNZjfb2mPrLNgWpSPy2YVS/ICEj2O9fuGrac1vCdPfloeWkaRk+Lg==}
     engines: {node: '>=22.13.0'}
@@ -392,10 +406,23 @@ packages:
       react: '>=19.0.0'
       react-dom: '>=19.0.0'
 
+  '@astryxdesign/core@0.7.17-canary.g12f81bd':
+    resolution: {integrity: sha512-rLybLojps7xpd+cxqu92PnaE9NbyFOgYp7e4ikWXjQaMCWauPfhzLwfYa3eozvQFa7/8cGz5Jx4X9Tc/QLqlVg==}
+    peerDependencies:
+      '@stylexjs/stylex': ^0.19.0
+      react: '>=19.0.0'
+      react-dom: '>=19.0.0'
+
   '@astryxdesign/theme-neutral@0.7.11':
     resolution: {integrity: sha512-zjI+6g/tv6TAY6i5gk2/x8zrf/Gn/io2TGXnd6IhRkhGdIhkb+zdL2bHOf4F8S5bjonHqdDiKzQ2P2AZEDyO/A==}
     peerDependencies:
       '@astryxdesign/core': 0.7.11
+      react: '>=19'
+
+  '@astryxdesign/theme-neutral@0.7.17-canary.g12f81bd':
+    resolution: {integrity: sha512-93qtgXC2phZV8XO1NBxAOr8/aScskfTnYXKHgIMZN0HFaNHgrDOrT+cEYtSpHl2tJxaV5weqXUy4DnNdPPgwpw==}
+    peerDependencies:
+      '@astryxdesign/core': 0.7.17-canary.g12f81bd
       react: '>=19'
 
   '@babel/code-frame@7.29.7':
@@ -2949,6 +2976,16 @@ snapshots:
       package-manager-detector: 1.8.0
       tinyexec: 1.3.0
 
+  '@astryxdesign/charts@0.7.17-canary.g12f81bd(patch_hash=f84904382a373fa9b3f9af57190bc4205abd2733eb1599f6d82c6e9006e0fbf0)(@astryxdesign/core@0.7.17-canary.g12f81bd(@stylexjs/stylex@0.19.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@stylexjs/stylex@0.19.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+    dependencies:
+      '@astryxdesign/core': 0.7.17-canary.g12f81bd(@stylexjs/stylex@0.19.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@stylexjs/stylex': 0.19.1
+      d3-array: 3.2.4
+      d3-scale: 4.0.2
+      d3-shape: 3.2.0
+      react: 19.3.1
+      react-dom: 19.3.1(react@19.3.1)
+
   '@astryxdesign/cli@0.7.11(@astryxdesign/core@0.7.11(@stylexjs/stylex@0.19.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))':
     dependencies:
       '@babel/core': 7.29.7
@@ -2979,9 +3016,24 @@ snapshots:
       react: 19.3.1
       react-dom: 19.3.1(react@19.3.1)
 
+  '@astryxdesign/core@0.7.17-canary.g12f81bd(@stylexjs/stylex@0.19.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+    dependencies:
+      '@stylexjs/stylex': 0.19.1
+      intl-messageformat: 11.2.15
+      react: 19.3.1
+      react-dom: 19.3.1(react@19.3.1)
+
   '@astryxdesign/theme-neutral@0.7.11(@astryxdesign/core@0.7.11(@stylexjs/stylex@0.19.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@types/react@19.3.0)(react@19.3.1)':
     dependencies:
       '@astryxdesign/core': 0.7.11(@stylexjs/stylex@0.19.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      lucide-react: 1.70.0(@types/react@19.3.0)(react@19.3.1)
+      react: 19.3.1
+    transitivePeerDependencies:
+      - '@types/react'
+
+  '@astryxdesign/theme-neutral@0.7.17-canary.g12f81bd(@astryxdesign/core@0.7.17-canary.g12f81bd(@stylexjs/stylex@0.19.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@types/react@19.3.0)(react@19.3.1)':
+    dependencies:
+      '@astryxdesign/core': 0.7.17-canary.g12f81bd(@stylexjs/stylex@0.19.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       lucide-react: 1.70.0(@types/react@19.3.0)(react@19.3.1)
       react: 19.3.1
     transitivePeerDependencies:
