@@ -314,7 +314,7 @@ def test_tokens_and_config_paths_match_the_pod() -> None:
     assert config["metricsAddr"] == ":9090"
     assert config["appId"] == 5758326
     assert config["checkName"] == "factory review"
-    assert config["concurrency"] == 5
+    assert config["concurrency"] == 3
     assert config["bindings"] == [
         {
             "name": "homelab",
@@ -468,7 +468,7 @@ def test_review_binding_gets_isolated_agent_and_egress_credentials() -> None:
         "GIT_CONFIG_VALUE_0"
     ] == "Authorization: Basic factory-placeholder"
     worker = _in(docs, "WorkerPool", _REVIEW_NS, "homelab-reviewer")["spec"]
-    assert worker["replicas"] == 5
+    assert worker["replicas"] == 3
     assert worker["sandboxClasses"] == [
         {"name": "gvisor", "configRef": {"name": "gvisor-default"}}
     ]
