@@ -229,10 +229,14 @@ type Engine struct {
 	commitRefs map[string]string
 
 	// Only the polling goroutine uses these.
-	groups       map[string]string    // merge group commit: the conclusion of its review check
-	enqueueAfter map[string]time.Time // repo#pr@sha: next enqueue attempt after a failure
-	waiting      map[prKey]*waitingHead
-	waitPoll     uint64
+	groups        map[string]string    // merge group commit: the conclusion of its review check
+	enqueueAfter  map[string]time.Time // repo#pr@sha: next enqueue attempt after a failure
+	waiting       map[prKey]*waitingHead
+	waitPoll      uint64
+	cleanupChecks map[int64]cleanupCheck // GitHub check run ID
+
+	// Background cleanup and review dispatch have independent slot budgets.
+	cleanupSlots chan struct{}
 
 	// Under mu: each binding's last session sweep, and whether one runs.
 	swept    map[string]time.Time
@@ -381,6 +385,7 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 	}
 	return &Engine{
 		cfg: cfg, gh: gh, tasks: tasks, m: m, log: log, rules: rules, epoch: rand.Text(),
+		cleanupChecks: make(map[int64]cleanupCheck), cleanupSlots: make(chan struct{}, cfg.Concurrency),
 		inflight: map[headKey]*running{}, parked: map[headKey]*parkedRoot{}, pendingHolds: map[headKey]*github.CheckRun{}, contexts: map[string]*heldContext{}, recoveries: map[prKey]recovery{},
 		groups: map[string]string{}, enqueueAfter: map[string]time.Time{}, waiting: map[prKey]*waitingHead{},
 		heads: map[prKey]string{}, comments: map[prKey]*commentState{}, commentLimits: map[prKey]bool{}, commentReplays: map[prKey]int64{},
@@ -433,6 +438,12 @@ func (e *Engine) Tick(ctx context.Context) {
 	// The worker may discover a comment limit after a check was completed.
 	// Refresh its notice only after every binding's merge groups reconcile.
 	e.noteCommentLimits(ctx)
+}
+
+type cleanupCheck struct {
+	binding string
+	cancel  context.CancelFunc
+	result  <-chan bool
 }
 
 type candidate struct {
@@ -585,6 +596,21 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 				reviews[pr.Number] = e.maybeEnqueue(ctx, b, pr, cur)
 			}
 			e.replayComment(ctx, b, pr, reviews[pr.Number])
+		}
+	}
+	// Stop cleanup for checks that are no longer candidates on this binding.
+	pending := make(map[int64]bool, len(attach))
+	for _, c := range attach {
+		pending[c.run.ID] = true
+	}
+	for id, check := range e.cleanupChecks {
+		if check.binding == b.Name && !pending[id] {
+			check.cancel()
+			select {
+			case <-check.result:
+				delete(e.cleanupChecks, id)
+			default:
+			}
 		}
 	}
 	e.dateWaiting(ctx, b, start)
@@ -1102,6 +1128,39 @@ func (e *Engine) readRecovery(ctx context.Context, b *Binding, pr github.PullReq
 	return recoveryClear, nil
 }
 
+// cleanupReady starts at most one probe per waiting check. Only the poller
+// owns cleanupChecks. The background probes share a separate concurrency limit.
+func (e *Engine) cleanupReady(ctx context.Context, b *Binding, pr github.PullRequest, id int64, ref *SessionRef, attempt int) bool {
+	if check, ok := e.cleanupChecks[id]; ok {
+		select {
+		case ready := <-check.result:
+			check.cancel()
+			delete(e.cleanupChecks, id)
+			return ready
+		default:
+			return false
+		}
+	}
+	select {
+	case e.cleanupSlots <- struct{}{}:
+	default:
+		return false
+	}
+	probeCtx, cancel := context.WithCancel(ctx)
+	result := make(chan bool, 1)
+	e.cleanupChecks[id] = cleanupCheck{binding: b.Name, cancel: cancel, result: result}
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		defer func() { <-e.cleanupSlots }()
+		defer cancel()
+		prior := &inputs{priorHead: ref.Head, prior: State{Session: ref}}
+		_, reason := e.resumable(probeCtx, b, pr, prior, attempt, false, e.prLog(b, pr))
+		result <- reason != reasonUnreadable && reason != reasonUnsettled && probeCtx.Err() == nil
+	}()
+	return false
+}
+
 // begin starts a review in the background, creating its check run first
 // when the head has none. It reports true, starting nothing, when every
 // slot is taken; a head already under review starts nothing either.
@@ -1111,9 +1170,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 	if run != nil {
 		rec := RecordedTask(run.Summary)
 		if st, ok := LoadState(run.Text); ok && st.Cleanup != nil && run.Status == "in_progress" && rec.ID == "" {
-			prior := &inputs{priorHead: st.Cleanup.Head, prior: State{Session: st.Cleanup}}
-			_, reason := e.resumable(ctx, b, pr, prior, rec.Attempt, false, e.prLog(b, pr))
-			if reason == reasonUnreadable || reason == reasonUnsettled {
+			if !e.cleanupReady(ctx, b, pr, run.ID, st.Cleanup, rec.Attempt) {
 				return false
 			}
 		}
