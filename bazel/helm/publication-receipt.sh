@@ -14,8 +14,13 @@ shopt -s nullglob
 declare -A seen=()
 lines=("Chart-Source-Commit: $source_sha" "Chart-Publication-Complete: true")
 for record in "$record_dir"/*; do
-	if [[ ! -f "$record" ]] ||
-		! read -r chart version extra <"$record" ||
+	if [[ -f "$record" ]]; then
+		mapfile -t record_lines <"$record"
+	else
+		record_lines=()
+	fi
+	if [[ "${#record_lines[@]}" -ne 1 ]] ||
+		! read -r chart version extra <<<"${record_lines[0]}" ||
 		[[ ! "$chart" =~ ^projects/[A-Za-z0-9_./-]+$ || -n "$extra" ||
 			"/$chart/" == *"/../"* || "/$chart/" == *"/./"* || "/$chart/" == *"//"* ||
 			! -f "$chart/Chart.yaml" || ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ||
