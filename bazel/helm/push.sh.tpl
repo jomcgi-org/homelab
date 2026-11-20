@@ -269,20 +269,38 @@ if [[ "$CURRENT_BRANCH" == "main" ]]; then
         echo "$SHOW_OUT" | head -5
       fi
 
-      # Repackage at the computed version: the bazel-built .tgz still carries
-      # Chart.yaml's version, which is now the PREVIOUS release. Only the
-      # version line changes, so the pinned image digests are untouched, which
-      # is what makes the next publish a no-op.
-      if [[ "$CHART_VERSION" != "$CURRENT_VERSION" ]]; then
-        MAIN_WORK_DIR=$(mktemp -d)
-        trap 'rm -rf "$MAIN_WORK_DIR"' EXIT
-        tar -xzf "$CHART_TGZ" -C "$MAIN_WORK_DIR"
-        PKG_NAME=$(ls "$MAIN_WORK_DIR")
-        sed "s/^version:.*/version: ${CHART_VERSION}/" "$MAIN_WORK_DIR/${PKG_NAME}/Chart.yaml" > "$MAIN_WORK_DIR/${PKG_NAME}/Chart.yaml.tmp"
-        mv "$MAIN_WORK_DIR/${PKG_NAME}/Chart.yaml.tmp" "$MAIN_WORK_DIR/${PKG_NAME}/Chart.yaml"
-        "$HELM" package "$MAIN_WORK_DIR/${PKG_NAME}" --destination "$MAIN_WORK_DIR" >/dev/null
-        PUSH_TGZ="$MAIN_WORK_DIR/${PKG_NAME}-${CHART_VERSION}.tgz"
-      fi
+      # Stamp the package outside the Bazel build. Kargo can use the source
+      # commit of a deployed chart to verify that it covers a merge.
+      SOURCE_COMMIT=$(git -C "$WORKSPACE" rev-parse --verify HEAD^{commit})
+      MAIN_WORK_DIR=$(mktemp -d)
+      trap 'rm -rf "$MAIN_WORK_DIR"' EXIT
+      tar -xzf "$CHART_TGZ" -C "$MAIN_WORK_DIR"
+      PKG_NAME=$(ls "$MAIN_WORK_DIR")
+      PACKAGE_METADATA="$MAIN_WORK_DIR/$PKG_NAME/Chart.yaml"
+      # Helm serializes the packaged annotations as a top-level block map.
+      # Add a reserved key, or replace it if present in the package.
+      awk -v version="$CHART_VERSION" -v source="$SOURCE_COMMIT" '
+        /^version:/ { print "version: " version; next }
+        /^annotations:([[:space:]]*|[[:space:]]*\{\})$/ {
+          print "annotations:"
+          printf "  homelab.jomcgi.dev/source-commit: \"%s\"\n", source
+          annotated = 1
+          next
+        }
+        /^annotations:/ { unsupported = 1; exit 1 }
+        /^  homelab\.jomcgi\.dev\/source-commit:/ && annotated { next }
+        { print }
+        END {
+          if (unsupported) exit 1
+          if (!annotated) {
+            print "annotations:"
+            printf "  homelab.jomcgi.dev/source-commit: \"%s\"\n", source
+          }
+        }
+      ' "$PACKAGE_METADATA" > "$PACKAGE_METADATA.tmp"
+      mv "$PACKAGE_METADATA.tmp" "$PACKAGE_METADATA"
+      "$HELM" package "$MAIN_WORK_DIR/${PKG_NAME}" --destination "$MAIN_WORK_DIR" >/dev/null
+      PUSH_TGZ="$MAIN_WORK_DIR/${PKG_NAME}-${CHART_VERSION}.tgz"
 
       # Record for the batched write-back: one file per chart, so concurrent
       # multirun jobs never write the same path.

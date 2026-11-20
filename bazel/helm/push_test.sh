@@ -71,6 +71,7 @@ setup() {
 	# Keep source values distinct from the build-time digest-pinned package.
 	mkdir -p "$stubs/archive/demo"
 	cp "$ws/projects/demo/chart/Chart.yaml" "$stubs/archive/demo/Chart.yaml"
+	printf 'annotations:\n  example.org/existing: keep\n  homelab.jomcgi.dev/source-commit: stale\n' >>"$stubs/archive/demo/Chart.yaml"
 	cat >"$stubs/archive/demo/values.yaml" <<-'VALUES'
 		replicas: 2
 		image:
@@ -305,6 +306,12 @@ expect "recovery preserves values and pinned digests" yes \
 	"$(cmp -s "$stubs/archive/demo/values.yaml" "$stubs/pushed/demo/values.yaml" && echo yes || echo no)" "all original values survive"
 expect "recovery updates packaged Chart.yaml version" 0.4.0 \
 	"$(awk '/^version:/ {print $2}' "$stubs/pushed/demo/Chart.yaml")" "published chart metadata"
+
+expect "published chart identifies the exact source commit" "$(git -C "$ws" rev-parse HEAD)" \
+	"$(awk '/^  homelab\.jomcgi\.dev\/source-commit:/ {gsub(/"/, "", $2); print $2}' "$stubs/pushed/demo/Chart.yaml")" "rollout provenance"
+
+expect "published chart keeps existing annotations" keep \
+	"$(awk '/^  example\.org\/existing:/ {print $2}' "$stubs/pushed/demo/Chart.yaml")" "packaging preserves chart metadata"
 
 # 6-9. Each refusal must reach its own diagnostic, never an incidental tar or
 # fixture error. Empty and unchanged output share a production diagnostic, but
