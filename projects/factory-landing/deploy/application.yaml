@@ -23,6 +23,10 @@ spec:
     server: https://kubernetes.default.svc
     namespace: factory-landing
   syncPolicy:
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/warn: restricted
+        pod-security.kubernetes.io/audit: restricted
     automated:
       # HOME-363: retain the live Service and policy until software-factory adopts them.
       prune: false

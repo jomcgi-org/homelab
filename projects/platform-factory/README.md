@@ -6,3 +6,6 @@ database, object storage keys, runtime identities and their grants. Its
 
 The [t3](t3/) application relays authenticated admin browser traffic to the
 T3 socket on node-1. See [T3 browser access](../factory-cluster/README.md#t3-browser-access).
+
+The [pod host access policy](pod-host-access/) warns and audits when application
+pods request host networking, host PID, hostPath volumes or privileged containers.
