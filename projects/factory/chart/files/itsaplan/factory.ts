@@ -6,6 +6,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { db, agentRun, aiAgent, issue, label, projectColumn } from "@repo/db";
 import { factoryTransaction } from "../../../packages/db/src/client";
 import { guards, entityGuard } from "./shared/guards";
+import { assertPermission } from "./shared/access";
 import { authContext } from "./shared/auth-context";
 import { HttpError, errorAnswer } from "./shared/lib";
 import {
@@ -169,6 +170,7 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
     "/issues/:issueId/factory-assessment",
     async ({ params, body, user, projectId }) =>
       factoryTransaction(async () => {
+        await assertPermission(projectId, user, "work_items", "read");
         const parentId = params.issueId;
         await api.lockIssue(parentId);
         const parent = await getIssue(parentId);
@@ -177,7 +179,13 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
         const receipt = await db.execute<{ child_id: number }>(
           sql`select child_id from factory_assessment where parent_id=${parentId} and work_id=${body.workId}`,
         );
-        if (receipt.length) return getIssue(receipt[0].child_id);
+        if (receipt.length) {
+          const childId = receipt[0].child_id;
+          await api.lockIssue(childId);
+          if ((await getIssueProjectId(childId)) !== projectId)
+            throw new HttpError(404, "Assessment unavailable");
+          return getIssue(childId);
+        }
         const scope = await getProjectById(projectId);
         const [backlog] = await db
           .select()

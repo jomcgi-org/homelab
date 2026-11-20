@@ -1079,7 +1079,11 @@ func TestAssessmentAfterDone(t *testing.T) {
 			if err := json.Unmarshal([]byte(`{"project":{"id":7},"columns":[{"id":5,"name":"Backlog","stateType":"backlog"},{"id":1,"name":"Todo","stateType":"unstarted"},{"id":3,"name":"Done","stateType":"completed"}],"labels":[{"id":8,"name":"deferred"}],"assignees":[{"userId":"coder-user","username":"coder","kind":"agent"}]}`), v.its.deferredProject); err != nil {
 				t.Fatal(err)
 			}
-			measure := "Assess: 3d untrusted measure instructions"
+			const specification = "median review rounds per merged PR from GitHub; baseline 4"
+			measure := "Assess: 3d " + specification
+			if scenario == "regressed" {
+				measure = "Assess: 3d untrusted measure instructions"
+			}
 			firstMerge := v.clk.Now().UTC().Truncate(24 * time.Hour).Add(23 * time.Hour)
 			anchor := firstMerge
 
@@ -1102,6 +1106,7 @@ func TestAssessmentAfterDone(t *testing.T) {
 				v.poll()
 				v.gh.merge(1, "merged")
 			}
+			v.its.issues[101].Description = "Success measure: " + specification
 			v.clk.Advance(anchor.Sub(v.clk.Now()))
 			v.gh.byNumber(len(v.gh.PRs())).mergedAt = anchor
 			for range 8 {
@@ -1129,7 +1134,10 @@ func TestAssessmentAfterDone(t *testing.T) {
 					t.Fatalf("missing %q in %s", want, follow.Description)
 				}
 			}
-			if strings.Contains(follow.Description, measure) {
+			if !strings.Contains(follow.Description, specification) || (scenario != "regressed" && !strings.Contains(follow.Description, measure)) {
+				t.Fatalf("missing authorized specification: %s", follow.Description)
+			}
+			if strings.Contains(follow.Description, "untrusted measure instructions") {
 				t.Fatal("commit instructions in brief")
 			}
 			count := v.its.activationCreates
@@ -1149,7 +1157,7 @@ func TestAssessmentAfterDone(t *testing.T) {
 			if scenario == "activation" {
 				return
 			}
-			answer := "Observed 3 rounds against baseline 4.\nVerdict: " + scenario
+			answer := "Observed 3 rounds against baseline 4. Confounder: a holiday.\nVerdict: " + scenario
 			if scenario == "missing" {
 				answer = "No measurement available."
 			}
@@ -1196,12 +1204,19 @@ func TestAssessmentAfterDone(t *testing.T) {
 			if follow.ColumnID != wantColumn {
 				t.Fatalf("verdict column %d, want %d", follow.ColumnID, wantColumn)
 			}
+			results := v.its.Results(receipt.RunID)
+			if len(results) != 1 || results[0].Output != answer {
+				t.Fatalf("assessment run result = %+v", results)
+			}
 			posted, parent := false, false
 			for _, c := range v.its.Comments() {
 				if strings.Contains(c.body, answer) {
 					t.Fatal("raw model answer in comment")
 				}
 				if strings.Contains(c.body, "Verdict: "+scenario) || (scenario == "missing" && strings.Contains(c.body, "remains open")) {
+					if !strings.Contains(c.body, fmt.Sprintf("https://plan.example/runs/%d", receipt.RunID)) {
+						t.Fatalf("missing assessment result reference: %s", c.body)
+					}
 					if c.issueID == id {
 						posted = scenario != "missing" || strings.Contains(c.body, "remains open")
 					}

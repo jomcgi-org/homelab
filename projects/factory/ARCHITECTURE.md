@@ -332,7 +332,7 @@ See the [connector architecture](connector/ARCHITECTURE.md) for the [run lifecyc
 
 A coding head with a success measure carries one `Assess: <N>d <measure, source and baseline>` trailer before the final Activation trailer. The default window is three days. A different window includes its reason. The connector saves the measure at merge and queues one related assessment when it acknowledges the original issue's move to Done, including completion through an activation child. The deferred Backlog issue starts on the first UTC date after that window ends.
 
-The connector builds the assessment brief from a fixed template pointing to the original issue’s authorized measure. It publishes the parsed verdict without a PR. A single accepted or inconclusive verdict closes the assessment. A regressed verdict returns it to Todo and reports the verdict on the original issue. Missing or ambiguous verdicts leave the assessment open. The recorded verdict is final.
+The connector builds the assessment brief from the original issue’s measurement text. A matching trailer is reproduced from the tracker line; otherwise the child quotes the original issue specification. The issue comment records the verdict and references the run result, which retains observations and confounders. A single accepted or inconclusive verdict closes the assessment. A regressed verdict returns it to Todo and reports the verdict on the original issue. Missing or ambiguous verdicts leave the assessment open. The recorded verdict is final.
 
 itsaplan owns the request and its run history, kagent owns execution and
 session state, GitHub owns PR, check, review and merge state. The connector

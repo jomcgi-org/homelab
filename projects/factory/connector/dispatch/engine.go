@@ -2081,7 +2081,6 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 					return err
 				}
 				if handled {
-					res.Output = assessmentSummary(res.Output)
 					return e.finishRun(ctx, tx, r, res)
 				}
 				// The turn finished; delivery opens or updates the PR from the
