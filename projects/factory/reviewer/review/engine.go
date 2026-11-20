@@ -1915,7 +1915,38 @@ func (e *Engine) previousState(ctx context.Context, b *Binding, pr github.PullRe
 		e.ghError(ctx, e.prLog(b, pr), b, "pull_request_heads", err)
 		return State{}, "", "", err
 	}
+	e.endPreviousHead(ctx, b, pr, hist)
 	return e.previousStateFrom(ctx, b, pr, hist)
+}
+
+// endPreviousHead completes the PR's in-progress check on its newest earlier
+// head as cancelled when that check records a review root and no worker or
+// parked root in this process holds it. This covers a process that stopped
+// during a quota wait and a push that replaced the head before the restart:
+// complete ends the recorded root once.
+func (e *Engine) endPreviousHead(ctx context.Context, b *Binding, pr github.PullRequest, hist *github.HeadHistory) {
+	var prev string
+	for i := len(hist.Heads) - 1; i >= 0 && prev == ""; i-- {
+		if sha := hist.Heads[i].SHA; sha != pr.HeadSHA {
+			prev = sha
+		}
+	}
+	if prev == "" || e.isRunning(headKey{b.Name, prev}) {
+		return
+	}
+	run, err := e.reviewCheck(ctx, b, prev)
+	if err != nil || run == nil || run.ExternalID != MessageID(b.repo(), pr.Number, prev) {
+		return
+	}
+	if _, ok := resumedTrace(run); !ok {
+		return
+	}
+	// Without the new review's usage, complete ends the old root, not this one.
+	octx := context.WithValue(ctx, reviewUsageKey{}, nil)
+	l := e.log.With("binding", b.Name, "repo", b.repo(), "pr", pr.Number, "sha", prev)
+	e.complete(octx, b, run, Outcome{Conclusion: ConclusionCancelled, Output: github.CheckRunOutput{
+		Title: "Review cancelled", Summary: "A newer head of the PR replaced this one.",
+	}}, l)
 }
 
 func (e *Engine) previousStateFrom(ctx context.Context, b *Binding, pr github.PullRequest, hist *github.HeadHistory) (st State, head, unknown string, err error) {

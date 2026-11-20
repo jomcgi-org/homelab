@@ -594,3 +594,38 @@ func TestSupersededParkedRootEndsOnce(t *testing.T) {
 		t.Fatalf("old head's review spans = %v, want one cancelled root", spans)
 	}
 }
+
+// A process stops while a head waits for quota, and a push replaces that
+// head before the next process starts. The new head's review completes the
+// old check as cancelled and ends the old head's recorded root once.
+func TestRestartThenPushEndsOldRootOnce(t *testing.T) {
+	exporter := captureReviewSpans(t)
+	h := newHarness(t)
+	addPR7(h)
+	q := &fakeQuota{}
+	h.cfg.Quota = q
+	e, ctx, stop := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	h.k.finish(task, kagent.StateFailed, "insufficient_quota")
+	waitForQuotaCheck(t, h)
+	stop()
+	shaB := sha40('b')
+	h.gh.push(7, shaB)
+	e, ctx, stop = h.start()
+	e.Tick(ctx)
+	eventually(t, "the new head's task", func() bool { return h.taskOn(7, shaB, 1) != "" })
+	e.Tick(ctx)
+	stop()
+	if c := h.gh.check(shaA); c.Status != "completed" || c.Conclusion != ConclusionCancelled {
+		t.Fatalf("old head's check = %s %s", c.Status, c.Conclusion)
+	}
+	var old []map[string]string
+	for _, span := range reviewSpans(exporter) {
+		if span["pr.head_sha"] == shaA {
+			old = append(old, span)
+		}
+	}
+	if len(old) != 1 || old[0]["root"] != "true" || old[0]["review.verdict"] != ConclusionCancelled {
+		t.Fatalf("old head's review spans = %v, want one cancelled root", old)
+	}
+}
