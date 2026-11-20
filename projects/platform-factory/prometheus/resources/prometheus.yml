@@ -211,6 +211,27 @@ scrape_configs:
         target_label: pod
       - source_labels: [__meta_kubernetes_pod_node_name]
         target_label: node
+  - job_name: factory-review-broker
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [factory-review-broker]
+        selectors:
+          - role: pod
+            label: app.kubernetes.io/name=factory-review-broker
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_port_number]
+        regex: "8081"
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
   - job_name: factory-connector
     kubernetes_sd_configs:
       - role: pod

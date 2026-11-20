@@ -10,7 +10,6 @@
 {{- end }}
 {{- $config := dict "namespace" $ns "adminListenAddr" (printf ":%d" (int $b.adminPort)) "tokenReview" (dict "audience" "factory-review-broker") }}
 {{- $_ := set $config "githubReview" (dict
-  "appIdFile" "/etc/factory-review-github-app/app-id"
   "installationIdFile" "/etc/factory-review-github-app/installation-id"
   "privateKeyFile" "/etc/factory-review-github-app/private-key") }}
 {{- with .Values.reviewer.commentAuthor }}
@@ -22,6 +21,8 @@
 {{- with $b.config.githubReview }}
 {{- $_ := set $config "githubReview" (mustMergeOverwrite $config.githubReview (deepCopy .)) }}
 {{- end }}
+{{- $_ := set $config.githubReview "expectedAppId" (printf "%d" (int64 .Values.reviewer.appId)) }}
+{{- $_ := set $config.githubReview "appIdFile" "/etc/factory-review-github-app/app-id" }}
 {{- $configYAML := toYaml $config }}
 apiVersion: v1
 kind: Namespace

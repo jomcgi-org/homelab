@@ -107,6 +107,7 @@ func run(logger *slog.Logger) error {
 		go d.reviewMinter.Run(ctx)
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /healthz", healthz)
+		mux.Handle("GET /metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 		d.registerReview(mux, cfg)
 		listeners = map[string]http.Handler{cfg.AdminListenAddr: mux}
 	} else {

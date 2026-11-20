@@ -1,4 +1,7 @@
 {{- if .Values.reviewer.enabled }}
+{{- if eq (int64 .Values.broker.githubApp.appId) (int64 .Values.reviewer.appId) }}
+{{- fail "author and reviewer App IDs must differ" }}
+{{- end }}
 {{- if not .Values.broker.enabled }}
 {{- fail "reviewer.enabled needs broker.enabled" }}
 {{- end }}

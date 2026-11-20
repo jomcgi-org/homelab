@@ -143,3 +143,20 @@ func TestClaudeConfigDefaultsAndValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestMountedAppIdentity(t *testing.T) {
+	path := write(t, "app-id", "5757158\n")
+	for _, tc := range []struct {
+		field, expected string
+		ok              bool
+	}{
+		{"github", "5757158", true},
+		{"githubReview", "5758326", false},
+	} {
+		data := "namespace: factory\n" + tc.field + ": {expectedAppId: '" + tc.expected + "', appIdFile: " + path + ", appId: '" + tc.expected + "', installationId: '1', privateKeyFile: /key}\n"
+		_, err := Load(write(t, "broker.yaml", data), func(string) string { return "" })
+		if (err == nil) != tc.ok {
+			t.Fatalf("%s: error = %v", tc.field, err)
+		}
+	}
+}

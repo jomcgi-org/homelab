@@ -442,7 +442,7 @@ records how they relate and routes results and feedback between them.
 
 ## Credential broker
 
-The reviewer calls `/github/reviewer-*` on the `factory-review-broker` Service in its own eponymous namespace with a separately projected audience. Its Deployment alone mounts the reviewer App key and writes the review bindings’ git tokens. Quota and run accounting stay on the author broker.
+The reviewer calls `/github/reviewer-*` on the `factory-review-broker` Service in its own eponymous namespace with a separately projected audience. Its Deployment alone mounts the reviewer App key and writes the review bindings’ git tokens. Each broker checks the App ID from its mounted Secret against its configured identity before minting. Prometheus scrapes both brokers for mint outcomes. Quota and run accounting stay on the author broker.
 
 `projects/factory/broker`, one replica with `Recreate`. It reuses the Codex
 OAuth code in `projects/shared/go/tokenbroker`, with the grant Secret prefix

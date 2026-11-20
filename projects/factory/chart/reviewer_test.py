@@ -599,7 +599,9 @@ def test_broker_keeps_apps_subjects_and_secret_writes_separate() -> None:
     }
     assert review["reviewBindings"] == config["reviewBindings"]
     assert "githubReview" not in config and "github" not in review
+    assert config["github"]["expectedAppId"] == "5757158"
     assert review["githubReview"] == {
+        "expectedAppId": "5758326",
         "appIdFile": "/etc/factory-review-github-app/app-id",
         "installationIdFile": "/etc/factory-review-github-app/installation-id",
         "privateKeyFile": "/etc/factory-review-github-app/private-key",
@@ -1004,3 +1006,8 @@ def test_codex_trial_stays_with_one_coding_binding() -> None:
         if doc["kind"] == "Harness" and "workload" in doc["spec"]
     ]
     assert trial_namespaces == ["factory-r-homelab"]
+
+
+def test_duplicate_broker_app_identity_is_rejected() -> None:
+    with pytest.raises(RuntimeError, match="author and reviewer App IDs must differ"):
+        _render(["broker.githubApp.appId=5758326"])

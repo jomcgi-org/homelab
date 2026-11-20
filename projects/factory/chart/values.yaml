@@ -223,6 +223,7 @@ broker:
   # Off until that item exists: the broker then mints no GitHub tokens and the
   # agents' git egress has no credential.
   githubApp:
+    appId: 5757158
     enabled: false
     itemPath: vaults/k8s-homelab/items/factory-github-app
   # Claude Code subscription relay. Only the broker mounts the token field;

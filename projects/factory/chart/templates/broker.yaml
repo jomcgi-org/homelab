@@ -47,7 +47,6 @@ and metrics. This pod holds the provider and author App credentials.
 }}
 {{- if $github }}
 {{- $_ := set $config "github" (dict
-  "appIdFile" "/etc/factory-github-app/app-id"
   "installationIdFile" "/etc/factory-github-app/installation-id"
   "privateKeyFile" "/etc/factory-github-app/private-key") }}
 {{- end }}
@@ -61,6 +60,10 @@ and metrics. This pod holds the provider and author App credentials.
   "enabled" true
   "tokenFile" "/etc/factory-claude-cvp/token"
   "modelAllowlist" $b.claude.modelAllowlist) }}
+{{- end }}
+{{- if $github }}
+{{- $_ := set $config.github "expectedAppId" (printf "%d" (int64 $b.githubApp.appId)) }}
+{{- $_ := set $config.github "appIdFile" "/etc/factory-github-app/app-id" }}
 {{- end }}
 {{- $configYAML := toYaml $config }}
 # The broker's namespace, shared with the connector. Kept: it holds the Codex

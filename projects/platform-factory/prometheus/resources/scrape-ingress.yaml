@@ -48,6 +48,25 @@ spec:
 apiVersion: cilium.io/v2
 kind: CiliumClusterwideNetworkPolicy
 metadata:
+  name: prometheus-scrape-factory-review-broker
+spec:
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: factory-review-broker
+      app.kubernetes.io/name: factory-review-broker
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: prometheus
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "8081"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
   name: prometheus-scrape-factory-connector
 spec:
   endpointSelector:
