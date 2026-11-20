@@ -1,5 +1,6 @@
 """Warn on secret patterns in PR additions and PR commit messages."""
 
+# invariant: ROOT-4
 import os
 import re
 import subprocess
