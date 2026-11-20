@@ -63,7 +63,8 @@ func readRetired(ctx context.Context, s *store, objects map[string]time.Time, pr
 //   - a payload that the new generation names is not retired;
 //   - a payload that the previous generation names retires now;
 //   - any other payload keeps its stored retirement time, or retires now
-//     without one: an orphan of a failed run, or a lost or stale state.
+//     without a usable one: an orphan of a failed run, a lost or stale
+//     state, or a stored time that is zero (a JSON null) or after now.
 //
 // prev is nil when the previous generation is unknown. retired is nil when
 // readRetired returns no state.
@@ -75,7 +76,9 @@ func collect(objects map[string]time.Time, retired map[string]time.Time, prev, c
 			continue
 		}
 		at, ok := retired[key]
-		if !ok || prev == nil || prev[key] {
+		// A zero time (a JSON null) or a time after now is not a real
+		// retirement, so the payload starts a new grace period.
+		if !ok || at.IsZero() || at.After(now) || prev == nil || prev[key] {
 			at = now
 		}
 		next[key] = at
