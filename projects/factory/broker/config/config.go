@@ -82,6 +82,7 @@ type Codex struct {
 	// MaxRequestBytes bounds a buffered relay request body.
 	MaxRequestBytes               int64    `json:"maxRequestBytes"`
 	MaxConcurrentRequestsPerActor int      `json:"maxConcurrentRequestsPerActor"`
+	TraceModels                   []string `json:"traceModels"`
 	AllowedModels                 []string `json:"allowedModels"`
 	// MaxConcurrentRequests caps relay requests in flight.
 	MaxConcurrentRequests int `json:"maxConcurrentRequests"`

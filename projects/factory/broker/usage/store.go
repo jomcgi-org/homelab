@@ -5,7 +5,6 @@ package usage
 import (
 	"context"
 	"database/sql"
-	"strings"
 
 	"github.com/jomcgi/homelab/projects/factory/broker/actorjwt"
 	"github.com/jomcgi/homelab/projects/factory/broker/relay"
@@ -16,13 +15,13 @@ type Store struct{ DB *sql.DB }
 func (s *Store) Begin(ctx context.Context, actor actorjwt.Identity) (int64, error) {
 	// kagent v1.0.1 substrate.ActorName is "session-" + lower(sessionID).
 	// Do not trust the caller's Session_id or Conversation_id headers.
-	session, ok := strings.CutPrefix(actor.ActorName, "session-")
-	if !ok || session == "" {
+	session := actor.SessionID()
+	if session == "" {
 		return 0, nil
 	}
 	var id int64
 	err := s.DB.QueryRowContext(ctx, `SELECT public.record_codex_call($1, $2, $3)`,
-		actor.Atespace, strings.ToLower(session), actor.ActorUID).Scan(&id)
+		actor.Atespace, session, actor.ActorUID).Scan(&id)
 	return id, err
 }
 
