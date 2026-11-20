@@ -307,6 +307,19 @@ groups:
           capacity:workload_pod_memory_budget_bytes offset 30m
           and on (namespace, workload, policy)
           (timestamp(capacity:workload_pod_memory_budget_bytes offset 30m) == time() - 1800)
+      # The worker publishes shortly after its five-minute input boundary.
+      # Read its 30-minute point from the corresponding earlier scrape and
+      # require the target timestamp to match this observation's grid slot.
+      - record: capacity:workload_pod_memory_due_budget_bytes
+        expr: |
+          max by (namespace, workload, policy) (
+            capacity_forecast_memory_budget_bytes{job="capacity-forecast",policy="timestral",horizon_seconds="1800"} offset 28m
+            and
+            (capacity_forecast_target_timestamp_seconds{job="capacity-forecast",policy="timestral",horizon_seconds="1800"} offset 28m
+              == time() - (time() % 300))
+          )
+        labels:
+          policy: timestral
       - record: capacity:workload_pod_memory_budget_exceeded
         expr: |
           (

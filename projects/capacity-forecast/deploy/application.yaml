@@ -1,0 +1,22 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: capacity-forecast
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: ghcr.io/jomcgi/homelab/charts
+    chart: capacity-forecast
+    targetRevision: 0.1.0
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: capacity-forecast
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
