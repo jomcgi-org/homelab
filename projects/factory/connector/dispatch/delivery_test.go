@@ -2649,11 +2649,20 @@ func TestBodySyncJournalsPRReadBeforeRetry(t *testing.T) {
 func TestRecordedForeignPullRequestStopsPolling(t *testing.T) {
 	v := newDeliveryEnv(t)
 	v.delivered()
+	v.gh.green("sha-1")
+	v.poll()
+	if len(v.gh.Enqueues()) != 1 {
+		t.Fatal("expected the legacy PR to be queued")
+	}
 	v.gh.byNumber(1).pr.Author = "another-account"
 	v.poll()
 	w := v.work(101)
 	if w.State != store.WorkStopped || !strings.Contains(w.StoppedReason, "refused PR delivery source") {
 		t.Fatalf("unexpected work item: %+v", w)
+	}
+	var notice string
+	if err := v.st.DB.QueryRow(`SELECT payload->>'body' FROM outbox WHERE dedupe_key = $1`, fmt.Sprintf("comment/stopped/%d/1", w.ID)).Scan(&notice); err != nil || !strings.Contains(notice, "remove this PR if it is queued") || strings.Contains(notice, "leaves the merge queue") {
+		t.Fatalf("cleanup notice: %q, %v", notice, err)
 	}
 	pr, err := v.st.PullRequestFor(v.ctx, w.ID)
 	if err != nil || pr == nil || pr.State != "refused" {
