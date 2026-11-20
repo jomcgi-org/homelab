@@ -19,7 +19,10 @@ type HumanGatePoll struct {
 func (s *Store) HumanGateWork(ctx context.Context) ([]HumanGatePoll, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT p.work_item_id, p.human_gate_polled_at
 		FROM pull_request p LEFT JOIN human_gate_issue h ON h.pull_request_id = p.id
-		WHERE p.state = 'open' OR h.state <> 'Done'
+		WHERE (p.state = 'open' AND h.id IS NULL) OR h.state <> 'Done'
+			OR EXISTS (SELECT 1 FROM human_gate_attempt a WHERE a.gate_id = h.id
+				AND a.operation = 'update' AND a.revision = h.revision
+				AND a.finished_at > now() - interval '24 hours')
 			OR h.applied_revision <> h.revision ORDER BY p.id`)
 	if err != nil {
 		return nil, err
@@ -154,9 +157,9 @@ func (s *Store) FinishHumanGateWrite(ctx context.Context, h *HumanGateIssue, mes
 		if _, err := tx.ExecContext(ctx, `UPDATE human_gate_attempt SET finished_at = now() WHERE message_id = $1`, messageID); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE human_gate_issue SET issue_id = $2,
-			applied_revision = CASE WHEN $3 THEN $4 ELSE applied_revision END WHERE id = $1`, h.ID, issueID, applied, h.Revision)
-		return err
+		return tx.QueryRowContext(ctx, `UPDATE human_gate_issue SET issue_id = $2,
+			applied_revision = CASE WHEN $3 THEN $4 ELSE applied_revision END
+			WHERE id = $1 AND (issue_id IS NULL OR issue_id = $2) RETURNING id`, h.ID, issueID, applied, h.Revision).Scan(new(int64))
 	})
 }
 
@@ -167,6 +170,6 @@ func (s *Store) FinishHumanGateCancel(ctx context.Context, messageID string, iss
 		if _, err := tx.ExecContext(ctx, `UPDATE human_gate_attempt SET finished_at = now() WHERE message_id = $1`, messageID); err != nil {
 			return err
 		}
-		return s.Enqueue(ctx, tx, OutboxComment, "comment/"+messageID, 0, "", map[string]any{"issueId": issueID, "body": comment})
+		return s.Enqueue(ctx, tx, OutboxComment, "comment/"+messageID, 0, "", map[string]any{"issueId": issueID, "body": comment, "once": true})
 	})
 }

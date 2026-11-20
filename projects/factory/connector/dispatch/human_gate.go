@@ -129,7 +129,7 @@ func (e *Engine) pollHumanGate(ctx context.Context, b *Binding, pr *store.PullRe
 		if marked, err = e.adoptHumanGateIssue(ctx, b, pr, h, key, marker); err != nil || h.IssueID == 0 {
 			return err
 		}
-	case h.CreateSends != 1:
+	case h.State == "Done" || h.CreateSends != 1:
 		// One create POST makes at most one issue. After a retry, an earlier
 		// POST can still commit a marked copy (ARCHITECTURE.md "Human gate"),
 		// so search on every poll. An adoption without a POST searches too.
