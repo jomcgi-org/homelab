@@ -462,23 +462,29 @@ func TestClaudeTrace(t *testing.T) {
 }
 
 func TestClaudeBodyBudget(t *testing.T) {
-	entered, release := make(chan struct{}), make(chan struct{})
-	h := newClaudeHarness(t, func(http.ResponseWriter, *http.Request) { close(entered); <-release })
-	done := make(chan struct{})
-	defer func() { close(release); <-done }()
+	var h *claudeHarness
+	h = newClaudeHarness(t, func(http.ResponseWriter, *http.Request) {
+		if h.calls.Load() != 1 {
+			t.Error("over-budget request reached upstream")
+			return
+		}
+		// The first handler holds its reservation until this upstream returns.
+		next := h.request(t, "/anthropic/v1/messages/count_tokens", claudeBody)
+		unread := strings.NewReader(claudeBody)
+		next.Body = io.NopCloser(unread)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, next)
+		if rec.Code != http.StatusServiceUnavailable || unread.Len() != len(claudeBody) {
+			t.Errorf("saturated relay returned %d and read %d bytes", rec.Code, len(claudeBody)-unread.Len())
+		}
+	})
 	r := h.request(t, "/anthropic/v1/messages", claudeBody)
 	r.ContentLength = -1 // Chunked callers reserve the full possible body.
-	go func() { defer close(done); h.ServeHTTP(httptest.NewRecorder(), r) }()
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("request never reached upstream")
-	}
-	next := h.request(t, "/anthropic/v1/messages/count_tokens", claudeBody)
-	next.Body = nil // Any attempted read panics.
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, next)
-	claudeError(t, rec, 503, ErrRelayBusy)
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK || h.calls.Load() != 1 {
+		t.Fatalf("first request returned %d, upstream calls = %d", rec.Code, h.calls.Load())
+	}
 }
 
 func TestClaudeRequestModelIgnoresNestedKeys(t *testing.T) {
