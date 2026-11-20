@@ -38,7 +38,7 @@
     "puppeteer-core": "25.0.4",
     "typescript": "6.0.2",
     "vite": "6.4.5",
-    "vitest": "4.1.11",
+    "vitest": "4.1.12",
     "@sveltejs/vite-plugin-svelte": "4.0.4",
     "marked": "18.0.10"
   }

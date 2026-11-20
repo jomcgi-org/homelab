@@ -25,6 +25,6 @@
     "happy-dom": "21.0.4",
     "typescript": "6.0.2",
     "vite": "6.4.5",
-    "vitest": "4.1.11"
+    "vitest": "4.1.12"
   }
 }
