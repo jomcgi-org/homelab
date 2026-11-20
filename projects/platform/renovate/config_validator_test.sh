@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# invariant: ROOT-4
 set -euo pipefail
 
 # Renovate installs its validator in /usr/local/sbin in the test image.
