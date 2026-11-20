@@ -1,6 +1,7 @@
 package publish
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -815,14 +816,15 @@ func TestInterruptedStateWritesRestartGrace(t *testing.T) {
 	delete(db.points, "222")
 	runEvery(t, st, db, clock, gone, gone)
 	s3.failPut = stateKey
-	// Vessel 222 reports its old history again: the same track is current.
+	// Vessel 222 reports its old history again under a fresh key.
 	db.points["222"] = points
 	db.rows[1].UpdatedAt = stamp{gone.Add(19 * time.Minute)}
 	if _, err := publishAt(t, st, db, clock, gone.Add(20*time.Minute)); err == nil {
 		t.Fatal("the state write succeeded")
 	}
-	if got := trackOf(t, st, "222"); got == nil || *got != old {
-		t.Fatalf("the manifest did not name the track again: %v", got)
+	reappeared := trackOf(t, st, "222")
+	if reappeared == nil || *reappeared == old {
+		t.Fatal("the manifest did not give the returning track a fresh key")
 	}
 	// The track retires again at gone+22.
 	delete(db.points, "222")
@@ -834,17 +836,17 @@ func TestInterruptedStateWritesRestartGrace(t *testing.T) {
 		t.Fatal("the manifest still names the track")
 	}
 	s3.failPut = ""
-	// The stored time is 32 minutes old, but the track retired 10 minutes ago.
+	// The stored state is stale. Both objects start a new grace period.
 	p, err := publishAt(t, st, db, clock, gone.Add(32*time.Minute))
-	if err != nil || p.stats.deletes != 0 || !s3.has(old) {
+	if err != nil || p.stats.deletes != 0 || (!s3.has(old) || !s3.has(*reappeared)) {
 		t.Fatalf("deletes=%d, %v", p.stats.deletes, err)
 	}
 	runEvery(t, st, db, clock, gone.Add(34*time.Minute), gone.Add(60*time.Minute))
-	if !s3.has(old) {
+	if !s3.has(old) || !s3.has(*reappeared) {
 		t.Fatal("the track left before its restarted grace period ended")
 	}
 	runEvery(t, st, db, clock, gone.Add(62*time.Minute), gone.Add(62*time.Minute))
-	if s3.has(old) {
+	if s3.has(old) || s3.has(*reappeared) {
 		t.Fatal("the track stayed after its restarted grace period")
 	}
 }
@@ -889,6 +891,66 @@ func TestOverlappingRunDoesNothing(t *testing.T) {
 	manual.now = *clock
 	if err := second.run(context.Background(), manual); err != nil {
 		t.Fatalf("run after the lock freed: %v", err)
+	}
+}
+
+// A DELETE already in flight can finish after the publisher loses its
+// database session. The successor must use a fresh key for the same bytes.
+func TestTakeoverDoesNotReuseAKeyBeingDeleted(t *testing.T) {
+	s3, db, st, clock := newFixture(t)
+	points := slices.Clone(db.points["222"])
+	oldKey, gone := dropTrack(t, st, db, clock)
+	cutoff := gone.Add(grace)
+	paused, resume := make(chan struct{}), make(chan struct{})
+	s3.beforeDelete = func() { close(paused); <-resume }
+	done := make(chan error, 1)
+	go func() {
+		_, err := publishAt(t, st, db, clock, cutoff)
+		done <- err
+	}()
+	select {
+	case <-paused:
+	case err := <-done:
+		t.Fatalf("the old publisher did not reach DELETE: %v", err)
+	}
+	defer func() {
+		close(resume)
+		if err := <-done; err != nil {
+			t.Errorf("old publisher: %v", err)
+		}
+		if s3.has(oldKey) {
+			t.Error("the old publisher did not remove the retired object")
+		}
+		g, err := resolve(context.Background(), st)
+		if err != nil {
+			t.Errorf("resolve successor manifest: %v", err)
+			return
+		}
+		for key := range g.refs() {
+			if !s3.has(key) {
+				t.Errorf("successor references a missing object: %s", key)
+			}
+		}
+	}()
+	db.end()
+	successor := db.session()
+	successor.rows = slices.Clone(db.rows)
+	successor.points = map[string][]point{"111": db.points["111"], "222": points, "333": db.points["333"]}
+	for i := range successor.rows {
+		if successor.rows[i].MMSI == "222" {
+			successor.rows[i].UpdatedAt = stamp{cutoff}
+		}
+	}
+	p := &publisher{store: st, now: func() time.Time { return cutoff }}
+	if err := p.run(context.Background(), successor); err != nil {
+		t.Fatal(err)
+	}
+	newKey := trackOf(t, st, "222")
+	if newKey == nil || *newKey == oldKey {
+		t.Fatalf("successor reused the retired key: %v", newKey)
+	}
+	if !bytes.Equal(s3.object(t, *newKey).body, s3.object(t, oldKey).body) {
+		t.Fatal("successor did not recreate the same track bytes")
 	}
 }
 

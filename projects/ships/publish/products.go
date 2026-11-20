@@ -174,7 +174,7 @@ func logStops(counts []int64, n int) []int64 {
 	return out
 }
 
-var digestKey = regexp.MustCompile(`^(snapshot|heat|tracks/[0-9]{1,15})-([0-9a-f]{64})\.json$`)
+var digestKey = regexp.MustCompile(`^(snapshot|heat|tracks/[0-9]{1,15})-([0-9a-f]{64})(?:-[A-Z2-7]{26})?\.json$`)
 
 // validMMSI limits track keys to MMSIs that are safe in an object key.
 var validMMSI = regexp.MustCompile(`^[0-9]{1,15}$`)
@@ -203,7 +203,7 @@ func series(key string) string {
 // verify reports whether body has the digest that its key names.
 func verify(key string, body []byte) bool {
 	m := digestKey.FindStringSubmatch(key)
-	return m != nil && address(m[1], body) == key
+	return m != nil && m[2] == digest(body)
 }
 
 func trackName(mmsi string) string { return "tracks/" + mmsi }
