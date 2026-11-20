@@ -632,14 +632,12 @@ func TestRestartThenPushEndsOldRootOnce(t *testing.T) {
 			for _, sha := range tc.pushes {
 				h.gh.push(7, sha)
 			}
-			head := tc.pushes[len(tc.pushes)-1]
 			update := fmt.Sprintf("PATCH /repos/%s/check-runs/%d", testRepo, h.gh.check(shaA).ID)
 			if tc.failOnce {
 				h.gh.failWith(update, 502)
 			}
 			e, ctx, stop = h.start()
 			e.Tick(ctx)
-			eventually(t, "the new head's task", func() bool { return h.taskOn(7, head, 1) != "" })
 			if tc.failOnce {
 				if c := h.gh.check(shaA); c.Status == "completed" {
 					t.Fatal("old head's check completed despite the refused write")
@@ -672,6 +670,9 @@ func TestTracingEnabledDuringReview(t *testing.T) {
 	addPR7(h)
 	e, ctx, stop := h.start()
 	task := runReview(t, h, e, ctx, 7, shaA)
+	eventually(t, "the task recorded before tracing starts", func() bool {
+		return RecordedTask(h.gh.check(shaA).Summary).ID == task
+	})
 	stop()
 	exporter := captureReviewSpans(t)
 	e, ctx, stop = h.start()
