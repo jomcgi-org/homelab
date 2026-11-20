@@ -1,14 +1,6 @@
 # Monolith Architecture
 
-**Factory notify (#7935), staged off.** The optional `factoryNotify` MCP route
-and dedicated Authentik verifier admit the factory's standing workload only
-to `monolith_agent_notify`, at the default Discord channel. The shared notify
-implementation supports hashed caller keys backed by the outbox's unique index;
-duplicates return `ok: true, queued: false`. Factory notifications use the
-outbox's uncertain-send quarantine, so ambiguous Discord outcomes are not
-automatically retried. No new database table or anonymous notification handler
-is introduced. [Activation and live acceptance](../factory/deploy/notify.md)
-remain outstanding until the smoke and same-key replay are observed.
+Agent notifications use the [factory Discord bridge](../factory/deploy/notify.md).
 
 Factory ownership is consolidated under `factory.module` within this application.
 The factory owns private interactions/MCP, its published public viewer, and the

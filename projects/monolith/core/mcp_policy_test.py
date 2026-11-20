@@ -54,11 +54,10 @@ FACTORY = replace(
 NOTIFY = _tool("monolith_agent_notify")
 
 
-def test_factory_grant_is_one_tool_even_with_escape_hatch(monkeypatch):
+def test_retired_factory_grant_denies_every_tool_even_with_escape_hatch(monkeypatch):
     monkeypatch.setenv("AUTH_FACTORY_NOTIFY_ISSUER", FACTORY.issuer)
     monkeypatch.setenv("MCP_GROUP_POLICY_ENFORCED", "false")
-    assert _call(FACTORY, NOTIFY.name, NOTIFY) == "ran"
-    for tool in (GATED, PUBLIC, None):
+    for tool in (NOTIFY, GATED, PUBLIC, None):
         with pytest.raises(AuthorizationError):
             _call(FACTORY, "unknown" if tool is None else tool.name, tool)
 
@@ -71,7 +70,7 @@ def test_factory_grant_is_one_tool_even_with_escape_hatch(monkeypatch):
             _list_context(), listed
         ),
     )
-    assert result == [NOTIFY]
+    assert result == []
 
 
 @pytest.mark.parametrize(
@@ -93,26 +92,6 @@ def test_factory_identity_is_verified_and_narrow(monkeypatch, changes):
     principal = replace(FACTORY, **changes)
     assert not mcp_policy.permitted(NOTIFY, principal)
     assert not mcp_policy.permitted(GATED, principal)
-
-
-def test_factory_arguments_use_default_channel_and_bounded_message(monkeypatch):
-    from core.notify_policy import check_notify_arguments
-
-    monkeypatch.setenv("AUTH_FACTORY_NOTIFY_ISSUER", FACTORY.issuer)
-    check_notify_arguments(FACTORY, "Factory notify sink is live", None, "key")
-    for channel in ("", "default", "other"):
-        with pytest.raises(AuthorizationError):
-            check_notify_arguments(FACTORY, "hello", channel, "key")
-    for message, key in (
-        ("", "key"),
-        ("x" * 1001, "key"),
-        ("é" * 501, "key"),
-        ("hi", None),
-    ):
-        with pytest.raises(ValueError):
-            check_notify_arguments(FACTORY, message, None, key)
-    # Operators retain their established explicit-channel API.
-    check_notify_arguments(OPERATOR, "hello", "other", None)
 
 
 def _run(principal: Principal, coro_factory):

@@ -42,8 +42,7 @@ Escalate only conflicting goals, a human-owned constraint exception, unapproved
 destructive work, or an explicit human-owned decision/hold. Name the decision
 and the rule requiring it. Joe works mostly from mobile: offer two to four
 choices, the recommended choice first, not an open question. Keep independent
-work moving. If Joe may be away, the delivery owner sends one
-`monolith-monolith-agent-notify` message when available. Factory workers
+work moving. If Joe may be away, the delivery owner requests one fixed-field notification through the factory connector’s authenticated Discord bridge when available. Factory workers
 report to their dispatcher.
 
 ## Factory roles

@@ -67,3 +67,9 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-13
+  statement: Agent notifications require the named connector credential, a configured target and fixed fields. Discord posts suppress all mentions.
+  mechanism:
+  - projects/factory/discord/notification.go
+  test: //projects/factory/discord:discord_test
+  state: live

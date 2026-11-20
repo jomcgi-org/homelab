@@ -8,7 +8,6 @@ underscores; FastMCP's wire identifiers use the dashed form
 (``monolith-agent-lock`` etc.).
 
   Locks    : lock (acquire | extend | release), list_locks
-  Notify   : notify
   Check    : check_stuck_jobs, check_dead_letters
   Trigger  : trigger_job  (Argo CronWorkflow one-off submission)
   Routine  : list_routine_jobs, routine_job (claim | complete | register |
@@ -32,7 +31,6 @@ from sqlalchemy.exc import IntegrityError
 
 from agent import checks, locks
 from agent import factory_goals as goals_mod
-from agent import notify as notify_mod
 from agent import routine_jobs
 from core.clock import isoformat_or_none
 from core.mcp_app import mcp
@@ -138,32 +136,6 @@ async def monolith_agent_list_locks(prefix: str | None = None) -> dict:
     """List currently-held (unexpired) locks, optionally filtered by key prefix."""
     rows = locks.list_active(prefix)
     return {"locks": [_serialize_lock(r) for r in rows]}
-
-
-# --- Notify --------------------------------------------------------------
-
-
-@mcp.tool
-async def monolith_agent_notify(
-    message: str,
-    level: Literal["info", "warn", "error"] = "info",
-    channel: str | None = None,
-    dedupe_key: str | None = None,
-) -> dict:
-    """Post a Discord message via the in-process bot.
-
-    Defaults to the homelab channel from settings. The ``channel`` arg, if
-    specified, must be a channel in a server the bot has been added to.
-    The factory caller may use only the default channel. A ``dedupe_key``
-    suppresses repeat enqueueing for that channel. Include the occurrence or
-    UTC date in the key when a later occurrence should post again.
-    """
-    from core.notify_policy import check_notify_arguments
-
-    check_notify_arguments(current_principal(), message, channel, dedupe_key)
-    return await notify_mod.notify(
-        message, level=level, channel=channel, dedupe_key=dedupe_key
-    )
 
 
 # --- Check ---------------------------------------------------------------

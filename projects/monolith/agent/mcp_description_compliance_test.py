@@ -136,7 +136,6 @@ SENTINEL_TOOLS = {
     "factory_configure_problem_issues",
     "factory_amend_policy",
     "k8s_list_resources",
-    "monolith_agent_notify",
     "search_knowledge",
 }
 

@@ -33,7 +33,6 @@ type Config struct {
 	StatusAddr         string // FACTORY_CONNECTOR_STATUS_ADDR, default :8082
 	Holder             string // POD_NAME, default hostname
 	NotifyURL          string // FACTORY_CONNECTOR_NOTIFY_URL; empty disables notify
-	NotifyTokenURL     string // FACTORY_CONNECTOR_NOTIFY_TOKEN_URL
 	NotifyPasswordFile string // FACTORY_CONNECTOR_NOTIFY_PASSWORD_FILE
 
 	File File
@@ -198,7 +197,6 @@ func Load(getenv func(string) string) (*Config, error) {
 		StatusAddr:         getenv("FACTORY_CONNECTOR_STATUS_ADDR"),
 		Holder:             getenv("POD_NAME"),
 		NotifyURL:          getenv("FACTORY_CONNECTOR_NOTIFY_URL"),
-		NotifyTokenURL:     getenv("FACTORY_CONNECTOR_NOTIFY_TOKEN_URL"),
 		NotifyPasswordFile: getenv("FACTORY_CONNECTOR_NOTIFY_PASSWORD_FILE"),
 	}
 	if c.MetricsAddr == "" {

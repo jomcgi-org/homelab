@@ -638,18 +638,17 @@ def test_notify_secret_config_and_connector_only_egress() -> None:
     docs = _render(["connector.notify.enabled=true"])
     env = _env(docs)
     assert (
-        env["FACTORY_CONNECTOR_NOTIFY_URL"] == "https://factory-notify.jomcgi.dev/mcp/"
-    )
-    assert (
-        env["FACTORY_CONNECTOR_NOTIFY_TOKEN_URL"]
-        == "https://auth.jomcgi.dev/application/o/token/"
+        env["FACTORY_CONNECTOR_NOTIFY_URL"]
+        == "http://discord-bridge.factory-discord.svc:8080/notify"
     )
     assert (
         env["FACTORY_CONNECTOR_NOTIFY_PASSWORD_FILE"]
         == "/var/run/secrets/factory-notify/app-password"
     )
     item = _in(docs, "OnePasswordItem", _NS, "factory-notify")
-    assert item["spec"] == {"itemPath": "vaults/k8s-homelab/items/factory-notify"}
+    assert item["spec"] == {
+        "itemPath": "vaults/k8s-homelab/items/factory-bridge-notify"
+    }
     pod = _pod(docs)["spec"]
     volume = next(v for v in pod["volumes"] if v["name"] == "notify-password")
     assert volume["secret"] == {
@@ -661,34 +660,36 @@ def test_notify_secret_config_and_connector_only_egress() -> None:
         "mountPath": "/var/run/secrets/factory-notify",
         "readOnly": True,
     } in pod["containers"][0]["volumeMounts"]
-    policies = [d for d in docs if d["kind"] == "CiliumNetworkPolicy"]
-    rules = [
-        (d, r)
-        for d in policies
-        for r in d["spec"].get("egress", [])
-        if {"matchName": "factory-notify.jomcgi.dev"} in r.get("toFQDNs", [])
-    ]
-    assert len(rules) == 1
-    policy, rule = rules[0]
-    assert policy["metadata"]["name"] == "factory-connector"
-    assert policy["spec"]["endpointSelector"]["matchLabels"] == {
-        k: v
-        for k, v in _pod(docs)["metadata"]["labels"].items()
-        if k != "app.kubernetes.io/part-of"
-    }
-    assert rule["toFQDNs"] == [
-        {"matchName": "factory-notify.jomcgi.dev"},
-        {"matchName": "auth.jomcgi.dev"},
-    ]
-    assert rule["toPorts"] == [{"ports": [{"port": "443", "protocol": "TCP"}]}]
+    policy = _in(docs, "CiliumNetworkPolicy", _NS, "factory-connector")
+    service = _in(docs, "Service", "factory-discord", "discord-bridge")
+    selector = service["spec"]["selector"]
+    assert selector["app.kubernetes.io/component"] == "gateway"
+    assert service["spec"]["ports"] == [{"port": 8080, "targetPort": "health"}]
+    assert any(
+        rule.get("toEndpoints")
+        == [
+            {
+                "matchLabels": {
+                    "k8s:io.kubernetes.pod.namespace": "factory-discord",
+                    "app.kubernetes.io/name": "factory-discord-bridge",
+                    "app.kubernetes.io/component": "gateway",
+                }
+            }
+        ]
+        for rule in policy["spec"]["egress"]
+    )
+    bridge = _in(docs, "Deployment", "factory-discord", "discord-bridge")
+    labels = bridge["spec"]["template"]["metadata"]["labels"]
+    assert all(labels[key] == value for key, value in selector.items())
+    bridge_item = _in(
+        docs, "OnePasswordItem", "factory-discord", "factory-notify-caller"
+    )
+    assert bridge_item["spec"] == item["spec"]
 
 
 @pytest.mark.parametrize(
     "override",
     [
-        "connector.notify.hostname=example.com/path",
-        "connector.notify.hostname=*.example.com",
-        "connector.notify.tokenHostname=example.com:8080",
         "networkPolicy.cilium=false",
         "connector.notify.secretName=",
         "connector.notify.itemPath=",

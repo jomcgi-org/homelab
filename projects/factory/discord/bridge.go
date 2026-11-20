@@ -29,6 +29,7 @@ type Guild struct {
 
 // Config is the bridge's policy, from values only.
 type Config struct {
+	NotificationChannels map[string]string
 	// Guilds is the server allowlist (HOME-162 contract rule 8): anyone with
 	// an invite link can add the bot to a server.
 	Guilds      map[string]Guild `json:"guilds"`

@@ -8,11 +8,12 @@ import (
 
 // policyFile is the bridge's policy as values render it.
 type policyFile struct {
-	Guilds      map[string]Guild `json:"guilds"`
-	UserLimit   limitFile        `json:"userLimit"`
-	GuildLimit  limitFile        `json:"guildLimit"`
-	GlobalLimit limitFile        `json:"globalLimit"`
-	QueueDepth  int              `json:"queueDepth"`
+	NotificationChannels map[string]string `json:"notificationChannels"`
+	Guilds               map[string]Guild  `json:"guilds"`
+	UserLimit            limitFile         `json:"userLimit"`
+	GuildLimit           limitFile         `json:"guildLimit"`
+	GlobalLimit          limitFile         `json:"globalLimit"`
+	QueueDepth           int               `json:"queueDepth"`
 }
 
 type limitFile struct {
@@ -49,6 +50,7 @@ func ParsePolicy(data []byte) (Config, error) {
 	if c.GlobalLimit, err = p.GlobalLimit.limit("globalLimit"); err != nil {
 		return Config{}, err
 	}
+	c.NotificationChannels = p.NotificationChannels
 	c.Guilds = p.Guilds
 	if c.Guilds == nil {
 		c.Guilds = map[string]Guild{}

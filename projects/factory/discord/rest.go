@@ -57,6 +57,8 @@ type MessageReference struct {
 // Reply is the body the bridge posts. Components V2 messages carry their
 // text in components; content must stay empty.
 type Reply struct {
+	Nonce            string            `json:"nonce,omitempty"`
+	EnforceNonce     bool              `json:"enforce_nonce,omitempty"`
 	Flags            int               `json:"flags"`
 	Components       []TextDisplay     `json:"components"`
 	AllowedMentions  AllowedMentions   `json:"allowed_mentions"`

@@ -698,21 +698,7 @@ reuse state, even after a prolonged persistence failure.
 
 ## Identities
 
-**Notification sink (#7935), staged off.** `connector.notify.enabled` wires
-`connector/notify` to the private monolith's `monolith_agent_notify` through
-Cloudflare at `factory-notify.jomcgi.dev`. The dedicated Authentik provider and
-`factory-notify-sa` account grant only that tool at the default Discord channel.
-1Password mounts its app password only into the connector. Its Cilium policy
-admits the notify and token hostnames on TCP 443. The client projects fixed
-fields, bounds text, deadlines and retries, and deduplicates caller keys per
-UTC day through the durable outbox. A rollout sends a fixed `info` smoke after
-acquiring the writer lock. Credential issuance, activation and live acceptance
-remain in [the rollout task](deploy/notify.md).
-
-**Why.** Operator and Ember agent credentials grant unrelated tools. A dedicated
-issuer and monolith permission check confine this sender even if it guesses
-another tool or channel. Durable dedupe handles the response-loss case that
-a connector memory cache cannot.
+The connector sends fixed-field notifications to the in-cluster Discord bridge. See [activation and caller credentials](deploy/notify.md).
 
 ### Factory front page
 
