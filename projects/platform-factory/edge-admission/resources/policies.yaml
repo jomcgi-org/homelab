@@ -221,6 +221,39 @@ spec:
         !has(object.spec.hostnames) ||
         !object.spec.hostnames.exists(h, h == 'factory-agents.jomcgi.dev')
       message: Only the edge namespace may route factory-agents.jomcgi.dev.
+    - expression: >-
+        !has(object.spec.hostnames) ||
+        !object.spec.hostnames.exists(h, h == 't3.jomcgi.dev') ||
+        (request.kind.kind == 'HTTPRoute' && request.namespace == 'edge' &&
+         ((object.metadata.name == 't3' && object.spec.hostnames == ['t3.jomcgi.dev'] &&
+           has(object.spec.parentRefs) && size(object.spec.parentRefs) == 1 &&
+           object.spec.parentRefs.all(p,
+             p.name == 'edge' && p.sectionName == 'http' &&
+             (!has(p.namespace) || p.namespace == 'edge') &&
+             (!has(p.group) || p.group == 'gateway.networking.k8s.io') &&
+             (!has(p.kind) || p.kind == 'Gateway'))) ||
+          (object.metadata.name == 'tunnel' && variables.onTunnel)))
+      message: Only edge/t3 and the edge tunnel may route t3.jomcgi.dev.
+    - expression: request.namespace != 't3'
+      message: The T3 relay namespace may not create routes.
+    - expression: >-
+        request.kind.kind != 'HTTPRoute' || !has(object.spec.rules) ||
+        object.spec.rules.all(r,
+          (!has(r.backendRefs) || r.backendRefs.all(b,
+            !has(b.namespace) || b.namespace != 't3' ||
+            (request.namespace == 'edge' && object.metadata.name == 't3' &&
+             object.spec.hostnames == ['t3.jomcgi.dev'] &&
+             b.name == 't3-relay' && (!has(b.group) || b.group == '') &&
+             (!has(b.kind) || b.kind == 'Service') && b.port == 8080 &&
+             !has(b.filters) && !has(r.filters)))) &&
+          (!has(r.backendRefs) || r.backendRefs.all(b,
+            !has(b.filters) || b.filters.all(f, !has(f.requestMirror) ||
+              !has(f.requestMirror.backendRef.namespace) ||
+              f.requestMirror.backendRef.namespace != 't3'))) &&
+          (!has(r.filters) || r.filters.all(f, !has(f.requestMirror) ||
+            !has(f.requestMirror.backendRef.namespace) ||
+            f.requestMirror.backendRef.namespace != 't3')))
+      message: Only the T3 HTTPS route may use the relay as a backend.
     # Its route replaces the gateway sign-in with a bearer check and reaches
     # the Kubernetes API.
     - expression: >-

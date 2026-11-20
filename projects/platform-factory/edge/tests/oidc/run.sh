@@ -4,7 +4,7 @@ cd "$(dirname "$0")"
 chart=../../chart
 [[ $(kubectl config current-context) == kind-edge-oidc ]]
 projects=../../../..
-namespaces=(edge kagent factory-landing argocd factory grafana)
+namespaces=(edge kagent t3 factory-landing argocd factory grafana)
 for ns in "${namespaces[@]}"; do kubectl create namespace "$ns"; done
 
 # Use the CRDs and controller shipped with the edge chart.
@@ -38,6 +38,8 @@ for ns in "${namespaces[@]}"; do
 done
 kubectl -n edge expose deployment fixture --name issuer --port 443 --target-port 8443
 kubectl -n kagent expose deployment fixture --name kagent-ui --port 8080
+kubectl -n t3 expose deployment fixture --name t3-relay --port 8080
+kubectl -n t3 apply -f "$projects/platform-factory/t3/resources/reference-grant.yaml"
 
 # Use the production HTTPRoutes with fixture services at their backend ports.
 kubectl -n factory-landing expose deployment fixture --name factory-landing --port 8080
@@ -54,7 +56,7 @@ kubectl apply -f "$projects/platform-factory/grafana/resources/route.yaml"
 kubectl apply -f "$projects/platform-factory/grafana/resources/runbooks-route.yaml"
 
 templates=()
-for template in gateway security-policy kagent-route oidc-client-secret oidc-sentinel; do
+for template in gateway security-policy kagent-route t3-route oidc-client-secret oidc-sentinel; do
 	templates+=(-s "templates/$template.yaml")
 done
 # Install the test CA in the initial proxy revision. A later patch can roll

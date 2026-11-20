@@ -7,7 +7,7 @@ import time
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 
-def session(host, subject):
+def session(host, subject, expected=200):
     cookies = SimpleCookie()
 
     def get(path):
@@ -56,8 +56,8 @@ def session(host, subject):
     )
     assert status == 302 and cookies["factory-edge-id-token"].value
     status, _, body = get(path)
-    if subject == "applicant":
-        assert status == 403, (host, status)
+    if subject == "applicant" or expected == 403:
+        assert status == 403, (host, subject, status)
     elif host.startswith("factory-agents."):
         assert (
             status == 200
@@ -81,3 +81,8 @@ for hostname in [
 ]:
     for role in ["operator", "applicant"]:
         session(hostname, role)
+
+# The shared gateway accepts factory operators, while T3 requires admins.
+session("factory.jomcgi.dev", "factory-operator")
+for role, status in [("operator", 200), ("factory-operator", 403), ("applicant", 403)]:
+    session("t3.jomcgi.dev", role, expected=status)

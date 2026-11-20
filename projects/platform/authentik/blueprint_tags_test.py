@@ -296,6 +296,7 @@ def test_factory_edge_and_argocd_callback_hosts():
         "https://factory-grafana.jomcgi.dev/oauth2/callback",
         "https://factory-runbooks.jomcgi.dev/oauth2/callback",
         "https://factory-agents.jomcgi.dev/oauth2/callback",
+        "https://t3.jomcgi.dev/oauth2/callback",
     }
     assert all(
         uri["matching_mode"] == "strict"

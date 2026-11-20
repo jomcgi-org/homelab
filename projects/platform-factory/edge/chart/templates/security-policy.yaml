@@ -28,6 +28,6 @@ spec:
     - group: gateway.networking.k8s.io
       kind: Gateway
       name: edge
-  {{- include "edge.operatorAuthorization" . | nindent 2 }}
+  {{- include "edge.operatorAuthorization" (dict "Values" .Values "denyT3" true) | nindent 2 }}
   oidc:
     {{- include "edge.oidc" . | nindent 4 }}
