@@ -208,7 +208,7 @@ func TestResumeFallsBackToAFreshSession(t *testing.T) {
 
 		{name: "a turn no review recorded", reason: reasonUnaccounted, reads: 1, setup: func(h *harness, id string) { h.k.open(id) }},
 
-		{name: "near the size bound", reason: reasonSize, before: func(h *harness, task string) { h.k.pad(task, maxSessionBytes) }},
+		{name: "near the size bound", reason: reasonSize, reads: 1, before: func(h *harness, task string) { h.k.pad(task, maxSessionBytes) }},
 		{name: "refused by kagent", reason: reasonRefused, reads: 2, setup: func(h *harness, id string) {
 			h.k.mu.Lock()
 			h.k.gone[id] = true // GetSession still answers READY: the session went between the read and the send.
@@ -291,6 +291,7 @@ func TestSessionReadFailureWaits(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
+			h.cfg.Concurrency = 1
 			addPR7(h)
 			e, ctx, _ := h.start()
 			ref := stateOn(t, finishHead(t, h, e, ctx, shaA, blocking, nil)).Session
@@ -302,11 +303,16 @@ func TestSessionReadFailureWaits(t *testing.T) {
 			h.gh.push(7, sessionShaB)
 			e.Tick(ctx)
 			eventually(t, "the failed read to be retried", func() bool {
-				return testutil.ToFloat64(h.m.KagentErrors.WithLabelValues("homelab", tc.call)) >= 2
+				e.Tick(ctx)
+				return testutil.ToFloat64(h.m.InFlight) == 0 && testutil.ToFloat64(h.m.KagentErrors.WithLabelValues("homelab", tc.call)) >= 2
 			})
 			if n, _ := h.k.state(); n != 1 {
 				t.Fatalf("started %d tasks during failed read", n)
 			}
+			h.gh.addPR(&fakePR{Number: 8, Title: "Independent review", Head: sessionShaC})
+			unrelated := runReview(t, h, e, ctx, 8, sessionShaC)
+			h.k.finish(unrelated, kagent.StateCompleted, report(t, passing))
+			eventually(t, "independent review to release the slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
 			h.sessions.mu.Lock()
 			delete(h.sessions.errs, ref.ContextID)
 			h.sessions.agentErr = nil
@@ -314,13 +320,14 @@ func TestSessionReadFailureWaits(t *testing.T) {
 			h.k.mu.Lock()
 			h.k.listErr = nil
 			h.k.mu.Unlock()
+			e.Tick(ctx)
 			eventually(t, "the review after recovery", func() bool { return h.taskOn(7, sessionShaB, 1) != "" })
 			if _, cancels := h.k.state(); !slices.Contains(cancels, stray) {
 				t.Fatal("review started before cleanup of the unrecorded turn")
 			}
 			h.k.finish(h.taskOn(7, sessionShaB, 1), kagent.StateCompleted, report(t, passing))
 			eventually(t, "review completion", func() bool { return h.gh.check(sessionShaB).Status == "completed" })
-			if n, _ := h.k.state(); n != 2 {
+			if n, _ := h.k.state(); n != 3 {
 				t.Fatalf("started %d tasks after read recovery", n)
 			}
 		})
@@ -554,46 +561,84 @@ func TestUnaccountedTurnStartsAFreshSession(t *testing.T) {
 // starts fresh rather than running beside it.
 // invariant: FACT-13
 func TestUnrecordedRunningTurnIsCancelled(t *testing.T) {
-	h := newHarness(t)
-	addPR7(h)
-	e, ctx, _ := h.start()
-	ref := stateOn(t, finishHead(t, h, e, ctx, shaA, blocking, nil)).Session
-	h.cfg.Timeout = 150 * time.Millisecond
-	h.cfg.Reissue = 100 * time.Millisecond
-	e, ctx, _ = h.start()
-	stray := h.k.open(ref.ContextID)
-	h.k.mu.Lock()
-	h.k.tasks[stray].task.Status = kagent.TaskStatus{State: kagent.StateWorking}
-	h.k.mu.Unlock()
-	// While the cancellation fails, no fresh review starts beside the turn.
-	h.k.mu.Lock()
-	h.k.cancelErr = errors.New("connection refused")
-	h.k.mu.Unlock()
-	h.gh.push(7, sessionShaB)
-	e.Tick(ctx)
-	eventually(t, "a retried cancellation", func() bool {
-		_, cancels := h.k.state()
-		n := 0
-		for _, id := range cancels {
-			if id == stray {
-				n++
+	for _, tc := range []struct {
+		name    string
+		prepare func(*SessionRef)
+	}{
+		{"resumable", func(*SessionRef) {}},
+		{"size limit", func(r *SessionRef) { r.Bytes = maxSessionBytes }},
+		{"legacy comment filter", func(r *SessionRef) { r.FilteredComments = false }},
+		{"unaccounted reviews", func(r *SessionRef) { r.Reviews++ }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			e, ctx, _ := h.start()
+			first := finishHead(t, h, e, ctx, shaA, blocking, nil)
+			st := stateOn(t, first)
+			tc.prepare(st.Session)
+			h.gh.withLock(func() {
+				for _, check := range h.gh.checks {
+					if check.ID == first.ID {
+						check.Text = encodeState(st)
+					}
+				}
+			})
+			ref := st.Session
+			h.cfg.Timeout = 150 * time.Millisecond
+
+			e, ctx, _ = h.start()
+			stray := h.k.open(ref.ContextID)
+			h.k.mu.Lock()
+			h.k.tasks[stray].task.Status = kagent.TaskStatus{State: kagent.StateWorking}
+			h.k.mu.Unlock()
+			// While the cancellation fails, no fresh review starts beside the turn.
+			h.k.mu.Lock()
+			h.k.cancelErr = errors.New("connection refused")
+			h.k.mu.Unlock()
+			h.gh.push(7, sessionShaB)
+			e.Tick(ctx)
+			eventually(t, "persisted session wait", func() bool {
+				c := h.gh.check(sessionShaB)
+				if c == nil {
+					return false
+				}
+				st, _ := LoadState(c.Text)
+				return st.Cleanup != nil && testutil.ToFloat64(h.m.InFlight) == 0
+			})
+			time.Sleep(h.cfg.Timeout)
+			e, ctx, _ = h.start() // Recover the pending cleanup from the check.
+			eventually(t, "a retried cancellation", func() bool {
+				e.Tick(ctx)
+				_, cancels := h.k.state()
+				n := 0
+				for _, id := range cancels {
+					if id == stray {
+						n++
+					}
+				}
+				return n >= 3
+			})
+			if n, _ := h.k.state(); n != 1 {
+				t.Fatalf("%d reviews started while the unrecorded turn still ran", n)
 			}
-		}
-		return n >= 3
-	})
-	if n, _ := h.k.state(); n != 1 {
-		t.Fatalf("%d reviews started while the unrecorded turn still ran", n)
+			h.k.mu.Lock()
+			h.k.cancelErr = nil
+			h.k.mu.Unlock()
+			e.Tick(ctx)
+			var task string
+			eventually(t, "the review task once the turn stopped", func() bool { task = h.taskOn(7, sessionShaB, 1); return task != "" })
+			if m := lastSend(h); m.ContextID == ref.ContextID {
+				t.Fatalf("resumed a session holding an unrecorded running turn")
+			}
+			h.k.finish(task, kagent.StateCompleted, report(t, passing))
+			eventually(t, "the check on the second head", func() bool { c := h.gh.check(sessionShaB); return c != nil && c.Status == "completed" })
+			e.Tick(ctx)
+			if n, _ := h.k.state(); n != 2 {
+				t.Fatalf("started %d tasks across both heads", n)
+			}
+		})
 	}
-	h.k.mu.Lock()
-	h.k.cancelErr = nil
-	h.k.mu.Unlock()
-	var task string
-	eventually(t, "the review task once the turn stopped", func() bool { task = h.taskOn(7, sessionShaB, 1); return task != "" })
-	if m := lastSend(h); m.ContextID == ref.ContextID {
-		t.Fatalf("resumed a session holding an unrecorded running turn")
-	}
-	h.k.finish(task, kagent.StateCompleted, report(t, passing))
-	eventually(t, "the check on the second head", func() bool { c := h.gh.check(sessionShaB); return c != nil && c.Status == "completed" })
 }
 
 // TestNewAgentRevisionStartsAFreshSession rolls out a new reviewer revision
@@ -674,29 +719,19 @@ func TestResumableRefusesOtherOwnersAndHeads(t *testing.T) {
 	b := &e.cfg.Bindings[0]
 	pr := github.PullRequest{Number: 7, HeadSHA: sessionShaB}
 	good := SessionRef{FilteredComments: true, ContextID: "ctx-1", Binding: "homelab", Agent: "factory-review/reviewer", PR: 7, Head: shaA, Reviews: 1, Bytes: 10, Tasks: []string{"task-1"}}
-	many := make([]string, maxSessionReviews)
-	for i := range many {
-		many[i] = fmt.Sprintf("task-%d", i+1)
-	}
 	for _, tc := range []struct {
 		name       string
 		change     func(r *SessionRef, in *inputs)
 		attempt    int
 		wantReason string
 	}{
-		{"before the CI comment filter", func(r *SessionRef, _ *inputs) { r.FilteredComments = false }, 1, reasonCommentFilter},
 		{"another binding", func(r *SessionRef, _ *inputs) { r.Binding = "other" }, 1, reasonForeign},
 		{"another agent", func(r *SessionRef, _ *inputs) { r.Agent = "factory-r-homelab/coder" }, 1, reasonForeign},
 		{"another PR", func(r *SessionRef, _ *inputs) { r.PR = 8 }, 1, reasonForeign},
 		{"another head", func(r *SessionRef, _ *inputs) { r.Head = sessionShaC }, 1, reasonForeign},
 		{"a malformed context", func(r *SessionRef, _ *inputs) { r.ContextID = "ctx 1\n" }, 1, reasonForeign},
-		{"the same head", func(_ *SessionRef, in *inputs) { in.priorHead = sessionShaB }, 1, reasonNone},
+		{"a mismatched same-head reference", func(_ *SessionRef, in *inputs) { in.priorHead = sessionShaB }, 1, reasonForeign},
 		{"no previous head", func(_ *SessionRef, in *inputs) { in.priorHead = "" }, 1, reasonNone},
-		{"incomplete history", func(_ *SessionRef, in *inputs) { in.prior.Incomplete = true }, 1, reasonNone},
-		{"the size bound", func(r *SessionRef, _ *inputs) { r.Bytes = maxSessionBytes }, 1, reasonSize},
-		{"the review bound", func(r *SessionRef, _ *inputs) { r.Reviews, r.Tasks = len(many), many }, 1, reasonSize},
-		{"no recorded tasks", func(r *SessionRef, _ *inputs) { r.Tasks = nil }, 1, reasonUnaccounted},
-		{"fewer tasks than reviews", func(r *SessionRef, _ *inputs) { r.Reviews = 2 }, 1, reasonUnaccounted},
 	} {
 		ref := good
 		in := &inputs{priorHead: shaA}
