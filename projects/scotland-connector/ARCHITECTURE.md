@@ -35,6 +35,44 @@ The plugin, the site's Scotland page and its catalog point at the new hostname
 it zero pods, no autoscaler and no route, and `factory/values.yaml` restores
 the factory copy's autoscaler.
 
+**Cutover record (HOME-540 criterion 1).** Prod synced jomcgi-site chart 0.51.1
+(#8375) at 2026-11-20 07:58:01Z, with the last sync Succeeded. The probes below
+ran from node-1 before this change:
+
+```text
+# 2026-11-20T07:58:16Z
+$ curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' https://jomcgi.dev/scotland/mcp?c=1795161491
+308 https://scotland-mcp.jomcgi.dev/mcp?c=1795161491
+$ curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' https://jomcgi.dev/scotland/v1/check?c=1795161491
+308 https://scotland-mcp.jomcgi.dev/v1/check?c=1795161491
+# 2026-11-20T07:59Z, Cloudflare API: zone jomcgi.dev Workers routes
+routes total 33, script jomcgi-site 33, including jomcgi.dev/scotland/mcp* and jomcgi.dev/scotland/v1*
+# 2026-11-20T07:59Z
+$ curl -X POST https://scotland-mcp.jomcgi.dev/mcp  (MCP initialize)
+HTTP 200
+```
+
+After the hub copy reaches zero, run the same three probes again. Both legacy
+paths must still answer 308, and `initialize` must answer 200.
+
+**Hub copy rollback.** Do not restore the replica ignore in the same change as
+the replica count. The HPA does not scale a Deployment whose desired count is
+zero, so an ignore that Argo CD applies first keeps the live zero. Use this
+order:
+
+1. Revert the values part of HOME-540 (`replicas`, `autoscaling` and `route` in
+   `deploy/values.yaml`, and the overrides in `factory/values.yaml`). Keep the
+   hub Application without `ignoreDifferences` on `/spec/replicas`, so Argo CD
+   applies the chart's replica count.
+2. On the hub, check that `kubectl -n scotland-connector get deploy
+   scotland-connector` shows ready pods, that the HPA exists, and that the
+   HTTPRoute is accepted.
+3. Then, in a second PR, restore the `/spec/replicas` ignore and
+   `RespectIgnoreDifferences` on the hub Application.
+4. Only with a ready hub backend, remove the two Worker route patterns
+   (`projects/jomcgi-site/README.md`, "Scotland and drafts migration"), so the legacy
+   paths reach the hub again.
+
 ## Shape
 
 ```mermaid
