@@ -40,6 +40,7 @@ type fakeGitHub struct {
 	creates    int
 	enqueues   []string
 	nodes      int
+	detailErr  error // fails every PR detail read while set
 	// loseCreate opens the next PR but loses the response; findErr fails
 	// the next lookups.
 	loseCreate bool
@@ -361,6 +362,9 @@ func (g *fakeGitHub) PullRequestDetail(_ context.Context, _ string, number int) 
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.calls++
+	if g.detailErr != nil {
+		return nil, g.detailErr
+	}
 	p := g.byNumber(number)
 	if p == nil {
 		return nil, github.ErrNotFound
@@ -3509,6 +3513,30 @@ func TestQueuedPollObservesPR(t *testing.T) {
 	for key, want := range map[string]string{
 		"issue.key": "HL-7", "run.id": "1", "pr.number": "1", "head.sha": "sha-1", "round": "0",
 		"state.from": store.WorkMerging, "state.to": store.WorkMerging, "outcome": "checked",
+	} {
+		if got := events[0][key]; got != want {
+			t.Errorf("pr observed %s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+// A poll whose PR read fails still names the PR and its work on its root.
+func TestFailedPRReadObservesPR(t *testing.T) {
+	exporter := captureWorkSpans(t)
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.mu.Lock()
+	v.gh.detailErr = errors.New("github: 502")
+	v.gh.mu.Unlock()
+	before := len(exporter.GetSpans())
+	v.clk.Advance(61 * time.Second)
+	_ = v.e.Tick(v.ctx) // the failed read may surface as a tick error
+	events := pollEvents(exporter, before, "pr observed")
+	if len(events) == 0 {
+		t.Fatal("no pr observed event after a failed PR read")
+	}
+	for key, want := range map[string]string{
+		"issue.key": "HL-7", "run.id": "1", "pr.number": "1", "head.sha": "sha-1", "outcome": "error",
 	} {
 		if got := events[0][key]; got != want {
 			t.Errorf("pr observed %s = %q, want %q", key, got, want)
