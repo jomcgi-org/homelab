@@ -27,7 +27,8 @@ type GitHub interface {
 	CreatePullRequest(ctx context.Context, repo string, n github.NewPullRequest) (*github.PullRequest, error)
 	UpdatePullRequest(ctx context.Context, repo string, number int, u github.PullRequestUpdate) (*github.PullRequest, error)
 	Compare(ctx context.Context, repo, base, head string) (*github.Comparison, error)
-	PullRequestDetail(ctx context.Context, repo string, number int, limited ...string) (*github.PullRequestDetail, error)
+	PullRequestDetail(ctx context.Context, repo string, number int) (*github.PullRequestDetail, error)
+	PullRequestDetailWithReviews(ctx context.Context, repo string, number int, limited []string, before func() error) (*github.PullRequestDetail, error)
 	CheckRuns(ctx context.Context, repo, sha string) ([]github.CheckRun, error)
 	Statuses(ctx context.Context, repo, sha string) ([]github.Status, error)
 	EnqueuePullRequest(ctx context.Context, repo, nodeID, headSHA string) (string, error)
@@ -586,20 +587,21 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		if err != nil {
 			return err
 		}
+	}
+	before := func() error {
+		if err := e.guard(ctx); err != nil {
+			return err
+		}
 		if len(limited) > 0 {
-			if err := e.guard(ctx); err != nil {
-				return err
-			}
 			id := fmt.Sprintf("limited-reviews/%d/%s", pr.ID, pr.HeadSHA)
 			if err := e.st.RecordDeliveryRead(ctx, pr.ID, e.w.Epoch, id, "limited-reviews", pr.HeadSHA); err != nil {
 				return err
 			}
+			return e.guard(ctx)
 		}
+		return nil
 	}
-	if err := e.guard(ctx); err != nil {
-		return err
-	}
-	d, err := e.gh.PullRequestDetail(ctx, repo, pr.Number, limited...)
+	d, err := e.gh.PullRequestDetailWithReviews(ctx, repo, pr.Number, limited, before)
 	if err != nil {
 		return err
 	}

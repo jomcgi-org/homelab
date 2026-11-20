@@ -514,12 +514,38 @@ func TestPullRequestDetailIncludesOlderReviews(t *testing.T) {
 	}))
 	defer gh.Close()
 	c := &Client{BaseURL: gh.URL, Tokens: fixedTokens{}}
-	d, err := c.PullRequestDetail(context.Background(), "example-org/homelab", 5, "old", "dismissed")
+	d, err := c.PullRequestDetailWithReviews(context.Background(), "example-org/homelab", 5, []string{"old", "dismissed"}, func() error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 || len(d.Reviews) != 1 || d.Reviews[0].NodeID != "old" || d.Reviews[0].CommitSHA != "head" {
 		t.Fatalf("calls=%d reviews=%+v", calls, d.Reviews)
+	}
+}
+
+func TestLimitedReviewCredentialRetry(t *testing.T) {
+	for _, status := range []int{401, 403} {
+		for _, revoked := range []bool{false, true} {
+			calls, attempts := 0, 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.WriteHeader(status)
+			}))
+			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+			fenced := errors.New("writer changed")
+			_, err := c.PullRequestDetailWithReviews(context.Background(), "org/repo", 1, []string{"old"}, func() error {
+				attempts++
+				if revoked && attempts == 2 {
+					return fenced
+				}
+				return nil
+			})
+			srv.Close()
+			var h *HTTPError
+			if attempts != 2 || (revoked && (calls != 1 || !errors.Is(err, fenced))) || (!revoked && (calls != 2 || !errors.As(err, &h) || h.Status != status)) {
+				t.Fatalf("status=%d revoked=%t calls=%d attempts=%d err=%v", status, revoked, calls, attempts, err)
+			}
+		}
 	}
 }
 
