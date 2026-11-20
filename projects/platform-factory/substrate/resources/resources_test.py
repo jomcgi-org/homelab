@@ -29,6 +29,11 @@ def _one(docs: list[dict], kind: str, name: str) -> dict:
     return found
 
 
+def _wave(doc: dict) -> int:
+    annotations = doc["metadata"].get("annotations", {})
+    return int(annotations.get("argocd.argoproj.io/sync-wave", "0"))
+
+
 def _atelet(docs: list[dict]) -> dict:
     return _one(docs, "DaemonSet", "atelet")["spec"]["template"]["spec"]
 
@@ -86,3 +91,6 @@ def test_plugin_config_names_the_installed_binary_and_the_login() -> None:
     assert item["spec"] == {
         "itemPath": "vaults/k8s-homelab/items/ghcr-read-permissions"
     }
+    # Not before the Namespace's wave, or a fresh install cannot create it.
+    namespace = _one(docs, "Namespace", "ate-system")
+    assert _wave(item) >= _wave(namespace)
