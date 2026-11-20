@@ -450,6 +450,8 @@ curl -s -X POST -H 'Content-Type: application/json' http://localhost:9093/api/v2
 | `AlertRelayDown` | No ready relay replica for 5 min |
 | `FactoryHealthUnhealthy` | The public `health.json` reports a `status` other than `healthy` for 5 min. The message names each down component |
 | `FactoryHealthStale` | The newest `health.json` that Prometheus read has a `generatedAt` more than 10 min old, or Prometheus read none in 15 min, for 2 min |
+| `FactoryEgressIPChanged` | The egress IP that Cloudflare sees differs from an address of the last hour. It fires at the first scrape of the new address, names both addresses and clears 1 h later |
+| `CloudflareCredentialRefused` | Cloudflare refuses a factory API token with HTTP 401 or 403 for 5 min. The message names the token and the current egress IP. The R2 keys are not tested |
 
 #### Writing an alert
 
@@ -541,7 +543,95 @@ them; also check the `health-exporter` pod in `prometheus`.
 For `FactoryHealthStale`, compare the public `generatedAt` with the exporter's
 reads (`kubectl -n prometheus logs deploy/health-exporter`). If the public
 file is old, check the `health` and `factory-public-factory-public-mirror`
-CronJobs in `factory-public`.
+CronJobs in `factory-public`. If the mirror Job's log shows the R2 error
+`403 AccessDenied`, Cloudflare refuses the R2 mirror key: fix its IP filter
+as for `FactoryEgressIPChanged`, or replace the key.
+
+#### FactoryEgressIPChanged, CloudflareCredentialRefused
+
+Every factory Cloudflare API token and R2 key accepts calls only from the
+home IPv4 address. At about 01:27Z on 2026-11-20 that address changed. Every
+credential then failed, and the public data stayed 6 h old (HOME-634).
+
+```mermaid
+flowchart LR
+  trace["exporter in prometheus"] -- "GET api.cloudflare.com/cdn-cgi/trace" --> cf["Cloudflare"]
+  checks["exporter in each API token's namespace"] -- "read-only check every minute" --> cf
+  mirror["mirror CronJobs, R2 key (not tested)"] -- "R2 copy of health.json" --> cf
+  trace -- "factory_egress_ip_info" --> prom["Prometheus rules"]
+  checks -- "factory_cloudflare_credential_auth_success" --> prom
+  mirror -. "R2 refused: health.json gets old" .-> prom
+  prom -- "firing alert" --> am["Alertmanager"]
+  am -- webhook --> relay["alert-relay"]
+  relay --> discord["Discord"]
+```
+
+`cloudflare-exporter` runs `resources/cloudflare_exporter.py` once in the
+prometheus namespace and once in each API token's namespace. The pod in
+prometheus reads the egress IP and holds no credential. Each other pod takes
+only its token through `secretKeyRef` and reaches only `api.cloudflare.com`.
+The pod in `factory-public` comes from that chart. The egress IP stays in
+Prometheus and the private Discord alert. The exporter never logs it.
+
+| API token (1Password item in `k8s-homelab`) | Secret and namespace | Read-only check |
+| --- | --- | --- |
+| `jomcgi-site-cloudflare`, field `api-token` | `jomcgi-site-cloudflare` in `jomcgi-site-prod` (and `jomcgi-site-dev`) | `GET /accounts/<account>/workers/scripts/jomcgi-site/deployments` |
+| `factory-health-cloudflare`, field `api-token` | `factory-health-cloudflare` in `factory-public` | The same |
+| `factory-cloudflare-api-token`, field `CLOUDFLARE_API_TOKEN` | `cloudflare-api-credentials` in `cfgate-system` | `GET /accounts/<account>/cfd_tunnel?per_page=1` |
+
+A 2xx answer accepts a token and a 401 or 403 refuses it. After a check with
+no answer, the exporter keeps the last answer and sets
+`factory_cloudflare_credential_check_success` to 0.
+
+Each check uses an endpoint that the token's own workload already calls, so
+a refusal means that workload fails too. The jomcgi-site refresh CronJob's
+release fence (`projects/jomcgi-site/data/fence.mjs`) reads the same
+deployments endpoint with the same `jomcgi-site-cloudflare` Secret on every
+run. The health job (`projects/factory-public/chart/files/health.py`) reads it
+with `factory-health-cloudflare`. cfgate manages the tunnel with its token.
+On 2026-11-20 at 07:43Z, after the IP filter fix, a direct GET of the check
+endpoint with the deployed Secret answered HTTP 200 for `jomcgi-site-cloudflare`
+and for the cfgate token. The prod refresh Job `jomcgi-site-refresh-manual-0749`
+then passed its fence check. The health job's 08:22Z `health.json` showed
+`jomcgi-site-worker` up, which needs a 2xx from the same endpoint with
+`factory-health-cloudflare`.
+
+The exporter does not test the R2 keys. The R2 mirror key can write and
+delete all of bucket `factory-public`, so no pod outside the mirror CronJobs
+holds it (`public_test` checks this). A refused R2 key shows through
+`FactoryEgressIPChanged` and `FactoryHealthStale`: the mirror stops, so
+`health.json` gets old.
+
+| R2 key, not tested (1Password item in `k8s-homelab`) | Secret and namespace |
+| --- | --- |
+| `factory-r2-public-mirror` | `<mirror>-r2` of each mirror CronJob in `factory-public` |
+| `r2-s3-public-read` | `jomcgi-site-r2-read` in `jomcgi-site-prod` and `jomcgi-site-dev` |
+| `grimoire-migration-r2` | `grimoire-migration-r2` in `grimoire` |
+
+For `FactoryEgressIPChanged`, allow the new address in each credential:
+
+1. Read the address. The alert summary names it, and node-1 shows it:
+   `curl -s https://api.cloudflare.com/cdn-cgi/trace | grep ^ip=`.
+2. In the Cloudflare dashboard, edit the Client IP Address Filtering of each
+   API token and each R2 key's token in the two tables. Allow the new
+   address and remove the old one.
+3. An edit keeps the token's value, so 1Password needs no change.
+   `CloudflareCredentialRefused` clears at the next accepted check.
+   `FactoryHealthStale` clears when the mirror copies a new `health.json`.
+
+No expected address is stored, so there is no value to change. The
+repository is public and the address is private. The rule counts the
+addresses of the last hour, so it clears 1 h after the change. To end it
+sooner, silence it in Alertmanager.
+
+For `CloudflareCredentialRefused`, read the egress IP in the message. If it
+is new, or `FactoryEgressIPChanged` fires, fix the IP filter as above.
+Otherwise Cloudflare revoked the token, or it lost a permission. Make a
+token with the same permissions and IP filter, and put it in the 1Password
+item. The 1Password operator updates the Secret and restarts the exporter
+(`operator.1password.io/auto-restart`). The exporter's log shows each change
+of result with its HTTP status:
+`kubectl -n <namespace> logs deploy/cloudflare-exporter`.
 
 #### NodeDiskFilling
 

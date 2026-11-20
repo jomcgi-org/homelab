@@ -123,6 +123,24 @@ rollout:
 4. In a second PR, remove that `valuesObject` line.
 5. When the file shows `healthy` again, Discord gets the resolved message.
 
+## Credential check
+
+The `cloudflare-exporter` Deployment checks the `factory-health-cloudflare`
+token every minute, for the `CloudflareCredentialRefused` alert
+([runbook](../factory-cluster/README.md#factoryegressipchanged-cloudflarecredentialrefused)).
+`templates/cloudflare-exporter.yaml` passes it `files/cloudflare_exporter.py`,
+a copy of the Prometheus script that `public_test` checks byte for byte.
+The check reads the Worker's deployments. The exporter writes nothing and
+reads no egress IP. The pod takes the token only, has no Kubernetes API
+token, and reaches only `api.cloudflare.com` on 443. It is a plain template:
+the factory library adds Garage egress to every workload of a chart with
+buckets.
+
+The exporter does not test the R2 mirror key. That key can write and delete
+all of bucket `factory-public`, so only the mirror CronJobs hold it.
+`public_test` checks that no other workload takes its Secrets. A refused R2
+key shows through `FactoryEgressIPChanged` and `FactoryHealthStale`.
+
 ## Before the mirror runs
 
 The mirror runs (`public.suspend: false`) since these checks passed on

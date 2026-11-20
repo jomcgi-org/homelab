@@ -49,3 +49,5 @@ configMapGenerator:
       - runbooks/AlertRelayDown.json
       - runbooks/FactoryHealthUnhealthy.json
       - runbooks/FactoryHealthStale.json
+      - runbooks/FactoryEgressIPChanged.json
+      - runbooks/CloudflareCredentialRefused.json

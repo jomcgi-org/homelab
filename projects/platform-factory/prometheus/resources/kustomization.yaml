@@ -5,11 +5,14 @@ kind: Kustomization
 # (projects/factory-cluster/README.md, "Metrics view"), Alertmanager for its
 # alerts ("Alerts"), the namespace's allowlist and the scrape ingress rules at
 # each target. health-exporter reads the public factory health file.
+# cloudflare-exporter reads the egress IP and checks the factory's Cloudflare
+# credentials, each in the namespace of its Secret (HOME-634).
 resources:
   - network-policy.yaml
   - scrape-ingress.yaml
   - kube-state-metrics.yaml
   - health-exporter.yaml
+  - cloudflare-exporter.yaml
   - prometheus.yaml
   - alertmanager.yaml
 
@@ -27,3 +30,16 @@ configMapGenerator:
     namespace: prometheus
     files:
       - health_exporter.py
+  # One copy of the script in each namespace that runs it.
+  - name: cloudflare-exporter
+    namespace: prometheus
+    files:
+      - cloudflare_exporter.py
+  - name: cloudflare-exporter
+    namespace: cfgate-system
+    files:
+      - cloudflare_exporter.py
+  - name: cloudflare-exporter
+    namespace: jomcgi-site-prod
+    files:
+      - cloudflare_exporter.py

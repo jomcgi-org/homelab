@@ -64,6 +64,17 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: capacity-forecast
             app.kubernetes.io/name: capacity-forecast
+        - matchLabels:
+            app.kubernetes.io/name: cloudflare-exporter
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: cfgate-system
+            app.kubernetes.io/name: cloudflare-exporter
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: jomcgi-site-prod
+            app.kubernetes.io/name: cloudflare-exporter
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-public
+            app.kubernetes.io/name: cloudflare-exporter
       toPorts:
         - ports:
             - port: "8080"
@@ -241,6 +252,34 @@ spec:
     # The public health file only (HOME-415).
     - toFQDNs:
         - matchName: factory-data.jomcgi.dev
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: cloudflare-exporter
+  namespace: prometheus
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflare-exporter
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    # Cloudflare's trace page only (HOME-634).
+    - toFQDNs:
+        - matchName: api.cloudflare.com
       toPorts:
         - ports:
             - port: "443"

@@ -1,5 +1,9 @@
 # templates/buckets.yaml passes this script to the health CronJob.
 # gazelle:exclude files/health.py
+# templates/cloudflare-exporter.yaml passes this copy of
+# //projects/platform-factory/prometheus/resources:cloudflare_exporter.py to
+# its Deployment; public_test checks that the bytes match.
+# gazelle:exclude files/cloudflare_exporter.py
 
 load("//bazel/helm:defs.bzl", "helm_chart")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
@@ -17,9 +21,11 @@ py_test(
     data = [
         ":chart",
         "//projects/factory-public/deploy:application.yaml",
+        "//projects/platform-factory/prometheus/resources:cloudflare_exporter.py",
         "@multitool//tools/helm",
     ],
     env = {
+        "CLOUDFLARE_EXPORTER": "$(rootpath //projects/platform-factory/prometheus/resources:cloudflare_exporter.py)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "PUBLIC_APPLICATION": "$(rootpath //projects/factory-public/deploy:application.yaml)",
     },

@@ -182,6 +182,20 @@ def render(*args):
     }
 
 
+def secret_refs(node):
+    """Return the Secret names of every secretKeyRef and secretRef in node."""
+    if isinstance(node, list):
+        return set().union(*(secret_refs(item) for item in node))
+    if not isinstance(node, dict):
+        return set()
+    names = {
+        node[key]["name"]
+        for key in ("secretKeyRef", "secretRef")
+        if isinstance(node.get(key), dict)
+    }
+    return names.union(*(secret_refs(value) for value in node.values()))
+
+
 def test_health_publisher_holds_no_factory_public_credential():
     docs = render()
     job = docs["CronJob", "health"]
@@ -296,3 +310,66 @@ def test_sources_mirror_writer_buckets_under_their_prefixes():
         assert item["spec"]["itemPath"] == (
             "vaults/k8s-homelab/items/factory-r2-public-mirror"
         )
+
+
+def test_cloudflare_exporter_checks_the_health_token_only():
+    # HOME-634: the health token, checked in its own namespace. Only the
+    # mirror CronJobs hold the R2 mirror key, so the exporter reads no R2 key
+    # and no egress IP. The script is the prometheus copy.
+    docs = render()
+    script = Path(
+        os.environ.get(
+            "CLOUDFLARE_EXPORTER",
+            str(
+                HERE.parents[2]
+                / "platform-factory/prometheus/resources/cloudflare_exporter.py"
+            ),
+        )
+    ).read_text()
+    assert (HERE / "files" / "cloudflare_exporter.py").read_text() == script
+    pod = docs["Deployment", "cloudflare-exporter"]["spec"]["template"]["spec"]
+    assert pod["serviceAccountName"] == "cloudflare-exporter"
+    assert pod["automountServiceAccountToken"] is False
+    assert "volumes" not in pod
+    [container] = pod["containers"]
+    assert container["command"] == ["python3", "-B", "-c"]
+    assert container["args"] == [script]
+    assert "envFrom" not in container
+    env = {e["name"]: e for e in container["env"]}
+    # The egress IP never enters the public data namespace.
+    assert "TRACE_URL" not in env
+    assert not [name for name in env if name.startswith("R2_")]
+    refs = sorted(
+        (
+            e["valueFrom"]["secretKeyRef"]["name"],
+            e["valueFrom"]["secretKeyRef"]["key"],
+            e["valueFrom"]["secretKeyRef"].get("optional", False),
+        )
+        for e in env.values()
+        if "valueFrom" in e
+    )
+    assert refs == [("factory-health-cloudflare", "api-token", True)]
+    assert env["API_URL"]["value"] == (
+        "https://api.cloudflare.com/client/v4/accounts/"
+        "7c56b458cd657d96b095c63d181c051f/workers/scripts/jomcgi-site/deployments"
+    )
+    # Only the mirror CronJobs hold the R2 mirror key.
+    r2_secrets = {
+        name
+        for (kind, name), doc in docs.items()
+        if kind == "OnePasswordItem"
+        and doc["spec"]["itemPath"]
+        == "vaults/k8s-homelab/items/factory-r2-public-mirror"
+    }
+    assert r2_secrets == {f"{mirror}-r2" for mirror in MIRRORS}
+    holders = {key for key, doc in docs.items() if secret_refs(doc) & r2_secrets}
+    assert holders == {("CronJob", mirror) for mirror in MIRRORS}
+    policy = docs["CiliumNetworkPolicy", "cloudflare-exporter"]["spec"]
+    assert policy["enableDefaultDeny"] == {"ingress": True, "egress": True}
+    assert "ingress" not in policy
+    assert policy["egress"] == [
+        {
+            "toFQDNs": [{"matchName": "api.cloudflare.com"}],
+            "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
+        }
+    ]
