@@ -36,6 +36,7 @@ REVIEWER_PROFILE = {
     "target": QUERY,
 }
 MAX_SERIES = 32
+DEFAULT_MIN_SAMPLES = 72
 
 
 @dataclass(frozen=True)
@@ -80,13 +81,18 @@ def aligned_history(samples, end):
     return history
 
 
-def forecast_points(model, samples, end, labels, covariates=()):
+def forecast_points(
+    model, samples, end, labels, covariates=(), min_samples=DEFAULT_MIN_SAMPLES
+):
     history = aligned_history(samples, end)
-    if not np.isfinite(history[-1]) or np.count_nonzero(np.isfinite(history)) < 72:
+    if (
+        not np.isfinite(history[-1])
+        or np.count_nonzero(np.isfinite(history)) < min_samples
+    ):
         raise ValueError("Memory history is stale or too sparse")
 
     past = [aligned_history(samples, end) for samples in covariates]
-    past = [series for series in past if np.isfinite(series).sum() >= 72]
+    past = [series for series in past if np.isfinite(series).sum() >= min_samples]
     forecast = model.forecast(
         history,
         prediction_length=HORIZONS,
@@ -166,6 +172,7 @@ def collect_profiles(model, url, profiles, end):
                             end,
                             profile_labels(profile, pod),
                             covariates,
+                            profile.get("min_samples", DEFAULT_MIN_SAMPLES),
                         )
                     )
                 except (ValueError, RuntimeError) as error:
@@ -215,6 +222,7 @@ def main():
             end,
             profile_labels(REVIEWER_PROFILE),
             replay.get("past_covariates", []),
+            replay.get("min_samples", DEFAULT_MIN_SAMPLES),
         )
         print(render_metrics(points, now), end="")
         return
@@ -228,6 +236,10 @@ def main():
     identities = {(profile["namespace"], profile["workload"]) for profile in profiles}
     if len(identities) != len(profiles):
         raise ValueError("Forecast profile namespace and workload must be unique")
+    for profile in profiles:
+        minimum = profile.get("min_samples", DEFAULT_MIN_SAMPLES)
+        if type(minimum) is not int or not 6 <= minimum <= WINDOW // STEP + 1:
+            raise ValueError("Profile min_samples must be between 6 and 2017")
     server = HTTPServer(("0.0.0.0", 8080), MetricsHandler)
     Thread(target=server.serve_forever, daemon=True).start()
     while True:
