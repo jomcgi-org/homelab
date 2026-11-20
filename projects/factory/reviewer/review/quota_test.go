@@ -655,3 +655,41 @@ func TestRestartThenPushEndsOldRootOnce(t *testing.T) {
 		})
 	}
 }
+
+func TestRestartAfterCloseEndsPausedRootOnce(t *testing.T) {
+	exporter := captureReviewSpans(t)
+	h := newHarness(t)
+	addPR7(h)
+	h.cfg.Quota = &fakeQuota{}
+	e, ctx, stop := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	h.k.finish(task, kagent.StateFailed, "insufficient_quota")
+	waitForQuotaCheck(t, h)
+	state, _ := LoadState(h.gh.check(shaA).Text)
+	if state.Trace == nil {
+		t.Fatal("paused check lost its root")
+	}
+	recorded, ok := state.Trace.spanContext()
+	if !ok {
+		t.Fatal("invalid persisted trace context")
+	}
+	stop()
+	h.gh.withLock(func() { h.gh.prs[7].Closed = true })
+	update := fmt.Sprintf("PATCH /repos/%s/check-runs/%d", testRepo, h.gh.check(shaA).ID)
+	h.gh.failWith(update, http.StatusBadGateway)
+	e, ctx, stop = h.start()
+	e.Tick(ctx)
+	if h.gh.check(shaA).Status != "in_progress" || len(reviewSpans(exporter)) != 0 {
+		t.Fatal("refused cancellation retired the review")
+	}
+	h.gh.failWith(update, 0)
+	e.Tick(ctx)
+	e.Tick(ctx)
+	stop()
+	c := h.gh.check(shaA)
+	spans := reviewSpans(exporter)
+	if c.Status != "completed" || c.Conclusion != ConclusionCancelled || len(spans) != 1 ||
+		spans[0]["id"] != recorded.SpanID().String() || spans[0]["root"] != "true" || spans[0]["pr.head_sha"] != shaA || spans[0]["review.verdict"] != ConclusionCancelled {
+		t.Fatalf("check %s %s, review spans %v", c.Status, c.Conclusion, spans)
+	}
+}
