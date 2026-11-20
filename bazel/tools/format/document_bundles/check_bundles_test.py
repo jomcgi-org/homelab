@@ -216,6 +216,7 @@ def test_unmatched_code_span_is_fast():
     assert time.monotonic() - start < 1
 
 
+# invariant: BUNDLE-1
 def test_component_row_in_separate_table_is_rejected():
     split = (
         GOOD.replace("| worker |", "| other |")
