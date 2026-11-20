@@ -343,3 +343,25 @@ test("the sync key can restore and update only its own INTSEC finding", async ()
     columnId: payload.columnId,
   });
 });
+
+test("assessment create retries return the same child after a lost response", async () => {
+  const f = await fixture();
+  const send = () =>
+    app.handle(
+      new Request(`http://localhost/issues/${f.id}/factory-assessment`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": f.coordinator.apiKey!,
+        },
+        body: JSON.stringify({ workId: "119" }),
+      }),
+    );
+  const first = await send();
+  expect(first.status).toBe(200);
+  const child = await first.json();
+  const retries = await Promise.all([send(), send()]);
+  for (const response of retries)
+    expect((await response.json()).id).toBe(child.id);
+  expect(await db.select().from(issue)).toHaveLength(2);
+});

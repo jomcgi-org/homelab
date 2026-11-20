@@ -111,7 +111,25 @@ func (f *fakeItsaplan) IssueRuns(_ context.Context, id, before int64) (*itsaplan
 	return page, nil
 }
 
+func (f *fakeItsaplan) CreateAssessment(ctx context.Context, parent, work int64) (*itsaplan.Issue, error) {
+	original, err := f.GetIssue(ctx, parent)
+	if err != nil {
+		return nil, err
+	}
+	marker := fmt.Sprintf("<!-- factory-assessment work-item=%d -->", work)
+	hits, err := f.SearchIssues(ctx, "HL", marker)
+	if err != nil {
+		return nil, err
+	}
+	if len(hits) > 0 {
+		return f.GetIssue(ctx, hits[0].ID)
+	}
+	return f.CreateIssue(ctx, "HL", itsaplan.NewIssue{Title: "Assess " + original.Identifier + ": " + original.Title, ColumnID: 5, Description: marker})
+}
+
 func (f *fakeItsaplan) RelateIssue(_ context.Context, source, target int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.issues[source].Links = append(f.issues[source].Links, itsaplan.IssueLink{Kind: "relates", Issue: itsaplan.IssueRef{ID: target}})
 	return nil
 }
@@ -1054,19 +1072,24 @@ func TestActivationRunConfirmationPaginatesAndRetriesCredentialErrors(t *testing
 }
 
 func TestAssessmentAfterDone(t *testing.T) {
-	for _, scenario := range []string{"absent", "accepted", "inconclusive", "regressed", "missing", "activation"} {
+	for _, scenario := range []string{"absent", "accepted", "inconclusive", "regressed", "missing", "stopped", "activation"} {
 		t.Run(scenario, func(t *testing.T) {
 			v := newDeliveryEnv(t)
 			v.its.deferredProject = &itsaplan.Project{}
 			if err := json.Unmarshal([]byte(`{"project":{"id":7},"columns":[{"id":5,"name":"Backlog","stateType":"backlog"},{"id":1,"name":"Todo","stateType":"unstarted"},{"id":3,"name":"Done","stateType":"completed"}],"labels":[{"id":8,"name":"deferred"}],"assignees":[{"userId":"coder-user","username":"coder","kind":"agent"}]}`), v.its.deferredProject); err != nil {
 				t.Fatal(err)
 			}
-			measure := "Assess: 3d review rounds from GitHub baseline 4"
+			measure := "Assess: 3d untrusted measure instructions"
+			firstMerge := v.clk.Now().UTC().Truncate(24 * time.Hour).Add(23 * time.Hour)
+			anchor := firstMerge
+
 			if scenario == "activation" {
 				v.pendingActivation()
+				v.clk.Advance(firstMerge.Sub(v.clk.Now()))
+				v.gh.byNumber(1).mergedAt = firstMerge
 				v.gh.headMessage("factory/HL-7", "feat: transcripts\n\n"+measure+"\nActivation: "+pendingActivation)
 				v.poll()
-				v.clk.Advance(48 * time.Hour)
+				anchor = firstMerge.Add(48 * time.Hour)
 				v.mergeActivation(1001, 2, "none")
 			} else {
 				v.delivered()
@@ -1079,9 +1102,8 @@ func TestAssessmentAfterDone(t *testing.T) {
 				v.poll()
 				v.gh.merge(1, "merged")
 			}
-			now := v.clk.Now().UTC()
-			anchor := now.Truncate(24 * time.Hour).Add(47 * time.Hour)
-			v.clk.Advance(anchor.Sub(now))
+			v.clk.Advance(anchor.Sub(v.clk.Now()))
+			v.gh.byNumber(len(v.gh.PRs())).mergedAt = anchor
 			for range 8 {
 				v.tick(v.e)
 			}
@@ -1102,18 +1124,25 @@ func TestAssessmentAfterDone(t *testing.T) {
 			if follow.Title != "Assess HL-7: Issue 101 title" || follow.ColumnID != 5 || follow.DelegateUserID != nil || follow.StartDate != anchor.AddDate(0, 0, 4).Format(time.DateOnly) || len(follow.LabelIDs) != 1 || follow.LabelIDs[0] != 8 || len(follow.Links) != 1 || follow.Links[0].Kind != "relates" || follow.Links[0].Issue.ID != 101 {
 				t.Fatalf("assessment %+v", follow)
 			}
-			for _, want := range []string{fmt.Sprintf("Put `Refs HL-%d` in the commit message.", id), measure, anchor.Format(time.RFC3339), "https://plan.example/issue/HL-7", "https://github.com/example-org/homelab/pull/1", "confounders"} {
+			for _, want := range []string{fmt.Sprintf("Put `Refs HL-%d` in the commit message.", id), "3 days", anchor.Format(time.RFC3339), "https://plan.example/issue/HL-7", "https://github.com/example-org/homelab/pull/1", "confounders"} {
 				if !strings.Contains(follow.Description, want) {
 					t.Fatalf("missing %q in %s", want, follow.Description)
 				}
 			}
+			if strings.Contains(follow.Description, measure) {
+				t.Fatal("commit instructions in brief")
+			}
 			count := v.its.activationCreates
 			v.e.Release()
 			v.e = v.engine("restart")
-			if _, err := v.st.DB.Exec("UPDATE outbox SET delivered_at=NULL WHERE kind='assessment'"); err != nil {
+			if _, err := v.st.DB.Exec("UPDATE outbox SET delivered_at=NULL, abandoned_at=now(),last_error='unknown kind assessment' WHERE kind='assessment'"); err != nil {
 				t.Fatal(err)
 			}
 			v.poll()
+			var delivered bool
+			if err := v.st.DB.QueryRow("SELECT delivered_at IS NOT NULL AND abandoned_at IS NULL FROM outbox WHERE kind='assessment'").Scan(&delivered); err != nil || !delivered {
+				t.Fatalf("assessment delivery after rollback = %v, error %v", delivered, err)
+			}
 			if v.its.activationCreates != count {
 				t.Fatal("duplicate assessment")
 			}
@@ -1136,10 +1165,25 @@ func TestAssessmentAfterDone(t *testing.T) {
 			}
 			v.its.add(receipt.RunID, "coder", id, follow.Identifier, follow.Description)
 			v.tick(v.e)
+			if scenario == "stopped" {
+				answer = "Verdict: accepted"
+				v.its.moveErr = []error{errors.New("temporary move failure")}
+			}
 			v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, answer, nil)
 			v.clk.Advance(5 * time.Second)
 			for range 5 {
 				v.tick(v.e)
+			}
+			if scenario == "stopped" {
+				stopped, err := v.st.StopWork(v.ctx, v.work(id).ID, "operator stop", "operator")
+				if err != nil || !stopped {
+					t.Fatalf("stop=%v err=%v", stopped, err)
+				}
+				v.poll()
+				if v.its.issues[id].ColumnID != 1 {
+					t.Fatal("pending verdict moved a stopped issue")
+				}
+				return
 			}
 			follow, err = v.its.GetIssue(v.ctx, id)
 			if err != nil {
@@ -1155,6 +1199,9 @@ func TestAssessmentAfterDone(t *testing.T) {
 			posted, parent := false, false
 			for _, c := range v.its.Comments() {
 				if strings.Contains(c.body, answer) {
+					t.Fatal("raw model answer in comment")
+				}
+				if strings.Contains(c.body, "Verdict: "+scenario) || (scenario == "missing" && strings.Contains(c.body, "remains open")) {
 					if c.issueID == id {
 						posted = scenario != "missing" || strings.Contains(c.body, "remains open")
 					}

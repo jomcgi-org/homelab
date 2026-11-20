@@ -57,22 +57,24 @@ func assessmentTrailer(message string) (int, string) {
 }
 
 type assessmentJob struct {
-	WorkID, ParentID, ChildID                                             int64
-	Project, Key, Title, Measure, IssueURL, PRURL, StartDate, ColumnState string
-	Anchor                                                                time.Time
+	WorkID, ParentID, ChildID                             int64
+	Project, Key, IssueURL, PRURL, StartDate, ColumnState string
+	Days                                                  int
+	Anchor                                                time.Time
 }
 
 // invariant: FACT-13
 func (e *Engine) queueAssessment(ctx context.Context, tx *sql.Tx, p issueDonePayload, is *itsaplan.Issue) error {
-	j := assessmentJob{WorkID: p.WorkID, ParentID: p.IssueID, Project: p.Project, Title: is.Title, Key: is.Identifier, Anchor: e.cfg.Now().UTC()}
+	j := assessmentJob{WorkID: p.WorkID, ParentID: p.IssueID, Project: p.Project, Key: is.Identifier, Anchor: e.cfg.Now().UTC()}
 	var days int
-	err := tx.QueryRowContext(ctx, "SELECT days,measure,issue_url,pr_url FROM assessment WHERE work_id=$1", p.WorkID).Scan(&days, &j.Measure, &j.IssueURL, &j.PRURL)
+	err := tx.QueryRowContext(ctx, "SELECT days,issue_url,pr_url FROM assessment WHERE work_id=$1", p.WorkID).Scan(&days, &j.IssueURL, &j.PRURL)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	j.Days = days
 	j.StartDate = j.Anchor.AddDate(0, 0, days+1).Format(time.DateOnly)
 	return e.st.Enqueue(ctx, tx, "assessment", fmt.Sprintf("assessment/%d", p.WorkID), 0, "", j)
 }
@@ -82,11 +84,20 @@ func (e *Engine) deliverAssessment(ctx context.Context, it *store.OutboxItem) er
 	if err := json.Unmarshal(it.Payload, &j); err != nil {
 		return err
 	}
+	before := func(operation string, resource any) error {
+		return e.BeginStatusRead(ctx, fmt.Sprintf("assessment/%d/%s/%v", it.ID, operation, resource))
+	}
+	if err := before("Project", j.Project); err != nil {
+		return err
+	}
 	project, err := e.its.Project(ctx, j.Project)
 	if err != nil {
 		return err
 	}
 	if j.ChildID != 0 {
+		if err := before("GetIssue", j.ChildID); err != nil {
+			return err
+		}
 		issue, err := e.its.GetIssue(ctx, j.ChildID)
 		if err != nil {
 			return err
@@ -100,6 +111,17 @@ func (e *Engine) deliverAssessment(ctx context.Context, it *store.OutboxItem) er
 		}
 		if issue.ColumnID == col.ID {
 			return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)
+		}
+		if err = before("MoveIssue", j.ChildID); err != nil {
+			return err
+		}
+		work, err := e.st.WorkItemByIssue(ctx, j.ChildID)
+		if err != nil {
+			return err
+		}
+		delegate := activationDelegate(project, work.AgentKey)
+		if (j.WorkID != 0 && work.ID != j.WorkID) || work.State == store.WorkStopped || delegate == "" || activationDelegateID(issue) != delegate {
+			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "assessment stopped or taken over")
 		}
 		if err = e.guard(ctx); err != nil {
 			return err
@@ -124,55 +146,28 @@ func (e *Engine) deliverAssessment(ctx context.Context, it *store.OutboxItem) er
 	// issue has been edited or search indexing is delayed.
 	var child *itsaplan.Issue
 	var id sql.NullInt64
-	if err := e.st.DB.QueryRowContext(ctx, "SELECT child_id FROM assessment WHERE work_id=$1", j.WorkID).Scan(&id); err != nil {
+	if err := e.st.DB.QueryRowContext(ctx, "SELECT child_id,days FROM assessment WHERE work_id=$1", j.WorkID).Scan(&id, &j.Days); err != nil {
 		return err
 	}
 	if id.Valid {
+		if err = before("GetIssue", id.Int64); err != nil {
+			return err
+		}
 		child, err = e.its.GetIssue(ctx, id.Int64)
 		if err != nil {
 			return err
 		}
-		if !inProject(child, j.Project) {
-			return errors.New("assessment left project")
-		}
 	} else {
-		hits, err := e.its.SearchIssues(ctx, j.Project, marker)
-		if err != nil {
+		if err = before("CreateAssessment", j.ParentID); err != nil {
 			return err
 		}
-		for _, h := range hits {
-			is, err := e.its.GetIssue(ctx, h.ID)
-			if err != nil {
-				return err
-			}
-			if inProject(is, j.Project) && strings.Contains(is.Description, marker) {
-				if child != nil {
-					return errors.New("ambiguous assessment marker")
-				}
-				child = is
-			}
+		child, err = e.its.CreateAssessment(ctx, j.ParentID, j.WorkID)
+		if err != nil {
+			return err
 		}
 	}
-	if child == nil {
-		if it.SendStarted {
-			return errors.New("assessment create outcome unknown")
-		}
-		title := []rune("Assess " + j.Key + ": " + j.Title)
-		if err = e.st.OutboxSendStarted(ctx, it.ID); err != nil {
-			return err
-		}
-		if err = e.guard(ctx); err != nil {
-			return err
-		}
-		child, err = e.its.CreateIssue(ctx, j.Project, itsaplan.NewIssue{Title: string(title[:min(len(title), 255)]), ColumnID: backlog.ID, Description: marker})
-		if err != nil {
-			if notCreated(err) {
-				if clear := e.st.OutboxSendCleared(ctx, it.ID); clear != nil {
-					return clear
-				}
-			}
-			return err
-		}
+	if !inProject(child, j.Project) || child.ArchivedAt != nil {
+		return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "assessment left project or was archived")
 	}
 	if _, err = e.st.DB.ExecContext(ctx, "UPDATE assessment SET child_id=$2 WHERE work_id=$1", j.WorkID, child.ID); err != nil {
 		return err
@@ -184,16 +179,16 @@ func (e *Engine) deliverAssessment(ctx context.Context, it *store.OutboxItem) er
 		}
 	}
 	if !linked {
-		if err = e.guard(ctx); err != nil {
+		if err = before("RelateIssue", child.ID); err != nil {
 			return err
 		}
 		if err = e.its.RelateIssue(ctx, child.ID, j.ParentID); err != nil {
 			return err
 		}
 	}
-	description := fmt.Sprintf("Put `Refs %s` in the commit message.\n\nAssess: %s\nWindow start: %s\nOriginal issue: %s\nMerged PR: %s\n\nCompare the measure before and after rollout. Name confounders. Finish without commits with a single Verdict: accepted, Verdict: regressed or Verdict: inconclusive line. The recorded verdict is final.\n\n%s", child.Identifier, j.Measure, j.Anchor.Format(time.RFC3339Nano), mdLink(j.Key, j.IssueURL), j.PRURL, marker)
+	description := fmt.Sprintf("Put `Refs %s` in the commit message.\n\nAssess the success measure, source and baseline authorized in the original issue over %d days before and after rollout.\nWindow start: %s\nOriginal issue: %s\nMerged PR: %s\n\nCompare the measure before and after rollout. Name confounders. Finish without commits with a single Verdict: accepted, Verdict: regressed or Verdict: inconclusive line. The recorded verdict is final.\n\n%s", child.Identifier, j.Days, j.Anchor.Format(time.RFC3339Nano), mdLink(j.Key, j.IssueURL), j.PRURL, marker)
 	if child.Description == marker {
-		if err = e.guard(ctx); err != nil {
+		if err = before("UpdateIssue", child.ID); err != nil {
 			return err
 		}
 		if err = e.its.UpdateIssue(ctx, child.ID, itsaplan.IssueUpdate{Description: &description, StartDate: &j.StartDate, LabelIDs: []int64{label}}); err != nil {
@@ -228,6 +223,13 @@ func assessmentOutcome(answer string) string {
 	return verdict
 }
 
+func assessmentSummary(answer string) string {
+	if v := assessmentOutcome(answer); v != "" {
+		return "Verdict: " + v
+	}
+	return "No unambiguous verdict line was recorded. The assessment remains open."
+}
+
 func (e *Engine) assessmentVerdict(ctx context.Context, tx *sql.Tx, wi *store.WorkItem, r *store.Run, answer string) (bool, error) {
 	var parent int64
 	var recorded sql.NullString
@@ -242,10 +244,7 @@ func (e *Engine) assessmentVerdict(ctx context.Context, tx *sql.Tx, wi *store.Wo
 		return true, nil
 	}
 	verdict := assessmentOutcome(answer)
-	body := answer
-	if verdict == "" {
-		body = strings.TrimSpace(body + "\n\nNo unambiguous verdict line was recorded. The assessment remains open.")
-	}
+	body := assessmentSummary(answer)
 	key := fmt.Sprintf("assessment-result/%d", r.ID)
 	if err = e.st.Enqueue(ctx, tx, store.OutboxComment, key, 0, "", commentPayload{IssueID: wi.IssueID, Body: body}); err != nil {
 		return true, err
@@ -259,7 +258,7 @@ func (e *Engine) assessmentVerdict(ctx context.Context, tx *sql.Tx, wi *store.Wo
 			return true, err
 		}
 		if verdict == "regressed" {
-			if err = e.st.Enqueue(ctx, tx, store.OutboxComment, key+"/parent", 0, "", commentPayload{IssueID: parent, Body: wi.IssueKey + "\n\n" + answer}); err != nil {
+			if err = e.st.Enqueue(ctx, tx, store.OutboxComment, key+"/parent", 0, "", commentPayload{IssueID: parent, Body: wi.IssueKey + "\n\n" + body}); err != nil {
 				return true, err
 			}
 		} else {
@@ -267,5 +266,5 @@ func (e *Engine) assessmentVerdict(ctx context.Context, tx *sql.Tx, wi *store.Wo
 		}
 	}
 	b := e.binding(wi.BindingName)
-	return true, e.st.Enqueue(ctx, tx, "assessment", key+"/move", 0, "", assessmentJob{Project: b.ItsaplanProject, ChildID: wi.IssueID, ColumnState: state})
+	return true, e.st.Enqueue(ctx, tx, "assessment", key+"/move", 0, "", assessmentJob{WorkID: wi.ID, Project: b.ItsaplanProject, ChildID: wi.IssueID, ColumnState: state})
 }

@@ -51,6 +51,7 @@ type Itsaplan interface {
 	CreateIssue(ctx context.Context, project string, issue itsaplan.NewIssue) (*itsaplan.Issue, error)
 	UpdateIssue(ctx context.Context, id int64, patch itsaplan.IssueUpdate) error
 	IssueRuns(ctx context.Context, issueID, before int64) (*itsaplan.IssueRunPage, error)
+	CreateAssessment(ctx context.Context, parent, work int64) (*itsaplan.Issue, error)
 	RelateIssue(ctx context.Context, source, target int64) error
 	BlockIssue(ctx context.Context, source, target int64) error
 	SearchGateIssues(ctx context.Context, project, marker string) ([]itsaplan.Issue, error)
@@ -2080,6 +2081,7 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 					return err
 				}
 				if handled {
+					res.Output = assessmentSummary(res.Output)
 					return e.finishRun(ctx, tx, r, res)
 				}
 				// The turn finished; delivery opens or updates the PR from the
@@ -2881,7 +2883,11 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 		return e.deliverIssueDone(ctx, it)
 	}
 	if it.Kind == "assessment" {
-		return e.deliverAssessment(ctx, it)
+		err := e.deliverAssessment(ctx, it)
+		if authHTTP(err) && e.refused(ctx, it, err) {
+			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, "assessment operation refused")
+		}
+		return err
 	}
 	if it.Kind == store.OutboxActivation {
 		return e.deliverActivation(ctx, it)
