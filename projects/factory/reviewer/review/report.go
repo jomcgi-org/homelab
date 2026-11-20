@@ -1174,6 +1174,7 @@ type State struct {
 	OptionalIDs        []string                     `json:"optional_ids,omitempty"`
 	Round              int                          `json:"round,omitempty"`
 	PromptVersions     []DecisionStamp              `json:"prompt_versions,omitempty"`
+	Deferred           []github.DeferredFinding     `json:"deferred,omitempty"`
 	DecisionComment    int64                        `json:"decision_comment,omitempty"` // Highest approver comment ID handled on this head.
 	InvariantBase      string                       `json:"invariant_base,omitempty"`
 	Semgrep            *SemgrepStamp                `json:"semgrep,omitempty"`
@@ -1487,6 +1488,9 @@ func stateOf(a Assessment, r *Report, gate *Gate) State {
 		if r != nil && exposureFinding(b.Finding) && r.acknowledged[b.ID] == b.Title && b.Title != "" {
 			st.Exposures = append(st.Exposures, b.Finding)
 		}
+	}
+	for _, f := range a.Deferred {
+		st.Deferred = append(st.Deferred, github.DeferredFinding{ID: f.ID, Title: f.Title, Detail: f.Detail})
 	}
 	if r != nil && r.ActivationHead != "" && r.Activation != "" {
 		st.Activation = &github.ActivationAssessment{HeadSHA: r.ActivationHead, Text: r.Activation}
