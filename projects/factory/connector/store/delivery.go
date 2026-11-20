@@ -296,11 +296,22 @@ func (s *Store) StopWork(ctx context.Context, workID int64, reason, by string) (
 // StopRefusedPR stops delivery and retires the recorded PR from stopped-work polling.
 func (s *Store) StopRefusedPR(ctx context.Context, workID, prID int64, reason string) error {
 	return s.Tx(ctx, func(tx *sql.Tx) error {
-		if _, err := s.stopWork(ctx, tx, workID, reason, "connector"); err != nil {
+		reason += ". Check the GitHub merge queue and remove this PR if it is queued"
+		stopped, err := s.stopWork(ctx, tx, workID, reason, "connector")
+		if err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE pull_request SET state = 'refused', updated_at = now() WHERE id = $1 AND work_item_id = $2`, prID, workID)
-		return err
+		_, err = tx.ExecContext(ctx, `UPDATE pull_request SET state = 'refused', updated_at = now() WHERE id = $1 AND work_item_id = $2`, prID, workID)
+		if err != nil || stopped {
+			return err
+		}
+		// An earlier stop may already have been announced before the source check.
+		var issueID, stops int64
+		if err := tx.QueryRowContext(ctx, `SELECT issue_id, stops FROM work_item WHERE id = $1`, workID).Scan(&issueID, &stops); err != nil {
+			return err
+		}
+		return s.Enqueue(ctx, tx, OutboxComment, fmt.Sprintf("comment/refused-pr/%d/%d", prID, stops), 0, "",
+			map[string]any{"issueId": issueID, "body": reason + "."})
 	})
 }
 
@@ -338,8 +349,7 @@ func (s *Store) stopWork(ctx context.Context, tx *sql.Tx, workID int64, reason, 
 	}
 	return true, s.Enqueue(ctx, tx, OutboxComment, fmt.Sprintf("comment/stopped/%d/%d", workID, n), 0, "",
 		map[string]any{"issueId": issueID, "body": fmt.Sprintf(
-			"The factory stopped delivering %s: %s. Its running turn is canceled, its PR leaves the merge "+
-				"queue, and no PR updates follow. A new run on the issue resumes delivery.", key, reason)})
+			"The factory stopped delivering %s: %s. Its running turn is canceled. A new run on the issue resumes delivery.", key, reason)})
 }
 
 // IssueStop is what `connector cancel` stopped.
