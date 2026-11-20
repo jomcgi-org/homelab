@@ -541,6 +541,7 @@ func (e *Engine) postAdmission(ctx context.Context, r *store.Run) (bool, error) 
 	return e.sendEvents(postCtx, r, admissionTask, journal.Events, tr.Base)
 }
 
+// invariant: FACT-13
 func (e *Engine) admissionMetrics(ctx context.Context) error {
 	total := 0
 	for _, agent := range e.cfg.Agents {
