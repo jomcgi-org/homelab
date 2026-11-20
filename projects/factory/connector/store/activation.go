@@ -38,8 +38,8 @@ func (s *Store) ActivationParent(ctx context.Context, q Querier, issueID int64) 
 func (s *Store) RecoverActivation(ctx context.Context) error {
 	_, err := s.DB.ExecContext(ctx, `UPDATE outbox SET abandoned_at = NULL,
 		last_error = NULL, next_attempt_at = $1
-		WHERE kind = 'activation' AND delivered_at IS NULL AND abandoned_at IS NOT NULL
-		AND last_error = 'unknown kind activation'`, s.now())
+		WHERE kind IN ('activation','assessment') AND delivered_at IS NULL AND abandoned_at IS NOT NULL
+		AND last_error = 'unknown kind ' || kind`, s.now())
 	return err
 }
 

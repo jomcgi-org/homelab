@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "activation.go",
         "admission.go",
+        "assessment.go",
         "classify.go",
         "deferred.go",
         "delivery.go",

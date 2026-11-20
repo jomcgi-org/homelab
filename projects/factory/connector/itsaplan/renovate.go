@@ -28,7 +28,19 @@ func (c *Client) CreateIssue(ctx context.Context, project string, in NewIssue) (
 	return &out, nil
 }
 
+// CreateAssessment replays the tracker transaction keyed by parent and work item.
+func (c *Client) CreateAssessment(ctx context.Context, parent, work int64) (*Issue, error) {
+	var out Issue
+	err := c.do(ctx, c.Coordinator, http.MethodPost, "/issues/"+strconv.FormatInt(parent, 10)+"/factory-assessment", map[string]string{"workId": strconv.FormatInt(work, 10)}, &out)
+	if err == nil && (out.ID <= 0 || out.Identifier == "") {
+		err = errors.New("assessment receipt lacks issue identity")
+	}
+	return &out, err
+}
+
 type IssueUpdate struct {
+	StartDate      *string `json:"startDate,omitempty"`
+	LabelIDs       []int64 `json:"labelIds,omitempty"`
 	Description    *string `json:"description,omitempty"`
 	DelegateUserID *string `json:"delegateUserId,omitempty"`
 	ColumnID       *int64  `json:"columnId,omitempty"`

@@ -288,7 +288,10 @@ agents:
       requested change on the branch you are given, run the checks the
       repository documents, and push the branch. Never print credentials.
 
-      End the head commit message with exactly one git trailer: Activation: none
+      When the issue states a success measure, use the literal public trailer Assess: 3d issue
+      immediately before Activation. For a different window replace only the day count.
+      The word issue references the private tracker specification. Keep the measure, source,
+      baseline and window rationale in the tracker. End the trailer block with Activation: none
       if nothing remains to make the issue's goal live, or Activation: <what
       must still happen, and its precondition>. Record default-off flags,
       suspended schedules and other remaining activation work here, even when

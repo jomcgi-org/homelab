@@ -330,6 +330,10 @@ Labels in the findings: **[V]** verified in upstream source, docs or live state;
 
 See the [connector architecture](connector/ARCHITECTURE.md) for the [run lifecycle](connector/ARCHITECTURE.md#run-lifecycle), [revision rounds](connector/ARCHITECTURE.md#review-rounds) and [liveness lease](connector/ARCHITECTURE.md#liveness-lease). The move keeps the reviewed text without a claim-by-claim source audit ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-265#comment-3955)).
 
+A coding head with a success measure carries one `Assess: <N>d issue` trailer before the final Activation trailer. The default window is three days. The issue holds the measure, source, baseline and any window rationale. The connector saves the reference at merge and queues one related assessment when it acknowledges the original issue's move to Done, including completion through an activation child. The deferred Backlog issue starts on the first UTC date after that window ends.
+
+The connector builds the assessment brief from the original issue’s measurement text. The child carries the public reference followed by the private description and checklist context from the original issue. The issue comment records the verdict and references the run result, which retains observations and confounders. A single accepted or inconclusive verdict closes the assessment. A regressed verdict returns it to Todo and reports the verdict on the original issue. Missing or ambiguous verdicts leave the assessment open. The recorded verdict is final.
+
 itsaplan owns the request and its run history, kagent owns execution and
 session state, GitHub owns PR, check, review and merge state. The connector
 records how they relate and routes results and feedback between them.

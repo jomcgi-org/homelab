@@ -301,11 +301,11 @@ func (s *Store) stopWork(ctx context.Context, tx *sql.Tx, workID int64, reason, 
 		UPDATE work_item SET state = 'stopped', stopped_reason = $2, stopped_by = $3, stops = stops + 1,
 			updated_at = now()
 		WHERE id = $1 AND state <> 'stopped' AND (state <> 'done' OR EXISTS (
-			SELECT 1 FROM outbox WHERE kind = 'activation' AND (
+			SELECT 1 FROM outbox WHERE ((kind='assessment' AND payload->>'ChildID'=work_item.issue_id::text) OR (kind = 'activation' AND (
 				payload->>'workId' = work_item.id::text OR
 				payload->>'followupId' = work_item.issue_id::text OR
-				payload#>>'{complete,activationChild}' = work_item.issue_id::text)
-			AND delivered_at IS NULL AND (abandoned_at IS NULL OR last_error = 'unknown kind activation')))
+				payload#>>'{complete,activationChild}' = work_item.issue_id::text)))
+			AND delivered_at IS NULL AND (abandoned_at IS NULL OR last_error = 'unknown kind ' || kind)))
 		RETURNING issue_id, issue_key, stops`, workID, reason, by).Scan(&issueID, &key, &n)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil

@@ -41,6 +41,9 @@ func (f *fakeItsaplan) CreateIssue(_ context.Context, project string, n itsaplan
 		Title: n.Title, Description: n.Description, ColumnID: n.ColumnID,
 		AssigneeUserID: f.activationAutoAssignee,
 	}
+	if f.deferredProject != nil {
+		is.ProjectID = f.deferredProject.Project.ID
+	}
 	f.issues[id] = is
 	if f.loseActivationCreate {
 		f.loseActivationCreate = false
@@ -56,6 +59,12 @@ func (f *fakeItsaplan) UpdateIssue(_ context.Context, id int64, patch itsaplan.I
 	is := f.issues[id]
 	if is == nil {
 		return itsaplan.ErrNotFound
+	}
+	if patch.StartDate != nil {
+		is.StartDate = *patch.StartDate
+	}
+	if patch.LabelIDs != nil {
+		is.LabelIDs = patch.LabelIDs
 	}
 	if patch.Description != nil {
 		if f.activationDescriptionErr != nil {
@@ -100,6 +109,29 @@ func (f *fakeItsaplan) IssueRuns(_ context.Context, id, before int64) (*itsaplan
 		}
 	}
 	return page, nil
+}
+
+func (f *fakeItsaplan) CreateAssessment(ctx context.Context, parent, work int64) (*itsaplan.Issue, error) {
+	original, err := f.GetIssue(ctx, parent)
+	if err != nil {
+		return nil, err
+	}
+	marker := fmt.Sprintf("<!-- factory-assessment work-item=%d -->", work)
+	hits, err := f.SearchIssues(ctx, "HL", marker)
+	if err != nil {
+		return nil, err
+	}
+	if len(hits) > 0 {
+		return f.GetIssue(ctx, hits[0].ID)
+	}
+	return f.CreateIssue(ctx, "HL", itsaplan.NewIssue{Title: "Assess " + original.Identifier + ": " + original.Title, ColumnID: 5, Description: marker})
+}
+
+func (f *fakeItsaplan) RelateIssue(_ context.Context, source, target int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.issues[source].Links = append(f.issues[source].Links, itsaplan.IssueLink{Kind: "relates", Issue: itsaplan.IssueRef{ID: target}})
+	return nil
 }
 
 func (f *fakeItsaplan) BlockIssue(_ context.Context, source, target int64) error {
@@ -1034,6 +1066,170 @@ func TestActivationRunConfirmationPaginatesAndRetriesCredentialErrors(t *testing
 			var pages, attempts int
 			if err := v.st.DB.QueryRow(`SELECT count(*), sum(attempts) FROM delivery_read WHERE operation = 'activation-delegation-run'`).Scan(&pages, &attempts); err != nil || pages != 2 || attempts != 3 {
 				t.Fatalf("pages=%d attempts=%d err=%v", pages, attempts, err)
+			}
+		})
+	}
+}
+
+func TestAssessmentAfterDone(t *testing.T) {
+	for _, scenario := range []string{"absent", "freeform", "accepted", "inconclusive", "regressed", "missing", "stopped", "activation"} {
+		t.Run(scenario, func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.its.deferredProject = &itsaplan.Project{}
+			if err := json.Unmarshal([]byte(`{"project":{"id":7},"columns":[{"id":5,"name":"Backlog","stateType":"backlog"},{"id":1,"name":"Todo","stateType":"unstarted"},{"id":3,"name":"Done","stateType":"completed"}],"labels":[{"id":8,"name":"deferred"}],"assignees":[{"userId":"coder-user","username":"coder","kind":"agent"}]}`), v.its.deferredProject); err != nil {
+				t.Fatal(err)
+			}
+			const specification = "median review rounds per merged PR"
+			const source = "Count rounds from GitHub pull request reviews."
+			const baseline = "Compare against the previous median of four rounds."
+			measure := "Assess: 3d issue"
+			if scenario == "freeform" {
+				measure = "Assess: 3d untrusted measure instructions"
+			}
+			firstMerge := v.clk.Now().UTC().Truncate(24 * time.Hour).Add(23 * time.Hour)
+			anchor := firstMerge
+
+			if scenario == "activation" {
+				v.pendingActivation()
+				v.clk.Advance(firstMerge.Sub(v.clk.Now()))
+				v.gh.byNumber(1).mergedAt = firstMerge
+				v.gh.headMessage("factory/HL-7", "feat: transcripts\n\n"+measure+"\nActivation: "+pendingActivation)
+				v.poll()
+				anchor = firstMerge.Add(48 * time.Hour)
+				v.mergeActivation(1001, 2, "none")
+			} else {
+				v.delivered()
+				message := "feat: transcripts\n\n"
+				if scenario != "absent" {
+					message += measure + "\n"
+				}
+				v.gh.headMessage("factory/HL-7", message+"Activation: none")
+				v.gh.green("sha-1")
+				v.poll()
+				v.gh.merge(1, "merged")
+			}
+			v.its.issues[101].Description = "Success measure: " + specification + "\n\n" + source
+			v.its.issues[101].Checklists = []itsaplan.Checklist{{Title: "Comparison", Items: []itsaplan.ChecklistItem{{Content: baseline}}}}
+			v.clk.Advance(anchor.Sub(v.clk.Now()))
+			v.gh.byNumber(len(v.gh.PRs())).mergedAt = anchor
+			for range 8 {
+				v.tick(v.e)
+			}
+			if scenario == "absent" || scenario == "freeform" {
+				if v.its.activationCreates != 0 {
+					t.Fatal("unexpected assessment")
+				}
+				return
+			}
+			id := int64(1001)
+			if scenario == "activation" {
+				id++
+			}
+			follow, err := v.its.GetIssue(v.ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if follow.Title != "Assess HL-7: Issue 101 title" || follow.ColumnID != 5 || follow.DelegateUserID != nil || follow.StartDate != anchor.AddDate(0, 0, 4).Format(time.DateOnly) || len(follow.LabelIDs) != 1 || follow.LabelIDs[0] != 8 || len(follow.Links) != 1 || follow.Links[0].Kind != "relates" || follow.Links[0].Issue.ID != 101 {
+				t.Fatalf("assessment %+v", follow)
+			}
+			for _, want := range []string{fmt.Sprintf("Put `Refs HL-%d` in the commit message.", id), "3 days", anchor.Format(time.RFC3339), "https://plan.example/issue/HL-7", "https://github.com/example-org/homelab/pull/1", "confounders"} {
+				if !strings.Contains(follow.Description, want) {
+					t.Fatalf("missing %q in %s", want, follow.Description)
+				}
+			}
+			if !strings.Contains(follow.Description, specification) || !strings.Contains(follow.Description, measure) || !strings.Contains(follow.Description, source) || !strings.Contains(follow.Description, baseline) {
+				t.Fatalf("missing authorized specification: %s", follow.Description)
+			}
+			if strings.Contains(follow.Description, "untrusted measure instructions") {
+				t.Fatal("commit instructions in brief")
+			}
+			count := v.its.activationCreates
+			v.e.Release()
+			v.e = v.engine("restart")
+			if _, err := v.st.DB.Exec("UPDATE outbox SET delivered_at=NULL, abandoned_at=now(),last_error='unknown kind assessment' WHERE kind='assessment'"); err != nil {
+				t.Fatal(err)
+			}
+			v.poll()
+			var delivered bool
+			if err := v.st.DB.QueryRow("SELECT delivered_at IS NOT NULL AND abandoned_at IS NULL FROM outbox WHERE kind='assessment'").Scan(&delivered); err != nil || !delivered {
+				t.Fatalf("assessment delivery after rollback = %v, error %v", delivered, err)
+			}
+			if v.its.activationCreates != count {
+				t.Fatal("duplicate assessment")
+			}
+			if scenario == "activation" {
+				return
+			}
+			answer := "Observed 3 rounds against baseline 4. Confounder: a holiday.\nVerdict: " + scenario
+			if scenario == "missing" {
+				answer = "No measurement available."
+			}
+			start, err := time.Parse(time.DateOnly, follow.StartDate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			v.clk.Advance(start.Sub(v.clk.Now()))
+			v.tick(v.e)
+			receipt := v.its.deferredReceipt
+			if receipt == nil || v.its.issues[id].ColumnID != 1 || v.its.issues[id].DelegateUserID == nil {
+				t.Fatalf("deferred assessment did not start: %+v", v.its.issues[id])
+			}
+			v.its.add(receipt.RunID, "coder", id, follow.Identifier, follow.Description)
+			v.tick(v.e)
+			if scenario == "stopped" {
+				answer = "Verdict: accepted"
+				v.its.moveErr = []error{errors.New("temporary move failure")}
+			}
+			v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, answer, nil)
+			v.clk.Advance(5 * time.Second)
+			for range 5 {
+				v.tick(v.e)
+			}
+			if scenario == "stopped" {
+				stopped, err := v.st.StopWork(v.ctx, v.work(id).ID, "operator stop", "operator")
+				if err != nil || !stopped {
+					t.Fatalf("stop=%v err=%v", stopped, err)
+				}
+				v.poll()
+				if v.its.issues[id].ColumnID != 1 {
+					t.Fatal("pending verdict moved a stopped issue")
+				}
+				return
+			}
+			follow, err = v.its.GetIssue(v.ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantColumn := int64(3)
+			if scenario == "missing" || scenario == "regressed" {
+				wantColumn = 1
+			}
+			if follow.ColumnID != wantColumn {
+				t.Fatalf("verdict column %d, want %d", follow.ColumnID, wantColumn)
+			}
+			results := v.its.Results(receipt.RunID)
+			if len(results) != 1 || results[0].Output != answer {
+				t.Fatalf("assessment run result = %+v", results)
+			}
+			posted, parent := false, false
+			for _, c := range v.its.Comments() {
+				if strings.Contains(c.body, answer) {
+					t.Fatal("raw model answer in comment")
+				}
+				if strings.Contains(c.body, "Verdict: "+scenario) || (scenario == "missing" && strings.Contains(c.body, "remains open")) {
+					if !strings.Contains(c.body, fmt.Sprintf("https://plan.example/runs/%d", receipt.RunID)) {
+						t.Fatalf("missing assessment result reference: %s", c.body)
+					}
+					if c.issueID == id {
+						posted = scenario != "missing" || strings.Contains(c.body, "remains open")
+					}
+					if c.issueID == 101 {
+						parent = true
+					}
+				}
+			}
+			if !posted || parent != (scenario == "regressed") {
+				t.Fatalf("verdict comments %+v", v.its.Comments())
 			}
 		})
 	}

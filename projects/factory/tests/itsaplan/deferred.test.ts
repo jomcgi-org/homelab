@@ -78,7 +78,17 @@ async function fixture() {
         body: JSON.stringify(body),
       }),
     );
-  return { id, body, send, backlog, todo, coder, coordinator };
+  return {
+    id,
+    body,
+    send,
+    backlog,
+    todo,
+    coder,
+    coordinator,
+    client,
+    teamId: project.project.teamId,
+  };
 }
 
 async function effects(id: number) {
@@ -342,4 +352,59 @@ test("the sync key can restore and update only its own INTSEC finding", async ()
     description: payload.description,
     columnId: payload.columnId,
   });
+});
+
+test("assessment create retries return the same child after a lost response", async () => {
+  const f = await fixture();
+  const send = () =>
+    app.handle(
+      new Request(`http://localhost/issues/${f.id}/factory-assessment`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": f.coordinator.apiKey!,
+        },
+        body: JSON.stringify({ workId: "119" }),
+      }),
+    );
+  const first = await send();
+  expect(first.status).toBe(200);
+  const child = await first.json();
+  const retries = await Promise.all([send(), send()]);
+  for (const response of retries)
+    expect((await response.json()).id).toBe(child.id);
+  expect(await db.select().from(issue)).toHaveLength(2);
+
+  const other = await createProject(f.client, { key: "OTHER", name: "Other" });
+  expect(other.status).toBe(201);
+  const foreign = (await f.client.projects({ projectKey: "OTHER" }).get())
+    .data!;
+  await db
+    .update(issue)
+    .set({
+      projectId: foreign.project.id,
+      columnId: foreign.columns[0].id,
+      description: "destination-only text",
+    })
+    .where(eq(issue.id, child.id));
+  const replay = await send();
+  expect(replay.status).toBe(404);
+  expect(await replay.text()).not.toContain("destination-only text");
+
+  const role = await f.client.teams({ teamId: f.teamId }).roles.post({
+    name: "Create only",
+    permissions: { work_items: { create: true, read: false } },
+  });
+  expect(role.status).toBe(201);
+  expect(
+    (
+      await setAgentProjectRole(
+        f.client,
+        "HOME",
+        f.coordinator.agent.userId,
+        role.data!.id,
+      )
+    ).status,
+  ).toBe(204);
+  expect((await send()).status).toBe(403);
 });

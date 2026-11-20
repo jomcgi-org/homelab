@@ -6,9 +6,11 @@ import { and, eq, sql } from "drizzle-orm";
 import { db, agentRun, aiAgent, issue, label, projectColumn } from "@repo/db";
 import { factoryTransaction } from "../../../packages/db/src/client";
 import { guards, entityGuard } from "./shared/guards";
+import { assertPermission } from "./shared/access";
 import { authContext } from "./shared/auth-context";
 import { HttpError, errorAnswer } from "./shared/lib";
 import {
+  createIssue,
   getIssue,
   getIssueProjectId,
   updateIssue,
@@ -17,6 +19,7 @@ import {
 import { createComment } from "./modules/issues/activity";
 import { getAssignTriggerAgent } from "./modules/agents/core/service";
 import { startDeferred, type DeferredStart as Start } from "./factory-deferred";
+import { getProjectById } from "./modules/projects/service";
 import pkg from "../../../package.json";
 
 if (pkg.version !== "1.10.0") {
@@ -39,6 +42,11 @@ await db.transaction(async (tx) => {
       primary key (issue_id, start_date)
     )
   `);
+  await tx.execute(sql`create table if not exists factory_assessment (
+    parent_id integer not null references issue(id) on delete cascade,
+    work_id text not null, child_id integer not null references issue(id),
+    primary key(parent_id,work_id)
+  )`);
 });
 
 const conflict = (message: string) => new HttpError(409, message);
@@ -158,6 +166,64 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
       getIssueProjectId(Number(p.issueId)),
     ),
   })
+  .post(
+    "/issues/:issueId/factory-assessment",
+    async ({ params, body, user, projectId }) =>
+      factoryTransaction(async () => {
+        await assertPermission(projectId, user, "work_items", "read");
+        const parentId = params.issueId;
+        await api.lockIssue(parentId);
+        const parent = await getIssue(parentId);
+        if (!parent || parent.projectId !== projectId)
+          throw conflict("Assessment parent moved");
+        const receipt = await db.execute<{ child_id: number }>(
+          sql`select child_id from factory_assessment where parent_id=${parentId} and work_id=${body.workId}`,
+        );
+        if (receipt.length) {
+          const childId = receipt[0].child_id;
+          await api.lockIssue(childId);
+          if ((await getIssueProjectId(childId)) !== projectId)
+            throw new HttpError(404, "Assessment unavailable");
+          return getIssue(childId);
+        }
+        const scope = await getProjectById(projectId);
+        const [backlog] = await db
+          .select()
+          .from(projectColumn)
+          .where(
+            and(
+              eq(projectColumn.projectId, projectId),
+              eq(projectColumn.name, "Backlog"),
+              eq(projectColumn.stateType, "backlog"),
+            ),
+          );
+        if (!backlog || !scope) throw conflict("Missing assessment Backlog");
+        const title = Array.from(
+          "Assess " + parent.identifier + ": " + parent.title,
+        )
+          .slice(0, 255)
+          .join("");
+        const child = await createIssue(
+          scope,
+          {
+            title,
+            columnId: backlog.id,
+            description:
+              "<!-- factory-assessment work-item=" + body.workId + " -->",
+          },
+          user!.id,
+        );
+        await db.execute(
+          sql`insert into factory_assessment(parent_id,work_id,child_id) values (${parentId},${body.workId},${child.id})`,
+        );
+        return getIssue(child.id);
+      }),
+    {
+      workItem: "create",
+      params: t.Object({ issueId: t.Numeric({ minimum: 1 }) }),
+      body: t.Object({ workId: t.String({ pattern: "^[1-9][0-9]{0,18}$" }) }),
+    },
+  )
   .post(
     "/issues/:issueId/factory-deferred-start",
     async ({ params, body, user, projectId }) => {

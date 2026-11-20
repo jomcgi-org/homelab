@@ -1845,6 +1845,11 @@ func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 			commentPayload{IssueID: wi.IssueID, Body: body}); err != nil {
 			return err
 		}
+		if days, measure := assessmentTrailer(d.HeadMessage); days > 0 {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO assessment(work_id,parent_id,days,measure,issue_url,pr_url) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING", wi.ID, wi.IssueID, days, measure, e.expand(e.cfg.Links.Issue, wi, 0, ""), pr.URL); err != nil {
+				return err
+			}
+		}
 		if activation != "none" {
 			return e.st.Enqueue(ctx, tx, store.OutboxActivation, fmt.Sprintf("activation/%d", wi.ID), 0, "",
 				activationPayload{

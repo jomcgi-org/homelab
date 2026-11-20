@@ -426,6 +426,10 @@ func (c *Client) BlockIssue(ctx context.Context, source, target int64) error {
 		map[string]any{"targetIssueId": target, "kind": "blocks"}, nil)
 }
 
+func (c *Client) RelateIssue(ctx context.Context, source, target int64) error {
+	return c.do(ctx, c.Coordinator, http.MethodPost, "/issues/"+strconv.FormatInt(source, 10)+"/links", map[string]any{"targetIssueId": target, "kind": "relates"}, nil)
+}
+
 // GetIssue reads an issue with the coordinator's key.
 func (c *Client) GetIssue(ctx context.Context, issueID int64) (*Issue, error) {
 	var out Issue

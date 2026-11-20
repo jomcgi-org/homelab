@@ -577,6 +577,9 @@ func (e *Engine) observeActivation(ctx context.Context, it *store.OutboxItem, p 
 // acknowledging this move. Retries therefore cannot lose completion of a chain.
 func (e *Engine) completeIssue(ctx context.Context, it *store.OutboxItem, p issueDonePayload, is *itsaplan.Issue) error {
 	return e.st.Tx(ctx, func(tx *sql.Tx) error {
+		if err := e.queueAssessment(ctx, tx, p, is); err != nil {
+			return err
+		}
 		parent, workID, err := e.st.ActivationParent(ctx, tx, p.IssueID)
 		if err != nil {
 			return err
