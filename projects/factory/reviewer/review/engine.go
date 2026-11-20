@@ -1423,7 +1423,17 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 		return withUsage(ctx, span), span
 	}
 	ctx, code := startCode()
-	defer func() { code.End() }()
+	// codeRecorded is set once the code span has its verdict and finding
+	// counts. An exit that never assessed the attempt records codeExit as
+	// its outcome, with no verdict from the model.
+	codeRecorded, codeExit := false, "stopped"
+	defer func() {
+		if !codeRecorded {
+			code.SetAttributes(attribute.String("review.verdict", "none"), attribute.String("review.outcome", codeExit))
+			recordFindings(code, nil)
+		}
+		code.End()
+	}()
 	began := e.cfg.Now()
 	if rec.ID != "" && rec.Sent.IsZero() {
 		rec.Sent = run.StartedAt
@@ -1438,13 +1448,28 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 		lastSend time.Time
 		refused  = rec.QuotaRetry > 0
 	)
+	// endFinished records a finished task's report on the code span before
+	// an exit that does not assess it, such as a failed PR read.
+	endFinished := func(t *kagent.Task, outcome string) {
+		var findings []Finding
+		verdict := ConclusionFailure
+		if t.Status.State == kagent.StateCompleted || t.Status.State == kagent.StateInputRequired {
+			if r, err := ParseReport(ReplyText(t)); err == nil {
+				findings, verdict = codeReviewResult(r, in.prior.Previous(), b.ItsaplanProject)
+			}
+		}
+		recordFindings(code, findings)
+		code.SetAttributes(attribute.String("review.verdict", verdict), attribute.String("review.outcome", outcome))
+		codeRecorded = true
+	}
 	// next ends the attempt without a report. It reports true when that was
 	// the last attempt and the check is complete.
 	next := func(reason string) bool {
 		traceFailure(root, "review attempt failed")
 		traceFailure(code, "review attempt failed")
-		code.SetAttributes(attribute.String("review.verdict", ConclusionFailure))
+		code.SetAttributes(attribute.String("review.verdict", ConclusionFailure), attribute.String("review.outcome", "no_report"))
 		recordFindings(code, nil)
+		codeRecorded = true
 		root.AddEvent("review attempt failed", trace.WithAttributes(attribute.Int("review.attempt", attempt)))
 		l.WarnContext(ctx, "review attempt ended without a report", "attempt", attempt, "task", rec.ID, "reason", reason)
 		if attempt >= MaxAttempts {
@@ -1479,6 +1504,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 		code.End()
 		attempt++
 		ctx, code = startCode()
+		codeRecorded = false
 		rec, msg, sends = recorded{Attempt: attempt}, nil, 0
 		e.recordProgress(ctx, b, run, gate, rec, note, l)
 		e.sleep(ctx, e.cfg.RetryBackoff)
@@ -1540,12 +1566,16 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				}
 				root.SetAttributes(attribute.Int("review.round", round))
 				code.SetAttributes(attribute.Int("review.round", round))
+				if u, ok := parent.Value(reviewUsageKey{}).(*spanUsage); ok {
+					u.root().round = round // recordProgress saves it for a restored root.
+				}
 				// Rebind inherited prior-head recovery to this PR.
 				in.gate, _ = e.recoveryGate(b, pr, in.gate)
 				in.gate, _ = e.retainGate(b, pr, in.gate, false)
 			case rec.ID == "" && e.waitForQuota(ctx, b, run, rec, l):
 				// Unreadable PR data must not hold a worker or spend an
 				// attempt while the grant is also blocked.
+				codeExit = "quota_wait"
 				return
 			case late:
 				if next("the reviewer could not read the PR from GitHub.") {
@@ -1557,6 +1587,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				continue
 			}
 			if rec.ID == "" && e.requestSplit(ctx, b, pr, run, in.size, l) {
+				codeExit = "split_requested"
 				return
 			}
 		}
@@ -1567,6 +1598,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			st := in.prior
 			st.Gate = in.gate
 			e.holdIssues(ctx, b, pr, run, st, in.issues.Pending)
+			codeExit = "issues_pending"
 			return // Release the slot; every poll retries without another push.
 		}
 		if rec.ID != "" && b.ItsaplanProject != "" && rec.Issues != issueDigest(in.issues) {
@@ -1598,6 +1630,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 		}
 		if rec.ID == "" {
 			if e.waitForQuota(ctx, b, run, rec, l) {
+				codeExit = "quota_wait"
 				return
 			}
 			rec.QuotaSince = time.Time{}
@@ -1630,6 +1663,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			}
 			// Rules and session reads can take time. Check again at dispatch.
 			if e.waitForQuota(ctx, b, run, rec, l) {
+				codeExit = "quota_wait"
 				return
 			}
 			t, err := e.tasks.Send(ctx, b.Agent, *msg)
@@ -1672,6 +1706,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			// The provider refused this task. Keep the attempt and give its
 			// eventual replacement a new message ID, persisted before sending.
 			recordUsage(ctx, t)
+			codeExit = "quota_paused"
 			rec = recorded{Attempt: attempt, QuotaRetry: rec.QuotaRetry + 1, QuotaSince: e.cfg.Now()}
 			e.recordProgress(ctx, b, run, in.gate, rec, "The review task reached the provider usage limit. It will resume after a newer usable broker reading.", l)
 			return
@@ -1682,9 +1717,11 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			current, err := e.gh.PullRequestQueue(ctx, b.repo(), pr.Number)
 			if err != nil {
 				e.ghError(ctx, l, b, "pull_request", err)
+				endFinished(t, "revalidation_failed")
 				return // Keep the completed task attached; the next poll retries this read.
 			}
 			if current.State != "open" || current.Draft || current.BaseRef != b.BaseBranch || current.HeadSHA != pr.HeadSHA {
+				endFinished(t, "pr_changed")
 				e.complete(ctx, b, run, Outcome{Conclusion: ConclusionCancelled, Output: github.CheckRunOutput{
 					Title: "PR changed during review", Summary: "The PR is no longer open and ready on this head and base branch.",
 				}}, l)
@@ -1695,6 +1732,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			prs, complete, err := e.gh.ListPullRequests(ctx, b.repo(), b.BaseBranch)
 			if err != nil {
 				e.ghError(ctx, l, b, "list_pulls", err)
+				endFinished(t, "revalidation_failed")
 				return
 			}
 			counts, labels := readyHeads(b, prs)
@@ -1704,6 +1742,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 						e.retainGate(b, p, &Gate{SharedHead: true, Labels: labels[pr.HeadSHA]}, false)
 					}
 				}
+				endFinished(t, "shared_head")
 				e.finish(parent, b, pr, run, sharedHeadOutcome(run, labels[pr.HeadSHA], e.cfg.Now()), l)
 				return
 			}
@@ -1711,6 +1750,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				return p.Number == pr.Number && p.HeadSHA == pr.HeadSHA && p.BaseRef == b.BaseBranch && !p.Draft
 			})
 			if listed < 0 {
+				endFinished(t, "pr_changed")
 				e.complete(ctx, b, run, Outcome{Conclusion: ConclusionCancelled, Output: github.CheckRunOutput{
 					Title: "PR changed during review", Summary: "The PR is no longer open and ready on this head and base branch.",
 				}}, l)
@@ -1726,6 +1766,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			if err != nil {
 				e.ghError(ctx, l, b, "label_events", err)
 				in.gate, _ = e.retainGate(b, pr, in.gate, before != in.gate.ApprovalNonce)
+				endFinished(t, "revalidation_failed")
 				e.recordProgress(ctx, b, run, in.gate, rec, "Waiting for complete hold history.", l)
 				return // Reattach the completed task once durable hold history is readable.
 			}
@@ -1737,6 +1778,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				// The prompt already lowered late findings, so a review
 				// assessed without the interdiff could pass on less than
 				// a full review: wait for it instead.
+				endFinished(t, "revalidation_failed")
 				e.recordProgress(ctx, b, run, in.gate, rec, "Waiting for the changes since the previous review.", l)
 				return // Reattach the completed task once the interdiff is readable.
 			}
@@ -1750,6 +1792,9 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				continue
 			}
 			res := e.outcome(parent, code, round, b, currentPR, t, in, l)
+			// outcome records a parsed report on the code span; next records
+			// an unusable one.
+			codeRecorded = res.reason == ""
 			if ctx.Err() != nil {
 				continue // stop ends the review.
 			}
@@ -2609,6 +2654,9 @@ func (e *Engine) recordProgress(ctx context.Context, b *Binding, run *github.Che
 	if s, ok := ctx.Value(reviewUsageKey{}).(*spanUsage); ok && st.Trace != nil {
 		r := s.root()
 		st.Trace.Usage, st.Trace.Tasks = r.total, slices.Sorted(maps.Keys(r.counted))
+		if r.round > 0 {
+			st.Trace.Round = r.round
+		}
 	}
 	run.Text = encodeState(st)
 	title := "Review in progress"
@@ -3456,9 +3504,10 @@ type spanUsage struct {
 	// counted holds the tasks this span already counted. Each span keeps
 	// its own set, so a task that a later span resumes still reaches it.
 	counted map[string]bool
-	// On the root only: whether the review's check run completed, and
-	// whether the check's state holds the root (State.Trace).
+	// On the root only: whether the review's check run completed, whether
+	// the check's state holds the root (State.Trace), and the review round.
 	completed, persisted bool
+	round                int
 }
 
 func (s *spanUsage) root() *spanUsage {
@@ -3610,12 +3659,12 @@ func (t *TraceState) spanContext() (trace.SpanContext, bool) {
 func restoreRoot(ctx context.Context, ts *TraceState, pr github.PullRequest) (context.Context, trace.Span) {
 	sc, _ := ts.spanContext()
 	_, root := otel.Tracer("factory-reviewer").Start(context.WithValue(ctx, presetIDsKey{}, sc), "review",
-		trace.WithNewRoot(), trace.WithTimestamp(ts.Start), reviewAttributes(pr, 1))
+		trace.WithNewRoot(), trace.WithTimestamp(ts.Start), reviewAttributes(pr, max(ts.Round, 1)))
 	root.AddEvent("review resumed")
 	recordFindings(root, nil)
 	ctx = withUsage(trace.ContextWithSpan(ctx, root), root)
 	u := ctx.Value(reviewUsageKey{}).(*spanUsage)
-	u.persisted = true
+	u.persisted, u.round = true, ts.Round
 	u.counted = map[string]bool{}
 	for _, id := range ts.Tasks {
 		u.counted[id] = true
