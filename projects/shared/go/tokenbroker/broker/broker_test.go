@@ -199,11 +199,16 @@ func TestRefreshTokenReusedRereadsStoreAndRetriesOnce(t *testing.T) {
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewTextHandler(&logs, nil))
 			b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, logger, nil)
-			if _, _, err := b.RefreshAccessToken("one", WithRefreshLogger(context.Background(), slog.New(slog.DiscardHandler))); err != nil {
+			ctx := context.Background()
+			reuseEvents := 0
+			if newLogin {
+				ctx = WithRefreshDiagnostics(ctx, slog.New(slog.DiscardHandler), func() { reuseEvents++ })
+			}
+			if _, _, err := b.RefreshAccessToken("one", ctx); err != nil {
 				t.Fatal(err)
 			}
-			if !bytes.Contains(logs.Bytes(), []byte("tokenbroker refresh_token_reused")) {
-				t.Fatal("missing token reuse warning after successful retry")
+			if logged := bytes.Contains(logs.Bytes(), []byte("tokenbroker refresh_token_reused")); logged == newLogin || (newLogin && reuseEvents != 1) {
+				t.Fatalf("reuse warning logged=%v, events=%d", logged, reuseEvents)
 			}
 			adapter.mu.Lock()
 			defer adapter.mu.Unlock()
