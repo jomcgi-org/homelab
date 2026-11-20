@@ -238,6 +238,29 @@ metadata:
     {{- include "factory.labels" . | nindent 4 }}
 data:
   policy.json: {{ toJson $b.policy | quote }}
+{{- if .Values.connector.notify.enabled }}
+---
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: factory-notify-caller
+  namespace: {{ $ns }}
+spec:
+  itemPath: {{ .Values.connector.notify.itemPath | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: discord-bridge
+  namespace: {{ $ns }}
+spec:
+  selector:
+    app.kubernetes.io/name: factory-discord-bridge
+    app.kubernetes.io/component: gateway
+  ports:
+    - port: 8080
+      targetPort: health
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -258,6 +281,7 @@ spec:
   template:
     metadata:
       labels:
+        app.kubernetes.io/component: gateway
         # hindsight-discord admits only this label (its network policies).
         app.kubernetes.io/name: factory-discord-bridge
       annotations:
@@ -316,6 +340,11 @@ spec:
             capabilities:
               drop: [ALL]
           volumeMounts:
+            {{- if .Values.connector.notify.enabled }}
+            - name: notify
+              mountPath: /var/run/secrets/factory-notify
+              readOnly: true
+            {{- end }}
             - name: discord
               mountPath: /var/run/secrets/discord
               readOnly: true
@@ -329,6 +358,14 @@ spec:
               mountPath: /etc/discord-bridge
               readOnly: true
       volumes:
+        {{- if .Values.connector.notify.enabled }}
+        - name: notify
+          secret:
+            secretName: factory-notify-caller
+            items:
+              - key: app-password
+                path: app-password
+        {{- end }}
         - name: discord
           secret:
             secretName: discord-bot
@@ -353,8 +390,7 @@ spec:
             name: {{ $name }}-policy
 {{- if .Values.networkPolicy.cilium }}
 ---
-# Egress to Discord, hindsight-discord and kagent's controller only; nothing
-# connects in. DNS is the cluster baseline's.
+# Only the connector may call the notification listener when enabled.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -366,6 +402,17 @@ spec:
   endpointSelector:
     matchLabels:
       app.kubernetes.io/name: factory-discord-bridge
+  {{- if .Values.connector.notify.enabled }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.broker.namespace }}
+            io.cilium.k8s.policy.serviceaccount: {{ include "factory.connectorName" . }}
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  {{- end }}
   egress:
     - toFQDNs:
         - matchName: discord.com

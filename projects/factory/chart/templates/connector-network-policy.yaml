@@ -50,13 +50,14 @@ spec:
               protocol: TCP
     {{- end }}
     {{- if $c.notify.enabled }}
-    # Cloudflare-fronted MCP and Authentik, for this connector's pods only.
-    - toFQDNs:
-        - matchName: {{ $c.notify.hostname | quote }}
-        - matchName: {{ $c.notify.tokenHostname | quote }}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.discord.bridge.namespace }}
+            app.kubernetes.io/name: factory-discord-bridge
+            app.kubernetes.io/component: gateway
       toPorts:
         - ports:
-            - port: "443"
+            - port: "8080"
               protocol: TCP
     {{- end }}
     # itsaplan's runner and coordinator routes.

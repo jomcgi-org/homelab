@@ -11,11 +11,6 @@ GitHub tokens the broker mints for that ServiceAccount.
 {{- $name := include "factory.connectorName" . }}
 {{- $delivers := include "factory.connectorDelivers" . }}
 {{- if $c.notify.enabled }}
-{{- range $host := list $c.notify.hostname $c.notify.tokenHostname }}
-{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$" $host) }}
-{{- fail "connector.notify requires DNS hostnames without ports or paths" }}
-{{- end }}
-{{- end }}
 {{- if not .Values.networkPolicy.cilium }}
 {{- fail "connector.notify requires networkPolicy.cilium" }}
 {{- end }}
@@ -256,9 +251,7 @@ spec:
               value: {{ printf ":%d" (int $c.metricsPort) | quote }}
             {{- if $c.notify.enabled }}
             - name: FACTORY_CONNECTOR_NOTIFY_URL
-              value: {{ printf "https://%s/mcp/" $c.notify.hostname | quote }}
-            - name: FACTORY_CONNECTOR_NOTIFY_TOKEN_URL
-              value: {{ printf "https://%s/application/o/token/" $c.notify.tokenHostname | quote }}
+              value: {{ printf "http://discord-bridge.%s.svc:8080/notify" .Values.discord.bridge.namespace | quote }}
             - name: FACTORY_CONNECTOR_NOTIFY_PASSWORD_FILE
               value: /var/run/secrets/factory-notify/app-password
             {{- end }}

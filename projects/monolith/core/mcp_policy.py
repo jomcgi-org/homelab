@@ -38,7 +38,7 @@ from fastmcp.server.middleware.middleware import (
 )
 from fastmcp.tools.base import Tool, ToolResult
 
-from core.notify_policy import factory_notify_permitted, is_factory_notify
+from core.notify_policy import is_factory_notify
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from auth.api import Principal
@@ -84,9 +84,7 @@ def permitted(tool: Tool | None, principal: Principal) -> bool:
     if tool is None:
         return False
     if is_factory_notify(principal):
-        return tool.name == "monolith_agent_notify" and factory_notify_permitted(
-            principal
-        )
+        return False
     if PUBLIC_TAG in tool.tags:
         return True
     return principal.has_group(OPERATOR_GROUP)

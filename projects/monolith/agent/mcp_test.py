@@ -8,48 +8,10 @@ import pytest
 from pydantic import ValidationError
 
 
-@pytest.mark.asyncio
-async def test_factory_notify_cannot_override_channel(monkeypatch):
-    from dataclasses import replace
-    from auth.api import Authority, PrincipalKind, anonymous_principal
-    from auth.dependencies import reset_current_principal, set_current_principal
-    from fastmcp.exceptions import AuthorizationError
-    from agent import mcp
-
-    issuer = "https://auth.example/application/o/factory-notify/"
-    monkeypatch.setenv("AUTH_FACTORY_NOTIFY_ISSUER", issuer)
-    principal = replace(
-        anonymous_principal(),
-        subject="factory",
-        issuer=issuer,
-        username="factory-notify-sa",
-        groups=("factory-notify",),
-        kind=PrincipalKind.WORKLOAD,
-        authority=Authority.STANDING,
-    )
-    calls = []
-
-    async def notify(message, **kwargs):
-        calls.append((message, kwargs))
-        return {"ok": True, "queued": True}
-
-    monkeypatch.setattr(mcp.notify_mod, "notify", notify)
-    token = set_current_principal(principal)
-    try:
-        with pytest.raises(AuthorizationError):
-            await mcp.monolith_agent_notify("live", channel="other", dedupe_key="key")
-        assert not calls
-        await mcp.monolith_agent_notify("live", dedupe_key="key")
-    finally:
-        reset_current_principal(token)
-    assert calls == [("live", {"level": "info", "channel": None, "dedupe_key": "key"})]
-
-
 EXPECTED_TOOLS = {
     "monolith_agent_completed_raw_recovery",
     "monolith_agent_lock",
     "monolith_agent_list_locks",
-    "monolith_agent_notify",
     "monolith_agent_check_stuck_jobs",
     "monolith_agent_check_dead_letters",
     "monolith_agent_trigger_job",
@@ -71,11 +33,12 @@ async def test_all_agent_tools_registered():
     missing = EXPECTED_TOOLS - registered
     assert not missing, f"Missing agent tools: {missing}"
     assert "monolith_agent_check_orphan_jobs" not in registered
+    assert "monolith_agent_notify" not in registered
 
 
-def test_expected_tool_count_is_twelve():
+def test_expected_tool_count_is_eleven():
     """Guard against silently dropping a tool from EXPECTED_TOOLS."""
-    assert len(EXPECTED_TOOLS) == 12
+    assert len(EXPECTED_TOOLS) == 11
 
 
 def test_admission_api_import_does_not_require_private_operator_module(monkeypatch):

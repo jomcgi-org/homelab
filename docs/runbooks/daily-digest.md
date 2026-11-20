@@ -77,36 +77,9 @@ Within a tier, sort by most-recently-updated first. Cap the whole digest at
 
 ### 4. Post to Discord
 
-Call `monolith-monolith-agent-notify` **once** with a markdown
-message. Keep it under Discord's 2000-character limit. Shape:
-
-```
-**Daily digest, follow-through, <YYYY-MM-DD>**
-
-**P0 finish**
-- #412 Cilium default-deny rollout, `critical`, <url>
-- #123 Fix collector opt-in, CI red on //projects/platform/otel-collector, <url>
-- #119 Auth health check, approved + mergeable, just needs merge, <url>
-
-**P1 in flight**
-- #3942 grimoire: live-play platform (tracking), 6 open sub-issues, <url>
-- #130 (draft) Per-PR preview envs, <url>
-
-**P2 decide**
-- #132 Choose the event-stream owner, `enhancement`, <url>
-
-**P3 review**
-- #131 Bump rules_apko, review requested, <url>
-```
-
-Set `level`:
-- `warn` if anything in P0 has been red/blocked for more than a couple of days,
-- otherwise `info`.
-
-If every source comes back empty (no open issues and no open PRs),
-post a single one-line `info`: "Daily digest: nothing
-outstanding, all clear." Do not stay silent, the absence of work is itself
-useful signal for a daily cadence.
+Request one factory bridge notification through the connector with title
+`Scheduled agent digest`, the item count and a canonical link. Use level
+`warn` for a sustained P0 blocker and `info` otherwise.
 
 ## Constraints
 

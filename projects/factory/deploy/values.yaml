@@ -270,6 +270,8 @@ discord:
   bridge:
     enabled: true
     policy:
+      notificationChannels:
+        homelab: "1501965852969402517"
       # Every server Bosun is in (Joe, HOME-162 comment 1942). history marks
       # each for the history import (HOME-164).
       guilds:

@@ -217,15 +217,7 @@ authentication cannot distinguish one virtual server from another.
 
 ## Authentication
 
-**Factory notifications (#7935), staged off.** The monolith's optional
-`factoryNotify` route exposes exact `/mcp/` at `factory-notify.jomcgi.dev`
-through Cloudflare and the private Gateway. It uses a separate Authentik
-`factory-notify` issuer. Its Envoy JWT policy denies anonymous discovery; the
-private monolith independently verifies the bearer and confines
-`factory-notify-sa` to `monolith_agent_notify` without a channel override,
-including when the group-policy escape hatch is off. The agents tier does not
-configure this issuer. Activation and the credential task are in
-[factory notify](../factory/deploy/notify.md).
+Factory notifications use the [in-cluster Discord bridge](../factory/deploy/notify.md).
 
 External identity is authentik. Two settings are required and **neither is
 sufficient alone**:
