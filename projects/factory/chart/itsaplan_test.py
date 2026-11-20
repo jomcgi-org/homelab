@@ -283,7 +283,7 @@ def test_job_roles_name_only_their_secrets() -> None:
     assert bootstrap[1]["verbs"] == ["get", "update"]
 
 
-def test_sessions_secret_is_accessible_only_to_bootstrap() -> None:
+def test_sessions_secret_is_read_by_bootstrap_and_mounted_only_by_connector() -> None:
     docs = _render()
     name = "factory-itsaplan-joe-sessions"
     secret = _one(docs, "Secret", name)
@@ -335,10 +335,20 @@ def test_sessions_secret_is_accessible_only_to_bootstrap() -> None:
     )
     env = pod["initContainers"][0]["env"]
     assert {e["name"]: e.get("value") for e in env}["SESSIONS_SECRET"] == name
-    # No pod, SandboxTemplate, credential mapping or injected environment
-    # references the Secret. Bootstrap reads it via its Kubernetes Role.
+    # Bootstrap uses its Kubernetes Role. Only the connector projects the password.
     for doc in docs:
         if doc["kind"] in ("Secret", "Role", "ConfigMap") or doc is bootstrap:
+            continue
+        if (
+            doc["kind"] == "Deployment"
+            and doc["metadata"]["name"] == "factory-connector"
+        ):
+            volume = next(
+                v
+                for v in doc["spec"]["template"]["spec"]["volumes"]
+                if v["name"] == "joe-sessions"
+            )
+            assert volume["secret"]["secretName"] == name
             continue
         assert name not in json.dumps(doc), doc["metadata"]["name"]
 

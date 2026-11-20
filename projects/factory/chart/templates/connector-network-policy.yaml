@@ -23,8 +23,8 @@ spec:
     matchLabels:
       {{- include "factory.connectorSelector" . | nindent 6 }}
   egress:
-    {{- if .Values.runbookRevert.enabled }}
     - toEntities: [kube-apiserver]
+    {{- if .Values.runbookRevert.enabled }}
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: ate-system

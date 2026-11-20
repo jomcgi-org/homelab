@@ -32,6 +32,9 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory-landing
             app.kubernetes.io/name: factory-landing
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-discord
+            io.cilium.k8s.policy.serviceaccount: discord-bridge
       toPorts:
         - ports:
             - port: "8082"

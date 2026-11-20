@@ -7,6 +7,9 @@ import {
   issueActivity,
   issueLabel,
   projectColumn,
+  projectMember,
+  teamMember,
+  user,
 } from "@repo/db";
 import { and, eq, sql } from "drizzle-orm";
 import {
@@ -24,8 +27,8 @@ import { setSubtaskAutomationSettings } from "./modules/projects/service";
 app.use(factoryRoutes);
 beforeEach(resetDb);
 
-async function fixture() {
-  const owner = await signUpTestUser();
+async function fixture(email?: string) {
+  const owner = await signUpTestUser({ email });
   const client = authedApi(owner.cookie);
   expect(
     (await createProject(client, { key: "HOME", name: "Homelab" })).status,
@@ -78,7 +81,18 @@ async function fixture() {
         body: JSON.stringify(body),
       }),
     );
-  return { id, body, send, backlog, todo, coder, coordinator };
+  return {
+    id,
+    body,
+    send,
+    backlog,
+    todo,
+    coder,
+    coordinator,
+    owner,
+    client,
+    project,
+  };
 }
 
 async function effects(id: number) {
@@ -343,3 +357,66 @@ test("the sync key can restore and update only its own INTSEC finding", async ()
     columnId: payload.columnId,
   });
 });
+
+test("connector records Joe's pick as joesessions and restores the removed delegate", async () => {
+  const f = await fixture("joe@example.com");
+  const password = "fixture-session-password";
+  const sessions = await signUpTestUser({
+    email: "joe-sessions@jomcgi.dev",
+    password,
+    team: false,
+  });
+  await db
+    .update(user)
+    .set({ username: "joesessions" })
+    .where(eq(user.id, sessions.userId));
+  await db
+    .insert(teamMember)
+    .values({ teamId: f.project.project.teamId, userId: sessions.userId });
+  await db
+    .insert(projectMember)
+    .values({ projectId: f.project.project.id, userId: sessions.userId });
+  const item = f.client.issues({ issueId: f.id });
+  expect(
+    (
+      await item.patch({
+        columnId: f.todo.id,
+        assigneeUserId: f.owner.userId,
+        delegateUserId: f.coder.agent.userId,
+      })
+    ).status,
+  ).toBe(200);
+  expect(
+    (
+      await item.patch({
+        delegateUserId: null,
+        description: "## Choices\n1. Ship (Recommended)\n2. Wait",
+      })
+    ).status,
+  ).toBe(200);
+
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: (request) => app.handle(request),
+  });
+  try {
+    const probe = Bun.spawn([process.env.DECISION_PROBE!], {
+      env: {
+        ...process.env,
+        TEST_PLAN_URL: server.url.origin,
+        TEST_READ_KEY: f.coordinator.apiKey!,
+        TEST_SESSION_PASSWORD: password,
+      },
+      stderr: "inherit",
+    });
+    expect(await probe.exited).toBe(0);
+    const state = await effects(f.id);
+    expect(state.comments.map((c) => [c.actorUserId, c.body])).toEqual([
+      [sessions.userId, "Decision: Wait"],
+    ]);
+    expect(state.issue.delegateUserId).toBe(f.coder.agent.userId);
+  } finally {
+    server.stop(true);
+  }
+}, 30000);

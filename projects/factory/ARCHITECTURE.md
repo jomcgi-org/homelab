@@ -297,8 +297,9 @@ The connector uses separate identities to claim coding work and coordinate issue
   generates and saves its password in `factory/factory-itsaplan-joe-sessions`
   (`email`, `password`). Reruns reuse the account and password, finish a pending
   invitation, and refuse to replace a lost password for an existing account.
-  The chart keeps the Secret and ArgoCD ignores its data. Only the bootstrap
-  Job has in-cluster access through its existing RoleBinding; the Secret has
+  The chart keeps the Secret and ArgoCD ignores its data. The bootstrap Job
+  reads it through its RoleBinding, and the connector mounts the password for
+  decision writes. The Secret has
   no sandbox injection label and its namespace has no credential-provider
   grant. Joe's sessions read it with the factory kubeconfig
   (`docs/agents/reference.md`, "Tracker"). This separates Joe's recorded
@@ -736,6 +737,32 @@ filters by `assigneeUserId` (at most 500) but not by a null delegate, which the
 connector checks. Without a member `joe`, `needsYou` is null and only Needs you
 shows as unavailable. On 2026-11-16 HOME's assignees included `joe` (`member`).
 
+Needs you entries with a valid `## Choices` section carry a `choices` array
+of labels in display order. The first is recommended. The parser follows
+CommonMark fenced code, indented code and HTML block starts, and it rejects
+choice lines that do not start at column 0. A section that CommonMark still
+renders differently from a flat top-level numbered list, such as a tag line
+right after a thematic break or setext underline, is a known gap that
+HOME-644 owns
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-439#comment-7511)). On the same port,
+`POST /decide` accepts `{"key":"HOME-42","choice":1}` with a one-based choice
+number. Send the status item's `choiceRevision` in double quotes in the
+`If-Match` header. An edited or reordered list returns 409. This endpoint
+is staged. HOME-440 wires the front page and HOME-441 wires the Discord bridge,
+including their token mounts and submission clients. Both callers require
+projected ServiceAccount tokens with audience `factory-decide` and subjects
+`system:serviceaccount:factory-landing:factory-landing` and
+`system:serviceaccount:factory-discord:discord-bridge`. The connector reads
+the current choices and the previous delegate, signs in as `joesessions`,
+comments and restores the delegate. A successful pick returns 204.
+
+**Why the revision check has a gap.** itsaplan comment and PATCH writes take
+no revision precondition. The connector reads the issue again right before
+each write, and a pick from an edited list replaces an older decision comment.
+An edit that lands between that read and the write can still apply a pick to
+the edited list. Joe accepted this gap
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-439#comment-7031)).
+
 Status polling starts after writer acquisition. Every request, retries
 included, checks the writer epoch, commits a `status_read` attempt, checks the
 epoch again and only then reads with `X-Request-ID`. If an epoch check or the
@@ -760,8 +787,8 @@ upstream reads; the credential-free landing server proxies only this snapshot,
 with a two-second timeout.
 
 **Why.** The connector already has the store and coordinator read access. The
-landing chart owns the status-only Service and Cilium grant, so removing the
-page removes its access. The edge's sign-in and route stay unchanged.
+factory chart owns the connector Service and its ingress policy. The edge's
+sign-in and route stay unchanged.
 
 ### Authentication
 

@@ -229,6 +229,8 @@ spec:
             - name: OTEL_SERVICE_NAME
               value: factory-connector
             {{- end }}
+            - name: ITSAPLAN_APP_URL
+              value: {{ include "factory.itsaplanAppURL" . | quote }}
             - name: FACTORY_CONNECTOR_CONFIG
               value: /etc/factory-connector/config.yaml
             - name: FACTORY_CONNECTOR_DATABASE_URL
@@ -295,6 +297,12 @@ spec:
             capabilities:
               drop: [ALL]
           volumeMounts:
+            - name: decision-api
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            - name: joe-sessions
+              mountPath: /var/run/secrets/joe-sessions
+              readOnly: true
             - name: config
               mountPath: /etc/factory-connector
               readOnly: true
@@ -320,6 +328,23 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
+        - name: decision-api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        - name: joe-sessions
+          secret:
+            secretName: {{ include "factory.itsaplanName" . }}-joe-sessions
+            optional: true
+            items:
+              - key: password
+                path: password
         {{- if .Values.runbookRevert.enabled }}
         {{- include "runbook.ownerVolumes" (dict "root" . "owner" "factory-connector") | nindent 8 }}
         {{- end }}
