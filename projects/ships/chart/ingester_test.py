@@ -252,3 +252,13 @@ def test_publisher_login_waits_for_a_sized_database():
     _, docs = render_publisher("--set", "database.storage=")
     assert not {k for k in docs if "ships-publisher-login" in k[1]}
     assert ("Cluster", "ships-db") not in docs
+
+
+def test_namespace_policy():
+    docs = render("--namespace", "ships")
+    assert sorted(
+        d["kind"]
+        for d in docs
+        if d["metadata"].get("namespace") == "ships"
+        and d["kind"] in {"ResourceQuota", "LimitRange"}
+    ) == ["LimitRange", "ResourceQuota"]
