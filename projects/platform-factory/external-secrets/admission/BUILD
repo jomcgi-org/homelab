@@ -5,9 +5,9 @@ go_test(
     size = "large",
     srcs = ["admission_test.go"],
     data = [
+        "//projects/platform-factory/external-secrets:application.yaml",
         "//projects/platform-factory/external-secrets:checks/allowed.yaml",
         "//projects/platform-factory/external-secrets:checks/denied.yaml",
-        "//projects/platform-factory/external-secrets:resources/upstream/external-secrets-2.15.0-install.yaml",
         "//projects/platform-factory/external-secrets:values.yaml",
         "//projects/platform-factory/external-secrets/chart",
         "//projects/platform-factory/external-secrets/chart:Chart.yaml",
@@ -19,7 +19,7 @@ go_test(
     ],
     env = {
         "ESO_ALLOWED": "$(rootpath //projects/platform-factory/external-secrets:checks/allowed.yaml)",
-        "ESO_MANIFEST": "$(rootpath //projects/platform-factory/external-secrets:resources/upstream/external-secrets-2.15.0-install.yaml)",
+        "ESO_APPLICATION": "$(rootpath //projects/platform-factory/external-secrets:application.yaml)",
         "ESO_DENIED": "$(rootpath //projects/platform-factory/external-secrets:checks/denied.yaml)",
         "ESO_GUARDS": "$(rootpath //projects/platform-factory/external-secrets/chart:Chart.yaml)",
         "ESO_UPSTREAM": "$(rootpath @external_secrets_chart_2_15_0//:Chart.yaml)",

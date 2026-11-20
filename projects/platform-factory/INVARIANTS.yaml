@@ -74,10 +74,3 @@ invariants:
   - bazel/helm/helm-template-test.sh
   test: //bazel/helm/content_rules:content_rules_test
   state: live
-- id: PLAT-14
-  statement: The factory CloudNativePG and External Secrets operators deploy from vendored renders of the pinned upstream charts and factory values.
-  mechanism:
-  - projects/platform-factory/cloudnative-pg/application.yaml
-  - projects/platform-factory/external-secrets/application.yaml
-  # Each operator directory has a verify-render.sh comparison against upstream.
-  state: unproven

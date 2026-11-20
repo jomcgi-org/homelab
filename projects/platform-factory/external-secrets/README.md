@@ -54,7 +54,8 @@ The built-in view/edit/admin roles receive no aggregated ESO permissions.
 Cilium allows ESO egress only to the API server (TCP 443/6443) and webhook
 ingress only from the API server (TCP 10250). The cluster baseline supplies
 DNS to CoreDNS. There is no internet egress allowance in this slice.
-Argo CD reads the operator manifests from `resources/upstream` in this repository.
+Argo CD's repo-server separately allows HTTPS to `charts.external-secrets.io`
+to fetch the upstream chart, alongside its existing GitHub release asset access.
 
 ## Add the next consumers
 
@@ -88,18 +89,22 @@ helm template external-secrets projects/platform-factory/external-secrets/chart 
   --namespace external-secrets
 HELM_BIN="$(command -v helm)" python3 -m pytest -q \
   projects/platform-factory/external-secrets/chart/external_secrets_test.py
-projects/platform-factory/external-secrets/verify-render.sh
+helm template external-secrets external-secrets \
+  --repo https://charts.external-secrets.io --version 2.15.0 \
+  --namespace external-secrets \
+  -f projects/platform-factory/external-secrets/values.yaml
 ```
 
 The render test has a Bazel target at
 `//projects/platform-factory/external-secrets/chart:external_secrets_test`.
-It also checks that Argo CD's egress policy omits the vendored chart hosts.
+It also verifies that Argo CD can reach the chart repository through its
+network policy.
 
 `//projects/platform-factory/external-secrets/admission:admission_test` runs the
 rendered guards against a private Kubernetes 1.37 API server and etcd using
 envtest. Bazel pins the control-plane binaries and the released ESO chart by
-checksum. The test compares the vendored manifests with the pinned chart rendered with
-factory values and installs CRD schemas from those manifests. It never starts
+checksum. The test verifies the chart version matches the Application and
+installs its real CRD schemas, with the deployment's values. It never starts
 ESO controllers or uses a kubeconfig or real credentials.
 
 The test first verifies every fixture is schema-valid without the guards,

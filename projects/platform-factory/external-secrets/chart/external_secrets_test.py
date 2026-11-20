@@ -2,7 +2,9 @@
 
 import os
 from pathlib import Path
+import re
 import subprocess
+from urllib.parse import urlsplit
 
 import pytest
 import yaml
@@ -143,21 +145,23 @@ def test_tokens_require_explicit_scope_and_roles_only_named_get(docs):
     )
 
 
-def test_application_uses_vendored_render_and_installs_guards():
+def test_application_pins_upstream_and_installs_guards():
     root = Path(__file__).resolve().parent.parent
     application = yaml.safe_load(
         Path(os.environ.get("ESO_APPLICATION", root / "application.yaml")).read_text()
     )
     sources = application["spec"]["sources"]
-    assert all(
-        "chart" not in source
-        and source["repoURL"] == "https://github.com/jomcgi-org/homelab.git"
-        for source in sources
+    upstream = next(
+        source for source in sources if source.get("chart") == "external-secrets"
     )
-    assert (
-        sources[0]["path"]
-        == "projects/platform-factory/external-secrets/resources/upstream"
-    )
+    assert upstream["repoURL"] == "https://charts.external-secrets.io"
+    assert re.fullmatch(r"\d+\.\d+\.\d+", upstream["targetRevision"])
+    assert upstream["helm"]["releaseName"] == "external-secrets"
+    assert upstream["helm"]["valueFiles"] == [
+        "$values/projects/platform-factory/external-secrets/values.yaml"
+    ]
+    assert upstream["helm"]["ignoreMissingValueFiles"] is False
+    assert any(source.get("ref") == "values" for source in sources)
     assert any(
         source.get("path") == "projects/platform-factory/external-secrets/chart"
         for source in sources
@@ -167,8 +171,17 @@ def test_application_uses_vendored_render_and_installs_guards():
     assert "ServerSideApply=true" in application["spec"]["syncPolicy"]["syncOptions"]
 
 
-def test_argocd_egress_omits_vendored_chart_hosts():
+def test_argocd_can_fetch_the_upstream_chart():
     root = Path(__file__).resolve().parent.parent
+    application = yaml.safe_load(
+        Path(os.environ.get("ESO_APPLICATION", root / "application.yaml")).read_text()
+    )
+    upstream = next(
+        source
+        for source in application["spec"]["sources"]
+        if source.get("chart") == "external-secrets"
+    )
+    host = urlsplit(upstream["repoURL"]).hostname
     policy_path = Path(
         os.environ.get(
             "ESO_ARGOCD_NETWORK_POLICY",
@@ -184,12 +197,14 @@ def test_argocd_egress_omits_vendored_chart_hosts():
     assert policy["spec"]["endpointSelector"]["matchLabels"] == {
         "app.kubernetes.io/name": "argocd-repo-server"
     }
-    hosts = {
-        entry.get("matchName")
+    assert any(
+        {"matchName": host} in rule.get("toFQDNs", [])
+        and any(
+            {"port": "443", "protocol": "TCP"} in ports.get("ports", [])
+            for ports in rule.get("toPorts", [])
+        )
         for rule in policy["spec"]["egress"]
-        for entry in rule.get("toFQDNs", [])
-    }
-    assert hosts.isdisjoint({"cloudnative-pg.github.io", "charts.external-secrets.io"})
+    )
 
 
 def test_upstream_values_disable_unused_controllers_and_budget_every_component():

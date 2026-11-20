@@ -1,4 +1,3 @@
-# invariant: PLAT-14
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -10,10 +9,25 @@ metadata:
     - resources-finalizer.argocd.argoproj.io
 spec:
   project: default
-  source:
-    repoURL: https://github.com/jomcgi-org/homelab.git
-    targetRevision: HEAD
-    path: projects/platform-factory/cloudnative-pg/resources
+  # The hub's operator release and values (projects/platform-gke/cloudnative-pg),
+  # this cluster's overrides (values.yaml beside this file), plus this
+  # cluster's network policy for the namespace.
+  sources:
+    - repoURL: https://cloudnative-pg.github.io/charts
+      chart: cloudnative-pg
+      targetRevision: 0.29.0
+      helm:
+        releaseName: cnpg
+        valueFiles:
+          - $values/projects/platform/cloudnative-pg/deploy/values.yaml
+          - $values/projects/platform-factory/cloudnative-pg/values.yaml
+        ignoreMissingValueFiles: false
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      ref: values
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      path: projects/platform-factory/cloudnative-pg/resources
   destination:
     server: https://kubernetes.default.svc
     namespace: cnpg-system

@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -130,10 +129,22 @@ func expectedDenial(err error, tc admissionCase) bool {
 }
 
 func TestCredentialAdmission(t *testing.T) {
-	vendored := readDocuments(t, "ESO_MANIFEST")
-	expected := render(t, "ESO_UPSTREAM", "--kube-version", "1.37.2", "--skip-tests", "-f", inputPath(t, "ESO_VALUES"))
-	if !reflect.DeepEqual(vendored, expected) {
-		t.Fatal("vendored ESO manifests differ from the pinned chart rendered with factory values")
+	// A pin mismatch must fail before testing a different schema from deployment.
+	chart := readDocuments(t, "ESO_UPSTREAM")[0]
+	application := readDocuments(t, "ESO_APPLICATION")[0]
+	sources, _, err := unstructured.NestedSlice(application.Object, "spec", "sources")
+	if err != nil {
+		t.Fatal(err)
+	}
+	matched := false
+	for _, raw := range sources {
+		source := raw.(map[string]interface{})
+		if source["chart"] == "external-secrets" {
+			matched = source["targetRevision"] == chart.Object["version"]
+		}
+	}
+	if !matched {
+		t.Fatal("the pinned test chart must match the Application targetRevision")
 	}
 
 	// Install only the seven CRDs exercised here, with their released schemas.
@@ -144,7 +155,7 @@ func TestCredentialAdmission(t *testing.T) {
 		"PushSecret": true, "ClusterPushSecret": true,
 	}
 	crdDir := t.TempDir()
-	for _, doc := range vendored {
+	for _, doc := range render(t, "ESO_UPSTREAM", "-f", inputPath(t, "ESO_VALUES")) {
 		if doc.GetKind() != "CustomResourceDefinition" {
 			continue
 		}
