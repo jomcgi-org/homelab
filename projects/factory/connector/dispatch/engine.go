@@ -167,19 +167,20 @@ func MinDispatchWindow(callTimeout time.Duration) time.Duration {
 
 // Engine runs dispatch.
 type Engine struct {
-	NotifyOutage  func(context.Context, string) error
-	phaseFailures map[string]time.Time
-	cfg           Config
-	st            *store.Store
-	its           Itsaplan
-	tasks         Tasks
-	sessions      Sessions
-	gh            GitHub
-	m             *metrics.Metrics
-	log           *slog.Logger
-	w             *store.Writer
-	locks         sync.Map   // run ID -> *sync.Mutex
-	starts        sync.Mutex // serialize slot checks and starts across admission and delivery
+	NotifyGateReconciliation func(context.Context, int64) error
+	NotifyOutage             func(context.Context, string) error
+	phaseFailures            map[string]time.Time
+	cfg                      Config
+	st                       *store.Store
+	its                      Itsaplan
+	tasks                    Tasks
+	sessions                 Sessions
+	gh                       GitHub
+	m                        *metrics.Metrics
+	log                      *slog.Logger
+	w                        *store.Writer
+	locks                    sync.Map   // run ID -> *sync.Mutex
+	starts                   sync.Mutex // serialize slot checks and starts across admission and delivery
 	// checked holds when each running attempt's session was last checked.
 	checked         sync.Map // attempt ID -> sessionCheck
 	admissionPolled sync.Map // run ID -> wall time; oldest admission is polled first
@@ -2906,9 +2907,17 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 			if found {
 				return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)
 			}
-			reason := fmt.Sprintf("manual reconciliation required for issue %d: legacy duplicate explanation absent from feed, original send outcome unknown", p.IssueID)
+			reason := fmt.Sprintf("assigned to Joe: verify legacy duplicate explanation for issue %d", p.IssueID)
+			if err := e.st.HoldGateComment(ctx, e.w, it.ID, reason, e.cfg.Now().Add(24*time.Hour)); err != nil {
+				return err
+			}
 			e.log.WarnContext(ctx, reason, "outbox", it.ID)
-			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, reason)
+			if e.NotifyGateReconciliation != nil {
+				if err := e.NotifyGateReconciliation(ctx, p.IssueID); err != nil {
+					e.log.ErrorContext(ctx, "gate reconciliation notification failed", "outbox", it.ID, "error", err)
+				}
+			}
+			return nil
 		}
 		if p.Once {
 			if it.SendStarted {

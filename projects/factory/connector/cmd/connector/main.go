@@ -288,6 +288,9 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
+	eng.NotifyGateReconciliation = func(ctx context.Context, issueID int64) error {
+		return notifier.Notify(ctx, "warn", notify.Text{Key: fmt.Sprintf("gate-comment/%d", issueID), Title: "Joe: verify legacy gate explanation", Status: "blocked", Link: fmt.Sprintf("https://factory-plan.jomcgi.dev/issue/%d", issueID)})
+	}
 	eng.NotifyOutage = func(ctx context.Context, phase string) error {
 		return notifier.Notify(ctx, "error", notify.Text{Key: "itsaplan-outage/" + phase, Title: "Factory itsaplan outage", Status: "failed"})
 	}

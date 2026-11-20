@@ -45,7 +45,7 @@ func (t Text) render() (string, error) {
 		return "", errors.New("notify: invalid key or count")
 	}
 	switch t.Title {
-	case "Factory itsaplan outage", "Factory notify sink is live", "Scheduled agent digest", "Scheduled agent alert":
+	case "Joe: verify legacy gate explanation", "Factory itsaplan outage", "Factory notify sink is live", "Scheduled agent digest", "Scheduled agent alert":
 	default:
 		return "", errors.New("notify: title is not in the fixed vocabulary")
 	}

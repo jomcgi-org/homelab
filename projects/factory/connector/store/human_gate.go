@@ -184,3 +184,12 @@ func (s *Store) SettleLegacyGateComment(ctx context.Context, w *Writer, id int64
 		return err
 	})
 }
+
+// HoldGateComment keeps the explanation pending for operator resolution and
+// schedules another feed check and reminder if the outcome remains unknown.
+func (s *Store) HoldGateComment(ctx context.Context, w *Writer, id int64, reason string, next time.Time) error {
+	return w.Tx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE outbox SET last_error=$2, next_attempt_at=$3 WHERE id=$1 AND delivered_at IS NULL AND abandoned_at IS NULL AND NOT (payload @> '{"once":true}'::jsonb)`, id, reason, next)
+		return err
+	})
+}

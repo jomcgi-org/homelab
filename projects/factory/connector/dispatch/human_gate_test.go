@@ -917,6 +917,8 @@ func TestLegacyDuplicateExplanation(t *testing.T) {
 	for _, posted := range []bool{false, true} {
 		t.Run(fmt.Sprint(posted), func(t *testing.T) {
 			v := newHumanGateEnv(t)
+			var assigned int64
+			v.e.NotifyGateReconciliation = func(_ context.Context, id int64) error { assigned = id; return nil }
 			const body = "Duplicate of HL-201"
 			err := v.st.Enqueue(v.ctx, v.st.DB, store.OutboxComment, "comment/factory-human-gate/jomcgi-org/homelab/1/duplicate/301", 0, "", map[string]any{"issueId": 301, "body": body})
 			if err != nil {
@@ -936,9 +938,9 @@ func TestLegacyDuplicateExplanation(t *testing.T) {
 			v.poll()
 			if !posted {
 				var reason string
-				err := v.st.DB.QueryRow(`SELECT last_error FROM outbox WHERE dedupe_key=$1 AND abandoned_at IS NOT NULL AND delivered_at IS NULL`,
+				err := v.st.DB.QueryRow(`SELECT last_error FROM outbox WHERE dedupe_key=$1 AND abandoned_at IS NULL AND delivered_at IS NULL`,
 					"comment/factory-human-gate/jomcgi-org/homelab/1/duplicate/301").Scan(&reason)
-				if err != nil || !strings.Contains(reason, "manual reconciliation required for issue 301") {
+				if err != nil || assigned != 301 || !strings.Contains(reason, "assigned to Joe") {
 					t.Fatalf("missing reconciliation record: reason=%q err=%v", reason, err)
 				}
 				// The original POST commits after the lookup that found no comment.
