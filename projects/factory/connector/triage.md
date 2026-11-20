@@ -38,8 +38,9 @@ drop.
 - A human-owned issue is assigned to a person with no delegate, or has the
   `human` or `needs-human` label.
 - A trusted writer is an account in the reviewed `triage.trustedWriters`
-  list: `joe` and `joesessions`. The connector reads who last wrote a
-  description or added a link from the issue's history feed.
+  list: `joe` and `joesessions`. The connector reads who last wrote the
+  title, the description or a link from the issue's history feed. The coding
+  prompt carries the title and the description, so both need a trusted writer.
 - A recorded stop is any stop in the connector's database for the issue's
   work item (`connector cancel`, a canceled column or a closed PR) with no
   re-admission by a person.
@@ -48,11 +49,11 @@ drop.
 
 | Op | Joe's item | The connector checks | Effect | Per run |
 | --- | --- | --- | --- | --- |
-| `delegate` | Delegate ready work, start unblocked follow-ups | Todo in a bound project; no delegate; not human-owned; no `deferred` label; no recorded stop; every `blocked_by` issue completed; a `Done when` checklist; description last written by a trusted writer, or a `split` child whose description still has the hash the connector recorded | Delegate to the binding's coding agent | Free coding slots, at most 4 |
+| `delegate` | Delegate ready work, start unblocked follow-ups | Todo in a bound project; no delegate; not human-owned; no `deferred` label; no recorded stop; every `blocked_by` issue completed; a `Done when` checklist; title and description each last written by a trusted writer, or a `split` child whose title and description still have the hashes the connector recorded | Delegate to the binding's coding agent | Free coding slots, at most 4 |
 | `set_priority` | Priority in HOME | Open; not human-owned; new value `low`, `medium` or `high` | Change the priority | 10, shared with `move` |
 | `move` | Order in HOME | Open; not human-owned; same column | Change the position | 10, shared with `set_priority` |
 | `cancel` | Close obsolete work | Open; not human-owned; no active work; a `duplicates` link that a trusted writer added | Move to Canceled | 3 |
-| `split` | Split work | Backlog or Todo; no delegate; not human-owned; no active work; description last written by a trusted writer; two or more `Done when` items; a partition that uses each item once | Create sub-tasks that copy the parent's description with their own items, titled "\<parent title\> (part i of n)"; record each child's description hash; block the parent on them | 2 |
+| `split` | Split work | Backlog or Todo; no delegate; not human-owned; no active work; title and description each last written by a trusted writer; two or more `Done when` items; a partition that uses each item once | Create sub-tasks that copy the parent's description with their own items, titled "\<parent title\> (part i of n)"; record each child's title and description hashes; block the parent on them | 2 |
 | `grant_round` | Raise the round cap by one round | Work item at `round_limit`; no recorded stop; no critical finding and no human-gate marker on the head's review check; no earlier grant on this work item | Allow one more review round on this work item | 3 |
 | `recut` | Re-cut a PR that lost review history or has a merge conflict | Factory-authored PR; no human hold; no recorded stop; no re-cut of this issue in 7 days; and either the reviewer's incomplete-state notice on the head check, or a conflict past the rebase cap while the head's review check has no blocking finding | Close the PR with a link; a fixed-text round squashes the work onto `origin/main` on a new branch; the connector opens a new PR that links the old one | 2 |
 
@@ -72,9 +73,10 @@ An obsolete issue that has no `duplicates` link from a trusted writer gets a
 card. The model never adds that link.
 
 **Model text.** The model chooses only the op, the target and fixed
-arguments: a priority value, a position or a partition. Coder-facing text
-comes only from a trusted writer's description, a `split` copy of one with an
-unchanged hash, or a reviewed template. Model text reaches only the audit
+arguments: a priority value, a position or a partition. Coder-facing text,
+the title and the description, comes only from a trusted writer, a `split`
+copy of a trusted writer's issue with unchanged hashes, or a reviewed
+template. Model text reaches only the audit
 `reason` and the evidence block of a proposal or card, quoted and sanitized.
 An instruction copied from a log, a PR or an untrusted edit therefore cannot
 reach a coder.
