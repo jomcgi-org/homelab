@@ -639,6 +639,37 @@ func TestCollectKeepsPayloadsForGraceAfterRetirement(t *testing.T) {
 	}
 }
 
+// A stored retirement time that is zero (a JSON null) or in the future is
+// not a real retirement: the payload starts a new grace period and stays.
+func TestCollectRestartsGraceForUnusableRetirementTimes(t *testing.T) {
+	now := t0
+	old := now.Add(-72 * time.Hour)
+	null := "tracks/111-" + strings.Repeat("a", 64) + ".json"
+	future := "tracks/222-" + strings.Repeat("b", 64) + ".json"
+	objects := map[string]time.Time{null: old, future: old}
+	var st gcState
+	body := `{"schema_version":1,"manifest":"m","retired":{"` + null + `":null,"` + future + `":"2999-01-01T00:00:00Z"}}`
+	if err := json.Unmarshal([]byte(body), &st); err != nil {
+		t.Fatal(err)
+	}
+	if !st.Retired[null].IsZero() {
+		t.Fatalf("null decoded to %v, want the zero time", st.Retired[null])
+	}
+	next, expired := collect(objects, st.Retired, map[string]bool{}, map[string]bool{}, now)
+	if len(expired) != 0 {
+		t.Fatalf("expired %v, want none", expired)
+	}
+	for _, key := range []string{null, future} {
+		if !next[key].Equal(now) {
+			t.Errorf("%s retired at %v, want %v", key, next[key], now)
+		}
+	}
+	// Thirty minutes later the same payloads expire from the new time.
+	if _, expired := collect(objects, next, map[string]bool{}, map[string]bool{}, now.Add(grace)); len(expired) != 2 {
+		t.Fatalf("after grace: expired %v, want both", expired)
+	}
+}
+
 // trackOf returns the track key that the published snapshot names for a vessel.
 func trackOf(t *testing.T, st *store, mmsi string) *string {
 	t.Helper()
