@@ -34,9 +34,7 @@ MODEL_REVISION = "bdd20cfc15a3fea0e4cb5ccef37f8d3ca7aa335f"
 
 
 def read_history(url, end):
-    query = urlencode(
-        {"query": QUERY, "start": end - WINDOW, "end": end, "step": STEP}
-    )
+    query = urlencode({"query": QUERY, "start": end - WINDOW, "end": end, "step": STEP})
     with urlopen(f"{url}/api/v1/query_range?{query}", timeout=20) as response:
         result = json.load(response)
     if result["status"] != "success" or len(result["data"]["result"]) != 1:
@@ -73,7 +71,9 @@ def forecast_metrics(model, samples, end, now):
                 lines.append(
                     f"capacity_forecast_memory_budget_bytes{{{labels}}} {max(0, float(budget))}"
                 )
-                lines.append(f"capacity_forecast_target_timestamp_seconds{{{labels}}} {target}")
+                lines.append(
+                    f"capacity_forecast_target_timestamp_seconds{{{labels}}} {target}"
+                )
     return "\n".join(lines) + "\n"
 
 
