@@ -94,7 +94,7 @@ run() {
 		exit 1
 	}
 }
-export GIT_PR_NUMBER=7455 GIT_BRANCH=factory/test PATTERNS=//p:unit_test WRITE_BACK_ONLY=false
+export GIT_BASE_BRANCH=main GIT_REPO_DEFAULT_BRANCH=main GIT_PR_NUMBER=7455 GIT_BRANCH=factory/test PATTERNS=//p:unit_test WRITE_BACK_ONLY=false
 run 0
 expected=$'git fetch origin main --quiet\ngit merge-base origin/main HEAD\nguard bazel/tools/ci/pr_content_scan.py origin/main HEAD\nguard ./bazel/tools/ci/verification_genrule_guard.py .\nguard ./bazel/tools/ci/central_build_ratchet.py frozen-base HEAD\nguard ./bazel/tools/ci/chart_version_guard.py frozen-base HEAD\nguard ./bazel/tools/ci/source_ratchet.py frozen-base HEAD\ngit ls-files -z -- :(glob)**/INVARIANTS.yaml\ninvariants\ngit diff --quiet frozen-base HEAD -- MODULE.bazel bazel/tools/http\ngit ls-files --others --exclude-standard\nselector frozen-base HEAD -- --config=ci\nsubset //p:unit_test\nreached'
 [[ "$(cat "$LOG")" == "$expected" ]]
