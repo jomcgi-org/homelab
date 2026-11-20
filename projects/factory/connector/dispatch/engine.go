@@ -2279,6 +2279,7 @@ func (e *Engine) engineeringFailure(ctx context.Context, r *store.Run, wi *store
 			brief += replacementNote
 		}
 	}
+	nextWork := *wi
 	var next *store.Attempt
 	err := e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
 		// A grant failure was already finished while blocked. Preserve its
@@ -2293,7 +2294,8 @@ func (e *Engine) engineeringFailure(ctx context.Context, r *store.Run, wi *store
 			return err
 		}
 		if ok && b != nil {
-			next, err = e.recordNext(ctx, tx, r, wi, n, brief)
+			nextWork.EngineeringRetries = n
+			next, err = e.recordNext(ctx, tx, r, &nextWork, n, brief)
 			return err
 		}
 		if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/retries/%d/%d", r.ID, a.Seq), r.ID, "",
@@ -2318,7 +2320,7 @@ func (e *Engine) engineeringFailure(ctx context.Context, r *store.Run, wi *store
 		return nil
 	}
 	e.m.Retries.WithLabelValues("sent").Inc()
-	return e.issue(ctx, r, wi, b, next)
+	return e.issue(ctx, r, &nextWork, b, next)
 }
 
 // stepCancellations drives pending cancellations until kagent reports each
