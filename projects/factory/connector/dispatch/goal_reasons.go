@@ -151,34 +151,41 @@ func goalReasonsComment(wi *store.WorkItem, pr *store.PullRequest, g *GoalReason
 // The read checks the writer epoch and records its attempt first, like the
 // CI log reads. A missing or failed read is logged by class and gives nil.
 func (e *Engine) goalReasons(ctx context.Context, b *Binding, wi *store.WorkItem, pr *store.PullRequest, sha string) (*GoalReasons, error) {
+	g, _, err := e.readGoalReasons(ctx, b, wi, pr, sha)
+	return g, err
+}
+
+// readGoalReasons is goalReasons that also reports a failed read, which a
+// later poll can retry.
+func (e *Engine) readGoalReasons(ctx context.Context, b *Binding, wi *store.WorkItem, pr *store.PullRequest, sha string) (*GoalReasons, bool, error) {
 	if e.cfg.GoalReasons == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err := e.guard(ctx); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	messageID := fmt.Sprintf("goal/%d/%s/reasons", pr.ID, sha)
 	if err := e.st.RecordDeliveryRead(ctx, pr.ID, e.w.Epoch, messageID, "goal-reasons", sha); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := e.guard(ctx); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	g, err := e.cfg.GoalReasons.GoalReasons(ctx, b.repo(), pr.Number, sha)
 	switch {
 	case errors.Is(err, ErrNoGoalReasons):
 		e.m.GoalReasonReads.WithLabelValues("none").Inc()
-		return nil, nil
+		return nil, false, nil
 	case err != nil:
 		e.m.GoalReasonReads.WithLabelValues("error").Inc()
 		e.log.WarnContext(ctx, "goal reasons read failed", "pr", pr.Number, "head", sha)
-		return nil, nil
+		return nil, true, nil
 	case g.Issue != wi.IssueKey:
 		e.m.GoalReasonReads.WithLabelValues("other_issue").Inc()
-		return nil, nil
+		return nil, false, nil
 	}
 	e.m.GoalReasonReads.WithLabelValues("ok").Inc()
-	return g, nil
+	return g, false, nil
 }
 
 // enqueueGoalReasons posts a head's reasons on the issue once.
@@ -194,23 +201,24 @@ const ownedFinding = "owned by a follow-up"
 // ownershipFeedback delivers the follow-up key of an owned criterion when
 // the reviewer's check passes, so no revision round carries its reasons.
 // The public check names no key; the reasons, which do, go to the work
-// item's issue once per head.
-func (e *Engine) ownershipFeedback(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, head string, checks []github.CheckRun) error {
+// item's issue once per head. A failed read gives wait, so the PR stays out
+// of the queue and the next poll reads again.
+func (e *Engine) ownershipFeedback(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, head string, checks []github.CheckRun) (wait bool, err error) {
 	r := b.Review.ReviewerCheck
 	if r == nil || r.AppID == 0 {
-		return nil
+		return false, nil
 	}
 	for _, c := range checks {
 		if c.HeadSHA != head || c.Name != r.Name || c.AppID != r.AppID || c.Status != "completed" || failedConclusion(c.Conclusion) ||
 			!goalFinding(c.Summary, wi.IssueKey) || !strings.Contains(c.Summary, ownedFinding) {
 			continue
 		}
-		g, err := e.goalReasons(ctx, b, wi, pr, head)
+		g, failed, err := e.readGoalReasons(ctx, b, wi, pr, head)
 		if err != nil || g == nil {
-			return err
+			return failed, err
 		}
-		return e.st.Enqueue(ctx, e.st.DB, store.OutboxComment, fmt.Sprintf("comment/goal-reasons/%d/%s", wi.ID, g.Head), 0, "",
+		return false, e.st.Enqueue(ctx, e.st.DB, store.OutboxComment, fmt.Sprintf("comment/goal-reasons/%d/%s", wi.ID, g.Head), 0, "",
 			commentPayload{IssueID: wi.IssueID, Once: true, Body: goalReasonsComment(wi, pr, g)})
 	}
-	return nil
+	return false, nil
 }

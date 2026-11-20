@@ -2973,6 +2973,7 @@ func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullReques
 		summary += " (" + prev.URL + ")"
 	}
 	summary += "."
+	summary += ownedSection(st)
 	summary = keepEnqueueHistory(summary, prev)
 	text = recordComment(text, prev.Text, pr.HeadSHA, u)
 	run, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
@@ -3084,6 +3085,25 @@ func keepEnqueueHistory(summary string, prev *github.CheckRun) string {
 		summary += "\n\n" + enqueuedMarker + "This head was already in the merge queue."
 	}
 	return summary
+}
+
+// ownedSection repeats the review's owned criteria on a gate check. The
+// connector reads the latest check, so it still delivers the follow-up key
+// when a human approval clears the gate. The section names no key.
+func ownedSection(st State) string {
+	if st.Goal == nil || st.GoalKey == "" {
+		return ""
+	}
+	var s strings.Builder
+	for _, f := range goalFindings(st.GoalKey, st.Goal) {
+		if f.Verdict == goalOwned {
+			writeFinding(&s, f)
+		}
+	}
+	if s.Len() == 0 {
+		return ""
+	}
+	return "\n\n### Deferred\n\n" + strings.TrimSuffix(s.String(), "\n")
 }
 
 // maybeEnqueue adds a head whose review passed to the merge queue, once:
