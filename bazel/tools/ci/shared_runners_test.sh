@@ -24,7 +24,8 @@ cat >"$tmp/bin/git" <<'EOF'
 set -eu
 printf 'git %s\n' "$*" >>"$LOG"
 case "$*" in
-    'fetch origin main --quiet') ;;
+    'fetch origin main --quiet' | 'fetch --quiet origin refs/heads/release') ;;
+    'rev-parse FETCH_HEAD') echo release-base ;;
     'merge-base origin/main HEAD')
         [[ "${MISSING_BASE:-0}" == 0 ]] || exit 8
         echo frozen-base ;;
@@ -38,7 +39,7 @@ cat >"$tmp/bin/python3" <<'EOF'
 set -eu
 printf 'guard %s\n' "$*" >>"$LOG"
 case "$1" in
-    bazel/tools/ci/pr_content_scan.py) [[ "$*" == "$1 origin/main HEAD" ]] ;;
+    bazel/tools/ci/pr_content_scan.py) [[ "$*" == "$1 frozen-base HEAD" || "$*" == "$1 release-base HEAD" ]] ;;
     ./bazel/tools/ci/verification_genrule_guard.py) [[ "$*" == "$1 ." ]] ;;
     ./bazel/tools/ci/central_build_ratchet.py|./bazel/tools/ci/chart_version_guard.py|./bazel/tools/ci/source_ratchet.py)
         [[ "$*" == "$1 frozen-base HEAD" ]] ;;
@@ -89,9 +90,12 @@ run() {
 }
 export GIT_BASE_BRANCH=main GIT_REPO_DEFAULT_BRANCH=main GIT_PR_NUMBER=7455 GIT_BRANCH=factory/test PATTERNS=//p:unit_test WRITE_BACK_ONLY=false
 run 0
-expected=$'git fetch origin main --quiet\ngit merge-base origin/main HEAD\nguard bazel/tools/ci/pr_content_scan.py origin/main HEAD\nguard ./bazel/tools/ci/verification_genrule_guard.py .\nguard ./bazel/tools/ci/central_build_ratchet.py frozen-base HEAD\nguard ./bazel/tools/ci/chart_version_guard.py frozen-base HEAD\nguard ./bazel/tools/ci/source_ratchet.py frozen-base HEAD\ngit ls-files -z -- :(glob)**/INVARIANTS.yaml\ninvariants\ngit ls-files --others --exclude-standard\nselector frozen-base HEAD -- --config=ci --deleted_packages=bazel/tools/python\nsubset //p:unit_test\nreached'
+expected=$'git fetch origin main --quiet\ngit merge-base origin/main HEAD\nguard bazel/tools/ci/pr_content_scan.py frozen-base HEAD\nguard ./bazel/tools/ci/verification_genrule_guard.py .\nguard ./bazel/tools/ci/central_build_ratchet.py frozen-base HEAD\nguard ./bazel/tools/ci/chart_version_guard.py frozen-base HEAD\nguard ./bazel/tools/ci/source_ratchet.py frozen-base HEAD\ngit ls-files -z -- :(glob)**/INVARIANTS.yaml\ninvariants\ngit ls-files --others --exclude-standard\nselector frozen-base HEAD -- --config=ci --deleted_packages=bazel/tools/python\nsubset //p:unit_test\nreached'
 [[ "$(cat "$LOG")" == "$expected" ]]
 echo 'PASS workflow PR frozen base, ordered guards and selective target-pattern file'
+GIT_BASE_BRANCH=release run 0
+grep -qxF 'git fetch --quiet origin refs/heads/release' "$LOG"
+grep -qxF 'guard bazel/tools/ci/pr_content_scan.py release-base HEAD' "$LOG"
 for guard in verification_genrule_guard.py central_build_ratchet.py chart_version_guard.py source_ratchet.py; do
 	FAIL_GUARD="$guard" run 7
 	[[ "$(tail -n 1 "$LOG")" == guard*"$guard"* ]]
