@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -383,14 +385,40 @@ func TestOriginalTitleAndEditedDescriptionTrust(t *testing.T) {
 	for _, tc := range []struct {
 		creator string
 		trusted bool
-	}{{"human", true}, {"bot", false}} {
-		e, b, api, pr := issueSetup()
-		api.author = tc.creator
-		api.textAuthors = []string{tc.creator, "sessions"}
-		in := e.issueContext(context.Background(), b, pr, nil)
-		if in.Issue == nil || in.Issue.Trusted != tc.trusted {
-			t.Fatalf("creator %q: issue = %+v", tc.creator, in.Issue)
-		}
+		count   int
+	}{{"human", true, 1}, {"bot", false, 0}} {
+		t.Run(tc.creator, func(t *testing.T) {
+			e, b, api, pr := issueSetup()
+			api.issue.Description = "Done when\n1. Publish the report."
+			created := fmt.Sprintf(`{"issueId":95,"kind":"activity","action":"created","actorUserId":%q,"payload":{"subject":{"value":"factory-creation-sha256-v1"},"from":{"value":"%x"},"to":{"value":"%x"}}}`, tc.creator, sha256.Sum256([]byte(api.issue.Title)), sha256.Sum256([]byte("Draft")))
+			edit := fmt.Sprintf(`{"issueId":95,"kind":"activity","action":"description","actorUserId":"sessions","payload":{"to":{"value":%q}}}`, api.issue.Description)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/projects/HOME":
+					_ = json.NewEncoder(w).Encode(api.project)
+				case "/projects/HOME/issues/58":
+					_ = json.NewEncoder(w).Encode(api.issue)
+				case "/issues/95/feed":
+					items := created
+					if r.URL.Query().Get("order") == "desc" {
+						items = edit + "," + created
+					}
+					fmt.Fprintf(w, `{"items":[%s]}`, items)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			e.cfg.Itsaplan = &itsaplan.Client{BaseURL: srv.URL, HTTP: srv.Client(), Coordinator: "reviewer", Keys: map[string]string{"reviewer": "test"}}
+			in := e.issueContext(context.Background(), b, pr, nil)
+			if in.Issue == nil || in.Issue.Trusted != tc.trusted || issueCriteria(in) != tc.count {
+				t.Fatalf("issue = %+v, count = %d", in.Issue, issueCriteria(in))
+			}
+			goal := &GoalCheck{Counted: issueCriteria(in), Criteria: []GoalVerdict{{}}}
+			if withdrawn := goalWithdrawn("HOME-57:goal", goalKey(in), goal) != ""; withdrawn != tc.trusted {
+				t.Fatalf("old goal withdrawn = %v", withdrawn)
+			}
+		})
 	}
 }
 
