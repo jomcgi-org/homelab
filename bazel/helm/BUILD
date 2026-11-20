@@ -83,6 +83,7 @@ MANIFEST_SETS = [
 # the gate without leaving reviewable evidence here. The completeness test
 # below enforces the record against the source tree.
 SKIPPED_MANIFEST_SETS = {
+    "projects/capacity-forecast/chart": "Renders CiliumNetworkPolicy, whose schema is outside this gate. //projects/capacity-forecast/chart:lint_test checks the Helm chart.",
     "projects/stars-forecast/chart": "Renders CiliumNetworkPolicy. Covered by the Stars chart render test.",
     "projects/ships/chart": "Factory CiliumNetworkPolicy has no pinned schema. //projects/ships/chart:ingester_test renders the inactive and shadow configurations.",
     "projects/factory-explore/chart": "Renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. //projects/factory-explore/chart:proxy_test renders the chart and checks the ingress boundary.",
