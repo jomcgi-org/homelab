@@ -169,7 +169,10 @@ def test_reviewed_planner_schedule_reaches_the_connector() -> None:
     }
     baseline = _render()
     configured = _render(
-        [f"connector.plannerSchedules[0].{key}={value}" for key, value in schedule.items()]
+        [
+            f"connector.plannerSchedules[0].{key}={value}"
+            for key, value in schedule.items()
+        ]
     )
     assert "plannerSchedules" not in _config(baseline)
     assert _config(configured)["plannerSchedules"] == [schedule]
