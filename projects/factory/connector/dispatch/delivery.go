@@ -678,6 +678,9 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		}
 		return e.idleRound(ctx, wi, b, pr, d)
 	}
+	if err := e.ownershipFeedback(ctx, wi, b, pr, d.HeadSHA, checks); err != nil {
+		return err
+	}
 	if err := e.guard(ctx); err != nil {
 		return err
 	}

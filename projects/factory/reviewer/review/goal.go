@@ -339,6 +339,7 @@ func criterionTexts(in *IssueContext, ownership bool) []string {
 func parseCriterionList(description string, ownership bool) []string {
 	var criteria []string
 	items, state, style := 0, 0, "" // state: 0 before the heading, 1 in the list, 2 after it
+	content := 0                    // the column where the last item's text starts
 	text := strings.ReplaceAll(strings.ReplaceAll(description, "\r\n", "\n"), "\r", "\n")
 	// Comments, code blocks and HTML can hide or fake list items, anywhere
 	// in a line. Rather than parse them, count nothing when the issue has an
@@ -370,6 +371,15 @@ func parseCriterionList(description string, ownership bool) []string {
 			if !strings.ContainsFunc(raw[len(m[1])+len(m[2])+len(m[3]):], func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) {
 				return nil // An item needs words; "* * *" is a thematic break.
 			}
+			// Five or more columns, or a tab, after the marker start an
+			// indented code block in the item, not a task.
+			width := len(m[1]) + len(m[2]) + len(m[3])
+			gap := raw[width:]
+			spaces := len(gap) - len(strings.TrimLeft(gap, " "))
+			if ownership && (spaces >= 5 || strings.HasPrefix(gap[spaces:], "\t")) {
+				return nil
+			}
+			content = width + spaces
 			kind := m[3]
 			if m[1] != "" {
 				if m[1] != strconv.Itoa(items+1) {
@@ -387,6 +397,11 @@ func parseCriterionList(description string, ownership bool) []string {
 			return nil
 		case raw != strings.TrimLeft(raw, " \t"):
 			if items == 0 {
+				return nil
+			}
+			// A continuation indented four or more columns past the item's
+			// text is a code block inside the item.
+			if expanded := strings.ReplaceAll(raw, "\t", "    "); ownership && len(expanded)-len(strings.TrimLeft(expanded, " ")) >= content+4 {
 				return nil
 			}
 			criteria[items-1] += " " + line

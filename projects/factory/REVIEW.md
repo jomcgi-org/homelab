@@ -46,7 +46,8 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   `unclear` and (for criteria only) `owned`. An `owned` answer supplies a private
   `follow_up` key. The service checks the linked issue is open and lists the
   criterion in its description. A failed match yields `not_met`. Only connector
-  feedback names the key. The public review says “owned by a follow-up”.
+  feedback names the key: a revision round's reasons or, when the review
+  passes, one private comment on the work item's issue. The public review says “owned by a follow-up”.
   [Joe’s decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-417#comment-4483). The service writes every
   public word from those values, with finding IDs from the issue key and
   criterion number, and a parse failure shows only a fixed class. An
