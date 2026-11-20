@@ -104,6 +104,11 @@ const MaxDescriptionBytes = 4000
 // proposal cannot contain either tag.
 const EvidenceOpen, EvidenceClose = "<untrusted-evidence>", "</untrusted-evidence>"
 
+const (
+	evidencePrefix = "\n\n" + EvidenceOpen + "\n> "
+	evidenceSuffix = "\n" + EvidenceClose
+)
+
 // Description appends a single JSON-quoted evidence line to trusted
 // instructions. It returns false when the result exceeds MaxDescriptionBytes.
 func (p Proposal) Description(instructions string) (string, bool) {
@@ -114,6 +119,6 @@ func (p Proposal) Description(instructions string) (string, bool) {
 		}
 		return r
 	}, string(quoted))
-	d := instructions + "\n\n" + EvidenceOpen + "\n> " + line + "\n" + EvidenceClose
+	d := instructions + evidencePrefix + line + evidenceSuffix
 	return d, len(d) <= MaxDescriptionBytes
 }
