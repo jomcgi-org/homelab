@@ -453,8 +453,8 @@ func (s *Store) startRound(ctx context.Context, q Querier, w *WorkItem, prompt, 
 	}
 	return scanRun(q.QueryRowContext(ctx, `
 		INSERT INTO run (id, origin, agent_key, work_item_id, issue_id, issue_key, trigger, prompt, system_prompt,
-			attempt, state, seen_visible, round_head_sha)
-		VALUES (nextval('connector_run_id'), 'connector', $1, $2, $3, $4, $7, $5, '', 1, 'waiting', true, nullif($6, ''))
+			attempt, state, seen_visible, provenance_required, round_head_sha)
+		VALUES (nextval('connector_run_id'), 'connector', $1, $2, $3, $4, $7, $5, '', 1, 'waiting', true, true, nullif($6, ''))
 		RETURNING `+runCols, w.AgentKey, w.ID, w.IssueID, w.IssueKey, prompt, head, trigger))
 }
 

@@ -63,7 +63,11 @@ model output nor PR labels classify the task.
 
 The migration leaves every historical row null, including runs already admitted
 when it applies. New claims may also be null while waiting for their first
-send. There is no backfill that guesses historical settings.
+send. Only provenance-aware coder run creators opt in. A run created during
+rollback by a pre-provenance connector stays legacy across retries. Its retries
+can record attempt receipts, but never a first-execution receipt for the run.
+When upgrading from the former opt-out schema, existing runs without a
+snapshot also stay legacy because their creator cannot be identified.
 
 Reviewer tasks, including goal checks, use `origin = 'reviewer'`. Their rows
 have connector state `closed` and reason `tracked_externally`: the reviewer

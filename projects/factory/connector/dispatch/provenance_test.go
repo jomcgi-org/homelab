@@ -166,6 +166,59 @@ func (k *fakeKagent) AgentRevision(context.Context, kagent.AgentRef) (string, er
 	return "current", nil
 }
 
+func TestLegacyRunRetryRecordsOnlyAttemptProvenance(t *testing.T) {
+	for _, workBranch := range []bool{true, false} {
+		t.Run(fmt.Sprintf("work-branch-present-%t", workBranch), func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.its.add(1, "coder", 101, "HL-7", "Fix it.")
+			v.tick(v.e)
+			first := v.latest(1)
+			if first.State != store.AttemptAccepted || first.Provenance != (provenance.Record{}) {
+				t.Fatalf("expected a legacy attempt: %+v", first)
+			}
+			if _, err := v.st.DB.Exec(`UPDATE run SET provenance_required=false WHERE id=1`); err != nil {
+				t.Fatal(err)
+			}
+			session := v.work(101).SessionID
+			v.kg.sessions[session].PreparedRevision = "current"
+			head := strings.Repeat("b", 40)
+			if workBranch {
+				v.gh.push("factory/HL-7", head, "partial fix")
+			} else {
+				v.gh.push("main", head, "current base")
+			}
+			v.kg.finish(first.TaskID, kagent.StateFailed, "test command failed", nil)
+			runtime := provenance.Runtime{Model: "coder-model", ReasoningEffort: "high", Arm: "control"}
+			v.cfg.Bindings[0].Runtime = &runtime
+			v.e.Release()
+			v.e = v.engine("legacy-retry")
+			v.clk.Advance(5 * time.Second)
+			v.tick(v.e)
+			if !workBranch {
+				if len(v.kg.Sends()) != 1 || v.latest(1).Issues != 0 {
+					t.Fatal("issued legacy continuation before fencing")
+				}
+				v.attestRecovery("retry")
+				v.tick(v.e)
+			}
+			next, sends := v.latest(1), v.kg.Sends()
+			if len(sends) != 2 || next.ID == first.ID || next.State != store.AttemptAccepted {
+				t.Fatalf("retry attempt=%+v sends=%d", next, len(sends))
+			}
+			if !workBranch && (next.ContextID == "" || next.ContextID == session) {
+				t.Fatal("replacement did not start a fresh session")
+			}
+			text := sends[1].msg.Parts[0].Text
+			if next.RenderedPrompt != text || next.Provenance != provenance.New(runtime, head, text, "unclassified") {
+				t.Fatalf("incorrect retry receipt: %+v", next)
+			}
+			if run := v.run(1); run.ProvenanceRequired || run.Provenance != (provenance.Record{}) {
+				t.Fatalf("retry attributed provenance to the legacy run: %+v", run)
+			}
+		})
+	}
+}
+
 func TestLegacySessionProvenanceUsesFencedReplacement(t *testing.T) {
 	v := provenanceEnv(t)
 	v.its.add(1, "coder", 101, "HL-7", "Fix it.")

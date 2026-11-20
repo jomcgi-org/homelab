@@ -25,9 +25,9 @@ var (
 
 func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.WorkItem, b *Binding, a *store.Attempt) (string, error) {
 	text := taskText(r, wi, b, a)
-	// Runtime is mandatory in production config. Old admitted runs retain NULL
-	// provenance; isolated engine fixtures may omit the runtime dependency.
-	if !r.ProvenanceRequired || b.Runtime == nil {
+	// Runtime is mandatory in production. The store checks run eligibility
+	// separately when it records the attempt.
+	if b.Runtime == nil {
 		return text, nil
 	}
 	runtime := *b.Runtime
@@ -76,6 +76,9 @@ func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.
 			// A verified session can fail before its first push. Its accepted
 			// receipt fixes the starting commit even if main has moved on.
 			base, err = sessionBase, nil
+		case a.Kind == "continuation" && a.ContextID != "":
+			// A matching Agent revision cannot establish the old checkout SHA.
+			return "", errLegacyRuntime
 		case !r.Connector() && wi.SessionID == "":
 			if err := e.beginAdmissionRead(ctx, r, "provenance-base", b.repo()+"/"+b.BaseBranch); err != nil {
 				return "", err
