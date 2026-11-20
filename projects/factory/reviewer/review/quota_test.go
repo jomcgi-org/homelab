@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -248,4 +249,89 @@ func TestQuotaWaitReleasesWorkerWhenDiffUnreadable(t *testing.T) {
 		testutil.ToFloat64(h.m.Retries.WithLabelValues("homelab")) != 0 {
 		t.Fatal("unreadable diff spent an attempt or held a worker during quota exhaustion")
 	}
+}
+
+// A quota pause keeps the review's root span open. The resumed worker
+// continues it, so the review is one root span with its verdict and the
+// usage of both tasks.
+func TestQuotaPauseKeepsOneReviewRoot(t *testing.T) {
+	exporter := captureReviewSpans(t)
+	h := newHarness(t)
+	addPR7(h)
+	q := &fakeQuota{}
+	h.cfg.Quota = q
+	e, ctx, stop := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	h.k.stamp(task, map[string]any{"inputTokens": float64(5), "outputTokens": float64(1)})
+	h.k.finish(task, kagent.StateFailed, "usage_limit_reached for account 1234")
+	rec := waitForQuotaCheck(t, h)
+	q.set(github.QuotaReading{ReceivedAt: rec.QuotaSince.Add(time.Second)}, nil)
+	e.Tick(ctx)
+	id := h.msgID(7, shaA, 1) + "/quota-1"
+	eventually(t, "resumed quota task", func() bool {
+		task = h.k.taskFor(id)
+		return task != ""
+	})
+	h.k.stamp(task, map[string]any{"inputTokens": float64(7), "outputTokens": float64(2)})
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	eventually(t, "review passes", func() bool {
+		return h.gh.check(shaA).Conclusion == ConclusionSuccess
+	})
+	stop()
+	var roots []map[string]string
+	var events []string
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "review" || span.Parent.IsValid() {
+			continue
+		}
+		attrs := map[string]string{}
+		for _, a := range span.Attributes {
+			attrs[string(a.Key)] = a.Value.Emit()
+		}
+		roots = append(roots, attrs)
+		for _, ev := range span.Events {
+			events = append(events, ev.Name)
+		}
+	}
+	if len(roots) != 1 {
+		t.Fatalf("got %d review roots, want 1: %v", len(roots), roots)
+	}
+	for k, v := range map[string]string{"review.verdict": ConclusionSuccess, "tokens.input": "12", "tokens.output": "3", "pr.head_sha": shaA} {
+		if roots[0][k] != v {
+			t.Errorf("%s = %q, want %q", k, roots[0][k], v)
+		}
+	}
+	if !slices.Contains(events, "review paused") || !slices.Contains(events, "review resumed") {
+		t.Errorf("root events = %v", events)
+	}
+}
+
+// A paused review whose process stops still exports its root, marked
+// interrupted, and the next process starts a new root.
+func TestQuotaPausedRootEndsOnShutdown(t *testing.T) {
+	exporter := captureReviewSpans(t)
+	h := newHarness(t)
+	addPR7(h)
+	h.cfg.Quota = &fakeQuota{}
+	e, ctx, stop := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	h.k.finish(task, kagent.StateFailed, "insufficient_quota")
+	waitForQuotaCheck(t, h)
+	for _, span := range exporter.GetSpans() {
+		if span.Name == "review" {
+			t.Fatal("paused review root ended before its check completed")
+		}
+	}
+	stop()
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "review" {
+			continue
+		}
+		for _, a := range span.Attributes {
+			if a.Key == "review.verdict" && a.Value.AsString() == "interrupted" {
+				return
+			}
+		}
+	}
+	t.Fatal("paused root not exported as interrupted on shutdown")
 }
