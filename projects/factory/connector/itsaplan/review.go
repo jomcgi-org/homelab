@@ -71,12 +71,7 @@ func (c *Client) IssueTextAuthors(ctx context.Context, issue *Issue) ([]string, 
 	want := map[string]string{"title": issue.Title, "description": issue.Description}
 	seen := map[string]bool{}
 	authors := map[string]string{}
-	for page := range 10 {
-		if beforePage != nil {
-			if err := beforePage(page); err != nil {
-				return nil, err
-			}
-		}
+	for range 10 {
 		var out feedPage
 		path := "/issues/" + strconv.FormatInt(issue.ID, 10) + "/feed?" + q.Encode()
 		if err := c.do(ctx, c.Coordinator, http.MethodGet, path, nil, &out); err != nil {
