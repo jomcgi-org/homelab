@@ -99,7 +99,7 @@ filegroup(
 )
 
 # Render the released CRDs with the deployment's values, rather than maintaining
-# permissive test-only schemas. The admission test checks this pin against Argo.
+# permissive test-only schemas. The admission test compares this render with the vendored manifests.
 http_archive(
     name = "external_secrets_chart_2_15_0",
     build_file_content = """

@@ -93,14 +93,13 @@ projects/platform-factory/external-secrets/verify-render.sh
 
 The render test has a Bazel target at
 `//projects/platform-factory/external-secrets/chart:external_secrets_test`.
-It also verifies that Argo CD can reach the chart repository through its
-network policy.
+It also checks that Argo CD's egress policy omits the vendored chart hosts.
 
 `//projects/platform-factory/external-secrets/admission:admission_test` runs the
 rendered guards against a private Kubernetes 1.37 API server and etcd using
 envtest. Bazel pins the control-plane binaries and the released ESO chart by
-checksum. The test verifies the chart version matches the Application and
-installs its real CRD schemas, with the deployment's values. It never starts
+checksum. The test compares the vendored manifests with the pinned chart rendered with
+factory values and installs CRD schemas from those manifests. It never starts
 ESO controllers or uses a kubeconfig or real credentials.
 
 The test first verifies every fixture is schema-valid without the guards,
