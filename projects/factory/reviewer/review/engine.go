@@ -1530,6 +1530,9 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				switch {
 				case err == nil:
 					msg, sends = m, 0
+				case errors.Is(err, errUnsettledTurn):
+					e.sleep(ctx, e.cfg.Reissue)
+					continue
 				case late:
 					if next("the reviewer could not read the rules or the PR from GitHub.") {
 						return
@@ -2408,7 +2411,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 	commits := e.commitMessages(ctx, b, pr, in.priorHead, l)
 	plan := sessionPlan{rules: rulesDigest(rules)}
 	plan.resume, plan.reason = e.resumable(ctx, b, pr, in, attempt, refused, l)
-	if plan.reason == reasonUnsettled {
+	if plan.reason == reasonUnsettled || plan.reason == reasonUnreadable {
 		return nil, errUnsettledTurn
 	}
 	text := Prompt(PromptInput{

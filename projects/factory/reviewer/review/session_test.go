@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
@@ -168,15 +170,12 @@ func TestLaterHeadResumesThePreviousSession(t *testing.T) {
 // TestResumeFallsBackToAFreshSession starts the second head's review fresh
 // whenever the recorded session cannot be continued, and records why.
 func TestResumeFallsBackToAFreshSession(t *testing.T) {
-	unavailable := errors.New("connection refused")
 	for _, tc := range []struct {
 		name   string
 		reason string
 		setup  func(h *harness, contextID string)
 		before func(h *harness, task string)
 		reads  int
-		// failed is the kagent call counted as an error.
-		failed string
 	}{
 		{name: "no session client", reason: reasonDisabled, setup: func(h *harness, _ string) { h.sessions = nil }},
 		{name: "missing", reason: reasonMissing, reads: 1, setup: func(h *harness, id string) {
@@ -197,9 +196,7 @@ func TestResumeFallsBackToAFreshSession(t *testing.T) {
 		{name: "another agent", reason: reasonForeign, reads: 1, setup: func(h *harness, id string) {
 			h.sessions.answer(id, &kagent.Session{ID: id, ContextID: id, State: kagent.RuntimeReady, AgentNamespace: "factory-r-homelab", AgentName: "coder"}, nil)
 		}},
-		{name: "unreadable", reason: reasonUnreadable, reads: 1, failed: "get_session", setup: func(h *harness, id string) {
-			h.sessions.answer(id, nil, unavailable)
-		}},
+
 		{name: "a new agent revision", reason: reasonRevision, reads: 1, setup: func(h *harness, _ string) {
 			h.k.mu.Lock()
 			h.k.revision = "rev-2" // a model or prompt change rolled out after the first review
@@ -208,19 +205,11 @@ func TestResumeFallsBackToAFreshSession(t *testing.T) {
 		{name: "no session revision", reason: reasonRevision, reads: 1, setup: func(h *harness, id string) {
 			h.sessions.answer(id, &kagent.Session{ID: id, ContextID: id, State: kagent.RuntimeReady}, nil)
 		}},
-		{name: "agent unreadable", reason: reasonUnreadable, reads: 1, failed: "get_agent", setup: func(h *harness, _ string) {
-			h.sessions.mu.Lock()
-			h.sessions.agentErr = unavailable
-			h.sessions.mu.Unlock()
-		}},
+
 		{name: "a turn no review recorded", reason: reasonUnaccounted, reads: 1, setup: func(h *harness, id string) { h.k.open(id) }},
-		{name: "tasks unreadable", reason: reasonUnreadable, reads: 1, failed: "list_tasks", setup: func(h *harness, _ string) {
-			h.k.mu.Lock()
-			h.k.listErr = unavailable
-			h.k.mu.Unlock()
-		}},
+
 		{name: "near the size bound", reason: reasonSize, before: func(h *harness, task string) { h.k.pad(task, maxSessionBytes) }},
-		{name: "refused by kagent", reason: reasonRefused, reads: 1, setup: func(h *harness, id string) {
+		{name: "refused by kagent", reason: reasonRefused, reads: 2, setup: func(h *harness, id string) {
 			h.k.mu.Lock()
 			h.k.gone[id] = true // GetSession still answers READY: the session went between the read and the send.
 			h.k.mu.Unlock()
@@ -242,6 +231,7 @@ func TestResumeFallsBackToAFreshSession(t *testing.T) {
 			if h.sessions == nil {
 				e, ctx, _ = h.start() // a process without a SessionService client
 			}
+
 			second := finishHead(t, h, e, ctx, sessionShaB, passing, nil)
 			msg := lastSend(h)
 			if msg.ContextID != "" || msg.MessageID != h.msgID(7, sessionShaB, 1) {
@@ -275,10 +265,63 @@ func TestResumeFallsBackToAFreshSession(t *testing.T) {
 					t.Errorf("session reads = %d, want %d", got, tc.reads)
 				}
 			}
-			if tc.failed != "" {
-				if got := testutil.ToFloat64(h.m.KagentErrors.WithLabelValues("homelab", tc.failed)); got != 1 {
-					t.Errorf("%s errors = %v", tc.failed, got)
-				}
+		})
+	}
+}
+
+func TestSessionReadFailureWaits(t *testing.T) {
+	unavailable := errors.New("connection refused")
+	for _, tc := range []struct {
+		name, call string
+		setup      func(*harness, string)
+	}{
+		{name: "unreadable", call: "get_session", setup: func(h *harness, id string) {
+			h.sessions.answer(id, nil, unavailable)
+		}},
+		{name: "agent unreadable", call: "get_agent", setup: func(h *harness, _ string) {
+			h.sessions.mu.Lock()
+			h.sessions.agentErr = unavailable
+			h.sessions.mu.Unlock()
+		}},
+		{name: "tasks unreadable", call: "list_tasks", setup: func(h *harness, _ string) {
+			h.k.mu.Lock()
+			h.k.listErr = unavailable
+			h.k.mu.Unlock()
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			e, ctx, _ := h.start()
+			ref := stateOn(t, finishHead(t, h, e, ctx, shaA, blocking, nil)).Session
+			stray := h.k.open(ref.ContextID)
+			h.k.mu.Lock()
+			h.k.tasks[stray].task.Status.State = kagent.StateWorking
+			h.k.mu.Unlock()
+			tc.setup(h, ref.ContextID)
+			h.gh.push(7, sessionShaB)
+			e.Tick(ctx)
+			eventually(t, "the failed read to be retried", func() bool {
+				return testutil.ToFloat64(h.m.KagentErrors.WithLabelValues("homelab", tc.call)) >= 2
+			})
+			if n, _ := h.k.state(); n != 1 {
+				t.Fatalf("started %d tasks during failed read", n)
+			}
+			h.sessions.mu.Lock()
+			delete(h.sessions.errs, ref.ContextID)
+			h.sessions.agentErr = nil
+			h.sessions.mu.Unlock()
+			h.k.mu.Lock()
+			h.k.listErr = nil
+			h.k.mu.Unlock()
+			eventually(t, "the review after recovery", func() bool { return h.taskOn(7, sessionShaB, 1) != "" })
+			if _, cancels := h.k.state(); !slices.Contains(cancels, stray) {
+				t.Fatal("review started before cleanup of the unrecorded turn")
+			}
+			h.k.finish(h.taskOn(7, sessionShaB, 1), kagent.StateCompleted, report(t, passing))
+			eventually(t, "review completion", func() bool { return h.gh.check(sessionShaB).Status == "completed" })
+			if n, _ := h.k.state(); n != 2 {
+				t.Fatalf("started %d tasks after read recovery", n)
 			}
 		})
 	}
@@ -514,6 +557,9 @@ func TestUnrecordedRunningTurnIsCancelled(t *testing.T) {
 	addPR7(h)
 	e, ctx, _ := h.start()
 	ref := stateOn(t, finishHead(t, h, e, ctx, shaA, blocking, nil)).Session
+	h.cfg.Timeout = 150 * time.Millisecond
+	h.cfg.Reissue = 100 * time.Millisecond
+	e, ctx, _ = h.start()
 	stray := h.k.open(ref.ContextID)
 	h.k.mu.Lock()
 	h.k.tasks[stray].task.Status = kagent.TaskStatus{State: kagent.StateWorking}
@@ -534,8 +580,8 @@ func TestUnrecordedRunningTurnIsCancelled(t *testing.T) {
 		}
 		return n >= 3
 	})
-	if task := h.taskOn(7, sessionShaB, 1); task != "" {
-		t.Fatalf("a fresh review %s started while the unrecorded turn still ran", task)
+	if n, _ := h.k.state(); n != 1 {
+		t.Fatalf("%d reviews started while the unrecorded turn still ran", n)
 	}
 	h.k.mu.Lock()
 	h.k.cancelErr = nil
@@ -646,7 +692,6 @@ func TestResumableRefusesOtherOwnersAndHeads(t *testing.T) {
 		{"the same head", func(_ *SessionRef, in *inputs) { in.priorHead = sessionShaB }, 1, reasonNone},
 		{"no previous head", func(_ *SessionRef, in *inputs) { in.priorHead = "" }, 1, reasonNone},
 		{"incomplete history", func(_ *SessionRef, in *inputs) { in.prior.Incomplete = true }, 1, reasonNone},
-		{"a retry", func(*SessionRef, *inputs) {}, 2, reasonRetry},
 		{"the size bound", func(r *SessionRef, _ *inputs) { r.Bytes = maxSessionBytes }, 1, reasonSize},
 		{"the review bound", func(r *SessionRef, _ *inputs) { r.Reviews, r.Tasks = len(many), many }, 1, reasonSize},
 		{"no recorded tasks", func(r *SessionRef, _ *inputs) { r.Tasks = nil }, 1, reasonUnaccounted},
