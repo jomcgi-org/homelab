@@ -339,3 +339,10 @@ invariants:
   - projects/factory/connector/itsaplan/review.go
   test: //projects/factory/connector/itsaplan:itsaplan_test
   state: live
+- id: HOME-132-1
+  statement: A router placement refusal acknowledged by kagent preserves the coder attempt and its retry budget.
+  mechanism:
+  - projects/factory/connector/dispatch/engine.go
+  - projects/factory/connector/store/store.go
+  test: //projects/factory/connector/dispatch:dispatch_test
+  state: live
