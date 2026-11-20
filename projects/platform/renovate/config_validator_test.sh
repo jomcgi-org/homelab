@@ -12,4 +12,5 @@ if renovate-config-validator --no-global "$invalid" >"$TEST_TMPDIR/validator.log
 	echo "Renovate accepted an unknown option" >&2
 	exit 1
 fi
-grep -F 'Invalid configuration option: unknownRenovateOption' "$TEST_TMPDIR/validator.log"
+cat "$TEST_TMPDIR/validator.log"
+grep -Fq 'Invalid configuration option: unknownRenovateOption' "$TEST_TMPDIR/validator.log"

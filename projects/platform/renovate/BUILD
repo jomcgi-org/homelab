@@ -51,6 +51,8 @@ sh_test(
     data = ["//:renovate.json"],
     exec_properties = {
         "test.container-image": "docker://ghcr.io/renovatebot/renovate:44.14.10",
+        # The Renovate image runs as UID 12021 and writes fixtures to TEST_TMPDIR.
+        "test.nonroot-workspace": "true",
     },
 )
 
