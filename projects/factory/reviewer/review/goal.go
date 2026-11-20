@@ -688,6 +688,7 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 				break
 			}
 			next, err = e.tasks.Send(ctx, b.Agent, msg)
+			// invariant: FACT-18
 			if errors.Is(err, kagent.ErrNotAccepted) || errors.Is(err, kagent.ErrRejected) || errors.Is(err, kagent.ErrTaskNotFound) {
 				// No earlier ambiguous send is retried through this path.
 				why = "rejected"
