@@ -919,3 +919,30 @@ tests:
       - eval_time: 11m
         alertname: FactoryItsaplanOutage
         exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'container_memory_working_set_bytes{job="kubelet-resource",namespace="factory-r-homelab-review",pod="homelab-reviewer-a",container="worker"}'
+        values: '100x389 200 stale _x10'
+      - series: 'container_memory_working_set_bytes{job="kubelet-resource",namespace="factory-r-homelab-review",pod="homelab-reviewer-a",container="sidecar"}'
+        values: '20x390 stale _x10'
+      - series: 'container_memory_working_set_bytes{job="kubelet-resource",namespace="factory-r-homelab-review",pod="homelab-reviewer-b",container="worker"}'
+        values: '110x390 stale _x10'
+    promql_expr_test:
+      - expr: capacity:workload_pod_memory_budget_exceeded
+        eval_time: 6h
+        exp_samples:
+          - labels: 'capacity:workload_pod_memory_budget_exceeded{namespace="factory-r-homelab-review",workload="homelab-reviewer",policy="baseline"}'
+            value: 0
+          - labels: 'capacity:workload_pod_memory_budget_exceeded{namespace="factory-r-homelab-review",workload="homelab-reviewer",policy="forecast"}'
+            value: 0
+      - expr: capacity:workload_pod_memory_budget_exceeded
+        eval_time: 6h30m
+        exp_samples:
+          - labels: 'capacity:workload_pod_memory_budget_exceeded{namespace="factory-r-homelab-review",workload="homelab-reviewer",policy="baseline"}'
+            value: 1
+          - labels: 'capacity:workload_pod_memory_budget_exceeded{namespace="factory-r-homelab-review",workload="homelab-reviewer",policy="forecast"}'
+            value: 1
+      - expr: capacity:workload_pod_memory_budget_exceeded
+        eval_time: 6h35m
+        exp_samples: []

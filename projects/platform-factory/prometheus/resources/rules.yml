@@ -262,3 +262,55 @@ groups:
           threshold: "1"
           runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory/deploy/notify.md#home-385-rollout-verification"
           summary: "Factory {{ $labels.phase }} has been failing on itsaplan for ten minutes"
+
+  - name: capacity-shadow
+    interval: 5m
+    rules:
+      # Track the largest worker pod, including its sidecars. Replica names
+      # change on rollout, so all policy series use namespace and workload.
+      - record: capacity:workload_pod_memory_working_set_bytes:max
+        expr: |
+          max by (namespace) (
+            sum by (namespace, pod) (
+              max by (namespace, pod, container) (
+                container_memory_working_set_bytes{
+                  job="kubelet-resource", namespace="factory-r-homelab-review",
+                  pod=~"homelab-reviewer-.*", container!=""
+                }
+              )
+            )
+          )
+        labels:
+          workload: homelab-reviewer
+      - record: capacity:workload_pod_memory_budget_bytes
+        expr: |
+          quantile_over_time(0.9, capacity:workload_pod_memory_working_set_bytes:max[24h])
+          and on (namespace, workload)
+          (count_over_time(capacity:workload_pod_memory_working_set_bytes:max[24h]) >= 72)
+          and on (namespace, workload)
+          capacity:workload_pod_memory_working_set_bytes:max
+        labels:
+          policy: baseline
+      - record: capacity:workload_pod_memory_budget_bytes
+        expr: |
+          clamp_min(predict_linear(capacity:workload_pod_memory_working_set_bytes:max[2h], 1800), 0)
+          and on (namespace, workload)
+          (count_over_time(capacity:workload_pod_memory_working_set_bytes:max[2h]) >= 18)
+          and on (namespace, workload)
+          capacity:workload_pod_memory_working_set_bytes:max
+        labels:
+          policy: forecast
+      # Align the budget with the observation it was issued for. Require an
+      # exact timestamp so Prometheus lookback cannot fill a missed run.
+      - record: capacity:workload_pod_memory_due_budget_bytes
+        expr: |
+          capacity:workload_pod_memory_budget_bytes offset 30m
+          and on (namespace, workload, policy)
+          (timestamp(capacity:workload_pod_memory_budget_bytes offset 30m) == time() - 1800)
+      - record: capacity:workload_pod_memory_budget_exceeded
+        expr: |
+          (
+            capacity:workload_pod_memory_due_budget_bytes
+            - on (namespace, workload) group_left
+            capacity:workload_pod_memory_working_set_bytes:max
+          ) < bool 0
