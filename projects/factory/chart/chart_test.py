@@ -1045,8 +1045,8 @@ def test_broker_secret_writes_are_confined() -> None:
     assert policy["matchConditions"] == [
         {
             "name": "broker",
-            "expression": "request.userInfo.username == "
-            "'system:serviceaccount:factory:factory-broker'",
+            "expression": "request.userInfo.username in ['system:serviceaccount:factory:factory-broker', "
+            "'system:serviceaccount:factory-review-broker:factory-review-broker']",
         }
     ]
     (validation,) = policy["validations"]
