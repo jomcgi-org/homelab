@@ -545,10 +545,11 @@ func (e *Engine) postAdmission(ctx context.Context, r *store.Run) (bool, error) 
 func (e *Engine) admissionMetrics(ctx context.Context) error {
 	total := 0
 	for _, agent := range e.cfg.Agents {
-		dispatched, runnable, err := e.st.DispatchCounts(ctx, agent.Key)
+		dispatched, runnable, busy, err := e.st.DispatchCounts(ctx, agent.Key)
 		if err != nil {
 			return err
 		}
+		e.m.BusyRuns.WithLabelValues(agent.Key).Set(float64(busy))
 		e.m.DispatchedRuns.WithLabelValues(agent.Key).Set(float64(dispatched))
 		total += runnable
 	}
