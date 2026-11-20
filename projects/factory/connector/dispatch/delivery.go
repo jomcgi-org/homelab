@@ -31,7 +31,7 @@ import (
 // GitHub is the subset of the GitHub client delivery uses.
 type GitHub interface {
 	ListCheckRuns(context.Context, string, string, github.CheckRunFilter) ([]github.CheckRun, error)
-	MergedSince(context.Context, string, string, time.Time) ([]github.PullRequest, error)
+	MergedSince(context.Context, string, string, time.Time, func(int) error) ([]github.PullRequest, error)
 	RevertedMerge(ctx context.Context, repo, branch, sha string, number int, since, until time.Time, before func(int) error) (*time.Time, error)
 	PullRequestReviews(context.Context, string, int) ([]github.PullRequestReview, error)
 	DraftStopReview(context.Context, string, int, string) (int64, error)
@@ -2331,7 +2331,7 @@ func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		if err != nil {
 			return err
 		}
-		if err := e.enqueueDeferred(ctx, tx, b, wi.ID, d.PullRequest, checks); err != nil {
+		if err := e.enqueueDeferred(ctx, tx, b, wi.ID, d.PullRequest, deferredCheck(b, d.PullRequest, checks)); err != nil {
 			return err
 		}
 		if !done {
@@ -2837,7 +2837,7 @@ func (e *Engine) retainLesson(ctx context.Context, it *store.OutboxItem) error {
 	return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)
 }
 
-func (e *Engine) enqueueDeferred(ctx context.Context, tx *sql.Tx, b *Binding, workID int64, pr github.PullRequest, checks []github.CheckRun) error {
+func deferredCheck(b *Binding, pr github.PullRequest, checks []github.CheckRun) *github.CheckRun {
 	externalID := fmt.Sprintf("factory-review/%s/%d/%s", b.repo(), pr.Number, pr.HeadSHA)
 	var own []github.CheckRun
 	for _, c := range checks {
@@ -2845,7 +2845,10 @@ func (e *Engine) enqueueDeferred(ctx context.Context, tx *sql.Tx, b *Binding, wo
 			own = append(own, c)
 		}
 	}
-	check := mergedReviewerCheck(&b.Review, &github.PullRequestDetail{PullRequest: pr}, own)
+	return mergedReviewerCheck(&b.Review, &github.PullRequestDetail{PullRequest: pr}, own)
+}
+
+func (e *Engine) enqueueDeferred(ctx context.Context, tx *sql.Tx, b *Binding, workID int64, pr github.PullRequest, check *github.CheckRun) error {
 	if check == nil || strings.Contains(check.Summary, "<!-- factory-review:duplicate-head -->") {
 		return nil
 	}
@@ -2872,24 +2875,73 @@ func (e *Engine) pollMergedReviews(ctx context.Context) error {
 			return err
 		}
 		until := e.cfg.Now().UTC().Truncate(time.Second)
-		if !until.After(since) {
-			continue
-		}
-		prs, err := e.gh.MergedSince(ctx, b.repo(), b.BaseBranch, since)
-		if err != nil {
-			return err
-		}
-		for _, pr := range prs {
-			checks, err := e.gh.ListCheckRuns(ctx, b.repo(), pr.HeadSHA, github.CheckRunFilter{Name: b.Review.ReviewerCheck.Name, AppID: b.Review.ReviewerCheck.AppID, All: true})
+		if until.After(since) {
+			prs, err := e.gh.MergedSince(ctx, b.repo(), b.BaseBranch, since, func(page int) error {
+				return e.BeginStatusRead(ctx, fmt.Sprintf("merged-reviews/list/%s/%s/%d", b.repo(), b.BaseBranch, page))
+			})
 			if err != nil {
 				return err
 			}
-			if err := e.st.Tx(ctx, func(tx *sql.Tx) error { return e.enqueueDeferred(ctx, tx, b, 0, pr, checks) }); err != nil {
+			err = e.w.Tx(ctx, func(tx *sql.Tx) error {
+				for _, pr := range prs {
+					if _, err := tx.ExecContext(ctx, `INSERT INTO pending_merge_review(binding_name,number,head_sha,pr_url) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, b.Name, pr.Number, pr.HeadSHA, pr.URL); err != nil {
+						return err
+					}
+				}
+				_, err := tx.ExecContext(ctx, "UPDATE repo_binding SET review_merges_since=greatest(review_merges_since,$2) WHERE name=$1", b.Name, until)
+				return err
+			})
+			if err != nil {
 				return err
 			}
 		}
-		if _, err := e.st.DB.ExecContext(ctx, "UPDATE repo_binding SET review_merges_since=greatest(review_merges_since,$2) WHERE name=$1", b.Name, until); err != nil {
+		if err := e.resolveMergedReviews(ctx, b, until); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func (e *Engine) resolveMergedReviews(ctx context.Context, b *Binding, now time.Time) error {
+	rows, err := e.st.DB.QueryContext(ctx, `SELECT number,head_sha,pr_url FROM pending_merge_review WHERE binding_name=$1 AND next_poll <= $2 ORDER BY next_poll,number LIMIT 100`, b.Name, now)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var due []github.PullRequest
+	for rows.Next() {
+		var pr github.PullRequest
+		if err := rows.Scan(&pr.Number, &pr.HeadSHA, &pr.URL); err != nil {
+			return err
+		}
+		due = append(due, pr)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, pr := range due {
+		id := fmt.Sprintf("merged-reviews/checks/%s/%d/%s", b.repo(), pr.Number, pr.HeadSHA)
+		if err := e.BeginStatusRead(ctx, id); err != nil {
+			return err
+		}
+		checks, readErr := e.gh.ListCheckRuns(ctx, b.repo(), pr.HeadSHA, github.CheckRunFilter{Name: b.Review.ReviewerCheck.Name, AppID: b.Review.ReviewerCheck.AppID, All: true})
+		check := deferredCheck(b, pr, checks)
+		err := e.w.Tx(ctx, func(tx *sql.Tx) error {
+			if readErr != nil || check == nil {
+				_, err := tx.ExecContext(ctx, `UPDATE pending_merge_review SET attempts=attempts+1,next_poll=$3::timestamptz+interval '1 minute'*(1 << least(attempts,10)) WHERE binding_name=$1 AND number=$2`, b.Name, pr.Number, now)
+				return err
+			}
+			if err := e.enqueueDeferred(ctx, tx, b, 0, pr, check); err != nil {
+				return err
+			}
+			_, err := tx.ExecContext(ctx, "DELETE FROM pending_merge_review WHERE binding_name=$1 AND number=$2", b.Name, pr.Number)
+			return err
+		})
+		if err != nil {
+			return err
+		}
+		if readErr != nil {
+			return readErr
 		}
 	}
 	return nil
