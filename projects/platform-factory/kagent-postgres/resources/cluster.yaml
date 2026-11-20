@@ -72,6 +72,8 @@ spec:
     initdb:
       database: kagent
       owner: kagent_admin
+      postInitApplicationSQL:
+        - REVOKE CREATE ON SCHEMA public FROM PUBLIC
   backup:
     # Garage keeps a full copy on every node; 14 days of this WAL would not
     # fit on one. Off-site copies give the longer history (Joe,
@@ -101,6 +103,25 @@ spec:
         compression: gzip
       data:
         compression: gzip
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: kagent-pg-kagent
+  namespace: kagent-pg
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  cluster:
+    name: kagent-pg
+  name: kagent
+  owner: kagent_admin
+  databaseReclaimPolicy: retain
+  schemas:
+    - name: kagent
+      owner: kagent_owner
+      ensure: present
 ---
 apiVersion: postgresql.cnpg.io/v1
 kind: ScheduledBackup
