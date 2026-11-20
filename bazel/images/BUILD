@@ -23,6 +23,8 @@ multirun(
     commands = [
         "//bazel/tools/hf2oci:image.push",
         "//bazel/tools/image:image.push",
+        "//projects/capacity-forecast/chart:chart.push",
+        "//projects/capacity-forecast:image.push",
         "//projects/embervm/chart:chart.push",
         "//projects/embervm/conformance:image.push",
         "//projects/embervm/image:image.push",
@@ -102,6 +104,7 @@ multirun(
 multirun(
     name = "push_charts",
     commands = [
+        "//projects/capacity-forecast/chart:chart.push",
         "//projects/embervm/chart:chart.push",
         "//projects/factory-explore-site/chart:chart.push",
         "//projects/factory-explore/chart:chart.push",
