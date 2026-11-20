@@ -42,7 +42,7 @@ def read_history(url, end):
     return result["data"]["result"][0]["values"]
 
 
-def forecast_metrics(model, samples, end, now):
+def forecast_points(model, samples, end):
     history = np.full(WINDOW // STEP + 1, np.nan, dtype=np.float32)
     start = end - WINDOW
     for timestamp, value in samples:
@@ -54,31 +54,37 @@ def forecast_metrics(model, samples, end, now):
 
     forecast = model.forecast(history, prediction_length=HORIZONS)
     baseline = np.nanpercentile(history[-288:], 90)
+    points = []
+    for policy, budgets in (
+        ("timestral", forecast.quantile(0.9).reshape(-1)),
+        ("baseline", [baseline] * HORIZONS),
+    ):
+        for i, budget in enumerate(budgets, start=1):
+            if math.isfinite(budget):
+                horizon = STEP * i
+                points.append((policy, horizon, end + horizon, max(0, float(budget))))
+    return tuple(points)
+
+
+def render_metrics(points, now):
     lines = [
         "# HELP capacity_forecast_memory_budget_bytes Predicted reviewer pod memory budget.",
         "# TYPE capacity_forecast_memory_budget_bytes gauge",
         "# HELP capacity_forecast_target_timestamp_seconds Time the prediction applies to.",
         "# TYPE capacity_forecast_target_timestamp_seconds gauge",
     ]
-    for policy, budgets in (
-        ("timestral", forecast.quantile(0.9).reshape(-1)),
-        ("baseline", [baseline] * HORIZONS),
-    ):
-        for i, budget in enumerate(budgets, start=1):
-            target = end + STEP * i
-            if target > now and math.isfinite(budget):
-                labels = f'{LABELS},policy="{policy}",horizon_seconds="{STEP * i}"'
-                lines.append(
-                    f"capacity_forecast_memory_budget_bytes{{{labels}}} {max(0, float(budget))}"
-                )
-                lines.append(
-                    f"capacity_forecast_target_timestamp_seconds{{{labels}}} {target}"
-                )
+    for policy, horizon, target, budget in points:
+        if target > now:
+            labels = f'{LABELS},policy="{policy}",horizon_seconds="{horizon}"'
+            lines.append(f"capacity_forecast_memory_budget_bytes{{{labels}}} {budget}")
+            lines.append(
+                f"capacity_forecast_target_timestamp_seconds{{{labels}}} {target}"
+            )
     return "\n".join(lines) + "\n"
 
 
 class MetricsHandler(BaseHTTPRequestHandler):
-    metrics = b""
+    points = ()
 
     def do_GET(self):
         if self.path != "/metrics":
@@ -87,7 +93,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; version=0.0.4")
         self.end_headers()
-        self.wfile.write(self.metrics)
+        self.wfile.write(render_metrics(self.points, time.time()).encode())
 
 
 def main():
@@ -98,10 +104,11 @@ def main():
         revision=MODEL_REVISION,
         local_files_only=True,
     )
-    if len(sys.argv) == 2 and sys.argv[1] == "--replay":
+    if len(sys.argv) in (2, 3) and sys.argv[1] == "--replay":
         samples = json.load(sys.stdin)["data"]["result"][0]["values"]
         end = int(samples[-1][0])
-        print(forecast_metrics(model, samples, end, end))
+        now = int(sys.argv[2]) if len(sys.argv) == 3 else end
+        print(render_metrics(forecast_points(model, samples, end), now), end="")
         return
 
     url = os.environ["PROMETHEUS_URL"].rstrip("/")
@@ -113,11 +120,9 @@ def main():
             now = int(time.time())
             end = (now - 35) // STEP * STEP
             samples = read_history(url, end)
-            MetricsHandler.metrics = forecast_metrics(
-                model, samples, end, int(time.time())
-            ).encode()
+            MetricsHandler.points = forecast_points(model, samples, end)
         except (OSError, ValueError, RuntimeError) as error:
-            MetricsHandler.metrics = b""
+            MetricsHandler.points = ()
             print(f"Forecast unavailable: {error}", file=sys.stderr, flush=True)
         time.sleep(STEP - (time.time() - 35) % STEP)
 
