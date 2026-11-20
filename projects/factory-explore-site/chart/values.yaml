@@ -1,3 +1,4 @@
+manageHostname: false
 publishEnabled: false
 image:
   repository: ghcr.io/jomcgi/homelab/projects/factory-explore-site

@@ -1,4 +1,5 @@
 # gazelle:ignore
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_image_layer")
 load("//bazel/tools/js:exec_filegroup.bzl", "exec_filegroup")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
@@ -26,6 +27,17 @@ genrule(
     """,
 )
 
+js_binary(
+    name = "withdraw",
+    entry_point = "withdraw.mjs",
+)
+
+js_image_layer(
+    name = "withdraw_layer",
+    binary = ":withdraw",
+    root = "/app",
+)
+
 apko_image(
     name = "image",
     arm64 = False,
@@ -33,6 +45,7 @@ apko_image(
     contents = "@jomcgi_site_lock//:contents",
     tars = [
         ":site_tar",
+        ":withdraw_layer",
         "//projects/jomcgi-site/wrangler:layers",
     ],
 )
