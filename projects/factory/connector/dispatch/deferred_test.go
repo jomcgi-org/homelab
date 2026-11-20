@@ -49,14 +49,23 @@ func (f *fakeItsaplan) StartDeferred(_ context.Context, id int64, r itsaplan.Def
 	if f.deferredReceipt != nil {
 		return f.deferredReceipt, nil
 	}
+	var backlog, todo int64
+	for _, column := range f.deferredProject.Columns {
+		switch column.Name {
+		case "Backlog":
+			backlog = column.ID
+		case "Todo":
+			todo = column.ID
+		}
+	}
 	i := f.issues[id]
-	if i.DelegateUserID != nil || i.ArchivedAt != nil || i.ColumnID != 1 ||
+	if i.DelegateUserID != nil || i.ArchivedAt != nil || i.ColumnID != backlog ||
 		i.StartDate != r.StartDate || len(i.LabelIDs) == 0 {
 		return nil, &itsaplan.HTTPError{Status: 409, Body: "no longer eligible"}
 	}
 	key := fmt.Sprintf("deferred/%d/%s", id, r.StartDate)
 	f.comments = append(f.comments, fakeComment{id, fmt.Sprintf("Starting deferred work scheduled for %s (UTC).\n\nFactory start: %s.", r.StartDate, key)})
-	i.ColumnID = 2
+	i.ColumnID = todo
 	i.DelegateUserID = &r.DelegateUserID
 	f.deferredWrites = append(f.deferredWrites, "comment", "move", "delegate")
 	f.deferredReceipt = &itsaplan.DeferredReceipt{Key: key, RunID: 42}
