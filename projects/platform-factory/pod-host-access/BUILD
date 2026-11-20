@@ -9,8 +9,5 @@ py_test(
         "@multitool//tools/kustomize",
     ],
     env = {"KUSTOMIZE_BIN": "$(rootpath @multitool//tools/kustomize)"},
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
+    deps = ["@pip//pyyaml"],
 )
