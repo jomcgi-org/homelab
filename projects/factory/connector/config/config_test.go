@@ -260,3 +260,35 @@ func TestParseReviewerGoalURL(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePlannerSchedules(t *testing.T) {
+	const schedule = `  - name: delivery-health
+    namespace: homelab:factory
+    ceiling: typo
+    minInterval: 3h
+    cooldown: 72h
+    perRun: 2
+    issueTitle: Check delivery health
+    instructions: Verify the finding before changing the connector.
+`
+	const key = "plannerSchedules:\n"
+	f, err := Parse([]byte(sample + key + schedule))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.PlannerSchedules; len(got) != 1 || got[0].MinInterval != 3*time.Hour ||
+		got[0].Cooldown != 72*time.Hour || got[0].EffectiveCeiling() != "backlog" {
+		t.Fatalf("planner schedules = %+v", got)
+	}
+	for _, input := range []string{
+		schedule + schedule,
+		strings.Replace(schedule, "homelab:factory", "homelab", 1),
+		strings.Replace(schedule, "3h", "0s", 1),
+		strings.Replace(schedule, "perRun: 2", "perRun: 5", 1),
+		schedule + "    privilege: admin\n",
+	} {
+		if _, err := Parse([]byte(sample + key + input)); err == nil {
+			t.Fatalf("invalid planner schedule accepted: %s", input)
+		}
+	}
+}

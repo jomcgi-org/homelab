@@ -156,6 +156,29 @@ def test_broker_accounting_secret_is_required() -> None:
         _render(["broker.accounting.secretName="])
 
 
+def test_reviewed_planner_schedule_reaches_the_connector() -> None:
+    schedule = {
+        "name": "delivery-health",
+        "namespace": "homelab:factory",
+        "ceiling": "backlog",
+        "minInterval": "3h",
+        "cooldown": "72h",
+        "perRun": 2,
+        "issueTitle": "Check delivery health",
+        "instructions": "Verify the finding.",
+    }
+    baseline = _render()
+    configured = _render(
+        [f"connector.plannerSchedules[0].{key}={value}" for key, value in schedule.items()]
+    )
+    assert "plannerSchedules" not in _config(baseline)
+    assert _config(configured)["plannerSchedules"] == [schedule]
+    assert (
+        _pod(baseline)["metadata"]["annotations"]["checksum/config"]
+        != _pod(configured)["metadata"]["annotations"]["checksum/config"]
+    )
+
+
 def test_disabled_renders_byte_for_byte_without_the_connector() -> None:
     # Off, the connector's templates render nothing at all.
     with tempfile.TemporaryDirectory() as tmp:

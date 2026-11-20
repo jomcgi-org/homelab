@@ -11,6 +11,7 @@ go_library(
         "delivery.go",
         "human_gate.go",
         "notify.go",
+        "planner.go",
         "provenance.go",
         "recovery.go",
         "renovate.go",
@@ -25,6 +26,7 @@ go_library(
     deps = [
         "//projects/factory/connector/internal/tracing",
         "//projects/factory/connector/itsaplan",
+        "//projects/factory/connector/planner",
         "//projects/factory/connector/provenance",
         "@com_github_lib_pq//:pq",
         "@io_opentelemetry_go_otel//attribute",
@@ -61,6 +63,7 @@ go_test(
         "//projects/factory/connector/github",
         "//projects/factory/connector/internal/pgtest",
         "//projects/factory/connector/migrations",
+        "//projects/factory/connector/planner",
         "//projects/factory/connector/provenance",
     ],
 )

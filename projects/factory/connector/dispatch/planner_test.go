@@ -4,19 +4,27 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
+	"github.com/jomcgi/homelab/projects/factory/connector/planner"
 )
 
 func plannerFixture(t *testing.T) *env {
 	v := newEnv(t)
 	v.e.Release()
 	v.cfg.Bindings[0].ItsaplanProject = "HOME"
+	v.cfg.PlannerSchedules = []planner.Schedule{{
+		Name: "smoke", Namespace: "homelab:docs", Ceiling: "unknown",
+		MinInterval: time.Hour, Cooldown: 24 * time.Hour, PerRun: 1,
+		IssueTitle: "Check documentation", Instructions: "Verify the documented claim.",
+	}}
 	v.e = v.engine("planner-test")
-	_, err := v.st.DB.Exec(`INSERT INTO planner_schedule(name,namespace,ceiling,min_interval,cooldown,per_run,issue_title,instructions)
- VALUES ('smoke','homelab:docs','backlog','1 hour','1 day',1,'Check documentation','Verify the documented claim.');
- SELECT admit_planner_run('smoke','r');
- UPDATE planner_run SET final_message='[{"title":"excerpt","body":"quoted","evidence":["https://example.org/doc"],"priority":"low","fix":"agent","fingerprint":"homelab:docs:file:missing"}]' WHERE run_id='r'`)
+	var admitted bool
+	if err := v.st.DB.QueryRow("SELECT admit_planner_run('smoke','r')").Scan(&admitted); err != nil || !admitted {
+		t.Fatalf("planner admission = %v, %v", admitted, err)
+	}
+	_, err := v.st.DB.Exec(`UPDATE planner_run SET final_message='[{"title":"excerpt","body":"quoted","evidence":["https://example.org/doc"],"priority":"low","fix":"agent","fingerprint":"homelab:docs:file:missing"}]' WHERE run_id='r'`)
 	if err != nil {
 		t.Fatal(err)
 	}

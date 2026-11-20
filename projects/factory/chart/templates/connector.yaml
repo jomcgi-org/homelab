@@ -118,6 +118,9 @@ GitHub tokens the broker mints for that ServiceAccount.
   "bindings" $bindings
   "links" $links
 }}
+{{- with $c.plannerSchedules }}
+{{- $_ := set $config "plannerSchedules" . }}
+{{- end }}
 {{- $bb := $c.buildbuddy | default dict }}
 {{- if $bb.enabled }}
 {{- if or (not $bb.host) (not $bb.itemPath) }}
