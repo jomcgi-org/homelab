@@ -549,15 +549,11 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 			next, err = e.tasks.Send(ctx, b.Agent, msg)
 			if errors.Is(err, kagent.ErrNotAccepted) || errors.Is(err, kagent.ErrRejected) || errors.Is(err, kagent.ErrTaskNotFound) {
 				// No earlier ambiguous send is retried through this path.
-				dispatch.State = goalPrepared
-				if saveErr := e.cfg.GoalTasks.SaveGoalTask(*dispatch); saveErr != nil {
+				why = "rejected"
+				if err := e.cfg.GoalTasks.DeleteGoalTask(indexKey); err != nil {
 					why = "task_index"
-					break
 				}
-				if !errors.Is(err, kagent.ErrNotAccepted) {
-					why = "rejected"
-					break
-				}
+				break
 			}
 		} else {
 			next, err = e.recoverGoalDispatch(ctx, b, dispatch)
