@@ -24,11 +24,12 @@ awk 'BEGIN {
     printf "%s[%d,\"%d\"]", (t == 0 ? "" : ","), t, 600000000 + (t % 7200) * 1000
   }
   print "]}]}}"
-}' | unshare -Urm bash -euc '
+}' | unshare -Urmpf bash -euc '
 	root=$1
 	shift
 	mount --bind /dev/null "$root/dev/null"
 	mount --bind /dev/urandom "$root/dev/urandom"
+	mount -t proc proc "$root/proc"
 	exec /usr/sbin/chroot "$root" /usr/bin/env -i "$@"
 ' bash "$root" "${image_env[@]}" "${entrypoint[@]}" --replay >"$TEST_TMPDIR/metrics"
 
