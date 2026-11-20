@@ -169,18 +169,37 @@ def test_credential_provider_reads_only_granted_namespaces() -> None:
         d
         for d in docs
         if d["kind"] == "RoleBinding"
-        and d["metadata"]["name"] == "substrate-credential-provider"
+        and d["metadata"]["name"]
+        in ("substrate-credential-provider", "factory-binding-secret-reader")
     ]
     assert {b["metadata"]["namespace"] for b in bindings} == {
         "kagent",
         "factory-r-homelab",
     }
     for binding in bindings:
-        assert binding["roleRef"] == {
-            "apiGroup": "rbac.authorization.k8s.io",
-            "kind": "ClusterRole",
-            "name": "k8s-credential-provider-secret-reader",
-        }
+        if binding["metadata"]["namespace"] == "factory-r-homelab":
+            assert binding["roleRef"] == {
+                "apiGroup": "rbac.authorization.k8s.io",
+                "kind": "Role",
+                "name": "factory-binding-secret-reader",
+            }
+            reader = _in(
+                docs, "Role", "factory-r-homelab", "factory-binding-secret-reader"
+            )
+            assert reader["rules"] == [
+                {
+                    "apiGroups": [""],
+                    "resources": ["secrets"],
+                    "verbs": ["get"],
+                    "resourceNames": ["github-git", "hindsight-recall"],
+                }
+            ]
+        else:
+            assert binding["roleRef"] == {
+                "apiGroup": "rbac.authorization.k8s.io",
+                "kind": "ClusterRole",
+                "name": "k8s-credential-provider-secret-reader",
+            }
         assert binding["subjects"] == [
             {
                 "kind": "ServiceAccount",
@@ -1063,7 +1082,8 @@ def test_binding_reader_follows_the_credential_provider_switch() -> None:
         d
         for d in docs
         if d["kind"] == "RoleBinding"
-        and d["metadata"]["name"] == "substrate-credential-provider"
+        and d["metadata"]["name"]
+        in ("substrate-credential-provider", "factory-binding-secret-reader")
     ]
 
 
@@ -1396,3 +1416,29 @@ def test_extra_mcp_server() -> None:
         "server": {"kind": "RemoteMCPServer", "name": "grafana"},
         "tools": ["query_prometheus", "search_dashboards"],
     }
+
+
+def test_generic_memory_server_keeps_its_tools_and_secret(tmp_path: Path) -> None:
+    values = yaml.safe_load(_DEPLOY_VALUES.read_text())
+    repo = values["repositories"][0]
+    repo.pop("memory")
+    repo["mcpServers"] = [
+        {
+            "name": "memory",
+            "url": "http://store/mcp",
+            "secret": "store-key",
+            "tools": ["search"],
+        }
+    ]
+    path = tmp_path / "values.yaml"
+    path.write_text(yaml.safe_dump(values))
+    docs = _render(values=path)
+    ns = repo["namespace"]
+    inline = _in(docs, "Agent", ns, "homelab-codex")["spec"]["template"]["inline"]
+    assert inline["tools"][0]["mcp"]["tools"] == ["search"]
+    assert (
+        _in(docs, "RemoteMCPServer", ns, "memory")["spec"]["headersFrom"][0][
+            "valueFrom"
+        ]["name"]
+        == "store-key"
+    )

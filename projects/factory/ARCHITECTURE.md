@@ -245,7 +245,10 @@ The connector receives a separate retain token. Hindsight accepts it at
 The tenant REST key stays inside Hindsight.
 
 During rollout, Hindsight and the git values preserve the legacy coder's
-recall and retain permissions. The replacement chart selects a separate recall-only credential and exposes only recall.
+recall and retain permissions. The replacement chart selects a separate recall-only credential. Its namespaced
+Role lets the injection provider get the git and configured MCP Secrets.
+Argo CD prunes the previous namespace-wide reader binding, so the legacy
+token cannot be injected into the replacement coder.
 After the connector stores a verified merged lesson, remove retain from the
 MCP binding, enabled tools and both values files. To roll back, restore those
 permissions and values before lowering the chart pin.

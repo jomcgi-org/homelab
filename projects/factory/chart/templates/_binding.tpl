@@ -11,8 +11,10 @@
 {{- $worker := printf "%s-worker" $agent }}
 {{- $toolchain := eq ($r.toolchain | default "") "homelab" }}
 {{- $servers := list }}
+{{- $cutover := and (not (empty $r.memory)) (eq $r.name "homelab") (eq $r.memory.secret "hindsight-mcp") }}
 {{- if $r.memory }}
-{{- $servers = append $servers (merge (dict "name" "memory") $r.memory) }}
+{{- $secret := ternary "hindsight-recall" $r.memory.secret $cutover }}
+{{- $servers = append $servers (dict "name" "memory" "hindsight" true "url" $r.memory.url "secret" $secret "tools" (list "recall")) }}
 {{- end }}
 {{- $servers = concat $servers ($r.mcpServers | default list) }}
 {{- $names := dict }}
@@ -45,15 +47,33 @@ metadata:
     argocd.argoproj.io/sync-wave: "-2"
 automountServiceAccountToken: false
 {{- if $.Values.substrate.credentialProvider.secretReaderBinding }}
+{{- $reader := ternary "factory-binding-secret-reader" "substrate-credential-provider" $cutover }}
+{{- if $cutover }}
+{{- $secrets := list }}
+{{- if has "github-git" $a.egress }}{{- $secrets = append $secrets "github-git" }}{{- end }}
+{{- range $server := $servers }}
+{{- if eq $server.secret "hindsight-mcp" }}{{ fail "the legacy hindsight-mcp credential is unavailable to this binding" }}{{ end }}
+{{- $secrets = append $secrets $server.secret }}
+{{- end }}
 ---
-# Lets Substrate's credential provider read this namespace's Secrets for
-# egress injection; it injects only those labelled
-# substrate.ate.dev/injectable=true, and only for actors in the atespaces its
-# namespacePolicies grant this namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $reader }}
+  namespace: {{ $ns }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: {{ $secrets | uniq | toJson }}
+    verbs: [get]
+{{- end }}
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: substrate-credential-provider
+  name: {{ $reader }}
   namespace: {{ $ns }}
   labels:
     {{- include "factory.labels" $ | nindent 4 }}
@@ -61,8 +81,8 @@ metadata:
     argocd.argoproj.io/sync-wave: "-1"
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: {{ $.Values.substrate.credentialProvider.clusterRole }}
+  kind: {{ ternary "Role" "ClusterRole" $cutover }}
+  name: {{ ternary $reader $.Values.substrate.credentialProvider.clusterRole $cutover }}
 subjects:
   - kind: ServiceAccount
     name: {{ $.Values.substrate.credentialProvider.serviceAccount }}
@@ -192,7 +212,7 @@ spec:
 {{- if hasKey $names $server.name }}{{ fail (printf "duplicate MCP server %s" $server.name) }}{{ end }}
 {{- $_ := set $names $server.name true }}
 ---
-{{- if eq $server.name "memory" }}
+{{- if $server.hindsight }}
 # Shared long-term memory (projects/platform-factory/hindsight). The egress
 # gateway injects the token from the Secret; the actor holds a placeholder.
 # The controller cannot reach Hindsight, so the agent lists tools at run time.
@@ -208,14 +228,14 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "2"
 spec:
-  description: {{ printf "%s for %s/%s" (ternary "Hindsight memory" $server.name (eq $server.name "memory")) $r.owner $r.repo | quote }}
+  description: {{ printf "%s for %s/%s" (ternary "Hindsight memory" $server.name (not (empty $server.hindsight))) $r.owner $r.repo | quote }}
   url: {{ $server.url | quote }}
   protocol: STREAMABLE_HTTP
   headersFrom:
     - name: Authorization
       valueFrom:
         type: Secret
-        name: {{ ternary "hindsight-recall" $server.secret (and (eq $server.name "memory") (eq $r.name "homelab") (eq $server.secret "hindsight-mcp")) | quote }}
+        name: {{ $server.secret | quote }}
         key: token
 {{- end }}
 {{- $ctx := . }}
@@ -281,7 +301,7 @@ spec:
             server:
               kind: RemoteMCPServer
               name: {{ ternary "memory" ($server.name | quote) (eq $server.name "memory") }}
-            tools: {{ ternary (list "recall") $server.tools (eq $server.name "memory") | toJson }}
+            tools: {{ $server.tools | toJson }}
         {{- end }}
       {{- end }}
   harnessRef:
