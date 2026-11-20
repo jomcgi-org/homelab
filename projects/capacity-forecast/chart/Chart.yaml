@@ -2,4 +2,4 @@ apiVersion: v2
 name: capacity-forecast
 description: Shadow memory forecasts for factory reviewers
 type: application
-version: 0.1.11
+version: 0.2.4
