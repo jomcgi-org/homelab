@@ -96,6 +96,54 @@ func TestDurableRecoveryAndAuditRetry(t *testing.T) {
 	}
 }
 
+// A delete retry with an unknown first result must revalidate the locked
+// claim. Admission checks only the journal and UID, so after the claim
+// clears the retry must leave the live worker alone.
+func TestDeletingRetryRevalidatesClaim(t *testing.T) {
+	ctx := t.Context()
+	target := revertTarget{"locked", "executor", "factory-r-homelab", "homelab-codex-deadbeef-abcde", "uid", "factory-connector"}
+	client := fake.NewSimpleClientset(&v1.ConfigMap{ObjectMeta: meta.ObjectMeta{Name: journalName(target.Creator), Namespace: "grafana"}}, &v1.Pod{ObjectMeta: meta.ObjectMeta{Name: target.Pod, Namespace: target.Namespace, UID: "uid"}})
+	locked := false
+	b := revertBackend{pods: client.CoreV1(), discover: func(context.Context) ([]revertTarget, error) {
+		if locked {
+			return []revertTarget{target}, nil
+		}
+		return nil, nil
+	}}
+	if err := b.submit(ctx, "joe", target); err != nil {
+		t.Fatal(err)
+	}
+	// The first DELETE failed before it reached the API server, and its
+	// lease expired while the confirmation deadline is still ahead.
+	cm, op, err := b.load(ctx, target.Creator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op.Phase = "deleting"
+	op.Epoch = 1
+	op.LeaseUntil = time.Now().Add(-time.Second)
+	if err := b.save(ctx, cm, op); err != nil {
+		t.Fatal(err)
+	}
+	exists := func() bool {
+		_, err := client.CoreV1().Pods(target.Namespace).Get(ctx, target.Pod, meta.GetOptions{})
+		return err == nil
+	}
+	if err := b.advance(ctx, target.Creator, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, op, err = b.load(ctx, target.Creator); err != nil || op.Phase != "deleting" || !exists() {
+		t.Fatal("retry deleted a worker whose claim cleared", op, err)
+	}
+	locked = true
+	if err := b.advance(ctx, target.Creator, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if exists() {
+		t.Fatal("retry kept a worker whose claim is still locked")
+	}
+}
+
 func testConfirmedRecovery(t *testing.T, target revertTarget) {
 	ctx := t.Context()
 	t.Setenv("KAGENT_AUTHORITY", "factory-home")

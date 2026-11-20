@@ -227,9 +227,18 @@ func testWorkerScope(t *testing.T, client, user kubernetes.Interface, owner, ns,
 			changed := journal.DeepCopy()
 			changed.Data["pod"] = other.Name
 			changed.Data["uid"] = string(other.UID)
-			_, err = user.CoreV1().ConfigMaps("grafana").Update(ctx, changed, meta.UpdateOptions{DryRun: []string{meta.DryRunAll}})
-			if err == nil || !strings.Contains(err.Error(), "confirmed identity and targets are immutable") {
-				t.Fatalf("retarget confirmed operation: %v", err)
+			// The journal policy is the first one this user meets on a
+			// ConfigMap update. Wait for the policy cache to load it.
+			retarget := time.Now().Add(10 * time.Second)
+			for {
+				_, err = user.CoreV1().ConfigMaps("grafana").Update(ctx, changed, meta.UpdateOptions{DryRun: []string{meta.DryRunAll}})
+				if err != nil && strings.Contains(err.Error(), "confirmed identity and targets are immutable") {
+					break
+				}
+				if time.Now().After(retarget) {
+					t.Fatalf("retarget confirmed operation: %v", err)
+				}
+				time.Sleep(100 * time.Millisecond)
 			}
 			// Keep the same pod UID and the same deleting phase. Expiry alone must deny it.
 			journal.Data["deadline"] = time.Now().Add(-time.Second).Format(time.RFC3339Nano)

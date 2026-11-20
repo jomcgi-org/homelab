@@ -384,14 +384,19 @@ func (b revertBackend) advance(ctx context.Context, owner string, credential *ka
 	if time.Now().After(op.Deadline) || op.Phase == "deleting" && op.LeaseUntil.IsZero() {
 		return nil
 	}
-	if op.Phase == "authorized" {
-		targets, err := b.discover(ctx)
-		if err != nil {
-			return err
-		}
-		if !slices.Contains(targets, t) {
+	// Revalidate the locked claim before every delete, including a retry
+	// whose first attempt has an unknown result. Admission checks the journal
+	// and UID, not the claim, so a retry after the claim cleared must not
+	// delete the still-live worker. The creator then audits it at the deadline.
+	targets, err := b.discover(ctx)
+	if err != nil {
+		return err
+	}
+	if !slices.Contains(targets, t) {
+		if op.Phase == "authorized" {
 			return finish("target changed")
 		}
+		return nil
 	}
 	first := op.Phase == "authorized"
 	if err := claim("deleting"); err != nil {
