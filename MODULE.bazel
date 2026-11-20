@@ -607,16 +607,14 @@ apko.translate_lock(
 )
 use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "factory_alert_relay_lock", "factory_broker_lock", "factory_codex_mode_lock", "factory_connector_lock", "factory_landing_lock", "factory_reviewer_lock", "jomcgi_site_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "scotland_connector_lock", "shotter_lock", "stars_grid_apko_lock")
 
-# Download multiarch archives (binaries from zip files)
-multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")
-
-multiarch_http_archive(
+multiarch_http_file(
     name = "goose",
     amd64_sha256 = "cf0100d2f4e085e4ec537e8399950d4695661bff83d12dc45a9a6d357cd33c41",
     amd64_url = "https://github.com/block/goose/releases/download/v1.39.0/goose-x86_64-unknown-linux-gnu.tar.bz2",
     arm64_sha256 = "a0a03859f0b3810863ce212b0c11a6cf3126a074db708bf39cf46af513bdd273",
     arm64_url = "https://github.com/block/goose/releases/download/v1.39.0/goose-aarch64-unknown-linux-gnu.tar.bz2",
     binary_name = "goose",
+    extract_path = "goose",
     package_dir = "/usr/local/bin",
 )
 
@@ -862,3 +860,6 @@ kubectl_deps.gazelle_override(
 use_repo(kubectl_deps, wasm_cli = "io_k8s_cli_runtime", wasm_client = "io_k8s_client_go", wasm_cobra = "com_github_spf13_cobra", wasm_kubectl = "io_k8s_kubectl", wasm_repo_config = "bazel_gazelle_go_repository_config")
 
 use_repo(go_sdk, wasm_go_sdk = "main___download_0_linux_amd64")
+
+http_test_fixture = use_extension("//bazel/tools/http/test:fixture.bzl", "fixture", dev_dependency = True)
+use_repo(http_test_fixture, "http_archive_fixture")
