@@ -1,7 +1,15 @@
 {{- if or .Values.manageHostname .Values.publishEnabled }}
 {{- $release := deepCopy . }}
-{{- if not .Values.publishEnabled }}
-{{- $_ := set (index $release.Values.workloads "factory-explore-deploy") "command" (list "/app/projects/factory-explore-site/withdraw") }}
+{{- $job := index $release.Values.workloads "factory-explore-deploy" }}
+{{- if and .Values.publishEnabled .Values.manageHostname }}
+{{- if or (ne (toJson $job.command) (toJson (list "/app/projects/factory-explore-site/withdraw"))) (not (dig "image" "digest" "" $job)) }}
+{{- fail "managed publication requires the withdrawal command and its independently pinned workload image for chart rollback" }}
+{{- end }}
+{{- $_ := include "factory-library.image" (dict "workload" $job "root" $release "name" "factory-explore-deploy") }}
+{{- $_ := unset $job "image" }}
+{{- $_ := set $job "command" .Values.publishCommand }}
+{{- else if not .Values.publishEnabled }}
+{{- $_ := set $job "command" (list "/app/projects/factory-explore-site/withdraw") }}
 {{- end }}
 {{ include "factory-library.all" $release }}
 {{- end }}

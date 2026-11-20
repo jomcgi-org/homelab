@@ -65,3 +65,21 @@ def test_reverting_publication_withdraws_managed_hostname():
     (job,) = [doc for doc in resources if doc["kind"] == "Job"]
     (container,) = job["spec"]["template"]["spec"]["containers"]
     assert container["command"] == ["/app/projects/factory-explore-site/withdraw"]
+
+
+def test_managed_publish_uses_release_image_over_rollback_image():
+    fallback = "sha256:" + "1" * 64
+    resources = render(
+        "--set",
+        "manageHostname=true,publishEnabled=true",
+        "--set",
+        "workloads.factory-explore-deploy.command={/app/projects/factory-explore-site/withdraw}",
+        "--set",
+        "workloads.factory-explore-deploy.image.repository=example.com/rollback",
+        "--set",
+        f"workloads.factory-explore-deploy.image.digest={fallback}",
+    )
+    (job,) = [doc for doc in resources if doc["kind"] == "Job"]
+    (container,) = job["spec"]["template"]["spec"]["containers"]
+    assert container["image"].endswith("@" + DIGEST)
+    assert "wrangler deploy" in container["command"][-1]
