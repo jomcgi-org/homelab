@@ -49,7 +49,7 @@ cat >"$tmp/work/bazel/tools/ci/affected-targets.sh" <<'EOF'
 #!/usr/bin/env bash
 set -eu
 printf 'selector %s\n' "$*" >>"$LOG"
-[[ "$*" == 'frozen-base HEAD -- --config=ci' ]]
+[[ "$*" == 'frozen-base HEAD -- --config=ci --deleted_packages=bazel/tools/python' ]]
 [[ "${SELECTOR_STATUS:-0}" == 0 ]] || exit "$SELECTOR_STATUS"
 [[ -z "${PATTERNS:-}" ]] || printf '%s\n' "$PATTERNS"
 EOF
@@ -63,11 +63,11 @@ if [[ "$1" == run ]]; then
     exit "${INVARIANT_STATUS:-0}"
 fi
 if [[ "${2:-}" == '//...' ]]; then
-    [[ "$*" == 'test //... --config=ci' ]]
+    [[ "$*" == 'test //... --config=ci --deleted_packages=bazel/tools/python' ]]
     printf 'full //...\n' >>"$LOG"
 else
-    [[ $# == 3 && "$1" == test && "$2" == --config=ci && "$3" == --target_pattern_file=* ]]
-    [[ "$(cat "${3#*=}")" == "$PATTERNS" ]]
+    [[ $# == 4 && "$1" == test && "$2" == --config=ci && "$3" == --deleted_packages=bazel/tools/python && "$4" == --target_pattern_file=* ]]
+    [[ "$(cat "${4#*=}")" == "$PATTERNS" ]]
     printf 'subset %s\n' "$PATTERNS" >>"$LOG"
 fi
 echo 'Executed 1 out of 1 test: 1 test passes.'
@@ -88,7 +88,7 @@ run() {
 }
 export GIT_PR_NUMBER=7455 GIT_BRANCH=factory/test PATTERNS=//p:unit_test WRITE_BACK_ONLY=false
 run 0
-expected=$'git fetch origin main --quiet\ngit merge-base origin/main HEAD\nguard ./bazel/tools/ci/verification_genrule_guard.py .\nguard ./bazel/tools/ci/central_build_ratchet.py frozen-base HEAD\nguard ./bazel/tools/ci/chart_version_guard.py frozen-base HEAD\nguard ./bazel/tools/ci/source_ratchet.py frozen-base HEAD\ngit ls-files -z -- :(glob)**/INVARIANTS.yaml\ninvariants\ngit ls-files --others --exclude-standard\nselector frozen-base HEAD -- --config=ci\nsubset //p:unit_test\nreached'
+expected=$'git fetch origin main --quiet\ngit merge-base origin/main HEAD\nguard ./bazel/tools/ci/verification_genrule_guard.py .\nguard ./bazel/tools/ci/central_build_ratchet.py frozen-base HEAD\nguard ./bazel/tools/ci/chart_version_guard.py frozen-base HEAD\nguard ./bazel/tools/ci/source_ratchet.py frozen-base HEAD\ngit ls-files -z -- :(glob)**/INVARIANTS.yaml\ninvariants\ngit ls-files --others --exclude-standard\nselector frozen-base HEAD -- --config=ci --deleted_packages=bazel/tools/python\nsubset //p:unit_test\nreached'
 [[ "$(cat "$LOG")" == "$expected" ]]
 echo 'PASS workflow PR frozen base, ordered guards and selective target-pattern file'
 for guard in verification_genrule_guard.py central_build_ratchet.py chart_version_guard.py source_ratchet.py; do

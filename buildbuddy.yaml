@@ -208,7 +208,7 @@ actions:
           if [ "$WRITE_BACK_ONLY" = true ]; then
             : # The publishing run already exercised this source tree.
           elif [[ "${GIT_BRANCH:-}" =~ ^gh-readonly-queue/ ]] || [ "${GIT_PR_NUMBER:-0}" = "0" ]; then
-            bazel test //... --config=ci
+            bazel test //... --config=ci --deleted_packages=bazel/tools/python
           else
             ./bazel/tools/ci/local-affected-test.sh "$base_ref"
           fi
