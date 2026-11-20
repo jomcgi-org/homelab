@@ -856,6 +856,7 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 	for _, c := range cands {
 		ids = append(ids, c.ev.NodeID)
 	}
+	// invariant: FACT-13
 	seen, err := e.st.SeenEvents(ctx, ids, d.HeadSHA, wi.ReviewRounds < p.MaxReviewRounds)
 	if err != nil {
 		return false, err
