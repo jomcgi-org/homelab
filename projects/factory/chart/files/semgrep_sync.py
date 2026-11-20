@@ -161,13 +161,30 @@ class DeferredFindings(Exception):
         self.keys = keys
 
 
+def drain(outbox, issues, alert, final=False):
+    """Send each outbox alert whose issue exists, then remove its entry.
+
+    With final, also remove entries without an issue: their finding closed
+    before its POST succeeded, and a later reopen writes a new entry.
+    """
+    for entry in sorted(e for e in outbox.iterdir() if e.suffix != ".tmp"):
+        pending = json.loads(entry.read_text())
+        if pending["key"] in issues:
+            alert("SemgrepNewSecret", pending["fields"])
+        elif not final:
+            continue
+        entry.unlink()
+
+
 def reconcile(findings, plan, alert, outbox):
     """Mirror findings, then notify each new secret once its issue exists.
 
     A new secret gets an outbox entry before its issue POST. The alert goes
     out only after the issue exists, and the entry is removed only after the
     alert is sent. A failed POST sends no alert; a failed send retries on the
-    next poll, which sees the issue and skips a second POST.
+    next poll, which sees the issue and skips a second POST. Pending alerts
+    for existing issues go out before any issue write, so a write that keeps
+    failing for another finding cannot hold them back.
     """
     deferred = []
     outbox.mkdir(parents=True, exist_ok=True)
@@ -204,6 +221,7 @@ def reconcile(findings, plan, alert, outbox):
             if key in issues:
                 raise ValueError("duplicate owned finding")
             issues[key] = issue
+    drain(outbox, issues, alert)
     for key, (closed, fields, description) in findings.items():
         issue = issues.get(key)
         desired = {"title": f"Semgrep {key}", "description": description}
@@ -220,6 +238,8 @@ def reconcile(findings, plan, alert, outbox):
                     {**desired, "columnId": backlog, "labelIds": [label]},
                 )
                 issues[key] = desired
+                if key.startswith("secrets/"):
+                    drain(outbox, {key}, alert)
             continue
         if issue.get("archivedAt"):
             if closed:
@@ -243,13 +263,7 @@ def reconcile(findings, plan, alert, outbox):
                 if error.code != 409:
                     raise
                 deferred.append(key)
-    for entry in sorted(e for e in outbox.iterdir() if e.suffix != ".tmp"):
-        pending = json.loads(entry.read_text())
-        if pending["key"] in issues:
-            alert("SemgrepNewSecret", pending["fields"])
-        # Without an issue the finding closed before its POST succeeded; a
-        # later reopen writes a new entry.
-        entry.unlink()
+    drain(outbox, issues, alert, final=True)
     if deferred:
         raise DeferredFindings(deferred)
 

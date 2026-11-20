@@ -356,3 +356,46 @@ def test_new_secret_alerts_once_after_its_issue_exists(sync):
         sync(get, "org", board, lambda name, fields: alerts.append(name))
     assert alerts == ["SemgrepNewSecret"]
     assert len(board.issues) == 2
+
+
+def test_failing_write_for_another_finding_does_not_hold_an_alert(sync):
+    board = Board()
+    board.issues.append({"id": 1, "description": "", "labelIds": []})
+    data = {
+        "sast": [],
+        "sca": [],
+        "secrets": [secret_row("secret-a"), secret_row("secret-b")],
+    }
+
+    def get(path):
+        if parse_qs(urlsplit(path).query).get("page", ["0"]) != ["0"]:
+            return {"findings": []}
+        product = parse_qs(urlsplit(path).query).get("issue_type", ["secrets"])[0]
+        return {"findings": data[product]}
+
+    alerts = []
+    real = Board.__call__
+
+    def failing_post_for_b(self, path, method="GET", body=None):
+        if method == "POST" and body["title"].endswith("secret-b"):
+            raise TimeoutError()
+        return real(self, path, method, body)
+
+    def failing_alert(name, fields):
+        raise TimeoutError()
+
+    Board.__call__ = failing_post_for_b
+    try:
+        # A's issue is created but its alert fails.
+        with pytest.raises(TimeoutError):
+            sync(get, "org", board, failing_alert)
+        assert [i["title"] for i in board.issues[1:]] == ["Semgrep secrets/secret-a"]
+        # B's POST keeps failing on every later poll; A's alert still goes
+        # out once, before B's write.
+        for _ in range(2):
+            with pytest.raises(TimeoutError):
+                sync(get, "org", board, lambda name, fields: alerts.append(name))
+    finally:
+        Board.__call__ = real
+    assert alerts == ["SemgrepNewSecret"]
+    assert len(board.issues) == 2
