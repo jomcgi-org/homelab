@@ -1,8 +1,8 @@
 """Generate kagent's database passwords once and write its connection strings.
 
 kagent-pg-logins (kagent-pg namespace) is the source of truth. Each password is
-generated only when it is absent, so reruns never rotate one; kagent-pg-setup
-then sets them on the database with kagent's setup script. The connection
+generated only when it is absent, so reruns never rotate one; CNPG
+reads them from per-login basic-auth Secrets. The connection
 strings the kagent chart reads (kagent-postgres-owner and
 kagent-postgres-readwrite, in the kagent namespace) are derived from it.
 
@@ -67,7 +67,7 @@ def call(method, path, body=None):
         # another Application), the same as a missing Secret.
         if e.code in (403, 404) and method == "GET":
             return None
-        raise SystemExit(f"{method} {path}: {e.code} {e.read().decode()}")
+        raise SystemExit(f"{method} {path}: {e.code}")
 
 
 def secret_path(name, namespace=NAMESPACE):
@@ -101,7 +101,7 @@ def b64(value):
     return base64.b64encode(value.encode()).decode()
 
 
-def main():
+def prepare_logins():
     source = get(SOURCE)
     data = dict(source.get("data") or {})
     # Hex, so the password needs no escaping in a connection URL.
@@ -115,6 +115,17 @@ def main():
     else:
         print(f"{NAMESPACE}/{SOURCE} complete")
 
+    for key, login, _, _ in LOGINS:
+        name = f"kagent-pg-{key.removesuffix('-password')}-login"
+        current = get(name)
+        want = {"username": b64(login), "password": data[key]}
+        if current.get("data") != want:
+            current["data"] = want
+            call("PUT", secret_path(name), current)
+
+
+def main():
+    data = get(SOURCE)["data"]
     for key, login, name, url_key in LOGINS:
         password = base64.b64decode(data[key]).decode()
         url = f"postgres://{login}:{password}@{HOST}:5432/{DATABASE}?sslmode=require"
@@ -130,6 +141,7 @@ def main():
 
 def wait_for_key():
     """Return once garage-init has written kagent-pg's Garage key."""
+    prepare_logins()
     while True:
         data = get("kagent-pg-s3").get("data") or {}
         if "AWS_SECRET_ACCESS_KEY" in data:

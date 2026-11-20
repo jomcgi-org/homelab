@@ -1,11 +1,15 @@
 -- Run in a disposable cluster as a superuser.
 CREATE DATABASE claims_test;
 \connect claims_test
-\setenv KAGENT_OWNER_PASSWORD test_owner
-\setenv KAGENT_READWRITE_PASSWORD test_writer
+CREATE ROLE kagent_owner;
+CREATE ROLE kagent_readwrite;
+CREATE ROLE kagent_owner_user LOGIN NOINHERIT IN ROLE kagent_owner;
+GRANT CREATE ON DATABASE claims_test TO kagent_owner;
+SET SESSION AUTHORIZATION kagent_owner_user;
 BEGIN;
 \ir setup.psql
 COMMIT;
+RESET SESSION AUTHORIZATION;
 
 SET ROLE pg_monitor;
 DO $$ BEGIN
@@ -23,9 +27,11 @@ INSERT INTO kagent.session VALUES ('locked', 1), ('idle', 2);
 INSERT INTO kagent.session_task_event VALUES
   (1, 'worker', true), (1, 'worker', true), (2, 'other', false), (2, NULL, true);
 RESET ROLE;
+SET SESSION AUTHORIZATION kagent_owner_user;
 BEGIN;
 \ir setup.psql
 COMMIT;
+RESET SESSION AUTHORIZATION;
 
 SET ROLE pg_monitor;
 DO $$ BEGIN
