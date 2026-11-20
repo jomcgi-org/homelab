@@ -6,6 +6,15 @@ exports_files(
 )
 
 exports_files(
+    [
+        "platform/cloudnative-pg/deploy/values.yaml",
+        "platform-factory/cloudnative-pg/values.yaml",
+        "platform-factory/cloudnative-pg/resources/upstream/operator.yaml",
+    ],
+    visibility = ["//projects/platform-factory/cloudnative-pg/tests:__pkg__"],
+)
+
+exports_files(
     ["platform-factory/network-policy/resources/argocd.yaml"],
     visibility = ["//projects/platform-factory/external-secrets/chart:__pkg__"],
 )

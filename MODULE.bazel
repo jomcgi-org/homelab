@@ -66,6 +66,13 @@ http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "ht
 http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
 
 http_file(
+    name = "cloudnative_pg_chart_0_29_0",
+    downloaded_file_path = "cloudnative-pg-0.29.0.tgz",
+    sha256 = "668e065ff53508d58238788fd35b355a925060843629a951df0e6a9362e6d32f",
+    urls = ["https://github.com/cloudnative-pg/charts/releases/download/cloudnative-pg-v0.29.0/cloudnative-pg-0.29.0.tgz"],
+)
+
+http_file(
     name = "factory_codex_catalog",
     sha256 = "d50b6749506d97e5f334dbabcb666eb1689f423cf3e88cfabdcf3c536b873068",
     urls = ["https://raw.githubusercontent.com/openai/codex/c376cf7396eff83ce4c6ac61b9553df142e7a0be/codex-rs/models-manager/models.json"],
