@@ -2276,6 +2276,8 @@ func deferredCheck(b *Binding, pr github.PullRequest, checks []github.CheckRun) 
 	return mergedReviewerCheck(&b.Review, &github.PullRequestDetail{PullRequest: pr}, own)
 }
 
+// invariant: FACT-13
+
 func (e *Engine) enqueueDeferred(ctx context.Context, tx *sql.Tx, b *Binding, workID int64, pr github.PullRequest, check *github.CheckRun) error {
 	if check == nil || strings.Contains(check.Summary, "<!-- factory-review:duplicate-head -->") {
 		return nil

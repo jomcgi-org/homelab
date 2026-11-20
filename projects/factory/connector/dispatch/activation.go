@@ -608,6 +608,8 @@ type reviewFollowup struct {
 	Finding        github.DeferredFinding
 }
 
+// invariant: FACT-13
+
 func (e *Engine) deliverReviewFollowup(ctx context.Context, it *store.OutboxItem) error {
 	var p reviewFollowup
 	if err := json.Unmarshal(it.Payload, &p); err != nil {

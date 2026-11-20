@@ -1301,6 +1301,8 @@ func loweredNote(f Finding) string {
 		oneLine(f.Lowered, 20))
 }
 
+// invariant: FACT-13
+
 // stateOf keeps an assessment's blocking findings for the next round, and
 // what this and earlier reviews cleared. The human gate is kept apart: only
 // a person clears it, so no round carries it.
