@@ -27,15 +27,11 @@ spec:
       app.kubernetes.io/name: argocd-repo-server
   egress:
     - toFQDNs:
-        # This repository, and GitHub release assets (the CloudNativePG
-        # chart archive downloads redirect there).
         - matchName: github.com
         - matchPattern: "*.githubusercontent.com"
         # The Helm chart repositories in use. Add a source in the change that
         # first syncs from it.
         - matchName: helm.cilium.io
-        - matchName: cloudnative-pg.github.io
-        - matchName: charts.external-secrets.io
         # This repository's published OCI charts; blobs come from
         # pkg-containers.githubusercontent.com, matched above.
         - matchName: ghcr.io

@@ -54,8 +54,7 @@ The built-in view/edit/admin roles receive no aggregated ESO permissions.
 Cilium allows ESO egress only to the API server (TCP 443/6443) and webhook
 ingress only from the API server (TCP 10250). The cluster baseline supplies
 DNS to CoreDNS. There is no internet egress allowance in this slice.
-Argo CD's repo-server separately allows HTTPS to `charts.external-secrets.io`
-to fetch the upstream chart, alongside its existing GitHub release asset access.
+Argo CD reads the operator manifests from `resources/upstream` in this repository.
 
 ## Add the next consumers
 
@@ -89,10 +88,7 @@ helm template external-secrets projects/platform-factory/external-secrets/chart 
   --namespace external-secrets
 HELM_BIN="$(command -v helm)" python3 -m pytest -q \
   projects/platform-factory/external-secrets/chart/external_secrets_test.py
-helm template external-secrets external-secrets \
-  --repo https://charts.external-secrets.io --version 2.15.0 \
-  --namespace external-secrets \
-  -f projects/platform-factory/external-secrets/values.yaml
+projects/platform-factory/external-secrets/verify-render.sh
 ```
 
 The render test has a Bazel target at

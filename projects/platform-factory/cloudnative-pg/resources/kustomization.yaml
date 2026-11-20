@@ -3,3 +3,4 @@ kind: Kustomization
 
 resources:
   - network-policy.yaml
+  - upstream/cloudnative-pg-0.29.0-install.yaml

@@ -12,17 +12,9 @@ metadata:
 spec:
   project: default
   sources:
-    - repoURL: https://charts.external-secrets.io
-      chart: external-secrets
-      targetRevision: 2.15.0
-      helm:
-        releaseName: external-secrets
-        valueFiles:
-          - $values/projects/platform-factory/external-secrets/values.yaml
-        ignoreMissingValueFiles: false
     - repoURL: https://github.com/jomcgi-org/homelab.git
       targetRevision: HEAD
-      ref: values
+      path: projects/platform-factory/external-secrets/resources/upstream
     - repoURL: https://github.com/jomcgi-org/homelab.git
       targetRevision: HEAD
       path: projects/platform-factory/external-secrets/chart
