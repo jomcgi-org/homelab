@@ -82,6 +82,7 @@ Refs HOME-N
 
 Update an invariant when the PR establishes or changes a system guarantee.
 Use the existing invariant ID when a fix restores that guarantee.
+If enforcement changes, update the mechanism and test under the same ID.
 Describe implementation choices in the Change section and show regression tests in Evidence.
 
 After each review round, read the whole description against the new head.

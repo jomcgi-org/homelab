@@ -101,15 +101,6 @@ are checked against their source, never line by line: the PR's source change
 or stated purpose explains them, and a lockfile names no new registry or
 download host.
 
-## Invariants
-
-Check that an invariant states what the system must guarantee and where it applies.
-It must still make sense if the team replaces its enforcement mechanism.
-Check the mechanism and test separately for evidence that the guarantee holds.
-
-Suggest a missing invariant only when the PR exposes a system guarantee that the existing rules omit.
-For a bug that restores an existing guarantee, check the regression test against that guarantee.
-
 ## Facts outside the repository
 
 The reviewer and the author reason from the same code. Neither can open a
