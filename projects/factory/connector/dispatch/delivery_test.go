@@ -3729,6 +3729,7 @@ func TestUnconfirmedEjectionEmitsNoEjectionSpan(t *testing.T) {
 	}
 }
 
+// invariant: FACT-13
 func TestLessonRetainedOnlyAfterMatchingMerge(t *testing.T) {
 	v := newDeliveryEnv(t)
 	requests := make(chan string, 4)
