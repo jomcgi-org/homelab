@@ -125,3 +125,11 @@ enqueue a second row. A new UTC date permits a new occurrence. These messages
 also use the outbox's `sending`/`uncertain` boundary: an ambiguous Discord send
 is quarantined rather than automatically posted twice. This is at-most-once
 after dispatch begins, not a guarantee of delivery.
+
+## FactoryConnectorStalled
+
+Check connector logs for admission, send and tick errors. Compare
+`factory_connector_dispatched_runs` by agent with the configured concurrency.
+If all slots are occupied, inspect those runs' task progress and lease
+deadlines. If slots are free, inspect the oldest runnable run and its latest
+send outcome. An accepted send or an empty runnable queue clears the alert.

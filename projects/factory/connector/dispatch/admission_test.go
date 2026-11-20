@@ -1053,6 +1053,9 @@ func TestReclaimedHeldRunWaitsForAFreeSlot(t *testing.T) {
 	if v.kg.Executions() != 1 || v.run(2).State != store.RunDispatched {
 		t.Fatal("the independent run did not take the only slot")
 	}
+	if testutil.ToFloat64(v.m.RunnableRuns) != 0 || testutil.ToFloat64(v.m.DispatchedRuns.WithLabelValues("coder")) != 1 {
+		t.Fatal("expected one dispatched run and no runnable runs while dependency is open")
+	}
 	task := v.kg.lastTask()
 
 	v.its.reclaimElsewhere(1)
@@ -1076,6 +1079,9 @@ func TestReclaimedHeldRunWaitsForAFreeSlot(t *testing.T) {
 			t.Fatal("the reclaimed run started past the agent's concurrency")
 		}
 		v.tick(v.e)
+	}
+	if testutil.ToFloat64(v.m.RunnableRuns) != 1 || testutil.ToFloat64(v.m.DispatchedRuns.WithLabelValues("coder")) != 1 {
+		t.Fatal("expected one runnable and one dispatched run after dependency cleared")
 	}
 	v.kg.finish(task, kagent.StateCompleted, "Done.", nil)
 	v.tickUntil(time.Second, 10, func() bool { return v.kg.Executions() == 2 })
