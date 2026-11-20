@@ -19,6 +19,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 type rpcSeen struct {
@@ -510,5 +512,37 @@ func TestSessionListDeleteAndNameOverGRPC(t *testing.T) {
 	}
 	if !slices.Equal(calls, want) {
 		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+}
+
+func TestServedPromptRevision(t *testing.T) {
+	for _, tc := range []struct {
+		name, prompt, desired string
+		observed              int
+		ready                 bool
+	}{
+		{"between waves", "old", "r1", 2, false},
+		{"spec updated", "new", "r1", 1, false},
+		{"compiling", "new", "r2", 2, false},
+		{"ready", "new", "r1", 2, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cr, err := structpb.NewStruct(map[string]any{
+				"metadata": map[string]any{"generation": 2},
+				"status":   map[string]any{"observedGeneration": tc.observed, "desiredRevision": tc.desired, "latestSuccessfulRevision": "r1"},
+				"spec":     map[string]any{"template": map[string]any{"inline": map[string]any{"systemPrompt": tc.prompt}}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := proto.Marshal(cr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rev, err := servedPromptRevision(raw, "new")
+			if (err == nil) != tc.ready || (tc.ready && rev != "r1") {
+				t.Fatalf("revision=%q err=%v", rev, err)
+			}
+		})
 	}
 }

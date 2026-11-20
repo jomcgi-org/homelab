@@ -23,7 +23,7 @@ var (
 	errRuntimeChanged = errors.New("unaccepted attempt runtime changed")
 )
 
-func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.WorkItem, b *Binding, a *store.Attempt) (string, error) {
+func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.WorkItem, b *Binding, a *store.Attempt, sendContext *string) (string, error) {
 	text := taskText(r, wi, b, a)
 	// Runtime is mandatory in production. The store checks run eligibility
 	// separately when it records the attempt.
@@ -46,11 +46,22 @@ func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.
 	}
 	var sessionBase string
 	var err error
+	verify := a.ContextID == ""
 	if a.ContextID != "" {
 		runtime, sessionBase, err = e.st.SessionRuntime(ctx, a.KagentNamespace, a.ContextID, runtime, len(b.Arms) > 0)
 		if errors.Is(err, sql.ErrNoRows) {
+			verify = true
 			err = e.verifyLegacyRuntime(ctx, r, wi, a)
 		}
+		if err != nil {
+			return "", err
+		}
+	}
+	if verify {
+		if err := e.beginAdmissionRead(ctx, r, "provenance-prompt", a.MessageID); err != nil {
+			return "", err
+		}
+		*sendContext, err = e.sessions.PinPromptSession(ctx, kagent.AgentRef{Namespace: a.KagentNamespace, Name: a.KagentAgent}, a.MessageID, a.ContextID, runtime.SystemPrompt)
 		if err != nil {
 			return "", err
 		}
