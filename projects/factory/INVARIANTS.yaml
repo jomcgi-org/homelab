@@ -87,3 +87,10 @@ invariants:
   - projects/factory/connector/dispatch/human_gate.go
   test: //projects/factory/connector/dispatch:dispatch_test
   state: live
+- id: FACT-17
+  statement: A coder run created without provenance support never acquires a first-execution receipt on retry.
+  mechanism:
+  - projects/factory/connector/migrations/20261122000000_run_provenance_opt_in.sql
+  - projects/factory/connector/store/provenance.go
+  test: //projects/factory/connector/store:store_test
+  state: live
