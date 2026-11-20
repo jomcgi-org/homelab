@@ -67,3 +67,10 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-13
+  statement: Author and reviewer App keys belong to separate broker processes and namespaces.
+  mechanism:
+  - projects/factory/chart/templates/broker.yaml
+  - projects/factory/chart/templates/review-broker.yaml
+  test: //projects/factory/chart:reviewer_test
+  state: live

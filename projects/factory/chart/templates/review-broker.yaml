@@ -1,0 +1,199 @@
+{{- /* invariant: FACT-13 */ -}}
+{{- if and .Values.broker.enabled .Values.reviewer.enabled }}
+{{- $b := .Values.broker }}
+{{- $ns := "factory-review-broker" }}
+{{- $name := "factory-review-broker" }}
+{{- $reviewBindings := list }}
+{{- range .Values.repositories }}
+{{- $reviewNs := include "factory.reviewerNamespace" (dict "root" $ "binding" .) }}
+{{- $reviewBindings = append $reviewBindings (dict "name" .name "repository" (printf "%s/%s" .owner .repo) "namespace" $reviewNs) }}
+{{- end }}
+{{- $config := dict "namespace" $ns "adminListenAddr" (printf ":%d" (int $b.adminPort)) "tokenReview" (dict "audience" "factory-review-broker") }}
+{{- $_ := set $config "githubReview" (dict
+  "appIdFile" "/etc/factory-review-github-app/app-id"
+  "installationIdFile" "/etc/factory-review-github-app/installation-id"
+  "privateKeyFile" "/etc/factory-review-github-app/private-key") }}
+{{- with .Values.reviewer.commentAuthor }}
+{{- /* The broker writes the reviewer's PR comment and edits only this login's. */}}
+{{- $_ := set $config.githubReview "commentAuthor" . }}
+{{- end }}
+{{- $_ := set $config "reviewBindings" $reviewBindings }}
+{{- $_ := set $config.tokenReview "reviewerSubjects" (list (include "factory.reviewerSubject" .)) }}
+{{- with $b.config.githubReview }}
+{{- $_ := set $config "githubReview" (mustMergeOverwrite $config.githubReview (deepCopy .)) }}
+{{- end }}
+{{- $configYAML := toYaml $config }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    {{- include "factory.keep" . | nindent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+data:
+  config.yaml: |
+    {{- $configYAML | nindent 4 }}
+---
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: factory-review-github-app
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  itemPath: {{ .Values.reviewer.githubApp.itemPath | quote }}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "factory.reviewBrokerSelector" . | nindent 4 }}
+  ports:
+    - name: admin
+      port: {{ $b.adminPort }}
+      targetPort: admin
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "factory.reviewBrokerSelector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "factory.reviewBrokerSelector" . | nindent 8 }}
+        app.kubernetes.io/part-of: factory
+      annotations:
+        checksum/config: {{ $configYAML | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      {{- include "factory.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: broker
+          image: {{ include "factory.brokerImage" . | quote }}
+          imagePullPolicy: {{ $b.image.pullPolicy }}
+          env:
+            - name: BROKER_CONFIG
+              value: /etc/factory-broker/config.yaml
+          ports:
+            - name: admin
+              containerPort: {{ $b.adminPort }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            periodSeconds: 30
+          resources:
+            {{- toYaml $b.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/factory-broker
+              readOnly: true
+            - name: review-github-app
+              mountPath: /etc/factory-review-github-app
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        - name: review-github-app
+          secret:
+            secretName: factory-review-github-app
+{{- if .Values.imagePullSecret.enabled }}
+---
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+type: kubernetes.io/dockerconfigjson
+metadata:
+  name: {{ .Values.imagePullSecret.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  itemPath: {{ .Values.imagePullSecret.itemPath | quote }}
+{{- end }}
+{{- if .Values.networkPolicy.cilium }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  name: {{ $name }}
+  namespace: {{ $ns }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "factory.reviewBrokerSelector" . | nindent 6 }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $b.namespace }}
+            {{- include "factory.reviewerSelector" . | nindent 12 }}
+      toPorts:
+        - ports: [{port: {{ $b.adminPort | quote }}, protocol: TCP}]
+  egress:
+    - toEntities: [kube-apiserver]
+    - toFQDNs: [{matchName: api.github.com}]
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
+{{- end }}
+{{- end }}

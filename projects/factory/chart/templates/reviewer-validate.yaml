@@ -18,8 +18,15 @@
 {{- fail "agents.reviewer: resources must equal kagent.config.runtimeDefaults" }}
 {{- end }}
 {{- $names := list }}
-{{- $seen := dict }}
+{{- $brokerNs := "factory-review-broker" }}
+{{- if or (eq .Values.broker.namespace $brokerNs) (eq (include "factory.kagentNamespace" .) $brokerNs) }}
+{{- fail "factory-review-broker requires a separate namespace" }}
+{{- end }}
+{{- $seen := dict $brokerNs true }}
 {{- range .Values.repositories }}
+{{- if eq .namespace $brokerNs }}
+{{- fail "coding bindings cannot use the review broker namespace" }}
+{{- end }}
 {{- $names = append $names .name }}
 {{- $_ := set $seen .namespace true }}
 {{- end }}

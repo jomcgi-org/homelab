@@ -102,36 +102,42 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	if dsn := os.Getenv("BROKER_USAGE_DATABASE_URL"); dsn != "" {
-		db, err := sql.Open("postgres", dsn)
-		if err != nil {
-			return errors.New("open token accounting database")
-		}
-		defer db.Close()
-		db.SetMaxOpenConns(8)
-		db.SetMaxIdleConns(2)
-		d.runStore = &usage.Store{DB: db}
-		d.relay.TokenUsage = d.runStore
-	}
-	go d.adminVerifier.Run(ctx)
-	go d.verifier.Run(ctx)
-	go d.grants.Run(ctx)
-	go d.usage.Run(ctx)
-	if d.reviewMinter != nil {
+	var listeners map[string]http.Handler
+	if cfg.GitHubReviewEnabled() {
 		go d.reviewMinter.Run(ctx)
-	}
-	if d.minter != nil {
-		go d.minter.Run(ctx)
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /healthz", healthz)
+		d.registerReview(mux, cfg)
+		listeners = map[string]http.Handler{cfg.AdminListenAddr: mux}
 	} else {
-		logger.Warn("GitHub App not configured; no tokens will be minted")
-	}
+		if dsn := os.Getenv("BROKER_USAGE_DATABASE_URL"); dsn != "" {
+			db, err := sql.Open("postgres", dsn)
+			if err != nil {
+				return errors.New("open token accounting database")
+			}
+			defer db.Close()
+			db.SetMaxOpenConns(8)
+			db.SetMaxIdleConns(2)
+			d.runStore = &usage.Store{DB: db}
+			d.relay.TokenUsage = d.runStore
+		}
+		go d.adminVerifier.Run(ctx)
+		go d.verifier.Run(ctx)
+		go d.grants.Run(ctx)
+		go d.usage.Run(ctx)
+		if d.minter != nil {
+			go d.minter.Run(ctx)
+		} else {
+			logger.Warn("GitHub App not configured; no tokens will be minted")
+		}
 
-	metricsHandler := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
-	listeners := map[string]http.Handler{cfg.ListenAddr: d.handler(cfg, metricsHandler)}
-	if cfg.AdminListenAddr != "" {
-		listeners = map[string]http.Handler{
-			cfg.ListenAddr:      d.relayHandler(),
-			cfg.AdminListenAddr: d.adminHandler(cfg, metricsHandler),
+		metricsHandler := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
+		listeners = map[string]http.Handler{cfg.ListenAddr: d.handler(cfg, metricsHandler)}
+		if cfg.AdminListenAddr != "" {
+			listeners = map[string]http.Handler{
+				cfg.ListenAddr:      d.relayHandler(),
+				cfg.AdminListenAddr: d.adminHandler(cfg, metricsHandler),
+			}
 		}
 	}
 	servers := make([]*http.Server, 0, len(listeners))
@@ -188,6 +194,32 @@ type deps struct {
 }
 
 func build(ctx context.Context, cfg config.Config, client kubernetes.Interface, quotaStore *quota.Store, m *metrics.Metrics, logger *slog.Logger) (*deps, error) {
+	if cfg.GitHubReviewEnabled() {
+		d := &deps{reviewer: &auth.Reviewer{Client: client, Audience: cfg.TokenReview.Audience, Logger: logger}}
+		r := cfg.GitHubReview
+		key, err := github.LoadPrivateKey(r.PrivateKeyFile)
+		if err != nil {
+			return nil, err
+		}
+		app := &github.App{APIURL: r.APIURL, AppID: r.AppID, InstallationID: r.InstallationID, Key: key}
+		d.reviewMinter = &github.Minter{
+			App:    app,
+			Client: client, Bindings: cfg.ReviewBindings, SecretName: r.AgentSecretName,
+			AgentPermissions: r.AgentPermissions, ConnectorPermissions: r.ConnectorPermissions,
+			Interval: r.MintInterval.Duration, RetryInterval: time.Minute, ConnectorMinLife: 15 * time.Minute,
+			AgentKind: "review_agent", TokenKind: "reviewer", Metrics: m, Logger: logger,
+		}
+		if len(r.CommentPermissions) > 0 && r.CommentAuthor != "" {
+			// Mints for the comment proxy only; it never runs, so it writes
+			// no agent Secret.
+			d.commentMinter = &github.Minter{
+				App: app, Bindings: cfg.ReviewBindings, ConnectorPermissions: r.CommentPermissions,
+				ConnectorMinLife: 15 * time.Minute, TokenKind: "reviewer_comment", Metrics: m, Logger: logger,
+			}
+			d.comments = &github.CommentProxy{Minter: d.commentMinter, Author: r.CommentAuthor, Logger: logger}
+		}
+		return d, nil
+	}
 	verifier, err := actorjwt.New(actorjwt.Options{
 		Issuer: cfg.ActorJWT.Issuer, Audience: cfg.ActorJWT.Audience, CAFile: cfg.ActorJWT.CAFile,
 		RefreshInterval: cfg.ActorJWT.KeyRefreshInterval.Duration, MinRefetch: cfg.ActorJWT.MinKeyRefetch.Duration,
@@ -249,30 +281,7 @@ func build(ctx context.Context, cfg config.Config, client kubernetes.Interface, 
 			Metrics: m, Logger: logger,
 		}
 	}
-	if cfg.GitHubReviewEnabled() {
-		r := cfg.GitHubReview
-		key, err := github.LoadPrivateKey(r.PrivateKeyFile)
-		if err != nil {
-			return nil, err
-		}
-		app := &github.App{APIURL: r.APIURL, AppID: r.AppID, InstallationID: r.InstallationID, Key: key}
-		d.reviewMinter = &github.Minter{
-			App:    app,
-			Client: client, Bindings: cfg.ReviewBindings, SecretName: r.AgentSecretName,
-			AgentPermissions: r.AgentPermissions, ConnectorPermissions: r.ConnectorPermissions,
-			Interval: r.MintInterval.Duration, RetryInterval: time.Minute, ConnectorMinLife: 15 * time.Minute,
-			AgentKind: "review_agent", TokenKind: "reviewer", Metrics: m, Logger: logger,
-		}
-		if len(r.CommentPermissions) > 0 && r.CommentAuthor != "" {
-			// Mints for the comment proxy only; it never runs, so it writes
-			// no agent Secret.
-			d.commentMinter = &github.Minter{
-				App: app, Bindings: cfg.ReviewBindings, ConnectorPermissions: r.CommentPermissions,
-				ConnectorMinLife: 15 * time.Minute, TokenKind: "reviewer_comment", Metrics: m, Logger: logger,
-			}
-			d.comments = &github.CommentProxy{Minter: d.commentMinter, Author: r.CommentAuthor, Logger: logger}
-		}
-	}
+
 	return d, nil
 }
 
@@ -342,6 +351,13 @@ func (d *deps) adminMux(cfg config.Config, metricsHandler http.Handler) *http.Se
 	// Both dispatchers pause work until the shared grant reads usable.
 	quotaSubjects := append(append([]string(nil), cfg.TokenReview.ConnectorSubjects...), cfg.TokenReview.ReviewerSubjects...)
 	mux.Handle("GET /codex/quota", d.reviewer.Require(quotaSubjects, d.relay.QuotaHandler()))
+	mux.Handle("/runs/reviewer", d.reviewer.Require(cfg.TokenReview.ReviewerSubjects, d.runStore.ReviewerHandler(cfg.ReviewBindings)))
+	return mux
+}
+
+func healthz(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) }
+
+func (d *deps) registerReview(mux *http.ServeMux, cfg config.Config) {
 	reviewer := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -362,8 +378,4 @@ func (d *deps) adminMux(cfg config.Config, metricsHandler http.Handler) *http.Se
 	// The reviewer's PR comment, written here so the comment token, which
 	// could approve, never reaches the reviewer.
 	mux.Handle("/github/reviewer-comments", d.reviewer.Require(cfg.TokenReview.ReviewerSubjects, comments))
-	mux.Handle("/runs/reviewer", d.reviewer.Require(cfg.TokenReview.ReviewerSubjects, d.runStore.ReviewerHandler(cfg.ReviewBindings)))
-	return mux
 }
-
-func healthz(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) }

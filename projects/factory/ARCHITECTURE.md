@@ -10,7 +10,7 @@ flowchart LR
     itsaplan["itsaplan · untrusted issue text"]
     connector["connector · agent keys"]
     kagent["kagent · isolated sessions"]
-    broker["broker · OAuth grant and both App keys"]
+    broker["broker · OAuth grant and author App key"]
     reviewer["reviewer · scoped token"]
   end
   itsaplan -->|delegated run| connector
@@ -36,7 +36,7 @@ flowchart LR
 | Codex CLI | Edits and checks the bound repository | `deploy/values.yaml`, `toolchain/` | 0.169.1 | Task and checkout | Gateway placeholders |
 | codex-code-mode | Runs the Codex tool-mode trial | `codex-code-mode/` | Built from this repo | Task and checkout | Gateway placeholders |
 | Claude Code | Claude harness supported by the staged relay | Upstream kagent harness | 2.1.285 | Session messages | Gateway placeholder |
-| broker | Relays model calls and mints repository credentials | `broker/` | Built from this repo | Actor requests | Codex OAuth grant, both App private keys and optional Claude OAuth token |
+| broker | Relays model calls and mints repository credentials | `broker/` | Built from this repo | Actor requests | Codex OAuth grant, author App private key and optional Claude OAuth token |
 | reviewer | Publishes the independent required check | `reviewer/` | Built from this repo | PR content and review replies | Projected ServiceAccount token and scoped reviewer installation token |
 | GitHub | Owns PRs, checks and the merge queue | External service | Hosted | Branches and PRs | GitHub App installations |
 | Hindsight | Stores reusable coding lessons | `../platform-factory/hindsight/` | Image 1.2.1, embeddings `mongodb/voyage-4-large`, decision model `typesafe/jev-1.14` | Recalled and retained text | Database and model credentials |
@@ -442,6 +442,8 @@ records how they relate and routes results and feedback between them.
 
 ## Credential broker
 
+The reviewer calls `/github/reviewer-*` on the `factory-review-broker` Service in its own eponymous namespace with a separately projected audience. Its Deployment alone mounts the reviewer App key and writes the review bindings’ git tokens. Quota and run accounting stay on the author broker.
+
 `projects/factory/broker`, one replica with `Recreate`. It reuses the Codex
 OAuth code in `projects/shared/go/tokenbroker`, with the grant Secret prefix
 (`factory-broker-grant-`), metric prefix (`factory_broker_`) and refresh
@@ -670,7 +672,7 @@ reuse state, even after a prolonged persistence failure.
   so the reviewer enqueues nothing ("Merge authority"). With `reviewer.enabled`, the chart mounts the separate App from
   `reviewer.githubApp.itemPath`, derives `reviewBindings` from the review
   namespaces, and admits only `factory-reviewer` in `reviewerSubjects`.
-  The config refuses the same App as `github`, a writable
+  The config refuses loading both App keys into one process, a writable
   agent token, any reviewer write besides checks and merge queues, a
   comment token writing anything but issues, and a
   subject that is also a connector or admin subject.

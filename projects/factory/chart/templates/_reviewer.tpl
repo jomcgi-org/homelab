@@ -54,6 +54,8 @@ system:serviceaccount:{{ .Values.broker.namespace }}:{{ include "factory.reviewe
 {{- end }}
 {{- $config := dict
   "brokerURL" (printf "http://%s.%s.svc:%d" (include "factory.brokerName" .) .Values.broker.namespace (int .Values.broker.adminPort))
+  "reviewBrokerURL" (printf "http://factory-review-broker.factory-review-broker.svc:%d" (int .Values.broker.adminPort))
+  "reviewBrokerTokenFile" "/var/run/secrets/factory-review-broker/token"
   "brokerTokenFile" "/var/run/secrets/factory-broker/token"
   "kagentURL" (printf "http://%s" (include "factory.kagentControllerAddress" .))
   "kagentTokenFile" "/var/run/secrets/kagent/token"

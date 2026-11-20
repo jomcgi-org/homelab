@@ -413,14 +413,11 @@ func (c Config) Validate() error {
 // its own token subjects.
 func (c Config) validateReview() []error {
 	var errs []error
-	if !c.GitHubReviewEnabled() {
-		if len(c.ReviewBindings) > 0 || len(c.TokenReview.ReviewerSubjects) > 0 {
-			errs = append(errs, errors.New("reviewBindings and reviewerSubjects need githubReview.privateKeyFile"))
-		}
-		return errs
+	if c.GitHubEnabled() && c.GitHubReviewEnabled() {
+		errs = append(errs, errors.New("author and reviewer keys require separate brokers"))
 	}
 	r := c.GitHubReview
-	if r.AppID == "" || r.InstallationID == "" {
+	if c.GitHubReviewEnabled() && (r.AppID == "" || r.InstallationID == "") {
 		errs = append(errs, errors.New("githubReview appId and installationId are required with a private key"))
 	}
 	if r.AppID != "" && r.AppID == c.GitHub.AppID {

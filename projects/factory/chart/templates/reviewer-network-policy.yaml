@@ -52,6 +52,14 @@ spec:
               protocol: TCP
     - toEndpoints:
         - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-review-broker
+            {{- include "factory.reviewBrokerSelector" . | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ .Values.broker.adminPort | quote }}
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ include "factory.kagentNamespace" . }}
             {{- include "factory.kagentSelector" (dict "root" . "component" "controller") | nindent 12 }}
       toPorts:

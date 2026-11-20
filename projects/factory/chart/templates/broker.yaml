@@ -3,7 +3,7 @@
 The credential broker (ARCHITECTURE.md, "Credential broker"): one replica,
 Recreate. The relay port takes actors' model calls through Substrate's egress
 gateway; the admin port serves device login, forced refresh, connector tokens
-and metrics. Provider and GitHub credentials exist only in this pod.
+and metrics. This pod holds the provider and author App credentials.
 */}}
 {{- $b := .Values.broker }}
 {{- $ns := $b.namespace }}
@@ -51,18 +51,10 @@ and metrics. Provider and GitHub credentials exist only in this pod.
   "privateKeyFile" "/etc/factory-github-app/private-key") }}
 {{- end }}
 {{- if .Values.reviewer.enabled }}
-{{- $_ := set $config "githubReview" (dict
-  "appIdFile" "/etc/factory-review-github-app/app-id"
-  "installationIdFile" "/etc/factory-review-github-app/installation-id"
-  "privateKeyFile" "/etc/factory-review-github-app/private-key") }}
-{{- with .Values.reviewer.commentAuthor }}
-{{- /* The broker writes the reviewer's PR comment and edits only this login's. */}}
-{{- $_ := set $config.githubReview "commentAuthor" . }}
-{{- end }}
 {{- $_ := set $config "reviewBindings" $reviewBindings }}
 {{- $_ := set $config.tokenReview "reviewerSubjects" (list (include "factory.reviewerSubject" .)) }}
 {{- end }}
-{{- $config = mustMergeOverwrite $config (deepCopy $b.config) }}
+{{- $config = mustMergeOverwrite $config (omit (deepCopy $b.config) "githubReview") }}
 {{- if $b.claude.enabled }}
 {{- $_ := set $config "claude" (dict
   "enabled" true
@@ -218,21 +210,6 @@ metadata:
 spec:
   itemPath: {{ $b.claude.itemPath | quote }}
 {{- end }}
-{{- if .Values.reviewer.enabled }}
----
-# The separate reviewer App; only the broker mounts its key files.
-apiVersion: onepassword.com/v1
-kind: OnePasswordItem
-metadata:
-  name: factory-review-github-app
-  namespace: {{ $ns }}
-  labels:
-    {{- include "factory.labels" . | nindent 4 }}
-  annotations:
-    argocd.argoproj.io/sync-wave: "-2"
-spec:
-  itemPath: {{ .Values.reviewer.githubApp.itemPath | quote }}
-{{- end }}
 ---
 # TokenReview for the admin and connector endpoints.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -260,6 +237,11 @@ subjects:
   - kind: ServiceAccount
     name: {{ $name }}
     namespace: {{ $ns }}
+{{- if .Values.reviewer.enabled }}
+  - kind: ServiceAccount
+    name: factory-review-broker
+    namespace: factory-review-broker
+{{- end }}
 ---
 # Its own grant Secret and quota ConfigMap, by name.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -295,6 +277,7 @@ subjects:
     name: {{ $name }}
     namespace: {{ $ns }}
 {{- range concat $bindings $reviewBindings }}
+{{- $review := has . $reviewBindings }}
 ---
 # The binding's git token Secret. RBAC cannot narrow create by name; the
 # broker only updates a github-git it labelled itself.
@@ -327,8 +310,8 @@ roleRef:
   name: {{ $name }}
 subjects:
   - kind: ServiceAccount
-    name: {{ $name }}
-    namespace: {{ $ns }}
+    name: {{ ternary "factory-review-broker" $name $review }}
+    namespace: {{ ternary "factory-review-broker" $ns $review }}
 {{- end }}
 ---
 apiVersion: v1
@@ -440,11 +423,6 @@ spec:
               mountPath: /etc/factory-github-app
               readOnly: true
             {{- end }}
-            {{- if .Values.reviewer.enabled }}
-            - name: review-github-app
-              mountPath: /etc/factory-review-github-app
-              readOnly: true
-            {{- end }}
       volumes:
         {{- if $b.claude.enabled }}
         - name: claude-cvp
@@ -468,11 +446,6 @@ spec:
                     matchLabels:
                       podcert.ate.dev/canarying: live
                   path: trust-bundle.pem
-        {{- if .Values.reviewer.enabled }}
-        - name: review-github-app
-          secret:
-            secretName: factory-review-github-app
-        {{- end }}
         {{- if $github }}
         - name: github-app
           secret:
