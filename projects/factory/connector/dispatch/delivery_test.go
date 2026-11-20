@@ -4459,6 +4459,7 @@ func TestCapOutcomeActsOnARecordedRoundLimit(t *testing.T) {
 	}
 }
 
+// invariant: FACT-18
 func TestLessonRetainedOnlyAfterMatchingMerge(t *testing.T) {
 	v := newDeliveryEnv(t)
 	requests := make(chan string, 4)

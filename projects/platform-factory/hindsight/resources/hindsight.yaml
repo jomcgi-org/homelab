@@ -103,6 +103,7 @@ spec:
             # tools, so the token can neither reach REST nor delete memories.
             - name: HINDSIGHT_API_MCP_EXTENSION
               value: bindings:MemoryTools
+            # invariant: FACT-13
             - name: MCP_BINDINGS
               value: '{"HOMELAB_MCP_TOKEN":{"bank":"homelab","tools":["recall"]}}'
             - name: HOMELAB_MCP_TOKEN
