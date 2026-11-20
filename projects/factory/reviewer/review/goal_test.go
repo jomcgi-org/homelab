@@ -934,25 +934,25 @@ func TestIssueCriteriaCount(t *testing.T) {
 		"Done when:\n1. a\n2. b\n\nOut of scope:\n- c":                                0,
 		"Done when:\n1. a\n2. b\n\nOut of scope: c":                                   2,
 		"Example:\n```\nDone when:\n1. x\n```\nDone when:\n1. a\n2. b":                2,
-		"Done when:\n1. a\n```\n2. b\n```":                                            1,
+		"Done when:\n1. a\n```\n2. b\n```":                                            0,
 		"Done when:\n```\n1. a\n```":                                                  0,
 		"````\n```\nDone when:\n1. Example\n":                                         0,
 		"<!--\nDone when:\n1. A\n-->\nText.":                                          0,
 		"<!-- note -->\nDone when:\n1. a\n2. b":                                       2,
 		"```mermaid\nflowchart TD\n  A --> B\n```\n\nDone when:\n1. a\n2. b":          2,
 		"~~~\nDone when:\n1. x\n```\n~~~\nDone when:\n1. a":                           1,
-		"Done when:\n1. Show the literal `<!--`\n2. Verify the result":                2,
-		"Done when:\n1. a\n<div>\n2. b\n</div>":                                       1,
+		"Done when:\n1. Show the literal `<!--`\n2. Verify the result":                0,
+		"Done when:\n1. a\n<div>\n2. b\n</div>":                                       0,
 		"Done when:\n1. Use `code` here\n2. b":                                        2,
 		"Text:\n\n    Done when:\n\n1. unrelated\n2. list":                            0,
 		"\tDone when:\n1. a":                                                          0,
 		"Done when:\n* * *":                                                           0,
-		"Done when:\n- a\n- - -":                                                      1,
+		"Done when:\n- a\n- - -":                                                      0,
 		"Title\n===\nDone when:\n1. a":                                                1,
 		"Done when:\n1. 2\n2. b":                                                      2,
 		"Done when:\n1. 值\n2. é":                                                      2,
 		"Done when:\n1. ```go":                                                        0,
-		"Done when:\n1. a <b>\n2. c":                                                  2,
+		"Done when:\n1. a <b>\n2. c":                                                  0,
 		"Done when:\n1. Keep p95 latency < 200 ms.\n2. b":                             2,
 		"Title\n=\nDone when:\n1. a":                                                  1,
 		"Done when:\r\n1. a\r\n2.\r\n   b\r\n":                                        0,
@@ -1099,21 +1099,33 @@ func TestGeneratedCriteriaMatchRenderer(t *testing.T) {
 func TestWithdrawalCriteriaKeepsExcludedBlockers(t *testing.T) {
 	for _, desc := range []string{
 		"Done when:\n1. visible\n<div>\n2. hidden\n</div>",
-		"```mermaid\ngraph TD\n```\nDone when:\n1. visible",
-		"~~~\nexample\n~~~\nDone when:\n1. visible",
-		"***\nDone when:\n1. visible",
-		"Title\r=\rDone when:\r1. visible",
-		"Title\n--\nDone when:\n1. visible",
+		"Done when:\n1. visible\n```\n2. hidden\n```",
+		"Done when:\n1. visible\n~~~\n2. hidden\n~~~",
+		"Done when:\n1. visible\n***",
+		"Done when:\n1. visible\n\nTitle\n--",
 	} {
 		in := &IssueContext{Issue: &IssueEvidence{Key: "HOME-1", Trusted: true, Description: desc}}
-		if got := issueCriteria(in); got != 1 {
-			t.Fatalf("%q: counted %d rendered items, want one", desc, got)
-		}
-		g := &GoalCheck{Counted: withdrawalCriteria(in), Criteria: goalVerdicts(1, goalMet)}
+		g := &GoalCheck{Counted: issueCriteria(in), Criteria: goalVerdicts(1, goalMet)}
 		for _, id := range []string{"HOME-1:goal:criterion-2", "HOME-2:goal"} {
 			if note := goalWithdrawn(id, "HOME-1", g); note != "" {
 				t.Errorf("%q withdrew %s: %s", desc, id, note)
 			}
 		}
+	}
+}
+
+func TestDiagramBeforeCriteriaAllowsWithdrawal(t *testing.T) {
+	h, api := issueHarness(t)
+	api.issue.Description = "```mermaid\nflowchart TD\n A --> B\n```\n\nDone when:\n1. one\n2. two"
+	h.k.goalReplies = []string{goalReply(`{"criteria":[{"criterion":1,"verdict":"met"},{"criterion":2,"verdict":"met"}],"overall":"met"}`)}
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	state, _ := LoadState(h.gh.check(shaA).Text)
+	if state.Goal == nil || state.Goal.Counted != 2 {
+		t.Fatalf("persisted goal = %+v, want two counted criteria", state.Goal)
+	}
+	if note := goalWithdrawn("HOME-58:goal:criterion-3", "HOME-58", state.Goal); note == "" {
+		t.Fatal("missing withdrawal for criterion 3 after the fenced diagram")
 	}
 }
