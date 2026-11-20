@@ -307,7 +307,7 @@ func TestPreparedGoalReusesSessionAfterLostCreationResponse(t *testing.T) {
 }
 
 func TestPreparedGoalRechecksInputsAfterRestart(t *testing.T) {
-	for _, checkpoint := range []string{"prepared", "session", "refused"} {
+	for _, checkpoint := range []string{"prepared", "session"} {
 		for _, field := range []string{"model", "effort", "arm", "system", "class"} {
 			t.Run(checkpoint+"/"+field, func(t *testing.T) {
 				h := newHarness(t)
@@ -326,9 +326,6 @@ func TestPreparedGoalRechecksInputsAfterRestart(t *testing.T) {
 					}
 					return nil
 				}}
-				if checkpoint == "refused" {
-					h.k.sendErr, h.k.afterSend = []error{kagent.ErrNotAccepted}, cancel
-				}
 				pr := github.PullRequest{Number: 7, HeadSHA: shaA}
 				in := &inputs{issues: &IssueContext{Issue: &IssueEvidence{Key: "HOME-245"}, taskClass: "unclassified"}}
 				e := h.engine()
@@ -572,5 +569,25 @@ func TestGoalReviewRequiresProvenanceBeforeSending(t *testing.T) {
 	}
 	if len(h.k.sends) != 0 {
 		t.Fatal("goal sent before provenance persisted")
+	}
+}
+
+func TestRefusedGoalUsesFreshSessionOnNextPoll(t *testing.T) {
+	for _, refusal := range []error{kagent.ErrTaskNotFound, kagent.ErrNotAccepted, kagent.ErrRejected} {
+		t.Run(refusal.Error(), func(t *testing.T) {
+			h := newHarness(t)
+			h.cfg.MACSecret = func() (string, error) { return strings.Repeat("k", 32), nil }
+			h.k.sendErr = []error{refusal}
+			e := h.engine()
+			poll := func() *GoalCheck {
+				return e.goalCall(context.Background(), &e.cfg.Bindings[0], github.PullRequest{Number: 7, HeadSHA: shaA}, &inputs{}, "goal text", nil, e.log)
+			}
+			if poll() != nil || len(h.k.sends) != 1 || h.k.sends[0].ContextID == "" {
+				t.Fatal("expected one refused send to a prepared session")
+			}
+			if poll() == nil || len(h.k.sends) != 2 || h.k.sends[1].ContextID == h.k.sends[0].ContextID || len(h.k.created) != 2 {
+				t.Fatal("next poll did not execute in a fresh session")
+			}
+		})
 	}
 }
