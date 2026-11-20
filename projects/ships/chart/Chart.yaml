@@ -1,4 +1,4 @@
 apiVersion: v2
 name: ships
-version: 0.9.12
+version: 0.10.7
 description: Pacific Northwest AIS ingestion on factory
