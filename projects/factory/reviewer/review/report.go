@@ -924,7 +924,7 @@ func namesPath(text, p string) bool {
 // previous head that introduced or exposed it, such as a caller broken by
 // a changed function, and the agent does not mark it earlier. High and
 // critical findings, human-gate findings, the previous round's IDs, IDs an
-// earlier review recorded as fixed (a regression), findings with no path
+// earlier review recorded as fixed (a regression), findings without a path or positive line number
 // and findings under any rule but lowerableRules keep their severity, so
 // neither a missing cause nor a regression missed on an intervening head
 // lowers a serious one. A nil Scope lowers nothing.
@@ -946,7 +946,7 @@ func (s *Scope) Lower(r *Report, prior []Finding, cleared []Cleared) *Report {
 	for i := range out.Findings {
 		f := &out.Findings[i]
 		if f.Severity != SeverityMedium || isGate(*f) || known[f.ID] ||
-			strings.TrimSpace(f.Path) == "" || !lowerable(*f) || s.touched(f.Path, f.Line) {
+			f.Line <= 0 || strings.TrimSpace(f.Path) == "" || !lowerable(*f) || s.touched(f.Path, f.Line) {
 			continue
 		}
 		if !f.Earlier && s.explains(f.Cause) {

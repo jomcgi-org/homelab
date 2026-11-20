@@ -1,9 +1,9 @@
 package review
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,7 +25,7 @@ const GoalReasonsPath = "/v1/goal-reasons"
 // maxGoalReasons bounds the reasons one answer carries.
 const maxGoalReasons = 4000
 
-// GoalReasons is the newest goal check reply for one head: the reasons
+// GoalReasons is the selected goal check reply for one head: the reasons
 // before its JSON answer, with the issue and evidence digest it judged.
 type GoalReasons struct {
 	Repository  string   `json:"repository"`
@@ -39,41 +39,29 @@ type GoalReasons struct {
 }
 
 var (
-	headSHA  = regexp.MustCompile(`^[0-9a-f]{40}$`)
-	repoName = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+	auditHash = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	headSHA   = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	repoName  = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 )
 
-// Reasons is the newest saved reply for the PR's head, or false. An error
-// means the audit could not be read, so the reply may exist.
-func (s *FileGoalAudit) Reasons(repo string, pr int, head string) (GoalReasons, bool, error) {
+// invariant: FACT-13
+func (s *FileGoalAudit) reasons(repo string, pr int, head, issue string, selected *GoalCheck) (GoalReasons, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	entries, err := os.ReadDir(s.dir)
+	if !auditHash.MatchString(selected.AuditID) || selected.Digest == "" {
+		return GoalReasons{}, false, nil
+	}
+	data, err := os.ReadFile(filepath.Join(s.dir, selected.AuditID+".json"))
 	if err != nil {
-		return GoalReasons{}, false, errors.New("goal audit unreadable")
+		if errors.Is(err, os.ErrNotExist) {
+			if _, dirErr := os.Stat(s.dir); dirErr == nil {
+				return GoalReasons{}, false, nil
+			}
+		}
+		return GoalReasons{}, false, err
 	}
 	var best GoalAuditRecord
-	found := false
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join(s.dir, entry.Name()))
-		if errors.Is(err, fs.ErrNotExist) {
-			continue // Pruned meanwhile.
-		}
-		if err != nil {
-			return GoalReasons{}, false, errors.New("goal audit unreadable")
-		}
-		var r GoalAuditRecord
-		if json.Unmarshal(b, &r) != nil || r.Repository != repo || r.PullRequest != pr || r.Head != head {
-			continue
-		}
-		if !found || r.CreatedAt.After(best.CreatedAt) {
-			best, found = r, true
-		}
-	}
-	if !found {
+	if json.Unmarshal(data, &best) != nil || best.Repository != repo || best.PullRequest != pr || best.Head != head || best.Issue != issue || best.Digest != selected.Digest || auditID(best.MessageID, best.TaskID) != selected.AuditID {
 		return GoalReasons{}, false, nil
 	}
 	reasons := strings.TrimSpace(best.Ownership + replyReasons(best.Reply))
@@ -81,42 +69,36 @@ func (s *FileGoalAudit) Reasons(repo string, pr int, head string) (GoalReasons, 
 		return GoalReasons{}, false, nil
 	}
 	var findings []string
-	if answer, err := ParseGoal(best.Reply); err == nil {
-		effective := &GoalCheck{Criteria: answer.Criteria, Overall: answer.Overall}
-		if best.Initial != nil {
-			effective = confirmOnly(best.Initial, effective)
+	if selected.Overall == goalNotMet {
+		for _, line := range strings.Split(reasons, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "Overall: ") {
+				findings = append(findings, clip(strings.TrimSpace(line), 400))
+				break
+			}
 		}
-		if effective.Overall == goalNotMet {
+		// Older replies explain the overall result in unlabelled prose.
+		if len(findings) == 0 {
 			for _, line := range strings.Split(reasons, "\n") {
-				if strings.HasPrefix(strings.TrimSpace(line), "Overall: ") {
-					findings = append(findings, clip(strings.TrimSpace(line), 400))
+				if detail := strings.TrimSpace(line); detail != "" && !strings.HasPrefix(detail, "Criterion ") {
+					findings = append(findings, "Overall: "+clip(detail, 400))
 					break
 				}
 			}
-			// Older replies explain the overall result in unlabelled prose.
-			if len(findings) == 0 {
-				for _, line := range strings.Split(reasons, "\n") {
-					if detail := strings.TrimSpace(line); detail != "" && !strings.HasPrefix(detail, "Criterion ") {
-						findings = append(findings, "Overall: "+clip(detail, 400))
-						break
-					}
-				}
+		}
+	}
+	for _, c := range selected.Criteria {
+		if c.Verdict != "not_met" {
+			continue
+		}
+		prefix := "Criterion " + strconv.Itoa(c.Criterion) + ": "
+		reason := "The implementation does not demonstrate this criterion."
+		for _, line := range strings.Split(reasons, "\n") {
+			if detail, ok := strings.CutPrefix(strings.TrimSpace(line), prefix); ok && detail != "" {
+				reason = clip(detail, 160)
+				break
 			}
 		}
-		for _, c := range effective.Criteria {
-			if c.Verdict != "not_met" {
-				continue
-			}
-			prefix := "Criterion " + strconv.Itoa(c.Criterion) + ": "
-			reason := "The implementation does not demonstrate this criterion."
-			for _, line := range strings.Split(reasons, "\n") {
-				if detail, ok := strings.CutPrefix(strings.TrimSpace(line), prefix); ok && detail != "" {
-					reason = clip(detail, 160)
-					break
-				}
-			}
-			findings = append(findings, prefix+reason)
-		}
+		findings = append(findings, prefix+reason)
 	}
 	return GoalReasons{
 		Findings: findings, Repository: best.Repository, PullRequest: best.PullRequest, Head: best.Head,
@@ -135,12 +117,11 @@ func replyReasons(reply string) string {
 
 // GoalReasonsSource is what the API reads.
 type GoalReasonsSource interface {
-	Reasons(repo string, pr int, head string) (GoalReasons, bool, error)
+	Reasons(ctx context.Context, repo string, pr int, head string) (GoalReasons, bool, error)
 }
 
 // GoalReasonsHandler serves GET GoalReasonsPath?repository=o/r&pullRequest=N&head=SHA.
-// It answers 404 when no reply is kept for that head, 503 when it cannot
-// read the audit, and never logs a
+// It answers 404 when no reply is kept for that head, and never logs a
 // query's answer.
 func GoalReasonsHandler(src GoalReasonsSource) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -155,9 +136,9 @@ func GoalReasonsHandler(src GoalReasonsSource) http.Handler {
 			http.Error(w, "bad query", http.StatusBadRequest)
 			return
 		}
-		got, ok, err := src.Reasons(repo, pr, head)
+		got, ok, err := src.Reasons(r.Context(), repo, pr, head)
 		if err != nil {
-			http.Error(w, "audit unreadable", http.StatusServiceUnavailable)
+			http.Error(w, "goal reasons unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		if !ok {

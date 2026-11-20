@@ -246,10 +246,10 @@ reviewer:
   enabled: true
   # Reviews at once; agents.reviewer.concurrency gives each a worker.
   concurrency: 5
-  # The coder gets the goal check's private reasons in its next revision
-  # round, posted on the issue by the connector (HOME-251).
+  # Enable private feedback after Argo CD deploys both the chart with the
+  # connector-only selector and the reviewer that checks current issue evidence.
   goalReasons:
-    enabled: true
+    enabled: false
   # The reviewer keeps one comment on each PR it reviews (verdict and
   # findings), written with the broker's Issues-write comment token.
   commentAuthor: jomcgi-factory-review[bot]

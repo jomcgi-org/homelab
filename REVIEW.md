@@ -255,7 +255,9 @@ PR:
   finding is high or critical, or it is low with `defer`. The service lowers
   a new medium finding under a root rule when it is outside the hunks
   changed since the last reviewed head and its cause names no changed file,
-  or when the reviewer marks it `earlier`. After a rebase, the changed files
+  or when the reviewer marks it `earlier`. Both cases require a path and a
+  positive line number. A finding without a line keeps its reported severity,
+  including on an unchanged file. After a rebase, the changed files
   are those whose own diff changed.
 - The check names each blocking finding a defect, missing evidence or a
   hold. Missing evidence is not a confirmed defect: the author supplies the

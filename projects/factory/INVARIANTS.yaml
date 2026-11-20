@@ -67,3 +67,10 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-13
+  statement: The goal reasons API serves only the selected parsed reply for the reviewed head and its issue evidence digest.
+  mechanism:
+  - projects/factory/reviewer/review/engine.go
+  - projects/factory/reviewer/review/goalapi.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live

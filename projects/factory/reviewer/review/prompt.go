@@ -437,7 +437,7 @@ const laterRule = " On code the earlier review covered and this head left alone,
 	"with defer. Give every new blocking finding a \"cause\" that names the changed file and says how the change introduced or " +
 	"exposed the failure, such as a caller broken by a changed function or a regression. The reviewer service lowers a new medium " +
 	"finding under a root rule to a deferred low one when it sits outside the hunks changed since the previous review and its " +
-	"cause names no changed file, or when you mark it \"earlier\": true. High and critical findings keep their severity; " +
+	"cause names no changed file, or when you mark it \"earlier\": true. Both cases require a path and a positive line number. High and critical findings keep their severity; " +
 	"one without a cause is shown as an earlier review's miss."
 
 func writeFiles(b *strings.Builder, files []RuleFile) {

@@ -165,8 +165,8 @@ def test_deploy_values_enable_the_reviewer() -> None:
     assert deploy["reviewer"]["bindings"]["homelab"]["enqueueAuthors"] == []
     # The reviewer keeps one comment on each PR, written as its App's bot.
     assert deploy["reviewer"]["commentAuthor"] == "jomcgi-factory-review[bot]"
-    # Revision rounds quote the goal check's private reasons (HOME-251).
-    assert deploy["reviewer"]["goalReasons"]["enabled"] is True
+    # Private feedback waits for the corrected chart and reviewer rollout.
+    assert deploy["reviewer"]["goalReasons"]["enabled"] is False
     assert deploy["connector"]["bindings"]["homelab"]["reviewerCheck"] == {
         "name": "factory review",
         "appId": 5758326,
@@ -708,6 +708,7 @@ def test_goal_reasons_reach_the_connector_alone() -> None:
     (peer,) = rule["fromEndpoints"]
     want = dict(peer["matchLabels"])
     assert want.pop("k8s:io.kubernetes.pod.namespace") == "factory"
+    assert want == connector["spec"]["selector"]["matchLabels"]
     assert want.items() <= connector_labels.items()
 
     egress = _in(docs, "CiliumNetworkPolicy", "factory", "factory-connector")["spec"][

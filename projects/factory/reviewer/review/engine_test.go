@@ -2232,7 +2232,7 @@ func TestLaterHeadsBlockOnlyOnTheirChanges(t *testing.T) {
 			"id": "b.go:correctness", "severity": "medium", "path": "b.go", "title": "Caller drops the error",
 			"cause": "interdiff-bbbb.go now returns an error from Load, and this unchanged caller drops it.",
 		},
-		map[string]any{"id": "b.go:validation", "severity": "medium", "path": "b.go", "title": "Old helper has no test"},
+		map[string]any{"id": "b.go:validation", "severity": "medium", "path": "b.go", "line": 5, "title": "Old helper has no test"},
 		map[string]any{"id": "interdiff-bbbb.go:validation", "severity": "medium", "path": "interdiff-bbbb.go", "title": "No regression test"},
 		map[string]any{"id": "c.go:security", "severity": "critical", "path": "c.go", "title": "Token logged"},
 	}, "previous": []any{
@@ -2241,7 +2241,7 @@ func TestLaterHeadsBlockOnlyOnTheirChanges(t *testing.T) {
 	prompt := h.k.sent()[len(h.k.sent())-1].Parts[0].Text
 	for _, want := range []string{
 		"On code the earlier review covered and this head left alone", "Give every new blocking finding a \"cause\"",
-		"its cause names no changed file", "- cause: for each finding", "- earlier: true for a new finding",
+		"Both cases require a path and a positive line number", "its cause names no changed file", "- cause: for each finding", "- earlier: true for a new finding",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("the second prompt lacks %q", want)
@@ -2293,7 +2293,7 @@ func TestRestartedReviewerStillLowersLateFindings(t *testing.T) {
 	eventually(t, "the task recorded on the check", func() bool { return RecordedTask(h.gh.check(shaB).Summary).ID == task })
 	stop1()
 	h.k.finish(task, kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{
-		map[string]any{"id": "x.go:correctness", "severity": "medium", "path": "x.go", "title": "Late race", "earlier": true},
+		map[string]any{"id": "x.go:correctness", "severity": "medium", "path": "x.go", "line": 5, "title": "Late race", "earlier": true},
 	}}))
 	// The prompt told the agent to treat late findings as low, so an
 	// unreadable interdiff must not complete the check: it waits.
@@ -2334,7 +2334,7 @@ func TestRestartedReviewerRereviewsWhenTheEarlierHeadIsGone(t *testing.T) {
 	eventually(t, "the task recorded on the check", func() bool { return RecordedTask(h.gh.check(shaB).Summary).ID == task })
 	stop1()
 	late := report(t, map[string]any{"summary": "s", "findings": []any{
-		map[string]any{"id": "x.go:correctness", "severity": "medium", "path": "x.go", "title": "Late race", "earlier": true},
+		map[string]any{"id": "x.go:correctness", "severity": "medium", "path": "x.go", "line": 5, "title": "Late race", "earlier": true},
 	}})
 	h.k.finish(task, kagent.StateCompleted, late)
 	h.gh.failWith("GET /repos/"+testRepo+"/compare/"+shaA+"..."+shaB, 404)

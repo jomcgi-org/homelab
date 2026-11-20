@@ -129,11 +129,15 @@ func OpenGoalAudit(dir string) (*FileGoalAudit, error) {
 	return &FileGoalAudit{dir: dir}, nil
 }
 
+func auditID(message, task string) string {
+	sum := sha256.Sum256([]byte(message + "\x00" + task))
+	return hex.EncodeToString(sum[:])
+}
+
 func (s *FileGoalAudit) Save(r GoalAuditRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sum := sha256.Sum256([]byte(r.MessageID + "\x00" + r.TaskID))
-	name := filepath.Join(s.dir, hex.EncodeToString(sum[:])+".json")
+	name := filepath.Join(s.dir, auditID(r.MessageID, r.TaskID)+".json")
 	if _, err := os.Stat(name); err == nil {
 		// Retry a directory sync too, if the first write failed at that step.
 		return s.sync()

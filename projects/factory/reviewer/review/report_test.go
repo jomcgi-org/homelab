@@ -1095,7 +1095,7 @@ func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
 		}
 	}
 	at := func(id, severity, path string, earlier bool) Finding {
-		return Finding{ID: id, Severity: severity, Path: path, Title: id, Earlier: earlier}
+		return Finding{ID: id, Severity: severity, Path: path, Line: 1, Title: id, Earlier: earlier}
 	}
 	r := &Report{Summary: "s", Findings: []Finding{
 		at("u.go:correctness", SeverityHigh, "u.go", true),
@@ -1169,8 +1169,8 @@ func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
 func TestLowerKeepsAFixedFindingsRegression(t *testing.T) {
 	d := &github.CommitComparison{Status: "ahead", Files: []github.PullRequestFile{{Path: "other.go"}}}
 	r := &Report{Findings: []Finding{
-		{ID: "u.go:validation", Severity: SeverityMedium, Path: "u.go", Title: "t", Earlier: true},
-		{ID: "u.go:correctness", Severity: SeverityMedium, Path: "u.go", Title: "t", Earlier: true},
+		{ID: "u.go:validation", Severity: SeverityMedium, Path: "u.go", Line: 1, Title: "t", Earlier: true},
+		{ID: "u.go:correctness", Severity: SeverityMedium, Path: "u.go", Line: 1, Title: "t", Earlier: true},
 	}}
 	cleared := []Cleared{
 		{ID: "u.go:validation", Status: StatusFixed},

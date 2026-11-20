@@ -468,7 +468,11 @@ def test_policy_egress_only_to_its_peers() -> None:
         return _in(docs, "CiliumNetworkPolicy", _NS, "factory-connector")["spec"]
 
     docs = _render(
-        ["broker.githubApp.enabled=false", f"connector.traceEndpoint={_TRACE_ENDPOINT}"]
+        [
+            "broker.githubApp.enabled=false",
+            f"connector.traceEndpoint={_TRACE_ENDPOINT}",
+            "reviewer.goalReasons.enabled=true",
+        ]
     )
     spec = policy(docs)
     assert (
