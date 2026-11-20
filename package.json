@@ -41,7 +41,8 @@
     "patchedDependencies": {
       "@sveltejs/kit": "bazel/patches/@sveltejs__kit.patch",
       "rollup": "bazel/patches/rollup.patch",
-      "happy-dom@21.0.4": "bazel/patches/happy-dom@21.0.4.patch"
+      "happy-dom@21.0.4": "bazel/patches/happy-dom@21.0.4.patch",
+      "@astryxdesign/charts@0.7.17-canary.g12f81bd": "bazel/patches/@astryxdesign__charts@0.7.17-canary.g12f81bd.patch"
     }
   }
 }

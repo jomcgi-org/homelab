@@ -1,83 +1,5 @@
 import { useId } from "react";
-import type {
-  BurnPoint,
-  Point,
-} from "../../../../factory-storyboard/schema/types";
-import { formatNumber } from "./data";
-
-export function Chart({
-  title,
-  unit,
-  points,
-  percent = false,
-}: {
-  title: string;
-  unit: string;
-  points: Point[];
-  percent?: boolean;
-}) {
-  const id = useId();
-  const max = percent
-    ? 100
-    : Math.max(1, ...points.map((point) => point.value));
-  const step = 300 / Math.max(points.length, 1);
-  return (
-    <figure className="chart" aria-labelledby={id}>
-      <figcaption id={id}>{title}</figcaption>
-      {points.length === 0 ? (
-        <p>No measurements yet.</p>
-      ) : (
-        <>
-          <svg
-            viewBox="0 0 340 160"
-            role="img"
-            aria-label={`${title}. Values are in the table below.`}
-          >
-            <text x="4" y="14">
-              {formatNumber(max)}
-            </text>
-            <text x="4" y="142">
-              0
-            </text>
-            <line x1="36" y1="140" x2="336" y2="140" className="axis" />
-            {points.map((point, index) => (
-              <rect
-                key={index}
-                className="bar"
-                x={36 + index * step + step * 0.15}
-                y={140 - (point.value / max) * 120}
-                width={step * 0.7}
-                height={(point.value / max) * 120}
-              />
-            ))}
-          </svg>
-          <details>
-            <summary>View values ({unit})</summary>
-            <table>
-              <caption>
-                {title}, {unit}
-              </caption>
-              <thead>
-                <tr>
-                  <th scope="col">Period or record</th>
-                  <th scope="col">{unit}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {points.map((point, index) => (
-                  <tr key={index}>
-                    <th scope="row">{point.label}</th>
-                    <td>{formatNumber(point.value)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </details>
-        </>
-      )}
-    </figure>
-  );
-}
+import type { BurnPoint } from "../../../../factory-storyboard/schema/types";
 
 export function BurnUp({ points }: { points: BurnPoint[] }) {
   const id = useId();
@@ -104,6 +26,7 @@ export function BurnUp({ points }: { points: BurnPoint[] }) {
             Solid line: shipped. Dashed line: total scope.
           </p>
           <svg
+            className="burn-up-plot"
             viewBox="0 0 340 160"
             role="img"
             aria-label="Shipped issues and total scope over time. Values are in the table below."

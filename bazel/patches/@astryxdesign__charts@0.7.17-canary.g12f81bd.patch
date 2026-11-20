@@ -1,0 +1,57 @@
+diff --git a/dist/Chart.js b/dist/Chart.js
+index 199845c97f515432fc065d20798b9d6ac8d1a2bc..cdfc058bc02ed2b76812001e6be9f8efda33a042 100644
+--- a/dist/Chart.js
++++ b/dist/Chart.js
+@@ -269,11 +269,7 @@ export function Chart({
+   if (containerWidth === 0) {
+     return /*#__PURE__*/_jsx("div", {
+       ref: mergedContainerRef,
+-      ...mergeProps(stylex.props(styles.container, xstyle), {
+-        style: {
+-          height: safeHeight
+-        }
+-      }, className, style),
++      ...mergeProps(stylex.props(styles.container, xstyle), className, style),
+       ...rest
+     });
+   }
+diff --git a/dist/ChartAxis.js b/dist/ChartAxis.js
+index aaafde5d4fe43475cd6b507276e10a35eedbd17b..22bb168d8785bd33eff8700f6c54d62d278591e4 100644
+--- a/dist/ChartAxis.js
++++ b/dist/ChartAxis.js
+@@ -152,7 +152,6 @@ export function ChartAxis({
+     }
+     return 0;
+   })();
+-  const tickTransition = animated ? 'transform 150ms linear, opacity 150ms ease' : undefined;
+   return /*#__PURE__*/_jsxs("g", {
+     transform: transform,
+     role: "group",
+@@ -177,11 +176,8 @@ export function ChartAxis({
+       if (isHorizontal) {
+         const y = position === 'bottom' ? TICK_SIZE : -TICK_SIZE;
+         return /*#__PURE__*/_jsxs("g", {
+-          style: {
+-            transform: `translateX(${offset}px)`,
+-            transition: tickTransition,
+-            opacity: isVisible ? 1 : 0
+-          },
++          transform: `translate(${offset},0)`,
++          opacity: isVisible ? 1 : 0,
+           children: [showTicks && /*#__PURE__*/_jsx("line", {
+             y2: y,
+             ...{
+@@ -199,11 +195,8 @@ export function ChartAxis({
+       // Vertical axis
+       const x = position === 'left' ? -TICK_SIZE : TICK_SIZE;
+       return /*#__PURE__*/_jsxs("g", {
+-        style: {
+-          transform: `translateY(${offset}px)`,
+-          transition: tickTransition,
+-          opacity: isVisible ? 1 : 0
+-        },
++        transform: `translate(0,${offset})`,
++          opacity: isVisible ? 1 : 0,
+         children: [showTicks && /*#__PURE__*/_jsx("line", {
+           x2: x,
+           ...{

@@ -90,6 +90,7 @@ js_library(
         ":docs_pages",
     ],
     deps = [
+        ":node_modules/@astryxdesign/charts",
         ":node_modules/@astryxdesign/core",
         ":node_modules/@astryxdesign/theme-neutral",
         ":node_modules/@esbuild/linux-x64",
