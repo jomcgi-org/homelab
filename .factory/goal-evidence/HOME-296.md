@@ -18,4 +18,6 @@ helm template cilium "$CILIUM_CHECKOUT/install/kubernetes/cilium" -n kube-system
   -f projects/platform-factory/cilium/values.yaml --show-only templates/cilium-configmap.yaml
 ```
 
-After the Cilium rollout, verify header redaction on every node eligible for the bridge. Then enable `discord.bridge.enforceAgentPath` in the factory deployment values. With the updated bridge running, verify a Bosun turn completes and a POST from the bridge to another agent receives a Cilium HTTP 403. Inspect the matching Hubble flows for a redacted Authorization value.
+After the Cilium rollout, verify header redaction on every node eligible for the bridge and verify the updated bridge image and chart are deployed. Set `discord.bridge.enforceAgentPath=true` in both `projects/factory/deploy/values.yaml` and `projects/factory/chart/values-homelab.yaml`. Refresh `projects/factory/deploy/render.sha256` using the command in `test_deploy_values_render_is_locked`.
+
+After sync, confirm a Discord mention completes a Bosun turn. From the bridge pod's network identity, POST to `/agents/factory-r-homelab/coder` on the same controller. Record the HTTP 403 and the corresponding Hubble L7 denial with the bridge as source. For the successful Bosun POST, check the Authorization field is redacted before retaining any flow evidence.

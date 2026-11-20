@@ -1201,7 +1201,7 @@ def test_discord_agent_uses_only_the_dedicated_key_and_has_no_tools() -> None:
 
 
 def test_discord_bridge_staging_and_session_expiration() -> None:
-    docs = _render(_DISCORD)
+    docs = _render(_DISCORD + ["discord.bridge.enforceAgentPath=false"])
     policy = _in(docs, "CiliumNetworkPolicy", "factory-discord", "discord-bridge")
     assert "rules" not in policy["spec"]["egress"][3]["toPorts"][0]
     config = _one(docs, "ConfigMap", "kagent-controller")["data"]["controller.yaml"]
