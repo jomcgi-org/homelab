@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// invariant: FACT-13
 // TestGoalReasonsAPIServesTheSelectedReplyForAHead returns a head's selected
 // goal reply without its JSON answer, and nothing for another head, a bad
 // query or another method.

@@ -1697,6 +1697,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				}
 			}
 			if e.finish(ctx, b, currentPR, run, res.o, l) {
+				// invariant: FACT-13
 				if publishes && in.goal != nil && in.goal.AuditID != "" {
 					if err := audit.selectGoal(b.repo(), pr.Number, currentPR.HeadSHA, issueDigest(in.issues), in.goal.AuditID, e.cfg.Now()); err != nil {
 						l.WarnContext(ctx, "could not save goal reasons")

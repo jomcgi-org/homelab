@@ -70,6 +70,7 @@ func (s *FileGoalAudit) selectionName(repo string, pr int, head string) string {
 	return filepath.Join(s.dir, "goal-selected-"+auditID(repo, strconv.Itoa(pr)+"/"+head)+".json")
 }
 
+// invariant: FACT-13
 func (s *FileGoalAudit) Reasons(repo string, pr int, head string) (GoalReasons, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
