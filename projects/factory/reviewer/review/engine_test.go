@@ -2460,6 +2460,8 @@ func TestMergeGroupsGetTheQueuedPRsReview(t *testing.T) {
 	e, ctx, _ := h.start()
 	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
 	eventually(t, "the check to pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
+	// The poller can read the completed review once its worker has released the head.
+	e.Wait()
 	h.gh.mu.Lock()
 	h.gh.queue = []github.MergeQueueEntry{
 		{State: "AWAITING_CHECKS", HeadCommit: "mg-7", Number: 7, PRHeadSHA: shaA},
