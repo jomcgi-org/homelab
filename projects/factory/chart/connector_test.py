@@ -113,6 +113,14 @@ def _env(docs: list[dict[str, Any]]) -> dict[str, Any]:
     return {e["name"]: e.get("value", e.get("valueFrom")) for e in c["env"]}
 
 
+def test_memory_retain_url_override() -> None:
+    endpoint = "http://memory.example.test:8888/ext/connector/retain"
+    assert (
+        _env(_render([f"connector.memoryRetainURL={endpoint}"]))["FACTORY_MEMORY_URL"]
+        == endpoint
+    )
+
+
 def _config(docs: list[dict[str, Any]]) -> dict[str, Any]:
     cm = _in(docs, "ConfigMap", _NS, "factory-connector")
     return yaml.safe_load(cm["data"]["config.yaml"])
