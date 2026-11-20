@@ -7,6 +7,7 @@ import "github.com/prometheus/client_golang/prometheus"
 
 // Metrics is the reviewer's metric set.
 type Metrics struct {
+	SemgrepErrors    *prometheus.CounterVec
 	ReviewsStarted   *prometheus.CounterVec // binding, kind
 	ReviewsCompleted *prometheus.CounterVec // binding, conclusion
 	Findings         *prometheus.CounterVec // binding, severity, rule
@@ -33,6 +34,7 @@ type Metrics struct {
 // New registers the metrics with reg; a nil reg leaves them unregistered.
 func New(reg prometheus.Registerer) *Metrics {
 	m := &Metrics{
+		SemgrepErrors: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "factory_reviewer_semgrep_triage_errors_total", Help: "Failed Semgrep triage requests."}, []string{"binding"}),
 		ReviewsStarted: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_reviewer_reviews_started_total",
 			Help: "Reviews started by binding and kind (new: check run created and task sent; reattach: an in-progress check run picked up again).",
@@ -125,7 +127,7 @@ func New(reg prometheus.Registerer) *Metrics {
 		}, []string{"binding", "reason"}),
 	}
 	if reg != nil {
-		reg.MustRegister(m.ReviewsStarted, m.ReviewsCompleted, m.Findings, m.Withdrawals, m.HumanGates, m.Retries, m.SplitRequests, m.InFlight, m.Enqueues, m.MergeGroupChecks,
+		reg.MustRegister(m.SemgrepErrors, m.ReviewsStarted, m.ReviewsCompleted, m.Findings, m.Withdrawals, m.HumanGates, m.Retries, m.SplitRequests, m.InFlight, m.Enqueues, m.MergeGroupChecks,
 			m.GitHubErrors, m.KagentErrors, m.Conditional, m.CommentWrites, m.ReviewSessions, m.ReviewTaskBytes, m.ReviewTokens, m.ReviewUsage,
 			m.SessionsDeleted)
 	}

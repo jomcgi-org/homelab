@@ -1,11 +1,17 @@
 package review
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,8 +25,10 @@ const (
 	maxSemgrepComment  = 4000
 )
 
-// Semgrep configures GitHub evidence only. Nil leaves the integration off.
+// Semgrep configures GitHub evidence and service-side finding triage.
 type Semgrep struct {
+	transport http.RoundTripper
+	APIKey    string `json:"-" yaml:"-"`
 	AppID     int64
 	CheckName string
 	Wait      time.Duration
@@ -165,7 +173,7 @@ func writeSemgrep(b *strings.Builder, sha string, s *SemgrepEvidence) {
 		"Account for every finding against the current head: fixed, a false positive with code evidence, or a real finding " +
 		"at its REVIEW.md severity. Report each real finding in findings under its own path:rule ID; it uses the normal reviewer gate. " +
 		"Explain fixed findings and false positives in your summary, citing code. Outdated comments still need that assessment. " +
-		"Do not use the service-owned ID semgrep:unverified.\n\n")
+		"Return semgrep_decisions, one object per listed comment in the same order with comment_id, reason (false positive, acceptable risk, fixed, or open) and a note citing evidence. Copy comment_id from its comment header. Do not return finding IDs in this array. Do not use the service-owned ID semgrep:unverified.\n\n")
 	if s.Unavailable != "" {
 		fmt.Fprintf(b, "The service will add a blocking medium semgrep:unverified: %s.\n\n", s.Unavailable)
 	}
@@ -192,4 +200,148 @@ func writeSemgrep(b *strings.Builder, sha string, s *SemgrepEvidence) {
 		data.WriteString(quote(cm.Body) + "\n\n")
 	}
 	writeUntrusted(b, "semgrep", sha, data.String())
+}
+
+type semgrepDecision struct {
+	CommentID int64  `json:"comment_id"`
+	Reason    string `json:"reason"`
+	Note      string `json:"note"`
+}
+
+type semgrepRow struct {
+	ID         int64
+	Ref        string
+	Status     string
+	Repository struct{ Name string }
+	Location   struct {
+		Commit string
+		Path   string `json:"file_path"`
+		Line   int
+	}
+}
+
+// Resolve only unique open findings at the App comment's current location.
+func semgrepTargets(ctx context.Context, client *http.Client, key, repo, ref string) (string, []semgrepRow, error) {
+	const base = "https://semgrep.dev/api/v1/deployments"
+	get := func(endpoint string, out any) error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			return fmt.Errorf("Semgrep lookup returned %d", resp.StatusCode)
+		}
+		return json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(out)
+	}
+	var orgs struct{ Deployments []struct{ Slug string } }
+	if key == "" {
+		return "", nil, fmt.Errorf("missing Semgrep key")
+	}
+	if err := get(base, &orgs); err != nil {
+		return "", nil, err
+	}
+	if len(orgs.Deployments) != 1 || orgs.Deployments[0].Slug == "" {
+		return "", nil, fmt.Errorf("ambiguous Semgrep deployment")
+	}
+	org := url.PathEscape(orgs.Deployments[0].Slug)
+	q := url.Values{"repos": {repo}, "ref": {ref}, "page_size": {"100"}}
+	var rows []semgrepRow
+	for page := 0; page < 50; page++ {
+		q.Set("page", strconv.Itoa(page))
+		var result struct{ Findings []semgrepRow }
+		if err := get(base+"/"+org+"/findings?"+q.Encode(), &result); err != nil {
+			return "", nil, err
+		}
+		rows = append(rows, result.Findings...)
+		if len(result.Findings) < 100 {
+			return org, rows, nil
+		}
+	}
+	return "", nil, fmt.Errorf("incomplete Semgrep listing")
+}
+
+func (e *Engine) triageSemgrep(ctx context.Context, b *Binding, pr github.PullRequest, s *SemgrepEvidence, r *Report, o *Outcome) {
+	if s == nil || s.Unavailable != "" || len(s.Comments) != len(r.SemgrepDecisions) {
+		return
+	}
+	var names []string
+	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	var rows []semgrepRow
+	var org string
+	loaded := false
+	if e.cfg.Semgrep.transport != nil {
+		client.Transport = e.cfg.Semgrep.transport
+	}
+	for i, cm := range s.Comments {
+		d := r.SemgrepDecisions[i]
+		if d.CommentID != cm.ID || cm.Kind != "pulls" || cm.CommitSHA != pr.HeadSHA || cm.Outdated == nil || *cm.Outdated || (d.Reason != "false positive" && d.Reason != "acceptable risk") || strings.TrimSpace(d.Note) == "" {
+			continue
+		}
+		// Separate comments at the same location cannot distinguish the rows.
+		if cm.Line <= 0 || cm.Path == "" || slices.ContainsFunc(s.Comments, func(other github.AppComment) bool {
+			return other.ID != cm.ID && other.Path == cm.Path && other.Line == cm.Line && other.CommitSHA == cm.CommitSHA
+		}) {
+			continue
+		}
+		if !loaded {
+			var err error
+			org, rows, err = semgrepTargets(ctx, client, e.cfg.Semgrep.APIKey, b.repo(), "refs/heads/"+pr.HeadRef)
+			if err != nil {
+				e.m.SemgrepErrors.WithLabelValues(b.Name).Inc()
+				e.prLog(b, pr).WarnContext(ctx, "Semgrep finding lookup failed")
+				break
+			}
+			loaded = true
+		}
+		var id int64
+		for _, row := range rows {
+			if (row.Ref == pr.HeadRef || row.Ref == "refs/heads/"+pr.HeadRef) && row.Repository.Name == b.repo() && row.Location.Commit == pr.HeadSHA && row.Location.Path == cm.Path && row.Location.Line == cm.Line {
+				if id != 0 || !strings.EqualFold(row.Status, "open") || row.ID <= 0 {
+					id = 0
+					break
+				}
+				id = row.ID
+			}
+		}
+		if id == 0 {
+			continue
+		}
+		if !ignoreSemgrep(ctx, client, e.cfg.Semgrep.APIKey, org, id, d) {
+			e.m.SemgrepErrors.WithLabelValues(b.Name).Inc()
+			e.prLog(b, pr).WarnContext(ctx, "Semgrep triage failed", "finding", id)
+			continue
+		}
+		names = append(names, strconv.FormatInt(id, 10))
+	}
+	if len(names) == 0 {
+		return
+	}
+	feedback := "Ignored in Semgrep: " + strings.Join(names, ", ") + "."
+	o.Output.Summary = feedback + "\n\n" + o.Output.Summary
+	o.Comment.Note = strings.TrimSpace(o.Comment.Note + " " + feedback)
+}
+
+func ignoreSemgrep(ctx context.Context, client *http.Client, key, org string, id int64, d semgrepDecision) bool {
+	if key == "" {
+		return false
+	}
+	body, _ := json.Marshal(map[string]any{"issue_ids": []int64{id}, "new_triage_state": "ignored", "new_ignored_reason": d.Reason, "new_note": d.Note})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://semgrep.dev/api/v1/deployments/"+org+"/triage", bytes.NewReader(body))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }

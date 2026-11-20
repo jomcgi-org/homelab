@@ -2,7 +2,10 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -521,5 +524,61 @@ func TestSemgrepLateScanKeepsGoalBlockers(t *testing.T) {
 	}
 	if after.Semgrep == nil || !after.Semgrep.Verified || !reflect.DeepEqual(after.Goal, before.Goal) || len(goalTexts(h)) != 2 {
 		t.Fatalf("late scan lost or reran the goal check: %+v", after)
+	}
+}
+
+type semgrepTransport func(*http.Request) (*http.Response, error)
+
+func (f semgrepTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestSemgrepTriageAfterVerdict(t *testing.T) {
+	for _, status := range []int{200, 503} {
+		h := semgrepHarness(t)
+		h.cfg.Semgrep.APIKey = "fixture"
+		b := &h.cfg.Bindings[0]
+		writes := 0
+		h.cfg.Semgrep.transport = semgrepTransport(func(req *http.Request) (*http.Response, error) {
+			payload := ""
+			code := 200
+			switch req.URL.Path {
+			case "/api/v1/deployments":
+				payload = `{"deployments":[{"slug":"test"}]}`
+			case "/api/v1/deployments/test/findings":
+				for i := 1; i <= 3; i++ {
+					if i > 1 {
+						payload += ","
+					}
+					payload += fmt.Sprintf(`{"id":%d,"status":"open","ref":"refs/heads/test","repository":{"name":%q},"location":{"file_path":"file","line":%d,"commit":%q}}`, i, b.repo(), i, shaA)
+				}
+				payload = `{"findings":[` + payload + `]}`
+			case "/api/v1/deployments/test/triage":
+				writes++
+				var body map[string]any
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				want := map[string]any{"issue_ids": []any{float64(1)}, "new_triage_state": "ignored", "new_ignored_reason": "false positive", "new_note": "validated upstream"}
+				if req.Method != "POST" || !reflect.DeepEqual(body, want) {
+					t.Fatalf("unexpected triage %v", body)
+				}
+				code = status
+			default:
+				t.Fatalf("unexpected endpoint %s", req.URL.Path)
+			}
+			return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(payload))}, nil
+		})
+		e := h.engine()
+		s := &SemgrepEvidence{}
+		r := &Report{}
+		current := false
+		for i, reason := range []string{"false positive", "fixed", "open"} {
+			s.Comments = append(s.Comments, github.AppComment{Kind: "pulls", ID: int64(i + 1), Path: "file", Line: i + 1, CommitSHA: shaA, Outdated: &current})
+			r.SemgrepDecisions = append(r.SemgrepDecisions, semgrepDecision{CommentID: int64(i + 1), Reason: reason, Note: "validated upstream"})
+		}
+		o := Outcome{Conclusion: ConclusionFailure, Comment: &CommentUpdate{}}
+		e.triageSemgrep(context.Background(), b, github.PullRequest{HeadSHA: shaA, HeadRef: "test"}, s, r, &o)
+		if writes != 1 || o.Conclusion != ConclusionFailure || strings.Contains(o.Output.Summary, "Ignored in Semgrep: 1.") != (status == 200) || strings.Contains(o.Comment.Note, "Ignored in Semgrep: 1.") != (status == 200) {
+			t.Fatalf("wrong triage outcome for %d: %+v", status, o)
+		}
 	}
 }

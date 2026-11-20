@@ -73,3 +73,9 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: The reviewer service alone receives the reviewer's Semgrep API key. Review sandboxes cannot read it.
+  mechanism:
+  - projects/factory/chart/templates/reviewer.yaml
+  test: //projects/factory/chart:reviewer_test
+  state: live

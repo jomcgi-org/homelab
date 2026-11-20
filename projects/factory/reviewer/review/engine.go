@@ -2876,6 +2876,7 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 			body := summary + "\n\n" + *o.Comment.Findings
 			o.Comment.Findings = &body
 		}
+		e.triageSemgrep(ctx, b, pr, in.semgrep, r, &o)
 		if in.priorUnknown != "" {
 			// Render left maxPreface for this note, so the summary's tail
 			// (the human-hold marker and footer) survives.
