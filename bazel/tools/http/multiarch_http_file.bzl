@@ -116,6 +116,7 @@ alias(
 
     repository_ctx.file("BUILD.bazel", build_content)
 
+    # invariant: HTTP-1
     # Download the binaries. With extract_path set the URL is an archive
     # (e.g. a GitHub release .tar.gz); it is extracted and the binary at
     # extract_path inside it becomes the per-arch binary. Without it the URL
