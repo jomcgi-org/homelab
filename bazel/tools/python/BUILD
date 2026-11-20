@@ -14,6 +14,7 @@ _PLATFORM_WHEELS = {
 # Fetches metadata for python packages we depend on.
 modules_mapping(
     name = "modules_map",
+    tags = ["manual"],
     wheels = [wheel for name, wheel in all_whl_requirements_by_package.items() if name not in _PLATFORM_WHEELS] + _PLATFORM_WHEELS.values(),
 )
 

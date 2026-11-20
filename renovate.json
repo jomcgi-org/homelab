@@ -175,7 +175,11 @@
       "matchManagers": ["pep621", "pip_requirements"],
       "postUpgradeTasks": {
         "commands": ["bazel/tools/format/update-python-requirements.sh"],
-        "fileFilters": ["pyproject.toml", "bazel/requirements/*.txt"],
+        "fileFilters": [
+          "pyproject.toml",
+          "bazel/requirements/*.txt",
+          "bazel/tools/python/gazelle_python.yaml"
+        ],
         "executionMode": "branch"
       },
       "matchFileNames": ["pyproject.toml", "bazel/requirements/overrides.txt"]
