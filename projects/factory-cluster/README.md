@@ -158,6 +158,26 @@ second factor; choose TOTP. A WebAuthn key enrolled over the port-forward is
 bound to `localhost` and fails on factory-auth.jomcgi.dev. The admin and user
 interfaces are reachable only through the port-forward.
 
+### T3 browser access
+
+On node-1, install the socket units after the T3 route and relay are reviewed.
+The relay mounts only the dedicated socket directory and has no network egress.
+T3 listens on `127.0.0.1:3773`. Tailscale Serve uses that listener for mobile.
+
+```sh
+sudo install -m 0644 projects/factory-cluster/nodes/t3-cluster.{socket,service} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now t3-cluster.socket
+```
+
+Before use, check that unauthenticated requests to the UI, API and WebSocket
+start sign-in, and that an authenticated `factory-operators` account without
+`authentik Admins` receives 403. Confirm that an admin can pair and reconnect
+from the browser, and that mobile pairing still works. To withdraw the
+cluster relay, use `sudo systemctl disable --now t3-cluster.socket` and
+`sudo systemctl stop t3-cluster.service`. Revert the Git change to withdraw
+the route and DNS.
+
 ### kubectl through Authentik
 
 | Authentik group | Access |

@@ -79,6 +79,13 @@ def test_edge_guards(docs):
         "defaultAction": "Deny",
         "rules": [
             {
+                "name": "deny-t3-fallback",
+                "action": "Deny",
+                "principal": {
+                    "headers": [{"name": ":authority", "values": ["t3.jomcgi.dev"]}]
+                },
+            },
+            {
                 "name": "allow-operators",
                 "action": "Allow",
                 "principal": {
@@ -125,7 +132,7 @@ def test_edge_guards(docs):
     assert [
         (rule["action"], claim["name"], claim["values"])
         for rule in runbook_auth["rules"]
-        for claim in rule["principal"]["jwt"]["claims"]
+        for claim in rule["principal"].get("jwt", {}).get("claims", [])
     ] == [("Allow", "groups", ["authentik Admins", "factory-operators"])]
     for (kind, _), doc in docs.items():
         if kind == "SecurityPolicy":
@@ -182,6 +189,7 @@ def test_only_kagent_forwards_the_access_token(docs):
         "edge-authentik-oidc",
         "authentik-no-gateway-oidc",
         "kagent-authentik-oidc",
+        "t3-authentik-oidc",
         "kube-api-authentik-jwt",
         "explore-api-authentik-jwt",
     }
@@ -196,7 +204,10 @@ def test_only_kagent_forwards_the_access_token(docs):
             }
         ],
         "jwt": gateway["jwt"],
-        "authorization": gateway["authorization"],
+        "authorization": {
+            "defaultAction": "Deny",
+            "rules": gateway["authorization"]["rules"][1:],
+        },
         "oidc": {**gateway["oidc"], "forwardAccessToken": True},
     }
     assert policies["authentik-no-gateway-oidc"]["spec"] == {
@@ -252,6 +263,31 @@ def test_edge_may_reference_only_the_kagent_ui(docs):
         ],
         "to": [{"group": "", "kind": "Service", "name": "kagent-ui"}],
     }
+
+
+def test_t3_requires_admin_group_on_the_entire_host(docs):
+    route = docs["HTTPRoute", "t3"]["spec"]
+    assert route["hostnames"] == ["t3.jomcgi.dev"]
+    assert route["rules"] == [
+        {
+            "matches": [{"path": {"type": "PathPrefix", "value": "/"}}],
+            "timeouts": {"request": "0s", "backendRequest": "0s"},
+            "backendRefs": [{"name": "t3-relay", "namespace": "t3", "port": 8080}],
+        }
+    ]
+    policy = docs["SecurityPolicy", "t3-authentik-oidc"]["spec"]
+    gateway = docs["SecurityPolicy", "edge-authentik-oidc"]["spec"]
+    assert policy["targetRefs"] == [
+        {"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "name": "t3"}
+    ]
+    assert policy["oidc"] == gateway["oidc"]
+    assert policy["jwt"] == gateway["jwt"]
+    assert policy["authorization"]["defaultAction"] == "Deny"
+    (rule,) = policy["authorization"]["rules"]
+    assert rule["action"] == "Allow"
+    assert rule["principal"]["jwt"]["claims"] == [
+        {"name": "groups", "valueType": "StringArray", "values": ["authentik Admins"]}
+    ]
 
 
 def test_kube_api_requires_an_authentik_token_from_a_kube_group(docs):
@@ -418,7 +454,12 @@ def test_kagent_hostname_is_owned_and_published():
     )
     route = yaml.safe_load(tunnel.read_text())
     assert route["metadata"]["namespace"] == "edge"
+    assert any(
+        rule["message"] == "Only edge/t3 and the edge tunnel may route t3.jomcgi.dev."
+        for rule in validations
+    )
     assert {
+        "t3.jomcgi.dev",
         "factory-agents.jomcgi.dev",
         "factory-kube.jomcgi.dev",
         "factory-explore-api.jomcgi.dev",
