@@ -1,3 +1,5 @@
+// invariant: FACT-13
+
 package config
 
 import (
