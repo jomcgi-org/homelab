@@ -732,7 +732,7 @@ The following query also pins the pod UID and session for the measurement.
 ```sql
 SELECT a.id AS old_attempt, a.context_id AS old_session, f.uid AS pod_uid,
        f.pod AS pod_name
-FROM delivery_attempt a JOIN worker_fence f ON f.attempt_id = a.id
+FROM delivery_attempt a JOIN scoped_worker_fence f ON f.attempt_id = a.id
 WHERE a.run_id = :'run_id' AND a.state = 'accepted' AND a.tool_running
   AND f.namespace = 'factory-r-homelab' AND f.gone_at IS NULL
   AND f.session_id = a.context_id
@@ -751,7 +751,7 @@ on the time to an accepted retry.
 SELECT f.uid, f.gone_at, a.id AS new_attempt, a.context_id AS new_session,
        clock_timestamp() - :'drill_start'::timestamptz AS elapsed,
        EXISTS (SELECT FROM recovery_hold WHERE target_attempt_id = f.attempt_id) AS had_hold
-FROM worker_fence f JOIN delivery_attempt old ON old.id = f.attempt_id
+FROM scoped_worker_fence f JOIN delivery_attempt old ON old.id = f.attempt_id
 JOIN delivery_attempt a ON a.run_id = old.run_id AND a.seq = old.seq + 1
 WHERE old.run_id = :'run_id' AND old.error_class = 'abandoned'
   AND f.attempt_id = :'old_attempt' AND f.uid = :'pod_uid' AND f.gone_at IS NOT NULL

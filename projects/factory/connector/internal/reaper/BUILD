@@ -24,6 +24,7 @@ go_test(
     embed = [":reaper"],
     deps = [
         "//projects/factory/connector/internal/pgtest",
+        "//projects/factory/connector/migrations",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
         "@io_k8s_client_go//kubernetes/typed/core/v1:core",
         "@io_k8s_client_go//rest",

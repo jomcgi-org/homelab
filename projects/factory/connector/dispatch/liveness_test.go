@@ -432,7 +432,7 @@ func TestGoneWorkerRetriesBusyTurnWithinFiveMinutes(t *testing.T) {
 
 func (v *env) recordWorkerLoss(a *store.Attempt) {
 	v.t.Helper()
-	_, err := v.st.DB.Exec(`INSERT INTO worker_fence(attempt_id,session_id,namespace,pod,uid,gone_at,actor_uid,actor_version)
+	_, err := v.st.DB.Exec(`INSERT INTO scoped_worker_fence(attempt_id,session_id,namespace,pod,uid,gone_at,actor_uid,actor_version)
 		VALUES ($1,$2,'factory-r-homelab','homelab-codex-a','original',now(),'actor',19)`, a.ID, a.ContextID)
 	if err != nil {
 		v.t.Fatal(err)
