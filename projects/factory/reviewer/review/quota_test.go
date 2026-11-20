@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
@@ -306,39 +307,29 @@ func TestQuotaPauseKeepsOneReviewRoot(t *testing.T) {
 	}
 }
 
-// A paused review whose process stops still exports its root, marked
-// interrupted.
-func TestQuotaPausedRootEndsOnShutdown(t *testing.T) {
-	exporter := captureReviewSpans(t)
-	h := newHarness(t)
-	addPR7(h)
-	h.cfg.Quota = &fakeQuota{}
-	e, ctx, stop := h.start()
-	task := runReview(t, h, e, ctx, 7, shaA)
-	h.k.finish(task, kagent.StateFailed, "insufficient_quota")
-	waitForQuotaCheck(t, h)
-	for _, span := range exporter.GetSpans() {
-		if span.Name == "review" {
-			t.Fatal("paused review root ended before its check completed")
-		}
-	}
-	stop()
+// reviewSpans returns the attributes and events of each exported review
+// span, with whether it is a root.
+func reviewSpans(exporter *tracetest.InMemoryExporter) (spans []map[string]string) {
 	for _, span := range exporter.GetSpans() {
 		if span.Name != "review" {
 			continue
 		}
+		attrs := map[string]string{"root": fmt.Sprint(!span.Parent.IsValid()), "id": span.SpanContext.SpanID().String()}
 		for _, a := range span.Attributes {
-			if a.Key == "review.verdict" && a.Value.AsString() == "interrupted" {
-				return
-			}
+			attrs[string(a.Key)] = a.Value.Emit()
 		}
+		for _, ev := range span.Events {
+			attrs["event."+ev.Name] = "true"
+		}
+		spans = append(spans, attrs)
 	}
-	t.Fatal("paused root not exported as interrupted on shutdown")
+	return spans
 }
 
-// The next process continues the trace of a review that stopped while it
-// waited for quota, when it reattaches to the in-progress check.
-func TestRestartedReviewContinuesItsTrace(t *testing.T) {
+// A process that stops while its review waits for quota exports no root.
+// The next process continues the same root span with the usage recorded
+// before the stop.
+func TestRestartedReviewKeepsOneRoot(t *testing.T) {
 	exporter := captureReviewSpans(t)
 	h := newHarness(t)
 	addPR7(h)
@@ -346,9 +337,13 @@ func TestRestartedReviewContinuesItsTrace(t *testing.T) {
 	h.cfg.Quota = q
 	e, ctx, stop := h.start()
 	task := runReview(t, h, e, ctx, 7, shaA)
+	h.k.stamp(task, map[string]any{"inputTokens": float64(5), "outputTokens": float64(1)})
 	h.k.finish(task, kagent.StateFailed, "insufficient_quota")
 	rec := waitForQuotaCheck(t, h)
 	stop()
+	if spans := reviewSpans(exporter); len(spans) != 0 {
+		t.Fatalf("stopped process exported the paused root: %v", spans)
+	}
 	e, ctx, stop = h.start()
 	q.set(github.QuotaReading{ReceivedAt: rec.QuotaSince.Add(time.Second)}, nil)
 	e.Tick(ctx)
@@ -357,30 +352,52 @@ func TestRestartedReviewContinuesItsTrace(t *testing.T) {
 		task = h.k.taskFor(id)
 		return task != ""
 	})
+	h.k.stamp(task, map[string]any{"inputTokens": float64(7), "outputTokens": float64(2)})
 	h.k.finish(task, kagent.StateCompleted, report(t, passing))
 	eventually(t, "review passes", func() bool {
 		return h.gh.check(shaA).Conclusion == ConclusionSuccess
 	})
 	stop()
-	traces := map[string]bool{}
-	var roots, verdicts []string
-	for _, span := range exporter.GetSpans() {
-		if span.Name != "review" {
-			continue
-		}
-		traces[span.SpanContext.TraceID().String()] = true
-		if !span.Parent.IsValid() {
-			roots = append(roots, span.SpanContext.SpanID().String())
-		}
-		for _, a := range span.Attributes {
-			if a.Key == "review.verdict" {
-				verdicts = append(verdicts, a.Value.AsString())
-			}
+	spans := reviewSpans(exporter)
+	if len(spans) != 1 {
+		t.Fatalf("review spans = %v, want one root", spans)
+	}
+	for k, v := range map[string]string{"root": "true", "review.verdict": ConclusionSuccess, "tokens.input": "12", "tokens.output": "3", "pr.number": "7", "pr.head_sha": shaA, "event.review resumed": "true"} {
+		if spans[0][k] != v {
+			t.Errorf("%s = %q, want %q", k, spans[0][k], v)
 		}
 	}
-	slices.Sort(verdicts)
-	if len(traces) != 1 || len(roots) != 1 || !slices.Equal(verdicts, []string{"interrupted", ConclusionSuccess}) {
-		t.Fatalf("traces = %v, roots = %v, verdicts = %v", traces, roots, verdicts)
+}
+
+// A task whose usage was recorded before a failed PR read and a restart is
+// counted once on the continued root.
+func TestRestartAfterFailedRevalidationCountsTaskOnce(t *testing.T) {
+	exporter := captureReviewSpans(t)
+	h := newHarness(t)
+	addPR7(h)
+	e, ctx, stop := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	h.gh.mu.Lock()
+	h.gh.failGQL = map[string]bool{"pull_request": true}
+	h.gh.mu.Unlock()
+	h.k.stamp(task, map[string]any{"inputTokens": float64(5), "outputTokens": float64(1)})
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	eventually(t, "failed revalidation", func() bool {
+		return h.gh.graphqlCalls("pull_request") > 0 && testutil.ToFloat64(h.m.InFlight) == 0
+	})
+	stop()
+	h.gh.mu.Lock()
+	h.gh.failGQL = nil
+	h.gh.mu.Unlock()
+	e, ctx, stop = h.start()
+	e.Tick(ctx)
+	eventually(t, "review passes", func() bool {
+		return h.gh.check(shaA).Conclusion == ConclusionSuccess
+	})
+	stop()
+	spans := reviewSpans(exporter)
+	if len(spans) != 1 || spans[0]["root"] != "true" || spans[0]["tokens.input"] != "5" || spans[0]["review.verdict"] != ConclusionSuccess {
+		t.Fatalf("review spans = %v, want one root with the task counted once", spans)
 	}
 }
 

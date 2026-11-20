@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -1067,9 +1068,20 @@ type State struct {
 	// Overflow marks a checkpoint that dropped this review's own findings to
 	// fit. Only a replay of its task clears it.
 	Overflow bool `json:"overflow,omitempty"`
-	// Trace is the W3C traceparent of the review's root span. A worker that
-	// reattaches to the in-progress check after a restart continues it.
-	Trace string `json:"trace,omitempty"`
+	// Trace records the review's root span while its check is in progress.
+	// A worker that reattaches to the check after a restart continues it.
+	Trace *TraceState `json:"trace,omitempty"`
+}
+
+// TraceState is a review root span that a later process can continue.
+type TraceState struct {
+	// Parent is the root's W3C traceparent.
+	Parent string    `json:"parent"`
+	Start  time.Time `json:"start"`
+	PR     int       `json:"pr"`
+	// Usage and Tasks are the root's token totals and the tasks it counted.
+	Usage Usage    `json:"usage"`
+	Tasks []string `json:"tasks,omitempty"`
 }
 
 // ClearedComplete reports whether the cleared record still holds every

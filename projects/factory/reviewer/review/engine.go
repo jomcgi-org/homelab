@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"path"
 	"regexp"
@@ -405,7 +406,12 @@ func (e *Engine) Run(ctx context.Context, poll time.Duration) error {
 func (e *Engine) Wait() {
 	e.wg.Wait()
 	e.commentWG.Wait()
-	e.endParked(func(*parkedRoot) bool { return true }, "interrupted")
+	// A root whose check state holds it is not exported here: the next
+	// process continues the same root span (restoreRoot).
+	e.endParked(func(p *parkedRoot) bool { return !p.usage.persisted }, "interrupted")
+	e.mu.Lock()
+	clear(e.parked)
+	e.mu.Unlock()
 }
 
 // Tick polls every binding once. Reviews it starts run in the background
@@ -1126,13 +1132,10 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		root = p.usage.span
 		root.AddEvent("review resumed")
 		ctx = context.WithValue(trace.ContextWithSpan(ctx, root), reviewUsageKey{}, p.usage)
-	} else if parent, ok := resumedTrace(run); ok {
-		// An earlier process ended this review's root when it stopped. The
-		// new span continues that trace, so the review stays one trace.
-		ctx, root = otel.Tracer("factory-reviewer").Start(trace.ContextWithRemoteSpanContext(ctx, parent), "review", reviewAttributes(pr, 1))
-		root.AddEvent("review resumed")
-		recordFindings(root, nil)
-		ctx = withUsage(ctx, root)
+	} else if ts, ok := resumedTrace(run); ok {
+		// An earlier process stopped during this review without exporting
+		// its root. Continue that root span with its recorded usage.
+		ctx, root = restoreRoot(ctx, ts, pr)
 	} else {
 		ctx, root = otel.Tracer("factory-reviewer").Start(ctx, "review", trace.WithNewRoot(), reviewAttributes(pr, 1))
 		// Zero counts until a report replaces them, so a review that ends
@@ -1169,7 +1172,9 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		}
 		st.Gate, _ = e.recoveryGate(b, pr, st.Gate)
 		st.Gate, _ = e.retainGate(b, pr, st.Gate, false)
-		st.Trace = traceParent(root.SpanContext())
+		if usage != nil {
+			st.Trace = newTraceState(root, pr.Number)
+		}
 		created, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
 			Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
 			Status: "in_progress", StartedAt: &now,
@@ -1188,6 +1193,9 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		}
 		if created.StartedAt.IsZero() {
 			created.StartedAt = now
+		}
+		if usage != nil && st.Trace != nil {
+			usage.persisted = true
 		}
 		run = created
 		l.InfoContext(ctx, "review check created", "check_run", run.ID)
@@ -2592,6 +2600,10 @@ func (e *Engine) recordProgress(ctx context.Context, b *Binding, run *github.Che
 		}
 		st.Gate = &observed
 	}
+	if s, ok := ctx.Value(reviewUsageKey{}).(*spanUsage); ok && st.Trace != nil {
+		r := s.root()
+		st.Trace.Usage, st.Trace.Tasks = r.total, slices.Sorted(maps.Keys(r.counted))
+	}
 	run.Text = encodeState(st)
 	title := "Review in progress"
 	if !rec.QuotaSince.IsZero() {
@@ -3118,7 +3130,14 @@ func (e *Engine) complete(ctx context.Context, b *Binding, run *github.CheckRun,
 		// A check completed outside its review worker (for example a
 		// superseded head) ends that review's parked root.
 		key := headKey{b.Name, run.HeadSHA}
-		e.endParked(func(p *parkedRoot) bool { return p.key == key }, o.Conclusion)
+		if !e.endParked(func(p *parkedRoot) bool { return p.key == key }, o.Conclusion) {
+			if ts, ok := resumedTrace(run); ok {
+				// An earlier process stopped during this review.
+				_, root := restoreRoot(ctx, ts, github.PullRequest{Number: ts.PR, HeadSHA: run.HeadSHA})
+				root.SetAttributes(attribute.String("review.verdict", o.Conclusion))
+				root.End()
+			}
+		}
 	}
 	e.m.ReviewsCompleted.WithLabelValues(b.Name, o.Conclusion).Inc()
 	l.InfoContext(ctx, "review check completed", "conclusion", o.Conclusion, "title", o.Output.Title)
@@ -3411,8 +3430,9 @@ type spanUsage struct {
 	// counted holds the tasks this span already counted. Each span keeps
 	// its own set, so a task that a later span resumes still reaches it.
 	counted map[string]bool
-	// On the root only: whether the review's check run completed.
-	completed bool
+	// On the root only: whether the review's check run completed, and
+	// whether the check's state holds the root (State.Trace).
+	completed, persisted bool
 }
 
 func (s *spanUsage) root() *spanUsage {
@@ -3447,8 +3467,10 @@ func (e *Engine) release(ctx context.Context, key headKey, usage *spanUsage) {
 		return
 	}
 	if ctx.Err() != nil {
-		usage.span.SetAttributes(attribute.String("review.verdict", "interrupted"))
-		usage.span.End()
+		if !usage.persisted {
+			usage.span.SetAttributes(attribute.String("review.verdict", "interrupted"))
+			usage.span.End()
+		}
 		return
 	}
 	usage.span.AddEvent("review paused")
@@ -3457,8 +3479,9 @@ func (e *Engine) release(ctx context.Context, key headKey, usage *spanUsage) {
 	e.parked[key] = &parkedRoot{key: key, usage: usage, since: e.cfg.Now()}
 }
 
-// endParked ends every parked root that match selects, with verdict.
-func (e *Engine) endParked(match func(*parkedRoot) bool, verdict string) {
+// endParked ends every parked root that match selects, with verdict. It
+// reports whether it ended any.
+func (e *Engine) endParked(match func(*parkedRoot) bool, verdict string) bool {
 	e.mu.Lock()
 	var ended []*parkedRoot
 	for k, p := range e.parked {
@@ -3472,6 +3495,7 @@ func (e *Engine) endParked(match func(*parkedRoot) bool, verdict string) {
 		p.usage.span.SetAttributes(attribute.String("review.verdict", verdict))
 		p.usage.span.End()
 	}
+	return len(ended) > 0
 }
 
 func withUsage(ctx context.Context, span trace.Span) context.Context {
@@ -3509,22 +3533,37 @@ func recordUsage(ctx context.Context, t *kagent.Task) {
 	}
 }
 
-// traceParent formats sc as a W3C traceparent, or "" when it is invalid.
-func traceParent(sc trace.SpanContext) string {
+// traceState records root in the check's state, so a later process can
+// continue the same root span (restoreRoot).
+func newTraceState(root trace.Span, pr int) *TraceState {
+	sc := root.SpanContext()
 	if !sc.IsValid() {
-		return ""
+		return nil
 	}
-	return fmt.Sprintf("00-%s-%s-%s", sc.TraceID(), sc.SpanID(), sc.TraceFlags())
+	return &TraceState{
+		Parent: fmt.Sprintf("00-%s-%s-%s", sc.TraceID(), sc.SpanID(), sc.TraceFlags()),
+		Start:  time.Now().UTC(), PR: pr,
+	}
 }
 
-// resumedTrace reads the trace of the review that an in-progress check
-// run belongs to. A worker that reattaches to that check continues it.
-func resumedTrace(run *github.CheckRun) (trace.SpanContext, bool) {
+// resumedTrace reads the root of the review that an in-progress check run
+// belongs to. A worker that reattaches to that check continues it.
+func resumedTrace(run *github.CheckRun) (*TraceState, bool) {
 	if run == nil || run.Status == "completed" || issuesPending(run) {
-		return trace.SpanContext{}, false
+		return nil, false
 	}
 	st, _ := LoadState(run.Text)
-	parts := strings.Split(st.Trace, "-")
+	if st.Trace == nil {
+		return nil, false
+	}
+	if _, ok := st.Trace.spanContext(); !ok {
+		return nil, false
+	}
+	return st.Trace, true
+}
+
+func (t *TraceState) spanContext() (trace.SpanContext, bool) {
+	parts := strings.Split(t.Parent, "-")
 	if len(parts) != 4 || parts[0] != "00" {
 		return trace.SpanContext{}, false
 	}
@@ -3536,8 +3575,57 @@ func resumedTrace(run *github.CheckRun) (trace.SpanContext, bool) {
 	if err != nil {
 		return trace.SpanContext{}, false
 	}
-	sc := trace.NewSpanContext(trace.SpanContextConfig{TraceID: tid, SpanID: sid, TraceFlags: trace.FlagsSampled, Remote: true})
+	sc := trace.NewSpanContext(trace.SpanContextConfig{TraceID: tid, SpanID: sid, TraceFlags: trace.FlagsSampled})
 	return sc, sc.IsValid()
+}
+
+// restoreRoot starts the review root span that ts records, with its trace
+// and span IDs (IDGenerator), start time and counted usage.
+func restoreRoot(ctx context.Context, ts *TraceState, pr github.PullRequest) (context.Context, trace.Span) {
+	sc, _ := ts.spanContext()
+	_, root := otel.Tracer("factory-reviewer").Start(context.WithValue(ctx, presetIDsKey{}, sc), "review",
+		trace.WithNewRoot(), trace.WithTimestamp(ts.Start), reviewAttributes(pr, 1))
+	root.AddEvent("review resumed")
+	recordFindings(root, nil)
+	ctx = withUsage(trace.ContextWithSpan(ctx, root), root)
+	u := ctx.Value(reviewUsageKey{}).(*spanUsage)
+	u.persisted = true
+	u.counted = map[string]bool{}
+	for _, id := range ts.Tasks {
+		u.counted[id] = true
+	}
+	u.add(ts.Usage)
+	return ctx, root
+}
+
+type presetIDsKey struct{}
+
+// IDGenerator gives spans random IDs, except a review root that
+// restoreRoot starts again after a restart: that root keeps the trace and
+// span IDs its check state records, so the review stays one root span.
+type IDGenerator struct{}
+
+func (IDGenerator) NewIDs(ctx context.Context) (trace.TraceID, trace.SpanID) {
+	if sc, ok := ctx.Value(presetIDsKey{}).(trace.SpanContext); ok && sc.IsValid() {
+		return sc.TraceID(), sc.SpanID()
+	}
+	var tid trace.TraceID
+	for !tid.IsValid() {
+		_, _ = rand.Read(tid[:])
+	}
+	return tid, randomSpanID()
+}
+
+func (IDGenerator) NewSpanID(context.Context, trace.TraceID) trace.SpanID {
+	return randomSpanID()
+}
+
+func randomSpanID() trace.SpanID {
+	var sid trace.SpanID
+	for !sid.IsValid() {
+		_, _ = rand.Read(sid[:])
+	}
+	return sid
 }
 
 func reviewAttributes(pr github.PullRequest, round int) trace.SpanStartOption {
