@@ -199,6 +199,7 @@ type Engine struct {
 
 	mu           sync.Mutex
 	inflight     map[headKey]*running
+	parked       map[headKey]*parkedRoot // under mu
 	pendingHolds map[headKey]*github.CheckRun
 	contexts     map[string]*heldContext
 	recoveries   map[prKey]recovery
@@ -376,7 +377,7 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 	}
 	return &Engine{
 		cfg: cfg, gh: gh, tasks: tasks, m: m, log: log, rules: rules, epoch: rand.Text(),
-		inflight: map[headKey]*running{}, pendingHolds: map[headKey]*github.CheckRun{}, contexts: map[string]*heldContext{}, recoveries: map[prKey]recovery{},
+		inflight: map[headKey]*running{}, parked: map[headKey]*parkedRoot{}, pendingHolds: map[headKey]*github.CheckRun{}, contexts: map[string]*heldContext{}, recoveries: map[prKey]recovery{},
 		groups: map[string]string{}, enqueueAfter: map[string]time.Time{}, waiting: map[prKey]*waitingHead{},
 		heads: map[prKey]string{}, comments: map[prKey]*commentState{}, commentLimits: map[prKey]bool{}, commentReplays: map[prKey]int64{},
 		swept: map[string]time.Time{}, sweeping: map[string]bool{},
@@ -404,11 +405,14 @@ func (e *Engine) Run(ctx context.Context, poll time.Duration) error {
 func (e *Engine) Wait() {
 	e.wg.Wait()
 	e.commentWG.Wait()
+	e.endParked(func(*parkedRoot) bool { return true }, "interrupted")
 }
 
 // Tick polls every binding once. Reviews it starts run in the background
 // under ctx.
 func (e *Engine) Tick(ctx context.Context) {
+	now := e.cfg.Now()
+	e.endParked(func(p *parkedRoot) bool { return now.Sub(p.since) > parkedLimit }, "abandoned")
 	for i := range e.cfg.Bindings {
 		if ctx.Err() != nil {
 			return
@@ -1116,11 +1120,20 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		e.mu.Unlock()
 		return true
 	}
-	ctx, root := otel.Tracer("factory-reviewer").Start(ctx, "review", trace.WithNewRoot(), reviewAttributes(pr, 1))
-	// Zero counts until a report replaces them, so a review that ends
-	// without a usable report (cancelled, stopped, no reply) still has them.
-	recordFindings(root, nil)
-	ctx = withUsage(ctx, root)
+	var root trace.Span
+	if p, ok := e.parked[key]; ok {
+		delete(e.parked, key)
+		root = p.usage.span
+		root.AddEvent("review resumed")
+		ctx = context.WithValue(trace.ContextWithSpan(ctx, root), reviewUsageKey{}, p.usage)
+	} else {
+		ctx, root = otel.Tracer("factory-reviewer").Start(ctx, "review", trace.WithNewRoot(), reviewAttributes(pr, 1))
+		// Zero counts until a report replaces them, so a review that ends
+		// without a usable report (cancelled, stopped, no reply) still has them.
+		recordFindings(root, nil)
+		ctx = withUsage(ctx, root)
+	}
+	usage, _ := ctx.Value(reviewUsageKey{}).(*spanUsage)
 	rctx, cancel := context.WithCancelCause(ctx)
 	r := &running{number: pr.Number, cancel: cancel, done: make(chan struct{})}
 	e.inflight[key] = r
@@ -1160,7 +1173,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		if err != nil {
 			e.ghError(ctx, l, b, "create_check", err)
 			cancel(nil)
-			root.End()
+			e.release(ctx, key, usage)
 			e.done(key)
 			close(r.done)
 			return false
@@ -1183,7 +1196,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 			if err != nil {
 				e.ghError(ctx, l, b, "update_check", err)
 				cancel(nil)
-				root.End()
+				e.release(ctx, key, usage)
 				e.done(key)
 				close(r.done)
 				return false
@@ -1200,7 +1213,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		defer e.wg.Done()
 		defer e.done(key)
 		defer cancel(nil)
-		defer root.End()
+		defer e.release(ctx, key, usage)
 		if kind == "new" {
 			e.queueMirror(rctx, b, pr, run, &CommentUpdate{Verdict: VerdictReviewing})
 		}
@@ -1636,10 +1649,14 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			dispatch.Classify(t.Status.State, dispatch.StatusText(t)) == dispatch.ClassQuota:
 			// The provider refused this task. Keep the attempt and give its
 			// eventual replacement a new message ID, persisted before sending.
+			recordUsage(ctx, t)
 			rec = recorded{Attempt: attempt, QuotaRetry: rec.QuotaRetry + 1, QuotaSince: e.cfg.Now()}
 			e.recordProgress(ctx, b, run, in.gate, rec, "The review task reached the provider usage limit. It will resume after a newer usable broker reading.", l)
 			return
 		case err == nil && kagent.Quiescent(t.Status.State):
+			// Record the usage kagent reported before revalidation, which
+			// can return early. The root counts each task once.
+			recordUsage(ctx, t)
 			current, err := e.gh.PullRequestQueue(ctx, b.repo(), pr.Number)
 			if err != nil {
 				e.ghError(ctx, l, b, "pull_request", err)
@@ -1710,7 +1727,6 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				}
 				continue
 			}
-			recordUsage(ctx, t)
 			res := e.outcome(parent, code, round, b, currentPR, t, in, l)
 			if ctx.Err() != nil {
 				continue // stop ends the review.
@@ -3088,10 +3104,14 @@ func (e *Engine) complete(ctx context.Context, b *Binding, run *github.CheckRun,
 	// A cancellation can arrive while the code check is active. The verdict
 	// belongs to the review that owns the GitHub check run.
 	if work, ok := ctx.Value(reviewUsageKey{}).(*spanUsage); ok {
-		for work.parent != nil {
-			work = work.parent
-		}
+		work = work.root()
 		work.span.SetAttributes(attribute.String("review.verdict", o.Conclusion))
+		work.completed = true
+	} else {
+		// A check completed outside its review worker (for example a
+		// superseded head) ends that review's parked root.
+		key := headKey{b.Name, run.HeadSHA}
+		e.endParked(func(p *parkedRoot) bool { return p.key == key }, o.Conclusion)
 	}
 	e.m.ReviewsCompleted.WithLabelValues(b.Name, o.Conclusion).Inc()
 	l.InfoContext(ctx, "review check completed", "conclusion", o.Conclusion, "title", o.Output.Title)
@@ -3400,6 +3420,69 @@ type spanUsage struct {
 	parent *spanUsage
 	span   trace.Span
 	total  Usage
+	// On the root only: tasks already counted, and whether the review's
+	// check run completed.
+	counted   map[string]bool
+	completed bool
+}
+
+func (s *spanUsage) root() *spanUsage {
+	for s.parent != nil {
+		s = s.parent
+	}
+	return s
+}
+
+// parkedLimit ends a parked root whose check never resumed or completed,
+// so an abandoned review still exports.
+const parkedLimit = 24 * time.Hour
+
+// parkedRoot is the open root span of a review whose worker returned with
+// its check still in progress (a quota pause or a retry on the next poll).
+// The next worker on that head continues it, so one review is one root.
+type parkedRoot struct {
+	key   headKey
+	usage *spanUsage
+	since time.Time
+}
+
+// release ends the review's root when its check completed or the process
+// is stopping. Otherwise the check stays in progress, so it parks the root
+// for the next worker on the same head.
+func (e *Engine) release(ctx context.Context, key headKey, usage *spanUsage) {
+	if usage == nil {
+		return
+	}
+	if usage.completed {
+		usage.span.End()
+		return
+	}
+	if ctx.Err() != nil {
+		usage.span.SetAttributes(attribute.String("review.verdict", "interrupted"))
+		usage.span.End()
+		return
+	}
+	usage.span.AddEvent("review paused")
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.parked[key] = &parkedRoot{key: key, usage: usage, since: e.cfg.Now()}
+}
+
+// endParked ends every parked root that match selects, with verdict.
+func (e *Engine) endParked(match func(*parkedRoot) bool, verdict string) {
+	e.mu.Lock()
+	var ended []*parkedRoot
+	for k, p := range e.parked {
+		if match(p) {
+			ended = append(ended, p)
+			delete(e.parked, k)
+		}
+	}
+	e.mu.Unlock()
+	for _, p := range ended {
+		p.usage.span.SetAttributes(attribute.String("review.verdict", verdict))
+		p.usage.span.End()
+	}
 }
 
 func withUsage(ctx context.Context, span trace.Span) context.Context {
@@ -3415,10 +3498,26 @@ func (s *spanUsage) add(u Usage) {
 }
 
 func recordUsage(ctx context.Context, t *kagent.Task) {
-	if u, ok := TaskUsage(t); ok {
-		for s, _ := ctx.Value(reviewUsageKey{}).(*spanUsage); s != nil; s = s.parent {
-			s.add(u)
+	s, _ := ctx.Value(reviewUsageKey{}).(*spanUsage)
+	if s == nil {
+		return
+	}
+	u, ok := TaskUsage(t)
+	if !ok {
+		return
+	}
+	root := s.root()
+	if t.ID != "" {
+		if root.counted[t.ID] {
+			return
 		}
+		if root.counted == nil {
+			root.counted = map[string]bool{}
+		}
+		root.counted[t.ID] = true
+	}
+	for ; s != nil; s = s.parent {
+		s.add(u)
 	}
 }
 
