@@ -325,9 +325,19 @@ func servedPromptRevision(raw []byte, prompt string) (string, error) {
 	return rev, nil
 }
 
+// ErrCreatedRevisionMismatch means creation succeeded and returned a session
+// pinned to a known, different revision. Its request ID must be retired.
+var ErrCreatedRevisionMismatch = errors.New("created session pinned a different Agent revision")
+
+type PromptSessionReader interface {
+	PromptRevision(context.Context, AgentRef, string) (string, error)
+	GetSession(context.Context, string) (*Session, error)
+}
+
 // PinPromptSession reads one reconciled Agent snapshot and pins the message to
 // that revision, including when reconciliation races session creation.
-func (s *Sessions) PinPromptSession(ctx context.Context, agent AgentRef, id, existing, prompt string) (string, error) {
+func PinPromptSession(ctx context.Context, s PromptSessionReader, agent AgentRef, id, existing, prompt string, create func(context.Context, AgentRef, string) (*Session, error),
+) (string, error) {
 	rev, err := s.PromptRevision(ctx, agent, prompt)
 	if err != nil {
 		return "", err
@@ -335,17 +345,23 @@ func (s *Sessions) PinPromptSession(ctx context.Context, agent AgentRef, id, exi
 	var sess *Session
 	if existing == "" {
 		key := fmt.Sprintf("%x", sha256.Sum256([]byte(id+"\x00"+rev)))
-		sess, err = s.CreateSession(ctx, agent, key)
+		sess, err = create(ctx, agent, key)
 	} else {
 		sess, err = s.GetSession(ctx, existing)
 	}
 	if err != nil {
 		return "", err
 	}
-	if sess == nil || sess.ContextID == "" || sess.ID != sess.ContextID || (existing != "" && existing != sess.ContextID) || sess.AgentNamespace != agent.Namespace || sess.AgentName != agent.Name || sess.PreparedRevision != rev {
+	if sess == nil || sess.ContextID == "" || sess.ID != sess.ContextID || (existing != "" && existing != sess.ContextID) || sess.AgentNamespace != agent.Namespace || sess.AgentName != agent.Name {
 		return "", errors.New("session has not pinned the verified prompt revision")
 	}
-	return sess.ContextID, nil
+	if sess.PreparedRevision == rev {
+		return sess.ContextID, nil
+	}
+	if existing == "" && sess.PreparedRevision != "" {
+		return "", ErrCreatedRevisionMismatch
+	}
+	return "", errors.New("session has not pinned the verified prompt revision")
 }
 
 // google.protobuf.Value kinds the reviewer reads.

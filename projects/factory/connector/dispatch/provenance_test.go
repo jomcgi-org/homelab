@@ -3,7 +3,6 @@ package dispatch_test
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -37,17 +36,73 @@ func provenanceEnv(t *testing.T) *env {
 	return v
 }
 
-func (k *fakeKagent) PinPromptSession(_ context.Context, agent kagent.AgentRef, id, existing, prompt string) (string, error) {
+func (k *fakeKagent) PromptRevision(_ context.Context, _ kagent.AgentRef, prompt string) (string, error) {
+	if k.onPromptRead != nil {
+		k.onPromptRead()
+	}
 	if k.servedPrompt != "" && k.servedPrompt != prompt {
 		return "", errors.New("prompt rollout pending")
 	}
-	if existing != "" {
-		return existing, nil
+	return "current", nil
+}
+
+func (k *fakeKagent) CreateSession(_ context.Context, agent kagent.AgentRef, id string) (*kagent.Session, error) {
+	ctxID := "ctx-" + id
+	if k.onPromptCreate != nil {
+		k.onPromptCreate(id)
 	}
-	ctxID := fmt.Sprintf("ctx-%x", sha256.Sum256([]byte(id)))
+	if sess := k.sessions[ctxID]; sess != nil {
+		return sess, nil
+	}
+	revision := "current"
+	if k.createdRevision != "" {
+		revision = k.createdRevision
+	}
+
 	k.contexts[ctxID] = agent
-	k.sessions[ctxID] = &kagent.Session{ID: ctxID, ContextID: ctxID, Creator: k.identity.PrincipalID(), State: kagent.RuntimeReady}
-	return ctxID, nil
+	k.sessions[ctxID] = &kagent.Session{ID: ctxID, ContextID: ctxID, AgentName: agent.Name, AgentNamespace: agent.Namespace, PreparedRevision: revision, Creator: k.identity.PrincipalID(), State: kagent.RuntimeReady}
+	return k.sessions[ctxID], nil
+}
+
+func TestWriterLostDuringPromptReadCannotCreateSession(t *testing.T) {
+	v := provenanceEnv(t)
+	v.kg.onPromptRead = func() {
+		var terminated bool
+		if err := v.st.DB.QueryRow(`SELECT pg_terminate_backend(pid, 5000) FROM pg_locks
+ WHERE locktype='advisory' AND granted AND database=(SELECT oid FROM pg_database WHERE datname=current_database())`).Scan(&terminated); err != nil || !terminated {
+			t.Fatalf("terminate writer: %v, %v", terminated, err)
+		}
+	}
+	v.kg.onPromptCreate = func(string) { t.Fatal("fenced writer created a session") }
+	v.its.add(1, "coder", 101, "HL-7", "Fix it.")
+	if err := v.e.Tick(v.ctx); !errors.Is(err, store.ErrNotWriter) {
+		t.Fatalf("tick: %v", err)
+	}
+}
+
+func TestPromptMismatchRetiresJournaledCreation(t *testing.T) {
+	v := provenanceEnv(t)
+	var keys []string
+	v.kg.onPromptCreate = func(key string) {
+		var count int
+		if err := v.st.DB.QueryRow("SELECT count(*) FROM admission_read WHERE message_id=$1 AND operation='create-prompt-session'", key).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("creation journal count=%d err=%v", count, err)
+		}
+		keys = append(keys, key)
+	}
+	v.kg.createdRevision = "other"
+	v.its.add(1, "coder", 101, "HL-7", "Fix it.")
+	v.tick(v.e)
+	if len(keys) == 0 || len(v.kg.Sends()) != 0 {
+		t.Fatal("mismatched session crossed dispatch gate")
+	}
+	v.e.Release()
+	v.e = v.engine("after-rollback")
+	v.kg.createdRevision = "current"
+	v.tick(v.e)
+	if len(v.kg.Sends()) != 1 || keys[len(keys)-1] == keys[0] {
+		t.Fatal("replacement reused the retired creation request")
+	}
 }
 
 func TestDispatchWaitsForServedPrompt(t *testing.T) {
