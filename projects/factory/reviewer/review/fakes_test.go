@@ -337,9 +337,6 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	prefix := "/repos/" + testRepo
 	path := strings.TrimPrefix(r.URL.Path, prefix)
-	if r.URL.Path == "/repos/outside/fork/activity" {
-		path = "/activity"
-	}
 	q := r.URL.Query()
 	// The check token reads comments but cannot write them; the comment
 	// token reaches comments and verifies the PR exists before creating one.
@@ -369,9 +366,10 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.NotFound(w, r)
-	case r.Method == http.MethodGet && path == "/activity":
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/") && strings.HasSuffix(r.URL.Path, "/activity"):
+		repo := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/repos/"), "/activity")
 		for _, pr := range f.prs {
-			if "refs/heads/"+pr.HeadRef == q.Get("ref") {
+			if pr.HeadRepo == repo && "refs/heads/"+pr.HeadRef == q.Get("ref") {
 				f.get(w, r, page(pr.Activity, q))
 				return
 			}
