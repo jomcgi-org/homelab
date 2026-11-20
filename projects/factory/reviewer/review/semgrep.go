@@ -279,6 +279,7 @@ func (e *Engine) triageSemgrep(ctx context.Context, b *Binding, pr github.PullRe
 		open = append(open, findings...)
 	}
 	var names []string
+	var scopeWarning string
 	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	var rows []semgrepRow
 	var org string
@@ -329,40 +330,49 @@ func (e *Engine) triageSemgrep(ctx context.Context, b *Binding, pr github.PullRe
 		if id == 0 {
 			continue
 		}
-		if !ignoreSemgrep(ctx, client, e.cfg.Semgrep.APIKey, org, id, d) {
+		affected, exact := ignoreSemgrep(ctx, client, e.cfg.Semgrep.APIKey, org, id, d)
+		for _, actual := range affected {
+			names = append(names, strconv.FormatInt(actual, 10))
+		}
+		if !exact {
 			e.m.SemgrepErrors.WithLabelValues(b.Name).Inc()
 			e.prLog(b, pr).WarnContext(ctx, "Semgrep triage failed", "finding", id)
-			continue
+			if len(affected) > 0 {
+				scopeWarning = fmt.Sprintf(" Semgrep's response did not confirm an update limited to requested finding %d.", id)
+				break
+			}
 		}
-		names = append(names, strconv.FormatInt(id, 10))
 	}
 	if len(names) == 0 {
 		return
 	}
-	feedback := "Ignored in Semgrep: " + strings.Join(names, ", ") + "."
+	feedback := "Ignored in Semgrep: " + strings.Join(names, ", ") + "." + scopeWarning
 	o.Output.Summary = feedback + "\n\n" + o.Output.Summary
 	o.Comment.Note = strings.TrimSpace(o.Comment.Note + " " + feedback)
 }
 
-func ignoreSemgrep(ctx context.Context, client *http.Client, key, org string, id int64, d semgrepDecision) bool {
+func ignoreSemgrep(ctx context.Context, client *http.Client, key, org string, id int64, d semgrepDecision) ([]int64, bool) {
 	if key == "" {
-		return false
+		return nil, false
 	}
 	body, _ := json.Marshal(map[string]any{"issue_type": "sast", "limit": 1, "issue_ids": []int64{id}, "new_triage_state": "ignored", "new_triage_reason": strings.ReplaceAll(d.Reason, " ", "_"), "new_note": d.Note})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://semgrep.dev/api/v1/deployments/"+org+"/triage", bytes.NewReader(body))
 	if err != nil {
-		return false
+		return nil, false
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return false
+		return nil, false
 	}
 	defer resp.Body.Close()
 	var updated struct {
 		Count int     `json:"num_triaged"`
 		IDs   []int64 `json:"triaged_issues"`
 	}
-	return resp.StatusCode >= 200 && resp.StatusCode < 300 && json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&updated) == nil && updated.Count == 1 && len(updated.IDs) == 1 && updated.IDs[0] == id
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&updated) != nil {
+		return nil, false
+	}
+	return updated.IDs, updated.Count == 1 && len(updated.IDs) == 1 && updated.IDs[0] == id
 }

@@ -532,7 +532,14 @@ type semgrepTransport func(*http.Request) (*http.Response, error)
 func (f semgrepTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestSemgrepTriageAfterVerdict(t *testing.T) {
-	for _, status := range []int{200, 503} {
+	for _, tc := range []struct {
+		status             int
+		response, feedback string
+	}{
+		{200, `{"num_triaged":1,"triaged_issues":[1]}`, "Ignored in Semgrep: 1."},
+		{200, `{"num_triaged":2,"triaged_issues":[1,999]}`, "Ignored in Semgrep: 1, 999. Semgrep's response did not confirm an update limited to requested finding 1."},
+		{503, "", ""},
+	} {
 		h := semgrepHarness(t)
 		h.cfg.Semgrep.APIKey = "fixture"
 		b := &h.cfg.Bindings[0]
@@ -562,8 +569,8 @@ func TestSemgrepTriageAfterVerdict(t *testing.T) {
 				if req.Method != "POST" || !reflect.DeepEqual(body, want) {
 					t.Fatalf("unexpected triage %v", body)
 				}
-				code = status
-				payload = `{"num_triaged":1,"triaged_issues":[1]}`
+				code = tc.status
+				payload = tc.response
 			default:
 				t.Fatalf("unexpected endpoint %s", req.URL.Path)
 			}
@@ -595,8 +602,8 @@ func TestSemgrepTriageAfterVerdict(t *testing.T) {
 		s.Comments[0].ID = 1
 		r.SemgrepDecisions[0].CommentID = 1
 		e.triageSemgrep(context.Background(), b, pr, s, r, &o)
-		if writes != 1 || o.Conclusion != ConclusionSuccess || strings.Contains(o.Output.Summary, "Ignored in Semgrep: 1.") != (status == 200) || strings.Contains(o.Comment.Note, "Ignored in Semgrep: 1.") != (status == 200) {
-			t.Fatalf("wrong triage outcome for %d: %+v", status, o)
+		if writes != 1 || o.Conclusion != ConclusionSuccess || strings.TrimSpace(o.Output.Summary) != tc.feedback || o.Comment.Note != tc.feedback {
+			t.Fatalf("wrong triage outcome for %d: %+v", tc.status, o)
 		}
 	}
 }
