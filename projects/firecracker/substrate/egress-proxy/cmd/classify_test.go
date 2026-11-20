@@ -7,9 +7,7 @@ import (
 	"testing"
 )
 
-// Cluster service names used as test fixtures (not runtime defaults, so the
-// no-hardcoded-k8s-service-url rule does not apply; annotated once here and
-// referenced by name below).
+// These cluster service names are fixtures for the proxy classification tests.
 const (
 	svcInference = "inference.inference.svc.cluster.local"
 	svcK8sAPI    = "kubernetes.default.svc.cluster.local"
