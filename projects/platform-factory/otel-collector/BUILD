@@ -1,4 +1,5 @@
 load("//bazel/helm:defs.bzl", "argocd_app")
+load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 argocd_app(
     name = "otel-collector",
@@ -24,4 +25,11 @@ exports_files(
 exports_files(
     ["application.yaml"],
     visibility = ["//projects/platform-factory/image-audit:__pkg__"],
+)
+
+py_test(
+    name = "ingress_test",
+    srcs = ["ingress_test.py"],
+    data = ["resources/network-policy.yaml"],
+    deps = ["@pip//pyyaml"],
 )
