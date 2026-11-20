@@ -19,11 +19,11 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/text"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-"github.com/yuin/goldmark"
-"github.com/yuin/goldmark/ast"
-"github.com/yuin/goldmark/text"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"

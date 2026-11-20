@@ -73,9 +73,9 @@ go_test(
         "//projects/factory/connector/provenance",
         "//projects/factory/reviewer/metrics",
         "@com_github_prometheus_client_golang//prometheus/testutil",
+        "@com_github_yuin_goldmark//:goldmark",
         "@io_opentelemetry_go_otel//:otel",
         "@io_opentelemetry_go_otel_sdk//trace",
         "@io_opentelemetry_go_otel_sdk//trace/tracetest",
-        "@com_github_yuin_goldmark//:goldmark",
     ],
 )
