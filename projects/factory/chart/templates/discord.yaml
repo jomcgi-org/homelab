@@ -353,7 +353,7 @@ spec:
             name: {{ $name }}-policy
 {{- if .Values.networkPolicy.cilium }}
 ---
-# Egress to Discord, hindsight-discord and kagent's controller only; nothing
+# Egress to the renderer, Discord, hindsight-discord and kagent's controller; nothing
 # connects in. DNS is the cluster baseline's.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -367,6 +367,14 @@ spec:
     matchLabels:
       app.kubernetes.io/name: factory-discord-bridge
   egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $ns }}
+            app.kubernetes.io/name: factory-discord-render
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
     - toFQDNs:
         - matchName: discord.com
         # gateway.discord.gg and its resume hosts.

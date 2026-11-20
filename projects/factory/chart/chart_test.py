@@ -1199,7 +1199,7 @@ def test_discord_agent_uses_only_the_dedicated_key_and_has_no_tools() -> None:
     )
 
 
-def test_discord_bridge_reaches_only_discord_its_memory_and_its_agent() -> None:
+def test_discord_bridge_reaches_only_its_expected_peers() -> None:
     docs = _render(_DISCORD)
     ns = "factory-discord"
     deploy = _in(docs, "Deployment", ns, "discord-bridge")
@@ -1258,12 +1258,12 @@ def test_discord_bridge_reaches_only_discord_its_memory_and_its_agent() -> None:
         for rule in egress["egress"]
         for e in rule.get("toEndpoints", [])
     ]
-    assert peers == ["hindsight-discord", "kagent"]
+    assert peers == ["factory-discord", "hindsight-discord", "kagent"]
     ports = [
         [p["port"] for to in rule["toPorts"] for p in to["ports"]]
         for rule in egress["egress"]
     ]
-    assert ports == [["443"], ["8888"], ["8083"]]
+    assert ports == [["8080"], ["443"], ["8888"], ["8083"]]
     controller = _in(docs, "CiliumNetworkPolicy", "kagent", "kagent-controller")
     admitted = [
         m["matchLabels"] for m in controller["spec"]["ingress"][0]["fromEndpoints"]
@@ -1272,6 +1272,32 @@ def test_discord_bridge_reaches_only_discord_its_memory_and_its_agent() -> None:
         "k8s:io.kubernetes.pod.namespace": "factory-discord",
         "app.kubernetes.io/name": "factory-discord-bridge",
     } in admitted
+
+
+def test_discord_render_isolated_from_cluster_egress() -> None:
+    docs = _render(_DISCORD)
+    resources = {
+        d["kind"]: d for d in docs if d["metadata"]["name"] == "factory-discord-render"
+    }
+    deployment = resources["Deployment"]["spec"]["template"]
+    labels = deployment["metadata"]["labels"]
+    assert labels == resources["Service"]["spec"]["selector"]
+    policy = resources["CiliumNetworkPolicy"]["spec"]
+    assert policy["endpointSelector"] == {"matchLabels": labels}
+    assert policy["egressDeny"] == [{"toEntities": ["all"]}]
+    assert policy["ingress"] == [
+        {
+            "fromEndpoints": [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "factory-discord",
+                        "app.kubernetes.io/name": "factory-discord-bridge",
+                    }
+                }
+            ],
+            "toPorts": [{"ports": [{"port": "8080", "protocol": "TCP"}]}],
+        }
+    ]
 
 
 def test_discord_is_off_by_default_and_checks_its_wiring() -> None:

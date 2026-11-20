@@ -33,6 +33,15 @@ bazel_dep(name = "aspect_rules_py", version = "1.8.4")
 bazel_dep(name = "rules_uv", version = "0.88.0")
 bazel_dep(name = "rules_go", version = "0.61.0")
 bazel_dep(name = "gazelle", version = "0.47.0")
+bazel_dep(name = "rules_rust", version = "0.71.0")
+render_crates = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+render_crates.from_cargo(
+    name = "discord_render_crates",
+    cargo_lockfile = "//projects/factory/discord/render:Cargo.lock",
+    manifests = ["//projects/factory/discord/render:Cargo.toml"],
+)
+use_repo(render_crates, "discord_render_crates")
+
 bazel_dep(name = "rules_shell", version = "0.6.1")
 bazel_dep(name = "rules_oci", version = "2.2.6")
 bazel_dep(name = "rules_apko", version = "1.5.52")
@@ -72,6 +81,29 @@ http_file(
 )
 
 multiarch_http_file = use_repo_rule("//bazel/tools/http:multiarch_http_file.bzl", "multiarch_http_file")
+
+# Browser-free Discord renderer engines and its fidelity-suite fonts.
+http_archive(
+    name = "discord_render_mmdr",
+    build_file_content = 'exports_files(["mmdr"])',
+    sha256 = "e1da47b758769bff21b82a480fad640a3b893a90fc0dc321551486f8b50c7200",
+    urls = ["https://github.com/1jehuang/mermaid-rs-renderer/releases/download/v0.3.1/mmdr-x86_64-unknown-linux-gnu.tar.gz"],
+)
+
+http_archive(
+    name = "discord_render_vl_convert",
+    build_file_content = 'exports_files(glob(["bin/*"]))',
+    sha256 = "f557637a159c7510a1486e1e41a86c3919abd71c18abc0826b499c76c712aa53",
+    urls = ["https://github.com/vega/vl-convert/releases/download/v1.9.0/vl-convert_linux-64.zip"],
+)
+
+http_archive(
+    name = "discord_render_fonts",
+    build_file_content = 'exports_files(["LICENSE"])\nfilegroup(name = "fonts", srcs = glob(["ttf/*.ttf"]), visibility = ["//visibility:public"])',
+    sha256 = "fa9ca4d13871dd122f61258a80d01751d603b4d3ee14095d65453b4e846e17d7",
+    strip_prefix = "dejavu-fonts-ttf-2.37",
+    urls = ["https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.tar.bz2"],
+)
 
 # Private API server for the factory credential admission test. Match the
 # factory cluster's Kubernetes minor; CI executors are Linux amd64. Checksums
@@ -583,6 +615,10 @@ apko.translate_lock(
     lock = "//projects/factory/codex-code-mode:apko.lock.json",
 )
 apko.translate_lock(
+    name = "discord_render_lock",
+    lock = "//projects/factory/discord/render:apko.lock.json",
+)
+apko.translate_lock(
     name = "factory_connector_lock",
     lock = "//projects/factory/connector/image:apko.lock.json",
 )
@@ -622,7 +658,7 @@ apko.translate_lock(
     name = "embervm_runtime_pi_lock",
     lock = "//projects/embervm/runtimes/pi:apko.lock.json",
 )
-use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "factory_alert_relay_lock", "factory_broker_lock", "factory_codex_mode_lock", "factory_connector_lock", "factory_landing_lock", "factory_reviewer_lock", "jomcgi_site_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "scotland_connector_lock", "shotter_lock", "stars_grid_apko_lock")
+use_repo(apko, "discord_render_lock", "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "factory_alert_relay_lock", "factory_broker_lock", "factory_codex_mode_lock", "factory_connector_lock", "factory_landing_lock", "factory_reviewer_lock", "jomcgi_site_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "scotland_connector_lock", "shotter_lock", "stars_grid_apko_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")

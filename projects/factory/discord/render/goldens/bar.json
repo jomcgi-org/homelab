@@ -1,0 +1,13 @@
+{
+  "data": {
+    "values": [
+      { "label": "A", "n": 2 },
+      { "label": "B", "n": 5 }
+    ]
+  },
+  "mark": "bar",
+  "encoding": {
+    "x": { "field": "label", "type": "nominal" },
+    "y": { "field": "n", "type": "quantitative" }
+  }
+}
