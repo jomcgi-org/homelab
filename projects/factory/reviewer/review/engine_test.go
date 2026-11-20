@@ -2241,7 +2241,7 @@ func TestLaterHeadsBlockOnlyOnTheirChanges(t *testing.T) {
 	prompt := h.k.sent()[len(h.k.sent())-1].Parts[0].Text
 	for _, want := range []string{
 		"On code the earlier review covered and this head left alone", "Give every new blocking finding a \"cause\"",
-		"its cause names no changed file", "- cause: for each finding", "- earlier: true for a new finding",
+		"Both cases require a path and a positive line number", "its cause names no changed file", "- cause: for each finding", "- earlier: true for a new finding",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("the second prompt lacks %q", want)
