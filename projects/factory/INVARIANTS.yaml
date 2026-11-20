@@ -56,6 +56,12 @@ invariants:
   - projects/factory/reviewer/review/rules.go
   test: //projects/factory/reviewer/review:review_test
   state: live
+- id: FACT-575
+  statement: Fresh dispatch uses a session pinned to a revision verified against the receipt’s system prompt.
+  mechanism:
+  - projects/factory/connector/kagent/session.go
+  test: //projects/factory/connector/dispatch:dispatch_test
+  state: live
 - id: FACT-10
   statement: An error, a timeout or an unparseable answer gives no pass, no enqueue and no token.
   mechanism:

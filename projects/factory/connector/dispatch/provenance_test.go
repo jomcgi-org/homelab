@@ -2,6 +2,7 @@ package dispatch_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -33,6 +34,40 @@ func provenanceEnv(t *testing.T) *env {
 	v.e.Release()
 	v.e = v.engine("provenance")
 	return v
+}
+
+func (k *fakeKagent) PinPromptSession(_ context.Context, agent kagent.AgentRef, id, existing, prompt string) (string, error) {
+	if k.servedPrompt != "" && k.servedPrompt != prompt {
+		return "", errors.New("prompt rollout pending")
+	}
+	if existing != "" {
+		return existing, nil
+	}
+	ctxID := fmt.Sprintf("ctx-%x", sha256.Sum256([]byte(id)))
+	k.contexts[ctxID] = agent
+	k.sessions[ctxID] = &kagent.Session{ID: ctxID, ContextID: ctxID, Creator: k.identity.PrincipalID(), State: kagent.RuntimeReady}
+	return ctxID, nil
+}
+
+func TestDispatchWaitsForServedPrompt(t *testing.T) {
+	v := provenanceEnv(t)
+	v.kg.servedPrompt = "previous system guidance"
+	v.its.add(1, "coder", 101, "HL-7", "Fix it.")
+	v.tick(v.e)
+	if len(v.kg.Sends()) != 0 || v.run(1).Provenance.PromptHash != "" {
+		t.Fatal("dispatch crossed the rollout gap")
+	}
+	v.kg.servedPrompt = v.cfg.Bindings[0].Runtime.SystemPrompt
+	v.clk.Advance(time.Minute)
+	v.tick(v.e)
+	sends := v.kg.Sends()
+	if len(sends) != 1 {
+		t.Fatalf("sends=%d", len(sends))
+	}
+	want := provenance.New(*v.cfg.Bindings[0].Runtime, strings.Repeat("a", 40), sends[0].msg.Parts[0].Text, "unclassified")
+	if v.run(1).Provenance != want {
+		t.Fatal("receipt differs from served prompt")
+	}
 }
 
 func TestCoderAndReworkRunProvenance(t *testing.T) {
