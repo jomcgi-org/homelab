@@ -789,6 +789,7 @@ func (e *Engine) dateWaiting(ctx context.Context, b *Binding, start []candidate)
 	}
 }
 
+// invariant: FACT-13
 // prioritize orders starts by author priority, eligible arrival, then PR number.
 func (e *Engine) prioritize(b *Binding, start []candidate) {
 	sort.Slice(start, func(i, j int) bool {

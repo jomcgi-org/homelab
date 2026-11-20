@@ -965,14 +965,12 @@ from reviewer App 5758326 alongside `pr-checks`.
 
 - **Review order (HOME-220).** Running reviews retain their slots. The poller
   reattaches in-progress checks before starting new reviews. Within each
-  `enqueueAuthors` priority, heads first observed eligible in an earlier poll
-  go first. Within one poll, GitHub's latest ref activity dates the exact
-  current SHA, bounded by PR creation and the latest readiness, skip-label
-  removal, reopening or base-change event. This recovers eligible waits at
-  startup without counting time spent as a draft or skipped PR. Incomplete
-  history keeps the first observation as the fallback. A later poll cannot
-  overtake that fallback with an older recovered timestamp. Forks keep their
-  observed wait; the reviewer never requests a token for an unbound repository.
+  `enqueueAuthors` priority, the longest eligible wait goes first across
+  polls. For repository and fork heads, GitHub's latest ref activity dates
+  the current SHA. PR creation, readiness, skip-label removal, reopening and
+  base changes bound that age. If history is incomplete, the reviewer uses
+  its first observation of the eligible head. When a shared-head hold clears,
+  the remaining PR starts a fresh wait.
   Git commit dates and PR `UpdatedAt` do not set queue order. Observation is
   recorded before check and recovery reads, even while slots are full, and
   kept while history reads retry.
@@ -981,8 +979,6 @@ from reviewer App 5758326 alongside `pr-checks`.
   at its new observation. PR number breaks equal arrival times.
   This prevents later updates from repeatedly overtaking an untouched head
   ([HOME-220](https://factory-plan.jomcgi.dev/factory/issue/HOME-220)).
-  Cross-poll and fork-head ordering edge cases are deferred by
-  [Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-220#comment-4036).
   `TestWaitingHeadStartsBeforeUpdatedPRs` holds all three slots across three
   ticks of later PR updates and pushes, then checks that the oldest waiting
   head gets the first free slot. It also covers metadata changes on the
@@ -991,8 +987,8 @@ from reviewer App 5758326 alongside `pr-checks`.
   checks head arrival order within one poll and after a restart, including a
   new PR opened from an old branch. `TestEligibilityTransitionStartsANewWaitAcrossRestart`
   covers draft readiness and skip removal, including during downtime;
-  `TestWaitingForkPrecedesLaterDatedRepositoryHead` covers mixed observed and
-  recovered ages. `TestReattachmentsKeepOrderBeforeWaitingHeads`
+  `TestOlderForkFirstListedLaterStartsBeforeRepositoryHead` covers a later
+  poll that discovers an older eligible fork head. `TestReattachmentsKeepOrderBeforeWaitingHeads`
   checks the order of resumed reviews before new starts.
 
 For issue-backed reviews, the service verifies the provenance of decision
