@@ -58,7 +58,6 @@ if grep -q 'horizon_seconds="300"' "$TEST_TMPDIR/after-first-target"; then
 fi
 grep -q 'horizon_seconds="600"' "$TEST_TMPDIR/after-first-target"
 
-
 "$jq_bin" '.data.result[0].values |= .[-6:] | .past_covariates[0] |= .[-6:] | .min_samples = 6' \
 	"$TEST_TMPDIR/history.json" | replay >"$TEST_TMPDIR/cold-start"
 test "$(grep -c '^capacity_forecast_memory_budget_bytes{.*policy="timestral"' "$TEST_TMPDIR/cold-start")" -eq 6
