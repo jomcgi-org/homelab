@@ -39,7 +39,7 @@ flowchart LR
 | broker | Relays model calls and mints repository credentials | `broker/` | Built from this repo | Actor requests | Codex OAuth grant, both App private keys and optional Claude OAuth token |
 | reviewer | Publishes the independent required check | `reviewer/` | Built from this repo | PR content and review replies | Projected ServiceAccount token and scoped reviewer installation token |
 | GitHub | Owns PRs, checks and the merge queue | External service | Hosted | Branches and PRs | GitHub App installations |
-| Hindsight | Stores reusable coding lessons | `../platform-factory/hindsight/` | 1.2.1 | Recalled and retained text | Database and model credentials |
+| Hindsight | Stores reusable coding lessons | `../platform-factory/hindsight/` | Image 1.2.1, embeddings `mongodb/voyage-4-large`, decision model `typesafe/jev-1.14` | Recalled and retained text | Database and model credentials |
 | discord | Routes mentions to Bosun | `discord/` | Built from this repo | Discord messages | Bot token and Discord memory access |
 | alert-relay | Forwards Alertmanager notifications to Discord | `alert-relay/` | Built from this repo | Alertmanager webhooks | Discord webhook URL |
 
@@ -158,14 +158,14 @@ recalled lesson costs a few hundred tokens.
 **Why.** Joe chose a decision model with no local
 fallback ([his words, recorded from his account on #8147](https://github.com/jomcgi-org/homelab/pull/8147#issuecomment-6949878652);
 also HOME-130 comment 1498).
-Hindsight's own question decided the order of the top 30 Voyage 4 Large
+Hindsight's own question decided the order of the top 30 embedding
 candidates for the same 32 graded questions. On candidates from
-embeddings and BM25 together, Jev 1.14 raised nDCG@10 by 0.079, in 0.29 s per
+embeddings and BM25 together, Jev raised nDCG@10 by 0.079, in 0.29 s per
 recall ([HOME-182](https://factory-plan.jomcgi.dev/factory/issue/HOME-182)).
 Liquid `d1` made no significant difference; Cloudflare `clef` and Upstage
 `solar-decide-flash` made it worse.
 
-**Why.** On a 494-fact factory test set, Voyage 4 Large had the best
+**Why.** On a 494-fact factory test set, the selected embedding model had the best
 nDCG@10 (0.781) of ten models, against 0.522 for a stand-in for the image's
 local `bge-small-en-v1.5`. Its 1,024 dimensions fit pgvector's index limit
 ([HOME-176](https://factory-plan.jomcgi.dev/factory/issue/HOME-176)). Joe
@@ -276,7 +276,29 @@ The connector uses separate identities to claim coding work and coordinate issue
   copies it into `factory/factory-itsaplan-oidc`, which `factory-buckets`
   declares so it exists before the chart enables itsaplan. Registration is
   invite-only, so a person is invited by an admin before their first OIDC
-  sign-in.
+  sign-in. The break-glass admin (`factory-itsaplan-admin`) handles bootstrap and recovery.
+- **Joe's sessions.** Claude and Codex sessions on Joe's account use
+  `joe-sessions@jomcgi.dev`, displayed as "Joe (sessions)". itsaplan's
+  human username validator excludes hyphens, so its handle is `@joesessions`.
+  The bootstrap invites it into the bound project on the default member role,
+  which permits issue edits and comments, and checks that it is neither an
+  agent nor an admin of the factory workspace. Before signing it up, bootstrap
+  generates and saves its password in `factory/factory-itsaplan-joe-sessions`
+  (`email`, `password`). Reruns reuse the account and password, finish a pending
+  invitation, and refuse to replace a lost password for an existing account.
+  The chart keeps the Secret and ArgoCD ignores its data. Only the bootstrap
+  Job has in-cluster access through its existing RoleBinding; the Secret has
+  no sandbox injection label and its namespace has no credential-provider
+  grant. Joe's sessions read it with the factory kubeconfig
+  (`docs/agents/reference.md`, "Tracker"). This separates Joe's recorded
+  decisions from bootstrap activity ([HOME-59](https://factory-plan.jomcgi.dev/factory/issue/HOME-59),
+  [Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-57#comment-292)).
+- **Bootstrap** (PostSync, `files/itsaplan/bootstrap.py`) signs in as that
+  admin, creating it on an empty database (the first account is itsaplan's
+  instance admin); sets invite-only registration and the OIDC provider; and
+  creates team `factory`, project `HOME` and the external agents
+  `homelab-codex` (claims runs, assignment and mention triggers) and
+  `factory-coordinator` (coordinates issue updates).
 - **Public api surface.** The route answers 404 for MCP and for the runner
   feeds (`claim`, `heartbeat`, `events`, `result` of runs and chats), so
   claiming and reporting runs happens only inside the cluster. An agent key
