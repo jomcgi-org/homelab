@@ -62,6 +62,7 @@ go_library(
         "20261125010000_review_merges.sql",
         "20261125020000_pending_merge_review.sql",
         "20261125100000_planner_runtime.sql",
+        "20261125110000_placement_waits.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],

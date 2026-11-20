@@ -408,6 +408,25 @@ func TestExpiredReservationIsResentAfterTheTaskLease(t *testing.T) {
 	}
 }
 
+func TestPlacementWaitSurvivesRestartAndRetryBudget(t *testing.T) {
+	v := newEnv(t)
+	v.cfg.MaxIssues, v.cfg.FinalLookups = 1, 1
+	v.kg.placementWaits = 3
+	v.its.add(1, "coder", 101, "HL-1", "Do it.")
+	v.tick(v.e)
+	original := v.latest(1)
+	v.e.Release()
+	v.e = v.engine("connector-b")
+	for range 3 {
+		v.clk.Advance(15 * time.Second)
+		v.tick(v.e)
+	}
+	a := v.latest(1)
+	if a.ID != original.ID || a.State != store.AttemptAccepted || a.PlacementWaits != 3 || v.kg.Executions() != 1 {
+		t.Fatalf("after capacity returned: %+v", a)
+	}
+}
+
 func TestNotAcceptedSendIsRetriedWithSameMessage(t *testing.T) {
 	for _, restart := range []bool{false, true} {
 		t.Run(fmt.Sprintf("restart=%t", restart), func(t *testing.T) {
