@@ -605,6 +605,11 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	if d.MergeGroupSHA != "" {
 		pr.MergeGroupSHA = d.MergeGroupSHA
 	}
+	if trace.SpanFromContext(ctx).IsRecording() {
+		// Every PR check is on the poll root, also one that changes nothing.
+		workID, source := wi.ID, wi.State
+		defer func() { e.observePR(ctx, workID, wi.IssueKey, source, pr, result) }()
+	}
 	if wi.State == store.WorkStopped {
 		return e.stoppedPR(ctx, wi, b, pr, d)
 	}
@@ -2184,6 +2189,22 @@ func (e *Engine) checkDeliveryReverts(ctx context.Context) error {
 		_, err := tx.ExecContext(ctx, `UPDATE delivery_outcome SET checked_until=$2, reverted_at=$3, retry_at=NULL, scan_until=NULL WHERE node_id=$1 AND reverted_at IS NULL`, node, until, reverted)
 		return err
 	})
+}
+
+func (e *Engine) observePR(ctx context.Context, workID int64, issue, source string, pr *store.PullRequest, result error) {
+	attrs := []attribute.KeyValue{
+		attribute.String("issue.key", issue), attribute.Int64("run.id", e.lastItsaplanRun(ctx, workID)),
+		attribute.Int("pr.number", pr.Number), attribute.String("head.sha", pr.HeadSHA),
+		attribute.String("state.from", source),
+	}
+	if current, err := e.st.GetWorkItem(ctx, workID); err == nil {
+		attrs = append(attrs, attribute.Int("round", current.ReviewRounds), attribute.String("state.to", current.State))
+	}
+	outcome := "checked"
+	if result != nil {
+		outcome = "error"
+	}
+	tracing.Observe(ctx, "pr observed", append(attrs, attribute.String("outcome", outcome))...)
 }
 
 func (e *Engine) startQueueAction(ctx context.Context, wi *store.WorkItem, pr *store.PullRequest, detail *github.PullRequestDetail, action string) (context.Context, trace.Span, func(error)) {

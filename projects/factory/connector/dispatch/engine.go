@@ -884,10 +884,13 @@ func (e *Engine) step(ctx context.Context, r *store.Run) (result error) {
 		id, issue, source, workID := r.ID, r.IssueKey, r.State, r.WorkItemID
 		defer func() {
 			attrs := []attribute.KeyValue{attribute.Int64("run.id", id), attribute.String("issue.key", issue), attribute.String("state.from", source)}
-			attrs = append(attrs, e.workAttrs(ctx, workID)...)
 			outcome := "unchanged"
 			current, err := e.st.GetRun(ctx, id)
 			if err == nil {
+				// Dispatch can link the run to a work item during this step.
+				if current.WorkItemID != 0 {
+					workID = current.WorkItemID
+				}
 				attrs = append(attrs, attribute.String("state.to", current.State))
 				if current.State != source {
 					outcome = "advanced"
@@ -896,6 +899,7 @@ func (e *Engine) step(ctx context.Context, r *store.Run) (result error) {
 			if result != nil || err != nil {
 				outcome = "error"
 			}
+			attrs = append(attrs, e.workAttrs(ctx, workID)...)
 			tracing.Observe(ctx, "run observed", append(attrs, attribute.String("outcome", outcome))...)
 		}()
 	}
