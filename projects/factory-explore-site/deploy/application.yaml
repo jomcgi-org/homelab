@@ -16,7 +16,7 @@ spec:
     helm:
       releaseName: factory-explore-site
       valuesObject:
-        publishEnabled: true
+        manageHostname: true
   destination:
     server: https://kubernetes.default.svc
     namespace: factory-explore-site
