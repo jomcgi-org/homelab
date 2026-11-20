@@ -139,6 +139,7 @@ func parseChoices(description string) []string {
 	// para is set while a paragraph is open. A paragraph continues across
 	// an indented line and an HTML block of type 7 cannot interrupt it.
 	para := false
+	setextEligible := false
 	for _, raw := range strings.Split(description, "\n") {
 		line := strings.TrimSpace(raw)
 		if inHTML {
@@ -177,7 +178,12 @@ func parseChoices(description string) []string {
 			fence, para = line[:len(line)-len(strings.TrimLeft(line, line[:1]))], false
 			continue
 		}
-		para = line != "" && !strings.HasPrefix(line, "#")
+		marker := strings.TrimRight(strings.TrimLeft(raw, " "), " \t\r")
+		// A setext underline completes the preceding top-level paragraph.
+		// A thematic break also closes the paragraph, including after a list.
+		setext := para && setextEligible && setextUnderline.MatchString(marker)
+		para = line != "" && !strings.HasPrefix(line, "#") && !setext && !thematicBreak.MatchString(marker)
+		setextEligible = para && !containerStart.MatchString(marker)
 		if line == "## Choices" {
 			if found {
 				return nil
@@ -212,6 +218,12 @@ func parseChoices(description string) []string {
 	}
 	return choices
 }
+
+var (
+	containerStart  = regexp.MustCompile(`^(?:>|(?:[-+*]|[0-9]{1,9}[.)])(?:[ \t]|$))`)
+	setextUnderline = regexp.MustCompile(`^(?:-+|=+)$`)
+	thematicBreak   = regexp.MustCompile(`^(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$`)
+)
 
 // indentWidth counts leading columns, with a tab advancing to the next
 // multiple of four as in CommonMark.

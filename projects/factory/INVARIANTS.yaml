@@ -73,3 +73,9 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: The choices parser ignores choices inside raw HTML blocks opened after thematic breaks.
+  mechanism:
+  - projects/factory/connector/itsaplan/status.go
+  test: //projects/factory/connector/itsaplan:itsaplan_test
+  state: live
