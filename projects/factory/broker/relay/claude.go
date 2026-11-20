@@ -131,6 +131,7 @@ func (c *Claude) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 	if enc := r.Header.Get("Content-Encoding"); enc != "" && !strings.EqualFold(enc, "identity") {
 		return writeError(w, http.StatusUnsupportedMediaType, "bad_request", "bad_request", nil)
 	}
+	// invariant: FACT-14
 	// Reserve before reading. Unknown lengths reserve a full request, and
 	// ReadFull below enforces the reservation even for inconsistent lengths.
 	size := r.ContentLength
