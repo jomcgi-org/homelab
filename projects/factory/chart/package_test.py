@@ -23,6 +23,7 @@ _IMAGES = {
     "broker": "image",
     "codexTrial": "image",
     "connector": "image",
+    "discordRender": "image",
     "itsaplan": "webImage",
     "reviewer": "image",
 }
@@ -149,13 +150,17 @@ def test_packaged_render_matches_the_lock_with_published_images(
     rendered = _render(archive, values / "values-homelab.yaml", *pinned)
     assert rendered == _render(_CHART, _DEPLOY, *overrides)
     docs = [doc for doc in yaml.safe_load_all(rendered) if doc]
-    for service in ("broker", "connector", "itsaplan", "reviewer"):
-        suffix = "itsaplan-web" if service == "itsaplan" else service
+    for service, name in (
+        ("broker", "factory-broker"),
+        ("connector", "factory-connector"),
+        ("itsaplan", "factory-itsaplan-web"),
+        ("reviewer", "factory-reviewer"),
+        ("discordRender", "factory-discord-render"),
+    ):
         (deployment,) = [
             doc
             for doc in docs
-            if doc["kind"] == "Deployment"
-            and doc["metadata"]["name"] == f"factory-{suffix}"
+            if doc["kind"] == "Deployment" and doc["metadata"]["name"] == name
         ]
         (container,) = deployment["spec"]["template"]["spec"]["containers"]
         image = published[service][_IMAGES[service]]
