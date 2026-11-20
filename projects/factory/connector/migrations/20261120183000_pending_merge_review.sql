@@ -1,3 +1,4 @@
+/* invariant: FACT-13 */
 -- Keep the merged head until its PR-specific review has finished.
 CREATE TABLE pending_merge_review (
     binding_name text NOT NULL REFERENCES repo_binding(name),

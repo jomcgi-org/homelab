@@ -31,18 +31,19 @@ import (
 // branch, reviews, check runs and statuses per commit, and a merge queue that
 // takes a PR only at its expected head.
 type fakeGitHub struct {
-	mergedListing []github.PullRequest
-	scanRevert    func(time.Time, time.Time, func(int) error) (*time.Time, error)
-	mu            sync.Mutex
-	calls         int
-	branches      map[string]*fakeBranch
-	prs           []*fakePR
-	checks        map[string][]github.CheckRun
-	statuses      map[string][]github.Status
-	creates       int
-	enqueues      []string
-	nodes         int
-	detailErr     error // fails every PR detail read while set
+	mergedListing   []github.PullRequest
+	listedMergeTime time.Time
+	scanRevert      func(time.Time, time.Time, func(int) error) (*time.Time, error)
+	mu              sync.Mutex
+	calls           int
+	branches        map[string]*fakeBranch
+	prs             []*fakePR
+	checks          map[string][]github.CheckRun
+	statuses        map[string][]github.Status
+	creates         int
+	enqueues        []string
+	nodes           int
+	detailErr       error // fails every PR detail read while set
 	// loseCreate opens the next PR but loses the response; findErr fails
 	// the next lookups.
 	loseCreate bool
@@ -3727,13 +3728,19 @@ func TestUnconfirmedEjectionEmitsNoEjectionSpan(t *testing.T) {
 	}
 }
 
-func (g *fakeGitHub) MergedSince(_ context.Context, _, _ string, _ time.Time, before func(int) error) ([]github.PullRequest, error) {
+func (g *fakeGitHub) MergedSince(_ context.Context, _, _ string, since time.Time, before func(int) error) ([]github.PullRequest, error) {
 	if err := before(1); err != nil {
 		return nil, err
+	}
+	if !g.listedMergeTime.IsZero() && g.listedMergeTime.Before(since) {
+		return nil, nil
 	}
 	return g.mergedListing, nil
 }
 
-func (g *fakeGitHub) ListCheckRuns(ctx context.Context, repo, sha string, _ github.CheckRunFilter) ([]github.CheckRun, error) {
+func (g *fakeGitHub) ListCheckRunsWithJournal(ctx context.Context, repo, sha string, _ github.CheckRunFilter, before func(int) error) ([]github.CheckRun, error) {
+	if err := before(1); err != nil {
+		return nil, err
+	}
 	return g.CheckRuns(ctx, repo, sha)
 }

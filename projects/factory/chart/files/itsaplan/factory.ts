@@ -1,3 +1,4 @@
+// invariant: FACT-13
 // Narrow, authenticated extension to the pinned itsaplan v1.10.0 API. Use the
 // upstream services so activity, status history, notifications, schedules and
 // webhook outboxes retain the same behavior as its ordinary routes.
@@ -171,6 +172,19 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
     "/projects/:projectKey/factory-review-followups",
     async ({ project, user, body }) =>
       factoryTransaction(async () => {
+        const coordinator = process.env.FACTORY_COORDINATOR;
+        const actor = user!.id;
+        if (!coordinator)
+          throw new HttpError(403, "Factory coordinator is not configured");
+        const authorized = await db.execute(sql`
+          select a.user_id from ai_agent a join project p on p.team_id = a.team_id
+          where p.id = ${project.id} and a.username = ${coordinator} and a.user_id = ${actor}
+        `);
+        if (!authorized.length)
+          throw new HttpError(
+            403,
+            "Only the configured coordinator can file review follow-ups",
+          );
         const { key, ...input } = body;
         await db.execute(
           sql`select pg_advisory_xact_lock(${project.id}::integer, hashtext(${key}))`,

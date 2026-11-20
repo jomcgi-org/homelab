@@ -1,3 +1,4 @@
+/* invariant: FACT-13 */
 ALTER TABLE repo_binding ADD COLUMN review_merges_since timestamptz NOT NULL DEFAULT date_trunc('second', now());
 
 ALTER TABLE outbox DROP CONSTRAINT outbox_kind_check;

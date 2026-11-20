@@ -352,17 +352,26 @@ test("concurrent review follow-up requests commit one backlog issue", async () =
     title: "Follow-up",
     description: "Review details",
   };
-  const send = () =>
+  const send = (apiKey = f.coordinator.apiKey!) =>
     app.handle(
       new Request("http://localhost/projects/HOME/factory-review-followups", {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-api-key": f.coordinator.apiKey!,
+          "x-api-key": apiKey,
         },
         body: JSON.stringify(input),
       }),
     );
+  const ordinary = apiKeyApi(f.coder.apiKey!);
+  expect(
+    (
+      await ordinary
+        .projects({ projectKey: "HOME" })
+        .issues.post({ title: "Ordinary issue", columnId: f.backlog.id })
+    ).status,
+  ).toBe(201);
+  expect((await send(f.coder.apiKey!)).status).toBe(403);
   const responses = await Promise.all([send(), send()]);
   expect(responses.map((r) => r.status)).toEqual([200, 200]);
   expect(await responses[0].json()).toEqual(await responses[1].json());

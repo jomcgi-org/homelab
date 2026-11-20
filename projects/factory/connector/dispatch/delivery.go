@@ -26,7 +26,7 @@ import (
 
 // GitHub is the subset of the GitHub client delivery uses.
 type GitHub interface {
-	ListCheckRuns(context.Context, string, string, github.CheckRunFilter) ([]github.CheckRun, error)
+	ListCheckRunsWithJournal(context.Context, string, string, github.CheckRunFilter, func(int) error) ([]github.CheckRun, error)
 	MergedSince(context.Context, string, string, time.Time, func(int) error) ([]github.PullRequest, error)
 	RevertedMerge(ctx context.Context, repo, branch, sha string, number int, since, until time.Time, before func(int) error) (*time.Time, error)
 	FindPullRequest(ctx context.Context, repo, branch string) (*github.PullRequest, error)
@@ -2306,7 +2306,8 @@ func (e *Engine) pollMergedReviews(ctx context.Context) error {
 		}
 		until := e.cfg.Now().UTC().Truncate(time.Second)
 		if until.After(since) {
-			prs, err := e.gh.MergedSince(ctx, b.repo(), b.BaseBranch, since, func(page int) error {
+			// Revisit the past day for merges that appear late in the closed-PR listing.
+			prs, err := e.gh.MergedSince(ctx, b.repo(), b.BaseBranch, since.Add(-24*time.Hour), func(page int) error {
 				return e.BeginStatusRead(ctx, fmt.Sprintf("merged-reviews/list/%s/%s/%d", b.repo(), b.BaseBranch, page))
 			})
 			if err != nil {
@@ -2351,10 +2352,11 @@ func (e *Engine) resolveMergedReviews(ctx context.Context, b *Binding, now time.
 	}
 	for _, pr := range due {
 		id := fmt.Sprintf("merged-reviews/checks/%s/%d/%s", b.repo(), pr.Number, pr.HeadSHA)
-		if err := e.BeginStatusRead(ctx, id); err != nil {
-			return err
-		}
-		checks, readErr := e.gh.ListCheckRuns(ctx, b.repo(), pr.HeadSHA, github.CheckRunFilter{Name: b.Review.ReviewerCheck.Name, AppID: b.Review.ReviewerCheck.AppID, All: true})
+		filter := github.CheckRunFilter{Name: b.Review.ReviewerCheck.Name, AppID: b.Review.ReviewerCheck.AppID, All: true}
+		checks, readErr := e.gh.ListCheckRunsWithJournal(ctx, b.repo(), pr.HeadSHA, filter, func(page int) error {
+			return e.BeginStatusRead(ctx, fmt.Sprintf("%s/%d", id, page))
+		})
+
 		check := deferredCheck(b, pr, checks)
 		err := e.w.Tx(ctx, func(tx *sql.Tx) error {
 			if readErr != nil || check == nil {
@@ -2364,7 +2366,7 @@ func (e *Engine) resolveMergedReviews(ctx context.Context, b *Binding, now time.
 			if err := e.enqueueDeferred(ctx, tx, b, 0, pr, check); err != nil {
 				return err
 			}
-			_, err := tx.ExecContext(ctx, "DELETE FROM pending_merge_review WHERE binding_name=$1 AND number=$2", b.Name, pr.Number)
+			_, err := tx.ExecContext(ctx, "UPDATE pending_merge_review SET next_poll='infinity' WHERE binding_name=$1 AND number=$2", b.Name, pr.Number)
 			return err
 		})
 		if err != nil {

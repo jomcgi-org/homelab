@@ -49,9 +49,13 @@ func (r restCheckRun) run() CheckRun {
 	return c
 }
 
-// ListCheckRuns lists the first 100 matching runs on a commit. All requests
-// include older runs and fail if the response omits any matching history.
+// ListCheckRuns returns the latest matching runs or the full history when All is set.
 func (c *Client) ListCheckRuns(ctx context.Context, repo, sha string, f CheckRunFilter) ([]CheckRun, error) {
+	return c.ListCheckRunsWithJournal(ctx, repo, sha, f, nil)
+}
+
+// ListCheckRunsWithJournal calls before for each HTTP attempt, including retries.
+func (c *Client) ListCheckRunsWithJournal(ctx context.Context, repo, sha string, f CheckRunFilter, before func(int) error) ([]CheckRun, error) {
 	q := url.Values{"filter": {"latest"}, "per_page": {"100"}}
 	if f.All {
 		q.Set("filter", "all")
@@ -62,22 +66,38 @@ func (c *Client) ListCheckRuns(ctx context.Context, repo, sha string, f CheckRun
 	if f.AppID != 0 {
 		q.Set("app_id", strconv.FormatInt(f.AppID, 10))
 	}
-	var out struct {
-		TotalCount int            `json:"total_count"`
-		CheckRuns  []restCheckRun `json:"check_runs"`
+	var runs []CheckRun
+	seen := map[int64]bool{}
+	for page := 1; ; page++ {
+		if page > 1 {
+			q.Set("page", strconv.Itoa(page))
+		}
+		var out struct {
+			TotalCount int            `json:"total_count"`
+			CheckRuns  []restCheckRun `json:"check_runs"`
+		}
+		path := repoPath(repo) + "/commits/" + url.PathEscape(sha) + "/check-runs?" + q.Encode()
+		var guard func() error
+		if before != nil {
+			guard = func() error { return before(page) }
+		}
+		if err := c.send(ctx, repo, http.MethodGet, path, nil, &out, true, guard); err != nil {
+			return nil, err
+		}
+		for _, r := range out.CheckRuns {
+			if f.All && seen[r.ID] {
+				return nil, fmt.Errorf("github: check history changed during pagination")
+			}
+			seen[r.ID] = true
+			runs = append(runs, r.run())
+		}
+		if !f.All || len(runs) == out.TotalCount {
+			return runs, nil
+		}
+		if len(out.CheckRuns) != 100 || len(runs) > out.TotalCount {
+			return nil, fmt.Errorf("github: check history is incomplete")
+		}
 	}
-	path := repoPath(repo) + "/commits/" + url.PathEscape(sha) + "/check-runs?" + q.Encode()
-	if err := c.do(ctx, repo, http.MethodGet, path, nil, &out); err != nil {
-		return nil, err
-	}
-	if f.All && out.TotalCount != len(out.CheckRuns) {
-		return nil, fmt.Errorf("github: check history is incomplete")
-	}
-	runs := make([]CheckRun, 0, len(out.CheckRuns))
-	for _, r := range out.CheckRuns {
-		runs = append(runs, r.run())
-	}
-	return runs, nil
 }
 
 // MaxAnnotations is how many annotations GitHub takes in one check run

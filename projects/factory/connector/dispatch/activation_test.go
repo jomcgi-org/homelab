@@ -1097,7 +1097,7 @@ func TestUntrackedMergedReviewUsesPRIdentity(t *testing.T) {
 	v := newDeliveryEnv(t)
 	v.gh.green("shared")
 	pr := github.PullRequest{Number: 42, HeadSHA: "shared", URL: "https://github.com/example-org/homelab/pull/42"}
-	v.gh.mergedListing = []github.PullRequest{pr}
+	v.gh.listedMergeTime = v.clk.Now()
 	for i, c := range v.gh.checks["shared"] {
 		if c.Name != "semgrep-review" {
 			continue
@@ -1120,22 +1120,25 @@ func TestUntrackedMergedReviewUsesPRIdentity(t *testing.T) {
 	if _, err := v.st.DB.Exec("UPDATE repo_binding SET review_merges_since='2000-01-01'"); err != nil {
 		t.Fatal(err)
 	}
+	v.poll() // GitHub has not listed the merge yet.
+	v.gh.mergedListing = []github.PullRequest{pr}
 	v.poll()
 	if v.its.activationCreates != 0 {
 		t.Fatal("in-progress review filed a follow-up")
 	}
 	v.e.Release()
 	v.e = v.engine("review-restart")
-	v.gh.mergedListing = nil
+
 	for i, c := range v.gh.checks["shared"] {
 		if c.ID == 42 {
 			v.gh.checks["shared"][i].Status = "completed"
 		}
 	}
 	v.poll()
+	v.poll() // A completed merge in the overlap must not start another lookup.
 	for id, want := range map[string]int{
-		"merged-reviews/list/jomcgi-org/homelab/main/1":                2,
-		"merged-reviews/checks/jomcgi-org/homelab/42/shared":           2,
+		"merged-reviews/list/jomcgi-org/homelab/main/1":                4,
+		"merged-reviews/checks/jomcgi-org/homelab/42/shared/1":         2,
 		"review-followup/jomcgi-org/homelab/42/f/ProjectColumns":       1,
 		"review-followup/jomcgi-org/homelab/42/f/CreateReviewFollowup": 1,
 	} {

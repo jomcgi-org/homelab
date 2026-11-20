@@ -1494,3 +1494,26 @@ func TestRevertedMergeSkipsTheMergeCommitItself(t *testing.T) {
 		t.Fatalf("revert = %v, err = %v; the merge commit counted as its own revert", got, err)
 	}
 }
+
+func TestMergedReviewHistoryPages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		first, last := 1, 100
+		if r.URL.Query().Get("page") == "2" {
+			first, last = 101, 101
+		}
+		var rows []map[string]any
+		for id := first; id <= last; id++ {
+			rows = append(rows, map[string]any{"id": id, "external_id": fmt.Sprintf("pr-%d", id)})
+		}
+		if err := json.NewEncoder(w).Encode(map[string]any{"total_count": 101, "check_runs": rows}); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer server.Close()
+	var pages []int
+	c := Client{BaseURL: server.URL, Tokens: fixedTokens{}}
+	runs, err := c.ListCheckRunsWithJournal(context.Background(), "example/repo", "sha", CheckRunFilter{All: true}, func(page int) error { pages = append(pages, page); return nil })
+	if err != nil || len(runs) != 101 || runs[100].ExternalID != "pr-101" || !slices.Equal(pages, []int{1, 2}) {
+		t.Fatalf("runs=%d pages=%v err=%v", len(runs), pages, err)
+	}
+}
