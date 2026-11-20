@@ -51,6 +51,7 @@ go_library(
         "20261120100000_planner_schedule_config.sql",
         "20261121000000_issue_reviewing.sql",
         "20261121125100_storyboard_artifact_prose.sql",
+        "20261122000000_run_provenance_opt_in.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],

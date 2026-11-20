@@ -318,8 +318,8 @@ func recordClaim(ctx context.Context, transact func(context.Context, func(*sql.T
 		existing, err := scanRun(tx.QueryRowContext(ctx, `SELECT `+runCols+` FROM run WHERE id = $1 FOR UPDATE`, c.ID))
 		if errors.Is(err, sql.ErrNoRows) {
 			run, err = scanRun(tx.QueryRowContext(ctx, `
-				INSERT INTO run (id, agent_key, issue_id, issue_key, trigger, prompt, system_prompt, attempt, state, admission_stops)
-				VALUES ($1, $2, nullif($3, 0), nullif($4, ''), $5, $6, $7, $8, 'claimed',
+				INSERT INTO run (id, agent_key, issue_id, issue_key, trigger, prompt, system_prompt, attempt, state, provenance_required, admission_stops)
+				VALUES ($1, $2, nullif($3, 0), nullif($4, ''), $5, $6, $7, $8, 'claimed', true,
 					coalesce((SELECT stops FROM work_item WHERE issue_id = $3), 0))
 				RETURNING `+runCols,
 				c.ID, c.AgentKey, c.IssueID, c.IssueKey, c.Trigger, c.Prompt, c.SystemPrompt, c.Attempt))
