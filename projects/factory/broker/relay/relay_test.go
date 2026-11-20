@@ -26,6 +26,10 @@ import (
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/store"
 	"github.com/klauspost/compress/zstd"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -449,6 +453,75 @@ func TestRelayTransientRefreshFailureIsUnavailable(t *testing.T) {
 	}
 	if testutil.ToFloat64(h.metrics.GrantState.WithLabelValues("codex-primary", "login_required")) != 0 {
 		t.Fatal("a transient failure reported login_required")
+	}
+}
+
+func recordRelaySpans(t *testing.T, tracing bool) *tracetest.SpanRecorder {
+	t.Helper()
+	recorder := tracetest.NewSpanRecorder()
+	sampler := sdktrace.NeverSample()
+	if tracing {
+		sampler = sdktrace.AlwaysSample()
+	}
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSampler(sampler), sdktrace.WithSpanProcessor(recorder))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() { otel.SetTracerProvider(previous); _ = provider.Shutdown(context.Background()) })
+	return recorder
+}
+
+func TestRelayUpstreamFailureSpan(t *testing.T) {
+	h := newHarness(t, true)
+	recorder := recordRelaySpans(t, true)
+	h.backend.set(func(b *backend) {
+		b.respond = func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("X-Request-Id", "req-failed")
+			w.WriteHeader(http.StatusBadGateway)
+		}
+	})
+	resp := h.post("/v1/responses", h.actorJWT())
+	h.relay.Close()
+	spans := recorder.Ended()
+	if resp.StatusCode != http.StatusBadGateway || len(spans) != 1 || spans[0].Status().Code != codes.Error {
+		t.Fatalf("status %d, spans %v", resp.StatusCode, spans)
+	}
+	attrs := map[string]string{}
+	for _, attr := range spans[0].Attributes() {
+		attrs[string(attr.Key)] = attr.Value.Emit()
+	}
+	if attrs["relay.outcome"] != "upstream_error" || attrs["upstream_request_id"] != "req-failed" || attrs["http.response.status_code"] != "502" {
+		t.Errorf("span attributes %v", attrs)
+	}
+}
+
+func TestRelayRejectedGrantDiagnostics(t *testing.T) {
+	for _, tracing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("tracing=%t", tracing), func(t *testing.T) {
+			h := newHarness(t, true)
+			h.backend.set(func(b *backend) { b.accepts = func(string) bool { return false } })
+			h.auth.FailTransiently(true)
+			recorder := recordRelaySpans(t, tracing)
+			resp := h.post("/v1/responses", h.actorJWT())
+			if factoryError(t, resp)["factory_error"] != ErrGrantUnavailable || resp.StatusCode != http.StatusServiceUnavailable || h.auth.RefreshCalls() != 1 {
+				t.Fatalf("status %d, refreshes %d", resp.StatusCode, h.auth.RefreshCalls())
+			}
+			h.relay.Close()
+			if tracing {
+				spans := recorder.Ended()
+				if len(spans) != 1 {
+					t.Fatalf("ended spans = %d", len(spans))
+				}
+				s := spans[0]
+				if events := s.Events(); s.Name() != "codex.relay" || len(events) != 1 || events[0].Name != "grant.failure" || s.Status().Code != codes.Error {
+					t.Errorf("grant diagnostics: %v, status %v", events, s.Status())
+				}
+			}
+			for _, message := range []string{"codex grant refresh after backend 401 failed", "tokenbroker refresh failed"} {
+				if strings.Contains(h.logs.String(), message) == tracing {
+					t.Errorf("unexpected log presence for %q", message)
+				}
+			}
+		})
 	}
 }
 

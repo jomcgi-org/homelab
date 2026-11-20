@@ -19,6 +19,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/jomcgi/homelab/projects/factory/broker/actorjwt"
@@ -199,10 +204,19 @@ func (rl *Relay) now() time.Time {
 
 func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := rl.now()
+	ctx, span := otel.Tracer("factory-broker").Start(r.Context(), "codex.relay", trace.WithNewRoot(), trace.WithSpanKind(trace.SpanKindServer))
+	defer span.End()
 	var id actorjwt.Identity
 	var upstreamID string
-	result := rl.serve(w, r, &id, &upstreamID)
+	result := rl.serve(w, r.WithContext(ctx), &id, &upstreamID)
 	rl.Metrics.RelayRequests.WithLabelValues(result.name, metrics.StatusClass(result.status)).Inc()
+	if span.IsRecording() {
+		span.SetAttributes(attribute.String("relay.outcome", result.name), attribute.Int("http.response.status_code", result.status), attribute.String("upstream_request_id", upstreamID), attribute.String("actor.subject", id.Subject), attribute.String("actor.uid", id.ActorUID), attribute.String("binding.namespace", id.Atespace))
+		if result.name != "ok" {
+			span.SetStatus(codes.Error, result.name)
+		}
+		return
+	}
 	// Never log credentials: the actor JWT, access token and request body
 	// stay out of this line.
 	rl.Logger.Info("codex relay", "actor", id.Subject, "atespace", id.Atespace, "actor_uid", id.ActorUID,

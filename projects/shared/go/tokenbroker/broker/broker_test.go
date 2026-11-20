@@ -1,11 +1,13 @@
 package broker
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -194,9 +196,19 @@ func TestRefreshTokenReusedRereadsStoreAndRetriesOnce(t *testing.T) {
 				st.grants["one"] = grant
 				st.mu.Unlock()
 			}}
-			b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
-			if _, _, err := b.RefreshAccessToken("one", context.Background()); err != nil {
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logs, nil))
+			b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, logger, nil)
+			ctx := context.Background()
+			reuseEvents := 0
+			if newLogin {
+				ctx = WithRefreshDiagnostics(ctx, slog.New(slog.DiscardHandler), func() { reuseEvents++ })
+			}
+			if _, _, err := b.RefreshAccessToken("one", ctx); err != nil {
 				t.Fatal(err)
+			}
+			if logged := bytes.Contains(logs.Bytes(), []byte("tokenbroker refresh_token_reused")); logged == newLogin || (newLogin && reuseEvents != 1) {
+				t.Fatalf("reuse warning logged=%v, events=%d", logged, reuseEvents)
 			}
 			adapter.mu.Lock()
 			defer adapter.mu.Unlock()
