@@ -1,3 +1,6 @@
+# The rollout probe is streamed into the Hindsight image, which supplies its imports.
+# gazelle:exclude validation/image_probe.py
+
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 py_test(
