@@ -12,7 +12,7 @@ spec:
   source:
     repoURL: ghcr.io/jomcgi/homelab/charts
     chart: factory-public
-    targetRevision: 0.17.6
+    targetRevision: 0.18.45
     helm:
       releaseName: factory-public
   destination:
