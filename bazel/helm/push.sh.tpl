@@ -38,6 +38,26 @@ REPOSITORY="{{REPOSITORY}}"
 CHART_VERSION_SH="{{CHART_VERSION_SH}}"
 CHART_DIR="{{CHART_DIR}}"
 
+# Capture the built rollback image alongside the chart receipt. The hidden
+# sidecar is consumed by write-back, outside the list of chart receipts.
+record_chart() {
+  local record_dir="${WORKSPACE}/.chart-version-records" digest
+  mkdir -p "$record_dir"
+  if [[ "$CHART_DIR" == "projects/factory-explore-site/chart" ]]; then
+    digest=$("$HELM" show values "$CHART_TGZ" | awk '
+      /^image:/ { image=1; next }
+      /^[^[:space:]]/ { image=0 }
+      image && /^  digest:/ { print $2 }
+    ')
+    if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      echo "Invalid factory-explore-site image digest in packaged chart" >&2
+      return 1
+    fi
+    printf '%s\n' "$digest" > "$record_dir/.factory-explore-site-image"
+  fi
+  printf '%s %s\n' "$CHART_DIR" "$CHART_VERSION" > "$record_dir/$CHART_NAME"
+}
+
 # Resolve chart-version.sh via rlocation if it's a runfiles path
 if [[ -n "$CHART_VERSION_SH" ]] && ! [[ -x "$CHART_VERSION_SH" ]]; then
   CHART_VERSION_SH="$(rlocation "$CHART_VERSION_SH" 2>/dev/null || echo "")"
@@ -212,9 +232,7 @@ if [[ "$CURRENT_BRANCH" == "main" ]]; then
           # Record every content-verified version, including an already aligned
           # one. Publication receipts need the full set checked by this build;
           # write-back itself decides whether a version file needs changing.
-          RECORD_DIR="${WORKSPACE}/.chart-version-records"
-          mkdir -p "$RECORD_DIR"
-          printf '%s %s\n' "$CHART_DIR" "$CHART_VERSION" > "${RECORD_DIR}/${CHART_NAME}"
+          record_chart
           if [[ "$CHART_VERSION" != "$CURRENT_VERSION" ]]; then
             echo "Chart ${CHART_NAME} ${CHART_VERSION} is published and its digests match, but main still says ${CURRENT_VERSION}; recording it so the write-back can align main."
           else
@@ -312,9 +330,7 @@ if [[ "$CURRENT_BRANCH" == "main" ]]; then
       # DEPLOY AGAIN with every step still green. BUILD_WORKSPACE_DIRECTORY is
       # set by `bazel run` itself and is already load-bearing above, so there is
       # no second thing to keep working.
-      RECORD_DIR="${WORKSPACE}/.chart-version-records"
-      mkdir -p "$RECORD_DIR"
-      printf '%s %s\n' "$CHART_DIR" "$CHART_VERSION" > "${RECORD_DIR}/${CHART_NAME}"
+      record_chart
     fi
   fi
 elif [[ "$CAN_VERSION" == "true" ]]; then

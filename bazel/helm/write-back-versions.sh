@@ -175,6 +175,16 @@ while [[ "$attempt" -le "$TRIES" ]]; do
 						echo "ERROR: failed to rewrite targetRevision in ${APP_YAML} (unusual formatting?)." >&2
 						exit 1
 					fi
+					if [[ "$CHART_DIR" == projects/factory-explore-site/chart ]] &&
+						grep -Fq 'digest: "" # CI seeds the rollback image on first publication' "$APP_YAML" &&
+						[[ -f "$RECORD_DIR/.factory-explore-site-image" ]]; then
+						read -r rollback_digest <"$RECORD_DIR/.factory-explore-site-image"
+						if [[ ! "$rollback_digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+							echo "Invalid explorer rollback digest" >&2
+							exit 1
+						fi
+						sed -i "s/digest: \"\" # CI seeds the rollback image on first publication/digest: ${rollback_digest}/" "$APP_YAML"
+					fi
 					git add "$APP_YAML"
 				fi
 			fi

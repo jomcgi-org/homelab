@@ -22,7 +22,7 @@ Sequence the first publication after HOME-358 exposes the HOME-356 proxy
 at factory-explore-api.jomcgi.dev. Both hostname management and publication start disabled.
 Before enabling publication, verify CORS from the UI origin, an authenticated read, and
 server-side denial of anonymous reads and writes. Record Joe’s decision on serving the SPA before sign-in, or verify that the
-hostname requires sign-in at the edge. Confirm image pull and dedicated credential access, including domain lookup and deletion. Pin that withdrawal-capable image by repository and digest in the Application under `workloads.factory-explore-deploy.image`. Enable hostname management on the withdrawal-capable pin, verify its Sync Job succeeds,
+hostname requires sign-in at the edge. Confirm image pull and dedicated credential access, including domain lookup and deletion. CI copies the first withdrawal-capable chart’s build-time image digest into the Application during chart version write-back. Subsequent chart pin changes retain that rollback image. Enable hostname management on the withdrawal-capable pin, verify its Sync Job succeeds,
 then set the Application's Helm value `publishEnabled` to `true` through Git.
 After publication, verify
 sign-in and a resource listing from a fresh browser.
