@@ -23,6 +23,25 @@ metadata:
   name: atelet
   namespace: ate-system
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: atelet-image-credential-provider
+  namespace: ate-system
+data:
+  config.yaml: |
+    apiVersion: kubelet.config.k8s.io/v1
+    kind: CredentialProviderConfig
+    providers:
+      - name: ghcr-credential-provider
+        apiVersion: credentialprovider.kubelet.k8s.io/v1
+        matchImages:
+          - ghcr.io
+        defaultCacheDuration: 5m
+        env:
+          - name: DOCKER_CONFIG_FILE
+            value: /run/ghcr-pull/.dockerconfigjson
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -192,6 +211,8 @@ spec:
         args:
         - "--preview=PerTemplateSnapshotLocation,GoldenEgressPolicy"
         - --objectstore-plugin-socket=/run/objectstore-plugin/node.sock
+        - --image-credential-provider-config=/run/image-credential-provider/config.yaml
+        - --image-credential-provider-bin-dir=/run/image-credential-provider/bin
         - --grpc-server-cred-bundle=/run/podidentity.podcert.ate.dev/credential-bundle.pem
         - --client-ca-certs=/run/podidentity.podcert.ate.dev/trust-bundle.pem
         - '--herder-allowed-spiffe-id=spiffe://cluster.local/ns/ate-system/sa/ate-api-server'
@@ -281,6 +302,13 @@ spec:
         - name: host-dev
           mountPath: /host/dev
           readOnly: true
+        - name: image-credential-provider-bin
+          mountPath: /run/image-credential-provider/bin
+          readOnly: true
+        - name: image-credential-provider-config
+          mountPath: /run/image-credential-provider/config.yaml
+          subPath: config.yaml
+          readOnly: true
       volumes:
       - name: objectstore-plugin
         emptyDir: {}
@@ -303,6 +331,13 @@ spec:
         hostPath:
           path: /dev
           type: Directory
+      - name: image-credential-provider-bin
+        hostPath:
+          path: "/var/lib/ate-image-credential-provider/bin"
+          type: Directory
+      - name: image-credential-provider-config
+        configMap:
+          name: atelet-image-credential-provider
       - name: podidentity
         projected:
           sources:

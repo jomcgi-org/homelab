@@ -34,6 +34,7 @@ resources:
   - snapshot-store.yaml
   - network-policy.yaml
   - kagent-identity-guard.yaml
+  - ghcr-pull-secret.yaml
 
 configMapGenerator:
   # The bundled PostgreSQL's roles and schema (pkg/postgressetup).
@@ -110,6 +111,8 @@ patches:
   # The bundled PostgreSQL, sized for this cluster, with its role setup run on
   # every start rather than by an installer over kubectl exec.
   - path: patches/postgres.yaml
+  # Private ghcr.io pulls through a kubelet credential plugin (HOME-539).
+  - path: patches/atelet-image-credentials.yaml
   # Memory requests at the 99th-percentile working set plus 10% (14-16 Nov);
   # the limits stay. The API server peaked at 68Mi against the chart's 256Mi,
   # and its snapshot plugin, which the chart leaves without resources, at

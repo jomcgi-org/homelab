@@ -29,3 +29,10 @@ go_image(
     binary = ":credential-provider",
     repository = "ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/credential-provider",
 )
+
+# The pushed image's digest, which resources/ pins and resources_test checks.
+filegroup(
+    name = "image_digest",
+    srcs = [":image.digest"],
+    visibility = ["//projects/platform-factory/substrate/resources:__pkg__"],
+)
