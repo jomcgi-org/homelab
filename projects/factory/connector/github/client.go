@@ -531,6 +531,7 @@ const pullRequestQuery = `query($owner: String!, $name: String!, $number: Int!) 
       mergeQueueEntry { state headCommit { oid } }
       labels(first: 100) { nodes { name } }
       reviews(last: 100) {
+        pageInfo { hasPreviousPage }
         nodes { id state body submittedAt author { login } commit { oid } }
       }
       reviewThreads(last: 100) {
@@ -591,6 +592,9 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 					} `json:"nodes"`
 				} `json:"labels"`
 				Reviews struct {
+					PageInfo struct {
+						HasPreviousPage bool `json:"hasPreviousPage"`
+					} `json:"pageInfo"`
 					Nodes []struct {
 						ID          string     `json:"id"`
 						State       string     `json:"state"`
@@ -657,18 +661,28 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 	for _, l := range p.Labels.Nodes {
 		d.Labels = append(d.Labels, l.Name)
 	}
-	for _, r := range p.Reviews.Nodes {
-		rv := Review{NodeID: r.ID, State: r.State, Body: r.Body}
-		if r.Author != nil {
-			rv.Author = r.Author.Login
+	if p.Reviews.PageInfo.HasPreviousPage {
+		reviews, err := c.PullRequestReviews(ctx, repo, number)
+		if err != nil {
+			return nil, err
 		}
-		if r.Commit != nil {
-			rv.CommitSHA = r.Commit.OID
+		for _, r := range reviews {
+			d.Reviews = append(d.Reviews, Review{NodeID: r.NodeID, CommitSHA: r.CommitSHA, Author: r.Author, State: r.State, Body: r.Body, SubmittedAt: r.SubmittedAt})
 		}
-		if r.SubmittedAt != nil {
-			rv.SubmittedAt = *r.SubmittedAt
+	} else {
+		for _, r := range p.Reviews.Nodes {
+			rv := Review{NodeID: r.ID, State: r.State, Body: r.Body}
+			if r.Author != nil {
+				rv.Author = r.Author.Login
+			}
+			if r.Commit != nil {
+				rv.CommitSHA = r.Commit.OID
+			}
+			if r.SubmittedAt != nil {
+				rv.SubmittedAt = *r.SubmittedAt
+			}
+			d.Reviews = append(d.Reviews, rv)
 		}
-		d.Reviews = append(d.Reviews, rv)
 	}
 	sort.SliceStable(d.Reviews, func(i, j int) bool { return d.Reviews[i].SubmittedAt.Before(d.Reviews[j].SubmittedAt) })
 	for _, t := range p.ReviewThreads.Nodes {
