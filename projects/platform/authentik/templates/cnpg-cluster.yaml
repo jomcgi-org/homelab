@@ -12,6 +12,9 @@ metadata:
     app.kubernetes.io/name: authentik-postgresql
     app.kubernetes.io/part-of: authentik
 spec:
+  {{- with .Values.cnpg.priorityClassName }}
+  priorityClassName: {{ . | quote }}
+  {{- end }}
   instances: {{ .Values.cnpg.instances }}
   {{- with .Values.cnpg.affinity }}
   affinity:

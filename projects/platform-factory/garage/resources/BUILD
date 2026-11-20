@@ -37,3 +37,8 @@ py_test(
         "@pip//pyyaml",
     ],
 )
+
+exports_files(
+    ["garage.yaml"],
+    visibility = ["//projects/platform-factory/priority:__pkg__"],
+)

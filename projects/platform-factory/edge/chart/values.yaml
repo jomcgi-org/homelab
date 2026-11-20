@@ -8,6 +8,7 @@ gateway-helm:
   crds:
     enabled: false
   deployment:
+    priorityClassName: factory-platform
     envoyGateway:
       resources:
         requests:
