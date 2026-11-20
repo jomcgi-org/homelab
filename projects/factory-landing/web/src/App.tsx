@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { paths } from "./paths";
 import { parseStatus, type Status } from "./status";
 
+import { pageOf } from "./paging.mjs";
+
 const tools = [
   { name: "itsaplan", purpose: "Work and the run queue.", href: paths.plan },
   {
@@ -20,6 +22,44 @@ export function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [failed, setFailed] = useState(false);
 
+  const [page, setPage] = useState(0);
+  const [expanded, setExpanded] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const [answered, setAnswered] = useState<Record<string, string>>({});
+  const items =
+    status?.needsYou?.filter(
+      (i) => !i.choiceRevision || answered[i.key] !== i.choiceRevision,
+    ) ?? [];
+  const visible = pageOf(items, page);
+  async function decide(item: (typeof items)[number], index: number) {
+    if (
+      pending ||
+      !window.confirm(`Record “${item.choices![index]}” for ${item.key}?`)
+    )
+      return;
+    setPending(true);
+    setError("");
+    try {
+      const result = await fetch("/api/decide", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "If-Match": `"${item.choiceRevision}"`,
+        },
+        body: JSON.stringify({ key: item.key, choice: index + 1 }),
+      });
+      if (result.status !== 204) throw new Error();
+      setAnswered((a) => ({ ...a, [item.key]: item.choiceRevision! }));
+      setExpanded("");
+    } catch {
+      setError(
+        `Could not confirm the decision for ${item.key}. Check itsaplan before retrying.`,
+      );
+    } finally {
+      setPending(false);
+    }
+  }
   useEffect(() => {
     let active = true;
     let controller: AbortController | undefined;
@@ -85,32 +125,80 @@ export function App() {
       <section aria-labelledby="needs-you" className="needs-you">
         <Heading level={2} id="needs-you">
           Needs you
-          {status?.needsYou ? ` (${status.needsYou.length})` : ""}
+          {status?.needsYou ? ` (${items.length})` : ""}
         </Heading>
         {status &&
           (status.needsYou === null ? (
             <p className="meta">
               Unavailable: no itsaplan member @joe in the factory's project.
             </p>
-          ) : status.needsYou.length ? (
-            <ul className="factory-list">
-              {status.needsYou.map((item) => (
-                <li key={item.key}>
-                  <a className="record" href={item.url}>
-                    <span className="key">{item.key}:</span> {item.title}
-                  </a>
-                  <p className="meta">
-                    {item.priority || "No priority"} · Created{" "}
-                    <time dateTime={item.createdAt}>
-                      {date(item.createdAt)}
-                    </time>
-                  </p>
-                </li>
-              ))}
-            </ul>
+          ) : items.length ? (
+            <>
+              {" "}
+              <ul className="factory-list">
+                {visible.items.map((item) => (
+                  <li key={item.key}>
+                    {item.choices?.length ? (
+                      <>
+                        <button
+                          aria-expanded={expanded === item.key}
+                          onClick={() =>
+                            setExpanded(expanded === item.key ? "" : item.key)
+                          }
+                        >
+                          <span className="key">{item.key}:</span> {item.title}
+                        </button>
+                        {expanded === item.key && (
+                          <div className="decision-choices">
+                            {item.choices.map((choice, index) => (
+                              <button
+                                key={index}
+                                disabled={pending}
+                                onClick={() => void decide(item, index)}
+                              >
+                                {choice}
+                                {index === 0 && " (Recommended)"}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <a className="record" href={item.url}>
+                        <span className="key">{item.key}:</span> {item.title}
+                      </a>
+                    )}
+                    <p className="meta">
+                      {item.priority || "No priority"} · Created{" "}
+                      <time dateTime={item.createdAt}>
+                        {date(item.createdAt)}
+                      </time>
+                    </p>
+                  </li>
+                ))}
+              </ul>
+              {visible.pages > 1 && (
+                <nav aria-label="Needs you pages">
+                  <button
+                    disabled={!visible.page}
+                    onClick={() => setPage(visible.page - 1)}
+                  >
+                    Previous
+                  </button>{" "}
+                  {visible.page + 1} / {visible.pages}{" "}
+                  <button
+                    disabled={visible.page + 1 >= visible.pages}
+                    onClick={() => setPage(visible.page + 1)}
+                  >
+                    Next
+                  </button>
+                </nav>
+              )}
+            </>
           ) : (
             <p className="meta">Nothing needs you right now.</p>
           ))}
+        {error && <p role="alert">{error}</p>}
       </section>
       <section aria-labelledby="in-flight">
         <Heading level={2} id="in-flight">

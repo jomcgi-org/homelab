@@ -14,7 +14,10 @@ js_library(
 
 js_test(
     name = "server_test",
-    data = [":server"],
+    data = [
+        ":server",
+        "//projects/factory-landing/web:paging",
+    ],
     entry_point = "server.test.mjs",
 )
 

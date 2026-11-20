@@ -71,3 +71,10 @@ both live objects before restoring the previous factory pin and resuming its
 sync. If the factory pin is lowered first, the live Prune=false annotations
 keep the Service and ingress grant available while the landing chart resumes
 ownership. Check /api/status again after both Applications reconcile.
+
+Needs you displays five tasks per page. For tasks with choices, the server
+accepts a confirmed same-origin decision and sends the displayed revision to
+the connector with a projected `factory-decide` token. Set the landing chart
+value `joeAuthentikSubject` to Joe's verified `sub` for the factory-edge OIDC
+client. The gateway supplies that claim in `X-Runbook-User`. An empty value
+disables decision submissions.

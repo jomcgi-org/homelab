@@ -1,1 +1,21 @@
-{{ include "factory-library.all" . }}
+{{- range $doc := splitList "\n---" (include "factory-library.all" .) }}
+{{- $object := fromYaml (trimPrefix "---" (trim $doc)) }}
+{{- if $object.kind }}
+{{- if eq $object.kind "Deployment" }}
+{{- $pod := $object.spec.template.spec }}
+{{- $web := first $pod.containers }}
+{{- $_ := set $web "env" (append $web.env (dict "name" "JOE_AUTHENTIK_SUBJECT" "value" $.Values.joeAuthentikSubject)) }}
+{{- $_ := set $pod "serviceAccountName" "factory-landing" }}
+{{- $_ := set $pod "volumes" (list (dict "name" "decision" "projected" (dict "sources" (list (dict "serviceAccountToken" (dict "audience" "factory-decide" "path" "token" "expirationSeconds" 600)))))) }}
+{{- $_ := set (first $pod.containers) "volumeMounts" (list (dict "name" "decision" "mountPath" "/var/run/factory-decide" "readOnly" true)) }}
+{{- end }}
+---
+{{ toYaml $object }}
+{{- end }}
+{{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: factory-landing
+automountServiceAccountToken: false

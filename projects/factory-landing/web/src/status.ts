@@ -9,6 +9,8 @@ export interface Status {
     | {
         key: string;
         title: string;
+        choices?: string[];
+        choiceRevision?: string;
         priority: string | null;
         url: string;
         createdAt: string;
@@ -48,6 +50,12 @@ export function parseStatus(value: unknown): Status {
         !value.needsYou.every(
           (v) =>
             item(v) &&
+            (v.choices === undefined ||
+              (Array.isArray(v.choices) &&
+                v.choices.every((c) => typeof c === "string") &&
+                (!v.choices.length ||
+                  (typeof v.choiceRevision === "string" &&
+                    /^[a-f0-9]{64}$/.test(v.choiceRevision))))) &&
             link(v.url) &&
             typeof v.createdAt === "string" &&
             (v.priority === null || typeof v.priority === "string"),

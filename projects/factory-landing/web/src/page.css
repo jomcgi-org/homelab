@@ -158,3 +158,17 @@
     grid-template-columns: 1fr 1fr;
   }
 }
+
+.factory-list button {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: start;
+  padding: 0.6rem;
+}
+
+.decision-choices {
+  display: grid;
+  gap: var(--spacing-2);
+  margin-block: var(--spacing-2);
+}

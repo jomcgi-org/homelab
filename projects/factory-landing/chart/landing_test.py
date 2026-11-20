@@ -75,7 +75,8 @@ def test_private_status_app():
         {
             "name": "CONNECTOR_STATUS_URL",
             "value": "http://factory-connector-status.factory.svc:8082/status",
-        }
+        },
+        {"name": "JOE_AUTHENTIK_SUBJECT", "value": ""},
     ]
     policy = docs["CiliumNetworkPolicy"]["spec"]
     ports = [{"ports": [{"port": "8082", "protocol": "TCP"}]}]
@@ -107,6 +108,28 @@ def test_private_status_app():
         container["env"]
     )
     before["CiliumNetworkPolicy"]["spec"]["egress"] = egress
+
+    assert docs.pop("ServiceAccount")["metadata"]["name"] == "factory-landing"
+    assert pod.pop("serviceAccountName") == "factory-landing"
+    assert pod.pop("volumes") == [
+        {
+            "name": "decision",
+            "projected": {
+                "sources": [
+                    {
+                        "serviceAccountToken": {
+                            "audience": "factory-decide",
+                            "path": "token",
+                            "expirationSeconds": 600,
+                        }
+                    }
+                ]
+            },
+        }
+    ]
+    assert container.pop("volumeMounts") == [
+        {"name": "decision", "mountPath": "/var/run/factory-decide", "readOnly": True}
+    ]
 
     def without_annotations(value):
         if isinstance(value, dict):
