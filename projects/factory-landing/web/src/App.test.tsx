@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { Theme } from "@astryxdesign/core/theme";
 import { neutralTheme } from "@astryxdesign/theme-neutral/built";
@@ -199,4 +199,47 @@ it("refreshes every 30 seconds, recovers from failure and stops on unmount", asy
   view.unmount();
   await vi.advanceTimersByTimeAsync(30_000);
   expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it("confirms a displayed choice once and returns from an emptied last page", async () => {
+  const revision = "a".repeat(64);
+  const needsYou = Array.from({ length: 6 }, (_, i) => ({
+    ...status.needsYou[0],
+    key: `HOME-${i + 1}`,
+    choices: ["Keep", "Change"],
+    choiceRevision: revision,
+  }));
+  vi.mocked(fetch)
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ ...status, needsYou }),
+    } as Response)
+    .mockResolvedValueOnce(new Response(null, { status: 204 }));
+  const confirm = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
+  vi.stubGlobal("confirm", confirm);
+  try {
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: "Next" }));
+    fireEvent.click(screen.getByRole("button", { name: /HOME-6/ }));
+    const recommended = screen.getByRole("button", {
+      name: "Keep (Recommended)",
+    });
+    fireEvent.click(recommended);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    fireEvent.click(recommended);
+    await screen.findByRole("heading", { name: "Needs you (5)" });
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenLastCalledWith("/api/decide", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "If-Match": `"${revision}"`,
+      },
+      body: JSON.stringify({ key: "HOME-6", choice: 1 }),
+    });
+    expect(screen.queryByRole("button", { name: /HOME-6/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /HOME-1/ })).toBeTruthy();
+  } finally {
+    confirm.mockRestore();
+  }
 });
