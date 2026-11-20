@@ -1,5 +1,6 @@
 # gazelle:ignore
 load("@aspect_bazel_lib//lib:tar.bzl", "tar")
+load("@aspect_rules_py//py:defs.bzl", "py_test")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/tools/oci:py3_image.bzl", "py3_image")
@@ -71,5 +72,24 @@ sh_test(
     target_compatible_with = [
         "@platforms//cpu:x86_64",
         "@platforms//os:linux",
+    ],
+)
+
+py_test(
+    name = "worker_test",
+    srcs = [
+        "worker.py",
+        "worker_test.py",
+    ],
+    imports = ["."],
+    main = "worker_test.py",
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    deps = [
+        "@capacity_forecast_pip//numpy",
+        "@capacity_forecast_pip//torch",
+        "@timestral_source//:timestral",
     ],
 )
