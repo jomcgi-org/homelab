@@ -1750,6 +1750,7 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 		e.m.Sends.WithLabelValues(a.Kind, "accepted").Inc()
 		return e.attach(ctx, a, wi, task)
 	case errors.Is(err, kagent.ErrPlacementWait):
+		// invariant: FACT-13
 		e.m.Sends.WithLabelValues(a.Kind, "placement_wait").Inc()
 		return e.st.MarkPlacementWait(ctx, a)
 	case errors.Is(err, kagent.ErrNotAccepted):
