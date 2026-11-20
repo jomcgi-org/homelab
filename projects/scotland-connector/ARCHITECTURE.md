@@ -47,13 +47,22 @@ $ curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' https://jomcgi.dev/sco
 308 https://scotland-mcp.jomcgi.dev/v1/check?c=1795161491
 # 2026-11-20T07:59Z, Cloudflare API: zone jomcgi.dev Workers routes
 routes total 33, script jomcgi-site 33, including jomcgi.dev/scotland/mcp* and jomcgi.dev/scotland/v1*
-# 2026-11-20T07:59Z
-$ curl -X POST https://scotland-mcp.jomcgi.dev/mcp  (MCP initialize)
-HTTP 200
+# 2026-11-20T08:24:58Z
+$ curl -sS -X POST https://scotland-mcp.jomcgi.dev/mcp \
+    -H 'content-type: application/json' \
+    -H 'accept: application/json, text/event-stream' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"rollout-check","version":"1"}}}'
+HTTP/2 200
+content-type: application/json
+{"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18",
+ "serverInfo": {"name": "scotland-connector", "title": "Scotland outdoors", "version": "0.60.51"},
+ "capabilities": {"tools": {}}, "instructions": "Read-only answers to Scottish outdoor trip questions from fo…"}}
 ```
 
 After the hub copy reaches zero, run the same three probes again. Both legacy
-paths must still answer 308, and `initialize` must answer 200.
+paths must still answer 308. The `initialize` request above must answer
+HTTP 200 with a JSON-RPC `result` that names `serverInfo.name`
+`scotland-connector` and the requested `protocolVersion`.
 
 **Hub copy rollback.** Do not restore the replica ignore in the same change as
 the replica count. The HPA does not scale a Deployment whose desired count is
