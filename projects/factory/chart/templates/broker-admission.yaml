@@ -26,10 +26,10 @@ spec:
         resources: [secrets]
   matchConditions:
     - name: broker
-      expression: request.userInfo.username == {{ $sa | squote }}
+      expression: request.userInfo.username in [{{ $sa | squote }}, 'system:serviceaccount:factory-review-broker:factory-review-broker']
   validations:
     - expression: >-
-        (request.namespace == {{ $b.namespace | squote }} &&
+        (request.userInfo.username == {{ $sa | squote }} && request.namespace == {{ $b.namespace | squote }} &&
           object.metadata.name == {{ include "factory.brokerGrantSecret" . | squote }}) ||
         (request.namespace != {{ $b.namespace | squote }} &&
           object.metadata.name == 'github-git' &&
