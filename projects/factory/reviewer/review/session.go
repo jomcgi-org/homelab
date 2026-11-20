@@ -125,6 +125,7 @@ func agentName(a kagent.AgentRef) string { return a.Namespace + "/" + a.Name }
 // without a report) leaves a task the State does not list, so Bytes would
 // undercount the session. refused says kagent already refused this
 // attempt's continuation.
+// invariant: FACT-13
 func (e *Engine) resumable(ctx context.Context, b *Binding, pr github.PullRequest, in *inputs, attempt int, refused bool, l *slog.Logger) (*SessionRef, string) {
 	ref := in.prior.Session
 	switch {

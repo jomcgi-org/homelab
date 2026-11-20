@@ -1531,6 +1531,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				case err == nil:
 					msg, sends = m, 0
 				case errors.Is(err, errUnsettledTurn):
+					// invariant: FACT-13
 					e.sleep(ctx, e.cfg.Reissue)
 					continue
 				case late:
