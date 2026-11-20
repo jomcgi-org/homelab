@@ -4,6 +4,10 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # Gazelle from making runbooks/ a package, which would break the labels below.
 # gazelle:exclude runbooks
 
+# provision_viewer.py ships in a ConfigMap and runs in the Grafana bootstrap
+# container; tests/bootstrap.sh exercises it.
+# gazelle:exclude provision_viewer.py
+
 exports_files(["runbooks-route.yaml"])
 
 py_test(
