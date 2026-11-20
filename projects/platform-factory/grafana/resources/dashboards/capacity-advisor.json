@@ -2,9 +2,7 @@
   "title": "Capacity advisor",
   "uid": "capacity-advisor",
   "schemaVersion": 39,
-  "tags": [
-    "factory"
-  ],
+  "tags": ["factory"],
   "time": {
     "from": "now-24h",
     "to": "now"
