@@ -42,7 +42,7 @@ describe.each(["light", "dark"] as const)("%s theme", (mode) => {
               );
             }
 
-          unobserve() {}
+            unobserve() {}
 
             disconnect() {}
           },
