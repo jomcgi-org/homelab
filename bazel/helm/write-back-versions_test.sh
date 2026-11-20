@@ -277,6 +277,17 @@ git -C "$clone" fetch --quiet origin main
 expect "invalid receipt leaves main untouched" "$source" \
 	"$(git -C "$clone" rev-parse origin/main)" "no completion claim on failure"
 
+clone=$(new_env receipt-multiline 0.1.0)
+source=$(git -C "$clone" rev-parse HEAD)
+record "$TMP/rec-multiline" demo projects/demo/chart 0.1.1
+printf 'projects/demo/chart 0.1.2\n' >>"$TMP/rec-multiline/demo"
+multiline_rc=0
+(cd "$clone" && bash "$SCRIPT" "$TMP/rec-multiline" --record-publication >/dev/null 2>&1) || multiline_rc=$?
+expect "multiline chart record fails closed" "1" "$multiline_rc" "every record contains exactly one chart and version"
+git -C "$clone" fetch --quiet origin main
+expect "multiline receipt leaves main untouched" "$source" \
+	"$(git -C "$clone" rev-parse origin/main)" "no completion claim on failure"
+
 clone=$(new_env receipt-duplicate 0.1.0)
 source=$(git -C "$clone" rev-parse HEAD)
 record "$TMP/rec-duplicate" demo projects/demo/chart 0.1.1
