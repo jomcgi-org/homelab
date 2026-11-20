@@ -24,6 +24,13 @@ def test_writer_without_mirror():
                 )
             )
         )
+        assert sorted(
+            d["kind"]
+            for d in docs
+            if d
+            and d["metadata"].get("namespace") == "stars-forecast"
+            and d["kind"] in {"ResourceQuota", "LimitRange"}
+        ) == ["LimitRange", "ResourceQuota"]
         pull = next(
             d
             for d in docs

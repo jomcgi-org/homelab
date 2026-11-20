@@ -40,6 +40,13 @@ def docs(result):
 
 def test_deploy_job_runs_on_every_sync_against_the_dev_worker():
     rendered = docs(render())
+    assert sorted(
+        d["kind"]
+        for d in rendered.values()
+        if d
+        and d["metadata"].get("namespace") == "jomcgi-site-dev"
+        and d["kind"] in {"ResourceQuota", "LimitRange"}
+    ) == ["LimitRange", "ResourceQuota"]
     job = rendered["Job/jomcgi-site-deploy"]
     assert job["metadata"]["annotations"]["argocd.argoproj.io/hook"] == "Sync"
     container = job["spec"]["template"]["spec"]["containers"][0]

@@ -1,3 +1,4 @@
+{{ include "factory-library.namespacePolicy" . }}
 {{ include "factory-library.buckets" . }}
 {{- $garage := list }}
 {{- range list "AWS_ENDPOINT_URL" "AWS_REGION" "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "BUCKET" }}
