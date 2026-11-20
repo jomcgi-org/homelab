@@ -1,3 +1,4 @@
+{{- /* invariant: FACT-13 */ -}}
 {{- if and .Values.discord.bridge.enabled .Values.networkPolicy.cilium }}
 {{- $image := .Values.discordRender.image }}
 {{- $name := "factory-discord-render" }}
