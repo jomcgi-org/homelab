@@ -89,6 +89,11 @@ spec:
     - group: ""
       kind: Secret
       namespace: factory
+      name: factory-itsaplan-agent-homelab-planner
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      namespace: factory
       name: factory-itsaplan-agent-factory-reviewer
       jsonPointers: [/data]
     - group: ""

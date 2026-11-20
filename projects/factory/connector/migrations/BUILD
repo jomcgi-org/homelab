@@ -47,6 +47,7 @@ go_library(
         "20261119120000_coder_arms.sql",
         "20261119130000_outbox_outages.sql",
         "20261119215000_storyboard_messages.sql",
+        "20261120090000_planner.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],

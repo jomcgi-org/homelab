@@ -41,6 +41,9 @@ func (f *fakeItsaplan) CreateIssue(_ context.Context, project string, n itsaplan
 		Title: n.Title, Description: n.Description, ColumnID: n.ColumnID,
 		AssigneeUserID: f.activationAutoAssignee,
 	}
+	if f.issues == nil {
+		f.issues = make(map[int64]*itsaplan.Issue)
+	}
 	f.issues[id] = is
 	if f.loseActivationCreate {
 		f.loseActivationCreate = false
