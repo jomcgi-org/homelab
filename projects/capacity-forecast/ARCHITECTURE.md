@@ -18,6 +18,9 @@ worker reads Prometheus and serves metrics over a cluster-local Service.
 It has no Kubernetes credentials and changes no workload resources.
 
 CI publishes the image and chart before Argo CD can deploy the chart.
+Activation also requires the Prometheus scrape job and both Prometheus
+network policy allowances. Allow the worker to query Prometheus on 9090
+and Prometheus to scrape the worker Service on 8080.
 After rollout, verify that Prometheus scrapes the worker and receives all
 six Timestral horizons. Check the 30-minute comparison after its first
 target observation arrives.
@@ -32,4 +35,4 @@ target observation arrives.
 
 | Direction | Tracks | State |
 | --- | --- | --- |
-| Compare reviewer forecasts with observed memory. | [HOME-570](https://factory-plan.jomcgi.dev/factory/issue/HOME-570) | Pending rollout |
+| Compare reviewer forecasts with observed memory. | [HOME-669](https://factory-plan.jomcgi.dev/factory/issue/HOME-669) | Pending rollout |

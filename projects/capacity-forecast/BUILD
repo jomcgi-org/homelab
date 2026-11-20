@@ -1,6 +1,7 @@
 # gazelle:ignore
 load("@aspect_bazel_lib//lib:tar.bzl", "tar")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/tools/oci:py3_image.bzl", "py3_image")
 
 exports_files([
@@ -50,4 +51,21 @@ filegroup(
     name = "repo_docs",
     srcs = glob(["*.md"]),
     visibility = ["//projects/monolith:__pkg__"],
+)
+
+sh_test(
+    name = "inference_test",
+    srcs = ["inference_test.sh"],
+    args = [
+        "$(rootpath :worker)",
+        "$(rootpath :model)",
+    ],
+    data = [
+        ":model",
+        ":worker",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
 )
