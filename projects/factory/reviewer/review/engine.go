@@ -304,9 +304,10 @@ type running struct {
 const closedAfter = 2
 
 var (
-	errSuperseded    = errors.New("a newer head of the PR superseded this one")
-	errClosed        = errors.New("the PR closed or no longer targets the base branch")
-	errDuplicateHead = errors.New("multiple ready PRs share this head")
+	errPriorStateUnread = errors.New("could not read prior review state")
+	errSuperseded       = errors.New("a newer head of the PR superseded this one")
+	errClosed           = errors.New("the PR closed or no longer targets the base branch")
+	errDuplicateHead    = errors.New("multiple ready PRs share this head")
 )
 
 // New builds an engine, filling unset settings with defaults.
@@ -1433,7 +1434,11 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 					if st.Incomplete {
 						// A complete replay restores the state; otherwise
 						// it stays incomplete and keeps the check blocked.
-						st, _ = e.recoverState(ctx, b, pr, run, st)
+						var replayResult replay
+						st, replayResult = e.recoverState(ctx, b, pr, run, st)
+						if replayResult == replayUnread {
+							return // Keep the check intact and retry on the next poll.
+						}
 					}
 					if st.Incomplete || st.Blocking != nil || (st.Gate != nil && len(st.Gate.Findings) > 0) {
 						// previousState skips the same head; retain its report too.
@@ -1467,6 +1472,8 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				// Rebind inherited prior-head recovery to this PR.
 				in.gate, _ = e.recoveryGate(b, pr, in.gate)
 				in.gate, _ = e.retainGate(b, pr, in.gate, false)
+			case errors.Is(err, errPriorStateUnread):
+				return // Retry next poll without spending a review attempt.
 			case rec.ID == "" && e.waitForQuota(ctx, b, run, rec, l):
 				// Unreadable PR data must not hold a worker or spend an
 				// attempt while the grant is also blocked.
@@ -1735,7 +1742,7 @@ func (e *Engine) gather(ctx context.Context, b *Binding, pr github.PullRequest, 
 	}
 	prior, head, unknown, err := e.previousState(ctx, b, pr)
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(errPriorStateUnread, err)
 	}
 	if unknown != "" {
 		l.WarnContext(ctx, "previous review state is incomplete; retaining the hold and asking for a full review", "reason", unknown)
@@ -1845,8 +1852,9 @@ func (e *Engine) previousStateWalk(ctx context.Context, b *Binding, pr github.Pu
 			if rec == replayDone {
 				return recovered, h.SHA, "", true, nil
 			}
-			// A gap or a failed read keeps the state incomplete; a later
-			// poll retries the read.
+			if rec == replayUnread {
+				return State{}, "", "", false, errPriorStateUnread
+			}
 			return recovered, h.SHA, "the earlier review state is incomplete; known findings still require accounting and missing history keeps the check blocked", true, nil
 		}
 		return st, h.SHA, "", true, nil
@@ -2815,8 +2823,10 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 		before := st
 		var rec replay
 		st, rec = e.recoverState(ctx, b, pr, run, st)
+		if rec == replayUnread {
+			return run, true
+		}
 		recovered = rec == replayDone
-		// replayUnread keeps the state incomplete; the next poll retries.
 		// A gap keeps it incomplete for good; persist the findings it carries.
 		carried = rec == replayGap && (st.Overflow != before.Overflow || len(st.Blocking) != len(before.Blocking) ||
 			gateFindings(st.Gate) != gateFindings(before.Gate))
