@@ -67,3 +67,9 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-13
+  statement: A measured change's assessment starts after the window anchored on issue completion.
+  mechanism:
+  - projects/factory/connector/dispatch/assessment.go
+  test: //projects/factory/connector/dispatch:dispatch_test
+  state: live
