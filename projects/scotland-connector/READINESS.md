@@ -390,3 +390,21 @@ On 2026-11-19 at 23:03 UTC, a check from node-1 passed every step.
 | Connection | `claude mcp list` reports `plugin:scotland:scotland: https://scotland-mcp.jomcgi.dev/mcp (HTTP) - ✔ Connected`. |
 
 HOME-475 owns hub retirement after Joe switches his claude.ai connector.
+
+## Roll back the factory namespace quota and defaults
+
+Remove `projects/scotland-connector/factory/resources/namespace-policy.yaml`
+through a revert PR. After merge, refresh the factory Application and confirm
+that only the two named policies below are selected for removal. The
+Application keeps automated pruning disabled to protect its Namespace.
+
+```sh
+argocd app get scotland-connector --refresh
+argocd app sync scotland-connector --prune \
+  --resource ':ResourceQuota:scotland-connector/scotland-connector' \
+  --resource ':LimitRange:scotland-connector/scotland-connector'
+kubectl -n scotland-connector get resourcequota/scotland-connector limitrange/scotland-connector --ignore-not-found
+kubectl get namespace scotland-connector
+```
+
+The policy lookup should return no objects and the namespace should remain Active.

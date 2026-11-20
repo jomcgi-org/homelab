@@ -28,6 +28,10 @@ spec:
     helm:
       releaseName: jomcgi-site-prod
       valuesObject:
+        # The factory root owns this namespace policy across Worker promotions.
+        factory-library:
+          namespacePolicy:
+            enabled: false
         stage: prod
         edge:
           enabled: true
