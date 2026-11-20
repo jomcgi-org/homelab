@@ -17,7 +17,10 @@ The reviewer profile tracks the largest pod. The Codex profile forecasts
 each pod using that pod's preceding CPU usage as an optional signal.
 Each batch publishes six five-minute p90 predictions and a rolling p90
 baseline. Missing observations stay missing. A missing or sparse optional
-signal leaves the memory-only prediction available.
+signal leaves the memory-only prediction available. A profile can set the
+minimum number of samples. Reviewers retain the 72-sample default. Codex
+starts forecasting after six samples so replacements appear in about
+30 minutes. The latest memory sample must be present in either case.
 
 The CPU-only image contains pinned model weights and their license. The
 worker reads Prometheus and serves metrics over a cluster-local Service.

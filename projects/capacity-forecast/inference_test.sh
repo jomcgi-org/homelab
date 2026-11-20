@@ -38,10 +38,10 @@ replay() {
 	mount --bind /dev/urandom "$root/dev/urandom"
 	mount -t proc proc "$root/proc"
 	exec /usr/sbin/chroot "$root" /usr/bin/env -i "$@"
-' bash "$root" "${image_env[@]}" "${entrypoint[@]}" --replay "$@" <"$TEST_TMPDIR/history.json"
+' bash "$root" "${image_env[@]}" "${entrypoint[@]}" --replay "$@"
 }
 
-replay >"$TEST_TMPDIR/metrics"
+replay <"$TEST_TMPDIR/history.json" >"$TEST_TMPDIR/metrics"
 
 for policy in baseline timestral; do
 	for horizon in 300 600 900 1200 1500 1800; do
@@ -51,9 +51,14 @@ for policy in baseline timestral; do
 	done
 done
 
-replay 605100 >"$TEST_TMPDIR/after-first-target"
+replay 605100 <"$TEST_TMPDIR/history.json" >"$TEST_TMPDIR/after-first-target"
 if grep -q 'horizon_seconds="300"' "$TEST_TMPDIR/after-first-target"; then
 	echo "Forecasts at their target time must expire" >&2
 	exit 1
 fi
 grep -q 'horizon_seconds="600"' "$TEST_TMPDIR/after-first-target"
+
+
+"$jq_bin" '.data.result[0].values |= .[-6:] | .past_covariates[0] |= .[-6:] | .min_samples = 6' \
+	"$TEST_TMPDIR/history.json" | replay >"$TEST_TMPDIR/cold-start"
+test "$(grep -c '^capacity_forecast_memory_budget_bytes{.*policy="timestral"' "$TEST_TMPDIR/cold-start")" -eq 6

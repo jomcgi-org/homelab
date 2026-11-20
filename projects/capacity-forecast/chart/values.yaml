@@ -12,6 +12,7 @@ profiles:
       (container_memory_working_set_bytes{job="kubelet-resource",namespace="factory-r-homelab-review",pod=~"homelab-reviewer-.*",container!=""})))
   - namespace: factory-r-homelab
     workload: homelab-codex
+    min_samples: 6
     target: >-
       max by (pod) (pod_memory_working_set_bytes{job="kubelet-resource",namespace="factory-r-homelab",pod=~"homelab-codex-.*"})
     past_covariates:

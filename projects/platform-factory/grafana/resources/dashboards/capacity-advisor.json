@@ -138,7 +138,7 @@
     {
       "id": 5,
       "title": "Codex pod memory and 30-minute forecast",
-      "description": "Timestral p90 at issue time and current pod memory. Each series is a running Codex pod.",
+      "description": "Timestral p90 at issue time and current pod memory. Each series is a running Codex pod. New pods need six five-minute observations before their first forecast.",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
