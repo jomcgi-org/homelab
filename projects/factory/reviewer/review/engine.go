@@ -1919,34 +1919,51 @@ func (e *Engine) previousState(ctx context.Context, b *Binding, pr github.PullRe
 	return e.previousStateFrom(ctx, b, pr, hist)
 }
 
-// endPreviousHead completes the PR's in-progress check on its newest earlier
-// head as cancelled when that check records a review root and no worker or
-// parked root in this process holds it. This covers a process that stopped
-// during a quota wait and a push that replaced the head before the restart:
-// complete ends the recorded root once.
+// endPreviousHead completes the PR's in-progress checks on its earlier
+// heads as cancelled when a check records a review root and no worker in
+// this process holds it. This covers a process that stopped during a quota
+// wait and pushes that replaced the head before the restart: complete ends
+// each recorded root once. The walk reads at most maxPreviousLookups
+// earlier heads, newest first, so a review paused on head A is still found
+// after offline pushes to B and then C. When GitHub refuses a completion,
+// the restored root parks, and endSuperseded retries it on the next poll.
 func (e *Engine) endPreviousHead(ctx context.Context, b *Binding, pr github.PullRequest, hist *github.HeadHistory) {
-	var prev string
-	for i := len(hist.Heads) - 1; i >= 0 && prev == ""; i-- {
-		if sha := hist.Heads[i].SHA; sha != pr.HeadSHA {
-			prev = sha
+	seen := map[string]bool{pr.HeadSHA: true}
+	looked := 0
+	for i := len(hist.Heads) - 1; i >= 0 && looked < maxPreviousLookups; i-- {
+		prev := hist.Heads[i].SHA
+		if seen[prev] {
+			continue
 		}
+		seen[prev] = true
+		looked++
+		key := headKey{b.Name, prev}
+		if e.isRunning(key) {
+			continue
+		}
+		run, err := e.reviewCheck(ctx, b, prev)
+		if err != nil || run == nil || run.ExternalID != MessageID(b.repo(), pr.Number, prev) {
+			continue
+		}
+		ts, ok := resumedTrace(run)
+		if !ok {
+			continue
+		}
+		// Without the new review's usage, complete ends the old root, not this one.
+		octx := context.WithValue(ctx, reviewUsageKey{}, nil)
+		l := e.log.With("binding", b.Name, "repo", b.repo(), "pr", pr.Number, "sha", prev)
+		if e.complete(octx, b, run, Outcome{Conclusion: ConclusionCancelled, Output: github.CheckRunOutput{
+			Title: "Review cancelled", Summary: "A newer head of the PR replaced this one.",
+		}}, l) {
+			continue
+		}
+		e.mu.Lock()
+		if _, parked := e.parked[key]; !parked {
+			rctx, _ := restoreRoot(ctx, ts, github.PullRequest{Number: ts.PR, HeadSHA: prev})
+			e.parked[key] = &parkedRoot{key: key, usage: rctx.Value(reviewUsageKey{}).(*spanUsage), since: e.cfg.Now()}
+		}
+		e.mu.Unlock()
 	}
-	if prev == "" || e.isRunning(headKey{b.Name, prev}) {
-		return
-	}
-	run, err := e.reviewCheck(ctx, b, prev)
-	if err != nil || run == nil || run.ExternalID != MessageID(b.repo(), pr.Number, prev) {
-		return
-	}
-	if _, ok := resumedTrace(run); !ok {
-		return
-	}
-	// Without the new review's usage, complete ends the old root, not this one.
-	octx := context.WithValue(ctx, reviewUsageKey{}, nil)
-	l := e.log.With("binding", b.Name, "repo", b.repo(), "pr", pr.Number, "sha", prev)
-	e.complete(octx, b, run, Outcome{Conclusion: ConclusionCancelled, Output: github.CheckRunOutput{
-		Title: "Review cancelled", Summary: "A newer head of the PR replaced this one.",
-	}}, l)
 }
 
 func (e *Engine) previousStateFrom(ctx context.Context, b *Binding, pr github.PullRequest, hist *github.HeadHistory) (st State, head, unknown string, err error) {
