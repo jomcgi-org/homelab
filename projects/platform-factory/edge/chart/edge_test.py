@@ -100,7 +100,7 @@ def test_edge_guards(docs):
                         ],
                     }
                 },
-            }
+            },
         ],
     }
     route_path = Path(
