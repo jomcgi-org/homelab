@@ -31,5 +31,8 @@ go_test(
         "@postgres_test//:postgres",
     ],
     embed = [":ingest_lib"],
-    deps = ["//projects/factory/connector/internal/pgtest"],
+    deps = [
+        "//projects/factory/connector/internal/pgtest",
+        "@com_github_lib_pq//:pq",
+    ],
 )
