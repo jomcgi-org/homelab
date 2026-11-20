@@ -189,6 +189,10 @@ actions:
             bash projects/platform-factory/edge/tests/oidc/kind.sh
           fi
 
+          if ! git diff --quiet "$base_ref" HEAD -- projects/platform-factory/onepassword projects/platform/onepassword; then
+            bash projects/platform-factory/onepassword/test-isolated.sh
+          fi
+
           # Exercise the source flow in the pinned image on the Docker runner.
           # For main pushes origin/main is already HEAD.
           social_base="$base_ref"
