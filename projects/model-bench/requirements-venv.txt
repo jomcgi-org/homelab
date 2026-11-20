@@ -23,6 +23,7 @@ idna==3.18
 iniconfig==2.3.1
 markdown-it-py==4.0.0
 mdurl==0.1.2
+# invariant: MODEL-BENCH-1
 # Keep SDK, API and semantic conventions on the publisher-matched release set.
 opentelemetry-sdk==1.45.2
 opentelemetry-semantic-conventions==0.66b2
