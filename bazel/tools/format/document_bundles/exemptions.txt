@@ -13,7 +13,6 @@ projects/factory-landing/ARCHITECTURE.md: missing component row for web
 projects/factory-public/ARCHITECTURE.md: missing file or link from projects/factory-public/README.md to projects/*/ARCHITECTURE.md
 projects/factory-storyboard/ARCHITECTURE.md: heading: Direction
 projects/factory-storyboard/README.md: link_if_present: ARCHITECTURE.md
-projects/factory/ARCHITECTURE.md: max_lines: 600
 projects/factory/README.md: missing required file
 projects/gke-apps/README.md: missing child context-forge-gateway
 projects/gke-apps/README.md: missing child inference
