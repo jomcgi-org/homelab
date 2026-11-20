@@ -1,4 +1,4 @@
 apiVersion: v2
 name: factory-explore
-version: 0.9.53
+version: 0.10.20
 description: Enforces explorer access windows at the Kubernetes API

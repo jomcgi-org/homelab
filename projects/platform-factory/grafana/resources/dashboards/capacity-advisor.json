@@ -1,0 +1,109 @@
+{
+  "title": "Capacity advisor",
+  "uid": "capacity-advisor",
+  "schemaVersion": 39,
+  "tags": ["factory"],
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "refresh": "5m",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Reviewer memory and prior budgets",
+      "description": "Each budget was issued 30 minutes before the observation it is compared with.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "capacity:workload_pod_memory_working_set_bytes:max{namespace=\"factory-r-homelab-review\",workload=\"homelab-reviewer\"}",
+          "legendFormat": "Largest observed reviewer pod",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "expr": "capacity:workload_pod_memory_due_budget_bytes{namespace=\"factory-r-homelab-review\",workload=\"homelab-reviewer\"}",
+          "legendFormat": "{{policy}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Share of observations over budget",
+      "description": "Six-hour share of scored samples above the hypothetical budget. This measures reservation shortfall risk.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg_over_time(capacity:workload_pod_memory_budget_exceeded{namespace=\"factory-r-homelab-review\",workload=\"homelab-reviewer\"}[6h])",
+          "legendFormat": "{{policy}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Scored observations",
+      "description": "Compare coverage alongside the violation rate. Missing observations are excluded.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 24,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count_over_time(capacity:workload_pod_memory_budget_exceeded{namespace=\"factory-r-homelab-review\",workload=\"homelab-reviewer\"}[6h])",
+          "legendFormat": "{{policy}}",
+          "range": true
+        }
+      ]
+    }
+  ]
+}

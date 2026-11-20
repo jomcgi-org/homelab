@@ -93,7 +93,7 @@ metadata:
 type: Opaque
 ---
 # Joe's sessions email and password, generated once by the bootstrap Job.
-# Only that Job reads it in-cluster; never label it injectable into sandboxes.
+# The connector mounts the password for decisions. Keep it outside sandbox injection.
 apiVersion: v1
 kind: Secret
 metadata:

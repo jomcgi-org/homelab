@@ -175,6 +175,7 @@ def test_generated_secrets_are_kept_and_never_rendered() -> None:
         "factory-itsaplan-agent-factory-coordinator",
         "factory-itsaplan-agent-factory-storyboard",
         "factory-itsaplan-agent-factory-reviewer",
+        "factory-itsaplan-agent-intsec-sync",
     }
     for s in secrets:
         assert "data" not in s and "stringData" not in s
@@ -277,11 +278,12 @@ def test_job_roles_name_only_their_secrets() -> None:
         "factory-itsaplan-agent-factory-coordinator",
         "factory-itsaplan-agent-factory-storyboard",
         "factory-itsaplan-agent-factory-reviewer",
+        "factory-itsaplan-agent-intsec-sync",
     ]
     assert bootstrap[1]["verbs"] == ["get", "update"]
 
 
-def test_sessions_secret_is_accessible_only_to_bootstrap() -> None:
+def test_sessions_secret_is_read_by_bootstrap_and_mounted_only_by_connector() -> None:
     docs = _render()
     name = "factory-itsaplan-joe-sessions"
     secret = _one(docs, "Secret", name)
@@ -333,10 +335,20 @@ def test_sessions_secret_is_accessible_only_to_bootstrap() -> None:
     )
     env = pod["initContainers"][0]["env"]
     assert {e["name"]: e.get("value") for e in env}["SESSIONS_SECRET"] == name
-    # No pod, SandboxTemplate, credential mapping or injected environment
-    # references the Secret. Bootstrap reads it via its Kubernetes Role.
+    # Bootstrap uses its Kubernetes Role. Only the connector projects the password.
     for doc in docs:
         if doc["kind"] in ("Secret", "Role", "ConfigMap") or doc is bootstrap:
+            continue
+        if (
+            doc["kind"] == "Deployment"
+            and doc["metadata"]["name"] == "factory-connector"
+        ):
+            volume = next(
+                v
+                for v in doc["spec"]["template"]["spec"]["volumes"]
+                if v["name"] == "joe-sessions"
+            )
+            assert volume["secret"]["secretName"] == name
             continue
         assert name not in json.dumps(doc), doc["metadata"]["name"]
 
@@ -350,6 +362,7 @@ def test_bootstrap_config_lists_the_agents() -> None:
         "factory-coordinator",
         "factory-storyboard",
         "factory-reviewer",
+        "intsec-sync",
     ]
     read_only = {a["username"] for a in config["agents"] if a.get("readOnly")}
     assert read_only == {"factory-storyboard", "factory-reviewer"}
@@ -837,3 +850,26 @@ def test_semgrep_sync_schedule_and_token():
     assert _one(docs, "OnePasswordItem", name)["spec"]["itemPath"] == (
         "vaults/k8s-homelab/items/factory-semgrep-sync"
     )
+
+
+def test_semgrep_sync_key_limit_without_connector():
+    docs = _render(
+        [
+            "semgrepSync.enabled=true",
+            "connector.enabled=false",
+            "reviewer.goalReasons.enabled=false",
+        ]
+    )
+    bootstrap = _one(docs, "Job", "factory-itsaplan-bootstrap")
+    pod = bootstrap["spec"]["template"]["spec"]
+    assert pod["initContainers"][0]["name"] == "bootstrap"
+    (limit,) = pod["containers"]
+    assert limit["name"] == "semgrep-sync-limit"
+    assert (
+        "rate_limit_time_window = 1000, rate_limit_max = 1000" in limit["command"][-1]
+    )
+    (agent,) = [entry for entry in limit["env"] if entry["name"] == "AGENT_ID"]
+    assert agent["valueFrom"]["secretKeyRef"] == {
+        "name": "factory-itsaplan-agent-intsec-sync",
+        "key": "agentId",
+    }

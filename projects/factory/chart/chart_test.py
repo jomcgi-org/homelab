@@ -220,6 +220,7 @@ def test_rbac_is_namespaced() -> None:
     assert set(cluster_scoped) == {
         "kagent-kagent-crds",
         "factory-broker-tokenreview",
+        "factory-connector-decide",
         "kagent-kagent-invocation-auth",
         # The controller's secure metrics (deploy values): it reviews a
         # scraper's token and access to GET /metrics, nothing else.
@@ -1258,12 +1259,12 @@ def test_discord_bridge_reaches_only_discord_its_memory_and_its_agent() -> None:
         for rule in egress["egress"]
         for e in rule.get("toEndpoints", [])
     ]
-    assert peers == ["hindsight-discord", "kagent"]
+    assert peers == ["hindsight-discord", "factory", "kagent"]
     ports = [
         [p["port"] for to in rule["toPorts"] for p in to["ports"]]
         for rule in egress["egress"]
     ]
-    assert ports == [["443"], ["8888"], ["8083"]]
+    assert ports == [["443"], ["8888"], ["8082"], ["8083"]]
     controller = _in(docs, "CiliumNetworkPolicy", "kagent", "kagent-controller")
     admitted = [
         m["matchLabels"] for m in controller["spec"]["ingress"][0]["fromEndpoints"]

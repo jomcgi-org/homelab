@@ -180,6 +180,7 @@ codexTrial:
     digest: ""
 
 broker:
+  otlpEndpoint: ""
   # A login that can only call the connector's accounting append functions.
   # Provisioned by factory-db; never use the connector owner's Secret here.
   accounting:

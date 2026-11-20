@@ -31,6 +31,7 @@ configMapGenerator:
     namespace: grafana
     files:
       - dashboards/cluster.json
+      - dashboards/capacity-advisor.json
       - dashboards/cilium-drops.json
       - dashboards/cnpg.json
       - dashboards/factory-delivery.json

@@ -41,3 +41,26 @@ py_test(
         "@pip//websockets",
     ],
 )
+
+py_test(
+    name = "publish_lock_test",
+    size = "medium",
+    srcs = ["publish_lock_test.py"],
+    data = [
+        "//projects/monolith/chart:migrations",
+        "//projects/ships/chart:sql/bootstrap.sql",
+        "//projects/ships/cmd",
+        "@postgres_test//:postgres",
+    ],
+    env = {
+        "PYTEST_ADDOPTS": "-p shared.testing.plugin",
+        "SHIPS_BINARY": "$(rootpath //projects/ships/cmd)",
+        "SHIPS_BOOTSTRAP_SQL": "$(rootpath //projects/ships/chart:sql/bootstrap.sql)",
+    },
+    target_compatible_with = ["@platforms//os:linux"],
+    deps = [
+        "//projects/monolith:shared_testing",  # keep
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)

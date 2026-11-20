@@ -46,6 +46,9 @@ type FeedItem struct {
 	Body        string          `json:"body"`
 	EditedAt    json.RawMessage `json:"editedAt"`
 	Payload     struct {
+		From *struct {
+			ID json.RawMessage `json:"id"`
+		} `json:"from"`
 		To *struct {
 			Value *string `json:"value"`
 		} `json:"to"`

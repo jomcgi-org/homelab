@@ -242,7 +242,14 @@ spec:
       restartPolicy: OnFailure
       securityContext:
         {{- include "factory.itsaplanPodSecurity" . | nindent 8 }}
+      {{- $limits := dict }}
       {{- if .Values.connector.enabled }}
+      {{- $_ := set $limits "coordinator-limit" .Values.connector.coordinator }}
+      {{- end }}
+      {{- if .Values.semgrepSync.enabled }}
+      {{- $_ := set $limits "semgrep-sync-limit" "intsec-sync" }}
+      {{- end }}
+      {{- if $limits }}
       initContainers:
       {{- else }}
       containers:
@@ -277,9 +284,10 @@ spec:
             - name: scripts
               mountPath: /scripts
               readOnly: true
-      {{- if .Values.connector.enabled }}
+      {{- if $limits }}
       containers:
-        - name: coordinator-limit
+        {{- range $container, $agent := $limits }}
+        - name: {{ $container }}
           image: {{ $i.images.api }}
           command:
             - sh
@@ -297,7 +305,7 @@ spec:
             - name: AGENT_ID
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "factory.itsaplanAgentSecret" .Values.connector.coordinator }}
+                  name: {{ include "factory.itsaplanAgentSecret" $agent }}
                   key: agentId
             - name: DATABASE_URL
               valueFrom:
@@ -308,6 +316,7 @@ spec:
             {{- include "factory.itsaplanContainerSecurity" . | nindent 12 }}
           resources:
             {{- toYaml $i.resources.jobs | nindent 12 }}
+        {{- end }}
       {{- end }}
       volumes:
         - name: scripts

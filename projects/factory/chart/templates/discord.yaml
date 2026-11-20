@@ -383,6 +383,14 @@ spec:
         - ports:
             - port: "8888"
               protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.broker.namespace }}
+            {{- include "factory.connectorSelector" . | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "8082"
+              protocol: TCP
     # A2A and SessionService share the controller's listener.
     - toEndpoints:
         - matchLabels:

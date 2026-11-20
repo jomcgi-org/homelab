@@ -23,16 +23,19 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jomcgi/homelab/projects/factory/connector/internal/tracing"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/jomcgi/homelab/projects/factory/broker/auth"
 	"github.com/jomcgi/homelab/projects/factory/connector/buildbuddy"
 	"github.com/jomcgi/homelab/projects/factory/connector/config"
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
+	"github.com/jomcgi/homelab/projects/factory/connector/internal/tracing"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/connector/metrics"
@@ -317,15 +320,14 @@ func run(log *slog.Logger) error {
 	// Status starts only after Acquire. Each outbound request checks the same
 	// writer, and loss of it cancels every loop and in-progress read. Wait for
 	// the status loop as well as heartbeats before releasing the lock.
-	statusHTTP := &http.Client{Timeout: status.ReadTimeout, Transport: &status.WriterTransport{
-		Begin: func(ctx context.Context, messageID string) error {
-			err := eng.BeginStatusRead(ctx, messageID)
-			if errors.Is(err, store.ErrNotWriter) {
-				cancel(err)
-			}
-			return err
-		},
-	}}
+	beginAttempt := func(ctx context.Context, messageID string) error {
+		err := eng.BeginStatusRead(ctx, messageID)
+		if errors.Is(err, store.ErrNotWriter) {
+			cancel(err)
+		}
+		return err
+	}
+	statusHTTP := &http.Client{Timeout: status.ReadTimeout, Transport: &status.WriterTransport{Begin: beginAttempt}}
 	statusPlan := &itsaplan.Client{
 		Limits:  limits,
 		BaseURL: cfg.ItsaplanURL, KeyFunc: keys.Key,
@@ -351,9 +353,34 @@ func run(log *slog.Logger) error {
 		defer wg.Done()
 		statusHandler.Run(ctx)
 	}()
+	clusterConfig, err := rest.InClusterConfig()
+	if err != nil {
+		return err
+	}
+	clusterConfig.NextProtos = []string{"http/1.1"}
+	clusterConfig.Wrap(func(next http.RoundTripper) http.RoundTripper {
+		return tokenReviewTransport{next: next, begin: beginAttempt}
+	})
+	kube, err := kubernetes.NewForConfig(clusterConfig)
+	if err != nil {
+		return err
+	}
+
+	decision := &itsaplan.DecisionHandler{
+		WithFence: st.WithDecisionFence,
+		Plan:      statusPlan,
+		Origin:    os.Getenv("ITSAPLAN_APP_URL"),
+		Password:  func() (string, error) { return config.ReadKey("/var/run/secrets/joe-sessions/password") },
+	}
+	for _, b := range cfg.File.Bindings {
+		decision.Projects = append(decision.Projects, b.ItsaplanProject)
+	}
+	statusMux := http.NewServeMux()
+	statusMux.Handle("/status", statusHandler)
+	statusMux.Handle("POST /decide", decisionAccess(kube, decision))
 	statusServer := &http.Server{
-		Addr: cfg.StatusAddr, Handler: statusHandler,
-		ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second,
+		Addr: cfg.StatusAddr, Handler: statusMux,
+		ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 35 * time.Second, IdleTimeout: 30 * time.Second,
 	}
 	go func() {
 		if err := statusServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -398,4 +425,25 @@ func run(log *slog.Logger) error {
 		case <-tick.C:
 		}
 	}
+}
+
+func decisionAccess(kube kubernetes.Interface, handler http.Handler) http.Handler {
+	reviewer := auth.Reviewer{Client: kube, Audience: "factory-decide"}
+	return reviewer.Require([]string{"system:serviceaccount:factory-landing:factory-landing", "system:serviceaccount:factory-discord:discord-bridge"}, handler)
+}
+
+type tokenReviewTransport struct {
+	next  http.RoundTripper
+	begin func(context.Context, string) error
+}
+
+func (t tokenReviewTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	const id = "decision/tokenreview"
+	if err := t.begin(req.Context(), id); err != nil {
+		return nil, err
+	}
+	req = req.Clone(req.Context())
+	req.Close = true // Prevent transport retries on a reused connection.
+	req.Header.Set("X-Request-ID", id)
+	return t.next.RoundTrip(req)
 }

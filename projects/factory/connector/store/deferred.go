@@ -20,6 +20,21 @@ func lockDeferredFence(ctx context.Context, tx *sql.Tx, issueID int64) (generati
 	return
 }
 
+// WithDecisionFence holds the issue's stop lock through the decision writes.
+// A concurrent stop must commit before admission or after the writes finish.
+func (s *Store) WithDecisionFence(ctx context.Context, issueID int64, write func() error) (bool, error) {
+	admitted := false
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		_, stopped, err := lockDeferredFence(ctx, tx, issueID)
+		if err != nil || stopped {
+			return err
+		}
+		admitted = true
+		return write()
+	})
+	return admitted, err
+}
+
 // EnqueueDeferred admits an eligible issue, or resumes the same request if an
 // older connector abandoned its unsupported kind during a chart rollback.
 // The caller checks current tracker eligibility; stored stops also block this

@@ -216,6 +216,16 @@ A HOME issue in Todo or In Progress that is assigned to Joe with no delegate
 is Joe's: no run starts on it, and the "Needs Joe" view
 (`/factory/HOME/view/1`) lists it.
 
+Give an escalation two to four numbered choices in its description. Put the
+recommended choice first and end it with `(Recommended)`. Use one line per item.
+
+```markdown
+## Choices
+
+1. Ship the smaller change (Recommended)
+2. Wait for the full migration
+```
+
 To take delegated work from the factory, stop it with
 `connector cancel <ISSUE> --by joe`, or move the issue to Canceled and leave
 it there, and close its PR: a closed PR cannot merge, and reopening it is the
