@@ -80,6 +80,10 @@ Refs HOME-N
 | Review findings | after a round raised findings | One line per finding ID, with the head it was raised on and the answer. The reviewer's PR comment holds the detail. A medium or high finding about state the reviewer cannot read clears with Joe's decision (below). |
 | Related | always | `Refs HOME-N` on its own line when a HOME issue tracks the work, then one line per link. A small explicit request can use its PR as the record (`docs/agents/ship.md`). |
 
+Update an invariant when the PR establishes or changes a system guarantee.
+Use the existing invariant ID when a fix restores that guarantee.
+Describe implementation choices in the Change section and show regression tests in Evidence.
+
 After each review round, read the whole description against the new head.
 Fix every claim that the head no longer supports.
 
