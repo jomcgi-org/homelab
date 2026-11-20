@@ -17,6 +17,9 @@ spec:
       releaseName: factory-explore-site
       valuesObject:
         manageHostname: false
+        workloads:
+          factory-explore-deploy:
+            command: ["/app/projects/factory-explore-site/withdraw"]
   destination:
     server: https://kubernetes.default.svc
     namespace: factory-explore-site
