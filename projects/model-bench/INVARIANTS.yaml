@@ -1,0 +1,7 @@
+invariants:
+- id: MODEL-BENCH-1
+  statement: The verifier venv pins matching OpenTelemetry API and SDK releases, semantic conventions at 0.(SDK minor + 21)b(SDK patch), and the exact core required by Pydantic.
+  mechanism:
+  - projects/model-bench/requirements-venv.txt
+  test: //projects/model-bench:venv_pins_test
+  state: live
