@@ -4376,3 +4376,35 @@ func TestAddedFileInvariantAnswerInCompletedCheck(t *testing.T) {
 		}
 	}
 }
+
+type limitedHeadReader struct{ GitHub }
+
+func (limitedHeadReader) PullRequestHeads(context.Context, string, int, github.CheckRunFilter) (*github.HeadHistory, error) {
+	return nil, fmt.Errorf("API rate limit already exceeded for installation")
+}
+
+func TestPriorStateReplayRetriesRateLimit(t *testing.T) {
+	h := newHarness(t)
+	addPR7(h)
+	h.gh.prs[7].Heads = []string{shaA}
+	seedLegacyReport(t, h, shaA, Report{Summary: "Clean", Findings: []Finding{}}, State{Blocking: []Finding{}}, ConclusionSuccess)
+	e := h.engine()
+	b := &e.cfg.Bindings[0]
+	pr := github.PullRequest{Number: 7, HeadSHA: sha40('b')}
+	hist := &github.HeadHistory{Heads: []github.Head{{SHA: shaA, Checked: true}}}
+	read := func() (State, string, string, error) { return e.previousStateFrom(context.Background(), b, pr, hist) }
+	want, head, unknown, err := read()
+	if err != nil || unknown != "" || head != shaA || want.Incomplete {
+		t.Fatalf("baseline head=%s unknown=%q err=%v", head, unknown, err)
+	}
+	client := e.gh
+	e.gh = limitedHeadReader{client}
+	if st, _, unknown, err := read(); err == nil || unknown != "" || st.Incomplete {
+		t.Fatalf("failed replay returned incomplete=%v unknown=%q err=%v", st.Incomplete, unknown, err)
+	}
+	e.gh = client
+	got, retryHead, unknown, err := read()
+	if err != nil || unknown != "" || retryHead != head || encodeState(got) != encodeState(want) {
+		t.Fatalf("retry head=%s unknown=%q err=%v state=%+v", retryHead, unknown, err, got)
+	}
+}

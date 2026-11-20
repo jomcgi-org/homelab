@@ -67,3 +67,9 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-13
+  statement: A failed prior review state read defers review until a later poll and preserves the saved check state.
+  mechanism:
+  - projects/factory/reviewer/review/engine.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live
