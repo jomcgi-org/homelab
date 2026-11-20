@@ -343,3 +343,34 @@ test("the sync key can restore and update only its own INTSEC finding", async ()
     columnId: payload.columnId,
   });
 });
+
+test("concurrent review follow-up requests commit one backlog issue", async () => {
+  const f = await fixture();
+  const input = {
+    key: "review-followup/example/homelab/42/F1",
+    columnId: f.backlog.id,
+    title: "Follow-up",
+    description: "Review details",
+  };
+  const send = () =>
+    app.handle(
+      new Request("http://localhost/projects/HOME/factory-review-followups", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": f.coordinator.apiKey!,
+        },
+        body: JSON.stringify(input),
+      }),
+    );
+  const responses = await Promise.all([send(), send()]);
+  expect(responses.map((r) => r.status)).toEqual([200, 200]);
+  expect(await responses[0].json()).toEqual(await responses[1].json());
+  const matches = await db
+    .select()
+    .from(issue)
+    .where(eq(issue.title, input.title));
+  expect(matches).toHaveLength(1);
+  expect(matches[0].columnId).toBe(f.backlog.id);
+  expect(matches[0].delegateUserId).toBeNull();
+});

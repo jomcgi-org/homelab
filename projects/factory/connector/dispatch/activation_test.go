@@ -1049,6 +1049,7 @@ func TestDeferredMergeFollowups(t *testing.T) {
 			data, _ := json.Marshal(map[string]any{"deferred": findings})
 			for i, c := range v.gh.checks["sha-1"] {
 				if c.Name == "semgrep-review" {
+					v.gh.checks["sha-1"][i].ExternalID = "factory-review/jomcgi-org/homelab/1/sha-1"
 					v.gh.checks["sha-1"][i].Text = github.ReviewStatePrefix + base64.StdEncoding.EncodeToString(data) + github.ReviewStateSuffix
 				}
 			}
@@ -1074,5 +1075,52 @@ func TestDeferredMergeFollowups(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func (f *fakeItsaplan) CreateReviewFollowup(ctx context.Context, project, key string, n itsaplan.NewIssue) error {
+	if f.reviewReceipts[key] {
+		return nil
+	}
+	if f.reviewReceipts == nil {
+		f.reviewReceipts = map[string]bool{}
+	}
+	before := f.activationCreates
+	_, err := f.CreateIssue(ctx, project, n)
+	if f.activationCreates > before {
+		f.reviewReceipts[key] = true
+	}
+	return err
+}
+
+func TestUntrackedMergedReviewUsesPRIdentity(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.gh.green("shared")
+	pr := github.PullRequest{Number: 42, HeadSHA: "shared", URL: "https://github.com/example-org/homelab/pull/42"}
+	v.gh.mergedListing = []github.PullRequest{pr}
+	for i, c := range v.gh.checks["shared"] {
+		if c.Name != "semgrep-review" {
+			continue
+		}
+		for _, number := range []int{42, 43} {
+			data, _ := json.Marshal(map[string]any{"deferred": []github.DeferredFinding{{ID: "f", Title: fmt.Sprint(number), Detail: "details"}}})
+			c.ID = int64(number)
+			c.ExternalID = fmt.Sprintf("factory-review/jomcgi-org/homelab/%d/shared", number)
+			c.Text = github.ReviewStatePrefix + base64.StdEncoding.EncodeToString(data) + github.ReviewStateSuffix
+			if number == 42 {
+				v.gh.checks["shared"][i] = c
+			} else {
+				v.gh.checks["shared"] = append(v.gh.checks["shared"], c)
+			}
+		}
+	}
+	v.its.columns = append(v.its.columns, itsaplan.Column{ID: 91, StateType: "backlog", Position: -1})
+	if _, err := v.st.DB.Exec("UPDATE repo_binding SET review_merges_since='2000-01-01'"); err != nil {
+		t.Fatal(err)
+	}
+	v.poll()
+	is, err := v.its.GetIssue(v.ctx, 1001)
+	if err != nil || is.Title != "42" || v.its.activationCreates != 1 {
+		t.Fatalf("issue=%+v err=%v", is, err)
 	}
 }

@@ -613,17 +613,6 @@ func (e *Engine) deliverReviewFollowup(ctx context.Context, it *store.OutboxItem
 	if err := json.Unmarshal(it.Payload, &p); err != nil {
 		return err
 	}
-	marker := fmt.Sprintf("<!-- factory-review-followup %d -->", it.ID)
-	if it.SendStarted {
-		issue, err := e.findFollowup(ctx, it, p.WorkID, p.Project, marker)
-		if err != nil {
-			return err
-		}
-		if issue == nil {
-			return errors.New("review follow-up create outcome unknown")
-		}
-		return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)
-	}
 	if err := e.beginActivationCall(ctx, it, p.WorkID, "ProjectColumns", p.Project); err != nil {
 		return err
 	}
@@ -638,17 +627,9 @@ func (e *Engine) deliverReviewFollowup(ctx context.Context, it *store.OutboxItem
 	if err := e.beginActivationCall(ctx, it, p.WorkID, "CreateIssue", p.Project); err != nil {
 		return err
 	}
-	if err := e.st.OutboxSendStarted(ctx, it.ID); err != nil {
-		return err
-	}
 	f := p.Finding
-	_, err = e.its.CreateIssue(ctx, p.Project, itsaplan.NewIssue{ColumnID: backlog.ID, Title: f.Title, Description: fmt.Sprintf("Merged PR: %s\nFinding: %s\n\n%s\n\n%s", p.PRURL, f.ID, f.Detail, marker)})
+	err = e.its.CreateReviewFollowup(ctx, p.Project, it.DedupeKey, itsaplan.NewIssue{ColumnID: backlog.ID, Title: f.Title, Description: fmt.Sprintf("Merged PR: %s\nFinding: %s\n\n%s", p.PRURL, f.ID, f.Detail)})
 	if err != nil {
-		if notCreated(err) {
-			if clearErr := e.st.OutboxSendCleared(ctx, it.ID); clearErr != nil {
-				return clearErr
-			}
-		}
 		return err
 	}
 	return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)

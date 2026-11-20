@@ -31,17 +31,18 @@ import (
 // branch, reviews, check runs and statuses per commit, and a merge queue that
 // takes a PR only at its expected head.
 type fakeGitHub struct {
-	scanRevert func(time.Time, time.Time, func(int) error) (*time.Time, error)
-	mu         sync.Mutex
-	calls      int
-	branches   map[string]*fakeBranch
-	prs        []*fakePR
-	checks     map[string][]github.CheckRun
-	statuses   map[string][]github.Status
-	creates    int
-	enqueues   []string
-	nodes      int
-	detailErr  error // fails every PR detail read while set
+	mergedListing []github.PullRequest
+	scanRevert    func(time.Time, time.Time, func(int) error) (*time.Time, error)
+	mu            sync.Mutex
+	calls         int
+	branches      map[string]*fakeBranch
+	prs           []*fakePR
+	checks        map[string][]github.CheckRun
+	statuses      map[string][]github.Status
+	creates       int
+	enqueues      []string
+	nodes         int
+	detailErr     error // fails every PR detail read while set
 	// loseCreate opens the next PR but loses the response; findErr fails
 	// the next lookups.
 	loseCreate bool
@@ -3724,4 +3725,12 @@ func TestUnconfirmedEjectionEmitsNoEjectionSpan(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (g *fakeGitHub) MergedSince(context.Context, string, string, time.Time) ([]github.PullRequest, error) {
+	return g.mergedListing, nil
+}
+
+func (g *fakeGitHub) ListCheckRuns(ctx context.Context, repo, sha string, _ github.CheckRunFilter) ([]github.CheckRun, error) {
+	return g.CheckRuns(ctx, repo, sha)
 }

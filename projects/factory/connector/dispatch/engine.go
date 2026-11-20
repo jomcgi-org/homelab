@@ -48,6 +48,7 @@ type Itsaplan interface {
 	MoveIssue(ctx context.Context, issueID, columnID int64) error
 	GetProject(ctx context.Context, key string) (*itsaplan.Project, error)
 	SearchIssues(ctx context.Context, project, query string) ([]itsaplan.Issue, error)
+	CreateReviewFollowup(context.Context, string, string, itsaplan.NewIssue) error
 	CreateIssue(ctx context.Context, project string, issue itsaplan.NewIssue) (*itsaplan.Issue, error)
 	UpdateIssue(ctx context.Context, id int64, patch itsaplan.IssueUpdate) error
 	IssueRuns(ctx context.Context, issueID, before int64) (*itsaplan.IssueRunPage, error)
@@ -411,6 +412,7 @@ func (e *Engine) Tick(ctx context.Context) (result error) {
 		{"leases", e.checkLeases},
 		{"cancellations", e.stepCancellations},
 		{"delivery", e.stepDelivery},
+		{"merged_reviews", e.pollMergedReviews},
 		{"delivery_reverts", e.checkDeliveryReverts},
 		{"activation recovery", e.st.RecoverActivation},
 		{"human_gates", e.stepHumanGates},

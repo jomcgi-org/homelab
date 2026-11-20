@@ -1308,7 +1308,7 @@ func stateOf(a Assessment, r *Report, gate *Gate) State {
 	cleared, partial := clearedOf(a, r)
 	st := State{Blocking: []Finding{}, Cleared: cleared, ClearedPartial: partial || a.EarlierPartial, Gate: gate, Decisions: a.decisions(), Incomplete: a.Incomplete, Overflow: a.Overflow, TaskID: a.TaskID, IssueDigest: a.IssueDigest, Goal: a.Goal, GoalKey: a.GoalKey}
 	for _, f := range a.Deferred {
-		st.Deferred = append(st.Deferred, github.DeferredFinding{ID: f.ID, Title: f.Title, Detail: f.Detail})
+		st.Deferred = append(st.Deferred, github.DeferredFinding{ID: f.ID, Title: storeText(f.Title, maxTitle), Detail: storeText(f.Detail, maxStoredDetail)})
 	}
 	if r != nil && r.ActivationHead != "" && r.Activation != "" {
 		st.Activation = &github.ActivationAssessment{HeadSHA: r.ActivationHead, Text: r.Activation}
@@ -1516,6 +1516,15 @@ func encodeState(st State) string {
 		return statePrefix + base64.StdEncoding.EncodeToString([]byte(strings.TrimSpace(b.String()))) + stateSuffix
 	}
 	out := enc(st)
+	if len(out) > maxState && len(st.Deferred) > 0 {
+		compact := append([]github.DeferredFinding(nil), st.Deferred...)
+		for i := range compact {
+			compact[i].Title = clip(compact[i].Title, 80)
+			compact[i].Detail = clip(compact[i].Detail, 80)
+		}
+		st.Deferred = compact
+		out = enc(st)
+	}
 	if len(out) > maxState && len(st.Cleared) > 0 {
 		bare := make([]Cleared, len(st.Cleared))
 		for i, c := range st.Cleared {

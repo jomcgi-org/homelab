@@ -66,13 +66,14 @@ func (f *fakeQuota) count() int {
 // leases, attempts, 404 for a reclaimed or finished attempt, offset-checked
 // events and terminal results.
 type fakeItsaplan struct {
-	mu       sync.Mutex
-	now      func() time.Time
-	lease    time.Duration
-	maxTries int
-	runs     []*fakeRun
-	comments []fakeComment
-	calls    int
+	reviewReceipts map[string]bool
+	mu             sync.Mutex
+	now            func() time.Time
+	lease          time.Duration
+	maxTries       int
+	runs           []*fakeRun
+	comments       []fakeComment
+	calls          int
 	// commentErr fails every comment while set.
 	commentErr error
 	// resultGone fails the run in itsaplan as its result arrives, as
