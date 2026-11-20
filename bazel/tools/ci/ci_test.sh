@@ -239,7 +239,7 @@ else
 fi
 
 if grep -qFx '            bazel test --config=ci //bazel/tools/python:gazelle_python_manifest.test' "$BUILD_BUDDY" &&
-	grep -q 'deleted_packages=bazel/tools/python' "$LOCAL_AFFECTED_TEST" &&
+	! grep -q 'deleted_packages=bazel/tools/python' "$LOCAL_AFFECTED_TEST" &&
 	grep -q -- '--config=ci' "$LOCAL_AFFECTED_TEST" &&
 	grep -q -- '--script=' "$CI"; then
 	pass "ci_affected_argv_locked"
