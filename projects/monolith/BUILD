@@ -289,9 +289,17 @@ exports_files(
     [
         "knowledge/tools/gen_docs_manifest.py",
         "knowledge/tools/prettier_json.py",
-        "knowledge/tools/public_content.py",
     ],
     visibility = [
+        "//projects/jomcgi-site/web:__pkg__",
+        "//projects/monolith/frontend:__pkg__",
+    ],
+)
+
+exports_files(
+    ["knowledge/tools/public_content.py"],
+    visibility = [
+        "//bazel/tools/ci:__pkg__",
         "//projects/jomcgi-site/web:__pkg__",
         "//projects/monolith/frontend:__pkg__",
     ],
