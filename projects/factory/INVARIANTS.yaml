@@ -62,6 +62,13 @@ invariants:
   - projects/factory/connector/kagent/session.go
   test: //projects/factory/connector/dispatch:dispatch_test
   state: live
+- id: FACT-REVIEW-SESSION-1
+  statement: A reviewer waits for unrecorded turns in its prior review session to end before dispatching another review.
+  mechanism:
+  - projects/factory/reviewer/review/session.go
+  - projects/factory/reviewer/review/engine.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live
 - id: FACT-10
   statement: An error, a timeout or an unparseable answer gives no pass, no enqueue and no token.
   mechanism:

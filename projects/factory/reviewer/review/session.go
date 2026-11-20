@@ -131,10 +131,6 @@ func (e *Engine) resumable(ctx context.Context, b *Binding, pr github.PullReques
 	switch {
 	case ref == nil || in.priorHead == "" || in.priorHead == pr.HeadSHA || in.prior.Incomplete:
 		return nil, reasonNone
-	case attempt > 1:
-		return nil, reasonRetry
-	case refused:
-		return nil, reasonRefused
 	case e.cfg.Sessions == nil:
 		return nil, reasonDisabled
 	case !contextIDPattern.MatchString(ref.ContextID) || ref.Binding != b.Name || ref.Agent != agentName(b.Agent) ||
@@ -171,26 +167,50 @@ func (e *Engine) resumable(ctx context.Context, b *Binding, pr github.PullReques
 		e.kagentError(ctx, l, b, "get_agent", err)
 		return nil, reasonUnreadable
 	}
+	// A running turn may be on a later page. Inspect the complete listing
+	// before deciding whether a retry or fallback can start.
+	page := &kagent.TaskPage{}
+	seen := map[string]bool{}
+	for token := ""; ; {
+		part, err := e.tasks.ListTasks(ctx, b.Agent, ref.ContextID, "", token)
+		if err != nil || part == nil {
+			e.kagentError(ctx, l, b, "list_tasks", err)
+			return nil, reasonUnreadable
+		}
+		page.Tasks = append(page.Tasks, part.Tasks...)
+		page.TotalSize = part.TotalSize
+		token = part.NextPageToken
+		if token == "" {
+			break
+		}
+		if seen[token] {
+			return nil, reasonUnreadable
+		}
+		seen[token] = true
+	}
+	if page.TotalSize != len(page.Tasks) {
+		return nil, reasonUnreadable
+	}
+	matched := accounted(page, ref)
+	if !matched {
+		l.InfoContext(ctx, "the recorded session holds turns its reviews do not account for", "context_id", ref.ContextID,
+			"recorded_tasks", len(ref.Tasks), "session_tasks", page.TotalSize)
+		if !e.stopUnrecorded(ctx, b, page, ref, l) {
+			return nil, reasonUnsettled
+		}
+	}
+	switch {
+	case attempt > 1:
+		return nil, reasonRetry
+	case refused:
+		return nil, reasonRefused
+	}
 	if rev == "" || s.PreparedRevision != rev {
 		l.InfoContext(ctx, "the recorded session runs another agent revision", "context_id", ref.ContextID,
 			"session_revision", s.PreparedRevision, "agent_revision", rev)
 		return nil, reasonRevision
 	}
-	page, err := e.tasks.ListTasks(ctx, b.Agent, ref.ContextID, "", "")
-	if err != nil {
-		e.kagentError(ctx, l, b, "list_tasks", err)
-		return nil, reasonUnreadable
-	}
-	if !accounted(page, ref) {
-		listed := -1
-		if page != nil {
-			listed = page.TotalSize
-		}
-		l.InfoContext(ctx, "the recorded session holds turns its reviews do not account for", "context_id", ref.ContextID,
-			"recorded_tasks", len(ref.Tasks), "session_tasks", listed)
-		if !e.stopUnrecorded(ctx, b, page, ref, l) {
-			return nil, reasonUnsettled
-		}
+	if !matched {
 		return nil, reasonUnaccounted
 	}
 	return ref, reasonResumed
@@ -207,7 +227,7 @@ var errUnsettledTurn = errors.New("a session turn no review recorded is still ru
 // a fresh review never runs beside one.
 func (e *Engine) stopUnrecorded(ctx context.Context, b *Binding, page *kagent.TaskPage, ref *SessionRef, l *slog.Logger) bool {
 	if page == nil {
-		return true
+		return false
 	}
 	stopped := true
 	for _, t := range page.Tasks {
