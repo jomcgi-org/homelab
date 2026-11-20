@@ -74,10 +74,10 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   of the issue's one "Done when" or "Acceptance criteria" list, only when
   the issue text has a trusted author and editor, and the valid answer
   must number the same count. A numbering gap or any other ambiguity
-  counts nothing, as does an issue with an HTML tag start, triple backtick or
-  triple tilde: comments, code fences and HTML can hide or fake list items. An issue with a diagram keeps
-  main's rules. So does a thematic break, a setext underline, or an item
-  with no words on its marker line. An indented heading is code, not a
+  counts nothing. CommonMark blocks before the top-level criteria heading
+  may include a fenced diagram. From that heading onward, an HTML tag start,
+  triple backtick, triple tilde, thematic break or setext underline prevents
+  withdrawal. Each item needs words on its marker line. An indented heading is code, not a
   heading. History replay
   withdraws nothing. A restated criterion gets a fresh verdict under the same
   ID. A missing issue reference, an uncounted list or a count the answer

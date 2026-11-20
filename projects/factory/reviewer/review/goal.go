@@ -352,20 +352,6 @@ func countedCriteria(g *GoalCheck) bool {
 	return g != nil && g.Counted > 0 && g.Counted == len(g.Criteria)
 }
 
-// Only persist counts eligible to withdraw findings under projects/factory/REVIEW.md.
-// Older readers of GoalCheck also treat any positive Counted as eligible.
-func withdrawalCriteria(in *IssueContext) int {
-	count := issueCriteria(in)
-	if count == 0 {
-		return 0
-	}
-	description := strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(in.Issue.Description)
-	if excludedWithdrawalMarkdown.MatchString(description) {
-		return 0
-	}
-	return count
-}
-
 var excludedWithdrawalMarkdown = regexp.MustCompile("(?m)<[A-Za-z/!?]|```|~~~|" + `^[ \t]*(?:(?:[-*_][ \t]*){3,}|=+|-+)[ \t]*$`)
 
 // Count direct items of the one unambiguous list following the criteria label.
@@ -386,6 +372,11 @@ func issueCriteria(in *IssueContext) int {
 		label := strings.ToLower(strings.TrimSpace(string(block.Lines().Value(source))))
 		if !criteriaLabel.MatchString(label) {
 			continue
+		}
+		// Earlier blocks cannot contain this top-level label. From the label
+		// onward, ambiguous markup could hide a removed criterion.
+		if excludedWithdrawalMarkdown.Match(source[block.Lines().At(0).Start:]) {
+			return 0
 		}
 		list, ok := block.NextSibling().(*ast.List)
 		if count > 0 || !ok || list.ChildCount() > maxCriteria {
@@ -812,7 +803,7 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 		var ownership string
 		if valid {
 			a.verifyOwnership(in.issues)
-			g = &GoalCheck{followUps: a.followUps, Head: pr.HeadSHA, Digest: issueDigest(in.issues), Criteria: a.Criteria, Overall: a.Overall, Counted: withdrawalCriteria(in.issues), ReplyRevision: goalReplyRevision(in.issues)}
+			g = &GoalCheck{followUps: a.followUps, Head: pr.HeadSHA, Digest: issueDigest(in.issues), Criteria: a.Criteria, Overall: a.Overall, Counted: issueCriteria(in.issues), ReplyRevision: goalReplyRevision(in.issues)}
 			if initial != nil {
 				g = confirmOnly(initial, g)
 			}
