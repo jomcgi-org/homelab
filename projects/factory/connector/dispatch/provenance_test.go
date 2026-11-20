@@ -1,3 +1,4 @@
+// invariant: FACT-13
 package dispatch_test
 
 import (
