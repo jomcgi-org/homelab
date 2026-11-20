@@ -341,6 +341,7 @@ groups:
           summary: "Factory {{ $labels.phase }} has been failing on itsaplan for ten minutes"
       - record: factory_connector:runnable_runs:max
         expr: max(factory_connector_runnable_runs{job="factory-connector"})
+      # invariant: FACT-13
       - alert: FactoryConnectorStalled
         expr: |
           factory_connector:runnable_runs:max > 0
