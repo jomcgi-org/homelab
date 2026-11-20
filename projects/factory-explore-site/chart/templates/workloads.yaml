@@ -1,3 +1,7 @@
-{{- if eq .Values.publishEnabled true }}
-{{ include "factory-library.all" . }}
+{{- if or .Values.manageHostname .Values.publishEnabled }}
+{{- $release := deepCopy . }}
+{{- if not .Values.publishEnabled }}
+{{- $_ := set (index $release.Values.workloads "factory-explore-deploy") "command" (list "/app/projects/factory-explore-site/withdraw") }}
+{{- end }}
+{{ include "factory-library.all" $release }}
 {{- end }}

@@ -58,3 +58,10 @@ def test_worker_deploy_job():
     }
     assert cloudflare == {"factory-explore-cloudflare"}
     assert "jomcgi-site-cloudflare" not in str(resources)
+
+
+def test_reverting_publication_withdraws_managed_hostname():
+    resources = render("--set", "manageHostname=true")
+    (job,) = [doc for doc in resources if doc["kind"] == "Job"]
+    (container,) = job["spec"]["template"]["spec"]["containers"]
+    assert container["command"] == ["/app/projects/factory-explore-site/withdraw"]
