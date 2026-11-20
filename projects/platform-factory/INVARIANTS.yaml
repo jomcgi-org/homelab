@@ -77,7 +77,7 @@ invariants:
 - id: PLAT-14
   statement: The factory CloudNativePG and External Secrets operators deploy from vendored renders of the pinned upstream charts and factory values.
   mechanism:
-  - projects/platform-factory/cloudnative-pg/resources/upstream
-  - projects/platform-factory/external-secrets/resources/upstream
-  # Manual comparisons run via each operator directoryx27s verify-render.sh.
+  - projects/platform-factory/cloudnative-pg/application.yaml
+  - projects/platform-factory/external-secrets/application.yaml
+  # Each operator directory has a verify-render.sh comparison against upstream.
   state: unproven
