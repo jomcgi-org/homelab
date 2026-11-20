@@ -46,7 +46,7 @@ func (f *fakeItsaplan) SearchGateIssues(_ context.Context, _, marker string) ([]
 			hits = append(hits, *is)
 		}
 	}
-	return hits, nil
+	return hits, f.gateSearchErr
 }
 
 func (f *fakeItsaplan) CreateGateIssue(_ context.Context, _ string, body itsaplan.GateIssueWrite) (*itsaplan.Issue, error) {
@@ -898,5 +898,50 @@ func TestHumanGateLateCreateResponseAfterAdoption(t *testing.T) {
 	err := v.st.FinishHumanGateWrite(context.Background(), h, "factory-human-gate/jomcgi-org/homelab/1/create", 301, false)
 	if err == nil || v.gateIssue(1, "sha-1").IssueID != h.IssueID {
 		t.Fatal("late response replaced the adopted issue")
+	}
+}
+
+func (f *fakeItsaplan) HasComment(_ context.Context, issueID int64, body string) (bool, error) {
+	for _, c := range f.Comments() {
+		if c.issueID == issueID && c.body == body {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func TestLegacyDuplicateExplanation(t *testing.T) {
+	for _, posted := range []bool{false, true} {
+		t.Run(fmt.Sprint(posted), func(t *testing.T) {
+			v := newHumanGateEnv(t)
+			const body = "Duplicate of HL-201"
+			if posted {
+				if err := v.its.Comment(v.ctx, 301, body); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := v.st.Enqueue(v.ctx, v.st.DB, store.OutboxComment, "comment/factory-human-gate/jomcgi-org/homelab/1/duplicate/301", 0, "", map[string]any{"issueId": 301, "body": body})
+			if err != nil {
+				t.Fatal(err)
+			}
+			v.poll()
+			_, comments := v.gateCancels()
+			if comments[301] != 1 {
+				t.Fatalf("comments=%v", comments)
+			}
+		})
+	}
+}
+
+func TestHumanGateMergeDuringSearchFailure(t *testing.T) {
+	v := newHumanGateEnv(t)
+	v.readyGate("sha-1")
+	v.poll()
+	v.gh.merge(1, "merged-sha")
+	v.its.gateSearchErr = errors.New("search unavailable")
+	v.poll()
+	h := v.gateIssue(3, "sha-1")
+	if h.AppliedRevision != h.Revision {
+		t.Fatal("merge update was not acknowledged")
 	}
 }

@@ -117,6 +117,7 @@ type fakeItsaplan struct {
 
 	gateCreates     []itsaplan.GateIssueWrite
 	gateUpdates     []itsaplan.GateIssueWrite
+	gateSearchErr   error
 	gateCreateErr   error
 	gateUpdateErr   error
 	loseGateCreate  bool
