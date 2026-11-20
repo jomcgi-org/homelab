@@ -101,8 +101,23 @@ spec:
                   key: tenant-api-key
             # MCP takes the agents' token instead, and registers only these
             # tools, so the token can neither reach REST nor delete memories.
+            - name: HINDSIGHT_API_HTTP_EXTENSION
+              value: bindings:ConnectorRetain
+            - name: CONNECTOR_RETAIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-keys
+                  key: retain-token
+            - name: HINDSIGHT_API_MCP_EXTENSION
+              value: bindings:MemoryTools
+            # invariant: FACT-13
             - name: MCP_BINDINGS
-              value: '{"HOMELAB_MCP_TOKEN":{"bank":"homelab","tools":["recall","retain"]}}'
+              value: '{"HOMELAB_MCP_TOKEN":{"bank":"homelab","tools":["recall","retain"]},"HOMELAB_RECALL_TOKEN":{"bank":"homelab","tools":["recall"]}}'
+            - name: HOMELAB_RECALL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hindsight-keys
+                  key: recall-token
             - name: HOMELAB_MCP_TOKEN
               valueFrom:
                 secretKeyRef:

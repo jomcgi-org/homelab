@@ -2068,12 +2068,16 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 	state := t.Status.State
 	switch state {
 	case kagent.StateCompleted, kagent.StateInputRequired:
-		res := itsaplan.Result{Status: "success", Output: Output(t)}
+		answer := taskAnswer(t)
+		res := itsaplan.Result{Status: "success", Output: clip(itsaplanText(answer), maxOutput)}
 		return e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
 			if err := e.st.CompleteTask(ctx, tx, a.ID, state); err != nil {
 				return err
 			}
 			if state == kagent.StateCompleted {
+				if err := saveLesson(ctx, tx, wi.ID, answer); err != nil {
+					return err
+				}
 				// The turn finished; delivery opens or updates the PR from the
 				// pushed branch. The issue is Done only once the merge is seen.
 				if err := e.st.FinishTurn(ctx, tx, wi.ID, a.ID); err != nil {
@@ -2769,6 +2773,8 @@ func (e *Engine) refused(ctx context.Context, it *store.OutboxItem, err error) b
 
 func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 	switch it.Kind {
+	case "retain":
+		return e.retainLesson(ctx, it)
 	case store.OutboxDeferredStart:
 		return e.deliverDeferred(ctx, it)
 	case store.OutboxComment:

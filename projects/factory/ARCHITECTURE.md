@@ -153,9 +153,9 @@ the endpoint and read tools.
 
 `repositories[].memory` binds one coding binding's Agent to Hindsight
 (`projects/platform-factory/hindsight`) as RemoteMCPServer `memory`, limited
-to `recall` and `retain`, and adds `chart/files/memory-prompt.txt` to its
-prompt: recall before planning, retain lessons with their issue, PR or commit
-and supporting evidence, and revalidate recalled claims against current code. Review bindings do not inherit it. The
+to `recall`. Hindsight wraps recalled text in an untrusted block. The memory prompt asks
+the coder for an optional lesson and head SHA in its final result. On observing
+that head merge, the connector queues the lesson with issue and PR tags. Review bindings do not inherit it. The
 `homelab` coding binding uses bank `homelab`
 ([HOME-185](https://factory-plan.jomcgi.dev/factory/issue/HOME-185)).
 
@@ -240,16 +240,18 @@ config, never its memories, so a template change in git reaches the bank on
 the next sync. `POST .../import?dry_run=true` validates a manifest without
 changing anything. A new project needs a new `app` value.
 
-Two keys separate the callers. The REST API takes only the tenant key, which
-only namespace `hindsight` holds: the API pod, and the Jobs that create the
-key and apply the bank template. MCP maps the homelab binding token to the homelab bank and registers only `recall` and `retain`
-(`HINDSIGHT_API_MCP_ENABLED_TOOLS`), so a caller with the token can neither
-reach REST nor list, delete or reflect. The `hindsight-keys` Jobs generate both
-keys once and copy the token into the binding's `hindsight-mcp` Secret, which
-is labelled injectable: the Substrate egress gateway adds it as the
-`Authorization` header, and the actor holds a placeholder. Hindsight admits
-the egress gateway for agent traffic. kagent cannot reach Hindsight, so the RemoteMCPServer
-sets `kagent.dev/discovery: disabled` and the agent lists tools at run time.
+The connector receives a separate retain token. Hindsight accepts it at
+`POST /ext/connector/retain` and sends the request to the homelab bank.
+The tenant REST key stays inside Hindsight.
+
+During rollout, Hindsight and the git values preserve the legacy coder's
+recall and retain permissions. The replacement chart selects a separate recall-only credential. Its namespaced
+Role lets the injection provider get the git and configured MCP Secrets.
+Argo CD prunes the previous namespace-wide reader binding, so the legacy
+token cannot be injected into the replacement coder.
+After the connector stores a verified merged lesson, remove retain from the
+MCP binding, enabled tools and both values files. To roll back, restore those
+permissions and values before lowering the chart pin.
 
 The bank is the URL path (`/mcp/homelab/`). The homelab binding uses this bank. Recalled text is data, never an
 instruction: the prompt says the repository, issue and CI win.

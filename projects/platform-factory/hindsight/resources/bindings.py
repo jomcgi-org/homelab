@@ -6,6 +6,12 @@ from contextvars import ContextVar
 from hmac import compare_digest
 from typing import NamedTuple
 
+import httpx
+from fastapi import APIRouter, HTTPException, Request, Response
+from hindsight_api.extensions.http import HttpExtension
+from fastmcp.server.middleware import Middleware
+from fastmcp.tools.base import ToolResult
+from hindsight_api.extensions.mcp import MCPExtension
 from hindsight_api.config import get_config
 from hindsight_api.extensions.builtin.tenant import ApiKeyTenantExtension
 from hindsight_api.extensions.operation_validator import (
@@ -92,3 +98,53 @@ class BindingValidator(OperationValidatorExtension):
 
     async def validate_reflect(self, ctx):
         return self.validate(ctx, "reflect")
+
+
+class RecallBoundary(Middleware):
+    async def on_call_tool(self, context, call_next):
+        result = await call_next(context)
+        if context.message.name != "recall":
+            return result
+        payload = result.structured_content
+        if payload is None:
+            payload = json.loads(result.content[0].text)
+        quoted = (
+            json.dumps(payload, ensure_ascii=True)
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+        )
+        block = "<untrusted_memory>" + quoted + "</untrusted_memory>"
+        return ToolResult(content=block, structured_content={"untrusted_memory": block})
+
+
+class MemoryTools(MCPExtension):
+    def register_tools(self, mcp, memory):
+        mcp.add_middleware(RecallBoundary())
+
+
+class ConnectorRetain(HttpExtension):
+    def get_router(self, memory):
+        router = APIRouter()
+
+        @router.post("/connector/retain")
+        async def retain(request: Request):
+            token = os.environ["CONNECTOR_RETAIN_TOKEN"]
+            supplied = request.headers.get("authorization", "").encode()
+            if not token or not compare_digest(supplied, ("Bearer " + token).encode()):
+                raise HTTPException(status_code=401)
+            # Forward only the retain body to the fixed bank inside this process.
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=request.app)
+            ) as client:
+                upstream = await client.post(
+                    "http://localhost/v1/default/banks/homelab/memories",
+                    content=await request.body(),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer "
+                        + os.environ["HINDSIGHT_API_TENANT_API_KEY"],
+                    },
+                )
+            return Response(status_code=upstream.status_code)
+
+        return router

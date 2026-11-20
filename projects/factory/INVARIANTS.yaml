@@ -67,3 +67,11 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-13
+  statement: Coding agents can only recall shared lessons. The connector retains a lesson for its matching merged head.
+  mechanism:
+  - projects/factory/connector/migrations/20261120000000_merge_lesson.sql
+  - projects/factory/connector/dispatch/delivery.go
+  - projects/platform-factory/hindsight/resources/hindsight.yaml
+  test: //projects/factory/connector/dispatch:dispatch_test
+  state: live

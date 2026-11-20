@@ -725,6 +725,10 @@
       "required": ["enabled"],
       "additionalProperties": false,
       "properties": {
+        "memoryRetainURL": {
+          "type": "string",
+          "pattern": "^https?://[^/]+/.+"
+        },
         "traceEndpoint": { "type": "string" },
         "notify": {
           "type": "object",
@@ -1115,6 +1119,7 @@
                 "type": "array",
                 "minItems": 1,
                 "uniqueItems": true,
+                "contains": { "const": "recall" },
                 "items": { "enum": ["recall", "retain"] }
               }
             }

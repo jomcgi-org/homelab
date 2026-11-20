@@ -5,7 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
@@ -3723,5 +3726,45 @@ func TestUnconfirmedEjectionEmitsNoEjectionSpan(t *testing.T) {
 				t.Fatalf("ejection spans = %d, want %d", ejections, want)
 			}
 		})
+	}
+}
+
+// invariant: FACT-13
+func TestLessonRetainedOnlyAfterMatchingMerge(t *testing.T) {
+	v := newDeliveryEnv(t)
+	requests := make(chan string, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+		}
+		requests <- string(data)
+	}))
+	defer server.Close()
+	t.Setenv("FACTORY_MEMORY_REPO", v.cfg.Bindings[0].Owner+"/"+v.cfg.Bindings[0].Repo)
+	t.Setenv("FACTORY_MEMORY_URL", server.URL)
+	head := strings.Repeat("a", 40)
+	v.its.add(1, "coder", 101, "HL-7", "Fix the flaky test.")
+	v.tick(v.e)
+	v.gh.push("factory/HL-7", head, "fix(test): stop the flake")
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, strings.Repeat("long result ", 1100)+"\n"+`{"lesson":"Use the fixture clock.","head":"`+head+`"}`, nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	v.gh.green(head)
+	v.poll()
+	if len(requests) != 0 {
+		t.Fatal("retained before merge")
+	}
+	v.gh.merge(1, "merge-sha")
+	v.poll()
+	v.poll()
+	if len(requests) != 1 {
+		t.Fatalf("got %d retains", len(requests))
+	}
+	body := <-requests
+	for _, want := range []string{"issue:HL-7", "pr:" + v.cfg.Bindings[0].Owner + "/homelab#1", "Use the fixture clock."} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in %s", want, body)
+		}
 	}
 }

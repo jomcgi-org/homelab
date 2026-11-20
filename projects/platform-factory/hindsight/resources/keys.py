@@ -1,12 +1,12 @@
-"""Generate Hindsight's two keys once and hand the MCP token to the agents.
+"""Generate Hindsight's keys once and provision their consumers.
 
 Two modes, both safe to rerun:
 
   init    Before the Deployment: fill hindsight-keys with a tenant API key
-          (the REST API; nothing else holds it) and an MCP token, each only
-          when absent.
+          and separate legacy MCP, recall and connector retain tokens.
+          Fill only missing keys.
   agents  After every sync: copy the MCP token into the coding binding's
-          hindsight-mcp Secret, which the Substrate egress gateway injects.
+          hindsight-mcp Secret and the retain token into the connector Secret.
 
 hindsight-keys is the source of truth, and a rerun never rotates a key. Uses
 only the standard library and the pod's service account token.
@@ -33,8 +33,12 @@ CTX = ssl.create_default_context(cafile=f"{SA}/ca.crt")
 NAMESPACE = "hindsight"
 KEYS = "hindsight-keys"
 # Source key in hindsight-keys -> destination namespace and Secret.
-AGENTS = {"mcp-token": ("factory-r-homelab", "hindsight-mcp")}
-FIELDS = ("tenant-api-key", *AGENTS)
+CONSUMERS = {
+    "mcp-token": ("factory-r-homelab", "hindsight-mcp"),
+    "recall-token": ("factory-r-homelab", "hindsight-recall"),
+    "retain-token": ("factory", "hindsight-connector"),
+}
+FIELDS = ("tenant-api-key", "mcp-token", "retain-token", "recall-token")
 
 
 def call(method, path, body=None):
@@ -97,7 +101,7 @@ def ensure_keys():
 
 
 def share_token(data):
-    for field, (namespace, name) in AGENTS.items():
+    for field, (namespace, name) in CONSUMERS.items():
         want = {"token": data[field]}
         current = get_eventually(name, namespace)
         if current.get("data") != want:
