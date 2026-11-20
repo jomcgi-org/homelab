@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -69,5 +70,28 @@ func TestGoalReasonsAPIServesTheNewestReplyForAHead(t *testing.T) {
 	}
 	if resp, _ := get(http.MethodPost, "repository=o/r&pullRequest=7&head="+head); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("POST = %d", resp.StatusCode)
+	}
+}
+
+// TestGoalReasonsAPIUnreadableAuditIsUnavailable answers 503, not 404, when
+// the audit directory cannot be read, so the connector retries the read.
+func TestGoalReasonsAPIUnreadableAuditIsUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	a, err := OpenGoalAudit(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(GoalReasonsHandler(a))
+	defer srv.Close()
+	resp, err := srv.Client().Get(srv.URL + GoalReasonsPath + "?repository=o/r&pullRequest=7&head=" + strings.Repeat("a", 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("unreadable audit = %d, want 503", resp.StatusCode)
 	}
 }

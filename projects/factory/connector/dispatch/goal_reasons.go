@@ -155,8 +155,8 @@ func (e *Engine) goalReasons(ctx context.Context, b *Binding, wi *store.WorkItem
 	return g, err
 }
 
-// readGoalReasons is goalReasons that also reports a failed read, which a
-// later poll can retry.
+// readGoalReasons is goalReasons that also reports a read that found no
+// reasons, failed or missing, which a later poll can retry.
 func (e *Engine) readGoalReasons(ctx context.Context, b *Binding, wi *store.WorkItem, pr *store.PullRequest, sha string) (*GoalReasons, bool, error) {
 	if e.cfg.GoalReasons == nil {
 		return nil, false, nil
@@ -175,7 +175,7 @@ func (e *Engine) readGoalReasons(ctx context.Context, b *Binding, wi *store.Work
 	switch {
 	case errors.Is(err, ErrNoGoalReasons):
 		e.m.GoalReasonReads.WithLabelValues("none").Inc()
-		return nil, false, nil
+		return nil, true, nil
 	case err != nil:
 		e.m.GoalReasonReads.WithLabelValues("error").Inc()
 		e.log.WarnContext(ctx, "goal reasons read failed", "pr", pr.Number, "head", sha)
@@ -201,8 +201,9 @@ const ownedFinding = "owned by a follow-up"
 // ownershipFeedback delivers the follow-up key of an owned criterion when
 // the reviewer's check passes, so no revision round carries its reasons.
 // The public check names no key; the reasons, which do, go to the work
-// item's issue once per head. A failed read gives wait, so the PR stays out
-// of the queue and the next poll reads again.
+// item's issue once per head. A failed read, or a reviewer that keeps no
+// reasons for the head, gives wait: the PR stays out of the queue and the
+// next poll reads again. A new head runs the goal check again.
 func (e *Engine) ownershipFeedback(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, head string, checks []github.CheckRun) (wait bool, err error) {
 	r := b.Review.ReviewerCheck
 	if r == nil || r.AppID == 0 {
