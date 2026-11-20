@@ -104,3 +104,11 @@ invariants:
   - projects/platform-factory/pod-host-access/resources/policies.yaml
   test: //projects/platform-factory/pod-host-access:host_access_test
   state: unproven
+- id: PLAT-18
+  statement: Renovate tracks factory manifest images directly and updates the generated Substrate manifests
+    through their chart release together with the kagent charts.
+  mechanism:
+  - renovate.json
+  - projects/platform-factory/substrate/render-upstream.sh
+  test: //projects/platform/renovate:dependency_policy_test
+  state: live
