@@ -1,3 +1,4 @@
+{{- /* invariant: FACT-13 */ -}}
 {{- if .Values.reviewer.enabled }}
 {{- $c := .Values.reviewer }}
 {{- $ns := .Values.broker.namespace }}
