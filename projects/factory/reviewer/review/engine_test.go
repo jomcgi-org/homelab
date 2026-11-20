@@ -1673,7 +1673,7 @@ func TestExpiredLegacyTasksRetainFindingsUntilAFreshReportAccountsForThem(t *tes
 }
 
 func TestDecisionRecoveryKeepsFindingIdentitiesAcrossRestart(t *testing.T) {
-	for _, mode := range []string{"legacy", "expired", "overflow"} {
+	for _, mode := range []string{"legacy", "hash-only", "expired", "overflow"} {
 		t.Run(mode, func(t *testing.T) {
 			h := newHarness(t)
 			addPR7(h)
@@ -1688,7 +1688,7 @@ func TestDecisionRecoveryKeepsFindingIdentitiesAcrossRestart(t *testing.T) {
 			note := "decision: https://github.com/" + testRepo + "/pull/7#issuecomment-42"
 			previous := []Previous{{ID: ids[0], Status: StatusJustified, Note: note}, {ID: ids[1], Status: StatusJustified, Note: note}}
 			initial := State{Blocking: slices.Clone(original)}
-			if mode == "legacy" {
+			if mode == "legacy" || mode == "hash-only" {
 				for i := range initial.Blocking {
 					initial.Blocking[i].ID = clip(initial.Blocking[i].ID, maxTitle)
 				}
@@ -1705,8 +1705,11 @@ func TestDecisionRecoveryKeepsFindingIdentitiesAcrossRestart(t *testing.T) {
 			}
 			a := AssessDecided(&accepted, original, Decisions{Repo: testRepo, Number: 7, Comments: []github.Comment{comment}})
 			state := stateOf(a, &accepted, nil)
-			if mode == "legacy" {
+			if mode == "legacy" || mode == "hash-only" {
 				for i := range state.Decisions {
+					if mode == "hash-only" {
+						state.Decisions[i].UpdatedAt = ""
+					}
 					state.Decisions[i].Finding = clip(state.Decisions[i].Finding, maxTitle)
 				}
 			}
@@ -1731,6 +1734,17 @@ func TestDecisionRecoveryKeepsFindingIdentitiesAcrossRestart(t *testing.T) {
 			failIf(t, rec != replayDone || recovered.Incomplete, "complete history could not recover with a revoked decision")
 			for _, id := range ids {
 				failIf(t, !slices.ContainsFunc(recovered.Blocking, func(f Finding) bool { return f.ID == id && f.Severity == SeverityHigh }), "historical reply accepted an edited decision")
+			}
+			if mode == "hash-only" {
+				d := Decisions{Repo: testRepo, Number: 7, Comments: h.gh.prs[7].Comments}
+				if d.decided(note, ids[0], SeverityHigh) == nil {
+					t.Fatal("edited comment must still be eligible for a fresh citation")
+				}
+				next := AssessDecided(&accepted, recovered.Previous(), d)
+				for _, id := range ids {
+					failIf(t, !slices.ContainsFunc(next.Blocking, func(f Finding) bool { return f.ID == id && f.ReauthorizeAfter == comment.ID }), "replayed blocker %s accepted the old comment or lost its cutoff", id)
+				}
+				return
 			}
 			h.gh.prs[7].Comments[0] = comment
 			round := func(head string, previous []Previous) (*fakeCheck, State) {

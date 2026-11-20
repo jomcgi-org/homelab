@@ -450,22 +450,33 @@ func bodyHash(body string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// citedIDs reads same-PR conversation links independently of whether the
+// comments still exist. Replay also uses them to identify revoked stamps.
+func (d Decisions) citedIDs(note string) []int64 {
+	if d.Repo == "" || d.Number <= 0 || !decisionNote(note) {
+		return nil
+	}
+	link := regexp.MustCompile(`(?i)https://github\.com/` + regexp.QuoteMeta(d.Repo) + `/(?:pull|issues)/` +
+		strconv.Itoa(d.Number) + `#issuecomment-([1-9][0-9]*)\b`)
+	var ids []int64
+	for _, m := range link.FindAllStringSubmatch(note, -1) {
+		if cid, err := strconv.ParseInt(m[1], 10, 64); err == nil {
+			ids = append(ids, cid)
+		}
+	}
+	return ids
+}
+
 // decided is Joe's comment that note cites to justify finding id at
 // severity, or nil. The note starts "decision:" and links the comment on
 // this PR (https://github.com/<repo>/pull/<n>#issuecomment-<id>, or
 // /issues/), and the comment's text names id. The agent's note alone grants
 // nothing.
 func (d Decisions) decided(note, id, severity string) *DecisionStamp {
-	if d.Repo == "" || d.Number <= 0 || strings.TrimSpace(id) == "" || !decisionNote(note) {
+	if strings.TrimSpace(id) == "" {
 		return nil
 	}
-	link := regexp.MustCompile(`(?i)https://github\.com/` + regexp.QuoteMeta(d.Repo) + `/(?:pull|issues)/` +
-		strconv.Itoa(d.Number) + `#issuecomment-([1-9][0-9]*)\b`)
-	for _, m := range link.FindAllStringSubmatch(note, -1) {
-		cid, err := strconv.ParseInt(m[1], 10, 64)
-		if err != nil {
-			continue
-		}
+	for _, cid := range d.citedIDs(note) {
 		for _, c := range d.Comments {
 			if c.UpdatedAt != "" && c.ID == cid && namesID(c.Body, id) {
 				return &DecisionStamp{Finding: id, ID: cid, UpdatedAt: c.UpdatedAt, Hash: bodyHash(c.Body), Severity: severity}

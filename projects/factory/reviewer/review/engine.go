@@ -2422,10 +2422,23 @@ heads:
 				continue
 			}
 			stamp := decisions.decided(p.Note, p.ID, SeverityHigh)
-			if stamp != nil && !slices.ContainsFunc(r.stored.Decisions, func(old DecisionStamp) bool {
+			cited := decisions.citedIDs(p.Note)
+			verified := false
+			for _, old := range r.stored.Decisions {
 				identity := old.Finding == p.ID || r.legacy && old.Finding == clip(p.ID, maxTitle)
-				return identity && old.ID == stamp.ID && decisions.holds(old)
-			}) {
+				if !identity || !slices.Contains(cited, old.ID) {
+					continue
+				}
+				if decisions.holds(old) {
+					verified = verified || stamp != nil && stamp.ID == old.ID
+				} else if r.reply != "" && old.UpdatedAt == "" {
+					// Restore the cutoff even if the edited comment no longer
+					// names this finding or has disappeared altogether.
+					old.Finding = p.ID
+					decisions.Carried = append(decisions.Carried, old)
+				}
+			}
+			if stamp != nil && !verified {
 				report.Previous[i].Status = StatusOpen
 			}
 		}
