@@ -7,6 +7,8 @@ metadata:
 data:
   argocd: |-
     vaults/k8s-homelab/items/argocd-ghcr-repo-creds
+  ate-system: |-
+    vaults/k8s-homelab/items/ghcr-read-permissions
   authentik: |-
     vaults/k8s-homelab/items/factory-authentik-discord
     vaults/k8s-homelab/items/factory-authentik-github
