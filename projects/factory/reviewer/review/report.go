@@ -800,6 +800,9 @@ func LaterScope(since string, d *github.CommitComparison) *Scope {
 	}
 	s := &Scope{paths: map[string]bool{}, hunks: map[string][]lineRange{}}
 	for _, f := range d.Files {
+		if f.Path == "" || f.Status == "" || (f.Status == "renamed" && f.PreviousPath == "") {
+			return nil
+		}
 		s.add(f.Path, patchHunks(f.Patch))
 		if f.PreviousPath != "" {
 			s.add(f.PreviousPath, nil)

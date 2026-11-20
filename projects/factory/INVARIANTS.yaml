@@ -67,3 +67,9 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-13
+  statement: A comparison produces no lowering scope if any file lacks a filename or status, or a renamed file lacks its previous filename.
+  mechanism:
+  - projects/factory/reviewer/review/report.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live

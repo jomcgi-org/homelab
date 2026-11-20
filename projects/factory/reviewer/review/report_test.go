@@ -1082,7 +1082,7 @@ func TestAssessKeepsPreviousGateFindings(t *testing.T) {
 // severity, and nothing is lowered without an interdiff the service can
 // trust.
 func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
-	files := []github.PullRequestFile{{Path: "changed.go"}, {Path: "new/name.go", PreviousPath: "old/name.go"}}
+	files := []github.PullRequestFile{{Path: "changed.go", Status: "modified"}, {Path: "new/name.go", Status: "renamed", PreviousPath: "old/name.go"}}
 	d := &github.CommitComparison{Status: "ahead", Files: files}
 	for name, s := range map[string]*Scope{
 		"first review": LaterScope("", d),
@@ -1167,7 +1167,7 @@ func TestLaterScopeLowersNewFindingsOutsideTheInterdiff(t *testing.T) {
 // A medium finding fixed on an earlier head, reintroduced and missed on a
 // later one, and reported again after an unrelated change keeps its severity.
 func TestLowerKeepsAFixedFindingsRegression(t *testing.T) {
-	d := &github.CommitComparison{Status: "ahead", Files: []github.PullRequestFile{{Path: "other.go"}}}
+	d := &github.CommitComparison{Status: "ahead", Files: []github.PullRequestFile{{Path: "other.go", Status: "modified"}}}
 	r := &Report{Findings: []Finding{
 		{ID: "u.go:validation", Severity: SeverityMedium, Path: "u.go", Title: "t", Earlier: true},
 		{ID: "u.go:correctness", Severity: SeverityMedium, Path: "u.go", Title: "t", Earlier: true},
@@ -1216,7 +1216,7 @@ func TestClearedFindingsCarryAcrossHeads(t *testing.T) {
 	if !ok || !reflect.DeepEqual(st.Cleared, want) {
 		t.Fatalf("cleared = %+v, want %+v", st.Cleared, want)
 	}
-	ahead := &github.CommitComparison{Status: "ahead", Files: []github.PullRequestFile{{Path: "x.go"}}}
+	ahead := &github.CommitComparison{Status: "ahead", Files: []github.PullRequestFile{{Path: "x.go", Status: "modified"}}}
 	text := Prompt(PromptInput{Repo: "o/r", Number: 1, SHA: shaA, PreviousHead: "prev", Previous: st.Previous(), Cleared: st.Cleared, Interdiff: ahead, Scope: LaterScope("prev", ahead)})
 	for _, line := range []string{
 		"Reviews of earlier heads cleared these findings. A fixed one present again on this head is a regression: raise it at its own severity. Raise a justified or withdrawn one again when a change since prev, in any file, affects it, and always when it is present on this head at high or critical severity. The exception is one marked `decided`: Joe accepted it in a comment the service checked, so raise it again when a change since then affects what his decision covers, or at critical severity:",
@@ -1259,6 +1259,19 @@ func TestClearedFindingsCarryAcrossHeads(t *testing.T) {
 	a.Earlier = a.Earlier[:1]
 	if got, partial := clearedOf(a, r); partial || !(State{Cleared: got}).ClearedComplete() {
 		t.Fatalf("a record within its bound reads partial: %d entries", len(got))
+	}
+}
+
+func TestLaterScopeRejectsMalformedFiles(t *testing.T) {
+	for _, files := range [][]github.PullRequestFile{
+		{{}},
+		{{Status: "modified"}},
+		{{Path: "changed.go"}},
+		{{Path: "valid.go", Status: "modified"}, {Path: "new.go", Status: "renamed"}},
+	} {
+		if s := LaterScope("prev", &github.CommitComparison{Status: "ahead", Files: files}); s != nil {
+			t.Errorf("files %+v gave scope %+v, want nil", files, s)
+		}
 	}
 }
 
