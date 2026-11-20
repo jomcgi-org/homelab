@@ -179,8 +179,12 @@ def validate(config, files, documents):
                     p = PurePosixPath(
                         posixpath.normpath(directory / rule["table_row_in"])
                     )
+                    required_columns = {
+                        rule["column"],
+                        *config["format"][p.name]["table_columns"],
+                    }
                     if not any(
-                        rule["column"] in h
+                        required_columns.issubset(h)
                         and any(
                             mentions(row[h.index(rule["column"])], directory.name)
                             for row in rows

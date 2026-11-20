@@ -189,9 +189,9 @@ Done when
 
 ## Factory deployment
 
-| Component | Responsibility |
-| --- | --- |
-| cmd | Holds the database lease on its own connection, and commits received frames to `ships.inbox` on a second connection. A third connection claims them, applies them to history, latest positions and vessels, and runs partition maintenance and the heat refresh. |
+| Component | Responsibility | Untrusted input | Credentials held |
+| --- | --- | --- | --- |
+| cmd | Holds the database lease on its own connection, and commits received frames to `ships.inbox` on a second connection. A third connection claims them, applies them to history, latest positions and vessels, and runs partition maintenance and the heat refresh. | Upstream AIS frames | Feed and database credentials |
 
 ```mermaid
 flowchart LR

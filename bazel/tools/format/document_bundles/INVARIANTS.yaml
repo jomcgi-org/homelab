@@ -1,0 +1,7 @@
+invariants:
+  - id: BUNDLE-1
+    statement: Each required component row appears in a table with all required architecture columns.
+    mechanism:
+      - bazel/tools/format/document_bundles/check_bundles.py
+    test: //bazel/tools/format/document_bundles:check_bundles_test
+    state: live
