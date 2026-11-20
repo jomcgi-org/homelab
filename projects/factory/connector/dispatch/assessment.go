@@ -62,6 +62,7 @@ type assessmentJob struct {
 	Anchor                                                                time.Time
 }
 
+// invariant: FACT-13
 func (e *Engine) queueAssessment(ctx context.Context, tx *sql.Tx, p issueDonePayload, is *itsaplan.Issue) error {
 	j := assessmentJob{WorkID: p.WorkID, ParentID: p.IssueID, Project: p.Project, Title: is.Title, Key: is.Identifier, Anchor: e.cfg.Now().UTC()}
 	var days int
