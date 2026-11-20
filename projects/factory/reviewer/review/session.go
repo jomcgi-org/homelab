@@ -125,80 +125,108 @@ func agentName(a kagent.AgentRef) string { return a.Namespace + "/" + a.Name }
 // without a report) leaves a task the State does not list, so Bytes would
 // undercount the session. refused says kagent already refused this
 // attempt's continuation.
+// invariant: FACT-13
 func (e *Engine) resumable(ctx context.Context, b *Binding, pr github.PullRequest, in *inputs, attempt int, refused bool, l *slog.Logger) (*SessionRef, string) {
 	ref := in.prior.Session
 	switch {
-	case ref == nil || in.priorHead == "" || in.priorHead == pr.HeadSHA || in.prior.Incomplete:
+	case ref == nil || in.priorHead == "":
 		return nil, reasonNone
-	case attempt > 1:
-		return nil, reasonRetry
-	case refused:
-		return nil, reasonRefused
-	case e.cfg.Sessions == nil:
-		return nil, reasonDisabled
 	case !contextIDPattern.MatchString(ref.ContextID) || ref.Binding != b.Name || ref.Agent != agentName(b.Agent) ||
 		ref.PR != pr.Number || ref.Head != in.priorHead:
 		return nil, reasonForeign
+	}
+	var s *kagent.Session
+	var rev string
+	if e.cfg.Sessions != nil {
+		var err error
+		s, err = e.cfg.Sessions.GetSession(ctx, ref.ContextID)
+		switch {
+		case errors.Is(err, kagent.ErrSessionNotFound) || errors.Is(err, kagent.ErrSessionUnrecoverable):
+			return nil, reasonMissing
+		case err != nil || s == nil:
+			e.kagentError(ctx, l, b, "get_session", err)
+			return nil, reasonUnreadable
+		case s.State == kagent.RuntimeDeleting:
+			return nil, reasonUnsettled
+		case s.State == kagent.RuntimeDeleted:
+			return nil, reasonDeleted
+		case s.Crashed():
+			return nil, reasonCrashed
+		case s.State == kagent.RuntimeFailed:
+			return nil, reasonFailed
+		case (s.ContextID != "" && s.ContextID != ref.ContextID) ||
+			(s.AgentNamespace != "" && (s.AgentNamespace != b.Agent.Namespace || s.AgentName != b.Agent.Name)):
+			return nil, reasonForeign
+		}
+		// kagent runs every turn of a session on the revision it pinned, so a
+		// model or prompt change reaches only new sessions.
+		rev, err = e.cfg.Sessions.AgentRevision(ctx, b.Agent)
+		if err != nil {
+			e.kagentError(ctx, l, b, "get_agent", err)
+			return nil, reasonUnreadable
+		}
+	}
+	// A running turn may be on a later page. Inspect the complete listing
+	// before deciding whether a retry or fallback can start.
+	page := &kagent.TaskPage{}
+	seen := map[string]bool{}
+	for token := ""; ; {
+		part, err := e.tasks.ListTasks(ctx, b.Agent, ref.ContextID, "", token)
+		if err != nil || part == nil {
+			e.kagentError(ctx, l, b, "list_tasks", err)
+			return nil, reasonUnreadable
+		}
+		page.Tasks = append(page.Tasks, part.Tasks...)
+		page.TotalSize = part.TotalSize
+		token = part.NextPageToken
+		if token == "" {
+			break
+		}
+		if seen[token] {
+			return nil, reasonUnreadable
+		}
+		seen[token] = true
+	}
+	if page.TotalSize != len(page.Tasks) {
+		return nil, reasonUnreadable
+	}
+	matched := accounted(page, ref)
+	if !matched {
+		l.InfoContext(ctx, "the recorded session holds turns its reviews do not account for", "context_id", ref.ContextID,
+			"recorded_tasks", len(ref.Tasks), "session_tasks", page.TotalSize)
+		if !e.stopUnrecorded(ctx, b, page, ref, l) {
+			return nil, reasonUnsettled
+		}
+	}
+	switch {
+	case in.priorHead == pr.HeadSHA || in.prior.Incomplete:
+		return nil, reasonNone
+	case e.cfg.Sessions == nil:
+		return nil, reasonDisabled
 	case !ref.FilteredComments:
 		return nil, reasonCommentFilter
 	case ref.Bytes >= maxSessionBytes || len(ref.Tasks) >= maxSessionReviews:
 		return nil, reasonSize
 	case len(ref.Tasks) != ref.Reviews:
 		return nil, reasonUnaccounted
-	}
-	s, err := e.cfg.Sessions.GetSession(ctx, ref.ContextID)
-	switch {
-	case errors.Is(err, kagent.ErrSessionNotFound) || errors.Is(err, kagent.ErrSessionUnrecoverable):
-		return nil, reasonMissing
-	case err != nil || s == nil:
-		e.kagentError(ctx, l, b, "get_session", err)
-		return nil, reasonUnreadable
-	case s.Gone():
-		return nil, reasonDeleted
-	case s.Crashed():
-		return nil, reasonCrashed
-	case s.State == kagent.RuntimeFailed:
-		return nil, reasonFailed
-	case (s.ContextID != "" && s.ContextID != ref.ContextID) ||
-		(s.AgentNamespace != "" && (s.AgentNamespace != b.Agent.Namespace || s.AgentName != b.Agent.Name)):
-		return nil, reasonForeign
-	}
-	// kagent runs every turn of a session on the revision it pinned, so a
-	// model or prompt change reaches only new sessions.
-	rev, err := e.cfg.Sessions.AgentRevision(ctx, b.Agent)
-	if err != nil {
-		e.kagentError(ctx, l, b, "get_agent", err)
-		return nil, reasonUnreadable
+	case attempt > 1:
+		return nil, reasonRetry
+	case refused:
+		return nil, reasonRefused
 	}
 	if rev == "" || s.PreparedRevision != rev {
 		l.InfoContext(ctx, "the recorded session runs another agent revision", "context_id", ref.ContextID,
 			"session_revision", s.PreparedRevision, "agent_revision", rev)
 		return nil, reasonRevision
 	}
-	page, err := e.tasks.ListTasks(ctx, b.Agent, ref.ContextID, "", "")
-	if err != nil {
-		e.kagentError(ctx, l, b, "list_tasks", err)
-		return nil, reasonUnreadable
-	}
-	if !accounted(page, ref) {
-		listed := -1
-		if page != nil {
-			listed = page.TotalSize
-		}
-		l.InfoContext(ctx, "the recorded session holds turns its reviews do not account for", "context_id", ref.ContextID,
-			"recorded_tasks", len(ref.Tasks), "session_tasks", listed)
-		if !e.stopUnrecorded(ctx, b, page, ref, l) {
-			return nil, reasonUnsettled
-		}
+	if !matched {
 		return nil, reasonUnaccounted
 	}
 	return ref, reasonResumed
 }
 
-// errUnsettledTurn holds a review back while a session turn no review
-// recorded may still run; the attempt builds its message again after
-// Reissue, which retries the cancellation.
-var errUnsettledTurn = errors.New("a session turn no review recorded is still running")
+// errUnsettledTurn defers dispatch until a poll confirms the prior session is settled.
+var errUnsettledTurn = errors.New("the prior review session has not been confirmed settled")
 
 // stopUnrecorded cancels the session's listed turns that no review recorded
 // and that still execute, such as a continuation kagent accepted before a
@@ -206,7 +234,7 @@ var errUnsettledTurn = errors.New("a session turn no review recorded is still ru
 // a fresh review never runs beside one.
 func (e *Engine) stopUnrecorded(ctx context.Context, b *Binding, page *kagent.TaskPage, ref *SessionRef, l *slog.Logger) bool {
 	if page == nil {
-		return true
+		return false
 	}
 	stopped := true
 	for _, t := range page.Tasks {

@@ -67,3 +67,10 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-13
+  statement: A reviewer waits for unrecorded turns in its prior review session to end before dispatching another review.
+  mechanism:
+  - projects/factory/reviewer/review/session.go
+  - projects/factory/reviewer/review/engine.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live
