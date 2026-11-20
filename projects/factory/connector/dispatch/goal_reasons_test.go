@@ -211,6 +211,38 @@ func TestOwnedCriterionReachesTheIssueOnAPassingReview(t *testing.T) {
 	}
 }
 
+// TestFailedOwnershipReadRetriesBeforeEnqueue keeps a PR out of the queue
+// while the reasons read fails, so a later poll still posts the follow-up
+// key once the reviewer answers.
+func TestFailedOwnershipReadRetriesBeforeEnqueue(t *testing.T) {
+	v := newDeliveryEnv(t)
+	goal := &fakeGoalReasons{issue: "HL-7", reasons: "Criterion 2 is owned by HL-9.", err: errors.New("goal reasons: status 503")}
+	v.cfg.GoalReasons = goal
+	v.e.Release()
+	v.e = v.engine("connector-a")
+	v.delivered()
+	v.gh.green("sha-1")
+	v.gh.summarize("sha-1", "semgrep-review", "s\n\n### Deferred\n\n- **low** HL-7 criterion 2: owned by a follow-up (`HL-7:goal:criterion-2`): An open follow-up owns criterion 2 of HL-7.")
+	v.poll()
+	if len(v.gh.Enqueues()) != 0 || goal.calls() != 1 {
+		t.Fatalf("enqueues = %d, reads = %d after a failed read", len(v.gh.Enqueues()), goal.calls())
+	}
+	goal.mu.Lock()
+	goal.err = nil
+	goal.mu.Unlock()
+	v.poll()
+	v.poll()
+	posted := 0
+	for _, c := range v.its.Comments() {
+		if strings.Contains(c.body, "Criterion 2 is owned by HL-9.") {
+			posted++
+		}
+	}
+	if posted != 1 || len(v.gh.Enqueues()) != 1 {
+		t.Fatalf("ownership comments = %d, enqueues = %d after the read recovered", posted, len(v.gh.Enqueues()))
+	}
+}
+
 // TestPassingReviewWithoutOwnershipReadsNoReasons keeps the read to reviews
 // that name an owned criterion.
 func TestPassingReviewWithoutOwnershipReadsNoReasons(t *testing.T) {

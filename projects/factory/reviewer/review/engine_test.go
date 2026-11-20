@@ -2486,6 +2486,29 @@ func TestHumanGateByPathHoldsUntilApprovalOnTheHead(t *testing.T) {
 	}
 }
 
+// TestGateCheckKeepsOwnedCriteria keeps an owned criterion on the check that
+// clears a human gate, so the connector still delivers its follow-up key.
+func TestGateCheckKeepsOwnedCriteria(t *testing.T) {
+	h := newHarness(t)
+	h.gh.addPR(&fakePR{Number: 7, Author: "jomcgi-factory[bot]", Title: "fix(reviewer): x", Head: shaA})
+	e, ctx, _ := h.start()
+	st := State{GoalKey: "HL-7", Goal: &GoalCheck{Head: shaA, Overall: goalMet, Criteria: []GoalVerdict{
+		{Criterion: 1, Verdict: goalMet}, {Criterion: 2, Verdict: goalOwned},
+	}}}
+	pr := github.PullRequest{Number: 7, HeadSHA: shaA}
+	e.gateCheck(ctx, &h.cfg.Bindings[0], pr, &github.CheckRun{}, st, ConclusionSuccess, "Human gate cleared by jomcgi", "jomcgi approved this exact head.",
+		&CommentUpdate{Verdict: VerdictApproved}, e.log)
+	c := h.gh.check(shaA)
+	if c == nil || c.Conclusion != ConclusionSuccess || !strings.Contains(c.Summary, "### Deferred") ||
+		!strings.Contains(c.Summary, "HL-7 criterion 2: owned by a follow-up (`HL-7:goal:criterion-2`)") ||
+		strings.Contains(c.Summary, "criterion-1") {
+		t.Fatalf("gate check summary:\n%+v", c)
+	}
+	if got := ownedSection(State{GoalKey: "HL-7", Goal: &GoalCheck{Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalMet}}}}); got != "" {
+		t.Fatalf("no owned criterion gave %q", got)
+	}
+}
+
 func TestEditingInvariantFileRequiresApprovalOnHead(t *testing.T) {
 	for _, file := range []string{"INVARIANTS.yaml", "projects/example/policy/INVARIANTS.yaml"} {
 		t.Run(file, func(t *testing.T) {
