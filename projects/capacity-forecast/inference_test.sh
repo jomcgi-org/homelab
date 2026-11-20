@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-worker="$1"
-archive="$2"
-tar -xf "$archive" -C "$TEST_TMPDIR"
-export TIMESTRAL_MODEL_DIR="$TEST_TMPDIR/model"
-export HF_HUB_OFFLINE=1
+layout="$1"
+root="$TEST_TMPDIR/rootfs"
+mkdir "$root"
+manifest=$(jq -r '.manifests[0].digest | split(":")[1]' "$layout/index.json")
+manifest="$layout/blobs/sha256/$manifest"
+while IFS= read -r layer; do
+	tar -xf "$layout/blobs/sha256/$layer" -C "$root"
+done < <(jq -r '.layers[].digest | split(":")[1]' "$manifest")
+
+config=$(jq -r '.config.digest | split(":")[1]' "$manifest")
+config="$layout/blobs/sha256/$config"
+mapfile -t image_env < <(jq -r '.config.Env[]' "$config")
+mapfile -t entrypoint < <(jq -r '.config.Entrypoint[]' "$config")
+touch "$root/dev/null" "$root/dev/urandom"
 
 # A full regularly sampled context ending at Unix time 604800.
 awk 'BEGIN {
@@ -14,7 +23,13 @@ awk 'BEGIN {
     printf "%s[%d,\"%d\"]", (t == 0 ? "" : ","), t, 600000000 + (t % 7200) * 1000
   }
   print "]}]}}"
-}' | "$worker" --replay >"$TEST_TMPDIR/metrics"
+}' | unshare -Urm bash -euc '
+	root=$1
+	shift
+	mount --bind /dev/null "$root/dev/null"
+	mount --bind /dev/urandom "$root/dev/urandom"
+	exec /usr/sbin/chroot "$root" /usr/bin/env -i "$@"
+' bash "$root" "${image_env[@]}" "${entrypoint[@]}" --replay >"$TEST_TMPDIR/metrics"
 
 for policy in baseline timestral; do
 	for horizon in 300 600 900 1200 1500 1800; do
