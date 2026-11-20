@@ -73,3 +73,9 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: The default human gate covers the files that configure its lists, determine its verdict or define its required check.
+  mechanism:
+  - projects/factory/reviewer/config/config.go
+  test: //projects/factory/reviewer/config:config_test
+  state: live

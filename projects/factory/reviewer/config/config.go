@@ -133,6 +133,16 @@ var (
 		"projects/factory/reviewer/review/gate.go", "projects/factory/reviewer/review/rules.go",
 		"projects/factory/reviewer/review/issues.go",
 		"projects/factory/broker/config/**",
+		"projects/factory/deploy/values.yaml",
+		"projects/factory/chart/templates/_reviewer.tpl",
+		"projects/factory/chart/templates/broker.yaml",
+		"projects/factory/reviewer/review/engine.go",
+		"projects/factory/reviewer/cmd/**",
+		"buildbuddy.yaml",
+		"bazel/tools/ci/**",
+		"AGENTS.md",
+		"docs/agents/reference.md",
+		"renovate.json",
 	}
 	DefaultHumanGateLabels        = []string{"human", "needs-human"}
 	DefaultMachineCommentMarkers  = []string{"<!-- helm-manifest-diff -->"}
