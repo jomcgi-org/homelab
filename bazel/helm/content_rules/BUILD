@@ -24,6 +24,7 @@ APPLICATIONS = [
     "scotland-connector",
     "ships",
     "stars-forecast",
+    "trips",
 ]
 
 py_library(

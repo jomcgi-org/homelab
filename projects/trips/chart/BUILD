@@ -11,6 +11,12 @@ helm_chart(
     visibility = ["//visibility:public"],
 )
 
+filegroup(
+    name = "image_values",
+    srcs = [":chart.images_values"],
+    visibility = ["//projects/trips/deploy:__pkg__"],
+)
+
 py_test(
     name = "trips_test",
     srcs = ["trips_test.py"],

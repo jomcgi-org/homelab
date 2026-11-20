@@ -17,10 +17,17 @@ in its claim and retains payloads referenced by cached manifests.
 
 The ingest tests use the hub's fixtures and a real PostgreSQL. They replay
 invalid uploads (missing fields, too small, not an image, truncated raster, no
-GPS, unknown trip) and duplicate uploads. An identical replay keeps one row and
-its approval. A replay that changes a published field, such as tags, revokes
-the approval in the same transaction. An unreadable camera time falls back to
-the upload time.
+GPS, unknown trip) and duplicate uploads. The service decodes the full JPEG
+raster within a 100 MP bound, so a truncated scan fails even with an end
+marker. An identical replay keeps one row, its elevation and its approval. A
+replay that changes a published field, such as tags, revokes the approval in
+the same transaction. An unreadable camera time falls back to the upload time,
+and a replay of the same bytes keeps the stored time.
+
+The export test runs the exporter against a real PostgreSQL with approved and
+unapproved trips and points. It checks that the bucket holds only WebP
+variants of approved images and JSON with approved points and published
+fields, and that a derivative with EXIF stops the export.
 
 ## Cutover
 
