@@ -47,6 +47,7 @@ go_library(
         "20261119120000_coder_arms.sql",
         "20261119130000_outbox_outages.sql",
         "20261119215000_storyboard_messages.sql",
+        "20261120000000_assessment.sql",
         "20261120090000_planner.sql",
         "20261120100000_planner_schedule_config.sql",
         "20261121000000_issue_reviewing.sql",

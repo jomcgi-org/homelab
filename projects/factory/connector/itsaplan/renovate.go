@@ -32,6 +32,8 @@ func (c *Client) CreateIssue(ctx context.Context, project string, in NewIssue) (
 }
 
 type IssueUpdate struct {
+	StartDate      *string `json:"startDate,omitempty"`
+	LabelIDs       []int64 `json:"labelIds,omitempty"`
 	Description    *string `json:"description,omitempty"`
 	DelegateUserID *string `json:"delegateUserId,omitempty"`
 	ColumnID       *int64  `json:"columnId,omitempty"`

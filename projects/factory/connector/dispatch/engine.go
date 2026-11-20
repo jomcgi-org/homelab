@@ -54,6 +54,7 @@ type Itsaplan interface {
 	CreateIssue(ctx context.Context, project string, issue itsaplan.NewIssue) (*itsaplan.Issue, error)
 	UpdateIssue(ctx context.Context, id int64, patch itsaplan.IssueUpdate) error
 	IssueRuns(ctx context.Context, issueID, before int64) (*itsaplan.IssueRunPage, error)
+	RelateIssue(ctx context.Context, source, target int64) error
 	BlockIssue(ctx context.Context, source, target int64) error
 	SearchGateIssues(ctx context.Context, project, marker string) ([]itsaplan.Issue, error)
 	CreateGateIssue(ctx context.Context, project string, body itsaplan.GateIssueWrite) (*itsaplan.Issue, error)
@@ -2221,6 +2222,13 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 				if err := saveLesson(ctx, tx, wi.ID, lesson); err != nil {
 					return err
 				}
+				handled, err := e.assessmentVerdict(ctx, tx, wi, r, res.Output)
+				if err != nil {
+					return err
+				}
+				if handled {
+					return e.finishRun(ctx, tx, r, res)
+				}
 				// The turn finished; delivery opens or updates the PR from the
 				// pushed branch. The issue is Done only once the merge is seen.
 				if err := e.st.FinishTurn(ctx, tx, wi.ID, a.ID); err != nil {
@@ -3096,6 +3104,9 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 	}
 	if it.Kind == store.OutboxReviewFollowup {
 		return e.deliverReviewFollowup(ctx, it)
+	}
+	if it.Kind == "assessment" {
+		return e.deliverAssessment(ctx, it)
 	}
 	if it.Kind == store.OutboxActivation {
 		return e.deliverActivation(ctx, it)
