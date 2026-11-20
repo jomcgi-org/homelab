@@ -128,6 +128,22 @@ func unblock(scope string) error {
 	return nil
 }
 
+func scrapeHandler(reg *prometheus.Registry, refresh func(context.Context, *metrics.DispatchSnapshot) error) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		snapshot := metrics.NewDispatchSnapshot()
+		scrape := prometheus.NewRegistry()
+		success := prometheus.NewGauge(prometheus.GaugeOpts{Name: "factory_connector_dispatch_collection_success", Help: "One if this scrape read the dispatch counts successfully."})
+		scrape.MustRegister(success)
+		if refresh(ctx, snapshot) == nil {
+			success.Set(1)
+			scrape.MustRegister(snapshot.BusyRuns, snapshot.DispatchedRuns, snapshot.RunnableRuns)
+		}
+		promhttp.HandlerFor(prometheus.Gatherers{reg, scrape}, promhttp.HandlerOpts{}).ServeHTTP(w, r)
+	})
+}
+
 func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -156,19 +172,13 @@ func run(log *slog.Logger) error {
 	m := metrics.New(reg)
 	mux := http.NewServeMux()
 	var dispatchMetrics atomic.Pointer[dispatch.Engine]
-	metricsHandler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
-	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
-		if eng := dispatchMetrics.Load(); eng != nil {
-			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-			defer cancel()
-			if err := eng.RefreshDispatchMetrics(ctx); err != nil {
-				log.Warn("read dispatch metrics", "error", err)
-				http.Error(w, "dispatch metrics unavailable", http.StatusServiceUnavailable)
-				return
-			}
+	mux.Handle("/metrics", scrapeHandler(reg, func(ctx context.Context, snapshot *metrics.DispatchSnapshot) error {
+		eng := dispatchMetrics.Load()
+		if eng == nil {
+			return errors.New("dispatch metrics are not ready")
 		}
-		metricsHandler.ServeHTTP(w, r)
-	})
+		return eng.RefreshDispatchMetrics(ctx, snapshot)
+	}))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	srv := &http.Server{Addr: cfg.MetricsAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
