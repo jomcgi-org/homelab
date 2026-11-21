@@ -99,5 +99,6 @@ The Substrate control plane and atelet run in `ate-system`. Workers run in label
 | Decision | Date | Record |
 | --- | --- | --- |
 | Use the rebuilt home nodes for the factory with Authentik sign-in and replicated Garage storage | November 2026 | [Factory cluster checklist #7817](https://github.com/jomcgi-org/homelab/issues/7817) |
+| Use short-lived service account tokens for local node-1 operator sessions with the existing session RBAC | 2026-11-21 | [HOME-710](https://factory-plan.jomcgi.dev/factory/issue/HOME-710#comment-9315) |
 
 See [Platform architecture §1, Clusters](../platform/ARCHITECTURE.md#1-clusters) for how the factory and hub divide workloads, and the [agent reference](../../docs/agents/reference.md) for the operator documentation index.

@@ -241,6 +241,43 @@ fetches Authentik's keys from factory-auth.jomcgi.dev, through Cloudflare. A
 watch or `logs -f` with no traffic for about 100 seconds ends at Cloudflare;
 run it again.
 
+### kubectl from node-1
+
+Node-1 operator sessions use the local k3s API. The node-1 helper asks k3s
+for a ten-minute token for `kube-system/factory-node1-sessions`, then returns
+the token and its expiry to kubectl. The account reuses the two
+`factory-sessions` roles. Its grants cover cluster reads, the tracker
+relay and the named tracker Secret. The helper uses the root-only k3s
+kubeconfig with a fixed TokenRequest and takes no arguments. The operator's
+existing passwordless sudo access runs the helper.
+[Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-710#comment-9315)
+
+After the `kube-access` Application reconciles, install the helper and config
+from the reviewed revision. Run this on node-1 from the repository root:
+
+```sh
+sudo install -o root -g root -m 0755 projects/factory-cluster/nodes/factory-session-token.py /usr/local/sbin/factory-session-token
+sudo install -D -o root -g root -m 0644 /var/lib/rancher/k3s/server/tls/server-ca.crt /etc/factory/k3s-server-ca.crt
+sudo install -D -o root -g root -m 0644 projects/factory-cluster/nodes/factory-session-kubeconfig.yaml /etc/factory/kube-session.yaml
+KUBECONFIG=/etc/factory/kube-session.yaml kubectl auth whoami
+KUBECONFIG=/etc/factory/kube-session.yaml bash projects/platform-factory/kube-access/check-session-access.sh
+```
+
+Check that the username is
+`system:serviceaccount:kube-system:factory-node1-sessions` and the access
+check passes. Open the named tracker relay and check the tracker sign-in
+using the [tracker procedure](../../docs/agents/reference.md#api-access).
+Use `/etc/factory/kube-session.yaml` for that check too. Then back up any
+previous `~/.kube/factory-sessions.yaml` outside the repo and link that path
+to `/etc/factory/kube-session.yaml`. Refresh the CA copy
+after a k3s server CA rotation.
+
+To revert, restore the previous sessions kubeconfig and remove the local
+helper and config. Use GitOps to remove the service account and its entries
+from the session role bindings. The
+[interactive Authentik setup](#kubectl-through-authentik) uses a separate
+token cache for each login identity.
+
 ### Break-glass
 
 When Authentik or the edge is down, kubectl through factory-kube.jomcgi.dev

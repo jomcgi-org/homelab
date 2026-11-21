@@ -37,6 +37,7 @@ expect_denied -n factory list secrets
 expect_denied -n factory watch secrets
 expect_denied -n default get secrets/factory-itsaplan-joe-sessions
 expect_denied -n factory get secrets/other
+expect_denied -n kube-system create serviceaccounts/factory-node1-sessions --subresource=token
 expect_denied -n factory patch deployments.apps
 expect_denied -n factory create pods/other --subresource=exec
 expect_denied -n factory create pods/other --subresource=portforward
