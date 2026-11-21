@@ -75,17 +75,17 @@ func TestOversizedRequestIsRejectedBeforeGitStarts(t *testing.T) {
 func TestIndexMustMatchThePin(t *testing.T) {
 	tmp := t.TempDir()
 	dir := filepath.Join(tmp, "indices")
-	if err := os.Mkdir(dir, 0700); err != nil {
+	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	raw := []byte("harmless index fixture")
 	digest := fmt.Sprintf("%x", sha256.Sum256(raw))
 	path := filepath.Join(dir, digest+".json")
-	write(t, path, raw, 0600)
+	write(t, path, raw, 0o600)
 	if got, err := verifiedIndex(tmp, digest); err != nil || got != path {
 		t.Fatalf("valid pin: %s %v", got, err)
 	}
-	write(t, path, []byte("changed fixture"), 0600)
+	write(t, path, []byte("changed fixture"), 0o600)
 	if _, err := verifiedIndex(tmp, digest); err == nil {
 		t.Fatal("changed index was accepted")
 	}
@@ -97,7 +97,7 @@ func TestGitPushIsCheckedBeforeItReachesUpstream(t *testing.T) {
 	git(t, tmp, "init", "-q", local)
 	git(t, local, "config", "user.name", "fixture")
 	git(t, local, "config", "user.email", "fixture@example.com")
-	write(t, filepath.Join(local, "tracked.txt"), []byte("initial\n"), 0600)
+	write(t, filepath.Join(local, "tracked.txt"), []byte("initial\n"), 0o600)
 	git(t, local, "add", "tracked.txt")
 	git(t, local, "commit", "-qm", "initial")
 	git(t, tmp, "clone", "-q", "--bare", local, upstream)
@@ -114,18 +114,18 @@ func TestGitPushIsCheckedBeforeItReachesUpstream(t *testing.T) {
 		t.Fatal(err)
 	}
 	installed := filepath.Join(staging, "hooks", "pre-receive")
-	write(t, installed, raw, 0700)
+	write(t, installed, raw, 0o700)
 
 	const ref = "refs/heads/factory/harmless-fixture"
 	sample := bytes.Repeat([]byte("synthetic protected analysis fixture\n"), 900)
 	reference := filepath.Join(tmp, "reference")
-	write(t, reference, sample, 0600)
+	write(t, reference, sample, 0o600)
 	index := filepath.Join(tmp, "index.json")
 	out, err := exec.Command(installed, "--index", reference, reference).Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	write(t, index, out, 0600)
+	write(t, index, out, 0o600)
 	git(t, staging, "config", "remote.fixture.url", upstream)
 	// A local test transport needs to clear the sender's object quarantine.
 	// Over HTTPS the upstream process cannot inherit this environment.
@@ -159,7 +159,7 @@ func TestGitPushIsCheckedBeforeItReachesUpstream(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			git(t, local, "checkout", "-q", "--detach", good)
-			write(t, filepath.Join(local, "candidate"), tc.data, 0600)
+			write(t, filepath.Join(local, "candidate"), tc.data, 0o600)
 			git(t, local, "add", "candidate")
 			git(t, local, "commit", "-qm", "add "+tc.name)
 			git(t, local, "rm", "-q", "candidate")
