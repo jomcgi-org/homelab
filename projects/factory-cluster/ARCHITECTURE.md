@@ -29,7 +29,7 @@ The [tunnel route](../platform-factory/edge-tunnel/resources/route.yaml) selects
 | k3s | API and embedded etcd | `nodes/` | v1.37.2+k3s1 | API requests | Server token and cluster CA |
 | Cloudflare Tunnel | Publishes edge hostnames through an outbound connection | [factory-edge](../platform-factory/factory-edge/) | cloudflared 2026.10.7 | Internet traffic | Tunnel credentials |
 | Envoy | Applies route authentication and forwards requests | [edge](../platform-factory/edge/) | Envoy Gateway 1.8.3 | HTTP requests and tokens | OIDC client secret |
-| Authentik | Issues tokens and enforces group membership | [authentik](../platform-factory/authentik/) | 2026.5.6 | Login requests | Signing keys and client secrets |
+| Authentik | Issues tokens and enforces group membership | [authentik](../platform-factory/authentik/) | [Chart 2026.5.6](../platform/authentik/Chart.yaml), [server 2026.5.8 (digest-pinned)](../platform/authentik/values-factory.yaml) | Login requests | Signing keys and client secrets |
 | Garage | Replicates workload objects and database archives | [garage](../platform-factory/garage/) | 2.5.0 | S3 requests | RPC secret and admin token |
 | CloudNativePG | Manages application database clusters | [cloudnative-pg](../platform-factory/cloudnative-pg/) | Operator chart 0.29.0 | Cluster specifications | Scoped database and archive credentials |
 
@@ -42,9 +42,13 @@ Gateway OIDC admits `factory-operators` and `authentik Admins` to the landing pa
 | Route control | State | Scope |
 | --- | --- | --- |
 | Authentik login | On | Public flow and enrollment paths allow the browser to complete MFA. |
+| Gateway OIDC on the Authentik hostname | Off | The gateway redirects browsers here for sign-in. Applying the same redirect on this route would loop. |
+| Public Authentik path restrictions | On | Envoy returns 403 for the admin and user interfaces, the initial-setup flow and its executor, and API v3 outside the permitted prefixes. Operators use a port-forward for setup and administration. [Route and filters](../platform-factory/edge/chart/templates/authentik-route.yaml) |
+| Authentik client address and scheme headers | On | Envoy replaces the incoming forwarded address with Cloudflare’s client address and sets the scheme to HTTPS after TLS termination. [Header rules](../platform-factory/edge/chart/templates/authentik-route.yaml) |
 | Kubernetes API JWT and backend TLS | On | Envoy checks the kubectl audience and allowed groups. The API server authenticates the request and applies RBAC. |
 | Explore API JWT | On | This route accepts bearer tokens for the separate factory-explore client. |
 | Scotland connector sign-in | Off | The public forecast route rejects Worker subrequests and rate limits by IP. |
+| Scotland connector Worker-subrequest denial and per-IP limits | On | These controls bound access to the public route while allowing unauthenticated forecast requests. [Route policy](../platform-factory/REVIEW.md) |
 | Broker admin OIDC | Staged off | The factory chart gates the route and token-forwarding policy together with `codexAdminRouteEnabled`. |
 
 **Why.** Publishing one proxy keeps route owners from choosing an unauthenticated origin. Browser redirects work for operator tools, while kubectl needs bearer authentication. Scotland serves public data by explicit decision. [Tunnel route](../platform-factory/edge-tunnel/resources/route.yaml) · [kubectl decision](https://github.com/jomcgi-org/homelab/pull/8237#issuecomment-6975000416) · [Scotland decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-259#comment-3908)
@@ -71,7 +75,7 @@ Each server retains 20 etcd snapshots. Recovery of encrypted cluster state also 
 
 The [root](root/) delegates to the [platform Application list](../platform-factory/kustomization.yaml). Cilium supplies pod networking, WireGuard and default-deny policies. Connect supplies secrets from 1Password. Agent Substrate runs sandboxed actors using gVisor. Kargo's controller is installed for promotion. Prometheus stores local metrics for Grafana, Alertmanager sends alerts to Discord, and the OpenTelemetry collectors export selected telemetry to Honeycomb.
 
-**Why.** Bootstrap installs Cilium first so pods have networking, then ArgoCD adopts the installation and reconciles the platform from Git. [Bootstrap](bootstrap-gitops.sh) · [Applications](../platform-factory/kustomization.yaml)
+**Why.** Cilium must supply pod networking before the in-cluster reconciler can run. Bootstrap hands ownership to ArgoCD so Git supplies the desired state after installation. Self-healing is on at both Application levels. Pruning is off at the outer root and deletion protection is on for the child Application, because cascading a root deletion could remove every platform Application. Kargo leaves its own prerequisites under ArgoCD so promotion can recover independently. [Root sync policy](factory-root-application.yaml) · [Child protection](root/root-application.yaml) · [Kargo ownership decision (HOME-116)](../platform-factory/kargo/application.yaml) [Bootstrap](bootstrap-gitops.sh) · [Applications](../platform-factory/kustomization.yaml)
 
 ## Nodes and sandboxing
 
@@ -80,6 +84,8 @@ The [host firewall](nodes/factory-firewall.nft) uses a separate nftables table, 
 Each node runs a k3s server with embedded etcd. The quorum tolerates one unavailable server. Node bootstrap pins k3s and runsc, configures zram for memory pressure and enables the certificates API used by Substrate. Cilium attaches to the wired interfaces and replaces kube-proxy. The local-path provisioner places volumes on individual nodes. Garage and the CNPG instances implement replication at the application level.
 
 The Substrate control plane and atelet run in `ate-system`. Workers run in labelled binding namespaces. The credential provider restricts each configured atespace to injectable Secrets in its allowed namespace. The rendered manifests and grant list are in [Substrate](../platform-factory/substrate/). Substrate keeps actor metadata in its own PostgreSQL and snapshots in rustfs.
+
+**Why.** Workers execute agent-supplied code. A separate runsc handler limits their contact with the host kernel, and per-atespace grants let the egress gateway inject credentials only for the selected worker identity. Private GHCR images bypass the shared mirror because peers can serve cached layers without the original pull secret. [Runtime class](../platform-factory/runtimeclasses/) · [Grant configuration](../platform-factory/substrate/values/substrate.yaml) · [Mirror selection](nodes/registries.yaml)
 
 ## Security controls
 
@@ -97,7 +103,7 @@ The Substrate control plane and atelet run in `ate-system`. Workers run in label
 | Worker isolation, controller identity and credential grants | On | gVisor isolates actor code. The gateway attests actors, admission protects the controller identity, and provider grants select injectable Secrets by namespace and label. [Substrate policies](../platform-factory/substrate/resources/) · [Provider grants](../platform-factory/substrate/values/substrate.yaml) |
 | Garage bucket claim admission | On | Namespace and writer checks constrain who obtains bucket access. [Claim policy](../platform-factory/garage/resources/claim-admission.yaml) |
 | Credential namespace admission | On | ESO restricts generator placement and Secret reads so roots stay separate from consumers. Universal short-lived consumer credentials remain designed (off). [Credential design](../platform-factory/external-secrets/README.md) |
-| Chart content checks | On | CI checks rendered application images, namespace, host access and Service exposure before deployment. [PLAT-13](../platform-factory/INVARIANTS.yaml) |
+| Chart content checks | On | For deploy targets with `content_rules = True`, the Helm template test checks the render for digest pins, namespace scope (with named exceptions), host access and node-address Services. The coverage test checks application opt-ins against the factory kustomization. These are build-time checks. [Helm macro](../../bazel/helm/app.bzl) · [Coverage target](../../bazel/helm/content_rules/BUILD) |
 | Cluster-wide enforcement of restricted Pod Security, digest-only images, quotas and prohibition of node-address Services | Off | The platform inventory records these broader controls as designed. |
 | Off-site recovery of every backup | Off | The public-data R2 mirror covers selected objects. Recovery of all databases, etcd snapshots and the server token requires an independent copy. [Operator procedures](README.md) |
 
