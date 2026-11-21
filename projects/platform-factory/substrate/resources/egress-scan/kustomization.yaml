@@ -8,3 +8,12 @@ images:
     digest: sha256:4757b4db67aaffe6f69714e641fa771bad83374e3a90d24ccfee15b47ed72470
 patches:
   - path: gateway-patch.yaml
+  # Wait for scanner readiness, then apply the gateway and its required config together.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: atenet-egress
+        namespace: ate-system
+        annotations:
+          argocd.argoproj.io/sync-wave: '1'
