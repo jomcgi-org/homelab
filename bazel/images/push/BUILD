@@ -1,3 +1,4 @@
+load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
@@ -26,11 +27,19 @@ sh_test(
     data = [":push-changed.sh"],
 )
 
+# gazelle:resolve py private_harness_package //bazel/images/push:private_harness_package
+
+py_library(
+    name = "private_harness_package",
+    srcs = ["private_harness_package.py"],
+    imports = ["."],
+)
+
 py_test(
     name = "private_harness_package_test",
-    srcs = [
-        "private_harness_package.py",
-        "private_harness_package_test.py",
+    srcs = ["private_harness_package_test.py"],
+    deps = [
+        ":private_harness_package",
+        "@pip//pytest",
     ],
-    deps = ["@pip//pytest"],
 )
