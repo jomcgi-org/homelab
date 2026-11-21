@@ -60,37 +60,31 @@
       key: "passenger",
       label: "Passenger",
       icon: "ship-passenger",
-      color: "var(--ships-passenger)",
     },
     {
       key: "cargo",
       label: "Cargo",
       icon: "ship-cargo",
-      color: "var(--ships-cargo)",
     },
     {
       key: "tanker",
       label: "Tanker",
       icon: "ship-tanker",
-      color: "var(--ships-tanker)",
     },
     {
       key: "hsc",
       label: "High-speed",
       icon: "ship-hsc",
-      color: "var(--ships-hsc)",
     },
     {
       key: "special",
       label: "Special",
       icon: "ship-special",
-      color: "var(--ships-special)",
     },
     {
       key: "unknown",
       label: "Other",
       icon: "ship-unknown",
-      color: "var(--ships-unknown)",
     },
   ];
   // The full legend order, used as the vessel-type allow-list + "all on" default
@@ -663,7 +657,6 @@
 
       map = new maplibregl.Map({
         container: mapContainer,
-        style: BASEMAP_STYLE,
         ...(seedBounds
           ? { bounds: seedBounds, fitBoundsOptions: FIT_OPTIONS }
           : { center: [0, 30], zoom: 1.4 }),
@@ -675,6 +668,7 @@
         // required credits.
         attributionControl: { compact: true },
       });
+      map.setStyle(BASEMAP_STYLE);
       // The viewport is already framed on the fleet, so suppress the one-time
       // fit in syncVessels (it would otherwise snap to the same bounds again).
       if (seedBounds) didFit = true;
@@ -903,11 +897,11 @@
         {#each LEGEND as item (item.key)}
           <button
             class="legend-item"
-            style="--vessel-color: {item.color}"
             aria-pressed={active.has(item.key)}
             onclick={() => toggleType(item.key)}
           >
-            <span class="vessel-sw" aria-hidden="true"></span>
+            <span class="vessel-sw ships-tone-{item.key}" aria-hidden="true"
+            ></span>
             <span class="legend-label">{item.label}</span>
           </button>
         {/each}
@@ -922,8 +916,10 @@
       <ul class="heat-scale">
         {#each heatBreaks.slice(0, HEAT_STEPS) as br, i (br)}
           <li>
-            <span class="heat-sw" style="background: var(--ships-heat-{i + 1})"
-            ></span>{heatLabel(heatBreaks, i)}
+            <span class="heat-sw ships-tone-heat-{i + 1}"></span>{heatLabel(
+              heatBreaks,
+              i,
+            )}
           </li>
         {/each}
       </ul>
@@ -981,12 +977,10 @@
 
 <style>
   .map-wrap {
-    --snapshot-top: 4.5rem;
-    --snapshot-bottom: 7rem;
     position: absolute;
     inset: 0;
     overflow: hidden;
-    background: var(--sheet);
+    background: var(--color-background-body);
   }
   .map {
     position: absolute;
@@ -1001,22 +995,22 @@
   }
   .map :global(.maplibregl-ctrl-group),
   .map :global(.maplibregl-ctrl-attrib) {
-    border: 1px solid var(--stroke);
+    border: 1px solid var(--color-border);
     border-radius: 0;
-    background: var(--sheet);
+    background: var(--color-background-body);
     box-shadow: none;
-    color: var(--ink);
+    color: var(--color-text-primary);
   }
   .map :global(.maplibregl-ctrl-group button),
   .map :global(.maplibregl-ctrl-attrib-button) {
     width: 44px;
     height: 44px;
     border-radius: 0;
-    background: var(--sheet);
-    color: var(--ink);
+    background: var(--color-background-body);
+    color: var(--color-text-primary);
   }
   .map :global(.maplibregl-ctrl-group button + button) {
-    border-top: 1px solid var(--stroke);
+    border-top: 1px solid var(--color-border);
   }
   /* Text glyphs inherit ink in both schemes, unlike the provider's black PNGs. */
   .map :global(.maplibregl-ctrl-icon) {
@@ -1033,7 +1027,7 @@
     inset: 0;
     display: grid;
     place-items: center;
-    font: 24px var(--font-code);
+    font: 24px var(--font-family-code);
   }
   .map :global(.maplibregl-ctrl-group button) {
     position: relative;
@@ -1045,7 +1039,7 @@
   .map :global(.maplibregl-ctrl-attrib-button)::before {
     content: "i";
     background: none;
-    font: 20px var(--font-code);
+    font: 20px var(--font-family-code);
     position: static;
     width: auto;
     height: auto;
@@ -1058,15 +1052,15 @@
   }
   .map :global(.maplibregl-ctrl-attrib-inner) {
     padding: 0.5rem;
-    font: 11px var(--font-code);
+    font: 11px var(--font-family-code);
     max-width: min(300px, calc(100vw - 70px));
   }
   .map :global(.maplibregl-ctrl-attrib-inner a) {
-    color: var(--ink);
+    color: var(--color-text-primary);
   }
   .map :global(button:focus-visible),
   .map :global(summary:focus-visible) {
-    outline: 2px solid var(--accent-ink);
+    outline: 2px solid var(--color-text-accent);
     outline-offset: -3px;
   }
 
@@ -1082,14 +1076,14 @@
     top: 12px;
     right: 12px;
     display: flex;
-    font: 12px var(--font-code);
+    font: 12px var(--font-family-code);
   }
   .mode-toggle :global(button + button) {
     border-left: 0;
   }
   .mode-toggle :global(button[aria-pressed="true"]) {
-    background: var(--ink);
-    color: var(--sheet);
+    background: var(--color-text-primary);
+    color: var(--color-background-body);
   }
   .legend {
     position: absolute;
@@ -1097,12 +1091,12 @@
     left: 12px;
     width: 264px;
     max-width: calc(100% - 82px);
-    background: var(--sheet);
+    background: var(--color-background-body);
   }
   .legend-title {
     margin: 0;
     padding: 0.5rem;
-    font: 12px var(--font-code);
+    font: 12px var(--font-family-code);
   }
   .legend-grid {
     display: grid;
@@ -1114,26 +1108,25 @@
     gap: 8px;
     padding: 6px 8px;
     border: 0;
-    border-top: 1px solid var(--stroke);
-    font: 12px var(--font-code);
+    border-top: 1px solid var(--color-border);
+    font: 12px var(--font-family-code);
     text-align: left;
   }
   .legend-grid :global(.legend-item:nth-child(even)) {
-    border-left: 1px solid var(--stroke);
+    border-left: 1px solid var(--color-border);
   }
   .vessel-sw,
   .heat-sw {
+    background: currentColor;
     display: inline-block;
     width: 14px;
     height: 14px;
-    border: 1px solid var(--ink-2);
+    border: 1px solid var(--color-text-secondary);
     flex: none;
   }
-  .vessel-sw {
-    background: var(--vessel-color);
-  }
+
   .legend-grid :global(button[aria-pressed="false"] .vessel-sw) {
-    background: var(--sheet);
+    background: var(--color-background-body);
   }
   .legend-grid :global(button[aria-pressed="false"] .legend-label) {
     text-decoration: line-through;
@@ -1145,7 +1138,7 @@
     margin: 0;
     gap: 10px;
     list-style: none;
-    font: 12px var(--font-code);
+    font: 12px var(--font-family-code);
   }
   .heat-scale li {
     display: flex;
@@ -1160,7 +1153,7 @@
     max-width: calc(100% - 24px);
     max-height: calc(100% - 220px);
     overflow-y: auto;
-    background: var(--sheet);
+    background: var(--color-background-body);
   }
   .panel :global(.panel-close) {
     float: right;
@@ -1170,7 +1163,7 @@
   .panel-name {
     margin: 0;
     padding: 12px;
-    font: 700 1.15rem var(--font-ui);
+    font: 700 1.15rem var(--font-family-body);
     overflow-wrap: anywhere;
   }
   .panel-rows {
@@ -1178,7 +1171,7 @@
     margin: 0;
   }
   .panel-rows dt {
-    color: var(--ink-2);
+    color: var(--color-text-secondary);
   }
   .panel-rows dd {
     margin: 0;
@@ -1187,9 +1180,9 @@
   .panel-meta {
     margin: 0;
     padding: 10px 12px;
-    font: 12px var(--font-code);
-    border-top: 1px solid var(--stroke);
-    color: var(--ink-2);
+    font: 12px var(--font-family-code);
+    border-top: 1px solid var(--color-border);
+    color: var(--color-text-secondary);
   }
   @media (max-width: 640px) {
     .panel-open .legend {

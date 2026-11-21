@@ -157,6 +157,13 @@ function validOther(role: OtherRole, value: string): boolean {
 }
 
 const ROLES: Record<string, Role> = {
+  "--ships-water": "decorative",
+  "--ships-heat-1": "decorative",
+  "--ships-heat-2": "decorative",
+  "--ships-heat-3": "decorative",
+  "--ships-heat-4": "decorative",
+  "--ships-heat-5": "decorative",
+  "--ships-heat-6": "decorative",
   "--lb-fail": "non-text",
   "--lb-provider-1": "non-text",
   "--lb-provider-2": "non-text",
