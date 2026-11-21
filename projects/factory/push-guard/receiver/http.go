@@ -89,8 +89,10 @@ func (h *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	args := []string{"-c", fmt.Sprintf("receive.maxInputSize=%d", maxPack),
-		"-c", "receive.hideRefs=" + upstreamRefs, "receive-pack", "--stateless-rpc"}
+	args := []string{
+		"-c", fmt.Sprintf("receive.maxInputSize=%d", maxPack),
+		"-c", "receive.hideRefs=" + upstreamRefs, "receive-pack", "--stateless-rpc",
+	}
 	if discover {
 		args = append(args, "--advertise-refs")
 	}
