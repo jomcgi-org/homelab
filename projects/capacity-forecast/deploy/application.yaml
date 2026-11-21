@@ -10,7 +10,7 @@ spec:
   source:
     repoURL: ghcr.io/jomcgi/homelab/charts
     chart: capacity-forecast
-    targetRevision: 0.9.18
+    targetRevision: 0.10.35
   destination:
     server: https://kubernetes.default.svc
     namespace: capacity-forecast
