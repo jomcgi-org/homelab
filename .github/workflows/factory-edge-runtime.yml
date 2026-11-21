@@ -30,4 +30,6 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
+      - name: Test the T3 socket installer
+        run: python3 projects/factory-cluster/nodes/install_t3_socket_test.py
       - run: bash projects/platform-factory/edge/tests/oidc/kind.sh
