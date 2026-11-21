@@ -68,7 +68,7 @@ def documents(cursor, key, project, board, scan=gitleaks):
         # Fail closed: before the connector migration applies, publish
         # nothing and keep the last manifest.
         LOG.error(
-            "connector view storyboard_messages is absent: the connector "
+            "connector view storyboard_prose_messages is absent: the connector "
             "migration has not applied; this cycle published nothing"
         )
         return None

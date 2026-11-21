@@ -45,7 +45,7 @@ def validate(docs):
 class Store:
     """The connector views: delivery facts and the text of eligible messages.
 
-    The store test checks that storyboard_messages holds only completed HOME
+    The store test checks that storyboard_prose_messages holds completed HOME
     tasks that the binding's own agent ran, never the security agent's.
     """
 
@@ -257,7 +257,7 @@ def test_absent_connector_view_publishes_nothing(monkeypatch, caplog):
         docs = runtime.documents(None, "HOME", PROJECT, board((4, 1, [])), no_secrets)
     assert docs is None
     assert store.queried == []
-    assert "storyboard_messages is absent" in caplog.text
+    assert "storyboard_prose_messages is absent" in caplog.text
 
 
 @pytest.mark.parametrize("value", [None, ""])

@@ -16,7 +16,7 @@ def session_messages(cursor, project, issue_id):
     # own agent ran: never the security agent's sessions.
     cursor.execute(
         """SELECT session_id, task_id, finished_at, text
-           FROM public.storyboard_messages
+           FROM public.storyboard_prose_messages
            WHERE itsaplan_project = %s AND issue_id = %s
            ORDER BY session_id, finished_at, task_id, journal_attempt, first_event""",
         (project, issue_id),
@@ -28,6 +28,6 @@ def messages_view_ready(cursor):
     # The view is absent until the connector applies its migration. The
     # factory and storyboard charts roll out independently.
     cursor.execute(
-        "SELECT to_regclass('public.storyboard_messages') IS NOT NULL AS ready"
+        "SELECT to_regclass('public.storyboard_prose_messages') IS NOT NULL AS ready"
     )
     return cursor.fetchone()["ready"]

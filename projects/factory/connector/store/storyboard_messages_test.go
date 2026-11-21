@@ -37,7 +37,7 @@ func storyboardMessages(t *testing.T, reader *sql.DB) []string {
 	t.Helper()
 	rows, err := reader.Query(`SELECT itsaplan_project, issue_id, session_id, task_id,
 			finished_at, journal_attempt, first_event, text
-		FROM public.storyboard_messages
+		FROM public.storyboard_prose_messages
 		ORDER BY session_id, finished_at, task_id, journal_attempt, first_event`)
 	if err != nil {
 		t.Fatal(err)
@@ -165,6 +165,10 @@ func TestStoryboardMessages(t *testing.T) {
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("messages =\n%s\nwant\n%s", got, want)
 	}
+	var previousProse int
+	if err := reader.QueryRow(`SELECT count(*) FROM public.storyboard_messages WHERE text = 'Codex prose segment'`).Scan(&previousProse); err != nil || previousProse != 0 {
+		t.Fatalf("previous publisher's view includes prose: %d, %v", previousProse, err)
+	}
 
 	// The migration only adds: the chart 0.1.10 publisher's approval table
 	// and digest views stay through the rollback window.
@@ -179,8 +183,8 @@ func TestStoryboardMessages(t *testing.T) {
 	// neither the journal nor the tables behind the view.
 	var refusal interface{ SQLState() string }
 	unrelated := pgtest.AsRole(t, st.DB, "factory_reaper")
-	if _, err := unrelated.Exec("SELECT * FROM public.storyboard_messages"); !errors.As(err, &refusal) || refusal.SQLState() != "42501" {
-		t.Fatalf("unrelated role read of storyboard_messages: %v", err)
+	if _, err := unrelated.Exec("SELECT * FROM public.storyboard_prose_messages"); !errors.As(err, &refusal) || refusal.SQLState() != "42501" {
+		t.Fatalf("unrelated role read of storyboard_prose_messages: %v", err)
 	}
 	for _, query := range []string{
 		"SELECT state FROM public.task_transcript",
