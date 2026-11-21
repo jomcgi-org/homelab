@@ -2,10 +2,7 @@
   "uid": "egress-scanning",
   "title": "Egress secret scanning",
   "description": "Credential checks that reach the private egress scanner. Check duration covers the authorization handler. The gateway allows 80 ms for the full RPC.",
-  "tags": [
-    "factory",
-    "security"
-  ],
+  "tags": ["factory", "security"],
   "timezone": "browser",
   "editable": false,
   "graphTooltip": 1,
@@ -65,9 +62,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -104,9 +99,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -143,9 +136,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -182,9 +173,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },

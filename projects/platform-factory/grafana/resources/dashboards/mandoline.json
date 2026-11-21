@@ -2,10 +2,7 @@
   "uid": "mandoline",
   "title": "Mandoline analysis",
   "description": "Prometheus metrics for RPCs served by the native Mandoline analysis server.",
-  "tags": [
-    "factory",
-    "security"
-  ],
+  "tags": ["factory", "security"],
   "timezone": "browser",
   "editable": false,
   "graphTooltip": 1,
@@ -65,9 +62,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -105,9 +100,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -144,9 +137,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -183,9 +174,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
