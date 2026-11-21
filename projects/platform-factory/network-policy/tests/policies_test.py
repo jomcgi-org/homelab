@@ -9,7 +9,11 @@ import pytest
 import yaml
 
 
-PROJECTS = Path(__file__).absolute().parents[3]
+PROJECTS = (
+    Path(os.environ["TEST_SRCDIR"]) / os.environ["TEST_WORKSPACE"] / "projects"
+    if "TEST_SRCDIR" in os.environ
+    else Path(__file__).resolve().parents[3]
+)
 PLATFORM = PROJECTS / "platform-factory"
 
 
