@@ -37,6 +37,19 @@ broker:
       reasoningEffort: xhigh
 
 kagent:
+  # The pinned chart reads these Git values before the replacement chart ships.
+  # Keep the alert outbox in Argo CD's desired state while the schedule is off.
+  extraObjects:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: factory-semgrep-sync
+        namespace: factory
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 1Mi
   # Agents and the controller's watch: kagent's own namespace plus each
   # repository binding's.
   rbac:
