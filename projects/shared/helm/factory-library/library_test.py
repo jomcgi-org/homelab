@@ -3,6 +3,7 @@
 # invariant: LIB-3
 # invariant: LIB-4
 # invariant: LIB-5
+# invariant: LIB-9
 # invariant: LIB-7
 """Render the public API, including refusals and offline-safe secret generation."""
 
@@ -152,7 +153,8 @@ def test_exceptions(chart):
     }
     docs = objects(render(chart, config))
     # The complete exception record is visible on both the workload and policy.
-    for doc in docs.values():
+    for key in ("Deployment/app", "CiliumNetworkPolicy/app"):
+        doc = docs[key]
         assert (
             json.loads(doc["metadata"]["annotations"]["factory.jomcgi.dev/exceptions"])
             == config["exceptions"]
@@ -1260,3 +1262,30 @@ def test_source_mirror_name_is_reserved(chart):
     result = render(chart, config)
     assert result.returncode != 0
     assert "reserved mirror workload name consumer-app-mirror" in result.stderr
+
+
+def test_namespace_policy_override(chart):
+    config = values()
+    policy = {
+        "hard": {"pods": "32"},
+        "defaultRequest": {"cpu": "100m"},
+        "default": {"memory": "1Gi"},
+    }
+    config["factory-library"] = {"namespacePolicy": policy}
+    docs = objects(render(chart, config))
+    assert docs["ResourceQuota/consumer"]["spec"]["hard"] == {
+        "requests.cpu": "2",
+        "requests.memory": "4Gi",
+        "limits.memory": "8Gi",
+        "pods": "32",
+    }
+    assert docs["LimitRange/consumer"]["spec"]["limits"] == [
+        {
+            "type": "Container",
+            "defaultRequest": {"cpu": "100m", "memory": "64Mi"},
+            "default": {"memory": "1Gi"},
+        }
+    ]
+    policy["enabled"] = False
+    docs = objects(render(chart, config))
+    assert {"ResourceQuota/consumer", "LimitRange/consumer"}.isdisjoint(docs)

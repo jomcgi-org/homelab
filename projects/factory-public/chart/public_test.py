@@ -37,6 +37,13 @@ def test_public_consumer():
         text=True,
     )
     docs = [d for d in yaml.safe_load_all(result.stdout) if d]
+    assert sorted(
+        d["kind"]
+        for d in docs
+        if d
+        and d["metadata"].get("namespace") == "factory-public"
+        and d["kind"] in {"ResourceQuota", "LimitRange"}
+    ) == ["LimitRange", "ResourceQuota"]
     by_name = {(d["kind"], d["metadata"]["name"]): d for d in docs}
     job = by_name["CronJob", "factory-public-factory-public-mirror"]
     pod = job["spec"]["jobTemplate"]["spec"]["template"]["spec"]

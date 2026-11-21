@@ -55,6 +55,13 @@ def assert_no_r2(result, documents):
 
 def test_writer_schedules_and_credentials():
     result, documents = render()
+    assert sorted(
+        d["kind"]
+        for d in documents
+        if d
+        and d["metadata"].get("namespace") == "hikes"
+        and d["kind"] in {"ResourceQuota", "LimitRange"}
+    ) == ["LimitRange", "ResourceQuota"]
     claims = {
         doc["data"]["secretName"]: (doc["data"]["bucket"], doc["data"]["access"])
         for doc in documents

@@ -15,6 +15,10 @@ spec:
     targetRevision: 0.9.24
     helm:
       releaseName: factory-storyboard
+      valuesObject:
+        factory-library:
+          namespacePolicy:
+            enabled: false # This release shares the platform namespace.
   destination:
     server: https://kubernetes.default.svc
     namespace: factory

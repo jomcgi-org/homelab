@@ -87,3 +87,13 @@ def test_sized_database():
         if d["kind"] == "ConfigMap" and d["metadata"]["name"] == ref["name"]
     )
     assert "CREATE TABLE ships.heat_cells_historical" in config["data"][ref["key"]]
+
+
+def test_namespace_policy():
+    docs = render("--namespace", "ships")
+    assert sorted(
+        d["kind"]
+        for d in docs
+        if d["metadata"].get("namespace") == "ships"
+        and d["kind"] in {"ResourceQuota", "LimitRange"}
+    ) == ["LimitRange", "ResourceQuota"]

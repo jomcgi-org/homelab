@@ -56,3 +56,9 @@ invariants:
   - bazel/helm/content_rules/content_rules.py
   test: //bazel/helm/content_rules:content_rules_test
   state: live
+- id: LIB-9
+  statement: Factory releases render a namespace quota and container defaults unless explicitly disabled.
+  mechanism:
+  - projects/shared/helm/factory-library/chart/templates/_helpers.tpl
+  test: //projects/shared/helm/factory-library:library_test
+  state: live

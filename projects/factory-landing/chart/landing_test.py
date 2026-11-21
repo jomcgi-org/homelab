@@ -28,6 +28,13 @@ def test_private_status_app():
         text=True,
     )
     rendered = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+    assert sorted(
+        d["kind"]
+        for d in rendered
+        if d
+        and d["metadata"].get("namespace") == "factory-landing"
+        and d["kind"] in {"ResourceQuota", "LimitRange"}
+    ) == ["LimitRange", "ResourceQuota"]
     names = {doc["metadata"]["name"] for doc in rendered}
     assert "factory-connector-status" not in names
     assert "factory-landing-status" not in names
@@ -112,4 +119,5 @@ def test_private_status_app():
             return [without_annotations(item) for item in value]
         return value
 
+    del docs["ResourceQuota"], docs["LimitRange"]
     assert without_annotations(docs) == without_annotations(before)

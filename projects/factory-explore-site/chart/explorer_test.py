@@ -15,6 +15,8 @@ def render(*settings):
             "template",
             "factory-explore",
             str(Path(__file__).parent),
+            "--namespace",
+            "factory-explore-site",
             "--set",
             f"image.digest={DIGEST}",
             *settings,
@@ -27,6 +29,16 @@ def render(*settings):
 
 def test_registered_release_waits_for_activation():
     resources = render()
+    assert sorted(
+        d["kind"]
+        for d in resources
+        if d
+        and d["metadata"].get("namespace") == "factory-explore-site"
+        and d["kind"] in {"ResourceQuota", "LimitRange"}
+    ) == ["LimitRange", "ResourceQuota"]
+    resources = [
+        doc for doc in resources if doc["kind"] not in {"ResourceQuota", "LimitRange"}
+    ]
     assert [doc["kind"] for doc in resources] == ["ConfigMap"]
     assert "publishEnabled" not in resources[0]["metadata"]
     assert resources[0]["data"]["publishEnabled"] == "false"
