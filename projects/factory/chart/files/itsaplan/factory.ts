@@ -263,7 +263,10 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
       const id = params.issueId;
       const actor = user!.id;
       return factoryTransaction(async () => {
-        const owned = await db.execute<{ columnId: number; applied: boolean }>(sql`
+        const owned = await db.execute<{
+          columnId: number;
+          applied: boolean;
+        }>(sql`
           select i.column_id as "columnId", exists (
             select 1 from factory_reviewed_head h where h.issue_id = i.id
               and h.head_sha = ${body.head}

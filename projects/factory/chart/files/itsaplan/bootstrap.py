@@ -302,7 +302,9 @@ def ensure_reviewing_column(session, team_id):
     for column in project["columns"]:
         if column["name"] == "Reviewing":
             if column["stateType"] != "started":
-                raise RuntimeError("HOME Reviewing must belong to the started workflow group")
+                raise RuntimeError(
+                    "HOME Reviewing must belong to the started workflow group"
+                )
             return
     session.call(
         "POST",
