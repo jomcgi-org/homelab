@@ -1,0 +1,14 @@
+# Route policy read by render_egress_gateway.py.
+conditional:
+  - condition: destination.hostname == "hindsight-api.hindsight.svc.cluster.local" && destination.port == 8888
+    host: egress-scan.ate-system.svc:8080
+    protocol:
+      grpc: {}
+    failureMode: deny
+    includeRequestBody:
+      maxRequestBytes: 524288
+      allowPartialMessage: false
+      packAsBytes: true
+    policies:
+      http:
+        requestTimeout: 80ms

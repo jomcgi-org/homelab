@@ -36,6 +36,9 @@ resources:
   - kagent-identity-guard.yaml
   - ghcr-pull-secret.yaml
 
+components:
+  - egress-scan
+
 configMapGenerator:
   # The bundled PostgreSQL's roles and schema (pkg/postgressetup).
   - name: postgres-setup

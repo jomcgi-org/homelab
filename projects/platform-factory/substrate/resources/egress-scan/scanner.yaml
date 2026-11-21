@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: egress-scan
+  namespace: ate-system
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: egress-scan
+  template:
+    metadata:
+      labels:
+        app: egress-scan
+    spec:
+      automountServiceAccountToken: false
+      runtimeClassName: gvisor
+      imagePullSecrets:
+        - name: ghcr-imagepull-secret
+      securityContext:
+        runAsUser: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: scanner
+          image: ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: grpc
+              containerPort: 8080
+          startupProbe:
+            grpc:
+              port: 8080
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            grpc:
+              port: 8080
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: 500m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: egress-scan
+  namespace: ate-system
+spec:
+  selector:
+    app: egress-scan
+  ports:
+    - name: grpc
+      port: 8080
+      targetPort: grpc
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: egress-scan
+  namespace: ate-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: egress-scan
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: egress-scan
+  namespace: ate-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: egress-scan
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: atenet-egress-to-scanner
+  namespace: ate-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: atenet-egress
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            app: egress-scan
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
