@@ -12,6 +12,7 @@ go_library(
         "//projects/factory/reviewer/config",
         "//projects/factory/reviewer/metrics",
         "//projects/factory/reviewer/review",
+        "//projects/factory/taskpin",
         "@com_github_prometheus_client_golang//prometheus",
         "@com_github_prometheus_client_golang//prometheus/collectors",
         "@com_github_prometheus_client_golang//prometheus/promhttp",

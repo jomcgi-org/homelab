@@ -920,6 +920,7 @@ const (
 type Attempt struct {
 	Provenance      provenance.Record
 	RenderedPrompt  string
+	AnalysisMainSHA string
 	ID              int64
 	RunID           int64
 	Seq             int
@@ -959,7 +960,7 @@ const attemptCols = `id, run_id, seq, run_attempt, work_item_epoch, decision_id,
 	coalesce(first_sent_at, 'epoch'::timestamptz), coalesce(sent_at, 'epoch'::timestamptz), coalesce(context, ''),
 	event_count, event_at, coalesce(rendered_prompt, ''),
 	coalesce(model, ''), coalesce(reasoning_effort, ''), coalesce(arm, ''),
-	coalesce(base_sha, ''), coalesce(prompt_hash, ''), coalesce(task_class, '')`
+	coalesce(base_sha, ''), coalesce(prompt_hash, ''), coalesce(task_class, ''), coalesce(analysis_main_sha, '')`
 
 func scanAttempt(row interface{ Scan(...any) error }) (*Attempt, error) {
 	a := &Attempt{}
@@ -969,7 +970,7 @@ func scanAttempt(row interface{ Scan(...any) error }) (*Attempt, error) {
 		&a.ErrorClass, &a.Error, &a.WriterEpoch, &a.Issues, &a.FirstSentAt, &a.SentAt, &a.Context,
 		&a.EventCount, &eventAt, &a.RenderedPrompt,
 		&a.Provenance.Model, &a.Provenance.ReasoningEffort, &a.Provenance.Arm,
-		&a.Provenance.BaseSHA, &a.Provenance.PromptHash, &a.Provenance.TaskClass)
+		&a.Provenance.BaseSHA, &a.Provenance.PromptHash, &a.Provenance.TaskClass, &a.AnalysisMainSHA)
 	a.EventAt = eventAt.Time
 	return a, err
 }

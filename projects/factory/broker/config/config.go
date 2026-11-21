@@ -42,6 +42,10 @@ type Config struct {
 	// actors to the relay without reaching them. Empty serves everything on
 	// ListenAddr.
 	AdminListenAddr string `json:"adminListenAddr"`
+	// TaskPinOwnerURL is the connector's private origin for coder pin reads.
+	TaskPinOwnerURL string `json:"taskPinOwnerUrl"`
+	// ReviewTaskPinOwnerURL is the reviewer's private origin for pin reads.
+	ReviewTaskPinOwnerURL string `json:"reviewTaskPinOwnerUrl"`
 
 	Codex       Codex       `json:"codex"`
 	Claude      Claude      `json:"claude"`
@@ -321,6 +325,16 @@ func (c Config) Validate() error {
 	}
 	if c.AdminListenAddr != "" && c.AdminListenAddr == c.ListenAddr {
 		errs = append(errs, errors.New("adminListenAddr must differ from listenAddr"))
+	}
+	for name, value := range map[string]string{"taskPinOwnerUrl": c.TaskPinOwnerURL, "reviewTaskPinOwnerUrl": c.ReviewTaskPinOwnerURL} {
+		if value == "" {
+			continue
+		}
+		owner, err := url.Parse(value)
+		if err != nil || (owner.Scheme != "http" && owner.Scheme != "https") || owner.Host == "" ||
+			owner.User != nil || owner.Path != "" || owner.RawQuery != "" || owner.ForceQuery || owner.Fragment != "" {
+			errs = append(errs, fmt.Errorf("%s must be an HTTP origin", name))
+		}
 	}
 	if c.Codex.Grant == "" || c.Codex.SecretPrefix == "" {
 		errs = append(errs, errors.New("codex.grant and codex.secretPrefix are required"))

@@ -45,6 +45,7 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/notify"
 	"github.com/jomcgi/homelab/projects/factory/connector/status"
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
+	"github.com/jomcgi/homelab/projects/factory/taskpin"
 )
 
 func main() {
@@ -423,6 +424,19 @@ func run(log *slog.Logger) error {
 		}
 	}()
 	defer phaseServer.Close()
+
+	if issuer := os.Getenv("FACTORY_TASK_PIN_ACTOR_ISSUER"); issuer != "" {
+		pinServer, err := taskpin.NewOwnerServer(ctx, issuer, eng.ResolveAnalysisMain, log)
+		if err != nil {
+			return fmt.Errorf("task pin verifier: %w", err)
+		}
+		go func() {
+			if err := pinServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("task pin server", "error", err)
+			}
+		}()
+		defer pinServer.Close()
+	}
 
 	wg.Add(1)
 	go func() {

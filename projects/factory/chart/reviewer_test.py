@@ -208,7 +208,10 @@ def test_one_kept_identity_and_private_image() -> None:
         container["image"]
         == "ghcr.io/jomcgi/homelab/projects/factory/reviewer@sha256:" + "c" * 64
     )
-    assert container["ports"] == [{"name": "metrics", "containerPort": 9090}]
+    assert container["ports"] == [
+        {"name": "metrics", "containerPort": 9090},
+        {"name": "analysis-pin", "containerPort": 8086},
+    ]
     assert container["env"] == [
         {"name": "OTEL_SERVICE_NAME", "value": "factory-reviewer"},
         {
@@ -218,6 +221,10 @@ def test_one_kept_identity_and_private_image() -> None:
         {
             "name": "FACTORY_REVIEWER_CONFIG",
             "value": "/etc/factory-reviewer/config.yaml",
+        },
+        {
+            "name": "FACTORY_TASK_PIN_ACTOR_ISSUER",
+            "value": "https://idp.ate-system.svc",
         },
     ]
     for probe in ("readinessProbe", "livenessProbe"):
@@ -670,9 +677,41 @@ def test_only_declared_network_paths_and_peers_admit_the_pod() -> None:
     labels = deploy["spec"]["template"]["metadata"]["labels"]
     spec = _in(docs, "CiliumNetworkPolicy", "factory", "factory-reviewer")["spec"]
     assert spec["endpointSelector"]["matchLabels"].items() <= labels.items()
-    assert "ingress" not in spec
-    assert len(spec["egress"]) == 5
+    assert spec["ingress"] == [
+        {
+            "fromEndpoints": [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "factory",
+                        "app.kubernetes.io/name": "factory-broker",
+                        "app.kubernetes.io/instance": "factory",
+                    }
+                }
+            ],
+            "toPorts": [{"ports": [{"port": "8086", "protocol": "TCP"}]}],
+        }
+    ]
+    assert _in(docs, "Service", "factory", "factory-reviewer-task-pin")["spec"][
+        "ports"
+    ] == [{"name": "analysis-pin", "port": 8086, "targetPort": "analysis-pin"}]
+    broker = _config(docs, "factory-broker")
+    assert (
+        broker["reviewTaskPinOwnerUrl"]
+        == "http://factory-reviewer-task-pin.factory.svc.cluster.local:8086"
+    )
+    assert len(spec["egress"]) == 6
     assert spec["egress"][0] == {
+        "toEndpoints": [
+            {
+                "matchLabels": {
+                    "k8s:io.kubernetes.pod.namespace": "ate-system",
+                    "app": "ate-idp-server",
+                }
+            }
+        ],
+        "toPorts": [{"ports": [{"port": "8443", "protocol": "TCP"}]}],
+    }
+    assert spec["egress"][1] == {
         "toEndpoints": [
             {
                 "matchLabels": {
@@ -685,9 +724,9 @@ def test_only_declared_network_paths_and_peers_admit_the_pod() -> None:
         "toPorts": [{"ports": [{"port": "4317", "protocol": "TCP"}]}],
     }
     for rule, ns, name, port in (
-        (spec["egress"][1], "factory", "factory-broker", "8081"),
-        (spec["egress"][2], "kagent", "kagent-controller", "8083"),
-        (spec["egress"][3], "factory", "factory-itsaplan-api", "3000"),
+        (spec["egress"][2], "factory", "factory-broker", "8081"),
+        (spec["egress"][3], "kagent", "kagent-controller", "8083"),
+        (spec["egress"][4], "factory", "factory-itsaplan-api", "3000"),
     ):
         assert rule["toPorts"] == [{"ports": [{"port": port, "protocol": "TCP"}]}]
         peer = _in(docs, "CiliumNetworkPolicy", ns, name)["spec"]
@@ -711,7 +750,7 @@ def test_only_declared_network_paths_and_peers_admit_the_pod() -> None:
             )
             for entry in peer["ingress"]
         )
-    assert spec["egress"][4] == {
+    assert spec["egress"][5] == {
         "toFQDNs": [{"matchName": "api.github.com"}],
         "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
     }
@@ -751,8 +790,8 @@ def test_goal_reasons_reach_the_connector_alone() -> None:
     spec = _in(docs, "CiliumNetworkPolicy", "factory", "factory-reviewer")["spec"]
     connector = _in(docs, "Deployment", "factory", "factory-connector")
     connector_labels = connector["spec"]["template"]["metadata"]["labels"]
-    assert len(spec["ingress"]) == 1
-    (rule,) = spec["ingress"]
+    assert len(spec["ingress"]) == 2
+    rule = spec["ingress"][1]
     assert rule["toPorts"] == [{"ports": [{"port": "8091", "protocol": "TCP"}]}]
     (peer,) = rule["fromEndpoints"]
     want = dict(peer["matchLabels"])
@@ -819,15 +858,17 @@ def test_service_identity_and_endpoints_follow_namespace_and_port_values() -> No
     rules = _in(docs, "CiliumNetworkPolicy", "other-factory", "factory-reviewer")[
         "spec"
     ]["egress"]
-    for rule, ns, port in (
-        (rules[1], "other-factory", "8181"),
-        (rules[2], "other-kagent", "8183"),
+    for ns, port in (
+        ("other-factory", "8181"),
+        ("other-kagent", "8183"),
     ):
-        assert (
-            rule["toEndpoints"][0]["matchLabels"]["k8s:io.kubernetes.pod.namespace"]
+        assert any(
+            rule.get("toEndpoints")
+            and rule["toEndpoints"][0]["matchLabels"]["k8s:io.kubernetes.pod.namespace"]
             == ns
+            and rule["toPorts"][0]["ports"] == [{"port": port, "protocol": "TCP"}]
+            for rule in rules
         )
-        assert rule["toPorts"][0]["ports"] == [{"port": port, "protocol": "TCP"}]
 
 
 def test_custom_namespaces_multiple_repositories_and_policy_overrides() -> None:

@@ -1158,12 +1158,13 @@ func (k *fakeKagent) ListTasks(_ context.Context, agent kagent.AgentRef, context
 	if k.listErr != nil {
 		return nil, k.listErr
 	}
-	if state != "" || pageToken != "" {
+	if pageToken != "" {
 		return nil, fmt.Errorf("unexpected listing %q %q %q", contextID, state, pageToken)
 	}
 	out := []*kagent.Task{}
 	for _, t := range k.tasks {
-		if t.agent == agent && (contextID == "" || t.task.ContextID == contextID) {
+		if t.agent == agent && (contextID == "" || t.task.ContextID == contextID) &&
+			(state == "" || t.task.Status.State == state) {
 			c := t.task
 			c.History, c.Artifacts = nil, nil
 			out = append(out, &c)

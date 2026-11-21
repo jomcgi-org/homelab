@@ -499,6 +499,53 @@ def test_github_app_is_optional() -> None:
     assert config["github"]["privateKeyFile"] == "/etc/factory-github-app/private-key"
 
 
+def test_coder_task_pin_accepts_actors_via_the_broker() -> None:
+    docs = _render()
+    config = yaml.safe_load(
+        _in(docs, "ConfigMap", "factory", "factory-broker")["data"]["config.yaml"]
+    )
+    assert (
+        config["taskPinOwnerUrl"]
+        == "http://factory-connector-task-pin.factory.svc.cluster.local:8086"
+    )
+    connector = _in(docs, "Deployment", "factory", "factory-connector")["spec"][
+        "template"
+    ]["spec"]
+    assert {
+        "name": "FACTORY_TASK_PIN_ACTOR_ISSUER",
+        "value": "https://idp.ate-system.svc",
+    } in connector["containers"][0]["env"]
+    ca = next(v for v in connector["volumes"] if v["name"] == "task-pin-issuer")
+    assert ca["projected"]["sources"] == [
+        {
+            "clusterTrustBundle": {
+                "signerName": "servicedns.podcert.ate.dev/identity",
+                "labelSelector": {"matchLabels": {"podcert.ate.dev/canarying": "live"}},
+                "path": "trust-bundle.pem",
+            }
+        },
+    ]
+    service = _in(docs, "Service", "factory", "factory-connector-task-pin")
+    assert service["spec"]["ports"] == [
+        {"name": "analysis-pin", "port": 8086, "targetPort": "analysis-pin"},
+    ]
+    policy = _in(docs, "CiliumNetworkPolicy", "factory", "factory-connector")
+    assert policy["spec"]["ingress"] == [
+        {
+            "fromEndpoints": [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "factory",
+                        "app.kubernetes.io/name": "factory-broker",
+                        "app.kubernetes.io/instance": "factory",
+                    }
+                }
+            ],
+            "toPorts": [{"ports": [{"port": "8086", "protocol": "TCP"}]}],
+        },
+    ]
+
+
 @pytest.mark.parametrize("binding", [False, True])
 def test_claude_relay_is_absent_by_default(binding: bool) -> None:
     docs = _render(["broker.enabled=true"], binding=binding)
@@ -683,6 +730,18 @@ def test_broker_policy() -> None:
         },
     ]
     assert spec["egress"] == [
+        {
+            "toEndpoints": [
+                {
+                    "matchLabels": {
+                        ns: "factory",
+                        "app.kubernetes.io/name": "factory-connector",
+                        "app.kubernetes.io/instance": "factory",
+                    }
+                }
+            ],
+            "toPorts": [{"ports": [{"port": "8086", "protocol": "TCP"}]}],
+        },
         {
             "toEndpoints": [
                 {"matchLabels": {ns: "factory-db", "cnpg.io/cluster": "factory-db"}}

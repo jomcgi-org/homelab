@@ -100,9 +100,13 @@ spec:
             {{- end }}
             - name: FACTORY_REVIEWER_CONFIG
               value: /etc/factory-reviewer/config.yaml
+            - name: FACTORY_TASK_PIN_ACTOR_ISSUER
+              value: {{ .Values.kagent.config.substrate.actorJwtIssuer | quote }}
           ports:
             - name: metrics
               containerPort: {{ $c.metricsPort }}
+            - name: analysis-pin
+              containerPort: 8086
             {{- if include "factory.goalReasons" . }}
             - name: goal-reasons
               containerPort: {{ $c.goalReasons.port }}
@@ -136,6 +140,9 @@ spec:
             - name: broker-token
               mountPath: /var/run/secrets/factory-broker
               readOnly: true
+            - name: task-pin-issuer
+              mountPath: /run/substrate-servicedns
+              readOnly: true
             {{- if .Values.itsaplan.enabled }}
             - name: itsaplan-key
               mountPath: /var/run/secrets/itsaplan
@@ -163,6 +170,7 @@ spec:
         - name: config
           configMap:
             name: {{ $name }}
+        {{- include "factory.taskPinIssuerVolume" . | nindent 8 }}
         - name: kagent-token
           projected:
             sources:
@@ -177,6 +185,21 @@ spec:
                   audience: factory-broker
                   expirationSeconds: 3600
                   path: token
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-task-pin
+  namespace: {{ $ns }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "factory.reviewerSelector" . | nindent 4 }}
+  ports:
+    - name: analysis-pin
+      port: 8086
+      targetPort: analysis-pin
 {{- if include "factory.goalReasons" . }}
 ---
 # The goal reasons listener; reviewer-network-policy.yaml admits only the

@@ -4,17 +4,118 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/connector/provenance"
 )
 
 type RunRecorder interface {
 	RecordReview(context.Context, provenance.ReviewerRun) error
+}
+
+type ReviewerTaskPins interface {
+	BindReviewTask(context.Context, provenance.ReviewerTask) error
+	ReviewTaskMain(context.Context, provenance.ReviewerTask) (string, error)
+}
+
+func reviewTask(b *Binding, session, task string) provenance.ReviewerTask {
+	return provenance.ReviewerTask{Repository: b.repo(), Agent: agentName(b.Agent), Session: session, Task: task}
+}
+
+func (e *Engine) bindReviewTask(ctx context.Context, b *Binding, messageID string, t *kagent.Task, log *slog.Logger) bool {
+	if e.cfg.TaskPins == nil || t == nil || t.ID == "" || t.ContextID == "" {
+		return false
+	}
+	binding := reviewTask(b, t.ContextID, t.ID)
+	binding.MessageID = messageID
+	if err := e.cfg.TaskPins.BindReviewTask(ctx, binding); err != nil {
+		log.WarnContext(ctx, "review analysis pin unavailable", "task", t.ID, "error", err)
+		return false
+	}
+	return true
+}
+
+// The check run supplies the task ID. A resumed or recovered task must also
+// hold the exact dispatch message before it can bind the stored receipt.
+func recordedReviewMessage(b *Binding, pr github.PullRequest, runID int64, rec recorded, t *kagent.Task) string {
+	base := AttemptMessageID(b.repo(), pr.Number, pr.HeadSHA, runID, rec.Attempt)
+	suffix := ""
+	if rec.QuotaRetry > 0 {
+		suffix = fmt.Sprintf("/quota-%d", rec.QuotaRetry)
+	}
+	fresh, resumed := base+suffix, base+"/resume"+suffix
+	hasFresh, hasResumed := t.HasMessage(fresh), t.HasMessage(resumed)
+	if hasFresh == hasResumed {
+		return ""
+	}
+	if hasResumed {
+		return resumed
+	}
+	return fresh
+}
+
+// ResolveAnalysisMain checks the live native task before returning its stored
+// analysis commit. Older review receipts yield an unavailable pin.
+func (e *Engine) ResolveAnalysisMain(ctx context.Context, namespace, session string) (string, error) {
+	if e.cfg.TaskPins == nil || e.cfg.Sessions == nil {
+		return "", sql.ErrNoRows
+	}
+	s, err := e.cfg.Sessions.GetSession(ctx, session)
+	if errors.Is(err, kagent.ErrSessionNotFound) {
+		return "", sql.ErrNoRows
+	}
+	if err != nil {
+		return "", err
+	}
+	if s == nil || s.ID != session || s.ContextID != session || s.AgentNamespace != namespace || s.Gone() || s.Crashed() {
+		return "", sql.ErrNoRows
+	}
+	for i := range e.cfg.Bindings {
+		b := &e.cfg.Bindings[i]
+		if b.Agent.Namespace != namespace || b.Agent.Name != s.AgentName {
+			continue
+		}
+		t, err := e.workingReviewTask(ctx, b, session)
+		if err != nil {
+			return "", err
+		}
+		main, err := e.cfg.TaskPins.ReviewTaskMain(ctx, reviewTask(b, session, t))
+		if err != nil {
+			return "", err
+		}
+		current, err := e.workingReviewTask(ctx, b, session)
+		if err != nil {
+			return "", err
+		}
+		if current != t {
+			return "", sql.ErrNoRows
+		}
+		return main, nil
+	}
+	return "", sql.ErrNoRows
+}
+
+func (e *Engine) workingReviewTask(ctx context.Context, b *Binding, session string) (string, error) {
+	page, err := e.tasks.ListTasks(ctx, b.Agent, session, kagent.StateWorking, "")
+	if err != nil {
+		return "", err
+	}
+	if page == nil || page.TotalSize != 1 || len(page.Tasks) != 1 || page.NextPageToken != "" {
+		return "", sql.ErrNoRows
+	}
+	t := page.Tasks[0]
+	if t == nil || t.ID == "" || t.ContextID != session || t.Status.State != kagent.StateWorking {
+		return "", sql.ErrNoRows
+	}
+	return t.ID, nil
 }
 
 type GoalSessionCreator interface {

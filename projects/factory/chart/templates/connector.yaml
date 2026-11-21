@@ -251,6 +251,10 @@ spec:
               value: /var/run/secrets/kagent/token
             - name: FACTORY_CONNECTOR_KAGENT_AUTHORITY
               value: {{ $kagentAuth.serviceAccount.authority | quote }}
+            {{- if .Values.broker.enabled }}
+            - name: FACTORY_TASK_PIN_ACTOR_ISSUER
+              value: {{ .Values.kagent.config.substrate.actorJwtIssuer | quote }}
+            {{- end }}
             {{- if $delivers }}
             - name: FACTORY_CONNECTOR_BROKER_URL
               value: {{ printf "http://%s.%s.svc:%d" (include "factory.brokerName" .) $ns (int .Values.broker.adminPort) | quote }}
@@ -274,6 +278,10 @@ spec:
           ports:
             - name: metrics
               containerPort: {{ $c.metricsPort }}
+            {{- if .Values.broker.enabled }}
+            - name: analysis-pin
+              containerPort: 8086
+            {{- end }}
           # Health is served before the key wait and the migrations; the
           # startup probe still allows five minutes before liveness counts.
           startupProbe:
@@ -300,6 +308,11 @@ spec:
             capabilities:
               drop: [ALL]
           volumeMounts:
+            {{- if .Values.broker.enabled }}
+            - name: task-pin-issuer
+              mountPath: /run/substrate-servicedns
+              readOnly: true
+            {{- end }}
             - name: decision-api
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
@@ -331,6 +344,9 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
+        {{- if .Values.broker.enabled }}
+        {{- include "factory.taskPinIssuerVolume" . | nindent 8 }}
+        {{- end }}
         - name: decision-api
           projected:
             sources:
@@ -424,4 +440,21 @@ metadata:
 spec:
   itemPath: {{ required "connector.notify.itemPath is required" $c.notify.itemPath | quote }}
 {{- end }}
+{{- end }}
+{{- if and .Values.connector.enabled .Values.broker.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "factory.connectorName" . }}-task-pin
+  namespace: {{ .Values.broker.namespace }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "factory.connectorSelector" . | nindent 4 }}
+  ports:
+    - name: analysis-pin
+      port: 8086
+      targetPort: analysis-pin
 {{- end }}

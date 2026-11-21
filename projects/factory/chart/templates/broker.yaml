@@ -44,6 +44,9 @@ and metrics. Provider and GitHub credentials exist only in this pod.
   "tokenReview" (dict "audience" "factory-broker" "adminSubjects" $adminSubjects "connectorSubjects" $connectorSubjects)
   "bindings" $bindings
 }}
+{{- if .Values.connector.enabled }}
+{{- $_ := set $config "taskPinOwnerUrl" (printf "http://%s-task-pin.%s.svc.%s:8086" (include "factory.connectorName" .) $ns .Values.clusterDomain) }}
+{{- end }}
 {{- if $github }}
 {{- $_ := set $config "github" (dict
   "appIdFile" "/etc/factory-github-app/app-id"
@@ -51,6 +54,7 @@ and metrics. Provider and GitHub credentials exist only in this pod.
   "privateKeyFile" "/etc/factory-github-app/private-key") }}
 {{- end }}
 {{- if .Values.reviewer.enabled }}
+{{- $_ := set $config "reviewTaskPinOwnerUrl" (printf "http://%s-task-pin.%s.svc.%s:8086" (include "factory.reviewerName" .) $ns .Values.clusterDomain) }}
 {{- $_ := set $config "githubReview" (dict
   "appIdFile" "/etc/factory-review-github-app/app-id"
   "installationIdFile" "/etc/factory-review-github-app/installation-id"

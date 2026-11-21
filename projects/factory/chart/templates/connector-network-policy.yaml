@@ -1,11 +1,8 @@
 {{- if and .Values.connector.enabled .Values.networkPolicy.cilium }}
 {{- /*
-The connector's allowlist under the cluster-wide default-deny. It accepts no
-connections (nothing scrapes its metrics yet; kubelet probes are host
-traffic) and calls only itsaplan's api, the kagent controller, the broker's
-admin port, its database, GitHub's API and, with connector.buildbuddy, that
-BuildBuddy host. Each peer admits it by networkPolicy.connector's labels in
-its own policy.
+The connector's allowlist under the cluster-wide default-deny. This policy
+admits the broker to the task pin listener. Each upstream peer admits the
+connector by networkPolicy.connector's labels in its own policy.
 */}}
 {{- $c := .Values.connector }}
 {{- $kagentNs := include "factory.kagentNamespace" . }}
@@ -22,8 +19,29 @@ spec:
   endpointSelector:
     matchLabels:
       {{- include "factory.connectorSelector" . | nindent 6 }}
+  {{- if .Values.broker.enabled }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.broker.namespace }}
+            {{- include "factory.brokerSelector" . | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "8086"
+              protocol: TCP
+  {{- end }}
   egress:
     - toEntities: [kube-apiserver]
+    {{- if .Values.broker.enabled }}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.substrate.namespace }}
+            app: ate-idp-server
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+    {{- end }}
     {{- if .Values.runbookRevert.enabled }}
     - toEndpoints:
         - matchLabels:

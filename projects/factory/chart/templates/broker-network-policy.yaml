@@ -50,7 +50,25 @@ spec:
             - port: {{ $b.adminPort | quote }}
               protocol: TCP
   egress:
+    {{- if .Values.reviewer.enabled }}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $b.namespace }}
+            {{- include "factory.reviewerSelector" . | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "8086"
+              protocol: TCP
+    {{- end }}
     {{- if .Values.connector.enabled }}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $b.namespace }}
+            {{- include "factory.connectorSelector" . | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "8086"
+              protocol: TCP
     {{- with .Values.connector.database.endpoints }}
     # Durable Codex call observations in the connector database.
     - toEndpoints:

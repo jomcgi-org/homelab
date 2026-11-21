@@ -364,6 +364,9 @@ func TestReviewerTokenAdmitsOnlyReviewerSubjects(t *testing.T) {
 		{"/runs/reviewer", "connector-token", http.StatusForbidden},
 		{"/runs/reviewer", "actor-token", http.StatusForbidden},
 		{"/runs/reviewer", "reviewer-token", http.StatusMethodNotAllowed},
+		{"/runs/reviewer/task", "actor-token", http.StatusForbidden},
+		{"/runs/reviewer/task-pin", "connector-token", http.StatusForbidden},
+		{"/runs/reviewer/task-pin", "reviewer-token", http.StatusMethodNotAllowed},
 		// Both dispatchers can read quota; unrelated subjects remain refused.
 		{"/codex/quota", "reviewer-token", http.StatusOK},
 		{"/codex/quota", "unknown-token", http.StatusUnauthorized},

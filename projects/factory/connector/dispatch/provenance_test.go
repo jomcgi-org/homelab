@@ -2,6 +2,7 @@ package dispatch_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -19,6 +20,9 @@ func (g *fakeGitHub) BranchHead(_ context.Context, _ string, branch string) (str
 	defer g.mu.Unlock()
 	if g.baseErr != nil {
 		return "", g.baseErr
+	}
+	if err := g.branchErr[branch]; err != nil {
+		return "", err
 	}
 	if b := g.branches[branch]; b != nil {
 		return b.head, nil
@@ -44,15 +48,42 @@ func TestCoderAndReworkRunProvenance(t *testing.T) {
 		t.Fatalf("sends=%d", len(sends))
 	}
 	initial := v.run(1).Provenance
+	firstAttempt := v.latest(1)
 	want := provenance.New(*v.cfg.Bindings[0].Runtime, strings.Repeat("a", 40), sends[0].msg.Parts[0].Text, "unclassified")
 	if initial != want {
 		t.Fatalf("coder provenance=%+v want %+v", initial, want)
 	}
+	if firstAttempt.AnalysisMainSHA != want.BaseSHA {
+		t.Fatalf("initial analysis pin=%q want %q", firstAttempt.AnalysisMainSHA, want.BaseSHA)
+	}
+	active, err := v.st.CurrentAnalysisTask(v.ctx, firstAttempt.KagentNamespace, strings.ToLower(firstAttempt.ContextID))
+	if err != nil || active.MainSHA != firstAttempt.AnalysisMainSHA || active.TaskID != firstAttempt.TaskID {
+		t.Fatalf("active analysis task=%+v err=%v", active, err)
+	}
+	if pin, err := v.e.ResolveAnalysisMain(v.ctx, firstAttempt.KagentNamespace, strings.ToLower(firstAttempt.ContextID)); err != nil || pin != active.MainSHA {
+		t.Fatalf("working task pin=%q err=%v", pin, err)
+	}
+	var readAttempt int64
+	if err := v.st.DB.QueryRowContext(v.ctx, `SELECT attempt_id FROM task_metadata_read WHERE message_id=$1`,
+		fmt.Sprintf("task-metadata/%d", firstAttempt.ID)).Scan(&readAttempt); err != nil || readAttempt != firstAttempt.ID {
+		t.Fatalf("task pin read was not journaled for attempt %d: %d, %v", firstAttempt.ID, readAttempt, err)
+	}
+	if _, err := v.st.CurrentAnalysisTask(v.ctx, "other-role", strings.ToLower(firstAttempt.ContextID)); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("analysis pin crossed a namespace boundary: %v", err)
+	}
 	head := strings.Repeat("b", 40)
 	v.gh.push("factory/HL-7", head, "fix: issue")
+	advancedMain := strings.Repeat("c", 40)
+	v.gh.push("main", advancedMain, "another change")
 	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Pushed.", nil)
+	if _, err := v.e.ResolveAnalysisMain(v.ctx, firstAttempt.KagentNamespace, strings.ToLower(firstAttempt.ContextID)); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("terminal kagent task retained its analysis pin before the next poll: %v", err)
+	}
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
+	if _, err := v.st.CurrentAnalysisTask(v.ctx, firstAttempt.KagentNamespace, strings.ToLower(firstAttempt.ContextID)); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("completed task retained its analysis pin: %v", err)
+	}
 	// Rework retains the model and system prompt pinned to the existing session,
 	// even after the configuration for new sessions changes.
 	original := *v.cfg.Bindings[0].Runtime
@@ -74,6 +105,12 @@ func TestCoderAndReworkRunProvenance(t *testing.T) {
 	if rounds[0].Provenance != want {
 		t.Fatalf("rework provenance=%+v want %+v", rounds[0].Provenance, want)
 	}
+	if rework := v.latest(rounds[0].ID); rework.AnalysisMainSHA != advancedMain || rework.Provenance.BaseSHA != head {
+		t.Fatalf("rework analysis pin=%q starting commit=%q", rework.AnalysisMainSHA, rework.Provenance.BaseSHA)
+	}
+	if saved := v.latest(1); saved.AnalysisMainSHA != firstAttempt.AnalysisMainSHA {
+		t.Fatal("rework rewrote the original analysis pin")
+	}
 	if v.run(1).Provenance != initial {
 		t.Fatal("rework changed the original run")
 	}
@@ -91,6 +128,31 @@ func TestProvenanceFailurePreventsCoderSend(t *testing.T) {
 	v.tick(v.e)
 	if len(v.kg.Sends()) != 1 {
 		t.Fatal("did not resume after provenance became readable")
+	}
+}
+
+func TestUnavailableAnalysisMainRetriesBeforeDispatch(t *testing.T) {
+	for _, status := range []int{401, 403, 404, 503} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			v := provenanceEnv(t)
+			head := strings.Repeat("b", 40)
+			v.gh.push("factory/HL-7", head, "work in progress")
+			v.gh.branchErr = map[string]error{"main": &github.HTTPError{Status: status}}
+			v.its.add(1, "coder", 101, "HL-7", "Fix it.")
+			v.tick(v.e)
+
+			first := v.latest(1)
+			if len(v.kg.Sends()) != 0 || first.AnalysisMainSHA != "" {
+				t.Fatal("accepted work before its trusted main read succeeded")
+			}
+			delete(v.gh.branchErr, "main")
+			v.tick(v.e)
+			accepted := v.latest(1)
+			if accepted.ID != first.ID || accepted.State != store.AttemptAccepted ||
+				accepted.Provenance.BaseSHA != head || accepted.AnalysisMainSHA != strings.Repeat("a", 40) {
+				t.Fatalf("same attempt did not recover both commits: %+v", accepted)
+			}
+		})
 	}
 }
 
@@ -133,6 +195,9 @@ func TestCoderProvenanceRetryBeforeFirstPush(t *testing.T) {
 			if next.Provenance != want || !strings.Contains(next.RenderedPrompt, "Worktree starting commit: "+first.Provenance.BaseSHA) {
 				t.Fatal("retry did not retain its session's starting commit and pinned runtime")
 			}
+			if first.AnalysisMainSHA == "" || next.AnalysisMainSHA != first.AnalysisMainSHA {
+				t.Fatal("retry lost the session's verified main commit before its first push")
+			}
 			if v.run(1).Provenance != first.Provenance {
 				t.Fatal("retry changed the first execution receipt")
 			}
@@ -146,6 +211,7 @@ func TestCoderProvenanceAndRenderedPromptSurviveResend(t *testing.T) {
 	v.its.add(1, "coder", 101, "HL-7", "Fix it.")
 	v.tick(v.e)
 	before := v.run(1).Provenance
+	firstPin := v.latest(1).AnalysisMainSHA
 	first := v.kg.Sends()[0].msg.Parts[0].Text
 	v.gh.push("main", strings.Repeat("c", 40), "new base")
 	v.its.issues[101].Description = "changed issue after first send"
@@ -159,6 +225,9 @@ func TestCoderProvenanceAndRenderedPromptSurviveResend(t *testing.T) {
 	}
 	if v.run(1).Provenance != before {
 		t.Fatal("resend rewrote the run snapshot")
+	}
+	if firstPin != strings.Repeat("a", 40) || v.latest(1).AnalysisMainSHA != firstPin {
+		t.Fatal("resend lost the original analysis main commit")
 	}
 }
 
