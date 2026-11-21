@@ -634,3 +634,7 @@ def test_reviewing_column_bootstrap_preserves_existing_settings(bootstrap):
     script.ensure_reviewing_column(session, 7)
     assert len(session.writes) == 1
     assert session.columns[0]["color"] == "#000000"
+    session.columns[0]["stateType"] = "unstarted"
+    with pytest.raises(RuntimeError, match="Reviewing must belong"):
+        script.ensure_reviewing_column(session, 7)
+    assert len(session.writes) == 1

@@ -263,8 +263,11 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
       const id = params.issueId;
       const actor = user!.id;
       return factoryTransaction(async () => {
-        const owned = await db.execute<{ columnId: number }>(sql`
-          select i.column_id as "columnId" from issue i
+        const owned = await db.execute<{ columnId: number; applied: boolean }>(sql`
+          select i.column_id as "columnId", exists (
+            select 1 from factory_reviewed_head h where h.issue_id = i.id
+              and h.head_sha = ${body.head}
+          ) as applied from issue i
           join project p on p.id = i.project_id
           join ai_agent a on a.team_id = p.team_id and a.user_id = ${actor}
           where i.id = ${id} and p.id = ${projectId} and p.key = 'HOME'
@@ -272,6 +275,7 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
           for update of i
         `);
         if (!owned.length) throw new HttpError(403, "Review transition denied");
+        if (owned[0].applied) return { moved: false, settled: true };
 
         const columns = await db.execute<{ id: number; name: string }>(sql`
           select c.id, c.name from project_column c where c.project_id = ${projectId}
@@ -283,7 +287,7 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
         if (!reviewing || !names.has("In Progress"))
           throw new HttpError(503, "Review workflow columns unavailable");
         if (owned[0].columnId !== names.get("In Progress"))
-          return { moved: false };
+          return { moved: false, settled: false };
         const blocked = await db.execute(sql`
           select 1 from issue i where i.id = ${id} and (
             i.archived_at is not null
@@ -293,15 +297,15 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
             )
           )
         `);
-        if (blocked.length) return { moved: false };
+        if (blocked.length) return { moved: false, settled: false };
 
         const inserted = await db.execute(sql`
           insert into factory_reviewed_head (issue_id, head_sha) values (${id}, ${body.head})
           on conflict do nothing returning issue_id
         `);
-        if (!inserted.length) return { moved: false };
+        if (!inserted.length) return { moved: false, settled: true };
         await updateIssue(id, { columnId: reviewing }, actor);
-        return { moved: true };
+        return { moved: true, settled: true };
       });
     },
     {

@@ -539,8 +539,18 @@ test("the coordinator enters Reviewing once per head and preserves manual moves"
     ).toBe(200);
   };
 
-  await setStarted();
   const head = "a".repeat(40);
+  expect(await (await move(coordinator.apiKey!, head)).json()).toEqual({
+    moved: false,
+    settled: false,
+  });
+  await setStarted();
+  await db.update(issue).set({ archivedAt: new Date() }).where(eq(issue.id, id));
+  expect(await (await move(coordinator.apiKey!, head)).json()).toEqual({
+    moved: false,
+    settled: false,
+  });
+  await db.update(issue).set({ archivedAt: null }).where(eq(issue.id, id));
   expect((await move(coder.apiKey!, head)).status).toBe(403);
   const hold = await project.labels.post({ name: "needs-human" });
   const labelIds = [hold.data!.id];
@@ -549,13 +559,14 @@ test("the coordinator enters Reviewing once per head and preserves manual moves"
   ).toBe(200);
   expect(await (await move(coordinator.apiKey!, head)).json()).toEqual({
     moved: false,
+    settled: false,
   });
   expect(
     (await ownerAPI.issues({ issueId: id }).patch({ labelIds: [] })).status,
   ).toBe(200);
   const applied = await move(coordinator.apiKey!, head);
   expect(applied.status).toBe(200);
-  expect(await applied.json()).toEqual({ moved: true });
+  expect(await applied.json()).toEqual({ moved: true, settled: true });
   expect((await ownerAPI.issues({ issueId: id }).get()).data?.columnId).toBe(
     reviewing.data!.id,
   );
@@ -563,6 +574,7 @@ test("the coordinator enters Reviewing once per head and preserves manual moves"
   await setStarted();
   expect(await (await move(coordinator.apiKey!, head)).json()).toEqual({
     moved: false,
+    settled: true,
   });
   expect((await ownerAPI.issues({ issueId: id }).get()).data?.columnId).toBe(
     started.id,

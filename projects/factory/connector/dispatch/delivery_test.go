@@ -3729,14 +3729,15 @@ func TestUnconfirmedEjectionEmitsNoEjectionSpan(t *testing.T) {
 type reviewingPlan struct {
 	dispatch.Itsaplan
 	heads []string
+	ready bool
 }
 
-func (p *reviewingPlan) MarkIssueReviewing(_ context.Context, issueID int64, head string) error {
+func (p *reviewingPlan) MarkIssueReviewing(_ context.Context, issueID int64, head string) (bool, error) {
 	if issueID != 101 {
-		return fmt.Errorf("unexpected issue %d", issueID)
+		return false, fmt.Errorf("unexpected issue %d", issueID)
 	}
 	p.heads = append(p.heads, head)
-	return nil
+	return p.ready, nil
 }
 
 func TestCurrentPendingReviewerCheckQueuesNativeReviewingOnce(t *testing.T) {
@@ -3749,14 +3750,17 @@ func TestCurrentPendingReviewerCheckQueuesNativeReviewingOnce(t *testing.T) {
 	v.its.add(1, "coder", 101, "HOME-7", "Fix the test.")
 	v.tick(v.e)
 	head := strings.Repeat("a", 40)
+	binding := v.cfg.Bindings[0]
+	checkPrefix := "factory-review/" + binding.Owner + "/" + binding.Repo
 	v.gh.push("factory/HOME-7", head, "fix(test): stop the flake")
 	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Pushed.", nil)
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
 	v.gh.mu.Lock()
 	v.gh.checks[head] = []github.CheckRun{
-		{ID: 5, Name: "semgrep-review", AppID: 200, HeadSHA: head, Status: "completed"},
-		{ID: 10, Name: "semgrep-review", AppID: 300, HeadSHA: head, Status: "in_progress"},
+		{ID: 5, ExternalID: checkPrefix + "/1/" + head, Name: "semgrep-review", AppID: 200, HeadSHA: head, Status: "completed"},
+		{ID: 10, ExternalID: checkPrefix + "/1/" + head, Name: "semgrep-review", AppID: 300, HeadSHA: head, Status: "in_progress"},
+		{ID: 12, ExternalID: checkPrefix + "/2/" + head, Name: "semgrep-review", AppID: 200, HeadSHA: head, Status: "in_progress"},
 	}
 	v.gh.mu.Unlock()
 	v.poll()
@@ -3765,12 +3769,15 @@ func TestCurrentPendingReviewerCheckQueuesNativeReviewingOnce(t *testing.T) {
 	}
 	v.gh.mu.Lock()
 	v.gh.checks[head] = append(v.gh.checks[head], github.CheckRun{
-		ID: 11, Name: "semgrep-review", AppID: 200, HeadSHA: head, Status: "in_progress",
+		ID: 11, ExternalID: checkPrefix + "/1/" + head, Name: "semgrep-review", AppID: 200, HeadSHA: head, Status: "in_progress",
 	})
 	v.gh.mu.Unlock()
 	v.poll()
+	plan.ready = true
+	v.clk.Advance(time.Minute)
 	v.poll()
-	if len(plan.heads) != 1 || plan.heads[0] != head {
-		t.Fatalf("Reviewing transitions = %v, want one call for the current head", plan.heads)
+	v.poll()
+	if len(plan.heads) != 2 || plan.heads[0] != head || plan.heads[1] != head {
+		t.Fatalf("Reviewing transitions = %v, want retry then settlement for the current head", plan.heads)
 	}
 }
