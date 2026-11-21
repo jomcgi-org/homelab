@@ -337,6 +337,20 @@ func TestGoalReplyGoesToTicketAndWaitsForFreshReview(t *testing.T) {
 	if v.gh.queued(1) {
 		t.Fatal("PR queued with a verdict for another reply")
 	}
+	revision := goal.replyRevision
+	v.gh.summarize(head, "semgrep-review", itsaplan.GoalReplyReviewed(revision))
+	goal.err = dispatch.ErrNoGoalReasons
+	v.poll()
+	if v.gh.queued(1) {
+		t.Fatal("PR queued before the private assessment was available")
+	}
+	goal.err = nil
+	goal.replyRevision = revision + 1
+	v.poll()
+	if v.gh.queued(1) {
+		t.Fatal("PR queued with private feedback for another reply")
+	}
+	goal.replyRevision = revision
 	v.gh.check(head, "semgrep-review", 200, "failure")
 	v.gh.summarize(head, "semgrep-review", itsaplan.GoalReplyReviewed(goal.replyRevision))
 	v.poll()
