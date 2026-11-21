@@ -17,6 +17,7 @@ py_test(
         "deferred.test.ts",
         "delivery-outcome-assertions.sql",
         "delivery-outcome-backfill.sql",
+        "reader.test.ts",
         "token-usage.test.ts",
         "//projects/factory/chart:deferred_adapter",
         "//projects/factory/connector/itsaplan:delivered_usage_report",
@@ -24,6 +25,7 @@ py_test(
         "//projects/factory/tests/itsaplan/decisionprobe",
         "//projects/platform-factory/kagent-postgres/resources:claims_test.sql",
         "//projects/platform-factory/kagent-postgres/resources:claims_test_files",
+        "@factory_codex_binaries//:usr/local/bin/codex",
         "@itsaplan_test//:runtime/bin/bun",
         "@itsaplan_test//:upstream.tar.gz",
         "@postgres_test//:postgres",
@@ -31,6 +33,7 @@ py_test(
     env = {
         "CLAIMS_TEST": "$(rootpath //projects/platform-factory/kagent-postgres/resources:claims_test.sql)",
         "DECISION_PROBE": "$(rootpath //projects/factory/tests/itsaplan/decisionprobe)",
+        "READER_CODEX": "$(rootpath @factory_codex_binaries//:usr/local/bin/codex)",
         "BUN_BIN": "$(rootpath @itsaplan_test//:runtime/bin/bun)",
         "ITSAPLAN_ARCHIVE": "$(rootpath @itsaplan_test//:upstream.tar.gz)",
     },
