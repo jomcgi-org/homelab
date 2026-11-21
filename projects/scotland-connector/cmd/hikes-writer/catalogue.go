@@ -46,15 +46,16 @@ func content(n *html.Node) string {
 }
 
 var (
-	coord    = regexp.MustCompile(`[-+]?\d+(?:\.\d+)?`)
-	km       = regexp.MustCompile(`([\d.]+)\s*km`)
-	metres   = regexp.MustCompile(`(\d+)\s*m`)
-	duration = regexp.MustCompile(`([\d.]+)\s*(hours?|hrs?|minutes?|mins?|days?)`)
+	coord     = regexp.MustCompile(`[-+]?\d+(?:\.\d+)?`)
+	km        = regexp.MustCompile(`([\d.]+)\s*km`)
+	metres    = regexp.MustCompile(`(\d+)\s*m`)
+	duration  = regexp.MustCompile(`([\d.]+)\s*(hours?|hrs?|minutes?|mins?|days?)`)
+	fractions = strings.NewReplacer("¼", ".25", "½", ".5", "¾", ".75")
 )
 
 func hours(s string) float64 {
 	s = strings.Split(strings.Split(strings.ToLower(s), "/")[0], " or ")[0]
-	parts := strings.Split(s, "-")
+	parts := strings.Split(fractions.Replace(s), "-")
 	var h float64
 	for _, m := range duration.FindAllStringSubmatch(parts[len(parts)-1], -1) {
 		v, _ := strconv.ParseFloat(m[1], 64)
@@ -125,7 +126,7 @@ func page(r io.Reader, base *url.URL, level int) ([]string, walk, error) {
 		}
 		switch n.Data {
 		case "h1":
-			if inside(n, "class", "wtitle") || (w.Name == "" && inside(n, "id", "content")) {
+			if inside(n, "class", "wtitle") || inside(n, "class", "hero-title") || (w.Name == "" && inside(n, "id", "content")) {
 				w.Name = content(n)
 			}
 		case "link":
@@ -141,19 +142,25 @@ func page(r io.Reader, base *url.URL, level int) ([]string, walk, error) {
 					haveCoords = true
 				}
 			}
-		case "dt":
-			if !inside(n, "id", "col") {
+		case "dt", "h2":
+			if n.Data == "dt" && !inside(n, "id", "col") {
 				continue
 			}
-			dd := n.NextSibling
-			for dd != nil && dd.Type != html.ElementNode {
-				dd = dd.NextSibling
+			if n.Data == "h2" && !inside(n, "class", "route-main-col") {
+				continue
 			}
-			if dd == nil || dd.Data != "dd" {
+			value := n.NextSibling
+			for value != nil && value.Type != html.ElementNode {
+				value = value.NextSibling
+			}
+			if value == nil || (n.Data == "dt" && value.Data != "dd") || (n.Data == "h2" && value.Data != "div") {
 				continue
 			}
 			label := strings.ToLower(content(n))
-			v := strings.ToLower(content(dd))
+			if n.Data == "h2" && !inside(n.Parent, "class", label) {
+				continue
+			}
+			v := strings.ToLower(content(value))
 			switch {
 			case strings.Contains(label, "distance"):
 				if m := km.FindStringSubmatch(v); m != nil {

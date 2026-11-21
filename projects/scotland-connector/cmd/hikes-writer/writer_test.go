@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -108,5 +109,44 @@ func TestBootstrapSeedKeepsHubWalks(t *testing.T) {
 	}
 	if added := byID["new"]; added.Fetched != nil || len(added.Hours) != 0 {
 		t.Fatalf("new walk has a forecast: %+v", added)
+	}
+}
+
+func TestWalkHighlandsRouteLayouts(t *testing.T) {
+	const address = "https://www.walkhighlands.co.uk/example/route.shtml"
+	base, err := url.Parse(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const canonical = `<link rel="canonical" href="` + address + `">`
+	const coords = `<a href="https://www.google.com/maps/search/55.59740,-2.43091/">Open in Google Maps</a>`
+	for _, tc := range []struct {
+		name string
+		html string
+	}{
+		{"current", `<h1 class="hero-title">Example route</h1>
+			<div class="route-main-col">
+				<div class="distance"><h2>Distance</h2><div><b>11.75km&nbsp;<wbr>(7.25 miles)</b></div></div>
+				<div class="time"><h2>Time</h2><div><b>3 - 3½ hours</b></div></div>
+				<div class="ascent"><h2>Ascent</h2><div><b>120m</b> (<a href="#route-profile">Profile</a>)</div></div>
+				<h2>Time on a connecting route</h2><div>8 hours</div>
+			</div>`},
+		{"legacy", `<h1 class="wtitle">Example route</h1><dl id="col">
+			<dt>Distance</dt><dd>11.75 km</dd>
+			<dt>Time</dt><dd>3 to 3.5 hours</dd>
+			<dt>Ascent</dt><dd>120 m</dd>
+		</dl>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, got, err := page(strings.NewReader(canonical+tc.html+coords), base, 3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Name != "Example route" || got.URL != address || got.ID == "" ||
+				got.Lat != 55.5974 || got.Lon != -2.43091 || got.Distance != 11.75 ||
+				got.Duration != 3.5 || got.Ascent != 120 {
+				t.Fatalf("unexpected route: %+v", got)
+			}
+		})
 	}
 }
