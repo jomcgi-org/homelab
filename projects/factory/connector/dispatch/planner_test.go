@@ -331,3 +331,31 @@ func TestPlannerFingerprintReadRefusal(t *testing.T) {
 		t.Fatalf("attempts %d creates %d: %v", attempts, v.its.activationCreates, err)
 	}
 }
+
+func TestPlannerLocalDuplicateAfterSearchRefusals(t *testing.T) {
+	for _, closed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("closed=%t", closed), func(t *testing.T) {
+			v := plannerFixture(t)
+			if _, err := v.st.DB.Exec("INSERT INTO planner_run(run_id,schedule,finished_at) VALUES('prior','smoke',now())"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := v.st.DB.Exec(`INSERT INTO planner_proposal(run_id,fingerprint,disposition,closed_at)
+ VALUES('prior','homelab:docs:file:missing','delegate',CASE WHEN $1 THEN now() END)`, closed); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := v.st.DB.Exec(`INSERT INTO planner_tracker_attempt(run_id,fingerprint,operation,resource,writer_epoch,attempts,refusals)
+ VALUES('r','homelab:docs:file:missing','LookupSearch','prior search',1,12,12)`); err != nil {
+				t.Fatal(err)
+			}
+			v.tick(v.e)
+			var duplicates, dropped, reads int
+			if err := v.st.DB.QueryRow(`SELECT deduplicated,dropped,(SELECT sum(attempts) FROM planner_tracker_attempt WHERE run_id='r')
+ FROM planner_run WHERE run_id='r'`).Scan(&duplicates, &dropped, &reads); err != nil {
+				t.Fatal(err)
+			}
+			if duplicates != 1 || dropped != 0 || reads != 12 || v.its.activationCreates != 0 {
+				t.Fatalf("duplicates %d dropped %d lookup attempts %d creates %d", duplicates, dropped, reads, v.its.activationCreates)
+			}
+		})
+	}
+}

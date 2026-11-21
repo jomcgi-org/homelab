@@ -18,10 +18,6 @@ func fingerprintMarker(fp string) string {
 }
 
 func (e *Engine) plannerDuplicate(ctx context.Context, call *plannerTrackerCall, fp string) (bool, error) {
-	var existing bool
-	if err := e.st.DB.QueryRowContext(ctx, "SELECT EXISTS(SELECT FROM planner_existing_issue WHERE fingerprint=$1)", fp).Scan(&existing); err != nil || existing {
-		return existing, err
-	}
 	marker := fingerprintMarker(fp)
 	hits, err := plannerRead(ctx, call, "LookupSearch", marker, func() ([]itsaplan.Issue, error) {
 		return e.its.SearchIssues(ctx, "HOME", strings.TrimSuffix(strings.TrimPrefix(marker, "<!-- "), " -->"))
@@ -70,9 +66,20 @@ func (e *Engine) preparePlannerResult(ctx context.Context) error {
 	}
 	duplicates := make(map[string]bool, len(items))
 	for _, p := range items {
-		var stopped bool
-		if err := e.st.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT FROM planner_tracker_attempt WHERE run_id=$1 AND fingerprint=$2 AND operation LIKE 'Lookup%' AND refusals>=$3)`, run, p.Fingerprint, outboxAuthMaxTries).Scan(&stopped); err != nil {
+		var localDuplicate, stopped bool
+		err := e.st.DB.QueryRowContext(ctx, `SELECT
+ EXISTS(SELECT FROM planner_existing_issue WHERE fingerprint=$2) OR
+ EXISTS(SELECT FROM planner_proposal p WHERE p.fingerprint=$2 AND
+        (p.closed_at IS NULL OR p.closed_at>now()-s.cooldown OR p.run_id=r.run_id)),
+ EXISTS(SELECT FROM planner_tracker_attempt WHERE run_id=$1 AND fingerprint=$2 AND operation LIKE 'Lookup%' AND refusals>=$3)
+ FROM planner_run r JOIN planner_schedule s ON s.name=r.schedule WHERE r.run_id=$1`,
+			run, p.Fingerprint, outboxAuthMaxTries).Scan(&localDuplicate, &stopped)
+		if err != nil {
 			return err
+		}
+		if localDuplicate {
+			duplicates[p.Fingerprint] = true
+			continue
 		}
 		if stopped {
 			continue
