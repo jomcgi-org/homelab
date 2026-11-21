@@ -242,12 +242,13 @@ kubectl --kubeconfig="${FACTORY_OPERATOR_KUBECONFIG:?Set the operator kubeconfig
        AND r.state <> 'closed') AS open_runs,
     (SELECT count(*) FROM cancellation c JOIN run r ON r.id = c.run_id
        WHERE r.work_item_id = w.id AND c.state = 'pending') AS pending,
+    (w.pr_create_check_at IS NOT NULL) AS pending_pr_create,
     (SELECT p.number FROM pull_request p WHERE p.work_item_id = w.id) AS pr
   FROM work_item w WHERE w.issue_key = 'HOME-N'"
 ```
 
 The stop has settled when the state is `stopped`, `open_runs` and `pending`
-are 0 (a cancellation is confirmed only after kagent confirms the task
+are 0, `pending_pr_create` is false (a cancellation is confirmed only after kagent confirms the task
 stopped), and GitHub shows the PR closed or merged
 (`gh pr view <pr> --json state`). The connector's own PR fields are its last
 poll and can be stale. When the query shows no PR, look on GitHub for one

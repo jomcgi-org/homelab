@@ -44,17 +44,20 @@ type fakeGitHub struct {
 	detailErr  error // fails every PR detail read while set
 	// loseCreate opens the next PR but loses the response; findErr fails
 	// the next lookups.
-	delayed     *github.NewPullRequest
-	delayCreate bool
-	stopComment string
-	loseCreate  bool
-	findErr     []error
-	checkErr    []error
-	statusErr   []error
-	dequeues    []string
-	baseFiles   map[string]string
-	baseReads   []string
-	baseErr     error
+	delayed          *github.NewPullRequest
+	delayCreate      bool
+	rejectCreate     bool
+	stopComment      string
+	stopCommentCount int
+	failClose        bool
+	loseCreate       bool
+	findErr          []error
+	checkErr         []error
+	statusErr        []error
+	dequeues         []string
+	baseFiles        map[string]string
+	baseReads        []string
+	baseErr          error
 	// onEnqueue runs as an enqueue is accepted.
 	onEnqueue func()
 	onChecks  func()
@@ -314,6 +317,10 @@ func (g *fakeGitHub) CreatePullRequest(_ context.Context, _ string, n github.New
 	if b == nil || b.ahead == 0 {
 		return nil, &github.HTTPError{Status: 422, Body: "No commits between main and " + n.Head}
 	}
+	if g.rejectCreate {
+		g.rejectCreate = false
+		return nil, &github.HTTPError{Status: 422}
+	}
 	if g.delayCreate {
 		g.delayCreate = false
 		g.delayed = &n
@@ -323,7 +330,7 @@ func (g *fakeGitHub) CreatePullRequest(_ context.Context, _ string, n github.New
 	num := len(g.prs) + 1
 	p := &fakePR{body: n.Body, pr: github.PullRequest{
 		Number: num, NodeID: fmt.Sprintf("PR_%d", num), URL: fmt.Sprintf("https://github.com/example-org/homelab/pull/%d", num),
-		Body: n.Body, State: "open", HeadSHA: b.head, HeadRef: n.Head, BaseRef: n.Base, Title: n.Title,
+		Author: "jomcgi-factory[bot]", Body: n.Body, State: "open", HeadSHA: b.head, HeadRef: n.Head, BaseRef: n.Base, Title: n.Title,
 	}}
 	g.prs = append(g.prs, p)
 	if g.loseCreate {
@@ -334,7 +341,12 @@ func (g *fakeGitHub) CreatePullRequest(_ context.Context, _ string, n github.New
 	return &c, nil
 }
 
+func (g *fakeGitHub) IssueComments(context.Context, string, int) ([]github.Comment, bool, error) {
+	return []github.Comment{{Author: "jomcgi-factory[bot]", Body: g.stopComment}}, true, nil
+}
+
 func (g *fakeGitHub) CreateIssueComment(_ context.Context, _ string, _ int, body string) (*github.Comment, error) {
+	g.stopCommentCount++
 	g.stopComment = body
 	return &github.Comment{}, nil
 }
@@ -351,6 +363,10 @@ func (g *fakeGitHub) UpdatePullRequest(_ context.Context, _ string, number int, 
 		p.body = *u.Body
 	}
 	if u.State != nil && !p.pr.Merged {
+		if g.failClose {
+			g.failClose = false
+			return nil, context.DeadlineExceeded
+		}
 		p.pr.State = *u.State
 	}
 	g.sync(p)
@@ -636,9 +652,37 @@ func TestStoppedCreateAppearsAfterTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	v.clk.Advance(time.Hour)
+	v.gh.byNumber(1).pr.Author = "person"
 	v.tick(v.e)
+	if v.gh.byNumber(1).pr.State != "open" || v.gh.stopCommentCount != 0 {
+		t.Fatal("acted on a human-authored PR with the factory body")
+	}
+	v.gh.byNumber(1).pr.Author = "jomcgi-factory[bot]"
+	v.clk.Advance(time.Hour)
+	v.gh.failClose = true
+	v.tick(v.e)
+	v.clk.Advance(time.Hour)
+	v.tick(v.e)
+	if v.gh.stopCommentCount != 1 {
+		t.Fatalf("posted %d stop comments", v.gh.stopCommentCount)
+	}
 	if v.gh.byNumber(1).pr.State != "closed" || !strings.Contains(v.gh.stopComment, "human takeover") {
 		t.Fatalf("late PR state %s, comment %q", v.gh.byNumber(1).pr.State, v.gh.stopComment)
+	}
+}
+
+func TestRejectedCreateClearsPendingHandoff(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.its.add(1, "coder", 101, "HL-7", "Fix it.")
+	v.tick(v.e)
+	v.gh.push("factory/HL-7", "sha-1", "fix: one")
+	v.gh.rejectCreate = true
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	var pending bool
+	if err := v.st.DB.QueryRowContext(v.ctx, `SELECT pr_create_check_at IS NOT NULL FROM work_item WHERE issue_id = 101`).Scan(&pending); err != nil || pending || v.gh.rejectCreate {
+		t.Fatalf("rejected create pending=%t, rejection unused=%t: %v", pending, v.gh.rejectCreate, err)
 	}
 }
 

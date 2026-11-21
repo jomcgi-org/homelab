@@ -27,6 +27,7 @@ import (
 // GitHub is the subset of the GitHub client delivery uses.
 type GitHub interface {
 	RevertedMerge(ctx context.Context, repo, branch, sha string, number int, since, until time.Time, before func(int) error) (*time.Time, error)
+	IssueComments(ctx context.Context, repo string, number int) ([]github.Comment, bool, error)
 	CreateIssueComment(ctx context.Context, repo string, number int, body string) (*github.Comment, error)
 	FindPullRequest(ctx context.Context, repo, branch string) (*github.PullRequest, error)
 	CreatePullRequest(ctx context.Context, repo string, n github.NewPullRequest) (*github.PullRequest, error)
@@ -485,17 +486,14 @@ func (e *Engine) findOrOpenPR(ctx context.Context, repo string, wi *store.WorkIt
 	}
 	// Commit the intent before sending. A timeout or writer crash leaves
 	// it visible to the stopped-item reconciler.
-	res, err := e.st.DB.ExecContext(ctx, `UPDATE work_item SET pr_create_check_at = $2
-		WHERE id = $1 AND state = 'review' AND turn_attempt_id = $3`, wi.ID, e.cfg.Now(), wi.TurnAttemptID)
+	var previouslyPending bool
+	err = e.st.DB.QueryRowContext(ctx, `WITH prior AS (
+		SELECT id, pr_create_check_at IS NOT NULL AS pending FROM work_item
+		WHERE id = $1 AND state = 'review' AND turn_attempt_id = $3 FOR UPDATE
+	) UPDATE work_item w SET pr_create_check_at = $2 FROM prior
+		WHERE w.id = prior.id RETURNING prior.pending`, wi.ID, e.cfg.Now(), wi.TurnAttemptID).Scan(&previouslyPending)
 	if err != nil {
-		return nil, err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return nil, err
-	}
-	if n == 0 {
-		return nil, fmt.Errorf("PR creation superseded for %s", wi.IssueKey)
+		return nil, fmt.Errorf("record PR creation for %s: %w", wi.IssueKey, err)
 	}
 	created, err := e.gh.CreatePullRequest(ctx, repo, github.NewPullRequest{
 		Title: title, Head: wi.Branch, Base: b.BaseBranch, Body: body,
@@ -503,6 +501,13 @@ func (e *Engine) findOrOpenPR(ctx context.Context, repo string, wi *store.WorkIt
 	if err == nil {
 		e.m.PullRequests.WithLabelValues("created").Inc()
 		return created, nil
+	}
+	var rejected *github.HTTPError
+	if !previouslyPending && (errors.Is(err, github.ErrPRExists) || errors.Is(err, github.ErrNotFound) ||
+		(errors.As(err, &rejected) && rejected.Status >= 400 && rejected.Status < 500 && rejected.Status != 408)) {
+		if _, clearErr := e.st.DB.ExecContext(ctx, `UPDATE work_item SET pr_create_check_at = NULL WHERE id = $1`, wi.ID); clearErr != nil {
+			return nil, errors.Join(err, clearErr)
+		}
 	}
 	e.log.WarnContext(ctx, "opening the PR failed; looking it up", "work_item", wi.ID, "error", err)
 	if gerr := e.guard(ctx); gerr != nil {
@@ -513,6 +518,19 @@ func (e *Engine) findOrOpenPR(ctx context.Context, repo string, wi *store.WorkIt
 		return nil, err
 	}
 	return e.adoptPR(ctx, repo, b, found, body)
+}
+
+// Record the attempt outside the work-item transaction so a failed response
+// or writer takeover cannot erase the send history.
+func (e *Engine) stoppedPRCall(ctx context.Context, id string) (bool, error) {
+	var confirmed bool
+	err := e.st.DB.QueryRowContext(ctx, `INSERT INTO stopped_pr_attempt (message_id) VALUES ($1)
+		ON CONFLICT (message_id) DO UPDATE SET attempts = stopped_pr_attempt.attempts + 1
+		RETURNING confirmed`, id).Scan(&confirmed)
+	if err != nil {
+		return false, err
+	}
+	return confirmed, e.guard(ctx)
 }
 
 // invariant: FACT-14
@@ -531,25 +549,59 @@ func (e *Engine) checkStoppedCreate(ctx context.Context, wi *store.WorkItem, b *
 		if n, err := res.RowsAffected(); err != nil || n == 0 {
 			return err
 		}
-		if err := e.guard(ctx); err != nil {
+		var stops int
+		if err := tx.QueryRowContext(ctx, `SELECT stops FROM work_item WHERE id = $1`, wi.ID).Scan(&stops); err != nil {
+			return err
+		}
+		id := fmt.Sprintf("stopped-pr/%d/%d", wi.ID, stops)
+		if _, err := e.stoppedPRCall(ctx, id+"/find"); err != nil {
 			return err
 		}
 		pr, err := e.gh.FindPullRequest(ctx, b.repo(), wi.Branch)
 		if err != nil || pr == nil || pr.BaseRef != b.BaseBranch {
 			return err
 		}
-		if !strings.Contains(pr.Body, fmt.Sprintf("<!-- factory-connector work-item=%d -->", wi.ID)) {
+		const factoryAuthor = "jomcgi-factory[bot]"
+		if pr.Author != factoryAuthor || !strings.Contains(pr.Body, fmt.Sprintf("<!-- factory-connector work-item=%d -->", wi.ID)) {
 			return nil
 		}
 		if pr.State == "open" {
-			if err := e.guard(ctx); err != nil {
+			id += fmt.Sprintf("/%d", pr.Number)
+			commentID := id + "/comment"
+			marker := "<!-- " + commentID + " -->"
+			if _, err := e.stoppedPRCall(ctx, id+"/list-comments"); err != nil {
 				return err
 			}
-			body := fmt.Sprintf("Closing this factory PR because delivery of %s was stopped: %s.", wi.IssueKey, wi.StoppedReason)
-			if _, err := e.gh.CreateIssueComment(ctx, b.repo(), pr.Number, body); err != nil {
+			comments, complete, err := e.gh.IssueComments(ctx, b.repo(), pr.Number)
+			if err != nil {
 				return err
 			}
-			if err := e.guard(ctx); err != nil {
+			found := false
+			for _, c := range comments {
+				if c.Author == factoryAuthor && strings.Contains(c.Body, marker) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				if !complete {
+					return fmt.Errorf("incomplete stop comment list for PR #%d", pr.Number)
+				}
+				confirmed, err := e.stoppedPRCall(ctx, commentID)
+				if err != nil {
+					return err
+				}
+				if !confirmed {
+					body := fmt.Sprintf("Closing this factory PR because delivery of %s was stopped: %s.\n\n%s", wi.IssueKey, wi.StoppedReason, marker)
+					if _, err := e.gh.CreateIssueComment(ctx, b.repo(), pr.Number, body); err != nil {
+						return err
+					}
+					if _, err := e.st.DB.ExecContext(ctx, `UPDATE stopped_pr_attempt SET confirmed = true WHERE message_id = $1`, commentID); err != nil {
+						return err
+					}
+				}
+			}
+			if _, err := e.stoppedPRCall(ctx, id+"/close"); err != nil {
 				return err
 			}
 			state := "closed"
