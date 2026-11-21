@@ -24,6 +24,10 @@ spec:
               protocol: TCP
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
 ---
 # The certgen Job writes the control plane's TLS and OIDC HMAC Secrets. It is a
 # Helm pre-install hook, which ArgoCD runs as a PreSync hook before any
@@ -43,6 +47,10 @@ spec:
       app: certgen
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy

@@ -86,6 +86,10 @@ spec:
   egress:
     # Kubernetes discovery: each node publishes and lists GarageNodes.
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     - toEndpoints:
         - matchLabels:
             app.kubernetes.io/name: garage
@@ -107,6 +111,10 @@ spec:
       app.kubernetes.io/name: garage-init
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     - toEndpoints:
         - matchLabels:
             app.kubernetes.io/name: garage

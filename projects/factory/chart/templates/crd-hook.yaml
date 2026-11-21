@@ -100,6 +100,10 @@ spec:
       app.kubernetes.io/name: {{ $name }}
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
 {{- end }}
 ---
 apiVersion: batch/v1

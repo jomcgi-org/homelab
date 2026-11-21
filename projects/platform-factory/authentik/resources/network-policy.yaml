@@ -149,6 +149,10 @@ spec:
               protocol: TCP
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     - toEndpoints:
         - matchLabels:
             cnpg.io/cluster: authentik-pg
@@ -182,3 +186,7 @@ spec:
       app.kubernetes.io/name: authentik-secret-init
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP

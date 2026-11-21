@@ -8,7 +8,10 @@ exports_files(
 
 exports_files(
     ["platform-factory/network-policy/resources/argocd.yaml"],
-    visibility = ["//projects/platform-factory/external-secrets/chart:__pkg__"],
+    visibility = [
+        "//projects/platform-factory/external-secrets/chart:__pkg__",
+        "//projects/platform-factory/network-policy/tests:__pkg__",
+    ],
 )
 
 filegroup(
@@ -97,4 +100,16 @@ sh_test(
     srcs = ["factory-cluster/rehearse-substrate-ca.sh"],
     args = ["$(rootpath @jq_toolchains//:resolved_toolchain)"],
     data = ["@jq_toolchains//:resolved_toolchain"],
+)
+
+exports_files(
+    [
+        "platform-factory/cert-manager/resources/network-policy.yaml",
+        "platform-factory/cfgate/resources/network-policy.yaml",
+        "platform-factory/cloudnative-pg/resources/network-policy.yaml",
+        "platform-factory/kargo/resources/network-policy.yaml",
+        "platform-factory/network-policy/resources/kube-system.yaml",
+        "platform-factory/network-policy/resources/onepassword.yaml",
+    ],
+    visibility = ["//projects/platform-factory/network-policy/tests:__pkg__"],
 )

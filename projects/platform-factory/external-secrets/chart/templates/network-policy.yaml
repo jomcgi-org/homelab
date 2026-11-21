@@ -22,10 +22,7 @@ spec:
     - toEntities: [kube-apiserver]
       toPorts:
         - ports:
-            # k3s API backend; 443 is the kubernetes Service port.
             - port: "6443"
-              protocol: TCP
-            - port: "443"
               protocol: TCP
 ---
 apiVersion: cilium.io/v2
