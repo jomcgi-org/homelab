@@ -1168,8 +1168,12 @@ func (e *Engine) finishRun(ctx context.Context, q store.Querier, r *store.Run, r
 	}
 	res.Usage = usage
 	if !r.Connector() {
-		res.Attempt = r.Attempt
-		if err := e.st.Enqueue(ctx, q, store.OutboxResult, resultKey(r.ID, r.Attempt), r.ID, r.AgentKey, res); err != nil {
+		// Cancellation and recovery can finish a run from a partial record.
+		// Bind the result to the lease stored in this writer transaction.
+		if err := q.QueryRowContext(ctx, `SELECT attempt FROM run WHERE id = $1 FOR UPDATE`, r.ID).Scan(&res.Attempt); err != nil {
+			return err
+		}
+		if err := e.st.Enqueue(ctx, q, store.OutboxResult, resultKey(r.ID, res.Attempt), r.ID, r.AgentKey, res); err != nil {
 			return err
 		}
 		return e.st.SetRunState(ctx, q, r.ID, store.RunFinishing, "")
