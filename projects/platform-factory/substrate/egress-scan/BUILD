@@ -5,6 +5,7 @@ go_library(
     name = "egress-scan_lib",
     srcs = [
         "main.go",
+        "metrics.go",
         "rules.go",
         "scan.go",
     ],
@@ -13,6 +14,8 @@ go_library(
     deps = [
         "@com_github_envoyproxy_go_control_plane_envoy//service/auth/v3:auth",
         "@com_github_envoyproxy_go_control_plane_envoy//type/v3:type",
+        "@com_github_prometheus_client_golang//prometheus",
+        "@com_github_prometheus_client_golang//prometheus/promhttp",
         "@com_github_spf13_viper//:viper",
         "@com_github_zricethezav_gitleaks_v8//config",
         "@com_github_zricethezav_gitleaks_v8//logging",
@@ -44,6 +47,7 @@ go_test(
     deps = [
         "@com_github_envoyproxy_go_control_plane_envoy//service/auth/v3:auth",
         "@com_github_envoyproxy_go_control_plane_envoy//type/v3:type",
+        "@com_github_prometheus_client_golang//prometheus",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//credentials/insecure",

@@ -204,6 +204,44 @@ scrape_configs:
       - source_labels: [__meta_kubernetes_pod_node_name]
         target_label: node
 
+  # Scanner pods expose metrics on a separate listener from gRPC requests.
+  - job_name: egress-scan
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [ate-system]
+        selectors:
+          - role: pod
+            label: app=egress-scan
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_port_name, __meta_kubernetes_pod_container_port_number]
+        regex: metrics;9090
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+
+  # The private native Mandoline server is discovered when deployed.
+  - job_name: mandoline
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [factory]
+        selectors:
+          - role: pod
+            label: app.kubernetes.io/name=mandoline
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_port_name, __meta_kubernetes_pod_container_port_number]
+        regex: metrics;9101
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+
   # The broker's admin port; every path there but /healthz and /metrics needs
   # a reviewed ServiceAccount token this Prometheus does not hold.
   - job_name: factory-broker

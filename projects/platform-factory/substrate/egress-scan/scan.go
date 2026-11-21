@@ -36,7 +36,7 @@ func (s *scanner) Check(ctx context.Context, check *authv3.CheckRequest) (*authv
 	case s.slots <- struct{}{}:
 		defer func() { <-s.slots }()
 	default:
-		return deny(codes.ResourceExhausted, typev3.StatusCode_ServiceUnavailable, "scan capacity exhausted"), nil
+		return deny(codes.ResourceExhausted, typev3.StatusCode_ServiceUnavailable, capacityReason), nil
 	}
 	scanCtx, cancel := context.WithTimeout(ctx, maxScanTime)
 	defer cancel()

@@ -39,6 +39,8 @@ spec:
           ports:
             - name: grpc
               containerPort: 8080
+            - name: metrics
+              containerPort: 9090
           startupProbe:
             grpc:
               port: 8080

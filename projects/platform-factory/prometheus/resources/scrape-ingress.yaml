@@ -64,6 +64,45 @@ spec:
             - port: "9090"
               protocol: TCP
 ---
+# The egress scanner's metrics listener. Its gRPC port has a separate policy.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: prometheus-scrape-egress-scan
+spec:
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: ate-system
+      app: egress-scan
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: prometheus
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "9090"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: prometheus-scrape-mandoline
+spec:
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: factory
+      app.kubernetes.io/name: mandoline
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: prometheus
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "9101"
+              protocol: TCP
+---
 # Every CloudNativePG instance: kagent-pg, factory-db and authentik-pg.
 apiVersion: cilium.io/v2
 kind: CiliumClusterwideNetworkPolicy

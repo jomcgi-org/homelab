@@ -35,6 +35,8 @@ configMapGenerator:
       - dashboards/cilium-drops.json
       - dashboards/cnpg.json
       - dashboards/factory-delivery.json
+      - dashboards/mandoline.json
+      - dashboards/egress-scanning.json
   - name: runbooks
     namespace: grafana
     files:

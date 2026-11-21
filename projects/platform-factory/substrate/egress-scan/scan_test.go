@@ -12,6 +12,7 @@ import (
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -84,13 +85,14 @@ func TestCheck(t *testing.T) {
 
 func TestCheckOverGRPC(t *testing.T) {
 	backend := newTestScanner(t)
+	registry := prometheus.NewRegistry()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(maxCheckMessage))
 	t.Cleanup(server.Stop)
-	authv3.RegisterAuthorizationServer(server, backend)
+	authv3.RegisterAuthorizationServer(server, newMeteredScanner(backend, registry))
 	go server.Serve(listener)
 
 	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -116,6 +118,38 @@ func TestCheckOverGRPC(t *testing.T) {
 	result, err = check()
 	if err != nil || result.GetDeniedResponse().GetStatus().GetCode() != typev3.StatusCode_ServiceUnavailable {
 		t.Fatalf("saturated check did not deny: %v", err)
+	}
+
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(families) != 2 {
+		t.Fatalf("unexpected metric families: %v", families)
+	}
+	for _, family := range families {
+		for _, sample := range family.GetMetric() {
+			labels := sample.GetLabel()
+			if len(labels) != 1 || labels[0].GetName() != "outcome" {
+				t.Fatal("every scan sample must have only the outcome label")
+			}
+			var want float64
+			if outcome := labels[0].GetValue(); outcome == "allowed" || outcome == "capacity_limited" {
+				want = 1
+			}
+			var count float64
+			switch family.GetName() {
+			case "factory_egress_scan_checks_total":
+				count = sample.GetCounter().GetValue()
+			case "factory_egress_scan_check_duration_seconds":
+				count = float64(sample.GetHistogram().GetSampleCount())
+			default:
+				t.Fatalf("unexpected metric family %s", family.GetName())
+			}
+			if count != want {
+				t.Fatalf("%s for %s = %v, want %v", family.GetName(), labels[0].GetValue(), count, want)
+			}
+		}
 	}
 }
 
