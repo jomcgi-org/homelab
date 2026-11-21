@@ -1,3 +1,4 @@
+{{- /* invariant: PLAT-14 */ -}}
 {{- if or (eq .Values.workloadKind "CronWorkflow") (.Values.githubApp | default dict).enabled }}
 apiVersion: v1
 kind: ConfigMap
