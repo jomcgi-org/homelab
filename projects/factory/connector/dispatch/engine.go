@@ -2707,6 +2707,7 @@ const (
 // flushOutbox delivers due results and comments in order. A failing item
 // backs off without holding back newer ones and is abandoned after
 // outboxMaxTries.
+// invariant: FACT-16
 func (e *Engine) flushOutbox(ctx context.Context) error {
 	items, err := e.st.PendingOutbox(ctx, e.cfg.Now(), outboxBatch)
 	if err != nil {

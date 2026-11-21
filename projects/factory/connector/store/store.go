@@ -1589,6 +1589,7 @@ func (s *Store) OutboxFailed(ctx context.Context, q Querier, id int64, msg strin
 }
 
 // OutboxCooldown reschedules a local skip while preserving the start of the outage.
+// invariant: FACT-16
 func (s *Store) OutboxCooldown(ctx context.Context, q Querier, id int64, msg string, now, next time.Time) error {
 	_, err := q.ExecContext(ctx, `UPDATE outbox SET last_error = $2, next_attempt_at = $3,
 		unavailable_since = coalesce(unavailable_since, $4)
