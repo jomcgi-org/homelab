@@ -1,6 +1,6 @@
 {
   "system": "CI and supply chain",
-  "system_dir": "bazel/tools/ci",
+  "system_dir": "projects/platform",
   "commit": "d27644169",
   "nodes": [
     {
