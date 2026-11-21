@@ -658,15 +658,17 @@ reuse state, even after a prolonged persistence failure.
   comment from a token with `issues: write` alone (HTTP 403, 2026-11-15).
   `pull_requests: write` could approve, so that token never leaves the
   broker. `/github/reviewer-comments` (`github.CommentProxy`), for the same
-  subjects only, does three things with it: finds the oldest comment
+  subjects only, finds the oldest comment
   `githubReview.commentAuthor`, the reviewer's bot login, wrote on a PR
   (reading up to 10,000 comments a page at a time and stopping at the first
   match, so the reviewer makes one request), creates a comment on a pull
   request (an issue number is refused), and edits a comment on a pull
   request that the bot login wrote. Lookup has a five-minute budget in both
   the reviewer and its broker client. The comment write gets a fresh
-  30-second budget after lookup. It serves
-  nothing else, and runs only when that login is set. An App without those
+  30-second budget after lookup. The inline operation checks the PR head,
+  submits COMMENT reviews, and replies to and resolves finding threads
+  identified by the bot login and a service marker. The proxy serves
+  only these comment operations, and runs only when that login is set. An App without those
   permissions fails only the comment, and the check token never gains
   them. `merge_queues: write` alone does not let this token
   enqueue: the first live attempt was refused with `FORBIDDEN` (2026-11-14),

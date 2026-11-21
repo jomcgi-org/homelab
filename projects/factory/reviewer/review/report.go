@@ -67,9 +67,30 @@ type Report struct {
 	Previous       []Previous `json:"previous"`
 }
 
+// Suggestion replaces the inclusive head-side range on the finding's path.
+type Suggestion struct {
+	Start       int     `json:"start"`
+	End         int     `json:"end"`
+	Replacement *string `json:"replacement"`
+}
+
+// UnmarshalJSON lets malformed optional advice fall away without losing the finding.
+func (q *Suggestion) UnmarshalJSON(data []byte) error {
+	type wire Suggestion
+	var decoded wire
+	if err := json.Unmarshal(data, &decoded); err == nil {
+		*q = Suggestion(decoded)
+	}
+	return nil
+}
+
 // Finding is one review finding with an ID that stays stable across
 // rounds: `<path>:<rule>` (REVIEW.md "Report").
 type Finding struct {
+	StartLine  int         `json:"start_line,omitempty"`
+	Suggestion *Suggestion `json:"suggestion,omitempty"`
+	threadID   int64
+
 	ID       string `json:"id"`
 	Severity string `json:"severity"`
 	Path     string `json:"path,omitempty"`
@@ -385,6 +406,7 @@ type Assessment struct {
 	Deferred []Finding
 	// DroppedLow counts low findings past MaxLow.
 	DroppedLow int
+	ExtraLow   []Finding
 	// Earlier is what earlier heads' reviews cleared; the State carries it
 	// on with this review's (clearedOf).
 	Earlier []Cleared
@@ -650,6 +672,7 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 		case f.Severity == SeverityLow:
 			if low++; low > MaxLow {
 				a.DroppedLow++
+				a.ExtraLow = append(a.ExtraLow, f)
 			} else if f.Defer {
 				a.Deferred = append(a.Deferred, f)
 			} else {
@@ -1031,12 +1054,14 @@ var stateRE = regexp.MustCompile(`<!-- factory-review:state v([12]) ([A-Za-z0-9+
 // findings and human gate on the completed check. The next round must
 // account for the findings; only a person clears the human gate.
 type State struct {
-	Round         int                          `json:"round,omitempty"`
-	InvariantBase string                       `json:"invariant_base,omitempty"`
-	Semgrep       *SemgrepStamp                `json:"semgrep,omitempty"`
-	Activation    *github.ActivationAssessment `json:"activation,omitempty"`
-	Blocking      []Finding                    `json:"blocking"`
-	Cleared       []Cleared                    `json:"cleared,omitempty"`
+	PendingResolutions map[string]string            `json:"pending_resolutions,omitempty"`
+	OptionalIDs        []string                     `json:"optional_ids,omitempty"`
+	Round              int                          `json:"round,omitempty"`
+	InvariantBase      string                       `json:"invariant_base,omitempty"`
+	Semgrep            *SemgrepStamp                `json:"semgrep,omitempty"`
+	Activation         *github.ActivationAssessment `json:"activation,omitempty"`
+	Blocking           []Finding                    `json:"blocking"`
+	Cleared            []Cleared                    `json:"cleared,omitempty"`
 	// ClearedPartial marks a cleared record that has lost entries, on this
 	// head or an earlier one, so it cannot show every fixed finding.
 	ClearedPartial bool  `json:"cleared_partial,omitempty"`
@@ -1388,6 +1413,8 @@ func clearedOf(a Assessment, r *Report) ([]Cleared, bool) {
 // storable bounds descriptive text for the hidden State. Identity and
 // severity survive unchanged.
 func storable(f Finding) Finding {
+	f.Suggestion = nil
+	f.threadID = 0
 	f.Title = storeText(f.Title, maxTitle)
 	f.Path = storeText(f.Path, maxStoredPath)
 	f.Detail = storeText(f.Detail, maxStoredDetail)
@@ -1452,11 +1479,23 @@ func blockingEntries(bs []Blocked, c entryContext, room int) []string {
 		entries = entries[:0]
 		total := 0
 		for _, b := range bs {
+			b.Suggestion = nil
 			e := blockingEntry(b, c, limit)
 			entries = append(entries, e)
 			total += len(e)
 		}
 		if total <= room {
+			for i, b := range bs {
+				if b.Suggestion == nil {
+					continue
+				}
+				full := blockingEntry(b, c, limit)
+				extra := len(full) - len(entries[i])
+				if extra <= room-total {
+					entries[i] = full
+					total += extra
+				}
+			}
 			break
 		}
 	}
@@ -1515,6 +1554,10 @@ func writeFindingN(s *strings.Builder, f Finding, detail int) {
 	if f.Detail != "" && detail > 0 {
 		fmt.Fprintf(s, ": %s", oneLine(f.Detail, detail))
 	}
+	if q := f.Suggestion; q != nil && q.Replacement != nil {
+		data, _ := json.Marshal(*q.Replacement)
+		fmt.Fprintf(s, "\n  Suggested replacement for %s:%d-%d (JSON string): %s", cleanPath(f.Path), q.Start, q.End, data)
+	}
 	s.WriteString("\n")
 }
 
@@ -1533,6 +1576,10 @@ func encodeState(st State) string {
 		return statePrefix + base64.StdEncoding.EncodeToString([]byte(strings.TrimSpace(b.String()))) + stateSuffix
 	}
 	out := enc(st)
+	if len(out) > maxState && len(st.OptionalIDs) > 0 {
+		st.OptionalIDs = nil
+		out = enc(st)
+	}
 	if len(out) > maxState && len(st.Cleared) > 0 {
 		bare := make([]Cleared, len(st.Cleared))
 		for i, c := range st.Cleared {
@@ -1605,7 +1652,7 @@ func encodeState(st State) string {
 			gate = &c
 		}
 		checkpoint := State{
-			Incomplete: true, Overflow: true, TaskID: st.TaskID, LegacyTask: st.LegacyTask,
+			PendingResolutions: st.PendingResolutions, Incomplete: true, Overflow: true, TaskID: st.TaskID, LegacyTask: st.LegacyTask,
 			IssueDigest: st.IssueDigest, IssuesPending: st.IssuesPending, Goal: st.Goal, GoalKey: st.GoalKey, Semgrep: st.Semgrep,
 			Decisions: st.Decisions, Gate: gate,
 		}
@@ -1863,4 +1910,32 @@ func advisorySection(a Assessment) string {
 	}
 	s.WriteString("\n")
 	return s.String()
+}
+
+// Keep optional IDs available to the next review without making them block.
+// An omitted finding remains available for an explicit fix on a later head.
+func optionalReviewIDs(prior []string, r *Report, a Assessment) []string {
+	ids := map[string]bool{}
+	for _, id := range prior {
+		ids[id] = true
+	}
+	for _, p := range r.Previous {
+		if p.Status == StatusFixed {
+			delete(ids, p.ID)
+		}
+	}
+	for _, b := range a.Blocking {
+		delete(ids, b.ID)
+	}
+	for _, group := range [][]Finding{a.Optional, a.Deferred, a.ExtraLow} {
+		for _, f := range group {
+			ids[f.ID] = true
+		}
+	}
+	var out []string
+	for id := range ids {
+		out = append(out, id)
+	}
+	slices.Sort(out)
+	return out
 }

@@ -2460,6 +2460,7 @@ func TestMergeGroupsGetTheQueuedPRsReview(t *testing.T) {
 	e, ctx, _ := h.start()
 	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
 	eventually(t, "the check to pass", func() bool { return h.gh.check(shaA).Conclusion == ConclusionSuccess })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
 	h.gh.mu.Lock()
 	h.gh.queue = []github.MergeQueueEntry{
 		{State: "AWAITING_CHECKS", HeadCommit: "mg-7", Number: 7, PRHeadSHA: shaA},
@@ -2525,7 +2526,7 @@ func TestStoredFindingsSurviveTheCheckRun(t *testing.T) {
 	failIf(t, st.InvariantBase == "", "stored state has no invariant base")
 	st.InvariantBase = ""
 	b, _ := json.Marshal(st)
-	if !ok || session == nil || string(b) != `{"round":1,"blocking":[{"id":"a.go#m1","severity":"medium","path":"a.go","title":"M1","detail":"Detail."}]}` {
+	if !ok || session == nil || string(b) != `{"optional_ids":["a.go#l1"],"round":1,"blocking":[{"id":"a.go#m1","severity":"medium","path":"a.go","title":"M1","detail":"Detail."}]}` {
 		t.Fatalf("stored = %s, %v, session %+v", b, ok, session)
 	}
 }

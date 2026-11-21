@@ -2433,7 +2433,9 @@ heads:
 		}
 		a := AssessDecided(report, prior.Previous(), decisions)
 		a.Earlier, a.EarlierPartial = decisions.Revalidate(prior.Cleared), true // Recovery cannot certify the complete cleared record.
+		optionalIDs := optionalReviewIDs(prior.OptionalIDs, report, a)
 		prior = stateOf(a, report, &Gate{Findings: a.Gated})
+		prior.OptionalIDs = optionalIDs
 	}
 	// Keep the current gate's approval baseline and sticky service holds.
 	// Its model findings come from the complete replay, never the lossy list.
@@ -2447,6 +2449,7 @@ heads:
 	}
 	prior.Gate, prior.TaskID, prior.LegacyTask = gate, saved.TaskID, saved.LegacyTask
 	prior.IssueDigest, prior.IssuesPending = saved.IssueDigest, saved.IssuesPending
+	prior.PendingResolutions = saved.PendingResolutions
 	prior.Round = saved.Round
 	prior.Goal, prior.GoalKey = saved.Goal, saved.GoalKey
 	prior.Semgrep = saved.Semgrep
@@ -2600,7 +2603,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 	text := Prompt(PromptInput{
 		Repo: repo, Number: pr.Number, URL: pr.URL, Base: b.BaseBranch, SHA: pr.HeadSHA,
 		Title: pr.Title, Body: pr.Body, Author: pr.Author, Files: in.files, Rules: rules,
-		Previous: in.prior.Previous(), Cleared: joeDecisions(b, pr, comments).Revalidate(in.prior.Cleared), PreviousHead: in.priorHead, Interdiff: interdiff, Scope: scope, PreviousUnknown: in.priorUnknown,
+		OptionalIDs: in.prior.OptionalIDs, Previous: in.prior.Previous(), Cleared: joeDecisions(b, pr, comments).Revalidate(in.prior.Cleared), PreviousHead: in.priorHead, Interdiff: interdiff, Scope: scope, PreviousUnknown: in.priorUnknown,
 		Resumed: plan.resume != nil, RulesHeld: plan.resume != nil && plan.rules != "" && plan.resume.Rules == plan.rules,
 		Comments: comments, DroppedComments: dropped, Cited: cited, Commits: &commits, Gate: in.gate, Attempt: attempt,
 		InvariantScopes: in.invariantScopes, InvariantBase: in.invariantBase, CheckName: e.cfg.CheckName, Semgrep: in.semgrep,
@@ -2751,6 +2754,7 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 			l.WarnContext(ctx, "the review reply has no usable report", "task", task.ID, "error", err, "reply_bytes", len(reply))
 			return result{reason: "the reviewer's reply had no usable findings report: " + oneLine(err.Error(), maxTitle) + "."}
 		}
+		validateSuggestions(r, b, in)
 		findings, verdict := codeReviewResult(r, in.prior.Previous(), b.ItsaplanProject)
 		recordFindings(code, findings)
 		code.SetAttributes(attribute.String("review.verdict", verdict), attribute.String("review.outcome", "assessed"))
@@ -2847,6 +2851,7 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 			}
 		}
 		st := stateOf(a, r, gate)
+		st.OptionalIDs = optionalReviewIDs(in.prior.OptionalIDs, r, a)
 		if in.semgrep != nil {
 			// The goal check can run another model task after the code review.
 			// Check scan freshness after both tasks, before saving the verdict.
@@ -2865,12 +2870,17 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 		}
 		st.Round = round
 		st.InvariantBase = in.invariantBase
+		st.PendingResolutions = in.prior.PendingResolutions
+		if stored, _ := LoadState(encodeState(st)); !a.Incomplete && !stored.Incomplete {
+			st.PendingResolutions = e.postInline(ctx, b, pr, &a, in, r)
+		}
 		o := render(a, r, gate, footer, &st)
 		session := sessionAfter(b, pr, in, task)
 		o.Output.Text = withSession(o.Output.Text, session)
 		if stored, _ := LoadState(o.Output.Text); stored.Incomplete {
 			a.Incomplete = true
 		}
+
 		o.Comment = reviewComment(a, r, b, gate)
 		if summary := acceptanceSummary(st.Goal); !a.Incomplete && summary != "" && st.Goal.Head == pr.HeadSHA {
 			body := summary + "\n\n" + *o.Comment.Findings
