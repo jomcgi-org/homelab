@@ -504,3 +504,52 @@ test("connector records Joe's pick as joesessions and restores the removed deleg
     server.stop(true);
   }
 }, 30000);
+
+test("the coordinator enters Reviewing once per head and preserves manual moves", async () => {
+  const { owner, coder, id } = await fixture();
+  const ownerAPI = authedApi(owner.cookie);
+  const project = ownerAPI.projects({ projectKey: "HOME" });
+  const started = (await project.get()).data!.columns.find(
+    (column) => column.name === "In Progress",
+  )!;
+  const reviewing = await project.columns.post({
+    name: "Reviewing",
+    stateType: "started",
+  });
+  expect(reviewing.status).toBe(201);
+  const coordinator = (
+    await createAgent(ownerAPI, "HOME", {
+      name: "Factory coordinator",
+      username: "factory-coordinator",
+      kind: "external",
+    })
+  ).data!;
+  const move = (key: string, head: string) =>
+    app.handle(
+      new Request(`http://localhost/issues/${id}/factory-reviewing`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": key },
+        body: JSON.stringify({ head }),
+      }),
+    );
+  const setStarted = async () => {
+    expect((await ownerAPI.issues({ issueId: id }).patch({ columnId: started.id })).status).toBe(200);
+  };
+
+  await setStarted();
+  const head = "a".repeat(40);
+  expect((await move(coder.apiKey!, head)).status).toBe(403);
+  const hold = await project.labels.post({ name: "needs-human" });
+  const labelIds = [hold.data!.id];
+  expect((await ownerAPI.issues({ issueId: id }).patch({ labelIds })).status).toBe(200);
+  expect(await (await move(coordinator.apiKey!, head)).json()).toEqual({ moved: false });
+  expect((await ownerAPI.issues({ issueId: id }).patch({ labelIds: [] })).status).toBe(200);
+  const applied = await move(coordinator.apiKey!, head);
+  expect(applied.status).toBe(200);
+  expect(await applied.json()).toEqual({ moved: true });
+  expect((await ownerAPI.issues({ issueId: id }).get()).data?.columnId).toBe(reviewing.data!.id);
+
+  await setStarted();
+  expect(await (await move(coordinator.apiKey!, head)).json()).toEqual({ moved: false });
+  expect((await ownerAPI.issues({ issueId: id }).get()).data?.columnId).toBe(started.id);
+});

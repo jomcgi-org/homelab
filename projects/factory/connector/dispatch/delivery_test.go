@@ -3725,3 +3725,52 @@ func TestUnconfirmedEjectionEmitsNoEjectionSpan(t *testing.T) {
 		})
 	}
 }
+
+type reviewingPlan struct {
+	dispatch.Itsaplan
+	heads []string
+}
+
+func (p *reviewingPlan) MarkIssueReviewing(_ context.Context, issueID int64, head string) error {
+	if issueID != 101 {
+		return fmt.Errorf("unexpected issue %d", issueID)
+	}
+	p.heads = append(p.heads, head)
+	return nil
+}
+
+func TestCurrentPendingReviewerCheckQueuesNativeReviewingOnce(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.e.Release()
+	v.cfg.Bindings[0].ItsaplanProject = "HOME"
+	plan := &reviewingPlan{Itsaplan: v.its}
+	v.plan = plan
+	v.e = v.engine("connector-a")
+	v.its.add(1, "coder", 101, "HOME-7", "Fix the test.")
+	v.tick(v.e)
+	head := strings.Repeat("a", 40)
+	v.gh.push("factory/HOME-7", head, "fix(test): stop the flake")
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Pushed.", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	v.gh.mu.Lock()
+	v.gh.checks[head] = []github.CheckRun{
+		{ID: 5, Name: "semgrep-review", AppID: 200, HeadSHA: head, Status: "completed"},
+		{ID: 10, Name: "semgrep-review", AppID: 300, HeadSHA: head, Status: "in_progress"},
+	}
+	v.gh.mu.Unlock()
+	v.poll()
+	if len(plan.heads) != 0 {
+		t.Fatalf("a foreign check updated the issue: %v", plan.heads)
+	}
+	v.gh.mu.Lock()
+	v.gh.checks[head] = append(v.gh.checks[head], github.CheckRun{
+		ID: 11, Name: "semgrep-review", AppID: 200, HeadSHA: head, Status: "in_progress",
+	})
+	v.gh.mu.Unlock()
+	v.poll()
+	v.poll()
+	if len(plan.heads) != 1 || plan.heads[0] != head {
+		t.Fatalf("Reviewing transitions = %v, want one call for the current head", plan.heads)
+	}
+}

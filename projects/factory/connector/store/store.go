@@ -1493,11 +1493,12 @@ func (s *Store) ConfirmCancellation(ctx context.Context, q Querier, id int64, ou
 
 // Outbox kinds.
 const (
-	OutboxResult        = "result"
-	OutboxComment       = "comment"
-	OutboxIssueDone     = "issue_done"
-	OutboxDeferredStart = "deferred_start"
-	OutboxActivation    = "activation"
+	OutboxResult         = "result"
+	OutboxComment        = "comment"
+	OutboxIssueDone      = "issue_done"
+	OutboxIssueReviewing = "issue_reviewing"
+	OutboxDeferredStart  = "deferred_start"
+	OutboxActivation     = "activation"
 )
 
 // OutboxItem is a side effect waiting for delivery.

@@ -293,6 +293,25 @@ def ensure_project(session, team_id):
     return project["id"]
 
 
+def ensure_reviewing_column(session, team_id):
+    """Add HOME's Reviewing column without rewriting a human's settings."""
+    if CONFIG["project"]["key"] != "HOME":
+        return
+    path = f"/projects/{team_id}.HOME"
+    project = session.call("GET", path)
+    for column in project["columns"]:
+        if column["name"] == "Reviewing":
+            if column["stateType"] != "started":
+                print("HOME Reviewing is outside the started workflow group")
+            return
+    session.call(
+        "POST",
+        path + "/columns",
+        {"name": "Reviewing", "stateType": "started", "color": "#6366f1"},
+    )
+    print("created Reviewing column in HOME")
+
+
 def ensure_deferred_labels(session, team_id):
     """Install the opt-in in every bound project, preserving existing labels."""
     for key in sorted(set(CONFIG.get("deferredProjects", []))):
@@ -722,6 +741,7 @@ def main():
         ensure_settings(session, oidc["client-secret"])
         team_id = ensure_team(session)
         project_id = ensure_project(session, team_id)
+        ensure_reviewing_column(session, team_id)
         ensure_deferred_labels(session, team_id)
         ensure_agents(session, team_id, project_id)
         ensure_sessions(session, team_id)

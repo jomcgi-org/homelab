@@ -2978,6 +2978,9 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 			return err
 		}
 	}
+	if it.Kind == store.OutboxIssueReviewing {
+		return e.deliverIssueReviewing(ctx, it)
+	}
 	if it.Kind == store.OutboxIssueDone {
 		return e.deliverIssueDone(ctx, it)
 	}
