@@ -63,6 +63,10 @@ spec:
     {{- end }}
     # TokenReview, and the grant, quota and github-git objects.
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     # The actor JWT issuer's discovery and keys (idp.<substrate>.svc:443).
     - toEndpoints:
         - matchLabels:

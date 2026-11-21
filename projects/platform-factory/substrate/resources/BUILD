@@ -5,7 +5,10 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 exports_files(
     ["network-policy.yaml"],
-    visibility = ["//projects/factory/chart:__pkg__"],
+    visibility = [
+        "//projects/factory/chart:__pkg__",
+        "//projects/platform-factory/network-policy/tests:__pkg__",
+    ],
 )
 
 py_venv_binary(

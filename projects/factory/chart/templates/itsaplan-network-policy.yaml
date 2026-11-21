@@ -202,6 +202,10 @@ spec:
       app.kubernetes.io/name: {{ $name }}-secret-init
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     {{- with $i.database.endpoints }}
     - toEndpoints:
         {{- toYaml . | nindent 8 }}
@@ -236,6 +240,10 @@ spec:
     {{- end }}
     {{- end }}
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     - toEndpoints:
         - matchLabels:
             {{- include "factory.itsaplanSelector" (dict "root" . "component" "api") | nindent 12 }}

@@ -61,6 +61,10 @@ spec:
               protocol: TCP
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     - toEndpoints:
         - matchLabels:
             {{- include "factory.kagentSelector" (dict "root" . "component" "controller") | nindent 12 }}

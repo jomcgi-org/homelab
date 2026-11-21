@@ -107,5 +107,9 @@ spec:
       toPorts: [{ports: [{port: "8443", protocol: TCP}]}]
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
 {{- end }}
 {{- end }}

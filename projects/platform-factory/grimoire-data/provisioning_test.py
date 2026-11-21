@@ -52,7 +52,7 @@ PEERS = {
     "grimoire-worker": {DATABASE, GARAGE},
     "grimoire-restore": {DATABASE, RECOVERED, R2},
     "grimoire-migration-check": {R2},
-    "grimoire-db-setup": {("kube-apiserver", None)},
+    "grimoire-db-setup": {("kube-apiserver", "6443")},
 }
 # (Secret, bucket, access)
 CLAIMS = {
@@ -122,11 +122,10 @@ def wave(doc):
 
 
 def peers(rule):
-    if "toEntities" in rule:
-        assert "toPorts" not in rule
-        return {(entity, None) for entity in rule["toEntities"]}
     ports = [port["port"] for entry in rule["toPorts"] for port in entry["ports"]]
     assert len(ports) == 1, rule
+    if "toEntities" in rule:
+        return {(entity, ports[0]) for entity in rule["toEntities"]}
     if "toFQDNs" in rule:
         # Exact names only: a pattern would reach other hosts.
         assert all(set(name) == {"matchName"} for name in rule["toFQDNs"]), rule

@@ -12,6 +12,10 @@ spec:
       app.kubernetes.io/component: logs
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     # Every target is addressed by this node's IP (status.hostIP), so the
     # host entity is enough: kubelet stats, Cilium agent metrics and Hubble
     # metrics.
@@ -46,6 +50,10 @@ spec:
       app.kubernetes.io/component: cluster
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     # The operator runs on the host network of any node.
     - toEntities: [host, remote-node]
       toPorts:

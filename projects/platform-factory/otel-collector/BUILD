@@ -15,3 +15,8 @@ argocd_app(
         "//projects/platform/otel-collector:values-factory.yaml",
     ],
 )
+
+exports_files(
+    ["resources/network-policy.yaml"],
+    visibility = ["//projects/platform-factory/network-policy/tests:__pkg__"],
+)

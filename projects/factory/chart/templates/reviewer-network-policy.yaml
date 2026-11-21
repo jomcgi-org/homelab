@@ -29,6 +29,10 @@ spec:
   egress:
     {{- if .Values.runbookRevert.enabled }}
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: ate-system

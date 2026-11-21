@@ -40,3 +40,8 @@ py_test(
     srcs = ["runbook_actions_test.py"],
     data = glob(["runbooks/*.json"]) + ["runbooks/server.py"],
 )
+
+exports_files(
+    ["network-policy.yaml"],
+    visibility = ["//projects/platform-factory/network-policy/tests:__pkg__"],
+)

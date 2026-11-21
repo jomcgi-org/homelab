@@ -521,7 +521,11 @@ def test_policy_egress_only_to_its_peers() -> None:
     peers = [
         (r.get("toEndpoints"), r.get("toFQDNs"), r["toPorts"][0]["ports"][0]["port"])
         for r in spec["egress"]
-        if r != {"toEntities": ["kube-apiserver"]}
+        if r
+        != {
+            "toEntities": ["kube-apiserver"],
+            "toPorts": [{"ports": [{"port": "6443", "protocol": "TCP"}]}],
+        }
     ]
     assert peers == [
         (
@@ -584,7 +588,11 @@ def test_policy_egress_only_to_its_peers() -> None:
     peers = [
         (r.get("toFQDNs"), r["toPorts"][0]["ports"][0]["port"])
         for r in spec["egress"]
-        if r != {"toEntities": ["kube-apiserver"]}
+        if r
+        != {
+            "toEntities": ["kube-apiserver"],
+            "toPorts": [{"ports": [{"port": "6443", "protocol": "TCP"}]}],
+        }
     ]
     assert (None, "8081") in peers
     assert ([{"matchName": "api.github.com"}], "443") in peers

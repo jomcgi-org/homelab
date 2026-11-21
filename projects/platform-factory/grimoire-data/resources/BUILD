@@ -21,3 +21,8 @@ filegroup(
     ],
     visibility = ["//projects/platform-factory/grimoire-data:__pkg__"],
 )
+
+exports_files(
+    ["policy.yaml"],
+    visibility = ["//projects/platform-factory/network-policy/tests:__pkg__"],
+)
