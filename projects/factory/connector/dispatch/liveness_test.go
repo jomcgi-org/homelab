@@ -367,8 +367,8 @@ func TestGoneWorkerRetriesBusyTurnWithinFiveMinutes(t *testing.T) {
 	// attempt, then clear its assignment as Substrate does on crash (revision 19).
 	// The fixtures encode ateapi.v1.Actor metadata, state and worker_assignment.
 	_, err := v.st.DB.Exec(`CREATE TABLE actor_fixture(name text, proto bytea);
-		CREATE FUNCTION public.reaper_actors() RETURNS TABLE(name text, proto bytea)
-		LANGUAGE sql AS $$ SELECT name, proto FROM actor_fixture $$`)
+		CREATE FUNCTION public.scoped_reaper_actors() RETURNS TABLE(atespace text, name text, proto bytea)
+		LANGUAGE sql AS $$ SELECT 'factory-homelab'::text, name, proto FROM actor_fixture $$`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +432,7 @@ func TestGoneWorkerRetriesBusyTurnWithinFiveMinutes(t *testing.T) {
 
 func (v *env) recordWorkerLoss(a *store.Attempt) {
 	v.t.Helper()
-	_, err := v.st.DB.Exec(`INSERT INTO worker_fence(attempt_id,session_id,namespace,pod,uid,gone_at,actor_uid,actor_version)
+	_, err := v.st.DB.Exec(`INSERT INTO scoped_worker_fence(attempt_id,session_id,namespace,pod,uid,gone_at,actor_uid,actor_version)
 		VALUES ($1,$2,'factory-r-homelab','homelab-codex-a','original',now(),'actor',19)`, a.ID, a.ContextID)
 	if err != nil {
 		v.t.Fatal(err)

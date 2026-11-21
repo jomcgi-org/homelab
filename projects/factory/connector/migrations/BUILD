@@ -50,6 +50,7 @@ go_library(
         "20261120090000_planner.sql",
         "20261120100000_planner_schedule_config.sql",
         "20261121000000_issue_reviewing.sql",
+        "20261121010000_reaper_atespace.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],
