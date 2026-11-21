@@ -15,7 +15,7 @@ patch --batch --forward -p1 --fuzz=0 <"$patch_file"
 # Hash the patched source and dependency lock independently of the installer
 # archive's timestamps and filesystem order.
 build_id=$(tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
-  --mode='u+rw,go+r,go-w' --exclude=node_modules -cf - . | sha256sum)
+	--mode='u+rw,go+r,go-w' --exclude=node_modules -cf - . | sha256sum)
 export ITSAPLAN_FACTORY_BUILD_ID="${build_id%% *}"
 # Next embeds a key even when the app has no Server Actions. This value is
 # public. Reject the build if upstream introduces an action that needs a key.
