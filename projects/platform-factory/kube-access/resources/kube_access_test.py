@@ -108,7 +108,10 @@ def test_every_subject_is_an_access_group_or_the_node_session():
         {
             "apiVersion": "v1",
             "kind": "ServiceAccount",
-            "metadata": {"name": NODE_SESSION["name"], "namespace": NODE_SESSION["namespace"]},
+            "metadata": {
+                "name": NODE_SESSION["name"],
+                "namespace": NODE_SESSION["namespace"],
+            },
             "automountServiceAccountToken": False,
         }
     ]
@@ -249,7 +252,11 @@ def test_session_permissions():
             if any(s["name"] == SESSIONS for s in b["subjects"])
         ]
         assert binding["subjects"] == [
-            {"kind": "Group", "apiGroup": "rbac.authorization.k8s.io", "name": SESSIONS},
+            {
+                "kind": "Group",
+                "apiGroup": "rbac.authorization.k8s.io",
+                "name": SESSIONS,
+            },
             NODE_SESSION,
         ]
         namespace = "factory" if kind == "Role" else None
