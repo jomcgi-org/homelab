@@ -6,6 +6,9 @@
 # private.jomcgi.dev route stay off, and the factory's own pipelines arrive
 # with their first Warehouse.
 kargo:
+  image:
+    repository: ghcr.io/akuity/kargo
+    tag: "v1.11.1@sha256:f53e5c5f66b5a2b83b88336c217a9360f58dee33fad918addba57b7b8edbd626"
   api:
     # No UI or API server yet. A Promotion is created as a resource, and the
     # UI needs an edge route and an Authentik client first

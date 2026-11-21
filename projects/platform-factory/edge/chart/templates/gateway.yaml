@@ -44,6 +44,7 @@ spec:
                   gateway.envoyproxy.io/owning-gateway-name: edge
                   gateway.envoyproxy.io/owning-gateway-namespace: {{ .Release.Namespace }}
         container:
+          image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag }}"
           resources: {{- toYaml .Values.proxy.resources | nindent 12 }}
           securityContext:
             readOnlyRootFilesystem: true

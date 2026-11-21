@@ -15,3 +15,8 @@ argocd_app(
         "//projects/platform/onepassword:values-factory.yaml",
     ],
 )
+
+exports_files(
+    ["application.yaml"],
+    visibility = ["//projects/platform-factory/image-audit:__pkg__"],
+)

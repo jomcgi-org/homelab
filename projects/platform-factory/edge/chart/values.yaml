@@ -92,6 +92,9 @@ kubeAPI:
     - factory-kube-sessions
 
 proxy:
+  image:
+    repository: docker.io/envoyproxy/envoy
+    tag: distroless-v1.38.3
   # Name of the Service Envoy Gateway creates for the proxy. The tunnel route
   # and the edge-admission policy name it.
   serviceName: edge-proxy

@@ -15,3 +15,8 @@ argocd_app(
         "//projects/platform/otel-collector:values-factory.yaml",
     ],
 )
+
+exports_files(
+    ["application.yaml"],
+    visibility = ["//projects/platform-factory/image-audit:__pkg__"],
+)
