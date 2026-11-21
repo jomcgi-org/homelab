@@ -3000,7 +3000,9 @@ func TestOldRecoveryOnlyHoldsAreReevaluated(t *testing.T) {
 		newHead     bool
 		cleared     bool
 	}{
-		{name: "recovery only", recoverable: true, cleared: true},
+		{name: "jomcgi recovers the same head without self-approval", setup: func(h *harness) {
+			h.gh.prs[7].Author = "jomcgi"
+		}, recoverable: true, cleared: true},
 		{name: "recovery only on an earlier head", recoverable: true, newHead: true, cleared: true},
 		{name: "recovery only, still unrecoverable"},
 		{name: "recovery and blocking findings", result: blocking, recoverable: true, cleared: true},
@@ -3053,6 +3055,9 @@ func TestOldRecoveryOnlyHoldsAreReevaluated(t *testing.T) {
 				failIf(t, st.Gate.RecoveryEpoch != before.Gate.RecoveryEpoch || st.Gate.ApprovalNonce != before.Gate.ApprovalNonce, "the kept hold was rebound to the new process")
 				return
 			}
+			h.gh.withLock(func() {
+				failIf(t, len(h.gh.prs[7].Reviews) != 0, "recovery relied on a GitHub review")
+			})
 			failIf(t, st.Gate != nil && st.Gate.RecoveryEpoch != "", "the old recovery-only hold was kept")
 			failIf(t, strings.Contains(check.Summary, "after reviewer recovery"), "the check still asks for recovery approval: %s", check.Summary)
 			failIf(t, (check.Conclusion == ConclusionSuccess) != (tc.result == nil), "conclusion %s after the hold cleared", check.Conclusion)

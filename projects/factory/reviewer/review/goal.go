@@ -60,11 +60,12 @@ type goalAnswer struct {
 // GoalCheck is a validated answer for one head and evidence digest. It holds
 // only numbers and enum values, so the public State can keep it as a cache.
 type GoalCheck struct {
-	followUps map[int]string // Private keys for combining answers before audit.
-	Head      string         `json:"head"`
-	Digest    string         `json:"digest"`
-	Criteria  []GoalVerdict  `json:"criteria"`
-	Overall   string         `json:"overall,omitempty"`
+	unclearEvidence string         // Private labelled lines from the reply supplying these verdicts.
+	followUps       map[int]string // Private keys for combining answers before audit.
+	Head            string         `json:"head"`
+	Digest          string         `json:"digest"`
+	Criteria        []GoalVerdict  `json:"criteria"`
+	Overall         string         `json:"overall,omitempty"`
 	// Counted is the number of criteria the service counted in the issue's
 	// list (issueCriteria), or 0 when it could not count them. It shows a
 	// removed criterion without relying on the goal check's word.
@@ -186,6 +187,36 @@ func (g *GoalCheck) ownershipFeedback() string {
 		}
 	}
 	return feedback.String()
+}
+
+// invariant: FACT-14
+
+var missingEvidenceLine = regexp.MustCompile(`^Searched ([^[:space:]]+); missing (.+)$`)
+
+// explainsUnclear checks the private account for every effective unclear verdict.
+func (g *GoalCheck) explainsUnclear(reply string) bool {
+	lines := strings.Split(replyReasons(reply), "\n")
+	explained := func(label string) bool {
+		for _, line := range lines {
+			if detail, ok := strings.CutPrefix(strings.TrimSpace(line), label); ok {
+				match := missingEvidenceLine.FindStringSubmatch(detail)
+				if match != nil && len(strings.Fields(match[2])) >= 2 {
+					g.unclearEvidence += label + detail + "\n"
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if g.Overall == goalUnclear && !explained("Overall: ") {
+		return false
+	}
+	for _, c := range g.Criteria {
+		if c.Verdict == goalUnclear && !explained(fmt.Sprintf("Criterion %d: ", c.Criterion)) {
+			return false
+		}
+	}
+	return true
 }
 
 // goalFindings renders a goal check. Each word is the service's: the issue
@@ -542,6 +573,7 @@ func (e *Engine) goalCheck(ctx context.Context, b *Binding, pr github.PullReques
 		g = e.goalCall(ctx, b, pr, in, text, g, l)
 	}
 	if g != nil {
+		g.unclearEvidence = ""
 		g.followUps = nil
 	} // Only the private audit retains ownership keys.
 	return keepEarlier(g, prev)
@@ -743,12 +775,19 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 		a, parseErr := ParseGoal(reply)
 		valid := parseErr == nil && (t.Status.State == kagent.StateCompleted || t.Status.State == kagent.StateInputRequired)
 		var g *GoalCheck
-		var ownership string
+		var ownership, inheritedEvidence string
 		if valid {
 			a.verifyOwnership(in.issues)
 			g = &GoalCheck{followUps: a.followUps, Head: pr.HeadSHA, Digest: issueDigest(in.issues), Criteria: a.Criteria, Overall: a.Overall, Counted: issueCriteria(in.issues), ReplyRevision: goalReplyRevision(in.issues)}
+			evidenceReply := reply
 			if initial != nil {
+				// Only initial not_met verdicts are replaced by confirmation.
 				g = confirmOnly(initial, g)
+				inheritedEvidence = initial.unclearEvidence
+				evidenceReply = inheritedEvidence + reply
+			}
+			if g != nil && !g.explainsUnclear(evidenceReply) {
+				valid, g = false, nil
 			}
 			if g != nil {
 				ownership = g.ownershipFeedback()
@@ -760,7 +799,7 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 			Repository: b.repo(), PullRequest: pr.Number, Head: pr.HeadSHA,
 			Issue: goalKey(in.issues), Digest: issueDigest(in.issues), ReplyRevision: goalReplyRevision(in.issues),
 			MessageID: msg.MessageID, TaskID: t.ID, SessionID: t.ContextID,
-			Initial: initial, Ownership: ownership, Phase: phase, CreatedAt: e.cfg.Now().UTC(), State: t.Status.State, Reply: reply,
+			Initial: initial, InheritedEvidence: inheritedEvidence, Ownership: ownership, Phase: phase, CreatedAt: e.cfg.Now().UTC(), State: t.Status.State, Reply: reply,
 		}); err != nil {
 			why = "audit"
 			break
@@ -931,7 +970,7 @@ func GoalPrompt(repo string, pr github.PullRequest, files []github.PullRequestFi
 		"Use \"after_rollout\" when the implementation addresses the problem and only its planned later enablement or rollout remains. " +
 		"Give every criterion from 1 to the last one a verdict, and give an empty list when the issue lists no acceptance criteria.\n\n" +
 		"Explain your reasoning briefly before the JSON block, including the evidence for staging or missing implementation. For an overall not_met include a line of the form Overall: specific unsolved problem. For each not_met criterion include a short line of the form Criterion N: specific missing behavior. " +
-		"The service keeps your full reply privately for 14 days for operator audit.\n\n" +
+		"For every unclear verdict (including in confirmation), use the same Overall: or Criterion N: label followed by Searched <repository path>; missing <specific expected evidence>. Name the artifact or behavior you sought there. The service keeps your full reply privately for 14 days for operator audit.\n\n" +
 		"End your reply with exactly one fenced JSON block and nothing after it. Use only these fields and values: " +
 		"any other field, value or text in the block voids the answer.\n\n" +
 		"```json\n{\"criteria\": [{\"criterion\": 1, \"verdict\": \"met\"}, {\"criterion\": 2, \"verdict\": \"not_met\"}], \"overall\": \"met\"}\n```\n")
