@@ -15,7 +15,6 @@ projects/factory-public/ARCHITECTURE.md: missing file or link from projects/fact
 projects/factory-storyboard/ARCHITECTURE.md: heading: Direction
 projects/factory-storyboard/ARCHITECTURE.md: table_columns: ['Untrusted input', 'Credentials held']
 projects/factory-storyboard/README.md: link_if_present: ARCHITECTURE.md
-projects/factory/ARCHITECTURE.md: max_lines: 600
 projects/factory/README.md: missing required file
 projects/gke-apps/README.md: missing child context-forge-gateway
 projects/gke-apps/README.md: missing child inference
