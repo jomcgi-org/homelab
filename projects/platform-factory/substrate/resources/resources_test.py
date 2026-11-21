@@ -1,8 +1,9 @@
-"""The atelet's private ghcr.io pull path (HOME-539), as ArgoCD applies it."""
+"""Validate the Substrate resources rendered for ArgoCD."""
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -11,6 +12,9 @@ import yaml
 _HERE = Path(__file__).resolve().parent
 _IMAGE = (
     "ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/credential-provider"
+)
+_SCANNER_IMAGE = (
+    "ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan"
 )
 
 
@@ -94,3 +98,72 @@ def test_plugin_config_names_the_installed_binary_and_the_login() -> None:
     # Not before the Namespace's wave, or a fresh install cannot create it.
     namespace = _one(docs, "Namespace", "ate-system")
     assert _wave(item) >= _wave(namespace)
+
+
+def test_egress_scan_pilot_changes_only_hindsight_route() -> None:
+    applied = _one(_docs(), "ConfigMap", "atenet-egress-agentgateway-config")
+    raw = _one(
+        [
+            doc
+            for doc in yaml.safe_load_all(
+                (_HERE / "upstream" / "substrate" / "atenet-egress.yaml").read_text()
+            )
+            if doc
+        ],
+        "ConfigMap",
+        "atenet-egress-agentgateway-config",
+    )
+    config = yaml.safe_load(applied["data"]["config.yaml"])
+    (route,) = next(
+        listener
+        for bind in config["binds"]
+        if bind.get("mode") == "internal"
+        for listener in bind["listeners"]
+        if listener["protocol"] == "HTTP"
+    )["routes"]
+    (check,) = route["policies"].pop("extAuthz")["conditional"]
+    assert check["condition"] == (
+        'destination.hostname == "hindsight-api.hindsight.svc.cluster.local"'
+        " && destination.port == 8888"
+    )
+    assert check["host"] == "egress-scan.ate-system.svc:8080"
+    assert check["failureMode"] == "deny"
+    assert check["protocol"] == {"grpc": {}}
+    assert check["includeRequestBody"] == {
+        "maxRequestBytes": 524288,
+        "allowPartialMessage": False,
+        "packAsBytes": True,
+    }
+    assert check["policies"] == {"http": {"requestTimeout": "80ms"}}
+    assert config == yaml.safe_load(raw["data"]["config.yaml"])
+    assert _wave(applied) > _wave(_one(_docs(), "Deployment", "egress-scan"))
+
+
+def test_egress_scanner_has_warm_replicas_and_a_gateway_only_listener() -> None:
+    docs = _docs()
+    spec = _one(docs, "Deployment", "egress-scan")["spec"]
+    assert spec["replicas"] == 2
+    pod = spec["template"]["spec"]
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["runtimeClassName"] == "gvisor"
+    (container,) = pod["containers"]
+    image, _, digest = container["image"].partition("@")
+    assert image == _SCANNER_IMAGE
+    assert re.fullmatch(r"sha256:[a-f0-9]{64}", digest)
+    assert container["readinessProbe"]["grpc"] == {"port": 8080}
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert pod["imagePullSecrets"] == [{"name": "ghcr-imagepull-secret"}]
+    (ingress,) = _one(docs, "CiliumNetworkPolicy", "egress-scan")["spec"]["ingress"]
+    (peer,) = ingress["fromEndpoints"]
+    assert peer["matchLabels"] == {"app": "atenet-egress"}
+    assert ingress["toPorts"] == [{"ports": [{"port": "8080", "protocol": "TCP"}]}]
+    egress_policy = _one(docs, "CiliumNetworkPolicy", "atenet-egress-to-scanner")[
+        "spec"
+    ]
+    assert egress_policy["endpointSelector"]["matchLabels"] == {"app": "atenet-egress"}
+    assert egress_policy["egress"] == [
+        {
+            "toEndpoints": [{"matchLabels": {"app": "egress-scan"}}],
+            "toPorts": ingress["toPorts"],
+        }
+    ]

@@ -1,8 +1,23 @@
+load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
+
+# gazelle:python_generation_mode file
 
 exports_files(
     ["network-policy.yaml"],
     visibility = ["//projects/factory/chart:__pkg__"],
+)
+
+py_venv_binary(
+    name = "render_egress_gateway",
+    srcs = ["render_egress_gateway.py"],
+    data = [
+        "egress-scan/gateway-patch.yaml",
+        "egress-scan/gateway-policy.yaml",
+        "upstream/substrate/atenet-egress.yaml",
+    ],
+    main = "render_egress_gateway.py",
+    deps = ["@pip//pyyaml"],
 )
 
 py_test(
@@ -10,6 +25,7 @@ py_test(
     srcs = ["resources_test.py"],
     data = glob([
         "*.yaml",
+        "egress-scan/*.yaml",
         "patches/*.yaml",
         "upstream/**",
     ]) + [

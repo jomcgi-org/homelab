@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - scanner.yaml
+images:
+  - name: ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan
+    digest: sha256:4757b4db67aaffe6f69714e641fa771bad83374e3a90d24ccfee15b47ed72470
+patches:
+  - path: gateway-patch.yaml
