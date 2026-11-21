@@ -208,7 +208,7 @@ actions:
           if [ "$WRITE_BACK_ONLY" = true ]; then
             : # The publishing run already exercised this source tree.
           elif [[ "${GIT_BRANCH:-}" =~ ^gh-readonly-queue/ ]] || [ "${GIT_PR_NUMBER:-0}" = "0" ]; then
-            bazel test //... --config=ci --deleted_packages=bazel/tools/python
+            bazel test //... --config=ci
           else
             ./bazel/tools/ci/local-affected-test.sh "$base_ref"
           fi
@@ -300,6 +300,7 @@ actions:
               //projects/embervm/proto/embervm/node/v1:node_go_src \
               //projects/embervm/proto/embervm/node/v1:nodev1
             bazel test --config=ci //bazel/helm/gazelle:gazelle_test
+            bazel test --config=ci //bazel/tools/python:gazelle_python_manifest.test
             bazel run //projects/embervm/proto/embervm/node/v1:check_go_stubs --config=ci
           fi
 

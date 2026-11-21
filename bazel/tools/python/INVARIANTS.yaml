@@ -1,0 +1,7 @@
+invariants:
+- id: PYTHON-MANIFEST-1
+  statement: The Gazelle Python import manifest must stay in sync with the universal requirements lock.
+  mechanism:
+  - bazel/tools/format/update-python-requirements.sh
+  test: //bazel/tools/python:gazelle_python_manifest.test
+  state: live

@@ -816,6 +816,10 @@ def test_overlays_are_scanned_and_python_regeneration_is_root_only(values_files)
     assert tasks[0]["postUpgradeTasks"]["commands"] == [
         "bazel/tools/format/update-python-requirements.sh"
     ]
+    assert (
+        "bazel/tools/python/gazelle_python.yaml"
+        in tasks[0]["postUpgradeTasks"]["fileFilters"]
+    )
     helm = [r for r in config["packageRules"] if r.get("matchManagers") == ["helmv3"]]
     assert helm[0]["postUpdateOptions"] == ["helmUpdateSubChartArchives"]
     # Check the effective runner after Helm resolves the shared container
