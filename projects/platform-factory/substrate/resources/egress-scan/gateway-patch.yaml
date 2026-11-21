@@ -2,7 +2,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: atenet-egress-agentgateway-config
+  name: atenet-egress-guard-config
   namespace: ate-system
   annotations:
     argocd.argoproj.io/sync-wave: '1'
@@ -40,6 +40,34 @@ data:
           cert: /run/egress-mitm/tls.crt
           key: /run/egress-mitm/tls.key
         routes:
+        - name: factory-push-guard
+          hostnames:
+          - factory-push-guard.factory-r-homelab.svc.cluster.local
+          backends:
+          - host: factory-push-guard.factory-r-homelab.svc.cluster.local:443
+            policies:
+              backendTLS:
+                hostname: factory-push-guard.factory-r-homelab.svc.cluster.local
+                cert: /run/podidentity.podcert.ate.dev/credential-bundle.pem
+                key: /run/podidentity.podcert.ate.dev/credential-bundle.pem
+                root: /run/servicedns.podcert.ate.dev/trust-bundle.pem
+          policies:
+            substrateEgress:
+              host: api.ate-system.svc:443
+              policies:
+                backendTLS:
+                  cert: /run/podidentity.podcert.ate.dev/credential-bundle.pem
+                  key: /run/podidentity.podcert.ate.dev/credential-bundle.pem
+                  root: /run/servicedns.podcert.ate.dev/trust-bundle.pem
+              credentialProviders:
+              - uriAuthority: k8s.io
+                target:
+                  host: k8s-credential-provider.ate-system.svc:50051
+                  policies:
+                    backendTLS:
+                      cert: /run/podidentity.podcert.ate.dev/credential-bundle.pem
+                      key: /run/podidentity.podcert.ate.dev/credential-bundle.pem
+                      root: /run/servicedns.podcert.ate.dev/trust-bundle.pem
         - backends:
           - dynamic: {}
             policies:

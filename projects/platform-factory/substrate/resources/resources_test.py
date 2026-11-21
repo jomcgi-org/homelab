@@ -109,19 +109,16 @@ def test_plugin_config_names_the_installed_binary_and_the_login() -> None:
     assert _wave(item) >= _wave(namespace)
 
 
+def _mounted_gateway_config(docs: list[dict]) -> dict:
+    gateway = _one(docs, "Deployment", "atenet-egress")
+    volumes = gateway["spec"]["template"]["spec"]["volumes"]
+    mounted = next(v for v in volumes if v["name"] == "config")["configMap"]["name"]
+    assert mounted.startswith("atenet-egress-guard-config-")
+    return _one(docs, "ConfigMap", mounted)
+
+
 def test_egress_scan_pilot_changes_only_hindsight_route() -> None:
-    applied = _one(_docs(), "ConfigMap", "atenet-egress-agentgateway-config")
-    raw = _one(
-        [
-            doc
-            for doc in yaml.safe_load_all(
-                (_HERE / "upstream" / "substrate" / "atenet-egress.yaml").read_text()
-            )
-            if doc
-        ],
-        "ConfigMap",
-        "atenet-egress-agentgateway-config",
-    )
+    applied = _mounted_gateway_config(_docs())
     config = yaml.safe_load(applied["data"]["config.yaml"])
     (route,) = next(
         listener
@@ -144,19 +141,14 @@ def test_egress_scan_pilot_changes_only_hindsight_route() -> None:
         "packAsBytes": True,
     }
     assert check["policies"] == {"http": {"requestTimeout": "80ms"}}
-    assert config == yaml.safe_load(raw["data"]["config.yaml"])
+    assert config == yaml.safe_load((_HERE / "atenet-egress-config.yaml").read_text())
 
 
 def test_egress_gateway_and_its_config_wait_for_the_scanner() -> None:
     docs = _docs()
     scanner = _scanner()
     gateway = _one(docs, "Deployment", "atenet-egress")
-    config = _one(docs, "ConfigMap", "atenet-egress-agentgateway-config")
-    volumes = gateway["spec"]["template"]["spec"]["volumes"]
-    assert any(
-        v.get("configMap", {}).get("name") == config["metadata"]["name"]
-        for v in volumes
-    )
+    config = _mounted_gateway_config(docs)
     assert _wave(scanner) < _wave(config) == _wave(gateway)
 
 
@@ -217,11 +209,9 @@ def test_substrate_sync_uses_the_chart_as_the_only_scanner_deployment() -> None:
 def test_the_receiver_route_keeps_substrate_authorization_and_scoped_mtls() -> None:
     docs = _docs()
     config_name = "atenet-egress-agentgateway-config"
-    gateway = _one(docs, "Deployment", "atenet-egress")
-    volumes = gateway["spec"]["template"]["spec"]["volumes"]
-    mounted = next(v for v in volumes if v["name"] == "config")["configMap"]["name"]
-    assert mounted.startswith("atenet-egress-guard-config-")
-    current = yaml.safe_load(_one(docs, "ConfigMap", mounted)["data"]["config.yaml"])
+    current = yaml.safe_load((_HERE / "atenet-egress-config.yaml").read_text())
+    mounted = yaml.safe_load(_mounted_gateway_config(docs)["data"]["config.yaml"])
+    assert mounted["binds"][0]["listeners"][0] == current["binds"][0]["listeners"][0]
     upstream_path = _HERE / "upstream/substrate/atenet-egress.yaml"
     upstream = [item for item in yaml.safe_load_all(upstream_path.read_text()) if item]
     original = yaml.safe_load(
