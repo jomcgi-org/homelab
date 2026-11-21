@@ -60,8 +60,9 @@ bazel_query_retry() {
 		if bazel query "$query" 2>"$stderr"; then
 			rm -f "$stderr"
 			return 0
+		else
+			rc=$?
 		fi
-		rc=$?
 		case "$rc" in
 		32 | 34 | 36 | 37 | 38 | 39)
 			echo "  bazel query (transient rc=$rc, attempt $attempt/$max): $query" >&2
@@ -125,7 +126,10 @@ compare_targets "push-all" "$TMPDIR_VALIDATE/push_all_grep.txt" "$TMPDIR_VALIDAT
 
 # Every OCI publisher depending on the private layer must be a guarded harness.
 # Query the workspace so even a push omitted from push_all is covered.
-bazel_query_retry 'kind("oci_push", rdeps(//..., //bazel/tools/mandoline:layer))' |
+# Limit the transitive closure to image publishers and their dependencies.
+# Using //... as the rdeps universe also loads unrelated test toolchains.
+# shellcheck disable=SC2016 # $pushes is a Bazel query variable.
+bazel_query_retry 'let pushes = kind("oci_push|apko_push", //...) in $pushes intersect rdeps($pushes, //bazel/tools/mandoline:layer)' |
 	filter_labels | LC_ALL=C sort >"$TMPDIR_VALIDATE/mandoline_actual.txt"
 cat >"$TMPDIR_VALIDATE/mandoline_expected.txt" <<'LABELS'
 //projects/factory/harness/claude:image.push
