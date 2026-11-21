@@ -6,7 +6,7 @@ ListenStream=/run/t3-cluster/t3.sock
 DirectoryMode=0755
 SocketMode=0660
 SocketUser=root
-SocketGroup=t3-cluster
+SocketGroup=t3-relay
 RemoveOnStop=yes
 
 [Install]
