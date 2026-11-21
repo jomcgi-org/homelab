@@ -217,10 +217,15 @@ spec:
     - name: edge
       namespace: edge
   hostnames:
-    - {{ $b.activity.hostname | quote }}
+    - bosun-activity-api.jomcgi.dev
   rules:
     - matches:
-        - path: {type: PathPrefix, value: /activity}
+        - method: POST
+          path: {type: Exact, value: /activity/token}
+        - method: GET
+          path: {type: PathPrefix, value: /activity/instances}
+        - method: POST
+          path: {type: PathPrefix, value: /activity/instances}
       backendRefs:
         - name: discord-activity
           namespace: {{ $ns }}
@@ -228,6 +233,21 @@ spec:
       timeouts:
         request: "0s"
         backendRequest: "0s"
+---
+# The bridge exchanges single-use Discord codes and checks the bearer user's
+# membership in the launch guild. The SDK cannot follow operator OIDC redirects.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: discord-activity
+  namespace: edge
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: discord-activity
+  authorization:
+    defaultAction: Allow
 ---
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant

@@ -403,7 +403,6 @@ discord:
     activity:
       enabled: false
       clientId: ""
-      hostname: bosun-activity-api.jomcgi.dev
     # The gateway connection. Turn it on only after the bot token exists and
     # the hub monolith's bot is off, so no message gets two replies.
     enabled: false

@@ -4,12 +4,13 @@ Build the shell from the repository root with `pnpm install --frozen-lockfile` a
 `VITE_DISCORD_CLIENT_ID=<application-id> pnpm --filter bosun-test-activity build`.
 Serve this package's `dist/` over HTTPS. Enable Activities on the existing Bosun
 application. Map the root prefix to the static host and the `/activity` prefix
-to `bosun-activity-api.jomcgi.dev/activity`. Configure the OAuth redirect
-for the embedded application in Discord's developer portal.
+to `bosun-activity-api.jomcgi.dev/activity`. Add `https://127.0.0.1` to the application’s
+OAuth2 redirects. The Embedded App SDK handles the return to the Activity.
+[Discord Activity setup](https://docs.discord.com/developers/activities/building-an-activity#add-a-redirect-uri).
 
 The gateway bridge needs a `client-secret` field on its discord-bot item.
-Set `discord.bridge.activity.clientId` to the same application ID. Route the
-API hostname through the factory Cloudflare tunnel to edge and enable
+Set `discord.bridge.activity.clientId` to the same application ID. After the admission rule,
+tunnel hostname and edge proxy egress are deployed, enable
 `discord.bridge.activity.enabled` for the test. Polls live in the bridge's
 memory for 24 hours and expire on restart.
 

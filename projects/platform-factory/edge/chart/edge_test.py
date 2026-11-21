@@ -406,6 +406,22 @@ def test_proxy_reaches_only_the_kagent_ui(docs):
     ]
 
 
+def test_proxy_reaches_activity_bridge_on_its_api_port(docs):
+    rules = docs["CiliumNetworkPolicy", "proxy"]["spec"]["egress"]
+    assert {
+        "toEndpoints": [
+            {
+                "matchLabels": {
+                    "k8s:io.kubernetes.pod.namespace": "factory-discord",
+                    "app.kubernetes.io/name": "factory-discord-bridge",
+                    "app.kubernetes.io/component": "discord-activity",
+                }
+            }
+        ],
+        "toPorts": [{"ports": [{"port": "8080", "protocol": "TCP"}]}],
+    } in rules
+
+
 def test_kagent_hostname_is_owned_and_published():
     platform = Path(__file__).resolve().parents[2]
     admission = Path(
@@ -430,6 +446,7 @@ def test_kagent_hostname_is_owned_and_published():
         "factory-agents.jomcgi.dev",
         "factory-kube.jomcgi.dev",
         "factory-explore-api.jomcgi.dev",
+        "bosun-activity-api.jomcgi.dev",
     ):
         assert {
             "expression": "request.namespace == 'edge' || "
@@ -467,6 +484,7 @@ def test_kagent_hostname_is_owned_and_published():
         "factory-agents.jomcgi.dev",
         "factory-kube.jomcgi.dev",
         "factory-explore-api.jomcgi.dev",
+        "bosun-activity-api.jomcgi.dev",
     } <= set(route["spec"]["hostnames"])
     assert "t3.jomcgi.dev" in route["spec"]["hostnames"]
     assert route["spec"]["rules"] == [

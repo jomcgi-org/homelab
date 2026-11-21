@@ -1413,5 +1413,27 @@ def test_discord_activity_exposes_only_activity_api_when_enabled() -> None:
     )
     route = _in(docs, "HTTPRoute", "edge", "discord-activity")
     (rule,) = route["spec"]["rules"]
-    assert rule["matches"] == [{"path": {"type": "PathPrefix", "value": "/activity"}}]
+    assert route["spec"]["hostnames"] == ["bosun-activity-api.jomcgi.dev"]
+    assert rule["matches"] == [
+        {"method": "POST", "path": {"type": "Exact", "value": "/activity/token"}},
+        {
+            "method": "GET",
+            "path": {"type": "PathPrefix", "value": "/activity/instances"},
+        },
+        {
+            "method": "POST",
+            "path": {"type": "PathPrefix", "value": "/activity/instances"},
+        },
+    ]
+    policy = _in(docs, "SecurityPolicy", "edge", "discord-activity")["spec"]
+    assert policy == {
+        "targetRefs": [
+            {
+                "group": "gateway.networking.k8s.io",
+                "kind": "HTTPRoute",
+                "name": "discord-activity",
+            }
+        ],
+        "authorization": {"defaultAction": "Allow"},
+    }
     assert rule["backendRefs"][0]["name"] == "discord-activity"

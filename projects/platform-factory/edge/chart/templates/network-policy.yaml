@@ -163,6 +163,13 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-discord
+            app.kubernetes.io/name: factory-discord-bridge
+            app.kubernetes.io/component: discord-activity
+      toPorts:
+        - ports: [{port: "8080", protocol: TCP}]
     # Explorer API at factory-explore-api.jomcgi.dev.
     - toEndpoints:
         - matchLabels:

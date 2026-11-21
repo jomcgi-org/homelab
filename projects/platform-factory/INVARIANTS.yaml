@@ -9,7 +9,8 @@ invariants:
   state: unproven
 - id: PLAT-2
   statement: Every route on the edge Gateway requires requester authentication except for the sign-in
-    flow and the approved public Scotland forecast and astronomy endpoints.
+    flow and the approved public Scotland forecast and astronomy endpoints. The Bosun Activity exchanges a
+    Discord authorization code at sign-in and checks launch-guild membership on instance reads and votes.
   mechanism:
   - projects/platform-factory/edge/chart
   test: //projects/platform-factory/edge/chart:edge_test
