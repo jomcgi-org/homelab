@@ -1,8 +1,7 @@
 load("@rules_oci//oci:defs.bzl", "oci_push")
 load("//bazel/tools/oci:providers.bzl", "oci_image_info")
 
-# Publish the layout exercised by the Codex harness version test.
-# The HOME-529 runner can be layered on this base.
+# Publish the Codex harness layout tested with the bounded Mandoline runner.
 # gazelle:ignore
 
 alias(
