@@ -780,8 +780,9 @@ A GraphQL query reads at most 25 PRs (75 connections, one
 at most four per refresh with one auth retry each: at most 960 of the
 5,000 points per hour. An over-budget refresh fails closed. The snapshot
 refreshes every 30 seconds (20-second deadline, eight concurrent reads, at
-most 100 live items and ten merges) and expires after 30 seconds. A truncated
-listing, excess live work, a failed refresh or a stopped poller clears it, and
+most 100 live items and ten merges) and expires after 30 seconds. Above 100
+live items, it shows the latest 100 admissions and the exact total. A truncated
+upstream listing, a failed refresh or a stopped poller clears it, and
 `/status` returns 503. Each failed refresh logs `status refresh failed` with
 its stage (`needs_you`, `work_items`, `github_budget`, `github`, `titles` or
 `other`) and a timeout flag, but no upstream error text. Visitors trigger no
