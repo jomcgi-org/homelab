@@ -175,19 +175,42 @@ func TestPlannerFiledIssueResetsBreaker(t *testing.T) {
 	}
 }
 
-func TestPlannerDropsOversizeEvidence(t *testing.T) {
-	v := plannerFixture(t)
-	link := `"https://example.org/` + strings.Repeat("a", 1000) + `"`
-	links := strings.TrimSuffix(strings.Repeat(link+",", 8), ",")
-	_, err := v.st.DB.Exec(`UPDATE planner_run SET final_message=$1 WHERE run_id='r'`,
-		`[{"title":"excerpt","body":"quoted","evidence":[`+links+`],"priority":"low","fix":"agent","fingerprint":"homelab:docs:file:missing"}]`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	v.tick(v.e)
-	var dropped, proposals int
-	if err := v.st.DB.QueryRow(`SELECT dropped,(SELECT count(*) FROM planner_proposal) FROM planner_run WHERE run_id='r'`).Scan(&dropped, &proposals); err != nil || dropped != 1 || proposals != 0 || v.its.activationCreates != 0 {
-		t.Fatalf("dropped %d, proposals %d, creates %d: %v", dropped, proposals, v.its.activationCreates, err)
+func TestPlannerOversizeEvidence(t *testing.T) {
+	for _, match := range []string{"novel", "seed", "open", "retained"} {
+		t.Run(match, func(t *testing.T) {
+			v := plannerFixture(t)
+			fp := "homelab:docs:file:missing"
+			switch match {
+			case "seed":
+				fp = "homelab:docs:home-4:scheduled-agent"
+			case "open":
+				v.its.issues = map[int64]*itsaplan.Issue{44: {ID: 44, Identifier: "HOME-44", ColumnID: 5, Description: "<!-- factory-planner-fingerprint-e7d26b91e6b4eb4aa83beacb2b99f0936c64bf86e3ea57a1e65717aa04158b88 -->"}}
+			case "retained":
+				if _, err := v.st.DB.Exec(`INSERT INTO planner_run(run_id,schedule,finished_at) VALUES('old','smoke',now());
+ INSERT INTO planner_proposal(run_id,fingerprint,disposition,closed_at) VALUES('old','homelab:docs:file:missing','delegate',now())`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			link := `"https://example.org/` + strings.Repeat("a", 1000) + `"`
+			links := strings.TrimSuffix(strings.Repeat(link+",", 8), ",")
+			_, err := v.st.DB.Exec(`UPDATE planner_run SET final_message=$1 WHERE run_id='r'`,
+				`[{"title":"excerpt","body":"quoted","evidence":[`+links+`],"priority":"low","fix":"agent","fingerprint":"`+fp+`"}]`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			v.tick(v.e)
+			var dropped, duplicates, proposals int
+			if err := v.st.DB.QueryRow(`SELECT dropped,deduplicated,(SELECT count(*) FROM planner_proposal WHERE run_id='r') FROM planner_run WHERE run_id='r'`).Scan(&dropped, &duplicates, &proposals); err != nil {
+				t.Fatal(err)
+			}
+			wantDropped := 0
+			if match == "novel" {
+				wantDropped = 1
+			}
+			if dropped != wantDropped || duplicates != 1-wantDropped || proposals != 0 || v.its.activationCreates != 0 {
+				t.Fatalf("dropped %d duplicates %d reservations %d creates %d", dropped, duplicates, proposals, v.its.activationCreates)
+			}
+		})
 	}
 }
 

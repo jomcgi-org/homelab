@@ -1,4 +1,4 @@
 1. `projects/factory/connector/dispatch/planner.go` derives the tracker marker. The seed rows are in `projects/factory/connector/migrations/20261120110000_planner_existing_issues.sql`.
-2. `TestPlannerExistingIdeas`, `TestPlannerOpenFingerprint`, and `TestPlannerFiledOutcomes` exercise the filing path in `//projects/factory/connector/dispatch:dispatch_test`. The seed namespaces match the pilots in `projects/factory/chart/values.yaml`.
+2. `TestPlannerExistingIdeas`, `TestPlannerOpenFingerprint`, `TestPlannerOversizeEvidence`, and `TestPlannerFiledOutcomes` exercise the filing path in `//projects/factory/connector/dispatch:dispatch_test`. The seed namespaces match the pilots in `projects/factory/chart/values.yaml`.
 3. `syncPlannerOutcome` and `plannerDelegationRejected` in `projects/factory/connector/dispatch/planner.go` reconcile tracker state. `TestPlannerFiledOutcomes` covers a newer pending retry and Done after rejection.
 4. Run `//projects/factory/connector/dispatch:dispatch_test` for the tracker cases. `projects/factory/connector/store/planner_breaker_test.sql` checks retention expiry and breaker accounting.
