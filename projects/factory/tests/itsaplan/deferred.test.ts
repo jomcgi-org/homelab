@@ -533,7 +533,10 @@ test("the coordinator enters Reviewing once per head and preserves manual moves"
       }),
     );
   const setStarted = async () => {
-    expect((await ownerAPI.issues({ issueId: id }).patch({ columnId: started.id })).status).toBe(200);
+    expect(
+      (await ownerAPI.issues({ issueId: id }).patch({ columnId: started.id }))
+        .status,
+    ).toBe(200);
   };
 
   await setStarted();
@@ -541,15 +544,27 @@ test("the coordinator enters Reviewing once per head and preserves manual moves"
   expect((await move(coder.apiKey!, head)).status).toBe(403);
   const hold = await project.labels.post({ name: "needs-human" });
   const labelIds = [hold.data!.id];
-  expect((await ownerAPI.issues({ issueId: id }).patch({ labelIds })).status).toBe(200);
-  expect(await (await move(coordinator.apiKey!, head)).json()).toEqual({ moved: false });
-  expect((await ownerAPI.issues({ issueId: id }).patch({ labelIds: [] })).status).toBe(200);
+  expect(
+    (await ownerAPI.issues({ issueId: id }).patch({ labelIds })).status,
+  ).toBe(200);
+  expect(await (await move(coordinator.apiKey!, head)).json()).toEqual({
+    moved: false,
+  });
+  expect(
+    (await ownerAPI.issues({ issueId: id }).patch({ labelIds: [] })).status,
+  ).toBe(200);
   const applied = await move(coordinator.apiKey!, head);
   expect(applied.status).toBe(200);
   expect(await applied.json()).toEqual({ moved: true });
-  expect((await ownerAPI.issues({ issueId: id }).get()).data?.columnId).toBe(reviewing.data!.id);
+  expect((await ownerAPI.issues({ issueId: id }).get()).data?.columnId).toBe(
+    reviewing.data!.id,
+  );
 
   await setStarted();
-  expect(await (await move(coordinator.apiKey!, head)).json()).toEqual({ moved: false });
-  expect((await ownerAPI.issues({ issueId: id }).get()).data?.columnId).toBe(started.id);
+  expect(await (await move(coordinator.apiKey!, head)).json()).toEqual({
+    moved: false,
+  });
+  expect((await ownerAPI.issues({ issueId: id }).get()).data?.columnId).toBe(
+    started.id,
+  );
 });
