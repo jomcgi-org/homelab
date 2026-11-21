@@ -62,7 +62,7 @@ If a run or a mirror copy stops part way, `latest.json` still names the previous
 
 Each run logs one line with `vessels`, `tracks`, `rebuilt`, `full`, `puts`, `put_bytes`, `deletes` and `retired`: the bytes and object writes of the cycle, and the payloads in their grace period. The hub page on 2026-11-19 had 7,843 vessels in a 2.7 MB snapshot. 135 of them had a report in the 2 minutes before the read, and 1,234 in the 7 days before it. So a run writes about 135 tracks, the snapshot, the manifest and the state. HOME-410 replaces these estimates with measurements.
 
-The CronJob and the `factory-public` source `ships` stay suspended, so the publisher and its network policies are staged off. After HOME-537 turns the ingester on, HOME-410 sets `publisher.suspend: false` in `chart/values.yaml` and `suspend: false` on the source. It then checks schema, timestamps, freshness, headers and expiry at the reader endpoint.
+HOME-410 enables the publisher and the `factory-public` source `ships` after HOME-537 starts the ingester. To pause publication, set `publisher.suspend: true` in the Ships chart and `suspend: true` on the source. R2 retains the last complete generation.
 
 ## Follow-up HOME issues
 
@@ -167,7 +167,7 @@ To roll back, confirm that no `ships-ingester` pod runs before the hub ingest st
 
 ### Garage sink and R2 mirror
 
-Tracked in [HOME-410](https://factory-plan.jomcgi.dev/factory/issue/HOME-410). The publisher, its Garage bucket and the suspended `factory-public` source `ships` are in place ([Publication contract](#publication-contract)).
+Tracked in [HOME-410](https://factory-plan.jomcgi.dev/factory/issue/HOME-410). The publisher writes to its Garage bucket and the `factory-public` source mirrors it to R2 ([Publication contract](#publication-contract)).
 
 Done when
 
