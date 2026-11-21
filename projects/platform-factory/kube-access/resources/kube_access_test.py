@@ -138,7 +138,8 @@ esac
     if undeclared_allowed:
         assert result.returncode != 0
         assert (
-            "Unexpected cluster-wide get on policyreports.wgpolicyk8s.io" in result.stderr
+            "Unexpected cluster-wide get on policyreports.wgpolicyk8s.io"
+            in result.stderr
         )
     else:
         assert result.returncode == 0, result.stderr
