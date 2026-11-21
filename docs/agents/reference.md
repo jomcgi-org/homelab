@@ -160,7 +160,8 @@ limits, split the work into smaller sub-tasks before delegation.
 Use the [local node-1 session kubeconfig](../../projects/factory-cluster/README.md#kubectl-from-node-1).
 Confirm `kubectl auth whoami` reports
 `system:serviceaccount:kube-system:factory-node1-sessions` before accessing the
-tracker. The setup checks the session's permissions against the live API.
+tracker. During a rollback, use the dedicated OIDC sessions account only
+after the rollback identity and permission checks pass.
 
 - Port-forward the API: `KUBECONFIG=~/.kube/factory-sessions.yaml kubectl -n factory
   port-forward pod/factory-itsaplan-session-forward-0 13000:3000`.
