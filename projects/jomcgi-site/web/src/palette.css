@@ -73,6 +73,13 @@
   --shadow-low: none;
   --shadow-med: none;
   --shadow-high: none;
+  --ships-water: #e2eff0;
+  --ships-heat-1: #debdbf;
+  --ships-heat-2: #db9fa1;
+  --ships-heat-3: #d88083;
+  --ships-heat-4: #d56265;
+  --ships-heat-5: #d34448;
+  --ships-heat-6: #d0262a;
   /* The hub's effort ramp. Marker size and a sheet stroke also encode effort. */
   --hikes-effort-0: #15a34a;
   --hikes-effort-1: #84c91e;
