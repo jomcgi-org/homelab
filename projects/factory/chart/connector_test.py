@@ -215,12 +215,14 @@ _TRACE_ENDPOINT = "http://otel-collector.otel-collector.svc.cluster.local:4317"
 
 
 def test_connector_trace_export_uses_the_factory_gateway() -> None:
-    env = _env(_render())
-    assert env["OTEL_SERVICE_NAME"] == "factory-connector"
-    assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == _TRACE_ENDPOINT
-    for off in (_env(_render(enable=False)), _env(_render(["connector.traceEndpoint="]))):
-        assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in off
-        assert "OTEL_SERVICE_NAME" not in off
+    for enable in (True, False):
+        env = _env(_render(enable=enable))
+        assert env["OTEL_SERVICE_NAME"] == "factory-connector"
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == _TRACE_ENDPOINT
+
+    off = _env(_render(["connector.traceEndpoint="]))
+    assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in off
+    assert "OTEL_SERVICE_NAME" not in off
 
 
 def test_deploy_values_render_is_locked() -> None:
