@@ -545,7 +545,10 @@ test("the coordinator enters Reviewing once per head and preserves manual moves"
     settled: false,
   });
   await setStarted();
-  await db.update(issue).set({ archivedAt: new Date() }).where(eq(issue.id, id));
+  await db
+    .update(issue)
+    .set({ archivedAt: new Date() })
+    .where(eq(issue.id, id));
   expect(await (await move(coordinator.apiKey!, head)).json()).toEqual({
     moved: false,
     settled: false,
