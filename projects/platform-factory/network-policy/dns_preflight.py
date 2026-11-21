@@ -17,6 +17,27 @@ def applies(selector, workload):
     )
 
 
+def reaches_coredns(rule, namespace):
+    # These are the destination labels in resources/baseline.yaml.
+    labels = {"io.kubernetes.pod.namespace": "kube-system", "k8s-app": "kube-dns"}
+    for peer in rule.get("toEndpoints", []):
+        if set(peer) - {"matchLabels"}:
+            continue
+        match = {
+            key.removeprefix("k8s:"): value
+            for key, value in peer.get("matchLabels", {}).items()
+        }
+        if "io.kubernetes.pod.namespace" not in match and namespace not in {
+            "*",
+            "kube-system",
+        }:
+            continue
+        if all(labels.get(key) == value for key, value in match.items()):
+            return True
+    # A port-only egress rule applies to every destination.
+    return not any(key.startswith("to") and key != "toPorts" for key in rule)
+
+
 def inventory(documents, default_namespace):
     declarations = set()
     dns = []
@@ -47,6 +68,8 @@ def inventory(documents, default_namespace):
                         declarations.add(
                             (namespace, meta["name"], yaml.safe_dump(selector), name)
                         )
+                if not reaches_coredns(rule, namespace):
+                    continue
                 for port in rule.get("toPorts", []):
                     if any(str(p["port"]) == "53" for p in port.get("ports", [])):
                         for entry in port.get("rules", {}).get("dns", []):

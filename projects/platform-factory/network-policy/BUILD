@@ -6,7 +6,10 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 py_test(
     name = "dns_preflight_test",
     srcs = ["dns_preflight_test.py"],
-    data = ["dns_preflight.py"],
+    data = [
+        "dns_preflight.py",
+        "resources/baseline.yaml",
+    ],
     deps = ["@pip//pyyaml"],
 )
 

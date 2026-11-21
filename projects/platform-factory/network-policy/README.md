@@ -10,5 +10,5 @@ set -o pipefail
 
 Each stdout row lists the declaring namespace, policy, external name and coverage.
 Exit 1 indicates missing or wildcard-only coverage. Keep the output local.
-The comparison checks DNS name rules on port 53 for identical endpoint selectors
+The comparison checks DNS name rules covering the factory CoreDNS peer on port 53 for identical endpoint selectors
 or matching subsets of workload labels. It does not simulate runtime reachability.
