@@ -1,0 +1,39 @@
+/* Ships owns a full-viewport sheet, with one in-flow chrome row. These rules
+ * cannot affect a sibling sheet after client navigation. */
+.ships-sheet {
+  --sheet: #ffffff;
+  --paper: #f3f1ea;
+  --ink: #26231c;
+  --ink-2: #625d50;
+  --warn: #8a5700;
+  --font-ui: system-ui, sans-serif;
+  --font-code: ui-monospace, "SF Mono", "Cascadia Mono", monospace;
+  --accent-ink: #1f4f9f;
+  --stroke: color-mix(in srgb, var(--ink) 28%, transparent);
+  --tone-gpu: #0b6bff;
+  --tone-ram: #0b7f47;
+  --tone-cache: #0e7c86;
+  --tone-disk: #d0262a;
+  --tone-hot: #d100b5;
+  --ships-passenger: var(--tone-gpu);
+  --ships-cargo: var(--tone-cache);
+  --ships-tanker: var(--tone-disk);
+  --ships-hsc: var(--warn);
+  --ships-special: var(--tone-ram);
+  --ships-unknown: var(--tone-hot);
+  --ships-water: color-mix(in srgb, var(--tone-cache) 12%, var(--sheet));
+  /* One ordered ramp, quiet to busy, shared by GPU cells and legend. */
+  --ships-heat-1: color-mix(in srgb, var(--tone-disk) 25%, var(--ships-water));
+  --ships-heat-2: color-mix(in srgb, var(--tone-disk) 40%, var(--ships-water));
+  --ships-heat-3: color-mix(in srgb, var(--tone-disk) 55%, var(--ships-water));
+  --ships-heat-4: color-mix(in srgb, var(--tone-disk) 70%, var(--ships-water));
+  --ships-heat-5: color-mix(in srgb, var(--tone-disk) 85%, var(--ships-water));
+  --ships-heat-6: var(--tone-disk);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100vh;
+  height: 100dvh;
+  padding: 0;
+  background: var(--sheet);
+  color: var(--ink);
+}

@@ -1,0 +1,9 @@
+invariants:
+- id: SHIPS-READER-1
+  statement: The map reads Ships products anonymously from the public mirror, following the manifest and requesting heat and tracks only for the active view.
+  mechanism:
+  - sink.js
+  - Page.svelte
+  - ShipsMap.svelte
+  test: //projects/jomcgi-site/web:ships_browser_test
+  state: live

@@ -70,6 +70,7 @@ export default defineConfig({
         "trip-day": page("trip-day.html"),
         "trip-timeline": page("trip-timeline.html"),
         engineering: page("engineering.html"),
+        ships: page("app/ships.html"),
         hikes: page("hikes.html"),
         stars: page("stars.html"),
       },
