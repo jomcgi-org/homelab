@@ -9,5 +9,4 @@ py_test(
         "cases.json",
         "score.py",
     ],
-    deps = ["@pip//pytest"],
 )
