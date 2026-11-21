@@ -11,7 +11,7 @@ trap 'rm -rf "$work"' EXIT
 mkdir "$work/source" "$work/image"
 tar -xf "$archive" -C "$work/source"
 cd "$work/source"
-patch --batch --forward -p1 --fuzz=0 < "$patch_file"
+patch --batch --forward -p1 --fuzz=0 <"$patch_file"
 cd apps/web
 export NEXT_TELEMETRY_DISABLED=1
 # SWC checks cache ancestors. Bazel may map the sandbox's sticky temporary
