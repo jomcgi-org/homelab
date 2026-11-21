@@ -9,11 +9,11 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
-	"github.com/zricethezav/gitleaks/v8/detect"
 	statuspb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 )
@@ -22,11 +22,12 @@ const (
 	maxBody              = 512 << 10
 	maxAddressAndHeaders = 64 << 10
 	maxCheckMessage      = maxBody + 2*maxAddressAndHeaders
+	maxScanTime          = 75 * time.Millisecond
 )
 
 type scanner struct {
 	authv3.UnimplementedAuthorizationServer
-	detector *detect.Detector
+	detector *requestDetector
 	slots    chan struct{}
 }
 
@@ -37,6 +38,8 @@ func (s *scanner) Check(ctx context.Context, check *authv3.CheckRequest) (*authv
 	default:
 		return deny(codes.ResourceExhausted, typev3.StatusCode_ServiceUnavailable, "scan capacity exhausted"), nil
 	}
+	scanCtx, cancel := context.WithTimeout(ctx, maxScanTime)
+	defer cancel()
 
 	req := check.GetAttributes().GetRequest().GetHttp()
 	if req == nil || req.GetMethod() == "" || req.GetSize() != int64(len(req.GetRawBody())) || req.GetBody() != "" {
@@ -113,8 +116,11 @@ func (s *scanner) Check(ctx context.Context, check *authv3.CheckRequest) (*authv
 				return deny(codes.InvalidArgument, typev3.StatusCode_BadRequest, "invalid JSON body"), nil
 			}
 			if bytes.IndexByte(body, '\\') >= 0 {
-				decoded, err = decodedJSONText(body)
+				decoded, err = decodedJSONText(scanCtx, body)
 				if err != nil {
+					if scanCtx.Err() != nil {
+						return scanBudgetResponse(ctx)
+					}
 					return deny(codes.InvalidArgument, typev3.StatusCode_BadRequest, "invalid JSON body"), nil
 				}
 			}
@@ -122,27 +128,33 @@ func (s *scanner) Check(ctx context.Context, check *authv3.CheckRequest) (*authv
 			return deny(codes.InvalidArgument, typev3.StatusCode_UnsupportedMediaType, "unsupported content type"), nil
 		}
 	}
-	for _, text := range []string{fields.String(), string(body), decoded} {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if text != "" && len(s.detector.DetectString(text)) != 0 {
-			return deny(codes.PermissionDenied, typev3.StatusCode_Forbidden, "request contains a credential pattern"), nil
-		}
+	matched, err := s.detector.find(scanCtx, fields.String(), string(body), decoded)
+	if err != nil {
+		return scanBudgetResponse(ctx)
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	if matched {
+		return deny(codes.PermissionDenied, typev3.StatusCode_Forbidden, "request contains a credential pattern"), nil
 	}
 	return &authv3.CheckResponse{Status: &statuspb.Status{}}, nil
 }
 
+func scanBudgetResponse(ctx context.Context) (*authv3.CheckResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return deny(codes.ResourceExhausted, typev3.StatusCode_ServiceUnavailable, "request exceeds scan work limit"), nil
+}
+
 // Scan decoded JSON strings in addition to the original text. Tokenization
 // visits each occurrence of a key, including values under duplicate keys.
-func decodedJSONText(body []byte) (string, error) {
+func decodedJSONText(ctx context.Context, body []byte) (string, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	var fields strings.Builder
 	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		token, err := dec.Token()
 		if err == io.EOF {
 			return fields.String(), nil
