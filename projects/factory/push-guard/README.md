@@ -1,12 +1,10 @@
 # Factory Git push receiver
 
-Install `pre-receive` in the hooks directory of a private bare staging
-repository seeded from the public repository. Run the receiver with Git and
-Python 3. Set `PUSH_UPSTREAM` to the trusted HTTPS URL. If using a
-named remote, configure only its URL. A fetch refspec makes Git try to update
-remote-tracking refs while the hook is still in receive-pack quarantine. Scope receiver access to the corresponding
-coder binding and work branch. The receiver needs the binding's write
-credential. Keep credential values out of remote URLs.
+The receiver image seeds a private bare repository from public homelab.
+It serves Git push discovery and receive-pack for that repository. The
+Substrate gateway authenticates the binding and presents its pod identity
+certificate. The receiver sends the injected binding credential only to
+GitHub. The pre-receive hook permits only factory work branches.
 
 Generate the index privately from the pinned Bazel outputs for
 `//bazel/tools/mandoline:mandoline` and `//bazel/tools/mandoline:layer`.
@@ -30,12 +28,16 @@ through the trusted receiver and remove direct GitHub write authentication
 from the sandbox egress policy. Verify rejection and acceptance from that
 binding using a synthetic private reference and harmless push fixtures.
 
-The factory chart routes the public homelab coding binding to
-`https://factory-push-guard.factory-r-homelab.svc.cluster.local/jomcgi-org/homelab.git`
-when `repositories[].guardedPush` is true or its private harness image is
-selected. Provision that TLS Git smart-HTTP endpoint and its gateway network
-policy before setting the flag. Terminate authenticated requests only for
-this repository, validate the injected binding credential and keep it on the
-trusted side. Use a synthetic index on a test receiver for live GitHub
-acceptance, then install the production private index before supplying
-Mandoline to coders.
+After CI publishes the image and chart, set `pushGuard.enabled`,
+`pushGuard.image.digest` and `pushGuard.indexSHA256` in reviewed values.
+The seed container waits for the private index. From an authorized operator
+session, copy it to a temporary file under
+`/var/lib/factory-push-guard/indices/` on the receiver's volume. Rename it to
+`<sha256>.json` after the copy completes. The receiver verifies that digest
+before it listens.
+
+Wait for receiver readiness before setting `repositories[].guardedPush`.
+Use a synthetic index and harmless fixtures to verify normal pushes and
+rejections from the active coder binding. Switch the index pin to the
+production index and verify the new receiver is Ready before selecting the
+private coder image.

@@ -552,7 +552,18 @@ def test_a_coding_binding_takes_its_own_harness_image() -> None:
     deploy = yaml.safe_load(_DEPLOY.read_text())
     assert all("harnessImage" not in r for r in deploy.get("repositories", []))
     image = "ghcr.io/jomcgi/homelab/projects/factory/harness/codex@sha256:" + "e" * 64
-    docs = _render(_TWO_REPOSITORIES + ["repositories[0].harnessImage=" + image])
+    with pytest.raises(RuntimeError, match="require the private receiver"):
+        _render(_TWO_REPOSITORIES + ["repositories[0].harnessImage=" + image])
+    index = "a" * 64
+    docs = _render(
+        _TWO_REPOSITORIES
+        + [
+            "repositories[0].harnessImage=" + image,
+            "pushGuard.enabled=true",
+            "pushGuard.image.digest=sha256:" + "f" * 64,
+            "pushGuard.indexSHA256=" + index,
+        ]
+    )
     policy = next(
         item
         for item in docs
@@ -567,6 +578,21 @@ def test_a_coding_binding_takes_its_own_harness_image() -> None:
         == "https://factory-push-guard.factory-r-homelab.svc.cluster.local"
     )
     assert receiver["authentication"]["secretKeyRef"]["name"] == "github-git"
+    deployment = next(
+        item
+        for item in docs
+        if item["kind"] == "Deployment"
+        and item["metadata"]["namespace"] == "factory-r-homelab"
+        and item["metadata"]["name"] == "factory-push-guard"
+    )
+    assert deployment["spec"]["strategy"] == {"type": "Recreate"}
+    pod = deployment["spec"]["template"]["spec"]
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["containers"][0]["args"] == ["--index-sha256", index]
+    assert next(v for v in pod["volumes"] if v["name"] == "data") == {
+        "name": "data",
+        "persistentVolumeClaim": {"claimName": "factory-push-guard"},
+    }
     workloads = {
         h["metadata"]["namespace"]: h["spec"].get("workload")
         for h in docs
