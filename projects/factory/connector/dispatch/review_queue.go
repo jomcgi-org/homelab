@@ -20,6 +20,7 @@ type IssueReview struct {
 	Position    int       `json:"position,omitempty"`
 	ObservedAt  time.Time `json:"observedAt"`
 	Complete    bool      `json:"complete"`
+	Reason      string    `json:"reason,omitempty"`
 }
 
 // IssueReviewQueue joins the reviewer snapshot to a work receipt by repository,
@@ -88,6 +89,7 @@ func (e *Engine) IssueReviewQueue(ctx context.Context, issueID int64, base strin
 	for _, item := range snapshot.Waiting {
 		if matches(item) {
 			answer.Phase = "queued"
+			answer.Reason = "Waiting for a review worker slot."
 			if snapshot.Complete {
 				answer.Position = item.Position
 			}
@@ -97,6 +99,7 @@ func (e *Engine) IssueReviewQueue(ctx context.Context, issueID int64, base strin
 	for _, item := range snapshot.QuotaHeld {
 		if matches(item) {
 			answer.Phase = "quota-held"
+			answer.Reason = "Waiting for review quota."
 			return &answer, nil
 		}
 	}

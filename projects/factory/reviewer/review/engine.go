@@ -604,8 +604,9 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding, snapshot *QueueSna
 	prioritizeResumed(b, attach)
 	waiting := append(attach, start...)
 	for i, c := range waiting {
-		if !e.begin(ctx, b, c.pr, c.run) {
-			if quotaRecorded(c) && !e.isRunning(headKey{b.Name, c.pr.HeadSHA}) {
+		full, quotaHeld := e.begin(ctx, b, c.pr, c.run)
+		if !full {
+			if quotaHeld {
 				snapshot.QuotaHeld = append(snapshot.QuotaHeld, QueueEntry{
 					Repository: repo, PullRequest: c.pr.Number, Head: c.pr.HeadSHA,
 				})
@@ -621,8 +622,9 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding, snapshot *QueueSna
 				Repository: repo, PullRequest: queued.pr.Number, Head: queued.pr.HeadSHA,
 				Resume: i+j < len(attach),
 			}
-			if quotaRecorded(queued) {
-				snapshot.QuotaHeld = append(snapshot.QuotaHeld, entry)
+			if j > 0 && quotaRecorded(queued) {
+				// Capacity stopped this pass before checking this head's quota.
+				snapshot.Complete = false
 				continue
 			}
 			entry.Position = len(snapshot.Waiting) + 1
@@ -1142,7 +1144,7 @@ func (e *Engine) readRecovery(ctx context.Context, b *Binding, pr github.PullReq
 // begin starts a review in the background, creating its check run first
 // when the head has none. It reports true, starting nothing, when every
 // slot is taken; a head already under review starts nothing either.
-func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (full bool) {
+func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (full, quotaHeld bool) {
 	// Recheck the diff budget before a quota wait, without a review worker.
 	// This also handles checks that an older process paused before sizing.
 	if run != nil {
@@ -1152,10 +1154,13 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 			files, err := e.gh.PullRequestFiles(ctx, b.repo(), pr.Number)
 			if err != nil {
 				e.ghError(ctx, l, b, "files", err)
-				return false
+				return false, false
 			}
-			if e.requestSplit(ctx, b, pr, run, measure(b, files), l) || e.waitForQuota(ctx, b, run, rec, l) {
-				return false
+			if e.requestSplit(ctx, b, pr, run, measure(b, files), l) {
+				return false, false
+			}
+			if e.waitForQuota(ctx, b, run, rec, l) {
+				return false, true
 			}
 		}
 	}
@@ -1163,11 +1168,11 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 	e.mu.Lock()
 	if _, ok := e.inflight[key]; ok {
 		e.mu.Unlock()
-		return false
+		return false, false
 	}
 	if len(e.inflight) >= e.cfg.Concurrency {
 		e.mu.Unlock()
-		return true
+		return true, false
 	}
 	var root trace.Span
 	if p, ok := e.parked[key]; ok {
@@ -1232,7 +1237,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 			e.release(ctx, key, usage)
 			e.done(key)
 			close(r.done)
-			return false
+			return false, false
 		}
 		if created.StartedAt.IsZero() {
 			created.StartedAt = now
@@ -1258,7 +1263,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 				e.release(ctx, key, usage)
 				e.done(key)
 				close(r.done)
-				return false
+				return false, false
 			}
 			run = updated
 		}
@@ -1278,7 +1283,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		}
 		e.review(rctx, b, pr, run, l.With("check_run", run.ID))
 	}()
-	return false
+	return false, false
 }
 
 // recorded is the attempt an in-progress check run records, its task once

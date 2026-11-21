@@ -172,6 +172,16 @@ func TestQuotaReadFailureWaitsWithoutSending(t *testing.T) {
 		t.Fatal("unreadable quota allowed a send")
 	}
 	q.set(github.QuotaReading{ReceivedAt: rec.QuotaSince.Add(time.Second)}, nil)
+	capacity := e.cfg.Concurrency
+	e.cfg.Concurrency = 0 // Model an occupied pool before starting more tasks.
+	e.Tick(ctx)
+	snapshot = e.QueueSnapshot()
+	if len(snapshot.QuotaHeld) != 0 || len(snapshot.Waiting) != 1 ||
+		snapshot.Waiting[0].Head != shaA || snapshot.Waiting[0].Position != 1 {
+		t.Fatalf("recovered quota should expose capacity wait: %+v", snapshot)
+	}
+	e.cfg.Concurrency = capacity
+
 	runReview(t, h, e, ctx, 7, shaA)
 }
 
