@@ -396,6 +396,7 @@ type Attachment struct {
 // IssueRun is the identity and trigger of a recorded run, including terminal
 // runs. Prompts, results and errors are deliberately not decoded or forwarded.
 type IssueRun struct {
+	Status   string `json:"status"`
 	ID       int64  `json:"id"`
 	Username string `json:"username"`
 	Trigger  string `json:"trigger"`
