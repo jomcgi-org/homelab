@@ -32,6 +32,7 @@ spec:
         - matchName: go.dev
         - matchName: dl.google.com
         # OCI metadata and chart blobs, including Docker Hub auth/redirects.
+        - matchName: cr.agentgateway.dev
         - matchName: ghcr.io
         - matchName: docker.io
         - matchName: index.docker.io
