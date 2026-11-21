@@ -1937,7 +1937,7 @@ type rootScan struct {
 	revisit      bool
 }
 
-// invariant: FACT-13
+// invariant: FACT-14
 // recoverRoots advances at most one page per open PR per poll. An empty
 // cursor on a recorded head marks its history as fully examined.
 func (e *Engine) recoverRoots(ctx context.Context, b *Binding, prs []github.PullRequest, complete bool) {
