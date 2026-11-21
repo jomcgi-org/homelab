@@ -396,13 +396,15 @@ func (s *Store) CountActiveRuns(ctx context.Context, agentKey string) (int, erro
 	return n, err
 }
 
+const busyRunStates = "NOT IN ('closed', 'stale', 'waiting')"
+
 // CountBusyRuns counts an agent key's runs that hold a slot beyond waiting.
 // It never counts run except, so a run that asks for a slot is not its own
 // occupant.
 func (s *Store) CountBusyRuns(ctx context.Context, agentKey string, except int64) (int, error) {
 	var n int
 	err := s.DB.QueryRowContext(ctx,
-		`SELECT count(*) FROM run WHERE agent_key = $1 AND id <> $2 AND state NOT IN ('closed', 'stale', 'waiting')`,
+		`SELECT count(*) FROM run WHERE agent_key = $1 AND id <> $2 AND state `+busyRunStates,
 		agentKey, except).Scan(&n)
 	return n, err
 }

@@ -38,6 +38,21 @@ type Metrics struct {
 	CredentialRefusals *prometheus.CounterVec // role, kind
 }
 
+// DispatchSnapshot holds the queue gauges for a single scrape.
+type DispatchSnapshot struct {
+	BusyRuns       *prometheus.GaugeVec
+	DispatchedRuns *prometheus.GaugeVec
+	RunnableRuns   prometheus.Gauge
+}
+
+func NewDispatchSnapshot() *DispatchSnapshot {
+	return &DispatchSnapshot{
+		BusyRuns:       prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "factory_connector_busy_runs", Help: "Runs occupying scheduler slots by agent."}, []string{"agent"}),
+		DispatchedRuns: prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "factory_connector_dispatched_runs", Help: "Runs currently dispatched by agent."}, []string{"agent"}),
+		RunnableRuns:   prometheus.NewGauge(prometheus.GaugeOpts{Name: "factory_connector_runnable_runs", Help: "Queued runs without an admission, work item or grant block."}),
+	}
+}
+
 // New registers the metrics with reg; a nil reg leaves them unregistered.
 func New(reg prometheus.Registerer) *Metrics {
 	m := &Metrics{
@@ -156,6 +171,9 @@ func New(reg prometheus.Registerer) *Metrics {
 				"(claim, heartbeat, events).",
 		}, []string{"role", "kind"}),
 	}
+	// Establish the counter baseline before the first successful dispatch.
+	m.Sends.WithLabelValues("initial", "accepted")
+	m.Sends.WithLabelValues("continuation", "accepted")
 	if reg != nil {
 		reg.MustRegister(m.Claims, m.Sends, m.Heartbeats, m.Results, m.Blocked, m.Retries,
 			m.DeferredStarted, m.Cancellations, m.Events, m.Reassignments, m.WriterEpoch, m.ItsaplanUnavailable, m.TickErrors,

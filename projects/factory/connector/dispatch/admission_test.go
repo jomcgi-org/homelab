@@ -1053,6 +1053,12 @@ func TestReclaimedHeldRunWaitsForAFreeSlot(t *testing.T) {
 	if v.kg.Executions() != 1 || v.run(2).State != store.RunDispatched {
 		t.Fatal("the independent run did not take the only slot")
 	}
+	if err := v.e.RefreshDispatchMetrics(v.ctx, v.snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if testutil.ToFloat64(v.snapshot.RunnableRuns) != 0 || testutil.ToFloat64(v.snapshot.DispatchedRuns.WithLabelValues("coder")) != 1 {
+		t.Fatal("expected one dispatched run and no runnable runs while dependency is open")
+	}
 	task := v.kg.lastTask()
 
 	v.its.reclaimElsewhere(1)
@@ -1067,6 +1073,12 @@ func TestReclaimedHeldRunWaitsForAFreeSlot(t *testing.T) {
 	redelivery.Attempts = fr.attempts
 	if err := v.e.HandleClaim(v.ctx, "coder", &redelivery); err != nil {
 		t.Fatal(err)
+	}
+	if err := v.e.RefreshDispatchMetrics(v.ctx, v.snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if testutil.ToFloat64(v.snapshot.RunnableRuns) != 1 || testutil.ToFloat64(v.snapshot.DispatchedRuns.WithLabelValues("coder")) != 1 {
+		t.Fatal("expected one runnable and one dispatched run after dependency cleared")
 	}
 	for range 3 {
 		if r := v.run(1); r.State != store.RunWaiting || r.HoldReason != "" || r.WorkItemID != 0 || v.latest(1) != nil {
