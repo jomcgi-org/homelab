@@ -490,7 +490,8 @@ func (e *Engine) findOrOpenPR(ctx context.Context, repo string, wi *store.WorkIt
 	err = e.st.DB.QueryRowContext(ctx, `WITH prior AS (
 		SELECT id, pr_create_check_at IS NOT NULL AS pending FROM work_item
 		WHERE id = $1 AND state = 'review' AND turn_attempt_id = $3 FOR UPDATE
-	) UPDATE work_item w SET pr_create_check_at = $2 FROM prior
+	) UPDATE work_item w SET pr_create_check_at = $2, pr_create_started_at = $2,
+		pr_create_absence_confirmed = false FROM prior
 		WHERE w.id = prior.id RETURNING prior.pending`, wi.ID, e.cfg.Now(), wi.TurnAttemptID).Scan(&previouslyPending)
 	if err != nil {
 		return nil, fmt.Errorf("record PR creation for %s: %w", wi.IssueKey, err)
@@ -558,7 +559,17 @@ func (e *Engine) checkStoppedCreate(ctx context.Context, wi *store.WorkItem, b *
 			return err
 		}
 		pr, err := e.gh.FindPullRequest(ctx, b.repo(), wi.Branch)
-		if err != nil || pr == nil || pr.BaseRef != b.BaseBranch {
+		if err != nil {
+			return err
+		}
+		if pr == nil {
+			// Release handoff only after a successful post-window lookup.
+			// Keep the watch active in case GitHub exposes the PR even later.
+			_, err = tx.ExecContext(ctx, `UPDATE work_item SET pr_create_absence_confirmed = true
+				WHERE id = $1 AND pr_create_started_at <= $2`, wi.ID, now.Add(-5*time.Minute))
+			return err
+		}
+		if pr.BaseRef != b.BaseBranch {
 			return err
 		}
 		const factoryAuthor = "jomcgi-factory[bot]"
@@ -566,6 +577,9 @@ func (e *Engine) checkStoppedCreate(ctx context.Context, wi *store.WorkItem, b *
 			return nil
 		}
 		if pr.State == "open" {
+			if _, err := tx.ExecContext(ctx, `UPDATE work_item SET pr_create_absence_confirmed = false WHERE id = $1`, wi.ID); err != nil {
+				return err
+			}
 			id += fmt.Sprintf("/%d", pr.Number)
 			commentID := id + "/comment"
 			marker := "<!-- " + commentID + " -->"
@@ -587,11 +601,23 @@ func (e *Engine) checkStoppedCreate(ctx context.Context, wi *store.WorkItem, b *
 				if !complete {
 					return fmt.Errorf("incomplete stop comment list for PR #%d", pr.Number)
 				}
-				confirmed, err := e.stoppedPRCall(ctx, commentID)
+				// Only the first reservation may send. A missing comment in a
+				// complete listing cannot resolve an earlier ambiguous POST.
+				var confirmed bool
+				var firstSend bool
+				err := e.st.DB.QueryRowContext(ctx, `INSERT INTO stopped_pr_attempt (message_id) VALUES ($1)
+					ON CONFLICT (message_id) DO UPDATE SET attempts = stopped_pr_attempt.attempts + 1
+					RETURNING confirmed, attempts = 1`, commentID).Scan(&confirmed, &firstSend)
 				if err != nil {
 					return err
 				}
+				if !confirmed && !firstSend {
+					return nil
+				}
 				if !confirmed {
+					if err := e.guard(ctx); err != nil {
+						return err
+					}
 					body := fmt.Sprintf("Closing this factory PR because delivery of %s was stopped: %s.\n\n%s", wi.IssueKey, wi.StoppedReason, marker)
 					if _, err := e.gh.CreateIssueComment(ctx, b.repo(), pr.Number, body); err != nil {
 						return err

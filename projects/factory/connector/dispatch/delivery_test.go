@@ -48,6 +48,8 @@ type fakeGitHub struct {
 	delayCreate      bool
 	rejectCreate     bool
 	stopComment      string
+	delayComment     bool
+	delayedComment   string
 	stopCommentCount int
 	failClose        bool
 	loseCreate       bool
@@ -347,6 +349,11 @@ func (g *fakeGitHub) IssueComments(context.Context, string, int) ([]github.Comme
 
 func (g *fakeGitHub) CreateIssueComment(_ context.Context, _ string, _ int, body string) (*github.Comment, error) {
 	g.stopCommentCount++
+	if g.delayComment {
+		g.delayComment = false
+		g.delayedComment = body
+		return nil, context.DeadlineExceeded
+	}
 	g.stopComment = body
 	return &github.Comment{}, nil
 }
@@ -646,8 +653,19 @@ func TestStoppedCreateAppearsAfterTimeout(t *testing.T) {
 	if _, err := v.st.StopIssue(v.ctx, "HL-7", "human takeover", "operator"); err != nil {
 		t.Fatal(err)
 	}
+	checkPending := func(want bool) {
+		t.Helper()
+		var pending bool
+		if err := v.st.DB.QueryRowContext(v.ctx, `SELECT pr_create_check_at IS NOT NULL AND NOT pr_create_absence_confirmed FROM work_item WHERE issue_id = 101`).Scan(&pending); err != nil || pending != want {
+			t.Fatalf("pending = %t, want %t: %v", pending, want, err)
+		}
+	}
+	v.clk.Advance(time.Minute)
+	v.tick(v.e)
+	checkPending(true)
 	v.clk.Advance(time.Hour)
 	v.tick(v.e)
+	checkPending(false)
 	if _, err := v.gh.CreatePullRequest(v.ctx, "", *v.gh.delayed); err != nil {
 		t.Fatal(err)
 	}
@@ -658,6 +676,15 @@ func TestStoppedCreateAppearsAfterTimeout(t *testing.T) {
 		t.Fatal("acted on a human-authored PR with the factory body")
 	}
 	v.gh.byNumber(1).pr.Author = "jomcgi-factory[bot]"
+	v.clk.Advance(time.Hour)
+	v.gh.delayComment = true
+	v.tick(v.e)
+	v.clk.Advance(time.Hour)
+	v.tick(v.e)
+	if v.gh.stopCommentCount != 1 || v.gh.byNumber(1).pr.State != "open" {
+		t.Fatal("ambiguous comment retried or PR closed before comment appeared")
+	}
+	v.gh.stopComment = v.gh.delayedComment
 	v.clk.Advance(time.Hour)
 	v.gh.failClose = true
 	v.tick(v.e)
