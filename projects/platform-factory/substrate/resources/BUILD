@@ -31,11 +31,18 @@ py_test(
         "upstream/**",
     ]) + [
         "//projects/platform-factory/substrate/credential-provider:image_digest",
+        "//projects/platform-factory/substrate/egress-scan/chart",
+        "//projects/platform-factory/substrate/egress-scan/chart:image_values",
+        "//projects/platform-factory/substrate/egress-scan/deploy:application.yaml",
+        "@multitool//tools/helm",
         "@multitool//tools/kustomize",
     ],
     env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "KUSTOMIZE_BIN": "$(rootpath @multitool//tools/kustomize)",
         "PROVIDER_DIGEST": "$(rootpath //projects/platform-factory/substrate/credential-provider:image_digest)",
+        "SCANNER_APPLICATION": "$(rootpath //projects/platform-factory/substrate/egress-scan/deploy:application.yaml)",
+        "SCANNER_VALUES": "$(rootpath //projects/platform-factory/substrate/egress-scan/chart:image_values)",
     },
     deps = ["@pip//pyyaml"],
 )
