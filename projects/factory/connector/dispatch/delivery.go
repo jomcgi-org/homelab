@@ -587,6 +587,8 @@ func (e *Engine) checkDeliverySource(ctx context.Context, repo string, pr *githu
 	e.log.WarnContext(ctx, "refused PR delivery source", "repo", repo, "pr", pr.Number, "author", pr.Author, "head_repo", pr.HeadRepo)
 	return fmt.Errorf("%w for %s pull request #%d", errDeliverySource, repo, pr.Number)
 }
+ 
+// invariant: FACT-14
 
 // checkStoppedCreate keeps looking across empty reads and writer restarts.
 // Lock the work item so a new delegation cannot resume it midway through close.
