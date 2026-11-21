@@ -7,13 +7,21 @@ import private_harness_package as guard
 REPO = "ghcr.io/jomcgi/homelab/projects/factory/harness/codex"
 
 
-def test_existing_private_package_does_not_bootstrap():
+@pytest.mark.parametrize(
+    "repository",
+    [
+        "ghcr.io/jomcgi/homelab/projects/factory/harness/claude",
+        REPO,
+        "ghcr.io/jomcgi/homelab/projects/factory/reviewer/harness",
+    ],
+)
+def test_existing_private_package_does_not_bootstrap(repository):
     with (
         patch.object(guard, "package_visibility", return_value="private") as read,
         patch.object(guard, "seed_package") as seed,
     ):
-        guard.verify_private(REPO, "test-token", "crane")
-    read.assert_called_once_with(REPO, "test-token")
+        guard.verify_private(repository, "test-token", "crane")
+    read.assert_called_once_with(repository, "test-token")
     seed.assert_not_called()
 
 
