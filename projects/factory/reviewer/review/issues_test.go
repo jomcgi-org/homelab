@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
@@ -158,6 +159,34 @@ func issueSetup() (*Engine, *Binding, *issueAPI, github.PullRequest) {
 	b := &Binding{ItsaplanProject: "HOME", HumanApprovers: []string{"jomcgi"}, TrustedItsaplanAuthors: []string{"joe", "joesessions", "factoryadmin"}}
 	pr := github.PullRequest{Author: "jomcgi-factory[bot]", HeadRef: "factory/HOME-58", HeadSHA: shaA}
 	return e, b, a, pr
+}
+
+func TestReviewPrioritiesRecoverFromItsaplanAfterRestart(t *testing.T) {
+	_, b, api, linked := issueSetup()
+	b.Name, b.BaseBranch = "homelab", "main"
+	b.EnqueueAuthors = []string{"jomcgi"}
+	api.issue.Priority = "urgent"
+	linked.Number, linked.BaseRef = 20, "main"
+	unlinked := github.PullRequest{
+		Number: 1, BaseRef: "main", HeadSHA: strings.Repeat("f", 40), Author: "jomcgi",
+	}
+	clock := func() time.Time { return time.Date(2026, 11, 21, 1, 0, 0, 0, time.UTC) }
+	for restart := range 2 {
+		e := New(Config{Itsaplan: api, Now: clock}, &issueCommits{}, nil, nil, nil)
+		e.noteWaiting(b, []github.PullRequest{unlinked, linked}, true)
+		start := []candidate{{pr: unlinked}, {pr: linked}}
+		priorities, complete := e.reviewPriorities(context.Background(), b, start)
+		e.prioritize(b, start, priorities)
+		if !complete || priorities[linked.Number] != "urgent" || start[0].pr.Number != linked.Number {
+			t.Fatalf("restart %d: priorities = %v complete = %v first = %d", restart, priorities, complete, start[0].pr.Number)
+		}
+	}
+	api.fail = "issue"
+	e := New(Config{Itsaplan: api, Now: clock}, &issueCommits{}, nil, nil, nil)
+	priorities, complete := e.reviewPriorities(context.Background(), b, []candidate{{pr: linked}})
+	if complete || len(priorities) != 0 {
+		t.Fatalf("failed read was reported as verified priority: %v, %t", priorities, complete)
+	}
 }
 
 func TestIssueAuthority(t *testing.T) {

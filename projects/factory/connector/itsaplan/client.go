@@ -326,6 +326,7 @@ func (c *Client) Comment(ctx context.Context, issueID int64, body string) error 
 
 // Issue is the part of an itsaplan issue the connector reads.
 type Issue struct {
+	Priority       string            `json:"priority"`
 	StartDate      string            `json:"startDate"`
 	LabelIDs       []int64           `json:"labelIds"`
 	ID             int64             `json:"id"`

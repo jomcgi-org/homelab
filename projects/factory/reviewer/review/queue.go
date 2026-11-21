@@ -18,6 +18,7 @@ type QueueEntry struct {
 	Head        string `json:"head"`
 	Position    int    `json:"position"`
 	Resume      bool   `json:"resume"`
+	Priority    string `json:"priority,omitempty"`
 }
 
 type ActiveReview struct {
