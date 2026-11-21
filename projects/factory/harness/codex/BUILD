@@ -14,8 +14,10 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 oci_image(
     name = "image",
     base = "@codex_harness_linux_amd64",
-    # Add the HOME-529 runner layer after mandoline.
-    tars = ["//bazel/tools/mandoline:layer"],
+    tars = [
+        "//bazel/tools/mandoline:layer",
+        "//projects/factory/mandoline/cmd/factory-mandoline:diff_layer",
+    ],
 )
 
 expand_template(

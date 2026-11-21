@@ -13,6 +13,7 @@ from pathlib import Path
 import yaml
 
 _MANDOLINE = "usr/local/bin/mandoline"
+_RUNNER = "usr/local/bin/factory-mandoline"
 
 
 def _blob(layout: Path, digest: str) -> Path:
@@ -34,16 +35,16 @@ def _layers(layout: Path) -> list[str]:
     return [layer["digest"] for layer in _manifest(layout)["layers"]]
 
 
-def test_image_is_the_pinned_harness_plus_one_mandoline_layer() -> None:
+def test_image_keeps_the_pinned_harness_and_adds_two_analysis_layers() -> None:
     base = _layers(Path(os.environ["BASE_LAYOUT"]))
     image = _layers(Path(os.environ["IMAGE_LAYOUT"]))
     assert image[: len(base)] == base
-    assert len(image) == len(base) + 1
+    assert len(image) == len(base) + 2
 
 
 def test_image_runs_the_pinned_mandoline() -> None:
     layout = Path(os.environ["IMAGE_LAYOUT"])
-    last = _blob(layout, _layers(layout)[-1])
+    last = _blob(layout, _layers(layout)[-2])
     with tempfile.TemporaryDirectory() as tmp, tarfile.open(last) as layer:
         member = layer.getmember(_MANDOLINE)
         assert member.isfile() and member.mode & 0o111
@@ -54,6 +55,25 @@ def test_image_runs_the_pinned_mandoline() -> None:
             [str(binary), "--version"], capture_output=True, text=True, check=True
         ).stdout
     assert re.match(r"mandoline 0\.25\.0 ", out), out
+
+
+def test_image_runs_the_factory_mandoline_command() -> None:
+    layout = Path(os.environ["IMAGE_LAYOUT"])
+    runner_layer = _blob(layout, _layers(layout)[-1])
+    with tempfile.TemporaryDirectory() as tmp, tarfile.open(runner_layer) as layer:
+        member = next(
+            m for m in layer.getmembers() if m.name.removeprefix("./") == _RUNNER
+        )
+        assert member.isfile() and member.mode & 0o111
+        layer.extract(member, tmp, filter="data")
+        out = subprocess.run(
+            [str(Path(tmp) / _RUNNER), "--help"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stderr
+    assert "-commit string" in out
+    assert "-base string" in out
 
 
 def test_base_digest_matches_the_deployed_codex_harness() -> None:

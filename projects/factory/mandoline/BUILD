@@ -1,32 +1,20 @@
-load("@aspect_rules_py//py:defs.bzl", "py_library")
-load("//bazel/tools/pytest:defs.bzl", "py_test")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
-# gazelle:resolve py projects.factory.mandoline.cache //projects/factory/mandoline:mandoline
-# gazelle:resolve py projects.factory.mandoline.execution //projects/factory/mandoline:mandoline
-
-py_test(
-    name = "execution_test",
-    srcs = ["execution_test.py"],
-    deps = [
-        "//projects/factory/mandoline",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "cache_test",
-    srcs = ["cache_test.py"],
-    deps = [
-        "//projects/factory/mandoline",
-        "@pip//pytest",
-    ],
-)
-
-py_library(
+go_library(
     name = "mandoline",
     srcs = [
-        "cache.py",
-        "execution.py",
+        "cache.go",
+        "process.go",
+        "runner.go",
     ],
-    visibility = ["//:__subpackages__"],
+    importpath = "github.com/jomcgi/homelab/projects/factory/mandoline",
+    visibility = ["//projects/factory/mandoline:__subpackages__"],
+)
+
+go_test(
+    name = "mandoline_test",
+    srcs = ["runner_test.go"],
+    data = ["//bazel/tools/mandoline:mandoline"],
+    embed = [":mandoline"],
+    env = {"FACTORY_TEST_MANDOLINE": "$(rootpath //bazel/tools/mandoline:mandoline)"},
 )
