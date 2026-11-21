@@ -34,6 +34,7 @@ type QueueSnapshot struct {
 	Waiting    []QueueEntry   `json:"waiting"`
 	InFlight   int            `json:"inFlight"`
 	Capacity   int            `json:"capacity"`
+	QuotaHeld  []QueueEntry   `json:"quotaHeld"`
 	Active     []ActiveReview `json:"active"`
 }
 
@@ -42,6 +43,7 @@ func (e *Engine) QueueSnapshot() QueueSnapshot {
 	defer e.mu.Unlock()
 	snapshot := e.queueSnapshot
 	snapshot.Waiting = slices.Clone(snapshot.Waiting)
+	snapshot.QuotaHeld = slices.Clone(snapshot.QuotaHeld)
 	snapshot.InFlight = len(e.inflight)
 	snapshot.Capacity = e.cfg.Concurrency
 	snapshot.Active = make([]ActiveReview, 0, len(e.inflight))

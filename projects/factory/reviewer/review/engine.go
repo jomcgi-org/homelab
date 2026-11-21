@@ -424,7 +424,7 @@ func (e *Engine) Tick(ctx context.Context) {
 	// A root that its check state records waits for that check instead
 	// (endSuperseded).
 	e.endParked(func(p *parkedRoot) bool { return now.Sub(p.since) > parkedLimit && !p.usage.persisted }, "abandoned")
-	snapshot := QueueSnapshot{ObservedAt: now.UTC(), Complete: true, Waiting: []QueueEntry{}}
+	snapshot := QueueSnapshot{ObservedAt: now.UTC(), Complete: true, Waiting: []QueueEntry{}, QuotaHeld: []QueueEntry{}}
 	for i := range e.cfg.Bindings {
 		if ctx.Err() != nil {
 			return
@@ -517,6 +517,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding, snapshot *QueueSna
 		recovered := e.recoverPR(ctx, b, pr, scan)
 		switch {
 		case !recovered && (sharedHeadHeld(run) || !foreign):
+			snapshot.Complete = false
 			reviews[pr.Number] = nil // An unconfirmed context must also fail a queued group.
 		case sharedHeadHeld(run):
 			// A resolved duplicate needs its remaining PR reviewed afresh.
@@ -537,6 +538,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding, snapshot *QueueSna
 			delete(e.waiting, prKey{b.Name, pr.Number})
 			attach = append(attach, candidate{pr, run})
 		case unread:
+			snapshot.Complete = false
 			reviews[pr.Number] = nil // An unconfirmed decision must not let a pass enqueue.
 		case revoked:
 			// Joe edited or deleted a decision this review relied on: withdraw
@@ -602,21 +604,38 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding, snapshot *QueueSna
 	prioritizeResumed(b, attach)
 	waiting := append(attach, start...)
 	for i, c := range waiting {
-		if e.begin(ctx, b, c.pr, c.run) {
-			bl.DebugContext(ctx, "review slots full", "waiting", len(waiting)-i)
-			for j, queued := range waiting[i:] {
-				if e.isRunning(headKey{b.Name, queued.pr.HeadSHA}) {
-					continue
-				}
-				snapshot.Waiting = append(snapshot.Waiting, QueueEntry{
-					Repository: repo, PullRequest: queued.pr.Number, Head: queued.pr.HeadSHA,
-					Position: len(snapshot.Waiting) + 1, Resume: i+j < len(attach),
+		if !e.begin(ctx, b, c.pr, c.run) {
+			if quotaRecorded(c) && !e.isRunning(headKey{b.Name, c.pr.HeadSHA}) {
+				snapshot.QuotaHeld = append(snapshot.QuotaHeld, QueueEntry{
+					Repository: repo, PullRequest: c.pr.Number, Head: c.pr.HeadSHA,
 				})
 			}
-			break
+			continue
 		}
+		bl.DebugContext(ctx, "review slots full", "waiting", len(waiting)-i)
+		for j, queued := range waiting[i:] {
+			if e.isRunning(headKey{b.Name, queued.pr.HeadSHA}) {
+				continue
+			}
+			entry := QueueEntry{
+				Repository: repo, PullRequest: queued.pr.Number, Head: queued.pr.HeadSHA,
+				Resume: i+j < len(attach),
+			}
+			if quotaRecorded(queued) {
+				snapshot.QuotaHeld = append(snapshot.QuotaHeld, entry)
+				continue
+			}
+			entry.Position = len(snapshot.Waiting) + 1
+			snapshot.Waiting = append(snapshot.Waiting, entry)
+		}
+		break
 	}
 	e.mergeGroups(ctx, b, reviews)
+}
+
+// quotaRecorded reports the pause recorded on this head's current check.
+func quotaRecorded(c candidate) bool {
+	return c.run != nil && !RecordedTask(c.run.Summary).QuotaSince.IsZero()
 }
 
 // readyHeads includes skipped PRs, which must not borrow a shared head's pass.

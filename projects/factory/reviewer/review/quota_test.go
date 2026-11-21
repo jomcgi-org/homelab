@@ -162,6 +162,12 @@ func TestQuotaReadFailureWaitsWithoutSending(t *testing.T) {
 	e.Tick(ctx)
 	rec := waitForQuotaCheck(t, h)
 	e.Tick(ctx)
+	snapshot := e.QueueSnapshot()
+	if len(snapshot.Waiting) != 0 || len(snapshot.QuotaHeld) != 1 ||
+		snapshot.QuotaHeld[0].Head != shaA || snapshot.QuotaHeld[0].Position != 0 {
+		t.Fatalf("quota-held review was not reported separately: %+v", snapshot)
+	}
+
 	if len(h.k.sent()) != 0 {
 		t.Fatal("unreadable quota allowed a send")
 	}

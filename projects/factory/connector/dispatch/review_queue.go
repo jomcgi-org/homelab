@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -18,6 +19,7 @@ type IssueReview struct {
 	Phase       string    `json:"phase"`
 	Position    int       `json:"position,omitempty"`
 	ObservedAt  time.Time `json:"observedAt"`
+	Complete    bool      `json:"complete"`
 }
 
 // IssueReviewQueue joins the reviewer snapshot to a work receipt by repository,
@@ -37,6 +39,13 @@ func (e *Engine) IssueReviewQueue(ctx context.Context, issueID int64, base strin
 	binding := e.binding(work.BindingName)
 	if binding == nil {
 		return nil, errors.New("review queue binding unavailable")
+	}
+	messageID := fmt.Sprintf("review-queue/%d/%s", pr.ID, pr.HeadSHA)
+	if err := e.w.RecordDeliveryRead(ctx, pr.ID, messageID, "review-queue", pr.HeadSHA); err != nil {
+		return nil, err
+	}
+	if err := e.guard(ctx); err != nil {
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(base, "/")+"/v1/review-queue", nil)
 	if err != nil {
@@ -58,6 +67,8 @@ func (e *Engine) IssueReviewQueue(ctx context.Context, issueID int64, base strin
 	}
 	var snapshot struct {
 		ObservedAt time.Time `json:"observedAt"`
+		Complete   bool      `json:"complete"`
+		QuotaHeld  []entry   `json:"quotaHeld"`
 		Waiting    []entry   `json:"waiting"`
 		Active     []entry   `json:"active"`
 	}
@@ -67,7 +78,7 @@ func (e *Engine) IssueReviewQueue(ctx context.Context, issueID int64, base strin
 	matches := func(item entry) bool {
 		return item.Repository == binding.repo() && item.PullRequest == pr.Number && item.Head == pr.HeadSHA
 	}
-	answer := IssueReview{PullRequest: pr.Number, Head: pr.HeadSHA, ObservedAt: snapshot.ObservedAt}
+	answer := IssueReview{PullRequest: pr.Number, Head: pr.HeadSHA, ObservedAt: snapshot.ObservedAt, Complete: snapshot.Complete}
 	for _, item := range snapshot.Active {
 		if matches(item) {
 			answer.Phase = "reviewing"
@@ -77,9 +88,20 @@ func (e *Engine) IssueReviewQueue(ctx context.Context, issueID int64, base strin
 	for _, item := range snapshot.Waiting {
 		if matches(item) {
 			answer.Phase = "queued"
-			answer.Position = item.Position
+			if snapshot.Complete {
+				answer.Position = item.Position
+			}
 			return &answer, nil
 		}
+	}
+	for _, item := range snapshot.QuotaHeld {
+		if matches(item) {
+			answer.Phase = "quota-held"
+			return &answer, nil
+		}
+	}
+	if !snapshot.Complete {
+		return nil, errors.New("review queue observation incomplete")
 	}
 	return nil, nil
 }

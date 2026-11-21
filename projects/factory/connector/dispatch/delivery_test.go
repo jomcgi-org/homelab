@@ -3737,7 +3737,7 @@ func TestIssueReviewQueueMatchesCurrentRepositoryAndHead(t *testing.T) {
 			t.Errorf("queue path = %q", r.URL.Path)
 		}
 		repo := binding.Owner + "/" + binding.Repo
-		fmt.Fprintf(w, `{"observedAt":"2026-11-21T01:00:00Z",
+		fmt.Fprintf(w, `{"observedAt":"2026-11-21T01:00:00Z","complete":true,
 			"active":[{"repository":%q,"pullRequest":1,"head":"old-head"}],
 			"waiting":[
 				{"repository":"other/repo","pullRequest":1,"head":"sha-1","position":1},
@@ -3753,4 +3753,9 @@ func TestIssueReviewQueueMatchesCurrentRepositoryAndHead(t *testing.T) {
 	if unrelated, err := v.e.IssueReviewQueue(v.ctx, 999, source.URL, source.Client()); err != nil || unrelated != nil {
 		t.Fatalf("unrelated issue review = %+v, %v", unrelated, err)
 	}
+	v.e.Release()
+	if _, err := v.e.IssueReviewQueue(v.ctx, 101, source.URL, source.Client()); !errors.Is(err, store.ErrNotWriter) {
+		t.Fatalf("former writer could start a queue read: %v", err)
+	}
+
 }
