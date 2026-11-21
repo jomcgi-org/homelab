@@ -210,8 +210,8 @@ HOME-279 validation on 2026-11-18 returned exit code 0 and
 `Config validated successfully against 1 file(s)` for the repository config
 with SHA-256 `9a4b11f4d38c862201cfcf1677bb3b9d210637eed4c37905b21c5265688a5d4f`.
 The validator used its RegExp fallback because RE2 was unavailable.
-No CI target runs the validator yet: HOME-391 adds one
-([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-279#comment-3952)).
+Required CI runs `//projects/platform/renovate:config_validator_test` in
+the Renovate image and checks that an unknown repository option fails validation.
 
 `ci` is the local validation entry point. CI runs the Bazel targets
 `//projects/platform/renovate:dependency_policy_test`,

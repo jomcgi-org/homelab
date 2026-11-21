@@ -17,3 +17,9 @@ invariants:
   statement: Every third-party GitHub Action is pinned by commit SHA.
   mechanism: []
   state: designed
+- id: ROOT-4
+  statement: renovate.json passes Renovate repository configuration validation.
+  mechanism:
+  - projects/platform/renovate/config_validator_test.sh
+  test: //projects/platform/renovate:config_validator_test
+  state: live

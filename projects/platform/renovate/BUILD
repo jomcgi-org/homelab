@@ -1,3 +1,4 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
@@ -41,6 +42,25 @@ argocd_app(
         "values.yaml",
         "values-gke.yaml",
     ],
+)
+
+sh_test(
+    name = "config_validator_test",
+    srcs = ["config_validator_test.sh"],
+    # Invoke the packaged renovate-config-validator CLI directly. The image's
+    # shell wrapper also initializes containerbase tools in /tmp.
+    args = [
+        "$(rootpath //:renovate.json)",
+        "/usr/local/renovate/node",
+        "--use-openssl-ca",
+        "/usr/local/renovate/dist/config-validator.js",
+    ],
+    data = ["//:renovate.json"],
+    exec_properties = {
+        "test.container-image": "docker://ghcr.io/renovatebot/renovate:44.14.10",
+        # The Renovate image runs as UID 12021 and writes fixtures to TEST_TMPDIR.
+        "test.nonroot-workspace": "true",
+    },
 )
 
 # Policy fixtures include the rendered maintenance assets and real Node publisher.
