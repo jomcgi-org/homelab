@@ -12,9 +12,7 @@ live object, that is the date it was read.
 **There are two MCP entry points, split by caller, and they share no path.**
 Context Forge is the front door for people and their tools: Claude.ai
 connectors, Claude Code and the claude.ai routines all reach `mcp.jomcgi.dev`,
-and it decides which tools that caller sees. Ember guests never reach it: they
-talk to the monolith-agents tier, a second and smaller MCP surface with its own
-port, binary and identity. Nothing else in the cluster calls Context Forge's
+and it decides which tools that caller sees. Nothing else in the cluster calls Context Forge's
 MCP endpoint. Its one in-cluster caller is the team-mapping CronJob, which uses
 the REST API with an admin JWT it mints itself.
 
@@ -30,9 +28,6 @@ with Context Forge's `httpRoute.rootMcp.enabled: false`.
 Claude.ai / Claude Code ──► Cloudflare ──► Envoy ──► Context Forge ──► monolith /mcp (port 8000)
                                                      (mcp ns, hub)      registrations: monolith (enabled)
                                                                         GitHub (disabled, no tools)
-
-Ember guest ──► egress sidecar ──► monolith-agents /mcp (port 8092)
-                (injects a broker-minted authentik bearer)
 ```
 
 Context Forge is IBM [mcp-context-forge](https://github.com/IBM/mcp-context-forge),
@@ -58,7 +53,7 @@ any profile declaring `mcp_enabled`, as stateless streamable HTTP behind
 is a visible symptom rather than a missing route. Which domains register is
 listed in `projects/monolith/ARCHITECTURE.md`.
 
-**The monolith-agents tier is the second entry point, intended for Ember guests.**
+**The monolith-agents tier is the second entry point, originally built for Ember guests.**
 It is a pruned monolith binary (`projects/monolith/app/agents_main.py`)
 serving four knowledge tools (`search_knowledge`, `report_knowledge`,
 `dispute_fact`, `report_distress`), three default-off board tools
@@ -70,13 +65,7 @@ on `agent_view.cluster_snapshot`. The snapshot refreshes every 2 minutes;
 stale or incomplete data means unknown, not healthy. It adds no Kubernetes
 permissions or egress. It is
 fail-closed: an anonymous principal is answered 401 before the MCP app runs.
-Identity comes from the authentik `mcp-agents` provider by
-`client_credentials`. The EmberVM token broker mints the bearer (grant
-`agent-mcp`) and the brick-local egress sidecar injects it on the way out, so
-the guest never holds the token and cannot reach the tier except through the
-sidecar. The guest-side half (the egress allowlist entry, `plaintextUpstream`,
-`injectAlwaysPaths`, the shim-written MCP client config and the boot argument
-that carries the URL) is EmberVM's and is documented there.
+The former EmberVM broker and guest egress sidecar retired with the hub sandbox.
 The application also configures the human `mcp-friends` verifier. Any
 non-anonymous principal may use the existing knowledge catalogue, while every
 Kubernetes tool invocation separately requires the standing, undelegated
@@ -109,8 +98,7 @@ topology retains the earlier mechanism until that cutover, accepting a gateway
 failure as a tool-wide outage and upstream maturity as an operational risk.
 The agents tier is a second surface rather than a gate on Context Forge's root
 because a new surface can be fail-closed from day one without risking the
-endpoint in daily use, guests then never traverse the gateway or pay its
-per-call cost, and its identity model (OIDC discovery, JWKS, `groups` claims,
+endpoint in daily use, and its identity model (OIDC discovery, JWKS, `groups` claims,
 authorization in the resource server) is portable where Context Forge teams
 and `tools.visibility` rows are not (#5633, #5656).
 
@@ -323,7 +311,7 @@ a backend could not replay it elsewhere. Context Forge implements exchange but
 authentik does not advertise the grant. The replay path is **not** closed on
 the network on the hub: the inert token-replay Cilium template was removed
 in #5816 because the hub exposes no corresponding CRDs. Native-policy
-successor work remains #5277 / #3897. The monolith has no code path
+enforcement remains tracked by #5277. The monolith has no code path
 that calls the gateway, which is the only thing keeping that theoretical.
 
 **The token now reaches the monolith.** On 2026-09-05 the hub monolith logged
@@ -339,26 +327,25 @@ the session opener and every later message runs in its context, so a stateful
 mount would pin `current_principal()` to the opener again (#4569 records the
 mechanism).
 
-**Per-caller result scoping is still not built** (#4569). The shared monolith
-surface now requires `operators` for every current tool call, so an anonymous
-caller cannot call `search_knowledge` at all. Among callers admitted to a tool,
-the tool still returns the same rows or object regardless of subject: for
-example, `search_knowledge` does not filter notes and
-`monolith_agent_detail` returns a requested turn's verbatim result without a
-per-session ownership check. Domain checks can narrow the surface gate:
-factory orchestration requires a standing human operator, `grant_kg_burst`
-checks the operator group, and `submit_product_update` checks
-`updates:submit`. Identity and attribution therefore do not themselves grant
-resource access. The authoritative surface table and future gates are in
-`projects/monolith/ARCHITECTURE.md` section 7.
+**Result authorization is tool-specific.** The shared monolith surface
+requires `operators` for every current tool call: `GroupPolicyMiddleware` is
+enabled by default and the committed values do not disable it. No tool carries
+`mcp:public`; anonymous catalogue refresh authorizes no call.
+`search_knowledge` applies `knowledge/retrieval_policy.py` to verified scopes
+and the explicit `homelab-admin` / `kg-agents` group mappings before querying.
+Personal and legacy NULL-scoped notes require explicit opt-in, an authorized
+personal grant and a durable audit row. `operators` alone grants no search scope.
+
+Caller-specific result filtering depends on each tool. The shared operator check establishes admission to the surface.
 
 **Why.** Tool-level gateway ACLs cannot decide whether a returned task, session,
 or repository object belongs to the caller, so identity must reach the domain
 that owns that object (ADR agents/055, ADR agents/059). Trusted identity headers
 were rejected because an in-cluster caller could forge them; a verifiable bearer
 keeps the resource server responsible for validation. ADR agents/059 superseded
-055's proposed placement. Any future GitHub mediation remains gated by #4940,
-#4944, and #4946; no broker or delegated grant enforcement is shipped.
+055's proposed placement. #4940 closed as an umbrella; #4944 and #4946 also
+closed not planned with evidence gates for reconsideration. No monolith GitHub
+mutation broker or delegated grant enforcement is shipped.
 
 ## Deployment
 
@@ -520,5 +507,5 @@ Rationale only. None of these describes current state.
 | `agents/020` | Deprecate Context Forge, serve MCP from the monolith | Superseded by 059; its execution issues #3832 and #3833 stay open, #3831 closed 2026-09-05 | deleted |
 | `agents/034` | Per-tier guest MCP ACL at `/private/mcp/{tier}/` | Draft; #3838 open. The agents tier (#5656) is the shape that shipped instead | deleted |
 | `agents/042` | Agent MCP v1 follow-ons | Accepted, partially shipped; #3844 | deleted |
-| `agents/055` | Tool-mediated GitHub access on Context Forge | Superseded by 059. The GitHub registration here is disabled with no tools; #4940 retains the gated direction, and no monolith broker is selected or shipped | deleted |
+| `agents/055` | Tool-mediated GitHub access on Context Forge | Superseded by 059. The GitHub registration here is disabled with no tools; #4940 closed as an umbrella, and no monolith broker is selected or shipped | deleted |
 | `agents/059` | Authentik federates identity, the monolith serves MCP directly | Accepted 2026-09-11, execution #3832; chart route and RFC 9728 document staged default-off in the monolith chart. Context Forge remains the front door until #3832; decommission is #3833 | deleted |
