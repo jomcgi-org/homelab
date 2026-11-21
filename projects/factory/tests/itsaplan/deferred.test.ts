@@ -112,12 +112,15 @@ test("run phase reads exclude stale attempts and require issue access", async ()
     reason: "Waiting for an agent slot.",
   };
   const ownerAPI = authedApi(owner.cookie);
-  expect((await createProject(ownerAPI, { key: "OTHER", name: "Other" })).status).toBe(201);
+  expect(
+    (await createProject(ownerAPI, { key: "OTHER", name: "Other" })).status,
+  ).toBe(201);
   const other = ownerAPI.projects({ projectKey: "OTHER" });
   const otherProject = (await other.get()).data!;
   const otherIssue = await other.issues.post({
     title: "Another project",
-    columnId: otherProject.columns.find((column) => column.name === "Backlog")!.id,
+    columnId: otherProject.columns.find((column) => column.name === "Backlog")!
+      .id,
   });
   expect(otherIssue.status).toBe(201);
   const foreignIssueId = otherIssue.data!.id;
@@ -206,7 +209,8 @@ test("run phase reads exclude stale attempts and require issue access", async ()
     expect(reviewResponse.status).toBe(200);
     expect(await reviewResponse.json()).toEqual(review);
 
-    const projectQueueURL = "http://localhost/projects/HOME/factory-review-queue";
+    const projectQueueURL =
+      "http://localhost/projects/HOME/factory-review-queue";
     const readsBeforeProjectDenial = reads;
     expect((await app.handle(new Request(projectQueueURL))).status).toBe(401);
     expect(reads).toBe(readsBeforeProjectDenial);

@@ -297,17 +297,24 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
           title: issue.title,
         })
         .from(issue)
-        .where(and(
-          eq(issue.projectId, project.id),
-          inArray(issue.id, items.map((r) => r.issueId)),
-        ));
+        .where(
+          and(
+            eq(issue.projectId, project.id),
+            inArray(
+              issue.id,
+              items.map((r) => r.issueId),
+            ),
+          ),
+        );
       const visible = new Map(rows.map((row) => [row.id, row]));
       return {
         observedAt,
         complete,
         items: items.flatMap((r) => {
           const row = visible.get(r.issueId);
-          return row ? [{ ...r, sequenceNumber: row.sequenceNumber, title: row.title }] : [];
+          return row
+            ? [{ ...r, sequenceNumber: row.sequenceNumber, title: row.title }]
+            : [];
         }),
       };
     },
