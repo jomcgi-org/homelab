@@ -258,6 +258,7 @@ func (a *Activities) summarize(p *poll, user string, revision uint64, counts map
 	}
 }
 
+// invariant: FACT-170
 func (a *Activities) member(r *http.Request, p *poll, auth string) (string, int) {
 	base := a.rest.Base
 	if base == "" {
