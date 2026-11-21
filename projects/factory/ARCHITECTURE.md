@@ -33,6 +33,7 @@ flowchart LR
 | connector | Claims runs and reconciles delivery | `connector/` | Built from this repo | Issue text, agent output and PR state | itsaplan agent keys, projected tokens and short-lived author App token |
 | kagent | Owns agents and sessions | `chart/Chart.yaml`, `deploy/values.yaml` | Charts 1.0.1, controller fork e3d14ee3dd62 | Tasks and session messages | Controller ServiceAccount |
 | Agent Substrate | Isolates actors and injects credentials at egress | `../platform-factory/substrate/` | Fork charts 1.0.1, source `7ce6f439` | Workspace traffic | Actor identity and credentials scoped by policy |
+| browser-comparison | Compares CLI and MCP evidence on a loopback fixture | `browser-comparison/` | See package-lock.json | Fixture HTML | None |
 | toolchain | Installs local checks for the coding binding | `toolchain/` | Built from this repo | Tool downloads | None |
 | Codex CLI | Edits and checks the bound repository | `deploy/values.yaml`, `toolchain/` | 0.169.1 | Task and checkout | Gateway placeholders |
 | codex-code-mode | Runs the Codex tool-mode trial | `codex-code-mode/` | Built from this repo | Task and checkout | Gateway placeholders |
