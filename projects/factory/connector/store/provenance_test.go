@@ -23,7 +23,7 @@ func TestProvenanceMigrationLeavesHistoricalRunsNull(t *testing.T) {
  ALTER TABLE delivery_attempt DROP COLUMN start_mismatch,DROP COLUMN actual_start_sha;
  ALTER TABLE delivery_attempt DROP COLUMN rendered_prompt,DROP COLUMN model,DROP COLUMN reasoning_effort,
  DROP COLUMN arm,DROP COLUMN base_sha,DROP COLUMN prompt_hash,DROP COLUMN task_class,DROP COLUMN guidance_system_prompt,DROP COLUMN execution_possible;
- DELETE FROM schema_migrations WHERE version IN ('20261119040000_run_provenance','20261122000000_run_provenance_opt_in','20261121010000_worktree_start')`)
+ DELETE FROM schema_migrations WHERE version IN ('20261119040000_run_provenance','20261122000000_run_provenance_opt_in','20261122010000_worktree_start')`)
 	if err != nil {
 		t.Fatal(err)
 	}
