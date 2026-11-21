@@ -2,6 +2,11 @@
 # docs/templates/INVARIANTS.yaml describes the fields. IDs are permanent:
 # never reuse or renumber one. docs/THREAT-MODEL.md cites them.
 invariants:
+- id: FACT-BROWSER-1
+  statement: Each browser comparison trial starts a fresh session and verifies descendant cleanup before reporting success.
+  mechanism:
+  - projects/factory/browser-comparison/compare.py
+  state: unproven
 - id: FACT-1
   statement: A sandbox holds placeholders, never a provider or GitHub credential.
   mechanism:
