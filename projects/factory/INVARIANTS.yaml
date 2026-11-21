@@ -73,3 +73,15 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-170
+  statement: The Discord Activity checks membership in the launch guild before reading or changing a poll.
+  mechanism:
+  - projects/factory/discord/activity.go
+  test: //projects/factory/discord:discord_test
+  state: unproven
+- id: FACT-171
+  statement: Only catalog text and vote buttons render in the Activity. Model-supplied HTML and URL properties never supply markup or resource URLs.
+  mechanism:
+  - projects/factory/discord/activity/catalog.js
+  test: //projects/factory/discord/activity:catalog_test
+  state: unproven

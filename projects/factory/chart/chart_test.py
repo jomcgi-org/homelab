@@ -1397,3 +1397,21 @@ def test_extra_mcp_server() -> None:
         "server": {"kind": "RemoteMCPServer", "name": "grafana"},
         "tools": ["query_prometheus", "search_dashboards"],
     }
+
+
+def test_discord_activity_exposes_only_activity_api_when_enabled() -> None:
+    assert not any(
+        d["kind"] == "HTTPRoute" and d["metadata"]["name"] == "discord-activity"
+        for d in _render(_DISCORD)
+    )
+    docs = _render(
+        _DISCORD
+        + [
+            "discord.bridge.activity.enabled=true",
+            "string:discord.bridge.activity.clientId=123",
+        ]
+    )
+    route = _in(docs, "HTTPRoute", "edge", "discord-activity")
+    (rule,) = route["spec"]["rules"]
+    assert rule["matches"] == [{"path": {"type": "PathPrefix", "value": "/activity"}}]
+    assert rule["backendRefs"][0]["name"] == "discord-activity"
