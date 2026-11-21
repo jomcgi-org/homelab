@@ -169,8 +169,12 @@ type InlineFinding struct {
 	Body  string
 }
 
-func (b *BrokerComments) SyncInline(ctx context.Context, repo string, number int, head string, findings []InlineFinding, active, fixed []string) (map[string]int64, error) {
+func (b *BrokerComments) SyncInline(ctx context.Context, repo string, number int, head string, findings []InlineFinding, active []string, clearedAt map[string]string) (map[string]int64, error) {
 	var links map[string]int64
-	err := b.do(ctx, http.MethodPost, "?inline=1", map[string]any{"repository": repo, "number": number, "head": head, "findings": findings, "active": active, "fixed": fixed}, &links)
+	var fixed []string
+	for key := range clearedAt {
+		fixed = append(fixed, key)
+	}
+	err := b.do(ctx, http.MethodPost, "?inline=1", map[string]any{"repository": repo, "number": number, "head": head, "findings": findings, "active": active, "fixed": fixed, "clearedAt": clearedAt}, &links)
 	return links, err
 }

@@ -16,6 +16,7 @@ import (
 	"html"
 	"io"
 	"log/slog"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -67,6 +68,7 @@ var severityLabel = map[string]string{
 
 // CommentUpdate is what a review check write shows in the PR comment.
 type CommentUpdate struct {
+	pendingResolutions map[string]string
 	// body replays a rendered snapshot recovered from a completed check.
 	body    string
 	Verdict Verdict
@@ -174,9 +176,19 @@ func (e *Engine) replayComment(ctx context.Context, b *Binding, pr github.PullRe
 	if queued {
 		return
 	}
-	if body := recordedComment(run.Text); body != "" {
-		e.queueMirror(ctx, b, pr, run, &CommentUpdate{body: body})
+	body := recordedComment(run.Text)
+	pending := recordedResolutions(run.Text)
+	if body != "" || len(pending) > 0 {
+		e.queueMirror(ctx, b, pr, run, &CommentUpdate{body: body, pendingResolutions: pending})
 	}
+}
+
+func recordedResolutions(text string) map[string]string {
+	st, ok := LoadState(text)
+	if !ok || st.Incomplete {
+		return nil
+	}
+	return st.PendingResolutions
 }
 
 // queueCompletedComment uses the same snapshot for live writes and retries.
@@ -186,6 +198,7 @@ func (e *Engine) queueCompletedComment(ctx context.Context, b *Binding, pr githu
 		return
 	}
 	update := *u
+	update.pendingResolutions = recordedResolutions(text)
 	update.body = recordedComment(text)
 	e.queueMirror(ctx, b, pr, run, &update)
 }
@@ -671,7 +684,20 @@ func (e *Engine) queueMirror(ctx context.Context, b *Binding, pr github.PullRequ
 		e.commentReplays[key] = run.ID
 	}
 	e.commentQueue = append(e.commentQueue, func() {
-		if !e.mirror(ctx, b, pr, link, &update) && run != nil {
+		ok := true
+		if update.body != "" || update.Verdict != "" || update.Findings != nil {
+			ok = e.mirror(ctx, b, pr, link, &update)
+		}
+		if w, enabled := e.cfg.Comments.(inlineWriter); enabled && len(update.pendingResolutions) > 0 {
+			retryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commentTimeout)
+			_, err := w.SyncInline(retryCtx, b.repo(), pr.Number, pr.HeadSHA, nil, nil, update.pendingResolutions)
+			cancel()
+			if err != nil {
+				ok = false
+				e.commentFailed(ctx, e.prLog(b, pr), b, "resolve", err)
+			}
+		}
+		if !ok && run != nil {
 			e.commentQueueMu.Lock()
 			if e.commentReplays[key] == run.ID {
 				delete(e.commentReplays, key)
@@ -1013,15 +1039,15 @@ func validateSuggestions(r *Report, b *Binding, in *inputs) {
 }
 
 type inlineWriter interface {
-	SyncInline(context.Context, string, int, string, []github.InlineFinding, []string, []string) (map[string]int64, error)
+	SyncInline(context.Context, string, int, string, []github.InlineFinding, []string, map[string]string) (map[string]int64, error)
 }
 
 func inlineKey(id string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(id))) }
 
-func (e *Engine) postInline(ctx context.Context, b *Binding, pr github.PullRequest, a *Assessment, in *inputs, r *Report) {
+func (e *Engine) postInline(ctx context.Context, b *Binding, pr github.PullRequest, a *Assessment, in *inputs, r *Report) map[string]string {
 	writer, ok := e.cfg.Comments.(inlineWriter)
 	if !ok {
-		return
+		return in.prior.PendingResolutions
 	}
 	lines := addedLines(in.files)
 	var entries []github.InlineFinding
@@ -1070,18 +1096,27 @@ func (e *Engine) postInline(ctx context.Context, b *Binding, pr github.PullReque
 	for i := range a.ExtraLow {
 		add(&a.ExtraLow[i], false)
 	}
-	var fixed []string
+	fixed := maps.Clone(in.prior.PendingResolutions)
+	if fixed == nil {
+		fixed = map[string]string{}
+	}
 	for _, p := range r.Previous {
 		if p.Status == StatusFixed {
-			fixed = append(fixed, inlineKey(p.ID))
+			if _, pending := fixed[inlineKey(p.ID)]; !pending {
+				fixed[inlineKey(p.ID)] = pr.HeadSHA
+			}
 		}
+	}
+	for _, key := range active {
+		delete(fixed, key)
 	}
 	links, err := writer.SyncInline(ctx, b.repo(), pr.Number, pr.HeadSHA, entries, active, fixed)
 	if err != nil {
 		e.commentFailed(ctx, e.prLog(b, pr), b, "inline", err)
-		return
+		return fixed
 	}
 	for _, f := range visible {
 		f.threadID = links[inlineKey(f.ID)]
 	}
+	return nil
 }

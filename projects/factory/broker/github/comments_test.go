@@ -437,8 +437,9 @@ func TestInlineReviewLifecycle(t *testing.T) {
 	h, _, p := newCommentHarness(t)
 	head := strings.Repeat("a", 40)
 	var nodes []map[string]any
+	rejectResolve := true
 	wantComments := 25
-	var posted, resolved int
+	var posted, resolved, replies int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/graphql":
@@ -450,10 +451,25 @@ func TestInlineReviewLifecycle(t *testing.T) {
 				t.Error(err)
 			}
 			if strings.HasPrefix(in.Query, "mutation") {
-				if in.Variables["id"] != "old" || in.Variables["body"] != "Cleared on "+head+"." {
+				if in.Variables["id"] != "old" {
 					t.Error(in.Variables)
 				}
-				resolved++
+				if strings.Contains(in.Query, "addPullRequestReviewThreadReply") {
+					if in.Variables["body"] != "Cleared on "+head+"." {
+						t.Error("wrong clearance head")
+					}
+					replies++
+					nodes[0]["latest"] = map[string]any{"nodes": []map[string]any{{"author": map[string]string{"login": bot}, "body": in.Variables["body"]}}}
+				} else {
+					if rejectResolve {
+						rejectResolve = false
+						http.Error(w, "try again", http.StatusServiceUnavailable)
+						return
+					}
+					resolved++
+					nodes[0]["isResolved"] = true
+					nodes[0]["resolvedBy"] = map[string]string{"login": bot}
+				}
 				fmt.Fprint(w, `{"data":{}}`)
 				return
 			}
@@ -488,7 +504,7 @@ func TestInlineReviewLifecycle(t *testing.T) {
 	for i := 1; i <= 26; i++ {
 		key := fmt.Sprintf("%064x", i)
 		active = append(active, key)
-		items = append(items, map[string]any{"key": key, "path": "a", "start": 1, "end": 1, "body": "finding"})
+		items = append(items, map[string]any{"key": key, "path": "a", "start": 1, "end": 1, "body": strings.Repeat("x", 16000)})
 	}
 	in["fixed"] = []string{strings.Repeat("0", 64)}
 	nodes = append(nodes, testThread("unaccounted", bot, inlinePrefix+strings.Repeat("d", 64)+" -->\nopen", "prior"))
@@ -500,11 +516,18 @@ func TestInlineReviewLifecycle(t *testing.T) {
 			t.Fatal(w.Code, w.Body.String())
 		}
 	}
+	body, _ := json.Marshal(in)
+	if w := doProxy(p, "POST", "/?inline=1", string(body)); w.Code != http.StatusBadGateway {
+		t.Fatalf("resolution failure status = %d", w.Code)
+	}
+
 	send()
 	if posted != 25 || resolved != 1 {
 		t.Fatal(posted, resolved)
 	}
-	nodes[0]["isResolved"] = true
+	// A person resolved a persisting finding without changing the code.
+	nodes[3]["isResolved"] = true
+	nodes[3]["resolvedBy"] = map[string]string{"login": "someone"}
 	// On a later head the existing 25 persist without another notification.
 	head = strings.Repeat("b", 40)
 	in["head"] = head
@@ -521,7 +544,7 @@ func TestInlineReviewLifecycle(t *testing.T) {
 	wantComments = 1
 	send()
 	send()
-	if posted != 26 || resolved != 1 {
+	if posted != 26 || resolved != 1 || replies != 1 {
 		t.Fatal(posted, resolved)
 	}
 }

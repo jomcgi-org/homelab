@@ -4,6 +4,7 @@ package github
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -245,7 +246,12 @@ func validBody(b string) bool {
 }
 
 func (p *CommentProxy) decode(w http.ResponseWriter, r *http.Request, op string, v any) bool {
-	dec := json.NewDecoder(io.LimitReader(r.Body, maxCommentRequest))
+	limit := int64(maxCommentRequest)
+	// Inline batches include escaped bodies and hashed IDs from a report of up to 1 MiB.
+	if op == "inline" {
+		limit = 32 << 20
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		p.fail(w, op, "", http.StatusBadRequest, "bad_request", err)
@@ -368,8 +374,9 @@ type inlineRequest struct {
 		Key, Path, Body string
 		Start, End      int
 	}
-	Active []string
-	Fixed  []string
+	Active    []string
+	Fixed     []string
+	ClearedAt map[string]string
 }
 
 const inlinePrefix = "<!-- factory-review:inline "
@@ -377,7 +384,14 @@ const inlinePrefix = "<!-- factory-review:inline "
 type inlineThread struct {
 	ID         string
 	IsResolved bool
-	Comments   struct {
+	ResolvedBy struct{ Login string }
+	Latest     struct {
+		Nodes []struct {
+			Body   string
+			Author struct{ Login string }
+		}
+	}
+	Comments struct {
 		Nodes []struct {
 			URL            string
 			Body           string
@@ -385,6 +399,30 @@ type inlineThread struct {
 			OriginalCommit struct{ Oid string }
 		}
 	}
+}
+
+// cleared reports a service clearance. A person can resolve a discussion
+// while the review still reports its finding.
+func (t inlineThread) cleared(author string) bool {
+	if !t.IsResolved {
+		return false
+	}
+	if strings.EqualFold(t.ResolvedBy.Login, author) {
+		return true
+	}
+	if len(t.Latest.Nodes) != 1 {
+		return false
+	}
+	last := t.Latest.Nodes[0]
+	if !strings.EqualFold(last.Author.Login, author) {
+		return false
+	}
+	head, ok := strings.CutPrefix(last.Body, "Cleared on ")
+	if !ok || len(head) != 41 || head[40] != '.' {
+		return false
+	}
+	_, err := hex.DecodeString(head[:40])
+	return err == nil
 }
 
 func (p *CommentProxy) graphql(ctx context.Context, repo, query string, vars map[string]any, out any) error {
@@ -412,7 +450,8 @@ func (p *CommentProxy) threads(ctx context.Context, in inlineRequest) (map[strin
 	vars := map[string]any{"owner": owner, "repo": name, "number": in.Number}
 	threads := map[string]inlineThread{}
 	count := 0
-	for page := 0; page < FindPages; page++ {
+	// Four pairs of maximum-size, JSON-escaped comments fit in maxCommentAnswer.
+	for page := 0; page < 500; page++ {
 		var data struct {
 			Repository struct {
 				PullRequest struct {
@@ -427,7 +466,7 @@ func (p *CommentProxy) threads(ctx context.Context, in inlineRequest) (map[strin
 				}
 			}
 		}
-		err := p.graphql(ctx, in.Repository, `query($owner:String!,$repo:String!,$number:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){headRefOid reviewThreads(first:20,after:$after){nodes{id isResolved comments(first:1){nodes{url body author{login} originalCommit{oid}}}} pageInfo{hasNextPage endCursor}}}}}`, vars, &data)
+		err := p.graphql(ctx, in.Repository, `query($owner:String!,$repo:String!,$number:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){headRefOid reviewThreads(first:4,after:$after){nodes{id isResolved resolvedBy{login} latest:comments(last:1){nodes{body author{login}}} comments(first:1){nodes{url body author{login} originalCommit{oid}}}} pageInfo{hasNextPage endCursor}}}}}`, vars, &data)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -479,10 +518,31 @@ func (p *CommentProxy) inline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for key, t := range threads {
-		if !slices.Contains(in.Fixed, key) || slices.Contains(in.Active, key) || t.IsResolved || t.Comments.Nodes[0].OriginalCommit.Oid == in.Head {
+		if !slices.Contains(in.Fixed, key) || slices.Contains(in.Active, key) || t.Comments.Nodes[0].OriginalCommit.Oid == in.Head {
 			continue
 		}
-		err = p.graphql(ctx, in.Repository, `mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body}){comment{id}} resolveReviewThread(input:{threadId:$id}){thread{id}}}`, map[string]any{"id": t.ID, "body": "Cleared on " + in.Head + "."}, nil)
+		head := in.ClearedAt[key]
+		if head == "" {
+			head = in.Head
+		} else if head != in.Head {
+			if _, err := hex.DecodeString(head); err != nil || len(head) != 40 {
+				p.fail(w, "inline", in.Repository, http.StatusBadRequest, "bad_clearance_head", nil)
+				return
+			}
+		}
+		body := "Cleared on " + head + "."
+		replied := len(t.Latest.Nodes) == 1 && strings.EqualFold(t.Latest.Nodes[0].Author.Login, p.Author) && t.Latest.Nodes[0].Body == body
+		if t.IsResolved && (replied || strings.EqualFold(t.ResolvedBy.Login, p.Author)) {
+			continue
+		}
+		if !replied {
+			err = p.graphql(ctx, in.Repository, `mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body}){comment{id}}}`, map[string]any{"id": t.ID, "body": body}, nil)
+			if err != nil {
+				p.failCall(w, "inline", in.Repository, err)
+				return
+			}
+		}
+		err = p.graphql(ctx, in.Repository, `mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id}}}`, map[string]any{"id": t.ID}, nil)
 		if err != nil {
 			p.failCall(w, "inline", in.Repository, err)
 			return
@@ -490,7 +550,7 @@ func (p *CommentProxy) inline(w http.ResponseWriter, r *http.Request) {
 	}
 	var comments []map[string]any
 	for _, f := range in.Findings {
-		if t, ok := threads[f.Key]; count >= 25 || ok && (!t.IsResolved || t.Comments.Nodes[0].OriginalCommit.Oid == in.Head) {
+		if t, ok := threads[f.Key]; count >= 25 || ok && (!t.cleared(p.Author) || t.Comments.Nodes[0].OriginalCommit.Oid == in.Head) {
 			continue
 		}
 		body := inlinePrefix + f.Key + " -->\n" + f.Body
@@ -519,7 +579,7 @@ func (p *CommentProxy) inline(w http.ResponseWriter, r *http.Request) {
 	}
 	links := map[string]int64{}
 	for _, key := range in.Active {
-		if t, ok := threads[key]; ok && !t.IsResolved {
+		if t, ok := threads[key]; ok {
 			_, fragment, ok := strings.Cut(t.Comments.Nodes[0].URL, "#discussion_r")
 			if ok {
 				id, err := strconv.ParseInt(fragment, 10, 64)

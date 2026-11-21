@@ -2449,6 +2449,7 @@ heads:
 	}
 	prior.Gate, prior.TaskID, prior.LegacyTask = gate, saved.TaskID, saved.LegacyTask
 	prior.IssueDigest, prior.IssuesPending = saved.IssueDigest, saved.IssuesPending
+	prior.PendingResolutions = saved.PendingResolutions
 	prior.Round = saved.Round
 	prior.Goal, prior.GoalKey = saved.Goal, saved.GoalKey
 	prior.Semgrep = saved.Semgrep
@@ -2869,15 +2870,17 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 		}
 		st.Round = round
 		st.InvariantBase = in.invariantBase
+		st.PendingResolutions = in.prior.PendingResolutions
+		if stored, _ := LoadState(encodeState(st)); !a.Incomplete && !stored.Incomplete {
+			st.PendingResolutions = e.postInline(ctx, b, pr, &a, in, r)
+		}
 		o := render(a, r, gate, footer, &st)
 		session := sessionAfter(b, pr, in, task)
 		o.Output.Text = withSession(o.Output.Text, session)
 		if stored, _ := LoadState(o.Output.Text); stored.Incomplete {
 			a.Incomplete = true
 		}
-		if !a.Incomplete {
-			e.postInline(ctx, b, pr, &a, in, r)
-		}
+
 		o.Comment = reviewComment(a, r, b, gate)
 		if summary := acceptanceSummary(st.Goal); !a.Incomplete && summary != "" && st.Goal.Head == pr.HeadSHA {
 			body := summary + "\n\n" + *o.Comment.Findings

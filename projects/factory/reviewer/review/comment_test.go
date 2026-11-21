@@ -1270,10 +1270,16 @@ func TestInlineSuggestionUsesOnlyChangedLines(t *testing.T) {
 type captureInline struct {
 	Comments
 	findings []github.InlineFinding
+	fixed    map[string]string
+	err      error
 }
 
-func (c *captureInline) SyncInline(_ context.Context, _ string, _ int, _ string, fs []github.InlineFinding, _, _ []string) (map[string]int64, error) {
+func (c *captureInline) SyncInline(_ context.Context, _ string, _ int, _ string, fs []github.InlineFinding, _ []string, fixed map[string]string) (map[string]int64, error) {
+	c.fixed = fixed
 	c.findings = fs
+	if c.err != nil {
+		return nil, c.err
+	}
 	return map[string]int64{inlineKey("a:correctness"): 123}, nil
 }
 
@@ -1320,5 +1326,38 @@ func TestOptionalFindingsBeyondCheckLimitAppearInlineAndInSummary(t *testing.T) 
 	ids := optionalReviewIDs(nil, r, a)
 	if len(optionalReviewIDs(ids, &Report{}, Assessment{})) != len(r.Findings) {
 		t.Fatal(ids)
+	}
+}
+
+func TestFailedInlineClearanceSurvivesRestart(t *testing.T) {
+	h := newHarness(t)
+	writer := &captureInline{err: fmt.Errorf("resolution unavailable")}
+	h.cfg.Comments = writer
+	b := &h.cfg.Bindings[0]
+	r := &Report{Previous: []Previous{{ID: "a:validation", Status: StatusFixed}}}
+	first := github.PullRequest{Number: 7, HeadSHA: shaA}
+	pending := h.engine().postInline(context.Background(), b, first, &Assessment{}, &inputs{}, r)
+	state, ok := LoadState(encodeState(State{Blocking: []Finding{}, PendingResolutions: pending}))
+	key := inlineKey("a:validation")
+	if !ok || state.PendingResolutions[key] != shaA {
+		t.Fatal(state.PendingResolutions)
+	}
+	// A new process retries from the completed check even without a summary snapshot.
+	h.cfg.CommentAuthor = botLogin
+	restarted := h.engine()
+	run := &github.CheckRun{ID: 12, Status: "completed", Text: encodeState(state)}
+	restarted.replayComment(context.Background(), b, first, run)
+	restarted.Wait()
+	writer.fixed = nil
+	writer.err = nil
+	restarted.replayComment(context.Background(), b, first, run)
+	restarted.Wait()
+	if writer.fixed[key] != shaA {
+		t.Fatal("poll did not retry the pending clearance", writer.fixed)
+	}
+	first.HeadSHA = sha40('b')
+	pending = h.engine().postInline(context.Background(), b, first, &Assessment{}, &inputs{prior: state}, &Report{})
+	if len(pending) != 0 || writer.fixed[key] != shaA {
+		t.Fatal(pending, writer.fixed)
 	}
 }
