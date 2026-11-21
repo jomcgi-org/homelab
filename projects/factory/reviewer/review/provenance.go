@@ -76,6 +76,7 @@ func (e *Engine) prepareGoalDispatch(ctx context.Context, b *Binding, in *inputs
 }
 
 var errGoalDispatchUncertain = errors.New("goal dispatch acceptance is uncertain")
+var errGoalTaskNotVisible = errors.New("goal task is not visible")
 
 // An issued dispatch must never recover through Send: it could start fresh
 // under changed settings. Its isolated session contains only this goal's turn.
@@ -88,6 +89,9 @@ func (e *Engine) recoverGoalDispatch(ctx context.Context, b *Binding, d *GoalTas
 	p, err := e.tasks.ListTasks(ctx, b.Agent, d.ContextID, "", "")
 	if err != nil {
 		return nil, err
+	}
+	if p != nil && p.NextPageToken == "" && p.TotalSize == 0 && len(p.Tasks) == 0 {
+		return nil, errGoalTaskNotVisible
 	}
 	if p == nil || p.NextPageToken != "" || p.TotalSize != 1 || len(p.Tasks) != 1 ||
 		p.Tasks[0] == nil || p.Tasks[0].ID == "" || p.Tasks[0].ContextID != d.ContextID {
