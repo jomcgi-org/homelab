@@ -189,7 +189,7 @@ func (g *GoalCheck) ownershipFeedback() string {
 	return feedback.String()
 }
 
-// invariant: FACT-13
+// invariant: FACT-14
 
 var missingEvidenceLine = regexp.MustCompile(`^Searched ([^[:space:]]+); missing (.+)$`)
 
