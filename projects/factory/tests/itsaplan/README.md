@@ -51,3 +51,12 @@ python3 -m pytest -q -s projects/factory/tests/itsaplan/integration_test.py
 The chart's `deferred_test` target also retains the portable in-memory
 fault-injection suite. Revalidate both targets before changing the pinned
 itsaplan release; the adapter refuses other versions at startup.
+
+The reader conformance case registers the fixture's loopback HTTP endpoint
+with the pinned Codex binary using `codex mcp add` and
+`--bearer-token-env-var` in a temporary Codex home. Through app-server it
+starts an ephemeral thread, discovers the server with `mcpServerStatus/list`
+and calls the advertised tools with `mcpServer/tool/call`. The read-only
+project role can follow issue links and read comment activity. The tracker
+returns 403 for a valid comment submission with the same fixture key.
+Local pytest also requires `READER_CODEX` pointing to the harness executable.

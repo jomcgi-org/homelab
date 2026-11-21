@@ -68,6 +68,12 @@ def test_upstream_factory_contracts(tmp_path):
         Path(__file__).with_name("token-usage.test.ts"),
         upstream / "apps/api/src/factory-token-usage.test.ts",
     )
+    shutil.copyfile(
+        Path(__file__).with_name("reader.test.ts"),
+        upstream / "apps/api/src/reader.test.ts",
+    )
+    reader_home = tmp_path / "codex"
+    reader_home.mkdir()
     connector = Path(__file__).resolve().parents[2] / "connector"
 
     pg_bin, pg_share = pg_paths()
@@ -143,6 +149,8 @@ def test_upstream_factory_contracts(tmp_path):
             env = {
                 **os.environ,
                 "DECISION_PROBE": str(Path(os.environ["DECISION_PROBE"]).resolve()),
+                "READER_CODEX": str(Path(os.environ["READER_CODEX"]).resolve()),
+                "READER_HOME": str(reader_home),
                 "NODE_ENV": "test",
                 "FACTORY_INTSEC_SYNC": "true",
                 "SKIP_PRE_MIGRATION_BACKUP": "1",
@@ -235,6 +243,7 @@ def test_upstream_factory_contracts(tmp_path):
                     "test",
                     "src/factory-deferred.test.ts",
                     "src/factory-token-usage.test.ts",
+                    "src/reader.test.ts",
                 ],
                 cwd=upstream / "apps/api",
                 env=env,
