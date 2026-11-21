@@ -83,6 +83,14 @@ spec:
     # Route backends.
     - toEndpoints:
         - matchLabels:
+            k8s:io.kubernetes.pod.namespace: t3
+            app.kubernetes.io/name: t3-relay
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
             k8s:io.kubernetes.pod.namespace: scotland-connector
             app.kubernetes.io/name: scotland-connector
       toPorts:

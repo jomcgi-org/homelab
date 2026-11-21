@@ -84,6 +84,22 @@ func TestNeedsYouRejectsMissingMemberAndFullListing(t *testing.T) {
 	}
 }
 
+func TestRecentIssueTitlesReadsOneBoundedPage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/projects/HOME/issues" || r.Header.Get("x-api-key") != "key" ||
+			r.URL.Query().Get("limit") != "500" || r.URL.Query().Get("includeArchived") != "true" {
+			t.Error("expected a bounded coordinator read that includes archived issues")
+		}
+		_, _ = w.Write([]byte(`[{"id":20,"title":"Archived change","archived":true,"description":"private body"}]`))
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Coordinator: "coord", Keys: map[string]string{"coord": "key"}}
+	titles, err := c.RecentIssueTitles(context.Background(), "HOME")
+	if err != nil || len(titles) != 1 || titles[20] != "Archived change" {
+		t.Fatalf("titles = %v, err = %v", titles, err)
+	}
+}
+
 func TestChoiceCounts(t *testing.T) {
 	desc := "## Choices\n1. First (Recommended)"
 	for i := 1; i <= 5; i++ {

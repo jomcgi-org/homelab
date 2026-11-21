@@ -83,6 +83,25 @@ func (c *Client) GetIssueSummary(ctx context.Context, id int64) (*IssueSummary, 
 	return &out, nil
 }
 
+// RecentIssueTitles reads one page of recently updated titles. Callers can
+// look up individual issues outside the page by ID.
+func (c *Client) RecentIssueTitles(ctx context.Context, project string) (map[int64]string, error) {
+	q := url.Values{"limit": {"500"}, "includeArchived": {"true"}}
+	path := "/projects/" + url.PathEscape(project) + "/issues?" + q.Encode()
+	var issues []struct {
+		ID    int64  `json:"id"`
+		Title string `json:"title"`
+	}
+	if err := c.do(ctx, c.Coordinator, http.MethodGet, path, nil, &issues); err != nil {
+		return nil, err
+	}
+	titles := make(map[int64]string, len(issues))
+	for _, issue := range issues {
+		titles[issue.ID] = issue.Title
+	}
+	return titles, nil
+}
+
 func (p *Project) memberID(username string) string {
 	for _, member := range p.Assignees {
 		if member.Kind == "member" && member.Username == username {

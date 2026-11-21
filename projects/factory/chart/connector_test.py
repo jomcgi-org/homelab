@@ -401,7 +401,7 @@ def test_itsaplan_keys_come_from_the_bootstrap_secrets() -> None:
         {
             "key": "homelab-codex",
             "apiKeyFile": "/var/run/secrets/factory-itsaplan/homelab-codex",
-            "concurrency": 8,
+            "concurrency": 10,
         }
     ]
 

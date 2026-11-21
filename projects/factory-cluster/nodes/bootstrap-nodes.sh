@@ -19,7 +19,7 @@ run_install() {
 	local node="$1"
 	shift
 	ssh -n "${node}" 'rm -rf /tmp/factory-node && mkdir -p /tmp/factory-node'
-	scp -q "${HERE}"/{install-node.sh,cap-ate.sh,audit-policy.yaml,k3s-config.yaml,authentication-config.yaml,registries.yaml,containerd-runsc.toml,99-factory.conf,zram-generator.conf,kubelet-swap.conf,k3s-gogc.conf,factory-firewall.nft,factory-firewall.service} \
+	scp -q "${HERE}"/{install-node.sh,cap-ate.sh,audit-policy.yaml,k3s-config.yaml,authentication-config.yaml,registries.yaml,containerd-runsc.toml,99-factory.conf,zram-generator.conf,kubelet-swap.conf,k3s-gogc.conf,factory-firewall.nft,factory-firewall.service,install-t3-socket.sh,t3-cluster.socket,t3-cluster.service} \
 		"${node}:/tmp/factory-node/"
 	ssh "${node}" "$@"
 	ssh -n "${node}" 'rm -rf /tmp/factory-node'

@@ -63,3 +63,13 @@ def test_failed_metadata_read_never_bootstraps():
     ):
         guard.verify_private(REPO, "test-token", "crane")
     seed.assert_not_called()
+
+
+def test_post_push_check_rejects_missing_package_without_seeding():
+    with (
+        patch.object(guard, "package_visibility", return_value=None),
+        patch.object(guard, "seed_package") as seed,
+        pytest.raises(guard.PrivacyError, match="no verified private visibility"),
+    ):
+        guard.verify_private(REPO, "test-token", "crane", bootstrap=False)
+    seed.assert_not_called()

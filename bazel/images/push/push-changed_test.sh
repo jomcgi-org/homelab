@@ -127,6 +127,7 @@ case "\$2" in
 	ghcr.io/jomcgi/homelab/alpha:tag-alpha) echo sha256:aaa ;;
 	ghcr.io/jomcgi/homelab/beta:tag-beta) echo sha256:bbb ;;
 	ghcr.io/jomcgi/homelab/gamma:tag-gamma) echo sha256:ccc ;;
+	ghcr.io/jomcgi/homelab/projects/factory/reviewer/harness:tag-private) echo "\${STUB_REVIEWER_DIGEST:-sha256:private}" ;;
 	*) exit 1 ;;
 esac
 STUB
@@ -578,6 +579,30 @@ STUB
 		pass "private refusal stops the $harness upload"
 	else
 		fail "private refusal stops the $harness upload" "$OUT"
+	fi
+	if [ "$harness" = "reviewer/harness" ]; then
+		cat >"$WORK/bazel/images/push/private_harness_package.py" <<'STUB'
+import os
+import sys
+
+if "--existing-only" in sys.argv and os.getenv("POST_PUSH_PUBLIC"):
+    sys.exit("published package is public")
+STUB
+		if OUT=$(STUB_REVIEWER_DIGEST=sha256:wrong run_script); then
+			fail "reject mismatched reviewer digest" "$OUT"
+		elif ! grep -q "differs from its build manifest" <<<"$OUT"; then
+			fail "missing reviewer digest diagnostic" "$OUT"
+		fi
+		if OUT=$(POST_PUSH_PUBLIC=1 run_script); then
+			fail "reject public reviewer package after upload" "$OUT"
+		elif ! grep -q "published package is public" <<<"$OUT"; then
+			fail "missing reviewer privacy diagnostic" "$OUT"
+		fi
+		if OUT=$(run_script) && grep -qF "Verified private reviewer harness $private_repo@sha256:private" <<<"$OUT"; then
+			pass "record verified reviewer package and digest"
+		else
+			fail "record verified reviewer package and digest" "$OUT"
+		fi
 	fi
 	teardown
 done

@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -75,34 +76,59 @@ func (c *Client) StatusesForLanding(ctx context.Context, repo string, numbers []
 			return nil, fmt.Errorf("github: invalid status PR number")
 		}
 	}
-	owner, name, _ := strings.Cut(repo, "/")
+	// At most four requests share the refresh deadline. A slow batch does
+	// not delay the start of the other batches.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type batchResult struct {
+		statuses map[int]*PRStatus
+		err      error
+	}
+	batches := (len(numbers) + StatusBatchSize - 1) / StatusBatchSize
+	replies := make(chan batchResult, batches)
+	for batch := range slices.Chunk(numbers, StatusBatchSize) {
+		go func() {
+			statuses, err := c.landingStatusBatch(ctx, repo, batch, reviewer)
+			replies <- batchResult{statuses: statuses, err: err}
+		}()
+	}
 	result := make(map[int]*PRStatus, len(numbers))
-	for start := 0; start < len(numbers); start += StatusBatchSize {
-		batch := numbers[start:min(start+StatusBatchSize, len(numbers))]
-		var query strings.Builder
-		query.WriteString(`query($owner: String!, $name: String!, $hasReviewer: Boolean!, $appId: Int!, $check: String!) {
+	for range batches {
+		reply := <-replies
+		if reply.err != nil {
+			return nil, reply.err
+		}
+		maps.Copy(result, reply.statuses)
+	}
+	return result, nil
+}
+
+func (c *Client) landingStatusBatch(ctx context.Context, repo string, numbers []int, reviewer CheckRunFilter) (map[int]*PRStatus, error) {
+	owner, name, _ := strings.Cut(repo, "/")
+	var query strings.Builder
+	query.WriteString(`query($owner: String!, $name: String!, $hasReviewer: Boolean!, $appId: Int!, $check: String!) {
           repository(owner: $owner, name: $name) {`)
-		for _, number := range batch {
-			fmt.Fprintf(&query, "p%d: pullRequest(number: %d) {%s}\n", number, number, statusFields)
+	for _, number := range numbers {
+		fmt.Fprintf(&query, "p%d: pullRequest(number: %d) {%s}\n", number, number, statusFields)
+	}
+	query.WriteString("}}")
+	var out struct {
+		Repository map[string]*statusPullRequest `json:"repository"`
+	}
+	vars := map[string]any{
+		"owner": owner, "name": name,
+		"hasReviewer": reviewer.AppID != 0 && reviewer.Name != "", "appId": reviewer.AppID, "check": reviewer.Name,
+	}
+	if err := c.graphql(ctx, repo, query.String(), vars, &out); err != nil {
+		return nil, err
+	}
+	result := make(map[int]*PRStatus, len(numbers))
+	for _, number := range numbers {
+		p := out.Repository[fmt.Sprintf("p%d", number)]
+		if p == nil || p.Number != number {
+			return nil, ErrNotFound
 		}
-		query.WriteString("}}")
-		var out struct {
-			Repository map[string]*statusPullRequest `json:"repository"`
-		}
-		vars := map[string]any{
-			"owner": owner, "name": name,
-			"hasReviewer": reviewer.AppID != 0 && reviewer.Name != "", "appId": reviewer.AppID, "check": reviewer.Name,
-		}
-		if err := c.graphql(ctx, repo, query.String(), vars, &out); err != nil {
-			return nil, err
-		}
-		for _, number := range batch {
-			p := out.Repository[fmt.Sprintf("p%d", number)]
-			if p == nil || p.Number != number {
-				return nil, ErrNotFound
-			}
-			result[number] = p.summary(reviewer)
-		}
+		result[number] = p.summary(reviewer)
 	}
 	return result, nil
 }

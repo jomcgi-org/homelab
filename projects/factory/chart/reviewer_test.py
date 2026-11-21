@@ -530,7 +530,9 @@ def test_only_the_review_harness_takes_the_workload_image() -> None:
         harnesses = [d for d in docs if d["kind"] == "Harness"]
         assert harnesses
         assert all("workload" not in h["spec"] for h in harnesses)
-    image = "ghcr.io/jomcgi/homelab/projects/factory/harness/codex@sha256:" + "d" * 64
+    image = (
+        "ghcr.io/jomcgi/homelab/projects/factory/reviewer/harness@sha256:" + "d" * 64
+    )
     docs = _render(_TWO_REPOSITORIES + ["reviewer.harnessImage=" + image])
     workloads = {
         h["metadata"]["namespace"]: h["spec"].get("workload")
