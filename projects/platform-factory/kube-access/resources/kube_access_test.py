@@ -15,6 +15,11 @@ DOCS = [
 VIEWERS = "authentik:factory-kube-viewers"
 EXPLORERS = "explore:explorers"
 SESSIONS = "authentik:factory-kube-sessions"
+NODE_SESSION = {
+    "kind": "ServiceAccount",
+    "name": "factory-node1-sessions",
+    "namespace": "kube-system",
+}
 ADMINS = "authentik:authentik Admins"
 # Reviewed in #8222: no private data in their objects or logs. Adding one is
 # Joe's decision; agent, ticket, chat, memory and sign-in namespaces stay out.
@@ -98,9 +103,19 @@ def test_only_admins_hold_cluster_admin():
         assert d["roleRef"]["name"] not in {"cluster-admin", "admin", "edit"}
 
 
-def test_every_subject_is_an_access_group():
+def test_every_subject_is_an_access_group_or_the_node_session():
+    assert by_kind("ServiceAccount") == [
+        {
+            "apiVersion": "v1",
+            "kind": "ServiceAccount",
+            "metadata": {"name": NODE_SESSION["name"], "namespace": NODE_SESSION["namespace"]},
+            "automountServiceAccountToken": False,
+        }
+    ]
     for d in by_kind("ClusterRoleBinding") + by_kind("RoleBinding"):
         for subject in d["subjects"]:
+            if d["roleRef"]["name"] == "factory-sessions" and subject == NODE_SESSION:
+                continue
             assert subject["kind"] == "Group"
             assert subject["name"] in {
                 ADMINS,
@@ -233,6 +248,10 @@ def test_session_permissions():
             for b in by_kind(kind + "Binding")
             if any(s["name"] == SESSIONS for s in b["subjects"])
         ]
+        assert binding["subjects"] == [
+            {"kind": "Group", "apiGroup": "rbac.authorization.k8s.io", "name": SESSIONS},
+            NODE_SESSION,
+        ]
         namespace = "factory" if kind == "Role" else None
         assert binding["metadata"].get("namespace") == namespace
         assert binding["roleRef"] == {
@@ -356,6 +375,7 @@ def test_session_permissions():
         ("patch", "secrets", "factory-itsaplan-joe-sessions", "factory", False),
         ("delete", "secrets", "factory-itsaplan-joe-sessions", "factory", False),
         ("list", "secrets", None, "factory", False),
+        ("create", "serviceaccounts/token", NODE_SESSION["name"], "kube-system", False),
         ("watch", "secrets", None, "factory", False),
         ("create", "pods/exec", "factory-db-1", "factory", False),
         (
@@ -379,12 +399,13 @@ def test_session_permissions():
         ("watch", "pods", None, "default", True),
     ],
 )
-def test_session_core_requests(verb, resource, name, namespace, allowed):
+@pytest.mark.parametrize("subject", [SESSIONS, NODE_SESSION["name"]])
+def test_session_core_requests(verb, resource, name, namespace, allowed, subject):
     rules = []
     for binding in by_kind("RoleBinding") + by_kind("ClusterRoleBinding"):
         if binding["metadata"].get("namespace", namespace) != namespace:
             continue
-        if not any(s["name"] == SESSIONS for s in binding["subjects"]):
+        if not any(s["name"] == subject for s in binding["subjects"]):
             continue
         ref = binding["roleRef"]
         for role in by_kind(ref["kind"]):

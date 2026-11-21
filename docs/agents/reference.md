@@ -157,21 +157,10 @@ limits, split the work into smaller sub-tasks before delegation.
 
 ### API access
 
-Use the node-1 session identity in the Authentik group `factory-kube-sessions`.
-The operator adds membership in the Authentik admin UI. The admin certificate
-in `~/.kube/factory.yaml` is for break-glass use only.
-
-Install the [factory kubelogin configuration](../../projects/factory-cluster/README.md#kubectl-through-authentik)
-as `~/.kube/factory-sessions.yaml`. Give its exec plugin a separate
-`--token-cache-dir` with an absolute path under the node-1 user's home directory.
-Sign in with the dedicated non-admin account. From the repository root, confirm
-the username and groups, then check permissions against the live API inventory:
-
-```sh
-export KUBECONFIG=~/.kube/factory-sessions.yaml
-kubectl auth whoami
-bash projects/platform-factory/kube-access/check-session-access.sh
-```
+Use the [local node-1 session kubeconfig](../../projects/factory-cluster/README.md#kubectl-from-node-1).
+Confirm `kubectl auth whoami` reports
+`system:serviceaccount:kube-system:factory-node1-sessions` before accessing the
+tracker. The setup checks the session's permissions against the live API.
 
 - Port-forward the API: `KUBECONFIG=~/.kube/factory-sessions.yaml kubectl -n factory
   port-forward pod/factory-itsaplan-session-forward-0 13000:3000`.
