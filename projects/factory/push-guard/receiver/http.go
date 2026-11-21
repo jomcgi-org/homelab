@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	maxPack  = 128 << 20
-	maxReply = 8 << 20
+	maxPack      = 128 << 20
+	maxReply     = 8 << 20
+	upstreamRefs = "refs/factory-push-guard/upstream/"
 )
 
 type receiver struct {
@@ -75,34 +76,26 @@ func (h *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer body.Close()
 	}
 
-	args := []string{"--no-replace-objects", "-c", fmt.Sprintf("receive.maxInputSize=%d", maxPack), "receive-pack", "--stateless-rpc"}
+	ctx, stop := context.WithTimeout(r.Context(), 120*time.Second)
+	defer stop()
+	authorization := r.Header.Get("Authorization")
+	if push {
+		fetch := h.gitCommand(ctx, authorization, "--git-dir="+h.repo, "fetch",
+			"--no-tags", "--no-recurse-submodules", "--no-auto-maintenance", "--no-write-fetch-head",
+			"--prune", "--", h.upstream, "+refs/heads/*:"+upstreamRefs+"*")
+		if err := fetch.Run(); err != nil {
+			http.Error(w, "could not refresh public Git refs", http.StatusBadGateway)
+			return
+		}
+	}
+
+	args := []string{"-c", fmt.Sprintf("receive.maxInputSize=%d", maxPack),
+		"-c", "receive.hideRefs=" + upstreamRefs, "receive-pack", "--stateless-rpc"}
 	if discover {
 		args = append(args, "--advertise-refs")
 	}
 	args = append(args, h.repo)
-	ctx, stop := context.WithTimeout(r.Context(), 120*time.Second)
-	defer stop()
-	cmd := exec.CommandContext(ctx, "/usr/bin/git", args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		if errors.Is(err, syscall.ESRCH) {
-			return os.ErrProcessDone
-		}
-		return err
-	}
-	cmd.WaitDelay = time.Second
-	// Keep the injected credential out of process arguments, logs, and disk.
-	// The hook's upstream is fixed and Git will refuse redirects.
-	cmd.Env = []string{
-		"PATH=/usr/bin:/bin", "HOME=/nonexistent", "LANG=C",
-		"GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "GIT_NO_REPLACE_OBJECTS=1",
-		"MANDOLINE_INDEX=" + h.index, "PUSH_UPSTREAM=" + h.upstream,
-		"GIT_CONFIG_COUNT=2",
-		"GIT_CONFIG_KEY_0=http.https://github.com/.extraHeader",
-		"GIT_CONFIG_VALUE_0=" + "Authorization: " + r.Header.Get("Authorization"),
-		"GIT_CONFIG_KEY_1=http.followRedirects", "GIT_CONFIG_VALUE_1=false",
-	}
+	cmd := h.gitCommand(ctx, authorization, args...)
 	if body != nil {
 		cmd.Stdin = body
 	}
@@ -121,6 +114,31 @@ func (h *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-git-receive-pack-result")
 	}
 	_, _ = w.Write(reply.Bytes())
+}
+
+func (h *receiver) gitCommand(ctx context.Context, authorization string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "/usr/bin/git", append([]string{"--no-replace-objects"}, args...)...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	cmd.WaitDelay = time.Second
+	// Keep the injected credential out of process arguments, logs, and disk.
+	// The upstream is fixed and Git will refuse redirects.
+	cmd.Env = []string{
+		"PATH=/usr/bin:/bin", "HOME=/nonexistent", "LANG=C",
+		"GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "GIT_NO_REPLACE_OBJECTS=1",
+		"MANDOLINE_INDEX=" + h.index, "PUSH_UPSTREAM=" + h.upstream,
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=http.https://github.com/.extraHeader",
+		"GIT_CONFIG_VALUE_0=Authorization: " + authorization,
+		"GIT_CONFIG_KEY_1=http.followRedirects", "GIT_CONFIG_VALUE_1=false",
+	}
+	return cmd
 }
 
 type cappedReply struct{ bytes.Buffer }
