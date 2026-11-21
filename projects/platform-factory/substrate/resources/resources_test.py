@@ -28,6 +28,26 @@ def _docs() -> list[dict]:
     return [d for d in yaml.safe_load_all(out) if d]
 
 
+def _scanner() -> dict:
+    chart = _HERE.parent / "egress-scan" / "chart"
+    out = subprocess.run(
+        [
+            os.environ["HELM_BIN"],
+            "template",
+            "egress-scan",
+            str(chart),
+            "--namespace",
+            "ate-system",
+            "-f",
+            os.environ["SCANNER_VALUES"],
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return _one([d for d in yaml.safe_load_all(out) if d], "Deployment", "egress-scan")
+
+
 def _one(docs: list[dict], kind: str, name: str) -> dict:
     (found,) = [d for d in docs if d["kind"] == kind and d["metadata"]["name"] == name]
     return found
@@ -140,7 +160,7 @@ def test_egress_scan_pilot_changes_only_hindsight_route() -> None:
 
 def test_egress_gateway_and_its_config_wait_for_the_scanner() -> None:
     docs = _docs()
-    scanner = _one(docs, "Deployment", "egress-scan")
+    scanner = _scanner()
     gateway = _one(docs, "Deployment", "atenet-egress")
     config = _one(docs, "ConfigMap", "atenet-egress-agentgateway-config")
     volumes = gateway["spec"]["template"]["spec"]["volumes"]
@@ -153,7 +173,7 @@ def test_egress_gateway_and_its_config_wait_for_the_scanner() -> None:
 
 def test_egress_scanner_has_warm_replicas_and_a_gateway_only_listener() -> None:
     docs = _docs()
-    spec = _one(docs, "Deployment", "egress-scan")["spec"]
+    spec = _scanner()["spec"]
     assert spec["replicas"] == 2
     pod = spec["template"]["spec"]
     assert pod["automountServiceAccountToken"] is False
@@ -162,6 +182,12 @@ def test_egress_scanner_has_warm_replicas_and_a_gateway_only_listener() -> None:
     image, _, digest = container["image"].partition("@")
     assert image == _SCANNER_IMAGE
     assert re.fullmatch(r"sha256:[a-f0-9]{64}", digest)
+    image_values = yaml.safe_load(Path(os.environ["SCANNER_VALUES"]).read_text())
+    assert digest == image_values["image"]["digest"]
+    assert container["ports"] == [
+        {"name": "grpc", "containerPort": 8080},
+        {"name": "metrics", "containerPort": 9090},
+    ]
     assert container["readinessProbe"]["grpc"] == {"port": 8080}
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
     assert pod["imagePullSecrets"] == [{"name": "ghcr-imagepull-secret"}]
@@ -179,3 +205,21 @@ def test_egress_scanner_has_warm_replicas_and_a_gateway_only_listener() -> None:
             "toPorts": ingress["toPorts"],
         }
     ]
+
+
+def test_substrate_sync_uses_the_chart_as_the_only_scanner_deployment() -> None:
+    app = yaml.safe_load(Path(os.environ["SCANNER_APPLICATION"]).read_text())
+    assert app["metadata"]["name"] == "substrate"
+    chart, resources = app["spec"]["sources"]
+    assert chart["repoURL"] == "ghcr.io/jomcgi/homelab/charts"
+    assert chart["chart"] == chart["helm"]["releaseName"] == "egress-scan"
+    assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", chart["targetRevision"])
+    assert resources["path"] == "projects/platform-factory/substrate/resources"
+    assert resources["targetRevision"] == "HEAD"
+    assert (
+        _scanner()["metadata"]["namespace"] == app["spec"]["destination"]["namespace"]
+    )
+    assert not any(
+        d["kind"] == "Deployment" and d["metadata"]["name"] == "egress-scan"
+        for d in _docs()
+    )

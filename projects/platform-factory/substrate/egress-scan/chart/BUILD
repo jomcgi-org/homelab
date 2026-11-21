@@ -16,3 +16,9 @@ helm_lint_test(
         "lint",
     ],
 )
+
+filegroup(
+    name = "image_values",
+    srcs = [":chart.images_values"],
+    visibility = ["//projects/platform-factory/substrate/resources:__pkg__"],
+)

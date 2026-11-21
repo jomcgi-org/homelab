@@ -17,10 +17,17 @@ metadata:
     - resources-finalizer.argocd.argoproj.io
 spec:
   project: default
-  source:
-    repoURL: https://github.com/jomcgi-org/homelab.git
-    targetRevision: HEAD
-    path: projects/platform-factory/substrate/resources
+  # Render both sources before syncing either one. The gateway shares
+  # the scanner's sync operation and waits for its readiness.
+  sources:
+    - repoURL: ghcr.io/jomcgi/homelab/charts
+      chart: egress-scan
+      targetRevision: 0.1.0
+      helm:
+        releaseName: egress-scan
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      path: projects/platform-factory/substrate/resources
   destination:
     server: https://kubernetes.default.svc
     namespace: ate-system
