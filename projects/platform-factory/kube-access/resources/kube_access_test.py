@@ -1,11 +1,16 @@
 """Check factory kubectl and explorer access."""
 
+import json
+import runpy
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
 
 HERE = Path(__file__).parent
+NODE_FILES = HERE.parents[2] / "factory-cluster/nodes"
+TOKEN_HELPER = str(NODE_FILES / "factory-session-token.py")
 DOCS = [
     d
     for name in yaml.safe_load((HERE / "kustomization.yaml").read_text())["resources"]
@@ -174,7 +179,7 @@ def test_readers_cover_only_the_reviewed_namespaces(group, role):
 
 
 def test_authentication_config():
-    config = HERE.parents[2] / "factory-cluster/nodes/authentication-config.yaml"
+    config = NODE_FILES / "authentication-config.yaml"
     assert yaml.safe_load(config.read_text())["jwt"] == [
         {
             "issuer": {
@@ -431,3 +436,91 @@ def test_session_core_requests(verb, resource, name, namespace, allowed, subject
         )
         == allowed
     )
+
+
+def test_node_session_kubeconfig_and_exec_credential(monkeypatch, capsys):
+    config = yaml.safe_load(
+        (NODE_FILES / "factory-session-kubeconfig.yaml").read_text()
+    )
+    assert config["clusters"] == [
+        {
+            "name": "factory-local",
+            "cluster": {
+                "server": "https://127.0.0.1:6443",
+                "certificate-authority": "/etc/factory/k3s-server-ca.crt",
+            },
+        }
+    ]
+    assert config["current-context"] == "factory"
+    assert config["contexts"] == [
+        {
+            "name": "factory",
+            "context": {"cluster": "factory-local", "user": NODE_SESSION["name"]},
+        }
+    ]
+    version = "client.authentication.k8s.io/v1"
+    assert config["users"] == [
+        {
+            "name": NODE_SESSION["name"],
+            "user": {
+                "exec": {
+                    "apiVersion": version,
+                    "command": "/usr/bin/sudo",
+                    "args": ["-n", "--", "/usr/local/sbin/factory-session-token"],
+                    "interactiveMode": "Never",
+                }
+            },
+        }
+    ]
+    credential = {
+        "token": "fixture-token",
+        "expirationTimestamp": "2026-11-21T09:10:00Z",
+    }
+
+    def request_token(command, **options):
+        endpoint = (
+            f"/api/v1/namespaces/{NODE_SESSION['namespace']}/"
+            f"serviceaccounts/{NODE_SESSION['name']}/token"
+        )
+        assert command == [
+            "/usr/local/bin/k3s",
+            "kubectl",
+            "--kubeconfig=/etc/rancher/k3s/k3s.yaml",
+            "--server=https://127.0.0.1:6443",
+            "--request-timeout=10s",
+            "create",
+            f"--raw={endpoint}",
+            "-f",
+            "-",
+        ]
+        assert json.loads(options["input"]) == {
+            "apiVersion": "authentication.k8s.io/v1",
+            "kind": "TokenRequest",
+            "spec": {"expirationSeconds": 600},
+        }
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps({"status": credential, "kind": "TokenRequest"})
+        )
+
+    monkeypatch.setattr("socket.gethostname", lambda: "node-1")
+    monkeypatch.setattr("sys.argv", [TOKEN_HELPER])
+    monkeypatch.setattr(subprocess, "run", request_token)
+    runpy.run_path(TOKEN_HELPER)
+    assert json.loads(capsys.readouterr().out) == {
+        "apiVersion": version,
+        "kind": "ExecCredential",
+        "status": credential,
+    }
+
+
+@pytest.mark.parametrize("node,args", [("node-2", []), ("node-1", ["extra"])])
+def test_node_session_helper_rejects_other_nodes_and_arguments(monkeypatch, node, args):
+    monkeypatch.setattr("socket.gethostname", lambda: node)
+    monkeypatch.setattr("sys.argv", [TOKEN_HELPER, *args])
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_options: pytest.fail("unexpected token request"),
+    )
+    with pytest.raises(SystemExit, match="available only on node-1"):
+        runpy.run_path(TOKEN_HELPER)

@@ -11,6 +11,8 @@ py_test(
         "sessions.yaml",
         "viewers.yaml",
         "//projects:factory-cluster/nodes/authentication-config.yaml",
+        "//projects:factory-cluster/nodes/factory-session-kubeconfig.yaml",
+        "//projects:factory-cluster/nodes/factory-session-token.py",
     ],
     deps = [
         "@pip//pytest",

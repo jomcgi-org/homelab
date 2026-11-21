@@ -272,11 +272,17 @@ previous `~/.kube/factory-sessions.yaml` outside the repo and link that path
 to `/etc/factory/kube-session.yaml`. Refresh the CA copy
 after a k3s server CA rotation.
 
-To revert, restore the previous sessions kubeconfig and remove the local
-helper and config. Use GitOps to remove the service account and its entries
-from the session role bindings. The
-[interactive Authentik setup](#kubectl-through-authentik) uses a separate
-token cache for each login identity.
+To revert, prepare a sessions kubeconfig from the
+[interactive Authentik setup](#kubectl-through-authentik). Set kubelogin's
+`--token-cache-dir` to a new absolute path under the operator's home
+directory. Use that cache only for the sessions identity. Sign in with the
+dedicated non-admin account. Run `kubectl auth whoami` with the prepared
+config and confirm the account is in `authentik:factory-kube-sessions`.
+Run `check-session-access.sh` with the same config. Replace
+`~/.kube/factory-sessions.yaml` only after both checks pass.
+
+Remove the local helper and config. Use GitOps to remove the service
+account and its entries from the session role bindings.
 
 ### Break-glass
 

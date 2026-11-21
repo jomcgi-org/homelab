@@ -84,7 +84,11 @@ filegroup(
 )
 
 exports_files(
-    ["factory-cluster/nodes/authentication-config.yaml"],
+    [
+        "factory-cluster/nodes/authentication-config.yaml",
+        "factory-cluster/nodes/factory-session-kubeconfig.yaml",
+        "factory-cluster/nodes/factory-session-token.py",
+    ],
     visibility = ["//projects/platform-factory/kube-access/resources:__pkg__"],
 )
 
