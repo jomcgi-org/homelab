@@ -337,6 +337,44 @@ func TestActivationCompletionPropagatesWithoutMovingCanceledOriginal(t *testing.
 	}
 }
 
+func TestActivationObservationClearsOutageAfterSuccessfulRead(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.pendingActivation()
+	v.poll()
+
+	v.its.waitIssueRead = func(_ context.Context, id int64) error {
+		if id == 1001 {
+			return &itsaplan.HTTPError{Status: 503}
+		}
+		return nil
+	}
+	v.poll()
+	since, err := v.st.PendingOutage(v.ctx)
+	if err != nil || !since.Valid {
+		t.Fatalf("failed activation read should record an outage: %v, %v", since, err)
+	}
+
+	v.its.waitIssueRead = nil
+	v.e.NotifyOutage = func(_ context.Context, phase string) error {
+		if phase == "outbox" {
+			t.Error("outbox alerted after the activation read recovered")
+		}
+		return nil
+	}
+	v.clk.Advance(10 * time.Minute)
+	v.tick(v.e)
+	since, err = v.st.PendingOutage(v.ctx)
+	if err != nil || since.Valid {
+		t.Fatalf("successful activation read should clear the outage: %v, %v", since, err)
+	}
+
+	var waiting bool
+	if err := v.st.DB.QueryRow(`SELECT delivered_at IS NULL AND abandoned_at IS NULL AND next_attempt_at > $1
+		FROM outbox WHERE dedupe_key LIKE 'activation-observe/%'`, v.clk.Now()).Scan(&waiting); err != nil || !waiting {
+		t.Fatalf("open follow-up should remain scheduled: %v, %v", waiting, err)
+	}
+}
+
 func TestActivationFollowupsChainToOriginal(t *testing.T) {
 	v := newDeliveryEnv(t)
 	v.pendingActivation()
