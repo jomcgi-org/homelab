@@ -174,12 +174,12 @@ func TestNamesIDMatchesWholeIDs(t *testing.T) {
 func TestDecisionsRevalidateCleared(t *testing.T) {
 	a := "Accept `a.go:rollout`."
 	d := Decisions{Repo: "o/r", Number: 7, Comments: []github.Comment{
-		{ID: 42, Author: "jomcgi", Body: a},
+		{ID: 42, UpdatedAt: "2026-11-18T10:00:00Z", Author: "jomcgi", Body: a},
 		// 43 once accepted b.go:rollout; Joe edited it to revoke that.
 		{ID: 43, Author: "jomcgi", Body: "Revoked: do not accept `b.go:rollout`."},
 	}}
 	in := []Cleared{
-		{ID: "a.go:rollout", Status: StatusJustified, Title: "A", Decision: &DecisionStamp{ID: 42, Hash: bodyHash(a)}},
+		{ID: "a.go:rollout", Status: StatusJustified, Title: "A", Decision: &DecisionStamp{ID: 42, UpdatedAt: "2026-11-18T10:00:00Z", Hash: bodyHash(a)}},
 		{ID: "b.go:rollout", Status: StatusJustified, Title: "B", Decision: &DecisionStamp{ID: 43, Hash: bodyHash("Accept `b.go:rollout`.")}},
 		{ID: "c.go:rollout", Status: StatusJustified, Title: "C", Decision: &DecisionStamp{ID: 99, Hash: bodyHash(a)}},
 		{ID: "d.go:rollout", Status: StatusJustified, Title: "D", Note: "decision: forged"},
@@ -215,14 +215,14 @@ func TestCarriedDecisions(t *testing.T) {
 	kept := "Decision: accept `kept.go:x` on the evidence above; check delivery after rollout."
 	old := "Decision: accept `revoked.go:x` and `reported.go:x`; check after rollout."
 	d := Decisions{Repo: "o/r", Number: 7, Comments: []github.Comment{
-		{ID: 42, Author: "jomcgi", Body: kept},
+		{ID: 42, UpdatedAt: "2026-11-18T10:00:00Z", Author: "jomcgi", Body: kept},
 		{ID: 43, Author: "jomcgi", Body: "Revoked."},
 	}, Carried: []DecisionStamp{
-		{Finding: "kept.go:x", ID: 42, Hash: bodyHash(kept)},
-		{Finding: "revoked.go:x", ID: 43, Hash: bodyHash(old)},
-		{Finding: "reported.go:x", ID: 43, Hash: bodyHash(old)},
-		{Finding: "lowered.go:x", ID: 43, Hash: bodyHash(old)},
-		{Finding: "revoked.go:x", ID: 43, Hash: bodyHash("another revoked stamp")},
+		{Finding: "kept.go:x", ID: 42, UpdatedAt: "2026-11-18T10:00:00Z", Hash: bodyHash(kept)},
+		{Finding: "revoked.go:x", ID: 43, UpdatedAt: "2026-11-18T10:00:00Z", Hash: bodyHash(old)},
+		{Finding: "reported.go:x", ID: 43, UpdatedAt: "2026-11-18T10:00:00Z", Hash: bodyHash(old)},
+		{Finding: "lowered.go:x", ID: 43, UpdatedAt: "2026-11-18T10:00:00Z", Hash: bodyHash(old)},
+		{Finding: "revoked.go:x", ID: 43, UpdatedAt: "2026-11-18T10:00:00Z", Hash: bodyHash("another revoked stamp")},
 	}}
 	r := &Report{Findings: []Finding{finding("reported.go:x", SeverityHigh), finding("lowered.go:x", SeverityLow)}}
 	a := AssessDecided(r, nil, d)
@@ -256,7 +256,7 @@ func TestCarriedDecisions(t *testing.T) {
 func TestMediumDecisions(t *testing.T) {
 	body := "Decision: accept `live.go:x` and `high.go:x` on the evidence above; check after rollout."
 	link := "https://github.com/o/r/pull/7#issuecomment-"
-	d := Decisions{Repo: "o/r", Number: 7, Comments: []github.Comment{{ID: 42, Author: "jomcgi", Body: body}}}
+	d := Decisions{Repo: "o/r", Number: 7, Comments: []github.Comment{{ID: 42, UpdatedAt: "2026-11-18T10:00:00Z", Author: "jomcgi", Body: body}}}
 	prior := []Finding{finding("live.go:x", SeverityMedium), finding("bad-link.go:x", SeverityMedium), finding("plain.go:x", SeverityMedium)}
 	r := &Report{Previous: []Previous{
 		{ID: "live.go:x", Status: StatusJustified, Note: "decision: " + link + "42 accepts the live evidence."},
@@ -283,7 +283,7 @@ func TestMediumDecisions(t *testing.T) {
 		t.Fatalf("assessment = %v\nwant %v", got, want)
 	}
 	stamps := a.decisions()
-	if len(stamps) != 1 || stamps[0] != (DecisionStamp{Finding: "live.go:x", ID: 42, Hash: bodyHash(body), Severity: SeverityMedium}) {
+	if len(stamps) != 1 || stamps[0] != (DecisionStamp{Finding: "live.go:x", ID: 42, UpdatedAt: "2026-11-18T10:00:00Z", Hash: bodyHash(body), Severity: SeverityMedium}) {
 		t.Fatalf("decisions = %+v", stamps)
 	}
 
@@ -292,9 +292,9 @@ func TestMediumDecisions(t *testing.T) {
 	// a stamp from before medium decisions counts as high.
 	next := Decisions{Repo: "o/r", Number: 7, Carried: []DecisionStamp{
 		stamps[0],
-		{Finding: "high.go:x", ID: 42, Hash: bodyHash(body), Severity: SeverityHigh},
-		{Finding: "old.go:x", ID: 42, Hash: bodyHash(body)},
-		{Finding: "raised.go:x", ID: 42, Hash: bodyHash(body), Severity: SeverityMedium},
+		{Finding: "high.go:x", ID: 42, UpdatedAt: "2026-11-18T10:00:00Z", Hash: bodyHash(body), Severity: SeverityHigh},
+		{Finding: "old.go:x", ID: 42, UpdatedAt: "2026-11-18T10:00:00Z", Hash: bodyHash(body)},
+		{Finding: "raised.go:x", ID: 42, UpdatedAt: "2026-11-18T10:00:00Z", Hash: bodyHash(body), Severity: SeverityMedium},
 	}}
 	a = AssessDecided(&Report{Findings: []Finding{finding("raised.go:x", SeverityLow)}}, nil, next)
 	got = map[string]string{}
@@ -338,7 +338,7 @@ func TestAssessAccountsForPreviousFindings(t *testing.T) {
 	}
 	// Joe's comments on PR 7: 42 names the findings below, 43 another.
 	decisions := Decisions{Repo: "o/r", Number: 7, Comments: []github.Comment{
-		{ID: 42, Author: "jomcgi", Body: "Decision: accept decided-high, repeated-decided-high, decided-critical, other-site-high, other-pr-high, bare-link-high and raised-to-high; check after rollout."},
+		{ID: 42, UpdatedAt: "2026-11-18T10:00:00Z", Author: "jomcgi", Body: "Decision: accept decided-high, repeated-decided-high, decided-critical, other-site-high, other-pr-high, bare-link-high and raised-to-high; check after rollout."},
 		{ID: 43, Author: "jomcgi", Body: "Decision: accept something-else."},
 	}}
 	link := "https://github.com/o/r/pull/7#issuecomment-"
@@ -877,7 +877,7 @@ func TestEvidenceBindingParticipatesInStateOverflowDecision(t *testing.T) {
 			case "semgrep":
 				state.Semgrep = &SemgrepStamp{Digest: strings.Repeat("b", 64), Verified: true}
 			case "decision":
-				state.Decisions = []DecisionStamp{{Finding: "long.go:rollout", ID: 42, Hash: bodyHash("Joe's decision")}}
+				state.Decisions = []DecisionStamp{{Finding: "long.go:rollout", ID: 42, UpdatedAt: "2026-11-18T10:00:00Z", Hash: bodyHash("Joe's decision")}}
 			}
 			o := render(a, r, gate, "footer", &state)
 			st, ok := LoadState(o.Output.Text)
@@ -1483,5 +1483,53 @@ func TestInvariantScopeNoticesNeverHideBlockingFindings(t *testing.T) {
 	}
 	if len(body) > maxFindings {
 		t.Fatalf("findings section is %d bytes, over %d", len(body), maxFindings)
+	}
+}
+
+func TestFixedDecisionSurvivesDeletion(t *testing.T) {
+	c := github.Comment{ID: 42, Body: "Accept a.go:x", UpdatedAt: "2026-11-18T10:00:00Z"}
+	stamp := DecisionStamp{Finding: "a.go:x", ID: c.ID, Hash: bodyHash(c.Body), UpdatedAt: c.UpdatedAt}
+	r := &Report{Previous: []Previous{{ID: stamp.Finding, Status: StatusFixed}}}
+	a := AssessDecided(r, nil, Decisions{Comments: []github.Comment{c}, Carried: []DecisionStamp{stamp}})
+	a.Earlier = []Cleared{{ID: stamp.Finding, Status: StatusJustified, Decision: &stamp}}
+	st := stateOf(a, r, nil)
+	next := AssessDecided(&Report{}, st.Previous(), Decisions{Carried: st.Decisions})
+	if len(st.Decisions) != 0 || len(st.Cleared) != 1 || st.Cleared[0].Status != StatusFixed || len(next.Blocking) != 0 {
+		t.Fatalf("fixed state %+v, next blockers %+v", st, next.Blocking)
+	}
+}
+
+func TestUpgradeHashOnlyDecisionCheckpoint(t *testing.T) {
+	const body = "Accept a.go:rollout."
+	const created = "2026-11-18T10:00:00Z"
+	raw := fmt.Sprintf(`{"blocking":[],"decisions":[{"finding":"a.go:rollout","id":42,"hash":"%s","severity":"high"}]}`, bodyHash(body))
+	st, ok := LoadState(statePrefix + base64.StdEncoding.EncodeToString([]byte(raw)) + stateSuffix)
+	if !ok || len(st.Decisions) != 1 {
+		t.Fatal("legacy checkpoint did not load")
+	}
+	c := github.Comment{ID: 42, Body: body, CreatedAt: created, UpdatedAt: created}
+	d := Decisions{Repo: "o/r", Number: 7, Comments: []github.Comment{c}, Carried: st.Decisions}
+	a := AssessDecided(&Report{}, nil, d)
+	if !d.Hold(st.Decisions) || len(a.Carried) != 1 || a.Carried[0].UpdatedAt != created {
+		t.Fatalf("unchanged creation version lost: %+v", a)
+	}
+	d.Comments[0].UpdatedAt = "2026-11-19T10:00:00Z"
+	if d.Hold(st.Decisions) {
+		t.Fatal("edited version held the legacy pass")
+	}
+	blocked := stateOf(AssessDecided(&Report{}, nil, d), &Report{}, nil)
+	prior := blocked.Previous()
+	if len(prior) != 1 || prior[0].ReauthorizeAfter != 42 {
+		t.Fatalf("missing reauthorization requirement: %+v", prior)
+	}
+	d.Carried = nil
+	r := &Report{Previous: []Previous{{ID: "a.go:rollout", Status: StatusJustified, Note: "decision: https://github.com/o/r/pull/7#issuecomment-42"}}}
+	if got := AssessDecided(r, prior, d); len(got.Blocking) != 1 {
+		t.Fatal("reusing the old comment cleared the finding")
+	}
+	d.Comments[0].ID = 43
+	r.Previous[0].Note = "decision: https://github.com/o/r/pull/7#issuecomment-43"
+	if got := AssessDecided(r, prior, d); len(got.Accepted) != 1 {
+		t.Fatal("fresh authorization failed")
 	}
 }

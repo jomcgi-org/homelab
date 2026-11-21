@@ -1,3 +1,4 @@
+// invariant: FACT-14
 // invariant: FACT-10
 // Package review is the factory reviewer's loop. It polls each binding's
 // open PRs into the base branch, keeps a `factory review` check run on every
@@ -1393,11 +1394,8 @@ type inputs struct {
 	scope  *Scope
 	scoped bool
 	// plan is the session plan of the last message this process built.
-	plan sessionPlan
-	// comments are the trusted comments that message put in the prompt;
-	// commentsRead is false until it read them in this process.
-	comments     []github.Comment
-	commentsRead bool
+	plan           sessionPlan
+	promptVersions []DecisionStamp
 }
 
 // review drives one head's review to a completed check run. It makes at
@@ -1525,6 +1523,7 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				in = got
 				sameSnapshot := false
 				if st, ok := LoadState(run.Text); ok {
+					in.promptVersions = st.PromptVersions
 					in.goal = st.Goal // goalCheck reuses it for the same evidence.
 					if st.Incomplete {
 						// A complete replay restores the state; otherwise
@@ -1682,6 +1681,9 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				e.m.ReviewSessions.WithLabelValues(b.Name, in.plan.path(), in.plan.reason).Inc()
 				l.InfoContext(ctx, "review task sent", "message_id", msg.MessageID, "task", t.ID, "attempt", attempt, "sends", sends,
 					"path", in.plan.path(), "reason", in.plan.reason, "context_id", t.ContextID)
+				st, _ := LoadState(run.Text)
+				st.PromptVersions = in.promptVersions
+				run.Text = encodeState(st)
 				e.recordProgress(ctx, b, run, in.gate, rec, "", l)
 				e.nameSession(ctx, b, pr, t.ContextID, l)
 			case in.plan.resume != nil && (errors.Is(err, kagent.ErrRejected) || errors.Is(err, kagent.ErrTaskNotFound)):
@@ -2419,15 +2421,24 @@ heads:
 			if p.Status != StatusJustified || withdrawn(p.Note) {
 				continue
 			}
-			high := func(f Finding) bool { return f.ID == p.ID && f.Severity == SeverityHigh }
-			if !slices.ContainsFunc(prior.Previous(), high) && !slices.ContainsFunc(report.Findings, high) {
-				continue
-			}
 			stamp := decisions.decided(p.Note, p.ID, SeverityHigh)
-			if stamp != nil && !slices.ContainsFunc(r.stored.Decisions, func(old DecisionStamp) bool {
+			cited := decisions.citedIDs(p.Note)
+			verified := false
+			for _, old := range r.stored.Decisions {
 				identity := old.Finding == p.ID || r.legacy && old.Finding == clip(p.ID, maxTitle)
-				return identity && old.ID == stamp.ID && old.Hash == stamp.Hash
-			}) {
+				if !identity || !slices.Contains(cited, old.ID) {
+					continue
+				}
+				if decisions.holds(old) {
+					verified = verified || stamp != nil && stamp.ID == old.ID
+				} else if r.reply != "" && old.UpdatedAt == "" {
+					// Restore the cutoff even if the edited comment no longer
+					// names this finding or has disappeared altogether.
+					old.Finding = p.ID
+					decisions.Carried = append(decisions.Carried, old)
+				}
+			}
+			if stamp != nil && !verified {
 				report.Previous[i].Status = StatusOpen
 			}
 		}
@@ -2578,7 +2589,12 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 		e.ghError(ctx, l, b, "comments", err)
 		return nil, err
 	}
-	in.comments, in.commentsRead = comments, true
+	in.promptVersions = nil
+	for _, c := range joeDecisions(b, pr, comments).Comments {
+		if c.ID > 0 && c.UpdatedAt != "" {
+			in.promptVersions = append(in.promptVersions, DecisionStamp{ID: c.ID, Hash: bodyHash(c.Body), UpdatedAt: c.UpdatedAt})
+		}
+	}
 	cited := e.citedEvidence(ctx, b, pr, l)
 	interdiff, err := e.interdiff(ctx, b, pr, in, l)
 	if err != nil {
@@ -2785,22 +2801,20 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 		if b.ItsaplanProject != "" {
 			applyGoal(r, prior, b.ItsaplanProject, key, in.goal)
 		}
-		// Joe's decisions come from the trusted comments the prompt showed;
-		// a finding justified by one counts only when its note links it
-		// (Decisions.decided). After a restart the task's message was not
-		// built here, so read them again. A failed read assesses nothing:
-		// the attempt ends without a report and is retried.
-		comments := in.comments
-		if !in.commentsRead {
-			var err error
-			if comments, _, err = e.trustedComments(ctx, b, pr); err != nil {
+		var decisions Decisions
+		// Only conversation comments captured in the prompt can justify a
+		// finding. Approval reviews are read separately by the human gate.
+		if len(in.promptVersions) > 0 {
+			comments, err := e.gh.PullRequestComments(ctx, b.repo(), pr.Number)
+			if err != nil {
 				e.ghError(ctx, l, b, "comments", err)
-				// Fixed text: GitHub's error can carry response text, and the
-				// reason can reach the PR comment. ghError logged it.
-				return result{reason: "the reviewer could not read the PR's trusted comments after a restart."}
+				return result{reason: "the reviewer could not verify the PR's trusted comments."}
 			}
+			decisions = joeDecisions(b, pr, comments)
+			decisions.Comments = slices.DeleteFunc(decisions.Comments, func(c github.Comment) bool {
+				return !containsFold(b.TrustedCommenters, c.Author) || !slices.Contains(in.promptVersions, DecisionStamp{ID: c.ID, Hash: bodyHash(c.Body), UpdatedAt: c.UpdatedAt})
+			})
 		}
-		decisions := joeDecisions(b, pr, comments)
 		decisions.Carried = in.prior.Decisions
 		recordFindings(trace.SpanFromContext(ctx), r.Findings)
 		a := AssessDecided(r, prior, decisions)

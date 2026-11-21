@@ -545,7 +545,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			for _, c := range pr.Comments {
 				if c.ID == id {
 					f.get(w, r, map[string]any{
-						"id": c.ID, "user": map[string]string{"login": c.Author}, "body": c.Body,
+						"id": c.ID, "user": map[string]string{"login": c.Author}, "updated_at": c.UpdatedAt, "body": c.Body,
 						"html_url": fmt.Sprintf("https://github.com/%s/pull/%d#issuecomment-%d", testRepo, pr.Number, c.ID),
 					})
 					return
@@ -564,7 +564,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		out := []map[string]any{}
 		for _, c := range f.prs[n].Comments {
-			out = append(out, map[string]any{"id": c.ID, "user": map[string]string{"login": c.Author}, "body": c.Body})
+			out = append(out, map[string]any{"id": c.ID, "user": map[string]string{"login": c.Author}, "updated_at": c.UpdatedAt, "body": c.Body})
 		}
 		per, _ := strconv.Atoi(q.Get("per_page"))
 		if max(p, 1)*per < len(out) {
@@ -580,7 +580,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.nextCommentID++
 		c := github.Comment{ID: 1000 + f.nextCommentID, Author: botLogin, Body: body.Body}
 		f.prs[n].Comments = append(f.prs[n].Comments, c)
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": c.ID, "user": map[string]string{"login": c.Author}, "body": c.Body})
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": c.ID, "user": map[string]string{"login": c.Author}, "updated_at": c.UpdatedAt, "body": c.Body})
 	case r.Method == http.MethodPatch && strings.HasPrefix(path, "/issues/comments/"):
 		id, _ := strconv.ParseInt(strings.TrimPrefix(path, "/issues/comments/"), 10, 64)
 		var body struct {
@@ -591,7 +591,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			for i := range pr.Comments {
 				if c := &pr.Comments[i]; c.ID == id {
 					c.Body = body.Body
-					_ = json.NewEncoder(w).Encode(map[string]any{"id": c.ID, "user": map[string]string{"login": c.Author}, "body": c.Body})
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": c.ID, "user": map[string]string{"login": c.Author}, "updated_at": c.UpdatedAt, "body": c.Body})
 					return
 				}
 			}

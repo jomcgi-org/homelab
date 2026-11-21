@@ -272,6 +272,7 @@ func Prompt(in PromptInput) string {
 				b.WriteString("Reviews of earlier heads cleared these findings. The interdiff below cannot show that they stay " +
 					"cleared, so check each again as part of the full review:\n\n")
 			}
+			b.WriteString("When a change fixes a decided finding, record its id as fixed in previous.\n\n")
 			for _, c := range in.Cleared {
 				status := c.Status
 				if c.Decision != nil {
@@ -334,6 +335,11 @@ func Prompt(in PromptInput) string {
 				where = fmt.Sprintf(" in https://github.com/%s/pull/%d#issuecomment-%d", in.Repo, in.Number, c.ID)
 			}
 			fmt.Fprintf(&b, "%s wrote%s:\n\n%s\n\n", c.Author, where, quote(clip(strings.TrimSpace(c.Body), maxPromptComment)))
+			// A resend with the same message ID must match the original
+			// prompt even if an edit restored the displayed text.
+			if c.ID > 0 && c.UpdatedAt != "" {
+				fmt.Fprintf(&b, "Comment version %s (SHA-256 %s)\n\n", c.UpdatedAt, bodyHash(c.Body))
+			}
 		}
 		if in.DroppedComments > 0 {
 			fmt.Fprintf(&b, "%d comments were left out.\n\n", in.DroppedComments)
