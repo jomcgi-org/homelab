@@ -42,9 +42,8 @@ groups:
           sum by (pod) (rpc_client_call_duration_seconds_count{job="kagent-controller", rpc_method="substrate.ateapi.v1.Control/SuspendActor", rpc_response_status_code="DEADLINE_EXCEEDED"})
           or
           0 * group by (pod) (up{job="kagent-controller"} == 1)
-      # kagent v1.0.1 bounds SuspendActor by a fixed 30 s deadline. A suspend
-      # past it leaves the Actor SUSPENDING and the session locked, and its
-      # worker slot held, until a person deletes the worker pod.
+      # The deployed controller allows 120 seconds for SuspendActor. A suspend
+      # past it can leave the Actor SUSPENDING and hold its worker slot.
       # The alert fires for an hour after the count rises, or while a
       # controller process younger than an hour has counted a timeout: its
       # first scrape can already show one. Its labels are the count and the
@@ -70,11 +69,10 @@ groups:
           graph: "kagent:suspend_timeouts:sum{pod={{ printf \"%q\" $labels.pod }}}"
           threshold: "0"
           runbook: "https://factory-runbooks.jomcgi.dev/KagentSuspendTimedOut"
-          summary: "A kagent session suspend passed the 30 s limit ({{ $labels.timeouts }} since the controller started)"
+          summary: "A kagent session suspend passed the 120-second deadline ({{ $labels.timeouts }} since the controller started)"
           description: >-
-            kagent keeps the session locked and its worker slot held until a
-            person deletes the worker pod and reverts the session. Runbook:
-            projects/factory-cluster/README.md, "Alerts".
+            The session can stay locked while the reaper waits five minutes.
+            If the lock persists, use the suspend-timeout runbook.
 
   - name: codex
     rules:
