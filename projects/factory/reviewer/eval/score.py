@@ -40,6 +40,7 @@ def main():
         else:
             defects += 1
             agent += matched is not None
+            # invariant: FACT-13
             check += failed and matched is not None and matched in blocking
     rate("Agent finding recall", agent, defects)
     rate("Check conclusion recall", check, defects)
