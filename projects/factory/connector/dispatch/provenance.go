@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
@@ -114,6 +115,7 @@ func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.
 		return "", err
 	}
 	text += fmt.Sprintf("\nWorktree starting commit: %s\nStart the worktree at this exact commit before editing. Preserve the assigned work branch name and any uncommitted work.\n", base)
+	text += fmt.Sprintf("After checkout and before editing, run git rev-parse --verify HEAD and report its literal output on its own line as: Worktree-Start-%d: <sha>. Include the line in your final reply even on mismatch.\n", a.ID)
 	p := provenance.New(runtime, base, text, class)
 	if err := e.st.RecordProvenance(ctx, e.w, a, p, runtime.SystemPrompt, text); err != nil {
 		return "", err
@@ -170,4 +172,26 @@ func (e *Engine) replaceRuntimeAttempt(ctx context.Context, r *store.Run, wi *st
 		return err
 	}
 	return e.issue(ctx, r, wi, b, next)
+}
+
+// invariant: FACT-13
+func reportedStart(t *kagent.Task, attemptID int64) string {
+	prefix := fmt.Sprintf("Worktree-Start-%d: ", attemptID)
+	read := func(m *kagent.Message) string {
+		if m == nil || m.Role != "ROLE_AGENT" {
+			return ""
+		}
+		for _, line := range strings.Split(messageText(m), "\n") {
+			if sha, ok := strings.CutPrefix(strings.TrimSpace(line), prefix); ok && baseCommit.MatchString(sha) {
+				return sha
+			}
+		}
+		return ""
+	}
+	for _, m := range t.History {
+		if sha := read(m); sha != "" {
+			return sha
+		}
+	}
+	return read(t.Status.Message)
 }

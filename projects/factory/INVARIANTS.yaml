@@ -67,3 +67,10 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-13
+  statement: A reported coder start commit belongs to its delivery attempt and is compared with that attempt's expected base.
+  mechanism:
+  - projects/factory/connector/dispatch/provenance.go
+  - projects/factory/connector/migrations/20261121010000_worktree_start.sql
+  test: //projects/factory/connector/dispatch:dispatch_test
+  state: live
