@@ -2653,11 +2653,21 @@ func TestCompletedPassRechecksChangedInvariantBase(t *testing.T) {
 	h.gh.mu.Lock()
 	h.gh.baseHead = "base-2"
 	h.gh.baseFiles["policy/INVARIANTS.yaml"] = "invariants:\n  - mechanism: [projects/old/y.go]"
+	h.gh.compares = map[string]map[string]any{"base-2..." + shaA: {"merge_base_commit": map[string]string{"sha": "base-1"}}}
 	h.gh.mu.Unlock()
 	e.Tick(ctx)
 	c := h.gh.check(shaA)
 	st, _ := LoadState(c.Text)
-	if c.Conclusion != ConclusionFailure || st.InvariantBase != "base-2" || st.Gate == nil || !slices.Contains(st.Gate.Paths, "projects/old/y.go") {
+	if c.Conclusion != ConclusionSuccess || st.InvariantBase != "base-1" {
+		t.Fatalf("base branch advanced past merge base: %s, state = %+v", c.Conclusion, st)
+	}
+	h.gh.mu.Lock()
+	h.gh.baseHead = "base-3"
+	h.gh.mu.Unlock()
+	e.Tick(ctx)
+	c = h.gh.check(shaA)
+	st, _ = LoadState(c.Text)
+	if c.Conclusion != ConclusionFailure || st.InvariantBase != "base-3" || st.Gate == nil || !slices.Contains(st.Gate.Paths, "projects/old/y.go") {
 		t.Fatalf("reconciled check = %s, state = %+v", c.Conclusion, st)
 	}
 }

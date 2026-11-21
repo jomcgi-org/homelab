@@ -935,6 +935,7 @@ const MaxCompareFiles = 300
 
 // CommitComparison is what changed from one commit to another.
 type CommitComparison struct {
+	MergeBaseSHA string
 	// Status is ahead when head descends from base, diverged after a rebase.
 	Status string
 	Files  []PullRequestFile
@@ -947,6 +948,9 @@ type CommitComparison struct {
 // 300 GitHub lists). A commit GitHub no longer has is ErrNotFound.
 func (c *Client) CompareCommits(ctx context.Context, repo, base, head string) (*CommitComparison, error) {
 	var out struct {
+		MergeBase struct {
+			SHA string `json:"sha"`
+		} `json:"merge_base_commit"`
 		Status string            `json:"status"`
 		Files  []PullRequestFile `json:"files"`
 	}
@@ -954,7 +958,7 @@ func (c *Client) CompareCommits(ctx context.Context, repo, base, head string) (*
 	if err := c.do(ctx, repo, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
 	}
-	return &CommitComparison{Status: out.Status, Files: out.Files, Truncated: len(out.Files) >= MaxCompareFiles}, nil
+	return &CommitComparison{MergeBaseSHA: out.MergeBase.SHA, Status: out.Status, Files: out.Files, Truncated: len(out.Files) >= MaxCompareFiles}, nil
 }
 
 // CitedPullRequest is fixed-class evidence about a pull request another PR
