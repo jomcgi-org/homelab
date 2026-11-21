@@ -47,7 +47,7 @@ def test_coverage_by_namespace_and_workload():
     ]
 
 
-def test_exact_rule_for_other_resolver_leaves_coredns_wildcard_only():
+def test_resolver_peer_selectors_against_baseline():
     baseline = yaml.safe_load(
         Path(__file__).with_name("resources").joinpath("baseline.yaml").read_text()
     )
@@ -81,13 +81,32 @@ def test_exact_rule_for_other_resolver_leaves_coredns_wildcard_only():
         "factory\tclient\tapi.example.org\twildcard-only"
     ]
 
+    peer = policy["spec"]["egress"][1]["toEndpoints"][0]
+    labels = peer["matchLabels"]
+    labels["k8s:io.kubernetes.pod.namespace"] = "kube-system"
+    explicit = ["factory\tclient\tapi.example.org\texplicit"]
+    assert run_preflight(baseline, policy, expected_exit=0) == explicit
 
-def run_preflight(*policies):
+    expressions = [
+        {"key": key, "operator": "In", "values": [value]}
+        for key, value in labels.items()
+    ]
+    peer.clear()
+    peer["matchExpressions"] = expressions
+    assert run_preflight(baseline, policy, expected_exit=0) == explicit
+
+    peer["matchLabels"] = {"k8s:k8s-app": "other-dns"}
+    assert run_preflight(baseline, policy) == [
+        "factory\tclient\tapi.example.org\twildcard-only"
+    ]
+
+
+def run_preflight(*policies, expected_exit=1):
     result = subprocess.run(
         [sys.executable, str(Path(__file__).with_name("dns_preflight.py"))],
         input=yaml.safe_dump_all(policies),
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 1, result.stderr
+    assert result.returncode == expected_exit, result.stderr
     return result.stdout.splitlines()
