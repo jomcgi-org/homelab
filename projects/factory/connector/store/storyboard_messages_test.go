@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -102,23 +103,42 @@ func TestStoryboardMessages(t *testing.T) {
 	if got := storyboardMessages(t, reader); len(got) != 0 {
 		t.Fatalf("messages without journals: %v", got)
 	}
-	// Journals as the connector writes them: chunked content, an artifact,
-	// U+0000 next to a literal "\u0000", and a journal with no events.
+	// A completed prose segment must match the cursor for this task.
+	artifactMessage := func(id string) string {
+		return fmt.Sprintf("artifact/%x", sha256.Sum256([]byte("finished\x00"+id)))
+	}
+	finished, err := json.Marshal(map[string]any{
+		"artifactText": true,
+		"artifacts": []map[string]any{
+			{"id": "prose", "closed": true},
+			{"id": "still-open", "closed": false},
+		},
+		"events": []map[string]string{
+			{"type": "TEXT_MESSAGE_START", "messageId": "m1", "role": "assistant"},
+			storyboardContent("m1", "Coded "),
+			storyboardContent(artifactMessage("missing"), "Unmatched text"),
+			storyboardContent("m2", "a\x00b\\u0000"),
+			storyboardContent("m3", "Second reply"),
+			storyboardContent("m1", "it"),
+			{"type": "TEXT_MESSAGE_END", "messageId": "m1"},
+			{"type": "TEXT_MESSAGE_START", "messageId": artifactMessage("prose"), "role": "assistant"},
+			storyboardContent(artifactMessage("prose"), "Codex prose "),
+			storyboardContent(artifactMessage("still-open"), "Unfinished text"),
+			{"type": "TOOL_CALL_RESULT", "messageId": artifactMessage("prose"), "delta": "Tool data"},
+			storyboardContent(artifactMessage("prose"), "segment"),
+			{"type": "TEXT_MESSAGE_END", "messageId": artifactMessage("prose")},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, j := range []struct {
 		run     int
 		attempt int
 		task    string
 		state   []byte
 	}{
-		{414, 1, "finished", storyboardJournal(t,
-			map[string]string{"type": "TEXT_MESSAGE_START", "messageId": "m1", "role": "assistant"},
-			storyboardContent("m1", "Coded "),
-			storyboardContent("artifact/x", "Artifact text"),
-			storyboardContent("m2", "a\x00b\\u0000"),
-			storyboardContent("m3", "Second reply"),
-			storyboardContent("m1", "it"),
-			map[string]string{"type": "TEXT_MESSAGE_END", "messageId": "m1"},
-		)},
+		{414, 1, "finished", finished},
 		{414, 2, "finished", []byte(`{"events":null}`)},
 		{414, 1, "waiting", storyboardJournal(t, storyboardContent("w", "Waiting reply"))},
 		{414, 1, "stale", storyboardJournal(t, storyboardContent("s", "Old session reply"))},
@@ -139,6 +159,7 @@ func TestStoryboardMessages(t *testing.T) {
 		storyboardRow("HOME", 213, "session", "finished", done, 1, 2, "Coded it"),
 		storyboardRow("HOME", 213, "session", "finished", done, 1, 4, "a\ufffdb\\u0000"),
 		storyboardRow("HOME", 213, "session", "finished", done, 1, 5, "Second reply"),
+		storyboardRow("HOME", 213, "session", "finished", done, 1, 9, "Codex prose segment"),
 	}
 	got := storyboardMessages(t, reader)
 	if fmt.Sprint(got) != fmt.Sprint(want) {

@@ -102,9 +102,11 @@ The publisher reads kagent session text through the connector store and
 publishes it by default
 ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-414#comment-5459)).
 The connector journals each task's history in `task_transcript`. The
-read-only `storyboard_messages` view returns the text of each assistant
-message in a completed task, as the itsaplan run trace shows it. Artifact
-text is excluded. A review round has no journal, so it publishes no turn.
+read-only `storyboard_messages` view returns assistant messages and completed
+Codex prose segments from the task journal
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-414#comment-5512)).
+The Codex harness emits tool calls and results separately as structured data.
+A review round has no journal, so it publishes no turn.
 
 | Rule | Enforced by |
 | --- | --- |
