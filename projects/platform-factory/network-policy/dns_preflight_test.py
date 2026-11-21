@@ -1,4 +1,8 @@
-from dns_preflight import inventory
+import subprocess
+import sys
+from pathlib import Path
+
+import yaml
 
 
 def test_coverage_by_namespace_and_workload():
@@ -35,8 +39,15 @@ def test_coverage_by_namespace_and_workload():
             ],
         },
     }
-    assert list(inventory([policy], "default")) == [
-        ("factory", "client", "api.example.org", "explicit"),
-        ("factory", "client", "cdn.example.org", "wildcard-only"),
-        ("factory", "client", "missing.test", "missing"),
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).with_name("dns_preflight.py"))],
+        input=yaml.safe_dump(policy),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1, result.stderr
+    assert result.stdout.splitlines() == [
+        "factory\tclient\tapi.example.org\texplicit",
+        "factory\tclient\tcdn.example.org\twildcard-only",
+        "factory\tclient\tmissing.test\tmissing",
     ]
