@@ -72,6 +72,12 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-713
+  statement: Missing delivery timing intervals reduce measured coverage and contribute no duration to the mean.
+  mechanism:
+  - projects/factory/connector/store/delivery_timings.sql
+  test: //projects/factory/connector/store:store_test
+  state: live
 - id: FACT-13
   statement: A reviewer harness image override affects only review Harness workloads.
   mechanism:
