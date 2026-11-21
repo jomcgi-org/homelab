@@ -1,6 +1,6 @@
 {
   "lens": "security",
-  "system_dir": "bazel/tools/ci",
+  "system_dir": "projects/platform",
   "commit": "d27644169",
   "scope": {
     "summary": "From upstream packages, base images and PR-controlled build inputs through review, queue validation and OCI publication to the pins consumed by ArgoCD.",
