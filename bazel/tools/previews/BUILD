@@ -34,3 +34,14 @@ py_test(
     imports = ["."],
     main = "compare_test.py",
 )
+
+py_test(
+    name = "staged_test",
+    srcs = [
+        "publish.py",
+        "staged.py",
+        "staged_test.py",
+    ],
+    imports = ["."],
+    main = "staged_test.py",
+)
