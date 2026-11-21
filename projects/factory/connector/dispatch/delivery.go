@@ -241,7 +241,7 @@ func (e *Engine) settlePR(ctx context.Context, wi *store.WorkItem, b *Binding, a
 	if err != nil {
 		return nil, err
 	}
-	e.observeDeliveryHead(ctx, b, a, r, pr)
+	e.observeDeliveryHead(ctx, b, wi, a, r, pr)
 	if got.State == "closed" && !got.Merged {
 		e.m.PullRequests.WithLabelValues("stopped").Inc()
 		return nil, e.stopWork(ctx, wi, fmt.Sprintf("PR #%d (%s) was closed; reopen it and start a new run to resume", got.Number, got.URL))
@@ -252,18 +252,19 @@ func (e *Engine) settlePR(ctx context.Context, wi *store.WorkItem, b *Binding, a
 // observeDeliveryHead identifies the native run whose finished turn the
 // connector synced to this observed head. Manual pushes can contribute to
 // the same head, so this event does not attribute commit authorship.
-func (e *Engine) observeDeliveryHead(ctx context.Context, b *Binding, a *store.Attempt, r *store.Run, pr *store.PullRequest) {
+func (e *Engine) observeDeliveryHead(ctx context.Context, b *Binding, wi *store.WorkItem, a *store.Attempt, r *store.Run, pr *store.PullRequest) {
 	if r == nil || r.Connector() || a.RunID != r.ID || pr.HeadSHA == "" {
 		return
 	}
 	_, span := tracing.Start(ctx, "factory.pr_head_delivery", trace.WithAttributes(
 		attribute.String("repository", b.repo()),
+		attribute.String("issue.key", wi.IssueKey),
 		attribute.Int("pr.number", pr.Number),
 		attribute.String("head.sha", pr.HeadSHA),
 		attribute.Int64("implementation.run_id", r.ID),
 		attribute.Int64("delivery.attempt_id", a.ID),
 	))
-	span.End()
+	tracing.Finish(span, nil, "synced")
 }
 
 // stopWork stops delivery for a work item; dispatch then cancels its review
