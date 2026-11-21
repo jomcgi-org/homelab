@@ -3753,6 +3753,10 @@ func TestIssueReviewQueueMatchesCurrentRepositoryAndHead(t *testing.T) {
 	if unrelated, err := v.e.IssueReviewQueue(v.ctx, 999, source.URL, source.Client()); err != nil || unrelated != nil {
 		t.Fatalf("unrelated issue review = %+v, %v", unrelated, err)
 	}
+	v.gh.push("factory/HL-7", "sha-2", "fix(test): update head")
+	if stale, err := v.e.IssueReviewQueue(v.ctx, 101, source.URL, source.Client()); stale != nil || err == nil {
+		t.Fatalf("superseded head was returned: %+v, %v", stale, err)
+	}
 	v.e.Release()
 	if _, err := v.e.IssueReviewQueue(v.ctx, 101, source.URL, source.Client()); !errors.Is(err, store.ErrNotWriter) {
 		t.Fatalf("former writer could start a queue read: %v", err)

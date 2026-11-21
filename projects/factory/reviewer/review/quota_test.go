@@ -267,6 +267,9 @@ func TestQuotaWaitReleasesWorkerWhenDiffUnreadable(t *testing.T) {
 		testutil.ToFloat64(h.m.Retries.WithLabelValues("homelab")) != 0 {
 		t.Fatal("unreadable diff spent an attempt or held a worker during quota exhaustion")
 	}
+	if e.QueueSnapshot().Complete {
+		t.Fatal("unreadable diff made an omitted quota candidate look absent")
+	}
 }
 
 // A quota pause keeps the review's root span open. The resumed worker
