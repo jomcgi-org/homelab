@@ -22,6 +22,10 @@ spec:
     - {group: "", kind: Secret, name: hikes-hikes-s3, jsonPointers: [/data]}
     - {group: "", kind: Secret, name: hikes-hikes-mirror-s3, jsonPointers: [/data]}
   syncPolicy:
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/warn: restricted
+        pod-security.kubernetes.io/audit: restricted
     automated:
       prune: true
       selfHeal: true
