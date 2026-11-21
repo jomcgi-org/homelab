@@ -12,7 +12,7 @@ spec:
   source:
     repoURL: ghcr.io/jomcgi/homelab/charts
     chart: factory-storyboard
-    targetRevision: 0.14.15
+    targetRevision: 0.15.29
     helm:
       releaseName: factory-storyboard
   destination:
