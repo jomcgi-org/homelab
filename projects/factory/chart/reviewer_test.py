@@ -218,7 +218,7 @@ def test_one_kept_identity_and_private_image() -> None:
         {
             "name": "FACTORY_REVIEWER_CONFIG",
             "value": "/etc/factory-reviewer/config.yaml",
-        }
+        },
     ]
     for probe in ("readinessProbe", "livenessProbe"):
         assert container[probe]["httpGet"] == {"path": "/healthz", "port": "metrics"}
