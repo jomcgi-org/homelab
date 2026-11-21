@@ -32,3 +32,17 @@ def test_unrelated_block_does_not_earn_check_credit(tmp_path):
     assert "Agent finding recall: 100.0%" in output
     assert "Check conclusion recall: 0.0%" in output
     assert "Control false-block rate: 100.0% (1/1)" in output
+
+
+def test_existing_evidence_stops_before_replay(tmp_path):
+    output = tmp_path / "results.json"
+    output.write_text("prior evidence")
+    result = subprocess.run(
+        [sys.executable, Path(__file__).with_name("score.py"), "--reviewer", "absent"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "evidence destination already exists" in result.stderr
+    assert output.read_text() == "prior evidence"

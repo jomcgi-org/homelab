@@ -43,6 +43,9 @@ def main():
     args = parser.parse_args()
     if args.output and not args.reviewer:
         parser.error("--output requires --reviewer")
+    output = args.output or Path("results.json")
+    if args.reviewer and (output.exists() or output.is_symlink()):
+        parser.error(f"evidence destination already exists: {output}")
     cases = json.loads(Path(__file__).with_name("cases.json").read_text())
     results = json.loads(args.results.read_text()) if args.results else {}
     agent = check = blocks = defects = controls = 0
@@ -72,7 +75,6 @@ def main():
             # invariant: FACT-13
             check += failed and matched is not None and matched in blocking
     if args.reviewer:
-        output = args.output or Path("results.json")
         with output.open("x", encoding="utf-8") as evidence:
             json.dump(results, evidence, indent=2)
             evidence.write("\n")
