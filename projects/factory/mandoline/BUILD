@@ -8,7 +8,7 @@ py_test(
     name = "execution_test",
     srcs = ["execution_test.py"],
     deps = [
-        ":mandoline",
+        "//projects/factory/mandoline",
         "@pip//pytest",
     ],
 )
@@ -17,7 +17,7 @@ py_test(
     name = "cache_test",
     srcs = ["cache_test.py"],
     deps = [
-        ":mandoline",
+        "//projects/factory/mandoline",
         "@pip//pytest",
     ],
 )
