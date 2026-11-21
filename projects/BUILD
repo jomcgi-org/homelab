@@ -1,6 +1,3 @@
-# The node installer uses this host script outside Bazel. Keep nodes in //projects.
-# gazelle:exclude factory-cluster/nodes/factory-session-token.py
-
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 
 exports_files(
@@ -81,15 +78,6 @@ filegroup(
         exclude = ["**/node_modules/**"],
     ),
     visibility = ["//projects/monolith:__pkg__"],
-)
-
-exports_files(
-    [
-        "factory-cluster/nodes/authentication-config.yaml",
-        "factory-cluster/nodes/factory-session-kubeconfig.yaml",
-        "factory-cluster/nodes/factory-session-token.py",
-    ],
-    visibility = ["//projects/platform-factory/kube-access/resources:__pkg__"],
 )
 
 filegroup(

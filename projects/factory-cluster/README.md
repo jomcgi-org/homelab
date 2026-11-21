@@ -216,7 +216,8 @@ interfaces are reachable only through the port-forward.
 Node bootstrap installs the socket units on node-1. After verifying that the
 admission guard is live, run
 `sudo bash projects/factory-cluster/nodes/install-t3-socket.sh --activate`
-on node-1. This starts the socket without restarting k3s.
+on node-1. The installer creates an empty `t3-cluster` group at GID 65532 for
+the relay and starts the socket without restarting k3s.
 
 Publish the hostname in the tunnel only after the relay Deployment is
 available, the socket accepts connections, and the production admission guard
