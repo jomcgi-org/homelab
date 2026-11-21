@@ -43,9 +43,7 @@ def inventory(documents, default_namespace):
                         .lower()
                         .rstrip(".")
                     )
-                    if name != "svc.cluster.local" and not name.endswith(
-                        ".svc.cluster.local"
-                    ):
+                    if name.split(".")[-3:] != ["svc", "cluster", "local"]:
                         declarations.add(
                             (namespace, meta["name"], yaml.safe_dump(selector), name)
                         )
