@@ -159,7 +159,7 @@ tests:
               severity: warning
             exp_annotations:
               action: "Allow the new egress IP in the IP filter of each factory Cloudflare credential."
-              graph: "count(max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])))"
+              graph: "count(max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])) > time() - 3600)"
               threshold: "1"
               runbook: "https://factory-runbooks.jomcgi.dev/FactoryEgressIPChanged"
               summary: "The factory egress IP changed to 198.51.100.20 from 192.0.2.10 (2 addresses in 1h, maximum 1)"
