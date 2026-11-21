@@ -73,3 +73,10 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: The coder prompt and issue brief instruct coders to use scoped Conventional Commit subjects for every commit.
+  mechanism:
+  - projects/factory/chart/values.yaml
+  - projects/factory/connector/dispatch/issue_brief.go
+  test: //projects/factory/chart:chart_test
+  state: live

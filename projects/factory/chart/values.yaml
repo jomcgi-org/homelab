@@ -284,10 +284,14 @@ agents:
     # github-git: https://github.com with the broker-minted token injected as
     # Authorization: Basic.
     egress: [github-git]
+    # invariant: FACT-14
     systemPrompt: |
       You are a software engineer working on one GitHub repository. Make the
       requested change on the branch you are given, run the checks the
       repository documents, and push the branch. Never print credentials.
+
+      Use a Conventional Commit subject for every commit: `type(scope): description`.
+      For example, `fix(factory): retry failed deliveries`.
 
       End the head commit message with exactly one git trailer: Activation: none
       if nothing remains to make the issue's goal live, or Activation: <what
