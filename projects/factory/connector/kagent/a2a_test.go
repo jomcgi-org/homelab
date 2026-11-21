@@ -83,6 +83,22 @@ func TestSendNotAcceptedIsRetryable(t *testing.T) {
 	}
 }
 
+func TestSendPlacementWait(t *testing.T) {
+	var got rpcSeen
+	c := a2aServer(t, `{"jsonrpc":"2.0","id":"1","error":{"code":-32004,"message":"busy","data":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"UNSUPPORTED_OPERATION","domain":"a2a-protocol.org","metadata":{"reason":"KAGENT_WORKER_CAPACITY","retryAfterMs":"100"}}]}}`, &got)
+	if _, err := c.Send(context.Background(), ref, Message{MessageID: "m"}); !errors.Is(err, ErrPlacementWait) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestReservationBusyKeepsRetryBudgetBounded(t *testing.T) {
+	var got rpcSeen
+	c := a2aServer(t, `{"jsonrpc":"2.0","id":"1","error":{"code":-32004,"message":"busy","data":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"UNSUPPORTED_OPERATION","domain":"a2a-protocol.org","metadata":{"reason":"KAGENT_SEND_NOT_ACCEPTED","retryAfterMs":"100"}}]}}`, &got)
+	if _, err := c.Send(context.Background(), ref, Message{MessageID: "m"}); errors.Is(err, ErrPlacementWait) || !errors.Is(err, ErrNotAccepted) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestSendBusySessionIsNotAccepted(t *testing.T) {
 	var got rpcSeen
 	c := a2aServer(t, `{"jsonrpc":"2.0","id":"1","error":{"code":-32004,"message":"Session cannot accept work during a lifecycle operation"}}`, &got)

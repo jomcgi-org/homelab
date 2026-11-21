@@ -536,7 +536,8 @@ type fakeKagent struct {
 	dropFor map[string]bool
 	loseFor map[string]bool
 	// notAccepted rejects the next sends with KAGENT_SEND_NOT_ACCEPTED.
-	notAccepted int
+	notAccepted    int
+	placementWaits int
 	// lateAccept takes the next send's dispatch reservation but loses the
 	// response; the message persists only when acceptPending runs within
 	// the reservation. Until then other sends to that session are not
@@ -694,6 +695,10 @@ func (k *fakeKagent) accept(agent kagent.AgentRef, msg kagent.Message) (*kagent.
 	if k.dropSend {
 		k.dropSend = false
 		return nil, fmt.Errorf("%w: connection reset", kagent.ErrAmbiguous)
+	}
+	if k.placementWaits > 0 {
+		k.placementWaits--
+		return nil, kagent.ErrPlacementWait
 	}
 	if k.notAccepted > 0 {
 		k.notAccepted--

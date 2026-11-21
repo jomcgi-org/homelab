@@ -936,6 +936,7 @@ type Attempt struct {
 	ErrorClass      string
 	Error           string
 	WriterEpoch     int64
+	PlacementWaits  int
 	Issues          int
 	FirstSentAt     time.Time
 	SentAt          time.Time
@@ -955,7 +956,7 @@ func (a *Attempt) Open() bool {
 
 const attemptCols = `id, run_id, seq, run_attempt, work_item_epoch, decision_id, kind, message_id,
 	kagent_namespace, kagent_agent, coalesce(context_id, ''), coalesce(task_id, ''), state,
-	coalesce(error_class, ''), coalesce(error, ''), writer_epoch, issues,
+	coalesce(error_class, ''), coalesce(error, ''), writer_epoch, issues, placement_waits,
 	coalesce(first_sent_at, 'epoch'::timestamptz), coalesce(sent_at, 'epoch'::timestamptz), coalesce(context, ''),
 	event_count, event_at, coalesce(rendered_prompt, ''),
 	coalesce(model, ''), coalesce(reasoning_effort, ''), coalesce(arm, ''),
@@ -966,7 +967,7 @@ func scanAttempt(row interface{ Scan(...any) error }) (*Attempt, error) {
 	var eventAt sql.NullTime
 	err := row.Scan(&a.ID, &a.RunID, &a.Seq, &a.RunAttempt, &a.WorkItemEpoch, &a.DecisionID, &a.Kind,
 		&a.MessageID, &a.KagentNamespace, &a.KagentAgent, &a.ContextID, &a.TaskID, &a.State,
-		&a.ErrorClass, &a.Error, &a.WriterEpoch, &a.Issues, &a.FirstSentAt, &a.SentAt, &a.Context,
+		&a.ErrorClass, &a.Error, &a.WriterEpoch, &a.Issues, &a.PlacementWaits, &a.FirstSentAt, &a.SentAt, &a.Context,
 		&a.EventCount, &eventAt, &a.RenderedPrompt,
 		&a.Provenance.Model, &a.Provenance.ReasoningEffort, &a.Provenance.Arm,
 		&a.Provenance.BaseSHA, &a.Provenance.PromptHash, &a.Provenance.TaskClass)
@@ -1259,6 +1260,16 @@ func (s *Store) MarkNotAccepted(ctx context.Context, a *Attempt) error {
 	if err == nil {
 		a.State = AttemptSending
 	}
+	return err
+}
+
+// MarkPlacementWait discounts a proven refusal while retaining the send for audit.
+// invariant: FACT-14
+func (s *Store) MarkPlacementWait(ctx context.Context, a *Attempt) error {
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE delivery_attempt SET state = 'sending', execution_possible = false,
+			placement_waits = placement_waits + 1
+		WHERE id = $1 AND state = 'ambiguous' AND issues = $2`, a.ID, a.Issues)
 	return err
 }
 

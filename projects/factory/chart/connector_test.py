@@ -406,6 +406,21 @@ def test_itsaplan_keys_come_from_the_bootstrap_secrets() -> None:
     ]
 
 
+@pytest.mark.parametrize("workers", [6, 9])
+def test_connector_matches_coder_pool_after_activation(workers: int) -> None:
+    docs = _render(
+        [
+            "connector.agents[0].username=homelab-codex",
+            "connector.agents[0].concurrency=codexWorkers",
+            f"agents.codex.concurrency={workers}",
+        ]
+    )
+    pool = _in(docs, "WorkerPool", "factory-r-homelab", "homelab-codex")
+    assert (
+        _config(docs)["agents"][0]["concurrency"] == pool["spec"]["replicas"] == workers
+    )
+
+
 def test_single_arm_release_and_trial_drain() -> None:
     binding = _config(_render())["bindings"][0]
     assert "arms" not in binding

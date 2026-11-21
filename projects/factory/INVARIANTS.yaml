@@ -73,3 +73,10 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: A router placement refusal acknowledged by kagent preserves the coder attempt and its retry budget.
+  mechanism:
+  - projects/factory/connector/dispatch/engine.go
+  - projects/factory/connector/store/store.go
+  test: //projects/factory/connector/dispatch:dispatch_test
+  state: live

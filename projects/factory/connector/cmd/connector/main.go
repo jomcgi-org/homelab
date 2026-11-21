@@ -221,7 +221,7 @@ func run(log *slog.Logger) error {
 	limits := &itsaplan.RequestLimits{}
 	its := &itsaplan.Client{Limits: limits, BaseURL: cfg.ItsaplanURL, KeyFunc: keys.Key, Coordinator: cfg.File.Coordinator.Key}
 	tokens := &kagent.TokenSource{Path: cfg.KagentTokenFile}
-	a2a := &kagent.A2A{BaseURL: cfg.KagentURL, Tokens: tokens}
+	a2a := &kagent.A2A{BaseURL: cfg.KagentURL, Tokens: tokens, SendTimeout: kagent.CoderSendTimeout}
 	sessions, err := kagent.DialSessions(cfg.KagentGRPCTarget, tokens)
 	if err != nil {
 		return err

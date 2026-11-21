@@ -57,6 +57,9 @@ var ErrAmbiguous = errors.New("kagent: ambiguous send outcome")
 // is busy or in a lifecycle operation. The same message may be sent again.
 var ErrNotAccepted = errors.New("kagent: send not accepted")
 
+// ErrPlacementWait identifies the gateway refusal after revoking an unused dispatch.
+var ErrPlacementWait = fmt.Errorf("%w: session unavailable", ErrNotAccepted)
+
 // ErrRejected is an InvalidRequest or InvalidParams answer: kagent refused the
 // message itself, for example a message ID reused with different input.
 var ErrRejected = errors.New("kagent: send rejected")
@@ -207,6 +210,9 @@ func (s *TokenSource) Token() (string, error) {
 // exceed it plus kagent's two-minute dispatch reservation.
 const DefaultTimeout = 60 * time.Second
 
+// CoderSendTimeout covers router parking (60s), reservation and revocation.
+const CoderSendTimeout = 90 * time.Second
+
 // CancelTaskTimeout bounds one CancelTask. kagent forwards it to the
 // session's runtime, which can hang; the connector deletes a session whose
 // cancellation kagent does not confirm, so a long wait gains nothing
@@ -215,9 +221,10 @@ const CancelTaskTimeout = 15 * time.Second
 
 // A2A calls the public A2A gateway.
 type A2A struct {
-	BaseURL string
-	HTTP    *http.Client
-	Tokens  *TokenSource
+	BaseURL     string
+	HTTP        *http.Client
+	Tokens      *TokenSource
+	SendTimeout time.Duration
 }
 
 type rpcRequest struct {
@@ -231,6 +238,23 @@ type rpcError struct {
 	Code    int             `json:"code"`
 	Message string          `json:"message"`
 	Data    json.RawMessage `json:"data,omitempty"`
+}
+
+func hasSendReason(data json.RawMessage, reason string) bool {
+	var details []struct {
+		Type     string            `json:"@type"`
+		Domain   string            `json:"domain"`
+		Metadata map[string]string `json:"metadata"`
+	}
+	if json.Unmarshal(data, &details) != nil {
+		return false
+	}
+	for _, d := range details {
+		if d.Type == "type.googleapis.com/google.rpc.ErrorInfo" && d.Domain == "a2a-protocol.org" && d.Metadata["reason"] == reason {
+			return true
+		}
+	}
+	return false
 }
 
 type rpcResponse struct {
@@ -295,7 +319,11 @@ func (c *A2A) callProjected(ctx context.Context, agent AgentRef, method string, 
 	}
 	hc := c.HTTP
 	if hc == nil {
-		hc = &http.Client{Timeout: DefaultTimeout}
+		timeout := DefaultTimeout
+		if method == "SendMessage" && c.SendTimeout > 0 {
+			timeout = c.SendTimeout
+		}
+		hc = &http.Client{Timeout: timeout}
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -323,7 +351,9 @@ func (c *A2A) callProjected(ctx context.Context, agent AgentRef, method string, 
 	}
 	if r.Error != nil {
 		switch {
-		case bytes.Contains(r.Error.Data, []byte("KAGENT_SEND_NOT_ACCEPTED")):
+		case method == "SendMessage" && r.Error.Code == -32004 && hasSendReason(r.Error.Data, "KAGENT_WORKER_CAPACITY"):
+			return fmt.Errorf("%w: %s", ErrPlacementWait, r.Error.Message)
+		case method == "SendMessage" && r.Error.Code == -32603 && hasSendReason(r.Error.Data, "KAGENT_SEND_NOT_ACCEPTED"):
 			return fmt.Errorf("%w: %s", ErrNotAccepted, r.Error.Message)
 		case r.Error.Code == -32001:
 			return fmt.Errorf("%w: %s", ErrTaskNotFound, r.Error.Message)

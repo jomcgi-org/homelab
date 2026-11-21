@@ -786,7 +786,12 @@
             "required": ["username"],
             "properties": {
               "username": { "type": "string", "pattern": "^[a-z0-9.-]{1,40}$" },
-              "concurrency": { "type": "integer", "minimum": 1 }
+              "concurrency": {
+                "oneOf": [
+                  { "type": "integer", "minimum": 1 },
+                  { "const": "codexWorkers" }
+                ]
+              }
             }
           }
         },
