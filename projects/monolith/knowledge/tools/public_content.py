@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 
-_INTERNAL_MARKERS: tuple[tuple[str, re.Pattern[str]], ...] = (
+INTERNAL_MARKERS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("in-cluster service hostname", re.compile(r"\.svc\.cluster\.local")),
     ("1Password op:// reference", re.compile(r"op://")),
     ("1Password vault item path", re.compile(r"vaults/[\w-]+/items/")),
@@ -50,7 +50,7 @@ _INTERNAL_MARKERS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 def check_public_content(rel_path: str, content: str) -> None:
     """Raise ``SystemExit`` if a public document contains an internal marker."""
-    for label, pattern in _INTERNAL_MARKERS:
+    for label, pattern in INTERNAL_MARKERS:
         match = pattern.search(content)
         if match:
             line = content.count("\n", 0, match.start()) + 1

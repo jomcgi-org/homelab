@@ -167,3 +167,13 @@ sh_test(
         "//:buildbuddy.yaml",
     ],
 )
+
+py_test(
+    name = "pr_content_scan_test",
+    srcs = ["pr_content_scan_test.py"],
+    data = [
+        "pr_content_scan.py",
+        "//projects/monolith:knowledge/tools/public_content.py",
+    ],
+    deps = ["@pip//pytest"],
+)

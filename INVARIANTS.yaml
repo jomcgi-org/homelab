@@ -17,3 +17,9 @@ invariants:
   statement: Every third-party GitHub Action is pinned by commit SHA.
   mechanism: []
   state: designed
+- id: ROOT-4
+  statement: PR content warnings scan added lines and PR commit messages and report rule labels without matched values.
+  mechanism:
+  - bazel/tools/ci/pr_content_scan.py
+  test: //bazel/tools/ci:pr_content_scan_test
+  state: live

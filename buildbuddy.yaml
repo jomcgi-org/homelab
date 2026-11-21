@@ -92,6 +92,15 @@ actions:
           git fetch origin "${GIT_REPO_DEFAULT_BRANCH:-main}" --quiet
           base_ref="$(git merge-base "$base_ref" HEAD)"
 
+          if [ "${GIT_PR_NUMBER:-0}" != "0" ]; then
+            scan_base="$base_ref"
+            if [ -n "${GIT_BASE_BRANCH:-}" ] && [ "$GIT_BASE_BRANCH" != "${GIT_REPO_DEFAULT_BRANCH:-main}" ]; then
+              git fetch --quiet origin "refs/heads/$GIT_BASE_BRANCH"
+              scan_base="$(git rev-parse FETCH_HEAD)"
+            fi
+            PYTHONPATH=projects/monolith/knowledge/tools python3 bazel/tools/ci/pr_content_scan.py "$scan_base" HEAD
+          fi
+
           # Shared ordered guards stop at the first failure.
           ./bazel/tools/ci/ratchets.sh "$base_ref" HEAD
 
