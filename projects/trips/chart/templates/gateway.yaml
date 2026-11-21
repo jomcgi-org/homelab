@@ -13,4 +13,23 @@ spec:
           podSelector:
             matchLabels: {gateway.envoyproxy.io/owning-gateway-name: edge}
       ports: [{protocol: TCP, port: 8080}]
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: trips-ingest
+spec:
+  parentRefs:
+    - name: edge
+      namespace: edge
+  hostnames: [factory-trips.jomcgi.dev]
+  rules:
+    - matches:
+        - method: POST
+          path: {type: Exact, value: /api/trips/ingest}
+        - method: GET
+          path: {type: Exact, value: /oauth2/callback}
+      backendRefs:
+        - name: trips-ingest
+          port: 8080
 {{- end }}
