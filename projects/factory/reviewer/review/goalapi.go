@@ -3,6 +3,7 @@ package review
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
@@ -28,14 +29,15 @@ const maxGoalReasons = 4000
 // GoalReasons is the newest goal check reply for one head: the reasons
 // before its JSON answer, with the issue and evidence digest it judged.
 type GoalReasons struct {
-	Repository  string   `json:"repository"`
-	PullRequest int      `json:"pullRequest"`
-	Head        string   `json:"head"`
-	Issue       string   `json:"issue"`
-	Digest      string   `json:"digest"`
-	Phase       string   `json:"phase"`
-	Findings    []string `json:"findings,omitempty"`
-	Reasons     string   `json:"reasons"`
+	ReplyRevision int64    `json:"replyRevision,omitempty"`
+	Repository    string   `json:"repository"`
+	PullRequest   int      `json:"pullRequest"`
+	Head          string   `json:"head"`
+	Issue         string   `json:"issue"`
+	Digest        string   `json:"digest"`
+	Phase         string   `json:"phase"`
+	Findings      []string `json:"findings,omitempty"`
+	Reasons       string   `json:"reasons"`
 }
 
 var (
@@ -77,7 +79,7 @@ func (s *FileGoalAudit) Reasons(repo string, pr int, head string) (GoalReasons, 
 		return GoalReasons{}, false, nil
 	}
 	reasons := strings.TrimSpace(best.Ownership + replyReasons(best.Reply))
-	if reasons == "" {
+	if reasons == "" && best.ReplyRevision == 0 {
 		return GoalReasons{}, false, nil
 	}
 	var findings []string
@@ -85,6 +87,17 @@ func (s *FileGoalAudit) Reasons(repo string, pr int, head string) (GoalReasons, 
 		effective := &GoalCheck{Criteria: answer.Criteria, Overall: answer.Overall}
 		if best.Initial != nil {
 			effective = confirmOnly(best.Initial, effective)
+		}
+		if effective != nil && reasons == "" {
+			var summary strings.Builder
+			fmt.Fprintf(&summary, "Stated goal: %s.\n", strings.ReplaceAll(effective.Overall, "_", " "))
+			for _, c := range effective.Criteria {
+				fmt.Fprintf(&summary, "Criterion %d: %s.\n", c.Criterion, strings.ReplaceAll(c.Verdict, "_", " "))
+			}
+			reasons = strings.TrimSpace(summary.String())
+		}
+		if effective == nil {
+			return GoalReasons{}, false, nil
 		}
 		if effective.Overall == goalNotMet {
 			for _, line := range strings.Split(reasons, "\n") {
@@ -118,8 +131,11 @@ func (s *FileGoalAudit) Reasons(repo string, pr int, head string) (GoalReasons, 
 			findings = append(findings, prefix+reason)
 		}
 	}
+	if reasons == "" {
+		return GoalReasons{}, false, nil
+	}
 	return GoalReasons{
-		Findings: findings, Repository: best.Repository, PullRequest: best.PullRequest, Head: best.Head,
+		Findings: findings, ReplyRevision: best.ReplyRevision, Repository: best.Repository, PullRequest: best.PullRequest, Head: best.Head,
 		Issue: best.Issue, Digest: best.Digest, Phase: best.Phase, Reasons: clip(reasons, maxGoalReasons),
 	}, true, nil
 }

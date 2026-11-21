@@ -259,7 +259,7 @@ actions:
             AUTHOR="$(git log -1 --format='%an')"
             if [ "$AUTHOR" = "ci-format-bot" ] &&
                [ "$(git log -1 --format=%s)" = "style: auto-format" ]; then
-              echo "HEAD is the ci-format-bot commit; formatting just ran, going straight to tests."
+              echo "HEAD is the ci-format-bot commit; formatting already ran, skipping the format pass."
             else
               # Run all formatters before source generation and drift writeback.
               bazel run //bazel/tools/format:format --config=ci
@@ -312,7 +312,7 @@ actions:
             *) echo "STPA FRESHNESS: informational result unavailable (exit $stpa_freshness_rc); this check does not block merges" ;;
           esac
 
-          # ---- 6. pnpm frozen-lockfile validation -----------------------
+          # ---- 5. pnpm frozen-lockfile validation -----------------------
           git fetch origin "${GIT_REPO_DEFAULT_BRANCH:-main}" --quiet
           if git diff --name-only \
             "origin/${GIT_REPO_DEFAULT_BRANCH:-main}" HEAD -- \

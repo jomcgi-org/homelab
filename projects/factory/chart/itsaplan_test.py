@@ -162,6 +162,31 @@ def test_images_are_upstream_by_digest() -> None:
         assert image.startswith(f"ghcr.io/croffasia/itsaplan-{component}:1.10.0@")
 
 
+@pytest.mark.parametrize("broker_enabled", [True, False])
+def test_rebuilt_web_has_pull_credentials(broker_enabled: bool) -> None:
+    overrides = ["itsaplan.webImage.digest=sha256:" + "c" * 64]
+    if not broker_enabled:
+        overrides += [
+            "broker.enabled=false",
+            "connector.enabled=false",
+            "reviewer.enabled=false",
+            "repositories=null",
+        ]
+    docs = _render(overrides)
+    web = _one(docs, "Deployment", "factory-itsaplan-web")
+    assert web["spec"]["template"]["spec"]["imagePullSecrets"] == [
+        {"name": "ghcr-imagepull-secret"}
+    ]
+    items = [
+        doc
+        for doc in docs
+        if doc["kind"] == "OnePasswordItem"
+        and doc["metadata"]["name"] == "ghcr-imagepull-secret"
+        and doc["metadata"]["namespace"] == web["metadata"]["namespace"]
+    ]
+    assert len(items) == 1
+
+
 def test_generated_secrets_are_kept_and_never_rendered() -> None:
     # The chart declares each Secret empty; Jobs and other namespaces fill it,
     # and nothing about it may change across upgrades (ARCHITECTURE.md).

@@ -88,9 +88,9 @@ func TestStatusItemsScopeStatesAndLastTenMerges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	items, err := st.StatusItems(ctx, []string{"homelab"})
-	if err != nil || len(items) != 14 {
-		t.Fatalf("items=%+v err=%v", items, err)
+	items, total, err := st.StatusItems(ctx, []string{"homelab"})
+	if err != nil || len(items) != 14 || total != 4 {
+		t.Fatalf("items=%+v total=%d err=%v", items, total, err)
 	}
 	for i, item := range items[:10] {
 		if item.BindingName != "homelab" || item.IssueID != int64(12-i) || item.MergedAt == nil || item.PRNumber != 12-i {
@@ -115,7 +115,13 @@ func TestStatusItemsScopeStatesAndLastTenMerges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.StatusItems(ctx, []string{"homelab"}); err == nil {
-		t.Fatal("oversized active listing accepted")
+	items, total, err = st.StatusItems(ctx, []string{"homelab"})
+	if err != nil || len(items) != 110 || total != 115 {
+		t.Fatalf("items=%d total=%d err=%v", len(items), total, err)
+	}
+	for _, item := range items[10:] {
+		if item.MergedAt != nil || item.IssueID < 111 || item.IssueID > 210 {
+			t.Fatalf("live listing contains an item outside the latest 100: %+v", item)
+		}
 	}
 }

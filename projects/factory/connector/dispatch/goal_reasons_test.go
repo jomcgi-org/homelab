@@ -10,16 +10,19 @@ import (
 	"testing"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
+	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
+	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // fakeGoalReasons answers for every head with fixed reasons, or err.
 type fakeGoalReasons struct {
-	mu      sync.Mutex
-	err     error
-	issue   string
-	reasons string
-	asked   []string
+	replyRevision int64
+	mu            sync.Mutex
+	err           error
+	issue         string
+	reasons       string
+	asked         []string
 }
 
 func (f *fakeGoalReasons) GoalReasons(_ context.Context, repo string, pr int, head string) (*dispatch.GoalReasons, error) {
@@ -29,7 +32,7 @@ func (f *fakeGoalReasons) GoalReasons(_ context.Context, repo string, pr int, he
 	if f.err != nil {
 		return nil, f.err
 	}
-	return &dispatch.GoalReasons{Repository: repo, PullRequest: pr, Head: head, Issue: f.issue, Digest: strings.Repeat("d", 64), Reasons: f.reasons}, nil
+	return &dispatch.GoalReasons{Repository: repo, PullRequest: pr, Head: head, Issue: f.issue, Digest: strings.Repeat("d", 64), ReplyRevision: f.replyRevision, Reasons: f.reasons}, nil
 }
 
 func (f *fakeGoalReasons) calls() int {
@@ -289,5 +292,83 @@ func TestPassingReviewWithoutOwnershipReadsNoReasons(t *testing.T) {
 	v.poll()
 	if goal.calls() != 0 || len(v.gh.Enqueues()) != 1 {
 		t.Fatalf("reads = %d, enqueues = %d", goal.calls(), len(v.gh.Enqueues()))
+	}
+}
+
+func TestGoalReplyGoesToTicketAndWaitsForFreshReview(t *testing.T) {
+	v := newDeliveryEnv(t)
+	goal := &fakeGoalReasons{issue: "HL-7", reasons: "Verified criterion 2."}
+	v.cfg.GoalReasons = goal
+	v.e.Release()
+	v.e = v.engine("connector-a")
+	v.delivered()
+	v.goalFindingCheck("sha-1")
+	v.poll()
+	head := strings.Repeat("a", 40)
+	v.gh.push("factory/HL-7", head, "fix(retry): cover retry path")
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted,
+		"Private summary excluded.\nGoal evidence for "+head+"\n2. Check retry_test.go. @coder",
+		nil)
+	v.gh.green(head)
+	v.poll()
+	v.poll()
+	if v.gh.queued(1) {
+		t.Fatal("PR queued before the reviewer read the ticket reply")
+	}
+	var posted int
+	for _, c := range v.its.Comments() {
+		if strings.Contains(c.body, "factory-goal-reply v1") {
+			posted++
+			if !strings.Contains(c.body, "@"+head+" ") || !strings.Contains(c.body, "@factory-reviewer") ||
+				!strings.Contains(c.body, "retry_test.go") || strings.Contains(c.body, "Private summary excluded") ||
+				strings.Contains(c.body, "@coder") {
+				t.Fatalf("unexpected ticket reply: %q", c.body)
+			}
+		}
+	}
+	if posted != 1 {
+		t.Fatalf("ticket replies = %d", posted)
+	}
+	if err := v.st.DB.QueryRow(`SELECT regexp_replace(dedupe_key, '^.*/', '')::bigint FROM outbox WHERE dedupe_key LIKE 'comment/goal-reply/%'`).Scan(&goal.replyRevision); err != nil {
+		t.Fatal(err)
+	}
+	v.gh.summarize(head, "semgrep-review", itsaplan.GoalReplyReviewed(goal.replyRevision+1))
+	v.poll()
+	if v.gh.queued(1) {
+		t.Fatal("PR queued with a verdict for another reply")
+	}
+	revision := goal.replyRevision
+	v.gh.summarize(head, "semgrep-review", itsaplan.GoalReplyReviewed(revision))
+	goal.err = dispatch.ErrNoGoalReasons
+	v.poll()
+	if v.gh.queued(1) {
+		t.Fatal("PR queued before the private assessment was available")
+	}
+	goal.err = nil
+	goal.replyRevision = revision + 1
+	v.poll()
+	if v.gh.queued(1) {
+		t.Fatal("PR queued with private feedback for another reply")
+	}
+	goal.replyRevision = revision
+	v.goalFindingCheck(head)
+	v.gh.summarize(head, "semgrep-review", "- **medium** HL-7 criterion 2: not met (`HL-7:goal:criterion-2`)\n"+itsaplan.GoalReplyReviewed(revision))
+	v.poll()
+	v.poll()
+	if v.gh.queued(1) {
+		t.Fatal("failed review reached the merge queue")
+	}
+	rounds := v.rounds()
+	if len(rounds) != 2 || !strings.Contains(rounds[1].Prompt, "Verified criterion 2.") {
+		t.Fatal("the rejected reply's reasons did not reach the next review round")
+	}
+	feedback := 0
+	for _, c := range v.its.Comments() {
+		if strings.Contains(c.body, "at head "+head) && strings.Contains(c.body, "Verified criterion 2.") {
+			feedback++
+		}
+	}
+	if feedback != 1 {
+		t.Fatalf("reviewer feedback comments = %d, want 1 for the reviewed reply", feedback)
 	}
 }

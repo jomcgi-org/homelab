@@ -27,9 +27,6 @@
 **/STPA.md
 **/stpa/*.json
 
-# Git worktrees have their own formatting
-.claude/worktrees/
-
 # Prose (Markdown) and YAML: Prettier owns CODE, not prose. The CI formatter
 # (//bazel/tools/format:format_code) wires prettier to the `javascript` language
 # slot ONLY, so CI never reformats .md or .yaml. Local ci lint also selects

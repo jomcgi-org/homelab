@@ -19,15 +19,11 @@ MODULE.bazel.lock
 
 node_modules/
 dist/
-/controls-preview-evidence/
-
 
 *.venv/
 __pycache__
 *.sqlite
 *.sqlite.db
-
-.playwright-mcp
 
 # Rendered manifests - ArgoCD renders at deploy time, no need to commit
 **/manifests/
@@ -64,14 +60,6 @@ Thumbs.db
 # Bazel remote-build output dir (bb remote). A stray binary here was committed
 # once and broke BuildBuddy git sync, blocking every push.
 bb-out/
-
-# Codex dispatch transcripts, kept per-worktree
-# for triage, never committed
-.codex-dispatch/
-
-# Same, for grok CLI dispatches. There is no wrapper for those, so the log is
-# whatever the caller tees; it still never belongs in a commit.
-.grok-dispatch/
 
 # Chart versions published by main's push, handed to write-back-versions.sh
 # (ADR platform/009 decision 1). Written by bazel/helm/push.sh.tpl, consumed and

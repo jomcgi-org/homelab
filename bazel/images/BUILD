@@ -56,6 +56,7 @@ multirun(
         "//projects/factory/connector/image:image.push",
         "//projects/factory/harness/claude:image.push",
         "//projects/factory/harness/codex:image.push",
+        "//projects/factory/itsaplan-web:image.push",
         "//projects/factory/reviewer/image:image.push",
         "//projects/firecracker/sandbox/elixir:image.push",
         "//projects/firecracker/sandbox/go:image.push",
