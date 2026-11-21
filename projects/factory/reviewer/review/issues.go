@@ -162,6 +162,75 @@ func (e *Engine) resolveIssue(ctx context.Context, b *Binding, pr github.PullReq
 	return e.commitIssue(ctx, b, pr)
 }
 
+// reviewPriorities reads the native issue order for eligible new heads.
+// An outage leaves unknown priorities at the scheduler fallback and makes the
+// observation partial. Reattachments keep precedence over all new starts.
+func (e *Engine) reviewPriorities(ctx context.Context, b *Binding, candidates []candidate) (map[int]string, bool) {
+	byPR := make(map[int]string)
+	if e.cfg.Itsaplan == nil || b.ItsaplanProject == "" {
+		return byPR, true
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	loaded := false
+	var projectID int64
+	byIssue := make(map[string]string)
+	complete := true
+	for _, c := range candidates {
+		if !issueReader(b, c.pr) {
+			continue
+		}
+		key, err := e.resolveIssue(ctx, b, c.pr)
+		if err != nil {
+			complete = false
+			continue
+		}
+		if key == "" {
+			continue
+		}
+		if !loaded {
+			project, err := e.cfg.Itsaplan.GetProject(ctx, b.ItsaplanProject)
+			if err != nil || project == nil || project.Project.ID <= 0 || project.Project.Key != b.ItsaplanProject {
+				return byPR, false
+			}
+			projectID, loaded = project.Project.ID, true
+		}
+		if priority, ok := byIssue[key]; ok {
+			byPR[c.pr.Number] = priority
+			continue
+		}
+		issue, err := e.cfg.Itsaplan.GetIssueByNumber(ctx, b.ItsaplanProject, issueNumber(key, b.ItsaplanProject))
+		if errors.Is(err, itsaplan.ErrNotFound) {
+			byIssue[key] = ""
+			continue
+		}
+		if err != nil || issue == nil || issue.Identifier != key || issue.ProjectID != projectID {
+			complete = false
+			continue
+		}
+		if issue.ArchivedAt == nil && priorityRank(issue.Priority) > 0 {
+			byPR[c.pr.Number] = issue.Priority
+		}
+		byIssue[key] = byPR[c.pr.Number]
+	}
+	return byPR, complete
+}
+
+func priorityRank(priority string) int {
+	switch priority {
+	case "urgent":
+		return 4
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	default:
+		return 0
+	}
+}
+
 // commitIssue returns the first issue key in the PR's commit messages. A
 // head's commits do not change, so each poll reuses the head's answer
 // instead of reading the list again.

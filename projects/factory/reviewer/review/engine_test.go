@@ -874,7 +874,7 @@ func TestPrioritizeUsesHeadWaitWithinAuthorPriority(t *testing.T) {
 			// order too, so neither listing order nor PR number can fake FIFO.
 			prs[1].UpdatedAt, prs[2].UpdatedAt = now, now.Add(time.Minute)
 			start := []candidate{{pr: prs[2]}, {pr: prs[1]}, {pr: prs[0]}}
-			e.prioritize(b, start)
+			e.prioritize(b, start, nil)
 			got := []int{start[0].pr.Number, start[1].pr.Number, start[2].pr.Number}
 			if !slices.Equal(got, tc.want) {
 				t.Fatalf("new review order = %v, want %v", got, tc.want)

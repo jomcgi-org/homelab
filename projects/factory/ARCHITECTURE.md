@@ -855,9 +855,13 @@ from reviewer App 5758326 alongside `pr-checks`.
 [Required-check decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6882698416)
 
 - **Review order (HOME-220).** Running reviews retain their slots. The poller
-  reattaches in-progress checks before starting new reviews. Within each
-  `enqueueAuthors` priority, heads first observed eligible in an earlier poll
-  go first. Within one poll, GitHub's latest ref activity dates the exact
+  reattaches in-progress checks before starting new reviews. Verified itsaplan
+  issue priority orders new starts from urgent to low. The poller reads the
+  current issue priority after restart. A failed priority read uses the
+  fallback rank and marks the queue observation partial.
+  Within one issue rank, `enqueueAuthors` preference comes first, then the
+  poll that first observed the eligible head. Within one poll, GitHub's latest
+  ref activity dates the exact
   current SHA, bounded by PR creation and the latest readiness, skip-label
   removal, reopening or base-change event. This recovers eligible waits at
   startup without counting time spent as a draft or skipped PR. Incomplete
