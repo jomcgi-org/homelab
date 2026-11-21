@@ -4,7 +4,7 @@ cd "$(dirname "$0")"
 chart=../../chart
 [[ $(kubectl config current-context) == kind-edge-oidc ]]
 projects=../../../..
-namespaces=(edge kagent factory-landing argocd factory grafana)
+namespaces=(edge kagent t3 factory-landing argocd factory grafana)
 for ns in "${namespaces[@]}"; do kubectl create namespace "$ns"; done
 
 # Use the CRDs and controller shipped with the edge chart.
@@ -38,6 +38,8 @@ for ns in "${namespaces[@]}"; do
 done
 kubectl -n edge expose deployment fixture --name issuer --port 443 --target-port 8443
 kubectl -n kagent expose deployment fixture --name kagent-ui --port 8080
+kubectl -n t3 expose deployment fixture --name t3-relay --port 8080
+kubectl -n t3 apply -f "$projects/platform-factory/t3/resources/reference-grant.yaml"
 
 # Use the production HTTPRoutes with fixture services at their backend ports.
 kubectl -n factory-landing expose deployment fixture --name factory-landing --port 8080
@@ -54,7 +56,7 @@ kubectl apply -f "$projects/platform-factory/grafana/resources/route.yaml"
 kubectl apply -f "$projects/platform-factory/grafana/resources/runbooks-route.yaml"
 
 templates=()
-for template in gateway security-policy kagent-route oidc-client-secret oidc-sentinel; do
+for template in gateway security-policy kagent-route t3-route oidc-client-secret oidc-sentinel; do
 	templates+=(-s "templates/$template.yaml")
 done
 # Install the test CA in the initial proxy revision. A later patch can roll
@@ -89,3 +91,57 @@ kubectl -n edge wait gateway/edge --for=condition=Programmed --timeout=180s
 kubectl -n edge rollout status deployment -l gateway.envoyproxy.io/owning-gateway-name=edge
 kubectl -n edge port-forward svc/edge-proxy 18080:80 >"$tmp/forward.log" 2>&1 &
 python3 session.py
+
+# Admission evaluates the production socket guard against the API server.
+kubectl -n t3 create serviceaccount t3-relay
+kubectl apply -f "$projects/platform-factory/edge-admission/resources/policies.yaml"
+cat >"$tmp/socket-probe.yaml" <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: socket-probe
+  ownerReferences:
+    - apiVersion: apps/v1
+      kind: ReplicaSet
+      name: t3-relay-test
+      uid: 11111111-1111-1111-1111-111111111111
+      controller: true
+spec:
+  serviceAccountName: t3-relay
+  containers:
+    - name: probe
+      image: busybox
+      volumeMounts:
+        - name: socket
+          mountPath: /socket
+          readOnly: true
+  volumes:
+    - name: socket
+      hostPath:
+        path: /run/t3-cluster
+        type: Directory
+YAML
+denied=false
+for _ in {1..15}; do
+	if output=$(kubectl -n t3 create --dry-run=server -f "$tmp/socket-probe.yaml" 2>&1); then
+		sleep 1
+	elif [[ "$output" == *'Only the t3 relay may mount'* ]]; then
+		denied=true
+		break
+	else
+		printf '%s\n' "$output" >&2
+		exit 1
+	fi
+done
+[[ "$denied" == true ]]
+kubectl -n t3 create --dry-run=server -f "$tmp/socket-probe.yaml" \
+	--as=system:serviceaccount:kube-system:replicaset-controller
+for mount in / /run /var/run /var/run/t3-cluster/t3.sock; do
+	if output=$(sed "s|path: /run/t3-cluster|path: $mount|" "$tmp/socket-probe.yaml" |
+		kubectl -n t3 create --dry-run=server -f - \
+			--as=system:serviceaccount:kube-system:replicaset-controller 2>&1); then
+		echo "unexpected hostPath admission: $mount" >&2
+		exit 1
+	fi
+	[[ "$output" == *'Only the t3 relay may mount'* ]]
+done

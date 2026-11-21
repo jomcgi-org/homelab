@@ -726,10 +726,13 @@ not archived) issues assigned to `@joe` with no delegate, such as HOME-20 to
 HOME-23. Agents never pick these up; delegating one is an explicit handoff, and
 the page's reads start no runs. Joe's member ID comes from each bound project's
 scaffold on every refresh. In flight is the store's active, blocked, review and
-merging work items, and Shipped recently its ten latest merges. Titles come
-from itsaplan; batched GitHub queries read checks, the reviewer check (or review
-decision) and queue state. No issue bodies, check output, transcripts or tokens
-enter the response.
+merging work items, and Shipped recently its ten latest merges. One itsaplan
+list per project reads the 500 latest updated titles, including archived
+issues. These list reads run alongside GitHub with a two-second deadline.
+The connector looks up displayed issues outside a returned list by ID.
+Concurrent GitHub batches across bindings read checks, the reviewer check
+(or review decision) and queue state. No issue bodies, check output,
+transcripts or tokens enter the response.
 
 The itsaplan contract is pinned to v1.10.0 commit `6c7c2fe2`: the
 [project route](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/apps/api/src/modules/projects/index.ts#L143)

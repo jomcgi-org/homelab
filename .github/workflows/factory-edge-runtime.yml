@@ -1,0 +1,33 @@
+name: Factory edge runtime
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/factory-edge-runtime.yml
+      - projects/platform-factory/edge/**
+      - projects/platform-factory/edge-admission/**
+      - projects/platform-factory/t3/**
+      - projects/platform-factory/kube-access/**
+      - projects/platform/authentik/factory-blueprints/**
+      - projects/factory-cluster/nodes/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: edge-runtime-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  oidc:
+    name: Factory edge OIDC and socket admission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      REQUIRE_EDGE_OIDC: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - run: bash projects/platform-factory/edge/tests/oidc/kind.sh

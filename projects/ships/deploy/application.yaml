@@ -12,7 +12,7 @@ spec:
   source:
     repoURL: ghcr.io/jomcgi/homelab/charts
     chart: ships
-    targetRevision: 0.16.6
+    targetRevision: 0.17.15
     helm:
       releaseName: ships
   destination:

@@ -45,4 +45,5 @@ resources:
   - ../scotland-connector/deploy
   - ../ships/deploy
   - ./edge-tunnel # Publishes the edge hostnames; deployed last, removed first
+  - ./t3 # Relay to the node-1 T3 socket
   - ./grimoire-data
