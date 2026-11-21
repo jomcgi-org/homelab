@@ -29,7 +29,7 @@ expand_template(
 
 # The package owner verified this destination was absent and approved its
 # first private publication.
-# https://factory-plan.jomcgi.dev/factory/issue/HOME-652#comment-8646
+# https://github.com/jomcgi-org/homelab/pull/8455#issuecomment-7055830336
 # GHCR assigns private visibility on first publication.
 oci_push(
     name = "image.push",
