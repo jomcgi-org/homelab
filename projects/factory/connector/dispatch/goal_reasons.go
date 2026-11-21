@@ -198,7 +198,9 @@ func (e *Engine) ticketFeedback(ctx context.Context, wi *store.WorkItem, b *Bind
 			return false, false, err
 		}
 		if g == nil || g.ReplyRevision != revision {
-			return false, false, nil
+			// The public check can arrive before the matching private assessment.
+			// Check it again before the PR leaves this delivery path.
+			break
 		}
 		return false, false, e.st.Enqueue(ctx, e.st.DB, store.OutboxComment, resultKey, 0, "",
 			commentPayload{IssueID: wi.IssueID, Once: true, Body: goalReasonsComment(wi, pr, g)})
@@ -207,7 +209,7 @@ func (e *Engine) ticketFeedback(ctx context.Context, wi *store.WorkItem, b *Bind
 	if late {
 		err = e.st.Enqueue(ctx, e.st.DB, store.OutboxComment, "comment/goal-reply-wait/"+strings.TrimPrefix(key, "comment/goal-reply/"), 0, "",
 			commentPayload{IssueID: wi.IssueID, Once: true, Body: fmt.Sprintf(
-				"The reviewer has not acknowledged evidence reply %d for PR #%d at `%s`. The merge waits. A new revision on this commit or a new commit can restore review.", revision, pr.Number, pr.HeadSHA)})
+				"The connector is waiting for reviewer feedback on evidence reply %d for PR #%d at `%s`. The merge waits. A new revision on this commit or a new commit can restore review.", revision, pr.Number, pr.HeadSHA)})
 	}
 	return true, late, err
 }
