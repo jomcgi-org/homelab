@@ -129,7 +129,7 @@ func choiceRevision(choices []string) string {
 	return fmt.Sprintf("%x", sha256.Sum256(data))
 }
 
-// invariant: FACT-13
+// invariant: FACT-14
 func parseChoices(description string) []string {
 	var choices []string
 	found, active := false, false
