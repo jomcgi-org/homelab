@@ -113,7 +113,7 @@ spec:
   workload:
     image: {{ printf "%s@%s" $.Values.codexTrial.image.repository (required "codexCodeMode requires a published trial image digest" $.Values.codexTrial.image.digest) | quote }}
   {{- end }}
-  {{- /* Review bindings only (HOME-530); they drop codexCodeMode. */}}
+  {{- /* reviewer.harnessImage or repositories[].harnessImage (HOME-530, HOME-652); never with codexCodeMode. */}}
   {{- with $r.workloadImage }}
   workload:
     image: {{ . | quote }}

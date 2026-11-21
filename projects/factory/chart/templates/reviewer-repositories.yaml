@@ -3,6 +3,7 @@
 {{- $binding := deepCopy $r }}
 {{- $_ := unset $binding "toolchain" }}
 {{- $_ := unset $binding "codexCodeMode" }}
+{{- $_ := unset $binding "harnessImage" }}
 {{- /* Memory is for the coding binding only (HOME-130). */}}
 {{- $_ := unset $binding "memory" }}
 {{- $_ := unset $binding "mcpServers" }}

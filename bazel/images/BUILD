@@ -54,7 +54,7 @@ multirun(
         "//projects/factory/chart:chart.push",
         "//projects/factory/codex-code-mode:image.push",
         "//projects/factory/connector/image:image.push",
-        "//projects/factory/reviewer/harness:image.push",
+        "//projects/factory/harness/codex:image.push",
         "//projects/factory/reviewer/image:image.push",
         "//projects/firecracker/sandbox/elixir:image.push",
         "//projects/firecracker/sandbox/go:image.push",

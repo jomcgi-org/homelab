@@ -462,7 +462,7 @@ private_oci_layer(
     visibility_to = ["//bazel/tools/mandoline:__pkg__"],
 )
 
-# Base of the private reviewer harness image (projects/factory/reviewer/harness).
+# Base of the private Codex+mandoline harness image (projects/factory/harness/codex).
 # Keep the digest equal to kagent.config.harnessImages.codex in
 # projects/factory/deploy/values.yaml; harness_image_test checks it.
 oci.pull(

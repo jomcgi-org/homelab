@@ -7,5 +7,13 @@ egress gateway injects, and git sends a placeholder Authorization header the
 gateway replaces from the broker-minted Secret github-git.
 */}}
 {{- range $r := .Values.repositories }}
-{{- include "factory.bindingResources" (dict "root" $ "binding" $r "coder" true "description" "Delivers changes to") }}
+{{- $binding := deepCopy $r }}
+{{- with $r.harnessImage }}
+{{- if hasKey $r "codexCodeMode" }}
+{{- fail "set harnessImage or codexCodeMode on a repository, not both" }}
+{{- end }}
+{{- /* The shared Codex+mandoline image (HOME-652). */}}
+{{- $_ := set $binding "workloadImage" . }}
+{{- end }}
+{{- include "factory.bindingResources" (dict "root" $ "binding" $binding "coder" true "description" "Delivers changes to") }}
 {{- end }}
