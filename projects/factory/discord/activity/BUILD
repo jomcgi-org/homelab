@@ -14,3 +14,9 @@ js_test(
     ],
     entry_point = "catalog.test.js",
 )
+
+filegroup(
+    name = "repo_docs",
+    srcs = ["README.md"],
+    visibility = ["//:__pkg__"],
+)
