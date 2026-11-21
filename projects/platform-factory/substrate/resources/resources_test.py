@@ -136,7 +136,19 @@ def test_egress_scan_pilot_changes_only_hindsight_route() -> None:
     }
     assert check["policies"] == {"http": {"requestTimeout": "80ms"}}
     assert config == yaml.safe_load(raw["data"]["config.yaml"])
-    assert _wave(applied) > _wave(_one(_docs(), "Deployment", "egress-scan"))
+
+
+def test_egress_gateway_and_its_config_wait_for_the_scanner() -> None:
+    docs = _docs()
+    scanner = _one(docs, "Deployment", "egress-scan")
+    gateway = _one(docs, "Deployment", "atenet-egress")
+    config = _one(docs, "ConfigMap", "atenet-egress-agentgateway-config")
+    volumes = gateway["spec"]["template"]["spec"]["volumes"]
+    assert any(
+        v.get("configMap", {}).get("name") == config["metadata"]["name"]
+        for v in volumes
+    )
+    assert _wave(scanner) < _wave(config) == _wave(gateway)
 
 
 def test_egress_scanner_has_warm_replicas_and_a_gateway_only_listener() -> None:
