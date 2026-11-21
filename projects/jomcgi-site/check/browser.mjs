@@ -118,6 +118,7 @@ export async function checkPage(
       const requestOrigin = new URL(route.request().url()).origin;
       if (requestOrigin !== origin) {
         const request = route.request();
+        // invariant: JOMCGI-SITE-1
         if (
           request.method() === "GET" &&
           request.resourceType() === "image" &&
