@@ -686,7 +686,9 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding, snapshot *QueueSna
 		}
 	}
 	e.dateWaiting(ctx, b, start)
-	e.prioritize(b, start)
+	priorities, verified := e.reviewPriorities(ctx, b, start)
+	snapshot.Complete = snapshot.Complete && verified
+	e.prioritize(b, start, priorities)
 	// Reviews already in progress (after a restart) go before new heads.
 	prioritizeResumed(b, attach)
 	waiting := append(attach, start...)
@@ -710,7 +712,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding, snapshot *QueueSna
 			}
 			entry := QueueEntry{
 				Repository: repo, PullRequest: queued.pr.Number, Head: queued.pr.HeadSHA,
-				Resume: i+j < len(attach),
+				Resume: i+j < len(attach), Priority: priorities[queued.pr.Number],
 			}
 			if j > 0 && quotaRecorded(queued) {
 				// Capacity stopped this pass before checking this head's quota.
@@ -1001,10 +1003,15 @@ func (e *Engine) readySince(ctx context.Context, b *Binding, pr github.PullReque
 }
 
 // invariant: FACT-406
-// prioritize orders starts by author priority, eligible arrival, then PR number.
-func (e *Engine) prioritize(b *Binding, start []candidate) {
+// prioritize orders starts by native issue priority, author priority,
+// eligible arrival, then PR number.
+func (e *Engine) prioritize(b *Binding, start []candidate, priorities map[int]string) {
 	sort.Slice(start, func(i, j int) bool {
 		pi, pj := start[i].pr, start[j].pr
+		ri, rj := priorityRank(priorities[pi.Number]), priorityRank(priorities[pj.Number])
+		if ri != rj {
+			return ri > rj
+		}
 		ei, ej := containsFold(b.EnqueueAuthors, pi.Author), containsFold(b.EnqueueAuthors, pj.Author)
 		if ei != ej {
 			return ei
