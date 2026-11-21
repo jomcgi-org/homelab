@@ -73,3 +73,10 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: The INTSEC sync key can create issues only through the dedicated Semgrep finding route.
+  mechanism:
+  - projects/factory/chart/files/itsaplan/bootstrap.py
+  - projects/factory/chart/files/itsaplan/factory.ts
+  test: //projects/factory/tests/itsaplan:integration_test
+  state: live
