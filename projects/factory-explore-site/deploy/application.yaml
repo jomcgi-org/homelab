@@ -8,7 +8,7 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
-  project: default
+  project: apps
   source:
     repoURL: ghcr.io/jomcgi/homelab/charts
     chart: factory-explore-site
@@ -23,7 +23,6 @@ spec:
       prune: true
       selfHeal: true
     syncOptions:
-      - CreateNamespace=true
       - ServerSideApply=true
     retry:
       limit: 5

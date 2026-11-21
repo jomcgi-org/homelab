@@ -13,7 +13,8 @@ def argocd_app(
         tags = [],
         target_suffix = "",
         content_rules = False,
-        content_rules_exceptions = {}):
+        content_rules_exceptions = {},
+        application_file = "application.yaml"):
     """Declares an ArgoCD application overlay with template testing and manifest rendering.
 
     This macro replaces the genrule + helm_template_test pattern that Gazelle
@@ -31,6 +32,7 @@ def argocd_app(
         generate_manifests: If True, create render_manifests genrule (default: True)
         tags: Additional tags for the template test
         target_suffix: Suffix for template and manifest targets sharing a package
+        application_file: Application manifest supplying the project and destination for content rules
         content_rules: If True, the template test also runs the factory-cluster
             content rules (//bazel/helm/content_rules) over the render
         content_rules_exceptions: Dict from "Kind/namespace/name" to the reason
@@ -49,6 +51,7 @@ def argocd_app(
         release_name = release_name,
         namespace = namespace,
         values_files = values_files,
+        application_file = application_file,
         content_rules = content_rules,
         content_rules_exceptions = content_rules_exceptions.keys(),
         tags = tags + ["helm", "template"],
