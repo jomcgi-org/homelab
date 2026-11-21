@@ -41,12 +41,16 @@ def package_visibility(repository, token):
         },
     )
     try:
-        with urllib.request.build_opener(NoRedirect()).open(request, timeout=10) as reply:
+        with urllib.request.build_opener(NoRedirect()).open(
+            request, timeout=10
+        ) as reply:
             metadata = json.load(reply)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return None
-        raise PrivacyError(f"GitHub package metadata returned HTTP {exc.code}") from None
+        raise PrivacyError(
+            f"GitHub package metadata returned HTTP {exc.code}"
+        ) from None
     except (urllib.error.URLError, TimeoutError, ValueError):
         raise PrivacyError("GitHub package metadata could not be read") from None
     expected_name = repository.removeprefix("ghcr.io/jomcgi/")
@@ -77,7 +81,9 @@ def seed_package(repository, crane):
                 timeout=60,
             )
         except (OSError, subprocess.SubprocessError):
-            raise PrivacyError("The harmless bootstrap image could not be uploaded") from None
+            raise PrivacyError(
+                "The harmless bootstrap image could not be uploaded"
+            ) from None
 
 
 def verify_private(repository, token, crane):
