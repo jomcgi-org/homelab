@@ -16,7 +16,7 @@ func capture(parent context.Context, program, root string, env, args []string) c
 	defer stop()
 	cmd := exec.CommandContext(ctx, program, args...)
 	cmd.Dir, cmd.Env = root, env
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 	cmd.Cancel = func() error {
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		if errors.Is(err, syscall.ESRCH) {

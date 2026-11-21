@@ -21,6 +21,7 @@ import (
 const (
 	toolVersion = "0.25.0"
 	runLimit    = 90 * time.Second
+	cleanupTime = 2 * time.Second
 	outputLimit = 1 << 20
 	trustedRepo = "https://github.com/jomcgi-org/homelab.git"
 	mainRef     = "refs/heads/main"
@@ -47,10 +48,32 @@ type Envelope struct {
 // Run takes the workspace and tool from the installed launcher. They are
 // deliberately absent from the model-facing command-line arguments.
 func Run(parent context.Context, workspace, tool string, audit bool, req Request) Envelope {
-	return run(parent, workspace, tool, audit, req, resolveTrustedMain)
+	return runBounded(parent, runLimit, req, func(ctx context.Context) Envelope {
+		return run(ctx, workspace, tool, audit, req, resolveTrustedMain)
+	})
 }
 
-func run(parent context.Context, workspace, tool string, audit bool, req Request, resolveMain func(context.Context, string, []string) (string, error)) Envelope {
+func runBounded(parent context.Context, limit time.Duration, req Request, analyze func(context.Context) Envelope) Envelope {
+	hard, stop := context.WithTimeout(parent, limit)
+	defer stop()
+	// Cancel subprocesses before the launcher must return, so capture can
+	// reap their process groups. The hard deadline also covers file I/O.
+	work, cancel := context.WithTimeout(hard, limit-min(cleanupTime, limit/2))
+	defer cancel()
+	result := make(chan Envelope, 1)
+	go func() { result <- analyze(work) }()
+	select {
+	case response := <-result:
+		if work.Err() == nil {
+			return response
+		}
+	case <-hard.Done():
+	}
+	return Envelope{Commit: req.Commit, PackDigests: map[string]string{}}.
+		fail("timeout", "analysis exceeded the wall-clock limit")
+}
+
+func run(ctx context.Context, workspace, tool string, audit bool, req Request, resolveMain func(context.Context, string, []string) (string, error)) Envelope {
 	result := Envelope{Commit: req.Commit, PackDigests: map[string]string{}, Gaps: []string{}}
 	if !fullSHA.MatchString(req.Commit) || (!audit && !fullSHA.MatchString(req.Base)) || (audit && req.Base != "") {
 		return result.fail("error", "expected a full commit and the base required by this harness")
@@ -59,9 +82,6 @@ func run(parent context.Context, workspace, tool string, audit bool, req Request
 		(!audit && req.Command != "diff" && req.Command != "callers") {
 		return result.fail("unsupported", "command outside the harness analysis scope")
 	}
-	ctx, cancel := context.WithTimeout(parent, runLimit)
-	defer cancel()
-
 	resolvedWorkspace, err := filepath.EvalSymlinks(workspace)
 	if err != nil || resolvedWorkspace != workspace {
 		return result.fail("error", "task workspace unavailable")

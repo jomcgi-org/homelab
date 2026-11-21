@@ -120,6 +120,31 @@ func TestCaptureLimitsAndSeparatesOutput(t *testing.T) {
 	}
 }
 
+func TestCacheRejectsRelativeTempInsideWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	t.Chdir(workspace)
+	if err := os.Mkdir("relative-temp", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", "relative-temp")
+	if _, err := openCache(workspace); err == nil {
+		t.Fatal("a relative temporary path placed the cache in the task workspace")
+	}
+}
+
+func TestHardDeadlineBoundsNonCancelablePreparation(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	req := Request{Commit: strings.Repeat("a", 40)}
+	got := runBounded(context.Background(), 20*time.Millisecond, req, func(context.Context) Envelope {
+		<-release
+		return Envelope{Status: "complete"}
+	})
+	if got.Status != "timeout" || got.Commit != req.Commit || len(got.Gaps) != 1 || got.Result != nil {
+		t.Fatalf("hard deadline: %+v", got)
+	}
+}
+
 func TestCoverageWarningIsIncomplete(t *testing.T) {
 	raw := []byte(`{"schemaVersion":1,"command":"audit","warnings":[{"code":"no_entry_points_found"}]}`)
 	got := classify(Envelope{}, "audit", captured{stdout: raw})
