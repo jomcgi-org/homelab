@@ -248,6 +248,7 @@ DENIED = [
     "select * from ships.vessels for update",
     "lock table ships.heat_cells_historical in exclusive mode",
     "select * from ships.inbox",
+    "lock table ships.ingest_lease in exclusive mode nowait",
     "delete from ships.inbox",
     "select nextval('ships.positions_id_seq')",
     "alter table ships.positions add column extra integer",
@@ -304,6 +305,11 @@ def test_publisher_login_cannot_write_or_alter(pg):
                 with conn.begin():
                     conn.exec_driver_sql(statement)
             assert refused.value.orig.sqlstate == "42501", statement
+    # The publisher keeps its own lock while the owner holds the ingester lease.
+    with engine.begin() as owner, login.connect() as publisher:
+        owner.exec_driver_sql("lock table ships.ingest_lease in exclusive mode nowait")
+        assert publisher.exec_driver_sql("select pg_try_advisory_lock(558, 1)").scalar()
+        assert publisher.exec_driver_sql("select pg_advisory_unlock(558, 1)").scalar()
     login.dispose()
     # The owner still sees the seeded rows: nothing the login tried changed them.
     with engine.connect() as conn:

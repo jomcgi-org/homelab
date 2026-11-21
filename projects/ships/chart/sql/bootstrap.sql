@@ -12,6 +12,9 @@ SET ROLE ships;
 
 CREATE SCHEMA IF NOT EXISTS ships;
 
+-- Reserved for the ingester lease. The publisher receives no privileges.
+CREATE TABLE ships.ingest_lease ();
+
 CREATE TABLE ships.vessels (
     mmsi         TEXT PRIMARY KEY,
     imo          TEXT,
