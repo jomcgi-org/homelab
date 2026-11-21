@@ -230,7 +230,14 @@ actions:
             # Check the real push runfiles without invoking crane. Remote tests
             # alone do not exercise the runner's minimal-download layout.
             if git diff --name-only "$base_ref" HEAD -- bazel/tools/oci/ bazel/tools/ci/oci_push_layout.py bazel/images/push/ projects/embervm/runtimes/claude/ | grep -q .; then
-              bazel run //projects/embervm/runtimes/claude:image.push --config=ci --stamp \
+              # Restore layer files left remote by the preceding push_all build,
+              # using the same top-level materialisation as the main publisher.
+              layers=$(bazel query 'labels(tars, deps(//projects/embervm/runtimes/claude:image, 3))')
+              if [ -n "$layers" ]; then
+                mapfile -t layer_targets <<<"$layers"
+                bazel build --config=ci --stamp --experimental_check_output_files --remote_download_toplevel "${layer_targets[@]}"
+              fi
+              bazel run //projects/embervm/runtimes/claude:image.push --config=ci --stamp --experimental_check_output_files \
                 --build_runfile_links \
                 --run_under="python3 $PWD/bazel/tools/ci/oci_push_layout.py --push-script"
             fi
