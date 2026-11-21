@@ -73,3 +73,9 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: The conformance fixture's tracker reader can read linked issue evidence and comments, cannot post comments, and has no assignment, mention, field or scheduled triggers.
+  mechanism:
+  - projects/factory/tests/itsaplan/reader.test.ts
+  test: //projects/factory/tests/itsaplan:integration_test
+  state: live
