@@ -210,6 +210,11 @@ def test_one_kept_identity_and_private_image() -> None:
     )
     assert container["ports"] == [{"name": "metrics", "containerPort": 9090}]
     assert container["env"] == [
+        {"name": "OTEL_SERVICE_NAME", "value": "factory-reviewer"},
+        {
+            "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "value": "http://otel-collector.otel-collector.svc.cluster.local:4317",
+        },
         {
             "name": "FACTORY_REVIEWER_CONFIG",
             "value": "/etc/factory-reviewer/config.yaml",
@@ -664,11 +669,23 @@ def test_only_declared_network_paths_and_peers_admit_the_pod() -> None:
     spec = _in(docs, "CiliumNetworkPolicy", "factory", "factory-reviewer")["spec"]
     assert spec["endpointSelector"]["matchLabels"].items() <= labels.items()
     assert "ingress" not in spec
-    assert len(spec["egress"]) == 4
+    assert len(spec["egress"]) == 5
+    assert spec["egress"][0] == {
+        "toEndpoints": [
+            {
+                "matchLabels": {
+                    "k8s:io.kubernetes.pod.namespace": "otel-collector",
+                    "app.kubernetes.io/name": "otel-collector",
+                    "app.kubernetes.io/instance": "otel-collector",
+                }
+            }
+        ],
+        "toPorts": [{"ports": [{"port": "4317", "protocol": "TCP"}]}],
+    }
     for rule, ns, name, port in (
-        (spec["egress"][0], "factory", "factory-broker", "8081"),
-        (spec["egress"][1], "kagent", "kagent-controller", "8083"),
-        (spec["egress"][2], "factory", "factory-itsaplan-api", "3000"),
+        (spec["egress"][1], "factory", "factory-broker", "8081"),
+        (spec["egress"][2], "kagent", "kagent-controller", "8083"),
+        (spec["egress"][3], "factory", "factory-itsaplan-api", "3000"),
     ):
         assert rule["toPorts"] == [{"ports": [{"port": port, "protocol": "TCP"}]}]
         peer = _in(docs, "CiliumNetworkPolicy", ns, name)["spec"]
@@ -692,7 +709,7 @@ def test_only_declared_network_paths_and_peers_admit_the_pod() -> None:
             )
             for entry in peer["ingress"]
         )
-    assert spec["egress"][3] == {
+    assert spec["egress"][4] == {
         "toFQDNs": [{"matchName": "api.github.com"}],
         "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
     }
@@ -801,8 +818,8 @@ def test_service_identity_and_endpoints_follow_namespace_and_port_values() -> No
         "spec"
     ]["egress"]
     for rule, ns, port in (
-        (rules[0], "other-factory", "8181"),
-        (rules[1], "other-kagent", "8183"),
+        (rules[1], "other-factory", "8181"),
+        (rules[2], "other-kagent", "8183"),
     ):
         assert (
             rule["toEndpoints"][0]["matchLabels"]["k8s:io.kubernetes.pod.namespace"]
