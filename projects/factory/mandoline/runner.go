@@ -24,7 +24,7 @@ const (
 	cleanupTime = 2 * time.Second
 	outputLimit = 1 << 20
 	trustedRepo = "https://github.com/jomcgi-org/homelab.git"
-	taskPinURL  = "http://factory-broker.factory.svc.cluster.local/v1/task-analysis-pin"
+	taskPinURL  = "http://factory-broker.factory.svc.cluster.local/v1/task-analysis-pin" // ratchet-allow: svc-url (the launcher must use the fixed broker route that injects the actor identity)
 )
 
 var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
