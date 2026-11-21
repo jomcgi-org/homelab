@@ -73,3 +73,10 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-16
+  statement: A local delivery pause preserves pending updates and their remaining retry budgets.
+  mechanism:
+  - projects/factory/connector/dispatch/engine.go
+  - projects/factory/connector/store/store.go
+  test: //projects/factory/connector/dispatch:dispatch_test
+  state: live

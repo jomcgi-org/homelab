@@ -2718,7 +2718,14 @@ func (e *Engine) flushOutbox(ctx context.Context) error {
 			if fatal(err) {
 				return err
 			}
-			if it.Tries+1 >= outboxMaxTries {
+			if errors.Is(err, itsaplan.ErrBackoff) {
+				now := e.cfg.Now()
+				if saveErr := e.w.Tx(ctx, func(tx *sql.Tx) error {
+					return e.st.OutboxCooldown(ctx, tx, it.ID, clip(err.Error(), maxErrorText), now, now.Add(time.Minute))
+				}); saveErr != nil {
+					return errors.Join(err, saveErr)
+				}
+			} else if it.Tries+1 >= outboxMaxTries {
 				if aerr := e.abandonItem(ctx, it, err); aerr != nil {
 					if fatal(aerr) {
 						return aerr
