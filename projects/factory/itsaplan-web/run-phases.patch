@@ -77,21 +77,6 @@
            <p className="truncate text-sm text-muted-foreground">
              {href ? (
                <Link
---- a/apps/web/src/features/runner-queue/RunnerQueuePage.tsx
-+++ b/apps/web/src/features/runner-queue/RunnerQueuePage.tsx
-@@ -55,6 +55,12 @@
-                   : t('internalInFlightNoLimit', { running: inFlight.running })}
-               </p>
-             )}
-+            <a
-+              href="https://github.com/jomcgi-org/homelab/tree/main/projects/factory/itsaplan-web"
-+              className="text-xs text-muted-foreground underline"
-+            >
-+              Source code
-+            </a>
-           </div>
-           <Button
-             variant="outline"
 --- a/apps/web/src/features/runner-queue/RunnerQueueRunPage.test.tsx
 +++ b/apps/web/src/features/runner-queue/RunnerQueueRunPage.test.tsx
 @@ -12,7 +12,7 @@
@@ -123,10 +108,17 @@
      sequenceNumber: null,
      issueTitle: null,
      scheduleName: null,
-@@ -107,6 +107,10 @@
+@@ -107,6 +107,17 @@
    const page = { items: [run], total: 1, page: 1, pageSize: 10, queued: 0, running: 0 };
    client.setQueryData(detailKey, page);
    client.setQueryData([...qk.externalRunTrace(1), null], null);
++  client.setQueryData(['factoryIssueReview', run.issueId], {
++    phase: 'queued',
++    position: 3,
++    pullRequest: 42,
++    head: '1234567890123456789012345678901234567890',
++    observedAt: new Date(0).toISOString(),
++  });
 +  const phaseKey = ['factoryRunPhases', run.issueId];
 +  client.setQueryData(phaseKey, {
 +    items: [{ runId: run.id, attempt: run.attempts, phase: 'waiting', reason: 'Waiting for a blocker.' }],
@@ -134,11 +126,13 @@
    const { default: RunnerQueueRunPage } = await import('./RunnerQueueRunPage');
    const { createRoot } = await import('react-dom/client');
    const root = createRoot(document.getElementById('root')!);
-@@ -128,6 +132,16 @@
+@@ -128,6 +139,18 @@
        ),
      );
      assert.ok(document.body.textContent?.includes('Selected result'));
 +    assert.ok(document.body.textContent?.includes('Waiting for a blocker.'));
++    assert.ok(document.body.textContent?.includes('Position 3 in the review queue'));
++    assert.ok(document.body.textContent?.includes('PR #42'));
 +    assert.equal(document.querySelector('h2')?.textContent, 'Waiting to run');
 +    await act(async () => {
 +      client.setQueryData(phaseKey, {
@@ -151,3 +145,175 @@
      await act(async () => {
        client
          .getQueryCache()
+@@ -136,6 +159,7 @@
+       await new Promise((resolve) => setTimeout(resolve, 10));
+     });
+     assert.ok(!document.body.textContent?.includes('Selected result'));
++    assert.ok(!document.body.textContent?.includes('PR #42'));
+   } finally {
+     await act(async () => root.unmount());
+     client.clear();
+--- a/apps/web/src/features/runner-queue/RunnerQueuePage.tsx
++++ b/apps/web/src/features/runner-queue/RunnerQueuePage.tsx
+@@ -1,7 +1,11 @@
+ 'use client';
+
+ import type { ReactNode } from 'react';
++import Link from 'next/link';
+ import { useParams } from 'next/navigation';
++import { useQuery } from '@tanstack/react-query';
++import { ApiError, request } from '@/lib/api/core/client';
++import { issuePath } from '@/utils/paths';
+ import { RefreshCw } from 'lucide-react';
+ import { cn } from '@/lib/utils';
+ import { useTranslations } from 'next-intl';
+@@ -18,6 +22,68 @@
+ const isActive = (run: RunnerQueueRun) =>
+   run.executionState === 'queued' || run.executionState === 'running';
+
++type ProjectReviewQueue = {
++  observedAt: string;
++  complete: boolean;
++  items: {
++    issueId: number;
++    sequenceNumber: number;
++    title: string;
++    pullRequest: number;
++    head: string;
++    phase: 'queued' | 'reviewing' | 'quota-held';
++    position?: number;
++    priority?: string;
++  }[];
++};
++
++function ProjectReviewBacklog({ api }: { api: string }) {
++  const query = useQuery({
++    queryKey: ['factoryReviewQueue', api],
++    queryFn: ({ signal }) =>
++      request<ProjectReviewQueue>(`${api}/factory-review-queue`, { signal }),
++    refetchInterval: ({ state: { error } }) =>
++      error instanceof ApiError && [401, 403, 404].includes(error.status) ? false : 15_000,
++    retry: false,
++  });
++  const queue = query.isError ? undefined : query.data;
++  if (!queue || queue.observedAt.startsWith('0001-')) return null;
++  const projectRef = api.slice('/projects/'.length);
++  return (
++    <details className="border-b px-4 py-3 text-sm" open>
++      <summary className="cursor-pointer font-medium">Reviewer queue</summary>
++      <p className="mt-1 text-xs text-muted-foreground">
++        {queue.complete ? 'Observed' : 'Partial observation'}
++        {' · '}<time dateTime={queue.observedAt}>{new Date(queue.observedAt).toLocaleString()}</time>
++      </p>
++      {queue.items.length === 0 ? (
++        <p className="py-2 text-xs text-muted-foreground">No linked PRs queued or reviewing.</p>
++      ) : (
++        <ol className="mt-2 divide-y">
++          {queue.items.map((entry) => (
++            <li className="py-2" key={entry.issueId}>
++              <Link
++                className="block truncate font-medium hover:underline"
++                href={issuePath(projectRef, entry.sequenceNumber)}
++              >
++                {entry.title}
++              </Link>
++              <p className="text-xs text-muted-foreground">
++                {entry.phase === 'reviewing' ? 'Reviewing'
++                  : entry.phase === 'quota-held' ? 'Waiting for review quota'
++                  : entry.position ? `Position ${entry.position}` : 'Waiting for a reviewer'}
++                {entry.priority && <> · {entry.priority} priority</>}
++                {' · '}PR #{entry.pullRequest}
++                {' · '}<code>{entry.head.slice(0, 12)}</code>
++              </p>
++            </li>
++          ))}
++        </ol>
++      )}
++    </details>
++  );
++}
++
+ export default function RunnerQueuePage({
+   scope,
+   children,
+@@ -55,6 +121,12 @@
+                   : t('internalInFlightNoLimit', { running: inFlight.running })}
+               </p>
+             )}
++            <a
++              href="https://github.com/jomcgi-org/homelab/tree/main/projects/factory/itsaplan-web"
++              className="text-xs text-muted-foreground underline"
++            >
++              Source code
++            </a>
+           </div>
+           <Button
+             variant="outline"
+@@ -77,6 +149,7 @@
+             <p className="px-4 text-sm text-muted-foreground">{t('queueEmpty')}</p>
+           )}
+           <RunnerQueueOfflineNotice runs={active} />
++          {scope.api.startsWith('/projects/') && <ProjectReviewBacklog api={scope.api} />}
+           {data && active.length > 0 && (
+             <section>
+               <h2 className="flex justify-between px-4 pt-3 pb-2 text-xs font-semibold text-muted-foreground">
+--- a/apps/web/src/features/runner-queue/components/RunnerQueueRunDetail.tsx
++++ b/apps/web/src/features/runner-queue/components/RunnerQueueRunDetail.tsx
+@@ -1,4 +1,6 @@
+ import { useTranslations } from 'next-intl';
++import { useQuery } from '@tanstack/react-query';
++import { ApiError, request } from '@/lib/api/core/client';
+ import type { RunnerQueueRun } from '@/lib/api/endpoints/runnerQueue';
+ import AgentRunExternalTrace from '@/components/common/agent-runs/AgentRunExternalTrace';
+ import AgentRunInternalTrace from '@/components/common/agent-runs/AgentRunInternalTrace';
+@@ -7,8 +9,30 @@
+ import RunnerQueueRunResult from './RunnerQueueRunResult';
+ import RunnerQueueRunSection from './RunnerQueueRunSection';
+
++type IssueReview = {
++  pullRequest: number;
++  head: string;
++  phase: 'queued' | 'reviewing' | 'quota-held';
++  position?: number;
++  priority?: string;
++  observedAt: string;
++};
++
+ export default function RunnerQueueRunDetail({ run }: { run: RunnerQueueRun }) {
+   const t = useTranslations('issue.agentRuns');
++  const reviewQuery = useQuery({
++    queryKey: ['factoryIssueReview', run.issueId],
++    queryFn: ({ signal }) =>
++      request<IssueReview | null>(`/issues/${run.issueId}/factory-review`, { signal }),
++    enabled: run.issueId != null && run.kind === 'external',
++    refetchInterval: ({ state: { error } }) =>
++      error instanceof ApiError && [401, 403, 404].includes(error.status) ? false : 15_000,
++    retry: false,
++  });
++  const review = reviewQuery.isError ? null : reviewQuery.data;
++  const reviewLabel = review?.phase === 'reviewing' ? 'Reviewing'
++    : review?.phase === 'quota-held' ? 'Waiting for review quota'
++    : review?.position ? `Position ${review.position} in the review queue` : 'Waiting for a reviewer';
+   const failing = run.executionState === 'failed' || run.executionState === 'queued';
+   return (
+     <article className="space-y-8">
+@@ -16,6 +40,19 @@
+         <RunnerQueueRunHeader run={run} />
+         <RunnerQueueRunFacts run={run} />
+       </div>
++      {review && (
++        <RunnerQueueRunSection title="Work item review">
++          <p className="text-sm">
++            {reviewLabel}
++            {review.priority && <> · {review.priority} priority</>}
++            {' · '}PR #{review.pullRequest}
++            {' · '}<code>{review.head.slice(0, 12)}</code>
++          </p>
++          <p className="text-xs text-muted-foreground">
++            Observed <time dateTime={review.observedAt}>{new Date(review.observedAt).toLocaleString()}</time>
++          </p>
++        </RunnerQueueRunSection>
++      )}
+       {failing && run.lastError && (
+         <RunnerQueueRunSection title={t('error')}>
+           <p className="text-[15px] whitespace-pre-wrap text-destructive" dir="auto">

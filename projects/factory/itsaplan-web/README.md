@@ -14,3 +14,6 @@ The run detail reads the issue's factory phases through the authenticated
 itsaplan API. It shows a connector phase only for the selected run and
 attempt. If the endpoint has no matching phase or the read fails, the
 detail displays the native itsaplan status.
+
+Project Agent runs also shows the reviewer queue for linked work items,
+with the observed head, scheduler position and observation time.
