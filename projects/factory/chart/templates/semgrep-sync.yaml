@@ -16,6 +16,15 @@ metadata:
 data:
   sync.py: |
     {{- .Files.Get "files/semgrep_sync.py" | nindent 4 }}
+{{- $existingClaim := false }}
+{{- if .Values.kagent.enabled }}
+{{- range .Values.kagent.extraObjects }}
+{{- if and (kindIs "map" .) (eq .kind "PersistentVolumeClaim") (eq .metadata.name "factory-semgrep-sync") (eq .metadata.namespace $ns) }}
+{{- $existingClaim = true }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if not $existingClaim }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -27,6 +36,7 @@ spec:
   resources:
     requests:
       storage: 1Mi
+{{- end }}
 ---
 apiVersion: batch/v1
 kind: CronJob

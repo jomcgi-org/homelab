@@ -643,6 +643,11 @@ def ensure_agents(session, team_id, project_id):
         raise SystemExit("coordinator is not a configured bootstrap agent")
     base = f"/teams/{team_id}/ai-agents"
     existing = {a["username"].lower(): a for a in session.call("GET", base)}
+    # invariant: FACT-14
+    if "intsec-sync" in existing and not any(
+        a["username"] == "intsec-sync" for a in CONFIG["agents"]
+    ):
+        ensure_scoped_role(session, team_id, "INTSEC sync", ("read",))
     for want in CONFIG["agents"]:
         username = want["username"]
         read_only = want.get("readOnly") is True
@@ -659,9 +664,7 @@ def ensure_agents(session, team_id, project_id):
                 raise SystemExit("INTSEC belongs to another team")
             if not any(label["name"] == "semgrep" for label in setup["labels"]):
                 session.call("POST", "/projects/INTSEC/labels", {"name": "semgrep"})
-            role_id = ensure_scoped_role(
-                session, team_id, "INTSEC sync", ("read", "create")
-            )
+            role_id = ensure_scoped_role(session, team_id, "INTSEC sync", ("read",))
         elif read_only:
             role_id = ensure_scoped_role(session, team_id, READ_ONLY_ROLE, ("read",))
         name = os.environ["AGENT_SECRET_PREFIX"] + username

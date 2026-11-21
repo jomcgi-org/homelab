@@ -332,6 +332,7 @@ test("WIP refusal rolls back; capacity returning starts once with the same key",
   expect(recovered.issue.delegateUserId).toBe(f.coder.agent.userId);
 });
 
+// invariant: FACT-14
 test("the sync key can restore and update only its own INTSEC finding", async () => {
   const owner = authedApi((await signUpTestUser()).cookie);
   const projectKey = "INTSEC";
@@ -352,7 +353,7 @@ test("the sync key can restore and update only its own INTSEC finding", async ()
   ).data!;
   const role = await owner.teams({ teamId: project.data!.teamId }).roles.post({
     name: "INTSEC sync",
-    permissions: { work_items: { read: true, create: true } },
+    permissions: { work_items: { read: true } },
   });
   expect(role.status).toBe(201);
   expect(
@@ -374,11 +375,29 @@ test("the sync key can restore and update only its own INTSEC finding", async ()
     columnId: columns.find((c) => c.stateType === "backlog")!.id,
     labelIds: [label.id],
   };
-  const own = await sync.projects({ projectKey }).issues.post(fields);
+  expect((await sync.projects({ projectKey }).issues.post(fields)).status).toBe(
+    403,
+  );
+  const createFinding = (description: string) =>
+    app.handle(
+      new Request("http://localhost/projects/INTSEC/factory-semgrep", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": agent.apiKey!,
+        },
+        body: JSON.stringify({ finding, description }),
+      }),
+    );
+  expect((await createFinding(description.padEnd(50001, "x"))).status).toBe(
+    400,
+  );
+  const own = await createFinding(description);
+  const owned = await own.json();
   const human = await setup.issues.post(fields);
   expect([own.status, human.status]).toEqual([201, 201]);
   const archivedAt = new Date();
-  for (const id of [own.data!.id, human.data!.id])
+  for (const id of [owned.id, human.data!.id])
     await db.update(issue).set({ archivedAt }).where(eq(issue.id, id));
 
   const payload = {
@@ -420,21 +439,18 @@ test("the sync key can restore and update only its own INTSEC finding", async ()
   await db
     .update(issue)
     .set({ parentId: parent.data!.id })
-    .where(eq(issue.id, own.data!.id));
+    .where(eq(issue.id, owned.id));
   const parentBefore = await effects(parent.data!.id);
-  expect((await send(own.data!.id)).status).toBe(409);
+  expect((await send(owned.id)).status).toBe(409);
   expect(await effects(parent.data!.id)).toEqual(parentBefore);
-  await db
-    .update(issue)
-    .set({ parentId: null })
-    .where(eq(issue.id, own.data!.id));
+  await db.update(issue).set({ parentId: null }).where(eq(issue.id, owned.id));
   await setSubtaskAutomationSettings(project.data!.id, {
     completeParent: false,
     closeSubtasks: false,
   });
 
-  expect((await send(own.data!.id)).status).toBe(200);
-  expect((await effects(own.data!.id)).issue).toMatchObject({
+  expect((await send(owned.id)).status).toBe(200);
+  expect((await effects(owned.id)).issue).toMatchObject({
     archivedAt: null,
     title: payload.title,
     description: payload.description,

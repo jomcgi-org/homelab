@@ -10,11 +10,13 @@ import { assertPermission } from "./shared/access";
 import { authContext } from "./shared/auth-context";
 import { HttpError, errorAnswer } from "./shared/lib";
 import {
+  createIssue,
   getIssue,
   getIssueProjectId,
   updateIssue,
   restoreIssue,
 } from "./modules/issues/service";
+import { ISSUE_TEXT_LIMIT } from "./modules/issues/model";
 import { createComment } from "./modules/issues/activity";
 import { getAssignTriggerAgent } from "./modules/agents/core/service";
 import { startDeferred, type DeferredStart as Start } from "./factory-deferred";
@@ -317,6 +319,46 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
       body: t.Object({ head: t.String({ pattern: "^[0-9a-f]{40}$" }) }),
     },
   )
+  .post(
+    // invariant: FACT-14
+    "/projects/:projectKey/factory-semgrep",
+    async ({ project, user, body, set }) => {
+      if (process.env.FACTORY_INTSEC_SYNC !== "true")
+        throw new HttpError(404, "Sync disabled");
+      const actor = user!.id;
+      const scope = await db.execute<{ labelId: number; columnId: number }>(sql`
+        select l.id as "labelId", c.id as "columnId" from ai_agent a
+        join label l on l.project_id = ${project.id} and l.name = 'semgrep'
+        join project_column c on c.project_id = l.project_id and c.state_type = 'backlog'
+        where a.team_id = ${project.teamId} and a.username = 'intsec-sync'
+          and a.user_id = ${actor} and ${project.key}::text = 'INTSEC'
+        order by c.position, c.id limit 1
+      `);
+      if (!scope.length) throw new HttpError(403, "Sync scope required");
+      if (!body.description.startsWith(`Semgrep finding ID: ${body.finding}\n`))
+        throw conflict("Invalid finding identity");
+      set.status = 201;
+      return createIssue(
+        project,
+        {
+          title: `Semgrep ${body.finding}`,
+          description: body.description,
+          columnId: scope[0].columnId,
+          labelIds: [scope[0].labelId],
+        },
+        actor,
+      );
+    },
+    {
+      permission: ["work_items", "read"],
+      body: t.Object({
+        finding: t.String({
+          pattern: "^((sast|sca)/[0-9]+|secrets/[A-Za-z0-9._~%-]+)$",
+        }),
+        description: t.String({ maxLength: ISSUE_TEXT_LIMIT }),
+      }),
+    },
+  )
   .patch(
     "/issues/:issueId/factory-semgrep",
     async ({ params, body, user, projectId }) => {
@@ -376,7 +418,7 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
       });
     },
     {
-      workItem: "create",
+      workItem: "read",
       params: t.Object({ issueId: t.Numeric({ minimum: 1 }) }),
       body: t.Object({
         finding: t.String({
