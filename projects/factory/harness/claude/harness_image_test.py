@@ -74,6 +74,7 @@ def test_image_runs_the_factory_mandoline_command() -> None:
         ).stderr
     assert "-commit string" in out
     assert "-base string" not in out
+    assert "<audit|surface>" in out
 
 
 def test_base_digest_matches_the_claude_harness_kagent_runs() -> None:

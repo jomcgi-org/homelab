@@ -4,6 +4,7 @@ go_library(
     name = "mandoline",
     srcs = [
         "cache.go",
+        "packs.go",
         "process.go",
         "runner.go",
     ],
