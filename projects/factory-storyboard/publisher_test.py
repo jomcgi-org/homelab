@@ -59,6 +59,7 @@ def test_redaction_and_whole_turn_withholding():
     ]
 
 
+# invariant: STORYBOARD-1
 def test_commit_and_retention():
     s3 = Mock()
     now = datetime.now(UTC)
