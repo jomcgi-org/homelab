@@ -51,3 +51,7 @@ spec:
       app.kubernetes.io/name: hindsight-keys
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP

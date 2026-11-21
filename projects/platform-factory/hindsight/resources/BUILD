@@ -33,3 +33,8 @@ filegroup(
     ],
     visibility = ["//projects/platform-factory/hindsight:__pkg__"],
 )
+
+exports_files(
+    ["network-policy.yaml"],
+    visibility = ["//projects/platform-factory/network-policy/tests:__pkg__"],
+)

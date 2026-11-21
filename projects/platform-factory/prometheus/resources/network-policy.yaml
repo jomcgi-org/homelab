@@ -43,6 +43,10 @@ spec:
   egress:
     # Node and pod discovery.
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     # Host-network targets on every node: the kubelets, the Cilium agents,
     # Hubble and the Cilium operators.
     - toEntities: [host, remote-node]
@@ -193,6 +197,10 @@ spec:
               protocol: TCP
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy

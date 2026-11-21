@@ -349,7 +349,10 @@ def test_controller_admits_only_bearer_paths() -> None:
     substrate = "ate-system"
     ns = "k8s:io.kubernetes.pod.namespace"
     assert spec["egress"] == [
-        {"toEntities": ["kube-apiserver"]},
+        {
+            "toEntities": ["kube-apiserver"],
+            "toPorts": [{"ports": [{"port": "6443", "protocol": "TCP"}]}],
+        },
         to([controller], "8083"),
         to([{ns: substrate, "app": "ate-api-server"}], "443"),
         to(
@@ -689,7 +692,10 @@ def test_broker_policy() -> None:
             ],
             "toPorts": [{"ports": [{"port": "5432", "protocol": "TCP"}]}],
         },
-        {"toEntities": ["kube-apiserver"]},
+        {
+            "toEntities": ["kube-apiserver"],
+            "toPorts": [{"ports": [{"port": "6443", "protocol": "TCP"}]}],
+        },
         {
             "toEndpoints": [
                 {"matchLabels": {ns: "ate-system", "app": "ate-idp-server"}}

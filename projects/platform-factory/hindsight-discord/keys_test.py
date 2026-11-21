@@ -249,7 +249,12 @@ def test_network_allows_only_discord_database_and_openrouter():
     assert key_policy["spec"]["endpointSelector"] == {
         "matchLabels": {"app.kubernetes.io/name": "hindsight-keys"}
     }
-    assert key_policy["spec"]["egress"] == [{"toEntities": ["kube-apiserver"]}]
+    assert key_policy["spec"]["egress"] == [
+        {
+            "toEntities": ["kube-apiserver"],
+            "toPorts": [{"ports": [{"port": "6443", "protocol": "TCP"}]}],
+        }
+    ]
     (client,) = read("discord/network-policy.yaml")
     assert client["metadata"]["namespace"] == "factory-discord"
     assert client["spec"] == {
