@@ -351,16 +351,24 @@ func TestGoalReplyGoesToTicketAndWaitsForFreshReview(t *testing.T) {
 		t.Fatal("PR queued with private feedback for another reply")
 	}
 	goal.replyRevision = revision
-	v.gh.check(head, "semgrep-review", 200, "failure")
-	v.gh.summarize(head, "semgrep-review", itsaplan.GoalReplyReviewed(goal.replyRevision))
+	v.goalFindingCheck(head)
+	v.gh.summarize(head, "semgrep-review", "- **medium** HL-7 criterion 2: not met (`HL-7:goal:criterion-2`)\n"+itsaplan.GoalReplyReviewed(revision))
+	v.poll()
 	v.poll()
 	if v.gh.queued(1) {
 		t.Fatal("failed review reached the merge queue")
 	}
+	rounds := v.rounds()
+	if len(rounds) != 2 || !strings.Contains(rounds[1].Prompt, "Verified criterion 2.") {
+		t.Fatal("the rejected reply's reasons did not reach the next review round")
+	}
+	feedback := 0
 	for _, c := range v.its.Comments() {
 		if strings.Contains(c.body, "at head "+head) && strings.Contains(c.body, "Verified criterion 2.") {
-			return
+			feedback++
 		}
 	}
-	t.Fatal("reviewer did not reply on the ticket for the new head")
+	if feedback != 1 {
+		t.Fatalf("reviewer feedback comments = %d, want 1 for the reviewed reply", feedback)
+	}
 }
