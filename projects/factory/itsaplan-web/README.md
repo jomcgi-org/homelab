@@ -7,7 +7,10 @@ is pinned to v1.10.0 in the root Bazel module.
 Bazel applies [the Next.js security patch](next-security.patch) before
 installing the web dependencies from the lockfile. [The build](build.sh)
 then applies [the Agent runs patch](run-phases.patch) and packages the
-standalone Next.js output. Build the image with
+standalone Next.js output. The patched source and lockfile set the Next.js
+build ID. The package uses the image path in its runtime configuration and
+disables Next.js Draft Mode credentials. The build fails if upstream adds
+Server Actions that require a private encryption key. Build the image with
 `bazel build //projects/factory/itsaplan-web:image`.
 
 The run detail reads the issue's factory phases through the authenticated

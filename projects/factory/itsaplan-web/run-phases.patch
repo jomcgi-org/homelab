@@ -151,3 +151,16 @@
      await act(async () => {
        client
          .getQueryCache()
+diff --git a/apps/web/next.config.ts b/apps/web/next.config.ts
+--- a/apps/web/next.config.ts
++++ b/apps/web/next.config.ts
+@@ -31,6 +31,9 @@
+ const nextConfig: NextConfig = {
+   // standalone build for a lean docker image.
+   output: 'standalone',
++  ...(process.env.ITSAPLAN_FACTORY_BUILD_ID
++    ? { generateBuildId: async () => process.env.ITSAPLAN_FACTORY_BUILD_ID! }
++    : {}),
+   poweredByHeader: false,
+   // No page may be framed, except the public ones (/share, /p) on the sites the instance
+   // owner trusts: src/proxy.ts decides those per request.
