@@ -714,12 +714,21 @@ func exposureStatements(text string) []string {
 // public finding. The goal check judges whether the statement applies.
 func plainExposure(line string, f Finding) bool {
 	statement := strings.ToLower(line)
-	description := strings.ToLower(f.Title + " " + f.Detail)
+	// Read the entire object from a simple subject-verb-object title.
+	// Details can discuss other data, including backups that must survive.
+	actor, predicate, ok := strings.Cut(strings.ToLower(strings.TrimSuffix(f.Title, ".")), " ")
+	if !ok || actor == "" {
+		return false
+	}
+	verb, object, ok := strings.Cut(predicate, " ")
+	if !ok || (verb != "deletes" && verb != "removes") {
+		return false
+	}
+	object = strings.TrimPrefix(object, "the ")
 	for _, prefix := range []string{"this deletes ", "this removes ", "delete ", "permanently delete "} {
 		if subject, ok := strings.CutPrefix(statement, prefix); ok {
 			subject = strings.TrimPrefix(subject, "the ")
-			return subject != "" && strings.Contains(description, subject) &&
-				(strings.Contains(description, "delet") || strings.Contains(description, "loss") || strings.Contains(description, "remov") || strings.Contains(description, "lost"))
+			return subject != "" && subject == object
 		}
 	}
 	return false
@@ -743,7 +752,7 @@ func publicationRequest(line, resource string) bool {
 	}
 	line = strings.ToLower(line)
 	for _, name := range []string{resource, "the " + resource} {
-		for _, statement := range []string{"make " + name + " public", "publish " + name, "expose " + name + " to the internet", "allow public access to " + name, name + " is publicly accessible"} {
+		for _, statement := range []string{"make " + name + " public", "publish " + name + " publicly", "expose " + name + " to the internet", "allow public access to " + name, name + " is publicly accessible"} {
 			if line == statement {
 				return true
 			}

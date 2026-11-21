@@ -1150,6 +1150,8 @@ func TestPublicationAcknowledgmentBindsResource(t *testing.T) {
 		want        bool
 	}{
 		{"Dashboard", "Make it public.", true},
+		{"Signed-in dashboard", "Require sign-in.\n\nPublish the dashboard.", false},
+		{"Dashboard", "Publish the dashboard publicly.", true},
 		{"Publish a status page", "Status page.\n\nMake it public.", false},
 		{"Publish a status page", "Expose the dashboard to the internet.", true},
 		{"Dashboard", "Make it public.\n\nSee the account export.", false},
@@ -1159,6 +1161,21 @@ func TestPublicationAcknowledgmentBindsResource(t *testing.T) {
 		got := acknowledgedExposures(in, candidates, []string{dashboard.ID, export.ID})
 		if _, ok := got[dashboard.ID]; ok != tc.want || got[export.ID] != "" {
 			t.Errorf("%q / %q: %v", tc.title, tc.body, got)
+		}
+	}
+}
+
+func TestDeletionAcknowledgmentBindsWholeObject(t *testing.T) {
+	data := Finding{ID: "migration:unverified:exposure", Severity: SeverityMedium, Title: "Migration deletes old data"}
+	backups := Finding{ID: "backup:unverified:exposure", Severity: SeverityMedium, Title: "Migration deletes old data backups", Detail: "The migration deletes old data."}
+	candidates := []Finding{data, backups}
+	for _, tc := range []struct{ request, want string }{
+		{"Delete the old data.", data.ID}, {"This deletes the old data backups.", backups.ID},
+	} {
+		in := &IssueContext{Issue: &IssueEvidence{Trusted: true, Description: tc.request}}
+		accepted := acknowledgedExposures(in, candidates, []string{data.ID, backups.ID})
+		if len(accepted) != 1 || accepted[tc.want] == "" {
+			t.Errorf("%q accepted %v", tc.request, accepted)
 		}
 	}
 }
