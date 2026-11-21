@@ -80,8 +80,13 @@ objects (B bytes); M referenced objects missing`.
 
 ### Check a run
 
-Run the check on the factory. It reads every object of the newest complete
-run and compares it with `SHA256SUMS`:
+The one-time `grimoire-migration-check-home-746` Job uses the same pod
+template as the suspended CronJob. Argo CD creates the named Job on sync.
+Read its logs for the export run ID, matched checksum count and
+missing-reference count before starting the restore.
+
+For a later run, start the suspended CronJob's template on demand. It reads
+every object of the newest complete run and compares it with `SHA256SUMS`:
 
 ```sh
 job=grimoire-migration-check-$(date -u +%Y%m%d%H%M%S)
