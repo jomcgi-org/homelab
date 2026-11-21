@@ -128,6 +128,7 @@ authentik:
   additionalObjects: []
 
 cnpg:
+  priorityClassName: factory-platform
   instances: 3
   annotations:
     # After authentik-pg-wait-for-key (wave -1). Keeping the Cluster also

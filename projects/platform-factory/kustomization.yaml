@@ -4,6 +4,7 @@ kind: Kustomization
 # One Application per shared component on the factory home cluster
 # (projects/factory-cluster/README.md).
 resources:
+  - priority/priority-class.yaml
   - ./cilium # CNI, kube-proxy replacement and policy engine; bootstrap-gitops.sh installs it first
   - ./network-policy # Cluster-wide default-deny baseline and per-namespace allowlists
   - ./argocd # In-cluster ArgoCD adopts the installation bootstrap-gitops.sh made

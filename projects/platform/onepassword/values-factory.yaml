@@ -17,6 +17,7 @@ connect:
         limits:
           memory: 64Mi
   operator:
+    priorityClassName: factory-platform
     resources:
       requests:
         memory: 64Mi

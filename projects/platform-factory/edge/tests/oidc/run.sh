@@ -8,6 +8,7 @@ namespaces=(edge kagent factory-landing argocd factory grafana)
 for ns in "${namespaces[@]}"; do kubectl create namespace "$ns"; done
 
 # Use the CRDs and controller shipped with the edge chart.
+kubectl apply -f "$projects/platform-factory/priority/priority-class.yaml"
 helm template crds "$chart"/charts/gateway-crds-helm-*.tgz --set crds.gatewayAPI.enabled=true --set crds.envoyGateway.enabled=true | kubectl apply --server-side -f -
 # Exercise the production RoleBindings against the API server's authorizer.
 kubectl apply -f "$projects/platform-factory/kube-access/resources/sessions.yaml"
@@ -15,7 +16,8 @@ bash "$projects/platform-factory/kube-access/check-session-access.sh" \
 	--as=oidc-test-session --as-group=authentik:factory-kube-sessions
 
 helm install edge "$chart"/charts/gateway-helm-*.tgz -n edge --skip-crds --wait \
-	--set crds.enabled=false --set config.envoyGateway.provider.type=Kubernetes \
+	--set crds.enabled=false --set deployment.priorityClassName=factory-platform \
+	--set config.envoyGateway.provider.type=Kubernetes \
 	--set config.envoyGateway.provider.kubernetes.deploy.type=GatewayNamespace
 
 tmp=$(mktemp -d)
