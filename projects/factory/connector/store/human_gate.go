@@ -13,7 +13,7 @@ type HumanGatePoll struct {
 	PolledAt   time.Time
 }
 
-// invariant: FACT-13
+// invariant: FACT-14
 
 // HumanGateWork includes active revisions and stopped deliveries. Canceled
 // gate issues stay eligible so reopening a PR is observed even after delivery
