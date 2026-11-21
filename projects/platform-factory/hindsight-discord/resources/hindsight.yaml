@@ -44,6 +44,7 @@ spec:
   template:
     metadata:
       labels:
+        factory.jomcgi.dev/garage-client: "true"
         app.kubernetes.io/name: hindsight
         app.kubernetes.io/component: api
     spec:
@@ -68,6 +69,27 @@ spec:
             - name: http
               containerPort: 8888
           env:
+            # invariant: PLAT-14
+            - name: HINDSIGHT_API_LLM_VISION
+              value: "true"
+            - name: HINDSIGHT_API_FILE_STORAGE_TYPE
+              value: "s3"
+            - name: HINDSIGHT_API_FILE_STORAGE_S3_BUCKET
+              value: "discord-media"
+            - name: HINDSIGHT_API_FILE_STORAGE_S3_REGION
+              value: "garage"
+            - name: HINDSIGHT_API_FILE_STORAGE_S3_ENDPOINT
+              value: "http://garage.garage.svc:3900"
+            - name: HINDSIGHT_API_FILE_STORAGE_S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: discord-media-s3
+                  key: AWS_ACCESS_KEY_ID
+            - name: HINDSIGHT_API_FILE_STORAGE_S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: discord-media-s3
+                  key: AWS_SECRET_ACCESS_KEY
             - name: HINDSIGHT_API_PORT
               value: "8888"
             - name: HINDSIGHT_API_DATABASE_URL
@@ -79,7 +101,9 @@ spec:
             - name: HINDSIGHT_API_LLM_PROVIDER
               value: openai
             - name: HINDSIGHT_API_LLM_MODEL
-              value: deepseek/deepseek-v4.1-flash-1017
+              value: openai/gpt-4.1-mini
+            - name: HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS
+              value: "32768"
             - name: HINDSIGHT_API_LLM_BASE_URL
               valueFrom:
                 secretKeyRef:

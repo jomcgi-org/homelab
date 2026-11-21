@@ -18,6 +18,7 @@ filegroup(
         "network-policy.yaml",
         "preflight.py",
         "secrets.yaml",
+        "storage.yaml",
     ],
     visibility = ["//projects/platform-factory/hindsight-discord:__pkg__"],
 )

@@ -175,19 +175,49 @@ def test_consumer_waits_for_its_application_and_repairs_a_stale_copy(keys, monke
     script.secrets.token_hex.assert_called_once_with(32)
 
 
-def test_only_the_dedicated_llm_and_tenant_credentials_reach_the_api():
-    deployment = next(
-        d for d in read("resources/hindsight.yaml") if d["kind"] == "Deployment"
-    )
+def test_api_storage_model_and_credentials(rendered):
+    deployment = next(d for d in rendered if d["kind"] == "Deployment")
     pod = deployment["spec"]["template"]["spec"]
     (container,) = pod["containers"]
     env = {e["name"]: e.get("value", e.get("valueFrom")) for e in container["env"]}
+    claim = next(
+        d
+        for d in rendered
+        if d["kind"] == "ConfigMap"
+        and d["metadata"]["name"].startswith("garage-claim-")
+    )
+    assert claim["metadata"]["namespace"] == "garage"
+    assert claim["data"] == {
+        "namespace": "hindsight-discord",
+        "secretName": "discord-media-s3",
+        "bucket": "discord-media",
+        "access": "readwrite",
+    }
+    assert (
+        deployment["spec"]["template"]["metadata"]["labels"][
+            "factory.jomcgi.dev/garage-client"
+        ]
+        == "true"
+    )
+    assert env["HINDSIGHT_API_FILE_STORAGE_TYPE"] == "s3"
+    assert env["HINDSIGHT_API_FILE_STORAGE_S3_BUCKET"] == claim["data"]["bucket"]
+    assert env["HINDSIGHT_API_FILE_STORAGE_S3_REGION"] == "garage"
+    assert (
+        env["HINDSIGHT_API_FILE_STORAGE_S3_ENDPOINT"] == "http://garage.garage.svc:3900"
+    )
+    assert env["HINDSIGHT_API_LLM_VISION"] == "true"
     assert env["HINDSIGHT_API_LLM_PROVIDER"] == "openai"
-    assert env["HINDSIGHT_API_LLM_MODEL"] == "deepseek/deepseek-v4.1-flash-1017"
+    assert env["HINDSIGHT_API_LLM_MODEL"] == "openai/gpt-4.1-mini"
     assert env["HINDSIGHT_API_MCP_ENABLED"] == "false"
     assert "HINDSIGHT_API_MCP_AUTH_TOKEN" not in env
     assert "HINDSIGHT_API_SKIP_LLM_VERIFICATION" not in env
     for variable, secret, key in (
+        ("FILE_STORAGE_S3_ACCESS_KEY_ID", "discord-media-s3", "AWS_ACCESS_KEY_ID"),
+        (
+            "FILE_STORAGE_S3_SECRET_ACCESS_KEY",
+            "discord-media-s3",
+            "AWS_SECRET_ACCESS_KEY",
+        ),
         ("LLM_API_KEY", "hindsight-openrouter", "api-key"),
         ("LLM_BASE_URL", "hindsight-openrouter", "base-url"),
         ("TENANT_API_KEY", "hindsight-keys", "tenant-api-key"),
@@ -210,8 +240,11 @@ def test_only_the_dedicated_llm_and_tenant_credentials_reach_the_api():
     assert container["securityContext"]["allowPrivilegeEscalation"] is False
 
 
-def test_network_allows_only_discord_database_and_openrouter():
-    policy, key_policy = read("resources/network-policy.yaml")
+def test_network_allows_only_bridge_database_garage_and_openrouter(rendered):
+    policies = {
+        d["metadata"]["name"]: d for d in rendered if d["kind"] == "CiliumNetworkPolicy"
+    }
+    policy, key_policy = policies["hindsight"], policies["hindsight-keys"]
     assert policy["metadata"]["namespace"] == "hindsight-discord"
     assert policy["spec"]["endpointSelector"] == {
         "matchLabels": {"app.kubernetes.io/name": "hindsight"}
@@ -240,6 +273,17 @@ def test_network_allows_only_discord_database_and_openrouter():
                 }
             ],
             "toPorts": [{"ports": [{"port": "5432", "protocol": "TCP"}]}],
+        },
+        {
+            "toEndpoints": [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "garage",
+                        "app.kubernetes.io/name": "garage",
+                    }
+                }
+            ],
+            "toPorts": [{"ports": [{"port": "3900", "protocol": "TCP"}]}],
         },
         {
             "toFQDNs": [{"matchName": "openrouter.ai"}],
@@ -274,7 +318,11 @@ def test_network_allows_only_discord_database_and_openrouter():
 
 def test_argo_preserves_keys_and_jobs_use_the_tested_modes():
     for path, namespace, names in (
-        ("application.yaml", "hindsight-discord", {"hindsight-keys", "hindsight-db"}),
+        (
+            "application.yaml",
+            "hindsight-discord",
+            {"hindsight-keys", "hindsight-db", "discord-media-s3"},
+        ),
         ("application-discord.yaml", "factory-discord", {"hindsight-discord-key"}),
     ):
         (application,) = read(path)
@@ -375,6 +423,8 @@ def test_models_are_the_factory_hindsight_models_on_the_dedicated_key():
         if isinstance(v, dict) and "secretKeyRef" in v
     }
     assert secret_refs == {
+        ("discord-media-s3", "AWS_ACCESS_KEY_ID"),
+        ("discord-media-s3", "AWS_SECRET_ACCESS_KEY"),
         ("hindsight-openrouter", "api-key"),
         ("hindsight-openrouter", "base-url"),
         ("hindsight-keys", "tenant-api-key"),
