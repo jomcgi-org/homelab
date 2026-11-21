@@ -73,3 +73,9 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: A planner schedule starts at most one session per itsaplan run and only after database admission.
+  mechanism:
+  - projects/factory/connector/dispatch/planner.go
+  test: //projects/factory/connector/dispatch:dispatch_test
+  state: live

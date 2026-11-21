@@ -106,6 +106,10 @@ GitHub tokens the broker mints for that ServiceAccount.
 {{- fail (printf "connector.bindings.%s names no repository in repositories" $k) }}
 {{- end }}
 {{- end }}
+{{- if and .Values.reviewer.enabled $c.plannerSchedules }}
+{{- $keys = append $keys "homelab-planner" }}
+{{- $agents = append $agents (dict "key" "homelab-planner" "apiKeyFile" (include "factory.connectorKeyPath" "homelab-planner") "concurrency" 1) }}
+{{- end }}
 {{- $links := deepCopy $c.links }}
 {{- if not $links.issue }}
 {{- /* itsaplan's /issue/:issueId deep link redirects to the issue's page. */}}

@@ -80,6 +80,11 @@ credentialProvider:
       secretSelector:
         matchLabels:
           substrate.ate.dev/injectable: "true"
+    - atespace: factory-r-homelab-planner
+      allowedNamespaces: [factory-r-homelab-planner]
+      secretSelector:
+        matchLabels:
+          substrate.ate.dev/injectable: "true"
     # The Discord bot's Agent (projects/factory/chart, discord.agent): its
     # dedicated OpenRouter key only.
     - atespace: factory-discord-agent

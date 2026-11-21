@@ -1,0 +1,7 @@
+1. projects/factory/connector/dispatch/engine.go routes homelab-planner claims into plannerSession in dispatch/planner.go. TestPlannerScheduleAdmissionAndReplay exercises the refused claim and checks the send count.
+
+2. projects/factory/deploy/application.yaml requires the deployment values; the pinned chart extends the kagent watch and RBAC scope in templates/configure/kagent/controller/rbac/scope.yaml. In projects/factory/chart/connector_test.py, test_controller_watches_and_reconciles_planner_namespace checks the production controller configuration, both controller RoleBindings and the Agent in that namespace. In reviewer_test.py, test_planner_agent_has_only_git_egress_and_no_tools checks the Agent and broker Secret role. templates/broker.yaml assigns the namespace to reviewBindings, whose GitHub agent token permissions are restricted to read access in projects/factory/broker/config/config.go. TestPlannerScheduleAdmissionAndReplay checks the Agent reference and empty context ID on the initial send.
+
+3. TestPlannerScheduleAdmissionAndReplay verifies the stored final message and a single send after redelivery. TestPlannerStopAfterDispatch exercises recovery after a lost acknowledgement.
+
+4. Run //projects/factory/connector/dispatch:dispatch_test and the factory chart connector and reviewer pytest suites. Finding 13 in projects/factory/ARCHITECTURE.md describes Core cron support.
