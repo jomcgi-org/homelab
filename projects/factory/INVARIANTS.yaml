@@ -73,3 +73,8 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: Each browser comparison trial starts a fresh session and verifies descendant cleanup before reporting success.
+  mechanism:
+  - projects/factory/browser-comparison/compare.py
+  state: unproven
