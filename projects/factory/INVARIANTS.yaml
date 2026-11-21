@@ -73,3 +73,9 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: With agent path enforcement enabled, the Discord bridge may only POST to Bosun's A2A path on the kagent controller.
+  mechanism:
+  - projects/factory/chart/templates/discord.yaml
+  test: //projects/factory/chart:chart_test
+  state: live

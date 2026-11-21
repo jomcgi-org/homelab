@@ -1,3 +1,4 @@
+{{- /* invariant: FACT-14 */ -}}
 {{- /*
 The Discord bot (HOME-162). The Agent lives in its own namespace and
 atespace, apart from every factory binding; the bridge lives in
@@ -400,6 +401,12 @@ spec:
         - ports:
             - port: {{ .Values.kagent.controller.service.ports.targetPort | default 8083 | quote }}
               protocol: TCP
+          {{- if $b.enforceAgentPath }}
+          rules:
+            http:
+              - method: POST
+                path: {{ printf "^/agents/%s/%s$" (regexQuoteMeta $d.agent.namespace) (regexQuoteMeta $d.agent.name) | quote }}
+          {{- end }}
 {{- end }}
 {{- end }}
 {{- if and $d.bridge.enabled $d.import.enabled }}

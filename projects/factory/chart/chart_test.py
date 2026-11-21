@@ -1200,8 +1200,16 @@ def test_discord_agent_uses_only_the_dedicated_key_and_has_no_tools() -> None:
     )
 
 
+def test_discord_bridge_staging_and_session_expiration() -> None:
+    docs = _render(_DISCORD + ["discord.bridge.enforceAgentPath=false"])
+    policy = _in(docs, "CiliumNetworkPolicy", "factory-discord", "discord-bridge")
+    assert "rules" not in policy["spec"]["egress"][3]["toPorts"][0]
+    config = _one(docs, "ConfigMap", "kagent-controller")["data"]["controller.yaml"]
+    assert yaml.safe_load(config)["sessions"]["idleTtl"] == "604800s"
+
+
 def test_discord_bridge_reaches_only_discord_its_memory_and_its_agent() -> None:
-    docs = _render(_DISCORD)
+    docs = _render(_DISCORD + ["discord.bridge.enforceAgentPath=true"])
     ns = "factory-discord"
     deploy = _in(docs, "Deployment", ns, "discord-bridge")
     pod = deploy["spec"]["template"]
@@ -1265,6 +1273,16 @@ def test_discord_bridge_reaches_only_discord_its_memory_and_its_agent() -> None:
         for rule in egress["egress"]
     ]
     assert ports == [["443"], ["8888"], ["8082"], ["8083"]]
+    assert egress["egress"][3]["toPorts"] == [
+        {
+            "ports": [{"port": "8083", "protocol": "TCP"}],
+            "rules": {
+                "http": [
+                    {"method": "POST", "path": "^/agents/factory-discord-agent/bosun$"}
+                ]
+            },
+        }
+    ]
     controller = _in(docs, "CiliumNetworkPolicy", "kagent", "kagent-controller")
     admitted = [
         m["matchLabels"] for m in controller["spec"]["ingress"][0]["fromEndpoints"]
