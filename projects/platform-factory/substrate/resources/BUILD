@@ -12,9 +12,9 @@ py_venv_binary(
     name = "render_egress_gateway",
     srcs = ["render_egress_gateway.py"],
     data = [
+        "atenet-egress-config.yaml",
         "egress-scan/gateway-patch.yaml",
         "egress-scan/gateway-policy.yaml",
-        "upstream/substrate/atenet-egress.yaml",
     ],
     main = "render_egress_gateway.py",
     visibility = ["//:__subpackages__"],

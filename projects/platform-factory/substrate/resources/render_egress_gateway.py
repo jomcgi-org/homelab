@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the opt-in gateway patch from the pinned upstream ConfigMap."""
+"""Generate the opt-in gateway patch from the private receiver gateway configuration."""
 
 import sys
 from pathlib import Path
@@ -23,21 +23,14 @@ Dumper.add_representer(
 )
 
 HERE = Path(__file__).resolve().parent
-SOURCE = HERE / "upstream" / "substrate" / "atenet-egress.yaml"
+SOURCE = HERE / "atenet-egress-config.yaml"
 PILOT = HERE / "egress-scan"
 POLICY = PILOT / "gateway-policy.yaml"
 PATCH = PILOT / "gateway-patch.yaml"
 
 
 def gateway_patch(source, scanner_policy):
-    (gateway,) = (
-        doc
-        for doc in yaml.safe_load_all(source)
-        if doc
-        and doc["kind"] == "ConfigMap"
-        and doc["metadata"]["name"] == "atenet-egress-agentgateway-config"
-    )
-    config = yaml.safe_load(gateway["data"]["config.yaml"])
+    config = yaml.safe_load(source)
     (listener,) = (
         listener
         for bind in config["binds"]
@@ -53,8 +46,8 @@ def gateway_patch(source, scanner_policy):
         "apiVersion": "v1",
         "kind": "ConfigMap",
         "metadata": {
-            "name": gateway["metadata"]["name"],
-            "namespace": gateway["metadata"]["namespace"],
+            "name": "atenet-egress-guard-config",
+            "namespace": "ate-system",
             "annotations": {"argocd.argoproj.io/sync-wave": "1"},
         },
         "data": {
