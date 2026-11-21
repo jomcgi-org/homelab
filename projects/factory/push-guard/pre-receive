@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""Hook for a private staging receiver with a trusted Mandoline fingerprint index."""
+
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+STRIDE = 16384
+WINDOW = 192
+PREFIX = 8
+MAX_BLOB = 1024 * 1024
+
+
+def fingerprint(files):
+    # Only the short lookup prefix is reversible. Keep the index private.
+    anchors = set()
+    for path in files:
+        with open(path, "rb") as source:
+            if os.fstat(source.fileno()).st_size < WINDOW + 2:
+                raise ValueError("incomplete reference file")
+            while block := source.read(STRIDE):
+                if len(block) < WINDOW + 2:
+                    continue
+                raw = block[:WINDOW]
+                variants = [raw, raw.hex().encode(), raw.hex().upper().encode()]
+                for offset in range(3):
+                    part = block[offset : offset + WINDOW]
+                    variants.extend(
+                        (base64.b64encode(part), base64.urlsafe_b64encode(part))
+                    )
+                for sample in variants:
+                    anchors.add(
+                        (
+                            sample[:PREFIX].hex(),
+                            len(sample),
+                            hashlib.sha256(sample).hexdigest(),
+                        )
+                    )
+    if not anchors:
+        raise ValueError("empty reference index")
+    return sorted(anchors)
+
+
+def matches(data, index):
+    for pos in range(len(data) - PREFIX + 1):
+        candidates = index.get(data[pos : pos + PREFIX])
+        if candidates:
+            for length, digest in candidates:
+                if hashlib.sha256(data[pos : pos + length]).digest() == digest:
+                    return True
+    return False
+
+
+def git(*args, **kwargs):
+    return subprocess.check_output(["git", "--no-replace-objects", *args], **kwargs)
+
+
+def inspect():
+    index = {}
+    for prefix, length, digest in json.loads(
+        Path(os.environ["MANDOLINE_INDEX"]).read_bytes()
+    ):
+        index.setdefault(bytes.fromhex(prefix), set()).add(
+            (length, bytes.fromhex(digest))
+        )
+    if not index:
+        raise ValueError("empty reference index")
+    updates = [line.split() for line in sys.stdin.buffer]
+    tips = []
+    leases = []
+    refspecs = []
+    for old, new, ref in updates:
+        if not ref.startswith(b"refs/heads/factory/"):
+            raise ValueError("expected a factory work branch")
+        previous = old if old.strip(b"0") else b""
+        target = new if new.strip(b"0") else b""
+        if target:
+            tips.append(target)
+        leases.append(b"--force-with-lease=" + ref + b":" + previous)
+        refspecs.append(target + b":" + ref)
+    objects = git(
+        "rev-list",
+        "--objects",
+        "--no-object-names",
+        "--stdin",
+        "--not",
+        "--all",
+        input=b"".join(tip + b"\n" for tip in tips),
+    )
+    # Optional receiver-owned list of exact SHA-256 content digests.
+    allowlist_path = os.environ.get("PUSH_SIZE_ALLOWLIST")
+    allowed = set(Path(allowlist_path).read_text().split()) if allowlist_path else set()
+    for row in git("cat-file", "--batch-check", input=objects).splitlines():
+        oid, kind, size = row.split()
+        if kind != b"blob":
+            continue
+        oversized = int(size) > MAX_BLOB
+        if oversized and not allowed:
+            raise ValueError("blob exceeds 1 MiB")
+        digest = hashlib.sha256()
+        raw_tail = compact_tail = b""
+        # Carry both representations across reads, including wrapped base64.
+        overlap = 2 * WINDOW - 1
+        with subprocess.Popen(
+            ["git", "--no-replace-objects", "cat-file", "blob", oid],
+            stdout=subprocess.PIPE,
+        ) as reader:
+            while block := reader.stdout.read(65536):
+                digest.update(block)
+                raw = raw_tail + block
+                compact = compact_tail + b"".join(block.split())
+                if matches(raw, index) or (compact != raw and matches(compact, index)):
+                    reader.stdout.close()
+                    raise ValueError("protected content")
+                raw_tail, compact_tail = raw[-overlap:], compact[-overlap:]
+            if reader.wait():
+                raise ValueError("cannot read blob")
+        if oversized and digest.hexdigest() not in allowed:
+            raise ValueError("blob exceeds 1 MiB")
+
+    # Repack from validated object IDs. The guest's incoming pack can contain
+    # unrelated objects and must never be relayed verbatim.
+    git(
+        "push",
+        *(["--atomic"] if len(updates) > 1 else []),
+        "--no-follow-tags",
+        *leases,
+        "--",
+        os.environ["PUSH_UPSTREAM"],
+        *refspecs,
+    )
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 4 and sys.argv[1] == "--index":
+        json.dump(fingerprint(sys.argv[2:]), sys.stdout)
+    else:
+        try:
+            inspect()
+        except Exception as error:
+            sys.exit(f"push rejected ({error})")

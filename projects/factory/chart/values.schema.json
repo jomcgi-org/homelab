@@ -1097,6 +1097,10 @@
             "type": "string",
             "minLength": 1
           },
+          "guardedPush": {
+            "description": "Exercise the trusted push receiver on the public homelab coder binding before selecting its private harness image.",
+            "type": "boolean"
+          },
           "harnessImage": {
             "description": "The coding Harness's workload image, pinned by digest. Omit for kagent's image. Not with codexCodeMode.",
             "type": "string",

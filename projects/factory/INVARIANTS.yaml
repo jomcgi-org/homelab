@@ -73,6 +73,12 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: The private staging receiver checks new reachable blobs before accepting coder refs, including blobs removed at the tip.
+  mechanism:
+  - projects/factory/push-guard/pre-receive
+  test: //projects/factory/push-guard:guard_test
+  state: unproven
 - id: FACT-16
   statement: A local delivery pause preserves pending updates and their remaining retry budgets.
   mechanism:
