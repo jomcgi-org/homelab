@@ -52,6 +52,7 @@ py_test(
         "Chart.lock",
         "Chart.yaml",
         "values.yaml",
+        "values-factory.yaml",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
