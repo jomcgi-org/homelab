@@ -305,7 +305,7 @@ closure is pruned in `projects/monolith/BUILD` and asserted by
   no `/api` rule, asserted by `public_httproute_chat_guard_test`; pages
   fetch through same-origin `+server.js` proxies. The paths that reach a
   backend from the internet are `/functions/` (the FaaS router, backend
-  port), `/img/` (imgproxy, backed by R2), and `/health/otel-collector`. Each route carries an Envoy
+  port), `/img/` (imgproxy, backed by R2), and `/health/otel-collector`. The functions route remains configured, but its EmberVM execution service has retired from the hub. Each route carries an Envoy
   `BackendTrafficPolicy` rate limit.
 - **Row filtering is the query's job.** A grant admits the table; the query
   must filter (`is_global = true` or the public view).

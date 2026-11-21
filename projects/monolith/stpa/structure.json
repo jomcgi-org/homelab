@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "166c911a6",
+  "commit": "20c7b96bc",
   "nodes": [
     {
       "key": "console-caller",
@@ -153,7 +153,7 @@
     },
     {
       "key": "public-binary",
-      "label": "monolith-public backend (constrained DB + FaaS access)",
+      "label": "Public monolith backend",
       "view": "physical",
       "layer": "compute",
       "maturity": "built"
@@ -935,6 +935,15 @@
       "to": "postgres",
       "maturity": "built",
       "evidence": "projects/monolith/grimoire/verifier.py:407,455,572; projects/monolith/grimoire/jobs.py:410"
+    },
+    {
+      "key": "session-detail.read",
+      "label": "Read a retained session turn via MCP",
+      "view": "logical",
+      "from": "mcp-caller",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/execution/mcp.py:2277"
     }
   ],
   "feedback": [

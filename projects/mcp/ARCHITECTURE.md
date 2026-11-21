@@ -336,7 +336,7 @@ and the explicit `homelab-admin` / `kg-agents` group mappings before querying.
 Personal and legacy NULL-scoped notes require explicit opt-in, an authorized
 personal grant and a durable audit row. `operators` alone grants no search scope.
 
-Caller-specific result filtering depends on each tool. The shared operator check establishes admission to the surface.
+Caller-specific result filtering depends on each tool. The shared operators-group check admits calls to `monolith_agent_detail`. This tool reads a selected turn from the database and returns its prompt, verbatim result and tool activities. These retained records remain readable after the hub conductor and EmberVM guests retired (`projects/monolith/factory/execution/mcp.py`).
 
 **Why.** Tool-level gateway ACLs cannot decide whether a returned task, session,
 or repository object belongs to the caller, so identity must reach the domain
