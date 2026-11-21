@@ -425,13 +425,10 @@ func run(log *slog.Logger) error {
 	}()
 	defer phaseServer.Close()
 
-	if subject := os.Getenv("FACTORY_CONNECTOR_TASK_PIN_SUBJECT"); subject != "" {
-		reviewer := &auth.Reviewer{Client: kube, Audience: taskpin.Audience, Logger: log}
-		pinMux := http.NewServeMux()
-		pinMux.Handle(taskpin.Path, reviewer.Require([]string{subject}, taskpin.Owner(eng.ResolveAnalysisMain)))
-		pinServer := &http.Server{
-			Addr: ":8086", Handler: http.TimeoutHandler(pinMux, 5*time.Second, "task pin unavailable"),
-			ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 6 * time.Second,
+	if issuer := os.Getenv("FACTORY_TASK_PIN_ACTOR_ISSUER"); issuer != "" {
+		pinServer, err := taskpin.NewOwnerServer(ctx, issuer, eng.ResolveAnalysisMain, log)
+		if err != nil {
+			return fmt.Errorf("task pin verifier: %w", err)
 		}
 		go func() {
 			if err := pinServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

@@ -35,6 +35,7 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/reviewer/config"
 	"github.com/jomcgi/homelab/projects/factory/reviewer/metrics"
 	"github.com/jomcgi/homelab/projects/factory/reviewer/review"
+	"github.com/jomcgi/homelab/projects/factory/taskpin"
 )
 
 // reviewerTokenPath is the broker endpoint that mints the reviewer App's
@@ -220,8 +221,10 @@ func run(log *slog.Logger) error {
 	if s := cfg.Semgrep; s != nil {
 		semgrep = &review.Semgrep{AppID: s.AppID, CheckName: s.CheckName, Wait: time.Duration(s.Wait)}
 	}
+	runs := &github.BrokerRuns{URL: cfg.BrokerURL, Bearer: fileToken(cfg.BrokerTokenFile)}
 	eng := review.New(review.Config{
-		Runs:          &github.BrokerRuns{URL: cfg.BrokerURL, Bearer: fileToken(cfg.BrokerTokenFile)},
+		Runs:          runs,
+		TaskPins:      runs,
 		Semgrep:       semgrep,
 		CheckName:     cfg.CheckName,
 		AppID:         cfg.AppID,
@@ -243,6 +246,18 @@ func run(log *slog.Logger) error {
 		GoalTasks:     audit,
 		GoalSessions:  sessions,
 	}, gh, a2a, m, log)
+	if issuer := os.Getenv("FACTORY_TASK_PIN_ACTOR_ISSUER"); issuer != "" {
+		pin, err := taskpin.NewOwnerServer(ctx, issuer, eng.ResolveAnalysisMain, log)
+		if err != nil {
+			return fmt.Errorf("task pin verifier: %w", err)
+		}
+		go func() {
+			if err := pin.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("task pin server", "error", err)
+			}
+		}()
+		defer pin.Close()
+	}
 	log.Info("reviewer started", "bindings", names, "check", cfg.CheckName, "app_id", cfg.AppID, "comment_author", cfg.CommentAuthor,
 		"concurrency", cfg.Concurrency, "poll", time.Duration(cfg.Intervals.Poll).String())
 	return eng.Run(ctx, time.Duration(cfg.Intervals.Poll))

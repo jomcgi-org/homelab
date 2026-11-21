@@ -8,10 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"regexp"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/factory/broker/actorjwt"
@@ -19,11 +18,11 @@ import (
 )
 
 const (
-	Path      = "/v1/task-analysis-pin"
-	Audience  = "factory-task-pin"
-	TokenFile = "/var/run/secrets/factory-task-pin/token"
+	Path = "/v1/task-analysis-pin"
 
-	timeout = 4 * time.Second
+	audience = "factory-broker"
+	caFile   = "/run/substrate-servicedns/trust-bundle.pem"
+	timeout  = 4 * time.Second
 )
 
 var (
@@ -31,9 +30,8 @@ var (
 	boundName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,127}$`)
 )
 
-type request struct {
-	Namespace string `json:"namespace"`
-	Session   string `json:"session"`
+type actor struct {
+	namespace, session, token string
 }
 
 type response struct {
@@ -44,9 +42,8 @@ type Verifier interface {
 	Verify(context.Context, string) (actorjwt.Identity, error)
 }
 
-// Broker verifies the egress-injected actor token and sends only its identity
-// to the dispatcher. The actor cannot supply a repository, commit or task ID.
-func Broker(verifier Verifier, namespaces []string, owner string, token func() (string, error)) http.Handler {
+// Broker routes each verified actor only to its configured dispatcher.
+func Broker(verifier Verifier, owners map[string]string) http.Handler {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	client := &http.Client{
@@ -56,6 +53,45 @@ func Broker(verifier Verifier, namespaces []string, owner string, token func() (
 			return http.ErrUseLastResponse
 		},
 	}
+	return actorRequest(verifier, func(ctx context.Context, a actor) (response, int) {
+		owner := owners[a.namespace]
+		if owner == "" {
+			return response{}, http.StatusForbidden
+		}
+		return readOwner(ctx, client, owner, a.token)
+	})
+}
+
+// NewOwnerServer gives the dispatcher an independent actor JWT check. It needs
+// the public issuer CA and never takes a caller-supplied task or repository.
+func NewOwnerServer(ctx context.Context, issuer string, resolve func(context.Context, string, string) (string, error), log *slog.Logger) (*http.Server, error) {
+	verifier, err := actorjwt.New(actorjwt.Options{Issuer: issuer, Audience: audience, CAFile: caFile, Logger: log})
+	if err != nil {
+		return nil, err
+	}
+	go verifier.Run(ctx)
+	mux := http.NewServeMux()
+	mux.Handle(Path, ownerHandler(verifier, resolve))
+	return &http.Server{
+		Addr: ":8086", Handler: mux, ReadHeaderTimeout: 3 * time.Second,
+		ReadTimeout: 5 * time.Second, WriteTimeout: 6 * time.Second,
+	}, nil
+}
+
+func ownerHandler(verifier Verifier, resolve func(context.Context, string, string) (string, error)) http.Handler {
+	return actorRequest(verifier, func(ctx context.Context, a actor) (response, int) {
+		main, err := resolve(ctx, a.namespace, a.session)
+		if errors.Is(err, sql.ErrNoRows) {
+			return response{}, http.StatusNotFound
+		}
+		if err != nil || !commitID.MatchString(main) {
+			return response{}, http.StatusServiceUnavailable
+		}
+		return response{main}, http.StatusOK
+	})
+}
+
+func actorRequest(verifier Verifier, lookup func(context.Context, actor) (response, int)) http.Handler {
 	active := make(chan struct{}, 16)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -88,92 +124,43 @@ func Broker(verifier Verifier, namespaces []string, owner string, token func() (
 			return
 		}
 		session := id.SessionID()
-		if !slices.Contains(namespaces, id.Atespace) || !boundName.MatchString(session) {
-			http.Error(w, "actor has no analysis binding", http.StatusForbidden)
+		if !boundName.MatchString(id.Atespace) || !boundName.MatchString(session) {
+			http.Error(w, "actor has no task session", http.StatusForbidden)
 			return
 		}
-		status, pin := readOwner(ctx, client, owner, token, request{id.Atespace, session})
+		pin, status := lookup(ctx, actor{id.Atespace, session, raw})
 		if status != http.StatusOK {
 			http.Error(w, "task pin unavailable", status)
 			return
 		}
-		writePin(w, pin)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(pin)
 	})
 }
 
-// Owner serves one trusted dispatcher. Callers must wrap it in an
-// audience-bound TokenReview check for the broker's ServiceAccount.
-func Owner(resolve func(context.Context, string, string) (string, error)) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", http.MethodPost)
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		var input request
-		if r.URL.RawQuery != "" || decode(http.MaxBytesReader(w, r.Body, 1024), &input) != nil ||
-			!boundName.MatchString(input.Namespace) || !boundName.MatchString(input.Session) {
-			http.Error(w, "invalid task identity", http.StatusBadRequest)
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), timeout)
-		defer cancel()
-		main, err := resolve(ctx, input.Namespace, input.Session)
-		if errors.Is(err, sql.ErrNoRows) {
-			http.Error(w, "active task pin unavailable", http.StatusNotFound)
-			return
-		}
-		if err != nil || !commitID.MatchString(main) {
-			http.Error(w, "task pin unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		writePin(w, response{main})
-	})
-}
-
-func readOwner(ctx context.Context, client *http.Client, owner string, token func() (string, error), input request) (int, response) {
-	credential, err := token()
-	if err != nil || strings.TrimSpace(credential) == "" {
-		return http.StatusServiceUnavailable, response{}
-	}
-	body, _ := json.Marshal(input)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, owner, bytes.NewReader(body))
+func readOwner(ctx context.Context, client *http.Client, owner, token string) (response, int) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, owner, nil)
 	if err != nil {
-		return http.StatusServiceUnavailable, response{}
+		return response{}, http.StatusServiceUnavailable
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(credential))
+	req.Header.Set("Authorization", "Bearer "+token)
 	res, err := client.Do(req)
 	if err != nil {
-		return http.StatusServiceUnavailable, response{}
+		return response{}, http.StatusServiceUnavailable
 	}
 	defer res.Body.Close()
 	if res.StatusCode == http.StatusNotFound {
-		return http.StatusNotFound, response{}
+		return response{}, http.StatusNotFound
 	}
-	var pin response
 	data, err := io.ReadAll(io.LimitReader(res.Body, 1025))
-	if res.StatusCode != http.StatusOK || err != nil || len(data) > 1024 ||
-		decode(bytes.NewReader(data), &pin) != nil || !commitID.MatchString(pin.MainSHA) {
-		return http.StatusServiceUnavailable, response{}
+	if res.StatusCode != http.StatusOK || err != nil || len(data) > 1024 {
+		return response{}, http.StatusServiceUnavailable
 	}
-	return http.StatusOK, pin
-}
-
-func decode(r io.Reader, target any) error {
-	decoder := json.NewDecoder(r)
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return err
+	var pin response
+	if err := decoder.Decode(&pin); err != nil || !commitID.MatchString(pin.MainSHA) || decoder.Decode(new(any)) != io.EOF {
+		return response{}, http.StatusServiceUnavailable
 	}
-	if err := decoder.Decode(new(any)); err != io.EOF {
-		return errors.New("unexpected additional JSON data")
-	}
-	return nil
-}
-
-func writePin(w http.ResponseWriter, pin response) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(pin)
+	return pin, http.StatusOK
 }

@@ -51,6 +51,7 @@ go_library(
         "20261120100000_planner_schedule_config.sql",
         "20261121000000_issue_reviewing.sql",
         "20261121114200_analysis_task_main.sql",
+        "20261121121200_reviewer_task_pin.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],

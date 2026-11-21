@@ -7,16 +7,10 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
 
 	"github.com/jomcgi/homelab/projects/factory/broker/actorjwt"
-	"github.com/jomcgi/homelab/projects/factory/broker/auth"
-	authenticationv1 "k8s.io/api/authentication/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/kubernetes/fake"
-	ktesting "k8s.io/client-go/testing"
 )
 
 type verifyFunc func(context.Context, string) (actorjwt.Identity, error)
@@ -26,30 +20,8 @@ func (f verifyFunc) Verify(ctx context.Context, raw string) (actorjwt.Identity, 
 }
 
 func TestBrokerUsesOnlyVerifiedActorIdentity(t *testing.T) {
-	const subject = "system:serviceaccount:factory:factory-broker"
-	const ownerToken = "projected-broker-token"
-	kube := fake.NewSimpleClientset()
-	kube.PrependReactor("create", "tokenreviews", func(action ktesting.Action) (bool, runtime.Object, error) {
-		in := action.(ktesting.CreateAction).GetObject().(*authenticationv1.TokenReview)
-		if in.Spec.Token != ownerToken || !slices.Equal(in.Spec.Audiences, []string{Audience}) {
-			return true, &authenticationv1.TokenReview{}, nil
-		}
-		return true, &authenticationv1.TokenReview{Status: authenticationv1.TokenReviewStatus{
-			Authenticated: true,
-			Audiences:     []string{Audience},
-			User:          authenticationv1.UserInfo{Username: subject},
-		}}, nil
-	})
 	const namespace = "factory-r-homelab"
 	main := strings.Repeat("a", 40)
-	reviewer := &auth.Reviewer{Client: kube, Audience: Audience}
-	owner := httptest.NewServer(reviewer.Require([]string{subject}, Owner(func(_ context.Context, wantNamespace, session string) (string, error) {
-		if wantNamespace != namespace || session != "working-1" {
-			return "", sql.ErrNoRows
-		}
-		return main, nil
-	})))
-	defer owner.Close()
 	verify := verifyFunc(func(_ context.Context, token string) (actorjwt.Identity, error) {
 		switch token {
 		case "working":
@@ -62,7 +34,14 @@ func TestBrokerUsesOnlyVerifiedActorIdentity(t *testing.T) {
 			return actorjwt.Identity{}, errors.New("signature rejected")
 		}
 	})
-	broker := Broker(verify, []string{namespace}, owner.URL, func() (string, error) { return ownerToken, nil })
+	owner := httptest.NewServer(ownerHandler(verify, func(_ context.Context, wantNamespace, session string) (string, error) {
+		if wantNamespace != namespace || session != "working-1" {
+			return "", sql.ErrNoRows
+		}
+		return main, nil
+	}))
+	defer owner.Close()
+	broker := Broker(verify, map[string]string{namespace: owner.URL})
 	for _, tc := range []struct {
 		name, token, query string
 		status             int
@@ -97,15 +76,26 @@ func TestBrokerUsesOnlyVerifiedActorIdentity(t *testing.T) {
 }
 
 func TestOwnerRejectsUnexpectedInput(t *testing.T) {
-	owner := Owner(func(context.Context, string, string) (string, error) {
-		t.Fatal("invalid input reached the pin resolver")
+	verify := verifyFunc(func(context.Context, string) (actorjwt.Identity, error) {
+		return actorjwt.Identity{}, errors.New("invalid token")
+	})
+	owner := ownerHandler(verify, func(context.Context, string, string) (string, error) {
+		t.Fatal("unverified request reached the pin resolver")
 		return "", nil
 	})
-	req := httptest.NewRequest(http.MethodPost, Path, strings.NewReader(
-		`{"namespace":"factory-r-homelab","session":"working-1","main_sha":"supplied-by-caller"}`))
-	rec := httptest.NewRecorder()
-	owner.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status %d, want %d", rec.Code, http.StatusBadRequest)
+	for _, tc := range []struct {
+		path   string
+		status int
+	}{
+		{Path + "?task=caller-choice", http.StatusBadRequest},
+		{Path, http.StatusUnauthorized},
+	} {
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		req.Header.Set("Authorization", "Bearer forged")
+		rec := httptest.NewRecorder()
+		owner.ServeHTTP(rec, req)
+		if rec.Code != tc.status {
+			t.Fatalf("status %d, want %d", rec.Code, tc.status)
+		}
 	}
 }

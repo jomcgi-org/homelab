@@ -17,10 +17,5 @@ go_test(
     embed = [":taskpin"],
     deps = [
         "//projects/factory/broker/actorjwt",
-        "//projects/factory/broker/auth",
-        "@io_k8s_api//authentication/v1:authentication",
-        "@io_k8s_apimachinery//pkg/runtime",
-        "@io_k8s_client_go//kubernetes/fake",
-        "@io_k8s_client_go//testing",
     ],
 )

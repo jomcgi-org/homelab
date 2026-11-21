@@ -28,6 +28,7 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/broker/metrics"
 	"github.com/jomcgi/homelab/projects/factory/broker/relay"
 	"github.com/jomcgi/homelab/projects/factory/broker/usage"
+	"github.com/jomcgi/homelab/projects/factory/connector/provenance"
 	"github.com/jomcgi/homelab/projects/factory/taskpin"
 	sharedmetrics "github.com/jomcgi/homelab/projects/shared/go/tokenbroker/metrics"
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/provider/codexchatgpt"
@@ -230,15 +231,23 @@ func build(ctx context.Context, cfg config.Config, client kubernetes.Interface, 
 		},
 		reviewer: &auth.Reviewer{Client: client, Audience: cfg.TokenReview.Audience, Logger: logger},
 	}
-	if cfg.TaskPinOwnerURL != "" {
-		namespaces := make([]string, 0, len(cfg.Bindings))
-		for _, binding := range cfg.Bindings {
-			namespaces = append(namespaces, binding.Namespace)
+	owners := map[string]string{}
+	for _, role := range []struct {
+		origin   string
+		bindings []config.Binding
+	}{{cfg.TaskPinOwnerURL, cfg.Bindings}, {cfg.ReviewTaskPinOwnerURL, cfg.ReviewBindings}} {
+		if role.origin == "" {
+			continue
 		}
-		d.taskPin = taskpin.Broker(verifier, namespaces, cfg.TaskPinOwnerURL+taskpin.Path, func() (string, error) {
-			token, err := os.ReadFile(taskpin.TokenFile)
-			return string(token), err
-		})
+		for _, binding := range role.bindings {
+			if owners[binding.Namespace] != "" {
+				return nil, fmt.Errorf("ambiguous task pin owner in %s", binding.Namespace)
+			}
+			owners[binding.Namespace] = role.origin + taskpin.Path
+		}
+	}
+	if len(owners) > 0 {
+		d.taskPin = taskpin.Broker(verifier, owners)
 	}
 	if cfg.Claude.Enabled {
 		d.claude = &relay.Claude{
@@ -378,6 +387,8 @@ func (d *deps) adminMux(cfg config.Config, metricsHandler http.Handler) *http.Se
 	// could approve, never reaches the reviewer.
 	mux.Handle("/github/reviewer-comments", d.reviewer.Require(cfg.TokenReview.ReviewerSubjects, comments))
 	mux.Handle("/runs/reviewer", d.reviewer.Require(cfg.TokenReview.ReviewerSubjects, d.runStore.ReviewerHandler(cfg.ReviewBindings)))
+	mux.Handle(provenance.BindReviewerTaskPath, d.reviewer.Require(cfg.TokenReview.ReviewerSubjects, d.runStore.ReviewerTaskHandler(cfg.ReviewBindings, true)))
+	mux.Handle(provenance.ReadReviewerPinPath, d.reviewer.Require(cfg.TokenReview.ReviewerSubjects, d.runStore.ReviewerTaskHandler(cfg.ReviewBindings, false)))
 	return mux
 }
 

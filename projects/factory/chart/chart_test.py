@@ -499,63 +499,50 @@ def test_github_app_is_optional() -> None:
     assert config["github"]["privateKeyFile"] == "/etc/factory-github-app/private-key"
 
 
-def test_task_pin_uses_the_broker_service_account() -> None:
+def test_coder_task_pin_accepts_actors_via_the_broker() -> None:
     docs = _render()
-    broker = _in(docs, "Deployment", "factory", "factory-broker")["spec"]["template"][
-        "spec"
-    ]
-    projected = next(v for v in broker["volumes"] if v["name"] == "task-pin")
-    assert projected["projected"]["sources"] == [
-        {
-            "serviceAccountToken": {
-                "audience": "factory-task-pin",
-                "path": "token",
-                "expirationSeconds": 3600,
-            }
-        }
-    ]
-    assert {
-        "name": "task-pin",
-        "mountPath": "/var/run/secrets/factory-task-pin",
-        "readOnly": True,
-    } in broker["containers"][0]["volumeMounts"]
     config = yaml.safe_load(
         _in(docs, "ConfigMap", "factory", "factory-broker")["data"]["config.yaml"]
     )
     assert (
         config["taskPinOwnerUrl"]
-        == "http://factory-connector-status.factory.svc.cluster.local:8086"
+        == "http://factory-connector-task-pin.factory.svc.cluster.local:8086"
     )
     connector = _in(docs, "Deployment", "factory", "factory-connector")["spec"][
         "template"
     ]["spec"]
     assert {
-        "name": "FACTORY_CONNECTOR_TASK_PIN_SUBJECT",
-        "value": "system:serviceaccount:factory:factory-broker",
+        "name": "FACTORY_TASK_PIN_ACTOR_ISSUER",
+        "value": "https://idp.ate-system.svc",
     } in connector["containers"][0]["env"]
-    service = _in(docs, "Service", "factory", "factory-connector-status")
-    assert {
-        "name": "analysis-pin",
-        "port": 8086,
-        "targetPort": 8086,
-        "protocol": "TCP",
-    } in service["spec"]["ports"]
-    policy = _in(docs, "CiliumNetworkPolicy", "factory", "factory-landing-status")
-    match = [
-        rule
-        for rule in policy["spec"]["ingress"]
-        if {"ports": [{"port": "8086", "protocol": "TCP"}]} in rule["toPorts"]
-    ]
-    assert [rule["fromEndpoints"] for rule in match] == [
-        [
-            {
-                "matchLabels": {
-                    "k8s:io.kubernetes.pod.namespace": "factory",
-                    "app.kubernetes.io/name": "factory-broker",
-                    "app.kubernetes.io/instance": "factory",
-                }
+    ca = next(v for v in connector["volumes"] if v["name"] == "task-pin-issuer")
+    assert ca["projected"]["sources"] == [
+        {
+            "clusterTrustBundle": {
+                "signerName": "servicedns.podcert.ate.dev/identity",
+                "labelSelector": {"matchLabels": {"podcert.ate.dev/canarying": "live"}},
+                "path": "trust-bundle.pem",
             }
-        ]
+        },
+    ]
+    service = _in(docs, "Service", "factory", "factory-connector-task-pin")
+    assert service["spec"]["ports"] == [
+        {"name": "analysis-pin", "port": 8086, "targetPort": "analysis-pin"},
+    ]
+    policy = _in(docs, "CiliumNetworkPolicy", "factory", "factory-connector")
+    assert policy["spec"]["ingress"] == [
+        {
+            "fromEndpoints": [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "factory",
+                        "app.kubernetes.io/name": "factory-broker",
+                        "app.kubernetes.io/instance": "factory",
+                    }
+                }
+            ],
+            "toPorts": [{"ports": [{"port": "8086", "protocol": "TCP"}]}],
+        },
     ]
 
 

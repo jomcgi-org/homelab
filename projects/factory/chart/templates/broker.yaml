@@ -45,7 +45,7 @@ and metrics. Provider and GitHub credentials exist only in this pod.
   "bindings" $bindings
 }}
 {{- if .Values.connector.enabled }}
-{{- $_ := set $config "taskPinOwnerUrl" (printf "http://factory-connector-status.%s.svc.%s:8086" $ns .Values.clusterDomain) }}
+{{- $_ := set $config "taskPinOwnerUrl" (printf "http://%s-task-pin.%s.svc.%s:8086" (include "factory.connectorName" .) $ns .Values.clusterDomain) }}
 {{- end }}
 {{- if $github }}
 {{- $_ := set $config "github" (dict
@@ -54,6 +54,7 @@ and metrics. Provider and GitHub credentials exist only in this pod.
   "privateKeyFile" "/etc/factory-github-app/private-key") }}
 {{- end }}
 {{- if .Values.reviewer.enabled }}
+{{- $_ := set $config "reviewTaskPinOwnerUrl" (printf "http://%s-task-pin.%s.svc.%s:8086" (include "factory.reviewerName" .) $ns .Values.clusterDomain) }}
 {{- $_ := set $config "githubReview" (dict
   "appIdFile" "/etc/factory-review-github-app/app-id"
   "installationIdFile" "/etc/factory-review-github-app/installation-id"
@@ -430,11 +431,6 @@ spec:
             - name: config
               mountPath: /etc/factory-broker
               readOnly: true
-            {{- if .Values.connector.enabled }}
-            - name: task-pin
-              mountPath: /var/run/secrets/factory-task-pin
-              readOnly: true
-            {{- end }}
             - name: substrate-servicedns
               mountPath: /run/substrate-servicedns
               readOnly: true
@@ -454,15 +450,6 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
-        {{- if .Values.connector.enabled }}
-        - name: task-pin
-          projected:
-            sources:
-              - serviceAccountToken:
-                  audience: factory-task-pin
-                  path: token
-                  expirationSeconds: 3600
-        {{- end }}
         {{- if $b.claude.enabled }}
         - name: claude-cvp
           secret:
