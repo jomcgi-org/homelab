@@ -941,7 +941,7 @@ tests:
               severity: warning
             exp_annotations:
               action: "Allow the new egress IP in the IP filter of each factory Cloudflare credential."
-              graph: "count(max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])))"
+              graph: "count(max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])) > time() - 3600)"
               threshold: "1"
               runbook: "https://factory-runbooks.jomcgi.dev/FactoryEgressIPChanged"
               summary: "The factory egress IP changed to 198.51.100.20 from 192.0.2.10 (2 addresses in 1h, maximum 1)"
@@ -952,6 +952,32 @@ tests:
       - eval_time: 90m
         alertname: FactoryEgressIPChanged
         exp_alerts: []
+
+  # The exporter keeps exposing its last valid observation until trace recovers.
+  - interval: 1m
+    input_series:
+      - series: 'factory_egress_ip_observed_timestamp_seconds{ip="192.0.2.10"}'
+        values: "0+0x60 stale"
+      - series: 'factory_egress_ip_observed_timestamp_seconds{ip="198.51.100.20"}'
+        values: "_x61 3660 stale"
+      - series: 'factory_egress_ip_observed_timestamp_seconds{ip="203.0.113.30"}'
+        values: "_x62 3720 stale"
+    alert_rule_test:
+      - eval_time: 61m
+        alertname: FactoryEgressIPChanged
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: FactoryEgressIPChanged
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              action: "Allow the new egress IP in the IP filter of each factory Cloudflare credential."
+              graph: "count(max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])) > time() - 3600)"
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/FactoryEgressIPChanged"
+              summary: "The factory egress IP changed to 203.0.113.30 from 198.51.100.20 (2 addresses in 1h, maximum 1)"
+              description: 'Each factory Cloudflare API token and R2 key fails until its IP filter allows the new address. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
   # An exporter restart, or a new instance label, with the same address is
   # no change.

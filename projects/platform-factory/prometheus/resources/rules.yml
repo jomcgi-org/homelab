@@ -249,19 +249,20 @@ groups:
       # address is stored. The rule counts the addresses of the last hour: it
       # fires at the first scrape of a new address and clears an hour later.
       # CloudflareCredentialRefused stays on while an API token fails.
+      # invariant: PLAT-14
       - alert: FactoryEgressIPChanged
-        expr: count(max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h]))) > 1
+        expr: count(max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])) > time() - 3600) > 1
         labels:
           severity: warning
         annotations:
           action: "Allow the new egress IP in the IP filter of each factory Cloudflare credential."
-          graph: "count(max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])))"
+          graph: "count(max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])) > time() - 3600)"
           threshold: "1"
           runbook: "https://factory-runbooks.jomcgi.dev/FactoryEgressIPChanged"
           summary: >-
-            The factory egress IP changed to {{ range query `topk(1, max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])))`
+            The factory egress IP changed to {{ range query `topk(1, max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])) > time() - 3600)`
             }}{{ .Labels.ip }}{{ else }}an unknown address{{ end }} from {{ range $i, $p := query
-            `max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])) unless on (ip) topk(1, max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])))`
+            `max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])) > time() - 3600 unless on (ip) topk(1, max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])) > time() - 3600)`
             | sortByLabel `ip` }}{{ if $i }}, {{ end }}{{ $p.Labels.ip }}{{ end }} ({{ $value }} addresses in 1h, maximum 1)
           description: >-
             Each factory Cloudflare API token and R2 key fails until its IP
