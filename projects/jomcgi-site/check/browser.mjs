@@ -88,10 +88,11 @@ export async function checkPage(
     colorScheme = "light",
     width = 1280,
     checkMap = false,
+    serveShipsRequest,
     factoryEnabled = sources.httpsManifests.factory.enabled !== false,
   },
 ) {
-  const origin = new URL(url).origin;
+  const { origin, pathname } = new URL(url);
   const stagedManifest = (location) =>
     !factoryEnabled && location === origin + "/data/factory/manifest.json";
   const context = await browser.newContext({
@@ -116,6 +117,18 @@ export async function checkPage(
     await context.route("**/*", (route) => {
       const requestOrigin = new URL(route.request().url()).origin;
       if (requestOrigin !== origin) {
+        if (pathname === "/app/ships" && route.request().method() === "GET") {
+          const target = new URL(route.request().url());
+          const shipsObject =
+            target.origin === "https://factory-data.jomcgi.dev" &&
+            /^\/ships\/(?:latest|(?:snapshot|heat|tracks\/\d{1,15})-[a-f0-9]{64}(?:-[A-Z2-7]{26})?)\.json$/.test(
+              target.pathname,
+            );
+          if (shipsObject || target.origin === tileOrigin)
+            return serveShipsRequest
+              ? serveShipsRequest(route)
+              : route.fallback();
+        }
         if (mapActive && requestOrigin === tileOrigin) return route.fallback();
         if (isEdgeBeacon(route.request().url())) return route.abort();
         errors.push(`off-origin request: ${route.request().url()}`);
@@ -259,13 +272,14 @@ export const TIER2_CONCURRENCY = 2;
 
 export async function tier2(
   pages,
-  { concurrency = TIER2_CONCURRENCY, checkMaps = true } = {},
+  { concurrency = TIER2_CONCURRENCY, checkMaps = true, serveShipsRequest } = {},
 ) {
   const browser = await launchBrowser();
   const checks = pages.flatMap((page) =>
     ["light", "dark"].flatMap((colorScheme) =>
       [390, 1280].map((width) => ({
         ...page,
+        serveShipsRequest,
         colorScheme,
         width,
         checkMap: checkMaps && colorScheme === "light" && width === 1280,

@@ -316,6 +316,18 @@ js_test(
 )
 
 js_test(
+    name = "ships_browser_test",
+    size = "medium",
+    args = ["$(rootpath :build)"],
+    data = [
+        ":build",
+        ":node_modules/@sparticuz/chromium",
+        ":node_modules/playwright",
+    ],
+    entry_point = "ships-browser.mjs",
+)
+
+js_test(
     name = "stars_browser_test",
     size = "medium",
     args = ["$(rootpath :build)"],

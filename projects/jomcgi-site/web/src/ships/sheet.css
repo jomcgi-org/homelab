@@ -1,0 +1,74 @@
+/* Ships owns a full-viewport sheet, with one in-flow chrome row. These rules
+ * cannot affect a sibling sheet after client navigation. */
+.ships-sheet {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100vh;
+  height: 100dvh;
+  padding: 0;
+  background: var(--color-background-body);
+  color: var(--color-text-primary);
+}
+
+.ships-tone-passenger {
+  color: var(--lb-provider-1);
+}
+
+.ships-tone-cargo {
+  color: var(--lb-provider-3);
+}
+
+.ships-tone-tanker {
+  color: var(--lb-provider-8);
+}
+
+.ships-tone-hsc {
+  color: var(--color-blog-warning);
+}
+
+.ships-tone-special {
+  color: var(--lb-provider-6);
+}
+
+.ships-tone-unknown {
+  color: var(--lb-provider-2);
+}
+.ships-tone-water {
+  color: var(--ships-water);
+}
+
+.ships-tone-heat-1 {
+  color: var(--ships-heat-1);
+}
+
+.ships-tone-heat-2 {
+  color: var(--ships-heat-2);
+}
+
+.ships-tone-heat-3 {
+  color: var(--ships-heat-3);
+}
+
+.ships-tone-heat-4 {
+  color: var(--ships-heat-4);
+}
+
+.ships-tone-heat-5 {
+  color: var(--ships-heat-5);
+}
+
+.ships-tone-heat-6 {
+  color: var(--ships-heat-6);
+}
+.ships-tone-ink {
+  color: var(--color-text-primary);
+}
+.ships-tone-muted {
+  color: var(--color-text-secondary);
+}
+.ships-tone-sheet {
+  color: var(--color-background-body);
+}
+.ships-tone-paper {
+  color: var(--color-background-muted);
+}

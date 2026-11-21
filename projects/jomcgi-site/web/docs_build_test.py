@@ -36,6 +36,7 @@ def test_published_pages_are_exactly_the_filtered_manifest():
     assert pages == {
         "index.html",
         "404.html",
+        "app/ships.html",
         "cv.html",
         "docs.html",
         "engineering.html",
