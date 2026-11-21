@@ -174,6 +174,24 @@ func TestGitPushIsCheckedBeforeItReachesUpstream(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("public base advances outside the receiver", func(t *testing.T) {
+		git(t, local, "checkout", "-q", "--detach", good)
+		write(t, filepath.Join(local, "public-large"), make([]byte, 1024*1024+1), 0o600)
+		git(t, local, "add", "public-large")
+		git(t, local, "commit", "-qm", "advance public main with a large fixture")
+		mainRef := git(t, upstream, "symbolic-ref", "HEAD")
+		git(t, local, "push", upstream, "HEAD:"+mainRef)
+
+		git(t, local, "commit", "--allow-empty", "-qm", "ordinary push from public main")
+		if out, err := push(ref); err != nil {
+			t.Fatalf("push on the fresh public base: %v\n%s", err, out)
+		}
+		want := git(t, local, "rev-parse", "HEAD")
+		if got := git(t, upstream, "rev-parse", ref); got != want {
+			t.Fatalf("upstream got %s, want %s", got, want)
+		}
+	})
 }
 
 func git(t *testing.T, dir string, args ...string) string {

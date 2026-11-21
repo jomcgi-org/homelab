@@ -1116,7 +1116,7 @@
             "minLength": 1
           },
           "guardedPush": {
-            "description": "Exercise the trusted push receiver on the public homelab coder binding before selecting its private harness image.",
+            "description": "Route the homelab coder's pushes through the trusted receiver. Required for a Mandoline harness image.",
             "type": "boolean"
           },
           "harnessImage": {

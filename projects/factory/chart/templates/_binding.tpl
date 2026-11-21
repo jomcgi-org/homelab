@@ -10,8 +10,12 @@
 {{- $agent := include "factory.bindingAgentName" $r }}
 {{- $worker := printf "%s-worker" $agent }}
 {{- $toolchain := eq ($r.toolchain | default "") "homelab" }}
-{{- $guard := and .coder (eq $r.owner "jomcgi-org") (eq $r.repo "homelab") (or $r.guardedPush $r.harnessImage) }}
-{{- if and $guard (or (not $.Values.pushGuard.enabled) (ne $ns "factory-r-homelab")) }}
+{{- $guard := and .coder $r.guardedPush }}
+{{- $mandoline := regexMatch "^ghcr[.]io/jomcgi/homelab/projects/factory/(harness/(codex|claude)|reviewer/harness)@" ($r.harnessImage | default "") }}
+{{- if and .coder $mandoline (not $guard) }}
+{{- fail "Mandoline coding images require guardedPush" }}
+{{- end }}
+{{- if and $guard (or (not $.Values.pushGuard.enabled) (ne $ns "factory-r-homelab") (ne $r.owner "jomcgi-org") (ne $r.repo "homelab")) }}
 {{- fail "guarded homelab pushes require the private receiver in factory-r-homelab" }}
 {{- end }}
 {{- $receiver := printf "https://factory-push-guard.%s.svc.cluster.local" $ns }}
