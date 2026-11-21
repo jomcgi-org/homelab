@@ -320,7 +320,7 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
     },
   )
   .post(
-    // invariant: FACT-13
+    // invariant: FACT-14
     "/projects/:projectKey/factory-semgrep",
     async ({ project, user, body, set }) => {
       if (process.env.FACTORY_INTSEC_SYNC !== "true")
