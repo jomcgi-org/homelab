@@ -473,6 +473,18 @@ oci.pull(
 )
 use_repo(oci, "codex_harness", "codex_harness_linux_amd64")
 
+# Base of the private Claude+mandoline harness image (projects/factory/harness/claude).
+# Keep the digest equal to the Claude harness kagent runs: the vendored kagent
+# chart's builtin claude image, unless deploy values override it.
+# harness_image_test checks it.
+oci.pull(
+    name = "claude_harness",
+    digest = "sha256:111d28bc8552469b028d91ecd2352c9d44811aba07be12b1e6868db7948f904e",
+    image = "ghcr.io/kagent-dev/kagent/claude-harness",
+    platforms = ["linux/amd64"],
+)
+use_repo(oci, "claude_harness", "claude_harness_linux_amd64")
+
 #########################
 # PostgreSQL test fixtures — extract PG16 + pgvector binaries from OCI
 postgres = use_extension("//bazel/tools/postgres:extensions.bzl", "postgres")

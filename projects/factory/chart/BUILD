@@ -235,3 +235,11 @@ py_test(
     env = {"SYNC_SCRIPT": "$(rootpath files/semgrep_sync.py)"},
     deps = ["@pip//pytest"],
 )
+
+# The vendored kagent chart, whose builtin harness images the INTSEC audit
+# harness image's base must match (projects/factory/harness/claude).
+filegroup(
+    name = "kagent_chart",
+    srcs = ["charts/kagent-1.0.1.tgz"],
+    visibility = ["//projects/factory/harness/claude:__pkg__"],
+)
