@@ -7,6 +7,7 @@ go_library(
         "packs.go",
         "process.go",
         "runner.go",
+        "taskpin.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/mandoline",
     visibility = ["//projects/factory/mandoline:__subpackages__"],

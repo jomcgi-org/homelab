@@ -24,7 +24,7 @@ const (
 	cleanupTime = 2 * time.Second
 	outputLimit = 1 << 20
 	trustedRepo = "https://github.com/jomcgi-org/homelab.git"
-	mainRef     = "refs/heads/main"
+	taskPinURL  = "http://factory-broker.factory.svc.cluster.local/v1/task-analysis-pin"
 )
 
 var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -49,7 +49,9 @@ type Envelope struct {
 // deliberately absent from the model-facing command-line arguments.
 func Run(parent context.Context, workspace, tool string, audit bool, req Request) Envelope {
 	return runBounded(parent, runLimit, req, func(ctx context.Context) Envelope {
-		return run(ctx, workspace, tool, audit, req, resolveTrustedMain)
+		return run(ctx, workspace, tool, audit, req, func(ctx context.Context) (string, error) {
+			return readAssignedMain(ctx, taskPinURL)
+		})
 	})
 }
 
@@ -73,7 +75,7 @@ func runBounded(parent context.Context, limit time.Duration, req Request, analyz
 		fail("timeout", "analysis exceeded the wall-clock limit")
 }
 
-func run(ctx context.Context, workspace, tool string, audit bool, req Request, resolveMain func(context.Context, string, []string) (string, error)) Envelope {
+func run(ctx context.Context, workspace, tool string, audit bool, req Request, resolveMain func(context.Context) (string, error)) Envelope {
 	result := Envelope{Commit: req.Commit, PackDigests: map[string]string{}, Gaps: []string{}}
 	if !fullSHA.MatchString(req.Commit) || (!audit && !fullSHA.MatchString(req.Base)) || (audit && req.Base != "") {
 		return result.fail("error", "expected a full commit and the base required by this harness")
@@ -104,16 +106,23 @@ func run(ctx context.Context, workspace, tool string, audit bool, req Request, r
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_COUNT=2",
 		"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null",
 		"GIT_CONFIG_KEY_1=core.fsmonitor", "GIT_CONFIG_VALUE_1=false",
-		"GIT_OPTIONAL_LOCKS=0", "GIT_NO_REPLACE_OBJECTS=1", "GIT_GRAFT_FILE=/dev/null",
+		"GIT_OPTIONAL_LOCKS=0", "GIT_NO_REPLACE_OBJECTS=1", "GIT_NO_LAZY_FETCH=1", "GIT_GRAFT_FILE=/dev/null",
 	}
-	main, err := resolveMain(ctx, home, env)
+	main, err := resolveMain(ctx)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return result.fail("timeout", "trusted main lookup exceeded the wall-clock limit")
 	}
 	if err != nil || !fullSHA.MatchString(main) {
-		return result.fail("error", "cannot pin trusted main")
+		return result.fail("error", "the active task has no verified main commit")
 	}
-	tree, err := verifyCheckout(ctx, root, main, audit, req, env)
+	gitEnv := env
+	if !audit {
+		gitEnv, err = ensureMainObject(ctx, root, home, trustedRepo, main, env)
+		if err != nil {
+			return result.fail("error", err.Error())
+		}
+	}
+	tree, err := verifyCheckout(ctx, root, main, audit, req, gitEnv)
 	if err != nil {
 		return result.fail("error", err.Error())
 	}
@@ -203,23 +212,6 @@ func selectCheckout(workspace string, audit bool) (string, error) {
 		return root, nil
 	}
 	return "", errors.New("task checkout unavailable")
-}
-
-func resolveTrustedMain(ctx context.Context, home string, env []string) (string, error) {
-	// Resolve a full SHA in a private temporary directory, outside both Git
-	// checkouts. The task cannot substitute a URL, ref or Git configuration.
-	isolated := append(env, "GIT_TERMINAL_PROMPT=0", "GIT_CEILING_DIRECTORIES="+filepath.Dir(home))
-	out := capture(ctx, "/usr/bin/git", home, isolated, []string{
-		"-c", "http.followRedirects=false", "ls-remote", "--exit-code", "--refs", "--", trustedRepo, mainRef,
-	})
-	if out.err != nil {
-		return "", out.err
-	}
-	fields := strings.Fields(string(out.stdout))
-	if len(fields) != 2 || fields[1] != mainRef || out.truncated {
-		return "", errors.New("unexpected trusted main reply")
-	}
-	return fields[0], nil
 }
 
 func verifyCheckout(ctx context.Context, root, main string, audit bool, req Request, env []string) (string, error) {

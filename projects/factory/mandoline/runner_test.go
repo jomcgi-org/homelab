@@ -3,6 +3,8 @@ package mandoline
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -190,8 +192,48 @@ func TestPinnedAnalyzer(t *testing.T) {
 	}
 }
 
-func fixtureMain(commit string) func(context.Context, string, []string) (string, error) {
-	return func(context.Context, string, []string) (string, error) {
+func TestTaskPinLookupUsesAssignedCommit(t *testing.T) {
+	assigned := strings.Repeat("a", 40)
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.RawQuery != "" || r.Header.Get("Authorization") != "Bearer factory-task-pin" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"main_sha": assigned})
+	}))
+	defer broker.Close()
+	pin, err := readAssignedMain(context.Background(), broker.URL)
+	if err != nil || pin != assigned {
+		t.Fatalf("task pin=%q err=%v", pin, err)
+	}
+}
+
+func TestMissingAssignedObjectIsFetchedWithoutChangingTheCheckout(t *testing.T) {
+	_, root, base := checkout(t)
+	remote := t.TempDir()
+	git(t, root, "clone", "--quiet", ".", remote)
+	git(t, remote, "config", "uploadpack.allowFilter", "true")
+	git(t, remote, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "commit", "--allow-empty", "-qm", "assigned main")
+	assigned := git(t, remote, "rev-parse", "HEAD")
+	// The remote advances again after dispatch. Fetch the assigned SHA even
+	// though the caller's checkout and current remote tip both differ.
+	git(t, remote, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "commit", "--allow-empty", "-qm", "later main")
+	env, err := ensureMainObject(context.Background(), root, t.TempDir(), remote, assigned, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyCheckout(context.Background(), root, assigned, false, Request{Commit: base, Base: base}, env); err != nil {
+		t.Fatalf("the assigned main object did not validate the diff: %v", err)
+	}
+	cmd := exec.Command("/usr/bin/git", "cat-file", "-e", assigned+"^{commit}")
+	cmd.Dir = root
+	if err := cmd.Run(); err == nil || git(t, root, "rev-parse", "refs/remotes/origin/main") != base {
+		t.Fatal("the analysis changed the source checkout")
+	}
+}
+
+func fixtureMain(commit string) func(context.Context) (string, error) {
+	return func(context.Context) (string, error) {
 		return commit, nil
 	}
 }
