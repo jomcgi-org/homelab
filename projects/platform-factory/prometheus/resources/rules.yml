@@ -247,6 +247,7 @@ groups:
       # address is stored. The rule counts the addresses of the last hour: it
       # fires at the first scrape of a new address and clears an hour later.
       # CloudflareCredentialRefused stays on while an API token fails.
+      # invariant: PLAT-16
       - alert: FactoryEgressIPChanged
         expr: count(max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])) > time() - 3600) > 1
         labels:
