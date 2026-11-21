@@ -2,11 +2,32 @@
 # Verify authorization without fetching Secret data or opening a tunnel.
 set -euo pipefail
 session=(kubectl "$@" auth can-i)
+expect_denied() {
+	local answer
+	answer=$("${session[@]}" "$@") && return 1
+	[[ $answer == no ]]
+}
+# The role explicitly lists API groups. Discovery also includes groups the
+# cluster installed after the role was defined.
+groups=$(kubectl "$@" get clusterrole factory-sessions -o \
+	'go-template={{range .rules}}{{range .apiGroups}}{{if .}}{{printf "%s\n" .}}{{end}}{{end}}{{end}}')
+[[ -n $groups ]]
+if grep -Fxq '*' <<<"$groups"; then
+	echo "The factory-sessions role has a wildcard API group" >&2
+	exit 1
+fi
 for verb in get list watch; do
 	resources=$(kubectl "$@" api-resources --verbs="$verb" -o name)
 	[[ -n $resources ]]
 	for resource in $resources; do
 		[[ $resource == secrets ]] && continue
+		if [[ $resource == *.* ]] && ! grep -Fxq -- "${resource#*.}" <<<"$groups"; then
+			expect_denied "$verb" "$resource" --all-namespaces || {
+				echo "Unexpected cluster-wide $verb on $resource" >&2
+				exit 1
+			}
+			continue
+		fi
 		"${session[@]}" "$verb" "$resource" --all-namespaces --quiet || {
 			echo "Missing cluster-wide $verb on $resource" >&2
 			exit 1
@@ -28,11 +49,6 @@ done
 for verb in get create; do
 	"${session[@]}" -n factory "$verb" pods/factory-itsaplan-session-forward-0 --subresource=portforward --quiet
 done
-expect_denied() {
-	local answer
-	answer=$("${session[@]}" "$@") && return 1
-	[[ $answer == no ]]
-}
 expect_denied -n factory list secrets
 expect_denied -n factory watch secrets
 expect_denied -n default get secrets/factory-itsaplan-joe-sessions
