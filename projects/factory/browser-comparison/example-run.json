@@ -1,0 +1,48 @@
+{
+  "browser": "Chromium 142.0.7444.59",
+  "fixture_sha256": "85a79f200b16d70d53c599d6885f2a8c7ac9735d0e15cc3e46e2f522c0d33b7c",
+  "trials": [
+    {
+      "interface": "cli",
+      "exit": "normal",
+      "snapshot": true,
+      "png_sha256": "b9a7eb56270b4078f2acd7c48f849b4bb387b4c1c57dbeb220c6fb6c46255d5b",
+      "remaining_processes": 0
+    },
+    {
+      "interface": "cli",
+      "exit": "cancel",
+      "snapshot": true,
+      "png_sha256": "b9a7eb56270b4078f2acd7c48f849b4bb387b4c1c57dbeb220c6fb6c46255d5b",
+      "remaining_processes": 0
+    },
+    {
+      "interface": "cli",
+      "exit": "timeout",
+      "snapshot": true,
+      "png_sha256": "b9a7eb56270b4078f2acd7c48f849b4bb387b4c1c57dbeb220c6fb6c46255d5b",
+      "remaining_processes": 0
+    },
+    {
+      "interface": "mcp",
+      "exit": "normal",
+      "snapshot": true,
+      "png_sha256": "b9a7eb56270b4078f2acd7c48f849b4bb387b4c1c57dbeb220c6fb6c46255d5b",
+      "remaining_processes": 0
+    },
+    {
+      "interface": "mcp",
+      "exit": "cancel",
+      "snapshot": true,
+      "png_sha256": "b9a7eb56270b4078f2acd7c48f849b4bb387b4c1c57dbeb220c6fb6c46255d5b",
+      "remaining_processes": 0
+    },
+    {
+      "interface": "mcp",
+      "exit": "timeout",
+      "snapshot": true,
+      "png_sha256": "b9a7eb56270b4078f2acd7c48f849b4bb387b4c1c57dbeb220c6fb6c46255d5b",
+      "remaining_processes": 0
+    }
+  ]
+}

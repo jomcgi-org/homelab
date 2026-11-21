@@ -1,0 +1,9 @@
+{
+  "name": "factory-browser-comparison",
+  "private": true,
+  "dependencies": {
+    "@playwright/cli": "0.1.25",
+    "@playwright/mcp": "0.0.86",
+    "pngjs": "7.0.0"
+  }
+}
