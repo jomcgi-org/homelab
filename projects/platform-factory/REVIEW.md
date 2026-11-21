@@ -47,6 +47,13 @@ boundary: a rule below broken on them is critical.
   bearer policy, route, grant and TLS check.
 
 
+  The optional `discord-activity` policy on bosun-activity-api.jomcgi.dev
+  delegates Discord sign-in to the bridge. Its POST token endpoint exchanges
+  a Discord authorization code. Its instance GET and POST endpoints require
+  a bearer token and a successful Discord membership lookup for the launch
+  guild. The factory chart creates the policy with the Activity route.
+  [HOME-170](https://factory-plan.jomcgi.dev/factory/issue/HOME-170).
+
   The Codex policy is reserved for a follow-up after the broker listener, ingress
   policy and exact Authentik callback are deployed. Its redirect URL must
   be `https://factory.jomcgi.dev/admin/codex/oauth2/callback` so the same
