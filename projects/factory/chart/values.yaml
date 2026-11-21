@@ -302,6 +302,25 @@ agents:
       instructions. A recorded follow-up completed in the tracker can also
       close its still-started parent without another PR.
 
+  planner:
+    harness: codex
+    provider: broker
+    model: gpt-6-astra
+    # All runtimes share kagent.config.runtimeDefaults, as for codex above.
+    resources:
+      cpu: "4"
+      memory: 8Gi
+    worker:
+      resources:
+        requests:
+          cpu: "1"
+          memory: 2Gi
+        limits:
+          cpu: "4"
+          memory: 9Gi
+    concurrency: 2
+    egress: [github-git]
+    systemPrompt: Inspect the repository read-only and return the requested JSON.
   reviewer:
     harness: codex
     provider: broker

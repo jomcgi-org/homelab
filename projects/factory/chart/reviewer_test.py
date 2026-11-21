@@ -603,7 +603,16 @@ def test_broker_keeps_apps_subjects_and_secret_writes_separate() -> None:
         + config["tokenReview"]["adminSubjects"]
     )
     assert config["reviewBindings"] == [
-        {"name": "homelab", "repository": "jomcgi-org/homelab", "namespace": _REVIEW_NS}
+        {
+            "name": "homelab",
+            "repository": "jomcgi-org/homelab",
+            "namespace": _REVIEW_NS,
+        },
+        {
+            "name": "homelab-planner",
+            "repository": "jomcgi-org/homelab",
+            "namespace": "factory-r-homelab-planner",
+        },
     ]
     assert config["bindings"] == [
         {
@@ -615,6 +624,7 @@ def test_broker_keeps_apps_subjects_and_secret_writes_separate() -> None:
     assert set(config["actorJwt"]["allowedAtespaces"]) == {
         "factory-r-homelab",
         _REVIEW_NS,
+        "factory-r-homelab-planner",
     }
     # The deploy values set the bot login, so the broker writes its comment.
     assert config["githubReview"] == {
@@ -1022,3 +1032,14 @@ def test_codex_trial_stays_with_one_coding_binding() -> None:
         if doc["kind"] == "Harness" and "workload" in doc["spec"]
     ]
     assert trial_namespaces == ["factory-r-homelab"]
+
+
+def test_planner_agent_has_only_git_egress_and_no_tools() -> None:
+    docs = _render()
+    ns = "factory-r-homelab-planner"
+    agent = _in(docs, "Agent", ns, "homelab-planner")["spec"]
+    assert not agent["template"]["inline"].get("tools")
+    assert agent["egressPolicyRefs"] == [{"name": "github-git"}]
+    assert _in(docs, "Role", ns, "factory-broker")["rules"][1]["resourceNames"] == [
+        "github-git"
+    ]

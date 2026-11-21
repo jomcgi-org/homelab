@@ -1,0 +1,19 @@
+{{/* Helm 3 evaluates deeper template paths first. Prepare the subchart's
+namespaced scope before its controller config and RBAC templates execute.
+An empty RBAC list retains kagent's cluster-wide scope. */}}
+{{- with $kagent := .Subcharts.kagent }}
+{{- $scope := include "kagent.rbacNamespaces" $kagent | fromJsonArray }}
+{{- if $scope }}
+{{- range $repo := $.Values.repositories }}
+{{- with include "factory.plannerNamespace" (dict "root" $ "binding" $repo) }}
+{{- $rbac := $kagent.Values.rbac | default dict }}
+{{- $_ := set $rbac "namespaces" (append $scope . | uniq) }}
+{{- $_ := set $kagent.Values "rbac" $rbac }}
+{{- $kubernetes := $kagent.Values.config.kubernetes }}
+{{- if $kubernetes.watchNamespaces }}
+{{- $_ := set $kubernetes "watchNamespaces" (append $kubernetes.watchNamespaces . | uniq) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

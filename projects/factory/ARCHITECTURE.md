@@ -420,7 +420,8 @@ records how they relate and routes results and feedback between them.
     Core v1.10.0 includes cron and status schedules without Pro. Its
     `agent_schedule` schema and CE `ScheduleDialog.tsx` expose them.
     Status delays and delegation delays stop at 86400 seconds; cron runs
-    carry no issue. Sources:
+    carry no issue. For the planner, set the cron prompt to the exact reviewed
+    schedule name. The connector uses that name for admission. Sources:
     [delegation](https://github.com/croffasia/itsaplan/blob/v1.10.0/apps/api/src/modules/issues/service.ts#L1395),
     [trigger scope](https://github.com/croffasia/itsaplan/blob/v1.10.0/apps/api/src/modules/agents/core/service.ts#L399),
     [schedule schema](https://github.com/croffasia/itsaplan/blob/v1.10.0/packages/db/src/schema/app.ts#L668),

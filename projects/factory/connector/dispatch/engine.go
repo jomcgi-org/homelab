@@ -883,6 +883,9 @@ func (e *Engine) checkStale(ctx context.Context, r *store.Run) error {
 // pending cancellation and the run closes when kagent confirms; a run with
 // nothing in kagent closes at once.
 func (e *Engine) startCancel(ctx context.Context, r *store.Run, reason, why string) error {
+	if r.AgentKey == "homelab-planner" && (r.State == store.RunDispatched || r.State == store.RunCanceling || r.State == store.RunStale) {
+		return e.st.SetRunState(ctx, e.st.DB, r.ID, store.RunCanceling, "")
+	}
 	a, err := e.st.LatestAttempt(ctx, r.ID)
 	if err != nil {
 		return err
@@ -993,6 +996,9 @@ func (e *Engine) step(ctx context.Context, r *store.Run) (result error) {
 	if live && r.StopRequested {
 		return e.stopRun(ctx, r, r.StoppedReason)
 	}
+	if (live || r.State == store.RunCanceling) && r.AgentKey == "homelab-planner" {
+		return e.plannerSession(ctx, r)
+	}
 	if live && r.WorkItemID != 0 {
 		wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
 		if err != nil {
@@ -1069,6 +1075,9 @@ func (e *Engine) step(ctx context.Context, r *store.Run) (result error) {
 // failure, with the reason, only when kagent confirms. A run with nothing
 // in kagent reports at once.
 func (e *Engine) stopRun(ctx context.Context, r *store.Run, reason string) error {
+	if r.AgentKey == "homelab-planner" && (r.State == store.RunDispatched || r.State == store.RunCanceling || r.State == store.RunStale) {
+		return e.st.SetRunState(ctx, e.st.DB, r.ID, store.RunCanceling, "")
+	}
 	a, err := e.st.LatestAttempt(ctx, r.ID)
 	if err != nil {
 		return err
@@ -2677,6 +2686,9 @@ func (e *Engine) HandleClaim(ctx context.Context, agent string, run *itsaplan.Ru
 			e.countRefusal(roleCoordinator, lookupRun, err)
 			e.log.WarnContext(ctx, "claimed run not visible to the coordinator", "run", r.ID, "error", err)
 		}
+	}
+	if agent == "homelab-planner" {
+		return e.step(ctx, r)
 	}
 	if deferred, _ := ctx.Value(deferAdmissionKey{}).(bool); deferred {
 		// Claims join the same queue as existing holds, without spending

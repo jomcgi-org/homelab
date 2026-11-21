@@ -382,6 +382,9 @@ def test_itsaplan_keys_come_from_the_bootstrap_secrets() -> None:
         s["secret"]["name"]: s["secret"]["items"] for s in keys["projected"]["sources"]
     }
     assert sources == {
+        "factory-itsaplan-agent-homelab-planner": [
+            {"key": "apiKey", "path": "homelab-planner"}
+        ],
         "factory-itsaplan-agent-factory-coordinator": [
             {"key": "apiKey", "path": "factory-coordinator"}
         ],
@@ -402,7 +405,12 @@ def test_itsaplan_keys_come_from_the_bootstrap_secrets() -> None:
             "key": "homelab-codex",
             "apiKeyFile": "/var/run/secrets/factory-itsaplan/homelab-codex",
             "concurrency": 10,
-        }
+        },
+        {
+            "key": "homelab-planner",
+            "apiKeyFile": "/var/run/secrets/factory-itsaplan/homelab-planner",
+            "concurrency": 1,
+        },
     ]
 
 
@@ -1014,3 +1022,47 @@ def test_runbook_revert_permissions():
             ("grafana", "configmaps", "runbook-revert-" + owner, "get"),
             ("grafana", "configmaps", "runbook-revert-" + owner, "update"),
         }
+
+
+def test_controller_watches_and_reconciles_planner_namespace() -> None:
+    docs = _render()
+    ns = "factory-r-homelab-planner"
+    _in(docs, "Namespace", None, ns)
+    _in(docs, "Agent", ns, "homelab-planner")
+    config = _in(docs, "ConfigMap", "kagent", "kagent-controller")["data"]
+    watched = yaml.safe_load(config["controller.yaml"])["kubernetes"]["watchNamespaces"]
+    base = yaml.safe_load(_DEPLOY_VALUES.read_text())["kagent"]["rbac"]["namespaces"]
+    assert set(watched) == set(base) | {ns}
+    for role in ("management", "reconciliation"):
+        binding = _in(docs, "RoleBinding", ns, f"kagent-{role}-rolebinding")
+        _in(docs, "Role", ns, binding["roleRef"]["name"])
+        assert {
+            "kind": "ServiceAccount",
+            "namespace": "kagent",
+            "name": "kagent-controller",
+        } in binding["subjects"]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        ["connector.enabled=false", "reviewer.goalReasons.enabled=false"],
+        ["reviewer.enabled=false"],
+        ["connector.plannerSchedules=null"],
+    ],
+)
+def test_disabled_planner_has_no_controller_scope(overrides: list[str]) -> None:
+    docs = _render(overrides)
+    ns = "factory-r-homelab-planner"
+    config = _in(docs, "ConfigMap", "kagent", "kagent-controller")["data"]
+    assert (
+        ns
+        not in yaml.safe_load(config["controller.yaml"])["kubernetes"][
+            "watchNamespaces"
+        ]
+    )
+    assert not any(
+        doc["metadata"].get("namespace") == ns
+        or (doc["kind"] == "Namespace" and doc["metadata"]["name"] == ns)
+        for doc in docs
+    )

@@ -19,6 +19,11 @@ and metrics. Provider and GitHub credentials exist only in this pod.
 {{- $reviewNs := include "factory.reviewerNamespace" (dict "root" $ "binding" .) }}
 {{- $reviewBindings = append $reviewBindings (dict "name" .name "repository" (printf "%s/%s" .owner .repo) "namespace" $reviewNs) }}
 {{- $atespaces = append $atespaces $reviewNs }}
+{{- $plannerNs := include "factory.plannerNamespace" (dict "root" $ "binding" .) }}
+{{- if $plannerNs }}
+{{- $reviewBindings = append $reviewBindings (dict "name" "homelab-planner" "repository" (printf "%s/%s" .owner .repo) "namespace" $plannerNs) }}
+{{- $atespaces = append $atespaces $plannerNs }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- /* The connector's own ServiceAccount fetches connector tokens. */}}
