@@ -1,12 +1,15 @@
 """Exercise factory social flows in a disposable Authentik database."""
 
 from base64 import b32decode
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from time import sleep, time
 from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
+from django.db import connections
 from django.test import Client
 from django.urls import reverse
 
@@ -64,12 +67,13 @@ def sessions(username):
     return AuthenticatedSession.objects.filter(user__username=username).count()
 
 
-def callback(browser, identifier, email="friend@example.org"):
+def callback(browser, identifier, email="friend@example.org", provider="discord"):
     profile = {
         "id": identifier,
         "username": "friend",
         "email": email,
-        "verified": True,
+        "verified_email" if provider == "google" else "verified": True,
+        "name": "Friend",
     }
     with (
         patch.object(
@@ -77,7 +81,7 @@ def callback(browser, identifier, email="friend@example.org"):
         ),
         patch.object(OAuth2Client, "get_profile_info", return_value=profile),
     ):
-        return browser.get("/source/oauth/callback/discord/")
+        return browser.get(f"/source/oauth/callback/{provider}/")
 
 
 def executor(flow):
@@ -174,6 +178,54 @@ def exercise():
 
 
 exercise()
+
+
+def exercise_competing_enrollments():
+    first = Client(HTTP_HOST="localhost")
+    second = Client(HTTP_HOST="localhost")
+    email = "race@example.org"
+    assert callback(first, "51", email).status_code == 302
+    assert callback(second, "52", email.upper(), "google").status_code == 302
+    accounts = User.objects.filter(email__iexact=email)
+    assert not accounts.exists()
+
+    url = executor("enrollment")
+    inserted = Event()
+    release = Event()
+    save = User.save
+
+    def pause_after_insert(user, *args, **kwargs):
+        creating = user._state.adding and user.username == "discord-51"
+        result = save(user, *args, **kwargs)
+        if creating:
+            inserted.set()
+            assert release.wait(30), "Timed out waiting for competing enrollment"
+        return result
+
+    def finish_first():
+        try:
+            return advance(first, first.get(url))
+        finally:
+            connections.close_all()
+
+    with patch.object(User, "save", pause_after_insert), ThreadPoolExecutor(1) as pool:
+        first_result = pool.submit(finish_first)
+        try:
+            assert inserted.wait(30), "First enrollment did not reach its insert"
+            assert not accounts.exists()
+            denied = advance(second, second.get(url))
+            assert not accounts.exists()
+        finally:
+            release.set()
+        assert first_result.result()["to"] == "/source/oauth/login/discord/"
+    assert denied["component"] == "ak-stage-access-denied"
+    assert denied["error_message"] == (
+        "An account already uses this email. Sign in with that account instead."
+    )
+    assert accounts.get().username == "discord-51"
+
+
+exercise_competing_enrollments()
 
 
 def exercise_application():
