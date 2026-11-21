@@ -62,6 +62,7 @@ test(
         "404",
         "missing-factory",
         "off-origin",
+        "wrong-photo-path",
         "edge-beacon",
         "shipped-beacon",
         "third-party-script",
@@ -102,6 +103,8 @@ test(
               respond(res, script, "text/javascript");
             } else {
               const tag = {
+                "wrong-photo-path":
+                  '<img alt="Fixture" src="https://factory-data.jomcgi.dev/manifest.json">',
                 csp: '<script>console.log("inline")</script>',
                 "report-only": '<script>console.log("inline")</script>',
                 // Cloudflare Web Analytics injects this on proxied hosts.
@@ -122,7 +125,12 @@ test(
                       "content-security-policy-report-only":
                         "script-src 'self'; report-uri /report",
                     }
-                  : {};
+                  : mode === "wrong-photo-path"
+                    ? {
+                        "content-security-policy":
+                          "default-src 'self'; img-src https://factory-data.jomcgi.dev",
+                      }
+                    : {};
               respond(
                 res,
                 body,
@@ -140,6 +148,8 @@ test(
                 factoryEnabled: true,
               });
             const expected = {
+              "wrong-photo-path":
+                /off-origin request: https:\/\/factory-data\.jomcgi\.dev\/manifest\.json/,
               "missing-factory": /HTTP 404: .*\/data\/factory\/manifest\.json/,
               contrast: /axe color-contrast/,
               console: /fixture console error/,

@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import { resolve } from "node:path";
 import { client, checkLinks, tier1 } from "./tier1.mjs";
-import { tier2 } from "./browser.mjs";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { checkPage, launchBrowser, tier2 } from "./browser.mjs";
 import { isolateBrowserCache } from "./fixture.mjs";
-import { serveRelease } from "./release-fixture.mjs";
+import { serveRelease, serveFixturePhoto } from "./release-fixture.mjs";
 import { scopeFor } from "./scope.mjs";
 
 test(
@@ -25,7 +27,13 @@ test(
             get: http.get,
             scope: scopeFor(stage),
           });
-          await checkLinks(http.get, await tier2(pages, { checkMaps: false }));
+          await checkLinks(
+            http.get,
+            await tier2(pages, {
+              checkMaps: false,
+              servePhoto: serveFixturePhoto,
+            }),
+          );
         } finally {
           await http.close();
           await server.close();
@@ -34,3 +42,32 @@ test(
     }
   },
 );
+
+test("public trip day loads its display derivative", async (t) => {
+  isolateBrowserCache(t);
+  const sources = JSON.parse(
+    readFileSync(new URL("../data/sources.json", import.meta.url)),
+  );
+  sources.sections.trips.enabled = true;
+  const server = await serveRelease(
+    resolve(process.env.SITE_CHECK_DIST ?? "../web/dist"),
+    "dev",
+    { snapshotSources: sources },
+  );
+  t.after(() => server.close());
+  const browser = await launchBrowser();
+  t.after(() => browser.close());
+  const requested = [];
+  await checkPage(browser, {
+    url: server.origin + "/trips/fixture-trip/day/1",
+    servePhoto(route) {
+      requested.push(route.request().url());
+      return serveFixturePhoto(route);
+    },
+  });
+  assert.ok(
+    requested.includes(
+      "https://factory-data.jomcgi.dev/trips/photos/img_fixture.jpg/display.webp",
+    ),
+  );
+});

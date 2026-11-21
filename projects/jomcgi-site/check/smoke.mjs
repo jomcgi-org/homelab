@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { client, checkLinks, tier1 } from "./tier1.mjs";
 import { checkPage, launchBrowser, tier2 } from "./browser.mjs";
-import { serveRelease } from "./release-fixture.mjs";
+import { serveRelease, serveFixturePhoto } from "./release-fixture.mjs";
 import { scopeFor } from "./scope.mjs";
 
 // Invoked by the image test through the deployed launcher's --self-test mode.
@@ -23,7 +23,10 @@ export async function smoke(dist) {
         get: http.get,
         scope: scopeFor(stage),
       });
-      await checkLinks(http.get, await tier2(pages, { checkMaps: false }));
+      await checkLinks(
+        http.get,
+        await tier2(pages, { checkMaps: false, servePhoto: serveFixturePhoto }),
+      );
       console.log(`image smoke: ${stage} release passed both tiers`);
     } finally {
       await http.close();
