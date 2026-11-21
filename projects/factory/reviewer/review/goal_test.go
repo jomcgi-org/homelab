@@ -1072,3 +1072,34 @@ func TestUncountedAnswerKeepsMainRules(t *testing.T) {
 		t.Fatalf("met verdicts: fixed %+v withdrawn %+v", a.Fixed, a.Withdrawn)
 	}
 }
+
+func TestExposureAcknowledgment(t *testing.T) {
+	f := Finding{ID: "route.yaml:unverified:exposure", Severity: SeverityMedium, Title: "Route permits public access"}
+	for _, tc := range []struct {
+		name    string
+		trusted bool
+		id      string
+		clears  bool
+	}{
+		{"trusted", true, f.ID, true}, {"untrusted", false, f.ID, false}, {"unknown", true, "private unknown ID", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := &IssueContext{Issue: &IssueEvidence{Trusted: tc.trusted}}
+			answer, err := ParseGoal("```json\n{\"criteria\":[],\"overall\":\"met\",\"acknowledged\":[\"" + tc.id + "\"]}\n```")
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := &Report{Findings: []Finding{f}}
+			g := &GoalCheck{Overall: goalMet, Acknowledged: acknowledgedExposures(in, r.Findings, answer.Acknowledged)}
+			applyGoal(r, nil, "HOME", "HOME-633", g)
+			a := Assess(r, nil)
+			if tc.clears {
+				if len(a.Accepted) != 1 || a.Accepted[0].Note != "Trusted issue evidence acknowledges this exposure." || len(a.Blocking) != 0 {
+					t.Fatal(a)
+				}
+			} else if len(a.Accepted) != 0 || len(a.Blocking) != 1 || len(g.Acknowledged) != 0 {
+				t.Fatal(a)
+			}
+		})
+	}
+}

@@ -120,6 +120,11 @@ Ask for evidence of outside state only when a wrong fact exposes something:
 
 For these, a fact the reviewer cannot read is `unverified` at medium, and
 Joe's decision on the PR clears it ("Clearing a finding without a fix").
+Use `<path>:unverified:exposure` for these findings, adding a symbol when
+needed. The private goal check receives their public IDs and titles. When
+the accepted issue is trusted and it or a trusted linked decision
+acknowledges the exposure, the service marks that ID justified with a fixed
+note.
 Leave out every other unknown about outside state, or name its check after
 rollout in one low finding. This includes a token's effective scopes and
 setup outside the repository, such as a secret, an account setting or a

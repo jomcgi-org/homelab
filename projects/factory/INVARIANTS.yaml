@@ -67,3 +67,10 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-13
+  statement: The goal check can justify only listed exposure IDs under a trusted accepted issue, with a service-written note.
+  mechanism:
+  - projects/factory/reviewer/review/goal.go
+  - projects/factory/reviewer/review/report.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live

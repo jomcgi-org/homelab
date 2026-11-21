@@ -57,6 +57,7 @@ type InvariantScopeAnswer struct {
 // Report is the reviewer agent's findings and optional activation assessment.
 // The service decides the conclusion; any verdict the agent declares is ignored.
 type Report struct {
+	acknowledged    map[string]string
 	InvariantScopes []InvariantScopeAnswer `json:"-"`
 	Summary         string                 `json:"summary"`
 	// Activation is independently assessed text, never an instruction copied
@@ -645,6 +646,8 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 			f.Severity, f.Lowered = sev, ""
 		}
 		switch {
+		case exposureFinding(f) && r.acknowledged[f.ID] == f.Title && f.Title != "":
+			a.Accepted = append(a.Accepted, Blocked{Finding: f, Repeated: priorByID[f.ID].ID != "", Note: "Trusted issue evidence acknowledges this exposure."})
 		case f.Severity == SeverityLow && (f.Lowered != "" || f.Verdict == goalOwned):
 			a.Deferred = append(a.Deferred, f)
 		case f.Severity == SeverityLow:
