@@ -38,15 +38,17 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   it searches the reviewed commit, including definitions outside the diff.
   The connector posts the implementer's evidence by criterion on the private
   ticket, addressed to the reviewer and bound to the PR, commit and reply
-  revision. This private channel may carry the implementer's quoted, bounded
-  final-answer evidence. It grants no decision or approval authority. Only
-  the goal check reads this evidence.
-  The reviewer checks each claim against that commit without running PR
+  revision. The connector bounds the final-answer evidence. Only the goal
+  check reads the reply. It quotes each line and sanitizes the reply inside
+  a delimited untrusted block, so the text cannot close the block or start
+  a line outside the quote. The reply grants no decision or approval authority.
+  The goal check verifies each claim against that commit without running PR
   commands. Only verified facts affect the verdict. The ticket holds the
   replies, and the public PR receives the service's fixed acceptance result.
-  [Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-678#comment-8639). On a later head it also receives
-  the previous head's goal verdicts and private reply on the same issue
-  evidence, quoted, and the names of the files changed since. Its answer counts only as
+  [Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-678#comment-8639).
+  On a later head with the same issue evidence, the goal check receives the
+  previous verdicts, the previous private review reply in an untrusted
+  block, and the names of the files changed since. Its answer counts only as
   criterion numbers and the verdicts `met`, `not_met`, `after_rollout`,
   `unclear` and (for criteria only) `owned`. An `owned` answer supplies a private
   `follow_up` key. The service checks the linked issue is open and lists the
