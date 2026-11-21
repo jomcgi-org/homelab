@@ -44,6 +44,7 @@ flowchart LR
 | discord | Routes mentions to Bosun | `discord/` | Built from this repo | Discord messages | Bot token and Discord memory access |
 | alert-relay | Forwards Alertmanager notifications to Discord | `alert-relay/` | Built from this repo | Alertmanager webhooks | Discord webhook URL |
 | harness | Private Codex and Claude harness images with Semgrep Mandoline | `harness/` | Built from this repo on the pinned Codex and Claude harness images | Task and checkout | Gateway placeholders |
+| mandoline | Bounds local analysis processes | `mandoline/` | Built from this repo | Tool output and checkout | None |
 
 ## Current state
 
