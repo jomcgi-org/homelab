@@ -34,18 +34,19 @@ const maxUsageEvent = 32 << 20
 // tokenObserver sees a copy of each chunk before the relay writes it. It
 // retains one bounded SSE event (or one JSON response), not the stream.
 type tokenObserver struct {
-	providerFailed         bool
-	traceOnly              bool
-	claudeSpan             trace.Span
-	sse                    bool
-	line, data             []byte
-	lineBytes              int
-	lastByte               byte
-	jsonDepth              int
-	jsonString, jsonEscape bool
-	event                  string
-	overflow, recorded     bool
-	onUsage                func(TokenUsage)
+	providerFailed           bool
+	traceOnly                bool
+	claudeSpan               trace.Span
+	sse                      bool
+	line, data               []byte
+	claudeKey, claudeCapture bool
+	lineBytes                int
+	lastByte                 byte
+	jsonDepth                int
+	jsonString, jsonEscape   bool
+	event                    string
+	overflow, recorded       bool
+	onUsage                  func(TokenUsage)
 	// sniffed is set once the first non-space body byte chose the format:
 	// a Responses JSON body starts with '{', anything else is an event
 	// stream, whatever the Content-Type says.
@@ -60,6 +61,11 @@ func (o *tokenObserver) write(p []byte) {
 	if o.recorded {
 		return
 	}
+	limit := maxUsageEvent
+	if o.claudeSpan != nil {
+		// Claude observes usage for tracing on up to 64 concurrent streams.
+		limit = 64 << 10
+	}
 	if !o.sse && !o.sniffed {
 		for _, c := range p {
 			if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
@@ -70,8 +76,12 @@ func (o *tokenObserver) write(p []byte) {
 			break
 		}
 	}
+	if !o.sse && o.claudeSpan != nil {
+		o.writeClaudeJSON(p, limit)
+		return
+	}
 	if !o.sse {
-		if len(o.data)+len(p) > maxUsageEvent {
+		if len(o.data)+len(p) > limit {
 			o.overflow = true
 			o.data = nil
 		}
@@ -115,7 +125,7 @@ func (o *tokenObserver) write(p []byte) {
 		if i > 0 {
 			o.lastByte = p[i-1]
 		}
-		if len(o.line)+len(o.data)+i > maxUsageEvent {
+		if len(o.line)+len(o.data)+i > limit {
 			o.overflow = true
 			o.line = nil
 			o.data = nil
@@ -160,8 +170,64 @@ func (o *tokenObserver) write(p []byte) {
 	}
 }
 
+// Retain only a top-level usage or count_tokens member. Depth and string
+// state span writes, so skipped content can be arbitrarily large.
+func (o *tokenObserver) writeClaudeJSON(p []byte, limit int) {
+	for _, c := range p {
+		if !o.jsonString && o.jsonDepth == 1 && (c == ',' || c == '}') {
+			if o.claudeCapture {
+				o.parse(append(o.data, '}'), false)
+			}
+			o.data = nil
+			o.claudeCapture = false
+			o.claudeKey = c == ','
+		} else if o.claudeKey && !o.jsonString && c == ':' {
+			var key string
+			if json.Unmarshal(o.data, &key) == nil && (key == "usage" || key == "input_tokens") {
+				o.claudeCapture = true
+				o.data = append(append([]byte{'{'}, o.data...), ':')
+			} else {
+				o.data = nil
+			}
+			o.claudeKey = false
+		} else if o.claudeCapture || o.claudeKey {
+			// Ignore whitespace outside strings to keep padded keys small.
+			if !o.jsonString && (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+				continue
+			}
+			if len(o.data) >= limit || (o.claudeKey && len(o.data) >= 80) {
+				o.claudeCapture, o.claudeKey = false, false
+				o.data = nil
+			} else {
+				o.data = append(o.data, c)
+			}
+		}
+		if o.jsonString {
+			if o.jsonEscape {
+				o.jsonEscape = false
+			} else if c == '\\' {
+				o.jsonEscape = true
+			} else if c == '"' {
+				o.jsonString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			o.jsonString = true
+		case '{', '[':
+			o.jsonDepth++
+			if o.jsonDepth == 1 {
+				o.claudeKey = true
+			}
+		case '}', ']':
+			o.jsonDepth--
+		}
+	}
+}
+
 func (o *tokenObserver) finish() {
-	if !o.sse && !o.overflow {
+	if !o.sse && o.claudeSpan == nil && !o.overflow {
 		o.parse(o.data, false)
 	}
 }

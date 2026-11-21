@@ -49,8 +49,10 @@ type Claude struct {
 	MaxConcurrent     int
 	StreamIdleTimeout time.Duration
 
-	once  sync.Once
-	slots chan struct{}
+	bodyMu   sync.Mutex
+	reserved int64
+	once     sync.Once
+	slots    chan struct{}
 }
 
 func (c *Claude) init() {
@@ -67,7 +69,7 @@ func (c *Claude) init() {
 		if c.StreamIdleTimeout <= 0 {
 			c.StreamIdleTimeout = DefaultStreamIdleTimeout
 		}
-		c.slots = make(chan struct{}, c.MaxConcurrent)
+		c.slots = make(chan struct{}, min(c.MaxConcurrent, DefaultMaxConcurrent))
 	})
 }
 
@@ -125,33 +127,50 @@ func (c *Claude) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 		return writeError(w, http.StatusServiceUnavailable, ErrRelayBusy, "busy", nil)
 	}
 	// Inspect the exact model sent upstream. Compressed input cannot bypass
-	// inspection; re-encoding JSON removes ambiguous duplicate object keys.
+	// inspection; ambiguous model keys are rejected.
 	if enc := r.Header.Get("Content-Encoding"); enc != "" && !strings.EqualFold(enc, "identity") {
 		return writeError(w, http.StatusUnsupportedMediaType, "bad_request", "bad_request", nil)
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, c.MaxRequestBytes))
-	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			return writeError(w, http.StatusRequestEntityTooLarge, ErrRequestTooLarge, "bad_request", nil)
-		}
+	// invariant: FACT-14
+	// Reserve before reading. Unknown lengths reserve a full request, and
+	// ReadFull below enforces the reservation even for inconsistent lengths.
+	size := r.ContentLength
+	limit := min(c.MaxRequestBytes, int64(DefaultMaxRequestBytes))
+	if size < 0 {
+		size = limit
+	}
+	if size > limit {
+		return writeError(w, http.StatusRequestEntityTooLarge, ErrRequestTooLarge, "bad_request", nil)
+	}
+	c.bodyMu.Lock()
+	if size > DefaultMaxRequestBytes-c.reserved {
+		c.bodyMu.Unlock()
+		w.Header().Set("Retry-After", "5")
+		return writeError(w, http.StatusServiceUnavailable, ErrRelayBusy, "busy", nil)
+	}
+	c.reserved += size
+	c.bodyMu.Unlock()
+	defer func() { c.bodyMu.Lock(); c.reserved -= size; c.bodyMu.Unlock() }()
+	body := make([]byte, size+1)
+	n, err := io.ReadFull(r.Body, body)
+	if err == nil {
+		return writeError(w, http.StatusRequestEntityTooLarge, ErrRequestTooLarge, "bad_request", nil)
+	}
+	if err != io.EOF && err != io.ErrUnexpectedEOF {
 		return writeError(w, http.StatusBadRequest, "bad_request", "bad_request", nil)
 	}
-	var payload map[string]json.RawMessage
-	var model string
-	if json.Unmarshal(body, &payload) != nil || json.Unmarshal(payload["model"], &model) != nil || model == "" {
-		return writeError(w, http.StatusBadRequest, "bad_request", "bad_request", nil)
+	body = body[:n]
+	model, denied := claudeRequestModel(body, c.ModelAllowlist[id.Subject])
+	if denied {
+		return writeError(w, http.StatusForbidden, ErrClaudeModelDenied, "model_denied", nil)
 	}
-	for key := range payload {
-		if key != "model" && strings.EqualFold(key, "model") {
-			return writeError(w, http.StatusBadRequest, "bad_request", "bad_request", nil)
-		}
+	if model == "" {
+		return writeError(w, http.StatusBadRequest, "bad_request", "bad_request", nil)
 	}
 	if !slices.Contains(c.ModelAllowlist[id.Subject], model) {
 		return writeError(w, http.StatusForbidden, ErrClaudeModelDenied, "model_denied", nil)
 	}
 	trace.SpanFromContext(r.Context()).SetAttributes(attribute.String("gen_ai.request.model", model))
-	body, _ = json.Marshal(payload)
 	_ = http.NewResponseController(w).SetReadDeadline(time.Time{})
 
 	token, err := os.ReadFile(c.TokenFile)
@@ -193,6 +212,79 @@ func (c *Claude) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 		observer = &tokenObserver{claudeSpan: span, sse: isSSE(resp.Header.Get("Content-Type"))}
 	}
 	return streamResponse(w, resp, c.Logger, "claude", c.StreamIdleTimeout, observer)
+}
+
+// Walk validated JSON in place so large prompts and wide objects do not
+// require a decoded object graph or a second serialized body.
+func claudeRequestModel(body []byte, allowed []string) (string, bool) {
+	if !json.Valid(body) {
+		return "", false
+	}
+	body = bytes.TrimSpace(body)
+	if body[0] != '{' {
+		return "", false
+	}
+	depth := 0
+	key, wantModel := false, false
+	model := ""
+	for i := 0; i < len(body); i++ {
+		switch body[i] {
+		case '{', '[':
+			depth++
+			key = depth == 1
+		case '}', ']':
+			depth--
+		case ',':
+			key = depth == 1
+		case '"':
+			start := i
+			for i++; body[i] != '"'; i++ {
+				if body[i] == '\\' {
+					i++
+				}
+			}
+			if depth != 1 {
+				continue
+			}
+			raw := body[start : i+1]
+			if key {
+				key = false
+				// Five JSON-escaped ASCII letters need at most 30 bytes.
+				if len(raw) > 32 {
+					continue
+				}
+				var field string
+				if json.Unmarshal(raw, &field) == nil && strings.EqualFold(field, "model") {
+					if field != "model" {
+						return "", false
+					}
+					if model != "" {
+						return "", true
+					}
+					wantModel = true
+				}
+			} else if wantModel {
+				// Each byte of an allowed UTF-8 name needs at most six
+				// bytes as a JSON escape, plus the surrounding quotes.
+				longest := 0
+				for _, name := range allowed {
+					longest = max(longest, len(name))
+				}
+				if (len(raw)-2+5)/6 > longest {
+					return "", true
+				}
+				if json.Unmarshal(raw, &model) != nil || model == "" {
+					return "", false
+				}
+				wantModel = false
+			}
+		case ':':
+			if wantModel && bytes.TrimLeft(body[i+1:], " \t\r\n")[0] != '"' {
+				return "", false
+			}
+		}
+	}
+	return model, false
 }
 
 // kagent v1.0.1 injects Anthropic actorJwt into x-api-key without a prefix.

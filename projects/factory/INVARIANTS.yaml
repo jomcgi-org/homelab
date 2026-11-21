@@ -67,3 +67,9 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-14
+  statement: Claude relay requests reserve at most 32 MiB of aggregate payload capacity before reading, including full-size reservations for unknown lengths.
+  mechanism:
+  - projects/factory/broker/relay/claude.go
+  test: //projects/factory/broker/relay:relay_test
+  state: live
