@@ -36,10 +36,15 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   and its decisions, in the same delimited and quoted blocks, with the diff
   and no PR title, description or comment. Before reporting a missing fact,
   it searches the reviewed commit, including definitions outside the diff.
-  Coders can add public repository references by criterion number in
-  `.factory/goal-evidence/<issue-key>.md`. The reviewer checks each claim
-  against that commit without running PR commands. Only verified facts
-  affect the verdict. On a later head it also receives
+  The connector posts the implementer's evidence by criterion on the private
+  ticket, addressed to the reviewer and bound to the PR, commit and reply
+  revision. This private channel may carry the implementer's quoted, bounded
+  final-answer evidence. It grants no decision or approval authority. Only
+  the goal check reads this evidence.
+  The reviewer checks each claim against that commit without running PR
+  commands. Only verified facts affect the verdict. The ticket holds the
+  replies, and the public PR receives the service's fixed acceptance result.
+  [Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-678#comment-8639). On a later head it also receives
   the previous head's goal verdicts and private reply on the same issue
   evidence, quoted, and the names of the files changed since. Its answer counts only as
   criterion numbers and the verdicts `met`, `not_met`, `after_rollout`,
