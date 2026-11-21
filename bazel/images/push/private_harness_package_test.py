@@ -38,7 +38,9 @@ def test_new_package_is_checked_again_after_the_harmless_push(visibility):
         if visibility == "private":
             guard.verify_private(REPO, "test-token", "crane")
         else:
-            with pytest.raises(guard.PrivacyError, match="no verified private visibility"):
+            with pytest.raises(
+                guard.PrivacyError, match="no verified private visibility"
+            ):
                 guard.verify_private(REPO, "test-token", "crane")
     seed.assert_called_once_with(REPO, "crane")
 

@@ -33,13 +33,14 @@ py_library(
     name = "private_harness_package",
     srcs = ["private_harness_package.py"],
     imports = ["."],
+    visibility = ["//:__subpackages__"],
 )
 
 py_test(
     name = "private_harness_package_test",
     srcs = ["private_harness_package_test.py"],
     deps = [
-        ":private_harness_package",
+        "//bazel/images/push:private_harness_package",
         "@pip//pytest",
     ],
 )
