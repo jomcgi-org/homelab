@@ -67,9 +67,30 @@ type Report struct {
 	Previous       []Previous `json:"previous"`
 }
 
+// Suggestion replaces the inclusive head-side range on the finding's path.
+type Suggestion struct {
+	Start       int     `json:"start"`
+	End         int     `json:"end"`
+	Replacement *string `json:"replacement"`
+}
+
+// UnmarshalJSON lets malformed optional advice fall away without losing the finding.
+func (q *Suggestion) UnmarshalJSON(data []byte) error {
+	type wire Suggestion
+	var decoded wire
+	if err := json.Unmarshal(data, &decoded); err == nil {
+		*q = Suggestion(decoded)
+	}
+	return nil
+}
+
 // Finding is one review finding with an ID that stays stable across
 // rounds: `<path>:<rule>` (REVIEW.md "Report").
 type Finding struct {
+	StartLine  int         `json:"start_line,omitempty"`
+	Suggestion *Suggestion `json:"suggestion,omitempty"`
+	threadID   int64
+
 	ID       string `json:"id"`
 	Severity string `json:"severity"`
 	Path     string `json:"path,omitempty"`
@@ -1388,6 +1409,8 @@ func clearedOf(a Assessment, r *Report) ([]Cleared, bool) {
 // storable bounds descriptive text for the hidden State. Identity and
 // severity survive unchanged.
 func storable(f Finding) Finding {
+	f.Suggestion = nil
+	f.threadID = 0
 	f.Title = storeText(f.Title, maxTitle)
 	f.Path = storeText(f.Path, maxStoredPath)
 	f.Detail = storeText(f.Detail, maxStoredDetail)
@@ -1514,6 +1537,10 @@ func writeFindingN(s *strings.Builder, f Finding, detail int) {
 	fmt.Fprintf(s, " %s (`%s`)", oneLine(f.Title, maxTitle), oneLine(f.ID, maxTitle))
 	if f.Detail != "" && detail > 0 {
 		fmt.Fprintf(s, ": %s", oneLine(f.Detail, detail))
+	}
+	if q := f.Suggestion; q != nil && q.Replacement != nil {
+		data, _ := json.Marshal(*q.Replacement)
+		fmt.Fprintf(s, "\n  Suggested replacement for %s:%d-%d (JSON string): %s", cleanPath(f.Path), q.Start, q.End, data)
 	}
 	s.WriteString("\n")
 }

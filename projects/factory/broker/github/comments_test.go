@@ -431,3 +431,86 @@ func TestCommentProxyMatchesTheMarkerAndRejectsTruncatedPages(t *testing.T) {
 		t.Fatalf("truncated page = %d %s", rec.Code, rec.Body)
 	}
 }
+
+func TestInlineReviewLifecycle(t *testing.T) {
+	h, _, p := newCommentHarness(t)
+	head := strings.Repeat("a", 40)
+	var nodes []map[string]any
+	var posted, resolved int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/graphql":
+			var in struct {
+				Query     string
+				Variables map[string]any
+			}
+			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+				t.Error(err)
+			}
+			if strings.HasPrefix(in.Query, "mutation") {
+				if in.Variables["id"] != "old" || in.Variables["body"] != "Cleared on "+head+"." {
+					t.Error(in.Variables)
+				}
+				resolved++
+				fmt.Fprint(w, `{"data":{}}`)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": map[string]any{"headRefOid": head, "reviewThreads": map[string]any{"nodes": nodes}}}}})
+		case "/repos/example-org/homelab/pulls/7/reviews":
+			var in struct {
+				Event    string
+				Comments []map[string]any
+			}
+			_ = json.NewDecoder(r.Body).Decode(&in)
+			if r.Method != "POST" || in.Event != "COMMENT" || len(in.Comments) != 25 {
+				t.Errorf("unexpected review %s: %d", in.Event, len(in.Comments))
+			}
+			for _, c := range in.Comments {
+				posted++
+				nodes = append(nodes, testThread(fmt.Sprint(posted), bot, c["body"].(string), head))
+			}
+			fmt.Fprint(w, `{"id":42}`)
+		default:
+			if !strings.HasPrefix(r.URL.Path, "/app/") {
+				t.Errorf("unexpected operation %s", r.URL.Path)
+			}
+			h.gh.Config.Handler.ServeHTTP(w, r)
+		}
+	}))
+	defer srv.Close()
+	h.minter.App.APIURL = srv.URL
+	nodes = append(nodes, testThread("old", bot, inlinePrefix+strings.Repeat("0", 64)+" -->\nold", "prior"), testThread("someone", "human", inlinePrefix+strings.Repeat("c", 64)+" -->\nother", "prior"))
+	in := map[string]any{"repository": "example-org/homelab", "number": 7, "head": head}
+	var items []map[string]any
+	var active []string
+	for i := 1; i <= 26; i++ {
+		key := fmt.Sprintf("%064x", i)
+		active = append(active, key)
+		items = append(items, map[string]any{"key": key, "path": "a", "start": 1, "end": 1, "body": "finding"})
+	}
+	in["findings"], in["active"] = items, active
+	send := func() {
+		body, _ := json.Marshal(in)
+		w := doProxy(p, "POST", "/?inline=1", string(body))
+		if w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
+	send()
+	if posted != 25 || resolved != 1 {
+		t.Fatal(posted, resolved)
+	}
+	nodes[0]["isResolved"] = true
+	// On a later head the existing 25 persist without another notification.
+	head = strings.Repeat("b", 40)
+	in["head"] = head
+	in["findings"] = items[:25]
+	send()
+	if posted != 25 || resolved != 1 {
+		t.Fatal(posted, resolved)
+	}
+}
+
+func testThread(id, author, body, head string) map[string]any {
+	return map[string]any{"id": id, "comments": map[string]any{"nodes": []map[string]any{{"url": "https://github.com/example-org/homelab/pull/7#discussion_r123", "body": body, "author": map[string]string{"login": author}, "originalCommit": map[string]string{"oid": head}}}}}
+}

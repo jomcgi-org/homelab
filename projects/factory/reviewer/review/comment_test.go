@@ -1235,3 +1235,64 @@ var _ Comments = (*github.Client)(nil)
 
 // The deployed reviewer uses the broker client for its comments.
 var _ Comments = (*github.BrokerComments)(nil)
+
+func TestInlineSuggestionUsesOnlyChangedLines(t *testing.T) {
+	patch := "@@ -4,3 +4,4 @@\n line\n-old\n+new\n+extra\n tail"
+	for _, tc := range []struct {
+		name, path, text string
+		start, end       int
+		want             bool
+	}{
+		{"changed", "a", "replacement", 5, 6, true},
+		{"context", "a", "replacement", 4, 5, false},
+		{"end outside", "a", "replacement", 5, 7, false},
+		{"gated", "REVIEW.md", "replacement", 5, 6, false},
+		{"fence", "a", "```", 5, 5, false},
+		{"too long", "a", strings.Repeat("x\n", 51), 5, 5, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Report{Findings: []Finding{{Path: tc.path, Line: 5, Suggestion: &Suggestion{Start: tc.start, End: tc.end, Replacement: &tc.text}}}}
+			validateSuggestions(r, &Binding{HumanGatePaths: []string{"REVIEW.md"}}, &inputs{files: []github.PullRequestFile{{Path: tc.path, Patch: patch}}})
+			if (r.Findings[0].Suggestion != nil) != tc.want {
+				t.Fatal(r.Findings[0])
+			}
+			if tc.want {
+				var summary strings.Builder
+				writeFinding(&summary, r.Findings[0])
+				if !strings.Contains(summary.String(), "a:5-6") || !strings.Contains(summary.String(), tc.text) {
+					t.Fatal(summary.String())
+				}
+			}
+		})
+	}
+}
+
+type captureInline struct {
+	Comments
+	findings []github.InlineFinding
+}
+
+func (c *captureInline) SyncInline(_ context.Context, _ string, _ int, _ string, fs []github.InlineFinding, _ []string) (map[string]int64, error) {
+	c.findings = fs
+	return map[string]int64{inlineKey("a:correctness"): 123}, nil
+}
+
+func TestInlineAnchorsAndSummary(t *testing.T) {
+	writer := &captureInline{}
+	engine := Engine{cfg: Config{Comments: writer}}
+	in := &inputs{files: []github.PullRequestFile{{Path: "a", Patch: "@@ -1 +1,2 @@\n context\n+changed"}}}
+	replacement := "fixed"
+	r := &Report{Findings: []Finding{{ID: "a:correctness", Path: "a", Line: 2, Severity: "high", Title: "Changed line", Detail: "Reason", Suggestion: &Suggestion{Start: 2, End: 2, Replacement: &replacement}}, {ID: "a:validation", Path: "a", Line: 1, Severity: "medium", Title: "Context line"}}}
+	validateSuggestions(r, &Binding{}, in)
+	a := Assess(r, nil)
+	engine.postInline(context.Background(), &Binding{}, github.PullRequest{}, &a, in, r)
+	if len(writer.findings) != 1 || writer.findings[0].End != 2 || !strings.Contains(writer.findings[0].Body, "```suggestion\nfixed\n```") {
+		t.Fatal(writer.findings)
+	}
+	body := findingsSection(a, r)
+	for _, want := range []string{"Changed line", "Context line", "#discussion_r123"} {
+		if !strings.Contains(body, want) {
+			t.Fatal(body)
+		}
+	}
+}

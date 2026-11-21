@@ -10,8 +10,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // MaxCommentBody is the largest comment body the proxy writes, in bytes.
@@ -47,6 +49,8 @@ const maxFindPage = 48 << 20
 // pull request, and edit one that Author wrote. Callers wrap it with TokenReview
 // authorization.
 type CommentProxy struct {
+	// Serialize discovery and writes so overlapping reconciliations cannot create duplicate threads.
+	inlineMu sync.Mutex
 	// Minter mints the comment token for a bound repository.
 	Minter *Minter
 	// Author is the reviewer App's bot login.
@@ -86,6 +90,10 @@ func (p *CommentProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		p.find(w, r)
 	case http.MethodPost:
+		if r.URL.Query().Get("inline") == "1" {
+			p.inline(w, r)
+			return
+		}
 		p.create(w, r)
 	case http.MethodPatch:
 		p.update(w, r)
@@ -261,7 +269,11 @@ func (p *CommentProxy) send(ctx context.Context, repo, method, path string, body
 		rd = bytes.NewReader(data)
 	}
 	a := p.Minter.App
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(a.APIURL, "/")+"/repos/"+repo+path, rd)
+	endpoint := "/repos/" + repo + path
+	if path == "/graphql" {
+		endpoint = path
+	}
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(a.APIURL, "/")+endpoint, rd)
 	if err != nil {
 		return nil, err
 	}
@@ -345,4 +357,172 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+type inlineRequest struct {
+	Repository string
+	Number     int
+	Head       string
+	Findings   []struct {
+		Key, Path, Body string
+		Start, End      int
+	}
+	Active []string
+}
+
+const inlinePrefix = "<!-- factory-review:inline "
+
+type inlineThread struct {
+	ID         string
+	IsResolved bool
+	Comments   struct {
+		Nodes []struct {
+			URL            string
+			Body           string
+			Author         struct{ Login string }
+			OriginalCommit struct{ Oid string }
+		}
+	}
+}
+
+func (p *CommentProxy) graphql(ctx context.Context, repo, query string, vars map[string]any, out any) error {
+	var resp struct {
+		Data   json.RawMessage
+		Errors []json.RawMessage
+	}
+	if err := p.call(ctx, repo, http.MethodPost, "/graphql", map[string]any{"query": query, "variables": vars}, &resp); err != nil {
+		return err
+	}
+	if len(resp.Errors) > 0 {
+		return errors.New("GitHub review thread operation failed")
+	}
+	if out != nil {
+		return json.Unmarshal(resp.Data, out)
+	}
+	return nil
+}
+
+func (p *CommentProxy) threads(ctx context.Context, in inlineRequest) (map[string]inlineThread, int, error) {
+	owner, name, ok := strings.Cut(in.Repository, "/")
+	if !ok {
+		return nil, 0, errNotAPR
+	}
+	vars := map[string]any{"owner": owner, "repo": name, "number": in.Number}
+	threads := map[string]inlineThread{}
+	count := 0
+	for page := 0; page < FindPages; page++ {
+		var data struct {
+			Repository struct {
+				PullRequest struct {
+					HeadRefOid    string
+					ReviewThreads struct {
+						Nodes    []inlineThread
+						PageInfo struct {
+							HasNextPage bool
+							EndCursor   string
+						}
+					}
+				}
+			}
+		}
+		err := p.graphql(ctx, in.Repository, `query($owner:String!,$repo:String!,$number:Int!,$after:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){headRefOid reviewThreads(first:20,after:$after){nodes{id isResolved comments(first:1){nodes{url body author{login} originalCommit{oid}}}} pageInfo{hasNextPage endCursor}}}}}`, vars, &data)
+		if err != nil {
+			return nil, 0, err
+		}
+		pr := data.Repository.PullRequest
+		if pr.HeadRefOid != in.Head {
+			return nil, 0, errors.New("review head has changed")
+		}
+		for _, t := range pr.ReviewThreads.Nodes {
+			if len(t.Comments.Nodes) == 0 {
+				continue
+			}
+			root := t.Comments.Nodes[0]
+			marker, _, _ := strings.Cut(root.Body, "\n")
+			key, found := strings.CutPrefix(marker, inlinePrefix)
+			if !found || !strings.HasSuffix(key, " -->") || !strings.EqualFold(root.Author.Login, p.Author) {
+				continue
+			}
+			threads[strings.TrimSuffix(key, " -->")] = t
+			if root.OriginalCommit.Oid == in.Head {
+				count++
+			}
+		}
+		if !pr.ReviewThreads.PageInfo.HasNextPage {
+			return threads, count, nil
+		}
+		vars["after"] = pr.ReviewThreads.PageInfo.EndCursor
+	}
+	return nil, 0, errors.New("incomplete review thread listing")
+}
+
+func (p *CommentProxy) inline(w http.ResponseWriter, r *http.Request) {
+	var in inlineRequest
+	if !p.decode(w, r, "inline", &in) {
+		return
+	}
+	if in.Number <= 0 || in.Head == "" {
+		p.fail(w, "inline", in.Repository, 400, "bad_request", nil)
+		return
+	}
+	p.inlineMu.Lock()
+	defer p.inlineMu.Unlock()
+	ctx := r.Context()
+	threads, count, err := p.threads(ctx, in)
+	if err != nil {
+		p.failCall(w, "inline", in.Repository, err)
+		return
+	}
+	for key, t := range threads {
+		if slices.Contains(in.Active, key) || t.IsResolved || t.Comments.Nodes[0].OriginalCommit.Oid == in.Head {
+			continue
+		}
+		err = p.graphql(ctx, in.Repository, `mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body}){comment{id}} resolveReviewThread(input:{threadId:$id}){thread{id}}}`, map[string]any{"id": t.ID, "body": "Cleared on " + in.Head + "."}, nil)
+		if err != nil {
+			p.failCall(w, "inline", in.Repository, err)
+			return
+		}
+	}
+	var comments []map[string]any
+	for _, f := range in.Findings {
+		if _, ok := threads[f.Key]; ok || count >= 25 {
+			continue
+		}
+		body := inlinePrefix + f.Key + " -->\n" + f.Body
+		if len(f.Key) != 64 || strings.ContainsAny(f.Key, "\r\n") || !validBody(body) || f.Start < 1 || f.End < f.Start {
+			p.fail(w, "inline", in.Repository, 400, "bad_finding", nil)
+			return
+		}
+		c := map[string]any{"path": f.Path, "line": f.End, "side": "RIGHT", "body": body}
+		if f.Start != f.End {
+			c["start_line"] = f.Start
+			c["start_side"] = "RIGHT"
+		}
+		comments = append(comments, c)
+		count++
+	}
+	if len(comments) > 0 {
+		var out struct{ ID int64 }
+		err = p.call(ctx, in.Repository, http.MethodPost, fmt.Sprintf("/pulls/%d/reviews", in.Number), map[string]any{"commit_id": in.Head, "event": "COMMENT", "body": "Review findings on changed lines.", "comments": comments}, &out)
+		if err == nil {
+			threads, _, err = p.threads(ctx, in)
+		}
+		if err != nil {
+			p.failCall(w, "inline", in.Repository, err)
+			return
+		}
+	}
+	links := map[string]int64{}
+	for _, key := range in.Active {
+		if t, ok := threads[key]; ok {
+			_, fragment, ok := strings.Cut(t.Comments.Nodes[0].URL, "#discussion_r")
+			if ok {
+				id, err := strconv.ParseInt(fragment, 10, 64)
+				if err == nil {
+					links[key] = id
+				}
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, links)
 }

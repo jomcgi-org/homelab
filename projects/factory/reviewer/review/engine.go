@@ -2751,6 +2751,7 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 			l.WarnContext(ctx, "the review reply has no usable report", "task", task.ID, "error", err, "reply_bytes", len(reply))
 			return result{reason: "the reviewer's reply had no usable findings report: " + oneLine(err.Error(), maxTitle) + "."}
 		}
+		validateSuggestions(r, b, in)
 		findings, verdict := codeReviewResult(r, in.prior.Previous(), b.ItsaplanProject)
 		recordFindings(code, findings)
 		code.SetAttributes(attribute.String("review.verdict", verdict), attribute.String("review.outcome", "assessed"))
@@ -2870,6 +2871,9 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 		o.Output.Text = withSession(o.Output.Text, session)
 		if stored, _ := LoadState(o.Output.Text); stored.Incomplete {
 			a.Incomplete = true
+		}
+		if !a.Incomplete {
+			e.postInline(ctx, b, pr, &a, in, r)
 		}
 		o.Comment = reviewComment(a, r, b, gate)
 		if summary := acceptanceSummary(st.Goal); !a.Incomplete && summary != "" && st.Goal.Head == pr.HeadSHA {

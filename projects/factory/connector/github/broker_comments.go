@@ -159,3 +159,18 @@ func (b *BrokerComments) do(ctx context.Context, method, query string, in, out a
 	}
 	return nil
 }
+
+// InlineFinding is a validated right-side diff comment. Key is the digest of the stable finding ID.
+type InlineFinding struct {
+	Key   string
+	Path  string
+	Start int
+	End   int
+	Body  string
+}
+
+func (b *BrokerComments) SyncInline(ctx context.Context, repo string, number int, head string, findings []InlineFinding, active []string) (map[string]int64, error) {
+	var links map[string]int64
+	err := b.do(ctx, http.MethodPost, "?inline=1", map[string]any{"repository": repo, "number": number, "head": head, "findings": findings, "active": active}, &links)
+	return links, err
+}

@@ -73,3 +73,9 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: Inline reviewer findings use COMMENT reviews and reconcile only the reviewer's own finding threads.
+  mechanism:
+  - projects/factory/broker/github/comments.go
+  test: //projects/factory/broker/github:github_test
+  state: live
