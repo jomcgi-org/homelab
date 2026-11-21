@@ -94,11 +94,6 @@ func (e *Engine) preparePlannerResult(ctx context.Context) error {
 			return err
 		}
 		for _, p := range items {
-			description, fits := p.Description(instructions)
-			if !fits {
-				dropped++
-				continue
-			}
 			duplicate, checked := duplicates[p.Fingerprint]
 			if !checked {
 				dropped++
@@ -110,7 +105,6 @@ func (e *Engine) preparePlannerResult(ctx context.Context) error {
 				}
 				continue
 			}
-			description += "\n\n" + fingerprintMarker(p.Fingerprint)
 			var route sql.NullString
 			if err := tx.QueryRowContext(ctx, "SELECT reserve_planner_proposal($1,$2,$3)", run, p.Fingerprint, p.Fix).Scan(&route); err != nil {
 				return err
@@ -118,6 +112,17 @@ func (e *Engine) preparePlannerResult(ctx context.Context) error {
 			if !route.Valid {
 				continue
 			}
+			description, fits := p.Description(instructions)
+			if !fits {
+				// Release this new reservation in the same transaction. Existing
+				// fingerprints have already been counted by the reservation function.
+				if _, err := tx.ExecContext(ctx, "DELETE FROM planner_proposal WHERE run_id=$1 AND fingerprint=$2", run, p.Fingerprint); err != nil {
+					return err
+				}
+				dropped++
+				continue
+			}
+			description += "\n\n" + fingerprintMarker(p.Fingerprint)
 			_, err = tx.ExecContext(ctx, `UPDATE planner_proposal SET title=$3,description=$4,priority=$5 WHERE run_id=$1 AND fingerprint=$2`, run, p.Fingerprint, title, description, p.Priority)
 			if err != nil {
 				return err
