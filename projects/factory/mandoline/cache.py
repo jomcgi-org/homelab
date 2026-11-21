@@ -14,6 +14,23 @@ def cache_key(*, tree, configs, tool_digest, pack_digests, invocation):
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def _complete(envelope):
+    if not isinstance(envelope, dict):
+        return False
+    packs = envelope.get("pack_digests")
+    return (
+        envelope.get("status") == "complete"
+        and envelope.get("gaps") == []
+        and isinstance(envelope.get("commit"), str)
+        and bool(envelope["commit"])
+        and isinstance(envelope.get("tool_version"), str)
+        and bool(envelope["tool_version"])
+        and isinstance(packs, dict)
+        and all(isinstance(value, str) and value for value in packs.values())
+        and "result" in envelope
+    )
+
+
 class Cache:
     def __init__(self, checkout):
         parent = Path(os.environ.get("TMPDIR") or tempfile.gettempdir()).resolve()
@@ -36,12 +53,14 @@ class Cache:
 
     def read(self, key):
         try:
-            return json.loads(self.path(key).read_bytes())
+            envelope = json.loads(self.path(key).read_bytes())
         except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
             return None
 
+        return envelope if _complete(envelope) else None
+
     def store(self, key, envelope):
-        if envelope["status"] != "complete":
+        if not _complete(envelope):
             return
         destination = self.path(key)
         with tempfile.NamedTemporaryFile(dir=self.directory, delete=False) as output:
