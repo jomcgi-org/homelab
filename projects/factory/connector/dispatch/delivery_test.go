@@ -678,7 +678,7 @@ func TestStoppedCreateAppearsAfterTimeout(t *testing.T) {
 	checkPending := func(want bool) {
 		t.Helper()
 		var pending bool
-		if err := v.st.DB.QueryRowContext(v.ctx, `SELECT pr_create_check_at IS NOT NULL AND NOT pr_create_absence_confirmed FROM work_item WHERE issue_id = 101`).Scan(&pending); err != nil || pending != want {
+		if err := v.st.DB.QueryRowContext(v.ctx, `SELECT pr_create_check_at IS NOT NULL FROM work_item WHERE issue_id = 101`).Scan(&pending); err != nil || pending != want {
 			t.Fatalf("pending = %t, want %t: %v", pending, want, err)
 		}
 	}
@@ -687,7 +687,7 @@ func TestStoppedCreateAppearsAfterTimeout(t *testing.T) {
 	checkPending(true)
 	v.clk.Advance(time.Hour)
 	v.tick(v.e)
-	checkPending(false)
+	checkPending(true)
 	if _, err := v.gh.CreatePullRequest(v.ctx, "", *v.gh.delayed); err != nil {
 		t.Fatal(err)
 	}
@@ -718,6 +718,7 @@ func TestStoppedCreateAppearsAfterTimeout(t *testing.T) {
 	if v.gh.byNumber(1).pr.State != "closed" || !strings.Contains(v.gh.stopComment, "human takeover") {
 		t.Fatalf("late PR state %s, comment %q", v.gh.byNumber(1).pr.State, v.gh.stopComment)
 	}
+	checkPending(false)
 }
 
 func TestRejectedCreateClearsPendingHandoff(t *testing.T) {

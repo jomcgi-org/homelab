@@ -491,8 +491,7 @@ func (e *Engine) findOrOpenPR(ctx context.Context, repo string, wi *store.WorkIt
 	err = e.st.DB.QueryRowContext(ctx, `WITH prior AS (
 		SELECT id, pr_create_check_at IS NOT NULL AS pending FROM work_item
 		WHERE id = $1 AND state = 'review' AND turn_attempt_id = $3 FOR UPDATE
-	) UPDATE work_item w SET pr_create_check_at = $2, pr_create_started_at = $2,
-		pr_create_absence_confirmed = false FROM prior
+	) UPDATE work_item w SET pr_create_check_at = $2 FROM prior
 		WHERE w.id = prior.id RETURNING prior.pending`, wi.ID, e.cfg.Now(), wi.TurnAttemptID).Scan(&previouslyPending)
 	if err != nil {
 		return nil, fmt.Errorf("record PR creation for %s: %w", wi.IssueKey, err)
@@ -610,24 +609,16 @@ func (e *Engine) checkStoppedCreate(ctx context.Context, wi *store.WorkItem, b *
 		if err != nil {
 			return err
 		}
-		if pr == nil {
-			// Release handoff only after a successful post-window lookup.
-			// Keep the watch active in case GitHub exposes the PR even later.
-			_, err = tx.ExecContext(ctx, `UPDATE work_item SET pr_create_absence_confirmed = true
-				WHERE id = $1 AND pr_create_started_at <= $2`, wi.ID, now.Add(-5*time.Minute))
-			return err
-		}
-		if pr.BaseRef != b.BaseBranch {
-			return err
+		// A successful lookup only describes what GitHub can see now.
+		// Keep the create pending until we observe its outcome.
+		if pr == nil || pr.BaseRef != b.BaseBranch {
+			return nil
 		}
 		const factoryAuthor = "jomcgi-factory[bot]"
 		if pr.Author != factoryAuthor || !strings.Contains(pr.Body, fmt.Sprintf("<!-- factory-connector work-item=%d -->", wi.ID)) {
 			return nil
 		}
 		if pr.State == "open" {
-			if _, err := tx.ExecContext(ctx, `UPDATE work_item SET pr_create_absence_confirmed = false WHERE id = $1`, wi.ID); err != nil {
-				return err
-			}
 			id += fmt.Sprintf("/%d", pr.Number)
 			reason := fmt.Sprintf("Closing this factory PR because delivery of %s was stopped: %s.", wi.IssueKey, wi.StoppedReason)
 			if err := e.commentOnStoppedPR(ctx, b.repo(), pr.Number, factoryAuthor, id+"/comment", reason); err != nil {

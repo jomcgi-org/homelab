@@ -242,7 +242,7 @@ kubectl --kubeconfig="${FACTORY_OPERATOR_KUBECONFIG:?Set the operator kubeconfig
        AND r.state <> 'closed') AS open_runs,
     (SELECT count(*) FROM cancellation c JOIN run r ON r.id = c.run_id
        WHERE r.work_item_id = w.id AND c.state = 'pending') AS pending,
-    (w.pr_create_check_at IS NOT NULL AND NOT w.pr_create_absence_confirmed) AS pending_pr_create,
+    (w.pr_create_check_at IS NOT NULL) AS pending_pr_create,
     (SELECT p.number FROM pull_request p WHERE p.work_item_id = w.id) AS pr
   FROM work_item w WHERE w.issue_key = 'HOME-N'"
 ```
@@ -255,10 +255,12 @@ poll and can be stale. When the query shows no PR, look on GitHub for one
 from the issue's branch, which the connector may have opened after its last
 write: `gh pr list --head factory/HOME-N --state all`. Close any open one.
 If GitHub is still processing a factory PR create when delivery stops, the
-connector checks the branch. A successful empty lookup at least five minutes
-after the last create attempt releases the handoff. The connector continues
-watching for a late PR. When the PR appears, the connector
-comments with the stop reason and closes it. The connector publishes the stop reason as a
+connector keeps the stop pending across empty lookups. When the PR appears,
+the connector comments with the stop reason and closes it. A definitive
+create rejection also settles the request. If GitHub never reports an outcome,
+leave the old issue stopped and its branch reserved. To continue the work,
+use a new HOME issue and a different branch. The connector continues watching
+the old branch and closes a late factory PR there. The connector publishes the stop reason as a
 review comment. If GitHub loses the response, the connector resumes with
 the same draft review. If
 `factory-db-1` is not the primary, take the name from
