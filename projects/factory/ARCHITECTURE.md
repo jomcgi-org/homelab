@@ -1169,13 +1169,16 @@ The delivery event identifies the native run whose turn the connector synced
 to that head. The exporters batch spans outside check and delivery processing.
 
 - **Review order (HOME-220).** Running reviews retain their slots. The poller
-  reattaches in-progress checks before starting new reviews. Within each
-  `enqueueAuthors` priority, the longest eligible wait goes first across
-  polls. For repository and fork heads, GitHub's latest ref activity dates
-  the current SHA. PR creation, readiness, skip-label removal, reopening and
-  base changes bound that age. If history is incomplete, the reviewer uses
-  its first observation of the eligible head. When a shared-head hold clears,
-  the remaining PR starts a fresh wait.
+  reattaches in-progress checks before starting new reviews. Verified itsaplan
+  issue priority orders new starts from urgent to low. The poller reads the
+  current issue priority after restart. A failed priority read uses the
+  fallback rank and marks the queue observation partial. Within one issue
+  rank and `enqueueAuthors` priority, the longest eligible wait goes first
+  across polls. For repository and fork heads, GitHub's latest ref activity
+  dates the current SHA. PR creation, readiness, skip-label removal,
+  reopening and base changes bound that age. If history is incomplete, the
+  reviewer uses its first observation of the eligible head. When a
+  shared-head hold clears, the remaining PR starts a fresh wait.
   Git commit dates and PR `UpdatedAt` do not set queue order. Observation is
   recorded before check and recovery reads, even while slots are full, and
   kept while history reads retry.
