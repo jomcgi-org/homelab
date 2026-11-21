@@ -54,9 +54,13 @@ func Run(parent context.Context, workspace, cwd, tool string, audit bool, req Re
 	ctx, cancel := context.WithTimeout(parent, runLimit)
 	defer cancel()
 
-	workspace, err := filepath.EvalSymlinks(workspace)
-	if err != nil {
+	resolvedWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil || resolvedWorkspace != workspace {
 		return result.fail("error", "task workspace unavailable")
+	}
+	cwd, err = filepath.EvalSymlinks(cwd)
+	if err != nil || !beneath(workspace, cwd) {
+		return result.fail("error", "working directory is outside the task workspace")
 	}
 	cache, err := openCache(workspace)
 	if err != nil {
