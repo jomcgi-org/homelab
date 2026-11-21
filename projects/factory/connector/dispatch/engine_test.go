@@ -3765,3 +3765,68 @@ func TestAdmissionOutageNotifiesAfterTenMinutes(t *testing.T) {
 		t.Fatalf("got %d admission alarms", alarms)
 	}
 }
+
+func TestQueuedResultAcrossLeaseRedelivery(t *testing.T) {
+	for _, name := range []string{"bound", "legacy"} {
+		t.Run(name, func(t *testing.T) {
+			v := newEnv(t)
+			v.its.add(1, "coder", 101, "HL-1", "Do it.")
+			v.tick(v.e)
+			v.its.resultErr = []error{errors.New("temporary result failure")}
+			v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+			v.clk.Advance(5 * time.Second)
+			v.tick(v.e)
+			if r := v.run(1); r.State != store.RunFinishing {
+				t.Fatalf("run state = %s, want finishing", r.State)
+			}
+			originalAttempt := 1
+			if name == "legacy" {
+				originalAttempt = 0
+				if _, err := v.st.DB.Exec(`UPDATE outbox SET dedupe_key = 'result/1',
+					payload = jsonb_set(payload, '{attempt}', '0') WHERE kind = 'result'`); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			v.e.Release()
+			v.clk.Advance(301 * time.Second)
+			successor := v.engine("connector-b")
+			claim, err := v.its.Claim(v.ctx, "coder")
+			if err != nil || claim == nil || claim.Attempts != 2 {
+				t.Fatalf("second claim = %+v, %v", claim, err)
+			}
+			// A heartbeat can see the newer lease before HandleClaim stores it.
+			if _, err := v.st.DB.Exec(`UPDATE run SET state = 'stale' WHERE id = 1`); err != nil {
+				t.Fatal(err)
+			}
+			if err := successor.HandleClaim(v.ctx, "coder", claim); err != nil {
+				t.Fatal(err)
+			}
+			if r := v.run(1); r.State != store.RunFinishing {
+				t.Fatalf("redelivered run state = %s, want finishing", r.State)
+			}
+
+			v.tick(successor)
+			if got := v.its.Run(1).results; len(got) != 0 {
+				t.Fatalf("original outbox item sent a result: %+v", got)
+			}
+			v.tick(successor)
+			results := v.its.Run(1).results
+			if len(results) != 1 || results[0].Attempt != 2 || results[0].Status != "success" {
+				t.Fatalf("results = %+v, want one success on attempt 2", results)
+			}
+			var attempt int
+			var reason string
+			if err := v.st.DB.QueryRow(`SELECT (payload->>'attempt')::int, last_error FROM outbox
+				WHERE kind = 'result' AND abandoned_at IS NOT NULL`).Scan(&attempt, &reason); err != nil {
+				t.Fatal(err)
+			}
+			if attempt != originalAttempt || reason != "committed outcome reconciled into result/1/2" {
+				t.Fatalf("original attempt = %d, reason = %q", attempt, reason)
+			}
+			if got := v.kg.Executions(); got != 1 {
+				t.Fatalf("agent executions = %d, want 1", got)
+			}
+		})
+	}
+}
