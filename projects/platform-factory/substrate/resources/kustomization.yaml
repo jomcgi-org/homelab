@@ -40,6 +40,15 @@ components:
   - egress-scan
 
 configMapGenerator:
+  # Keep the upstream gateway policy and add the private receiver's mTLS route.
+  # resources_test.py checks drift against the pinned upstream configuration.
+  - name: atenet-egress-agentgateway-config
+    namespace: ate-system
+    behavior: replace
+    options:
+      disableNameSuffixHash: true
+    files:
+      - config.yaml=atenet-egress-config.yaml
   # The bundled PostgreSQL's roles and schema (pkg/postgressetup).
   - name: postgres-setup
     namespace: ate-system

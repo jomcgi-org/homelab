@@ -11,6 +11,9 @@
 {{- $worker := printf "%s-worker" $agent }}
 {{- $toolchain := eq ($r.toolchain | default "") "homelab" }}
 {{- $guard := and .coder (eq $r.owner "jomcgi-org") (eq $r.repo "homelab") (or $r.guardedPush $r.harnessImage) }}
+{{- if and $guard (or (not $.Values.pushGuard.enabled) (ne $ns "factory-r-homelab")) }}
+{{- fail "guarded homelab pushes require the private receiver in factory-r-homelab" }}
+{{- end }}
 {{- $receiver := printf "https://factory-push-guard.%s.svc.cluster.local" $ns }}
 {{- $gitOrigin := ternary $receiver "https://github.com" (not (empty $guard)) }}
 {{- $servers := list }}
