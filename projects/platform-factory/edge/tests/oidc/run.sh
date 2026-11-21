@@ -91,3 +91,57 @@ kubectl -n edge wait gateway/edge --for=condition=Programmed --timeout=180s
 kubectl -n edge rollout status deployment -l gateway.envoyproxy.io/owning-gateway-name=edge
 kubectl -n edge port-forward svc/edge-proxy 18080:80 >"$tmp/forward.log" 2>&1 &
 python3 session.py
+
+# Admission evaluates the production socket guard against the API server.
+kubectl -n t3 create serviceaccount t3-relay
+kubectl apply -f "$projects/platform-factory/edge-admission/resources/policies.yaml"
+cat >"$tmp/socket-probe.yaml" <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: socket-probe
+  ownerReferences:
+    - apiVersion: apps/v1
+      kind: ReplicaSet
+      name: t3-relay-test
+      uid: 11111111-1111-1111-1111-111111111111
+      controller: true
+spec:
+  serviceAccountName: t3-relay
+  containers:
+    - name: probe
+      image: busybox
+      volumeMounts:
+        - name: socket
+          mountPath: /socket
+          readOnly: true
+  volumes:
+    - name: socket
+      hostPath:
+        path: /run/t3-cluster
+        type: Directory
+YAML
+denied=false
+for _ in {1..15}; do
+	if output=$(kubectl -n t3 create --dry-run=server -f "$tmp/socket-probe.yaml" 2>&1); then
+		sleep 1
+	elif [[ "$output" == *'Only the t3 relay may mount'* ]]; then
+		denied=true
+		break
+	else
+		printf '%s\n' "$output" >&2
+		exit 1
+	fi
+done
+[[ "$denied" == true ]]
+kubectl -n t3 create --dry-run=server -f "$tmp/socket-probe.yaml" \
+	--as=system:serviceaccount:kube-system:replicaset-controller
+for mount in / /run /var/run /var/run/t3-cluster/t3.sock; do
+	if output=$(sed "s|path: /run/t3-cluster|path: $mount|" "$tmp/socket-probe.yaml" |
+		kubectl -n t3 create --dry-run=server -f - \
+			--as=system:serviceaccount:kube-system:replicaset-controller 2>&1); then
+		echo "unexpected hostPath admission: $mount" >&2
+		exit 1
+	fi
+	[[ "$output" == *'Only the t3 relay may mount'* ]]
+done

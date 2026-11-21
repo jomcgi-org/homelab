@@ -160,15 +160,14 @@ interfaces are reachable only through the port-forward.
 
 ### T3 browser access
 
-On node-1, install the socket units after the T3 route and relay are reviewed.
+Node bootstrap installs the socket on node-1. On an existing node-1, run
+`sudo bash projects/factory-cluster/nodes/install-t3-socket.sh` after the
+admission guard is live. The standalone installer reloads systemd and starts
+the socket without restarting k3s. Full node bootstrap restarts k3s on each
+node in turn.
+
 The relay mounts only the dedicated socket directory and has no network egress.
 T3 listens on `127.0.0.1:3773`. Tailscale Serve uses that listener for mobile.
-
-```sh
-sudo install -m 0644 projects/factory-cluster/nodes/t3-cluster.{socket,service} /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now t3-cluster.socket
-```
 
 Before use, check that unauthenticated requests to the UI, API and WebSocket
 start sign-in, and that an authenticated `factory-operators` account without

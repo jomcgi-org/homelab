@@ -344,3 +344,99 @@ metadata:
 spec:
   policyName: factory-edge-cfgate-resources
   validationActions: [Deny]
+---
+# Reserve the socket and its parent directories, including Ubuntu's /var/run
+# alias. Only the ReplicaSet controller can admit the dedicated relay Pod.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factory-t3-socket
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods, pods/ephemeralcontainers]
+  variables:
+    - name: reserved
+      expression: >-
+        has(object.spec.volumes) ?
+        object.spec.volumes.filter(v, has(v.hostPath) &&
+          (v.hostPath.path.matches('^/+$') ||
+           v.hostPath.path.matches('^/+var/*$') ||
+           v.hostPath.path.matches('^/+(var/+)?run/*$') ||
+           v.hostPath.path.matches('^/+(var/+)?run/+t3-cluster(/.*)?$') ||
+           v.hostPath.path.matches('(^|/)\\.\\.?(/|$)'))) : []
+  validations:
+    - expression: >-
+        size(variables.reserved) == 0 ||
+        (request.subResource == '' &&
+         request.userInfo.username == 'system:serviceaccount:kube-system:replicaset-controller' &&
+         request.namespace == 't3' &&
+         object.spec.serviceAccountName == 't3-relay' &&
+         has(object.metadata.ownerReferences) &&
+         object.metadata.ownerReferences.exists(ref,
+           ref.apiVersion == 'apps/v1' && ref.kind == 'ReplicaSet' &&
+           has(ref.controller) && ref.controller && ref.name.startsWith('t3-relay-')) &&
+         variables.reserved.all(v, v.hostPath.path == '/run/t3-cluster' &&
+           has(v.hostPath.type) && v.hostPath.type == 'Directory'))
+      message: Only the t3 relay may mount the node's T3 socket directory.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factory-t3-socket
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  policyName: factory-t3-socket
+  validationActions: [Deny]
+---
+# Guard the owner chain. A caller who can write other namespaces cannot name a
+# Deployment or ReplicaSet that gets the controller's Pod admission identity.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factory-t3-relay-owners
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [apps]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [deployments, replicasets]
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [configmaps, services, serviceaccounts]
+  matchConditions:
+    - name: t3
+      expression: request.namespace == 't3'
+  validations:
+    - expression: >-
+        (!object.metadata.name.startsWith('t3-relay') &&
+         request.resource.resource in ['configmaps', 'services', 'serviceaccounts'])
+        ||
+        (request.resource.resource in ['deployments', 'configmaps', 'services', 'serviceaccounts'] &&
+         request.userInfo.username == 'system:serviceaccount:argocd:argocd-application-controller')
+        ||
+        (request.resource.resource == 'replicasets' &&
+         request.userInfo.username == 'system:serviceaccount:kube-system:deployment-controller')
+      message: Argo CD and the Deployment controller own the T3 relay workloads.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factory-t3-relay-owners
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  policyName: factory-t3-relay-owners
+  validationActions: [Deny]
