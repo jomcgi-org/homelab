@@ -1,0 +1,161 @@
+{
+  "system": "CI and supply chain",
+  "system_dir": "bazel/tools/ci",
+  "commit": "d27644169",
+  "nodes": [
+    {
+      "key": "renovate",
+      "label": "Factory Renovate App",
+      "layer": "controller",
+      "evidence": "renovate.json:216-234",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "apko",
+      "label": "Hub apko lock maintenance",
+      "layer": "controller",
+      "evidence": "projects/platform/renovate/values-gke.yaml:6",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "intake",
+      "label": "Monolith dependency intake",
+      "layer": "controller",
+      "evidence": "projects/monolith/factory/orchestration/dependency_prs.py:398",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "pr",
+      "label": "Dependency or author PR",
+      "layer": "input",
+      "evidence": "renovate.json:216-234",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "reviewer",
+      "label": "Factory reviewer App",
+      "layer": "controller",
+      "evidence": "projects/factory/reviewer/review/engine.go:3486",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "queue",
+      "label": "GitHub ruleset and merge queue",
+      "layer": "controller",
+      "evidence": "projects/factory/connector/github/client.go:695",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "runner",
+      "label": "BuildBuddy pr-checks runner",
+      "layer": "controller",
+      "evidence": "buildbuddy.yaml:217",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "registry",
+      "label": "OCI registry",
+      "layer": "storage",
+      "evidence": "buildbuddy.yaml:217",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "main",
+      "label": "main and GitOps pins",
+      "layer": "storage",
+      "evidence": "buildbuddy.yaml:225",
+      "view": "logical",
+      "maturity": "built"
+    }
+  ],
+  "control_actions": [
+    {
+      "key": "renovate.request-automerge",
+      "label": "Request native auto-merge as jomcgi-factory-renovate",
+      "from": "renovate",
+      "to": "pr",
+      "evidence": "renovate.json:216-234",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "apko.refresh-lock",
+      "label": "Propose refreshed base-image locks",
+      "from": "apko",
+      "to": "pr",
+      "evidence": "projects/platform/renovate/values-gke.yaml:6",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "intake.assess",
+      "label": "Assess changed files, dependency comparison and advisories",
+      "from": "intake",
+      "to": "pr",
+      "evidence": "projects/monolith/factory/orchestration/dependency_prs.py:398",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "reviewer.attest",
+      "label": "Post factory review on the queue candidate",
+      "from": "reviewer",
+      "to": "queue",
+      "evidence": "projects/factory/reviewer/review/engine.go:3486",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "queue.merge",
+      "label": "Admit the validated queue candidate to main",
+      "from": "queue",
+      "to": "main",
+      "evidence": "projects/factory/connector/github/client.go:695",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "pr.validate",
+      "label": "Submit the PR head for BuildBuddy checks",
+      "from": "pr",
+      "to": "runner",
+      "evidence": "buildbuddy.yaml:16",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "runner.publish",
+      "label": "Publish images and charts from main",
+      "from": "runner",
+      "to": "registry",
+      "evidence": "buildbuddy.yaml:217",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "runner.write-back",
+      "label": "Write published versions into deployment pins",
+      "from": "runner",
+      "to": "main",
+      "evidence": "buildbuddy.yaml:225",
+      "view": "logical",
+      "maturity": "built"
+    }
+  ],
+  "feedback": [
+    {
+      "from": "reviewer",
+      "to": "queue",
+      "signal": "factory review conclusion for PR head",
+      "view": "logical"
+    }
+  ]
+}

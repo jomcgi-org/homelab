@@ -1,0 +1,93 @@
+{
+  "system": "Polylane hub agent",
+  "system_dir": "projects/platform-gke/polylane",
+  "commit": "d27644169",
+  "nodes": [
+    {
+      "key": "platform",
+      "label": "Polylane platform",
+      "layer": "external",
+      "evidence": "projects/platform/polylane/values.yaml:48",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "agent",
+      "label": "Hub agent and tunnel sidecar",
+      "layer": "workload",
+      "evidence": "projects/platform/polylane/values.yaml:48",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "api",
+      "label": "Hub API server",
+      "layer": "enforcement",
+      "evidence": "projects/platform/polylane/charts/polylane-k8s-0.2.3.tgz (templates/clusterrole.yaml: verbs: [get, list])",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "argo",
+      "label": "Hub ArgoCD",
+      "layer": "controller",
+      "evidence": "projects/platform-gke/polylane/application.yaml:46",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "state",
+      "label": "Agent registration and tunnel state",
+      "layer": "storage",
+      "evidence": "projects/platform/polylane/charts/polylane-k8s-0.2.3.tgz (templates/role.yaml: resourceNames)",
+      "view": "logical",
+      "maturity": "built"
+    }
+  ],
+  "control_actions": [
+    {
+      "key": "platform.query",
+      "label": "Query the shim through the outbound tunnel",
+      "from": "platform",
+      "to": "agent",
+      "evidence": "projects/platform/polylane/values.yaml:48",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "agent.read",
+      "label": "Read topology and pods/log",
+      "from": "agent",
+      "to": "api",
+      "evidence": "projects/platform/polylane/charts/polylane-k8s-0.2.3.tgz (templates/clusterrole.yaml: verbs: [get, list])",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "agent.persist",
+      "label": "Update registration and tunnel state",
+      "from": "agent",
+      "to": "state",
+      "evidence": "projects/platform/polylane/charts/polylane-k8s-0.2.3.tgz (templates/role.yaml: resourceNames)",
+      "view": "logical",
+      "maturity": "built"
+    },
+    {
+      "key": "argo.sync",
+      "label": "Reconcile the chart-owned Secret manifest",
+      "from": "argo",
+      "to": "state",
+      "evidence": "projects/platform-gke/polylane/application.yaml:46",
+      "view": "logical",
+      "maturity": "built"
+    }
+  ],
+  "feedback": [
+    {
+      "from": "state",
+      "to": "argo",
+      "signal": "Observed agent-owned Secret data",
+      "view": "logical"
+    }
+  ]
+}
