@@ -593,7 +593,10 @@ def test_a_coding_binding_takes_its_own_harness_image() -> None:
         docs, "OnePasswordItem", "factory-r-homelab", "ghcr-imagepull-secret"
     )
     assert pull_item["type"] == "kubernetes.io/dockerconfigjson"
-    assert pull_item["spec"]["itemPath"] == "vaults/k8s-homelab/items/ghcr-read-permissions"
+    assert (
+        pull_item["spec"]["itemPath"]
+        == "vaults/k8s-homelab/items/ghcr-read-permissions"
+    )
     assert pod["containers"][0]["args"] == ["--index-sha256", index]
     assert next(v for v in pod["volumes"] if v["name"] == "data") == {
         "name": "data",
