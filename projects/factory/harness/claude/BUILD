@@ -3,7 +3,7 @@ load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
 load("//bazel/tools/oci:providers.bzl", "oci_image_info")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
-# The private Claude+mandoline Harness image (HOME-234): the pinned Claude
+# The private Claude+mandoline Harness image (HOME-684): the pinned Claude
 # harness plus Semgrep mandoline, for the INTSEC audit binding (HOME-235). Push
 # it only to a private package. Codex agents use ../codex (HOME-652).
 # gazelle:ignore
@@ -26,7 +26,7 @@ expand_template(
 
 # The package owner verified this destination was absent and approved its
 # first private publication.
-# https://factory-plan.jomcgi.dev/factory/issue/HOME-234#comment-8645
+# https://github.com/jomcgi-org/homelab/pull/8454#issuecomment-7055813923
 # GHCR assigns private visibility on first publication.
 oci_push(
     name = "image.push",
