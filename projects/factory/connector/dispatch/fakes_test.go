@@ -74,7 +74,8 @@ type fakeItsaplan struct {
 	comments []fakeComment
 	calls    int
 	// commentErr fails every comment while set.
-	commentErr error
+	commentErr  error
+	loseComment bool
 	// resultGone fails the run in itsaplan as its result arrives, as
 	// expireExhaustedRuns can.
 	resultGone      bool
@@ -116,6 +117,7 @@ type fakeItsaplan struct {
 
 	gateCreates     []itsaplan.GateIssueWrite
 	gateUpdates     []itsaplan.GateIssueWrite
+	gateSearchErr   error
 	gateCreateErr   error
 	gateUpdateErr   error
 	loseGateCreate  bool
@@ -389,6 +391,10 @@ func (f *fakeItsaplan) Comment(_ context.Context, issueID int64, body string) er
 		return f.commentErr
 	}
 	f.comments = append(f.comments, fakeComment{issueID, body})
+	if f.loseComment {
+		f.loseComment = false
+		return errors.New("lost comment response")
+	}
 	return nil
 }
 

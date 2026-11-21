@@ -50,6 +50,7 @@ func (e *Engine) stepHumanGates(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// invariant: FACT-14
 func (e *Engine) pollHumanGate(ctx context.Context, b *Binding, pr *store.PullRequest) error {
 	if err := e.beginHumanGateRead(ctx, b, pr, "pr", fmt.Sprint(pr.Number)); err != nil {
 		return err
@@ -124,21 +125,22 @@ func (e *Engine) pollHumanGate(ctx context.Context, b *Binding, pr *store.PullRe
 		return err
 	}
 	var marked []*itsaplan.Issue
-	switch {
-	case h.IssueID == 0:
+	needsSearch := h.IssueID != 0 && (h.State == "Done" || h.CreateSends != 1)
+	if h.IssueID == 0 {
 		if marked, err = e.adoptHumanGateIssue(ctx, b, pr, h, key, marker); err != nil || h.IssueID == 0 {
-			return err
-		}
-	case h.CreateSends != 1:
-		// One create POST makes at most one issue. After a retry, an earlier
-		// POST can still commit a marked copy (ARCHITECTURE.md "Human gate"),
-		// so search on every poll. An adoption without a POST searches too.
-		if marked, err = e.markedHumanGateIssues(ctx, b, pr, marker); err != nil {
 			return err
 		}
 	}
 	if h.AppliedRevision != h.Revision {
 		if err := e.updateHumanGate(ctx, b, pr, h, key); err != nil {
+			return err
+		}
+	}
+	if needsSearch {
+		// One create POST makes at most one issue. After a retry, an earlier
+		// POST can still commit a marked copy (ARCHITECTURE.md "Human gate"),
+		// so search on every poll. An adoption without a POST searches too.
+		if marked, err = e.markedHumanGateIssues(ctx, b, pr, marker); err != nil {
 			return err
 		}
 	}

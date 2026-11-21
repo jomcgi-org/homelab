@@ -13,13 +13,18 @@ type HumanGatePoll struct {
 	PolledAt   time.Time
 }
 
+// invariant: FACT-14
+
 // HumanGateWork includes active revisions and stopped deliveries. Canceled
 // gate issues stay eligible so reopening a PR is observed even after delivery
 // stops. Only an acknowledged merge can end gate polling.
 func (s *Store) HumanGateWork(ctx context.Context) ([]HumanGatePoll, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT p.work_item_id, p.human_gate_polled_at
 		FROM pull_request p LEFT JOIN human_gate_issue h ON h.pull_request_id = p.id
-		WHERE p.state = 'open' OR h.state <> 'Done'
+		WHERE (p.state = 'open' AND h.id IS NULL) OR h.state <> 'Done'
+			OR EXISTS (SELECT 1 FROM human_gate_attempt a WHERE a.gate_id = h.id
+				AND a.operation = 'update' AND a.revision = h.revision
+				AND a.finished_at > now() - interval '24 hours')
 			OR h.applied_revision <> h.revision ORDER BY p.id`)
 	if err != nil {
 		return nil, err
@@ -154,9 +159,9 @@ func (s *Store) FinishHumanGateWrite(ctx context.Context, h *HumanGateIssue, mes
 		if _, err := tx.ExecContext(ctx, `UPDATE human_gate_attempt SET finished_at = now() WHERE message_id = $1`, messageID); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE human_gate_issue SET issue_id = $2,
-			applied_revision = CASE WHEN $3 THEN $4 ELSE applied_revision END WHERE id = $1`, h.ID, issueID, applied, h.Revision)
-		return err
+		return tx.QueryRowContext(ctx, `UPDATE human_gate_issue SET issue_id = $2,
+			applied_revision = CASE WHEN $3 THEN $4 ELSE applied_revision END
+			WHERE id = $1 AND (issue_id IS NULL OR issue_id = $2) RETURNING id`, h.ID, issueID, applied, h.Revision).Scan(new(int64))
 	})
 }
 
@@ -167,6 +172,24 @@ func (s *Store) FinishHumanGateCancel(ctx context.Context, messageID string, iss
 		if _, err := tx.ExecContext(ctx, `UPDATE human_gate_attempt SET finished_at = now() WHERE message_id = $1`, messageID); err != nil {
 			return err
 		}
-		return s.Enqueue(ctx, tx, OutboxComment, "comment/"+messageID, 0, "", map[string]any{"issueId": issueID, "body": comment})
+		return s.Enqueue(ctx, tx, OutboxComment, "comment/"+messageID, 0, "", map[string]any{"issueId": issueID, "body": comment, "once": true})
+	})
+}
+
+// SettleLegacyGateComment delays the first feed lookup after takeover. Save
+// the deadline with the row so a restart cannot skip the settling period.
+func (s *Store) SettleLegacyGateComment(ctx context.Context, w *Writer, id int64, next time.Time) error {
+	return w.Tx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE outbox SET payload=payload || '{"legacySettling":true}'::jsonb, next_attempt_at=$2 WHERE id=$1`, id, next)
+		return err
+	})
+}
+
+// HoldGateComment keeps the explanation pending for operator resolution and
+// schedules another feed check and reminder if the outcome remains unknown.
+func (s *Store) HoldGateComment(ctx context.Context, w *Writer, id int64, reason string, next time.Time) error {
+	return w.Tx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE outbox SET last_error=$2, next_attempt_at=$3 WHERE id=$1 AND delivered_at IS NULL AND abandoned_at IS NULL AND NOT (payload @> '{"once":true}'::jsonb)`, id, reason, next)
+		return err
 	})
 }

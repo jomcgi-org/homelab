@@ -34,6 +34,7 @@ import (
 
 // Itsaplan is the subset of the itsaplan client dispatch uses.
 type Itsaplan interface {
+	HasComment(ctx context.Context, issueID int64, body string, beforePage func(int) error) (bool, error)
 	Project(context.Context, string) (*itsaplan.Project, error)
 	ProjectIssues(context.Context, string) ([]itsaplan.Issue, error)
 	StartDeferred(context.Context, int64, itsaplan.DeferredRequest) (*itsaplan.DeferredReceipt, error)
@@ -166,19 +167,20 @@ func MinDispatchWindow(callTimeout time.Duration) time.Duration {
 
 // Engine runs dispatch.
 type Engine struct {
-	NotifyOutage  func(context.Context, string) error
-	phaseFailures map[string]time.Time
-	cfg           Config
-	st            *store.Store
-	its           Itsaplan
-	tasks         Tasks
-	sessions      Sessions
-	gh            GitHub
-	m             *metrics.Metrics
-	log           *slog.Logger
-	w             *store.Writer
-	locks         sync.Map   // run ID -> *sync.Mutex
-	starts        sync.Mutex // serialize slot checks and starts across admission and delivery
+	NotifyGateReconciliation func(context.Context, int64) error
+	NotifyOutage             func(context.Context, string) error
+	phaseFailures            map[string]time.Time
+	cfg                      Config
+	st                       *store.Store
+	its                      Itsaplan
+	tasks                    Tasks
+	sessions                 Sessions
+	gh                       GitHub
+	m                        *metrics.Metrics
+	log                      *slog.Logger
+	w                        *store.Writer
+	locks                    sync.Map   // run ID -> *sync.Mutex
+	starts                   sync.Mutex // serialize slot checks and starts across admission and delivery
 	// checked holds when each running attempt's session was last checked.
 	checked         sync.Map // attempt ID -> sessionCheck
 	admissionPolled sync.Map // run ID -> wall time; oldest admission is polled first
@@ -1891,7 +1893,8 @@ type commentPayload struct {
 	Body    string `json:"body"`
 	// Once posts the comment at most once: itsaplan comments have no
 	// idempotency key, so a send whose outcome is unknown is not repeated.
-	Once bool `json:"once,omitempty"`
+	Once           bool `json:"once,omitempty"`
+	LegacySettling bool `json:"legacySettling,omitempty"`
 }
 
 // notCreated reports an error that proves itsaplan created nothing: the
@@ -2888,6 +2891,33 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 		}
 		if err := e.guard(ctx); err != nil {
 			return err
+		}
+		// Older duplicate explanations have no send marker. A previous
+		// writer may already have posted one before it lost the response.
+		if !p.Once && strings.HasPrefix(it.DedupeKey, "comment/factory-human-gate/") && strings.Contains(it.DedupeKey, "/duplicate/") {
+			if !p.LegacySettling {
+				return e.st.SettleLegacyGateComment(ctx, e.w, it.ID, e.cfg.Now().Add(humanGateSettle))
+			}
+			found, err := e.its.HasComment(ctx, p.IssueID, p.Body, func(page int) error {
+				return e.w.RecordStatusRead(ctx, fmt.Sprintf("%s/read/feed/%d", it.DedupeKey, page))
+			})
+			if err != nil {
+				return err
+			}
+			if found {
+				return e.st.OutboxDelivered(ctx, e.st.DB, it.ID)
+			}
+			reason := fmt.Sprintf("assigned to Joe: verify legacy duplicate explanation for issue %d", p.IssueID)
+			if err := e.st.HoldGateComment(ctx, e.w, it.ID, reason, e.cfg.Now().Add(24*time.Hour)); err != nil {
+				return err
+			}
+			e.log.WarnContext(ctx, reason, "outbox", it.ID)
+			if e.NotifyGateReconciliation != nil {
+				if err := e.NotifyGateReconciliation(ctx, p.IssueID); err != nil {
+					e.log.ErrorContext(ctx, "gate reconciliation notification failed", "outbox", it.ID, "error", err)
+				}
+			}
+			return nil
 		}
 		if p.Once {
 			if it.SendStarted {

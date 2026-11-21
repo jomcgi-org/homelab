@@ -337,7 +337,7 @@ Only the connector mounts the read-only 1Password key `k8s-homelab/buildbuddy`.
 
 ## Human approval
 
-**Human gate.** For the Homelab binding's HOME project ([#7935](https://github.com/jomcgi-org/homelab/issues/7935)), `humanGateAssignee` defaults to
+**Human gate.** Joe [reconciles legacy explanations](legacy-gate-comments.md). For the Homelab binding's HOME project ([#7935](https://github.com/jomcgi-org/homelab/issues/7935)), `humanGateAssignee` defaults to
 `joe`; an explicit empty string disables it, and other bindings opt in.
 When the current PR head passes `pr-checks` and the configured reviewer
 App marks its failed review `human-gate-only`, the connector creates one

@@ -46,7 +46,7 @@ func (f *fakeItsaplan) SearchGateIssues(_ context.Context, _, marker string) ([]
 			hits = append(hits, *is)
 		}
 	}
-	return hits, nil
+	return hits, f.gateSearchErr
 }
 
 func (f *fakeItsaplan) CreateGateIssue(_ context.Context, _ string, body itsaplan.GateIssueWrite) (*itsaplan.Issue, error) {
@@ -358,8 +358,8 @@ func TestHumanGateReopenedPRKeepsItsIssueAfterRestart(t *testing.T) {
 	if v.work(101).State != store.WorkStopped {
 		t.Fatal("gate polling resumed stopped delivery")
 	}
-	if work, err := v.st.HumanGateWork(v.ctx); err != nil || len(work) != 0 {
-		t.Fatalf("acknowledged merge still eligible: %+v, %v", work, err)
+	if work, err := v.st.HumanGateWork(v.ctx); err != nil || len(work) != 1 || work[0].WorkItemID != v.work(101).ID {
+		t.Fatalf("expected merged gate to remain eligible for late-copy cleanup: %+v, %v", work, err)
 	}
 }
 
@@ -862,5 +862,110 @@ func TestHumanGateUnreadyEvidenceCreatesNothing(t *testing.T) {
 				t.Fatalf("created an issue for %s", reason)
 			}
 		})
+	}
+}
+
+func TestHumanGateMergedLateCopy(t *testing.T) {
+	v := newHumanGateEnv(t)
+	v.readyGate("sha-1")
+	v.poll()
+	v.gh.merge(1, "merged-sha")
+	v.poll()
+	h := v.gateIssue(3, "sha-1")
+	v.lateGateCreate(301, v.clk.Now())
+	v.its.loseComment = true
+	v.poll()
+	v.clk.Advance(time.Hour)
+	v.poll()
+	moves, comments := v.gateCancels()
+	if moves[301] != 1 || comments[301] != 1 {
+		t.Fatalf("moves=%v comments=%v", moves, comments)
+	}
+	if _, err := v.st.DB.Exec(`UPDATE human_gate_attempt SET finished_at=now()-interval '25 hours' WHERE operation='update'`); err != nil {
+		t.Fatal(err)
+	}
+	items, err := v.st.HumanGateWork(context.Background())
+	if err != nil || len(items) != 0 {
+		t.Fatalf("expired gate %d: items=%v err=%v", h.ID, items, err)
+	}
+}
+
+func TestHumanGateLateCreateResponseAfterAdoption(t *testing.T) {
+	v := newHumanGateEnv(t)
+	v.readyGate("sha-1")
+	v.poll()
+	h := v.gateIssue(1, "sha-1")
+	err := v.st.FinishHumanGateWrite(context.Background(), h, "factory-human-gate/jomcgi-org/homelab/1/create", 301, false)
+	if err == nil || v.gateIssue(1, "sha-1").IssueID != h.IssueID {
+		t.Fatal("late response replaced the adopted issue")
+	}
+}
+
+func (f *fakeItsaplan) HasComment(_ context.Context, issueID int64, body string, beforePage func(int) error) (bool, error) {
+	if err := beforePage(0); err != nil {
+		return false, err
+	}
+	for _, c := range f.Comments() {
+		if c.issueID == issueID && c.body == body {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func TestLegacyDuplicateExplanation(t *testing.T) {
+	for _, posted := range []bool{false, true} {
+		t.Run(fmt.Sprint(posted), func(t *testing.T) {
+			v := newHumanGateEnv(t)
+			var assigned int64
+			v.e.NotifyGateReconciliation = func(_ context.Context, id int64) error { assigned = id; return nil }
+			const body = "Duplicate of HL-201"
+			err := v.st.Enqueue(v.ctx, v.st.DB, store.OutboxComment, "comment/factory-human-gate/jomcgi-org/homelab/1/duplicate/301", 0, "", map[string]any{"issueId": 301, "body": body})
+			if err != nil {
+				t.Fatal(err)
+			}
+			v.poll()
+			_, early := v.gateCancels()
+			if early[301] != 0 {
+				t.Fatal("replacement sent before settlement")
+			}
+			if posted {
+				if err := v.its.Comment(v.ctx, 301, body); err != nil {
+					t.Fatal(err)
+				}
+			}
+			v.clk.Advance(10 * time.Minute)
+			v.poll()
+			if !posted {
+				var reason string
+				err := v.st.DB.QueryRow(`SELECT last_error FROM outbox WHERE dedupe_key=$1 AND abandoned_at IS NULL AND delivered_at IS NULL`,
+					"comment/factory-human-gate/jomcgi-org/homelab/1/duplicate/301").Scan(&reason)
+				if err != nil || assigned != 301 || !strings.Contains(reason, "assigned to Joe") {
+					t.Fatalf("missing reconciliation record: reason=%q err=%v", reason, err)
+				}
+				// The original POST commits after the lookup that found no comment.
+				if err := v.its.Comment(v.ctx, 301, body); err != nil {
+					t.Fatal(err)
+				}
+				v.poll()
+			}
+			_, comments := v.gateCancels()
+			if comments[301] != 1 {
+				t.Fatalf("comments=%v", comments)
+			}
+		})
+	}
+}
+
+func TestHumanGateMergeDuringSearchFailure(t *testing.T) {
+	v := newHumanGateEnv(t)
+	v.readyGate("sha-1")
+	v.poll()
+	v.gh.merge(1, "merged-sha")
+	v.its.gateSearchErr = errors.New("search unavailable")
+	v.poll()
+	h := v.gateIssue(3, "sha-1")
+	if h.AppliedRevision != h.Revision {
+		t.Fatal("merge update was not acknowledged")
 	}
 }
