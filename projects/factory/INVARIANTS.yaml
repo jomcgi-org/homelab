@@ -73,3 +73,9 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: Missing delivery timing intervals reduce measured coverage and contribute no duration to the mean.
+  mechanism:
+  - projects/factory/connector/store/delivery_timings.sql
+  test: //projects/factory/connector/store:store_test
+  state: live

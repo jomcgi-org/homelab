@@ -246,3 +246,18 @@ code-mode thread (01a1f590-c88d-7303-83c8-0bc478298e6c) called the binding's
 memory MCP server. These measurements cover local app-server threads inside
 the actor. A connector-dispatched pair on the published image is still needed
 for per-delivery accounting.
+
+## Private delivery timing report
+
+Run `psql -X -f projects/factory/connector/store/delivery_timings.sql` with
+an existing private connector database connection. Each row reports the mean
+and measured work items out of all work items created in the displayed
+30-day window. Queue wait starts at the first coordinator run's creation and
+ends at its first attempt's first send. First PR and merge times start at
+work-item creation. PR time is when the connector recorded the PR. Review
+wait runs from PR recording to the first recorded request for changes that
+the connector acted on for that PR. It includes time spent reviewing and
+time until the connector observes the feedback. PRs with only an approval,
+a prepared review task, or no actionable review have no sample. Rework rounds
+use the work item's recorded review-round counter as of query time. Missing
+endpoints and negative intervals reduce coverage.
