@@ -95,3 +95,22 @@ func TestGoalReasonsAPIUnreadableAuditIsUnavailable(t *testing.T) {
 		t.Fatalf("unreadable audit = %d, want 503", resp.StatusCode)
 	}
 }
+
+func TestJSONOnlyGoalAssessmentReturnsTicketFeedback(t *testing.T) {
+	a, err := OpenGoalAudit(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := strings.Repeat("a", 40)
+	if err := a.Save(GoalAuditRecord{
+		Repository: "o/r", PullRequest: 7, Head: head, Issue: "HOME-1",
+		MessageID: "m", TaskID: "t", ReplyRevision: 17, CreatedAt: time.Now(),
+		Reply: "```json\n{\"criteria\":[{\"criterion\":1,\"verdict\":\"not_met\"}],\"overall\":\"not_met\"}\n```",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	g, ok, err := a.Reasons("o/r", 7, head)
+	if err != nil || !ok || g.ReplyRevision != 17 || !strings.Contains(g.Reasons, "Criterion 1: not met.") {
+		t.Fatalf("ticket assessment = %+v, %v, %v", g, ok, err)
+	}
+}
