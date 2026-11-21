@@ -59,18 +59,34 @@ def test_redaction_and_whole_turn_withholding():
     ]
 
 
+# invariant: STORYBOARD-1
 def test_commit_and_retention():
     s3 = Mock()
     now = datetime.now(UTC)
-    old, recent = ("objects/" + c * 64 + ".json" for c in "ab")
+    before_outage = now - timedelta(hours=24)
+    s3.get_paginator.return_value.paginate.return_value = []
+    publish(
+        s3,
+        "factory-public",
+        before_outage,
+        {"old": True},
+        {},
+        {},
+        {},
+        matching(b"leak"),
+    )
+    old = json.loads(s3.put_object.call_args.kwargs["Body"])["story"]
+    s3.reset_mock()
+    recent = "objects/" + "b" * 64 + ".json"
     s3.get_paginator.return_value.paginate.return_value = [
         {
             "Contents": [
-                {"Key": old, "LastModified": now - timedelta(hours=24)},
+                {"Key": old, "LastModified": before_outage},
                 {"Key": recent, "LastModified": now - timedelta(hours=23, minutes=59)},
             ]
         }
     ]
+    s3.head_object.return_value = {"Metadata": {}}
     scanned = []
 
     def scan(bodies):
@@ -84,6 +100,20 @@ def test_commit_and_retention():
     assert json.loads(manifest["Body"])["story"] == obj["Key"]
     # One scan covers every object and the manifest.
     assert scanned == [[obj["Body"], manifest["Body"]]]
+    s3.delete_object.assert_not_called()
+    mark = s3.copy_object.call_args.kwargs
+    assert mark["Key"] == old
+    assert mark["CopySource"] == {"Bucket": "factory-public", "Key": old}
+    assert mark["MetadataDirective"] == "REPLACE"
+
+    # The post-outage copy starts a new LastModified interval.
+    s3.head_object.return_value = {"Metadata": mark["Metadata"]}
+    s3.get_paginator.return_value.paginate.return_value = [
+        {"Contents": [{"Key": old, "LastModified": now}]}
+    ]
+    publish(s3, "factory-public", now + timedelta(seconds=989), {}, {}, {}, {}, scan)
+    s3.delete_object.assert_not_called()
+    publish(s3, "factory-public", now + timedelta(hours=24), {}, {}, {}, {}, scan)
     s3.delete_object.assert_called_once_with(Bucket="factory-public", Key=old)
 
 

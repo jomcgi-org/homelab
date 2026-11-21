@@ -152,4 +152,18 @@ def publish(s3, bucket, now, story, goals, issues, sessions, scan=gitleaks):
                 and re.fullmatch(r"objects/[a-f0-9]{64}\.json", key)
                 and now - entry["LastModified"] >= timedelta(hours=24)
             ):
-                s3.delete_object(Bucket=bucket, Key=key)
+                # invariant: STORYBOARD-1
+                # Live puts clear this metadata when a digest returns.
+                # The post-commit copy starts a fresh LastModified interval.
+                head = s3.head_object(Bucket=bucket, Key=key)
+                if head["Metadata"].get("dropped") == "1":
+                    s3.delete_object(Bucket=bucket, Key=key)
+                else:
+                    s3.copy_object(
+                        Bucket=bucket,
+                        Key=key,
+                        CopySource={"Bucket": bucket, "Key": key},
+                        MetadataDirective="REPLACE",
+                        Metadata={"dropped": "1"},
+                        ContentType="application/json",
+                    )
