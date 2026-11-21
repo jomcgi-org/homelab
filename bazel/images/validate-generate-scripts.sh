@@ -123,6 +123,17 @@ extract_targets_from_build bazel/images/BUILD >"$TMPDIR_VALIDATE/push_all_grep.t
 
 compare_targets "push-all" "$TMPDIR_VALIDATE/push_all_grep.txt" "$TMPDIR_VALIDATE/push_all_query.txt"
 
+# Every OCI publisher depending on the private layer must be a guarded harness.
+# Query the workspace so even a push omitted from push_all is covered.
+bazel_query_retry 'kind("oci_push", rdeps(//..., //bazel/tools/mandoline:layer))' |
+	filter_labels | LC_ALL=C sort >"$TMPDIR_VALIDATE/mandoline_actual.txt"
+cat >"$TMPDIR_VALIDATE/mandoline_expected.txt" <<'LABELS'
+//projects/factory/harness/claude:image.push
+//projects/factory/harness/codex:image.push
+//projects/factory/reviewer/harness:image.push
+LABELS
+compare_targets "mandoline-publishers" "$TMPDIR_VALIDATE/mandoline_actual.txt" "$TMPDIR_VALIDATE/mandoline_expected.txt"
+
 # --- Validation 2: doc manifest inputs ---
 
 # The two doc-index manifests (repo_docs_manifest.ndjson and the public docs-site
