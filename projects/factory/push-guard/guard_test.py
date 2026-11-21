@@ -127,5 +127,7 @@ def test_push_checks_the_current_upstream_tip(receiver, includes_upstream):
         assert result.returncode == 0, result.stderr.decode()
         assert published == candidate
     else:
-        assert result.returncode and b"include the current upstream tip" in result.stderr
+        assert (
+            result.returncode and b"include the current upstream tip" in result.stderr
+        )
         assert published == advanced
