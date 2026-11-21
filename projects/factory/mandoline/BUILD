@@ -14,7 +14,7 @@ go_library(
 go_test(
     name = "mandoline_test",
     srcs = ["runner_test.go"],
-    data = ["//bazel/tools/mandoline:mandoline"],
+    data = ["//bazel/tools/mandoline"],
     embed = [":mandoline"],
     env = {"FACTORY_TEST_MANDOLINE": "$(rootpath //bazel/tools/mandoline:mandoline)"},
 )
