@@ -234,6 +234,7 @@ filegroup(
         "//projects/factory/alert-relay:repo_docs",
         "//projects/factory/deploy:repo_docs",
         "//projects/factory/itsaplan-web:repo_docs",
+        "//projects/factory/push-guard:repo_docs",
         "//projects/factory/tests/itsaplan:repo_docs",
         "//projects/firecracker/sandbox/elixir:repo_docs",
         "//projects/firecracker/sandbox/go:repo_docs",

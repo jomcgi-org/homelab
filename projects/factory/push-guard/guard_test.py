@@ -62,6 +62,7 @@ def receiver(tmp_path, monkeypatch):
         "layer",
         "base64",
         "hex",
+        "wrapped-hex",
         "allowed",
         "allowed-protected",
         "missing-index",
@@ -76,6 +77,11 @@ def test_push(receiver, sample, monkeypatch):
         "base64": base64.encodebytes(part),
         "hex": part.hex().encode(),
     }.get(sample, part)
+    if sample == "wrapped-hex":
+        encoded = refs[0].read_bytes()[:192].hex().encode()
+        data = b"x" * 65400 + b"\n".join(
+            encoded[start : start + 65] for start in range(0, len(encoded), 65)
+        )
     if sample.startswith("allowed"):
         data = b"x" * 1048577 + (part if sample == "allowed-protected" else b"")
         allowlist = repo.parent / "allowlist"
@@ -98,3 +104,28 @@ def test_push(receiver, sample, monkeypatch):
     else:
         assert b"push rejected" in result.stderr
         assert result.returncode and published.returncode
+
+
+@pytest.mark.parametrize("includes_upstream", [True, False])
+def test_push_checks_the_current_upstream_tip(receiver, includes_upstream):
+    repo, remote, _, upstream = receiver
+    branch = "refs/heads/factory/check"
+    git(repo, "commit", "--allow-empty", "-m", "initial")
+    old = git(repo, "rev-parse", "HEAD").stdout.strip()
+    git(repo, "push", remote, f"HEAD:{branch}")
+    git(repo, "commit", "--allow-empty", "-m", "other writer")
+    advanced = git(repo, "rev-parse", "HEAD").stdout.strip()
+    git(repo, "push", upstream, f"HEAD:{branch}")
+    if not includes_upstream:
+        git(repo, "checkout", "--detach", old)
+
+    git(repo, "commit", "--allow-empty", "-m", "coder update")
+    candidate = git(repo, "rev-parse", "HEAD").stdout.strip()
+    result = git(repo, "push", remote, f"HEAD:{branch}", check=False)
+    published = git(upstream, "rev-parse", branch).stdout.strip()
+    if includes_upstream:
+        assert result.returncode == 0, result.stderr.decode()
+        assert published == candidate
+    else:
+        assert result.returncode and b"include the current upstream tip" in result.stderr
+        assert published == advanced
