@@ -39,11 +39,8 @@ resources:
 configMapGenerator:
   # Keep the upstream gateway policy and add the private receiver's mTLS route.
   # resources_test.py checks drift against the pinned upstream configuration.
-  - name: atenet-egress-agentgateway-config
+  - name: atenet-egress-guard-config
     namespace: ate-system
-    behavior: replace
-    options:
-      disableNameSuffixHash: true
     files:
       - config.yaml=atenet-egress-config.yaml
   # The bundled PostgreSQL's roles and schema (pkg/postgressetup).
@@ -71,6 +68,27 @@ secretGenerator:
       - ownerConnectionString=postgresql://substrate_owner_user@postgres.ate-system.svc:5432/atepg?sslmode=verify-full&sslrootcert=/run/servicedns.podcert.ate.dev/trust-bundle.pem&sslcert=/run/postgres.podcert.ate.dev/substrate_owner_user.pem&sslkey=/run/postgres.podcert.ate.dev/substrate_owner_user.pem
 
 patches:
+  # The generated config name changes with its content, so the gateway rolls.
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: atenet-egress-agentgateway-config
+        namespace: ate-system
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: atenet-egress
+        namespace: ate-system
+      spec:
+        template:
+          spec:
+            volumes:
+              - name: config
+                configMap:
+                  name: atenet-egress-guard-config
   # The credential provider's Secret reader ClusterRole is bound per namespace
   # instead of cluster-wide: the kagent install binds it in kagent with a
   # RoleBinding, so the provider can read no other namespace's Secrets.
