@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# invariant: FACT-13
 """Hook for a private staging receiver with a trusted Mandoline fingerprint index."""
 
 import base64
