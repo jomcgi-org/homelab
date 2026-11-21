@@ -1,6 +1,6 @@
 {
-  "head": "40cb82fa87d7be4cacab050107bde3d155e0a6f2",
-  "baseline": "82b217328ae892ae483618675fdd3f617a9009a7",
+  "head": "3854501f78aeaa65bb226e33508e773ff3051a0a",
+  "baseline": "9c22bd0055782a5eb1be01c87b96aba394b28e59",
   "baseline_kind": "git merge-base",
   "rows": [
     {
@@ -68,7 +68,7 @@
       "after": "captures/blog/after-360x640-complete.png",
       "before": "captures/blog/before-360x640-complete.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 360,
         "height": 2492
@@ -125,7 +125,7 @@
       "after": "captures/blog/after-390x844-complete.png",
       "before": "captures/blog/before-390x844-complete.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 2472
@@ -657,7 +657,7 @@
       "after": "captures/factory/after-overview-live-1440x1000-dark-100pct-opening.png",
       "before": "captures/factory/before-overview-live-1440x1000-dark-100pct-opening.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 1440,
         "height": 1000
@@ -695,7 +695,7 @@
       "after": "captures/factory/after-overview-live-1440x1000-light-100pct-opening.png",
       "before": "captures/factory/before-overview-live-1440x1000-light-100pct-opening.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 1440,
         "height": 1000
@@ -980,7 +980,7 @@
       "after": "captures/review/after-gaps-audit-390-dark.png",
       "before": "captures/review/before-gaps-audit-390-dark.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -999,7 +999,7 @@
       "after": "captures/review/after-gaps-audit-390-light.png",
       "before": "captures/review/before-gaps-audit-390-light.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1227,7 +1227,7 @@
       "after": "captures/review/after-notes-pending-390-light.png",
       "before": "captures/review/before-notes-pending-390-light.png",
       "unavailable": null,
-      "identical": false,
+      "identical": true,
       "after_dimensions": {
         "width": 390,
         "height": 1000
@@ -1626,7 +1626,7 @@
       "after": "captures/trips/after-timeline-1440-light-viewer.png",
       "before": "captures/trips/before-timeline-1440-light-viewer.png",
       "unavailable": null,
-      "identical": true,
+      "identical": false,
       "after_dimensions": {
         "width": 1440,
         "height": 1000
