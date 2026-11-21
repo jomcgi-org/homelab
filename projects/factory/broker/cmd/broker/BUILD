@@ -24,6 +24,10 @@ go_library(
         "@com_github_prometheus_client_golang//prometheus/promhttp",
         "@io_k8s_client_go//kubernetes",
         "@io_k8s_client_go//rest",
+        "@io_opentelemetry_go_otel//:otel",
+        "@io_opentelemetry_go_otel_exporters_otlp_otlptrace_otlptracegrpc//:otlptracegrpc",
+        "@io_opentelemetry_go_otel_sdk//resource",
+        "@io_opentelemetry_go_otel_sdk//trace",
     ],
 )
 

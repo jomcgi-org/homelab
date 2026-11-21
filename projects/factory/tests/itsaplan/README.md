@@ -37,7 +37,10 @@ and stops PostgreSQL in cleanup. Credentials are synthetic. Caller-supplied
 database URLs are ignored. Missing fixtures or any suite failure fail the
 target; the test has no skip or manual tag.
 
-For local pytest, supply `BUN_BIN`, `ITSAPLAN_ARCHIVE` (an archive of the
+The decision probe runs the connector handler against the pinned API and
+checks the saved comment author, text and delegate in PostgreSQL. For local
+pytest, build the probe and export its absolute path in `DECISION_PROBE`
+(`go build -o /tmp/decisionprobe ./projects/factory/tests/itsaplan/decisionprobe`). Supply `BUN_BIN`, `ITSAPLAN_ARCHIVE` (an archive of the
 pinned checkout with its locked API dependencies installed), `PG_BIN` and
 `PG_SHARE`. The same launcher still creates and deletes its own database.
 

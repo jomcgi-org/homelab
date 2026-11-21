@@ -1,8 +1,9 @@
 {{- if .Values.itsaplan.enabled }}
 {{- /*
 itsaplan Community (ARCHITECTURE.md, "itsaplan"): the api, which applies the
-migrations in an init container before it starts, the web app and the worker,
-from the upstream images. Generated secrets come from itsaplan-jobs.yaml's
+migrations in an init container before it starts, and the worker use upstream
+images. CI builds the web app from the pinned upstream source.
+Generated secrets come from itsaplan-jobs.yaml's
 Jobs; the database, S3 key and OIDC client secret from outside the chart;
 the instance's admin, sign-in settings, project, sessions member and agents
 from its bootstrap. The namespace is not rendered here: the broker's template
@@ -93,7 +94,7 @@ metadata:
 type: Opaque
 ---
 # Joe's sessions email and password, generated once by the bootstrap Job.
-# Only that Job reads it in-cluster; never label it injectable into sandboxes.
+# The connector mounts the password for decisions. Keep it outside sandbox injection.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -252,6 +253,10 @@ spec:
                 name: {{ $name }}
           env:
             {{- include "factory.itsaplanSecretEnv" . | nindent 12 }}
+            {{- if .Values.connector.enabled }}
+            - name: FACTORY_RUN_PHASE_URL
+              value: {{ printf "http://factory-connector-status.%s.svc:8085/run-phases" .Values.broker.namespace | quote }}
+            {{- end }}
           # The root answers 200 once the server listens.
           readinessProbe:
             httpGet:
@@ -317,11 +322,18 @@ spec:
       automountServiceAccountToken: false
       securityContext:
         {{- include "factory.itsaplanPodSecurity" . | nindent 8 }}
+      {{- if $i.webImage.digest }}
+      {{- include "factory.imagePullSecrets" . | nindent 6 }}
+      {{- end }}
       containers:
         # The web app holds no secret: it reads the public origins and
         # reaches the api by Service.
         - name: web
+          {{- if $i.webImage.digest }}
+          image: {{ printf "%s@%s" $i.webImage.repository $i.webImage.digest | quote }}
+          {{- else }}
           image: {{ $i.images.web }}
+          {{- end }}
           command: [node, apps/web/server.js]
           ports:
             - name: http

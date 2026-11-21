@@ -14,7 +14,7 @@ flowchart LR
   health["health CronJob (HOME-260)"] -- "write health.json" --> hgarage[("Garage factory-health")]
   garage -- "rclone, every minute" --> r2[("R2 factory-public")]
   hgarage -- "copy health.json only" --> r2
-  sources[("Garage stars-forecast and hikes")] -- "read-only, one mirror each, under its prefix" --> r2
+  sources[("Garage stars-forecast, hikes and ships")] -- "read-only, one mirror each, under its prefix" --> r2
   r2 --> cdn["factory-data.jomcgi.dev"]
 ```
 
@@ -22,7 +22,7 @@ flowchart LR
 
 The chart has two `buckets:` entries in `chart/values.yaml`: `factory-public`
 with its mirror, and `factory-health` for the health publisher. The mirror
-also lists the Garage buckets `stars-forecast` and `hikes` in
+also lists the Garage buckets `stars-forecast`, `hikes` and `ships` in
 `public.sources`. They render:
 
 - a Garage bucket claim and key Secret for each entry, which garage-init fills;
@@ -38,25 +38,31 @@ also lists the Garage buckets `stars-forecast` and `hikes` in
 - an admission rule for each mirror that lets only its ServiceAccount mount
   its R2 Secret.
 
-Each root run syncs every object except `manifest.json`, `health.json`,
-`stars-forecast/` and `hikes/` with
-`Cache-Control: public, max-age=31536000, immutable`, then copies
-`manifest.json` with `Cache-Control: public, max-age=60`.
+Each root run copies every object except `manifest.json`, `health.json`,
+`stars-forecast/`, `hikes/` and `ships/` with
+`Cache-Control: public, max-age=31536000, immutable`. Then it uploads the
+`manifest.json` that it saved before the copy, with
+`Cache-Control: public, max-age=60`. Only then does it delete the R2 objects
+that Garage held at neither of its two listings
+([library steps](../shared/helm/factory-library/README.md#buckets-and-public-mirrors)).
+Each source mirror uses the same steps under its prefix.
 
 The publisher gets write access through its own `buckets:` entry without
 `public:`. Only this namespace holds the R2 token (HOME-492). Each source
-mirror syncs one writer's Garage bucket under its prefix of R2
-`factory-public`, and the library adds that prefix to the root sync's
+mirror copies one writer's Garage bucket under its prefix of R2
+`factory-public`, and the library adds that prefix to the root mirror's
 excludes ([library rule](../shared/helm/factory-library/README.md#one-public-r2-bucket)):
 
 | Source bucket | Writer chart | Public manifest | Activated by |
 | --- | --- | --- | --- |
 | `stars-forecast` | `projects/stars-forecast` | `https://factory-data.jomcgi.dev/stars-forecast/latest.json` | HOME-478 |
 | `hikes` | `projects/hikes` | `https://factory-data.jomcgi.dev/hikes/latest.json` | HOME-477 |
+| `ships` | `projects/ships` | `https://factory-data.jomcgi.dev/ships/latest.json` | HOME-410, after HOME-537 |
 
-Both sources run since their activation. To stop one, set its `suspend` to
-`true`: R2 keeps what it has. To add a writer, add a `public.sources` entry
-here. The writer chart keeps a Garage bucket without `public:`.
+Stars and Hikes run since their activation. The `ships` source stays
+`suspend: true` until its activation. To stop a source, set its `suspend`
+to `true`: R2 keeps what it has. To add a writer, add a `public.sources`
+entry here. The writer chart keeps a Garage bucket without `public:`.
 
 ## Factory health
 
@@ -118,6 +124,24 @@ rollout:
    names `alert-test`.
 4. In a second PR, remove that `valuesObject` line.
 5. When the file shows `healthy` again, Discord gets the resolved message.
+
+## Credential check
+
+The `cloudflare-exporter` Deployment checks the `factory-health-cloudflare`
+token every minute, for the `CloudflareCredentialRefused` alert
+([runbook](../factory-cluster/README.md#factoryegressipchanged-cloudflarecredentialrefused)).
+`templates/cloudflare-exporter.yaml` passes it `files/cloudflare_exporter.py`,
+a copy of the Prometheus script that `public_test` checks byte for byte.
+The check reads the Worker's deployments. The exporter writes nothing and
+reads no egress IP. The pod takes the token only, has no Kubernetes API
+token, and reaches only `api.cloudflare.com` on 443. It is a plain template:
+the factory library adds Garage egress to every workload of a chart with
+buckets.
+
+The exporter does not test the R2 mirror key. That key can write and delete
+all of bucket `factory-public`, so only the mirror CronJobs hold it.
+`public_test` checks that no other workload takes its Secrets. A refused R2
+key shows through `FactoryEgressIPChanged` and `FactoryHealthStale`.
 
 ## Before the mirror runs
 

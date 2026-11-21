@@ -86,11 +86,27 @@ scrape_configs:
     static_configs:
       - targets: [kube-state-metrics:8080]
 
+  - job_name: capacity-forecast
+    honor_labels: true
+    static_configs:
+      - targets: [capacity-forecast.capacity-forecast.svc:8080]
+
   # The public factory health file (HOME-415): health-exporter reads
   # https://factory-data.jomcgi.dev/health.json on each scrape.
   - job_name: factory-health
     static_configs:
       - targets: [health-exporter:8080]
+
+  # The egress IP and the factory's Cloudflare credential checks (HOME-634):
+  # one cloudflare-exporter in this namespace and one in the namespace of each
+  # credential's Secret.
+  - job_name: cloudflare
+    static_configs:
+      - targets:
+          - cloudflare-exporter:8080
+          - cloudflare-exporter.cfgate-system.svc:8080
+          - cloudflare-exporter.jomcgi-site-prod.svc:8080
+          - cloudflare-exporter.factory-public.svc:8080
 
   # Cilium on the host network of each node: the agent, Hubble's flow and
   # drop counters, and both operator replicas.

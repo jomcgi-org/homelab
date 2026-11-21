@@ -277,6 +277,28 @@ git -C "$clone" fetch --quiet origin main
 expect "invalid receipt leaves main untouched" "$source" \
 	"$(git -C "$clone" rev-parse origin/main)" "no completion claim on failure"
 
+clone=$(new_env receipt-multiline 0.1.0)
+source=$(git -C "$clone" rev-parse HEAD)
+record "$TMP/rec-multiline" demo projects/demo/chart 0.1.1
+printf 'projects/demo/chart 0.1.2\n' >>"$TMP/rec-multiline/demo"
+multiline_rc=0
+(cd "$clone" && bash "$SCRIPT" "$TMP/rec-multiline" --record-publication >/dev/null 2>&1) || multiline_rc=$?
+expect "multiline chart record fails closed" "1" "$multiline_rc" "every record contains exactly one chart and version"
+git -C "$clone" fetch --quiet origin main
+expect "multiline receipt leaves main untouched" "$source" \
+	"$(git -C "$clone" rev-parse origin/main)" "no completion claim on failure"
+
+clone=$(new_env receipt-duplicate 0.1.0)
+source=$(git -C "$clone" rev-parse HEAD)
+record "$TMP/rec-duplicate" demo projects/demo/chart 0.1.1
+record "$TMP/rec-duplicate" duplicate projects/demo/chart 0.1.2
+duplicate_rc=0
+(cd "$clone" && bash "$SCRIPT" "$TMP/rec-duplicate" --record-publication >/dev/null 2>&1) || duplicate_rc=$?
+expect "duplicate chart receipt fails closed" "1" "$duplicate_rc" "one source cannot attest two versions of a chart"
+git -C "$clone" fetch --quiet origin main
+expect "duplicate receipt leaves main untouched" "$source" \
+	"$(git -C "$clone" rev-parse origin/main)" "no completion claim on failure"
+
 if [[ "$FAILURES" -gt 0 ]]; then
 	echo "${FAILURES} test(s) failed"
 	exit 1

@@ -10,12 +10,12 @@ import subprocess
 def test_replacement_sync(tmp_path):
     app = runpy.run_path(str(Path(__file__).parent / "runbooks/server.py"))
     book = app["BOOKS"]["SemgrepSyncFailed"]
-    params = {"namespace": ["factory"], "job_name": ["intsec-sync-1"]}
+    params = {"namespace": ["factory"], "job_name": ["factory-semgrep-sync-1"]}
     check = app["bind"](book["check"], params)
     graph = app["bind"](book["graph"], params)
 
     def series(metric, job):
-        labels = f'namespace="factory",job_name="intsec-sync-{job}"'
+        labels = f'namespace="factory",job_name="factory-semgrep-sync-{job}"'
         if metric == "kube_job_failed":
             labels += ',condition="true"'
         return f"{metric}{{{labels}}}"

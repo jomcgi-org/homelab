@@ -608,3 +608,11 @@ py_test(
     env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
     deps = ["@pip//pyyaml"],
 )
+
+exports_files(
+    ["migrations/20260615120000_trips_schema.sql"],
+    visibility = [
+        "//projects/trips/export:__pkg__",
+        "//projects/trips/ingest:__pkg__",
+    ],
+)

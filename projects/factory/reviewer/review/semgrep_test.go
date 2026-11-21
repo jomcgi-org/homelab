@@ -281,6 +281,7 @@ func TestSemgrepOverflowRecoveryAcrossRestart(t *testing.T) {
 }
 
 func TestSemgrepWithdrawsPassWhileReviewSlotsAreFull(t *testing.T) {
+	exporter := captureReviewSpans(t)
 	h := semgrepHarness(t)
 	h.gh.addCheck(shaA, scanName, scanApp, "success")
 	e, ctx, _ := h.start()
@@ -298,6 +299,24 @@ func TestSemgrepWithdrawsPassWhileReviewSlotsAreFull(t *testing.T) {
 	e.Tick(ctx)
 	if h.gh.check(shaA).Conclusion != ConclusionFailure || len(h.k.sent()) != 1 {
 		t.Fatal("stale pass survived full review slots")
+	}
+	verdicts := 0
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "factory.review_transition" {
+			continue
+		}
+		fields := map[string]string{}
+		for _, field := range span.Attributes {
+			fields[string(field.Key)] = field.Value.Emit()
+		}
+		if fields["review.transition"] == ConclusionFailure && fields["head.sha"] == shaA &&
+			fields["repository"] == testRepo && fields["pr.number"] == "7" &&
+			fields["review.check_id"] == fmt.Sprint(h.gh.check(shaA).ID) {
+			verdicts++
+		}
+	}
+	if verdicts != 1 {
+		t.Fatalf("head-bound failure observations = %d, want 1", verdicts)
 	}
 	// Even if the old scan state comes back, the invalidated review must rerun.
 	h.gh.withLock(func() { h.gh.checks[0].Status = "completed" })
@@ -439,7 +458,7 @@ func TestSemgrepAndIssueEvidenceKeepTheAttemptBound(t *testing.T) {
 	}
 	e.Wait()
 	st, ok := LoadState(h.gh.check(shaA).Text)
-	if !ok || st.Semgrep == nil || !st.Semgrep.NoReport || st.IssueDigest == "" {
+	if !ok || st.Round != 1 || st.Semgrep == nil || !st.Semgrep.NoReport || st.IssueDigest == "" {
 		t.Fatalf("exhausted review lost its evidence bindings: %+v", st)
 	}
 	for range 2 {

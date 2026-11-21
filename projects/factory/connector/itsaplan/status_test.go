@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -33,9 +35,12 @@ func TestNeedsYouUsesCoordinatorAndFiltersJoeWithoutDelegate(t *testing.T) {
 				{"id":25,"columnId":1,"assigneeUserId":"joe-id","archived":true},
 				{"id":26,"columnId":99,"assigneeUserId":"joe-id"},
 				{"id":27,"columnId":1,"assigneeUserId":null},
-				{"id":28,"columnId":4,"assigneeUserId":"joe-id","delegateUserId":null},
-				{"id":29,"columnId":5,"assigneeUserId":"joe-id","delegateUserId":null}
+				{"id":28,"identifier":"HOME-28","columnId":4,"assigneeUserId":"joe-id","delegateUserId":null},
+				{"id":29,"identifier":"HOME-29","columnId":5,"assigneeUserId":"joe-id","delegateUserId":null}
 			]`))
+		case "/issues/20", "/issues/28", "/issues/29":
+			n := strings.TrimPrefix(r.URL.Path, "/issues/")
+			fmt.Fprintf(w, `{"identifier":"HOME-%s","columnId":1,"assigneeUserId":"joe-id","description":"## Choices\n1. Ship (Recommended)\n2. Wait"}`, n)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
@@ -43,10 +48,10 @@ func TestNeedsYouUsesCoordinatorAndFiltersJoeWithoutDelegate(t *testing.T) {
 	defer srv.Close()
 	c := &Client{BaseURL: srv.URL, Coordinator: "coord", Keys: map[string]string{"coord": "coordinator-key"}}
 	issues, err := c.NeedsYou(context.Background(), "HOME", "joe")
-	if err != nil || len(issues) != 3 || reads != 2 {
+	if err != nil || len(issues) != 3 || reads != 5 {
 		t.Fatalf("issues = %+v, reads = %d, err = %v", issues, reads, err)
 	}
-	if issues[0].ID != 20 || issues[1].ID != 28 || issues[2].ID != 29 {
+	if len(issues[0].Choices) != 2 || issues[0].Choices[0] != "Ship" || issues[0].ID != 20 || issues[1].ID != 28 || issues[2].ID != 29 {
 		t.Fatalf("wrong issue filter: %+v", issues)
 	}
 	data, _ := json.Marshal(issues[0])
@@ -75,6 +80,83 @@ func TestNeedsYouRejectsMissingMemberAndFullListing(t *testing.T) {
 		srv.Close()
 		if err == nil || errors.Is(err, ErrNotMember) == full {
 			t.Fatalf("full=%v: err = %v", full, err)
+		}
+	}
+}
+
+func TestRecentIssueTitlesReadsOneBoundedPage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/projects/HOME/issues" || r.Header.Get("x-api-key") != "key" ||
+			r.URL.Query().Get("limit") != "500" || r.URL.Query().Get("includeArchived") != "true" {
+			t.Error("expected a bounded coordinator read that includes archived issues")
+		}
+		_, _ = w.Write([]byte(`[{"id":20,"title":"Archived change","archived":true,"description":"private body"}]`))
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Coordinator: "coord", Keys: map[string]string{"coord": "key"}}
+	titles, err := c.RecentIssueTitles(context.Background(), "HOME")
+	if err != nil || len(titles) != 1 || titles[20] != "Archived change" {
+		t.Fatalf("titles = %v, err = %v", titles, err)
+	}
+}
+
+func TestChoiceCounts(t *testing.T) {
+	desc := "## Choices\n1. First (Recommended)"
+	for i := 1; i <= 5; i++ {
+		if i > 1 {
+			desc += fmt.Sprintf("\n%d. Next", i)
+		}
+		want := i
+		if i == 1 || i == 5 {
+			want = 0
+		}
+		if got := len(parseChoices(desc)); got != want {
+			t.Errorf("%d items: got %d", i, got)
+		}
+	}
+	if parseChoices("## Choices\n1. First\n2. Second") != nil {
+		t.Fatal("missing recommendation accepted")
+	}
+}
+
+func TestChoicesIgnoreCodeAndHTMLBlocks(t *testing.T) {
+	for _, valid := range []string{
+		"## Choices\n1. Ship (Recommended)\n2. Hold",
+		"<!-- note -->\n## Choices\n1. Ship (Recommended)\n2. Hold",
+		"<!--\n## Choices\n1. Old (Recommended)\n2. Older\n-->\n## Choices\n1. Ship (Recommended)\n2. Hold",
+		"<pre>\nexample\n</pre>\n## Choices\n1. Ship (Recommended)\n2. Hold",
+		"<div>note</div>\n\n## Choices\n1. Ship (Recommended)\n2. Hold",
+		"See:\n<https://example.com>\n## Choices\n1. Ship (Recommended)\n2. Hold",
+		"<https://example.com>\n## Choices\n1. Ship (Recommended)\n2. Hold",
+		"Text\n<span class=\"x\">\n## Choices\n1. Ship (Recommended)\n2. Hold",
+		"```\n    ```\n## Choices\n1. Old (Recommended)\n2. Older\n```\n## Choices\n1. Ship (Recommended)\n2. Hold",
+	} {
+		if len(parseChoices(valid)) != 2 {
+			t.Fatalf("valid section rejected: %q", valid)
+		}
+	}
+	for _, desc := range []string{
+		"Example:\n\n    ## Choices\n    1. Ship (Recommended)\n    2. Hold",
+		"Example:\n\n\t## Choices\n\t1. Ship (Recommended)\n\t2. Hold",
+		"## Choices\n1. Ship (Recommended)\n2. Hold\n\n    3. Code",
+		"Example:\n```\n## Choices\n1. Ship (Recommended)\n2. Hold\n```",
+		"<!--\n## Choices\n1. Ship (Recommended)\n2. Hold\n-->",
+		"<!-- draft\n## Choices\n1. Ship (Recommended)\n2. Hold -->",
+		"## Choices\n1. Ship (Recommended)\n<!-- 2. Hold -->",
+		"<pre>\n## Choices\n1. Ship (Recommended)\n2. Hold\n</pre>",
+		"<PRE class=x>\n## Choices\n1. Ship (Recommended)\n2. Hold\n</PRE>",
+		"<script>\n## Choices\n1. Ship (Recommended)\n2. Hold\n</script>",
+		"<details>\n## Choices\n1. Ship (Recommended)\n2. Hold",
+		"<?x\n## Choices\n1. Ship (Recommended)\n2. Hold\n?>",
+		"## Choices\n1. Ship (Recommended)\n<div>2. Hold</div>",
+		"Example:\n```\n    ```\n## Choices\n1. Ship (Recommended)\n2. Hold\n```",
+		"<span class=\"x\">\n## Choices\n1. Ship (Recommended)\n2. Hold",
+		"</section>\n## Choices\n1. Ship (Recommended)\n2. Hold",
+		"## Choices\n1. Ship (Recommended)\n\n   2. Wait",
+		"## Choices\n1. Ship (Recommended)\n 2. Wait",
+	} {
+		if got := parseChoices(desc); got != nil {
+			t.Errorf("code block parsed as choices: %q", got)
 		}
 	}
 }

@@ -85,7 +85,7 @@ spec:
             - port: "5432"
               protocol: TCP
 ---
-# kagent-pg-wait-for-key reads one Secret and nothing else.
+# kagent-pg-wait-for-key prepares login Secrets and waits for the backup key.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:

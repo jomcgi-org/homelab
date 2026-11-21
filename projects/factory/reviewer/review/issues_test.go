@@ -135,6 +135,16 @@ func (a *issueAPI) LinkedComment(ctx context.Context, _ int64, id int64) (*itsap
 	return a.comments[id], nil
 }
 
+func (a *issueAPI) RecentComments(context.Context, int64) ([]itsaplan.FeedItem, error) {
+	var comments []itsaplan.FeedItem
+	for _, item := range a.comments {
+		if item != nil {
+			comments = append(comments, *item)
+		}
+	}
+	return comments, nil
+}
+
 // testMACSecret stands in for the mounted itsaplan key the MAC key derives from.
 func testMACSecret() (string, error) { return "test-itsaplan-key-0123456789", nil }
 
@@ -857,5 +867,118 @@ func TestPublishedOutputCarriesNoUnkeyedEvidenceHash(t *testing.T) {
 				t.Fatalf("a published field carries private text or its unkeyed hash %q", bad)
 			}
 		}
+	}
+}
+
+func TestOwnedCriterion(t *testing.T) {
+	for _, tc := range []struct{ name, state, description, failure, want string }{
+		{"verified", "started", "- Ship telemetry.", "", goalOwned},
+		{"example", "started", "```\n- Ship telemetry.\n```", "", goalNotMet},
+		{"comment", "started", "<!--\nDone when\n- Ship telemetry.\n-->", "", goalNotMet},
+		{"lazy continuation", "started", "- Ship telemetry.\nonly as an example.", "", goalNotMet},
+		{"quoted", "started", "> - Ship telemetry.", "", goalNotMet},
+		{"continuation", "started", "Done when\n- Ship telemetry.\n  Only in a mock.", "", goalNotMet},
+		{"missing", "started", "- Ship telemetry.", "missing", goalNotMet},
+		{"closed", "completed", "- Ship telemetry.", "", goalNotMet},
+		{"unrelated", "started", "- Ship a dashboard.", "", goalNotMet},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, b, api, _ := issueSetup()
+			goal := &itsaplan.Issue{Identifier: "HOME-1", Links: []itsaplan.IssueLink{{Issue: itsaplan.IssueRef{ID: api.issue.ID, Identifier: api.issue.Identifier}}}}
+			api.fail = tc.failure
+			api.project.Columns[0].StateType = tc.state
+			api.issue.Description = tc.description
+			in := &IssueContext{Issue: &IssueEvidence{Key: goal.Identifier, Trusted: true, Description: "Done when\n1. Ship telemetry."}}
+			e.readFollowUps(context.Background(), b.ItsaplanProject, api.project, goal, in)
+			a, err := ParseGoal("```json\n" + `{"criteria":[{"criterion":1,"verdict":"owned","follow_up":"HOME-58"}],"overall":"met"}` + "\n```")
+			if err != nil {
+				t.Fatal(err)
+			}
+			a.verifyOwnership(in)
+			feedback := (&GoalCheck{Criteria: a.Criteria, followUps: a.followUps}).ownershipFeedback()
+			if a.Criteria[0].Verdict != tc.want || strings.Contains(feedback, "HOME-58") != (tc.want == goalOwned) {
+				t.Fatalf("verdict %v, feedback %q", a.Criteria, feedback)
+			}
+			findings := goalFindings(goal.Identifier, &GoalCheck{Overall: a.Overall, Criteria: a.Criteria})
+			if len(findings) != 1 || strings.Contains(findings[0].Title+findings[0].Detail, "HOME-58") {
+				t.Fatalf("public findings %v", findings)
+			}
+		})
+	}
+}
+
+func TestOwnershipRejectsPartialSourceCriterion(t *testing.T) {
+	in := &IssueContext{
+		Issue:     &IssueEvidence{Key: "HOME-1", Trusted: true, Description: "Done when\n- Ship telemetry\nfor all production tenants."},
+		FollowUps: map[string]string{"HOME-58": "- Ship telemetry"},
+	}
+	a := goalAnswer{Criteria: []GoalVerdict{{1, goalOwned}}, followUps: map[int]string{1: "HOME-58"}}
+	a.verifyOwnership(in)
+	if a.Criteria[0].Verdict != goalNotMet {
+		t.Fatal("partial ownership cleared the production scope")
+	}
+	if issueCriteria(in) != 1 {
+		t.Fatal("the source still lists one criterion")
+	}
+}
+
+// An indented code example in a follow-up is not a task, so it cannot
+// take ownership of a criterion.
+func TestOwnershipRejectsIndentedCodeExample(t *testing.T) {
+	for name, followUp := range map[string]string{
+		"spaces after marker":    "Done when\n1.     Ship telemetry",
+		"tab after marker":       "Done when\n1.\tShip telemetry",
+		"code under an item":     "Done when\n1. Example:\n\n       Ship telemetry",
+		"code under a bullet":    "Done when\n- Example:\n      Ship telemetry",
+		"plain item (control) ✓": "Done when\n1. Ship telemetry",
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := &IssueContext{
+				Issue:     &IssueEvidence{Key: "HOME-1", Trusted: true, Description: "Done when\n1. Ship telemetry"},
+				FollowUps: map[string]string{"HOME-58": followUp},
+			}
+			a := goalAnswer{Criteria: []GoalVerdict{{1, goalOwned}}, followUps: map[int]string{1: "HOME-58"}}
+			a.verifyOwnership(in)
+			want := goalNotMet
+			if strings.HasSuffix(name, "✓") {
+				want = goalOwned
+			}
+			if a.Criteria[0].Verdict != want {
+				t.Fatalf("verdict = %q, want %q", a.Criteria[0].Verdict, want)
+			}
+		})
+	}
+}
+
+func TestTicketReplyBindsEvidenceToTheExactPRAndCommit(t *testing.T) {
+	b := &Binding{Owner: "example-org", Repo: "homelab"}
+	pr := github.PullRequest{Number: 7, HeadSHA: shaA}
+	p := &itsaplan.Project{Assignees: []itsaplan.Assignee{{
+		UserID: "coordinator", Username: "factory-coordinator", Kind: "agent",
+	}}}
+	marker := itsaplan.GoalReplyMarker(b.repo(), pr.Number, pr.HeadSHA)
+	api := &issueAPI{comments: map[int64]*itsaplan.FeedItem{
+		1: {IssueID: 62, Kind: "comment", ActorUserID: "coordinator", EditedAt: []byte("null"), Body: marker + "1 -->\nother issue"},
+		2: {IssueID: 61, Kind: "comment", ActorUserID: "someone-else", EditedAt: []byte("null"), Body: marker + "2 -->\nwrong account"},
+		3: {IssueID: 61, Kind: "comment", ActorUserID: "coordinator", EditedAt: []byte(`"2026-11-20"`), Body: marker + "3 -->\nedited"},
+		4: {IssueID: 61, Kind: "comment", ActorUserID: "coordinator", EditedAt: []byte("null"), Body: itsaplan.GoalReplyMarker(b.repo(), pr.Number, strings.Repeat("b", 40)) + "4 -->\nold head"},
+	}}
+	e := &Engine{cfg: Config{Itsaplan: api, MACSecret: testMACSecret}}
+	ctx := context.Background()
+	before, _, err := e.ticketGoalReply(ctx, b, pr, p, 61)
+	if err != nil || before != "" {
+		t.Fatalf("accepted unmatched reply %q, %v", before, err)
+	}
+	api.comments[5] = &itsaplan.FeedItem{IssueID: 61, Kind: "comment", ActorUserID: "coordinator", EditedAt: []byte("null"), Body: marker + "5 -->\ncriterion 1: test"}
+	after, revision, err := e.ticketGoalReply(ctx, b, pr, p, 61)
+	if err != nil || after != "criterion 1: test" || revision != 5 {
+		t.Fatalf("matching reply = %q, %v", after, err)
+	}
+	older := &IssueContext{}
+	newer := &IssueContext{GoalReply: after}
+	e.sealIssues(older)
+	e.sealIssues(newer)
+	if issueDigest(older) == issueDigest(newer) {
+		t.Fatal("matching reply did not invalidate the earlier verdict")
 	}
 }

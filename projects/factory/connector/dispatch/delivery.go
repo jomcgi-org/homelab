@@ -14,6 +14,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/internal/tracing"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/jomcgi/homelab/projects/factory/connector/buildbuddy"
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
@@ -193,7 +197,7 @@ func (e *Engine) syncPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 			return nil, err
 		}
 		e.m.PullRequests.WithLabelValues("updated").Inc()
-		return e.settlePR(ctx, wi, b, a, got)
+		return e.settlePR(ctx, wi, b, a, r, got)
 	}
 	if err := e.guard(ctx); err != nil {
 		return nil, err
@@ -221,14 +225,14 @@ func (e *Engine) syncPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	if err != nil {
 		return nil, err
 	}
-	return e.settlePR(ctx, wi, b, a, got)
+	return e.settlePR(ctx, wi, b, a, r, got)
 }
 
 // settlePR records the PR a turn was synced to. A PR against another base
 // branch is not the factory's, and a closed, unmerged one was closed by a
 // person; either stops delivery for the work item, with a comment, and it
 // is not polled.
-func (e *Engine) settlePR(ctx context.Context, wi *store.WorkItem, b *Binding, a *store.Attempt, got *github.PullRequest) (*store.PullRequest, error) {
+func (e *Engine) settlePR(ctx context.Context, wi *store.WorkItem, b *Binding, a *store.Attempt, r *store.Run, got *github.PullRequest) (*store.PullRequest, error) {
 	if got.BaseRef != "" && got.BaseRef != b.BaseBranch {
 		e.m.PullRequests.WithLabelValues("stopped").Inc()
 		return nil, e.stopWork(ctx, wi, fmt.Sprintf("PR #%d (%s) targets %s, not %s", got.Number, got.URL, got.BaseRef, b.BaseBranch))
@@ -237,11 +241,31 @@ func (e *Engine) settlePR(ctx context.Context, wi *store.WorkItem, b *Binding, a
 	if err != nil {
 		return nil, err
 	}
+	e.observeDeliveryHead(ctx, b, wi, a, r, pr)
 	if got.State == "closed" && !got.Merged {
 		e.m.PullRequests.WithLabelValues("stopped").Inc()
 		return nil, e.stopWork(ctx, wi, fmt.Sprintf("PR #%d (%s) was closed; reopen it and start a new run to resume", got.Number, got.URL))
 	}
 	return pr, nil
+}
+
+// observeDeliveryHead identifies the native run whose finished turn the
+// connector synced to this observed head. Manual pushes can contribute to
+// the same head, so this event does not attribute commit authorship.
+func (e *Engine) observeDeliveryHead(ctx context.Context, b *Binding, wi *store.WorkItem, a *store.Attempt, r *store.Run, pr *store.PullRequest) {
+	if r == nil || r.Connector() || a.RunID != r.ID || pr.HeadSHA == "" {
+		return
+	}
+	_, span := tracing.Start(ctx, "factory.pr_head_delivery", trace.WithNewRoot(), trace.WithAttributes(
+		attribute.String("factory.lifecycle", "pr_head_delivery"),
+		attribute.String("repository", b.repo()),
+		attribute.String("issue.key", wi.IssueKey),
+		attribute.Int("pr.number", pr.Number),
+		attribute.String("head.sha", pr.HeadSHA),
+		attribute.Int64("implementation.run_id", r.ID),
+		attribute.Int64("delivery.attempt_id", a.ID),
+	))
+	tracing.Finish(span, nil, "synced")
 }
 
 // stopWork stops delivery for a work item; dispatch then cancels its review
@@ -257,7 +281,7 @@ func (e *Engine) stopWork(ctx context.Context, wi *store.WorkItem, reason string
 
 // stoppedPR follows the open PR of a stopped work item: a queued PR is
 // dequeued, and a merge is recorded without moving the issue to Done.
-func (e *Engine) stoppedPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) error {
+func (e *Engine) stoppedPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) (result error) {
 	switch {
 	case d.Merged:
 		return e.merged(ctx, wi, b, pr, d)
@@ -267,11 +291,15 @@ func (e *Engine) stoppedPR(ctx context.Context, wi *store.WorkItem, b *Binding, 
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
+	ctx, span, finish := e.startQueueAction(ctx, wi, pr, d, "dequeue")
+	defer func() { finish(result) }()
 	if err := e.gh.DequeuePullRequest(ctx, b.repo(), pr.NodeID); err != nil {
 		return fmt.Errorf("dequeue PR %d: %w", pr.Number, err)
 	}
 	e.m.MergeQueue.WithLabelValues("dequeued").Inc()
-	e.log.InfoContext(ctx, "PR dequeued; delivery stopped", "work_item", wi.ID, "pr", pr.Number)
+	if !span.IsRecording() {
+		e.log.InfoContext(ctx, "PR dequeued; delivery stopped", "work_item", wi.ID, "pr", pr.Number, "head", d.HeadSHA)
+	}
 	return e.st.MarkDequeued(ctx, pr)
 }
 
@@ -321,7 +349,7 @@ func (e *Engine) readIssueStopped(ctx context.Context, wi *store.WorkItem, b *Bi
 // delivery and its PR must be open, or delivery stops and the round is
 // canceled. The PR poll skips a work item while its turn runs, so a merge is
 // recorded here; step then stops the round (HOME-141).
-func (e *Engine) checkRound(ctx context.Context, r *store.Run) error {
+func (e *Engine) checkRound(ctx context.Context, r *store.Run) (result error) {
 	now := e.cfg.Now()
 	wi, err := e.st.GetWorkItem(ctx, r.WorkItemID)
 	if err != nil {
@@ -341,6 +369,11 @@ func (e *Engine) checkRound(ctx context.Context, r *store.Run) error {
 			return err
 		}
 		if pr != nil && pr.State != "merged" {
+			var head string // GitHub's head once read; the stored one if the read fails
+			if trace.SpanFromContext(ctx).IsRecording() {
+				workID, run, issue, source := wi.ID, r.ID, wi.IssueKey, wi.State
+				defer func() { e.observePR(ctx, workID, run, issue, source, pr, head, result) }()
+			}
 			if err := e.guard(ctx); err != nil {
 				return err
 			}
@@ -348,6 +381,7 @@ func (e *Engine) checkRound(ctx context.Context, r *store.Run) error {
 			if err != nil {
 				return err
 			}
+			head = d.HeadSHA
 			if d.Merged {
 				if err := e.st.SetHeartbeat(ctx, r.ID, now); err != nil {
 					return err
@@ -371,7 +405,7 @@ func (e *Engine) checkRound(ctx context.Context, r *store.Run) error {
 // checkPRClosed stops delivery when the PR of an itsaplan run's work item
 // was closed during the turn; dispatch then cancels the turn. A merge is
 // recorded, and step stops a run claimed before it (HOME-141).
-func (e *Engine) checkPRClosed(ctx context.Context, r *store.Run) error {
+func (e *Engine) checkPRClosed(ctx context.Context, r *store.Run) (result error) {
 	if e.gh == nil || r.WorkItemID == 0 {
 		return nil
 	}
@@ -387,10 +421,18 @@ func (e *Engine) checkPRClosed(ctx context.Context, r *store.Run) error {
 	if b == nil || wi.State == store.WorkStopped || wi.State == store.WorkDone {
 		return nil
 	}
+	var head string // GitHub's head once read; the stored one if the read fails
+	if trace.SpanFromContext(ctx).IsRecording() {
+		workID, run, issue, source := wi.ID, r.ID, wi.IssueKey, wi.State
+		defer func() { e.observePR(ctx, workID, run, issue, source, pr, head, result) }()
+	}
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
 	d, err := e.gh.PullRequestDetail(ctx, b.repo(), pr.Number)
+	if err == nil {
+		head = d.HeadSHA
+	}
 	switch {
 	case err != nil || d.State == "open":
 		return err
@@ -564,7 +606,12 @@ func (e *Engine) lastItsaplanRun(ctx context.Context, workID int64) int64 {
 
 // pollPR reads the PR and acts on what changed: the merge, a merge queue
 // ejection, review events on the head, or a head ready to enqueue.
-func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest) error {
+func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest) (result error) {
+	if trace.SpanFromContext(ctx).IsRecording() {
+		// Every PR check is on the poll root, also one that changes nothing or fails.
+		workID, source := wi.ID, wi.State
+		defer func() { e.observePR(ctx, workID, 0, wi.IssueKey, source, pr, "", result) }()
+	}
 	repo := b.repo()
 	if wi.State != store.WorkStopped {
 		// The issue decides first: a person who canceled it in itsaplan must
@@ -641,7 +688,7 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		return e.ejected(ctx, wi, b, pr, again)
 	case d.MergeQueueState != "":
 		// Queued although the enqueue's answer was lost.
-		return e.enqueued(ctx, wi, b, pr, d, d.MergeQueueState)
+		return e.reconcileEnqueue(ctx, wi, b, pr, d)
 	}
 	if d.Mergeable == "UNKNOWN" {
 		return nil // GitHub is still computing mergeability; poll again
@@ -660,12 +707,22 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	if err != nil {
 		return err
 	}
+	wait, late, err := e.ticketFeedback(ctx, wi, b, pr, checks)
+	if err != nil || (wait && !late && d.Mergeable != "CONFLICTING") {
+		return err
+	}
 	started, err := e.reviewEvents(ctx, wi, b, pr, d, checks, statuses)
 	if errors.Is(err, store.ErrNotReview) {
 		return nil // delivery stopped meanwhile; nothing started
 	}
 	if err != nil || started {
 		return err
+	}
+	if err := e.queueIssueReviewing(ctx, wi, b, d, checks); err != nil {
+		if fatal(err) {
+			return err
+		}
+		e.log.WarnContext(ctx, "could not queue issue review state", "issue", wi.IssueKey)
 	}
 	if d.Mergeable == "CONFLICTING" {
 		// A head already sent back never enters the queue, even with green
@@ -678,16 +735,26 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		}
 		return e.idleRound(ctx, wi, b, pr, d)
 	}
+	if wait {
+		return nil
+	}
+	if wait, err := e.ownershipFeedback(ctx, wi, b, pr, d.HeadSHA, checks); err != nil || wait {
+		return err // A failed ownership read waits for the next poll.
+	}
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
+	ctx, span, finish := e.startQueueAction(ctx, wi, pr, d, "enqueue")
+	defer func() { finish(result) }()
 	qs, err := e.gh.EnqueuePullRequest(ctx, repo, pr.NodeID, d.HeadSHA)
 	if err != nil {
 		e.m.MergeQueue.WithLabelValues("enqueue_error").Inc()
 		return fmt.Errorf("enqueue PR %d at %s: %w", pr.Number, d.HeadSHA, err)
 	}
 	e.m.MergeQueue.WithLabelValues("enqueued").Inc()
-	e.log.InfoContext(ctx, "PR enqueued", "work_item", wi.ID, "pr", pr.Number, "head", d.HeadSHA)
+	if !span.IsRecording() {
+		e.log.InfoContext(ctx, "PR enqueued", "work_item", wi.ID, "pr", pr.Number, "head", d.HeadSHA)
+	}
 	return e.enqueued(ctx, wi, b, pr, d, qs)
 }
 
@@ -701,6 +768,15 @@ func (e *Engine) enqueued(ctx context.Context, wi *store.WorkItem, b *Binding, p
 	queued := *d
 	queued.MergeQueueState = qs
 	return e.stoppedPR(ctx, wi, b, pr, &queued)
+}
+
+// reconcileEnqueue records an enqueue whose GitHub response was lost. It
+// emits the same enqueue span as a confirmed enqueue, marked as reconciled.
+func (e *Engine) reconcileEnqueue(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) (result error) {
+	ctx, span, finish := e.startQueueAction(ctx, wi, pr, d, "enqueue")
+	defer func() { finish(result) }()
+	span.SetAttributes(attribute.Bool("enqueue.reconciled", true))
+	return e.enqueued(ctx, wi, b, pr, d, d.MergeQueueState)
 }
 
 // humanHoldMarker is how the factory-reviewer marks a failed check whose only
@@ -978,7 +1054,7 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 				c.ev.RoundRunID = round.ID
 			}
 			for _, g := range goals {
-				if err := e.enqueueGoalReasons(ctx, tx, wi, pr, round, g); err != nil {
+				if err := e.enqueueGoalReasons(ctx, tx, wi, pr, round.ID, g); err != nil {
 					return err
 				}
 			}
@@ -1349,7 +1425,7 @@ func succeeded(c Check, head string, checks []github.CheckRun, statuses []github
 
 // ejected records the confirmed ejection and starts a bounded revision in
 // the mapped session. The rejected head stays barred from the merge queue.
-func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) error {
+func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) (result error) {
 	if hasHumanLabel(d.Labels) {
 		return e.stopWork(ctx, wi, "the queued PR is human-owned")
 	}
@@ -1417,6 +1493,9 @@ func (e *Engine) ejected(ctx context.Context, wi *store.WorkItem, b *Binding, pr
 	case latest.HeadSHA != pr.EnqueuedHeadSHA:
 		return e.queueHeadChanged(ctx, pr)
 	}
+	// Only the final read confirms the ejection; its root starts here.
+	ctx, _, finish := e.startQueueAction(ctx, wi, pr, latest, "ejection")
+	defer func() { finish(result) }()
 	held = held || b.Review.held(latest.Labels) != ""
 	var prompt string
 	if !limited && !held {
@@ -1733,7 +1812,9 @@ type issueDonePayload struct {
 
 // merged records the observed merge and its activation decision. A completed
 // code delivery may still leave the itsaplan issue waiting for activation.
-func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) error {
+func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) (result error) {
+	ctx, span, finish := e.startQueueAction(ctx, wi, pr, d, "merge")
+	defer func() { finish(result) }()
 	activation, valid := github.ActivationTrailer(d.HeadMessage)
 	step := ""
 	if !valid || activation != "none" {
@@ -1759,6 +1840,7 @@ func (e *Engine) merged(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		at = e.cfg.Now()
 	}
 	runID := e.lastItsaplanRun(ctx, wi.ID)
+	span.SetAttributes(attribute.Int64("run.id", runID))
 	merge := d.MergeCommitSHA
 	mergeLink := short(merge)
 	if merge != "" {
@@ -2020,7 +2102,9 @@ func (e *Engine) abandonItem(ctx context.Context, it *store.OutboxItem, err erro
 	if it.Kind == store.OutboxIssueDone && json.Unmarshal(it.Payload, &p) == nil {
 		return e.abandonDone(ctx, it, p, "", fmt.Sprintf("the move kept failing for %d tries", outboxMaxTries), err)
 	}
-	return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, clip(err.Error(), maxErrorText))
+	return e.w.Tx(ctx, func(tx *sql.Tx) error {
+		return e.st.OutboxAbandon(ctx, tx, it.ID, clip(err.Error(), maxErrorText))
+	})
 }
 
 // doneRefused says on the issue, once, that it could not be moved to Done.
@@ -2158,4 +2242,55 @@ func (e *Engine) checkDeliveryReverts(ctx context.Context) error {
 		_, err := tx.ExecContext(ctx, `UPDATE delivery_outcome SET checked_until=$2, reverted_at=$3, retry_at=NULL, scan_until=NULL WHERE node_id=$1 AND reverted_at IS NULL`, node, until, reverted)
 		return err
 	})
+}
+
+// observePR records one PR check on the poll or heartbeat root. A runID of
+// zero names the work item's latest itsaplan run; an empty head, the stored one.
+func (e *Engine) observePR(ctx context.Context, workID, runID int64, issue, source string, pr *store.PullRequest, head string, result error) {
+	if runID == 0 {
+		runID = e.lastItsaplanRun(ctx, workID)
+	}
+	if head == "" {
+		head = pr.HeadSHA
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("issue.key", issue), attribute.Int64("run.id", runID),
+		attribute.Int("pr.number", pr.Number), attribute.String("head.sha", head),
+		attribute.String("state.from", source),
+	}
+	if current, err := e.st.GetWorkItem(ctx, workID); err == nil {
+		attrs = append(attrs, attribute.Int("round", current.ReviewRounds), attribute.String("state.to", current.State))
+	}
+	outcome := "checked"
+	if result != nil {
+		outcome = "error"
+	}
+	tracing.Observe(ctx, "pr observed", append(attrs, attribute.String("outcome", outcome))...)
+}
+
+func (e *Engine) startQueueAction(ctx context.Context, wi *store.WorkItem, pr *store.PullRequest, detail *github.PullRequestDetail, action string) (context.Context, trace.Span, func(error)) {
+	attrs := []attribute.KeyValue{
+		attribute.String("issue.key", wi.IssueKey), attribute.Int("pr.number", pr.Number),
+		attribute.String("head.sha", detail.HeadSHA), attribute.String("state.from", wi.State),
+		attribute.Int("round", wi.ReviewRounds), attribute.String("action", action),
+	}
+	workID := wi.ID
+	actionCtx, span := tracing.Start(ctx, "factory.merge_queue", trace.WithAttributes(attrs...))
+	finish := func(result error) {
+		if span.IsRecording() || trace.SpanFromContext(ctx).IsRecording() {
+			attrs = append(attrs, attribute.Int64("run.id", e.lastItsaplanRun(ctx, workID)))
+			if current, err := e.st.GetWorkItem(ctx, workID); err == nil {
+				attrs = append(attrs, attribute.String("state.to", current.State))
+			}
+			outcome := action
+			if result != nil {
+				outcome = "error"
+			}
+			attrs = append(attrs, attribute.String("outcome", outcome))
+			span.SetAttributes(attrs...)
+			tracing.Observe(ctx, "factory.merge_queue", attrs...)
+		}
+		tracing.Finish(span, result, action)
+	}
+	return actionCtx, span, finish
 }

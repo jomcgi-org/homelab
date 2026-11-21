@@ -282,7 +282,7 @@ func TestGoalPromptJudgesChecksByTheCasesTheIssueNames(t *testing.T) {
 	files := []github.PullRequestFile{{Path: "x.test.ts", Status: "added", Patch: "+test"}}
 	got := GoalPrompt("jomcgi-org/homelab", github.PullRequest{Number: 8145, HeadSHA: shaA}, files, in, GoalContext{})
 	for _, want := range []string{
-		".factory/goal-evidence/HOME-174.md",
+		"Use only the service-quoted evidence claims",
 		"An unsupported or false claim changes nothing",
 		"search the reviewed commit",
 		"for the cases the issue names",
@@ -404,6 +404,7 @@ func TestGoalCheck8260EvidenceOnlyRevision(t *testing.T) {
 		}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			exporter := captureReviewSpans(t)
 			h, api := issueHarness(t)
 			api.issue.Identifier = "HOME-351"
 			api.issue.Description = "Done when:\n1. A CI test requires a group gate on every factory app.\n2. Current apps pass the test.\n3. Removing group bindings for any app makes the test fail."
@@ -435,7 +436,33 @@ func TestGoalCheck8260EvidenceOnlyRevision(t *testing.T) {
 				h.gh.headFiles = map[string]string{tc.revision + ":" + path: evidence}
 				h.gh.compares = map[string]map[string]any{original + "..." + tc.revision: {"status": "ahead", "files": []github.PullRequestFile{{Path: path, Status: "added"}}}}
 			})
+			exporter.Reset()
 			got := run(tc.revision)
+			var verdict string
+			for _, span := range exporter.GetSpans() {
+				if span.Name == "factory.review_transition" {
+					continue
+				}
+				var round int64
+				for _, attr := range span.Attributes {
+					if attr.Key == "review.round" {
+						round = attr.Value.AsInt64()
+					}
+				}
+				if round != 2 {
+					t.Fatalf("%s round on revised head = %d, want 2", span.Name, round)
+				}
+				if span.Name == "code review" {
+					for _, attr := range span.Attributes {
+						if attr.Key == "review.verdict" {
+							verdict = attr.Value.AsString()
+						}
+					}
+				}
+			}
+			if verdict != ConclusionSuccess {
+				t.Fatalf("clean code verdict with saved goal blockers = %q", verdict)
+			}
 			texts := goalTexts(h)
 			last := texts[len(texts)-1]
 			for _, want := range []string{original, tc.revision, "pytest never runs", "> " + strings.TrimSpace(strings.SplitN(evidence, "\n", 2)[0])} {
@@ -641,7 +668,7 @@ func TestGoalCheckPublishesOnlyServiceWording(t *testing.T) {
 			t.Fatal("the goal message ID carries an unkeyed hash of the issue text")
 		}
 	}
-	private, ok := h.cfg.GoalAudit.(*FileGoalAudit).Reasons(h.cfg.Bindings[0].repo(), 7, shaA)
+	private, ok, _ := h.cfg.GoalAudit.(*FileGoalAudit).Reasons(h.cfg.Bindings[0].repo(), 7, shaA)
 	if !ok || len(private.Findings) != 1 || private.Findings[0] != "Criterion 2: PRIVATE-TWO is missing." {
 		t.Fatalf("private feedback = %+v", private)
 	}

@@ -14,6 +14,7 @@ exports_files([
     "check-missed-bump.sh",
     "helm-template-test.sh",
     "lint.sh",
+    "publication-receipt.sh",
     "push.sh.tpl",
     "render.sh",
     "render-manifests.sh",
@@ -82,6 +83,7 @@ MANIFEST_SETS = [
 # the gate without leaving reviewable evidence here. The completeness test
 # below enforces the record against the source tree.
 SKIPPED_MANIFEST_SETS = {
+    "projects/capacity-forecast/chart": "Renders CiliumNetworkPolicy, whose schema is outside this gate. //projects/capacity-forecast/chart:lint_test checks the Helm chart.",
     "projects/stars-forecast/chart": "Renders CiliumNetworkPolicy. Covered by the Stars chart render test.",
     "projects/ships/chart": "Factory CiliumNetworkPolicy has no pinned schema. //projects/ships/chart:ingester_test renders the inactive and shadow configurations.",
     "projects/factory-explore/chart": "Renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. //projects/factory-explore/chart:proxy_test renders the chart and checks the ingress boundary.",
@@ -89,6 +91,7 @@ SKIPPED_MANIFEST_SETS = {
     "projects/factory-landing/chart": "Factory-cluster chart; it renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. Rendered by //projects/factory-landing/deploy:template_test and //projects/factory-landing/chart:landing_test.",
     "projects/factory-public/chart": "Factory-cluster chart; it renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. Rendered by //projects/factory-public/deploy:template_test and //projects/factory-public/chart:public_test.",
     "projects/hikes/chart": "Factory-cluster CiliumNetworkPolicy uses a CRD outside the pinned schemas. //projects/hikes/deploy:template_test checks rendered content and //projects/hikes/chart:jobs_test checks writer configuration.",
+    "projects/trips/chart": "Factory-cluster CiliumNetworkPolicy uses a CRD outside the pinned schemas. //projects/trips/deploy:template_test checks rendered content and //projects/trips/chart:trips_test checks the staged defaults.",
     "projects/factory-storyboard/chart": "Factory-cluster CiliumNetworkPolicy; //projects/factory-storyboard/chart:scheduled_test checks the rendered workload.",
     "projects/jomcgi-site/chart": "Factory-cluster chart; it renders CiliumNetworkPolicy, whose CRD schema is not among the pinned inputs. Rendered by //projects/jomcgi-site/deploy:template_test and //projects/jomcgi-site/chart:site_chart_test.",
     "projects/embervm/dev/deploy/values-store-validation-gke.yaml": "Default-off store validation overlay, rendered by its hermetic config test.",
@@ -246,7 +249,10 @@ sh_test(
 sh_test(
     name = "write_back_versions_test",
     srcs = ["write-back-versions_test.sh"],
-    data = [":write-back-versions.sh"],
+    data = [
+        ":publication-receipt.sh",
+        ":write-back-versions.sh",
+    ],
 )
 
 sh_test(

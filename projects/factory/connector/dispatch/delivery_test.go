@@ -2,6 +2,7 @@ package dispatch_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net"
@@ -10,6 +11,12 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	sdk "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/buildbuddy"
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
@@ -34,6 +41,7 @@ type fakeGitHub struct {
 	creates    int
 	enqueues   []string
 	nodes      int
+	detailErr  error // fails every PR detail read while set
 	// loseCreate opens the next PR but loses the response; findErr fails
 	// the next lookups.
 	loseCreate bool
@@ -355,6 +363,9 @@ func (g *fakeGitHub) PullRequestDetail(_ context.Context, _ string, number int) 
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.calls++
+	if g.detailErr != nil {
+		return nil, g.detailErr
+	}
 	p := g.byNumber(number)
 	if p == nil {
 		return nil, github.ErrNotFound
@@ -2791,6 +2802,7 @@ func TestHumanOwnershipOnAQueuedPRSurvivesLabelRemoval(t *testing.T) {
 }
 
 func TestCanceledIssueIsDequeuedAndNotMovedToDone(t *testing.T) {
+	exporter := captureWorkSpans(t)
 	v := newDeliveryEnv(t)
 	v.delivered()
 	v.gh.green("sha-1")
@@ -2809,6 +2821,24 @@ func TestCanceledIssueIsDequeuedAndNotMovedToDone(t *testing.T) {
 	// It merges anyway, say by hand: the issue stays canceled.
 	v.gh.merge(1, "merge-sha-1")
 	v.poll()
+	var actions []string
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "factory.merge_queue" {
+			continue
+		}
+		if span.Parent.IsValid() {
+			t.Fatal("queue action has a parent")
+		}
+		for _, a := range span.Attributes {
+			if string(a.Key) == "action" {
+				actions = append(actions, a.Value.AsString())
+			}
+		}
+	}
+	if got := strings.Join(actions, ","); got != "enqueue,dequeue,merge" {
+		t.Fatalf("queue action spans = %s", got)
+	}
+
 	v.poll()
 	if moves := v.its.Moves(); len(moves) != 0 {
 		t.Fatalf("moves = %+v; a canceled issue must not move to Done", moves)
@@ -3238,5 +3268,569 @@ func TestDoneMoveOutageSurvivesIdleOutboxTicks(t *testing.T) {
 	v.tick(v.e)
 	if len(v.its.Moves()) != 1 || testutil.ToFloat64(v.m.ItsaplanUnavailable.WithLabelValues("outbox")) != 0 {
 		t.Fatal("successful Done move did not clear outage")
+	}
+}
+
+func TestDoneMoveCooldownPreservesLastAttempt(t *testing.T) {
+	const lastAttempt = 19 // One failed delivery away from abandonment.
+	v := newDeliveryEnv(t)
+	v.mergedAtWIPLimit()
+	if _, err := v.st.DB.Exec("UPDATE outbox SET tries = $1 WHERE kind = $2", lastAttempt, store.OutboxIssueDone); err != nil {
+		t.Fatal(err)
+	}
+	v.its.moveErr = []error{itsaplan.ErrBackoff, itsaplan.ErrBackoff}
+	firstSkip := v.clk.Now().Add(time.Minute)
+	for range 2 {
+		v.clk.Advance(time.Minute)
+		v.tick(v.e)
+		var tries int
+		var unavailableSince time.Time
+		if err := v.st.DB.QueryRow(`SELECT tries, unavailable_since FROM outbox WHERE kind = $1
+			AND abandoned_at IS NULL AND delivered_at IS NULL AND next_attempt_at > $2`,
+			store.OutboxIssueDone, v.clk.Now()).Scan(&tries, &unavailableSince); err != nil {
+			t.Fatal(err)
+		}
+		if tries != lastAttempt || !unavailableSince.Equal(firstSkip) {
+			t.Fatalf("queued after cooldown: tries=%d unavailable since=%s", tries, unavailableSince)
+		}
+	}
+	v.clk.Advance(time.Minute)
+	v.tick(v.e)
+	if len(v.its.Moves()) != 1 || testutil.ToFloat64(v.m.ItsaplanUnavailable.WithLabelValues("outbox")) != 0 {
+		t.Fatal("cooldown recovery did not deliver the Done move and clear the outage")
+	}
+}
+
+func captureWorkSpans(t *testing.T) *tracetest.InMemoryExporter {
+	t.Helper()
+	exporter := tracetest.NewInMemoryExporter()
+	previous := otel.GetTracerProvider()
+	tp := sdk.NewTracerProvider(sdk.WithSyncer(exporter))
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() { otel.SetTracerProvider(previous); _ = tp.Shutdown(context.Background()) })
+	return exporter
+}
+
+func TestWorkSpans(t *testing.T) {
+	exporter := captureWorkSpans(t)
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.green("sha-1")
+	v.poll()
+	v.gh.eject(1)
+	v.poll()
+	rounds := v.rounds()
+	if len(rounds) != 1 {
+		t.Fatalf("got %d review rounds", len(rounds))
+	}
+	rollback := errors.New("abort close")
+	before := len(exporter.GetSpans())
+	err := v.st.Tx(v.ctx, func(tx *sql.Tx) error {
+		if err := v.st.SetRunState(v.ctx, tx, rounds[0].ID, store.RunClosed, "reported success"); err != nil {
+			return err
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) || len(exporter.GetSpans()) != before {
+		t.Fatalf("rolled-back close emitted a span or failed: %v", err)
+	}
+	const secret = "secret-task-result-sentinel"
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, secret, nil)
+	v.poll()
+	v.poll()
+	counts := map[string]int{}
+	actions := map[string]int{}
+	correlatedPoll := false
+	enqueueEvents := 0
+	advancedRun := false
+	runWithPR := false
+	for _, span := range exporter.GetSpans() {
+		if span.Parent.IsValid() {
+			t.Errorf("%s has parent", span.Name)
+		}
+		if strings.Contains(fmt.Sprint(span.Attributes, span.Events, span.Status), secret) {
+			t.Fatal("task result leaked")
+		}
+		attrs := map[string]string{}
+		for _, a := range span.Attributes {
+			attrs[string(a.Key)] = a.Value.Emit()
+		}
+		if attrs["outcome"] == "" {
+			t.Errorf("%s missing outcome", span.Name)
+		}
+		root := span.Name == "factory.poll" || span.Name == "factory.admission" || span.Name == "factory.heartbeat"
+		if !root && attrs["issue.key"] != "HL-7" {
+			t.Errorf("%s missing issue", span.Name)
+		}
+		switch span.Name {
+		case "factory.poll":
+			pollAttrs := map[string]string{}
+			for _, a := range span.Attributes {
+				if a.Value.Type() == attribute.STRINGSLICE {
+					pollAttrs[string(a.Key)] = strings.Join(a.Value.AsStringSlice(), ",")
+				}
+			}
+			for _, event := range span.Events {
+				fields := map[string]string{}
+				for _, a := range event.Attributes {
+					fields[string(a.Key)] = a.Value.Emit()
+				}
+				if event.Name == "run observed" && fields["run.id"] == "1" && fields["state.to"] == store.RunFinishing && fields["state.from"] == store.RunDispatched && fields["outcome"] == "advanced" {
+					advancedRun = true
+				}
+				if event.Name == "run observed" && fields["pr.number"] != "" {
+					if fields["pr.number"] != "1" || fields["head.sha"] != "sha-1" || fields["round"] == "" {
+						t.Errorf("run observed event lacks PR, head or round: %v", fields)
+					}
+					runWithPR = true
+					for key, want := range map[string]string{"poll.pr.number": "1", "poll.head.sha": "sha-1"} {
+						if got := pollAttrs[key]; got != want {
+							t.Errorf("poll root %s = %q, want %q", key, got, want)
+						}
+					}
+					if pollAttrs["poll.round"] == "" {
+						t.Error("poll root lacks round")
+					}
+				}
+				if event.Name != "factory.merge_queue" || fields["action"] != "enqueue" {
+					continue
+				}
+				enqueueEvents++
+				for key, want := range map[string]string{"run.id": "1", "issue.key": "HL-7", "pr.number": "1", "head.sha": "sha-1", "round": "0", "state.from": store.WorkReview, "state.to": store.WorkMerging, "outcome": "enqueue"} {
+					if got := fields[key]; got != want {
+						t.Errorf("poll enqueue event %s = %q, want %q", key, got, want)
+					}
+				}
+			}
+			for _, a := range span.Attributes {
+				if string(a.Key) == "poll.issue.key" && strings.Join(a.Value.AsStringSlice(), ",") == "HL-7" && attrs["poll.run.id"] != "" {
+					correlatedPoll = true
+				}
+			}
+		case "factory.run":
+			wantRound, wantFrom := "1", store.RunDispatched
+			if attrs["run.id"] == "1" {
+				wantRound, wantFrom = "0", store.RunFinishing
+			}
+			if attrs["pr.number"] != "1" || attrs["head.sha"] != "sha-1" || attrs["round"] != wantRound || attrs["state.from"] != wantFrom {
+				t.Errorf("run span attributes = %v", attrs)
+			}
+			if attrs["run.id"] == "" || attrs["state.to"] != "closed" {
+				t.Error("missing run transition")
+			}
+		case "factory.review_round":
+			if attrs["round"] != "1" || attrs["run.id"] == "" {
+				t.Error("missing review identifiers")
+			}
+			fallthrough
+		case "factory.merge_queue":
+			if span.Name == "factory.merge_queue" {
+				actions[attrs["action"]]++
+				wantRound := map[string]string{"enqueue": "0", "ejection": "0"}[attrs["action"]]
+				if attrs["round"] != wantRound {
+					t.Errorf("%s queue span round = %q, want %q", attrs["action"], attrs["round"], wantRound)
+				}
+				if attrs["run.id"] != "1" || attrs["outcome"] != attrs["action"] || len(span.Links) != 1 {
+					t.Errorf("queue span lacks run, outcome or triggering poll: %v", attrs)
+				}
+			}
+			if attrs["pr.number"] != "1" || attrs["head.sha"] != "sha-1" || attrs["run.id"] == "" || attrs["state.from"] == "" || attrs["state.to"] == "" {
+				t.Error("missing PR identifiers")
+			}
+		}
+		counts[span.Name]++
+	}
+	for name, want := range map[string]int{"factory.run": 2, "factory.review_round": 1, "factory.poll": 6} {
+		if counts[name] != want {
+			t.Errorf("%s spans = %d, want %d", name, counts[name], want)
+		}
+	}
+	if !advancedRun {
+		t.Error("missing nonterminal run transition on poll")
+	}
+	if !runWithPR {
+		t.Error("no poll observed a run with its PR, head and round")
+	}
+	if enqueueEvents != 1 {
+		t.Errorf("poll enqueue events = %d, want one", enqueueEvents)
+	}
+	if !correlatedPoll || len(actions) != 2 || actions["enqueue"] != 1 || actions["ejection"] != 1 {
+		t.Errorf("correlated poll=%v, queue actions=%v", correlatedPoll, actions)
+	}
+}
+
+// An enqueue whose GitHub response was lost is reconciled on the next poll.
+// The reconcile path emits the same enqueue root as a confirmed enqueue.
+func TestLostEnqueueResponseEmitsEnqueueSpan(t *testing.T) {
+	exporter := captureWorkSpans(t)
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.mu.Lock()
+	v.gh.byNumber(1).queue = "QUEUED"
+	v.gh.mu.Unlock()
+	v.poll()
+	if w := v.work(101); w.State != store.WorkMerging {
+		t.Fatalf("work item = %s, want merging", w.State)
+	}
+	found := 0
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "factory.merge_queue" {
+			continue
+		}
+		attrs := map[string]string{}
+		for _, a := range span.Attributes {
+			attrs[string(a.Key)] = a.Value.Emit()
+		}
+		found++
+		for key, want := range map[string]string{
+			"action": "enqueue", "enqueue.reconciled": "true", "outcome": "enqueue",
+			"issue.key": "HL-7", "pr.number": "1", "head.sha": "sha-1", "round": "0",
+			"run.id": "1", "state.to": store.WorkMerging,
+		} {
+			if got := attrs[key]; got != want {
+				t.Errorf("reconciled enqueue span %s = %q, want %q", key, got, want)
+			}
+		}
+		if span.Parent.IsValid() || len(span.Links) != 1 {
+			t.Error("reconciled enqueue span is not a root linked to its poll")
+		}
+	}
+	if found != 1 {
+		t.Fatalf("enqueue spans = %d, want one", found)
+	}
+	if len(v.gh.enqueues) != 0 {
+		t.Fatalf("enqueues = %v; the PR was already queued", v.gh.enqueues)
+	}
+}
+
+func pollEvents(exporter *tracetest.InMemoryExporter, from int, name string) []map[string]string {
+	var out []map[string]string
+	for _, span := range exporter.GetSpans()[from:] {
+		if span.Name != "factory.poll" {
+			continue
+		}
+		for _, event := range span.Events {
+			if event.Name != name {
+				continue
+			}
+			fields := map[string]string{}
+			for _, a := range event.Attributes {
+				fields[string(a.Key)] = a.Value.Emit()
+			}
+			out = append(out, fields)
+		}
+	}
+	return out
+}
+
+func TestDeliveredHeadLinksTheFinishedImplementationRun(t *testing.T) {
+	exporter := captureWorkSpans(t)
+	v := newDeliveryEnv(t)
+	v.delivered()
+	b := v.cfg.Bindings[0]
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "factory.pr_head_delivery" {
+			continue
+		}
+		fields := map[string]string{}
+		for _, field := range span.Attributes {
+			fields[string(field.Key)] = field.Value.Emit()
+		}
+		if fields["repository"] != b.Owner+"/"+b.Repo || fields["pr.number"] != "1" ||
+			fields["head.sha"] != "sha-1" || fields["implementation.run_id"] != "1" ||
+			fields["delivery.attempt_id"] == "" {
+			t.Fatalf("delivery head attributes = %v", fields)
+		}
+		return
+	}
+	t.Fatal("missing delivery head event")
+}
+
+// A poll that only finds the PR still queued keeps the work on its root.
+func TestQueuedPollObservesPR(t *testing.T) {
+	exporter := captureWorkSpans(t)
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.green("sha-1")
+	v.poll()
+	if w := v.work(101); w.State != store.WorkMerging {
+		t.Fatalf("work item = %s, want merging", w.State)
+	}
+	v.gh.mu.Lock()
+	v.gh.byNumber(1).queue = "QUEUED"
+	v.gh.mu.Unlock()
+	before := len(exporter.GetSpans())
+	v.poll()
+	events := pollEvents(exporter, before, "pr observed")
+	if len(events) != 1 {
+		t.Fatalf("pr observed events = %v, want one", events)
+	}
+	for key, want := range map[string]string{
+		"issue.key": "HL-7", "run.id": "1", "pr.number": "1", "head.sha": "sha-1", "round": "0",
+		"state.from": store.WorkMerging, "state.to": store.WorkMerging, "outcome": "checked",
+	} {
+		if got := events[0][key]; got != want {
+			t.Errorf("pr observed %s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+// A poll whose PR read fails still names the PR and its work on its root.
+func TestFailedPRReadObservesPR(t *testing.T) {
+	exporter := captureWorkSpans(t)
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.gh.mu.Lock()
+	v.gh.detailErr = errors.New("github: 502")
+	v.gh.mu.Unlock()
+	before := len(exporter.GetSpans())
+	v.clk.Advance(61 * time.Second)
+	_ = v.e.Tick(v.ctx) // the failed read may surface as a tick error
+	events := pollEvents(exporter, before, "pr observed")
+	if len(events) == 0 {
+		t.Fatal("no pr observed event after a failed PR read")
+	}
+	for key, want := range map[string]string{
+		"issue.key": "HL-7", "run.id": "1", "pr.number": "1", "head.sha": "sha-1", "outcome": "error",
+	} {
+		if got := events[0][key]; got != want {
+			t.Errorf("pr observed %s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+// A new itsaplan run that dispatch links to a work item with a PR carries
+// that PR on its first run event.
+func TestLinkedRunObservesPR(t *testing.T) {
+	exporter := captureWorkSpans(t)
+	v := newDeliveryEnv(t)
+	v.delivered()
+	v.its.add(2, "coder", 101, "HL-7", "Fix it again.")
+	before := len(exporter.GetSpans())
+	v.tick(v.e)
+	if r := v.run(2); r.WorkItemID == 0 {
+		t.Fatalf("run 2 was not linked: %+v", r)
+	}
+	var first map[string]string
+	for _, fields := range pollEvents(exporter, before, "run observed") {
+		if fields["run.id"] == "2" {
+			first = fields
+			break
+		}
+	}
+	if first == nil {
+		t.Fatal("no run observed event for run 2")
+	}
+	if first["pr.number"] != "1" || first["head.sha"] != "sha-1" || first["round"] == "" {
+		t.Errorf("linked run event lacks PR, head or round: %v", first)
+	}
+}
+
+func spanEvents(events []sdk.Event, name string) []map[string]string {
+	var out []map[string]string
+	for _, event := range events {
+		if event.Name != name {
+			continue
+		}
+		fields := map[string]string{}
+		for _, a := range event.Attributes {
+			fields[string(a.Key)] = a.Value.Emit()
+		}
+		out = append(out, fields)
+	}
+	return out
+}
+
+// The heartbeat loop runs apart from the poll. Its PR check and a failed
+// PR read are on its own root, with the run and PR they concern.
+func TestHeartbeatPassObservesPR(t *testing.T) {
+	exporter := captureWorkSpans(t)
+	v := newDeliveryEnv(t)
+	round, _ := v.startRound()
+	v.gh.mu.Lock()
+	v.gh.detailErr = errors.New("github: 502")
+	v.gh.mu.Unlock()
+	v.clk.Advance(61 * time.Second)
+	if err := v.e.HeartbeatPass(v.ctx); err == nil {
+		t.Fatal("heartbeat pass hid the failed PR read")
+	}
+	var roots []tracetest.SpanStub
+	for _, span := range exporter.GetSpans() {
+		if span.Name == "factory.heartbeat" {
+			roots = append(roots, span)
+		}
+	}
+	if len(roots) != 1 {
+		t.Fatalf("heartbeat roots = %d, want one", len(roots))
+	}
+	root := roots[0]
+	if root.Status.Code != codes.Error {
+		t.Errorf("heartbeat root status = %v, want error", root.Status)
+	}
+	prs := spanEvents(root.Events, "pr observed")
+	if len(prs) != 1 {
+		t.Fatalf("pr observed events = %v, want one", prs)
+	}
+	for key, want := range map[string]string{"issue.key": "HL-7", "pr.number": "1", "head.sha": "sha-1", "outcome": "error"} {
+		if got := prs[0][key]; got != want {
+			t.Errorf("pr observed %s = %q, want %q", key, got, want)
+		}
+	}
+	runs := spanEvents(root.Events, "run heartbeat")
+	if len(runs) != 1 || runs[0]["run.id"] != fmt.Sprint(round.ID) || runs[0]["outcome"] != "error" || runs[0]["pr.number"] != "1" {
+		t.Errorf("run heartbeat events = %v, want round %d with error", runs, round.ID)
+	}
+}
+
+// A background admission pass steps runs outside the poll, under its own root.
+func TestAdmissionPassHasRoot(t *testing.T) {
+	exporter := captureWorkSpans(t)
+	v := newDeliveryEnv(t)
+	v.delivered()
+	found := false
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "factory.admission" {
+			continue
+		}
+		if span.Parent.IsValid() {
+			t.Error("admission span has a parent")
+		}
+		for _, fields := range spanEvents(span.Events, "run observed") {
+			if fields["run.id"] == "1" && fields["issue.key"] == "HL-7" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no admission root observed run 1")
+	}
+}
+
+// A heartbeat that reads a new head names that head and the round that
+// checked it.
+func TestHeartbeatPassObservesReadHeadAndRound(t *testing.T) {
+	exporter := captureWorkSpans(t)
+	v := newDeliveryEnv(t)
+	round, _ := v.startRound()
+	v.gh.push("factory/HL-7", "sha-2", "fix(test): address review")
+	v.clk.Advance(61 * time.Second)
+	if err := v.e.HeartbeatPass(v.ctx); err != nil {
+		t.Fatal(err)
+	}
+	var prs []map[string]string
+	for _, span := range exporter.GetSpans() {
+		if span.Name == "factory.heartbeat" {
+			prs = append(prs, spanEvents(span.Events, "pr observed")...)
+		}
+	}
+	if len(prs) != 1 {
+		t.Fatalf("pr observed events = %v, want one", prs)
+	}
+	for key, want := range map[string]string{"head.sha": "sha-2", "run.id": fmt.Sprint(round.ID), "outcome": "checked"} {
+		if got := prs[0][key]; got != want {
+			t.Errorf("heartbeat pr observed %s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+// An ejection root is only for an ejection that the final read confirms.
+func TestUnconfirmedEjectionEmitsNoEjectionSpan(t *testing.T) {
+	for _, state := range []string{"merged", "queued", "confirmed"} {
+		t.Run(state, func(t *testing.T) {
+			exporter := captureWorkSpans(t)
+			v := newDeliveryEnv(t)
+			v.delivered()
+			v.gh.green("sha-1")
+			v.poll()
+			v.gh.mergeGroup(1, "group-sha-1")
+			v.poll()
+			v.gh.check("group-sha-1", "test", 100, "failure")
+			v.gh.eject(1)
+			v.gh.onRead = func(operation, resource string) {
+				if operation != "statuses" || resource != "group-sha-1" {
+					return
+				}
+				switch state {
+				case "merged":
+					v.gh.merge(1, "merged-sha")
+				case "queued":
+					v.gh.mu.Lock()
+					v.gh.byNumber(1).queue = "QUEUED"
+					v.gh.mu.Unlock()
+				}
+			}
+			v.poll()
+			ejections := 0
+			for _, span := range exporter.GetSpans() {
+				for _, a := range span.Attributes {
+					if span.Name == "factory.merge_queue" && string(a.Key) == "action" && a.Value.AsString() == "ejection" {
+						ejections++
+					}
+				}
+			}
+			want := 0
+			if state == "confirmed" {
+				want = 1
+			}
+			if ejections != want {
+				t.Fatalf("ejection spans = %d, want %d", ejections, want)
+			}
+		})
+	}
+}
+
+type reviewingPlan struct {
+	dispatch.Itsaplan
+	heads []string
+	ready bool
+}
+
+func (p *reviewingPlan) MarkIssueReviewing(_ context.Context, issueID int64, head string) (bool, error) {
+	if issueID != 101 {
+		return false, fmt.Errorf("unexpected issue %d", issueID)
+	}
+	p.heads = append(p.heads, head)
+	return p.ready, nil
+}
+
+func TestCurrentPendingReviewerCheckQueuesNativeReviewingOnce(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.e.Release()
+	v.cfg.Bindings[0].ItsaplanProject = "HOME"
+	plan := &reviewingPlan{Itsaplan: v.its}
+	v.plan = plan
+	v.e = v.engine("connector-a")
+	v.its.add(1, "coder", 101, "HOME-7", "Fix the test.")
+	v.tick(v.e)
+	head := strings.Repeat("a", 40)
+	binding := v.cfg.Bindings[0]
+	checkPrefix := "factory-review/" + binding.Owner + "/" + binding.Repo
+	v.gh.push("factory/HOME-7", head, "fix(test): stop the flake")
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Pushed.", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	v.gh.mu.Lock()
+	v.gh.checks[head] = []github.CheckRun{
+		{ID: 5, ExternalID: checkPrefix + "/1/" + head, Name: "semgrep-review", AppID: 200, HeadSHA: head, Status: "completed"},
+		{ID: 10, ExternalID: checkPrefix + "/1/" + head, Name: "semgrep-review", AppID: 300, HeadSHA: head, Status: "in_progress"},
+		{ID: 12, ExternalID: checkPrefix + "/2/" + head, Name: "semgrep-review", AppID: 200, HeadSHA: head, Status: "in_progress"},
+	}
+	v.gh.mu.Unlock()
+	v.poll()
+	if len(plan.heads) != 0 {
+		t.Fatalf("a foreign check updated the issue: %v", plan.heads)
+	}
+	v.gh.mu.Lock()
+	v.gh.checks[head] = append(v.gh.checks[head], github.CheckRun{
+		ID: 11, ExternalID: checkPrefix + "/1/" + head, Name: "semgrep-review", AppID: 200, HeadSHA: head, Status: "in_progress",
+	})
+	v.gh.mu.Unlock()
+	v.poll()
+	plan.ready = true
+	v.clk.Advance(time.Minute)
+	v.poll()
+	v.poll()
+	if len(plan.heads) != 2 || plan.heads[0] != head || plan.heads[1] != head {
+		t.Fatalf("Reviewing transitions = %v, want retry then settlement for the current head", plan.heads)
 	}
 }

@@ -376,3 +376,17 @@ review/listing outcomes.
 No claim is made about account eligibility, directory approval or live
 availability. The audit's findings can inform that work without changing
 this receipt's repository-only acceptance.
+
+## HOME-486 Scotland client cutover check
+
+On 2026-11-19 at 23:03 UTC, a check from node-1 passed every step.
+
+| Check | Result |
+| --- | --- |
+| Deployed revision | Argo CD `jomcgi-site-prod` Synced and Healthy at chart 0.44.6, image `ghcr.io/jomcgi/homelab/projects/jomcgi-site@sha256:7401dd8b935963ed0d1ded548fb537d7b543c464fcd5f690231260529f67558f`, sync finished 18:10:53 UTC. PR #8338 merged at 16:26:54 UTC as `b76563c51f8844c2b9ab526af7f0d40f5bb8ce5f`. |
+| Page | `https://jomcgi.dev/scotland` returns 200 and advertises `https://scotland-mcp.jomcgi.dev/mcp`. |
+| Marketplace | In an empty directory with a fresh `CLAUDE_CONFIG_DIR`, Claude Code 2.1.325 ran `claude plugin marketplace add https://jomcgi.dev/scotland/marketplace.json`: "Successfully added marketplace: jomcgi". |
+| Install | `claude plugin install scotland@jomcgi` installed version 0.1.2 from `main` at `2a9a7821d2bbcb6cb83428ff653e02de98047218`. |
+| Connection | `claude mcp list` reports `plugin:scotland:scotland: https://scotland-mcp.jomcgi.dev/mcp (HTTP) - ✔ Connected`. |
+
+HOME-475 owns hub retirement after Joe switches his claude.ai connector.

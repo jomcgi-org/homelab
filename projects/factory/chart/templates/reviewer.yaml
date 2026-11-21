@@ -92,6 +92,12 @@ spec:
           image: {{ include "factory.reviewerImage" . | quote }}
           imagePullPolicy: {{ $c.image.pullPolicy }}
           env:
+            {{- with .Values.reviewer.traceEndpoint }}
+            - name: OTEL_SERVICE_NAME
+              value: factory-reviewer
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
             - name: FACTORY_REVIEWER_CONFIG
               value: /etc/factory-reviewer/config.yaml
           ports:

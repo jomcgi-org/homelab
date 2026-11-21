@@ -4,7 +4,7 @@
 # node or a volume, not losing the cluster.
 #
 # It runs in its own namespace, kagent-pg: the kagent controller can read
-# every Secret in kagent, and the superuser and backup credentials stay out
+# every Secret in kagent, and the database owner and backup credentials stay out
 # of its reach. Only the two connection strings are written into kagent.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
@@ -25,11 +25,26 @@ spec:
   instances: 3
   imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:42708a75345b7a48fdd9257b071830783a97fd228529196b6313187a7198e185
   primaryUpdateStrategy: unsupervised
-  # kagent-pg-setup reruns kagent's setup script as the superuser after every
-  # sync: it creates roles, which the database owner cannot. The password
-  # stays in this namespace, and only the setup Job may connect besides the
-  # controller, peers and operator (network-policy.yaml).
-  enableSuperuserAccess: true
+  # invariant: KAGENT-PG-1
+  enableSuperuserAccess: false
+  managed:
+    roles:
+      - name: kagent_owner
+        login: false
+      - name: kagent_readwrite
+        login: false
+      - name: kagent_owner_user
+        login: true
+        inherit: false
+        inRoles: [kagent_owner]
+        passwordSecret:
+          name: kagent-pg-owner-login
+      - name: kagent_readwrite_user
+        login: true
+        inherit: false
+        inRoles: [kagent_readwrite]
+        passwordSecret:
+          name: kagent-pg-readwrite-login
   affinity:
     enablePodAntiAffinity: true
     podAntiAffinityType: required
@@ -56,8 +71,9 @@ spec:
   bootstrap:
     initdb:
       database: kagent
-      # Owns the database only; kagent's logins come from setup.sql.
       owner: kagent_admin
+      postInitApplicationSQL:
+        - REVOKE CREATE ON SCHEMA public FROM PUBLIC
   backup:
     # Garage keeps a full copy on every node; 14 days of this WAL would not
     # fit on one. Off-site copies give the longer history (Joe,
@@ -87,6 +103,25 @@ spec:
         compression: gzip
       data:
         compression: gzip
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: kagent-pg-kagent
+  namespace: kagent-pg
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  cluster:
+    name: kagent-pg
+  name: kagent
+  owner: kagent_admin
+  databaseReclaimPolicy: retain
+  schemas:
+    - name: kagent
+      owner: kagent_owner
+      ensure: present
 ---
 apiVersion: postgresql.cnpg.io/v1
 kind: ScheduledBackup

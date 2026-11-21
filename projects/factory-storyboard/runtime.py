@@ -68,7 +68,7 @@ def documents(cursor, key, project, board, scan=gitleaks):
         # Fail closed: before the connector migration applies, publish
         # nothing and keep the last manifest.
         LOG.error(
-            "connector view storyboard_messages is absent: the connector "
+            "connector view storyboard_prose_messages is absent: the connector "
             "migration has not applied; this cycle published nothing"
         )
         return None
@@ -240,11 +240,16 @@ def documents(cursor, key, project, board, scan=gitleaks):
 
 
 def main():
+    logging.basicConfig(format="%(levelname)s %(message)s")
+    if not os.environ.get("ITSAPLAN_KEY"):
+        # The factory chart's PostSync bootstrap writes the key Secret. A
+        # cycle that runs first publishes nothing and keeps the last manifest.
+        LOG.warning("itsaplan key not bootstrapped yet; skipping this cycle")
+        return
     import boto3
     import psycopg
     from psycopg.rows import dict_row
 
-    logging.basicConfig(format="%(levelname)s %(message)s")
     key = os.environ["PUBLIC_PROJECT"]
     project, board = read_board(key)
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as db:

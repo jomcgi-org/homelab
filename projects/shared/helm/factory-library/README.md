@@ -259,9 +259,12 @@ rebuilds. Narrower access revokes unwanted rights without rotating the key.
 Retiring a kept claim requires explicit Garage key revocation; deleting the
 chart does not revoke the key.
 
-Adding public creates a separate read-only Garage key, a OnePasswordItem and
-a mirror CronJob. Its default schedule is every minute with Forbid concurrency, its own
-ServiceAccount and no mounted token. It uses the stock rclone/rclone image at
+Adding public creates a separate read-only Garage key and a mirror CronJob.
+A configured public.itemPath creates a OnePasswordItem. The path may be absent
+while the root mirror and every source mirror are suspended. Each job retains
+its required Secret references and admission guard. The CronJob runs every
+minute by default with Forbid concurrency. It uses its own ServiceAccount
+without a mounted token. It uses the stock rclone/rclone image at
 the 1.76.0 multi-platform digest. The optional public.image accepts only the
 stock repository and a SHA-256 digest; tags fail rendering.
 Set public.suspend to true while checking a destination. Verify its bucket,
@@ -281,7 +284,7 @@ flowchart LR
   item[1Password item] -->|operator| credential[R2 Secret]
   garage -->|read on 3900| mirror[rclone CronJob]
   credential -->|environment| mirror
-  mirror -->|sync payloads, then manifest on 443| r2[R2 bucket]
+  mirror -->|copy payloads, saved manifest, then delete on 443| r2[R2 bucket]
 ```
 
 The item supplies access-key-id, secret-access-key and s3-api-endpoint.
@@ -323,11 +326,40 @@ controllers and principals that can impersonate them remain trusted.
 Direct Secret reads and exec access require separate RBAC; these policies do
 not grant either capability. The mirror ServiceAccount has no API permissions.
 
-Each run syncs payloads excluding the selected root index with
-Cache-Control: public, max-age=31536000, immutable. After a successful sync,
-it copies an existing manifest with Cache-Control: public, max-age=60.
-A failed sync or listing stops publication. An absent source manifest removes
-the destination manifest. Payload deletions use rclone sync's normal deletion.
+Each run has four steps. A step starts only after the previous step
+succeeds. Thus a stop at any point leaves the R2 manifest naming only objects
+that R2 holds. The payload listings, the copy and the delete leave out the
+manifest, the `copyKeys` and the `public.sources` prefixes.
+
+```mermaid
+flowchart LR
+  capture["0. list Garage, save manifest, list Garage"] --> copy["1. rclone copy payloads, no deletes"]
+  copy --> check{"every listed payload in R2?"}
+  check -->|no| stop["stop, R2 keeps its manifest"]
+  check -->|yes| publish["2. upload saved manifest"]
+  publish --> delete["3. delete what neither listing holds"]
+```
+
+0. The run lists Garage, saves the manifest to a local file, and lists Garage
+   again. A writer puts each payload before the manifest that names it, and
+   keeps it as the writer rule below requires. Thus the two listings hold
+   every payload that the saved manifest names.
+1. `rclone copy` uploads the payloads with Cache-Control: public,
+   max-age=31536000, immutable. It deletes nothing. Then the run lists R2. If
+   a listed payload is not in R2, the writer removed it before the copy. The
+   run then stops before the manifest, and the next run saves a new one.
+2. The run uploads the saved manifest with Cache-Control: public, max-age=60.
+   If Garage had no manifest, the run removes the R2 manifest.
+3. `rclone delete --files-from-raw` removes the R2 payloads that neither
+   Garage listing holds. The saved manifest names none of them, also when the
+   writer removes payloads during the run. The next run deletes those.
+
+A failed copy or listing stops publication.
+
+Each mirror Job has `activeDeadlineSeconds: 900`. The deadline counts from
+the start of the Job and includes its retry pod. At the deadline, Kubernetes
+stops the pod within the default 30-second termination grace period. A stop
+at the deadline is like a stop at any other point.
 
 Set `public.manifestName: latest.json` for static-page writers. The default is
 `manifest.json` for existing publishers.
@@ -336,13 +368,19 @@ Set `public.manifestName: latest.json` for static-page writers. The default is
 example `[{bucket: factory-health, key: health.json}]`. The writer of that key
 then needs no access to the mirrored bucket. Each key is a root `*.json` name
 other than the manifest. The mirror gets a separate read-only Garage key for
-each named bucket. The sync leaves these keys out. After the manifest step,
-each key is copied from its bucket with the manifest's 60-second cache, or
-removed from R2 when its bucket lacks it.
+each named bucket. The listings, the copy and the delete leave these keys
+out. After the manifest step, each key is copied from its bucket with the
+manifest's 60-second cache, or removed from R2 when its bucket lacks it.
 
-The publisher must write immutable objects before replacing its manifest.
-Keep objects referenced by a current or cached manifest until those readers
-expire; the mirror does not provide a transaction across concurrent writes.
+The publisher must write each immutable payload before the manifest that
+names it. It must not remove a payload that its current manifest names, or
+one that it wrote less than a minute before. After its manifest stops naming
+a payload, it must keep that payload for at least the mirror deadline plus
+90 seconds: 30 seconds of termination grace and 60 seconds of manifest cache.
+A mirror pod stops within the deadline plus the grace, so the second listing
+holds every payload of the saved manifest that the first listing missed.
+Thus the writer can publish and remove payloads at any step of a mirror run.
+R2 loses a payload one run after Garage loses it.
 
 ### One public R2 bucket
 
@@ -364,9 +402,9 @@ flowchart LR
   gfp[("Garage factory-public")] -->|read| root
   gsf[("Garage stars-forecast")] -->|read-only claim| smirror
   ghk[("Garage hikes")] -->|read-only claim| hmirror
-  root -->|"sync root, excludes /stars-forecast/** and /hikes/**"| r2[("R2 factory-public")]
-  smirror -->|"sync under stars-forecast/"| r2
-  hmirror -->|"sync under hikes/"| r2
+  root -->|"mirror root, excludes /stars-forecast/** and /hikes/**"| r2[("R2 factory-public")]
+  smirror -->|"mirror under stars-forecast/"| r2
+  hmirror -->|"mirror under hikes/"| r2
 ```
 
 The root mirror's `public.sources` lists the Garage buckets of other charts.
@@ -385,7 +423,7 @@ bucket. Garage-init grants that claim like any other: the claim in the
 `garage` namespace binds the reading namespace, Secret, bucket and `read`.
 The source mirror has no `copyKeys`.
 
-A source sync, its manifest copy and every delete name
+A source mirror's copy, R2 listing, manifest upload and deletes name
 `R2:<r2Bucket>/<r2Prefix>`, so they stay under that prefix. Readers get
 `https://factory-data.jomcgi.dev/<r2Prefix>/<key>`.
 

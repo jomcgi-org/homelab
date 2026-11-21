@@ -8,11 +8,16 @@ resources:
   - network-policy.yaml
   - oidc.yaml
   - grafana.yaml
+  - mcp-grafana.yaml
   - route.yaml
   - runbooks.yaml
   - runbooks-route.yaml
 
 configMapGenerator:
+  - name: grafana-viewer-script
+    namespace: grafana
+    files:
+      - provision_viewer.py
   - name: grafana-config
     namespace: grafana
     files:
@@ -26,6 +31,7 @@ configMapGenerator:
     namespace: grafana
     files:
       - dashboards/cluster.json
+      - dashboards/capacity-advisor.json
       - dashboards/cilium-drops.json
       - dashboards/cnpg.json
       - dashboards/factory-delivery.json
@@ -43,3 +49,5 @@ configMapGenerator:
       - runbooks/AlertRelayDown.json
       - runbooks/FactoryHealthUnhealthy.json
       - runbooks/FactoryHealthStale.json
+      - runbooks/FactoryEgressIPChanged.json
+      - runbooks/CloudflareCredentialRefused.json

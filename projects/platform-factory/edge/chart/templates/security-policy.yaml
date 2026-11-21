@@ -1,10 +1,10 @@
 {{- /* invariant: PLAT-2 */ -}}
 {{- /*
-Every route on the edge Gateway signs in through Authentik before Envoy
-forwards the request. A SecurityPolicy that targets a route replaces this one
-for that route, so only the `edge` namespace may create SecurityPolicies
-(projects/platform-factory/edge-admission/). Authentik's own route is exempt;
-kagent's route uses the same OIDC settings with access-token forwarding.
+Envoy Gateway requires Authentik sign-in by default. Route policies can use
+verified bearer tokens or pass an approved anonymous request for sign-in or
+the public Scotland endpoints. Only the edge namespace may create these
+policies (projects/platform-factory/edge-admission/). The kagent route adds
+access-token forwarding to the OIDC settings.
 
 If the client secret is missing or empty, Envoy Gateway marks this policy
 invalid and answers every route with 500. The Secret starts with a placeholder
@@ -28,6 +28,6 @@ spec:
     - group: gateway.networking.k8s.io
       kind: Gateway
       name: edge
-  {{- include "edge.operatorAuthorization" . | nindent 2 }}
+  {{- include "edge.operatorAuthorization" (dict "Values" .Values "denyT3" true) | nindent 2 }}
   oidc:
     {{- include "edge.oidc" . | nindent 4 }}

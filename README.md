@@ -53,10 +53,12 @@ current state, its direction and the reasons.
 ## Systems
 
 - [**Factory**](projects/factory/): the umbrella chart, connector, broker and reviewer above. Reusable for other repositories through a repository binding.
+- [**Capacity forecast**](projects/capacity-forecast/): shadow memory forecasts for factory reviewers, with a baseline comparison in Grafana.
 - [**Factory home cluster**](projects/factory-cluster/): node bootstrap and ArgoCD root. [platform-factory](projects/platform-factory/) holds one Application for each shared component.
 - [**Monolith**](projects/monolith/): knowledge graph, Discord bot, Grimoire and the private apps, with a [read-only public tier](projects/monolith-public/) and an [agent-facing MCP tier](projects/monolith-agents/).
 - [**Knowledge pipeline**](projects/monolith/knowledge/): LLM extraction turns markdown into structured facts in pgvector, searchable through MCP tools.
 - [**Public site**](projects/jomcgi-site/): static Astryx pages on a Cloudflare Worker. It replaces the monolith's public pages section by section.
+- [**Trips**](projects/trips/) stages a Go service for private photo uploads and a daily export of approved trip points and photo derivatives.
 - [**Scotland connector**](projects/scotland-connector/): Go service that answers Scottish dark-sky and walk-weather questions over REST and MCP.
 - [**oom-inference**](projects/oom-inference/): Rust inference engine that serves a 125B mixture-of-experts model from a 24 GB GPU. See its [architecture](projects/oom-inference/docs/dev/architecture.md).
 - [**OCI Model Cache**](projects/operators/oci-model-cache/) and [**Sextant**](projects/sextant/): a Kubernetes operator that syncs HuggingFace models to OCI registries, and the generator that turns its YAML state machine into type-safe Go.

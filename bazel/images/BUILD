@@ -23,6 +23,8 @@ multirun(
     commands = [
         "//bazel/tools/hf2oci:image.push",
         "//bazel/tools/image:image.push",
+        "//projects/capacity-forecast/chart:chart.push",
+        "//projects/capacity-forecast:image.push",
         "//projects/embervm/chart:chart.push",
         "//projects/embervm/conformance:image.push",
         "//projects/embervm/image:image.push",
@@ -52,6 +54,10 @@ multirun(
         "//projects/factory/chart:chart.push",
         "//projects/factory/codex-code-mode:image.push",
         "//projects/factory/connector/image:image.push",
+        "//projects/factory/harness/claude:image.push",
+        "//projects/factory/harness/codex:image.push",
+        "//projects/factory/itsaplan-web:image.push",
+        "//projects/factory/reviewer/harness:image.push",
         "//projects/factory/reviewer/image:image.push",
         "//projects/firecracker/sandbox/elixir:image.push",
         "//projects/firecracker/sandbox/go:image.push",
@@ -80,12 +86,15 @@ multirun(
         "//projects/operators/oci-model-cache/helm/oci-model-cache-operator:chart.push",
         "//projects/operators/oci-model-cache:image.push",
         "//projects/platform-factory/prometheus/resources/alert-relay/chart:chart.push",
+        "//projects/platform-factory/substrate/credential-provider:image.push",
         "//projects/scotland-connector/chart:chart.push",
         "//projects/scotland-connector/image:image.push",
         "//projects/ships/chart:chart.push",
         "//projects/ships:image.push",
         "//projects/stars-forecast/chart:chart.push",
         "//projects/stars-forecast:image.push",
+        "//projects/trips/chart:chart.push",
+        "//projects/trips/image:image.push",
     ],
     jobs = 0,  # 0 means unlimited parallelism
     visibility = ["//visibility:public"],
@@ -100,6 +109,7 @@ multirun(
 multirun(
     name = "push_charts",
     commands = [
+        "//projects/capacity-forecast/chart:chart.push",
         "//projects/embervm/chart:chart.push",
         "//projects/factory-explore-site/chart:chart.push",
         "//projects/factory-explore/chart:chart.push",
@@ -117,6 +127,7 @@ multirun(
         "//projects/scotland-connector/chart:chart.push",
         "//projects/ships/chart:chart.push",
         "//projects/stars-forecast/chart:chart.push",
+        "//projects/trips/chart:chart.push",
     ],
     jobs = 0,  # 0 means unlimited parallelism
     visibility = ["//visibility:public"],

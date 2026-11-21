@@ -71,6 +71,10 @@ BUILD
 # `query` answers with STUB_LAYERS (one label per line) only for the image
 # named in STUB_LAYERED_IMAGE, and `build` records what it was asked to fetch.
 if [ "${1:-}" = "query" ]; then
+	echo "query $2" >>"$STUB_ORDER_LOG"
+	if [ -n "${STUB_QUERY_FAIL:-}" ] && [[ "$2" == *"deps(${STUB_QUERY_FAIL%.push},"* ]]; then
+		exit 1
+	fi
 	if [ -n "${STUB_LAYERED_IMAGE:-}" ] && [[ "$2" == *"deps(${STUB_LAYERED_IMAGE%.push},"* ]]; then
 		printf '%s\n' "$STUB_LAYERS"
 	fi
@@ -78,6 +82,7 @@ if [ "${1:-}" = "query" ]; then
 fi
 if [ "${1:-}" = "build" ] && [[ "$*" == *"--remote_download_toplevel"* ]]; then
 	echo "$*" >>"$STUB_ORDER_LOG"
+	[ -z "${STUB_LAYER_BUILD_FAIL:-}" ] || exit 1
 	exit 0
 fi
 if [ "${1:-}" = "run" ]; then
@@ -122,6 +127,7 @@ case "\$2" in
 	ghcr.io/jomcgi/homelab/alpha:tag-alpha) echo sha256:aaa ;;
 	ghcr.io/jomcgi/homelab/beta:tag-beta) echo sha256:bbb ;;
 	ghcr.io/jomcgi/homelab/gamma:tag-gamma) echo sha256:ccc ;;
+	ghcr.io/jomcgi/homelab/projects/factory/reviewer/harness:tag-private) echo "\${STUB_REVIEWER_DIGEST:-sha256:private}" ;;
 	*) exit 1 ;;
 esac
 STUB
@@ -129,7 +135,8 @@ STUB
 	cat >"$WORK/bin/verifier" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >"$STUB_VERIFY_ARGV"
-cp "$2" "$STUB_VERIFY_RESULTS"
+cp "$2" "$STUB_VERIFY_RESULTS" || exit 1
+exit "${STUB_VERIFY_STATUS:-0}"
 STUB
 
 	chmod +x "$WORK/bin/bazel" "$WORK/bin/crane" "$WORK/bin/verifier"
@@ -351,6 +358,19 @@ tag.log: $(cat "$STUB_TAG_LOG")"
 fi
 teardown
 
+# With the same stale tag, verifier rejection must stop the publisher.
+setup "$MANIFEST_3" "$ALL_PUBLISHED"
+tools_version_alpha
+if OUT=$(STUB_TOOLS_TAG_DIGEST=sha256:old STUB_VERIFY_STATUS=1 run_script); then
+	fail "rejected chart verification fails the publisher" "$OUT"
+elif [ -s "$STUB_VERIFY_RESULTS" ] && [ ! -s "$STUB_TAG_LOG" ]; then
+	pass "rejected chart verification leaves the stale floating tag alone"
+else
+	fail "rejected chart verification leaves the stale floating tag alone" "$OUT
+tag.log: $(cat "$STUB_TAG_LOG")"
+fi
+teardown
+
 # 12. A tag that does not exist yet is created the same way, after a push.
 setup "$MANIFEST_3" ""
 tools_version_alpha
@@ -421,7 +441,9 @@ teardown
 setup "$MANIFEST_3" "ghcr.io/jomcgi/homelab/alpha@sha256:aaa"
 OUT=$(run_script)
 EXPECTED=$(printf '%s\n' \
+	"query labels(tars, deps(//projects/beta:image, 3))" \
 	"check //projects/beta:image.push" \
+	"query labels(tars, deps(//projects/gamma:image, 3))" \
 	"check //projects/gamma:image.push" \
 	"push //projects/beta:image.push" \
 	"push //projects/gamma:image.push" \
@@ -454,6 +476,7 @@ export STUB_LAYERED_IMAGE="//projects/beta:image.push"
 export STUB_LAYERS="//bazel/tools/image:prettier_tar"
 OUT=$(run_script)
 EXPECTED=$(printf '%s\n' \
+	"query labels(tars, deps(//projects/beta:image, 3))" \
 	"build --config=ci --stamp --experimental_check_output_files --remote_download_toplevel //bazel/tools/image:prettier_tar" \
 	"check //projects/beta:image.push" \
 	"push //projects/beta:image.push" \
@@ -485,6 +508,104 @@ else
 	fail "chart push re-checks remote outputs" "$(cat "$STUB_ARGV_LOG")"
 fi
 teardown
+
+# A query failure defers to the layout check. When alpha is readable,
+# fail beta's layout so the log shows how far preflight got before aborting.
+alpha="//projects/alpha:image.push"
+beta="//projects/beta:image.push"
+alpha_query="query labels(tars, deps(//projects/alpha:image, 3))"
+beta_query="query labels(tars, deps(//projects/beta:image, 3))"
+for unreadable in "$alpha" "$beta"; do
+	setup "$MANIFEST_3" ""
+	tools_version_alpha
+	EXPECTED=$(printf '%s\n' "$alpha_query" "check $alpha")
+	if [ "$unreadable" = "$beta" ]; then
+		EXPECTED+=$(printf '\n%s\n%s' "$beta_query" "check $beta")
+	fi
+	if OUT=$(STUB_QUERY_FAIL="$alpha" STUB_PREFLIGHT_FAIL="$unreadable" run_script); then
+		fail "unreadable $unreadable stops publication after a query failure" "$OUT"
+	elif grep -qF "WARNING: could not list layer tars for $alpha" <<<"$OUT" &&
+		[ "$(cat "$STUB_ORDER_LOG")" = "$EXPECTED" ] && [ ! -s "$STUB_RUN_LOG" ] && [ ! -s "$STUB_TAG_LOG" ]; then
+		pass "failed query checks layouts through $unreadable before aborting"
+	else
+		fail "failed query checks layouts through $unreadable before aborting" "$OUT
+$(cat "$STUB_ORDER_LOG" "$STUB_TAG_LOG")"
+	fi
+	teardown
+done
+
+# Alpha is ready, but a failed download for beta must abort before its check.
+setup "$MANIFEST_3" ""
+tools_version_alpha
+layer="//bazel/tools/image:prettier_tar"
+EXPECTED=$(printf '%s\n' "$alpha_query" "check $alpha" "$beta_query" \
+	"build --config=ci --stamp --experimental_check_output_files --remote_download_toplevel $layer")
+if OUT=$(STUB_LAYERED_IMAGE="$beta" STUB_LAYERS="$layer" STUB_LAYER_BUILD_FAIL=1 run_script); then
+	fail "failed layer download stops publication" "$OUT"
+elif [ "$(cat "$STUB_ORDER_LOG")" = "$EXPECTED" ] && [ ! -s "$STUB_RUN_LOG" ] && [ ! -s "$STUB_TAG_LOG" ]; then
+	pass "failed layer download stops publication after an earlier layout passed"
+else
+	fail "failed layer download stops publication after an earlier layout passed" "$OUT
+$(cat "$STUB_ORDER_LOG" "$STUB_TAG_LOG")"
+fi
+teardown
+
+# The manifest's missing-target fallback must not bypass the private check.
+for harness in harness/claude harness/codex reviewer/harness; do
+	private_label="//projects/factory/$harness:image.push"
+	private_repo="ghcr.io/jomcgi/homelab/projects/factory/$harness"
+	setup "$MANIFEST_3" "$ALL_PUBLISHED"
+	sed -i "/\"\/\/projects\/gamma:image.push\",/a\\        \"$private_label\"," "$WORK/bazel/images/BUILD"
+	if OUT=$(run_script); then
+		fail "$harness requires its exact destination in the manifest" "expected a non-zero exit"
+	elif grep -q "has no matching harness package" <<<"$OUT" && ! grep -qF "$private_label" "$STUB_RUN_LOG"; then
+		pass "$harness requires its exact destination in the manifest"
+	else
+		fail "$harness requires its exact destination in the manifest" "$OUT"
+	fi
+
+	printf '\n%s\t%s\t%s\t%s\n' "$private_label" "$private_repo" "sha256:private" "tag-private" >>"$WORK/bazel-bin/bazel/images/digests/manifest.txt"
+	mkdir -p "$WORK/bazel/images/push"
+	cat >"$WORK/bazel/images/push/private_harness_package.py" <<'STUB'
+import os
+import sys
+
+assert sys.argv[1] == os.environ["EXPECTED_PRIVATE_REPO"]
+sys.exit("private visibility was refused")
+STUB
+	if OUT=$(EXPECTED_PRIVATE_REPO="$private_repo" run_script); then
+		fail "private refusal stops the $harness upload" "expected a non-zero exit"
+	elif grep -q "private visibility was refused" <<<"$OUT" && ! grep -qF "$private_label" "$STUB_RUN_LOG"; then
+		pass "private refusal stops the $harness upload"
+	else
+		fail "private refusal stops the $harness upload" "$OUT"
+	fi
+	if [ "$harness" = "reviewer/harness" ]; then
+		cat >"$WORK/bazel/images/push/private_harness_package.py" <<'STUB'
+import os
+import sys
+
+if "--existing-only" in sys.argv and os.getenv("POST_PUSH_PUBLIC"):
+    sys.exit("published package is public")
+STUB
+		if OUT=$(STUB_REVIEWER_DIGEST=sha256:wrong run_script); then
+			fail "reject mismatched reviewer digest" "$OUT"
+		elif ! grep -q "differs from its build manifest" <<<"$OUT"; then
+			fail "missing reviewer digest diagnostic" "$OUT"
+		fi
+		if OUT=$(POST_PUSH_PUBLIC=1 run_script); then
+			fail "reject public reviewer package after upload" "$OUT"
+		elif ! grep -q "published package is public" <<<"$OUT"; then
+			fail "missing reviewer privacy diagnostic" "$OUT"
+		fi
+		if OUT=$(run_script) && grep -qF "Verified private reviewer harness $private_repo@sha256:private" <<<"$OUT"; then
+			pass "record verified reviewer package and digest"
+		else
+			fail "record verified reviewer package and digest" "$OUT"
+		fi
+	fi
+	teardown
+done
 
 echo ""
 if [ "$FAILURES" -ne 0 ]; then

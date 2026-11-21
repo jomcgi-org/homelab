@@ -43,11 +43,11 @@ func (s *Store) RecoverActivation(ctx context.Context) error {
 	return err
 }
 
-// WaitActivation schedules another observation after successful reads. Waiting
-// for a person is not a failed attempt; API failures still use the outbox bound.
+// WaitActivation clears the previous failure and schedules another observation
+// after successful reads.
 func (s *Store) WaitActivation(ctx context.Context, id int64, next time.Time) error {
 	_, err := s.DB.ExecContext(ctx, `UPDATE outbox SET next_attempt_at = $2,
-		tries = 0, last_error = NULL WHERE id = $1`, id, next)
+		tries = 0, last_error = NULL, unavailable_since = NULL WHERE id = $1`, id, next)
 	return err
 }
 

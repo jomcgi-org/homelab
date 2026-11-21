@@ -210,10 +210,15 @@ def test_one_kept_identity_and_private_image() -> None:
     )
     assert container["ports"] == [{"name": "metrics", "containerPort": 9090}]
     assert container["env"] == [
+        {"name": "OTEL_SERVICE_NAME", "value": "factory-reviewer"},
+        {
+            "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "value": "http://otel-collector.otel-collector.svc.cluster.local:4317",
+        },
         {
             "name": "FACTORY_REVIEWER_CONFIG",
             "value": "/etc/factory-reviewer/config.yaml",
-        }
+        },
     ]
     for probe in ("readinessProbe", "livenessProbe"):
         assert container[probe]["httpGet"] == {"path": "/healthz", "port": "metrics"}
@@ -314,7 +319,7 @@ def test_tokens_and_config_paths_match_the_pod() -> None:
     assert config["metricsAddr"] == ":9090"
     assert config["appId"] == 5758326
     assert config["checkName"] == "factory review"
-    assert config["concurrency"] == 3
+    assert config["concurrency"] == 5
     assert config["bindings"] == [
         {
             "name": "homelab",
@@ -413,6 +418,7 @@ def test_reviewer_identity_is_mandatory_and_isolated() -> None:
             "name": "Factory reviewer",
             "triggerOnAssign": False,
             "triggerOnMention": False,
+            "readOnly": True,
         }
     ]
     secret = _in(docs, "Secret", "factory", "factory-itsaplan-agent-factory-reviewer")
@@ -468,7 +474,7 @@ def test_review_binding_gets_isolated_agent_and_egress_credentials() -> None:
         "GIT_CONFIG_VALUE_0"
     ] == "Authorization: Basic factory-placeholder"
     worker = _in(docs, "WorkerPool", _REVIEW_NS, "homelab-reviewer")["spec"]
-    assert worker["replicas"] == 3
+    assert worker["replicas"] == 5
     assert worker["sandboxClasses"] == [
         {"name": "gvisor", "configRef": {"name": "gvisor-default"}}
     ]
@@ -515,6 +521,76 @@ def test_review_binding_gets_isolated_agent_and_egress_credentials() -> None:
                 "toPorts": [{"ports": [{"port": "8443", "protocol": "TCP"}]}],
             }
         ]
+
+
+def test_only_the_review_harness_takes_the_workload_image() -> None:
+    # Deploy values leave it empty: every Harness keeps kagent's image.
+    assert yaml.safe_load(_DEPLOY.read_text())["reviewer"].get("harnessImage", "") == ""
+    for docs in (_render(), _render(_TWO_REPOSITORIES)):
+        harnesses = [d for d in docs if d["kind"] == "Harness"]
+        assert harnesses
+        assert all("workload" not in h["spec"] for h in harnesses)
+    image = (
+        "ghcr.io/jomcgi/homelab/projects/factory/reviewer/harness@sha256:" + "d" * 64
+    )
+    docs = _render(_TWO_REPOSITORIES + ["reviewer.harnessImage=" + image])
+    workloads = {
+        h["metadata"]["namespace"]: h["spec"].get("workload")
+        for h in docs
+        if h["kind"] == "Harness"
+    }
+    assert workloads == {
+        "factory-r-homelab": None,
+        "factory-r-second": None,
+        "factory-r-homelab-review": {"image": image},
+        "factory-r-second-review": {"image": image},
+    }
+
+
+def test_a_coding_binding_takes_its_own_harness_image() -> None:
+    # Deploy values select no shared image for any coding binding (HOME-652).
+    deploy = yaml.safe_load(_DEPLOY.read_text())
+    assert all("harnessImage" not in r for r in deploy.get("repositories", []))
+    image = "ghcr.io/jomcgi/homelab/projects/factory/harness/codex@sha256:" + "e" * 64
+    docs = _render(_TWO_REPOSITORIES + ["repositories[0].harnessImage=" + image])
+    workloads = {
+        h["metadata"]["namespace"]: h["spec"].get("workload")
+        for h in docs
+        if h["kind"] == "Harness"
+    }
+    assert workloads == {
+        "factory-r-homelab": {"image": image},
+        "factory-r-second": None,
+        "factory-r-homelab-review": None,
+        "factory-r-second-review": None,
+    }
+
+
+def test_a_coding_harness_image_excludes_code_mode() -> None:
+    image = "ghcr.io/jomcgi/homelab/projects/factory/harness/codex@sha256:" + "e" * 64
+    with pytest.raises(RuntimeError, match="harnessImage or codexCodeMode"):
+        _render(
+            [
+                "repositories[0].harnessImage=" + image,
+                "repositories[0].codexCodeMode=true",
+            ]
+        )
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        "reviewer.harnessImage=ghcr.io/x/y:latest",
+        "reviewer.harnessImage=ghcr.io/x/y@sha256:abc",
+        # A coding binding cannot take a workload image.
+        "repositories[0].workloadImage=ghcr.io/x/y@sha256:" + "d" * 64,
+        # A coding binding's image is pinned by digest too.
+        "repositories[0].harnessImage=ghcr.io/x/y:latest",
+    ],
+)
+def test_only_a_pinned_review_harness_image_is_accepted(override: str) -> None:
+    with pytest.raises(RuntimeError, match="schema"):
+        _render([override])
 
 
 def test_broker_keeps_apps_subjects_and_secret_writes_separate() -> None:
@@ -595,11 +671,23 @@ def test_only_declared_network_paths_and_peers_admit_the_pod() -> None:
     spec = _in(docs, "CiliumNetworkPolicy", "factory", "factory-reviewer")["spec"]
     assert spec["endpointSelector"]["matchLabels"].items() <= labels.items()
     assert "ingress" not in spec
-    assert len(spec["egress"]) == 4
+    assert len(spec["egress"]) == 5
+    assert spec["egress"][0] == {
+        "toEndpoints": [
+            {
+                "matchLabels": {
+                    "k8s:io.kubernetes.pod.namespace": "otel-collector",
+                    "app.kubernetes.io/name": "otel-collector",
+                    "app.kubernetes.io/instance": "otel-collector",
+                }
+            }
+        ],
+        "toPorts": [{"ports": [{"port": "4317", "protocol": "TCP"}]}],
+    }
     for rule, ns, name, port in (
-        (spec["egress"][0], "factory", "factory-broker", "8081"),
-        (spec["egress"][1], "kagent", "kagent-controller", "8083"),
-        (spec["egress"][2], "factory", "factory-itsaplan-api", "3000"),
+        (spec["egress"][1], "factory", "factory-broker", "8081"),
+        (spec["egress"][2], "kagent", "kagent-controller", "8083"),
+        (spec["egress"][3], "factory", "factory-itsaplan-api", "3000"),
     ):
         assert rule["toPorts"] == [{"ports": [{"port": port, "protocol": "TCP"}]}]
         peer = _in(docs, "CiliumNetworkPolicy", ns, name)["spec"]
@@ -623,7 +711,7 @@ def test_only_declared_network_paths_and_peers_admit_the_pod() -> None:
             )
             for entry in peer["ingress"]
         )
-    assert spec["egress"][3] == {
+    assert spec["egress"][4] == {
         "toFQDNs": [{"matchName": "api.github.com"}],
         "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
     }
@@ -732,8 +820,8 @@ def test_service_identity_and_endpoints_follow_namespace_and_port_values() -> No
         "spec"
     ]["egress"]
     for rule, ns, port in (
-        (rules[0], "other-factory", "8181"),
-        (rules[1], "other-kagent", "8183"),
+        (rules[1], "other-factory", "8181"),
+        (rules[2], "other-kagent", "8183"),
     ):
         assert (
             rule["toEndpoints"][0]["matchLabels"]["k8s:io.kubernetes.pod.namespace"]

@@ -1,13 +1,5 @@
-# kagent-pg-setup (after every sync, once kagent-pg is healthy): its init
-# container generates the login passwords once and writes the chart's
-# connection-string Secrets (secret_init.py); then psql runs kagent's setup
-# script (setup.psql, setup.sql), which creates the roles and schema and sets
-# the passwords. Both steps are idempotent.
-#
-# ArgoCD owns the Secrets as empty placeholders and ignores their data. Only
-# the two connection strings go to the kagent namespace, from the
-# kagent-postgres-secrets Application (../kagent/); the passwords' source,
-# the superuser and the backup key stay in kagent-pg.
+# invariant: KAGENT-PG-1
+# The setup Job connects with the migration login.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -17,6 +9,30 @@ metadata:
     argocd.argoproj.io/sync-wave: "-2"
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
 type: Opaque
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kagent-pg-owner-login
+  namespace: kagent-pg
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: kubernetes.io/basic-auth
+stringData:
+  username: kagent_owner_user
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kagent-pg-readwrite-login
+  namespace: kagent-pg
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+type: kubernetes.io/basic-auth
+stringData:
+  username: kagent_readwrite_user
 ---
 # kagent-pg's Garage key, filled by garage-init
 # (projects/platform-factory/garage). kagent-pg-wait-for-key holds the Cluster
@@ -79,7 +95,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [secrets]
-    resourceNames: [kagent-pg-logins]
+    resourceNames: [kagent-pg-logins, kagent-pg-owner-login, kagent-pg-readwrite-login]
     verbs: [get, update]
   - apiGroups: [""]
     resources: [secrets]
@@ -162,25 +178,12 @@ spec:
             - name: PGSSLMODE
               value: require
             - name: PGUSER
-              valueFrom:
-                secretKeyRef:
-                  name: kagent-pg-superuser
-                  key: username
+              value: kagent_owner_user
             - name: PGPASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: kagent-pg-superuser
-                  key: password
-            - name: KAGENT_OWNER_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: kagent-pg-logins
                   key: owner-password
-            - name: KAGENT_READWRITE_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: kagent-pg-logins
-                  key: readwrite-password
             - name: HOME
               value: /tmp
           securityContext:

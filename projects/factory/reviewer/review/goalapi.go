@@ -2,6 +2,9 @@ package review
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -26,14 +29,15 @@ const maxGoalReasons = 4000
 // GoalReasons is the newest goal check reply for one head: the reasons
 // before its JSON answer, with the issue and evidence digest it judged.
 type GoalReasons struct {
-	Repository  string   `json:"repository"`
-	PullRequest int      `json:"pullRequest"`
-	Head        string   `json:"head"`
-	Issue       string   `json:"issue"`
-	Digest      string   `json:"digest"`
-	Phase       string   `json:"phase"`
-	Findings    []string `json:"findings,omitempty"`
-	Reasons     string   `json:"reasons"`
+	ReplyRevision int64    `json:"replyRevision,omitempty"`
+	Repository    string   `json:"repository"`
+	PullRequest   int      `json:"pullRequest"`
+	Head          string   `json:"head"`
+	Issue         string   `json:"issue"`
+	Digest        string   `json:"digest"`
+	Phase         string   `json:"phase"`
+	Findings      []string `json:"findings,omitempty"`
+	Reasons       string   `json:"reasons"`
 }
 
 var (
@@ -41,14 +45,14 @@ var (
 	repoName = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 )
 
-// Reasons is the newest saved reply for the PR's head, or false. A read
-// error finds nothing.
-func (s *FileGoalAudit) Reasons(repo string, pr int, head string) (GoalReasons, bool) {
+// Reasons is the newest saved reply for the PR's head, or false. An error
+// means the audit could not be read, so the reply may exist.
+func (s *FileGoalAudit) Reasons(repo string, pr int, head string) (GoalReasons, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
-		return GoalReasons{}, false
+		return GoalReasons{}, false, errors.New("goal audit unreadable")
 	}
 	var best GoalAuditRecord
 	found := false
@@ -57,8 +61,11 @@ func (s *FileGoalAudit) Reasons(repo string, pr int, head string) (GoalReasons, 
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(s.dir, entry.Name()))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // Pruned meanwhile.
+		}
 		if err != nil {
-			continue
+			return GoalReasons{}, false, errors.New("goal audit unreadable")
 		}
 		var r GoalAuditRecord
 		if json.Unmarshal(b, &r) != nil || r.Repository != repo || r.PullRequest != pr || r.Head != head {
@@ -69,17 +76,28 @@ func (s *FileGoalAudit) Reasons(repo string, pr int, head string) (GoalReasons, 
 		}
 	}
 	if !found {
-		return GoalReasons{}, false
+		return GoalReasons{}, false, nil
 	}
-	reasons := strings.TrimSpace(replyReasons(best.Reply))
-	if reasons == "" {
-		return GoalReasons{}, false
+	reasons := strings.TrimSpace(best.Ownership + replyReasons(best.Reply))
+	if reasons == "" && best.ReplyRevision == 0 {
+		return GoalReasons{}, false, nil
 	}
 	var findings []string
 	if answer, err := ParseGoal(best.Reply); err == nil {
 		effective := &GoalCheck{Criteria: answer.Criteria, Overall: answer.Overall}
 		if best.Initial != nil {
 			effective = confirmOnly(best.Initial, effective)
+		}
+		if effective != nil && reasons == "" {
+			var summary strings.Builder
+			fmt.Fprintf(&summary, "Stated goal: %s.\n", strings.ReplaceAll(effective.Overall, "_", " "))
+			for _, c := range effective.Criteria {
+				fmt.Fprintf(&summary, "Criterion %d: %s.\n", c.Criterion, strings.ReplaceAll(c.Verdict, "_", " "))
+			}
+			reasons = strings.TrimSpace(summary.String())
+		}
+		if effective == nil {
+			return GoalReasons{}, false, nil
 		}
 		if effective.Overall == goalNotMet {
 			for _, line := range strings.Split(reasons, "\n") {
@@ -113,10 +131,13 @@ func (s *FileGoalAudit) Reasons(repo string, pr int, head string) (GoalReasons, 
 			findings = append(findings, prefix+reason)
 		}
 	}
+	if reasons == "" {
+		return GoalReasons{}, false, nil
+	}
 	return GoalReasons{
-		Findings: findings, Repository: best.Repository, PullRequest: best.PullRequest, Head: best.Head,
+		Findings: findings, ReplyRevision: best.ReplyRevision, Repository: best.Repository, PullRequest: best.PullRequest, Head: best.Head,
 		Issue: best.Issue, Digest: best.Digest, Phase: best.Phase, Reasons: clip(reasons, maxGoalReasons),
-	}, true
+	}, true, nil
 }
 
 // replyReasons is a reply without its last fenced block, the answer.
@@ -130,11 +151,12 @@ func replyReasons(reply string) string {
 
 // GoalReasonsSource is what the API reads.
 type GoalReasonsSource interface {
-	Reasons(repo string, pr int, head string) (GoalReasons, bool)
+	Reasons(repo string, pr int, head string) (GoalReasons, bool, error)
 }
 
 // GoalReasonsHandler serves GET GoalReasonsPath?repository=o/r&pullRequest=N&head=SHA.
-// It answers 404 when no reply is kept for that head, and never logs a
+// It answers 404 when no reply is kept for that head, 503 when it cannot
+// read the audit, and never logs a
 // query's answer.
 func GoalReasonsHandler(src GoalReasonsSource) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +171,11 @@ func GoalReasonsHandler(src GoalReasonsSource) http.Handler {
 			http.Error(w, "bad query", http.StatusBadRequest)
 			return
 		}
-		got, ok := src.Reasons(repo, pr, head)
+		got, ok, err := src.Reasons(repo, pr, head)
+		if err != nil {
+			http.Error(w, "audit unreadable", http.StatusServiceUnavailable)
+			return
+		}
 		if !ok {
 			http.NotFound(w, r)
 			return

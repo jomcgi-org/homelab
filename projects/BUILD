@@ -1,6 +1,11 @@
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 
 exports_files(
+    ["platform-factory/kube-access/check-session-access.sh"],
+    visibility = ["//projects/platform-factory/kube-access/resources:__pkg__"],
+)
+
+exports_files(
     ["platform-factory/network-policy/resources/argocd.yaml"],
     visibility = ["//projects/platform-factory/external-secrets/chart:__pkg__"],
 )
@@ -78,11 +83,6 @@ filegroup(
         exclude = ["**/node_modules/**"],
     ),
     visibility = ["//projects/monolith:__pkg__"],
-)
-
-exports_files(
-    ["factory-cluster/nodes/authentication-config.yaml"],
-    visibility = ["//projects/platform-factory/kube-access/resources:__pkg__"],
 )
 
 filegroup(

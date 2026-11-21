@@ -66,6 +66,7 @@ LOGINS = [
         "factory-storyboard-db",
     ),
     ("factory-db-reaper-login", "factory_reaper", "factory", "factory-reaper-db"),
+    ("factory-db-trips-login", "factory_trips", "trips", "trips-postgres"),
 ]
 # These logins share the connector database and own no database.
 DATABASES = {

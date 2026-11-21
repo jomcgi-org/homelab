@@ -6,12 +6,19 @@ boundary: a rule below broken on them is critical.
 
 - **Every route signs in.** Each HTTPRoute attaches to the `edge` Gateway
   under its gateway-wide Authentik OIDC policy or one of the route-level
-  SecurityPolicies below. Five are active. The Codex policy is reserved for HOME-405.
+  SecurityPolicies below. The Codex policy is reserved for HOME-405.
   - Authentik's own route.
   - `kagent-authentik-oidc`, which carries the shared `edge.oidc` settings
     plus `forwardAccessToken: true`.
   - `codex-admin-authentik-oidc`, which forwards the access token with the
     shared `edge.oidc` settings on the broker’s `/admin/codex` route.
+  - `t3-authentik-oidc` targets only the `t3` route on `t3.jomcgi.dev`.
+    It uses the shared Authentik OIDC settings with the exact T3 callback,
+    requires MFA and membership in the Authentik admin group, and denies
+    other groups. Its sole backend is `t3/t3-relay:8080`. The Gateway policy
+    must deny T3 if the route policy is absent. Publish the hostname only
+    after the admission guard, node-1 socket and relay are verified live
+    ([HOME-681](https://factory-plan.jomcgi.dev/factory/issue/HOME-681)).
   - `kube-api-authentik-jwt` on the `kube-api` route
     (factory-kube.jomcgi.dev). kubectl cannot follow the browser redirect,
     so this policy checks a bearer token instead: one JWT provider with the
@@ -52,8 +59,8 @@ boundary: a rule below broken on them is critical.
   Authentik's admin, user, API and initial-setup paths keep answering 403
   publicly.
 - **Hostnames are owned.** A new route's namespace gets a rule in
-  `edge-admission` naming that namespace and its exact hostnames, and the
-  cfgate tunnel names the hostname. Each policy keeps `failurePolicy: Fail`
+  `edge-admission` naming that namespace and its exact hostnames. The cfgate
+  tunnel names each published hostname. Each policy keeps `failurePolicy: Fail`
   and its `Delete=false` annotation.
 - **OIDC redirect URIs are exact**: no wildcards, and none left on a hostname
   that moved.

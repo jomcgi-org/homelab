@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/jomcgi/homelab/projects/factory/broker/actorjwt"
 )
@@ -29,6 +34,9 @@ const maxUsageEvent = 32 << 20
 // tokenObserver sees a copy of each chunk before the relay writes it. It
 // retains one bounded SSE event (or one JSON response), not the stream.
 type tokenObserver struct {
+	providerFailed         bool
+	traceOnly              bool
+	claudeSpan             trace.Span
 	sse                    bool
 	line, data             []byte
 	lineBytes              int
@@ -123,6 +131,9 @@ func (o *tokenObserver) write(p []byte) {
 		// Even an oversized event must end at its own blank line so the
 		// next completion can be observed.
 		if o.lineBytes == 0 || o.lineBytes == 1 && o.lastByte == '\r' {
+			if o.event == "error" || (o.claudeSpan == nil && o.event == "response.failed") {
+				o.providerFailed = true
+			}
 			if !o.overflow {
 				o.parse(o.data, true)
 			} else {
@@ -159,6 +170,45 @@ func (o *tokenObserver) parse(data []byte, sse bool) {
 	if o.recorded {
 		return
 	}
+	if o.claudeSpan != nil {
+		// Messages streams report input at message_start and cumulative output at message_delta.
+		type usage struct {
+			Input    *int64 `json:"input_tokens"`
+			Cached   *int64 `json:"cache_read_input_tokens"`
+			Output   *int64 `json:"output_tokens"`
+			Creation int64  `json:"cache_creation_input_tokens"`
+		}
+		var msg struct {
+			Usage   usage
+			Message struct{ Usage usage }
+			Type    string
+			Input   *int64 `json:"input_tokens"`
+		}
+		if json.Unmarshal(data, &msg) != nil {
+			return
+		}
+		if sse && msg.Type == "error" {
+			o.providerFailed = true
+		}
+		u := msg.Usage
+		if msg.Type == "message_start" {
+			u = msg.Message.Usage
+		}
+		if msg.Input != nil {
+			u.Input = msg.Input
+		}
+		if u.Input != nil {
+			cached := int64(0)
+			if u.Cached != nil {
+				cached = *u.Cached
+			}
+			o.claudeSpan.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", *u.Input+cached+u.Creation), attribute.Int64("gen_ai.usage.cache_read.input_tokens", cached))
+		}
+		if u.Output != nil {
+			o.claudeSpan.SetAttributes(attribute.Int64("gen_ai.usage.output_tokens", *u.Output))
+		}
+		return
+	}
 	type response struct {
 		ID    string `json:"id"`
 		Usage *struct {
@@ -186,6 +236,9 @@ func (o *tokenObserver) parse(data []byte, sse bool) {
 		if event.Type == "" {
 			event.Type = o.event
 		}
+		if event.Type == "response.failed" || event.Type == "error" {
+			o.providerFailed = true
+		}
 		o.lastType = eventName(event.Type)
 		switch event.Type {
 		case "response.completed", "response.incomplete", "response.failed":
@@ -208,8 +261,16 @@ func (o *tokenObserver) parse(data []byte, sse bool) {
 }
 
 func (rl *Relay) observeTokens(ctx context.Context, id actorjwt.Identity) *tokenObserver {
+	span := trace.SpanFromContext(ctx)
+	var fallback *tokenObserver
+	record := func(u TokenUsage) {
+		span.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", u.Input), attribute.Int64("gen_ai.usage.cache_read.input_tokens", u.CachedInput), attribute.Int64("gen_ai.usage.output_tokens", u.Output))
+	}
+	if span.IsRecording() {
+		fallback = &tokenObserver{onUsage: record, traceOnly: true}
+	}
 	if rl.TokenUsage == nil {
-		return nil
+		return fallback
 	}
 	// Request cancellation must not discard a completion already read.
 	ctx = context.WithoutCancel(ctx)
@@ -217,18 +278,24 @@ func (rl *Relay) observeTokens(ctx context.Context, id actorjwt.Identity) *token
 	call, err := rl.TokenUsage.Begin(start, id)
 	cancel()
 	if err != nil {
-		rl.Logger.Warn("codex token accounting start failed")
+		// Error status keeps the trace: the collector keeps every error trace.
+		span.AddEvent("codex token accounting start failed")
+		span.SetStatus(codes.Error, "token_accounting_start_failed")
+		logUntraced(span, rl.Logger, slog.LevelWarn, "codex token accounting start failed")
 		rl.Metrics.TokenAccounting.WithLabelValues("start_error").Inc()
-		return nil
+		return fallback
 	}
 	if call == 0 {
-		return nil
+		return fallback
 	} // not a kagent session actor
 	return &tokenObserver{onUsage: func(u TokenUsage) {
+		record(u)
 		write, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		if err := rl.TokenUsage.Complete(write, call, u); err != nil {
-			rl.Logger.Warn("codex token accounting write failed", "call", call)
+			span.AddEvent("codex token accounting write failed", trace.WithAttributes(attribute.Int64("call", call)))
+			span.SetStatus(codes.Error, "token_accounting_write_failed")
+			logUntraced(span, rl.Logger, slog.LevelWarn, "codex token accounting write failed", "call", call)
 			rl.Metrics.TokenAccounting.WithLabelValues("write_error").Inc()
 			return
 		}

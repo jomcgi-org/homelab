@@ -415,8 +415,10 @@ dev: next.jomcgi.dev carries the rules; site-check passes
          └► HOME-540: the hub copy goes to zero pods and no route
 ```
 
-Until HOME-540, a rollback that removes the two patterns gives the paths back
-to the hub copy.
+HOME-540 took the hub copy to zero pods and no route. A rollback that removes
+the two patterns first needs the hub copy back, with ready pods, in the order
+that `projects/scotland-connector/ARCHITECTURE.md` "Hub copy rollback" gives.
+Remove the patterns only after that.
 
 `exactBecause` records HOME-207's explicit exceptions to the wildcard rule:
 query-string variants such as `/scotland?ref=x` and `/slop?ref=x` still reach

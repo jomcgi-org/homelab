@@ -17,6 +17,7 @@
   --focus-outline-color: light-dark(#1f4f9f, #d3a45f);
   --font-family-body: "Avenir Next", "Segoe UI", system-ui, sans-serif;
   --font-family-heading: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --font-family-code: ui-monospace, SFMono-Regular, Menlo, monospace;
   --radius-inner: 0;
   --radius-element: 0;
   --radius-container: 0;

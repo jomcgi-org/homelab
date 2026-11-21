@@ -104,9 +104,13 @@ credential or the registry token. A build
 without GHCR credentials fails to fetch it. The external repository exports the
 blob to `//bazel/tools/mandoline` only, and only `//projects/factory/...` can see
 its targets. Only private images may use them. `rules_oci`'s `oci.pull` is not
-used here, because its repositories are visible to the whole workspace.
+used here, because its repositories are visible to the whole workspace. The first
+private image is `//projects/factory/harness/codex:image`, the pinned Codex
+harness plus mandoline. The reviewer and coders can share its private package
+(HOME-530, HOME-652).
 
-**Why.** The INTSEC audit Harness runs a private image built by Bazel. The
+**Why.** Bazel builds the private INTSEC audit Harness at
+`//projects/factory/harness/claude:image` (HOME-234). The
 sandbox gets no GHCR token. Copies of the layer and binary in the BuildBuddy
 cache, which is private to the org, are accepted
 ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-234#comment-5555)).

@@ -44,7 +44,9 @@ GitHub tokens the broker mints for that ServiceAccount.
 {{- end }}
 {{- $itsaplanAgents := list }}
 {{- range .Values.itsaplan.bootstrap.agents }}
+{{- if not .readOnly }}
 {{- $itsaplanAgents = append $itsaplanAgents .username }}
+{{- end }}
 {{- end }}
 {{- $keys := list $c.coordinator }}
 {{- $agents := list }}
@@ -57,7 +59,7 @@ GitHub tokens the broker mints for that ServiceAccount.
 {{- end }}
 {{- range $keys }}
 {{- if not (has . $itsaplanAgents) }}
-{{- fail (printf "connector: itsaplan agent %s is not in itsaplan.bootstrap.agents, which writes its key" .) }}
+{{- fail (printf "connector: itsaplan agent %s is not a writable agent in itsaplan.bootstrap.agents, which writes its key" .) }}
 {{- end }}
 {{- end }}
 {{- $repoNames := list }}
@@ -116,6 +118,9 @@ GitHub tokens the broker mints for that ServiceAccount.
   "bindings" $bindings
   "links" $links
 }}
+{{- with $c.plannerSchedules }}
+{{- $_ := set $config "plannerSchedules" . }}
+{{- end }}
 {{- $bb := $c.buildbuddy | default dict }}
 {{- if $bb.enabled }}
 {{- if or (not $bb.host) (not $bb.itemPath) }}
@@ -221,6 +226,14 @@ spec:
           image: {{ include "factory.connectorImage" . | quote }}
           imagePullPolicy: {{ $c.image.pullPolicy }}
           env:
+            {{- with $c.traceEndpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ . | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: factory-connector
+            {{- end }}
+            - name: ITSAPLAN_APP_URL
+              value: {{ include "factory.itsaplanAppURL" . | quote }}
             - name: FACTORY_CONNECTOR_CONFIG
               value: /etc/factory-connector/config.yaml
             - name: FACTORY_CONNECTOR_DATABASE_URL
@@ -287,6 +300,12 @@ spec:
             capabilities:
               drop: [ALL]
           volumeMounts:
+            - name: decision-api
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            - name: joe-sessions
+              mountPath: /var/run/secrets/joe-sessions
+              readOnly: true
             - name: config
               mountPath: /etc/factory-connector
               readOnly: true
@@ -312,6 +331,23 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
+        - name: decision-api
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        - name: joe-sessions
+          secret:
+            secretName: {{ include "factory.itsaplanName" . }}-joe-sessions
+            optional: true
+            items:
+              - key: password
+                path: password
         {{- if .Values.runbookRevert.enabled }}
         {{- include "runbook.ownerVolumes" (dict "root" . "owner" "factory-connector") | nindent 8 }}
         {{- end }}

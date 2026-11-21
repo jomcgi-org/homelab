@@ -1,0 +1,115 @@
+{{- /*
+cloudflare-exporter (HOME-634): checks the factory-health-cloudflare token
+for the CloudflareCredentialRefused alert
+(projects/platform-factory/prometheus/resources/rules.yml). It reads no
+egress IP and writes nothing: one read of the Worker's deployments.
+files/cloudflare_exporter.py is a byte copy of the prometheus resources
+script; public_test checks it.
+
+The pod holds no R2 key. Only the mirror CronJobs hold the R2 mirror key, so
+the exporter does not test it. The pod takes the token key only, has no
+Kubernetes API token, and reaches only api.cloudflare.com on 443. It is not a
+factory-library workload: the library adds Garage egress to every workload of
+a chart with buckets. Prometheus reaches it through
+prometheus-scrape-cloudflare-exporter in
+projects/platform-factory/prometheus/resources/scrape-ingress.yaml. The
+account ID is not a secret
+(projects/platform-factory/factory-edge/resources/tunnel.yaml).
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cloudflare-exporter
+  namespace: {{ .Release.Namespace }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloudflare-exporter
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: cloudflare-exporter
+spec:
+  selector:
+    app.kubernetes.io/name: cloudflare-exporter
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflare-exporter
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    # The 1Password operator restarts the pod when the token Secret changes.
+    operator.1password.io/auto-restart: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflare-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cloudflare-exporter
+    spec:
+      serviceAccountName: cloudflare-exporter
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cloudflare-exporter
+          image: docker.io/library/python:3.13-alpine3.22@sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
+          command: [python3, -B, -c]
+          args:
+            - {{ required "cloudflare exporter script is missing" (.Files.Get "files/cloudflare_exporter.py") | toJson }}
+          env:
+            - name: API_CREDENTIAL
+              value: factory-health-cloudflare
+            - name: API_URL
+              value: https://api.cloudflare.com/client/v4/accounts/7c56b458cd657d96b095c63d181c051f/workers/scripts/jomcgi-site/deployments
+            # Optional, as for the health CronJob: until the item exists the
+            # check has no credential and exports check_success 0 only.
+            - name: CLOUDFLARE_API_TOKEN
+              valueFrom:
+                secretKeyRef: {name: factory-health-cloudflare, key: api-token, optional: true}
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 10m, memory: 24Mi}
+            limits: {memory: 96Mi}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: cloudflare-exporter
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflare-exporter
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  egress:
+    - toFQDNs:
+        - matchName: api.cloudflare.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

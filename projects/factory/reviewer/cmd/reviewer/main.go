@@ -19,6 +19,12 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -81,6 +87,19 @@ func (f fileToken) Token() (string, error) {
 func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" || os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") != "" {
+		exp, err := otlptracegrpc.New(ctx)
+		if err != nil {
+			return errors.New("initialize reviewer trace exporter")
+		}
+		provider := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithIDGenerator(review.IDGenerator{}), sdktrace.WithResource(resource.NewSchemaless(attribute.String("service.name", os.Getenv("OTEL_SERVICE_NAME")))))
+		otel.SetTracerProvider(provider)
+		defer func() {
+			flush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = provider.Shutdown(flush)
+		}()
+	}
 
 	cfg, err := config.Load(os.Getenv)
 	if err != nil {

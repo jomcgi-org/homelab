@@ -142,6 +142,7 @@ def test_upstream_factory_contracts(tmp_path):
             # Always use this private database and synthetic auth credentials.
             env = {
                 **os.environ,
+                "DECISION_PROBE": str(Path(os.environ["DECISION_PROBE"]).resolve()),
                 "NODE_ENV": "test",
                 "FACTORY_INTSEC_SYNC": "true",
                 "SKIP_PRE_MIGRATION_BACKUP": "1",
@@ -194,7 +195,7 @@ def test_upstream_factory_contracts(tmp_path):
             env["DATABASE_URL"] = f"postgres://test@127.0.0.1:{port}/factory_test"
             env["ITSAPLAN_DATABASE_URL"] = env["DATABASE_URL"]
             env["FACTORY_CONNECTOR_DATABASE_URL"] = (
-                f"postgres://test@127.0.0.1:{port}/connector_test"
+                f"postgres://test@127.0.0.1:{port}/connector_test?sslmode=disable"
             )
             run([bun, "run", "packages/db/src/migrate.ts"], cwd=upstream, env=env)
             migration_args = [

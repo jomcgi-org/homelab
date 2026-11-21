@@ -751,6 +751,28 @@ func TestDelayedTerminalResponseCannotOverwriteSuccessor(t *testing.T) {
 	}
 }
 
+func TestFormerWriterCannotChangeNativeRunAttempt(t *testing.T) {
+	v := newEnv(t)
+	issueID := int64(101)
+	claim := store.ClaimedRun{ID: 1, AgentKey: "coder", IssueID: issueID, IssueKey: "HL-1", Attempt: 1}
+	if _, _, err := v.st.RecordClaim(v.ctx, claim); err != nil {
+		t.Fatal(err)
+	}
+	former := v.e
+	former.Release()
+	v.e = v.engine("successor")
+	err := former.HandleClaim(v.ctx, "coder", &itsaplan.Run{
+		ID: 1, IssueID: &issueID, IssueIdentifier: "HL-1", Attempts: 2,
+	})
+	if !errors.Is(err, store.ErrNotWriter) {
+		t.Fatalf("former writer claim = %v, want ErrNotWriter", err)
+	}
+	phases, err := v.e.RunPhases(v.ctx, issueID)
+	if err != nil || len(phases) != 1 || phases[0].Attempt != 1 || phases[0].Phase != "admission" {
+		t.Fatalf("run phases after stale claim = %+v, %v", phases, err)
+	}
+}
+
 func TestDuplicateClaimIsIgnored(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
@@ -1415,6 +1437,17 @@ func TestBlockedGrantKeepsRunsWaitingWithoutHoldingSlots(t *testing.T) {
 			t.Fatalf("run %d reported %+v while blocked", id, res)
 		}
 	}
+	// A sibling can still occupy the slot while a grant is paused.
+	if err := v.st.SetRunState(v.ctx, v.st.DB, 3, store.RunDispatched, ""); err != nil {
+		t.Fatal(err)
+	}
+	phases, err := v.e.RunPhases(v.ctx, 102)
+	if err != nil || len(phases) != 1 || phases[0].Reason != "Waiting for the agent grant to resume." {
+		t.Fatalf("paused grant phases = %+v, %v", phases, err)
+	}
+	if err := v.st.SetRunState(v.ctx, v.st.DB, 3, store.RunWaiting, ""); err != nil {
+		t.Fatal(err)
+	}
 	if n := len(v.kg.Sends()); n != 1 {
 		t.Fatalf("sends = %d while blocked", n)
 	}
@@ -1432,6 +1465,10 @@ func TestBlockedGrantKeepsRunsWaitingWithoutHoldingSlots(t *testing.T) {
 	v.tick(v.e)
 	if n := len(v.kg.Sends()); n != 2 {
 		t.Fatalf("sends = %d after unblock, want 2 within concurrency 1", n)
+	}
+	phases, err = v.e.RunPhases(v.ctx, 103)
+	if err != nil || len(phases) != 1 || phases[0].Reason != "Waiting for an agent slot." {
+		t.Fatalf("capacity phases = %+v, %v", phases, err)
 	}
 	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
 	v.clk.Advance(5 * time.Second)
@@ -3726,5 +3763,70 @@ func TestAdmissionOutageNotifiesAfterTenMinutes(t *testing.T) {
 	v.tick(v.e)
 	if alarms != 1 {
 		t.Fatalf("got %d admission alarms", alarms)
+	}
+}
+
+func TestQueuedResultAcrossLeaseRedelivery(t *testing.T) {
+	for _, name := range []string{"bound", "legacy"} {
+		t.Run(name, func(t *testing.T) {
+			v := newEnv(t)
+			v.its.add(1, "coder", 101, "HL-1", "Do it.")
+			v.tick(v.e)
+			v.its.resultErr = []error{errors.New("temporary result failure")}
+			v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+			v.clk.Advance(5 * time.Second)
+			v.tick(v.e)
+			if r := v.run(1); r.State != store.RunFinishing {
+				t.Fatalf("run state = %s, want finishing", r.State)
+			}
+			originalAttempt := 1
+			if name == "legacy" {
+				originalAttempt = 0
+				if _, err := v.st.DB.Exec(`UPDATE outbox SET dedupe_key = 'result/1',
+					payload = jsonb_set(payload, '{attempt}', '0') WHERE kind = 'result'`); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			v.e.Release()
+			v.clk.Advance(301 * time.Second)
+			successor := v.engine("connector-b")
+			claim, err := v.its.Claim(v.ctx, "coder")
+			if err != nil || claim == nil || claim.Attempts != 2 {
+				t.Fatalf("second claim = %+v, %v", claim, err)
+			}
+			// A heartbeat can see the newer lease before HandleClaim stores it.
+			if _, err := v.st.DB.Exec(`UPDATE run SET state = 'stale' WHERE id = 1`); err != nil {
+				t.Fatal(err)
+			}
+			if err := successor.HandleClaim(v.ctx, "coder", claim); err != nil {
+				t.Fatal(err)
+			}
+			if r := v.run(1); r.State != store.RunFinishing {
+				t.Fatalf("redelivered run state = %s, want finishing", r.State)
+			}
+
+			v.tick(successor)
+			if got := v.its.Run(1).results; len(got) != 0 {
+				t.Fatalf("original outbox item sent a result: %+v", got)
+			}
+			v.tick(successor)
+			results := v.its.Run(1).results
+			if len(results) != 1 || results[0].Attempt != 2 || results[0].Status != "success" {
+				t.Fatalf("results = %+v, want one success on attempt 2", results)
+			}
+			var attempt int
+			var reason string
+			if err := v.st.DB.QueryRow(`SELECT (payload->>'attempt')::int, last_error FROM outbox
+				WHERE kind = 'result' AND abandoned_at IS NOT NULL`).Scan(&attempt, &reason); err != nil {
+				t.Fatal(err)
+			}
+			if attempt != originalAttempt || reason != "committed outcome reconciled into result/1/2" {
+				t.Fatalf("original attempt = %d, reason = %q", attempt, reason)
+			}
+			if got := v.kg.Executions(); got != 1 {
+				t.Fatalf("agent executions = %d, want 1", got)
+			}
+		})
 	}
 }

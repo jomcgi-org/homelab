@@ -30,7 +30,7 @@ Validate with `ci`; PR CI covers factory guests without the local toolchain.
 Live acceptance after rollout: an anonymous `/` redirects to Authentik;
 sign-in shows HOME-20 to HOME-23 (assigned to member `joe`, no delegate) under
 Needs you, live work under In flight, recent merges under Shipped recently, and
-the five tool cards; the ArgoCD link signs in at its hostname. See
+the five tools; the ArgoCD link signs in at its hostname. See
 [the factory architecture](../factory/ARCHITECTURE.md#factory-front-page).
 Keep the Authentik admin/setup 403/404 probes and the edge's
 `/oauth2-sentinel` 404 unchanged.

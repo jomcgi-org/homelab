@@ -19,6 +19,6 @@
     "@vitejs/plugin-vue": "^5.2.0",
     "happy-dom": "21.0.4",
     "vite": "6.4.5",
-    "vitest": "4.1.11"
+    "vitest": "4.1.12"
   }
 }

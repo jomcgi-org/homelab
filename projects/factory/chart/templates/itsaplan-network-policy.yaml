@@ -47,7 +47,7 @@ spec:
             app.kubernetes.io/name: factory-storyboard
         {{- if .Values.semgrepSync.enabled }}
         - matchLabels:
-            app.kubernetes.io/name: intsec-sync
+            app.kubernetes.io/name: factory-semgrep-sync
         {{- end }}
         {{- if .Values.reviewer.enabled }}
         - matchLabels:
@@ -59,6 +59,16 @@ spec:
             - port: "3000"
               protocol: TCP
   egress:
+    {{- if .Values.connector.enabled }}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $np.connector.namespace }}
+            {{- include "factory.connectorSelector" . | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "8085"
+              protocol: TCP
+    {{- end }}
     {{- with $i.database.endpoints }}
     - toEndpoints:
         {{- toYaml . | nindent 8 }}

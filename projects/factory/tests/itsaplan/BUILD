@@ -21,6 +21,7 @@ py_test(
         "//projects/factory/chart:deferred_adapter",
         "//projects/factory/connector/itsaplan:delivered_usage_report",
         "//projects/factory/connector/migrations:sql",
+        "//projects/factory/tests/itsaplan/decisionprobe",
         "//projects/platform-factory/kagent-postgres/resources:claims_test.sql",
         "//projects/platform-factory/kagent-postgres/resources:claims_test_files",
         "@itsaplan_test//:runtime/bin/bun",
@@ -29,6 +30,7 @@ py_test(
     ],
     env = {
         "CLAIMS_TEST": "$(rootpath //projects/platform-factory/kagent-postgres/resources:claims_test.sql)",
+        "DECISION_PROBE": "$(rootpath //projects/factory/tests/itsaplan/decisionprobe)",
         "BUN_BIN": "$(rootpath @itsaplan_test//:runtime/bin/bun)",
         "ITSAPLAN_ARCHIVE": "$(rootpath @itsaplan_test//:upstream.tar.gz)",
     },

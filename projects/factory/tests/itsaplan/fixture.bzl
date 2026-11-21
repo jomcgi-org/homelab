@@ -26,15 +26,18 @@ def _fixture(rctx):
     # Resolve the source label before doing work: a repository restart must not
     # leave a half-installed tree. No adapter or test code runs during fetching.
     source = rctx.path(rctx.attr.source).dirname
+    manifest_patch = rctx.path(rctx.attr.manifest_patch) if rctx.attr.manifest_patch else None
     platform = ("darwin" if rctx.os.name == "mac os x" else "linux") + "-" + ("aarch64" if rctx.os.arch in ["aarch64", "arm64"] else "x64")
     if platform == "linux-x64" and rctx.path("/lib/ld-musl-x86_64.so.1").exists:
         platform += "-musl"
     runtime = _bun(rctx, "linux-x64", "runtime")
     installer = runtime if platform == "linux-x64" else _bun(rctx, platform, "installer")
-    _run(rctx, ["cp", "-R", str(source), "upstream"])
+    _run(rctx, ["cp", "-R", str(source) + "/.", "upstream"])
+    if manifest_patch:
+        _run(rctx, ["patch", "--batch", "--forward", "-p1", "--fuzz=0", "-i", str(manifest_patch)], working_directory = str(rctx.path("upstream")))
     _run(
         rctx,
-        [installer, "install", "--frozen-lockfile", "--filter", "api", "--ignore-scripts", "--os=linux", "--cpu=x64", "--libc=glibc"],
+        [installer, "install", "--frozen-lockfile", "--filter", rctx.attr.workspace, "--ignore-scripts", "--os=linux", "--cpu=x64", "--libc=glibc"],
         working_directory = str(rctx.path("upstream")),
         environment = {"BUN_INSTALL_CACHE_DIR": str(rctx.path("bun-cache"))},
     )
@@ -49,5 +52,9 @@ def _fixture(rctx):
 
 itsaplan_fixture = repository_rule(
     implementation = _fixture,
-    attrs = {"source": attr.label(mandatory = True, allow_single_file = True)},
+    attrs = {
+        "manifest_patch": attr.label(allow_single_file = True),
+        "source": attr.label(mandatory = True, allow_single_file = True),
+        "workspace": attr.string(default = "api", values = ["api", "web"]),
+    },
 )

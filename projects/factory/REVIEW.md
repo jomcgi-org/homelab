@@ -36,14 +36,29 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   and its decisions, in the same delimited and quoted blocks, with the diff
   and no PR title, description or comment. Before reporting a missing fact,
   it searches the reviewed commit, including definitions outside the diff.
-  Coders can add public repository references by criterion number in
-  `.factory/goal-evidence/<issue-key>.md`. The reviewer checks each claim
-  against that commit without running PR commands. Only verified facts
-  affect the verdict. On a later head it also receives
-  the previous head's goal verdicts and private reply on the same issue
-  evidence, quoted, and the names of the files changed since. Its answer counts only as
-  criterion numbers and the verdicts `met`, `not_met`, `after_rollout` and
-  `unclear`: any other field or value voids it. The service writes every
+  The connector's private evidence reply is an exception to the restriction
+  on model text in issue comments. The connector may post the implementer's
+  bounded final-answer evidence by criterion on the private ticket. It
+  addresses the reply to the reviewer and binds it to the PR, commit and
+  reply revision. Only the goal check reads the reply. It quotes each line
+  and sanitizes the reply inside a delimited untrusted block. The text cannot
+  close the block or start a line outside the quote. The reply grants no
+  decision or approval authority.
+  The goal check verifies each claim against that commit without running PR
+  commands. Only verified facts affect the verdict. The ticket holds the
+  replies, and the public PR receives the service's fixed acceptance result.
+  [Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-678#comment-8639).
+  On a later head with the same issue evidence, the goal check receives the
+  previous verdicts, the previous private review reply, and the names of
+  the files changed since. It also quotes each line and sanitizes the
+  previous reply inside a delimited untrusted block. Its answer counts only as
+  criterion numbers and the verdicts `met`, `not_met`, `after_rollout`,
+  `unclear` and (for criteria only) `owned`. An `owned` answer supplies a private
+  `follow_up` key. The service checks the linked issue is open and lists the
+  criterion in its description. A failed match yields `not_met`. Only connector
+  feedback names the key: a revision round's reasons or, when the review
+  passes, one private comment on the work item's issue. The public review says “owned by a follow-up”.
+  [Joe’s decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-417#comment-4483). The service writes every
   public word from those values, with finding IDs from the issue key and
   criterion number, and a parse failure shows only a fixed class. An
   earlier goal finding stays open until a valid answer on the same issue

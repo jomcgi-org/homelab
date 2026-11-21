@@ -6,10 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
@@ -484,8 +489,8 @@ func TestUnusableReplyIsNeverSuccess(t *testing.T) {
 			if strings.Contains(c.Summary, "account 1234") || strings.Contains(c.Summary, `"nit"`) {
 				t.Fatal("provider status or reply text reached the public check")
 			}
-			if _, ok := LoadState(c.Text); ok {
-				t.Fatal("a review without a report stored findings")
+			if st, ok := LoadState(c.Text); !ok || st.Round != 1 || st.Blocking != nil {
+				t.Fatal("exhausted review must checkpoint its round without a findings report")
 			}
 			if n, _ := h.k.state(); n != MaxAttempts || h.taskOn(7, shaA, 3) == "" {
 				t.Fatalf("executions = %d, want one per attempt", n)
@@ -494,6 +499,52 @@ func TestUnusableReplyIsNeverSuccess(t *testing.T) {
 				t.Fatalf("retries = %v", got)
 			}
 		})
+	}
+}
+
+func TestExhaustedRevisionAdvancesRound(t *testing.T) {
+	exporter := captureReviewSpans(t)
+	h := newHarness(t)
+	addPR7(h)
+	reviewRound(t, h, shaA, passing)
+	second := sha40('b')
+	h.gh.push(7, second)
+	e, ctx, stop := h.start()
+	defer stop()
+	runReview(t, h, e, ctx, 7, second)
+	eventually(t, "exhausted second head", func() bool {
+		h.k.finishOpen(kagent.StateCompleted, "no report")
+		return h.gh.check(second).Status == "completed"
+	})
+	e.Wait()
+	if got := stateOn(t, h.gh.check(second)).Round; got != 2 {
+		t.Fatalf("exhausted round = %d", got)
+	}
+	checked := false
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "review" {
+			continue
+		}
+		attrs := map[string]string{}
+		for _, a := range span.Attributes {
+			attrs[string(a.Key)] = a.Value.Emit()
+		}
+		if attrs["pr.head_sha"] != second {
+			continue
+		}
+		checked = true
+		for _, sev := range Severities {
+			if attrs["review.findings."+sev] != "0" {
+				t.Errorf("exhausted %s count = %q", sev, attrs["review.findings."+sev])
+			}
+		}
+	}
+	if !checked {
+		t.Fatal("missing exhausted root span")
+	}
+	third := reviewRound(t, h, sha40('c'), passing)
+	if got := stateOn(t, third).Round; got != 3 {
+		t.Fatalf("subsequent round = %d", got)
 	}
 }
 
@@ -623,6 +674,7 @@ func TestReattachWithoutRecordedTaskResendsTheMessage(t *testing.T) {
 }
 
 func TestSupersededHeadCancelsTheOldReview(t *testing.T) {
+	exporter := captureReviewSpans(t)
 	h := newHarness(t)
 	addPR7(h)
 	e, ctx, _ := h.start()
@@ -646,6 +698,55 @@ func TestSupersededHeadCancelsTheOldReview(t *testing.T) {
 	if c := h.gh.check(shaA); c.Conclusion != ConclusionCancelled {
 		t.Fatalf("old check = %+v", c)
 	}
+	e.Wait()
+	cancelled := 0
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "factory.review_transition" {
+			continue
+		}
+		fields := map[string]string{}
+		for _, field := range span.Attributes {
+			fields[string(field.Key)] = field.Value.Emit()
+		}
+		if fields["review.transition"] == ConclusionCancelled && fields["head.sha"] == shaA {
+			cancelled++
+			if fields["repository"] != testRepo || fields["pr.number"] != "7" ||
+				fields["review.check_id"] != strconv.FormatInt(h.gh.check(shaA).ID, 10) {
+				t.Errorf("cancellation observation = %v", fields)
+			}
+		}
+	}
+	if cancelled != 1 {
+		t.Errorf("cancelled observations = %d, want 1", cancelled)
+	}
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "review" || span.Parent.IsValid() {
+			continue
+		}
+		var head, verdict string
+		counts := map[string]string{}
+		for _, attr := range span.Attributes {
+			switch key := string(attr.Key); {
+			case key == "pr.head_sha":
+				head = attr.Value.AsString()
+			case key == "review.verdict":
+				verdict = attr.Value.AsString()
+			case strings.HasPrefix(key, "review.findings."):
+				counts[strings.TrimPrefix(key, "review.findings.")] = attr.Value.Emit()
+			}
+		}
+		if head != shaA || verdict != ConclusionCancelled {
+			continue
+		}
+		// Cancelled before a usable report: every severity count is zero.
+		for _, sev := range Severities {
+			if counts[sev] != "0" {
+				t.Errorf("cancelled review %s count = %q, want 0", sev, counts[sev])
+			}
+		}
+		return
+	}
+	t.Fatal("missing cancelled verdict on superseded review root")
 }
 
 // A shared commit still needs current PR context: labels and approvals on
@@ -2424,7 +2525,7 @@ func TestStoredFindingsSurviveTheCheckRun(t *testing.T) {
 	failIf(t, st.InvariantBase == "", "stored state has no invariant base")
 	st.InvariantBase = ""
 	b, _ := json.Marshal(st)
-	if !ok || session == nil || string(b) != `{"blocking":[{"id":"a.go#m1","severity":"medium","path":"a.go","title":"M1","detail":"Detail."}]}` {
+	if !ok || session == nil || string(b) != `{"round":1,"blocking":[{"id":"a.go#m1","severity":"medium","path":"a.go","title":"M1","detail":"Detail."}]}` {
 		t.Fatalf("stored = %s, %v, session %+v", b, ok, session)
 	}
 }
@@ -2483,6 +2584,29 @@ func TestHumanGateByPathHoldsUntilApprovalOnTheHead(t *testing.T) {
 	}
 	if n, _ := h.k.state(); n != 1 {
 		t.Fatalf("executions = %d; the gate starts no new review", n)
+	}
+}
+
+// TestGateCheckKeepsOwnedCriteria keeps an owned criterion on the check that
+// clears a human gate, so the connector still delivers its follow-up key.
+func TestGateCheckKeepsOwnedCriteria(t *testing.T) {
+	h := newHarness(t)
+	h.gh.addPR(&fakePR{Number: 7, Author: "jomcgi-factory[bot]", Title: "fix(reviewer): x", Head: shaA})
+	e, ctx, _ := h.start()
+	st := State{GoalKey: "HL-7", Goal: &GoalCheck{Head: shaA, Overall: goalMet, Criteria: []GoalVerdict{
+		{Criterion: 1, Verdict: goalMet}, {Criterion: 2, Verdict: goalOwned},
+	}}}
+	pr := github.PullRequest{Number: 7, HeadSHA: shaA}
+	e.gateCheck(ctx, &h.cfg.Bindings[0], pr, &github.CheckRun{}, st, ConclusionSuccess, "Human gate cleared by jomcgi", "jomcgi approved this exact head.",
+		&CommentUpdate{Verdict: VerdictApproved}, e.log)
+	c := h.gh.check(shaA)
+	if c == nil || c.Conclusion != ConclusionSuccess || !strings.Contains(c.Summary, "### Deferred") ||
+		!strings.Contains(c.Summary, "HL-7 criterion 2: owned by a follow-up (`HL-7:goal:criterion-2`)") ||
+		strings.Contains(c.Summary, "criterion-1") {
+		t.Fatalf("gate check summary:\n%+v", c)
+	}
+	if got := ownedSection(State{GoalKey: "HL-7", Goal: &GoalCheck{Criteria: []GoalVerdict{{Criterion: 1, Verdict: goalMet}}}}); got != "" {
+		t.Fatalf("no owned criterion gave %q", got)
 	}
 }
 
@@ -4373,6 +4497,154 @@ func TestAddedFileInvariantAnswerInCompletedCheck(t *testing.T) {
 					t.Fatalf("conclusion %q, state %+v", c.Conclusion, st)
 				}
 			})
+		}
+	}
+}
+
+func TestReviewTransitionUsesTheAcceptedGitHubHead(t *testing.T) {
+	exporter := captureReviewSpans(t)
+	h := newHarness(t)
+	addPR7(h)
+	e, ctx, _ := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	eventually(t, "head-bound review transition", func() bool {
+		for _, span := range exporter.GetSpans() {
+			if span.Name != "factory.review_transition" {
+				continue
+			}
+			fields := map[string]string{}
+			for _, field := range span.Attributes {
+				fields[string(field.Key)] = field.Value.Emit()
+			}
+			if fields["review.transition"] == ConclusionSuccess {
+				return fields["repository"] == testRepo && fields["pr.number"] == "7" &&
+					fields["head.sha"] == shaA && fields["review.check_id"] != ""
+			}
+		}
+		return false
+	})
+}
+
+type stalledReviewExporter struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *stalledReviewExporter) ExportSpans(ctx context.Context, _ []sdktrace.ReadOnlySpan) error {
+	s.once.Do(func() { close(s.entered) })
+	select {
+	case <-s.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *stalledReviewExporter) Shutdown(context.Context) error { return nil }
+
+func TestReviewCompletesWithStalledAnalytics(t *testing.T) {
+	exporter := &stalledReviewExporter{entered: make(chan struct{}), release: make(chan struct{})}
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter, sdktrace.WithMaxQueueSize(1), sdktrace.WithMaxExportBatchSize(1)),
+		sdktrace.WithIDGenerator(IDGenerator{}),
+	)
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		close(exporter.release)
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	h := newHarness(t)
+	addPR7(h)
+	e, ctx, _ := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	select {
+	case <-exporter.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("analytics did not attempt an export")
+	}
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	eventually(t, "successful check while analytics is blocked", func() bool {
+		check := h.gh.check(shaA)
+		return check != nil && check.Conclusion == ConclusionSuccess
+	})
+}
+
+func captureReviewSpans(t *testing.T) *tracetest.InMemoryExporter {
+	t.Helper()
+	exporter := tracetest.NewInMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter), sdktrace.WithIDGenerator(IDGenerator{}))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() { otel.SetTracerProvider(previous) })
+	return exporter
+}
+
+func TestReviewTrace(t *testing.T) {
+	exporter := captureReviewSpans(t)
+	h, _ := issueHarness(t)
+	secret, _ := testMACSecret()
+	h.k.goal = secret + "\n" + goalReply(`{"criteria":[{"criterion":1,"verdict":"met"}],"overall":"met"}`)
+	e, ctx, stop := h.start()
+	defer stop()
+	finishHead(t, h, e, ctx, shaA, Report{Summary: secret, Findings: []Finding{finding("a.go:bug", SeverityHigh)}}, func(id string) {
+		h.k.stamp(id, map[string]any{"inputTokens": float64(12), "outputTokens": float64(3)})
+	})
+	e.Wait()
+	spans := slices.DeleteFunc(exporter.GetSpans(), func(span tracetest.SpanStub) bool {
+		return span.Name == "factory.review_transition"
+	})
+	if len(spans) != 3 {
+		t.Fatalf("got %d spans", len(spans))
+	}
+	root := spans[2]
+	if root.Name != "review" || root.Parent.IsValid() {
+		t.Fatal("missing review root")
+	}
+	attrs := map[string]string{}
+	for _, s := range spans {
+		if s.Name != "review" && s.Parent.SpanID() != root.SpanContext.SpanID() {
+			t.Fatal("unexpected span parent")
+		}
+		for _, a := range s.Attributes {
+			if strings.Contains(a.Value.Emit(), secret) {
+				t.Fatal("private value in span")
+			}
+			attrs[s.Name+"/"+string(a.Key)] = a.Value.Emit()
+		}
+		for _, ev := range s.Events {
+			for _, a := range ev.Attributes {
+				if strings.Contains(a.Value.Emit(), secret) {
+					t.Fatal("private value in event")
+				}
+			}
+		}
+	}
+	for k, v := range map[string]string{
+		"review/pr.number":                 "7",
+		"review/pr.head_sha":               shaA,
+		"review/review.round":              "1",
+		"review/review.verdict":            "failure",
+		"review/tokens.input":              "12",
+		"code review/pr.number":            "7",
+		"code review/pr.head_sha":          shaA,
+		"code review/review.round":         "1",
+		"code review/review.verdict":       "failure",
+		"goal check/pr.number":             "7",
+		"goal check/pr.head_sha":           shaA,
+		"goal check/review.round":          "1",
+		"goal check/review.findings.high":  "0",
+		"review/review.findings.high":      "1",
+		"code review/tokens.output":        "3",
+		"code review/review.findings.high": "1",
+		"goal check/review.verdict":        "met",
+	} {
+		if attrs[k] != v {
+			t.Errorf("%s: got %q, want %q", k, attrs[k], v)
 		}
 	}
 }

@@ -54,7 +54,17 @@ jwt:
 authorization:
   defaultAction: Deny
   rules:
-    - name: allow-operators
+    {{- if .denyT3 }}
+    # A missing route-level policy must not inherit operator access.
+    # The relay rejects every other spelling of this authority.
+    - name: deny-t3-fallback
+      action: Deny
+      principal:
+        headers:
+          - name: ":authority"
+            values: [t3.jomcgi.dev]
+    {{- end }}
+    - name: {{ ternary "allow-admins" "allow-operators" (default false .adminOnly) }}
       action: Allow
       principal:
         jwt:
@@ -64,5 +74,7 @@ authorization:
               valueType: StringArray
               values:
                 - authentik Admins
+                {{- if not .adminOnly }}
                 - factory-operators
+                {{- end }}
 {{- end -}}

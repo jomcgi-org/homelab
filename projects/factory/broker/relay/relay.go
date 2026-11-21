@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,6 +21,10 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/jomcgi/homelab/projects/factory/broker/actorjwt"
 	"github.com/jomcgi/homelab/projects/factory/broker/auth"
@@ -84,6 +89,7 @@ type Relay struct {
 	// MaxConcurrent caps requests in flight to the backend.
 	MaxConcurrent         int
 	MaxConcurrentPerActor int
+	TraceModels           []string
 	AllowedModels         []string
 	// ReasoningEffort, when set, replaces reasoning.effort in every
 	// /responses request (withEffort).
@@ -199,15 +205,39 @@ func (rl *Relay) now() time.Time {
 
 func (rl *Relay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := rl.now()
+	ctx, span := startRelaySpan(r.Context(), "codex.relay")
+	defer span.End()
 	var id actorjwt.Identity
 	var upstreamID string
-	result := rl.serve(w, r, &id, &upstreamID)
+	result := rl.serve(w, r.WithContext(ctx), &id, &upstreamID)
+	finishSpan(span, rl.Tokens.Grant(), id, result)
 	rl.Metrics.RelayRequests.WithLabelValues(result.name, metrics.StatusClass(result.status)).Inc()
 	// Never log credentials: the actor JWT, access token and request body
 	// stay out of this line.
-	rl.Logger.Info("codex relay", "actor", id.Subject, "atespace", id.Atespace, "actor_uid", id.ActorUID,
+	logUntraced(span, rl.Logger, slog.LevelInfo, "codex relay", "actor", id.Subject, "atespace", id.Atespace, "actor_uid", id.ActorUID,
 		"path", r.URL.Path, "status", result.status, "outcome", result.name,
 		"upstream_request_id", upstreamID, "duration_ms", rl.now().Sub(start).Milliseconds())
+}
+
+// Unobserved counts are -1 so a missing usage report is distinguishable from zero.
+func startRelaySpan(ctx context.Context, name string) (context.Context, trace.Span) {
+	return otel.Tracer("factory-broker").Start(ctx, name, trace.WithNewRoot(), trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(
+		attribute.String("gen_ai.request.model", "unknown"), attribute.String("quota.state", "unknown"),
+		attribute.Int64("gen_ai.usage.input_tokens", -1), attribute.Int64("gen_ai.usage.cache_read.input_tokens", -1), attribute.Int64("gen_ai.usage.output_tokens", -1)))
+}
+
+func finishSpan(span trace.Span, grant string, id actorjwt.Identity, result outcome) {
+	span.SetAttributes(attribute.String("grant.name", grant), attribute.String("binding.namespace", id.Atespace), attribute.String("actor.subject", id.Subject), attribute.String("actor.uid", id.ActorUID), attribute.Int("http.response.status_code", result.status), attribute.String("relay.outcome", result.name))
+	if session := id.SessionID(); session != "" {
+		span.SetAttributes(attribute.String("factory.session.id", session))
+	}
+	if result.name == "quota_exhausted" {
+		span.SetAttributes(attribute.String("quota.state", "exhausted"))
+	}
+	if result.name != "ok" {
+		span.RecordError(errors.New(result.name))
+		span.SetStatus(codes.Error, result.name)
+	}
 }
 
 func (rl *Relay) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Identity, upstreamID *string) outcome {
@@ -236,6 +266,7 @@ func (rl *Relay) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 	if until, blocked := rl.quotaBlock(rl.now()); blocked {
 		return writeQuota(w, until)
 	}
+	trace.SpanFromContext(r.Context()).SetAttributes(attribute.String("quota.state", "available"))
 	if !rl.acquireActor(identity.Subject) {
 		w.Header().Set("Retry-After", "5")
 		return writeError(w, http.StatusTooManyRequests, "relay_actor_busy", "actor_busy", nil)
@@ -263,16 +294,21 @@ func (rl *Relay) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 			return writeError(w, http.StatusBadRequest, "bad_request", "bad_request", nil)
 		}
 	}
-	if rt.method == http.MethodPost && len(rl.AllowedModels) > 0 {
+	span := trace.SpanFromContext(r.Context())
+	restrictModels := len(rl.AllowedModels) > 0
+	if rt.method == http.MethodPost && (restrictModels || span.IsRecording()) {
 		decoded, err := modelBody(body, strings.Join(r.Header.Values("Content-Encoding"), ","), rl.maxRequestBytes())
-		if errors.Is(err, errDecodedTooLarge) || errors.Is(err, zstd.ErrWindowSizeExceeded) || errors.Is(err, zstd.ErrDecoderSizeExceeded) {
+		if restrictModels && (errors.Is(err, errDecodedTooLarge) || errors.Is(err, zstd.ErrWindowSizeExceeded) || errors.Is(err, zstd.ErrDecoderSizeExceeded)) {
 			return writeError(w, http.StatusRequestEntityTooLarge, ErrRequestTooLarge, "bad_request", nil)
 		}
 		var fields map[string]json.RawMessage
 		var model string
-		if err != nil || json.Unmarshal(decoded, &fields) != nil || json.Unmarshal(fields["model"], &model) != nil || model == "" || !slices.Contains(rl.AllowedModels, model) {
+		valid := err == nil && json.Unmarshal(decoded, &fields) == nil && json.Unmarshal(fields["model"], &model) == nil && model != ""
+		allowed := valid && slices.Contains(rl.AllowedModels, model)
+		if restrictModels && !allowed {
 			return writeError(w, http.StatusBadRequest, "model_not_allowed", "model_not_allowed", nil)
 		}
+		span.SetAttributes(attribute.String("gen_ai.request.model", rl.traceModel(valid, allowed, model)))
 	}
 	if rt.suffix == "responses" {
 		effort := rl.ReasoningEffort
@@ -307,6 +343,7 @@ func (rl *Relay) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 	if resp.StatusCode == http.StatusUnauthorized {
 		// The backend refused the access token. Replace it once, sharing
 		// the refresh with concurrent callers, and retry.
+		trace.SpanFromContext(r.Context()).AddEvent("upstream token rejected")
 		drain(resp)
 		if err := r.Context().Err(); err != nil {
 			return rl.upstreamFailure(w, r, err)
@@ -329,14 +366,20 @@ func (rl *Relay) serve(w http.ResponseWriter, r *http.Request, id *actorjwt.Iden
 			if err := r.Context().Err(); err != nil {
 				return rl.upstreamFailure(w, r, err)
 			}
-			rl.Logger.Error("codex backend refused a freshly refreshed token", "grant", rl.Tokens.Grant())
+			span := trace.SpanFromContext(r.Context())
+			span.AddEvent("upstream refreshed token rejected")
+			logUntraced(span, rl.Logger, slog.LevelError, "codex backend refused a freshly refreshed token", "grant", rl.Tokens.Grant())
 			w.Header().Set("Retry-After", "60")
 			return writeError(w, http.StatusServiceUnavailable, ErrGrantUnavailable, "grant_unavailable", nil)
 		}
 	}
 	defer resp.Body.Close()
+
 	*upstreamID = resp.Header.Get("X-Request-Id")
 	obs, observed := codexchatgpt.ParseQuotaHeaders(resp.Header, resp.StatusCode, rl.now())
+	if observed {
+		span.SetAttributes(attribute.String("quota.state", obs.Status))
+	}
 	if observed && rl.quotaRec != nil {
 		rl.quotaRec.record(obs, rl.now().UTC())
 	}
@@ -363,7 +406,11 @@ func (rl *Relay) upstreamFailure(w http.ResponseWriter, r *http.Request, err err
 	if r.Context().Err() != nil {
 		return outcome{"client_canceled", 499}
 	}
-	rl.Logger.Error("codex upstream request failed", "err", err)
+	// The span keeps only the error's type: its text can name the backend
+	// address and dial details.
+	span := trace.SpanFromContext(r.Context())
+	span.AddEvent("codex upstream request failed", trace.WithAttributes(attribute.String("error.type", fmt.Sprintf("%T", err))))
+	logUntraced(span, rl.Logger, slog.LevelError, "codex upstream request failed", "err", err)
 	return writeError(w, http.StatusBadGateway, ErrUpstreamUnreachable, "upstream_unreachable", nil)
 }
 
@@ -553,10 +600,13 @@ func (rl *Relay) stream(w http.ResponseWriter, resp *http.Response, observer *to
 	if observer != nil {
 		observer.sse = isSSE(resp.Header.Get("Content-Type"))
 		defer func() {
-			if !observer.recorded {
+			if !observer.recorded && !observer.traceOnly {
 				rl.Metrics.TokenAccounting.WithLabelValues("missing").Inc()
 				// Metadata only: why no completion was read, never the body.
-				rl.Logger.Info("codex usage not observed",
+				span := trace.SpanFromContext(resp.Request.Context())
+				span.AddEvent("codex usage not observed", trace.WithAttributes(
+					attribute.Bool("sse", observer.sse), attribute.Int("events", observer.events), attribute.String("last_event", observer.lastType)))
+				logUntraced(span, rl.Logger, slog.LevelInfo, "codex usage not observed",
 					"content_type", resp.Header.Get("Content-Type"),
 					"sse", observer.sse, "events", observer.events, "last_event", observer.lastType)
 			}
@@ -589,11 +639,19 @@ func streamResponse(w http.ResponseWriter, resp *http.Response, logger *slog.Log
 		if err == io.EOF {
 			if observer != nil {
 				observer.finish()
+				if observer.providerFailed {
+					return outcome{"provider_stream_error", resp.StatusCode}
+				}
 			}
 			break
 		}
 		if err != nil {
-			logger.Warn("upstream stream ended early", "provider", provider, "idle_timeout", idle.String())
+			span := trace.SpanFromContext(context.Background())
+			if resp.Request != nil {
+				span = trace.SpanFromContext(resp.Request.Context())
+			}
+			span.AddEvent("upstream stream ended early", trace.WithAttributes(attribute.String("idle_timeout", idle.String())))
+			logUntraced(span, logger, slog.LevelWarn, "upstream stream ended early", "provider", provider, "idle_timeout", idle.String())
 			return outcome{"upstream_stream_error", resp.StatusCode}
 		}
 	}
@@ -797,5 +855,30 @@ func (q *quotaRecorder) run() {
 		if err := q.store.PutGrant(q.grant, QuotaProvider, next.obs, next.receivedAt); err != nil {
 			q.logger.Warn("codex quota observation not recorded", "err", err)
 		}
+	}
+}
+
+// traceModel returns the model name for the span. Clients control the
+// request body, so only names from trusted configuration (AllowedModels or
+// TraceModels) are exported. A missing name is "unknown"; any other name is
+// "other", so no request text reaches a span.
+func (rl *Relay) traceModel(valid, allowed bool, model string) string {
+	switch {
+	case !valid:
+		return "unknown"
+	case allowed || slices.Contains(rl.TraceModels, model):
+		return model
+	}
+	return "other"
+}
+
+// logUntraced writes a per-request line only when no tracer records the
+// span, so attribution stays available until trace export is enabled. With
+// export on, the span holds the actor, binding, status, outcome and failure
+// events (HOME-510 comment 7036: traces first). The upstream request ID is
+// backend-controlled text, so only this line has it.
+func logUntraced(span trace.Span, logger *slog.Logger, level slog.Level, msg string, args ...any) {
+	if !span.IsRecording() {
+		logger.Log(context.Background(), level, msg, args...)
 	}
 }

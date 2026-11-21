@@ -38,6 +38,7 @@ helm_chart(
         "broker.image": "//projects/factory/broker/image:image.info",
         "codexTrial.image": "//projects/factory/codex-code-mode:image.info",
         "connector.image": "//projects/factory/connector/image:image.info",
+        "itsaplan.webImage": "//projects/factory/itsaplan-web:image.info",
         "reviewer.image": "//projects/factory/reviewer/image:image.info",
     },
     # The vendored kagent subcharts are linted by their own repository.
@@ -234,4 +235,12 @@ py_test(
     data = ["files/semgrep_sync.py"],
     env = {"SYNC_SCRIPT": "$(rootpath files/semgrep_sync.py)"},
     deps = ["@pip//pytest"],
+)
+
+# The vendored kagent chart, whose builtin harness images the INTSEC audit
+# harness image's base must match (projects/factory/harness/claude).
+filegroup(
+    name = "kagent_chart",
+    srcs = ["charts/kagent-1.0.1.tgz"],
+    visibility = ["//projects/factory/harness/claude:__pkg__"],
 )

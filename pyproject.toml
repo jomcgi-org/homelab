@@ -75,7 +75,3 @@ dependencies = [
     # Kubernetes API client (async) — stats endpoint, future observability MCP
     "kubernetes-asyncio>=31.0",
 ]
-
-# See https://docs.astral.sh/ruff/configuration/
-[tool.ruff]
-extend-exclude = [".claude/worktrees"]

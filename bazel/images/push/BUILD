@@ -1,5 +1,7 @@
+load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 # Its own package rather than bazel/images/: that BUILD is regenerated wholesale
 # by //bazel/images:generate-push-all, and validate-generate-scripts.sh diffs
@@ -12,6 +14,7 @@ sh_binary(
     name = "push_changed",
     srcs = ["push-changed.sh"],
     data = [
+        "private_harness_package.py",
         "//bazel/helm:verify-published-images.sh",
         "//bazel/tools/ci:oci_push_layout.py",
     ],
@@ -22,4 +25,22 @@ sh_test(
     name = "push_changed_test",
     srcs = ["push-changed_test.sh"],
     data = [":push-changed.sh"],
+)
+
+# gazelle:resolve py private_harness_package //bazel/images/push:private_harness_package
+
+py_library(
+    name = "private_harness_package",
+    srcs = ["private_harness_package.py"],
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+)
+
+py_test(
+    name = "private_harness_package_test",
+    srcs = ["private_harness_package_test.py"],
+    deps = [
+        "//bazel/images/push:private_harness_package",
+        "@pip//pytest",
+    ],
 )

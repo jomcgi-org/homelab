@@ -10,8 +10,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/jomcgi/homelab/projects/factory/connector/internal/tracing"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/provenance"
@@ -142,6 +147,8 @@ func (w *Writer) Tx(ctx context.Context, fn func(*sql.Tx) error) error {
 	if epoch != w.Epoch {
 		return ErrNotWriter
 	}
+	commitHooks.Store(tx, new([]func()))
+	defer commitHooks.Delete(tx)
 	if err := fn(tx); err != nil {
 		var state interface{ SQLState() string }
 		if errors.Is(err, driver.ErrBadConn) || errors.Is(err, sql.ErrConnDone) || errors.Is(err, sql.ErrTxDone) ||
@@ -150,14 +157,15 @@ func (w *Writer) Tx(ctx context.Context, fn func(*sql.Tx) error) error {
 		}
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitWithHooks(tx); err != nil {
 		return lost(err)
 	}
 	return nil
 }
 
-// Release drops the lock by closing its session: driver.ErrBadConn makes
-// database/sql discard the connection instead of pooling it.
+// Release waits for PostgreSQL to acknowledge the advisory unlock. Discard
+// the connection even if the unlock fails, so it cannot be reused while
+// still holding the lock.
 func (w *Writer) Release() {
 	if w == nil {
 		return
@@ -165,6 +173,9 @@ func (w *Writer) Release() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.conn != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, _ = w.conn.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, writerLockKey)
+		cancel()
 		_ = w.conn.Raw(func(any) error { return driver.ErrBadConn })
 		w.conn.Close()
 		w.conn = nil
@@ -292,9 +303,18 @@ type ClaimedRun struct {
 // transport redelivery: the attempt moves forward, a stale run resumes and
 // the event offset restarts for the new attempt's transcript.
 func (s *Store) RecordClaim(ctx context.Context, c ClaimedRun) (*Run, ClaimOutcome, error) {
+	return recordClaim(ctx, s.Tx, c)
+}
+
+// RecordWriterClaim records a claim only while the connector still owns its epoch.
+func (s *Store) RecordWriterClaim(ctx context.Context, writer *Writer, c ClaimedRun) (*Run, ClaimOutcome, error) {
+	return recordClaim(ctx, writer.Tx, c)
+}
+
+func recordClaim(ctx context.Context, transact func(context.Context, func(*sql.Tx) error) error, c ClaimedRun) (*Run, ClaimOutcome, error) {
 	var run *Run
 	var outcome ClaimOutcome
-	err := s.Tx(ctx, func(tx *sql.Tx) error {
+	err := transact(ctx, func(tx *sql.Tx) error {
 		existing, err := scanRun(tx.QueryRowContext(ctx, `SELECT `+runCols+` FROM run WHERE id = $1 FOR UPDATE`, c.ID))
 		if errors.Is(err, sql.ErrNoRows) {
 			run, err = scanRun(tx.QueryRowContext(ctx, `
@@ -315,7 +335,17 @@ func (s *Store) RecordClaim(ctx context.Context, c ClaimedRun) (*Run, ClaimOutco
 		}
 		state := existing.State
 		if state == RunStale {
+			var pendingResult bool
+			err := tx.QueryRowContext(ctx, `
+				SELECT EXISTS (SELECT 1 FROM outbox WHERE run_id = $1 AND kind = 'result'
+					AND delivered_at IS NULL AND abandoned_at IS NULL)`, c.ID).Scan(&pendingResult)
+			if err != nil {
+				return err
+			}
 			state = RunDispatched
+			if pendingResult {
+				state = RunFinishing
+			}
 		}
 		run, err = scanRun(tx.QueryRowContext(ctx, `
 			UPDATE run SET attempt = $2, state = $3, event_attempt = NULL, event_offset = 0,
@@ -384,6 +414,57 @@ func (s *Store) SetRunState(ctx context.Context, q Querier, id int64, state, rea
 		if _, err := s.RunUsage(ctx, q, id); err != nil {
 			return err
 		}
+		var issue, previous, head, origin string
+		var number, round int
+		var created time.Time
+		err := q.QueryRowContext(ctx, `WITH old AS (SELECT id,state FROM run WHERE id=$1 AND state <> 'closed' FOR UPDATE)
+ UPDATE run r SET state='closed',closed_reason=nullif($2,''),updated_at=now() FROM old WHERE r.id=old.id
+ RETURNING coalesce(r.issue_key,''),old.state,r.created_at,
+ coalesce((select number from pull_request where work_item_id=r.work_item_id),0),
+ coalesce(r.round_head_sha,(select head_sha from pull_request where work_item_id=r.work_item_id),''),
+ coalesce((select case r.trigger when 'split' then split_rounds when 'rebase' then rebase_rounds else review_rounds end from work_item where id=r.work_item_id),0),r.origin`, id, reason).Scan(&issue, &previous, &created, &number, &head, &round, &origin)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		emit := func() {
+			emitUnit := func(name string) {
+				attrs := []attribute.KeyValue{
+					attribute.String("issue.key", issue), attribute.Int64("run.id", id),
+					attribute.String("state.from", previous), attribute.String("state.to", RunClosed),
+					attribute.Int("pr.number", number), attribute.String("head.sha", head), attribute.Int("round", round),
+				}
+				tracing.Observe(ctx, name, attrs...)
+				_, span := tracing.Start(ctx, name, trace.WithTimestamp(created), trace.WithAttributes(attrs...))
+				// The close reason may include arbitrary task output. Export only
+				// the connector's known terminal classifications.
+				switch {
+				case reason == "reported success" || reason == "review round success":
+					tracing.Finish(span, nil, "success")
+				case strings.HasPrefix(reason, "review round failed") || reason == "reported failed" || strings.HasPrefix(reason, "result "):
+					tracing.Finish(span, errors.New("run failed"), "error")
+				case strings.HasPrefix(reason, "canceled"):
+					tracing.Finish(span, nil, "canceled")
+				default:
+					tracing.Finish(span, nil, RunClosed)
+				}
+			}
+			emitUnit("factory.run")
+			if origin == OriginConnector {
+				emitUnit("factory.review_round")
+			}
+		}
+		if tx, ok := q.(*sql.Tx); ok {
+			if hooks, registered := commitHooks.Load(tx); registered {
+				callbacks := hooks.(*[]func())
+				*callbacks = append(*callbacks, emit)
+			}
+		} else {
+			emit()
+		}
+		return nil
 	}
 	_, err := q.ExecContext(ctx, `UPDATE run SET state = $2, closed_reason = nullif($3, ''), updated_at = now() WHERE id = $1`,
 		id, state, reason)
@@ -392,8 +473,8 @@ func (s *Store) SetRunState(ctx context.Context, q Querier, id int64, state, rea
 
 // MarkStale stops a run's writing when itsaplan reports a newer attempt than
 // the one held. A redelivery claim at that attempt resumes it.
-func (s *Store) MarkStale(ctx context.Context, id int64, attempt int) error {
-	_, err := s.DB.ExecContext(ctx,
+func (s *Store) MarkStale(ctx context.Context, q Querier, id int64, attempt int) error {
+	_, err := q.ExecContext(ctx,
 		`UPDATE run SET state = 'stale', updated_at = now() WHERE id = $1 AND attempt = $2 AND state <> 'closed'`, id, attempt)
 	return err
 }
@@ -765,9 +846,9 @@ func (s *Store) RecordQuotaReads(ctx context.Context, w *Writer, messageIDs []st
 // returns the cleared scopes. A credential failure needs a person: a grant
 // with a credential-blocked work item keeps its block, and that work item
 // stays blocked, until the operator's unblock (ClearGrantBlock).
-func (s *Store) ClearQuotaBlocks(ctx context.Context, before time.Time) ([]string, error) {
+func (s *Store) ClearQuotaBlocks(ctx context.Context, writer *Writer, before time.Time) ([]string, error) {
 	var scopes []string
-	err := s.Tx(ctx, func(tx *sql.Tx) error {
+	err := writer.Tx(ctx, func(tx *sql.Tx) error {
 		scopes = nil
 		rows, err := tx.QueryContext(ctx, `
 			UPDATE grant_block g SET cleared_at = now()
@@ -1412,11 +1493,12 @@ func (s *Store) ConfirmCancellation(ctx context.Context, q Querier, id int64, ou
 
 // Outbox kinds.
 const (
-	OutboxResult        = "result"
-	OutboxComment       = "comment"
-	OutboxIssueDone     = "issue_done"
-	OutboxDeferredStart = "deferred_start"
-	OutboxActivation    = "activation"
+	OutboxResult         = "result"
+	OutboxComment        = "comment"
+	OutboxIssueDone      = "issue_done"
+	OutboxIssueReviewing = "issue_reviewing"
+	OutboxDeferredStart  = "deferred_start"
+	OutboxActivation     = "activation"
 )
 
 // OutboxItem is a side effect waiting for delivery.
@@ -1499,10 +1581,19 @@ func (s *Store) OutboxSendCleared(ctx context.Context, id int64) error {
 }
 
 // OutboxFailed records a failed delivery and when to try again.
-func (s *Store) OutboxFailed(ctx context.Context, id int64, msg string, next time.Time, unavailableSince *time.Time) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE outbox SET tries = tries + 1, last_error = $2, next_attempt_at = $3,
+func (s *Store) OutboxFailed(ctx context.Context, q Querier, id int64, msg string, next time.Time, unavailableSince *time.Time) error {
+	_, err := q.ExecContext(ctx, `UPDATE outbox SET tries = tries + 1, last_error = $2, next_attempt_at = $3,
 		unavailable_since = CASE WHEN $4::timestamptz IS NULL THEN NULL ELSE coalesce(unavailable_since, $4) END WHERE id = $1`,
 		id, msg, next, unavailableSince)
+	return err
+}
+
+// OutboxCooldown reschedules a local skip while preserving the start of the outage.
+// invariant: FACT-16
+func (s *Store) OutboxCooldown(ctx context.Context, q Querier, id int64, msg string, now, next time.Time) error {
+	_, err := q.ExecContext(ctx, `UPDATE outbox SET last_error = $2, next_attempt_at = $3,
+		unavailable_since = coalesce(unavailable_since, $4)
+		WHERE id = $1 AND delivered_at IS NULL AND abandoned_at IS NULL`, id, msg, next, now)
 	return err
 }
 
@@ -1526,15 +1617,33 @@ type Querier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
+// Both transaction owners register their after-commit work here. Dropping
+// the entry on any exit discards observations of rolled-back changes.
+var commitHooks sync.Map // *sql.Tx -> *[]func()
+
+func commitWithHooks(tx *sql.Tx) error {
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if hooks, ok := commitHooks.Load(tx); ok {
+		for _, fn := range *hooks.(*[]func()) {
+			fn()
+		}
+	}
+	return nil
+}
+
 // Tx runs fn in a transaction.
 func (s *Store) Tx(ctx context.Context, fn func(*sql.Tx) error) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
+	commitHooks.Store(tx, new([]func()))
+	defer commitHooks.Delete(tx)
 	if err := fn(tx); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
-	return tx.Commit()
+	return commitWithHooks(tx)
 }

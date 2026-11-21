@@ -1,11 +1,17 @@
 """Check factory kubectl and explorer access."""
 
+import json
+import os
+import runpy
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
 
 HERE = Path(__file__).parent
+NODE_FILES = HERE.parents[2] / "factory-cluster/nodes"
+TOKEN_HELPER = str(NODE_FILES / "factory-session-token.py")
 DOCS = [
     d
     for name in yaml.safe_load((HERE / "kustomization.yaml").read_text())["resources"]
@@ -15,6 +21,11 @@ DOCS = [
 VIEWERS = "authentik:factory-kube-viewers"
 EXPLORERS = "explore:explorers"
 SESSIONS = "authentik:factory-kube-sessions"
+NODE_SESSION = {
+    "kind": "ServiceAccount",
+    "name": "factory-node1-sessions",
+    "namespace": "kube-system",
+}
 ADMINS = "authentik:authentik Admins"
 # Reviewed in #8222: no private data in their objects or logs. Adding one is
 # Joe's decision; agent, ticket, chat, memory and sign-in namespaces stay out.
@@ -79,6 +90,61 @@ def by_kind(kind):
     return [d for d in DOCS if d["kind"] == kind]
 
 
+@pytest.mark.parametrize("undeclared_allowed", [False, True])
+def test_session_verifier_checks_undeclared_group(tmp_path, undeclared_allowed):
+    kubectl = tmp_path / "kubectl"
+    kubectl.write_text(
+        """#!/bin/bash
+case "$1" in
+    get)
+        [[ "$2 $3" == "clusterrole factory-sessions" ]] || exit 2
+        printf '%s\\n' apps
+        ;;
+    api-resources)
+        printf '%s\\n' pods secrets deployments.apps policyreports.wgpolicyk8s.io
+        ;;
+    auth)
+        [[ "$2" == "can-i" ]] || exit 2
+        case " $* " in
+            *" policyreports.wgpolicyk8s.io "*)
+                if [[ "$ALLOW_POLICY_REPORTS" == 1 ]]; then
+                    echo yes
+                    exit 0
+                fi
+                ;;
+            *" --quiet "*) exit 0 ;;
+        esac
+        echo no
+        exit 1
+        ;;
+    *) exit 2 ;;
+esac
+"""
+    )
+    kubectl.chmod(0o700)
+    result = subprocess.run(
+        ["bash", str(HERE.parent / "check-session-access.sh")],
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+            "ALLOW_POLICY_REPORTS": str(int(undeclared_allowed)),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    if undeclared_allowed:
+        assert result.returncode != 0
+        assert (
+            "Unexpected cluster-wide get on policyreports.wgpolicyk8s.io"
+            in result.stderr
+        )
+    else:
+        assert result.returncode == 0, result.stderr
+
+
 def test_only_admins_hold_cluster_admin():
     (binding,) = [
         d
@@ -98,9 +164,22 @@ def test_only_admins_hold_cluster_admin():
         assert d["roleRef"]["name"] not in {"cluster-admin", "admin", "edit"}
 
 
-def test_every_subject_is_an_access_group():
+def test_every_subject_is_an_access_group_or_the_node_session():
+    assert by_kind("ServiceAccount") == [
+        {
+            "apiVersion": "v1",
+            "kind": "ServiceAccount",
+            "metadata": {
+                "name": NODE_SESSION["name"],
+                "namespace": NODE_SESSION["namespace"],
+            },
+            "automountServiceAccountToken": False,
+        }
+    ]
     for d in by_kind("ClusterRoleBinding") + by_kind("RoleBinding"):
         for subject in d["subjects"]:
+            if d["roleRef"]["name"] == "factory-sessions" and subject == NODE_SESSION:
+                continue
             assert subject["kind"] == "Group"
             assert subject["name"] in {
                 ADMINS,
@@ -156,7 +235,7 @@ def test_readers_cover_only_the_reviewed_namespaces(group, role):
 
 
 def test_authentication_config():
-    config = HERE.parents[2] / "factory-cluster/nodes/authentication-config.yaml"
+    config = NODE_FILES / "authentication-config.yaml"
     assert yaml.safe_load(config.read_text())["jwt"] == [
         {
             "issuer": {
@@ -232,6 +311,14 @@ def test_session_permissions():
             b
             for b in by_kind(kind + "Binding")
             if any(s["name"] == SESSIONS for s in b["subjects"])
+        ]
+        assert binding["subjects"] == [
+            {
+                "kind": "Group",
+                "apiGroup": "rbac.authorization.k8s.io",
+                "name": SESSIONS,
+            },
+            NODE_SESSION,
         ]
         namespace = "factory" if kind == "Role" else None
         assert binding["metadata"].get("namespace") == namespace
@@ -356,6 +443,7 @@ def test_session_permissions():
         ("patch", "secrets", "factory-itsaplan-joe-sessions", "factory", False),
         ("delete", "secrets", "factory-itsaplan-joe-sessions", "factory", False),
         ("list", "secrets", None, "factory", False),
+        ("create", "serviceaccounts/token", NODE_SESSION["name"], "kube-system", False),
         ("watch", "secrets", None, "factory", False),
         ("create", "pods/exec", "factory-db-1", "factory", False),
         (
@@ -379,12 +467,13 @@ def test_session_permissions():
         ("watch", "pods", None, "default", True),
     ],
 )
-def test_session_core_requests(verb, resource, name, namespace, allowed):
+@pytest.mark.parametrize("subject", [SESSIONS, NODE_SESSION["name"]])
+def test_session_core_requests(verb, resource, name, namespace, allowed, subject):
     rules = []
     for binding in by_kind("RoleBinding") + by_kind("ClusterRoleBinding"):
         if binding["metadata"].get("namespace", namespace) != namespace:
             continue
-        if not any(s["name"] == SESSIONS for s in binding["subjects"]):
+        if not any(s["name"] == subject for s in binding["subjects"]):
             continue
         ref = binding["roleRef"]
         for role in by_kind(ref["kind"]):
@@ -403,3 +492,91 @@ def test_session_core_requests(verb, resource, name, namespace, allowed):
         )
         == allowed
     )
+
+
+def test_node_session_kubeconfig_and_exec_credential(monkeypatch, capsys):
+    config = yaml.safe_load(
+        (NODE_FILES / "factory-session-kubeconfig.yaml").read_text()
+    )
+    assert config["clusters"] == [
+        {
+            "name": "factory-local",
+            "cluster": {
+                "server": "https://127.0.0.1:6443",
+                "certificate-authority": "/etc/factory/k3s-server-ca.crt",
+            },
+        }
+    ]
+    assert config["current-context"] == "factory"
+    assert config["contexts"] == [
+        {
+            "name": "factory",
+            "context": {"cluster": "factory-local", "user": NODE_SESSION["name"]},
+        }
+    ]
+    version = "client.authentication.k8s.io/v1"
+    assert config["users"] == [
+        {
+            "name": NODE_SESSION["name"],
+            "user": {
+                "exec": {
+                    "apiVersion": version,
+                    "command": "/usr/bin/sudo",
+                    "args": ["-n", "--", "/usr/local/sbin/factory-session-token"],
+                    "interactiveMode": "Never",
+                }
+            },
+        }
+    ]
+    credential = {
+        "token": "fixture-token",
+        "expirationTimestamp": "2026-11-21T09:10:00Z",
+    }
+
+    def request_token(command, **options):
+        endpoint = (
+            f"/api/v1/namespaces/{NODE_SESSION['namespace']}/"
+            f"serviceaccounts/{NODE_SESSION['name']}/token"
+        )
+        assert command == [
+            "/usr/local/bin/k3s",
+            "kubectl",
+            "--kubeconfig=/etc/rancher/k3s/k3s.yaml",
+            "--server=https://127.0.0.1:6443",
+            "--request-timeout=10s",
+            "create",
+            f"--raw={endpoint}",
+            "-f",
+            "-",
+        ]
+        assert json.loads(options["input"]) == {
+            "apiVersion": "authentication.k8s.io/v1",
+            "kind": "TokenRequest",
+            "spec": {"expirationSeconds": 600},
+        }
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps({"status": credential, "kind": "TokenRequest"})
+        )
+
+    monkeypatch.setattr("socket.gethostname", lambda: "node-1")
+    monkeypatch.setattr("sys.argv", [TOKEN_HELPER])
+    monkeypatch.setattr(subprocess, "run", request_token)
+    runpy.run_path(TOKEN_HELPER)
+    assert json.loads(capsys.readouterr().out) == {
+        "apiVersion": version,
+        "kind": "ExecCredential",
+        "status": credential,
+    }
+
+
+@pytest.mark.parametrize("node,args", [("node-2", []), ("node-1", ["extra"])])
+def test_node_session_helper_rejects_other_nodes_and_arguments(monkeypatch, node, args):
+    monkeypatch.setattr("socket.gethostname", lambda: node)
+    monkeypatch.setattr("sys.argv", [TOKEN_HELPER, *args])
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_options: pytest.fail("unexpected token request"),
+    )
+    with pytest.raises(SystemExit, match="available only on node-1"):
+        runpy.run_path(TOKEN_HELPER)

@@ -42,6 +42,17 @@ spec:
       toPorts:
         - ports: [{port: "9090", protocol: TCP}]
     {{- end }}
+    {{- if .Values.reviewer.traceEndpoint }}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: otel-collector
+            app.kubernetes.io/name: otel-collector
+            app.kubernetes.io/instance: otel-collector
+      toPorts:
+        - ports:
+            - port: "4317"
+              protocol: TCP
+    {{- end }}
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ .Values.broker.namespace }}

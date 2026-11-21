@@ -1,8 +1,12 @@
 """The chart owns the public bucket and mirror, and the health publisher."""
 
+import hashlib
+import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
+import tempfile
 
 import yaml
 
@@ -12,6 +16,7 @@ MIRRORS = [
     "factory-public-factory-public-mirror",
     "factory-public-stars-forecast-mirror",
     "factory-public-hikes-mirror",
+    "factory-public-ships-mirror",
 ]
 
 
@@ -99,6 +104,12 @@ def test_public_consumer():
             "hikes",
             "read",
         ),
+        (
+            "factory-public",
+            "factory-public-ships-mirror-s3",
+            "ships",
+            "read",
+        ),
     }
     # Only each mirror's ServiceAccount may mount its R2 Secret: one denying
     # policy each for Pods, Jobs and CronJobs, each with its binding.
@@ -126,6 +137,10 @@ def test_public_consumer():
             f'"{mirror}"' in p["spec"]["validations"][0]["expression"] for p in own
         )
     assert len(policies) == 3 * len(MIRRORS)
+    # The library README's writer rule depends on this deadline.
+    for mirror in MIRRORS:
+        job = by_name["CronJob", mirror]["spec"]["jobTemplate"]["spec"]
+        assert job["activeDeadlineSeconds"] > 0
     policy = by_name["CiliumNetworkPolicy", "factory-public-factory-public-mirror"][
         "spec"
     ]
@@ -176,6 +191,20 @@ def render(*args):
         for d in yaml.safe_load_all(result.stdout)
         if d
     }
+
+
+def secret_refs(node):
+    """Return the Secret names of every secretKeyRef and secretRef in node."""
+    if isinstance(node, list):
+        return set().union(*(secret_refs(item) for item in node))
+    if not isinstance(node, dict):
+        return set()
+    names = {
+        node[key]["name"]
+        for key in ("secretKeyRef", "secretRef")
+        if isinstance(node.get(key), dict)
+    }
+    return names.union(*(secret_refs(value) for value in node.values()))
 
 
 def test_health_publisher_holds_no_factory_public_credential():
@@ -246,28 +275,44 @@ def test_mirror_publishes_only_health_json_from_the_health_bucket():
     # The sources own these prefixes; the root sync keeps them.
     assert "  --exclude '/stars-forecast/**' \\\n" in script
     assert "  --exclude '/hikes/**' \\\n" in script
-    assert (
+    assert "  --exclude '/ships/**' \\\n" in script
+    health = (
         'copyto "SRC0:factory-health/health.json" "R2:$R2_BUCKET/health.json" \\\n'
         '    --ignore-times --header-upload "Cache-Control: public, max-age=60"'
-    ) in script
+    )
+    assert health in script
+    # Garage listings around the saved manifest, payloads without deletes,
+    # the saved manifest and health.json, then the deletes.
+    assert (
+        script.index('cat "GARAGE:$GARAGE_BUCKET/manifest.json"')
+        < script.index('\npayloads copy "GARAGE:$GARAGE_BUCKET" "R2:$R2_BUCKET"')
+        < script.index('copyto "$scratch/manifest.json" "R2:$R2_BUCKET/manifest.json"')
+        < script.index(health)
+        < script.index('run delete "R2:$R2_BUCKET" --files-from-raw')
+    )
 
 
 def test_sources_mirror_writer_buckets_under_their_prefixes():
     docs = render()
-    for prefix in ("stars-forecast", "hikes"):
+    for prefix in ("stars-forecast", "hikes", "ships"):
         name = f"factory-public-{prefix}-mirror"
         job = docs["CronJob", name]["spec"]
-        # HOME-478 (Stars) and HOME-477 (Hikes) turned them on.
         assert job["suspend"] is False
         assert job["schedule"] == "* * * * *"
         container = job["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
         env = {e["name"]: e.get("value") for e in container["env"]}
         assert (env["GARAGE_BUCKET"], env["R2_BUCKET"]) == (prefix, "factory-public")
         script = container["command"][2]
+        # Payloads without deletes, then the saved manifest, then the deletes.
+        dest = f'"R2:$R2_BUCKET/{prefix}"'
         assert (
-            f'run sync "GARAGE:$GARAGE_BUCKET" "R2:$R2_BUCKET/{prefix}" \\\n' in script
+            script.index('cat "GARAGE:$GARAGE_BUCKET/latest.json"')
+            < script.index(f'\npayloads copy "GARAGE:$GARAGE_BUCKET" {dest}')
+            < script.index(
+                f'copyto "$scratch/latest.json" "R2:$R2_BUCKET/{prefix}/latest.json"'
+            )
+            < script.index(f"run delete {dest} --files-from-raw")
         )
-        assert f'"R2:$R2_BUCKET/{prefix}/latest.json"' in script
         # Every R2 path in the script stays under the prefix.
         assert script.count('"R2:$R2_BUCKET') == script.count(
             f'"R2:$R2_BUCKET/{prefix}'
@@ -276,3 +321,191 @@ def test_sources_mirror_writer_buckets_under_their_prefixes():
         assert item["spec"]["itemPath"] == (
             "vaults/k8s-homelab/items/factory-r2-public-mirror"
         )
+
+
+def test_cloudflare_exporter_checks_the_health_token_only():
+    # HOME-634: the health token, checked in its own namespace. Only the
+    # mirror CronJobs hold the R2 mirror key, so the exporter reads no R2 key
+    # and no egress IP. The script is the prometheus copy.
+    docs = render()
+    script = Path(
+        os.environ.get(
+            "CLOUDFLARE_EXPORTER",
+            str(
+                HERE.parents[2]
+                / "platform-factory/prometheus/resources/cloudflare_exporter.py"
+            ),
+        )
+    ).read_text()
+    assert (HERE / "files" / "cloudflare_exporter.py").read_text() == script
+    pod = docs["Deployment", "cloudflare-exporter"]["spec"]["template"]["spec"]
+    assert pod["serviceAccountName"] == "cloudflare-exporter"
+    assert pod["automountServiceAccountToken"] is False
+    assert "volumes" not in pod
+    [container] = pod["containers"]
+    assert container["command"] == ["python3", "-B", "-c"]
+    assert container["args"] == [script]
+    assert "envFrom" not in container
+    env = {e["name"]: e for e in container["env"]}
+    # The egress IP never enters the public data namespace.
+    assert "TRACE_URL" not in env
+    assert not [name for name in env if name.startswith("R2_")]
+    refs = sorted(
+        (
+            e["valueFrom"]["secretKeyRef"]["name"],
+            e["valueFrom"]["secretKeyRef"]["key"],
+            e["valueFrom"]["secretKeyRef"].get("optional", False),
+        )
+        for e in env.values()
+        if "valueFrom" in e
+    )
+    assert refs == [("factory-health-cloudflare", "api-token", True)]
+    assert env["API_URL"]["value"] == (
+        "https://api.cloudflare.com/client/v4/accounts/"
+        "7c56b458cd657d96b095c63d181c051f/workers/scripts/jomcgi-site/deployments"
+    )
+    # Only the mirror CronJobs hold the R2 mirror key.
+    r2_secrets = {
+        name
+        for (kind, name), doc in docs.items()
+        if kind == "OnePasswordItem"
+        and doc["spec"]["itemPath"]
+        == "vaults/k8s-homelab/items/factory-r2-public-mirror"
+    }
+    assert r2_secrets == {f"{mirror}-r2" for mirror in MIRRORS}
+    holders = {key for key, doc in docs.items() if secret_refs(doc) & r2_secrets}
+    assert holders == {("CronJob", mirror) for mirror in MIRRORS}
+    policy = docs["CiliumNetworkPolicy", "cloudflare-exporter"]["spec"]
+    assert policy["enableDefaultDeny"] == {"ingress": True, "egress": True}
+    assert "ingress" not in policy
+    assert policy["egress"] == [
+        {
+            "toFQDNs": [{"matchName": "api.cloudflare.com"}],
+            "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
+        }
+    ]
+
+
+def payload(root, name, value):
+    """Write a payload the way the Ships publisher does: its digest in its key."""
+    body = json.dumps(value).encode()
+    key = f"{name}-{hashlib.sha256(body).hexdigest()}.json"
+    path = root / key
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body)
+    return key
+
+
+def generation(root, lat):
+    track = payload(root, "tracks/111", {"mmsi": "111", "track": [{"lat": lat}]})
+    heat = payload(root, "heat", {"cells": [[1, 2, 3]]})
+    snapshot = payload(root, "snapshot", {"vessels": [{"mmsi": "111", "track": track}]})
+    (root / "latest.json").write_text(json.dumps({"snapshot": snapshot, "heat": heat}))
+    return {snapshot, heat, track}
+
+
+def resolve(prefix):
+    """Read the generation that a public reader of the prefix sees.
+
+    Every key it names must exist with the bytes that its digest names.
+    """
+    manifest = json.loads((prefix / "latest.json").read_text())
+    keys = {manifest["snapshot"], manifest["heat"]}
+    assert (prefix / manifest["snapshot"]).exists(), (
+        "latest.json names a missing snapshot"
+    )
+    snapshot = json.loads((prefix / manifest["snapshot"]).read_bytes())
+    keys |= {v["track"] for v in snapshot["vessels"]}
+    for key in keys:
+        assert (prefix / key).exists(), f"latest.json names missing {key}"
+        digest = key.rsplit("-", 1)[1].removesuffix(".json")
+        assert hashlib.sha256((prefix / key).read_bytes()).hexdigest() == digest, key
+    return keys
+
+
+def test_ships_mirror_survives_an_interrupted_copy(tmp_path):
+    job = render()["CronJob", "factory-public-ships-mirror"]
+    container = job["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
+    garage, r2 = tmp_path / "garage", tmp_path / "r2"
+    bucket, prefix = garage / "ships", r2 / "factory-public" / "ships"
+    bucket.mkdir(parents=True)
+    prefix.mkdir(parents=True)
+    # The library's directory-backed rclone stand-in (fake_rclone.py).
+    binary = tmp_path / "bin" / "rclone"
+    binary.parent.mkdir()
+    binary.write_text(
+        "#!"
+        + shutil.which("python3")
+        + "\n"
+        + Path(os.environ["FAKE_RCLONE"]).read_text()
+    )
+    binary.chmod(0o755)
+
+    def mirror(r2_root, budget=None):
+        state = tempfile.mkdtemp(dir=tmp_path)
+        env = {
+            **os.environ,
+            **{var["name"]: var["value"] for var in container["env"] if "value" in var},
+            "FAKE_REMOTES": json.dumps({"GARAGE": str(garage), "R2": str(r2_root)}),
+            "FAKE_STATE": state,
+            "PATH": str(binary.parent) + os.pathsep + os.environ["PATH"],
+        }
+        env["RCLONE_CONFIG_R2_ENDPOINT"] = "https://" + env["R2_HOST"]
+        if budget is not None:
+            env["FAKE_BUDGET"] = str(budget)
+        result = subprocess.run(container["command"], env=env, capture_output=True)
+        headers = Path(state) / "headers.json"
+        return result, json.loads(headers.read_text()) if headers.exists() else {}
+
+    def interrupt_at_every_step(expected):
+        """Stop a run before each call and between each object write or delete.
+
+        Each run starts from the same R2 state. Readers always resolve a
+        complete generation: the one before the run, or the new one.
+        """
+        budget = 0
+        while True:
+            attempt = Path(tempfile.mkdtemp(dir=tmp_path)) / "r2"
+            shutil.copytree(r2, attempt)
+            result, _ = mirror(attempt, budget)
+            assert resolve(attempt / "factory-public" / "ships") in expected, budget
+            if result.returncode == 0:
+                return budget
+            assert b"interrupted" in result.stderr, result.stderr
+            budget += 1
+
+    first = generation(bucket, 48.5)
+    assert mirror(r2)[0].returncode == 0
+    assert resolve(prefix) == first
+
+    # The writer publishes a second generation and keeps the first one's
+    # objects. The mirror stops after one transfer.
+    second = generation(bucket, 48.6)
+    assert mirror(r2, budget=6)[0].returncode != 0
+    # Readers still get the first generation, every object complete.
+    assert resolve(prefix) == first
+    assert interrupt_at_every_step([first, second]) > 0
+
+    # A long outage: the writer's grace period ends and it removes the
+    # objects that only the first generation names. R2 still serves them
+    # under its first latest.json, so the mirror deletes them only after it
+    # replaces that manifest.
+    for key in first - second:
+        (bucket / key).unlink()
+    # Two Garage listings around the manifest lookup and cat, the copy and
+    # its upload of the second track, the R2 listing, copyto and its upload,
+    # then the delete and its two deletes: 12 steps.
+    assert interrupt_at_every_step([first, second]) == 12
+
+    # Recovery: the next complete run catches up.
+    result, headers = mirror(r2)
+    assert result.returncode == 0
+    assert resolve(prefix) == second
+    stored = {p.relative_to(prefix).as_posix() for p in prefix.rglob("*.json")}
+    assert stored == second | {"latest.json"}
+    assert headers[str(prefix / "latest.json")] == ["Cache-Control: public, max-age=60"]
+    _, headers = mirror(tmp_path / "fresh")
+    for key in second:
+        assert headers[str(tmp_path / "fresh" / "factory-public" / "ships" / key)] == [
+            "Cache-Control: public, max-age=31536000, immutable"
+        ]

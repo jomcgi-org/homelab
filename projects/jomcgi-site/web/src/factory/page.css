@@ -1,8 +1,16 @@
+.factory {
+  font: 1rem/1.6 var(--font-family-body);
+  overflow-wrap: anywhere;
+}
 .factory * {
   box-sizing: border-box;
 }
+.factory :where(section, article, div, figure) {
+  min-width: 0;
+}
 .factory a {
   color: var(--color-text-accent);
+  text-decoration-thickness: 1px;
   text-underline-offset: 0.2em;
 }
 .factory a:hover {
@@ -28,132 +36,225 @@
 .factory .skip-link:focus {
   transform: translateY(0);
 }
-.factory nav,
-.factory .trail {
+
+/* Type */
+.factory p {
+  margin-block: 0.75rem;
+  font-size: 1rem;
+}
+.factory .factory-footer p {
+  font-size: inherit;
+}
+.factory h2 {
+  font-size: 1.5rem;
+  line-height: 1.3;
+  margin: 0;
+}
+.factory h3 {
+  font-size: 1.125rem;
+  line-height: 1.35;
+  margin: 0;
+}
+.factory .eyebrow,
+.factory .stats dt,
+.factory .state-group > h3 {
+  font: 0.75rem/1.5 var(--font-family-body);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+.factory time,
+.factory .progress-label,
+.factory .record-parent,
+.factory figure p {
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.factory .key {
+  font: 0.8125rem/1.95 var(--font-family-code);
+  color: var(--color-text-secondary);
+}
+
+/* Notices and missing records */
+.factory .notice,
+.factory .unavailable,
+.factory .withheld {
+  padding: 0.6rem 0.75rem;
+  font-size: 0.875rem;
+  white-space: pre-wrap;
+  background: var(--color-background-muted);
+  border-left: 2px solid var(--color-border-emphasized);
+}
+
+/* Breadcrumb and transcript jumps */
+.factory nav {
   display: flex;
-  gap: 0.5rem 1.5rem;
   flex-wrap: wrap;
+  gap: 0 0.75rem;
+  font-size: 0.875rem;
 }
 .factory nav a {
   max-width: 100%;
 }
-.factory .notice,
-.factory .section-band,
-.factory figcaption {
-  background: var(--color-background-muted);
-  padding: 0.6rem 0.75rem;
+.factory .trail a + a::before,
+.factory .jump a + a::before {
+  content: "/";
+  margin-right: 0.75rem;
+  color: var(--color-text-secondary);
 }
-.factory .notice {
-  font-size: 0.875rem;
-  margin-bottom: 2rem;
+.factory nav a,
+.factory .more,
+.factory-footer > a {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
 }
+
+/* Page lead */
 .factory .lead {
-  margin-block: 1rem 2.5rem;
+  margin-block: 1.5rem 3rem;
+  max-width: 46rem;
 }
 .factory .lead h1 {
-  font-size: clamp(1.8rem, 5vw, 2.7rem);
-  line-height: 1.15;
-  margin-block: 0.75rem;
+  font-size: clamp(2rem, 5vw, 3rem);
+  line-height: 1.1;
+  margin-block: 0.5rem 1rem;
 }
-.factory h2 {
-  font-size: 1.35rem;
-  line-height: 1.35;
-}
-.factory h3 {
-  font-size: 1.05rem;
-}
-.factory p {
-  margin-block: 0.75rem;
+.factory .lead .eyebrow {
+  margin: 0;
 }
 .factory .narrative {
-  max-width: 48rem;
+  max-width: 46rem;
   white-space: pre-wrap;
 }
+.factory .lead .narrative p:first-child {
+  font-size: 1.125rem;
+}
+
+/* A section starts at a rule; the heading names it. */
+.factory #factory-content > section {
+  margin-block: 3.5rem;
+  border-top: 1px solid var(--color-border-emphasized);
+  padding-top: 0.75rem;
+}
+
+/* State: a square marker and a word */
+.factory .state {
+  display: inline-block;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.factory .state::before {
+  content: "";
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.5rem;
+  background: var(--color-accent);
+}
+.factory .state[data-state="Shipped"] {
+  color: var(--color-blog-success);
+}
+.factory .state[data-state="Stopped"] {
+  color: var(--color-text-secondary);
+}
+.factory .state[data-state="Shipped"]::before,
+.factory .state[data-state="Stopped"]::before {
+  background: currentcolor;
+}
+
+/* Goal chapters */
+.factory .chapters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+  gap: 0 3rem;
+}
 .factory .chapter {
-  margin-block: 1.5rem;
-  border-top: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  padding-block: 1.25rem 0.5rem;
+  border-bottom: 1px solid var(--color-border);
 }
 .factory .section-band {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
-  gap: 0.5rem 1rem;
+  gap: 0.25rem 1rem;
 }
-.factory .section-band > a {
-  font-weight: 600;
+.factory .progress {
+  margin-top: auto;
+  padding-top: 0.5rem;
 }
-.factory .state {
-  display: inline-block;
-  font-size: 0.875rem;
-  font-weight: 600;
-}
-.factory .state::before {
-  content: "";
-  display: inline-block;
-  width: 0.4rem;
-  height: 0.4rem;
-  margin-right: 0.5rem;
-  background: currentColor;
-}
-.factory .state[data-state="Shipped"] {
-  color: var(--color-text-accent);
-}
-.factory .state[data-state="Stopped"] {
-  color: var(--color-text-secondary);
+.factory .progress p {
+  margin-block: 0.4rem 0;
 }
 .factory progress {
   display: block;
   width: 100%;
-  height: 0.5rem;
+  height: 4px;
+  border: 0;
+  appearance: none;
+  background: var(--color-border);
   accent-color: var(--color-accent);
 }
-.factory .progress-label {
-  font-size: 0.875rem;
+.factory progress::-webkit-progress-bar {
+  background: var(--color-border);
 }
-.factory .more {
-  margin-top: 0.5rem;
+.factory progress::-webkit-progress-value {
+  background: var(--color-accent);
 }
+.factory progress::-moz-progress-bar {
+  background: var(--color-accent);
+}
+
+/* Numbers */
 .factory .stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
-  gap: 1.5rem;
-  margin-block: 1.5rem 2rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+  gap: 1.5rem 2rem;
+  margin-block: 1.5rem 3rem;
 }
 .factory .stats dd {
-  font-size: 1.8rem;
   margin: 0;
+  font: 2.5rem/1.15 var(--font-family-heading);
   font-variant-numeric: tabular-nums;
 }
 .factory .stats dd span {
-  font-size: 0.875rem;
+  font: 0.875rem var(--font-family-body);
+  color: var(--color-text-secondary);
 }
 .factory .charts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
-  gap: 1.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: 2rem;
 }
 .factory .chart {
   margin: 0;
-  min-width: 0;
+  max-width: 34rem;
 }
 .factory figcaption {
+  font-size: 0.875rem;
   font-weight: 600;
-  border-top: 1px solid var(--color-border);
 }
-.factory .chart svg {
+.factory .burn-up-plot {
   display: block;
   width: 100%;
-  max-height: 15rem;
-  margin-block: 0.75rem;
+  margin-block: 0.5rem 0;
 }
-.factory .chart svg text {
+.factory .burn-up-plot text {
   fill: var(--color-text-primary);
   font-size: 11px;
   font-family: var(--font-family-body);
 }
 .factory .axis {
   stroke: var(--color-border-emphasized);
+}
+.factory .grid {
+  stroke: var(--color-border);
+  stroke-dasharray: 2 3;
 }
 .factory .bar {
   fill: var(--color-accent);
@@ -166,13 +267,15 @@
 }
 .factory .scope-line {
   stroke: var(--color-text-secondary);
+  stroke-width: 1.5;
   stroke-dasharray: 5 4;
 }
 .factory summary {
   display: list-item;
   list-style-position: inside;
-  padding-block: 0.5rem;
+  padding-block: 0.6rem;
   cursor: pointer;
+  font-size: 0.875rem;
   color: var(--color-text-accent);
 }
 .factory table {
@@ -184,134 +287,208 @@
 .factory caption {
   text-align: left;
   padding-block: 0.5rem;
+  color: var(--color-text-secondary);
 }
 .factory th,
 .factory td {
   padding: 0.5rem 0.25rem;
   border-bottom: 1px solid var(--color-border);
   text-align: left;
+  font-weight: 400;
   font-variant-numeric: tabular-nums;
 }
+.factory thead th {
+  font-weight: 600;
+}
+
+/* Record lists: key, title, goal, state on one line */
 .factory .records {
   list-style: none;
+  margin: 0.5rem 0 0;
   padding: 0;
 }
 .factory .records li {
-  padding-block: 0.75rem;
-  border-bottom: 1px solid var(--color-border);
-}
-.factory .records li > div {
   display: flex;
   flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 0.5rem 1rem;
+  align-items: center;
+  gap: 0 1.5rem;
+  border-bottom: 1px solid var(--color-border);
+}
+.factory .record-row {
+  display: contents;
+}
+.factory .record {
+  flex: 1 1 22rem;
+  display: grid;
+  grid-template-columns: 6rem 1fr;
+  align-items: baseline;
+  padding-block: 0.6rem;
+  min-height: 44px;
 }
 .factory .record-parent {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
-  font-size: 0.875rem;
 }
+.factory .records .state {
+  order: 1;
+  min-width: 8.5rem;
+  text-align: right;
+}
+.factory .records .unavailable {
+  flex-basis: 100%;
+  margin-top: 0;
+}
+/* A goal page groups its issues by state, so each row repeats neither. */
 .factory .state-group {
-  margin-block: 1.5rem;
+  margin-top: 1.75rem;
 }
+.factory .state-group .state,
+.factory .state-group .record-parent {
+  display: none;
+}
+
+/* Timeline: time, rail, event. Milestones carry a marker. */
 .factory .timeline {
   list-style: none;
+  margin: 1rem 0 0;
   padding: 0;
 }
 .factory .timeline > li {
-  border-left: 2px solid var(--color-border);
-  padding: 0 0 1.5rem 1rem;
+  display: grid;
+  grid-template-columns: 12.5rem 1fr;
 }
-.factory time {
-  font-size: 0.875rem;
-  font-variant-numeric: tabular-nums;
+.factory .timeline time {
+  padding-top: 0.7rem;
+}
+.factory .event {
+  position: relative;
+  border-left: 1px solid var(--color-border-emphasized);
+  padding: 0 0 0.75rem 1.5rem;
+}
+.factory .event::before {
+  content: "";
+  position: absolute;
+  top: 1.1rem;
+  left: -0.3rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  background: var(--color-accent);
+}
+.factory [data-kind="session"] .event::before {
+  left: -0.15rem;
+  width: 0.25rem;
+  height: 0.25rem;
+  top: 1.25rem;
+  background: var(--color-border-emphasized);
+}
+.factory .timeline > li:last-child .event {
+  padding-bottom: 0;
 }
 .factory .event-heading {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem 1rem;
+  align-items: center;
+  gap: 0 1rem;
+  min-height: 44px;
 }
-.factory .event-heading > a,
-.factory .records li > div > a {
+.factory .event-heading > a {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
 }
+.factory .event p {
+  margin-block: 0 0.5rem;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+}
+.factory [data-kind="session"] .event-heading {
+  font-size: 0.875rem;
+}
+
+/* Transcript */
+.factory #transcript {
+  max-width: 50rem;
+}
 .factory .turn {
-  margin-block: 2rem;
+  margin-block: 0;
+  padding-block: 1rem 1.25rem;
+  border-top: 1px solid var(--color-border);
   scroll-margin-top: 1rem;
 }
 .factory .turn .section-band h2 {
-  font-size: 1rem;
-  font-family: var(--font-family-body);
+  font: 600 0.75rem/1.5 var(--font-family-body);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
-.factory .transcript-text,
-.factory .unavailable,
-.factory .withheld {
+.factory .transcript-text {
   white-space: pre-wrap;
 }
-.factory .unavailable,
-.factory .withheld {
-  padding: 0.75rem;
-  background: var(--color-background-muted);
-  border-left: 2px solid var(--color-border-emphasized);
-}
 .factory .tool {
-  border-bottom: 1px solid var(--color-border);
+  border: 1px solid var(--color-border);
+  padding-inline: 0.75rem;
+  margin-top: 0.5rem;
+}
+.factory .tool summary {
+  font-family: var(--font-family-code);
+  font-size: 0.8125rem;
+}
+.factory .tool h3,
+.factory .diff h3 {
+  font: 600 0.75rem/1.5 var(--font-family-body);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+.factory .diff {
+  margin-top: 1rem;
 }
 .factory pre {
-  font:
-    0.8125rem/1.65 ui-monospace,
-    SFMono-Regular,
-    Consolas,
-    monospace;
+  font: 0.8125rem/1.65 var(--font-family-code);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
   background: var(--color-background-muted);
   padding: 0.75rem;
-  margin-block: 0.75rem;
+  margin-block: 0.5rem 0.75rem;
   max-width: 100%;
 }
 .factory .addition {
-  color: var(--color-text-accent);
-}
-.factory .deletion {
-  color: var(--color-text-primary);
-}
-.factory {
-  font: 1rem/1.6 var(--font-family-body);
-  overflow-wrap: anywhere;
-}
-.factory :where(section, article, div, figure) {
-  min-width: 0;
-}
-.factory #factory-content > section {
-  margin-block: 2.5rem;
-}
-.factory nav a,
-.factory .more,
-.factory-footer > a {
-  min-height: 44px;
-  display: inline-flex;
-  align-items: center;
-}
-.factory-footer {
-  border-top: 1px solid var(--color-border);
-  padding-block: 1rem;
-  margin-top: 2rem;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 1rem;
-}
-.factory .addition {
+  color: var(--color-blog-success);
   font-weight: 600;
 }
+.factory .deletion {
+  color: var(--color-blog-warning);
+}
+
+.factory-footer {
+  border-top: 1px solid var(--color-border-emphasized);
+  padding-block: 0.5rem;
+  margin-top: 3.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0 1rem;
+  font-size: 0.875rem;
+}
+
 /* Wrap transcripts and table cells inside the phone gutters, without clipping. */
 @media (max-width: 40rem) {
   .site:has(.factory) {
     padding-inline: 16px;
+  }
+  .factory .record {
+    grid-template-columns: 1fr;
+  }
+  .factory .records .state {
+    margin-left: auto;
+  }
+  .factory .timeline > li {
+    grid-template-columns: 1fr;
+  }
+  .factory .timeline time {
+    padding: 0.5rem 0 0 1.5rem;
+    border-left: 1px solid var(--color-border-emphasized);
   }
 }

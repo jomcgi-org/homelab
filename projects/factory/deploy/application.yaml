@@ -23,7 +23,7 @@ spec:
   sources:
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: factory
-      targetRevision: 0.88.16
+      targetRevision: 0.112.10
       helm:
         releaseName: factory
         # The chart's PreSync hook is the CRDs' only applier, so ArgoCD never
@@ -89,7 +89,17 @@ spec:
     - group: ""
       kind: Secret
       namespace: factory
+      name: factory-itsaplan-agent-homelab-planner
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      namespace: factory
       name: factory-itsaplan-agent-factory-reviewer
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      namespace: factory
+      name: factory-itsaplan-agent-factory-storyboard
       jsonPointers: [/data]
     - group: ""
       kind: Secret

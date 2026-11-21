@@ -16,6 +16,13 @@ spec:
   ingress:
     - fromEndpoints:
         - matchLabels:
+            app.kubernetes.io/name: mcp-grafana
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
             k8s:io.kubernetes.pod.namespace: edge
             gateway.envoyproxy.io/owning-gateway-name: edge
             gateway.envoyproxy.io/owning-gateway-namespace: edge
@@ -24,6 +31,11 @@ spec:
             - port: "3000"
               protocol: TCP
   egress:
+    - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: prometheus

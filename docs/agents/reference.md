@@ -143,8 +143,6 @@ Follow [docs/writing.md](../writing.md) and
   5. **Out of scope:** name the excluded work.
 - **Flows and state machines:** use a small diagram in a code block.
 - **Done when:** create one checklist with this exact title. Each item states one check a reviewer can verify.
-- **Work larger than one PR:** create sub-tasks, one PR each.
-- **Order between tickets:** use `blocked_by` links. Do not write instructions such as "delegate after HOME-X" in prose.
 - **Long design or reference text:** put the full record in an itsaplan document. Summarize required design details in the description and link the document.
 - **Logs and screenshots:** add attachments. State the relevant errors, reproduction steps and visible results in **Problem**.
 - **Joe's decisions:** record each in a comment by `joe` or `joesessions`. State the decision under **Decisions** and link the comment.
@@ -155,23 +153,41 @@ context in the description and use **Done when** for the checks. Links preserve
 the source records for human readers. If the required context exceeds the ticket
 limits, split the work into smaller sub-tasks before delegation.
 
+### Initiatives and subtasks
+
+Use an initiative for a measurable outcome that needs several HOME issues.
+Add each related issue to the initiative in itsaplan. Use native subtasks for
+steps with a separate owner, start time, or acceptance decision. Scope each
+implementation subtask to one PR. Keep steps that one agent finishes in one run
+in its `Done when` checklist. itsaplan supports one level of subtasks within a
+project.
+
+```mermaid
+flowchart TD
+  I["Initiative · CI/CD improvements"] -->|contains| P["Issue · Move linting out of Bazel"]
+  P -->|subtask| A["Capture baseline and ship the change"]
+  P -->|subtask| B["Assess CI performance after 24 hours"]
+  A -->|blocks| B
+```
+
+Use `blocked_by` for prerequisites so the connector can enforce run order.
+When the subtasks carry all the work, leave the parent undelegated. Move the
+parent to Done when the subtasks finish and the acceptance evidence is recorded.
+
+For the linting example, record the rollout timestamp after the new CI path
+runs and the required lint checks pass. Compare PR check duration and lint
+coverage with the baseline. Record the verdict on the assessment subtask.
+Explain the 24-hour window on the issue because the
+[evolution contract](evolution.md#improvements-earn-their-place) defaults to
+72 hours.
+
 ### API access
 
-Use the node-1 session identity in the Authentik group `factory-kube-sessions`.
-The operator adds membership in the Authentik admin UI. The admin certificate
-in `~/.kube/factory.yaml` is for break-glass use only.
-
-Install the [factory kubelogin configuration](../../projects/factory-cluster/README.md#kubectl-through-authentik)
-as `~/.kube/factory-sessions.yaml`. Give its exec plugin a separate
-`--token-cache-dir` with an absolute path under the node-1 user's home directory.
-Sign in with the dedicated non-admin account. From the repository root, confirm
-the username and groups, then check permissions against the live API inventory:
-
-```sh
-export KUBECONFIG=~/.kube/factory-sessions.yaml
-kubectl auth whoami
-bash projects/platform-factory/kube-access/check-session-access.sh
-```
+Use the [local node-1 session kubeconfig](../../projects/factory-cluster/README.md#kubectl-from-node-1).
+Confirm `kubectl auth whoami` reports
+`system:serviceaccount:kube-system:factory-node1-sessions` before accessing the
+tracker. During a rollback, use the dedicated OIDC sessions account only
+after the rollback identity and permission checks pass.
 
 - Port-forward the API: `KUBECONFIG=~/.kube/factory-sessions.yaml kubectl -n factory
   port-forward pod/factory-itsaplan-session-forward-0 13000:3000`.
@@ -189,7 +205,8 @@ bash projects/platform-factory/kube-access/check-session-access.sh
 - Read the board with `GET /projects/HOME/issues/board`; user IDs are under
   `assignees` in `GET /projects/HOME`.
 - Write with `POST /projects/HOME/issues` (`title`, `description`,
-  `columnId`, `priority`, `assigneeUserId`, `delegateUserId`),
+  `columnId`, `priority`, `assigneeUserId`, `delegateUserId`, `initiativeId`,
+  `parentId`),
   `PATCH /issues/<id>`, `POST /issues/<id>/comments` (`body`) and
   `POST /issues/<id>/links` (`targetIssueId`, `kind`: `blocks`,
   `blocked_by`, `relates`, `duplicates`).
@@ -210,11 +227,26 @@ issues are skipped. Removing the label before the start cancels the
 schedule. A stored operator stop still holds the issue. Open blockers do
 not delay a scheduled start (HOME-55).
 
+For a full observation window, calculate its end from verified rollout.
+If the end falls after midnight UTC, set the deferred start date to the
+following UTC date. To run earlier on the day the window ends, delegate after
+its end time.
+
 ## Human handoff
 
 A HOME issue in Todo or In Progress that is assigned to Joe with no delegate
 is Joe's: no run starts on it, and the "Needs Joe" view
 (`/factory/HOME/view/1`) lists it.
+
+Give an escalation two to four numbered choices in its description. Put the
+recommended choice first and end it with `(Recommended)`. Use one line per item.
+
+```markdown
+## Choices
+
+1. Ship the smaller change (Recommended)
+2. Wait for the full migration
+```
 
 To take delegated work from the factory, stop it with
 `connector cancel <ISSUE> --by joe`, or move the issue to Canceled and leave

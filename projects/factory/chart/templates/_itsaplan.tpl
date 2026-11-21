@@ -22,22 +22,33 @@ http://{{ include "factory.itsaplanName" . }}-api.{{ .Values.itsaplan.namespace 
 {{/* The Secret holding one bootstrap agent's API key. */}}
 {{- define "factory.itsaplanAgentSecret" -}}factory-itsaplan-agent-{{ . }}{{- end }}
 
-{{/* The reviewer identity is mandatory when enabled, independent of user agent lists. */}}
+{{/*
+The reviewer identity is mandatory when enabled, independent of user agent
+lists. A readOnly agent gets only work_items read in the bound project, and no
+triggers (files/itsaplan/bootstrap.py, verify_read_only).
+*/}}
 {{- define "factory.itsaplanAgents" -}}
 {{- $agents := .Values.itsaplan.bootstrap.agents | default list -}}
 {{- range $agents -}}
+{{- if eq (lower .username) "homelab-planner" -}}
+{{- fail "homelab-planner is reserved for scheduled planning" -}}
+{{- end -}}
 {{- if eq (lower .username) "intsec-sync" -}}
 {{- fail "intsec-sync is reserved for Semgrep" -}}
 {{- end -}}
 {{- if eq (lower .username) "factory-reviewer" -}}
 {{- fail "factory-reviewer is reserved for the chart's read-only reviewer identity" -}}
 {{- end -}}
+{{- if and .readOnly (or .triggerOnAssign .triggerOnMention) -}}
+{{- fail (printf "itsaplan.bootstrap.agents: readOnly agent %s cannot have triggers" .username) -}}
+{{- end -}}
 {{- end -}}
 {{- if .Values.reviewer.enabled -}}
-{{- $agents = append $agents (dict "username" "factory-reviewer" "name" "Factory reviewer" "triggerOnAssign" false "triggerOnMention" false) -}}
+{{- $agents = append $agents (dict "username" "factory-reviewer" "name" "Factory reviewer" "triggerOnAssign" false "triggerOnMention" false "readOnly" true) -}}
 {{- end -}}
+{{- $agents = append $agents (dict "username" "homelab-planner" "name" "Homelab planner" "readOnly" true) -}}
 {{- if .Values.semgrepSync.enabled -}}
-{{- $agents = append $agents (dict "username" "intsec-sync" "name" "INTSEC sync") -}}
+{{- $agents = append $agents (dict "username" "intsec-sync" "name" "factory-semgrep-sync") -}}
 {{- end -}}
 {{- toJson $agents -}}
 {{- end -}}

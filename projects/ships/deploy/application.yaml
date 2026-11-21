@@ -12,12 +12,23 @@ spec:
   source:
     repoURL: ghcr.io/jomcgi/homelab/charts
     chart: ships
-    targetRevision: 0.5.11
+    targetRevision: 0.17.15
     helm:
       releaseName: ships
   destination:
     server: https://kubernetes.default.svc
     namespace: ships
+  # garage-init owns credential bytes in the kept claim Secret, and
+  # ships-publisher-login-generate owns the publisher's password.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: ships-ships-s3
+      jsonPointers: [/data]
+    - group: ""
+      kind: Secret
+      name: ships-publisher-login
+      jsonPointers: [/data]
   syncPolicy:
     automated:
       prune: true
@@ -25,6 +36,7 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
+      - RespectIgnoreDifferences=true
     retry:
       limit: 5
       backoff:

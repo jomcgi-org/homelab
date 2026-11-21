@@ -1,0 +1,8 @@
+invariants:
+  - id: KAGENT-PG-1
+    statement: kagent-pg disables superuser access and provisions application roles through CNPG.
+    mechanism:
+      - projects/platform-factory/kagent-postgres/resources/cluster.yaml
+      - projects/platform-factory/kagent-postgres/resources/setup.yaml
+    test: //projects/platform-factory/kagent-postgres/resources:setup_test
+    state: live

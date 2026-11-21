@@ -128,6 +128,14 @@ def test_deploy_values_turn_the_connector_on() -> None:
     docs = _render(enable=False)
     assert _broker_subjects(docs) == [_SUBJECT]
     assert _config(docs) == _config(_render())
+    chart_values = yaml.safe_load((_CHART_DIR / "values.yaml").read_text())
+    schedules = _config(docs)["plannerSchedules"]
+    assert schedules == chart_values["connector"]["plannerSchedules"]
+    assert {job["name"]: job["ceiling"] for job in schedules} == {
+        "delivery-health": "delegate",
+        "trust-drift": "delegate",
+        "documentation-drift": "delegate",
+    }
     _in(docs, "ClusterRoleBinding", None, "kagent-kagent-invocation-auth")
 
 
@@ -156,6 +164,32 @@ def test_broker_accounting_secret_is_required() -> None:
         _render(["broker.accounting.secretName="])
 
 
+def test_reviewed_planner_schedule_reaches_the_connector(tmp_path: Path) -> None:
+    schedule = {
+        "name": "delivery-health",
+        "namespace": "homelab:factory",
+        "ceiling": "backlog",
+        "minInterval": "3h",
+        "cooldown": "72h",
+        "perRun": 2,
+        "issueTitle": "Check delivery health",
+        "instructions": "Verify the finding.",
+    }
+    baseline = _render()
+    override = tmp_path / "schedules.yaml"
+    override.write_text(yaml.safe_dump({"connector": {"plannerSchedules": [schedule]}}))
+    configured = [
+        d
+        for d in yaml.safe_load_all(_helm(_CHART_DIR, ["--values", str(override)]))
+        if d
+    ]
+    assert _config(configured)["plannerSchedules"] == [schedule]
+    assert (
+        _pod(baseline)["metadata"]["annotations"]["checksum/config"]
+        != _pod(configured)["metadata"]["annotations"]["checksum/config"]
+    )
+
+
 def test_disabled_renders_byte_for_byte_without_the_connector() -> None:
     # Off, the connector's templates render nothing at all.
     with tempfile.TemporaryDirectory() as tmp:
@@ -175,6 +209,20 @@ def test_disabled_renders_byte_for_byte_without_the_connector() -> None:
             "reviewer.goalReasons.enabled=false",
         ]
         assert _helm(_CHART_DIR, off) == _helm(bare, off)
+
+
+_TRACE_ENDPOINT = "http://otel-collector.otel-collector.svc.cluster.local:4317"
+
+
+def test_connector_trace_export_uses_the_factory_gateway() -> None:
+    for enable in (True, False):
+        env = _env(_render(enable=enable))
+        assert env["OTEL_SERVICE_NAME"] == "factory-connector"
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == _TRACE_ENDPOINT
+
+    off = _env(_render(["connector.traceEndpoint="]))
+    assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in off
+    assert "OTEL_SERVICE_NAME" not in off
 
 
 def test_deploy_values_render_is_locked() -> None:
@@ -234,15 +282,21 @@ def test_tokens_are_bound_to_kagent_and_the_broker() -> None:
         for v in _pod(docs)["spec"]["volumes"]:
             for s in v.get("projected", {}).get("sources", []):
                 if "serviceAccountToken" in s:
-                    out[v["name"]] = s["serviceAccountToken"]["audience"]
+                    out[v["name"]] = s["serviceAccountToken"].get(
+                        "audience", "apiserver"
+                    )
         return out
 
     # Without the GitHub App the broker mints nothing, so delivery is off.
     docs = _render(["broker.githubApp.enabled=false"])
-    assert audiences(docs) == {"kagent-token": "kagent-invocation"}
+    assert audiences(docs) == {
+        "decision-api": "apiserver",
+        "kagent-token": "kagent-invocation",
+    }
     assert "FACTORY_CONNECTOR_BROKER_URL" not in _env(docs)
     docs = _render(["broker.githubApp.enabled=true"])
     assert audiences(docs) == {
+        "decision-api": "apiserver",
         "kagent-token": "kagent-invocation",
         "broker-token": "factory-broker",
     }
@@ -347,7 +401,7 @@ def test_itsaplan_keys_come_from_the_bootstrap_secrets() -> None:
         {
             "key": "homelab-codex",
             "apiKeyFile": "/var/run/secrets/factory-itsaplan/homelab-codex",
-            "concurrency": 7,
+            "concurrency": 10,
         }
     ]
 
@@ -454,7 +508,9 @@ def test_policy_egress_only_to_its_peers() -> None:
     def policy(docs: list[dict[str, Any]]) -> dict[str, Any]:
         return _in(docs, "CiliumNetworkPolicy", _NS, "factory-connector")["spec"]
 
-    docs = _render(["broker.githubApp.enabled=false"])
+    docs = _render(
+        ["broker.githubApp.enabled=false", f"connector.traceEndpoint={_TRACE_ENDPOINT}"]
+    )
     spec = policy(docs)
     assert (
         spec["endpointSelector"]["matchLabels"].items()
@@ -464,8 +520,22 @@ def test_policy_egress_only_to_its_peers() -> None:
     peers = [
         (r.get("toEndpoints"), r.get("toFQDNs"), r["toPorts"][0]["ports"][0]["port"])
         for r in spec["egress"]
+        if r != {"toEntities": ["kube-apiserver"]}
     ]
     assert peers == [
+        (
+            [
+                {
+                    "matchLabels": {
+                        "k8s:io.kubernetes.pod.namespace": "otel-collector",
+                        "app.kubernetes.io/name": "otel-collector",
+                        "app.kubernetes.io/instance": "otel-collector",
+                    }
+                }
+            ],
+            None,
+            "4317",
+        ),
         (
             [
                 {
@@ -511,7 +581,9 @@ def test_policy_egress_only_to_its_peers() -> None:
     ]
     spec = policy(_render(["broker.githubApp.enabled=true"]))
     peers = [
-        (r.get("toFQDNs"), r["toPorts"][0]["ports"][0]["port"]) for r in spec["egress"]
+        (r.get("toFQDNs"), r["toPorts"][0]["ports"][0]["port"])
+        for r in spec["egress"]
+        if r != {"toEntities": ["kube-apiserver"]}
     ]
     assert (None, "8081") in peers
     assert ([{"matchName": "api.github.com"}], "443") in peers
@@ -562,7 +634,12 @@ def test_peers_admit_the_connector_pod() -> None:
         ),
         (
             "connector.coordinator=stranger",
-            "stranger is not in itsaplan.bootstrap.agents",
+            "stranger is not a writable agent in itsaplan.bootstrap.agents",
+        ),
+        (
+            # A readOnly agent's key can never claim runs or write comments.
+            "connector.coordinator=factory-storyboard",
+            "factory-storyboard is not a writable agent",
         ),
         ("connector.bindings.homelab.owner=x", "owner"),
         ("connector.bindings.homelab.maxRebaseRounds=-1", "maxRebaseRounds"),
@@ -761,7 +838,8 @@ def test_landing_status_access() -> None:
     assert status_service["metadata"]["namespace"] == "factory"
     assert status_service["spec"]["selector"] == connector_labels
     assert status_service["spec"]["ports"] == [
-        {"name": "status", "port": 8082, "targetPort": 8082, "protocol": "TCP"}
+        {"name": "status", "port": 8082, "targetPort": 8082, "protocol": "TCP"},
+        {"name": "run-phases", "port": 8085, "targetPort": 8085, "protocol": "TCP"},
     ]
     status_policy = _in(docs, "CiliumNetworkPolicy", _NS, "factory-landing-status")
     assert status_policy["metadata"]["namespace"] == "factory"
@@ -775,12 +853,43 @@ def test_landing_status_access() -> None:
                             "k8s:io.kubernetes.pod.namespace": "factory-landing",
                             "app.kubernetes.io/name": "factory-landing",
                         }
-                    }
+                    },
+                    {
+                        "matchLabels": {
+                            "k8s:io.kubernetes.pod.namespace": "factory-discord",
+                            "io.cilium.k8s.policy.serviceaccount": "discord-bridge",
+                        }
+                    },
                 ],
                 "toPorts": ports,
-            }
+            },
+            {
+                "fromEndpoints": [
+                    {
+                        "matchLabels": {
+                            "k8s:io.kubernetes.pod.namespace": "factory",
+                            "app.kubernetes.io/name": "factory-itsaplan",
+                            "app.kubernetes.io/instance": "factory",
+                            "app.kubernetes.io/component": "api",
+                        }
+                    }
+                ],
+                "toPorts": [{"ports": [{"port": "8085", "protocol": "TCP"}]}],
+            },
         ],
     }
+    api_policy = _in(docs, "CiliumNetworkPolicy", _NS, "factory-itsaplan-api")
+    assert {
+        "toEndpoints": [
+            {
+                "matchLabels": {
+                    "k8s:io.kubernetes.pod.namespace": "factory",
+                    **connector_labels,
+                }
+            }
+        ],
+        "toPorts": [{"ports": [{"port": "8085", "protocol": "TCP"}]}],
+    } in api_policy["spec"]["egress"]
     for resource in (status_service, status_policy):
         options = resource["metadata"]["annotations"]["argocd.argoproj.io/sync-options"]
         assert "Prune=false" in options.split(",")
@@ -860,6 +969,12 @@ def test_runbook_revert_permissions():
             role = roles[
                 ref["kind"], ns if ref["kind"] == "Role" else None, ref["name"]
             ]
+            if (ref["kind"], ref["name"]) == (
+                "ClusterRole",
+                "factory-connector-decide",
+            ):
+                # The decision API's TokenReview grant; pinned below.
+                continue
             for rule in role["rules"]:
                 assert rule["apiGroups"] == [""]
                 grants.extend(
@@ -870,6 +985,13 @@ def test_runbook_revert_permissions():
                 )
         return set(grants)
 
+    assert roles["ClusterRole", None, "factory-connector-decide"]["rules"] == [
+        {
+            "apiGroups": ["authentication.k8s.io"],
+            "resources": ["tokenreviews"],
+            "verbs": ["create"],
+        }
+    ]
     owners = {
         "factory-connector": "factory-r-homelab",
         "factory-reviewer": "factory-r-homelab-review",

@@ -2,9 +2,13 @@
 # Run with a private kubeconfig on the PR runner.
 set -euo pipefail
 # kubelet needs the kernel key sysctls. The BuildBuddy runner kernel has
-# none, so kind cannot start a node there; HOME-421 moves this to a runner
-# that can. Skip loudly instead of failing every edge PR.
+# none, so kind cannot start a node there. The dedicated GitHub Actions
+# VM must start kind and run the tests for the exact PR head.
 if [ ! -e /proc/sys/kernel/keys/root_maxkeys ]; then
+	if [[ "${REQUIRE_EDGE_OIDC:-0}" == 1 ]]; then
+		echo "edge OIDC requires the kernel key sysctls" >&2
+		exit 1
+	fi
 	echo "SKIP edge OIDC kind test: this kernel has no /proc/sys/kernel/keys (HOME-421)"
 	exit 0
 fi

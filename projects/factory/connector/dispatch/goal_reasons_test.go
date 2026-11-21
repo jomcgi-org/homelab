@@ -10,16 +10,19 @@ import (
 	"testing"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
+	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
+	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // fakeGoalReasons answers for every head with fixed reasons, or err.
 type fakeGoalReasons struct {
-	mu      sync.Mutex
-	err     error
-	issue   string
-	reasons string
-	asked   []string
+	replyRevision int64
+	mu            sync.Mutex
+	err           error
+	issue         string
+	reasons       string
+	asked         []string
 }
 
 func (f *fakeGoalReasons) GoalReasons(_ context.Context, repo string, pr int, head string) (*dispatch.GoalReasons, error) {
@@ -29,7 +32,7 @@ func (f *fakeGoalReasons) GoalReasons(_ context.Context, repo string, pr int, he
 	if f.err != nil {
 		return nil, f.err
 	}
-	return &dispatch.GoalReasons{Repository: repo, PullRequest: pr, Head: head, Issue: f.issue, Digest: strings.Repeat("d", 64), Reasons: f.reasons}, nil
+	return &dispatch.GoalReasons{Repository: repo, PullRequest: pr, Head: head, Issue: f.issue, Digest: strings.Repeat("d", 64), ReplyRevision: f.replyRevision, Reasons: f.reasons}, nil
 }
 
 func (f *fakeGoalReasons) calls() int {
@@ -176,5 +179,196 @@ func TestGoalReasonsClientChecksTheAnswer(t *testing.T) {
 	status = http.StatusInternalServerError
 	if _, err := c.GoalReasons(context.Background(), "o/r", 7, head); err == nil || errors.Is(err, dispatch.ErrNoGoalReasons) {
 		t.Fatalf("500 = %v", err)
+	}
+}
+
+// TestOwnedCriterionReachesTheIssueOnAPassingReview reads the reasons for a
+// passing review with an owned criterion and posts them, which name the
+// follow-up key, on the work item's issue once. No round starts and the PR
+// still enters the queue.
+func TestOwnedCriterionReachesTheIssueOnAPassingReview(t *testing.T) {
+	v := newDeliveryEnv(t)
+	goal := &fakeGoalReasons{issue: "HL-7", reasons: "Criterion 2 is owned by HL-9."}
+	v.cfg.GoalReasons = goal
+	v.e.Release()
+	v.e = v.engine("connector-a")
+	v.delivered()
+	v.gh.green("sha-1")
+	v.gh.summarize("sha-1", "semgrep-review", "s\n\n### Optional\n\n- **low** HL-7 criterion 2: owned by a follow-up (`HL-7:goal:criterion-2`): An open follow-up owns criterion 2 of HL-7.")
+	v.poll()
+	v.poll()
+	if n := len(v.rounds()); n != 0 {
+		t.Fatalf("rounds = %d, want none for a passing review", n)
+	}
+	if len(v.gh.Enqueues()) != 1 {
+		t.Fatal("a passing review with an owned criterion did not enqueue")
+	}
+	posted := 0
+	for _, c := range v.its.Comments() {
+		if strings.Contains(c.body, "Criterion 2 is owned by HL-9.") {
+			posted++
+		}
+	}
+	if posted != 1 || goal.calls() == 0 {
+		t.Fatalf("ownership comments = %d, reads = %d", posted, goal.calls())
+	}
+}
+
+// TestFailedOwnershipReadRetriesBeforeEnqueue keeps a PR out of the queue
+// while the reasons read fails, so a later poll still posts the follow-up
+// key once the reviewer answers.
+func TestFailedOwnershipReadRetriesBeforeEnqueue(t *testing.T) {
+	v := newDeliveryEnv(t)
+	goal := &fakeGoalReasons{issue: "HL-7", reasons: "Criterion 2 is owned by HL-9.", err: errors.New("goal reasons: status 503")}
+	v.cfg.GoalReasons = goal
+	v.e.Release()
+	v.e = v.engine("connector-a")
+	v.delivered()
+	v.gh.green("sha-1")
+	v.gh.summarize("sha-1", "semgrep-review", "s\n\n### Deferred\n\n- **low** HL-7 criterion 2: owned by a follow-up (`HL-7:goal:criterion-2`): An open follow-up owns criterion 2 of HL-7.")
+	v.poll()
+	if len(v.gh.Enqueues()) != 0 || goal.calls() != 1 {
+		t.Fatalf("enqueues = %d, reads = %d after a failed read", len(v.gh.Enqueues()), goal.calls())
+	}
+	goal.mu.Lock()
+	goal.err = nil
+	goal.mu.Unlock()
+	v.poll()
+	v.poll()
+	posted := 0
+	for _, c := range v.its.Comments() {
+		if strings.Contains(c.body, "Criterion 2 is owned by HL-9.") {
+			posted++
+		}
+	}
+	if posted != 1 || len(v.gh.Enqueues()) != 1 {
+		t.Fatalf("ownership comments = %d, enqueues = %d after the read recovered", posted, len(v.gh.Enqueues()))
+	}
+}
+
+// TestMissingOwnershipReasonsHoldTheQueue keeps a PR out of the queue while
+// the reviewer keeps no reasons for a head that names an owned criterion.
+func TestMissingOwnershipReasonsHoldTheQueue(t *testing.T) {
+	v := newDeliveryEnv(t)
+	goal := &fakeGoalReasons{issue: "HL-7", reasons: "Criterion 2 is owned by HL-9.", err: dispatch.ErrNoGoalReasons}
+	v.cfg.GoalReasons = goal
+	v.e.Release()
+	v.e = v.engine("connector-a")
+	v.delivered()
+	v.gh.green("sha-1")
+	v.gh.summarize("sha-1", "semgrep-review", "s\n\n### Deferred\n\n- **low** HL-7 criterion 2: owned by a follow-up (`HL-7:goal:criterion-2`): An open follow-up owns criterion 2 of HL-7.")
+	v.poll()
+	v.poll()
+	if len(v.gh.Enqueues()) != 0 || goal.calls() != 2 {
+		t.Fatalf("enqueues = %d, reads = %d while no reasons are kept", len(v.gh.Enqueues()), goal.calls())
+	}
+	goal.mu.Lock()
+	goal.err = nil
+	goal.mu.Unlock()
+	v.poll()
+	v.poll()
+	posted := 0
+	for _, c := range v.its.Comments() {
+		if strings.Contains(c.body, "Criterion 2 is owned by HL-9.") {
+			posted++
+		}
+	}
+	if posted != 1 || len(v.gh.Enqueues()) != 1 {
+		t.Fatalf("ownership comments = %d, enqueues = %d after the reasons returned", posted, len(v.gh.Enqueues()))
+	}
+}
+
+// TestPassingReviewWithoutOwnershipReadsNoReasons keeps the read to reviews
+// that name an owned criterion.
+func TestPassingReviewWithoutOwnershipReadsNoReasons(t *testing.T) {
+	v := newDeliveryEnv(t)
+	goal := &fakeGoalReasons{issue: "HL-7", reasons: "private"}
+	v.cfg.GoalReasons = goal
+	v.e.Release()
+	v.e = v.engine("connector-a")
+	v.delivered()
+	v.gh.green("sha-1")
+	v.gh.summarize("sha-1", "semgrep-review", "s\n\n### Optional\n\n- **low** HL-7 criterion 4: to check after rollout (`HL-7:goal:criterion-4`): Check after rollout.")
+	v.poll()
+	if goal.calls() != 0 || len(v.gh.Enqueues()) != 1 {
+		t.Fatalf("reads = %d, enqueues = %d", goal.calls(), len(v.gh.Enqueues()))
+	}
+}
+
+func TestGoalReplyGoesToTicketAndWaitsForFreshReview(t *testing.T) {
+	v := newDeliveryEnv(t)
+	goal := &fakeGoalReasons{issue: "HL-7", reasons: "Verified criterion 2."}
+	v.cfg.GoalReasons = goal
+	v.e.Release()
+	v.e = v.engine("connector-a")
+	v.delivered()
+	v.goalFindingCheck("sha-1")
+	v.poll()
+	head := strings.Repeat("a", 40)
+	v.gh.push("factory/HL-7", head, "fix(retry): cover retry path")
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted,
+		"Private summary excluded.\nGoal evidence for "+head+"\n2. Check retry_test.go. @coder",
+		nil)
+	v.gh.green(head)
+	v.poll()
+	v.poll()
+	if v.gh.queued(1) {
+		t.Fatal("PR queued before the reviewer read the ticket reply")
+	}
+	var posted int
+	for _, c := range v.its.Comments() {
+		if strings.Contains(c.body, "factory-goal-reply v1") {
+			posted++
+			if !strings.Contains(c.body, "@"+head+" ") || !strings.Contains(c.body, "@factory-reviewer") ||
+				!strings.Contains(c.body, "retry_test.go") || strings.Contains(c.body, "Private summary excluded") ||
+				strings.Contains(c.body, "@coder") {
+				t.Fatalf("unexpected ticket reply: %q", c.body)
+			}
+		}
+	}
+	if posted != 1 {
+		t.Fatalf("ticket replies = %d", posted)
+	}
+	if err := v.st.DB.QueryRow(`SELECT regexp_replace(dedupe_key, '^.*/', '')::bigint FROM outbox WHERE dedupe_key LIKE 'comment/goal-reply/%'`).Scan(&goal.replyRevision); err != nil {
+		t.Fatal(err)
+	}
+	v.gh.summarize(head, "semgrep-review", itsaplan.GoalReplyReviewed(goal.replyRevision+1))
+	v.poll()
+	if v.gh.queued(1) {
+		t.Fatal("PR queued with a verdict for another reply")
+	}
+	revision := goal.replyRevision
+	v.gh.summarize(head, "semgrep-review", itsaplan.GoalReplyReviewed(revision))
+	goal.err = dispatch.ErrNoGoalReasons
+	v.poll()
+	if v.gh.queued(1) {
+		t.Fatal("PR queued before the private assessment was available")
+	}
+	goal.err = nil
+	goal.replyRevision = revision + 1
+	v.poll()
+	if v.gh.queued(1) {
+		t.Fatal("PR queued with private feedback for another reply")
+	}
+	goal.replyRevision = revision
+	v.goalFindingCheck(head)
+	v.gh.summarize(head, "semgrep-review", "- **medium** HL-7 criterion 2: not met (`HL-7:goal:criterion-2`)\n"+itsaplan.GoalReplyReviewed(revision))
+	v.poll()
+	v.poll()
+	if v.gh.queued(1) {
+		t.Fatal("failed review reached the merge queue")
+	}
+	rounds := v.rounds()
+	if len(rounds) != 2 || !strings.Contains(rounds[1].Prompt, "Verified criterion 2.") {
+		t.Fatal("the rejected reply's reasons did not reach the next review round")
+	}
+	feedback := 0
+	for _, c := range v.its.Comments() {
+		if strings.Contains(c.body, "at head "+head) && strings.Contains(c.body, "Verified criterion 2.") {
+			feedback++
+		}
+	}
+	if feedback != 1 {
+		t.Fatalf("reviewer feedback comments = %d, want 1 for the reviewed reply", feedback)
 	}
 }

@@ -11,6 +11,7 @@ go_library(
         "delivery.go",
         "human_gate.go",
         "notify.go",
+        "planner.go",
         "provenance.go",
         "recovery.go",
         "renovate.go",
@@ -23,9 +24,13 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/store",
     visibility = ["//visibility:public"],
     deps = [
+        "//projects/factory/connector/internal/tracing",
         "//projects/factory/connector/itsaplan",
+        "//projects/factory/connector/planner",
         "//projects/factory/connector/provenance",
         "@com_github_lib_pq//:pq",
+        "@io_opentelemetry_go_otel//attribute",
+        "@io_opentelemetry_go_otel_trace//:trace",
     ],
 )
 
@@ -33,6 +38,7 @@ go_test(
     name = "store_test",
     srcs = [
         "deferred_test.go",
+        "planner_test.go",
         "provenance_test.go",
         "recovery_test.go",
         "renovate_test.go",
@@ -46,7 +52,10 @@ go_test(
     data = [
         "@postgres_test//:postgres",
     ],
-    embedsrcs = ["delivered_issue_usage.sql"],
+    embedsrcs = [
+        "delivered_issue_usage.sql",
+        "planner_breaker_test.sql",
+    ],
     deps = [
         ":store",
         "//projects/factory/broker/config",
@@ -54,6 +63,7 @@ go_test(
         "//projects/factory/connector/github",
         "//projects/factory/connector/internal/pgtest",
         "//projects/factory/connector/migrations",
+        "//projects/factory/connector/planner",
         "//projects/factory/connector/provenance",
     ],
 )

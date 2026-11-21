@@ -27,10 +27,60 @@ The factory route is public, with no sign-in, as Joe decided
 Its route-level SecurityPolicy replaces the gateway OIDC policy with the hub's
 origin rules, and native Envoy rate limits match the hub's. The factory tunnel
 publishes scotland-mcp.jomcgi.dev. The cutover is staged
-([HOME-259 #comment-3953](https://factory-plan.jomcgi.dev/factory/issue/HOME-259#comment-3953)):
-the hub keeps serving `jomcgi.dev/scotland/mcp` and `/scotland/v1/*` until
-HOME-393 points the plugin and marketplace at the new hostname, makes the hub
-URLs answer with a 404 or a pointer, and scales the hub to zero.
+([HOME-259 #comment-3953](https://factory-plan.jomcgi.dev/factory/issue/HOME-259#comment-3953)).
+The plugin, the site's Scotland page and its catalog point at the new hostname
+(#8338). The jomcgi-site Worker answers `jomcgi.dev/scotland/mcp` and
+`/scotland/v1/*` with a 308 to the same path on scotland-mcp.jomcgi.dev
+(HOME-475). HOME-540 scales the hub copy to zero: `deploy/values.yaml` gives
+it zero pods, no autoscaler and no route, and `factory/values.yaml` restores
+the factory copy's autoscaler.
+
+**Cutover record (HOME-540 criterion 1).** Prod synced jomcgi-site chart 0.51.1
+(#8375) at 2026-11-20 07:58:01Z, with the last sync Succeeded. The probes below
+ran from node-1 before this change:
+
+```text
+# 2026-11-20T07:58:16Z
+$ curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' https://jomcgi.dev/scotland/mcp?c=1795161491
+308 https://scotland-mcp.jomcgi.dev/mcp?c=1795161491
+$ curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' https://jomcgi.dev/scotland/v1/check?c=1795161491
+308 https://scotland-mcp.jomcgi.dev/v1/check?c=1795161491
+# 2026-11-20T07:59Z, Cloudflare API: zone jomcgi.dev Workers routes
+routes total 33, script jomcgi-site 33, including jomcgi.dev/scotland/mcp* and jomcgi.dev/scotland/v1*
+# 2026-11-20T08:24:58Z
+$ curl -sS -X POST https://scotland-mcp.jomcgi.dev/mcp \
+    -H 'content-type: application/json' \
+    -H 'accept: application/json, text/event-stream' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"rollout-check","version":"1"}}}'
+HTTP/2 200
+content-type: application/json
+{"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18",
+ "serverInfo": {"name": "scotland-connector", "title": "Scotland outdoors", "version": "0.60.51"},
+ "capabilities": {"tools": {}}, "instructions": "Read-only answers to Scottish outdoor trip questions from fo…"}}
+```
+
+After the hub copy reaches zero, run the same three probes again. Both legacy
+paths must still answer 308. The `initialize` request above must answer
+HTTP 200 with a JSON-RPC `result` that names `serverInfo.name`
+`scotland-connector` and the requested `protocolVersion`.
+
+**Hub copy rollback.** Do not restore the replica ignore in the same change as
+the replica count. The HPA does not scale a Deployment whose desired count is
+zero, so an ignore that Argo CD applies first keeps the live zero. Use this
+order:
+
+1. Revert the values part of HOME-540 (`replicas`, `autoscaling` and `route` in
+   `deploy/values.yaml`, and the overrides in `factory/values.yaml`). Keep the
+   hub Application without `ignoreDifferences` on `/spec/replicas`, so Argo CD
+   applies the chart's replica count.
+2. On the hub, check that `kubectl -n scotland-connector get deploy
+   scotland-connector` shows ready pods, that the HPA exists, and that the
+   HTTPRoute is accepted.
+3. Then, in a second PR, restore the `/spec/replicas` ignore and
+   `RespectIgnoreDifferences` on the hub Application.
+4. Only with a ready hub backend, remove the two Worker route patterns
+   (`projects/jomcgi-site/README.md`, "Scotland and drafts migration"), so the legacy
+   paths reach the hub again.
 
 ## Shape
 
@@ -610,11 +660,12 @@ answer any request.
   (#7248), as the monolith's is.
 - HPA 2 to 10 on container CPU at 60%, scaling up by up to 100% every 30
   seconds and down by one pod a minute; PDB `maxUnavailable: 1`; replicas
-  spread across nodes. A new pod is ready after two R2 GETs.
-- The route shares the `jomcgi.dev` apex with `monolith-public` under
-  `route.pathPrefix` `/scotland`: it matches only `/scotland/v1` and
-  `/scotland/mcp`, rewrites each back to `/v1` and `/mcp`, and wins over the
-  apex catch-all `/` by Gateway API longest-path precedence. It carries
+  spread across nodes. A new pod is ready after two R2 GETs. The hub copy
+  runs zero pods and no HPA since HOME-540.
+- The hub route, off since HOME-540, shares the `jomcgi.dev` apex with
+  `monolith-public` under `route.pathPrefix` `/scotland`. It matches only
+  `/scotland/v1` and `/scotland/mcp`, rewrites each back to `/v1` and `/mcp`,
+  and wins over the apex catch-all `/` by Gateway API longest-path precedence. It carries
   per-client limits keyed on `CF-Connecting-IP` in the shape
   `projects/monolith-public` proves (a fail-safe bucket for missing or
   malformed identities, a Distinct bucket per valid address), and Cloudflare

@@ -5,6 +5,12 @@ policy data, not a credential. The Secret endpoint must agree at runtime. */}}
 7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
 {{- end -}}
 
+{{/* Every mirror Job stops at this deadline. The README's writer rule names
+the same value; library_test checks that the two agree. */}}
+{{- define "factory-library.mirrorDeadlineSeconds" -}}
+900
+{{- end -}}
+
 {{- define "factory-library.mirrorScript" -}}
 set -eu
 # Never log credentials or load a config file from the image.
@@ -13,41 +19,58 @@ case "$RCLONE_CONFIG_R2_ENDPOINT" in
   *) echo "R2 endpoint does not match the declared egress" >&2; exit 1 ;;
 esac
 run() { rclone --config /dev/null --s3-no-check-bucket "$@"; }
-{{- if eq .manifestName "latest.json" }}
-# Immutable generation keys exist before the writer commits this manifest.
 scratch=$(mktemp -d /tmp/mirror.XXXXXX)
-captured="$scratch/latest.json"
 trap 'rm -rf "$scratch"' EXIT
-manifest=$(run lsf "GARAGE:$GARAGE_BUCKET" --files-only --max-depth 1 --include /latest.json)
-if [ "$manifest" = latest.json ]; then
-  run cat "GARAGE:$GARAGE_BUCKET/latest.json" > "$captured"
-fi
-{{- end }}
 {{- if .prefix }}
 # Every write and delete below stays under prefix {{ .prefix }}/ of the R2 bucket.
 {{- end }}
 {{- if .excludePrefixes }}
-# The sources of this release own the excluded prefixes. Sync does not delete excluded R2 objects.
+# The sources of this release own the excluded prefixes. No listing, copy or delete below includes them.
 {{- end }}
-# Upload payloads before publishing the manifest. A failed sync stops here.
-run sync "GARAGE:$GARAGE_BUCKET" "{{ .dest }}" \
-  --exclude /{{ .manifestName }} \
+# payloads VERB ARGS: rclone VERB for every object except the manifest and the copied keys.
+payloads() {
+  verb=$1
+  shift
+  run "$verb" \
+    --exclude /{{ .manifestName }} \
 {{- range .copyKeys }}
-  --exclude /{{ .key }} \
+    --exclude /{{ .key }} \
 {{- end }}
 {{- range .excludePrefixes }}
-  --exclude '/{{ . }}/**' \
+    --exclude '/{{ . }}/**' \
 {{- end }}
-  --header-upload "Cache-Control: public, max-age=31536000, immutable"
-{{- if ne .manifestName "latest.json" }}
+    "$@"
+}
+# 0. Capture the manifest between two listings of Garage. A writer puts each
+# payload before the manifest that names it, so the two listings together hold
+# every payload that the captured manifest names.
+payloads lsf -R --files-only "GARAGE:$GARAGE_BUCKET" > "$scratch/before"
 # Listing failure is an error, not proof that the manifest is absent.
 manifest=$(run lsf "GARAGE:$GARAGE_BUCKET" --files-only --max-depth 1 --include /{{ .manifestName }})
-{{- end }}
 if [ "$manifest" = {{ .manifestName }} ]; then
-  run copyto {{ if eq .manifestName "latest.json" }}"$captured"{{ else }}"GARAGE:$GARAGE_BUCKET/{{ .manifestName }}"{{ end }} "{{ .dest }}/{{ .manifestName }}" \
+  run cat "GARAGE:$GARAGE_BUCKET/{{ .manifestName }}" > "$scratch/{{ .manifestName }}"
+fi
+payloads lsf -R --files-only "GARAGE:$GARAGE_BUCKET" > "$scratch/after"
+LC_ALL=C sort -u -o "$scratch/keep" "$scratch/before" "$scratch/after"
+# 1. Upload payloads and delete nothing, so the manifest that R2 still holds
+# keeps every object it names. A failed copy stops here.
+payloads copy "GARAGE:$GARAGE_BUCKET" "{{ .dest }}" \
+  --header-upload "Cache-Control: public, max-age=31536000, immutable"
+payloads lsf -R --files-only "{{ .dest }}" > "$scratch/r2"
+LC_ALL=C sort -o "$scratch/r2" "$scratch/r2"
+LC_ALL=C comm -23 "$scratch/keep" "$scratch/r2" > "$scratch/missing"
+if [ -s "$scratch/missing" ]; then
+  # The writer removed a listed payload before the copy, and the captured
+  # manifest can name it. The next run captures a new manifest.
+  echo "a listed payload left Garage before the copy; R2 keeps its manifest" >&2
+  exit 1
+fi
+# 2. Publish the captured manifest after every object it names.
+if [ "$manifest" = {{ .manifestName }} ]; then
+  run copyto "$scratch/{{ .manifestName }}" "{{ .dest }}/{{ .manifestName }}" \
     --ignore-times --header-upload "Cache-Control: public, max-age=60"
 else
-  # The sync excludes this key, so remove it separately when Garage lacks it.
+  # No listing includes this key, so remove it separately when Garage lacks it.
   run delete "{{ .dest }}" --include /{{ .manifestName }}
 fi
 {{- range .copyKeys }}
@@ -61,6 +84,14 @@ else
   run delete "{{ $.dest }}" --include /{{ .key }}
 fi
 {{- end }}
+# 3. Only now delete the R2 payloads that neither Garage listing holds. Both
+# listings hold every object that the published manifest names, also when the
+# writer removes them during this run. Those objects go in a later run.
+LC_ALL=C comm -13 "$scratch/keep" "$scratch/r2" > "$scratch/delete"
+if [ -s "$scratch/delete" ]; then
+  # The list holds exact keys, and --files-from-raw takes no other filter.
+  run delete "{{ .dest }}" --files-from-raw "$scratch/delete"
+fi
 {{- end -}}
 
 {{- define "factory-library.mirror" -}}
@@ -114,8 +145,8 @@ is one path segment, so a source cannot reach above or beside it. */}}
 {{- if not (has (get $source "manifestName" | default "manifest.json") (list "manifest.json" "latest.json")) -}}{{- fail "factory-library: public.sources manifestName must be manifest.json or latest.json" -}}{{- end -}}
 {{- $prefixes = append $prefixes $prefix -}}
 {{- end -}}
-{{- $path := required "factory-library: public.itemPath is required" $public.itemPath -}}
-{{- if not (regexMatch "^vaults/[^/]+/items/[^/]+$" $path) -}}{{- fail "factory-library: public.itemPath must be vaults/<vault>/items/<item>" -}}{{- end -}}
+{{- $path := get $public "itemPath" -}}
+{{- if or (not (kindIs "string" $path)) (and $path (not (regexMatch "^vaults/[^/]+/items/[^/]+$" $path))) -}}{{- fail "factory-library: public.itemPath must be vaults/<vault>/items/<item>" -}}{{- end -}}
 {{/* rclone 1.76.0, upstream multi-platform index; see README for provenance. */}}
 {{- $image := $public.image | default (dict "repository" "docker.io/rclone/rclone" "digest" "sha256:7cbeec24a44f206067597c0368be4de90ae19a64d5113c7d1938bd737a81e466") -}}
 {{- include "factory-library.keys" (dict "path" "mirror image" "value" $image "allowed" (list "repository" "digest")) -}}
@@ -130,6 +161,7 @@ is one path segment, so a source cannot reach above or beside it. */}}
 {{/* One CronJob with its own read-only Garage key, R2 Secret and admission
 guard. Its R2 writes go to the bucket root, or only under .prefix. */}}
 {{- define "factory-library.mirrorJob" -}}
+{{- if and (not .itemPath) (not .suspend) -}}{{- fail "factory-library: public.itemPath is required for an active mirror" -}}{{- end -}}
 {{- $name := .name -}}
 {{- $r2Secret := printf "%s-r2" $name -}}
 {{- $garageSecret := printf "%s-s3" $name -}}
@@ -166,6 +198,7 @@ guard. Its R2 writes go to the bucket root, or only under .prefix. */}}
 {{ include "factory-library.bucketSecret" (dict "root" $.root "name" (printf "%s-%s-s3" $name $from) "bucket" $from "access" "read") }}
 {{- end }}
 {{ include "factory-library.mirrorAdmission" (dict "root" .root "name" $name "secret" $r2Secret) }}
+{{- if .itemPath }}
 ---
 apiVersion: onepassword.com/v1
 kind: OnePasswordItem
@@ -177,5 +210,6 @@ metadata:
 type: Opaque
 spec:
   itemPath: {{ .itemPath }}
+{{- end }}
 {{ include "factory-library.cronjob" (dict "root" .root "name" $name "workload" $workload "mirror" true "suspend" (.suspend | default false)) }}
 {{- end -}}

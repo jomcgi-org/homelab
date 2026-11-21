@@ -6,6 +6,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { db, agentRun, aiAgent, issue, label, projectColumn } from "@repo/db";
 import { factoryTransaction } from "../../../packages/db/src/client";
 import { guards, entityGuard } from "./shared/guards";
+import { assertPermission } from "./shared/access";
 import { authContext } from "./shared/auth-context";
 import { HttpError, errorAnswer } from "./shared/lib";
 import {
@@ -37,6 +38,13 @@ await db.transaction(async (tx) => {
       delegate_user_id text not null,
       run_id integer not null,
       primary key (issue_id, start_date)
+    )
+  `);
+  await tx.execute(sql`
+    create table if not exists factory_reviewed_head (
+      issue_id integer not null references issue(id) on delete cascade,
+      head_sha text not null,
+      primary key (issue_id, head_sha)
     )
   `);
 });
@@ -158,6 +166,75 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
       getIssueProjectId(Number(p.issueId)),
     ),
   })
+  .get(
+    "/issues/:issueId/factory-run-phases",
+    async ({ params, projectId, user, set }) => {
+      await assertPermission(projectId, user, "ai_agents", "read");
+      set.headers["cache-control"] = "no-store";
+      const endpoint = process.env.FACTORY_RUN_PHASE_URL;
+      if (!endpoint) throw new HttpError(503, "Factory run phases unavailable");
+      const url = new URL(endpoint);
+      url.searchParams.set("issueId", String(params.issueId));
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          signal: AbortSignal.timeout(2000),
+          redirect: "error",
+        });
+      } catch {
+        throw new HttpError(503, "Factory run phases unavailable");
+      }
+      if (!response.ok)
+        throw new HttpError(503, "Factory run phases unavailable");
+      const phases = (await response.json()) as {
+        items: {
+          runId: number;
+          attempt: number;
+          phase: string;
+          reason: string;
+        }[];
+      };
+      if (!phases.items.length) return { items: [] };
+      const runs = await db.execute<{
+        id: number;
+        attempts: number;
+        status: string;
+        leased: boolean;
+      }>(sql`
+        select r.id, r.attempts, r.status,
+          (r.status = 'pending' and r.next_attempt_at > now()
+            and r.execution_started_at is not null) as leased
+        from agent_run r
+        join issue i on i.id = r.issue_id and i.project_id = r.project_id
+        where r.issue_id = ${params.issueId} and r.project_id = ${projectId}
+          and r.document_id is null
+          and r.id in (${sql.join(
+            phases.items.map((phase) => sql`${phase.runId}`),
+            sql`, `,
+          )})
+      `);
+      const attempts = new Map(Array.from(runs, (row) => [row.id, row]));
+      return {
+        items: phases.items.filter((phase) => {
+          const run = attempts.get(phase.runId);
+          if (!run || run.attempts !== phase.attempt) return false;
+          // A lease may lapse or a result may reach itsaplan before the
+          // connector closes its outbox. Keep the same attempt visible.
+          return (
+            run.leased ||
+            (phase.phase === "finishing" &&
+              (run.status === "pending" ||
+                run.status === "success" ||
+                run.status === "failed"))
+          );
+        }),
+      };
+    },
+    {
+      workItem: "read",
+      params: t.Object({ issueId: t.Numeric({ minimum: 1 }) }),
+    },
+  )
   .post(
     "/issues/:issueId/factory-deferred-start",
     async ({ params, body, user, projectId }) => {
@@ -178,6 +255,66 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
         startDate: t.String({ format: "date" }),
         delegateUserId: t.String({ minLength: 1 }),
       }),
+    },
+  )
+  .post(
+    "/issues/:issueId/factory-reviewing",
+    async ({ params, body, user, projectId }) => {
+      const id = params.issueId;
+      const actor = user!.id;
+      return factoryTransaction(async () => {
+        const owned = await db.execute<{
+          columnId: number;
+          applied: boolean;
+        }>(sql`
+          select i.column_id as "columnId", exists (
+            select 1 from factory_reviewed_head h where h.issue_id = i.id
+              and h.head_sha = ${body.head}
+          ) as applied from issue i
+          join project p on p.id = i.project_id
+          join ai_agent a on a.team_id = p.team_id and a.user_id = ${actor}
+          where i.id = ${id} and p.id = ${projectId} and p.key = 'HOME'
+            and a.username = 'factory-coordinator'
+          for update of i
+        `);
+        if (!owned.length) throw new HttpError(403, "Review transition denied");
+        if (owned[0].applied) return { moved: false, settled: true };
+
+        const columns = await db.execute<{ id: number; name: string }>(sql`
+          select c.id, c.name from project_column c where c.project_id = ${projectId}
+            and c.state_type = 'started' and c.name in ('In Progress', 'Reviewing')
+          for share of c
+        `);
+        const names = new Map(Array.from(columns, (c) => [c.name, c.id]));
+        const reviewing = names.get("Reviewing");
+        if (!reviewing || !names.has("In Progress"))
+          throw new HttpError(503, "Review workflow columns unavailable");
+        if (owned[0].columnId !== names.get("In Progress"))
+          return { moved: false, settled: false };
+        const blocked = await db.execute(sql`
+          select 1 from issue i where i.id = ${id} and (
+            i.archived_at is not null
+            or exists (
+              select 1 from issue_label il join label l on l.id = il.label_id
+              where il.issue_id = i.id and lower(l.name) in ('human', 'needs-human')
+            )
+          )
+        `);
+        if (blocked.length) return { moved: false, settled: false };
+
+        const inserted = await db.execute(sql`
+          insert into factory_reviewed_head (issue_id, head_sha) values (${id}, ${body.head})
+          on conflict do nothing returning issue_id
+        `);
+        if (!inserted.length) return { moved: false, settled: true };
+        await updateIssue(id, { columnId: reviewing }, actor);
+        return { moved: true, settled: true };
+      });
+    },
+    {
+      workItem: "edit",
+      params: t.Object({ issueId: t.Numeric({ minimum: 1 }) }),
+      body: t.Object({ head: t.String({ pattern: "^[0-9a-f]{40}$" }) }),
     },
   )
   .patch(
@@ -242,7 +379,9 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
       workItem: "create",
       params: t.Object({ issueId: t.Numeric({ minimum: 1 }) }),
       body: t.Object({
-        finding: t.String({ pattern: "^(sast|sca|secrets)/[0-9]+$" }),
+        finding: t.String({
+          pattern: "^((sast|sca)/[0-9]+|secrets/[A-Za-z0-9._~%-]+)$",
+        }),
         title: t.Optional(t.String()),
         description: t.Optional(t.String()),
         columnId: t.Optional(t.Integer()),

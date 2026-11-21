@@ -119,6 +119,8 @@ exports_files(
     visibility = [
         "//projects/embervm/chart:__pkg__",
         "//projects/embervm/runtimes/claude:__pkg__",
+        "//projects/factory/harness/claude:__pkg__",
+        "//projects/factory/harness/codex:__pkg__",
     ],
 )
 
@@ -155,7 +157,6 @@ filegroup(
     srcs = glob(
         [
             "AGENTS.md",
-            "CLAUDE.md",
             "bazel/**/*.md",
             "docs/**/*.md",
         ],

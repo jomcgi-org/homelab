@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/config",
     visibility = ["//visibility:public"],
     deps = [
+        "//projects/factory/connector/planner",
         "//projects/factory/connector/provenance",
         "@in_gopkg_yaml_v3//:yaml_v3",
     ],

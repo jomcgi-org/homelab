@@ -11,10 +11,12 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
+	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 )
 
@@ -628,7 +630,7 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 	current := map[string]bool{}
 	low := 0
 	for _, f := range r.Findings {
-		if p, was := priorByID[f.ID]; was && f.Verdict != goalLive && !cleared(f.ID) && rank(p.Severity) < rank(f.Severity) {
+		if p, was := priorByID[f.ID]; was && f.Verdict != goalLive && f.Verdict != goalOwned && !cleared(f.ID) && rank(p.Severity) < rank(f.Severity) {
 			reason[f.ID] = fmt.Sprintf("reported again as %s; it keeps its earlier severity", f.Severity)
 			f.Severity = p.Severity
 		}
@@ -643,7 +645,7 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 			f.Severity, f.Lowered = sev, ""
 		}
 		switch {
-		case f.Severity == SeverityLow && f.Lowered != "":
+		case f.Severity == SeverityLow && (f.Lowered != "" || f.Verdict == goalOwned):
 			a.Deferred = append(a.Deferred, f)
 		case f.Severity == SeverityLow:
 			if low++; low > MaxLow {
@@ -1029,6 +1031,7 @@ var stateRE = regexp.MustCompile(`<!-- factory-review:state v([12]) ([A-Za-z0-9+
 // findings and human gate on the completed check. The next round must
 // account for the findings; only a person clears the human gate.
 type State struct {
+	Round         int                          `json:"round,omitempty"`
 	InvariantBase string                       `json:"invariant_base,omitempty"`
 	Semgrep       *SemgrepStamp                `json:"semgrep,omitempty"`
 	Activation    *github.ActivationAssessment `json:"activation,omitempty"`
@@ -1066,6 +1069,21 @@ type State struct {
 	// Overflow marks a checkpoint that dropped this review's own findings to
 	// fit. Only a replay of its task clears it.
 	Overflow bool `json:"overflow,omitempty"`
+	// Trace records the review's root span while its check is in progress.
+	// A worker that reattaches to the check after a restart continues it.
+	Trace *TraceState `json:"trace,omitempty"`
+}
+
+// TraceState is a review root span that a later process can continue.
+type TraceState struct {
+	// Parent is the root's W3C traceparent.
+	Parent string    `json:"parent"`
+	Start  time.Time `json:"start"`
+	PR     int       `json:"pr"`
+	Round  int       `json:"round,omitempty"`
+	// Usage and Tasks are the root's token totals and the tasks it counted.
+	Usage Usage    `json:"usage"`
+	Tasks []string `json:"tasks,omitempty"`
 }
 
 // ClearedComplete reports whether the cleared record still holds every
@@ -1156,6 +1174,9 @@ func render(a Assessment, r *Report, gate *Gate, footer string, state *State) Ou
 	// and a tail of the human-hold marker and the footer. The connector reads
 	// the marker and the findings, so the tail is never clipped and the
 	// blocking findings get the space before the other sections.
+	if !stored.Incomplete && stored.Goal != nil && stored.Goal.ReplyRevision > 0 {
+		footer = itsaplan.GoalReplyReviewed(stored.Goal.ReplyRevision) + "\n\n" + footer
+	}
 	tail := footer
 	if !stored.Incomplete && gate != nil && gate.Authorship != "" {
 		tail = gate.Authorship + "\n\n" + tail

@@ -7,6 +7,9 @@ import {
   issueActivity,
   issueLabel,
   projectColumn,
+  projectMember,
+  teamMember,
+  user,
 } from "@repo/db";
 import { and, eq, sql } from "drizzle-orm";
 import {
@@ -24,8 +27,8 @@ import { setSubtaskAutomationSettings } from "./modules/projects/service";
 app.use(factoryRoutes);
 beforeEach(resetDb);
 
-async function fixture() {
-  const owner = await signUpTestUser();
+async function fixture(email?: string) {
+  const owner = await signUpTestUser({ email });
   const client = authedApi(owner.cookie);
   expect(
     (await createProject(client, { key: "HOME", name: "Homelab" })).status,
@@ -78,8 +81,103 @@ async function fixture() {
         body: JSON.stringify(body),
       }),
     );
-  return { id, body, send, backlog, todo, coder, coordinator };
+  return {
+    id,
+    body,
+    send,
+    backlog,
+    todo,
+    coder,
+    coordinator,
+    owner,
+    client,
+    project,
+  };
 }
+
+test("run phase reads exclude stale attempts and require issue access", async () => {
+  const { id, coder, owner, send } = await fixture();
+  expect((await send()).status).toBe(200);
+  await db
+    .update(agentRun)
+    .set({ nextAttemptAt: new Date(0) })
+    .where(eq(agentRun.issueId, id));
+  const run = (await apiKeyApi(coder.apiKey!)["agent-runs"].claim.post()).data!
+    .run!;
+  let reads = 0;
+  let current = {
+    runId: run.id,
+    attempt: run.attempts,
+    phase: "waiting",
+    reason: "Waiting for an agent slot.",
+  };
+  const source = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      reads++;
+      expect(new URL(request.url).searchParams.get("issueId")).toBe(String(id));
+      return Response.json({
+        items: [
+          current,
+          { ...current, attempt: run.attempts - 1 },
+          { ...current, runId: run.id + 1 },
+        ],
+      });
+    },
+  });
+  process.env.FACTORY_RUN_PHASE_URL = source.url.href;
+  try {
+    const url = `http://localhost/issues/${id}/factory-run-phases`;
+    expect((await app.handle(new Request(url))).status).toBe(401);
+    expect(reads).toBe(0);
+    const response = await app.handle(
+      new Request(url, { headers: { cookie: owner.cookie } }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ items: [current] });
+    const read = () =>
+      app.handle(new Request(url, { headers: { cookie: owner.cookie } }));
+    current = { ...current, phase: "finishing", reason: "" };
+    expect(await (await read()).json()).toEqual({ items: [current] });
+    await db
+      .update(agentRun)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(eq(agentRun.id, run.id));
+    expect(await (await read()).json()).toEqual({ items: [current] });
+    await db
+      .update(agentRun)
+      .set({ nextAttemptAt: new Date(Date.now() + 60_000) })
+      .where(eq(agentRun.id, run.id));
+    const result = await apiKeyApi(coder.apiKey!)
+      ["agent-runs"]({
+        runId: run.id,
+      })
+      .result.post({
+        attempt: run.attempts,
+        status: "success",
+        output: "done",
+      });
+    expect(result.status).toBe(204);
+    expect(await (await read()).json()).toEqual({ items: [current] });
+    await db
+      .update(agentRun)
+      .set({ attempts: run.attempts + 1 })
+      .where(eq(agentRun.id, run.id));
+    expect(await (await read()).json()).toEqual({ items: [] });
+
+    const oldWrite = await app.handle(
+      new Request(`http://localhost/agent-runs/${run.id}/factory-phase`, {
+        method: "POST",
+        headers: { "x-api-key": coder.apiKey! },
+      }),
+    );
+    expect(oldWrite.status).toBe(404);
+  } finally {
+    delete process.env.FACTORY_RUN_PHASE_URL;
+    source.stop(true);
+  }
+});
 
 async function effects(id: number) {
   return {
@@ -342,4 +440,146 @@ test("the sync key can restore and update only its own INTSEC finding", async ()
     description: payload.description,
     columnId: payload.columnId,
   });
+});
+
+test("connector records Joe's pick as joesessions and restores the removed delegate", async () => {
+  const f = await fixture("joe@example.com");
+  const password = "fixture-session-password";
+  const sessions = await signUpTestUser({
+    email: "joe-sessions@jomcgi.dev",
+    password,
+    team: false,
+  });
+  await db
+    .update(user)
+    .set({ username: "joesessions" })
+    .where(eq(user.id, sessions.userId));
+  await db
+    .insert(teamMember)
+    .values({ teamId: f.project.project.teamId, userId: sessions.userId });
+  await db
+    .insert(projectMember)
+    .values({ projectId: f.project.project.id, userId: sessions.userId });
+  const item = f.client.issues({ issueId: f.id });
+  expect(
+    (
+      await item.patch({
+        columnId: f.todo.id,
+        assigneeUserId: f.owner.userId,
+        delegateUserId: f.coder.agent.userId,
+      })
+    ).status,
+  ).toBe(200);
+  expect(
+    (
+      await item.patch({
+        delegateUserId: null,
+        description: "## Choices\n1. Ship (Recommended)\n2. Wait",
+      })
+    ).status,
+  ).toBe(200);
+
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: (request) => app.handle(request),
+  });
+  try {
+    const probe = Bun.spawn([process.env.DECISION_PROBE!], {
+      env: {
+        ...process.env,
+        TEST_PLAN_URL: server.url.origin,
+        TEST_READ_KEY: f.coordinator.apiKey!,
+        TEST_SESSION_PASSWORD: password,
+      },
+      stderr: "inherit",
+    });
+    expect(await probe.exited).toBe(0);
+    const state = await effects(f.id);
+    expect(state.comments.map((c) => [c.actorUserId, c.body])).toEqual([
+      [sessions.userId, "Decision: Wait"],
+    ]);
+    expect(state.issue.delegateUserId).toBe(f.coder.agent.userId);
+  } finally {
+    server.stop(true);
+  }
+}, 30000);
+
+test("the coordinator enters Reviewing once per head and preserves manual moves", async () => {
+  const { owner, coder, id } = await fixture();
+  const ownerAPI = authedApi(owner.cookie);
+  const project = ownerAPI.projects({ projectKey: "HOME" });
+  const started = (await project.get()).data!.columns.find(
+    (column) => column.name === "In Progress",
+  )!;
+  const reviewing = await project.columns.post({
+    name: "Reviewing",
+    stateType: "started",
+  });
+  expect(reviewing.status).toBe(201);
+  const coordinator = (
+    await createAgent(ownerAPI, "HOME", {
+      name: "Factory coordinator",
+      username: "factory-coordinator",
+      kind: "external",
+    })
+  ).data!;
+  const move = (key: string, head: string) =>
+    app.handle(
+      new Request(`http://localhost/issues/${id}/factory-reviewing`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": key },
+        body: JSON.stringify({ head }),
+      }),
+    );
+  const setStarted = async () => {
+    expect(
+      (await ownerAPI.issues({ issueId: id }).patch({ columnId: started.id }))
+        .status,
+    ).toBe(200);
+  };
+
+  const head = "a".repeat(40);
+  expect(await (await move(coordinator.apiKey!, head)).json()).toEqual({
+    moved: false,
+    settled: false,
+  });
+  await setStarted();
+  await db
+    .update(issue)
+    .set({ archivedAt: new Date() })
+    .where(eq(issue.id, id));
+  expect(await (await move(coordinator.apiKey!, head)).json()).toEqual({
+    moved: false,
+    settled: false,
+  });
+  await db.update(issue).set({ archivedAt: null }).where(eq(issue.id, id));
+  expect((await move(coder.apiKey!, head)).status).toBe(403);
+  const hold = await project.labels.post({ name: "needs-human" });
+  const labelIds = [hold.data!.id];
+  expect(
+    (await ownerAPI.issues({ issueId: id }).patch({ labelIds })).status,
+  ).toBe(200);
+  expect(await (await move(coordinator.apiKey!, head)).json()).toEqual({
+    moved: false,
+    settled: false,
+  });
+  expect(
+    (await ownerAPI.issues({ issueId: id }).patch({ labelIds: [] })).status,
+  ).toBe(200);
+  const applied = await move(coordinator.apiKey!, head);
+  expect(applied.status).toBe(200);
+  expect(await applied.json()).toEqual({ moved: true, settled: true });
+  expect((await ownerAPI.issues({ issueId: id }).get()).data?.columnId).toBe(
+    reviewing.data!.id,
+  );
+
+  await setStarted();
+  expect(await (await move(coordinator.apiKey!, head)).json()).toEqual({
+    moved: false,
+    settled: true,
+  });
+  expect((await ownerAPI.issues({ issueId: id }).get()).data?.columnId).toBe(
+    started.id,
+  );
 });

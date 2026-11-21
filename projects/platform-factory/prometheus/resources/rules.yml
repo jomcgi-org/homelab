@@ -42,9 +42,8 @@ groups:
           sum by (pod) (rpc_client_call_duration_seconds_count{job="kagent-controller", rpc_method="substrate.ateapi.v1.Control/SuspendActor", rpc_response_status_code="DEADLINE_EXCEEDED"})
           or
           0 * group by (pod) (up{job="kagent-controller"} == 1)
-      # kagent v1.0.1 bounds SuspendActor by a fixed 30 s deadline. A suspend
-      # past it leaves the Actor SUSPENDING and the session locked, and its
-      # worker slot held, until a person deletes the worker pod.
+      # The deployed controller allows 120 seconds for SuspendActor. A suspend
+      # past it can leave the Actor SUSPENDING and hold its worker slot.
       # The alert fires for an hour after the count rises, or while a
       # controller process younger than an hour has counted a timeout: its
       # first scrape can already show one. Its labels are the count and the
@@ -70,11 +69,10 @@ groups:
           graph: "kagent:suspend_timeouts:sum{pod={{ printf \"%q\" $labels.pod }}}"
           threshold: "0"
           runbook: "https://factory-runbooks.jomcgi.dev/KagentSuspendTimedOut"
-          summary: "A kagent session suspend passed the 30 s limit ({{ $labels.timeouts }} since the controller started)"
+          summary: "A kagent session suspend passed the 120-second deadline ({{ $labels.timeouts }} since the controller started)"
           description: >-
-            kagent keeps the session locked and its worker slot held until a
-            person deletes the worker pod and reverts the session. Runbook:
-            projects/factory-cluster/README.md, "Alerts".
+            The session can stay locked while the reaper waits five minutes.
+            If the lock persists, use the suspend-timeout runbook.
 
   - name: codex
     rules:
@@ -155,14 +153,14 @@ groups:
             projects/factory-cluster/README.md, "Alerts".
 
 
-  - name: intsec-sync
+  - name: factory-semgrep-sync
     rules:
       - alert: SemgrepSyncFailed
         expr: |
-          kube_job_failed{job_name=~"intsec-sync-[0-9]+",condition="true"} == 1
+          kube_job_failed{job_name=~"factory-semgrep-sync-[0-9]+",condition="true"} == 1
           and on (namespace, job_name)
           (kube_job_status_start_time == on (namespace) group_left
-            max by (namespace) (kube_job_status_start_time{job_name=~"intsec-sync-[0-9]+"}))
+            max by (namespace) (kube_job_status_start_time{job_name=~"factory-semgrep-sync-[0-9]+"}))
         labels:
           severity: warning
         annotations:
@@ -235,6 +233,85 @@ groups:
             Public readers see an old status. Runbook:
             projects/factory-cluster/README.md, "Alerts".
 
+  - name: cloudflare
+    rules:
+      # Every factory Cloudflare API token and R2 key accepts calls only from
+      # the home IPv4 address. At about 01:27Z on 2026-11-20 that address
+      # changed: every credential failed and the public data stayed 6 h old
+      # (HOME-634). cloudflare-exporter reads the address that Cloudflare
+      # sees (factory_egress_ip_info, label ip) and checks each API token
+      # every minute. It does not test the R2 keys: only the mirror CronJobs
+      # hold the R2 mirror key. An R2 refusal shows through this alert and
+      # FactoryHealthStale.
+      # The address is private and the repository is public, so no expected
+      # address is stored. The rule counts the addresses of the last hour: it
+      # fires at the first scrape of a new address and clears an hour later.
+      # CloudflareCredentialRefused stays on while an API token fails.
+      - alert: FactoryEgressIPChanged
+        expr: count(max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h]))) > 1
+        labels:
+          severity: warning
+        annotations:
+          action: "Allow the new egress IP in the IP filter of each factory Cloudflare credential."
+          graph: "count(max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])))"
+          threshold: "1"
+          runbook: "https://factory-runbooks.jomcgi.dev/FactoryEgressIPChanged"
+          summary: >-
+            The factory egress IP changed to {{ range query `topk(1, max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])))`
+            }}{{ .Labels.ip }}{{ else }}an unknown address{{ end }} from {{ range $i, $p := query
+            `max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])) unless on (ip) topk(1, max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[1h])))`
+            | sortByLabel `ip` }}{{ if $i }}, {{ end }}{{ $p.Labels.ip }}{{ end }} ({{ $value }} addresses in 1h, maximum 1)
+          description: >-
+            Each factory Cloudflare API token and R2 key fails until its IP
+            filter allows the new address. Runbook:
+            projects/factory-cluster/README.md, "Alerts".
+      # An API token that Cloudflare refuses with 401 or 403 at its read-only
+      # check, for 5 min of answered checks. After a check with no answer the
+      # exporter keeps the last answer and sets check_success to 0. So a
+      # pending alert needs check_success 1: one refusal followed by
+      # unanswered checks does not fire, and a gap restarts the 5 min. A
+      # firing alert stays on (its own ALERTS series, value 0) until a check
+      # accepts the token: unanswered checks and an exporter restart that
+      # drops auth_success do not clear it.
+      # With an address change, the IP filter is the likely cause; without
+      # one, a revoked or replaced token.
+      - alert: CloudflareCredentialRefused
+        expr: >-
+          (
+            max by (credential) (factory_cloudflare_credential_auth_success) == 0
+            and on (credential)
+            max by (credential) (factory_cloudflare_credential_check_success) == 1
+          )
+          or on (credential)
+          (
+            0 * max by (credential) (ALERTS{alertname="CloudflareCredentialRefused",alertstate="firing"})
+            unless on (credential)
+            max by (credential) (factory_cloudflare_credential_auth_success) == 1
+          )
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          action: "Allow the egress IP in this token's Cloudflare IP filter, or replace the token."
+          graph: "factory_cloudflare_credential_auth_success{credential={{ printf \"%q\" $labels.credential }}}"
+          threshold: "1"
+          runbook: "https://factory-runbooks.jomcgi.dev/CloudflareCredentialRefused"
+          # While the trace read fails, the text names the newest address
+          # Prometheus saw in the last 7 days, calls it "last known" and says
+          # why. That history also covers an exporter restart whose first
+          # read fails, when the exporter itself has no address.
+          summary: >-
+            Cloudflare refuses API token {{ $labels.credential }} from {{ with query
+            `max(factory_egress_ip_read_success) == 0` }}last known egress IP {{ range query
+            `topk(1, max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[7d])))`
+            }}{{ .Labels.ip }}{{ else }}unknown{{ end }} (the egress IP read is failing, so the address may be stale){{ else }}egress IP {{ range query
+            `max by (ip) (factory_egress_ip_info)` }}{{ .Labels.ip }}{{ else }}{{ range query
+            `topk(1, max by (ip) (max_over_time(factory_egress_ip_observed_timestamp_seconds[7d])))`
+            }}{{ .Labels.ip }} (last known){{ else }}unknown{{ end }}{{ end }}{{ end }} (auth success {{ $value }}, minimum 1)
+          description: >-
+            Its read-only check gets HTTP 401 or 403. Runbook:
+            projects/factory-cluster/README.md, "Alerts".
+
   - name: relay
     rules:
       - alert: AlertRelayDown
@@ -262,3 +339,74 @@ groups:
           threshold: "1"
           runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory/deploy/notify.md#home-385-rollout-verification"
           summary: "Factory {{ $labels.phase }} has been failing on itsaplan for ten minutes"
+
+  - name: capacity-shadow
+    interval: 5m
+    rules:
+      # Track the largest worker pod, including its sidecars. Replica names
+      # change on rollout, so all policy series use namespace and workload.
+      - record: capacity:workload_pod_memory_working_set_bytes:max
+        expr: |
+          max by (namespace) (
+            sum by (namespace, pod) (
+              max by (namespace, pod, container) (
+                container_memory_working_set_bytes{
+                  job="kubelet-resource", namespace="factory-r-homelab-review",
+                  pod=~"homelab-reviewer-.*", container!=""
+                }
+              )
+            )
+          )
+        labels:
+          workload: homelab-reviewer
+      - record: capacity:workload_pod_memory_budget_bytes
+        expr: |
+          quantile_over_time(0.9, capacity:workload_pod_memory_working_set_bytes:max[24h])
+          and on (namespace, workload)
+          (count_over_time(capacity:workload_pod_memory_working_set_bytes:max[24h]) >= 72)
+          and on (namespace, workload)
+          capacity:workload_pod_memory_working_set_bytes:max
+        labels:
+          policy: baseline
+      - record: capacity:workload_pod_memory_budget_bytes
+        expr: |
+          clamp_min(predict_linear(capacity:workload_pod_memory_working_set_bytes:max[2h], 1800), 0)
+          and on (namespace, workload)
+          (count_over_time(capacity:workload_pod_memory_working_set_bytes:max[2h]) >= 18)
+          and on (namespace, workload)
+          capacity:workload_pod_memory_working_set_bytes:max
+        labels:
+          policy: forecast
+      # Align the budget with the observation it was issued for. Require an
+      # exact timestamp so Prometheus lookback cannot fill a missed run.
+      - record: capacity:workload_pod_memory_due_budget_bytes
+        expr: |
+          capacity:workload_pod_memory_budget_bytes offset 30m
+          and on (namespace, workload, policy)
+          (timestamp(capacity:workload_pod_memory_budget_bytes offset 30m) == time() - 1800)
+      # The worker publishes shortly after its five-minute input boundary.
+      # Check two scrape times three minutes apart. If the later one has
+      # advanced to the next batch, the earlier one still covers this slot.
+      # Keep a budget only when its paired target matches the observed slot.
+      - record: capacity:workload_pod_memory_due_budget_bytes
+        expr: |
+          max by (namespace, workload, policy) (
+            capacity_forecast_memory_budget_bytes{job="capacity-forecast",pod="",policy="timestral",horizon_seconds="1800"} offset 28m
+            and
+            (capacity_forecast_target_timestamp_seconds{job="capacity-forecast",pod="",policy="timestral",horizon_seconds="1800"} offset 28m
+              == time() - (time() % 300))
+            or
+            capacity_forecast_memory_budget_bytes{job="capacity-forecast",pod="",policy="timestral",horizon_seconds="1800"} offset 31m
+            and
+            (capacity_forecast_target_timestamp_seconds{job="capacity-forecast",pod="",policy="timestral",horizon_seconds="1800"} offset 31m
+              == time() - (time() % 300))
+          )
+        labels:
+          policy: timestral
+      - record: capacity:workload_pod_memory_budget_exceeded
+        expr: |
+          (
+            capacity:workload_pod_memory_due_budget_bytes
+            - on (namespace, workload) group_left
+            capacity:workload_pod_memory_working_set_bytes:max
+          ) < bool 0

@@ -153,6 +153,17 @@ trap 'rm -f "$COVERED" "$TO_PUSH" "$IMAGE_RESULTS" "$CHART_TARGETS"' EXIT
 
 _multirun_labels push_charts >"$CHART_TARGETS"
 
+_verify_published_reviewer() {
+	[ "$label" = "//projects/factory/reviewer/harness:image.push" ] || return 0
+	if [ "$repository" != "ghcr.io/jomcgi/homelab/projects/factory/reviewer/harness" ] ||
+		[ -z "$digest" ] || [ "$observed" != "$digest" ]; then
+		echo "ERROR: published reviewer package or digest differs from its build manifest" >&2
+		return 1
+	fi
+	python3 "$WORKSPACE/bazel/images/push/private_harness_package.py" "$repository" "$CRANE" --existing-only
+	echo "Verified private reviewer harness $repository@$observed"
+}
+
 SKIPPED=0
 # `|| [ -n "$label" ]` so a manifest whose last line has no trailing newline
 # still gets its last image compared. Without it `read` returns non-zero at EOF
@@ -173,6 +184,7 @@ while IFS= read -r image_row || [ -n "${image_row:-}" ]; do
 		observed=$("$CRANE" digest "${repository}@${digest}" 2>/dev/null || true)
 	fi
 	if [ -n "$digest" ] && [ "$observed" = "$digest" ]; then
+		_verify_published_reviewer
 		echo "  skip  $label  ($digest already published)"
 		printf '%s\t%s\t%s\t%s\t%s\n' \
 			"$RUN_ID" "skipped" "$label" "$repository" "$observed" >>"$IMAGE_RESULTS"
@@ -288,12 +300,27 @@ while IFS= read -r image_row || [ -n "${image_row:-}" ]; do
 	[ -n "$label" ] || continue
 	echo ""
 	echo "==> push $label"
+	case "$label" in
+	//projects/factory/harness/claude:image.push | //projects/factory/harness/codex:image.push | //projects/factory/reviewer/harness:image.push)
+		expected="ghcr.io/jomcgi/homelab/${label#//}"
+		if [ "$repository" != "${expected%:image.push}" ]; then
+			echo "ERROR: $label has no matching harness package in the digest manifest" >&2
+			exit 1
+		fi
+		;;
+	esac
+	case "$repository" in
+	ghcr.io/jomcgi/homelab/projects/factory/harness/claude | ghcr.io/jomcgi/homelab/projects/factory/harness/codex | ghcr.io/jomcgi/homelab/projects/factory/reviewer/harness)
+		python3 "$WORKSPACE/bazel/images/push/private_harness_package.py" "$repository" "$CRANE"
+		;;
+	esac
 	"$BAZEL" run "$label" "${BAZEL_ARGS[@]}" "${CHECK_OUTPUTS[@]}" --build_runfile_links
 
 	# Resolve the stamped tag written by this successful push. Unlike the
 	# manifest row, this is an independent registry result attributable to this
 	# source commit. Missing tag or registry evidence is left absent so the
 	# chart-scoped verifier can fail precisely when the image is expected.
+	observed=""
 	if [ -n "${repository:-}" ] && [ -n "${tag:-}" ]; then
 		observed=$("$CRANE" digest "${repository}:${tag}" 2>/dev/null || true)
 		if [ -n "$observed" ]; then
@@ -301,6 +328,7 @@ while IFS= read -r image_row || [ -n "${image_row:-}" ]; do
 				"$RUN_ID" "pushed" "$label" "$repository" "$observed" >>"$IMAGE_RESULTS"
 		fi
 	fi
+	_verify_published_reviewer
 done <"$TO_PUSH"
 
 # Charts LAST, and in their own multirun. Ordering is load-bearing now in a way

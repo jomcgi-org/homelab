@@ -220,6 +220,7 @@ def test_rbac_is_namespaced() -> None:
     assert set(cluster_scoped) == {
         "kagent-kagent-crds",
         "factory-broker-tokenreview",
+        "factory-connector-decide",
         "kagent-kagent-invocation-auth",
         # The controller's secure metrics (deploy values): it reviews a
         # scraper's token and access to GET /metrics, nothing else.
@@ -909,7 +910,7 @@ def test_binding_worker_pool_sets_resources_and_concurrency() -> None:
     labels = pool["metadata"]["labels"]
     assert labels["kagent.dev/worker-pool-name"] == "homelab-codex"
     assert labels["kagent.dev/worker-pool-namespace"] == "factory-r-homelab"
-    assert pool["spec"]["replicas"] == 9  # deploy agents.codex.concurrency
+    assert pool["spec"]["replicas"] == 12  # deploy agents.codex.concurrency
     assert pool["spec"]["template"]["serviceAccountName"] == "homelab-codex-worker"
     # The worker's capacity is its limit less a 64Mi reserve, and must hold
     # the actor's 8Gi plus gVisor's sentry.
@@ -1258,12 +1259,12 @@ def test_discord_bridge_reaches_only_discord_its_memory_and_its_agent() -> None:
         for rule in egress["egress"]
         for e in rule.get("toEndpoints", [])
     ]
-    assert peers == ["hindsight-discord", "kagent"]
+    assert peers == ["hindsight-discord", "factory", "kagent"]
     ports = [
         [p["port"] for to in rule["toPorts"] for p in to["ports"]]
         for rule in egress["egress"]
     ]
-    assert ports == [["443"], ["8888"], ["8083"]]
+    assert ports == [["443"], ["8888"], ["8082"], ["8083"]]
     controller = _in(docs, "CiliumNetworkPolicy", "kagent", "kagent-controller")
     admitted = [
         m["matchLabels"] for m in controller["spec"]["ingress"][0]["fromEndpoints"]
@@ -1366,3 +1367,33 @@ def test_codex_admin_route_follows_broker_chart():
         policy["oidc"]["redirectURL"]
         == "https://factory.jomcgi.dev/admin/codex/oauth2/callback"
     )
+
+
+def test_extra_mcp_server() -> None:
+    namespace = "factory-r-homelab"
+    assert not any(
+        d["kind"] == "RemoteMCPServer" and d["metadata"]["name"] == "grafana"
+        for d in _render()
+    )
+    docs = _render(
+        [
+            "repositories[0].mcpServers[0].name=grafana",
+            "repositories[0].mcpServers[0].url=http://grafana:8000/mcp",
+            "repositories[0].mcpServers[0].secret=grafana-mcp",
+            "repositories[0].mcpServers[0].tools={query_prometheus,search_dashboards}",
+        ]
+    )
+    server = _in(docs, "RemoteMCPServer", namespace, "grafana")
+    assert server["metadata"]["labels"]["kagent.dev/discovery"] == "disabled"
+    assert server["spec"]["headersFrom"][0]["valueFrom"] == {
+        "type": "Secret",
+        "name": "grafana-mcp",
+        "key": "token",
+    }
+    inline = _in(docs, "Agent", namespace, "homelab-codex")["spec"]["template"][
+        "inline"
+    ]
+    assert inline["tools"][-1]["mcp"] == {
+        "server": {"kind": "RemoteMCPServer", "name": "grafana"},
+        "tools": ["query_prometheus", "search_dashboards"],
+    }

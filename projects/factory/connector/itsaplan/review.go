@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -46,6 +47,9 @@ type FeedItem struct {
 	Body        string          `json:"body"`
 	EditedAt    json.RawMessage `json:"editedAt"`
 	Payload     struct {
+		From *struct {
+			ID json.RawMessage `json:"id"`
+		} `json:"from"`
 		To *struct {
 			Value *string `json:"value"`
 		} `json:"to"`
@@ -147,4 +151,24 @@ func (c *Client) LinkedComment(ctx context.Context, issueID, commentID int64) (*
 		q.Set("cursor", string(cursor))
 	}
 	return nil, errors.New("itsaplan: comment lookup exceeded feed bound")
+}
+
+// GoalReplyMarker binds a ticket comment to one repository, PR and commit.
+func GoalReplyMarker(repo string, pr int, head string) string {
+	return fmt.Sprintf("<!-- factory-goal-reply v1 %s#%d@%s ", repo, pr, head)
+}
+
+// GoalReplyReviewed binds the service's acknowledgement to the reply revision.
+func GoalReplyReviewed(revision int64) string {
+	return fmt.Sprintf("<!-- factory-review:ticket-reply-reviewed %d -->", revision)
+}
+
+// RecentComments reads the newest comments from the issue's API feed.
+func (c *Client) RecentComments(ctx context.Context, issueID int64) ([]FeedItem, error) {
+	var out feedPage
+	path := "/issues/" + strconv.FormatInt(issueID, 10) + "/feed?filter=comments&order=desc&limit=100"
+	if err := c.do(ctx, c.Coordinator, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Items, nil
 }

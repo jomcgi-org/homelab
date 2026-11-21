@@ -8,8 +8,8 @@ invariants:
   - projects/platform-factory/network-policy/resources/baseline.yaml
   state: unproven
 - id: PLAT-2
-  statement: Every route on the edge Gateway signs in through Authentik, except the Authentik route that
-    serves the sign-in flow.
+  statement: Every route on the edge Gateway requires requester authentication except for the sign-in
+    flow and the approved public Scotland forecast and astronomy endpoints.
   mechanism:
   - projects/platform-factory/edge/chart
   test: //projects/platform-factory/edge/chart:edge_test

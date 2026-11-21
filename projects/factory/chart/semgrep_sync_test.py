@@ -9,7 +9,21 @@ import pytest
 module = runpy.run_path(
     os.getenv("SYNC_SCRIPT", Path(__file__).parent / "files/semgrep_sync.py")
 )
-sync = module["sync"]
+
+
+@pytest.fixture
+def sync(tmp_path):
+    def run(get, deployment, plan, alert=None):
+        def api(path):
+            if path == "" and deployment:
+                return {"deployments": [{"slug": deployment, "id": 17}]}
+            return get(path)
+
+        return module["sync"](
+            api, deployment, plan, alert or pytest.fail, tmp_path / "auth-failed"
+        )
+
+    return run
 
 
 def row(number, **values):
@@ -22,6 +36,21 @@ def row(number, **values):
         "status": "open",
         "severity": "high",
         **values,
+    }
+
+
+def secret_row(finding_id, **fields):
+    # Wire names from the SecretsService list response, not the Findings API.
+    # sdks-io/apimatic-semgrep-python-sdk@aaef3dd9, ProtosSecretsV1SecretsFinding._names.
+    return {
+        "id": str(finding_id),
+        "repository": {"name": "jomcgi-org/homelab"},
+        "ref": "refs/heads/main",
+        "findingPath": "src/file",
+        "ruleHashId": "rule-hash",
+        "severity": "SEVERITY_LOW",
+        "status": "FINDING_STATUS_OPEN",
+        **fields,
     }
 
 
@@ -41,7 +70,11 @@ class Board:
         elif path == "/me":
             return {
                 "authenticated": True,
-                "user": {"username": "intsec-sync", "isAgent": True, "id": "bot"},
+                "user": {
+                    "username": "intsec-sync",
+                    "isAgent": True,
+                    "id": "bot",
+                },
             }
         elif path == "/projects/INTSEC":
             return {
@@ -69,7 +102,7 @@ class Board:
         self.writes.append((method, path))
 
 
-def test_mirror():
+def test_mirror(sync):
     board = Board()
     board.issues.append(
         {"id": 1, "description": "Semgrep finding ID: sast/1\n", "labelIds": [5]}
@@ -77,38 +110,76 @@ def test_mirror():
     data = {
         "sast": [row(1), row(2, severity="low"), row(3, ref="refs/pull/7/merge")],
         "sca": [row(4, exposure="reachable"), row(5, exposure="unreachable")],
-        "secrets": [row(6, severity="low")],
+        "secrets": [
+            {"repository": {"name": "example/other"}, "ref": "main"},
+            {"repository": {"name": "jomcgi-org/homelab"}, "ref": "feature"},
+            secret_row("secret-6"),
+        ],
     }
 
+    alerts = []
+
+    def alert(name, fields):
+        alerts.append((name, fields))
+
     def get(path):
+        if parse_qs(urlsplit(path).query).get("page", ["0"]) != ["0"]:
+            return {"findings": []}
         product = parse_qs(urlsplit(path).query).get("issue_type", ["secrets"])[0]
+        if product == "secrets":
+            assert urlsplit(path).path == "/17/secrets"
+            return {"findings": data[product]}
+        assert urlsplit(path).path == "/org/findings"
+        params = parse_qs(urlsplit(path).query)
+        assert params["dedup"] == ["true"] and params["page_size"] == ["3000"]
         return {"findings": data[product]}
 
-    sync(get, "org", board)
+    sync(get, "org", board, alert)
     assert [i["title"] for i in board.issues[1:]] == [
         "Semgrep sast/1",
         "Semgrep sca/4",
-        "Semgrep secrets/6",
+        "Semgrep secrets/secret-6",
     ]
-    sync(get, "org", board)
+    sync(get, "org", board, alert)
+    assert alerts == [
+        (
+            "SemgrepNewSecret",
+            {
+                "repository": "jomcgi-org/homelab",
+                "file": "src/file",
+                "link": "https://semgrep.dev/orgs/org/findings/secret-6",
+            },
+        )
+    ]
     assert len(board.writes) == 3
+    secret_issue = board.issues[-1]
+    assert "rule-hash" in secret_issue["description"]
+    for status, col in [("FINDING_STATUS_FIXED", 2), ("FINDING_STATUS_OPEN", 1)]:
+        data["secrets"][-1]["status"] = status
+        sync(get, "org", board, alert)
+        assert secret_issue["columnId"] == col
+    assert len(alerts) == 1
     data["sast"][0]["location"]["line"] = 42
-    sync(get, "org", board)
+    sync(get, "org", board, alert)
     issue = board.issues[1]
     assert "src/file:42" in issue["description"]
     assert json.dumps("untrusted\n```") in issue["description"]
     for status, col in [("fixed", 2), ("open", 1), ("ignored", 2), ("open", 1)]:
         data["sast"][0]["status"] = status
-        sync(get, "org", board)
+        sync(get, "org", board, alert)
         assert issue["columnId"] == col
     assert "title" not in board.issues[0]
 
 
-def test_failure_on_last_product_writes_nothing():
+def test_failure_on_last_product_writes_nothing(sync):
     def get(path):
-        if path.startswith("/secrets"):
+        if path.startswith("/17/secrets"):
             raise TimeoutError()
-        return {"findings": [row(1)]}
+        return {
+            "findings": [row(1)]
+            if parse_qs(urlsplit(path).query)["page"] == ["0"]
+            else []
+        }
 
     with pytest.raises(TimeoutError):
         sync(
@@ -118,7 +189,7 @@ def test_failure_on_last_product_writes_nothing():
         )
 
 
-def test_linked_finding_does_not_stop_later_findings():
+def test_linked_finding_does_not_stop_later_findings(sync):
     from urllib.error import HTTPError
 
     board = Board()
@@ -127,6 +198,8 @@ def test_linked_finding_does_not_stop_later_findings():
     data = {"sast": [row(1), row(2)], "sca": [], "secrets": []}
 
     def get(path):
+        if parse_qs(urlsplit(path).query).get("page", ["0"]) != ["0"]:
+            return {"findings": []}
         product = parse_qs(urlsplit(path).query).get("issue_type", ["secrets"])[0]
         return {"findings": data[product]}
 
@@ -151,12 +224,14 @@ def test_linked_finding_does_not_stop_later_findings():
     assert board.issues[2]["columnId"] == 2
 
 
-def test_finding_data_has_no_literal_mention():
+def test_finding_data_has_no_literal_mention(sync):
     board = Board()
     board.issues.append({"id": 1, "description": "", "labelIds": []})
     data = {"sast": [row(1, rule_name="@joe rule")], "sca": [], "secrets": []}
 
     def get(path):
+        if parse_qs(urlsplit(path).query).get("page", ["0"]) != ["0"]:
+            return {"findings": []}
         product = parse_qs(urlsplit(path).query).get("issue_type", ["secrets"])[0]
         return {"findings": data[product]}
 
@@ -164,3 +239,163 @@ def test_finding_data_has_no_literal_mention():
     description = board.issues[1]["description"]
     assert "@" not in description
     assert "\\u0040joe rule" in description
+
+
+@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.parametrize("deployment", ["org", ""])
+def test_auth_error_alerts_once_before_board_access(status, deployment, sync):
+    from urllib.error import HTTPError
+
+    def get(path):
+        if path.startswith("/org/findings"):
+            return {
+                "findings": [row(1)]
+                if parse_qs(urlsplit(path).query)["page"] == ["0"]
+                else []
+            }
+        raise HTTPError(path, status, "", {}, None)
+
+    alerts = []
+    for _ in range(2):
+        sync(
+            get,
+            deployment,
+            lambda *args: pytest.fail("accessed INTSEC"),
+            lambda *args: alerts.append(args),
+        )
+    assert len(alerts) == 1
+    sync(lambda _: {"findings": []}, "org", Board())
+    sync(get, deployment, pytest.fail, lambda *args: alerts.append(args))
+    assert [name for name, _ in alerts] == ["SemgrepAuthenticationFailed"] * 2
+    assert alerts[0][1]["outage"] != alerts[1][1]["outage"]
+
+
+@pytest.mark.parametrize("reject_large", [False, True])
+@pytest.mark.parametrize("with_paging", [False, True])
+def test_findings_continue_past_server_capped_pages(reject_large, with_paging):
+    from urllib.error import HTTPError
+
+    def get(path):
+        params = parse_qs(urlsplit(path).query)
+        if params.get("issue_type") != ["sast"]:
+            return {"findings": []}
+        if reject_large and params["page_size"] == ["3000"]:
+            raise HTTPError(path, 400, "page_size", {}, None)
+        page = int(params["page"][0])
+        payload = {"findings": [row(page + 1)] if page < 2 else []}
+        if with_paging:
+            assert page <= 1
+            payload["paging"] = {"next": "/findings?page=1" if page == 0 else None}
+        return payload
+
+    assert list(module["snapshot"](get, "org", 17)) == ["sast/1", "sast/2"]
+
+
+def test_secrets_cursor_ends_on_nonempty_terminal_page():
+    calls = []
+
+    def get(path):
+        if path.startswith("/org/findings?"):
+            return {"findings": []}
+        assert urlsplit(path).path == "/17/secrets"
+        calls.append(parse_qs(urlsplit(path).query))
+        if len(calls) == 1:
+            return {"findings": [secret_row(1)], "cursor": "a/b+= c"}
+        assert len(calls) == 2
+        return {
+            "findings": [
+                {
+                    "id": "2",
+                    "ref": "main",
+                    "repository": {"name": "jomcgi-org/homelab"},
+                    "status": "FINDING_STATUS_OPEN",
+                }
+            ],
+            "cursor": None,
+        }
+
+    assert list(module["snapshot"](get, "org", 17)) == ["secrets/1", "secrets/2"]
+    assert calls == [{"limit": ["2000"]}, {"limit": ["2000"], "cursor": ["a/b+= c"]}]
+
+
+def test_new_secret_alerts_once_after_its_issue_exists(sync):
+    board = Board()
+    board.issues.append({"id": 1, "description": "", "labelIds": []})
+    data = {"sast": [], "sca": [], "secrets": [secret_row("secret-6")]}
+
+    def get(path):
+        if parse_qs(urlsplit(path).query).get("page", ["0"]) != ["0"]:
+            return {"findings": []}
+        product = parse_qs(urlsplit(path).query).get("issue_type", ["secrets"])[0]
+        return {"findings": data[product]}
+
+    alerts = []
+    real = Board.__call__
+
+    def failing_post(self, path, method="GET", body=None):
+        if method == "POST":
+            raise TimeoutError()
+        return real(self, path, method, body)
+
+    def failing_alert(name, fields):
+        raise TimeoutError()
+
+    # The issue POST fails: no alert goes out for an issue that does not exist.
+    Board.__call__ = failing_post
+    try:
+        with pytest.raises(TimeoutError):
+            sync(get, "org", board, failing_alert)
+    finally:
+        Board.__call__ = real
+    # The POST succeeds and the alert fails: the next poll retries the alert
+    # without a second issue.
+    with pytest.raises(TimeoutError):
+        sync(get, "org", board, failing_alert)
+    assert len(board.issues) == 2
+    for _ in range(2):
+        sync(get, "org", board, lambda name, fields: alerts.append(name))
+    assert alerts == ["SemgrepNewSecret"]
+    assert len(board.issues) == 2
+
+
+def test_failing_write_for_another_finding_does_not_hold_an_alert(sync):
+    board = Board()
+    board.issues.append({"id": 1, "description": "", "labelIds": []})
+    data = {
+        "sast": [],
+        "sca": [],
+        "secrets": [secret_row("secret-a"), secret_row("secret-b")],
+    }
+
+    def get(path):
+        if parse_qs(urlsplit(path).query).get("page", ["0"]) != ["0"]:
+            return {"findings": []}
+        product = parse_qs(urlsplit(path).query).get("issue_type", ["secrets"])[0]
+        return {"findings": data[product]}
+
+    alerts = []
+    real = Board.__call__
+
+    def failing_post_for_b(self, path, method="GET", body=None):
+        if method == "POST" and body["title"].endswith("secret-b"):
+            raise TimeoutError()
+        return real(self, path, method, body)
+
+    def failing_alert(name, fields):
+        raise TimeoutError()
+
+    Board.__call__ = failing_post_for_b
+    try:
+        # A's issue is created but its alert fails.
+        with pytest.raises(TimeoutError):
+            sync(get, "org", board, failing_alert)
+        assert [i["title"] for i in board.issues[1:]] == ["Semgrep secrets/secret-a"]
+        # B's POST keeps failing on every later poll; A's alert still goes
+        # out once, before B's write.
+        for _ in range(2):
+            with pytest.raises(TimeoutError):
+                sync(get, "org", board, lambda name, fields: alerts.append(name))
+    finally:
+        Board.__call__ = real
+    assert alerts == ["SemgrepNewSecret"]
+    assert len(board.issues) == 2

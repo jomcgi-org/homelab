@@ -22,19 +22,21 @@ const (
 // GoalAuditRecord is private. It must never enter a check, comment or log.
 // Reply holds the entire final reply before the verdict parser bounds it.
 type GoalAuditRecord struct {
-	Initial     *GoalCheck `json:"initial,omitempty"` // Verdicts the confirmation was asked to recheck.
-	Repository  string     `json:"repository"`
-	PullRequest int        `json:"pull_request"`
-	Head        string     `json:"head"`
-	Issue       string     `json:"issue"`
-	Digest      string     `json:"evidence_digest"`
-	MessageID   string     `json:"message_id"`
-	TaskID      string     `json:"task_id"`
-	SessionID   string     `json:"session_id"`
-	Phase       string     `json:"phase"`
-	CreatedAt   time.Time  `json:"created_at"`
-	State       string     `json:"state"`
-	Reply       string     `json:"reply"`
+	ReplyRevision int64      `json:"replyRevision,omitempty"`
+	Ownership     string     `json:"ownership,omitempty"`
+	Initial       *GoalCheck `json:"initial,omitempty"` // Verdicts the confirmation was asked to recheck.
+	Repository    string     `json:"repository"`
+	PullRequest   int        `json:"pull_request"`
+	Head          string     `json:"head"`
+	Issue         string     `json:"issue"`
+	Digest        string     `json:"evidence_digest"`
+	MessageID     string     `json:"message_id"`
+	TaskID        string     `json:"task_id"`
+	SessionID     string     `json:"session_id"`
+	Phase         string     `json:"phase"`
+	CreatedAt     time.Time  `json:"created_at"`
+	State         string     `json:"state"`
+	Reply         string     `json:"reply"`
 }
 
 type GoalAudit interface {
@@ -96,6 +98,7 @@ type GoalTask struct {
 	State     string    `json:"state,omitempty"`
 	Nonce     string    `json:"nonce,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+	IssuedAt  time.Time `json:"issued_at,omitzero"`
 }
 
 const (

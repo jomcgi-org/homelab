@@ -180,6 +180,7 @@ codexTrial:
     digest: ""
 
 broker:
+  otlpEndpoint: ""
   # A login that can only call the connector's accounting append functions.
   # Provisioned by factory-db; never use the connector owner's Secret here.
   accounting:
@@ -337,6 +338,11 @@ agents:
 # Secret must exist first: kagent rejects the Agent while it is missing.
 # Omit codexCodeMode for ordinary bindings. Explicit false and true select
 # direct and code mode respectively on the same published trial image.
+# mcpServers:
+#   - name: grafana
+#     url: http://mcp-grafana.grafana.svc.cluster.local:8000/mcp
+#     secret: grafana-mcp
+#     tools: [query_prometheus, search_dashboards, get_dashboard_summary, alerting_rules_read]
 repositories: []
 
 # The Substrate worker image for binding WorkerPools, matching Substrate's
@@ -446,6 +452,11 @@ itsaplan:
   # and the session cookie stays host-only (__Host-).
   host: factory-plan.jomcgi.dev
   apiPath: /backend
+  # CI pins the rebuilt web image in published charts.
+  webImage:
+    repository: ghcr.io/jomcgi/homelab/projects/factory/itsaplan-web
+    tag: ""
+    digest: ""
   images:
     api: ghcr.io/croffasia/itsaplan-api:1.10.0@sha256:9f53d060db6594b2e51bc224183e8e8c60e544a1fd65dcd451c053568c642753
     web: ghcr.io/croffasia/itsaplan-web:1.10.0@sha256:be213d6861f66ac68320db2a1481c050bc811a740d558f5ebde576b34f78b289
@@ -485,7 +496,9 @@ itsaplan:
   # What the bootstrap Job creates once: a team, its project and the external
   # agents. Each agent's API key goes to Secret factory-itsaplan-agent-<username>
   # (keys apiKey, agentId, teamId, projectKey, url); a lost Secret gets the
-  # same agent a new key.
+  # same agent a new key. A readOnly agent gets only work_items read in the
+  # project, through the Factory reviewer role, and no triggers; the bootstrap
+  # checks that with the agent's own key before it writes the key.
   bootstrap:
     team:
       name: Factory
@@ -506,6 +519,11 @@ itsaplan:
         name: Factory coordinator
         triggerOnAssign: false
         triggerOnMention: false
+      # The public storyboard publisher (projects/factory-storyboard) reads the
+      # project's issues with this key.
+      - username: factory-storyboard
+        name: Factory storyboard
+        readOnly: true
   # Settings written to the api's environment over the chart's.
   env: {}
   resources:
@@ -547,6 +565,8 @@ itsaplan:
 # queue. One replica in the broker's namespace, as ServiceAccount
 # factory-connector, which the chart keeps.
 connector:
+  # OTLP/gRPC URL of the factory trace receiver. Empty disables export.
+  traceEndpoint: ""
   # Staged off until the hub route and dedicated Authentik app password exist.
   notify:
     enabled: false
@@ -573,6 +593,43 @@ connector:
   agents:
     - username: homelab-codex
       concurrency: 1
+  # Reviewed planner jobs. Each entry sets name, namespace (the first two
+  # fingerprint segments), ceiling, minInterval, cooldown, perRun (1–4),
+  # issueTitle and instructions. An unknown ceiling routes to Backlog.
+  # The three pilots Joe approved (#7935, decision 6891325789).
+  plannerSchedules:
+    - name: delivery-health
+      namespace: homelab:delivery
+      ceiling: delegate
+      minInterval: 24h
+      cooldown: 168h
+      perRun: 2
+      issueTitle: Investigate a factory delivery failure
+      instructions: >-
+        Verify the cited failure on the current code and identify the affected
+        delivery stage. Fix its cause and validate the affected check or
+        rollout path.
+    - name: trust-drift
+      namespace: homelab:trust
+      ceiling: delegate
+      minInterval: 24h
+      cooldown: 168h
+      perRun: 1
+      issueTitle: Investigate drift in factory trust rules
+      instructions: >-
+        Compare the cited evidence with reviewed factory policy. Repair a
+        confirmed repository defect through review and preserve all required
+        checks and approval rules.
+    - name: documentation-drift
+      namespace: homelab:docs
+      ceiling: delegate
+      minInterval: 168h
+      cooldown: 720h
+      perRun: 2
+      issueTitle: Verify a stale homelab documentation claim
+      instructions: >-
+        Check the cited claim against current code or rollout evidence. Correct
+        the affected documentation and link the source that supports the change.
   # Per repository binding, by its `repositories` name; every binding needs
   # one. Owner, repository, base branch and the kagent Agent come from the
   # binding. Keys: itsaplanProject and agents (required); branchPrefix
@@ -636,6 +693,7 @@ connector:
 # and Substrate credentialProvider.namespacePolicies. Deploy values follow the
 # chart publish; neither the connector's reviewerCheck nor a ruleset changes here.
 reviewer:
+  traceEndpoint: ""
   enabled: false
   # Overwritten at build time by helm_chart(images = ...).
   image:
@@ -653,6 +711,11 @@ reviewer:
   # broker's comment token, which needs the App's Issues write permission.
   # Empty posts no comment.
   commentAuthor: ""
+  # The review Harness's workload image (spec.workload.image), for example the
+  # private Codex harness plus mandoline from projects/factory/reviewer/harness.
+  # Empty keeps kagent's built-in harness image. A coding binding sets its own
+  # with repositories[].harnessImage.
+  harnessImage: ""
   # GitHub-only Semgrep evidence. Unset is off; enabling follows chart write-back.
   # semgrep: {appId: 4746654, checkName: semgrep-cloud-platform/scan, wait: 10m}
   semgrep: null

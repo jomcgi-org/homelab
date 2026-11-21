@@ -11,7 +11,7 @@ bazel_dep(name = "aspect_rules_lint", version = "1.10.2")
 # Register jq toolchain for JSON processing in OCI operations
 bazel_lib = use_extension("@aspect_bazel_lib//lib:extensions.bzl", "toolchains")
 bazel_lib.jq()
-use_repo(bazel_lib, "jq_toolchains")
+use_repo(bazel_lib, "jq_linux_amd64", "jq_toolchains")
 
 bazel_dep(name = "buildifier_prebuilt", version = "8.2.0.2")
 bazel_dep(name = "bazel_skylib", version = "1.8.2")
@@ -203,6 +203,12 @@ http_file(
 
 # BuildBuddy RBE toolchain for remote build execution (80 cores on free tier)
 buildbuddy = use_extension("@toolchains_buildbuddy//:extensions.bzl", "buildbuddy")
+
+# Remote actions use Ubuntu 22.04. Local fallback on the Ubuntu 24.04
+# workflow runner also needs the GCC 13 compiler's builtin header directory.
+buildbuddy.gcc_toolchain(
+    extra_cxx_builtin_include_directories = ["/usr/lib/gcc/x86_64-linux-gnu/13/include"],
+)
 use_repo(buildbuddy, "buildbuddy_toolchain")
 
 multitool = use_extension("@rules_multitool//multitool:extension.bzl", "multitool")
@@ -456,6 +462,29 @@ private_oci_layer(
     visibility_to = ["//bazel/tools/mandoline:__pkg__"],
 )
 
+# Base of the private Codex+mandoline harness image (projects/factory/harness/codex).
+# Keep the digest equal to kagent.config.harnessImages.codex in
+# projects/factory/deploy/values.yaml; harness_image_test checks it.
+oci.pull(
+    name = "codex_harness",
+    digest = "sha256:51d92a9c9b5e819325e89491a80678539fc60dc7713a6e4e4b150ff9adc0a3cb",
+    image = "ghcr.io/jomcgi-org/kagent/codex-harness",
+    platforms = ["linux/amd64"],
+)
+use_repo(oci, "codex_harness", "codex_harness_linux_amd64")
+
+# Base of the private Claude+mandoline harness image (projects/factory/harness/claude).
+# Keep the digest equal to the Claude harness kagent runs: the vendored kagent
+# chart's builtin claude image, unless deploy values override it.
+# harness_image_test checks it.
+oci.pull(
+    name = "claude_harness",
+    digest = "sha256:111d28bc8552469b028d91ecd2352c9d44811aba07be12b1e6868db7948f904e",
+    image = "ghcr.io/kagent-dev/kagent/claude-harness",
+    platforms = ["linux/amd64"],
+)
+use_repo(oci, "claude_harness", "claude_harness_linux_amd64")
+
 #########################
 # PostgreSQL test fixtures — extract PG16 + pgvector binaries from OCI
 postgres = use_extension("//bazel/tools/postgres:extensions.bzl", "postgres")
@@ -479,8 +508,19 @@ itsaplan_fixture(
     source = "@itsaplan_source//:package.json",
 )
 
+itsaplan_fixture(
+    name = "itsaplan_web_inputs",
+    manifest_patch = "//projects/factory/itsaplan-web:next-security.patch",
+    source = "@itsaplan_source//:package.json",
+    workspace = "web",
+)
+
 # Configure apko for container images
 apko = use_extension("@rules_apko//apko:extensions.bzl", "apko")
+apko.translate_lock(
+    name = "itsaplan_web_lock",
+    lock = "//projects/factory/itsaplan-web:apko.lock.json",
+)
 apko.translate_lock(
     name = "factory_landing_lock",
     lock = "//projects/factory-landing:apko.lock.json",
@@ -574,6 +614,10 @@ apko.translate_lock(
     lock = "//projects/factory/reviewer/image:apko.lock.json",
 )
 apko.translate_lock(
+    name = "trips_lock",
+    lock = "//projects/trips/image:apko.lock.json",
+)
+apko.translate_lock(
     name = "scotland_connector_lock",
     lock = "//projects/scotland-connector/image:apko.lock.json",
 )
@@ -605,7 +649,7 @@ apko.translate_lock(
     name = "embervm_runtime_pi_lock",
     lock = "//projects/embervm/runtimes/pi:apko.lock.json",
 )
-use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "factory_alert_relay_lock", "factory_broker_lock", "factory_codex_mode_lock", "factory_connector_lock", "factory_landing_lock", "factory_reviewer_lock", "jomcgi_site_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "scotland_connector_lock", "shotter_lock", "stars_grid_apko_lock")
+use_repo(apko, "embervm_conformance_lock", "embervm_lock", "embervm_noded_lock", "embervm_runtime_claude_lock", "embervm_runtime_k3s_agent_lock", "embervm_runtime_k3s_server_lock", "embervm_runtime_pi_lock", "embervm_runtime_postgres_lock", "embervm_runtime_python_lock", "embervm_scratch_prep_lock", "embervm_tokenbroker_lock", "embervm_xds_lock", "factory_alert_relay_lock", "factory_broker_lock", "factory_codex_mode_lock", "factory_connector_lock", "factory_landing_lock", "factory_reviewer_lock", "itsaplan_web_lock", "jomcgi_site_lock", "monolith_frontend_lock", "rootfs_builder_lock", "sandbox_elixir_lock", "sandbox_go_lock", "sandbox_javascript_lock", "sandbox_ocaml_lock", "sandbox_python_lock", "sandbox_rust_lock", "scotland_connector_lock", "shotter_lock", "stars_grid_apko_lock", "trips_lock")
 
 # Download multiarch archives (binaries from zip files)
 multiarch_http_archive = use_repo_rule("//bazel/tools/http:multiarch_http_archive.bzl", "multiarch_http_archive")
@@ -862,3 +906,34 @@ kubectl_deps.gazelle_override(
 use_repo(kubectl_deps, wasm_cli = "io_k8s_cli_runtime", wasm_client = "io_k8s_client_go", wasm_cobra = "com_github_spf13_cobra", wasm_kubectl = "io_k8s_kubectl", wasm_repo_config = "bazel_gazelle_go_repository_config")
 
 use_repo(go_sdk, wasm_go_sdk = "main___download_0_linux_amd64")
+
+# CPU-only forecasting dependencies stay out of the shared Python hub.
+pip.parse(
+    hub_name = "capacity_forecast_pip",
+    python_version = "3.13",
+    requirements_lock = "//projects/capacity-forecast:requirements.txt",
+)
+use_repo(pip, "capacity_forecast_pip")
+
+http_archive(
+    name = "timestral_source",
+    build_file = "//projects/capacity-forecast:timestral.BUILD",
+    sha256 = "be734f502f88e95b138558d765f3ad3b3ac8d2662270f9cf8b03138359828150",
+    strip_prefix = "timestral-a534bdbd244d64f3d9d743f46c7bf6fc330ed4ff",
+    type = "tar.gz",
+    urls = ["https://codeload.github.com/mistralai/timestral/tar.gz/a534bdbd244d64f3d9d743f46c7bf6fc330ed4ff"],
+)
+
+[
+    http_file(
+        name = name,
+        downloaded_file_path = filename,
+        sha256 = sha256,
+        urls = ["https://huggingface.co/mistralai/Timestral-5M/resolve/bdd20cfc15a3fea0e4cb5ccef37f8d3ca7aa335f/" + filename],
+    )
+    for name, filename, sha256 in [
+        ("timestral_config", "config.json", "b5f27f61513f8fd1a3aa996f3720d3679cb40bce5bcb08eb3dc320ce726e7c2f"),
+        ("timestral_weights", "model.safetensors", "7ace108c4987e7f2a99a75a445240019d1d31c2117139d1bd05ffdfd25aca738"),
+        ("timestral_license", "LICENSE", "648194727930df730890e9f9affdbcc5c930d406d6829559b25ca3d5a973fc8c"),
+    ]
+]

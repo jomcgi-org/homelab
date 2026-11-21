@@ -45,18 +45,57 @@ def test_scheduled_writer():
     ]
     assert {ref["name"] for ref in refs} == {
         "factory-storyboard-factory-public-s3",
-        "factory-storyboard-readers",
+        "factory-itsaplan-agent-factory-storyboard",
         "factory-storyboard-db",
+    }
+    (claim,) = [
+        d["data"]
+        for d in docs
+        if d["kind"] == "ConfigMap"
+        and d["metadata"].get("labels", {}).get("factory.jomcgi.dev/garage-claim")
+        == "true"
+    ]
+    assert claim == {
+        "access": "readwrite",
+        "bucket": "factory-public",
+        "namespace": "factory",
+        "secretName": "factory-storyboard-factory-public-s3",
     }
     # The root filesystem stays read-only; the secret scan writes to /tmp.
     (container,) = pod["containers"]
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
     assert container["volumeMounts"] == [{"name": "tmp", "mountPath": "/tmp"}]
     assert pod["volumes"] == [{"name": "tmp", "emptyDir": {"sizeLimit": "256Mi"}}]
-    # The 1Password item needs only the read-only itsaplan key.
+
+
+def test_itsaplan_key_comes_from_the_bootstrap_secret():
+    # The factory chart's itsaplan bootstrap creates the read-only agent
+    # factory-storyboard and writes its key to this Secret under apiKey
+    # (projects/factory/chart/files/itsaplan/bootstrap.py).
+    docs = render()
+    (job,) = [d for d in docs if d["kind"] == "CronJob"]
+    pod = job["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+    env = {v["name"]: v for v in pod["containers"][0]["env"]}
+    # The CronJob can run before that PostSync bootstrap. An optional
+    # reference lets the pod start, and the publisher then skips the cycle.
+    assert env["ITSAPLAN_KEY"]["valueFrom"] == {
+        "secretKeyRef": {
+            "name": "factory-itsaplan-agent-factory-storyboard",
+            "key": "apiKey",
+            "optional": True,
+        }
+    }
+    # No other Secret reference is optional.
     assert [
-        ref["key"] for ref in refs if ref["name"] == "factory-storyboard-readers"
+        name
+        for name, var in env.items()
+        if var.get("valueFrom", {}).get("secretKeyRef", {}).get("optional")
     ] == ["ITSAPLAN_KEY"]
+    assert "APPROVED_HISTORY" not in env
+    # The chart owns no copy of that Secret and no 1Password item.
+    kinds = {(d["kind"], d["metadata"]["name"]) for d in docs}
+    assert not any(kind == "OnePasswordItem" for kind, _ in kinds)
+    assert not any(name.startswith("factory-itsaplan") for _, name in kinds)
 
 
 def test_no_pod_reaches_the_kagent_controller():

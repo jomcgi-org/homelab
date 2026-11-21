@@ -1,7 +1,7 @@
 # The prometheus namespace's allowlist under the cluster-wide default-deny
 # (projects/platform-factory/network-policy/). Prometheus reaches each target
 # on its metrics port only; scrape-ingress.yaml admits it at the other end.
-# Grafana is its only client; operators use a port-forward. Prometheus sends
+# Operators query through Grafana or a port-forward. Prometheus sends
 # alerts to Alertmanager, which posts them to Discord.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -33,6 +33,9 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: factory
             app.kubernetes.io/name: factory-reviewer
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: capacity-forecast
+            app.kubernetes.io/name: capacity-forecast
       toPorts:
         - ports:
             - port: "9090"
@@ -58,6 +61,20 @@ spec:
             app.kubernetes.io/name: kube-state-metrics
         - matchLabels:
             app.kubernetes.io/name: health-exporter
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: capacity-forecast
+            app.kubernetes.io/name: capacity-forecast
+        - matchLabels:
+            app.kubernetes.io/name: cloudflare-exporter
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: cfgate-system
+            app.kubernetes.io/name: cloudflare-exporter
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: jomcgi-site-prod
+            app.kubernetes.io/name: cloudflare-exporter
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-public
+            app.kubernetes.io/name: cloudflare-exporter
       toPorts:
         - ports:
             - port: "8080"
@@ -132,6 +149,9 @@ spec:
     - fromEndpoints:
         - matchLabels:
             app.kubernetes.io/name: prometheus
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory
+            app.kubernetes.io/name: factory-semgrep-sync
       toPorts:
         - ports:
             - port: "9093"
@@ -232,6 +252,34 @@ spec:
     # The public health file only (HOME-415).
     - toFQDNs:
         - matchName: factory-data.jomcgi.dev
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: cloudflare-exporter
+  namespace: prometheus
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflare-exporter
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    # Cloudflare's trace page only (HOME-634).
+    - toFQDNs:
+        - matchName: api.cloudflare.com
       toPorts:
         - ports:
             - port: "443"

@@ -4,6 +4,8 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+import sys
+import types
 import pytest
 from jsonschema import Draft7Validator
 
@@ -43,7 +45,7 @@ def validate(docs):
 class Store:
     """The connector views: delivery facts and the text of eligible messages.
 
-    The store test checks that storyboard_messages holds only completed HOME
+    The store test checks that storyboard_prose_messages holds completed HOME
     tasks that the binding's own agent ran, never the security agent's.
     """
 
@@ -255,4 +257,42 @@ def test_absent_connector_view_publishes_nothing(monkeypatch, caplog):
         docs = runtime.documents(None, "HOME", PROJECT, board((4, 1, [])), no_secrets)
     assert docs is None
     assert store.queried == []
-    assert "storyboard_messages is absent" in caplog.text
+    assert "storyboard_prose_messages is absent" in caplog.text
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_cycle_without_itsaplan_key_skips_cleanly(monkeypatch, caplog, value):
+    # The CronJob can run before the factory chart's PostSync bootstrap
+    # writes the key. The chart reads it as optional, so the pod starts.
+    if value is None:
+        monkeypatch.delenv("ITSAPLAN_KEY", raising=False)
+    else:
+        monkeypatch.setenv("ITSAPLAN_KEY", value)
+
+    def read_board(key):
+        raise AssertionError("read the board without a key")
+
+    monkeypatch.setattr(runtime, "read_board", read_board)
+    with caplog.at_level(logging.WARNING, logger=runtime.__name__):
+        runtime.main()
+    assert caplog.messages == ["itsaplan key not bootstrapped yet; skipping this cycle"]
+
+
+def test_cycle_with_itsaplan_key_reads_the_board(monkeypatch):
+    monkeypatch.setenv("ITSAPLAN_KEY", "key")
+    monkeypatch.setenv("PUBLIC_PROJECT", "HOME")
+    for name in ("boto3", "psycopg", "psycopg.rows"):
+        module = types.ModuleType(name)
+        module.dict_row = None
+        monkeypatch.setitem(sys.modules, name, module)
+
+    class Read(Exception):
+        pass
+
+    def read_board(key):
+        assert key == "HOME"
+        raise Read
+
+    monkeypatch.setattr(runtime, "read_board", read_board)
+    with pytest.raises(Read):
+        runtime.main()

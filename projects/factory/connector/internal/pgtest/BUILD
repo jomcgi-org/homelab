@@ -5,7 +5,11 @@ go_library(
     testonly = True,
     srcs = ["pgtest.go"],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/internal/pgtest",
-    visibility = ["//projects/factory/connector:__subpackages__"],
+    visibility = [
+        "//projects/factory/connector:__subpackages__",
+        "//projects/trips/export:__pkg__",
+        "//projects/trips/ingest:__pkg__",
+    ],
     deps = [
         "//projects/factory/connector/migrations",
         "@com_github_lib_pq//:pq",

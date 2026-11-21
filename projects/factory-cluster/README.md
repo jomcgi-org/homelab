@@ -93,6 +93,59 @@ Kubernetes Secrets are encrypted at rest (`secrets-encryption: true` in
 on each server (`/var/lib/rancher/k3s/server/token`); keeping a copy off the nodes is part of
 the [backup plan](ARCHITECTURE.md#direction).
 
+## Retire a lost factory node
+
+Before fencing, open an authorized SSH session on a surviving factory k3s
+server (for example, node-2 when retiring node-1). The bootstrap kubeconfig
+points to node-1. Use the surviving server's local API and credentials for
+the entire procedure. In that shell run:
+
+```bash
+factory_kubectl() { sudo k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml --server=https://127.0.0.1:6443 "$@"; }
+factory_kubectl get --raw=/readyz
+factory_kubectl get nodes -o wide
+```
+
+Proceed only if readiness returns `ok` and the Node names and addresses match
+the factory inventory. Keep this shell open for the commands below.
+
+1. Match the factory Node to the physical host using inventory. Disconnect its
+   power and keep it disconnected, or verify power-off through independent
+   management and prevent restart. Record the host identifier, fencing method,
+   verification time and operator in the incident.
+2. Before removing the Node, capture its name and UID, the affected pod names,
+   namespaces and UIDs, and the recovery hold for each affected issue. Set
+   `NODE` and `ISSUE` to the identified Node name and issue key.
+
+   ```bash
+   factory_kubectl get node "$NODE" -o custom-columns=NAME:.metadata.name,UID:.metadata.uid
+   factory_kubectl get pods -A --field-selector "spec.nodeName=$NODE" -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid
+   factory_kubectl -n factory exec deploy/factory-connector -- connector recovery inspect "$ISSUE"
+   ```
+
+   Match the hold's session and historical attempts to the workers. Record how
+   every possible execution copy, including copies under historical principals,
+   was fenced and how retired or in-flight dispatchers were quiesced.
+   **Stop before Node deletion or recovery confirmation if any fence is unproven.**
+   A `NotReady` Node, missing pod or `READY` session can coexist with a running worker.
+3. Verify the Node still has the recorded UID, then remove the fenced Node with
+   `factory_kubectl delete node "$NODE"`. Keep the host and old dispatchers fenced.
+4. Inspect again. For each affected `pending` hold, verify its snapshot still
+   matches the evidence and wait until `NotBefore`. Set `HOLD_ID` and `HASH` from
+   its exact `ID` and `Fingerprint`, and `EVIDENCE` to the incident reference.
+   Choose `ACTION=retry` for replacement or `ACTION=cancel` to close the target
+   without replacement.
+
+   ```bash
+   factory_kubectl -n factory exec deploy/factory-connector -- \
+     connector recovery confirm-fenced "$HOLD_ID" --fingerprint "$HASH" \
+     --action "$ACTION" --by "$USER" --evidence "$EVIDENCE" --confirm-all-copies-fenced
+   ```
+
+   Inspect again to verify the connector revalidated the `attested` hold and
+   marked it `consumed`. If the fingerprint changes, reconcile the new snapshot
+   with the fencing evidence before confirming. Keep old copies fenced after consumption.
+
 ## Network policy
 
 Ordering matters inside an Application. A pod that starts before its policy
@@ -158,6 +211,29 @@ second factor; choose TOTP. A WebAuthn key enrolled over the port-forward is
 bound to `localhost` and fails on factory-auth.jomcgi.dev. The admin and user
 interfaces are reachable only through the port-forward.
 
+### T3 browser access
+
+Node bootstrap installs the socket units on node-1. After verifying that the
+admission guard is live, run
+`sudo bash projects/factory-cluster/nodes/install-t3-socket.sh --activate`
+on node-1. The installer creates an empty `t3-relay` group at GID 65532 for
+the relay and starts the socket without restarting k3s.
+
+Publish the hostname in the tunnel only after the relay Deployment is
+available, the socket accepts connections, and the production admission guard
+denies a non-relay socket mount.
+
+The relay mounts only the dedicated socket directory and has no network egress.
+T3 listens on `127.0.0.1:3773`. Tailscale Serve uses that listener for mobile.
+
+Before use, check that unauthenticated requests to the UI, API and WebSocket
+start sign-in, and that an authenticated `factory-operators` account without
+`authentik Admins` receives 403. Confirm that an admin can pair and reconnect
+from the browser, and that mobile pairing still works. To withdraw the
+cluster relay, use `sudo systemctl disable --now t3-cluster.socket` and
+`sudo systemctl stop t3-cluster.service`. Revert the Git change to withdraw
+the route and DNS.
+
 ### kubectl through Authentik
 
 | Authentik group | Access |
@@ -218,6 +294,49 @@ a k3s restart: rerun step 2 of "Bootstrap and rebuild". The API server
 fetches Authentik's keys from factory-auth.jomcgi.dev, through Cloudflare. A
 watch or `logs -f` with no traffic for about 100 seconds ends at Cloudflare;
 run it again.
+
+### kubectl from node-1
+
+Node-1 operator sessions use the local k3s API. The node-1 helper asks k3s
+for a ten-minute token for `kube-system/factory-node1-sessions`, then returns
+the token and its expiry to kubectl. The account reuses the two
+`factory-sessions` roles. Its grants cover cluster reads, the tracker
+relay and the named tracker Secret. The helper uses the root-only k3s
+kubeconfig with a fixed TokenRequest and takes no arguments. The operator's
+existing passwordless sudo access runs the helper.
+[Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-710#comment-9315)
+
+After the `kube-access` Application reconciles, install the helper and config
+from the reviewed revision. Run this on node-1 from the repository root:
+
+```sh
+sudo install -o root -g root -m 0755 projects/factory-cluster/nodes/factory-session-token.py /usr/local/sbin/factory-session-token
+sudo install -D -o root -g root -m 0644 /var/lib/rancher/k3s/server/tls/server-ca.crt /etc/factory/k3s-server-ca.crt
+sudo install -D -o root -g root -m 0644 projects/factory-cluster/nodes/factory-session-kubeconfig.yaml /etc/factory/kube-session.yaml
+KUBECONFIG=/etc/factory/kube-session.yaml kubectl auth whoami
+KUBECONFIG=/etc/factory/kube-session.yaml bash projects/platform-factory/kube-access/check-session-access.sh
+```
+
+Check that the username is
+`system:serviceaccount:kube-system:factory-node1-sessions` and the access
+check passes. Open the named tracker relay and check the tracker sign-in
+using the [tracker procedure](../../docs/agents/reference.md#api-access).
+Use `/etc/factory/kube-session.yaml` for that check too. Then back up any
+previous `~/.kube/factory-sessions.yaml` outside the repo and link that path
+to `/etc/factory/kube-session.yaml`. Refresh the CA copy
+after a k3s server CA rotation.
+
+To revert, prepare a sessions kubeconfig from the
+[interactive Authentik setup](#kubectl-through-authentik). Set kubelogin's
+`--token-cache-dir` to a new absolute path under the operator's home
+directory. Use that cache only for the sessions identity. Sign in with the
+dedicated non-admin account. Run `kubectl auth whoami` with the prepared
+config and confirm the account is in `authentik:factory-kube-sessions`.
+Run `check-session-access.sh` with the same config. Replace
+`~/.kube/factory-sessions.yaml` only after both checks pass.
+
+Remove the local helper and config. Use GitOps to remove the service
+account and its entries from the session role bindings.
 
 ### Break-glass
 
@@ -440,7 +559,7 @@ curl -s -X POST -H 'Content-Type: application/json' http://localhost:9093/api/v2
 | Alert | Fires when |
 | --- | --- |
 | `NodeDiskFilling` | A node's root filesystem is more than 75% full for 15 min. Image garbage collection starts at 85% and the kubelet evicts pods at 90% |
-| `KagentSuspendTimedOut` | A `SuspendActor` call passed kagent's fixed 30 s deadline. Each scrape (30 s) that shows more timeouts sends one message with the count, so two timeouts in one scrape give one message. The alert ends an hour later and sends nothing then |
+| `KagentSuspendTimedOut` | A `SuspendActor` call passed the controller's 120-second deadline. Each scrape (30 s) that shows more timeouts sends one message with the count, so two timeouts in one scrape give one message. The alert ends an hour later and sends nothing then |
 | `FactoryItsaplanOutage` | A connector dispatch phase has been failing on itsaplan for 10 min. Check the named phase in connector logs and sample the coordinator key counter using the [HOME-385 procedure](../factory/deploy/notify.md#home-385-rollout-verification). |
 | `FactoryCodexQuotaLow` | A Codex grant has used 90% or more of a quota window for 5 min |
 | `FactoryCodexQuotaExhausted` | A Codex grant is out of quota for 5 min. Coder and review turns fail until a person resets the plan or changes the account. The message gives, for each window the grant has used up, its reset time or that it has none; when no window reads 100%, every window's reset |
@@ -450,6 +569,8 @@ curl -s -X POST -H 'Content-Type: application/json' http://localhost:9093/api/v2
 | `AlertRelayDown` | No ready relay replica for 5 min |
 | `FactoryHealthUnhealthy` | The public `health.json` reports a `status` other than `healthy` for 5 min. The message names each down component |
 | `FactoryHealthStale` | The newest `health.json` that Prometheus read has a `generatedAt` more than 10 min old, or Prometheus read none in 15 min, for 2 min |
+| `FactoryEgressIPChanged` | The egress IP that Cloudflare sees differs from an address of the last hour. It fires at the first scrape of the new address, names both addresses and clears 1 h later |
+| `CloudflareCredentialRefused` | Cloudflare refuses a factory API token with HTTP 401 or 403 for 5 min. The message names the token and the current egress IP. The R2 keys are not tested |
 
 #### Writing an alert
 
@@ -541,7 +662,95 @@ them; also check the `health-exporter` pod in `prometheus`.
 For `FactoryHealthStale`, compare the public `generatedAt` with the exporter's
 reads (`kubectl -n prometheus logs deploy/health-exporter`). If the public
 file is old, check the `health` and `factory-public-factory-public-mirror`
-CronJobs in `factory-public`.
+CronJobs in `factory-public`. If the mirror Job's log shows the R2 error
+`403 AccessDenied`, Cloudflare refuses the R2 mirror key: fix its IP filter
+as for `FactoryEgressIPChanged`, or replace the key.
+
+#### FactoryEgressIPChanged, CloudflareCredentialRefused
+
+Every factory Cloudflare API token and R2 key accepts calls only from the
+home IPv4 address. At about 01:27Z on 2026-11-20 that address changed. Every
+credential then failed, and the public data stayed 6 h old (HOME-634).
+
+```mermaid
+flowchart LR
+  trace["exporter in prometheus"] -- "GET api.cloudflare.com/cdn-cgi/trace" --> cf["Cloudflare"]
+  checks["exporter in each API token's namespace"] -- "read-only check every minute" --> cf
+  mirror["mirror CronJobs, R2 key (not tested)"] -- "R2 copy of health.json" --> cf
+  trace -- "factory_egress_ip_info" --> prom["Prometheus rules"]
+  checks -- "factory_cloudflare_credential_auth_success" --> prom
+  mirror -. "R2 refused: health.json gets old" .-> prom
+  prom -- "firing alert" --> am["Alertmanager"]
+  am -- webhook --> relay["alert-relay"]
+  relay --> discord["Discord"]
+```
+
+`cloudflare-exporter` runs `resources/cloudflare_exporter.py` once in the
+prometheus namespace and once in each API token's namespace. The pod in
+prometheus reads the egress IP and holds no credential. Each other pod takes
+only its token through `secretKeyRef` and reaches only `api.cloudflare.com`.
+The pod in `factory-public` comes from that chart. The egress IP stays in
+Prometheus and the private Discord alert. The exporter never logs it.
+
+| API token (1Password item in `k8s-homelab`) | Secret and namespace | Read-only check |
+| --- | --- | --- |
+| `jomcgi-site-cloudflare`, field `api-token` | `jomcgi-site-cloudflare` in `jomcgi-site-prod` (and `jomcgi-site-dev`) | `GET /accounts/<account>/workers/scripts/jomcgi-site/deployments` |
+| `factory-health-cloudflare`, field `api-token` | `factory-health-cloudflare` in `factory-public` | The same |
+| `factory-cloudflare-api-token`, field `CLOUDFLARE_API_TOKEN` | `cloudflare-api-credentials` in `cfgate-system` | `GET /accounts/<account>/cfd_tunnel?per_page=1` |
+
+A 2xx answer accepts a token and a 401 or 403 refuses it. After a check with
+no answer, the exporter keeps the last answer and sets
+`factory_cloudflare_credential_check_success` to 0.
+
+Each check uses an endpoint that the token's own workload already calls, so
+a refusal means that workload fails too. The jomcgi-site refresh CronJob's
+release fence (`projects/jomcgi-site/data/fence.mjs`) reads the same
+deployments endpoint with the same `jomcgi-site-cloudflare` Secret on every
+run. The health job (`projects/factory-public/chart/files/health.py`) reads it
+with `factory-health-cloudflare`. cfgate manages the tunnel with its token.
+On 2026-11-20 at 07:43Z, after the IP filter fix, a direct GET of the check
+endpoint with the deployed Secret answered HTTP 200 for `jomcgi-site-cloudflare`
+and for the cfgate token. The prod refresh Job `jomcgi-site-refresh-manual-0749`
+then passed its fence check. The health job's 08:22Z `health.json` showed
+`jomcgi-site-worker` up, which needs a 2xx from the same endpoint with
+`factory-health-cloudflare`.
+
+The exporter does not test the R2 keys. The R2 mirror key can write and
+delete all of bucket `factory-public`, so no pod outside the mirror CronJobs
+holds it (`public_test` checks this). A refused R2 key shows through
+`FactoryEgressIPChanged` and `FactoryHealthStale`: the mirror stops, so
+`health.json` gets old.
+
+| R2 key, not tested (1Password item in `k8s-homelab`) | Secret and namespace |
+| --- | --- |
+| `factory-r2-public-mirror` | `<mirror>-r2` of each mirror CronJob in `factory-public` |
+| `r2-s3-public-read` | `jomcgi-site-r2-read` in `jomcgi-site-prod` and `jomcgi-site-dev` |
+| `grimoire-migration-r2` | `grimoire-migration-r2` in `grimoire` |
+
+For `FactoryEgressIPChanged`, allow the new address in each credential:
+
+1. Read the address. The alert summary names it, and node-1 shows it:
+   `curl -s https://api.cloudflare.com/cdn-cgi/trace | grep ^ip=`.
+2. In the Cloudflare dashboard, edit the Client IP Address Filtering of each
+   API token and each R2 key's token in the two tables. Allow the new
+   address and remove the old one.
+3. An edit keeps the token's value, so 1Password needs no change.
+   `CloudflareCredentialRefused` clears at the next accepted check.
+   `FactoryHealthStale` clears when the mirror copies a new `health.json`.
+
+No expected address is stored, so there is no value to change. The
+repository is public and the address is private. The rule counts the
+addresses of the last hour, so it clears 1 h after the change. To end it
+sooner, silence it in Alertmanager.
+
+For `CloudflareCredentialRefused`, read the egress IP in the message. If it
+is new, or `FactoryEgressIPChanged` fires, fix the IP filter as above.
+Otherwise Cloudflare revoked the token, or it lost a permission. Make a
+token with the same permissions and IP filter, and put it in the 1Password
+item. The 1Password operator updates the Secret and restarts the exporter
+(`operator.1password.io/auto-restart`). The exporter's log shows each change
+of result with its HTTP status:
+`kubectl -n <namespace> logs deploy/cloudflare-exporter`.
 
 #### NodeDiskFilling
 
@@ -554,11 +763,12 @@ directory that a running session uses.
 
 #### KagentSuspendTimedOut
 
-kagent v1.0.1 keeps the Actor SUSPENDING, refuses
-every turn and delete for the session, and holds its worker slot. The reaper
-checks every 15 seconds and deletes the assigned worker after five minutes in
-SUSPENDING. If the same claim persists after that deadline, inspect the reaper
-logs and pod assignment. When the reviewed action is enabled, sign in to the
+When a suspend exceeds the controller's two-minute deadline, the Actor can
+stay SUSPENDING and hold its worker slot. The session then refuses turns and
+delete requests. The reaper checks every 15 seconds and deletes the assigned
+worker after five minutes in SUSPENDING. If the same claim persists after
+that deadline, inspect the reaper logs and pod assignment. When the reviewed
+action is enabled, sign in to the
 [KagentSuspendTimedOut runbook](https://factory-runbooks.jomcgi.dev/KagentSuspendTimedOut)
 and select **Review locked sessions**. For the session you intend to free,
 check its executor, worker namespace, pod name and UID, and creator account,
@@ -569,13 +779,13 @@ If the action is unavailable, the node-1 fallback frees every locked session:
 
 ```bash
 # 1. The locked sessions: the same quiescence claim (session and executor)
-#    seen twice, a minute apart. A suspend that is still running has at most
-#    30 s, and the table records no claim time.
+#    seen twice, 150 seconds apart. The controller allows 120 seconds for
+#    a suspend. The table records no claim time.
 claims() { KUBECONFIG=~/.kube/factory.yaml kubectl -n kagent-pg exec kagent-pg-1 -c postgres -- \
   psql -d kagent -At -c "select distinct s.id || ' ' || e.quiescence_executor_id
     from kagent.session s join kagent.session_task_event e using (history_id)
     where e.quiescence_pending and e.quiescence_executor_id is not null" | sort; }
-FIRST=$(claims); sleep 60
+FIRST=$(claims); sleep 150
 SESSIONS=$(comm -12 <(echo "$FIRST") <(claims) | cut -d' ' -f1 | sort -u)
 KUBECONFIG=~/.kube/factory.yaml kubectl -n kagent port-forward svc/kagent-controller 18083:8083 &
 for SESSION in $SESSIONS; do

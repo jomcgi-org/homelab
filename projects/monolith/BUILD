@@ -220,6 +220,7 @@ filegroup(
         "//bazel/tools/js:repo_docs",
         "//bazel/tools/oci:repo_docs",
         "//projects:repo_docs",
+        "//projects/capacity-forecast:repo_docs",
         "//projects/design-system:repo_docs",
         "//projects/embervm/deploy:repo_docs",
         "//projects/embervm/dev/apple:repo_docs",
@@ -232,6 +233,7 @@ filegroup(
         "//projects/factory-explore-site:repo_docs",
         "//projects/factory/alert-relay:repo_docs",
         "//projects/factory/deploy:repo_docs",
+        "//projects/factory/itsaplan-web:repo_docs",
         "//projects/factory/tests/itsaplan:repo_docs",
         "//projects/firecracker/sandbox/elixir:repo_docs",
         "//projects/firecracker/sandbox/go:repo_docs",
@@ -264,6 +266,7 @@ filegroup(
         "//projects/platform/spire:repo_docs",
         "//projects/scotland-connector/internal/httpapi:repo_docs",
         "//projects/scotland-connector/plugin:repo_docs",
+        "//projects/trips:repo_docs",
     ],
     visibility = [
         "//projects/jomcgi-site/web:__pkg__",
@@ -10130,4 +10133,12 @@ filegroup(
         "//projects/monolith/stpa:fragments",
     ],
     visibility = ["//:__pkg__"],
+)
+
+exports_files(
+    [
+        "trips/testdata/geotagged.jpg",
+        "trips/testdata/no_gps.jpg",
+    ],
+    visibility = ["//projects/trips/ingest:__pkg__"],
 )
