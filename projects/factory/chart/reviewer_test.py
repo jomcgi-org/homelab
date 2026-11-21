@@ -968,7 +968,7 @@ def test_invalid_wiring_fails_closed(override: str, message: str) -> None:
         _render([override])
 
 
-def test_semgrep_is_opt_in_github_only_config() -> None:
+def test_semgrep_key_is_scoped_to_opted_in_reviewer_service() -> None:
     assert "semgrep" not in _config(_render(), "factory-reviewer")
     overrides = [
         "semgrepSync.enabled=false",
@@ -976,17 +976,37 @@ def test_semgrep_is_opt_in_github_only_config() -> None:
         "reviewer.semgrep.checkName=semgrep-cloud-platform/scan",
         "reviewer.semgrep.wait=2m",
     ]
-    docs = _render(overrides)
+    evidence_only = _render(overrides)
+    assert "reviewer-semgrep" not in json.dumps(_pod(evidence_only, "factory-reviewer"))
+    docs = _render([*overrides, "reviewer.semgrepTriageEnabled=true"])
     assert _config(docs, "factory-reviewer")["semgrep"] == {
         "appId": 4746654,
         "checkName": "semgrep-cloud-platform/scan",
         "wait": "2m",
     }
-    assert _pod(docs, "factory-reviewer") == _pod(_render(), "factory-reviewer")
-    assert not any(
-        "semgrep" in json.dumps(d).lower()
-        for d in docs
-        if d["kind"] in ("OnePasswordItem", "NetworkPolicy")
+    reviewer = next(
+        c
+        for c in _pod(docs, "factory-reviewer")["containers"]
+        if c["name"] == "reviewer"
+    )
+    key = next(v for v in reviewer["env"] if v["name"] == "SEMGREP_API_KEY")
+    assert key["valueFrom"]["secretKeyRef"] == {
+        "name": "reviewer-semgrep",
+        "key": "API_KEY",
+        "optional": True,
+    }
+    consumers = [
+        (doc["metadata"]["name"], container["name"])
+        for doc in docs
+        for container in doc.get("spec", {})
+        .get("template", {})
+        .get("spec", {})
+        .get("containers", [])
+        if "reviewer-semgrep" in json.dumps(container)
+    ]
+    assert consumers == [("factory-reviewer", "reviewer")]
+    assert all(
+        "reviewer-semgrep" not in json.dumps(d) for d in docs if d["kind"] == "Agent"
     )
 
 

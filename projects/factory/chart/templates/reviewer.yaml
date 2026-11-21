@@ -1,8 +1,19 @@
+{{- /* invariant: FACT-14 */ -}}
 {{- if .Values.reviewer.enabled }}
 {{- $c := .Values.reviewer }}
 {{- $ns := .Values.broker.namespace }}
 {{- $name := include "factory.reviewerName" . }}
 {{- $configYAML := include "factory.reviewerConfig" . }}
+{{- if and $c.semgrep $c.semgrepTriageEnabled }}
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+metadata:
+  name: reviewer-semgrep
+  namespace: {{ $ns }}
+spec:
+  itemPath: vaults/k8s-homelab/items/semgrep
+---
+{{- end }}
 # A kagent principal includes this ServiceAccount's UID. Keep it across
 # upgrades and disable/re-enable cycles, just like the connector's.
 apiVersion: v1
@@ -97,6 +108,11 @@ spec:
               value: factory-reviewer
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ . | quote }}
+            {{- end }}
+            {{- if and $c.semgrep $c.semgrepTriageEnabled }}
+            - name: SEMGREP_API_KEY
+              valueFrom:
+                secretKeyRef: {name: reviewer-semgrep, key: API_KEY, optional: true}
             {{- end }}
             - name: FACTORY_REVIEWER_CONFIG
               value: /etc/factory-reviewer/config.yaml

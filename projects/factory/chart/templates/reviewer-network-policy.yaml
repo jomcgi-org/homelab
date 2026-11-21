@@ -81,6 +81,9 @@ spec:
     {{- end }}
     - toFQDNs:
         - matchName: api.github.com
+        {{- if and .Values.reviewer.semgrep .Values.reviewer.semgrepTriageEnabled }}
+        - matchName: semgrep.dev
+        {{- end }}
       toPorts:
         - ports:
             - port: "443"

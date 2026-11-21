@@ -2876,6 +2876,11 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 			body := summary + "\n\n" + *o.Comment.Findings
 			o.Comment.Findings = &body
 		}
+		// A retained low finding can survive even when omitted from this report.
+		// Its identity may be absent from the bounded check output.
+		if !a.Incomplete && a.DroppedLow == 0 {
+			e.triageSemgrep(ctx, b, pr, in.semgrep, r, &o, a.Optional, a.Deferred)
+		}
 		if in.priorUnknown != "" {
 			// Render left maxPreface for this note, so the summary's tail
 			// (the human-hold marker and footer) survives.
