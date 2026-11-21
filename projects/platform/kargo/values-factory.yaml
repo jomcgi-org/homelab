@@ -6,6 +6,17 @@
 # private.jomcgi.dev route stay off, and the factory's own pipelines arrive
 # with their first Warehouse.
 kargo:
+  # Keep CRDs for HOME-116. No Stage or project needs a controller yet.
+  workloads:
+    install: false
+  rbac:
+    installClusterRoles: false
+    installClusterRoleBindings: false
+  webhooks:
+    register: false
+  argocd:
+    dataPlane:
+      install: false
   api:
     # No UI or API server yet. A Promotion is created as a resource, and the
     # UI needs an edge route and an Authentik client first

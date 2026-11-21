@@ -14,6 +14,10 @@ resources:
   - upstream/substrate-podcert/pod-certificate-controller.yaml
   - upstream/substrate-atelet/atelet.yaml
   - upstream/substrate/namespace.yaml
+  # ate-controller's only Secret grant is the ate-system Role for
+  # egress-mitm-ca-pool. The chart binds its worker controller cluster-wide:
+  # it watches pods, Deployments and WorkerPools across worker namespaces,
+  # and reconciles cluster-scoped SandboxConfigs and ClusterTrustBundles.
   - upstream/substrate/role.yaml
   - upstream/substrate/sandboxconfig-validation.yaml
   - upstream/substrate/sandboxconfig-gvisor.yaml
