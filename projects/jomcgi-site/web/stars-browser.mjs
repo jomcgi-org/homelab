@@ -1,5 +1,6 @@
 // Compiled-page acceptance: pnpm build && pnpm test:browser.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -34,25 +35,41 @@ const sites = Array.from({ length: 95 }, (_, i) => ({
   ),
 }));
 const payloads = {
-  "sites.json": { fetched_at: hour(-2), sites },
-  "history-map.json": {
+  sites: { fetched_at: hour(-2), sites },
+  historyMap: {
     sites: sites.map((site) => ({
       ...site,
       clear: Array.from({ length: 12 }, (_, m) => m + 1),
       dark: Array(12).fill(100),
     })),
   },
-  "map.json": { sites },
+  map: { sites },
 };
 const sources = JSON.parse(
   await readFile(new URL("../data/sources.json", import.meta.url)),
 );
+const files = {};
+const objects = new Map();
+for (const [name, payload] of Object.entries(payloads)) {
+  const body = Buffer.from(JSON.stringify(payload));
+  const digest = createHash("sha256").update(body).digest("hex");
+  const stem = name === "historyMap" ? "history-map" : name;
+  const key = `stars/${stem}-${digest}.json`;
+  files[name] = key;
+  objects.set(`stars-forecast/${key}`, body);
+}
+objects.set(
+  "stars-forecast/latest.json",
+  Buffer.from(JSON.stringify({ files })),
+);
 await snapshot(
   { sections: { stars: sources.sections.stars } },
-  async (_bucket, key) => ({
-    body: Buffer.from(JSON.stringify(payloads[key])),
-    lastModified: new Date(now).toUTCString(),
-  }),
+  async (bucket, key) => {
+    assert.equal(bucket, "factory-public");
+    const body = objects.get(key);
+    assert.ok(body, `Missing fixture object: ${bucket}/${key}`);
+    return { body, lastModified: new Date(now).toUTCString() };
+  },
   join(root, "data"),
 );
 const headers = await readFile(join(root, "_headers"), "utf8");

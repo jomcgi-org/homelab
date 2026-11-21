@@ -74,6 +74,22 @@ const fixtureTrip = {
   highlights: [],
 };
 const objects = new Map([["walks.json", FIXTURE_WALKS]]);
+const starsFiles = {};
+const starsBody = JSON.stringify({ sites: [] });
+const starsDigest = createHash("sha256").update(starsBody).digest("hex");
+for (const [name, stem] of Object.entries({
+  sites: "sites",
+  historyMap: "history-map",
+  map: "map",
+})) {
+  const key = `stars/${stem}-${starsDigest}.json`;
+  starsFiles[name] = key;
+  objects.set(`stars-forecast/${key}`, starsBody);
+}
+objects.set(
+  "stars-forecast/latest.json",
+  JSON.stringify({ files: starsFiles }),
+);
 function tripObject(name, value) {
   const body = JSON.stringify(value);
   const key = `trips/v/${name}-${createHash("sha256").update(body).digest("hex")}.json`;
@@ -125,7 +141,7 @@ export function serveFixturePhoto(route) {
 
 export async function fixtureObject(bucket, key) {
   const body = objects.get(key);
-  if (!body && key.startsWith("trips/"))
+  if (!body && (key.startsWith("trips/") || key.startsWith("stars-forecast/")))
     throw new Error(`Missing fixture object: ${bucket}/${key}`);
   return {
     body: Buffer.from(body ?? "{}"),
