@@ -643,6 +643,7 @@ def ensure_agents(session, team_id, project_id):
         raise SystemExit("coordinator is not a configured bootstrap agent")
     base = f"/teams/{team_id}/ai-agents"
     existing = {a["username"].lower(): a for a in session.call("GET", base)}
+    # invariant: FACT-13
     if "intsec-sync" in existing and not any(
         a["username"] == "intsec-sync" for a in CONFIG["agents"]
     ):

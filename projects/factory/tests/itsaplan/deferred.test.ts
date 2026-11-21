@@ -332,6 +332,7 @@ test("WIP refusal rolls back; capacity returning starts once with the same key",
   expect(recovered.issue.delegateUserId).toBe(f.coder.agent.userId);
 });
 
+// invariant: FACT-13
 test("the sync key can restore and update only its own INTSEC finding", async () => {
   const owner = authedApi((await signUpTestUser()).cookie);
   const projectKey = "INTSEC";
