@@ -326,6 +326,10 @@ func main() {
 	defer db.Close()
 	s := service{db, originals, make(chan struct{}, 4)}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte("Trips upload session ready.\n"))
+	})
 	mux.HandleFunc("POST /api/trips/ingest", s.ingest)
 	server := http.Server{Addr: ":8080", Handler: mux, ReadTimeout: 2 * time.Minute, ReadHeaderTimeout: 10 * time.Second}
 	log.Fatal(server.ListenAndServe())

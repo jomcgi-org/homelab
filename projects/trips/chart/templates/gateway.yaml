@@ -25,6 +25,8 @@ spec:
   hostnames: [factory-trips.jomcgi.dev]
   rules:
     - matches:
+        - method: GET
+          path: {type: Exact, value: /}
         - method: POST
           path: {type: Exact, value: /api/trips/ingest}
         - method: GET

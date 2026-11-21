@@ -47,12 +47,14 @@ cutover. The production hub routing stays in place until step 4.
 2. Set `workloadsEnabled`. Run a one-off export. Verify the manifest's JSON
    hashes, point counts, image references and all five WebP variants against
    the hub snapshot. Provision the scoped R2 mirror credential in
-   `vaults/k8s-homelab/items/trips-public-mirror`. Set the public bucket's
-   `itemPath` to that path while the mirror is suspended. Verify the
+   `vaults/k8s-homelab/items/trips-public-mirror`. The chart references this
+   `itemPath` while the mirror is suspended. Verify the
    OnePasswordItem is Ready, then enable the mirror. Check root latest.json
    and payload cache headers at the public endpoint.
 3. With the published chart enabled, sign in through the factory gateway at
-   `factory-trips.jomcgi.dev`. Replay the same upload corpus against both authenticated routes at
+   `https://factory-trips.jomcgi.dev/`. After sign-in, verify the browser shows
+   “Trips upload session ready.” Send the upload POST with the authenticated
+   session cookie. Replay the same upload corpus against both authenticated routes at
    equal concurrency, including invalid and duplicate uploads. Compare rows,
    HTTP responses, cgroup CPU usage per accepted image and peak memory on fresh
    pods. Check that a missing credential is rejected.
