@@ -188,6 +188,8 @@ func (g *GoalCheck) ownershipFeedback() string {
 	return feedback.String()
 }
 
+// invariant: FACT-13
+
 // explainsUnclear checks the private account for every effective unclear verdict.
 func (g *GoalCheck) explainsUnclear(reply string) bool {
 	lines := strings.Split(replyReasons(reply), "\n")
