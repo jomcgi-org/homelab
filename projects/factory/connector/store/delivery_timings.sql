@@ -4,15 +4,15 @@
 WITH bounds AS (
     SELECT now() - interval '30 days' AS window_start, now() AS window_end
 ), items AS (
-    SELECT w.*, p.created_at AS pr_at, p.merged_at
+    SELECT w.*, p.id AS pr_id, p.created_at AS pr_at, p.merged_at
     FROM work_item w CROSS JOIN bounds b
     LEFT JOIN pull_request p ON p.work_item_id = w.id
     WHERE w.created_at >= b.window_start AND w.created_at < b.window_end
 ), observations AS (
     SELECT i.*, initial.created_at AS queued_at, a.first_sent_at,
-        (SELECT min(r.created_at) FROM run r
-         WHERE r.origin = 'reviewer' AND r.issue_key = i.issue_key
-           AND r.created_at >= i.pr_at) AS review_dispatch_at
+        (SELECT min(e.created_at) FROM review_event e
+         WHERE e.pull_request_id = i.pr_id AND e.kind = 'changes_requested'
+           AND e.disposition = 'acted' AND e.created_at >= i.pr_at) AS feedback_at
     FROM items i
     LEFT JOIN LATERAL (
         SELECT id, created_at FROM run
@@ -25,7 +25,7 @@ WITH bounds AS (
     CROSS JOIN LATERAL (VALUES
         ('queue wait', extract(epoch FROM first_sent_at - queued_at)),
         ('time to first PR', extract(epoch FROM pr_at - created_at)),
-        ('time to first recorded review dispatch attempt', extract(epoch FROM review_dispatch_at - pr_at)),
+        ('review wait', extract(epoch FROM feedback_at - pr_at)),
         ('rework rounds', review_rounds),
         ('time to merge', extract(epoch FROM merged_at - created_at))
     ) m(metric, value)
@@ -35,7 +35,7 @@ SELECT b.window_start, b.window_end, m.metric, m.unit,
     round(avg(s.value) FILTER (WHERE s.value >= 0), 2) AS mean
 FROM bounds b CROSS JOIN (VALUES
     ('queue wait', 'seconds'), ('time to first PR', 'seconds'),
-    ('time to first recorded review dispatch attempt', 'seconds'), ('rework rounds', 'rounds'), ('time to merge', 'seconds')
+    ('review wait', 'seconds'), ('rework rounds', 'rounds'), ('time to merge', 'seconds')
 ) m(metric, unit)
 LEFT JOIN samples s USING (metric)
 GROUP BY b.window_start, b.window_end, m.metric, m.unit

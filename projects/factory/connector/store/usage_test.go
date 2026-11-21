@@ -211,6 +211,9 @@ func TestDeliveryTimings(t *testing.T) {
 		SELECT id,1,1,1,'d','initial','m','factory','coder','completed',1,created_at+interval '1 minute' FROM run WHERE id=1;
 		INSERT INTO pull_request (work_item_id,number,node_id,head_sha,state,created_at,merged_at)
 		SELECT id,1,'node','sha','merged',created_at+interval '3 minutes',created_at+interval '10 minutes' FROM work_item WHERE id=1;
+		INSERT INTO review_event (pull_request_id,github_node_id,commit_sha,author,kind,disposition,created_at)
+		SELECT id,'feedback','sha','reviewer','changes_requested','acted',created_at+interval '6 minutes'
+		FROM pull_request WHERE work_item_id=1;
 	`)
 	if err != nil {
 		t.Fatal(err)
@@ -220,7 +223,7 @@ func TestDeliveryTimings(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	want := map[string]float64{"queue wait": 60, "time to first PR": 180, "time to first recorded review dispatch attempt": 120, "rework rounds": 0.5, "time to merge": 600}
+	want := map[string]float64{"queue wait": 60, "time to first PR": 180, "review wait": 360, "rework rounds": 0.5, "time to merge": 600}
 	for rows.Next() {
 		var start, end any
 		var metric, unit string
