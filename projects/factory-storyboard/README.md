@@ -90,8 +90,9 @@ fixtures at those paths in development and tests; production builds contain none
 
 The factory-storyboard CronJob runs in the factory namespace every five
 minutes. Its ServiceAccount uses the read-only connector database login and
-a Garage write claim for factory-public. Its root filesystem is read-only,
-and the secret scan writes its input files to a 256 MiB `/tmp` emptyDir.
+a Garage read-write claim for `factory-public`. The publisher lists objects
+to enforce retention. Its root filesystem is read-only, and the secret scan
+writes its input files to a 256 MiB `/tmp` emptyDir.
 Its egress allows only factory-db, the itsaplan API and Garage. No
 storyboard pod can reach the kagent controller, because its trusted-proxy
 listener accepts unverified bearer tokens
