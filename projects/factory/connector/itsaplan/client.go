@@ -470,6 +470,13 @@ func (c *Client) MoveIssue(ctx context.Context, issueID, columnID int64) error {
 		map[string]int64{"columnId": columnID}, nil)
 }
 
+// MarkIssueReviewing asks itsaplan to reconcile its native state for a head.
+// itsaplan compares the current column and records each applied head once.
+func (c *Client) MarkIssueReviewing(ctx context.Context, issueID int64, head string) error {
+	return c.do(ctx, c.Coordinator, http.MethodPost, "/issues/"+strconv.FormatInt(issueID, 10)+"/factory-reviewing",
+		map[string]string{"head": head}, nil)
+}
+
 func runPath(id int64, op string) string {
 	return "/agent-runs/" + strconv.FormatInt(id, 10) + "/" + op
 }
