@@ -39,7 +39,10 @@ def main():
     source.add_argument("results", nargs="?", type=Path)
     source.add_argument("--reviewer", metavar="EXECUTABLE")
     parser.add_argument("--split", choices=("scored", "tuning"), default="scored")
+    parser.add_argument("--output", type=Path, help="save per-head replay evidence")
     args = parser.parse_args()
+    if args.output and not args.reviewer:
+        parser.error("--output requires --reviewer")
     cases = json.loads(Path(__file__).with_name("cases.json").read_text())
     results = json.loads(args.results.read_text()) if args.results else {}
     agent = check = blocks = defects = controls = 0
@@ -58,6 +61,7 @@ def main():
         blocking = set(row["blocking_ids"])
         if matched is not None and (not matched or matched not in findings):
             parser.error(f"unknown matched finding on {head}")
+        results[head] = row
         failed = row["conclusion"] == "failure"
         if case["answer"] is None:
             controls += 1
@@ -67,6 +71,11 @@ def main():
             agent += matched is not None
             # invariant: FACT-13
             check += failed and matched is not None and matched in blocking
+    if args.reviewer:
+        output = args.output or Path("results.json")
+        with output.open("x", encoding="utf-8") as evidence:
+            json.dump(results, evidence, indent=2)
+            evidence.write("\n")
     rate("Agent finding recall", agent, defects)
     rate("Check conclusion recall", check, defects)
     rate("Control false-block rate", blocks, controls)
