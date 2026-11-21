@@ -293,7 +293,12 @@ export const TIER2_CONCURRENCY = 2;
 
 export async function tier2(
   pages,
-  { concurrency = TIER2_CONCURRENCY, checkMaps = true, servePhoto, serveShipsRequest } = {},
+  {
+    concurrency = TIER2_CONCURRENCY,
+    checkMaps = true,
+    servePhoto,
+    serveShipsRequest,
+  } = {},
 ) {
   const browser = await launchBrowser();
   const checks = pages.flatMap((page) =>

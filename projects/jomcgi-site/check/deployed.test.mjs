@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { test } from "node:test";
 import { checkPage, launchBrowser } from "./browser.mjs";
+import { isolateBrowserCache } from "./fixture.mjs";
 import { serveRelease, serveFixturePhoto } from "./release-fixture.mjs";
 import { checkReleaseStage } from "./smoke.mjs";
-import { test } from "node:test";
-import { resolve } from "node:path";
-import { isolateBrowserCache } from "./fixture.mjs";
 
 test(
   "both tiers verify dev and the routed production pages",
@@ -21,6 +21,7 @@ test(
     }
   },
 );
+
 test("public trip day loads its display derivative", async (t) => {
   isolateBrowserCache(t);
   const sources = JSON.parse(

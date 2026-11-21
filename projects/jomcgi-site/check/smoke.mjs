@@ -42,7 +42,11 @@ export async function checkReleaseStage(dist, stage) {
     });
     await checkLinks(
       http.get,
-      await tier2(pages, { checkMaps: false, servePhoto: serveFixturePhoto, serveShipsRequest }),
+      await tier2(pages, {
+        checkMaps: false,
+        servePhoto: serveFixturePhoto,
+        serveShipsRequest,
+      }),
     );
   } finally {
     await http.close();
