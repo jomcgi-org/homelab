@@ -955,11 +955,48 @@ version write-back.
 
 | Direction | Tracks | State |
 | --- | --- | --- |
+| Let Joe triage from Discord or start urgent work on reserved capacity. | [HOME-314](https://factory-plan.jomcgi.dev/factory/issue/HOME-314) | designed |
 | Deliver private goal-assessment reasons to the delivery owner. | [HOME-251](https://factory-plan.jomcgi.dev/factory/issue/HOME-251) | staged off behind `reviewer.goalReasons.enabled` |
 | Verify the factory App author when adopting a PR. | [#7920](https://github.com/jomcgi-org/homelab/issues/7920) | designed |
 | Remove third-party Apps from the merge trust path. | [#7921](https://github.com/jomcgi-org/homelab/issues/7921) | designed |
 | Move CI and the registry into the cluster and scope the chart write-back identity. | [#7922](https://github.com/jomcgi-org/homelab/issues/7922) | designed |
 | Isolate fork PRs and serve fixture-only public previews. | [#7923](https://github.com/jomcgi-org/homelab/issues/7923) | designed |
+
+### Discord operator session
+
+Joe chooses the outcome of a conversation in a dedicated operator session.
+Before assembling any agent input, the Discord bridge checks the author’s
+Discord user ID against Joe’s configured ID. It builds context solely from
+Joe’s own messages in that session, excluding bot and webhook events, forwarded
+messages, reply previews, shared channel history and Bosun’s channel memory.
+This session-specific exception to HOME-162 rules 1 and 4 leaves the public
+Bosun path and member access (HOME-303) outside its scope. The operator session
+uses the Codex secondary account through the second broker grant in HOME-328.
+
+- **Triage.** Summarize the conversation into a homelab Backlog ticket, leave
+  it unassigned and return its link. Filing it ends triage without a worker run.
+- **Do it now.** Joe’s explicit request authorizes dispatch without an MFA
+  confirmation. Create a trackable issue and put it at the top of the pending
+  queue. Reserve at least one execution slot for Discord so ordinary
+  `homelab-codex` work cannot consume it. If the reserved worker is busy,
+  the urgent request waits for the next available reserved slot. The run
+  follows the factory’s usual PR and review path.
+
+One proposed way to reserve capacity is a second itsaplan agent user such as
+`homelab-codex-now` in the homelab binding, with connector concurrency one
+and one additional Codex worker. The reservation is decided. The identity
+and worker layout remain open.
+
+Implementation sequence, one PR per step:
+
+1. Add the operator session to the bridge, bind it to the HOME-328 secondary
+   grant and test author filtering across live messages and restored context.
+2. Add triage filing and return the issue link. Verify that submitting the
+   same Discord event twice creates one Backlog ticket and dispatches zero runs.
+3. Select and provision the reserved capacity in the binding and connector.
+   Test that a saturated ordinary queue leaves one slot available for Discord.
+4. Wire “do it now” to priority dispatch and return the issue link. Exercise
+   immediate dispatch, a busy reserved slot and event redelivery end to end.
 
 ## Delivery plan
 
