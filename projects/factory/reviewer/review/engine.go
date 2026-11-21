@@ -1,4 +1,5 @@
 // invariant: FACT-10
+// invariant: FACT-14
 // Package review is the factory reviewer's loop. It polls each binding's
 // open PRs into the base branch, keeps a `factory review` check run on every
 // head, sends each new head to the binding's kagent reviewer agent,
@@ -49,6 +50,7 @@ type GitHub interface {
 	UpdateCheckRun(ctx context.Context, repo string, id int64, w github.CheckRunWrite) (*github.CheckRun, error)
 	PullRequestFiles(ctx context.Context, repo string, number int) ([]github.PullRequestFile, error)
 	PullRequestHeads(ctx context.Context, repo string, number int, f github.CheckRunFilter) (*github.HeadHistory, error)
+	PullRequestHeadsPage(ctx context.Context, repo string, number int, f github.CheckRunFilter, before string, last int) (*github.HeadHistory, error)
 	PullRequestReviews(ctx context.Context, repo string, number int) ([]github.PullRequestReview, error)
 	HeadRefActivity(ctx context.Context, repo, branch string) ([]github.RefActivity, error)
 	HeadRefChangedAt(ctx context.Context, repo, branch, head string) (time.Time, error)
@@ -98,6 +100,10 @@ type Check struct {
 type Binding struct {
 	Runtime                *provenance.Runtime
 	startupBefore          *time.Time
+	closedScanDone         bool
+	closedScanSince        time.Time
+	closedPages            map[int]string
+	closedFinished         map[int]bool
 	Name                   string
 	Owner                  string
 	Repo                   string
@@ -362,6 +368,10 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 	for i := range cfg.Bindings {
 		b := &cfg.Bindings[i]
 		b.startupBefore = nil
+		b.closedScanDone = false
+		b.closedPages = make(map[int]string)
+		b.closedFinished = make(map[int]bool)
+		b.closedScanSince = cfg.Now().Add(-24 * time.Hour)
 		if b.MaxDiffLines <= 0 {
 			b.MaxDiffLines = 2500
 		}
@@ -463,6 +473,9 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 	}
 	e.supersede(b, prs, complete)
 	e.endSuperseded(ctx, b, prs, complete)
+	if !b.closedScanDone {
+		b.closedScanDone = e.endClosedReviews(ctx, b)
+	}
 	e.noteHeads(b, prs, complete)
 	e.sweepSessions(ctx, b, prs, complete, bl)
 	e.noteWaiting(b, prs, complete)
@@ -1921,6 +1934,67 @@ func (e *Engine) previousState(ctx context.Context, b *Binding, pr github.PullRe
 	}
 	e.endPreviousHead(ctx, b, pr, hist)
 	return e.previousStateFrom(ctx, b, pr, hist)
+}
+
+// endClosedReviews reconciles recent closures once per process. Keep the
+// window fixed across retries so a refused write cannot age out.
+func (e *Engine) endClosedReviews(ctx context.Context, b *Binding) bool {
+	prs, _, err := e.gh.PullRequestsUpdatedSince(ctx, b.repo(), b.closedScanSince)
+	if err != nil {
+		e.ghError(ctx, e.log, b, "recent_closed_pulls", err)
+		return false
+	}
+	done := true
+	seen := map[int]bool{}
+	for _, pr := range slices.Backward(prs) {
+		if b.closedFinished[pr.Number] || seen[pr.Number] {
+			continue
+		}
+		seen[pr.Number] = true
+		if pr.State != "closed" || pr.BaseRef != b.BaseBranch || pr.UpdatedAt.Before(b.closedScanSince) {
+			continue
+		}
+		cursor := b.closedPages[pr.Number]
+		hist, err := e.gh.PullRequestHeadsPage(ctx, b.repo(), pr.Number, github.CheckRunFilter{Name: e.cfg.CheckName, AppID: e.cfg.AppID}, cursor, maxPreviousLookups)
+		if err != nil {
+			e.ghError(ctx, e.prLog(b, pr.PullRequest), b, "pull_request_heads", err)
+			done = false
+			continue
+		}
+		seenHeads := map[string]bool{}
+		if cursor == "" {
+			hist.Heads = append(hist.Heads, github.Head{SHA: pr.HeadSHA})
+		}
+		pageOK := true
+		for _, head := range slices.Backward(hist.Heads) {
+			if seenHeads[head.SHA] {
+				continue
+			}
+			seenHeads[head.SHA] = true
+			run, err := e.reviewCheck(ctx, b, head.SHA)
+			if err != nil {
+				pageOK = false
+				continue
+			}
+			if _, ok := resumedTrace(run); !ok || run.Status != "in_progress" || run.ExternalID != MessageID(b.repo(), pr.Number, head.SHA) {
+				continue
+			}
+			if !e.complete(ctx, b, run, Outcome{Conclusion: ConclusionCancelled, Output: github.CheckRunOutput{
+				Title: "Review cancelled", Summary: "The pull request closed.",
+			}}, e.prLog(b, pr.PullRequest)) {
+				pageOK = false
+			}
+		}
+		if pageOK && !hist.Truncated {
+			b.closedFinished[pr.Number] = true
+			continue
+		}
+		done = false
+		if pageOK {
+			b.closedPages[pr.Number] = hist.StartCursor
+		}
+	}
+	return done
 }
 
 // endPreviousHead completes the PR's in-progress checks on its earlier

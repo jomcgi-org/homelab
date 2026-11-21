@@ -1022,3 +1022,28 @@ def test_codex_trial_stays_with_one_coding_binding() -> None:
         if doc["kind"] == "Harness" and "workload" in doc["spec"]
     ]
     assert trial_namespaces == ["factory-r-homelab"]
+
+
+def test_reviewer_trace_endpoint_configures_export_and_gateway_egress() -> None:
+    endpoint = "http://otel-collector.otel-collector.svc.cluster.local:4317"
+    docs = _render([f"reviewer.traceEndpoint={endpoint}"])
+    containers = _pod(docs, "factory-reviewer")["containers"]
+    reviewer = next(
+        container for container in containers if container["name"] == "reviewer"
+    )
+    env = {entry["name"]: entry.get("value") for entry in reviewer["env"]}
+    assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == endpoint
+    assert env["OTEL_SERVICE_NAME"] == "factory-reviewer"
+    policy = _in(docs, "CiliumNetworkPolicy", "factory", "factory-reviewer")
+    assert {
+        "toEndpoints": [
+            {
+                "matchLabels": {
+                    "k8s:io.kubernetes.pod.namespace": "otel-collector",
+                    "app.kubernetes.io/name": "otel-collector",
+                    "app.kubernetes.io/instance": "otel-collector",
+                }
+            }
+        ],
+        "toPorts": [{"ports": [{"port": "4317", "protocol": "TCP"}]}],
+    } in policy["spec"]["egress"]
