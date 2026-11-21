@@ -15,3 +15,18 @@ py_test(
         "@pip//pytest",
     ],
 )
+
+py_library(
+    name = "cache",
+    srcs = ["cache.py"],
+    visibility = ["//:__subpackages__"],
+)
+
+py_test(
+    name = "cache_test",
+    srcs = ["cache_test.py"],
+    deps = [
+        ":cache",
+        "@pip//pytest",
+    ],
+)
