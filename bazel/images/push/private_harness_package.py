@@ -16,6 +16,7 @@ HARNESS_PACKAGES = frozenset(
     {
         "ghcr.io/jomcgi/homelab/projects/factory/harness/claude",
         "ghcr.io/jomcgi/homelab/projects/factory/harness/codex",
+        "ghcr.io/jomcgi/homelab/projects/factory/reviewer/harness",
     }
 )
 
