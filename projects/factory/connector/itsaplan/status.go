@@ -129,6 +129,7 @@ func choiceRevision(choices []string) string {
 	return fmt.Sprintf("%x", sha256.Sum256(data))
 }
 
+// invariant: FACT-14
 func parseChoices(description string) []string {
 	var choices []string
 	found, active := false, false
@@ -139,6 +140,7 @@ func parseChoices(description string) []string {
 	// para is set while a paragraph is open. A paragraph continues across
 	// an indented line and an HTML block of type 7 cannot interrupt it.
 	para := false
+	setextEligible := false
 	for _, raw := range strings.Split(description, "\n") {
 		line := strings.TrimSpace(raw)
 		if inHTML {
@@ -177,15 +179,27 @@ func parseChoices(description string) []string {
 			fence, para = line[:len(line)-len(strings.TrimLeft(line, line[:1]))], false
 			continue
 		}
-		para = line != "" && !strings.HasPrefix(line, "#")
-		if line == "## Choices" {
+		marker := strings.TrimRight(strings.TrimLeft(raw, " "), " \t\r")
+		// A setext underline completes the preceding top-level paragraph.
+		// A thematic break also closes the paragraph, including after a list.
+		container := containerStart
+		if para && setextEligible {
+			// Only a nonempty list item can interrupt a paragraph. An
+			// ordered item must also start at one.
+			container = interruptingContainer
+		}
+		heading := atxHeading.MatchString(marker)
+		setext := para && setextEligible && setextUnderline.MatchString(marker)
+		para = line != "" && !heading && !setext && !thematicBreak.MatchString(marker)
+		setextEligible = para && !container.MatchString(marker)
+		if heading && line == "## Choices" {
 			if found {
 				return nil
 			}
 			found, active = true, true
 			continue
 		}
-		if strings.HasPrefix(line, "#") {
+		if heading {
 			active = false
 		}
 		if !active || line == "" {
@@ -212,6 +226,14 @@ func parseChoices(description string) []string {
 	}
 	return choices
 }
+
+var (
+	atxHeading            = regexp.MustCompile(`^#{1,6}(?:[ \t]|$)`)
+	containerStart        = regexp.MustCompile(`^(?:>|(?:[-+*]|[0-9]{1,9}[.)])(?:[ \t]|$))`)
+	interruptingContainer = regexp.MustCompile(`^(?:>|(?:[-+*]|0{0,8}1[.)])[ \t]+[^ \t])`)
+	setextUnderline       = regexp.MustCompile(`^(?:-+|=+)$`)
+	thematicBreak         = regexp.MustCompile(`^(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$`)
+)
 
 // indentWidth counts leading columns, with a tab advancing to the next
 // multiple of four as in CommonMark.
