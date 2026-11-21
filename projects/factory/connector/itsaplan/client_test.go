@@ -531,6 +531,42 @@ func TestBackoffAfterItsaplanFailure(t *testing.T) {
 	}
 }
 
+func TestCanceledStatusReadDoesNotBackOffCoordinator(t *testing.T) {
+	started := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/projects/HOME/issues" {
+			close(started)
+			<-r.Context().Done()
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":1}`))
+	}))
+	defer srv.Close()
+	status := Client{BaseURL: srv.URL, Coordinator: "coord", Keys: map[string]string{"coord": "test"}, Limits: &RequestLimits{}}
+	dispatch := status
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	listCtx, cancelList := context.WithCancel(ctx)
+	defer cancelList()
+	result := make(chan error, 1)
+	go func() {
+		_, err := status.RecentIssueTitles(listCtx, "HOME")
+		result <- err
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("title list request did not reach itsaplan")
+	}
+	cancelList()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("title list error = %v", err)
+	}
+	if issue, err := dispatch.GetIssue(ctx, 1); err != nil || issue.ID != 1 {
+		t.Fatalf("coordinator read after a canceled title list: issue = %+v, err = %v", issue, err)
+	}
+}
+
 // Model the coordinator key at the incident boundary. The counter resets only
 // after a quiet second. The planner maps the underlying 429 to HTTP 500.
 func TestCoordinatorRecoversFromExhaustedKeyAndKeepsServing(t *testing.T) {

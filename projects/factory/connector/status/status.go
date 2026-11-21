@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	RefreshInterval = 30 * time.Second
-	ReadTimeout     = 20 * time.Second
+	RefreshInterval    = 30 * time.Second
+	ReadTimeout        = 20 * time.Second
+	recentTitleTimeout = 2 * time.Second
 )
 
 type NeedsYou struct {
@@ -72,6 +73,7 @@ type Store interface {
 
 type Plan interface {
 	NeedsYou(context.Context, string, string) ([]itsaplan.IssueSummary, error)
+	RecentIssueTitles(context.Context, string) (map[int64]string, error)
 	GetIssueSummary(context.Context, int64) (*itsaplan.IssueSummary, error)
 }
 
@@ -136,24 +138,63 @@ func (s *Source) Load(ctx context.Context) (*Snapshot, error) {
 	if batches > 4 {
 		return nil, &stageError{"github_budget", fmt.Errorf("status: GitHub query budget exceeded")}
 	}
-	prs := map[string]map[int]*github.PRStatus{}
-	if s.GitHub != nil {
-		for _, b := range s.Bindings {
-			numbers := prNumbers[b.Name]
-			if len(numbers) == 0 {
+	listCtx, cancelList := context.WithTimeout(ctx, recentTitleTimeout)
+	defer cancelList()
+	recent := make(chan map[string]map[int64]string, 1)
+	go func() {
+		defer cancelList()
+		// List reads can run alongside GitHub. Their shorter deadline
+		// leaves time for the individual reads if the list stalls.
+		titles := map[string]map[int64]string{}
+		for _, item := range items {
+			b, ok := bindings[item.BindingName]
+			if !ok {
 				continue
 			}
-			var reviewer github.CheckRunFilter
-			if b.ReviewerCheck != nil {
-				reviewer = github.CheckRunFilter{Name: b.ReviewerCheck.Name, AppID: b.ReviewerCheck.AppID}
-			}
-			prs[b.Name], err = s.GitHub.StatusesForLanding(ctx, b.Owner+"/"+b.Repo, numbers, reviewer)
-			if err != nil {
-				return nil, &stageError{"github", err}
+			project := b.ItsaplanProject
+			if _, loaded := titles[project]; !loaded {
+				titles[project], _ = s.Plan.RecentIssueTitles(listCtx, project)
 			}
 		}
+		recent <- titles
+	}()
+	prs := map[string]map[int]*github.PRStatus{}
+	if s.GitHub != nil {
+		readCtx, cancelReads := context.WithCancel(ctx)
+		defer cancelReads()
+		type readResult struct {
+			binding string
+			prs     map[int]*github.PRStatus
+			err     error
+		}
+		// Every binding uses at least one of the four permitted batches.
+		results := make(chan readResult, len(prNumbers))
+		reads := 0
+		for name, numbers := range prNumbers {
+			b, ok := bindings[name]
+			if !ok {
+				continue
+			}
+			reads++
+			go func() {
+				var reviewer github.CheckRunFilter
+				if b.ReviewerCheck != nil {
+					reviewer = github.CheckRunFilter{Name: b.ReviewerCheck.Name, AppID: b.ReviewerCheck.AppID}
+				}
+				statuses, err := s.GitHub.StatusesForLanding(readCtx, b.Owner+"/"+b.Repo, numbers, reviewer)
+				results <- readResult{binding: name, prs: statuses, err: err}
+			}()
+		}
+		for range reads {
+			result := <-results
+			if result.err != nil {
+				return nil, &stageError{"github", result.err}
+			}
+			prs[result.binding] = result.prs
+		}
 	}
-	// Eight workers bound title reads. The store caps the input at 110 items.
+	titles := <-recent
+	// Eight workers bound fallback reads for issues outside the recent list.
 	var mu sync.Mutex
 	var firstErr error
 	var wg sync.WaitGroup
@@ -163,11 +204,19 @@ func (s *Source) Load(ctx context.Context) (*Snapshot, error) {
 		go func() {
 			defer wg.Done()
 			for item := range jobs {
-				_, ok := bindings[item.BindingName]
+				b, ok := bindings[item.BindingName]
 				if !ok {
 					continue
 				}
-				issue, err := s.Plan.GetIssueSummary(ctx, item.IssueID)
+				title := titles[b.ItsaplanProject][item.IssueID]
+				var err error
+				if title == "" {
+					var issue *itsaplan.IssueSummary
+					issue, err = s.Plan.GetIssueSummary(ctx, item.IssueID)
+					if err == nil {
+						title = issue.Title
+					}
+				}
 				pr := prs[item.BindingName][item.PRNumber]
 				mu.Lock()
 				if err != nil {
@@ -176,7 +225,7 @@ func (s *Source) Load(ctx context.Context) (*Snapshot, error) {
 					}
 				} else if item.MergedAt != nil {
 					out.Shipped = append(out.Shipped, Shipped{
-						Key: item.Key, Title: issue.Title,
+						Key: item.Key, Title: title,
 						PR: PRLink{Number: item.PRNumber, URL: item.PRURL}, MergedAt: *item.MergedAt,
 					})
 				} else {
@@ -184,7 +233,7 @@ func (s *Source) Load(ctx context.Context) (*Snapshot, error) {
 						pr = &github.PRStatus{Number: item.PRNumber, URL: item.PRURL, CI: "unknown", Review: "unknown", Queue: "unknown"}
 					}
 					out.InFlight = append(out.InFlight, InFlight{
-						Key: item.Key, Title: issue.Title,
+						Key: item.Key, Title: title,
 						State: item.State, ReviewRounds: item.ReviewRounds, PR: pr,
 					})
 				}

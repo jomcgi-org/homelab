@@ -142,18 +142,22 @@ func (l *RequestLimits) enter(ctx context.Context, agent string) (*keyWindow, er
 	return w, nil
 }
 
-func (w *keyWindow) finish(status int) {
+func (w *keyWindow) finish(status int, callerCanceled bool) {
 	defer func() { <-w.turn }()
 	w.burst++
-	if status == 0 || status == 429 || status >= 500 {
+	if (status == 0 && !callerCanceled) || status == 429 || status >= 500 {
 		w.failed = true
 		w.delay = min(time.Minute, max(2*time.Second, 2*w.delay))
 		w.resume = time.Now().Add(w.delay/2 + time.Duration(rand.Int64N(int64(w.delay/2))))
 		w.burst = 0
 		return
 	}
-	w.delay = 0
-	w.failed = false
+	// A caller's deadline limits its own read. It still counts toward the
+	// burst but does not start a cooldown for others using the same key.
+	if status != 0 {
+		w.delay = 0
+		w.failed = false
+	}
 	// better-auth resets after an idle interval, even at modest throughput.
 	if w.burst >= 12 {
 		w.burst = 0
@@ -220,7 +224,7 @@ func (c *Client) do(ctx context.Context, agent, method, path string, body, out a
 		if err != nil {
 			return err
 		}
-		defer func() { window.finish(status) }()
+		defer func() { window.finish(status, ctx.Err() != nil) }()
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -236,7 +240,9 @@ func (c *Client) do(ctx context.Context, agent, method, path string, body, out a
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		status = 0
+		if ctx.Err() == nil {
+			status = 0
+		}
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return ctx.Err()
 		}
