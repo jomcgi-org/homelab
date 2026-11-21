@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -22,20 +23,31 @@ type fakeR2 struct {
 	calls   map[string]int
 	fail    error
 	tags    map[string]string
+	buckets map[string]string
 }
 
-func (f *fakeR2) Get(_ context.Context, _, key, ifNoneMatch string, limit int64) (r2.Object, error) {
+func (f *fakeR2) Get(_ context.Context, bucket, key, ifNoneMatch string, limit int64) (r2.Object, error) {
 	f.calls[key]++
-	if limit != 64<<20 {
+	wantLimit := int64(maxSnapshotBytes)
+	if key == "stars-forecast/latest.json" {
+		wantLimit = maxManifestBytes
+	}
+	if limit != wantLimit {
 		return r2.Object{}, fmt.Errorf("unexpected read limit %d", limit)
 	}
 	if f.tags != nil {
 		f.tags[key] = ifNoneMatch
 	}
+	if f.buckets != nil {
+		f.buckets[key] = bucket
+	}
 	if f.fail != nil {
 		return r2.Object{}, f.fail
 	}
-	o := f.objects[key]
+	o, ok := f.objects[key]
+	if !ok {
+		return r2.Object{}, r2.ErrNotFound
+	}
 	if ifNoneMatch != "" && ifNoneMatch == o.ETag {
 		return r2.Object{ETag: o.ETag, NotModified: true}, nil
 	}
@@ -43,6 +55,65 @@ func (f *fakeR2) Get(_ context.Context, _, key, ifNoneMatch string, limit int64)
 }
 
 const history = `{"sites":[]}`
+
+func TestManifestRefreshKeepsLastVerifiedGeneration(t *testing.T) {
+	const manifestKey = "stars-forecast/latest.json"
+	const prefix = "stars-forecast/"
+	ctx := context.Background()
+	f := &fakeR2{calls: map[string]int{}, tags: map[string]string{}, buckets: map[string]string{}, objects: map[string]r2.Object{}}
+	s := New(Config{Bucket: "factory-public", ManifestKey: manifestKey}, f, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	objectKey := func(name string, body []byte) string {
+		return fmt.Sprintf("stars/%s-%x.json", name, sha256.Sum256(body))
+	}
+	setIndex := func(sites, hist, tag string) {
+		f.objects[manifestKey] = r2.Object{
+			Body: []byte(fmt.Sprintf(`{"files":{"sites":%q,"historyMap":%q}}`, sites, hist)),
+			ETag: tag,
+		}
+	}
+	sitesKey := objectKey("sites", producerSnapshot)
+	historyBody := []byte(history)
+	historyKey := objectKey("history-map", historyBody)
+	f.objects[prefix+sitesKey] = r2.Object{Body: producerSnapshot, ETag: "sites"}
+	setIndex(sitesKey, historyKey, "first")
+
+	if err := s.Refresh(ctx); !errors.Is(err, r2.ErrNotFound) || s.Current() != nil || !s.LastChecked().IsZero() {
+		t.Fatalf("incomplete first generation: %v", err)
+	}
+	f.objects[prefix+historyKey] = r2.Object{Body: historyBody, ETag: "history"}
+	if err := s.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	first, checked := s.Current(), s.LastChecked()
+	if first == nil || len(first.Sites) != 4 || first.Version != "first" || f.tags[manifestKey] != "" {
+		t.Fatal("verified generation did not load", first)
+	}
+	for _, key := range []string{manifestKey, prefix + sitesKey, prefix + historyKey} {
+		if f.buckets[key] != "factory-public" {
+			t.Fatalf("wrong source for %s: %s", key, f.buckets[key])
+		}
+	}
+
+	setIndex("../"+sitesKey, historyKey, "bad-path")
+	if err := s.Refresh(ctx); err == nil || s.Current() != first || f.calls[prefix+"../"+sitesKey] != 0 {
+		t.Fatal("invalid object path was accepted", err)
+	}
+	setIndex(sitesKey, historyKey, "second")
+	f.objects[prefix+historyKey] = r2.Object{Body: []byte(`{"sites":[{}]}`), ETag: "corrupt"}
+	if err := s.Refresh(ctx); err == nil || s.Current() != first || s.LastChecked() != checked {
+		t.Fatal("corrupt generation replaced a good one", err)
+	}
+	f.objects[prefix+historyKey] = r2.Object{Body: historyBody, ETag: "history"}
+	if err := s.Refresh(ctx); err != nil || s.Current() == first || s.Current().Version != "second" || f.tags[manifestKey] != "first" {
+		t.Fatal("retry did not load the repaired generation", err)
+	}
+	loaded := s.Current()
+	reads := f.calls[prefix+sitesKey] + f.calls[prefix+historyKey]
+	if err := s.Refresh(ctx); err != nil || s.Current() != loaded || f.tags[manifestKey] != "second" ||
+		f.calls[prefix+sitesKey]+f.calls[prefix+historyKey] != reads {
+		t.Fatal("unchanged manifest read the immutable objects again", err)
+	}
+}
 
 // Regenerated and byte-checked by stars/router_test.py using the real producer.
 //

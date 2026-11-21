@@ -30,16 +30,17 @@ import (
 )
 
 type config struct {
-	listenAddr, adminAddr          string
-	r2Endpoint, r2Region           string
-	r2Creds                        r2.Credentials
-	bucket, sitesKey, historyKey   string
-	walksKey                       string
-	auroraEnabled                  bool
-	auroraKey                      string
-	refreshInterval, shutdownGrace time.Duration
-	publicBaseURL, version         string
-	allowedOrigins                 []string
+	listenAddr, adminAddr            string
+	r2Endpoint, r2Region             string
+	r2Creds                          r2.Credentials
+	bucket, sitesKey, historyKey     string
+	forecastBucket, forecastManifest string
+	walksKey                         string
+	auroraEnabled                    bool
+	auroraKey                        string
+	refreshInterval, shutdownGrace   time.Duration
+	publicBaseURL, version           string
+	allowedOrigins                   []string
 }
 
 func env(key, def string) string {
@@ -51,19 +52,21 @@ func env(key, def string) string {
 
 func loadConfig() (config, error) {
 	c := config{
-		listenAddr:     env("LISTEN_ADDR", ":8080"),
-		adminAddr:      env("ADMIN_ADDR", ":9090"),
-		r2Endpoint:     env("R2_ENDPOINT", ""),
-		r2Region:       env("AWS_REGION", "auto"),
-		r2Creds:        r2.Credentials{AccessKeyID: env("S3_ACCESS_KEY_ID", ""), SecretAccessKey: env("S3_SECRET_ACCESS_KEY", "")},
-		bucket:         env("STARS_BUCKET", "stars"),
-		sitesKey:       env("STARS_SITES_KEY", "sites.json"),
-		historyKey:     env("STARS_HISTORY_KEY", "history-map.json"),
-		walksKey:       env("STARS_WALKS_KEY", "walks.json"),
-		auroraKey:      env("STARS_AURORA_KEY", "aurora.json"),
-		publicBaseURL:  strings.TrimRight(env("PUBLIC_BASE_URL", ""), "/"),
-		version:        env("SERVICE_VERSION", "dev"),
-		allowedOrigins: strings.Split(env("MCP_ALLOWED_ORIGINS", "https://claude.ai,https://claude.com,https://chatgpt.com"), ","),
+		listenAddr:       env("LISTEN_ADDR", ":8080"),
+		adminAddr:        env("ADMIN_ADDR", ":9090"),
+		r2Endpoint:       env("R2_ENDPOINT", ""),
+		r2Region:         env("AWS_REGION", "auto"),
+		r2Creds:          r2.Credentials{AccessKeyID: env("S3_ACCESS_KEY_ID", ""), SecretAccessKey: env("S3_SECRET_ACCESS_KEY", "")},
+		bucket:           env("STARS_BUCKET", "stars"),
+		sitesKey:         env("STARS_SITES_KEY", "sites.json"),
+		historyKey:       env("STARS_HISTORY_KEY", "history-map.json"),
+		forecastBucket:   env("STARS_FORECAST_BUCKET", ""),
+		forecastManifest: env("STARS_FORECAST_MANIFEST_KEY", ""),
+		walksKey:         env("STARS_WALKS_KEY", "walks.json"),
+		auroraKey:        env("STARS_AURORA_KEY", "aurora.json"),
+		publicBaseURL:    strings.TrimRight(env("PUBLIC_BASE_URL", ""), "/"),
+		version:          env("SERVICE_VERSION", "dev"),
+		allowedOrigins:   strings.Split(env("MCP_ALLOWED_ORIGINS", "https://claude.ai,https://claude.com,https://chatgpt.com"), ","),
 	}
 	var err error
 	switch env("AURORA_ENABLED", "false") {
@@ -81,6 +84,9 @@ func loadConfig() (config, error) {
 	}
 	if c.r2Endpoint == "" {
 		return c, errors.New("R2_ENDPOINT is required")
+	}
+	if (c.forecastBucket == "") != (c.forecastManifest == "") {
+		return c, errors.New("STARS_FORECAST_BUCKET and STARS_FORECAST_MANIFEST_KEY must be set together")
 	}
 	return c, nil
 }
@@ -112,7 +118,12 @@ func newApp(cfg config, log *slog.Logger, httpClient *http.Client) (*app, error)
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	m := meter.New(reg)
 
-	st := store.New(store.Config{Bucket: cfg.bucket, SitesKey: cfg.sitesKey, HistoryKey: cfg.historyKey, Interval: cfg.refreshInterval}, client, log)
+	forecast := store.Config{Bucket: cfg.bucket, SitesKey: cfg.sitesKey, HistoryKey: cfg.historyKey, Interval: cfg.refreshInterval}
+	if cfg.forecastManifest != "" {
+		forecast.Bucket = cfg.forecastBucket
+		forecast.ManifestKey = cfg.forecastManifest
+	}
+	st := store.New(forecast, client, log)
 	reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Name: "scotland_connector_forecast_age_seconds",
 		Help: "Seconds since the newest MET Norway fetch in the live snapshot.",

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,6 +15,56 @@ import (
 
 	"github.com/jomcgi/homelab/projects/scotland-connector/internal/fixture"
 )
+
+func TestAppLoadsFactoryForecastManifest(t *testing.T) {
+	sites := fmt.Sprintf("stars/sites-%x.json", sha256.Sum256([]byte(fixture.Sites)))
+	history := fmt.Sprintf("stars/history-map-%x.json", sha256.Sum256([]byte(fixture.History)))
+	const prefix = "/factory-public/stars-forecast/"
+	objects := map[string]string{
+		prefix + "latest.json": fmt.Sprintf(`{"files":{"sites":%q,"historyMap":%q}}`, sites, history),
+		prefix + sites:         fixture.Sites,
+		prefix + history:       fixture.History,
+	}
+	r2srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := objects[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("ETag", `"factory-fixture"`)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer r2srv.Close()
+	t.Setenv("R2_ENDPOINT", r2srv.URL)
+	t.Setenv("S3_ACCESS_KEY_ID", "fixture-key")
+	t.Setenv("S3_SECRET_ACCESS_KEY", "fixture-secret")
+	t.Setenv("STARS_BUCKET", "stars")
+	t.Setenv("STARS_FORECAST_BUCKET", "factory-public")
+	t.Setenv("STARS_FORECAST_MANIFEST_KEY", "stars-forecast/latest.json")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := newApp(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), r2srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if current := a.store.Current(); current == nil || len(current.Sites) == 0 || current.Version != `"factory-fixture"` {
+		t.Fatal("factory snapshot did not load", current)
+	}
+	resp := httptest.NewRecorder()
+	a.admin.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if resp.Code != http.StatusOK {
+		t.Fatal(resp.Code, resp.Body.String())
+	}
+	t.Setenv("STARS_FORECAST_BUCKET", "")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("accepted a forecast manifest without its bucket")
+	}
+}
 
 func TestAuroraActivationIsIndependentOfReadiness(t *testing.T) {
 	r2srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

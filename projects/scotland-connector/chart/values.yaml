@@ -95,6 +95,9 @@ config:
   bucket: stars
   sitesKey: sites.json
   historyKey: history-map.json
+  # Set both to select one generation by manifest for forecasts and history.
+  forecastBucket: ""
+  forecastManifestKey: ""
   # Written by the monolith's hikes-refresh-forecasts job. Optional: until it
   # exists a walks-only plan or check answers 503, and one that also covers
   # stargazing answers that part with a note for the walks.

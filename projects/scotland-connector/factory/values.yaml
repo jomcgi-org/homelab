@@ -6,6 +6,8 @@ autoscaling:
 createNamespace: false
 config:
   publicBaseURL: https://scotland-mcp.jomcgi.dev
+  forecastBucket: factory-public
+  forecastManifestKey: stars-forecast/latest.json
 route:
   enabled: false
 networkPolicy:
