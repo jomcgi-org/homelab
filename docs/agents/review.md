@@ -99,3 +99,12 @@ Controls use a null answer. Select merged factory-authored PRs with comparable
 added plus deleted lines and verify 30 days of subsequent history for reverts
 or corrective changes before freezing their revisions. The earliest commits
 by Factory date from November 14, 2026.
+
+To replay and score in one command from a checkout containing the pinned
+commits, run `python3 projects/factory/reviewer/eval/score.py --reviewer /path/to/candidate-adapter`.
+Supply an executable for the candidate under test. It receives the base and
+head SHAs as arguments and the git diff on stdin. It runs the candidate with
+its usual review context and writes a JSON object containing `findings`,
+`blocking_ids` and the service's `conclusion` on stdout. After each defect
+review with findings, enter the matching finding ID or press Enter for a miss.
+Only the adjudicator sees the answer during this exchange.

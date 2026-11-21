@@ -2,6 +2,8 @@
 
 import argparse
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -10,19 +12,42 @@ def rate(label, hits, total):
     print(f"{label}: {value} ({hits}/{total})")
 
 
+def replay(executable, case):
+    base, head = case["base"], case["head"]
+    diff = subprocess.check_output(["git", "diff", "--no-ext-diff", base, head, "--"])
+    result = subprocess.run(
+        [executable, base, head], input=diff, stdout=subprocess.PIPE, check=True
+    )
+    row = json.loads(result.stdout)
+    row["base"] = base
+    row["matched_id"] = None
+    if case["answer"] is not None and row["findings"]:
+        print(json.dumps(row, indent=2), case["answer"], sep="\n", file=sys.stderr)
+        print(
+            "Matching finding ID (empty for miss): ",
+            end="",
+            file=sys.stderr,
+            flush=True,
+        )
+        row["matched_id"] = input().strip() or None
+    return row
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("results", type=Path)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("results", nargs="?", type=Path)
+    source.add_argument("--reviewer", metavar="EXECUTABLE")
     parser.add_argument("--split", choices=("scored", "tuning"), default="scored")
     args = parser.parse_args()
     cases = json.loads(Path(__file__).with_name("cases.json").read_text())
-    results = json.loads(args.results.read_text())
+    results = json.loads(args.results.read_text()) if args.results else {}
     agent = check = blocks = defects = controls = 0
     for case in cases:
         if case["split"] != args.split:
             continue
         head = case["head"]
-        row = results.get(head, {})
+        row = replay(args.reviewer, case) if args.reviewer else results.get(head, {})
         if row.get("base") != case["base"] or row.get("conclusion") not in (
             "failure",
             "success",
