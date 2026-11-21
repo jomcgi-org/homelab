@@ -549,6 +549,36 @@ $(cat "$STUB_ORDER_LOG" "$STUB_TAG_LOG")"
 fi
 teardown
 
+# The manifest's missing-target fallback must not bypass the private check.
+private_label="//projects/factory/harness/codex:image.push"
+private_repo="ghcr.io/jomcgi/homelab/projects/factory/harness/codex"
+setup "$MANIFEST_3" "$ALL_PUBLISHED"
+sed -i '/"\/\/projects\/gamma:image.push",/a\        "//projects/factory/harness/codex:image.push",' "$WORK/bazel/images/BUILD"
+if OUT=$(run_script); then
+	fail "private harness requires its exact destination in the manifest" "expected a non-zero exit"
+elif grep -q "has no matching harness package" <<<"$OUT" && ! grep -qF "$private_label" "$STUB_RUN_LOG"; then
+	pass "private harness requires its exact destination in the manifest"
+else
+	fail "private harness requires its exact destination in the manifest" "$OUT"
+fi
+
+printf '\n%s\t%s\t%s\t%s\n' "$private_label" "$private_repo" "sha256:private" "tag-private" >>"$WORK/bazel-bin/bazel/images/digests/manifest.txt"
+mkdir -p "$WORK/bazel/images/push"
+cat >"$WORK/bazel/images/push/private_harness_package.py" <<'STUB'
+import sys
+
+assert sys.argv[1] == "ghcr.io/jomcgi/homelab/projects/factory/harness/codex"
+sys.exit("private visibility was refused")
+STUB
+if OUT=$(run_script); then
+	fail "private refusal stops the harness upload" "expected a non-zero exit"
+elif grep -q "private visibility was refused" <<<"$OUT" && ! grep -qF "$private_label" "$STUB_RUN_LOG"; then
+	pass "private refusal stops the harness upload"
+else
+	fail "private refusal stops the harness upload" "$OUT"
+fi
+teardown
+
 echo ""
 if [ "$FAILURES" -ne 0 ]; then
 	echo "$FAILURES test(s) failed"
