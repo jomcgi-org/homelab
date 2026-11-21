@@ -1140,3 +1140,25 @@ func TestPlainExposureEvidence(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicationAcknowledgmentBindsResource(t *testing.T) {
+	dashboard := Finding{ID: "dashboard:unverified:exposure", Severity: SeverityMedium, Title: "Dashboard becomes public"}
+	export := Finding{ID: "export:unverified:exposure", Severity: SeverityMedium, Title: "Account export becomes public"}
+	candidates := []Finding{dashboard, export}
+	for _, tc := range []struct {
+		title, body string
+		want        bool
+	}{
+		{"Dashboard", "Make it public.", true},
+		{"Publish a status page", "Status page.\n\nMake it public.", false},
+		{"Publish a status page", "Expose the dashboard to the internet.", true},
+		{"Dashboard", "Make it public.\n\nSee the account export.", false},
+		{"Publication", "Expose the admin dashboard to the internet.", false},
+	} {
+		in := &IssueContext{Issue: &IssueEvidence{Trusted: true, Title: tc.title, Description: tc.body}}
+		got := acknowledgedExposures(in, candidates, []string{dashboard.ID, export.ID})
+		if _, ok := got[dashboard.ID]; ok != tc.want || got[export.ID] != "" {
+			t.Errorf("%q / %q: %v", tc.title, tc.body, got)
+		}
+	}
+}

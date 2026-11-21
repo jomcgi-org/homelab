@@ -124,10 +124,12 @@ Use `<path>:unverified:exposure` for these findings, adding a symbol when
 needed. The private goal check receives their public IDs and titles. When
 the accepted issue is trusted and it or a trusted linked decision
 contains a standalone top-level statement `Accept exposure: <public title or finding ID>`, the service marks that ID justified with a fixed
-note. A request of the form “Make <resource> public” also acknowledges a
-finding titled “<resource> becomes public”. Plain requests such as “make it public”
-or “this deletes the old data” count when the goal check identifies the
-corresponding public-access or data-loss finding.
+note. For publication findings, title the finding “<resource> becomes public”
+so the service can match requests such as “Expose the dashboard to the internet”
+to the named resource. “Make it public” alone can clear a finding when the
+issue title names exactly that resource and the body contains only that
+directive. A statement such as “this deletes the old data” can acknowledge
+the corresponding data-loss finding.
 Leave out every other unknown about outside state, or name its check after
 rollout in one low finding. This includes a token's effective scopes and
 setup outside the repository, such as a secret, an account setting or a
