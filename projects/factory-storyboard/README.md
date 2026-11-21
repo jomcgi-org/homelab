@@ -229,7 +229,11 @@ The publisher withdraws whole issues, with all their sessions.
    least the mirror timestamp recorded in step 3. Run
    `node projects/factory-storyboard/verify-rollout.mjs` to check the digests.
 5. Check the old keys separately. The publisher normally expires unreachable
-   Garage objects once their last write is at least 24 hours old. The next
+   Garage objects in two passes. After committing the manifest, it marks each
+   unreferenced payload whose last write was at least 24 hours ago. It keeps
+   the marked payload for another 24 hours, covering the [library writer
+   retention of 990 seconds](../shared/helm/factory-library/README.md#buckets-and-public-mirrors)
+   after the first manifest that drops it, even after an outage. The next
    mirror sync removes them from R2. For an urgent takedown, have the bucket
    operator remove the affected, unreferenced Garage keys immediately and
    confirm the deletions reach R2. Use authenticated listings of both buckets.
