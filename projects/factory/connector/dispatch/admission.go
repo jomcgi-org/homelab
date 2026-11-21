@@ -544,7 +544,7 @@ func (e *Engine) postAdmission(ctx context.Context, r *store.Run) (bool, error) 
 
 // RefreshDispatchMetrics samples committed run state independently of the writer tick.
 //
-// invariant: FACT-13
+// invariant: FACT-14
 func (e *Engine) RefreshDispatchMetrics(ctx context.Context, snapshot *metrics.DispatchSnapshot) error {
 	total := 0
 	for _, agent := range e.cfg.Agents {
