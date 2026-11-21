@@ -61,7 +61,13 @@ class Board:
 
     def __call__(self, path, method="GET", body=None):
         if method == "POST":
-            assert path == "/projects/INTSEC/issues"
+            assert path == "/projects/INTSEC/factory-semgrep"
+            body = {
+                **body,
+                "title": "Semgrep " + body["finding"],
+                "columnId": 1,
+                "labelIds": [5],
+            }
             self.issues.append({**body, "id": len(self.issues) + 1})
         elif method == "PATCH":
             assert path.endswith("/factory-semgrep")
@@ -377,7 +383,7 @@ def test_failing_write_for_another_finding_does_not_hold_an_alert(sync):
     real = Board.__call__
 
     def failing_post_for_b(self, path, method="GET", body=None):
-        if method == "POST" and body["title"].endswith("secret-b"):
+        if method == "POST" and body["finding"] == "secrets/secret-b":
             raise TimeoutError()
         return real(self, path, method, body)
 

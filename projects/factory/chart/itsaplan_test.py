@@ -201,7 +201,6 @@ def test_generated_secrets_are_kept_and_never_rendered() -> None:
         "factory-itsaplan-agent-factory-storyboard",
         "factory-itsaplan-agent-factory-reviewer",
         "factory-itsaplan-agent-homelab-planner",
-        "factory-itsaplan-agent-intsec-sync",
     }
     for s in secrets:
         assert "data" not in s and "stringData" not in s
@@ -305,7 +304,6 @@ def test_job_roles_name_only_their_secrets() -> None:
         "factory-itsaplan-agent-factory-storyboard",
         "factory-itsaplan-agent-factory-reviewer",
         "factory-itsaplan-agent-homelab-planner",
-        "factory-itsaplan-agent-intsec-sync",
     ]
     assert bootstrap[1]["verbs"] == ["get", "update"]
 
@@ -390,7 +388,6 @@ def test_bootstrap_config_lists_the_agents() -> None:
         "factory-storyboard",
         "factory-reviewer",
         "homelab-planner",
-        "intsec-sync",
     ]
     read_only = {a["username"] for a in config["agents"] if a.get("readOnly")}
     assert read_only == set(_READ_ONLY)
@@ -721,7 +718,7 @@ def test_sync_bootstrap_grants_only_read_and_create_in_intsec(bootstrap, monkeyp
         for r, actions in api.role["permissions"].items()
         for a, allowed in actions.items()
         if allowed
-    } == {("work_items", "read"), ("work_items", "create")}
+    } == {("work_items", "read")}
 
 
 def test_reviewer_bootstrap_does_not_publish_when_role_fails(bootstrap, monkeypatch):

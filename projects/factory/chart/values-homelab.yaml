@@ -339,4 +339,4 @@ discord:
       queueDepth: 3
 
 semgrepSync:
-  enabled: true
+  enabled: false
