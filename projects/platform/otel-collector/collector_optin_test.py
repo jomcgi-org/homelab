@@ -1418,8 +1418,12 @@ def test_factory_renders_gateway():
     }
     lifecycle = next(p for p in policies if p["name"] == "factory-lifecycle")
     for event in ("pr_head_delivery", "review_transition"):
-        assert _matches_policy(lifecycle, [{"attributes": {"factory.lifecycle": event}}])
-    assert not _matches_policy(lifecycle, [{"attributes": {"factory.lifecycle": "other"}}])
+        assert _matches_policy(
+            lifecycle, [{"attributes": {"factory.lifecycle": event}}]
+        )
+    assert not _matches_policy(
+        lifecycle, [{"attributes": {"factory.lifecycle": "other"}}]
+    )
     assert not _matches_policy(lifecycle, [{"attributes": {}}])
     kinds = {(d["kind"], d["metadata"]["name"]) for d in docs}
     for kind in ("Deployment", "Service", "ConfigMap", "ServiceAccount"):
