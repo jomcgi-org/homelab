@@ -11,6 +11,7 @@ buckets:
     access: write
     public:
       suspend: true
+      itemPath: vaults/k8s-homelab/items/trips-public-mirror
       manifestName: latest.json
       r2Bucket: trips-public
 # Size the private volume from the hub inventory before migration.
