@@ -188,6 +188,28 @@ func (g *GoalCheck) ownershipFeedback() string {
 	return feedback.String()
 }
 
+// explainsUnclear checks the private account for every effective unclear verdict.
+func (g *GoalCheck) explainsUnclear(reply string) bool {
+	lines := strings.Split(replyReasons(reply), "\n")
+	explained := func(label string) bool {
+		for _, line := range lines {
+			if detail, ok := strings.CutPrefix(strings.TrimSpace(line), label); ok && strings.TrimSpace(detail) != "" {
+				return true
+			}
+		}
+		return false
+	}
+	if g.Overall == goalUnclear && !explained("Overall: ") {
+		return false
+	}
+	for _, c := range g.Criteria {
+		if c.Verdict == goalUnclear && !explained(fmt.Sprintf("Criterion %d: ", c.Criterion)) {
+			return false
+		}
+	}
+	return true
+}
+
 // goalFindings renders a goal check. Each word is the service's: the issue
 // key, a criterion number and fixed text. A nil check is unavailable.
 func goalFindings(key string, g *GoalCheck) []Finding {
@@ -750,6 +772,9 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 			if initial != nil {
 				g = confirmOnly(initial, g)
 			}
+			if g != nil && !g.explainsUnclear(reply) {
+				valid, g = false, nil
+			}
 			if g != nil {
 				ownership = g.ownershipFeedback()
 			}
@@ -931,7 +956,7 @@ func GoalPrompt(repo string, pr github.PullRequest, files []github.PullRequestFi
 		"Use \"after_rollout\" when the implementation addresses the problem and only its planned later enablement or rollout remains. " +
 		"Give every criterion from 1 to the last one a verdict, and give an empty list when the issue lists no acceptance criteria.\n\n" +
 		"Explain your reasoning briefly before the JSON block, including the evidence for staging or missing implementation. For an overall not_met include a line of the form Overall: specific unsolved problem. For each not_met criterion include a short line of the form Criterion N: specific missing behavior. " +
-		"The service keeps your full reply privately for 14 days for operator audit.\n\n" +
+		"For every unclear verdict (including in confirmation), use the same Overall: or Criterion N: label and name the specific evidence you looked for and could not find. The service keeps your full reply privately for 14 days for operator audit.\n\n" +
 		"End your reply with exactly one fenced JSON block and nothing after it. Use only these fields and values: " +
 		"any other field, value or text in the block voids the answer.\n\n" +
 		"```json\n{\"criteria\": [{\"criterion\": 1, \"verdict\": \"met\"}, {\"criterion\": 2, \"verdict\": \"not_met\"}], \"overall\": \"met\"}\n```\n")

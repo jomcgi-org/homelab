@@ -652,7 +652,7 @@ func TestGoalCheckPublishesOnlyServiceWording(t *testing.T) {
 	cleaner := &fakeCleaner{}
 	h.cfg.Cleaner = cleaner
 	api.issue.Description = "1. PRIVATE-ONE\n2. PRIVATE-TWO\n3. PRIVATE-THREE"
-	h.k.goal = "Criterion 2: PRIVATE-TWO is missing.\n\n```json\n" +
+	h.k.goal = "Criterion 2: PRIVATE-TWO is missing.\nCriterion 3: PRIVATE-THREE has no digest in the manifest.\n\n```json\n" +
 		`{"criteria": [{"criterion": 1, "verdict": "met"}, {"criterion": 2, "verdict": "not_met"}, {"criterion": 3, "verdict": "unclear"}], "overall": "met"}` + "\n```"
 	e, ctx, _ := h.start()
 	task := runReview(t, h, e, ctx, 7, shaA)
@@ -669,7 +669,7 @@ func TestGoalCheckPublishesOnlyServiceWording(t *testing.T) {
 		}
 	}
 	private, ok, _ := h.cfg.GoalAudit.(*FileGoalAudit).Reasons(h.cfg.Bindings[0].repo(), 7, shaA)
-	if !ok || len(private.Findings) != 1 || private.Findings[0] != "Criterion 2: PRIVATE-TWO is missing." {
+	if !ok || !strings.Contains(private.Reasons, "Criterion 3: PRIVATE-THREE has no digest in the manifest.") || len(private.Findings) != 1 || private.Findings[0] != "Criterion 2: PRIVATE-TWO is missing." {
 		t.Fatalf("private feedback = %+v", private)
 	}
 	out := published(t, h)
@@ -779,7 +779,7 @@ func TestGoalCheckRunsOncePerHeadAndEvidence(t *testing.T) {
 func TestGoalBlockersSurviveUnavailableAndUnclearAnswers(t *testing.T) {
 	for name, reply := range map[string]string{
 		"unavailable": "No answer.",
-		"unclear":     goalReply(`{"criteria": [{"criterion": 1, "verdict": "unclear"}], "overall": "unclear"}`),
+		"unclear":     "Overall: missing retry path.\nCriterion 1: missing retry test.\n" + goalReply(`{"criteria": [{"criterion": 1, "verdict": "unclear"}], "overall": "unclear"}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			h, _ := issueHarness(t)
@@ -1073,5 +1073,12 @@ func TestUncountedAnswerKeepsMainRules(t *testing.T) {
 	applyGoal(r, prior, "HOME", "HOME-7", &GoalCheck{Overall: goalUnclear, Criteria: []GoalVerdict{{1, goalMet}, {2, goalMet}, {3, goalMet}}})
 	if a := Assess(r, prior); len(a.Fixed) != 2 || len(a.Withdrawn) != 0 {
 		t.Fatalf("met verdicts: fixed %+v withdrawn %+v", a.Fixed, a.Withdrawn)
+	}
+}
+
+func TestUnclearNeedsItsOwnPrivateExplanation(t *testing.T) {
+	g := GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{2, goalUnclear}}}
+	if g.explainsUnclear("Criterion 1: missing test.") || g.explainsUnclear("Criterion 2:  ") {
+		t.Fatal("accepted an unclear verdict without its evidence account")
 	}
 }
