@@ -119,7 +119,7 @@ exports_files(
     visibility = [
         "//projects/embervm/chart:__pkg__",
         "//projects/embervm/runtimes/claude:__pkg__",
-        "//projects/factory/reviewer/harness:__pkg__",
+        "//projects/factory/harness/codex:__pkg__",
     ],
 )
 
