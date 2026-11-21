@@ -16,8 +16,9 @@ change. It contains short lookup prefixes. Keep the inputs and index
 outside guest-writable storage and public repositories.
 
 The receiver checks every newly reachable blob, then pushes the accepted
-object IDs atomically with leases against the previous refs. After an
-interrupted upstream push, reconcile staging refs from GitHub before retrying.
+object IDs atomically with leases against the GitHub refs it just read. If a
+branch advanced since staging advertised it, the accepted tip must include
+the current GitHub tip. A concurrent update after that read fails the lease.
 A receiver-owned `PUSH_SIZE_ALLOWLIST` can name a file of SHA-256 digests
 exempt from the 1 MiB size limit. Content checks still apply. The scanner
 samples 192 bytes every 16 KiB and recognizes raw bytes, hex, and standard
