@@ -24,7 +24,7 @@ func openCache(workspace string) (cache, error) {
 	if beneath(workspace, dir) {
 		return cache{}, errors.New("cache must be outside the task workspace")
 	}
-	if err := os.Mkdir(dir, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		return cache{}, err
 	}
 	info, err := os.Lstat(dir)
@@ -32,7 +32,7 @@ func openCache(workspace string) (cache, error) {
 		return cache{}, err
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || !info.IsDir() || info.Mode().Perm()&0077 != 0 || int(stat.Uid) != os.Getuid() {
+	if !ok || !info.IsDir() || info.Mode().Perm()&0o077 != 0 || int(stat.Uid) != os.Getuid() {
 		return cache{}, errors.New("cache must be private")
 	}
 	return cache{dir}, nil

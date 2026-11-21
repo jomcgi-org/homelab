@@ -21,7 +21,7 @@ if [ "$1" = --version ]; then
 fi
 test "$#" = 5 && test "$1 $2 $3 $4" = 'diff --json --no-cache --base' || exit 2
 printf '{"schemaVersion":1,"command":"slice","base":"%s"}\n' "$5"
-`), 0700); err != nil {
+`), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	req := Request{Command: "diff", Commit: commit, Base: commit}
@@ -57,7 +57,7 @@ func TestCheckoutRejectsDirtyTreeAndHiddenChanges(t *testing.T) {
 			if flag != "" {
 				git(t, root, "update-index", flag, "tracked.py")
 			}
-			if err := os.WriteFile(filepath.Join(root, "tracked.py"), []byte("changed\n"), 0600); err != nil {
+			if err := os.WriteFile(filepath.Join(root, "tracked.py"), []byte("changed\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if _, _, err := verifyCheckout(context.Background(), workspace, root, req, nil); err == nil {
@@ -102,7 +102,7 @@ func TestPinnedAnalyzer(t *testing.T) {
 		program = filepath.Join(os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"), program)
 	}
 	workspace, root, base := checkout(t)
-	if err := os.WriteFile(filepath.Join(root, "tracked.py"), []byte("def value():\n    return 43\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "tracked.py"), []byte("def value():\n    return 43\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	git(t, root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "commit", "-qam", "head")
@@ -126,11 +126,11 @@ func checkout(t *testing.T) (string, string, string) {
 	workspace := t.TempDir()
 	t.Setenv("TMPDIR", t.TempDir())
 	root := filepath.Join(workspace, "pr")
-	if err := os.Mkdir(root, 0700); err != nil {
+	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	git(t, root, "init", "-q")
-	if err := os.WriteFile(filepath.Join(root, "tracked.py"), []byte("def value():\n    return 42\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "tracked.py"), []byte("def value():\n    return 42\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	git(t, root, "add", ".")
