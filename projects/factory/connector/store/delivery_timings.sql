@@ -12,7 +12,7 @@ WITH bounds AS (
     SELECT i.*, initial.created_at AS queued_at, a.first_sent_at,
         (SELECT min(r.created_at) FROM run r
          WHERE r.origin = 'reviewer' AND r.issue_key = i.issue_key
-           AND r.created_at >= i.pr_at) AS review_at
+           AND r.created_at >= i.pr_at) AS review_dispatch_at
     FROM items i
     LEFT JOIN LATERAL (
         SELECT id, created_at FROM run
@@ -25,7 +25,7 @@ WITH bounds AS (
     CROSS JOIN LATERAL (VALUES
         ('queue wait', extract(epoch FROM first_sent_at - queued_at)),
         ('time to first PR', extract(epoch FROM pr_at - created_at)),
-        ('review wait', extract(epoch FROM review_at - pr_at)),
+        ('time to first recorded review dispatch attempt', extract(epoch FROM review_dispatch_at - pr_at)),
         ('rework rounds', review_rounds),
         ('time to merge', extract(epoch FROM merged_at - created_at))
     ) m(metric, value)
@@ -35,7 +35,7 @@ SELECT b.window_start, b.window_end, m.metric, m.unit,
     round(avg(s.value) FILTER (WHERE s.value >= 0), 2) AS mean
 FROM bounds b CROSS JOIN (VALUES
     ('queue wait', 'seconds'), ('time to first PR', 'seconds'),
-    ('review wait', 'seconds'), ('rework rounds', 'rounds'), ('time to merge', 'seconds')
+    ('time to first recorded review dispatch attempt', 'seconds'), ('rework rounds', 'rounds'), ('time to merge', 'seconds')
 ) m(metric, unit)
 LEFT JOIN samples s USING (metric)
 GROUP BY b.window_start, b.window_end, m.metric, m.unit
