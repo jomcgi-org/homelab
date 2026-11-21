@@ -32,7 +32,6 @@ spec:
     - factory-kube.jomcgi.dev
     - scotland-mcp.jomcgi.dev
     - factory-explore-api.jomcgi.dev
-    - t3.jomcgi.dev
   # matches and weight are the schema defaults, stated so ArgoCD's diff owns
   # them.
   rules:
