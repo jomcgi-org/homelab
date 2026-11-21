@@ -45,6 +45,7 @@ filegroup(
         "kustomization.yaml",
         "migration.sh",
         "migration-check-cronjob.yaml",
+        "migration-check-once.yaml",
         "recovery.yaml",
         "restore.sh",
         "restore-cronjob.yaml",
