@@ -156,9 +156,19 @@ try {
     assert.ok(key in products);
     await route.fulfill({ headers, json: products[key] });
   });
+  async function swatchColours(selector) {
+    return page
+      .locator(selector)
+      .evaluateAll(
+        (nodes) =>
+          new Set(nodes.map((node) => getComputedStyle(node).backgroundColor))
+            .size,
+      );
+  }
   await page.goto(origin + "/app/ships?mmsi=111");
   await expect(page.getByText("0 track points")).toBeVisible();
   await expect(page.locator("time")).toHaveText(timestamp);
+  assert.equal(await swatchColours(".vessel-sw"), 6);
   assert.ok(!requests.includes(heat));
   generation++;
   missing = true;
@@ -178,6 +188,7 @@ try {
   await page.goto(origin + "/app/ships?mode=heat");
   await expect.poll(() => requests.includes(heat)).toBe(true);
   await expect(page.getByText("Heat computed")).toBeVisible();
+  assert.equal(await swatchColours(".heat-sw"), 6);
   assert.ok(!requests.includes(track));
   assert.deepEqual(errors, []);
   // Run from an environment with mirror egress before moving reader traffic.

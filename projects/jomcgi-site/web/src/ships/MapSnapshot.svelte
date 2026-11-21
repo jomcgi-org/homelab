@@ -35,24 +35,24 @@
     position: absolute;
     inset: 0;
     z-index: 1;
-    background: var(--sheet);
-    color: var(--ink);
+    background: var(--color-background-body);
+    color: var(--color-text-primary);
   }
 
   .snapshot-content {
     position: absolute;
-    inset: var(--snapshot-top, 1.5rem) 1.5rem var(--snapshot-bottom, 5rem);
+    inset: 4.5rem 1.5rem 7rem;
     max-width: 36rem;
     overflow: auto;
   }
 
   h2 {
     margin: 0 0 0.5rem;
-    font: 600 1.4rem/1.2 var(--font-ui);
+    font: 600 1.4rem/1.2 var(--font-family-body);
   }
 
   p {
-    font: 0.85rem/1.5 var(--font-ui);
+    font: 0.85rem/1.5 var(--font-family-body);
   }
 
   .snapshot-summary {
@@ -63,26 +63,26 @@
     margin: 0;
     padding: 0;
     list-style: none;
-    border-top: 1px solid var(--stroke);
+    border-top: 1px solid var(--color-border);
   }
 
   li {
     display: grid;
     gap: 0.2rem;
     padding: 0.65rem 0;
-    border-bottom: 1px solid var(--stroke);
-    font: 0.9rem/1.3 var(--font-ui);
+    border-bottom: 1px solid var(--color-border);
+    font: 0.9rem/1.3 var(--font-family-body);
   }
 
   a,
   strong {
-    color: var(--ink);
+    color: var(--color-text-primary);
     font-weight: 600;
   }
 
   span,
   .snapshot-note {
-    font: 0.75rem/1.5 var(--font-code);
-    color: var(--ink-2);
+    font: 0.75rem/1.5 var(--font-family-code);
+    color: var(--color-text-secondary);
   }
 </style>

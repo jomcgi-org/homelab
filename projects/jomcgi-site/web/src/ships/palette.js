@@ -8,34 +8,30 @@ const VESSEL_KEYS = [
 ];
 export const HEAT_STEPS = 6;
 
-// MapLibre's color parser does not accept CSS variables or color-mix. Resolve
-// them on the actual map surface, then let the browser rasterize CSS Color 4
-// into sRGB bytes. The CSS legend and the GPU receive the same resolved color.
+// Resolve the same palette tokens as the legend before passing them to MapLibre.
 export function readPalette(surface) {
-  const styles = getComputedStyle(surface);
-  const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = 1;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  const color = (token) => {
-    ctx.clearRect(0, 0, 1, 1);
-    ctx.fillStyle = styles.getPropertyValue(token).trim();
-    ctx.fillRect(0, 0, 1, 1);
-    const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
-    return `rgba(${r}, ${g}, ${b}, ${a / 255})`;
+  const probe = document.createElement("span");
+  probe.hidden = true;
+  surface.append(probe);
+  const tone = (name) => {
+    probe.className = "ships-tone-" + name;
+    return getComputedStyle(probe).color;
   };
-  return {
-    ...Object.fromEntries(
-      VESSEL_KEYS.map((key) => [key, color(`--ships-${key}`)]),
-    ),
-    heat: Array.from({ length: HEAT_STEPS }, (_, i) =>
-      color(`--ships-heat-${i + 1}`),
-    ),
-    ink: color("--ink"),
-    muted: color("--ink-2"),
-    sheet: color("--sheet"),
-    paper: color("--paper"),
-    water: color("--ships-water"),
-  };
+  try {
+    return {
+      ...Object.fromEntries(VESSEL_KEYS.map((key) => [key, tone(key)])),
+      heat: Array.from({ length: HEAT_STEPS }, (_, i) =>
+        tone("heat-" + (i + 1)),
+      ),
+      ink: tone("ink"),
+      muted: tone("muted"),
+      sheet: tone("sheet"),
+      paper: tone("paper"),
+      water: tone("water"),
+    };
+  } finally {
+    probe.remove();
+  }
 }
 
 // Repaint the existing provider style in place. Never setStyle: its sources,
