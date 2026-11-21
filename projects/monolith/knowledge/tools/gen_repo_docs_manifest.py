@@ -29,12 +29,11 @@ from pathlib import Path
 
 MANIFEST_REL = "projects/monolith/knowledge/repo_docs_manifest.ndjson"
 
-# We index *.md under these top-level prefixes, plus any CLAUDE.md anywhere.
+# We index *.md under these top-level prefixes, plus any AGENTS.md anywhere.
 # bazel/ carries the build and CI architecture document plus the per-ruleset
 # READMEs (helm, oci, image), which are the only place that
 # knowledge lives; without it the KG could not answer a CI question.
 _INCLUDE_DIRS = ("bazel/", "docs/", "projects/")
-_INCLUDE_NAMES = ("AGENTS.md", "CLAUDE.md")  # indexed anywhere (root + nested)
 
 # Path segments that mark generated / vendored / irrelevant trees. All entries
 # are slash-wrapped so they match whole path segments via the ``/{rel_path}/``
@@ -84,7 +83,7 @@ def _should_index(rel_path: str) -> bool:
     """True if a repo-relative path belongs in the manifest (pure predicate)."""
     if _excluded(rel_path):
         return False
-    if rel_path.rsplit("/", 1)[-1] in _INCLUDE_NAMES:
+    if rel_path.rsplit("/", 1)[-1] == "AGENTS.md":
         return True
     return rel_path.endswith(".md") and rel_path.startswith(_INCLUDE_DIRS)
 

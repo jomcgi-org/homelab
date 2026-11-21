@@ -87,13 +87,13 @@ def seed_package(repository, crane):
             ) from None
 
 
-def verify_private(repository, token, crane):
+def verify_private(repository, token, crane, *, bootstrap=True):
     if repository not in HARNESS_PACKAGES:
         raise PrivacyError("Unknown private harness destination")
     if not token:
         raise PrivacyError("GHCR_TOKEN is required to verify package privacy")
     visibility = package_visibility(repository, token)
-    if visibility is None:
+    if visibility is None and bootstrap:
         seed_package(repository, crane)
         # The registry may acknowledge the write before metadata is indexed.
         for delay in (0, 1, 2, 4, 8):
@@ -110,9 +110,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("repository", choices=sorted(HARNESS_PACKAGES))
     parser.add_argument("crane")
+    parser.add_argument("--existing-only", action="store_true")
     args = parser.parse_args()
     try:
-        verify_private(args.repository, os.environ.get("GHCR_TOKEN"), args.crane)
+        verify_private(
+            args.repository,
+            os.environ.get("GHCR_TOKEN"),
+            args.crane,
+            bootstrap=not args.existing_only,
+        )
     except PrivacyError as exc:
         parser.exit(1, f"ERROR: {args.repository}: {exc}\n")
     print(f"Verified private GHCR package: {args.repository}")

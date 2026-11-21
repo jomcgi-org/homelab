@@ -6,9 +6,9 @@ cd "${BUILD_WORKSPACE_DIRECTORY:-$(git rev-parse --show-toplevel)}"
 
 BUILD_FILE="bazel/images/BUILD"
 
-# Image macros that generate .push targets (go_image, py3_image, apko_image, apko_nginx_frontend)
+# Image macros that generate .push targets (go_image, py3_image, apko_image)
 # Also matches raw oci_push targets (used by bazel/tools/image which doesn't use a macro wrapper)
-IMAGE_MACROS="go_image\|py3_image\|apko_image\|apko_nginx_frontend\|oci_push"
+IMAGE_MACROS="go_image\|py3_image\|apko_image\|oci_push"
 
 # Find all OCI push targets by scanning BUILD files for image macros
 OCI_PUSH=$(
@@ -19,7 +19,7 @@ OCI_PUSH=$(
 			# Use awk to find image macro calls and extract their name attribute
 			# For oci_push, the name IS the push target (no .push suffix needed)
 			awk -v dir="$dir" '
-				/^[^#]*(go_image|py3_image|apko_image|apko_nginx_frontend)\(/ {
+				/^[^#]*(go_image|py3_image|apko_image)\(/ {
 					in_macro = 1; is_push = 0
 				}
 				/^[^#]*oci_push\(/ {

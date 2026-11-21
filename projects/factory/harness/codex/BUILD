@@ -18,6 +18,7 @@ oci_image(
         "//bazel/tools/mandoline:layer",
         "//projects/factory/mandoline/cmd/factory-mandoline:diff_layer",
     ],
+    visibility = ["//projects/factory/reviewer/harness:__pkg__"],
 )
 
 expand_template(
@@ -27,6 +28,7 @@ expand_template(
         "{STABLE_IMAGE_TAG}": "{{STABLE_IMAGE_TAG}}",
     },
     template = ["{STABLE_IMAGE_TAG}"],
+    visibility = ["//projects/factory/reviewer/harness:__pkg__"],
 )
 
 # The package owner verified this destination was absent and approved its

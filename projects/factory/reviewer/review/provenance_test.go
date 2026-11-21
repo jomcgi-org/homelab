@@ -21,6 +21,7 @@ type isolatedGoalTasks struct {
 	lists       int
 	sessions    []string
 	nextReadErr error
+	beforeList  func(int) *kagent.TaskPage
 }
 
 func (k *isolatedGoalTasks) GetTask(ctx context.Context, agent kagent.AgentRef, id string) (*kagent.Task, error) {
@@ -38,6 +39,11 @@ func (k *isolatedGoalTasks) GetTask(ctx context.Context, agent kagent.AgentRef, 
 func (k *isolatedGoalTasks) ListTasks(ctx context.Context, agent kagent.AgentRef, session, state, token string) (*kagent.TaskPage, error) {
 	k.lists++
 	k.sessions = append(k.sessions, session)
+	if k.beforeList != nil {
+		if page := k.beforeList(k.lists); page != nil {
+			return page, nil
+		}
+	}
 	return k.Tasks.ListTasks(ctx, agent, session, state, token)
 }
 
@@ -196,6 +202,60 @@ func TestGoalProvenanceRecoversAmbiguousSendAfterRestart(t *testing.T) {
 	}
 	if len(recorder.runs) != 1 || h.k.executions != 1 || len(h.k.sends) != 1 || tasks.lists != 1 || tasks.sessions[0] != h.k.sends[0].ContextID {
 		t.Fatal("recovery changed the receipt, executed again, or scanned other tasks")
+	}
+}
+
+func TestGoalObservesAcceptanceAfterAnEmptySessionRead(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		accepted bool
+	}{
+		{name: "accepted but initially invisible", accepted: true},
+		{name: "no task in the window"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newHarness(t)
+			now := time.Now()
+			h.cfg.Now = func() time.Time { return now }
+			h.cfg.DispatchWindow = 6 * time.Second
+			recorder := &recordedRuns{}
+			h.cfg.Runs = recorder
+			h.cfg.MACSecret = func() (string, error) { return strings.Repeat("k", 32), nil }
+			h.cfg.Bindings[0].Runtime = &provenance.Runtime{Model: "model", ReasoningEffort: "high", Arm: "control"}
+			if test.accepted {
+				h.k.loseResponse = true
+			} else {
+				h.k.sendErr = []error{kagent.ErrAmbiguous}
+			}
+			tasks := &isolatedGoalTasks{Tasks: h.k, beforeList: func(list int) *kagent.TaskPage {
+				now = now.Add(h.cfg.DispatchWindow / 2)
+				if list == 1 {
+					return &kagent.TaskPage{}
+				}
+				return nil
+			}}
+			e := h.engine()
+			e.tasks = tasks
+			pr := github.PullRequest{Number: 7, HeadSHA: shaA}
+			in := &inputs{issues: &IssueContext{Issue: &IssueEvidence{Key: "HOME-691"}, taskClass: "unclassified"}}
+			goal := e.goalCall(context.Background(), &e.cfg.Bindings[0], pr, in, "goal text", nil, e.log)
+			if len(h.k.sends) != 1 || len(recorder.runs) != 1 || tasks.lists != 2 {
+				t.Fatalf("sends=%d receipts=%d lists=%d", len(h.k.sends), len(recorder.runs), tasks.lists)
+			}
+			if tasks.sessions[0] != h.k.sends[0].ContextID || tasks.sessions[1] != tasks.sessions[0] {
+				t.Fatal("recovery read outside the original goal session")
+			}
+			index := h.cfg.GoalTasks.(*FileGoalAudit)
+			records := auditRecords(t, index)
+			if test.accepted {
+				if goal == nil || goal.Overall != goalMet || goal.Head != shaA || h.k.executions != 1 || len(records) != 1 ||
+					records[0].MessageID != recorder.runs[0].MessageID || records[0].SessionID != tasks.sessions[0] {
+					t.Fatal("did not recover one verdict bound to the original head and receipt")
+				}
+			} else if goal != nil || h.k.executions != 0 || len(records) != 0 || !strings.Contains(h.log.String(), "dispatch_uncertain") {
+				t.Fatal("an empty session must leave acceptance uncertain")
+			}
+		})
 	}
 }
 

@@ -108,9 +108,7 @@ agents:
     # session's actor keeps its worker after its turn, and a resume with no
     # free worker fails ("no worker has room"), which the connector records
     # as an ambiguous send (HOME-131, 2026-11-16).
-    # Temporarily 10 (HOME-570): with maxSurge 0 the rollout to 768Mi
-    # stalled on full nodes. A follow-up returns this to 12.
-    concurrency: 10
+    concurrency: 12
     # The request covers what reclaim cannot take from a busy worker, not its
     # peak. Most of a worker's memory is file cache, which the kernel drops
     # under pressure: on 18 Nov, busy workers held 0.2-1.2Gi of anonymous and
@@ -132,7 +130,7 @@ agents:
   reviewer:
     model: gpt-6.2-sol
     # One worker per concurrent review (reviewer.concurrency).
-    concurrency: 3
+    concurrency: 5
     # The review binding has no toolchain and runs no PR code, so its
     # workers stay small: 1.2Gi at most for one worker and 2.7Gi for all
     # three together (14-16 Nov), sized per worker like the coder pool. Five
@@ -197,12 +195,13 @@ itsaplan:
 # The connector (projects/factory/connector) as factory/factory-connector,
 # for the homelab binding.
 connector:
+  traceEndpoint: http://otel-collector.otel-collector.svc.cluster.local:4317
   enabled: true
-  # homelab-codex claims up to 8 runs at once, two fewer than the
+  # homelab-codex claims up to 10 runs at once, two fewer than the
   # agents.codex.concurrency workers that hold them (see there).
   agents:
     - username: homelab-codex
-      concurrency: 8
+      concurrency: 10
   bindings:
     homelab:
       itsaplanProject: HOME
@@ -245,9 +244,10 @@ connector:
 # with a read-only git token from the reviewer App
 # (k8s-homelab/factory-review-gh-app).
 reviewer:
+  traceEndpoint: http://otel-collector.otel-collector.svc.cluster.local:4317
   enabled: true
   # Reviews at once; agents.reviewer.concurrency gives each a worker.
-  concurrency: 3
+  concurrency: 5
   # The coder gets the goal check's private reasons in its next revision
   # round, posted on the issue by the connector (HOME-251).
   goalReasons:

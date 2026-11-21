@@ -24,7 +24,11 @@ def signed_token(subject):
         "sub": subject,
         "iat": now,
         "exp": now + 600,
-        "groups": ["authentik Admins"] if subject == "operator" else ["applicants"],
+        "groups": {
+            "operator": ["authentik Admins"],
+            "factory-operator": ["factory-operators"],
+            "applicant": ["applicants"],
+        }[subject],
     }
     header = {"alg": "RS256", "kid": "test"}
     payload = ".".join(encode(json.dumps(part).encode()) for part in [header, claims])
@@ -73,7 +77,7 @@ class Fixture(BaseHTTPRequestHandler):
         assert self.path == "/application/o/token/"
         data = parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode())
         subject = data["code"][0]
-        assert subject in ("operator", "applicant")
+        assert subject in ("operator", "factory-operator", "applicant")
         self.reply(
             {
                 "token_type": "Bearer",

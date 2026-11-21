@@ -1,0 +1,13 @@
+[Unit]
+Description=Forward the factory T3 socket to the node-1 loopback listener
+
+[Service]
+ExecStart=/lib/systemd/systemd-socket-proxyd 127.0.0.1:3773
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=localhost

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -698,6 +699,26 @@ func TestSupersededHeadCancelsTheOldReview(t *testing.T) {
 		t.Fatalf("old check = %+v", c)
 	}
 	e.Wait()
+	cancelled := 0
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "factory.review_transition" {
+			continue
+		}
+		fields := map[string]string{}
+		for _, field := range span.Attributes {
+			fields[string(field.Key)] = field.Value.Emit()
+		}
+		if fields["review.transition"] == ConclusionCancelled && fields["head.sha"] == shaA {
+			cancelled++
+			if fields["repository"] != testRepo || fields["pr.number"] != "7" ||
+				fields["review.check_id"] != strconv.FormatInt(h.gh.check(shaA).ID, 10) {
+				t.Errorf("cancellation observation = %v", fields)
+			}
+		}
+	}
+	if cancelled != 1 {
+		t.Errorf("cancelled observations = %d, want 1", cancelled)
+	}
 	for _, span := range exporter.GetSpans() {
 		if span.Name != "review" || span.Parent.IsValid() {
 			continue
@@ -4480,6 +4501,79 @@ func TestAddedFileInvariantAnswerInCompletedCheck(t *testing.T) {
 	}
 }
 
+func TestReviewTransitionUsesTheAcceptedGitHubHead(t *testing.T) {
+	exporter := captureReviewSpans(t)
+	h := newHarness(t)
+	addPR7(h)
+	e, ctx, _ := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	eventually(t, "head-bound review transition", func() bool {
+		for _, span := range exporter.GetSpans() {
+			if span.Name != "factory.review_transition" {
+				continue
+			}
+			fields := map[string]string{}
+			for _, field := range span.Attributes {
+				fields[string(field.Key)] = field.Value.Emit()
+			}
+			if fields["review.transition"] == ConclusionSuccess {
+				return fields["repository"] == testRepo && fields["pr.number"] == "7" &&
+					fields["head.sha"] == shaA && fields["review.check_id"] != ""
+			}
+		}
+		return false
+	})
+}
+
+type stalledReviewExporter struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *stalledReviewExporter) ExportSpans(ctx context.Context, _ []sdktrace.ReadOnlySpan) error {
+	s.once.Do(func() { close(s.entered) })
+	select {
+	case <-s.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *stalledReviewExporter) Shutdown(context.Context) error { return nil }
+
+func TestReviewCompletesWithStalledAnalytics(t *testing.T) {
+	exporter := &stalledReviewExporter{entered: make(chan struct{}), release: make(chan struct{})}
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter, sdktrace.WithMaxQueueSize(1), sdktrace.WithMaxExportBatchSize(1)),
+		sdktrace.WithIDGenerator(IDGenerator{}),
+	)
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		close(exporter.release)
+		otel.SetTracerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	h := newHarness(t)
+	addPR7(h)
+	e, ctx, _ := h.start()
+	task := runReview(t, h, e, ctx, 7, shaA)
+	select {
+	case <-exporter.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("analytics did not attempt an export")
+	}
+	h.k.finish(task, kagent.StateCompleted, report(t, passing))
+	eventually(t, "successful check while analytics is blocked", func() bool {
+		check := h.gh.check(shaA)
+		return check != nil && check.Conclusion == ConclusionSuccess
+	})
+}
+
 func captureReviewSpans(t *testing.T) *tracetest.InMemoryExporter {
 	t.Helper()
 	exporter := tracetest.NewInMemoryExporter()
@@ -4501,7 +4595,9 @@ func TestReviewTrace(t *testing.T) {
 		h.k.stamp(id, map[string]any{"inputTokens": float64(12), "outputTokens": float64(3)})
 	})
 	e.Wait()
-	spans := exporter.GetSpans()
+	spans := slices.DeleteFunc(exporter.GetSpans(), func(span tracetest.SpanStub) bool {
+		return span.Name == "factory.review_transition"
+	})
 	if len(spans) != 3 {
 		t.Fatalf("got %d spans", len(spans))
 	}

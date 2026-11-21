@@ -518,7 +518,7 @@ func (e *Engine) holdIssues(ctx context.Context, b *Binding, pr github.PullReque
 	// A refused update must not leave the only durable check as a pass when
 	// GitHub still accepts a new failing check on the same head.
 	now := e.cfg.Now().UTC()
-	cur, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
+	cur, err := e.createReviewVerdict(ctx, b, github.CheckRunWrite{
 		Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
 		Status: "completed", Conclusion: ConclusionFailure, StartedAt: &now, CompletedAt: &now, Output: &o.Output,
 	})

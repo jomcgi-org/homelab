@@ -9,16 +9,20 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestLandingStatusBatchesFortyTwoAndOneHundredPRs(t *testing.T) {
 	for _, count := range []int{42, 100} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			var mu sync.Mutex
 			reads := 0
+			wantReads := (count + 24) / 25
+			allStarted := make(chan struct{})
 			seen := map[int]bool{}
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				reads++
 				var request struct{ Query string }
 				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 					t.Error(err)
@@ -28,6 +32,7 @@ func TestLandingStatusBatchesFortyTwoAndOneHundredPRs(t *testing.T) {
 					t.Errorf("unbounded query: %d aliases", len(aliases))
 				}
 				prs := map[string]any{}
+				mu.Lock()
 				for _, alias := range aliases {
 					number, _ := strconv.Atoi(alias[1])
 					if alias[1] != alias[2] || seen[number] {
@@ -35,6 +40,17 @@ func TestLandingStatusBatchesFortyTwoAndOneHundredPRs(t *testing.T) {
 					}
 					seen[number] = true
 					prs["p"+alias[1]] = map[string]any{"number": number, "url": fmt.Sprintf("https://github.com/org/repo/pull/%d", number)}
+				}
+				reads++
+				if reads == wantReads {
+					close(allStarted)
+				}
+				mu.Unlock()
+				// Each batch starts before any batch can reply.
+				select {
+				case <-allStarted:
+				case <-r.Context().Done():
+					return
 				}
 				_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": prs}})
 			}))
@@ -44,9 +60,14 @@ func TestLandingStatusBatchesFortyTwoAndOneHundredPRs(t *testing.T) {
 			for i := range numbers {
 				numbers[i] = count - i
 			}
-			out, err := c.StatusesForLanding(context.Background(), "org/repo", numbers, CheckRunFilter{AppID: 123, Name: "factory review"})
-			if err != nil || len(out) != count || reads != (count+24)/25 {
-				t.Fatalf("PRs=%d reads=%d err=%v", len(out), reads, err)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			out, err := c.StatusesForLanding(ctx, "org/repo", numbers, CheckRunFilter{AppID: 123, Name: "factory review"})
+			mu.Lock()
+			gotReads := reads
+			mu.Unlock()
+			if err != nil || len(out) != count || gotReads != wantReads {
+				t.Fatalf("PRs=%d reads=%d err=%v", len(out), gotReads, err)
 			}
 			if numbers[0] != count {
 				t.Fatal("modified caller's input")

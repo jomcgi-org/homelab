@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,48 +24,72 @@ import (
 )
 
 type fakeStore struct {
-	items []store.StatusItem
-	names []string
+	items     []store.StatusItem
+	names     []string
+	liveTotal int
 }
 
-func (s fakeStore) StatusItems(_ context.Context, names []string) ([]store.StatusItem, error) {
+func (s fakeStore) StatusItems(_ context.Context, names []string) ([]store.StatusItem, int, error) {
 	want := s.names
 	if want == nil {
 		want = []string{"homelab"}
 	}
 	if !reflect.DeepEqual(names, want) {
-		return nil, errors.New("wrong binding")
+		return nil, 0, errors.New("wrong binding")
 	}
-	return s.items, nil
+	return s.items, s.liveTotal, nil
 }
 
-type countingStatusGitHub struct{ calls int }
+type concurrentStatusGitHub struct {
+	calls      atomic.Int32
+	allStarted chan struct{}
+}
 
-func (g *countingStatusGitHub) StatusesForLanding(context.Context, string, []int, github.CheckRunFilter) (map[int]*github.PRStatus, error) {
-	g.calls++
-	return map[int]*github.PRStatus{}, nil
+func (g *concurrentStatusGitHub) StatusesForLanding(ctx context.Context, repo string, numbers []int, _ github.CheckRunFilter) (map[int]*github.PRStatus, error) {
+	if g.calls.Add(1) == 4 {
+		close(g.allStarted)
+	}
+	select {
+	case <-g.allStarted:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	number := numbers[0]
+	return map[int]*github.PRStatus{number: {Number: number, URL: "https://github.com/" + repo}}, nil
 }
 
 func TestSourceBoundsGitHubQueriesAcrossAllBindings(t *testing.T) {
 	for _, count := range []int{4, 5} {
-		st := fakeStore{}
-		gh := &countingStatusGitHub{}
-		source := &Source{Plan: fakePlan{}, GitHub: gh}
-		for i := range count {
-			name := fmt.Sprintf("binding-%d", i)
-			st.names = append(st.names, name)
-			st.items = append(st.items, store.StatusItem{BindingName: name, IssueID: int64(i + 1), PRNumber: i + 1})
-			source.Bindings = append(source.Bindings, config.Binding{Name: name, ItsaplanProject: "HOME", Owner: "org", Repo: name})
-		}
-		source.Store = st
-		_, err := source.Load(context.Background())
-		if count == 4 {
-			if err != nil || gh.calls != 4 {
-				t.Fatalf("calls=%d err=%v", gh.calls, err)
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			st := fakeStore{}
+			gh := &concurrentStatusGitHub{allStarted: make(chan struct{})}
+			source := &Source{Plan: fakePlan{}, GitHub: gh}
+			for i := range count {
+				name := fmt.Sprintf("binding-%d", i)
+				st.names = append(st.names, name)
+				st.items = append(st.items, store.StatusItem{BindingName: name, IssueID: int64(i + 1), Key: name, PRNumber: 42})
+				source.Bindings = append(source.Bindings, config.Binding{Name: name, ItsaplanProject: "HOME", Owner: "org", Repo: name})
 			}
-		} else if err == nil || gh.calls != 0 {
-			t.Fatalf("over-budget refresh sent %d requests: %v", gh.calls, err)
-		}
+			source.Store = st
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			snapshot, err := source.Load(ctx)
+			calls := gh.calls.Load()
+			if count == 5 {
+				if err == nil || calls != 0 {
+					t.Fatalf("over-budget refresh sent %d requests: %v", calls, err)
+				}
+				return
+			}
+			if err != nil || calls != 4 || len(snapshot.InFlight) != 4 {
+				t.Fatalf("calls=%d snapshot=%+v err=%v", calls, snapshot, err)
+			}
+			for _, item := range snapshot.InFlight {
+				if item.PR == nil || item.PR.Number != 42 || item.PR.URL != "https://github.com/org/"+item.Key {
+					t.Fatalf("wrong repository in PR status: %+v", item.PR)
+				}
+			}
+		})
 	}
 }
 
@@ -79,6 +104,100 @@ func (fakePlan) NeedsYou(_ context.Context, project, username string) ([]itsapla
 
 func (fakePlan) GetIssueSummary(_ context.Context, id int64) (*itsaplan.IssueSummary, error) {
 	return &itsaplan.IssueSummary{Title: "Change"}, nil
+}
+
+func (fakePlan) RecentIssueTitles(context.Context, string) (map[int64]string, error) {
+	return nil, errors.New("recent issue list unavailable")
+}
+
+type stalledTitleList struct {
+	fakePlan
+	started chan struct{}
+}
+
+func (p stalledTitleList) RecentIssueTitles(ctx context.Context, _ string) (map[int64]string, error) {
+	close(p.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+type titleListAwareGitHub struct {
+	fakeGitHub
+	listStarted <-chan struct{}
+}
+
+func (g titleListAwareGitHub) StatusesForLanding(ctx context.Context, repo string, numbers []int, reviewer github.CheckRunFilter) (map[int]*github.PRStatus, error) {
+	select {
+	case <-g.listStarted:
+		return g.fakeGitHub.StatusesForLanding(ctx, repo, numbers, reviewer)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestStatusFallsBackWhenConcurrentTitleListTimesOut(t *testing.T) {
+	started := make(chan struct{})
+	source := &Source{
+		Store: fakeStore{items: []store.StatusItem{{BindingName: "homelab", IssueID: 24, Key: "HOME-24", PRNumber: 8000}}},
+		Plan:  stalledTitleList{started: started}, GitHub: titleListAwareGitHub{listStarted: started},
+		Bindings: []config.Binding{{Name: "homelab", ItsaplanProject: "HOME", Owner: "jomcgi-org", Repo: "homelab", ReviewerCheck: &config.Check{Name: "factory review", AppID: 123}}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	snapshot, err := source.Load(ctx)
+	if err != nil || len(snapshot.InFlight) != 1 || snapshot.InFlight[0].Title != "Change" || snapshot.InFlight[0].PR.CI != "success" {
+		t.Fatalf("snapshot = %+v, err = %v", snapshot, err)
+	}
+}
+
+type recentTitlePlan struct {
+	fakePlan
+	titles    map[int64]string
+	listCalls int
+}
+
+func (p *recentTitlePlan) RecentIssueTitles(_ context.Context, project string) (map[int64]string, error) {
+	p.listCalls++
+	if project != "HOME" {
+		return nil, errors.New("wrong title project")
+	}
+	return p.titles, nil
+}
+
+func (p *recentTitlePlan) GetIssueSummary(_ context.Context, id int64) (*itsaplan.IssueSummary, error) {
+	if id != 900 {
+		return nil, fmt.Errorf("unexpected fallback read for issue %d", id)
+	}
+	return &itsaplan.IssueSummary{Title: "Older merge"}, nil
+}
+
+func TestStatusRemainsAvailableAboveLiveListingLimit(t *testing.T) {
+	rows := make([]store.StatusItem, 100)
+	plan := &recentTitlePlan{titles: make(map[int64]string)}
+	for i := range rows {
+		rows[i] = store.StatusItem{BindingName: "homelab", IssueID: int64(i + 1), Key: fmt.Sprintf("HOME-%d", i+1), State: "active"}
+		plan.titles[rows[i].IssueID] = "Recent work"
+	}
+	merged := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
+	rows = append(rows, store.StatusItem{BindingName: "homelab", IssueID: 900, Key: "HOME-900", MergedAt: &merged})
+	source := &Source{
+		Store: fakeStore{items: rows, liveTotal: 110}, Plan: plan,
+		Bindings: []config.Binding{{Name: "homelab", ItsaplanProject: "HOME"}},
+	}
+	handler := &Handler{Load: source.Load}
+	handler.refresh(context.Background())
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("GET", "/status", nil))
+	var snapshot Snapshot
+	if err := json.Unmarshal(response.Body.Bytes(), &snapshot); response.Code != http.StatusOK || err != nil {
+		t.Fatalf("status=%d decode error=%v", response.Code, err)
+	}
+	if len(snapshot.InFlight) != 100 || snapshot.InFlightTotal != 110 || len(snapshot.NeedsYou) != 1 {
+		t.Fatalf("in flight=%d total=%d needs you=%d", len(snapshot.InFlight), snapshot.InFlightTotal, len(snapshot.NeedsYou))
+	}
+	if plan.listCalls != 1 || snapshot.InFlight[0].Title != "Recent work" || len(snapshot.Shipped) != 1 || snapshot.Shipped[0].Title != "Older merge" {
+		t.Fatalf("title list calls = %d, first in-flight title = %q, shipped = %+v", plan.listCalls, snapshot.InFlight[0].Title, snapshot.Shipped)
+	}
 }
 
 type fakeGitHub struct{}

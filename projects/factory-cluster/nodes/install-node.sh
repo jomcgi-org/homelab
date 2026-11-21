@@ -50,6 +50,12 @@ systemctl reload-or-restart factory-firewall
 # rpcbind serves NFS, which no node uses.
 systemctl disable --now --quiet rpcbind.socket rpcbind.service 2>/dev/null || true
 
+# Stage the T3 units on node-1. The rollout starts the listener after
+# GitOps applies and verifies the socket admission guard.
+if [[ "$(hostname -s)" == "node-1" ]]; then
+	bash "${HERE}/install-t3-socket.sh" --stage
+fi
+
 # zram swap replaces the disk swap file (zram-generator.conf).
 if ! dpkg -s systemd-zram-generator >/dev/null 2>&1; then
 	apt-get update -qq

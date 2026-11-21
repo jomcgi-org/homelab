@@ -682,6 +682,7 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 			}
 			// Persist possible acceptance before making the external call.
 			dispatch.State = goalIssued
+			dispatch.IssuedAt = e.cfg.Now().UTC()
 			if err := e.cfg.GoalTasks.SaveGoalTask(*dispatch); err != nil {
 				why = "task_index"
 				break
@@ -701,6 +702,18 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 			}
 		} else {
 			next, err = e.recoverGoalDispatch(ctx, b, dispatch)
+			if errors.Is(err, errGoalTaskNotVisible) {
+				issued := dispatch.IssuedAt
+				if issued.IsZero() {
+					issued = dispatch.CreatedAt // Index written before IssuedAt was recorded.
+				}
+				// The first empty read may be earlier than task publication.
+				// Observe only this session while acceptance could still appear.
+				if e.cfg.Now().Before(issued.Add(e.cfg.DispatchWindow)) {
+					continue
+				}
+				err = errGoalDispatchUncertain
+			}
 			if errors.Is(err, errGoalDispatchUncertain) {
 				why = "dispatch_uncertain"
 				break

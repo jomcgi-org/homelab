@@ -727,10 +727,13 @@ not archived) issues assigned to `@joe` with no delegate, such as HOME-20 to
 HOME-23. Agents never pick these up; delegating one is an explicit handoff, and
 the page's reads start no runs. Joe's member ID comes from each bound project's
 scaffold on every refresh. In flight is the store's active, blocked, review and
-merging work items, and Shipped recently its ten latest merges. Titles come
-from itsaplan; batched GitHub queries read checks, the reviewer check (or review
-decision) and queue state. No issue bodies, check output, transcripts or tokens
-enter the response.
+merging work items, and Shipped recently its ten latest merges. One itsaplan
+list per project reads the 500 latest updated titles, including archived
+issues. These list reads run alongside GitHub with a two-second deadline.
+The connector looks up displayed issues outside a returned list by ID.
+Concurrent GitHub batches across bindings read checks, the reviewer check
+(or review decision) and queue state. No issue bodies, check output,
+transcripts or tokens enter the response.
 
 The itsaplan contract is pinned to v1.10.0 commit `6c7c2fe2`: the
 [project route](https://github.com/croffasia/itsaplan/blob/6c7c2fe2cb9d810d29c68e054de25876b47434f8/apps/api/src/modules/projects/index.ts#L143)
@@ -781,8 +784,9 @@ A GraphQL query reads at most 25 PRs (75 connections, one
 at most four per refresh with one auth retry each: at most 960 of the
 5,000 points per hour. An over-budget refresh fails closed. The snapshot
 refreshes every 30 seconds (20-second deadline, eight concurrent reads, at
-most 100 live items and ten merges) and expires after 30 seconds. A truncated
-listing, excess live work, a failed refresh or a stopped poller clears it, and
+most 100 live items and ten merges) and expires after 30 seconds. Above 100
+live items, it shows the latest 100 admissions and the exact total. A truncated
+upstream listing, a failed refresh or a stopped poller clears it, and
 `/status` returns 503. Each failed refresh logs `status refresh failed` with
 its stage (`needs_you`, `work_items`, `github_budget`, `github`, `titles` or
 `other`) and a timeout flag, but no upstream error text. Visitors trigger no
@@ -856,6 +860,12 @@ computes the verdict and publishes it as `jomcgi-factory-review`.
 The PR comment explains the check. Ruleset 9180009 requires the check
 from reviewer App 5758326 alongside `pr-checks`.
 [Required-check decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6882698416)
+
+The reviewer emits `factory.review_transition` for check start, reattachment
+and terminal verdict. Both this event and the connector's
+`factory.pr_head_delivery` event carry the repository, PR number and head SHA.
+The delivery event identifies the native run whose turn the connector synced
+to that head. The exporters batch spans outside check and delivery processing.
 
 - **Review order (HOME-220).** Running reviews retain their slots. The poller
   reattaches in-progress checks before starting new reviews. Within each

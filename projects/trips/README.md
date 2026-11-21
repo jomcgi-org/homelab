@@ -46,9 +46,11 @@ cutover. The production hub routing stays in place until step 4.
    public_points. Review highlight/default image references with each slug.
 2. Set `workloadsEnabled`. Run a one-off export. Verify the manifest's JSON
    hashes, point counts, image references and all five WebP variants against
-   the hub snapshot. Provision scoped R2 mirror credentials and enable the
-   trips-public mirror. Check root latest.json and payload cache headers at the
-   public endpoint.
+   the hub snapshot. Provision the scoped R2 mirror credential in
+   `vaults/k8s-homelab/items/trips-public-mirror`. Set the public bucket's
+   `itemPath` to that path while the mirror is suspended. Verify the
+   OnePasswordItem is Ready, then enable the mirror. Check root latest.json
+   and payload cache headers at the public endpoint.
 3. Add an edge route for the upload path on a shadow hostname that the factory
    edge owns, with gateway sign-in and tunnel ingress. This PR adds no edge
    route. Replay the same upload corpus against both authenticated routes at

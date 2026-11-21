@@ -158,6 +158,28 @@ second factor; choose TOTP. A WebAuthn key enrolled over the port-forward is
 bound to `localhost` and fails on factory-auth.jomcgi.dev. The admin and user
 interfaces are reachable only through the port-forward.
 
+### T3 browser access
+
+Node bootstrap installs the socket units on node-1. After verifying that the
+admission guard is live, run
+`sudo bash projects/factory-cluster/nodes/install-t3-socket.sh --activate`
+on node-1. This starts the socket without restarting k3s.
+
+Publish the hostname in the tunnel only after the relay Deployment is
+available, the socket accepts connections, and the production admission guard
+denies a non-relay socket mount.
+
+The relay mounts only the dedicated socket directory and has no network egress.
+T3 listens on `127.0.0.1:3773`. Tailscale Serve uses that listener for mobile.
+
+Before use, check that unauthenticated requests to the UI, API and WebSocket
+start sign-in, and that an authenticated `factory-operators` account without
+`authentik Admins` receives 403. Confirm that an admin can pair and reconnect
+from the browser, and that mobile pairing still works. To withdraw the
+cluster relay, use `sudo systemctl disable --now t3-cluster.socket` and
+`sudo systemctl stop t3-cluster.service`. Revert the Git change to withdraw
+the route and DNS.
+
 ### kubectl through Authentik
 
 | Authentik group | Access |
@@ -440,7 +462,7 @@ curl -s -X POST -H 'Content-Type: application/json' http://localhost:9093/api/v2
 | Alert | Fires when |
 | --- | --- |
 | `NodeDiskFilling` | A node's root filesystem is more than 75% full for 15 min. Image garbage collection starts at 85% and the kubelet evicts pods at 90% |
-| `KagentSuspendTimedOut` | A `SuspendActor` call passed kagent's fixed 30 s deadline. Each scrape (30 s) that shows more timeouts sends one message with the count, so two timeouts in one scrape give one message. The alert ends an hour later and sends nothing then |
+| `KagentSuspendTimedOut` | A `SuspendActor` call passed the controller's 120-second deadline. Each scrape (30 s) that shows more timeouts sends one message with the count, so two timeouts in one scrape give one message. The alert ends an hour later and sends nothing then |
 | `FactoryItsaplanOutage` | A connector dispatch phase has been failing on itsaplan for 10 min. Check the named phase in connector logs and sample the coordinator key counter using the [HOME-385 procedure](../factory/deploy/notify.md#home-385-rollout-verification). |
 | `FactoryCodexQuotaLow` | A Codex grant has used 90% or more of a quota window for 5 min |
 | `FactoryCodexQuotaExhausted` | A Codex grant is out of quota for 5 min. Coder and review turns fail until a person resets the plan or changes the account. The message gives, for each window the grant has used up, its reset time or that it has none; when no window reads 100%, every window's reset |
@@ -644,11 +666,12 @@ directory that a running session uses.
 
 #### KagentSuspendTimedOut
 
-kagent v1.0.1 keeps the Actor SUSPENDING, refuses
-every turn and delete for the session, and holds its worker slot. The reaper
-checks every 15 seconds and deletes the assigned worker after five minutes in
-SUSPENDING. If the same claim persists after that deadline, inspect the reaper
-logs and pod assignment. When the reviewed action is enabled, sign in to the
+When a suspend exceeds the controller's two-minute deadline, the Actor can
+stay SUSPENDING and hold its worker slot. The session then refuses turns and
+delete requests. The reaper checks every 15 seconds and deletes the assigned
+worker after five minutes in SUSPENDING. If the same claim persists after
+that deadline, inspect the reaper logs and pod assignment. When the reviewed
+action is enabled, sign in to the
 [KagentSuspendTimedOut runbook](https://factory-runbooks.jomcgi.dev/KagentSuspendTimedOut)
 and select **Review locked sessions**. For the session you intend to free,
 check its executor, worker namespace, pod name and UID, and creator account,
@@ -659,13 +682,13 @@ If the action is unavailable, the node-1 fallback frees every locked session:
 
 ```bash
 # 1. The locked sessions: the same quiescence claim (session and executor)
-#    seen twice, a minute apart. A suspend that is still running has at most
-#    30 s, and the table records no claim time.
+#    seen twice, 150 seconds apart. The controller allows 120 seconds for
+#    a suspend. The table records no claim time.
 claims() { KUBECONFIG=~/.kube/factory.yaml kubectl -n kagent-pg exec kagent-pg-1 -c postgres -- \
   psql -d kagent -At -c "select distinct s.id || ' ' || e.quiescence_executor_id
     from kagent.session s join kagent.session_task_event e using (history_id)
     where e.quiescence_pending and e.quiescence_executor_id is not null" | sort; }
-FIRST=$(claims); sleep 60
+FIRST=$(claims); sleep 150
 SESSIONS=$(comm -12 <(echo "$FIRST") <(claims) | cut -d' ' -f1 | sort -u)
 KUBECONFIG=~/.kube/factory.yaml kubectl -n kagent port-forward svc/kagent-controller 18083:8083 &
 for SESSION in $SESSIONS; do

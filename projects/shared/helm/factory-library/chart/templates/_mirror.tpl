@@ -145,8 +145,8 @@ is one path segment, so a source cannot reach above or beside it. */}}
 {{- if not (has (get $source "manifestName" | default "manifest.json") (list "manifest.json" "latest.json")) -}}{{- fail "factory-library: public.sources manifestName must be manifest.json or latest.json" -}}{{- end -}}
 {{- $prefixes = append $prefixes $prefix -}}
 {{- end -}}
-{{- $path := required "factory-library: public.itemPath is required" $public.itemPath -}}
-{{- if not (regexMatch "^vaults/[^/]+/items/[^/]+$" $path) -}}{{- fail "factory-library: public.itemPath must be vaults/<vault>/items/<item>" -}}{{- end -}}
+{{- $path := get $public "itemPath" -}}
+{{- if or (not (kindIs "string" $path)) (and $path (not (regexMatch "^vaults/[^/]+/items/[^/]+$" $path))) -}}{{- fail "factory-library: public.itemPath must be vaults/<vault>/items/<item>" -}}{{- end -}}
 {{/* rclone 1.76.0, upstream multi-platform index; see README for provenance. */}}
 {{- $image := $public.image | default (dict "repository" "docker.io/rclone/rclone" "digest" "sha256:7cbeec24a44f206067597c0368be4de90ae19a64d5113c7d1938bd737a81e466") -}}
 {{- include "factory-library.keys" (dict "path" "mirror image" "value" $image "allowed" (list "repository" "digest")) -}}
@@ -161,6 +161,7 @@ is one path segment, so a source cannot reach above or beside it. */}}
 {{/* One CronJob with its own read-only Garage key, R2 Secret and admission
 guard. Its R2 writes go to the bucket root, or only under .prefix. */}}
 {{- define "factory-library.mirrorJob" -}}
+{{- if and (not .itemPath) (not .suspend) -}}{{- fail "factory-library: public.itemPath is required for an active mirror" -}}{{- end -}}
 {{- $name := .name -}}
 {{- $r2Secret := printf "%s-r2" $name -}}
 {{- $garageSecret := printf "%s-s3" $name -}}
@@ -197,6 +198,7 @@ guard. Its R2 writes go to the bucket root, or only under .prefix. */}}
 {{ include "factory-library.bucketSecret" (dict "root" $.root "name" (printf "%s-%s-s3" $name $from) "bucket" $from "access" "read") }}
 {{- end }}
 {{ include "factory-library.mirrorAdmission" (dict "root" .root "name" $name "secret" $r2Secret) }}
+{{- if .itemPath }}
 ---
 apiVersion: onepassword.com/v1
 kind: OnePasswordItem
@@ -208,5 +210,6 @@ metadata:
 type: Opaque
 spec:
   itemPath: {{ .itemPath }}
+{{- end }}
 {{ include "factory-library.cronjob" (dict "root" .root "name" $name "workload" $workload "mirror" true "suspend" (.suspend | default false)) }}
 {{- end -}}

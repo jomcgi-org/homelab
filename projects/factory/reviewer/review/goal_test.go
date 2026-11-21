@@ -440,6 +440,9 @@ func TestGoalCheck8260EvidenceOnlyRevision(t *testing.T) {
 			got := run(tc.revision)
 			var verdict string
 			for _, span := range exporter.GetSpans() {
+				if span.Name == "factory.review_transition" {
+					continue
+				}
 				var round int64
 				for _, attr := range span.Attributes {
 					if attr.Key == "review.round" {
