@@ -378,16 +378,21 @@ test("the sync key can restore and update only its own INTSEC finding", async ()
   expect((await sync.projects({ projectKey }).issues.post(fields)).status).toBe(
     403,
   );
-  const own = await app.handle(
-    new Request("http://localhost/projects/INTSEC/factory-semgrep", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": agent.apiKey!,
-      },
-      body: JSON.stringify({ finding, description }),
-    }),
+  const createFinding = (description: string) =>
+    app.handle(
+      new Request("http://localhost/projects/INTSEC/factory-semgrep", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": agent.apiKey!,
+        },
+        body: JSON.stringify({ finding, description }),
+      }),
+    );
+  expect((await createFinding(description.padEnd(50001, "x"))).status).toBe(
+    400,
   );
+  const own = await createFinding(description);
   const owned = await own.json();
   const human = await setup.issues.post(fields);
   expect([own.status, human.status]).toEqual([201, 201]);

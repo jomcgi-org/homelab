@@ -16,6 +16,7 @@ import {
   updateIssue,
   restoreIssue,
 } from "./modules/issues/service";
+import { ISSUE_TEXT_LIMIT } from "./modules/issues/model";
 import { createComment } from "./modules/issues/activity";
 import { getAssignTriggerAgent } from "./modules/agents/core/service";
 import { startDeferred, type DeferredStart as Start } from "./factory-deferred";
@@ -354,7 +355,7 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
         finding: t.String({
           pattern: "^((sast|sca)/[0-9]+|secrets/[A-Za-z0-9._~%-]+)$",
         }),
-        description: t.String(),
+        description: t.String({ maxLength: ISSUE_TEXT_LIMIT }),
       }),
     },
   )

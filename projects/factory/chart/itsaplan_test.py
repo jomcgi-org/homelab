@@ -866,6 +866,9 @@ def test_session_forward_has_one_fixed_upstream():
 def test_semgrep_sync_schedule_and_token():
     docs = _render(["semgrepSync.enabled=true"])
     name = "factory-semgrep-sync"
+    for manifests in (_render(), docs):
+        claim = _one(manifests, "PersistentVolumeClaim", name, "factory")
+        assert claim["spec"]["resources"]["requests"]["storage"] == "1Mi"
     spec = _one(docs, "CronJob", name)["spec"]
     assert spec["schedule"] == "*/15 * * * *"
     assert spec["concurrencyPolicy"] == "Forbid"
