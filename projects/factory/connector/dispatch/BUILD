@@ -17,6 +17,7 @@ go_library(
         "provenance.go",
         "reconciliation.go",
         "recovery.go",
+        "review_queue.go",
         "sessions.go",
         "task_output.go",
         "transcript.go",

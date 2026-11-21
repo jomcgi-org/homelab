@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
@@ -3723,5 +3725,32 @@ func TestUnconfirmedEjectionEmitsNoEjectionSpan(t *testing.T) {
 				t.Fatalf("ejection spans = %d, want %d", ejections, want)
 			}
 		})
+	}
+}
+
+func TestIssueReviewQueueMatchesCurrentRepositoryAndHead(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.delivered()
+	binding := v.cfg.Bindings[0]
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/review-queue" {
+			t.Errorf("queue path = %q", r.URL.Path)
+		}
+		repo := binding.Owner + "/" + binding.Repo
+		fmt.Fprintf(w, `{"observedAt":"2026-11-21T01:00:00Z",
+			"active":[{"repository":%q,"pullRequest":1,"head":"old-head"}],
+			"waiting":[
+				{"repository":"other/repo","pullRequest":1,"head":"sha-1","position":1},
+				{"repository":%q,"pullRequest":2,"head":"sha-1","position":2},
+				{"repository":%q,"pullRequest":1,"head":"sha-1","position":3}
+			]}`, repo, repo, repo)
+	}))
+	defer source.Close()
+	got, err := v.e.IssueReviewQueue(v.ctx, 101, source.URL, source.Client())
+	if err != nil || got == nil || got.Phase != "queued" || got.Position != 3 || got.Head != "sha-1" {
+		t.Fatalf("issue review = %+v, %v", got, err)
+	}
+	if unrelated, err := v.e.IssueReviewQueue(v.ctx, 999, source.URL, source.Client()); err != nil || unrelated != nil {
+		t.Fatalf("unrelated issue review = %+v, %v", unrelated, err)
 	}
 }

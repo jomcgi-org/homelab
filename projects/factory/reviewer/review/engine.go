@@ -231,6 +231,9 @@ type Engine struct {
 	waiting      map[prKey]*waitingHead
 	waitPoll     uint64
 
+	// Under mu: the scheduling candidates left after the last poll.
+	queueSnapshot QueueSnapshot
+
 	// Under mu: each binding's last session sweep, and whether one runs.
 	swept    map[string]time.Time
 	sweeping map[string]bool
@@ -421,12 +424,16 @@ func (e *Engine) Tick(ctx context.Context) {
 	// A root that its check state records waits for that check instead
 	// (endSuperseded).
 	e.endParked(func(p *parkedRoot) bool { return now.Sub(p.since) > parkedLimit && !p.usage.persisted }, "abandoned")
+	snapshot := QueueSnapshot{ObservedAt: now.UTC(), Complete: true, Waiting: []QueueEntry{}}
 	for i := range e.cfg.Bindings {
 		if ctx.Err() != nil {
 			return
 		}
-		e.tickBinding(ctx, &e.cfg.Bindings[i])
+		e.tickBinding(ctx, &e.cfg.Bindings[i], &snapshot)
 	}
+	e.mu.Lock()
+	e.queueSnapshot = snapshot
+	e.mu.Unlock()
 	// The worker may discover a comment limit after a check was completed.
 	// Refresh its notice only after every binding's merge groups reconcile.
 	e.noteCommentLimits(ctx)
@@ -437,13 +444,14 @@ type candidate struct {
 	run *github.CheckRun
 }
 
-func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
+func (e *Engine) tickBinding(ctx context.Context, b *Binding, snapshot *QueueSnapshot) {
 	repo := b.repo()
 	bl := e.log.With("binding", b.Name, "repo", repo)
 	if b.startupBefore == nil {
 		boundary, err := e.gh.PullRequestCreationBoundary(ctx, repo)
 		if err != nil {
 			e.ghError(ctx, bl, b, "creation_boundary", err)
+			snapshot.Complete = false
 			e.mergeGroups(ctx, b, nil)
 			return
 		}
@@ -452,10 +460,12 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 	prs, complete, err := e.gh.ListPullRequests(ctx, repo, b.BaseBranch)
 	if err != nil {
 		e.ghError(ctx, bl, b, "list_pulls", err)
+		snapshot.Complete = false
 		e.mergeGroups(ctx, b, nil)
 		return
 	}
 	if !complete {
+		snapshot.Complete = false
 		bl.WarnContext(ctx, "the open PR listing is longer than the client reads; PRs past it are not reviewed this poll", "listed", len(prs))
 	}
 	e.supersede(b, prs, complete)
@@ -479,6 +489,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			if !held {
 				// Await the worker so it cannot overwrite the hold.
 				if !e.stopSharedHead(ctx, b, pr.HeadSHA) {
+					snapshot.Complete = false
 					return
 				}
 				if run, err := e.reviewCheck(ctx, b, pr.HeadSHA); err == nil {
@@ -496,6 +507,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 		}
 		run, err := e.reviewCheck(ctx, b, pr.HeadSHA)
 		if err != nil {
+			snapshot.Complete = false
 			reviews[pr.Number] = nil // Unknown approval must also fail a queued group.
 			continue
 		}
@@ -592,6 +604,15 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 	for i, c := range waiting {
 		if e.begin(ctx, b, c.pr, c.run) {
 			bl.DebugContext(ctx, "review slots full", "waiting", len(waiting)-i)
+			for j, queued := range waiting[i:] {
+				if e.isRunning(headKey{b.Name, queued.pr.HeadSHA}) {
+					continue
+				}
+				snapshot.Waiting = append(snapshot.Waiting, QueueEntry{
+					Repository: repo, PullRequest: queued.pr.Number, Head: queued.pr.HeadSHA,
+					Position: len(snapshot.Waiting) + 1, Resume: i+j < len(attach),
+				})
+			}
 			break
 		}
 	}

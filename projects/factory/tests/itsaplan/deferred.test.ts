@@ -111,12 +111,21 @@ test("run phase reads exclude stale attempts and require issue access", async ()
     phase: "waiting",
     reason: "Waiting for an agent slot.",
   };
+  const review = {
+    pullRequest: 42,
+    head: "a".repeat(40),
+    phase: "queued",
+    position: 3,
+    observedAt: new Date().toISOString(),
+  };
   const source = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch(request) {
       reads++;
-      expect(new URL(request.url).searchParams.get("issueId")).toBe(String(id));
+      const url = new URL(request.url);
+      expect(url.searchParams.get("issueId")).toBe(String(id));
+      if (url.pathname === "/issue-review") return Response.json(review);
       return Response.json({
         items: [
           current,
@@ -165,6 +174,16 @@ test("run phase reads exclude stale attempts and require issue access", async ()
       .set({ attempts: run.attempts + 1 })
       .where(eq(agentRun.id, run.id));
     expect(await (await read()).json()).toEqual({ items: [] });
+
+    const reviewURL = `http://localhost/issues/${id}/factory-review`;
+    const readsBeforeDenial = reads;
+    expect((await app.handle(new Request(reviewURL))).status).toBe(401);
+    expect(reads).toBe(readsBeforeDenial);
+    const reviewResponse = await app.handle(
+      new Request(reviewURL, { headers: { cookie: owner.cookie } }),
+    );
+    expect(reviewResponse.status).toBe(200);
+    expect(await reviewResponse.json()).toEqual(review);
 
     const oldWrite = await app.handle(
       new Request(`http://localhost/agent-runs/${run.id}/factory-phase`, {

@@ -957,6 +957,26 @@ func TestWaitingHeadStartsBeforeUpdatedPRs(t *testing.T) {
 				t.Fatalf("waiting heads cancelled the running review: %v", cancels)
 			}
 
+			snapshot := e.QueueSnapshot()
+			if snapshot.InFlight != 3 || snapshot.Capacity != 3 || snapshot.ObservedAt != h.cfg.Now() ||
+				snapshot.Complete == tc.failCheckRead {
+				t.Fatalf("unexpected queue snapshot: %+v", snapshot)
+			}
+			want := []int{20, 2, 1, 3}
+			if tc.failCheckRead {
+				want = want[1:]
+			}
+			var got []int
+			for i, entry := range snapshot.Waiting {
+				if entry.Repository != testRepo || entry.Position != i+1 || entry.Resume {
+					t.Fatalf("unexpected candidate at position %d: %+v", i+1, entry)
+				}
+				got = append(got, entry.PullRequest)
+			}
+			if !slices.Equal(got, want) {
+				t.Fatalf("waiting order = %v, want %v", got, want)
+			}
+
 			h.gh.failWith(checkRead, 0)
 			h.k.finish(running, kagent.StateCompleted, report(t, passing))
 			eventually(t, "one free slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 2 })
