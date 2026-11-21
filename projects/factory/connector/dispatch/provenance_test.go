@@ -50,9 +50,16 @@ func TestCoderAndReworkRunProvenance(t *testing.T) {
 	}
 	head := strings.Repeat("b", 40)
 	v.gh.push("factory/HL-7", head, "fix: issue")
-	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Pushed.", nil)
+	attemptID := v.latest(1).ID
+	observed := strings.Repeat("c", 40)
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, fmt.Sprintf("Worktree-Start-%d: %s", attemptID, observed), nil)
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
+	var actual string
+	var mismatch bool
+	if err := v.st.DB.QueryRow("SELECT actual_start_sha,start_mismatch FROM delivery_attempt WHERE id=$1", attemptID).Scan(&actual, &mismatch); err != nil || actual != observed || !mismatch {
+		t.Fatalf("start %q mismatch %v: %v", actual, mismatch, err)
+	}
 	// Rework retains the model and system prompt pinned to the existing session,
 	// even after the configuration for new sessions changes.
 	original := *v.cfg.Bindings[0].Runtime

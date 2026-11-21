@@ -2017,6 +2017,16 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 	if t == nil || t.ID != a.TaskID || t.ContextID != a.ContextID {
 		return errors.New("task transcript: invalid task identity")
 	}
+	if a.Provenance.BaseSHA != "" {
+		if sha := reportedStart(t, a.ID); sha != "" {
+			if err := e.w.Tx(ctx, func(tx *sql.Tx) error {
+				_, err := tx.ExecContext(ctx, `UPDATE delivery_attempt SET actual_start_sha=$2 WHERE id=$1 AND actual_start_sha IS NULL`, a.ID, sha)
+				return err
+			}); err != nil {
+				return err
+			}
+		}
+	}
 	// Lifecycle decisions use the bounded metadata observation. A newer
 	// transcript state will be observed by the next metadata poll.
 	t.Status.State = metadata.Status.State

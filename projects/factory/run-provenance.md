@@ -27,7 +27,7 @@ own fixed Agent.
 On the third review round that is not a CI fix, or on the second CI fix round,
 a trial item starts a fresh control session on its existing work branch. The
 two thresholds count separately. For outcome attribution, group
-work items by `first_arm` and count `escalated`. Join runs on `work_item_id`
+work items by `first_arm` and count `escalated`. Join accepted delivery attempts through their run
 to see the arm that actually handled each round.
 
 A session without an earlier snapshot can use current settings only if kagent
@@ -124,17 +124,19 @@ and the coder's actual start commit is not verified yet.
 After the connector migration and updated services roll out, select one new
 coder receipt and one new reviewer receipt. Confirm the reviewer message was
 accepted by kagent in the reviewer service logs. This query must show six
-non-empty values for each selected run:
+non-empty inputs for each selected execution. For coder attempts, a null actual start means the connector has no checkout report.
 
 ```sql
+SELECT r.id, r.origin, r.trigger, r.issue_key, a.model, a.reasoning_effort, a.arm,
+       a.base_sha, a.prompt_hash, a.task_class, a.id AS attempt_id,
+       a.actual_start_sha, a.start_mismatch
+FROM delivery_attempt a JOIN run r ON r.id = a.run_id
+WHERE a.task_id IS NOT NULL AND a.model IS NOT NULL
+UNION ALL
 SELECT id, origin, trigger, issue_key, model, reasoning_effort, arm,
-       base_sha, prompt_hash, task_class, reviewer_message_id
-FROM run
-WHERE provenance_required
-  AND model IS NOT NULL
-  AND (origin = 'reviewer' OR EXISTS (
-      SELECT 1 FROM delivery_attempt a WHERE a.run_id = run.id AND a.issues > 0))
-ORDER BY created_at DESC
+       base_sha, prompt_hash, task_class, NULL, NULL, NULL
+FROM run WHERE origin = 'reviewer' AND model IS NOT NULL
+ORDER BY id DESC, attempt_id DESC
 LIMIT 20;
 ```
 
