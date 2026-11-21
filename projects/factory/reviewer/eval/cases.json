@@ -1,0 +1,23 @@
+[
+  {
+    "pr": 7914,
+    "split": "scored",
+    "base": "ad2416a2e19c0bc5d62f30aff9593c4943dfd450",
+    "head": "95402364a1a2ec4501c2de6b02917e3a2a030560",
+    "answer": "The landing pod cannot pull its private GHCR image because it lacks namespace-local pull credentials."
+  },
+  {
+    "pr": 7852,
+    "split": "tuning",
+    "base": "20d54bfb21810dc62f8c8c086dcfbdaffd514ffb",
+    "head": "1059231786d6576eb36dd875edcd949fd72b1b1e",
+    "answer": "Deploy values enable the broker before the pinned published chart can render those settings."
+  },
+  {
+    "pr": 7894,
+    "split": "scored",
+    "base": "57aed973baead6088f3f54a335b61f481df210ae",
+    "head": "6fa858810aa8eb663812447b8d3bfb7940cc79c3",
+    "answer": "A node bootstrap rerun writes the restricted registry mirror list without restarting k3s, leaving the old mirror configuration active."
+  }
+]

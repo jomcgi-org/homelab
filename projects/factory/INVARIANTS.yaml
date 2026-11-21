@@ -73,3 +73,9 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: Reviewer evaluation credits check recall only when an answer-matched agent finding blocks the replay.
+  mechanism:
+  - projects/factory/reviewer/eval/score.py
+  test: //projects/factory/reviewer/eval:score_test
+  state: live

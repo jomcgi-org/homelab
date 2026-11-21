@@ -64,3 +64,50 @@ a reviewer can check from a diff and CI cannot yet.
   the code it guards. The owner of the domain's `ARCHITECTURE.md` prunes
   rules that produced no finding in 90 days and whose source failure a test
   now covers.
+
+## Reviewer evaluation
+
+A reviewer prompt, model or verdict change reports its score in the PR.
+Replay each scored base-to-head diff in `projects/factory/reviewer/eval/cases.json`
+with the candidate reviewer. The heads precede the corrective commits on
+the source branches. Give the agent only its ordinary review inputs. Use
+the tuning split for prompt development.
+
+After each replay, save the raw agent findings, base SHA, final check conclusion
+and IDs of findings that blocked the check. Independently compare the findings
+to the one-sentence answer and record the ID naming that specific failure,
+preferring a blocking match when several findings identify it. Use null for a
+miss. Store the records in a JSON object keyed by head SHA, for example:
+
+```json
+{
+  "<head>": {
+    "base": "<base>",
+    "findings": [],
+    "matched_id": null,
+    "blocking_ids": [],
+    "conclusion": "success"
+  }
+}
+```
+
+Run `python3 projects/factory/reviewer/eval/score.py results.json` and include
+the counts alongside the rates. The optional `--split tuning` scores development
+replays separately. An unrelated blocking finding earns no defect credit.
+
+Controls use a null answer. Select merged factory-authored PRs with comparable
+added plus deleted lines and verify 30 days of subsequent history for reverts
+or corrective changes before freezing their revisions. The earliest commits
+by Factory date from November 14, 2026.
+
+To replay and score in one command from a checkout containing the pinned
+commits, run `python3 projects/factory/reviewer/eval/score.py --reviewer /path/to/candidate-adapter`.
+Supply an executable for the candidate under test. It receives the base and
+head SHAs as arguments and the git diff on stdin. It runs the candidate with
+its usual review context and writes a JSON object containing `findings`,
+`blocking_ids` and the service's `conclusion` on stdout. After each defect
+review with findings, enter the matching finding ID or press Enter for a miss.
+A successful replay saves every scored record, including controls and misses, in
+`results.json`. Use `--output PATH` to select a fresh evidence file for another run.
+Pass that file as the positional argument to reproduce the aggregate scores.
+Only the adjudicator sees the answer during this exchange.
