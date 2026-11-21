@@ -2,6 +2,7 @@
 # gazelle:exclude factory-cluster/nodes/factory-session-token.py
 
 load("@aspect_rules_py//py:defs.bzl", "py_library")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 exports_files(
     ["platform-factory/network-policy/resources/argocd.yaml"],
@@ -96,4 +97,11 @@ filegroup(
     name = "stpa_model",
     srcs = ["embervm/STPA.md"] + glob(["embervm/stpa/*.json"]),
     visibility = ["//:__pkg__"],
+)
+
+sh_test(
+    name = "substrate_ca_rotation_test",
+    srcs = ["factory-cluster/rehearse-substrate-ca.sh"],
+    args = ["$(rootpath @jq_toolchains//:resolved_toolchain)"],
+    data = ["@jq_toolchains//:resolved_toolchain"],
 )

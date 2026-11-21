@@ -25,7 +25,7 @@
 #
 # The CAs are valid for one year, as ate-setup makes them. Substrate 1.0 has
 # no CA rotation command (`kubectl ate admin` rotates only JWT keys), so the
-# rotation is tracked in https://github.com/jomcgi-org/homelab/issues/7831.
+# local rehearsal and operator procedure are in substrate-ca-rotation.md.
 #
 # Inputs:
 #   KUBECONFIG   the factory cluster (default ~/.kube/factory.yaml)
