@@ -282,6 +282,25 @@ def test_factory_hpa_owns_replicas_with_a_floor_of_two() -> None:
     assert "HTTPRoute" not in {d["kind"] for d in docs}
 
 
+def test_forecast_manifest_is_selected_only_by_factory_values() -> None:
+    for values, bucket, manifest in (
+        ([_DEPLOY_VALUES], "", ""),
+        (
+            [_DEPLOY_VALUES, _FACTORY_VALUES],
+            "factory-public",
+            "stars-forecast/latest.json",
+        ),
+    ):
+        deployment = _one(_render(values=values), "Deployment")
+        container = deployment["spec"]["template"]["spec"]["containers"][0]
+        env = {item["name"]: item.get("value") for item in container["env"]}
+        assert env["STARS_FORECAST_BUCKET"] == bucket
+        assert env["STARS_FORECAST_MANIFEST_KEY"] == manifest
+        assert env["STARS_BUCKET"] == "stars"
+        assert env["STARS_WALKS_KEY"] == "walks.json"
+        assert env["STARS_AURORA_KEY"] == "aurora.json"
+
+
 def test_hub_copy_runs_no_pods_and_claims_no_route() -> None:
     # HOME-540 scaled the hub copy to zero. The jomcgi-site Worker answers its
     # old URLs with a 308 to scotland-mcp.jomcgi.dev.

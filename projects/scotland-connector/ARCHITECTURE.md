@@ -86,10 +86,9 @@ order:
 
 ```mermaid
 graph LR
-    J["monolith stars-refresh<br/>(Argo, every 3h)"] -->|writes| R2["R2: stars/sites.json<br/>stars/history-map.json"]
-    H["monolith hikes-refresh-forecasts<br/>(Argo, every 2h)"] -->|writes| W["R2: stars/walks.json"]
+    J["factory Stars writer and mirror"] --> R2["R2: factory-public<br/>stars-forecast/latest.json"]
     R2 -->|"conditional GET<br/>every 60s"| P["connector pods<br/>(in-memory index)"]
-    W -->|"conditional GET<br/>every 60s"| P
+    W["Hikes and Aurora snapshots"] -->|"conditional GET<br/>every 60s"| P
     C["Caller or assistant"] --> CF["Cloudflare edge<br/>(cache)"] --> E["Envoy Gateway<br/>(per-client limits)"] --> P
 ```
 
@@ -306,13 +305,14 @@ HPA.
 
 ## Data: R2 snapshots held in memory
 
-Each pod loads the two objects the monolith's stars-refresh job already
-materializes (`projects/monolith/stars/materialize.py`), parses them into an
-immutable `stars.Dataset` with a 0.25 degree spatial grid, and swaps it in
-with one atomic pointer store. A poller re-checks both ETags every 60
-seconds; an unchanged pair is two `304`s. A new pair is parsed in full
-before the swap, so a broken or half-written upload never replaces a good
-one, and an R2 outage leaves every pod serving its last good copy.
+Each factory pod checks the forecast manifest ETag every 60 seconds. It
+resolves the sites and history map keys under the manifest prefix, checks
+each SHA-256 against its key, and parses both into one immutable
+`stars.Dataset` with a 0.25 degree spatial grid. One atomic pointer store
+publishes the complete generation. A failed read or parse leaves the last
+good generation in use. Clearing both forecast manifest values restores
+the direct-key reader, which checks both configured objects' ETags before
+swapping a complete pair. Hikes and Aurora still use their configured keys.
 
 Readiness means a dataset has loaded. Failing readiness on staleness would
 take every pod out at once during an R2 outage and turn stale answers into

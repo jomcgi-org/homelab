@@ -6,8 +6,13 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -19,18 +24,20 @@ import (
 // approach this limit even when valid. Verify size and refresh-memory headroom
 // before selecting it; an oversized object leaves the last-good dataset in use.
 const maxSnapshotBytes = 64 << 20
+const maxManifestBytes = 64 << 10
 
 // Getter is the subset of the R2 client the store uses.
 type Getter interface {
 	Get(ctx context.Context, bucket, key, ifNoneMatch string, maxBytes int64) (r2.Object, error)
 }
 
-// Config names the snapshots to read.
+// Config selects a manifest when ManifestKey is set, or two direct keys.
 type Config struct {
-	Bucket     string
-	SitesKey   string
-	HistoryKey string
-	Interval   time.Duration
+	Bucket      string
+	SitesKey    string
+	HistoryKey  string
+	ManifestKey string
+	Interval    time.Duration
 }
 
 // Store holds the live dataset.
@@ -44,6 +51,7 @@ type Store struct {
 	// re-parses against the other without refetching it.
 	sitesBody, historyBody []byte
 	sitesTag, historyTag   string
+	manifestTag            string
 }
 
 // New builds an empty store; Refresh or Run fills it.
@@ -54,7 +62,7 @@ func New(cfg Config, get Getter, log *slog.Logger) *Store {
 // Current returns the live dataset, or nil before the first load.
 func (s *Store) Current() *stars.Dataset { return s.cur.Load() }
 
-// LastChecked is when R2 last answered for both objects.
+// LastChecked is when the last snapshot check succeeded.
 func (s *Store) LastChecked() time.Time {
 	n := s.loaded.Load()
 	if n == 0 {
@@ -63,9 +71,12 @@ func (s *Store) LastChecked() time.Time {
 	return time.Unix(0, n)
 }
 
-// Refresh does one conditional fetch of both objects and swaps in a new
-// dataset if either changed. Not safe for concurrent use; Run serializes it.
+// Refresh checks for a change and swaps in a complete dataset. Run serializes
+// refreshes.
 func (s *Store) Refresh(ctx context.Context) error {
+	if s.cfg.ManifestKey != "" {
+		return s.refreshManifest(ctx)
+	}
 	sites, err := s.get.Get(ctx, s.cfg.Bucket, s.cfg.SitesKey, s.sitesTag, maxSnapshotBytes)
 	if err != nil {
 		return err
@@ -90,12 +101,74 @@ func (s *Store) Refresh(ctx context.Context) error {
 		// empty If-None-Match the first load sends; guard anyway.
 		return fmt.Errorf("store: missing snapshot body after conditional fetch")
 	}
-	ds, err := stars.Parse(sitesBody, historyBody, sites.ETag+"|"+history.ETag)
-	if err != nil {
+	if err := s.publish(sitesBody, historyBody, sites.ETag+"|"+history.ETag); err != nil {
 		return err
 	}
 	s.sitesBody, s.historyBody = sitesBody, historyBody
 	s.sitesTag, s.historyTag = sites.ETag, history.ETag
+	return nil
+}
+
+func (s *Store) refreshManifest(ctx context.Context) error {
+	manifest, err := s.get.Get(ctx, s.cfg.Bucket, s.cfg.ManifestKey, s.manifestTag, maxManifestBytes)
+	if err != nil {
+		return err
+	}
+	if manifest.NotModified {
+		if s.cur.Load() == nil {
+			return fmt.Errorf("store: manifest returned not modified before the first load")
+		}
+		s.loaded.Store(time.Now().UnixNano())
+		return nil
+	}
+	var index struct {
+		Files struct {
+			Sites      string `json:"sites"`
+			HistoryMap string `json:"historyMap"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(manifest.Body, &index); err != nil {
+		return fmt.Errorf("store: parse forecast manifest: %w", err)
+	}
+	sites, err := s.manifestObject(ctx, "sites", index.Files.Sites)
+	if err != nil {
+		return err
+	}
+	history, err := s.manifestObject(ctx, "history-map", index.Files.HistoryMap)
+	if err != nil {
+		return err
+	}
+	if err := s.publish(sites, history, manifest.ETag); err != nil {
+		return err
+	}
+	s.manifestTag = manifest.ETag
+	return nil
+}
+
+func (s *Store) manifestObject(ctx context.Context, name, key string) ([]byte, error) {
+	digest, hasPrefix := strings.CutPrefix(key, "stars/"+name+"-")
+	digest, hasSuffix := strings.CutSuffix(digest, ".json")
+	if !hasPrefix || !hasSuffix || len(digest) != 2*sha256.Size || digest != strings.ToLower(digest) {
+		return nil, fmt.Errorf("store: invalid forecast manifest %s object key", name)
+	}
+	if _, err := hex.DecodeString(digest); err != nil {
+		return nil, fmt.Errorf("store: invalid forecast manifest %s digest", name)
+	}
+	object, err := s.get.Get(ctx, s.cfg.Bucket, path.Join(path.Dir(s.cfg.ManifestKey), key), "", maxSnapshotBytes)
+	if err != nil {
+		return nil, err
+	}
+	if fmt.Sprintf("%x", sha256.Sum256(object.Body)) != digest {
+		return nil, fmt.Errorf("store: forecast manifest %s object digest did not match", name)
+	}
+	return object.Body, nil
+}
+
+func (s *Store) publish(sites, history []byte, version string) error {
+	ds, err := stars.Parse(sites, history, version)
+	if err != nil {
+		return err
+	}
 	s.cur.Store(ds)
 	s.loaded.Store(time.Now().UnixNano())
 	s.log.Info("stars snapshot loaded", "sites", len(ds.Sites), "version", ds.Version, "fetched_at", ds.FetchedAt)
