@@ -39,7 +39,7 @@ After the first refresh:
 
 ## Reader switch and hub retirement
 
-[HOME-522](https://factory-plan.jomcgi.dev/factory/issue/HOME-522) switches the
+[HOME-739](https://factory-plan.jomcgi.dev/factory/issue/HOME-739) switches the
 site snapshot to `factory-public/stars-forecast/latest.json`. The site resolves
 each manifest key under `stars-forecast/` and checks its SHA-256. The site R2
 credential needs read access to both `factory-public` and the legacy `stars`
@@ -52,8 +52,8 @@ their object keys. The forecast samples used different fetch times
 same inputs.
 
 Keep the hub jobs until the Scotland connector, legacy public endpoints and
-aurora grid have replacement sources. HOME-522 tracks this retirement after
-the site reader switch. Hikes uses a separate writer and [HOME-521](https://factory-plan.jomcgi.dev/factory/issue/HOME-521).
+aurora grid have replacement sources. [HOME-522](https://factory-plan.jomcgi.dev/factory/issue/HOME-522)
+tracks the live same-input comparison and hub job retirement. Hikes uses a separate writer and [HOME-521](https://factory-plan.jomcgi.dev/factory/issue/HOME-521).
 
 ## Rollback
 
