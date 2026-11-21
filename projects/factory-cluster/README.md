@@ -93,6 +93,46 @@ Kubernetes Secrets are encrypted at rest (`secrets-encryption: true` in
 on each server (`/var/lib/rancher/k3s/server/token`); keeping a copy off the nodes is part of
 the [backup plan](ARCHITECTURE.md#direction).
 
+## Retire a lost factory node
+
+1. Match the factory Node to the physical host using inventory. Disconnect its
+   power and keep it disconnected, or verify power-off through independent
+   management and prevent restart. Record the host identifier, fencing method,
+   verification time and operator in the incident.
+2. Before removing the Node, capture its name and UID, the affected pod names,
+   namespaces and UIDs, and the recovery hold for each affected issue. Set
+   `NODE` and `ISSUE` to the identified Node name and issue key.
+
+   ```bash
+   export KUBECONFIG=~/.kube/factory.yaml
+   kubectl get node "$NODE" -o custom-columns=NAME:.metadata.name,UID:.metadata.uid
+   kubectl get pods -A --field-selector "spec.nodeName=$NODE" -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid
+   kubectl -n factory exec deploy/factory-connector -- connector recovery inspect "$ISSUE"
+   ```
+
+   Match the hold's session and historical attempts to the workers. Record how
+   every possible execution copy, including copies under historical principals,
+   was fenced and how retired or in-flight dispatchers were quiesced.
+   **Stop before Node deletion or recovery confirmation if any fence is unproven.**
+   A `NotReady` Node, missing pod or `READY` session can coexist with a running worker.
+3. Verify the Node still has the recorded UID, then remove the fenced Node with
+   `kubectl delete node "$NODE"`. Keep the host and old dispatchers fenced.
+4. Inspect again. For each affected `pending` hold, verify its snapshot still
+   matches the evidence and wait until `NotBefore`. Set `HOLD_ID` and `HASH` from
+   its exact `ID` and `Fingerprint`, and `EVIDENCE` to the incident reference.
+   Choose `ACTION=retry` for replacement or `ACTION=cancel` to close the target
+   without replacement.
+
+   ```bash
+   kubectl -n factory exec deploy/factory-connector -- \
+     connector recovery confirm-fenced "$HOLD_ID" --fingerprint "$HASH" \
+     --action "$ACTION" --by "$USER" --evidence "$EVIDENCE" --confirm-all-copies-fenced
+   ```
+
+   Inspect again to verify the connector revalidated the `attested` hold and
+   marked it `consumed`. If the fingerprint changes, reconcile the new snapshot
+   with the fencing evidence before confirming. Keep old copies fenced after consumption.
+
 ## Network policy
 
 Ordering matters inside an Application. A pod that starts before its policy
