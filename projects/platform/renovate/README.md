@@ -91,42 +91,11 @@ unaffected dependency.
 
 ## Review and auto-merge
 
-`renovate.json` enables native platform auto-merge for minor, patch, digest,
-pin (including digest pins) and lock-file maintenance updates. Major updates
-stay manual and carry `major-upgrade`. Replacement, bump and rollback updates
-also keep the default manual merge policy. Existing compatibility holds
-still disable auto-merge and require dashboard approval.
-
-Updates in `projects/platform*/**`, `projects/factory-cluster/**`, `MODULE.bazel`,
-`.github/**` and `buildbuddy.yaml` require manual merge. GitHub retains
-auto-merge requests that Renovate made under the previous policy. Immediately
-before rollout and again after the first scan under the new policy, list open
-PRs with native auto-merge enabled and inspect their authors and changed paths:
-
-```bash
-repo=jomcgi-org/homelab
-gh api --paginate "repos/$repo/pulls?state=open&per_page=100" \
-  --jq '.[] | select(.auto_merge != null) | [.number, .user.login] | @tsv'
-# For each listed Renovate PR, set pr to its number.
-gh api --paginate "repos/$repo/pulls/$pr/files?per_page=100" --jq '.[].filename'
-```
-
-For each Renovate PR touching a protected path, run
-`gh pr merge "$pr" --repo "$repo" --disable-auto`. Repeat the audit and record
-the result on the rollout issue before relying on manual merge.
-
-The OpenTelemetry and Pydantic/core groups use the same auto-merge path
-through the merge queue. A security alert shortens the release age to one day for
-the vulnerable package. A peer released less than three days earlier
-keeps its current version; Renovate adds it to the group on the first scan
-after it ages.
-
-GitHub must require both `pr-checks` and the reviewer App's `factory review`
-before a PR can enter the merge queue. Renovate requests auto-merge and never
-approves its own PR. This change does not edit rulesets, reviewer permissions
-or bypasses. Before running the writer, verify those required checks and
-repository auto-merge are enabled. The policy applies to any runner reading
-this repository, including while this CronJob is suspended.
+Dependency PRs require manual landing through independent review, required
+checks and the merge queue. Both Renovate and the weekly factory apko job
+leave auto-merge disabled. Before rollout, audit existing Renovate PRs for
+previously armed requests or queue entries. The weekly job skips such PRs
+before regenerating or pushing locks.
 
 The hub's weekly maintenance helper retains its separate default-off
 `MAINTENANCE_AUTOMERGE_ENABLED` flag. Its old dependency-evidence rollout
@@ -161,7 +130,7 @@ After merge, wait for ArgoCD's `renovate` Application to be Synced and Healthy,
 its OnePasswordItem to materialize `private-key`, `app-id` and `installation-id`
 in Secret `factory-renovate-gh-app`, and its Cilium policy to exist. Check key
 names only; do not display Secret values. Confirm `pr-checks` and `factory review`
-are required, repository auto-merge is enabled, and this App has no bypass.
+are required and this App has no bypass.
 Suspend the CronJob while re-verifying a credential change.
 
 Ensure no other Renovate Job is running. Manually created Jobs bypass the
@@ -193,10 +162,8 @@ gh api repos/jomcgi-org/homelab/pulls/<pr-number>/commits \
   --jq '.[] | {sha, author: .author.login, verified: .commit.verification.verified, reason: .commit.verification.reason}'
 ```
 
-For an eligible non-major PR, verify its native auto-merge request, both
-required checks on its current head and its queue result. A major PR must
-stay manual. Record the Job and PR evidence before enabling the daily
-schedule through #8041 or its replacement. Suspending the CronJob stops future
+Verify that each dependency PR has no auto-merge request and requires review
+and checks on its current head. Suspending the CronJob stops future
 scheduled Jobs; it does not stop a running Job or cancel an armed PR.
 
 ## Repository checks
@@ -219,7 +186,7 @@ No CI target runs the validator yet: HOME-391 adds one
 `//projects/platform/renovate:factory_deployment_test` and
 `//projects/platform/renovate:hub_deployment_test`, plus Helm rendering and
 linting for the factory Application. The policy tests cover extraction,
-manual majors, retained holds and native auto-merge without approval.
+manual landing for all update types, retained holds and queue preflight.
 The deployment tests follow the actual ArgoCD roots and values order,
 check the App item, init container, memory-backed token handoff, absence of a
 Secret-backed `RENOVATE_TOKEN`, deadline and pod egress, and retain the hub's

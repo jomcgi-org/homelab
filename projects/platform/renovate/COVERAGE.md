@@ -1,8 +1,6 @@
 # Dependency coverage
 
-`renovate.json` requests native auto-merge for minor, patch, digest, pin and
-lock-file maintenance updates through `pr-checks` and `factory review`.
-Majors stay manual. The factory CronJob authenticates as the dedicated
+Dependency updates require manual landing through `pr-checks` and `factory review`. The factory CronJob authenticates as the dedicated
 `jomcgi-factory-renovate` GitHub App, with a fresh installation token per Pod
 and a 45-minute Job deadline. It resolves the bot's numeric user ID through
 GitHub and sets its username and noreply author; `platformCommit: enabled`

@@ -44,31 +44,29 @@ def _cron_suspensions(docs: list[dict]) -> dict[str, bool]:
 
 
 @pytest.mark.parametrize(
-    ("update_type", "automerge"),
+    "update_type",
     [
-        ("minor", True),
-        ("patch", True),
-        ("digest", True),
-        ("pin", True),
-        ("pinDigest", True),
-        ("lockFileMaintenance", True),
-        ("major", False),
-        ("replacement", False),
-        ("bump", False),
-        ("rollback", False),
+        "minor",
+        "patch",
+        "digest",
+        "pin",
+        "pinDigest",
+        "lockFileMaintenance",
+        "major",
+        "replacement",
+        "bump",
+        "rollback",
     ],
 )
-def test_only_non_major_updates_request_native_automerge(update_type, automerge):
+def test_dependency_updates_require_manual_landing(update_type):
     config = json.loads((ROOT / "renovate.json").read_text())
-    assert config["automerge"] is False  # Unlisted update types stay manual.
-    assert config["platformAutomerge"] is True
     effective = config.copy()
     for rule in config["packageRules"]:
         if update_type in rule.get("matchUpdateTypes", []):
             effective.update(rule)
-    assert effective["automerge"] is automerge
-    if automerge:
-        assert effective["platformAutomerge"] is True
+    assert effective["automerge"] is False
+    assert effective["platformAutomerge"] is False
+    assert not any(rule.get("automerge") for rule in config["packageRules"])
     assert effective["automergeType"] == "pr"
     assert config["automergeStrategy"] == "auto"
     assert config["dependencyDashboardApproval"] is False
@@ -134,8 +132,7 @@ def test_lockstep_python_packages_share_a_group(group_name, package_names):
     assert rule["groupSlug"] == group_name.lower().replace(" ", "-")
     assert rule["separateMajorMinor"] is False
     assert rule["separateMinorPatch"] is False
-    # Family PRs inherit the repository release-age filter and the non-major
-    # native auto-merge rule, which GitHub routes through the merge queue.
+    # Family PRs inherit the release-age filter and manual landing policy.
     for inherited in (
         "automerge",
         "platformAutomerge",
@@ -236,7 +233,7 @@ def _python_update_config(
         ("MODULE.bazel", False),
         (".github/workflows/ci.yml", False),
         ("buildbuddy.yaml", False),
-        ("projects/model-bench/requirements-venv.txt", True),
+        ("projects/model-bench/requirements-venv.txt", False),
     ],
 )
 @pytest.mark.parametrize("security", [False, True])
@@ -473,11 +470,9 @@ def test_lockstep_prs_exclude_pending_releases_and_use_the_merge_queue(
         for index, name in enumerate(members)
     ]
     for upgrade in upgrades:
-        # Same path as every other non-major update: native auto-merge, which
-        # GitHub sends through the required checks and merge queue.
-        assert upgrade["automerge"] is True
+        assert upgrade["automerge"] is False
         assert upgrade["automergeType"] == "pr"
-        assert upgrade["platformAutomerge"] is True
+        assert upgrade["platformAutomerge"] is False
         assert upgrade.get("ignoreTests", False) is False
         assert upgrade.get("minimumReleaseAgeBehaviour", "timestamp-required") == (
             "timestamp-required"
@@ -502,7 +497,7 @@ def test_unrelated_updates_keep_strict_age_and_stability_filtering():
     assert effective["schedule"] == ["before 6am on monday"]
     assert effective["prConcurrentLimit"] == 5
     assert effective["prHourlyLimit"] == 2
-    assert effective["platformAutomerge"] is True
+    assert effective["platformAutomerge"] is False
     assert (
         _selected_python_release(
             config,
@@ -516,15 +511,9 @@ def test_unrelated_updates_keep_strict_age_and_stability_filtering():
 
 def test_compatibility_holds_override_non_major_automerge():
     config = json.loads((ROOT / "renovate.json").read_text())
-    enabled_rule = next(
-        i
-        for i, rule in enumerate(config["packageRules"])
-        if rule.get("automerge") is True
-    )
     held_packages = set()
-    for index, rule in enumerate(config["packageRules"]):
+    for rule in config["packageRules"]:
         if rule.get("dependencyDashboardApproval"):
-            assert index > enabled_rule
             assert rule["automerge"] is False
             assert rule["platformAutomerge"] is False
             held_packages.update(rule["matchPackageNames"])
@@ -1332,6 +1321,40 @@ def test_native_uv_artifacts_cannot_execute_source_build_backends():
         row["value"] for row in env if row["name"] == "RENOVATE_CUSTOM_ENV_VARIABLES"
     )
     assert json.loads(custom) == {"UV_NO_BUILD": "true"}
+
+
+@pytest.mark.parametrize(
+    "state,expected", [("clear", 0), ("armed", 3), ("queued", 3), ("unknown", 1)]
+)
+def test_publisher_preflight_preserves_armed_or_queued_prs(state, expected):
+    runner = r"""
+      const [path, state] = process.argv.slice(1);
+      process.argv[2] = "preflight";
+      process.env.MAINTENANCE_MODE = "apko";
+      globalThis.fetch = async (url, options) => {
+        let result;
+        if (url.includes("/pulls?")) result = [{user: {type: "Bot"}, assignees: [], labels: [], node_id: "pr"}];
+        else if (url.endsWith("/graphql") && JSON.parse(options.body).query.startsWith("query"))
+          result = {data: {node: state === "unknown" ? null : {
+            autoMergeRequest: state === "armed" ? {} : null,
+            mergeQueueEntry: state === "queued" ? {} : null}}};
+        else throw Error("Unexpected write");
+        return {ok: true, json: async () => result};
+      };
+      await import(path);
+    """
+    result = subprocess.run(
+        [
+            os.environ.get("NODE_BIN", "node"),
+            "--input-type=module",
+            "-e",
+            runner,
+            str(HERE / "files/pull-request.mjs"),
+            state,
+        ],
+        timeout=20,
+    )
+    assert result.returncode == expected
 
 
 def test_maintenance_automerge_requires_an_explicit_activation_flag():
