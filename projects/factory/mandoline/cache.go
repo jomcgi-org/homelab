@@ -38,10 +38,10 @@ func openCache(workspace string) (cache, error) {
 	return cache{dir}, nil
 }
 
-func cacheKey(tree, packs string, req Request) string {
+func cacheKey(tree, tool string, packs map[string]string, req Request) string {
 	// The tree covers tracked analysis configuration and ignore files.
 	// Project pack installs and ambient tool configuration are excluded.
-	input, _ := json.Marshal([]any{1, tree, packs, req})
+	input, _ := json.Marshal([]any{2, tree, tool, packs, req})
 	digest := sha256.Sum256(input)
 	return hex.EncodeToString(digest[:])
 }
@@ -64,6 +64,7 @@ func (c cache) read(key string, expected Envelope) (Envelope, bool) {
 	valid := json.Unmarshal(b, &got) == nil &&
 		got.Status == "complete" && got.Gaps != nil && len(got.Gaps) == 0 &&
 		got.Commit == expected.Commit && got.ToolVersion == expected.ToolVersion &&
+		got.ToolDigest == expected.ToolDigest &&
 		maps.Equal(got.PackDigests, expected.PackDigests) && len(got.Result) > 0 &&
 		string(got.Result) != "null"
 	return got, valid

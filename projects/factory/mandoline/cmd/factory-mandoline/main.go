@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
+	"fmt"
 	"os"
 
 	"github.com/jomcgi/homelab/projects/factory/mandoline"
@@ -15,20 +17,37 @@ var auditOnly = "false"
 
 func main() {
 	var req mandoline.Request
-	flags := flag.NewFlagSet("factory-mandoline", flag.ExitOnError)
+	flags := flag.NewFlagSet("factory-mandoline", flag.ContinueOnError)
 	flags.StringVar(&req.Commit, "commit", "", "full commit SHA of the checkout")
+	command := "audit|surface"
 	if auditOnly != "true" {
-		flags.StringVar(&req.Base, "base", "", "full commit SHA for the diff base")
+		flags.StringVar(&req.Base, "base", "", "full SHA of the merge base with origin/main")
+		command = "diff|callers"
 	}
-	flags.Parse(os.Args[1:])
-	if flags.NArg() != 1 {
-		flags.Usage()
-		os.Exit(2)
+	flags.Usage = func() {
+		fmt.Fprintf(flags.Output(), "Usage: factory-mandoline [options] <%s>\n", command)
+		flags.PrintDefaults()
 	}
-	req.Command = flags.Arg(0)
-	cwd, _ := os.Getwd()
-	result := mandoline.Run(context.Background(), "/data/workspace", cwd, "/usr/local/bin/mandoline", auditOnly == "true", req)
+	parseErr := flags.Parse(os.Args[1:])
+	if errors.Is(parseErr, flag.ErrHelp) {
+		return
+	}
+	var result mandoline.Envelope
+	exit := 0
+	if parseErr != nil || flags.NArg() != 1 {
+		result = mandoline.Envelope{
+			Commit: req.Commit, Status: "error", PackDigests: map[string]string{},
+			Gaps: []string{"expected one analysis command with this harness's options"},
+		}
+		exit = 2
+	} else {
+		req.Command = flags.Arg(0)
+		result = mandoline.Run(context.Background(), "/data/workspace", "/usr/local/bin/mandoline", auditOnly == "true", req)
+	}
 	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
 		os.Exit(1)
+	}
+	if exit != 0 {
+		os.Exit(exit)
 	}
 }
