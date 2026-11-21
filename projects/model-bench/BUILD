@@ -1,3 +1,5 @@
+load("//bazel/tools/pytest:defs.bzl", "py_test")
+
 # This tool imports itself as the top-level `bench` package (for example
 # `from bench.sandbox import run_sandboxed`), and it lives in a subdirectory whose
 # name (`model-bench`) is not a valid Python module path. Mark this directory as the
@@ -100,4 +102,12 @@ filegroup(
         "tasks/worldcup-swing-settled-01/task.yaml",
     ],
     visibility = ["//projects/model-bench:__subpackages__"],
+)
+
+py_test(
+    name = "venv_pins_test",
+    srcs = ["venv_pins_test.py"],
+    args = ["$(rootpath venv_pins_test.py)"],
+    data = ["requirements-venv.txt"],
+    deps = ["@pip//pytest"],
 )
