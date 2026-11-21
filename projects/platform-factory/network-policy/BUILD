@@ -15,3 +15,8 @@ filegroup(
     srcs = ["README.md"],
     visibility = ["//projects/monolith:__pkg__"],
 )
+
+exports_files(
+    ["resources/argocd.yaml"],
+    visibility = ["//projects/platform-factory/external-secrets/chart:__pkg__"],
+)
