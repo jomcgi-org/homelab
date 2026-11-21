@@ -95,6 +95,20 @@ the [backup plan](ARCHITECTURE.md#direction).
 
 ## Retire a lost factory node
 
+Before fencing, open an authorized SSH session on a surviving factory k3s
+server (for example, node-2 when retiring node-1). The bootstrap kubeconfig
+points to node-1. Use the surviving server's local API and credentials for
+the entire procedure. In that shell run:
+
+```bash
+factory_kubectl() { sudo k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml --server=https://127.0.0.1:6443 "$@"; }
+factory_kubectl get --raw=/readyz
+factory_kubectl get nodes -o wide
+```
+
+Proceed only if readiness returns `ok` and the Node names and addresses match
+the factory inventory. Keep this shell open for the commands below.
+
 1. Match the factory Node to the physical host using inventory. Disconnect its
    power and keep it disconnected, or verify power-off through independent
    management and prevent restart. Record the host identifier, fencing method,
@@ -104,10 +118,9 @@ the [backup plan](ARCHITECTURE.md#direction).
    `NODE` and `ISSUE` to the identified Node name and issue key.
 
    ```bash
-   export KUBECONFIG=~/.kube/factory.yaml
-   kubectl get node "$NODE" -o custom-columns=NAME:.metadata.name,UID:.metadata.uid
-   kubectl get pods -A --field-selector "spec.nodeName=$NODE" -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid
-   kubectl -n factory exec deploy/factory-connector -- connector recovery inspect "$ISSUE"
+   factory_kubectl get node "$NODE" -o custom-columns=NAME:.metadata.name,UID:.metadata.uid
+   factory_kubectl get pods -A --field-selector "spec.nodeName=$NODE" -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid
+   factory_kubectl -n factory exec deploy/factory-connector -- connector recovery inspect "$ISSUE"
    ```
 
    Match the hold's session and historical attempts to the workers. Record how
@@ -116,7 +129,7 @@ the [backup plan](ARCHITECTURE.md#direction).
    **Stop before Node deletion or recovery confirmation if any fence is unproven.**
    A `NotReady` Node, missing pod or `READY` session can coexist with a running worker.
 3. Verify the Node still has the recorded UID, then remove the fenced Node with
-   `kubectl delete node "$NODE"`. Keep the host and old dispatchers fenced.
+   `factory_kubectl delete node "$NODE"`. Keep the host and old dispatchers fenced.
 4. Inspect again. For each affected `pending` hold, verify its snapshot still
    matches the evidence and wait until `NotBefore`. Set `HOLD_ID` and `HASH` from
    its exact `ID` and `Fingerprint`, and `EVIDENCE` to the incident reference.
@@ -124,7 +137,7 @@ the [backup plan](ARCHITECTURE.md#direction).
    without replacement.
 
    ```bash
-   kubectl -n factory exec deploy/factory-connector -- \
+   factory_kubectl -n factory exec deploy/factory-connector -- \
      connector recovery confirm-fenced "$HOLD_ID" --fingerprint "$HASH" \
      --action "$ACTION" --by "$USER" --evidence "$EVIDENCE" --confirm-all-copies-fenced
    ```
