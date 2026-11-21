@@ -1,0 +1,3 @@
+image:
+  repository: ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan
+  digest: "" # Supplied by the image build during packaging.
