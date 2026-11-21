@@ -3,6 +3,7 @@
 from http.client import HTTPConnection
 from http.cookies import SimpleCookie
 import json
+import subprocess
 import time
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -69,6 +70,7 @@ def session(host, subject, expected=200):
             status,
         )
     print(host, subject, status)
+    return get
 
 
 for hostname in [
@@ -84,5 +86,22 @@ for hostname in [
 
 # The shared gateway accepts factory operators, while T3 requires admins.
 session("factory.jomcgi.dev", "factory-operator")
-for role, status in [("operator", 200), ("factory-operator", 403), ("applicant", 403)]:
-    session("t3.jomcgi.dev", role, expected=status)
+admin_request = session("t3.jomcgi.dev", "operator")
+for role in ["factory-operator", "applicant"]:
+    session("t3.jomcgi.dev", role, expected=403)
+
+# The signed admin cookie used above must fail closed if the route policy is gone.
+subprocess.run(
+    ["kubectl", "--context", "kind-edge-oidc", "-n", "edge", "delete",
+     "securitypolicy", "t3-authentik-oidc"],
+    check=True,
+)
+deadline = time.monotonic() + 60
+while True:
+    status, _, _ = admin_request("/")
+    if status == 403:
+        print("t3.jomcgi.dev admin without route policy 403")
+        break
+    if time.monotonic() >= deadline:
+        raise AssertionError(("T3 without route policy should deny the admin", status))
+    time.sleep(1)
