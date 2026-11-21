@@ -33,7 +33,7 @@ printf '{"schemaVersion":1,"command":"slice","base":"%s"}\n' "$5"
 		t.Fatal(err)
 	}
 	req := Request{Command: "diff", Commit: commit, Base: commit}
-	got := Run(context.Background(), workspace, program, false, req)
+	got := run(context.Background(), workspace, program, false, req, fixtureMain(commit))
 	if got.Status != "complete" || got.ToolVersion != toolVersion || got.Commit != commit {
 		t.Fatalf("analysis: %+v", got)
 	}
@@ -53,11 +53,11 @@ printf '{"schemaVersion":1,"command":"slice","base":"%s"}\n' "$5"
 		t.Fatalf("complete analysis was not cached: %+v", cached)
 	}
 	req.Command = "edit-file"
-	if got := Run(context.Background(), workspace, program, false, req); got.Status != "unsupported" {
+	if got := run(context.Background(), workspace, program, false, req, fixtureMain(commit)); got.Status != "unsupported" {
 		t.Fatalf("edit-file escaped allowlist: %+v", got)
 	}
 	req.Command = "audit"
-	if got := Run(context.Background(), workspace, program, false, req); got.Status != "unsupported" {
+	if got := run(context.Background(), workspace, program, false, req, fixtureMain(commit)); got.Status != "unsupported" {
 		t.Fatalf("diff harness accepted a full audit: %+v", got)
 	}
 }
@@ -73,7 +73,7 @@ func TestCheckoutRejectsDirtyTreeAndHiddenChanges(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "tracked.py"), []byte("changed\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := verifyCheckout(context.Background(), root, false, req, nil); err == nil {
+			if _, err := verifyCheckout(context.Background(), root, commit, false, req, nil); err == nil {
 				t.Fatal("dirty checkout accepted")
 			}
 		})
@@ -84,13 +84,14 @@ func TestTaskCheckoutAndBaseCannotBeSubstituted(t *testing.T) {
 	workspace, root, base := checkout(t)
 	git(t, root, "commit", "--allow-empty", "-qm", "head")
 	head := git(t, root, "rev-parse", "HEAD")
-	if _, err := verifyCheckout(context.Background(), root, false, Request{Commit: head, Base: head}, nil); err == nil {
+	git(t, root, "update-ref", "refs/remotes/origin/main", head)
+	if _, err := verifyCheckout(context.Background(), root, base, false, Request{Commit: head, Base: head}, nil); err == nil {
 		t.Fatal("accepted a substitute diff base")
 	}
-	if _, err := verifyCheckout(context.Background(), root, true, Request{Commit: head}, nil); err == nil {
+	if _, err := verifyCheckout(context.Background(), root, base, true, Request{Commit: head}, nil); err == nil {
 		t.Fatal("accepted an audit of a non-main commit")
 	}
-	if _, err := verifyCheckout(context.Background(), root, false, Request{Commit: head, Base: base}, nil); err != nil {
+	if _, err := verifyCheckout(context.Background(), root, base, false, Request{Commit: head, Base: base}, nil); err != nil {
 		t.Fatal(err)
 	}
 	decoy := filepath.Join(workspace, "other")
@@ -143,25 +144,30 @@ func TestPinnedAnalyzer(t *testing.T) {
 	git(t, root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "commit", "-qam", "head")
 	head := git(t, root, "rev-parse", "HEAD")
 	ctx := context.Background()
-	scoped := Run(ctx, workspace, program, false, Request{Command: "diff", Commit: head, Base: base})
+	scoped := run(ctx, workspace, program, false, Request{Command: "diff", Commit: head, Base: base}, fixtureMain(base))
 	if scoped.Status != "complete" || scoped.ToolVersion != toolVersion || !json.Valid(scoped.Result) {
 		t.Fatalf("pinned diff: status %s, gaps %v", scoped.Status, scoped.Gaps)
 	}
-	callers := Run(ctx, workspace, program, false, Request{Command: "callers", Commit: head, Base: base})
+	callers := run(ctx, workspace, program, false, Request{Command: "callers", Commit: head, Base: base}, fixtureMain(base))
 	if (callers.Status != "complete" && callers.Status != "partial") || !json.Valid(callers.Result) {
 		t.Fatalf("pinned callers: status %s, gaps %v", callers.Status, callers.Gaps)
 	}
-	git(t, root, "update-ref", "refs/remotes/origin/main", head)
 	main := filepath.Join(workspace, "main")
 	if err := os.Rename(root, main); err != nil {
 		t.Fatal(err)
 	}
-	audit := Run(ctx, workspace, program, true, Request{Command: "audit", Commit: head})
+	audit := run(ctx, workspace, program, true, Request{Command: "audit", Commit: head}, fixtureMain(head))
 	if audit.Status != "partial" || len(audit.Gaps) == 0 || !json.Valid(audit.Result) {
 		t.Fatalf("pinned audit: status %s, gaps %v", audit.Status, audit.Gaps)
 	}
 	if git(t, main, "status", "--short", "--ignored") != "" {
 		t.Fatal("analysis changed the checkout")
+	}
+}
+
+func fixtureMain(commit string) func(context.Context, string, []string) (string, error) {
+	return func(context.Context, string, []string) (string, error) {
+		return commit, nil
 	}
 }
 
