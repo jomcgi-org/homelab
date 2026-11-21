@@ -257,7 +257,11 @@ def test_site_check_is_a_restricted_postsync_hook_with_no_deploy_credentials():
             "toFQDNs": [{"matchName": host}],
             "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
         }
-        for host in ["next.jomcgi.dev", "tiles.openfreemap.org"]
+        for host in [
+            "next.jomcgi.dev",
+            "tiles.openfreemap.org",
+            "factory-data.jomcgi.dev",
+        ]
     ]
 
 

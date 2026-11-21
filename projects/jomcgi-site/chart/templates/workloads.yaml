@@ -46,7 +46,7 @@ earlier sync could stay live while site-check is off (routes off below). */}}
 {{- end }}
 {{- $_ := set $check "args" (list .Values.stage) }}
 {{- $host := ternary "next.jomcgi.dev" "jomcgi.dev" (eq .Values.stage "dev") }}
-{{- $_ := set $check.network "egress" (list (dict "peer" "stage-site" "fqdn" $host "port" 443) (dict "peer" "map-tiles" "fqdn" "tiles.openfreemap.org" "port" 443)) }}
+{{- $_ := set $check.network "egress" (list (dict "peer" "stage-site" "fqdn" $host "port" 443) (dict "peer" "map-tiles" "fqdn" "tiles.openfreemap.org" "port" 443) (dict "peer" "trip-photos" "fqdn" "factory-data.jomcgi.dev" "port" 443)) }}
 {{- if .Values.edge.enabled }}
 {{- if ne .Values.stage "prod" }}
 {{- fail "edge.enabled is for the prod stage only: zone config is not per stage" }}
