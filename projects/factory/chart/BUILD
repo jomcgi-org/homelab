@@ -38,6 +38,7 @@ helm_chart(
         "broker.image": "//projects/factory/broker/image:image.info",
         "codexTrial.image": "//projects/factory/codex-code-mode:image.info",
         "connector.image": "//projects/factory/connector/image:image.info",
+        "itsaplan.webImage": "//projects/factory/itsaplan-web:image.info",
         "reviewer.image": "//projects/factory/reviewer/image:image.info",
     },
     # The vendored kagent subcharts are linted by their own repository.

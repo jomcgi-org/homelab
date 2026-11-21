@@ -19,7 +19,13 @@ _APPLICATION = Path(
 )
 _DEPLOY = Path(os.environ.get("DEPLOY_VALUES", _CHART.parent / "deploy/values.yaml"))
 _LOCK = Path(os.environ.get("RENDER_LOCK", _CHART.parent / "deploy/render.sha256"))
-_IMAGES = ("broker", "codexTrial", "connector", "reviewer")
+_IMAGES = {
+    "broker": "image",
+    "codexTrial": "image",
+    "connector": "image",
+    "itsaplan": "webImage",
+    "reviewer": "image",
+}
 
 
 @pytest.fixture(scope="module")
@@ -105,13 +111,13 @@ def test_homelab_values_are_packaged_without_becoming_defaults(
     assert (values / "values-homelab.yaml").read_bytes() == _DEPLOY.read_bytes()
     expected = yaml.safe_load((_CHART / "values.yaml").read_text())
     published = yaml.safe_load((values / "values.yaml").read_text())
-    for service in _IMAGES:
-        image = published[service]["image"]
-        assert image["repository"] == expected[service]["image"]["repository"]
+    for service, key in _IMAGES.items():
+        image = published[service][key]
+        assert image["repository"] == expected[service][key]["repository"]
         assert image["tag"]
         assert re.fullmatch(r"sha256:[0-9a-f]{64}", image["digest"])
-        for key in ("repository", "tag", "digest"):
-            expected[service]["image"][key] = image[key]
+        for field in ("repository", "tag", "digest"):
+            expected[service][key][field] = image[field]
     # The only changes to reusable defaults are the image pins from CI.
     assert published == expected
 
@@ -129,27 +135,28 @@ def test_packaged_render_matches_the_lock_with_published_images(
     published = yaml.safe_load((values / "values.yaml").read_text())
     overrides = []
     pinned = []
-    for service in _IMAGES:
-        image = dict(published[service]["image"])
+    for service, key in _IMAGES.items():
+        image = dict(published[service][key])
         # An unstamped PR build leaves the tag as the "{STABLE_IMAGE_TAG}"
         # placeholder, which YAML reads as a mapping and the schema rejects.
         # Stamped release builds have a string tag, so they need no pin.
         if not isinstance(image["tag"], str):
             image["tag"] = "unstamped"
-            pinned += ["--set-json", f"{service}.image={json.dumps(image)}"]
-        overrides += ["--set-json", f"{service}.image={json.dumps(image)}"]
+            pinned += ["--set-json", f"{service}.{key}={json.dumps(image)}"]
+        overrides += ["--set-json", f"{service}.{key}={json.dumps(image)}"]
     # Compare all rendered bytes, including ConfigMaps and hooks. Only CI's
     # generated image values may differ from the source render under the lock.
     rendered = _render(archive, values / "values-homelab.yaml", *pinned)
     assert rendered == _render(_CHART, _DEPLOY, *overrides)
     docs = [doc for doc in yaml.safe_load_all(rendered) if doc]
-    for service in ("broker", "connector", "reviewer"):
+    for service in ("broker", "connector", "itsaplan", "reviewer"):
+        suffix = "itsaplan-web" if service == "itsaplan" else service
         (deployment,) = [
             doc
             for doc in docs
             if doc["kind"] == "Deployment"
-            and doc["metadata"]["name"] == f"factory-{service}"
+            and doc["metadata"]["name"] == f"factory-{suffix}"
         ]
         (container,) = deployment["spec"]["template"]["spec"]["containers"]
-        image = published[service]["image"]
+        image = published[service][_IMAGES[service]]
         assert container["image"] == f"{image['repository']}@{image['digest']}"
