@@ -3757,5 +3757,4 @@ func TestIssueReviewQueueMatchesCurrentRepositoryAndHead(t *testing.T) {
 	if _, err := v.e.IssueReviewQueue(v.ctx, 101, source.URL, source.Client()); !errors.Is(err, store.ErrNotWriter) {
 		t.Fatalf("former writer could start a queue read: %v", err)
 	}
-
 }
