@@ -8,6 +8,7 @@ import { createAgent, setAgentProjectRole } from "./__tests__/helpers/agents";
 import { signUpTestUser } from "./__tests__/helpers/auth";
 import { resetDb } from "./__tests__/helpers/db";
 
+// invariant: FACT-14
 test("Codex discovers tracker tools and the reader can only read issue evidence", async () => {
   await resetDb();
   const owner = authedApi((await signUpTestUser()).cookie);
