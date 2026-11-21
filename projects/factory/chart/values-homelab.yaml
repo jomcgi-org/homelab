@@ -132,7 +132,7 @@ agents:
   reviewer:
     model: gpt-6.2-sol
     # One worker per concurrent review (reviewer.concurrency).
-    concurrency: 3
+    concurrency: 5
     # The review binding has no toolchain and runs no PR code, so its
     # workers stay small: 1.2Gi at most for one worker and 2.7Gi for all
     # three together (14-16 Nov), sized per worker like the coder pool. Five
@@ -249,7 +249,7 @@ reviewer:
   traceEndpoint: http://otel-collector.otel-collector.svc.cluster.local:4317
   enabled: true
   # Reviews at once; agents.reviewer.concurrency gives each a worker.
-  concurrency: 3
+  concurrency: 5
   # The coder gets the goal check's private reasons in its next revision
   # round, posted on the issue by the connector (HOME-251).
   goalReasons:

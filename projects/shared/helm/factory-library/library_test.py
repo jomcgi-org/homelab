@@ -981,6 +981,34 @@ def sources_config():
     return config
 
 
+@pytest.mark.parametrize("active", [None, "root", "source"])
+def test_mirror_item_path_is_optional_only_while_all_jobs_are_suspended(chart, active):
+    config = sources_config()
+    public = config["buckets"][0]["public"]
+    del public["itemPath"]
+    public["suspend"] = active != "root"
+    public["sources"][1]["suspend"] = active != "source"
+
+    result = render(chart, config)
+    if active:
+        assert result.returncode != 0
+        assert "public.itemPath is required" in result.stderr
+        return
+
+    docs = objects(result)
+    jobs = [doc for doc in docs.values() if doc["kind"] == "CronJob"]
+    assert len(jobs) == 3
+    for job in jobs:
+        assert job["spec"]["suspend"]
+        name = job["metadata"]["name"]
+        assert f"OnePasswordItem/{name}-r2" not in docs
+        env = {var["name"]: var for var in mirror_container(docs, name)["env"]}
+        assert env["RCLONE_CONFIG_R2_ACCESS_KEY_ID"]["valueFrom"]["secretKeyRef"] == {
+            "name": f"{name}-r2",
+            "key": "access-key-id",
+        }
+
+
 def run_fake_mirror(container, tmp_path, listing=""):
     """Run a mirror script against an rclone that logs each call."""
     env = {
