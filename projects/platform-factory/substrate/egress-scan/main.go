@@ -16,7 +16,6 @@ import (
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"github.com/spf13/viper"
 	"github.com/zricethezav/gitleaks/v8/config"
-	"github.com/zricethezav/gitleaks/v8/detect"
 	"github.com/zricethezav/gitleaks/v8/logging"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
@@ -63,7 +62,7 @@ func main() {
 	}
 }
 
-func newDetector(path string) (*detect.Detector, error) {
+func newDetector(path string) (*requestDetector, error) {
 	loader := viper.New()
 	loader.SetConfigType("toml")
 	var err error
@@ -80,15 +79,17 @@ func newDetector(path string) (*detect.Detector, error) {
 	if err := loader.Unmarshal(&raw); err != nil {
 		return nil, err
 	}
+	if raw.Extend.Path != "" || raw.Extend.URL != "" {
+		return nil, errors.New("request rules can extend the embedded rules only")
+	}
+	for _, rule := range raw.Rules {
+		if path != "" && rule.Path != "" {
+			return nil, errors.New("operator request rules cannot require a file path")
+		}
+	}
 	rules, err := raw.Translate()
 	if err != nil {
 		return nil, err
 	}
-	if len(rules.Rules) == 0 {
-		return nil, errors.New("no secret scan rules loaded")
-	}
-	detector := detect.NewDetector(rules)
-	detector.IgnoreGitleaksAllow = true
-	detector.Redact = 100
-	return detector, nil
+	return compileRequestRules(rules)
 }

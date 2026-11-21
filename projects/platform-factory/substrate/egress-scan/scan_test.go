@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -120,12 +121,45 @@ func TestCheckOverGRPC(t *testing.T) {
 
 func TestOperatorRules(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gitleaks.toml")
-	if err := os.WriteFile(path, []byte(`title = "Operator test rules"
+	const config = `title = "Operator test rules"
 
 [[rules]]
 id = "test-credential"
 description = "Synthetic pattern added by operator"
 regex = 'TEST_CREDENTIAL_[A-Z0-9]{12}'
+`
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	detector, err := newDetector(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matched, err := detector.find(context.Background(), "TEST_CREDENTIAL_AB12CD34EF56"); !matched || err != nil {
+		t.Fatalf("configured rule did not match: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(config+`path = '\.go$'`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newDetector(path); err == nil {
+		t.Fatal("configured a rule that requires a repository path")
+	}
+	if err := os.WriteFile(path, []byte("rules = []"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newDetector(path); err == nil {
+		t.Fatal("configured an empty ruleset")
+	}
+}
+
+func TestDenseMatchesReleaseScanSlot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gitleaks.toml")
+	if err := os.WriteFile(path, []byte(`[[rules]]
+id = 'synthetic-marker'
+regex = '(?m)^MARK:([a-z]+)'
+[[rules.allowlists]]
+regexTarget = 'line'
+regexes = ['approved-line']
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -133,14 +167,35 @@ regex = 'TEST_CREDENTIAL_[A-Z0-9]{12}'
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(detector.DetectString("TEST_CREDENTIAL_AB12CD34EF56")) != 1 {
-		t.Fatal("configured rule did not match")
+	backend := &scanner{detector: detector, slots: make(chan struct{}, 1)}
+	check := func(body string, code codes.Code) {
+		t.Helper()
+		reply, err := backend.Check(context.Background(), request(&authv3.AttributeContext_HttpRequest{
+			Method: "POST", Path: "/", Headers: map[string]string{"content-type": "text/plain"},
+			Size: int64(len(body)), RawBody: []byte(body),
+		}))
+		if err != nil || codes.Code(reply.GetStatus().GetCode()) != code {
+			t.Fatalf("expected %v, got %v: %v", code, reply.GetStatus(), err)
+		}
 	}
-	if err := os.WriteFile(path, []byte("rules = []"), 0o600); err != nil {
+	check("MARK:example approved-line MARK:other", codes.OK)
+	check("MARK:example approved-line\nMARK:other", codes.PermissionDenied)
+	check(strings.Repeat("MARK:other\n", 25000), codes.PermissionDenied)
+	check(strings.Repeat("MARK:example approved-line\n", 17000), codes.ResourceExhausted)
+	check("clean text", codes.OK)
+}
+
+func TestRegexReaderStopsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	reader := newScanReader(ctx, strings.Repeat("abcd", 1024)+"MARK:other")
+	if _, _, err := reader.ReadRune(); err != nil {
+		cancel()
 		t.Fatal(err)
 	}
-	if _, err := newDetector(path); err == nil {
-		t.Fatal("configured an empty ruleset")
+	cancel()
+	match := regexp.MustCompile(`MARK:[a-z]+`).FindReaderIndex(reader)
+	if match != nil || reader.count > 256 {
+		t.Fatal("regex kept reading input after cancellation")
 	}
 }
 

@@ -5,6 +5,7 @@ go_library(
     name = "egress-scan_lib",
     srcs = [
         "main.go",
+        "rules.go",
         "scan.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/platform-factory/substrate/egress-scan",
@@ -14,7 +15,6 @@ go_library(
         "@com_github_envoyproxy_go_control_plane_envoy//type/v3:type",
         "@com_github_spf13_viper//:viper",
         "@com_github_zricethezav_gitleaks_v8//config",
-        "@com_github_zricethezav_gitleaks_v8//detect",
         "@com_github_zricethezav_gitleaks_v8//logging",
         "@org_golang_google_genproto_googleapis_rpc//status",
         "@org_golang_google_grpc//:grpc",

@@ -2,8 +2,9 @@
 
 The scanner is an Envoy External Authorization v3 server. It loads
 Gitleaks rules before its gRPC health service reports ready. By default it
-uses the Gitleaks rules pinned in `go.mod`. Use `--rules` to load a TOML file
-from a trusted mount.
+uses the Gitleaks rules pinned in `go.mod` that can match HTTP text. Use
+`--rules` to load a TOML file from a trusted mount. Operator rules that
+require a repository file path fail startup.
 
 ```mermaid
 flowchart LR
@@ -17,7 +18,9 @@ Apply the policy to the selected route on agentgateway 1.7.0. Leave
 `includeRequestHeaders` unset so the scanner receives all request headers.
 Route authorization runs before Substrate injects the upstream credential.
 The scanner checks the path, query, headers and UTF-8 JSON or plain text
-body. It rejects unsupported encodings and bodies over 512 KiB.
+body. It rejects unsupported encodings and bodies over 512 KiB. Matching
+stops at the first finding. The scanner denies requests that exceed its
+75 ms scan deadline or exhaust the budget of 64 suppressed matches.
 
 ```yaml
 policies:
