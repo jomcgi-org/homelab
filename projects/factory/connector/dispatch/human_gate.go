@@ -50,7 +50,7 @@ func (e *Engine) stepHumanGates(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// invariant: FACT-13
+// invariant: FACT-14
 func (e *Engine) pollHumanGate(ctx context.Context, b *Binding, pr *store.PullRequest) error {
 	if err := e.beginHumanGateRead(ctx, b, pr, "pr", fmt.Sprint(pr.Number)); err != nil {
 		return err
