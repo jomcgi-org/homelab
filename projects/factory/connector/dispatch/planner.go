@@ -13,23 +13,28 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/planner"
 )
 
-func fingerprintMarker(fp string) string { return "<!-- factory-planner-fingerprint: " + fp + " -->" }
+func fingerprintMarker(fp string) string {
+	return fmt.Sprintf("<!-- factory-planner-fingerprint-%x -->", sha256.Sum256([]byte(fp)))
+}
 
-func (e *Engine) plannerDuplicate(ctx context.Context, fp string) (bool, error) {
+func (e *Engine) plannerDuplicate(ctx context.Context, call *plannerTrackerCall, fp string) (bool, error) {
 	var existing bool
 	if err := e.st.DB.QueryRowContext(ctx, "SELECT EXISTS(SELECT FROM planner_existing_issue WHERE fingerprint=$1)", fp).Scan(&existing); err != nil || existing {
 		return existing, err
 	}
-	hits, err := e.its.SearchIssues(ctx, "HOME", fp)
+	marker := fingerprintMarker(fp)
+	hits, err := plannerRead(ctx, call, "LookupSearch", marker, func() ([]itsaplan.Issue, error) {
+		return e.its.SearchIssues(ctx, "HOME", strings.TrimSuffix(strings.TrimPrefix(marker, "<!-- "), " -->"))
+	})
 	if err != nil || len(hits) == 0 {
 		return false, err
 	}
-	project, err := e.its.GetProject(ctx, "HOME")
+	project, err := plannerRead(ctx, call, "LookupProject", "HOME", func() (*itsaplan.Project, error) { return e.its.GetProject(ctx, "HOME") })
 	if err != nil {
 		return false, err
 	}
 	for _, hit := range hits {
-		is, err := e.its.GetIssue(ctx, hit.ID)
+		is, err := plannerRead(ctx, call, "LookupIssue", fmt.Sprint(hit.ID), func() (*itsaplan.Issue, error) { return e.its.GetIssue(ctx, hit.ID) })
 		if err != nil {
 			return false, err
 		}
@@ -51,7 +56,7 @@ func (e *Engine) preparePlannerResult(ctx context.Context) error {
 	var run, message, namespace, title, instructions string
 	err := e.st.DB.QueryRowContext(ctx, `SELECT r.run_id,r.final_message,s.namespace,s.issue_title,s.instructions
  FROM planner_run r JOIN planner_schedule s ON s.name=r.schedule
- WHERE r.final_message IS NOT NULL AND NOT processed AND finished_at IS NULL
+ WHERE lookup_after<=now() AND r.final_message IS NOT NULL AND NOT processed AND finished_at IS NULL
  AND s.issue_title <> '' AND s.instructions <> '' ORDER BY started_at LIMIT 1`).Scan(&run, &message, &namespace, &title, &instructions)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
@@ -65,7 +70,15 @@ func (e *Engine) preparePlannerResult(ctx context.Context) error {
 	}
 	duplicates := make(map[string]bool, len(items))
 	for _, p := range items {
-		duplicate, err := e.plannerDuplicate(ctx, p.Fingerprint)
+		var stopped bool
+		if err := e.st.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT FROM planner_tracker_attempt WHERE run_id=$1 AND fingerprint=$2 AND operation LIKE 'Lookup%' AND refusals>=$3)`, run, p.Fingerprint, outboxAuthMaxTries).Scan(&stopped); err != nil {
+			return err
+		}
+		if stopped {
+			continue
+		}
+		call := plannerTrackerCall{engine: e, run: run, fingerprint: p.Fingerprint}
+		duplicate, err := e.plannerDuplicate(ctx, &call, p.Fingerprint)
 		if err != nil {
 			return err
 		}
@@ -86,7 +99,12 @@ func (e *Engine) preparePlannerResult(ctx context.Context) error {
 				dropped++
 				continue
 			}
-			if duplicates[p.Fingerprint] {
+			duplicate, checked := duplicates[p.Fingerprint]
+			if !checked {
+				dropped++
+				continue
+			}
+			if duplicate {
 				if _, err := tx.ExecContext(ctx, "UPDATE planner_run SET deduplicated=deduplicated+1 WHERE run_id=$1", run); err != nil {
 					return err
 				}
@@ -113,9 +131,6 @@ func (e *Engine) preparePlannerResult(ctx context.Context) error {
 // File at most one issue per tick after coding admission. A committed send
 // intent permits only reconciliation on later ticks, even after a lost POST.
 func (e *Engine) stepPlanner(ctx context.Context) error {
-	if err := e.preparePlannerResult(ctx); err != nil {
-		return err
-	}
 	var run, fp, route, title, description, priority string
 	var started bool
 	err := e.st.DB.QueryRowContext(ctx, `SELECT run_id,fingerprint,disposition,title,description,priority,create_started
@@ -228,6 +243,15 @@ type plannerTrackerCall struct {
 	run, fingerprint, operation, resource string
 }
 
+func plannerRead[T any](ctx context.Context, call *plannerTrackerCall, operation, resource string, read func() (T, error)) (T, error) {
+	if err := call.begin(ctx, operation, resource); err != nil {
+		var zero T
+		return zero, err
+	}
+	value, err := read()
+	return value, call.result(ctx, err)
+}
+
 func (c *plannerTrackerCall) begin(ctx context.Context, operation, resource string) error {
 	c.operation, c.resource = operation, resource
 	err := c.engine.w.Tx(ctx, func(tx *sql.Tx) error {
@@ -263,6 +287,18 @@ func (c *plannerTrackerCall) result(ctx context.Context, result error) error {
 		if err != nil {
 			return err
 		}
+		if strings.HasPrefix(c.operation, "Lookup") {
+			if result != nil {
+				_, err = tx.ExecContext(ctx, "UPDATE planner_run SET lookup_after=now()+interval '1 minute' WHERE run_id=$1", c.run)
+			}
+			return err
+		}
+		if strings.HasPrefix(c.operation, "Outcome") {
+			if streak >= outboxAuthMaxTries {
+				_, err = tx.ExecContext(ctx, "UPDATE planner_proposal SET next_attempt=now()+interval '1 hour' WHERE run_id=$1 AND fingerprint=$2", c.run, c.fingerprint)
+			}
+			return err
+		}
 		var status *itsaplan.HTTPError
 		throttled := errors.As(result, &status) && status.Status == 429
 		rejected := c.operation == "CreateIssue" && (refused || terminalHTTP(result) || throttled || errors.Is(result, itsaplan.ErrWIPLimit))
@@ -284,12 +320,13 @@ func (c *plannerTrackerCall) result(ctx context.Context, result error) error {
 }
 
 func (e *Engine) syncPlannerOutcome(ctx context.Context) error {
+	call := plannerTrackerCall{engine: e}
 	var key, route string
 	err := e.w.Tx(ctx, func(tx *sql.Tx) error {
 		return tx.QueryRowContext(ctx, `UPDATE planner_proposal SET next_attempt=now()+interval '5 minutes'
  WHERE issue_key=(SELECT issue_key FROM planner_proposal JOIN planner_run USING(run_id)
- WHERE issue_key IS NOT NULL AND finished_at IS NOT NULL AND closed_at IS NULL AND next_attempt<=now()
- ORDER BY next_attempt,issue_key LIMIT 1) RETURNING issue_key,disposition`).Scan(&key, &route)
+ WHERE issue_key IS NOT NULL AND finished_at IS NOT NULL AND NOT reproducible AND next_attempt<=now()
+ ORDER BY next_attempt,issue_key LIMIT 1) RETURNING issue_key,disposition,run_id,fingerprint`).Scan(&key, &route, &call.run, &call.fingerprint)
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
@@ -301,11 +338,11 @@ func (e *Engine) syncPlannerOutcome(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	is, err := e.its.GetIssueByNumber(ctx, "HOME", n)
+	is, err := plannerRead(ctx, &call, "OutcomeIssue", key, func() (*itsaplan.Issue, error) { return e.its.GetIssueByNumber(ctx, "HOME", n) })
 	if err != nil {
 		return err
 	}
-	project, err := e.its.GetProject(ctx, "HOME")
+	project, err := plannerRead(ctx, &call, "OutcomeProject", "HOME", func() (*itsaplan.Project, error) { return e.its.GetProject(ctx, "HOME") })
 	if err != nil {
 		return err
 	}
@@ -314,7 +351,7 @@ func (e *Engine) syncPlannerOutcome(ctx context.Context) error {
 		if route != "delegate" {
 			return nil
 		}
-		rejected, err := e.plannerDelegationRejected(ctx, is.ID)
+		rejected, err := e.plannerDelegationRejected(ctx, &call, is.ID)
 		if err != nil || !rejected {
 			return err
 		}
@@ -330,16 +367,16 @@ func (e *Engine) syncPlannerOutcome(ctx context.Context) error {
 	})
 }
 
-func (e *Engine) plannerDelegationRejected(ctx context.Context, id int64) (bool, error) {
+func (e *Engine) plannerDelegationRejected(ctx context.Context, call *plannerTrackerCall, id int64) (bool, error) {
 	var before int64
 	for {
-		page, err := e.its.IssueRuns(ctx, id, before)
+		page, err := plannerRead(ctx, call, "OutcomeRuns", fmt.Sprintf("%d/%d", id, before), func() (*itsaplan.IssueRunPage, error) { return e.its.IssueRuns(ctx, id, before) })
 		if err != nil {
 			return false, err
 		}
 		for _, r := range page.Items {
-			if r.Username == "homelab-codex" && r.Trigger == "delegation" && (r.Status == "failed" || r.Status == "canceled") {
-				return true, nil
+			if r.Username == "homelab-codex" && r.Trigger == "delegation" {
+				return r.Status == "failed" || r.Status == "canceled", nil
 			}
 		}
 		if page.NextCursor == nil {

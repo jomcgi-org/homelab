@@ -202,7 +202,7 @@ func (f *fakeItsaplan) GetIssueByNumber(ctx context.Context, project string, n i
 
 func TestPlannerOpenFingerprint(t *testing.T) {
 	v := plannerFixture(t)
-	v.its.issues = map[int64]*itsaplan.Issue{44: {ID: 44, Identifier: "HOME-44", ColumnID: 5, Description: "<!-- factory-planner-fingerprint: homelab:docs:file:missing -->"}}
+	v.its.issues = map[int64]*itsaplan.Issue{44: {ID: 44, Identifier: "HOME-44", ColumnID: 5, Description: "<!-- factory-planner-fingerprint-e7d26b91e6b4eb4aa83beacb2b99f0936c64bf86e3ea57a1e65717aa04158b88 -->"}}
 	v.tick(v.e)
 	var duplicates int
 	if err := v.st.DB.QueryRow("SELECT deduplicated FROM planner_run WHERE run_id='r'").Scan(&duplicates); err != nil || duplicates != 1 || v.its.activationCreates != 0 {
@@ -217,8 +217,12 @@ func TestPlannerFiledOutcomes(t *testing.T) {
 			v.tick(v.e)
 			v.tick(v.e)
 			is := v.its.issues[1001]
-			if !strings.Contains(is.Description, "<!-- factory-planner-fingerprint: homelab:docs:file:missing -->") {
+			if !strings.Contains(is.Description, "<!-- factory-planner-fingerprint-e7d26b91e6b4eb4aa83beacb2b99f0936c64bf86e3ea57a1e65717aa04158b88 -->") {
 				t.Fatal("missing fingerprint")
+			}
+			_, after, found := strings.Cut(is.Description, "</untrusted-evidence>")
+			if !found || strings.Contains(after, "homelab:docs:file:missing") {
+				t.Fatal("raw fingerprint escaped evidence block")
 			}
 			if outcome == "Done" {
 				is.ColumnID = 3
@@ -228,10 +232,47 @@ func TestPlannerFiledOutcomes(t *testing.T) {
 			if _, err := v.st.DB.Exec("UPDATE planner_proposal SET disposition='delegate',next_attempt=now()"); err != nil {
 				t.Fatal(err)
 			}
+			if outcome != "Done" {
+				page := v.its.activationRunPages[0]
+				old := page.Items[0]
+				page.Items = []itsaplan.IssueRun{{ID: 51, Username: "homelab-codex", Trigger: "delegation", Status: "pending"}, old}
+				v.tick(v.e)
+				var open bool
+				if err := v.st.DB.QueryRow("SELECT closed_at IS NULL FROM planner_proposal").Scan(&open); err != nil || !open {
+					t.Fatalf("pending retry lost to older failure: %v", err)
+				}
+				page.Items[0].Status = outcome
+				if _, err := v.st.DB.Exec("UPDATE planner_proposal SET next_attempt=now()"); err != nil {
+					t.Fatal(err)
+				}
+			}
 			v.tick(v.e)
 			var closed, proven bool
 			if err := v.st.DB.QueryRow("SELECT closed_at IS NOT NULL,reproducible FROM planner_proposal WHERE issue_key='HOME-1001'").Scan(&closed, &proven); err != nil || !closed || proven != (outcome == "Done") {
 				t.Fatalf("closed %v reproducible %v: %v", closed, proven, err)
+			}
+			// Remove the tracker-side match to exercise the retained database row.
+			archived := time.Now()
+			is.ArchivedAt = &archived
+			if _, err := v.st.DB.Exec(`INSERT INTO planner_run(run_id,schedule,final_message) VALUES('repeat','smoke','[{"title":"excerpt","body":"quoted","evidence":["https://example.org/doc"],"priority":"low","fix":"agent","fingerprint":"homelab:docs:file:missing"}]')`); err != nil {
+				t.Fatal(err)
+			}
+			v.tick(v.e)
+			var duplicates int
+			if err := v.st.DB.QueryRow("SELECT deduplicated FROM planner_run WHERE run_id='repeat'").Scan(&duplicates); err != nil || duplicates != 1 || v.its.activationCreates != 1 {
+				t.Fatalf("retained repeat: duplicates %d creates %d: %v", duplicates, v.its.activationCreates, err)
+			}
+			is.ArchivedAt = nil
+			if outcome != "Done" {
+				is.ColumnID = 3
+				if _, err := v.st.DB.Exec("UPDATE planner_proposal SET next_attempt=now()"); err != nil {
+					t.Fatal(err)
+				}
+				v.tick(v.e)
+				var credited bool
+				if err := v.st.DB.QueryRow("SELECT reproducible AND low_yield=1 FROM planner_proposal JOIN planner_run USING(run_id) JOIN planner_schedule ON name=schedule").Scan(&credited); err != nil || !credited {
+					t.Fatalf("late Done credit %v: %v", credited, err)
+				}
 			}
 		})
 	}
@@ -240,10 +281,7 @@ func TestPlannerFiledOutcomes(t *testing.T) {
 func TestPlannerExistingIdeas(t *testing.T) {
 	for n := 4; n <= 11; n++ {
 		v := plannerFixture(t)
-		fp := fmt.Sprintf("homelab:planner:home-%d:scheduled-agent", n)
-		if _, err := v.st.DB.Exec("UPDATE planner_schedule SET namespace='homelab:planner'"); err != nil {
-			t.Fatal(err)
-		}
+		fp := fmt.Sprintf("homelab:docs:home-%d:scheduled-agent", n)
 		if _, err := v.st.DB.Exec("UPDATE planner_run SET final_message=replace(final_message,'homelab:docs:file:missing',$1)", fp); err != nil {
 			t.Fatal(err)
 		}
@@ -252,5 +290,21 @@ func TestPlannerExistingIdeas(t *testing.T) {
 		if err := v.st.DB.QueryRow("SELECT deduplicated FROM planner_run WHERE run_id='r'").Scan(&count); err != nil || count != 1 || v.its.activationCreates != 0 {
 			t.Fatalf("HOME-%d duplicates %d: %v", n, count, err)
 		}
+	}
+}
+
+func TestPlannerFingerprintReadRefusal(t *testing.T) {
+	v := plannerFixture(t)
+	v.its.issues = map[int64]*itsaplan.Issue{44: {ID: 44, Identifier: "HOME-44", ColumnID: 5, Description: "<!-- factory-planner-fingerprint-e7d26b91e6b4eb4aa83beacb2b99f0936c64bf86e3ea57a1e65717aa04158b88 -->"}}
+	v.its.issueErr = &itsaplan.HTTPError{Status: 403}
+	for range 13 {
+		v.tick(v.e)
+		if _, err := v.st.DB.Exec("UPDATE planner_run SET lookup_after=now()"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var attempts int
+	if err := v.st.DB.QueryRow(`SELECT attempts FROM planner_tracker_attempt JOIN planner_run USING(run_id) WHERE operation='LookupIssue' AND writer_epoch>0 AND dropped=1 AND finished_at IS NOT NULL`).Scan(&attempts); err != nil || attempts != 12 || v.its.activationCreates != 0 {
+		t.Fatalf("attempts %d creates %d: %v", attempts, v.its.activationCreates, err)
 	}
 }
