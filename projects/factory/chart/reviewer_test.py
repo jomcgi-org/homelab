@@ -553,6 +553,20 @@ def test_a_coding_binding_takes_its_own_harness_image() -> None:
     assert all("harnessImage" not in r for r in deploy.get("repositories", []))
     image = "ghcr.io/jomcgi/homelab/projects/factory/harness/codex@sha256:" + "e" * 64
     docs = _render(_TWO_REPOSITORIES + ["repositories[0].harnessImage=" + image])
+    policy = next(
+        item
+        for item in docs
+        if item["kind"] == "EgressPolicy"
+        and item["metadata"]["namespace"] == "factory-r-homelab"
+        and item["metadata"]["name"] == "github-git"
+    )
+    public, receiver = policy["spec"]["destinations"]
+    assert public == {"origin": "https://github.com"}
+    assert (
+        receiver["origin"]
+        == "https://factory-push-guard.factory-r-homelab.svc.cluster.local"
+    )
+    assert receiver["authentication"]["secretKeyRef"]["name"] == "github-git"
     workloads = {
         h["metadata"]["namespace"]: h["spec"].get("workload")
         for h in docs

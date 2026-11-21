@@ -35,6 +35,7 @@ flowchart LR
 | Agent Substrate | Isolates actors and injects credentials at egress | `../platform-factory/substrate/` | Fork charts 1.0.1, source `7ce6f439` | Workspace traffic | Actor identity and credentials scoped by policy |
 | browser-comparison | Compares CLI and MCP evidence on a loopback fixture | `browser-comparison/` | See package-lock.json | Fixture HTML | None |
 | toolchain | Installs local checks for the coding binding | `toolchain/` | Built from this repo | Tool downloads | None |
+| push-guard | Inspects blobs before forwarding factory work branches | `push-guard/` | Staged receiver hook | Private fingerprint index and Git objects | Upstream Git write credential |
 | Codex CLI | Edits and checks the bound repository | `deploy/values.yaml`, `toolchain/` | 0.169.1 | Task and checkout | Gateway placeholders |
 | codex-code-mode | Runs the Codex tool-mode trial | `codex-code-mode/` | Built from this repo | Task and checkout | Gateway placeholders |
 | Claude Code | Claude harness supported by the staged relay | Upstream kagent harness | 2.1.285 | Session messages | Gateway placeholder |
