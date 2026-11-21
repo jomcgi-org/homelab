@@ -20,6 +20,30 @@ images:
     digest: sha256:6cd934b258ee245eadf4fc46704897410be008f0b88296ff77e74f06fc8b4c1a
 
 patches:
+  # The tunnel Gateway and Cloudflare credentials both live in cfgate-system.
+  # Its existing RoleBinding binds this Role to the controller.
+  - target:
+      kind: Role
+      name: cfgate-manager-role
+    patch: |-
+      - op: add
+        path: /rules/-
+        value:
+          apiGroups: [""]
+          resources: [secrets]
+          verbs: [create, delete, get, list, patch, update, watch]
+  # alpha.11 watches Secrets with the default cluster-wide manager cache.
+  # Drop this rule once the Secret informer targets the Gateway namespaces.
+  - target:
+      kind: ClusterRole
+      name: cfgate-manager-role
+    patch: |-
+      - op: test
+        path: /rules/1/resources
+        value: [secrets]
+      - op: replace
+        path: /rules/1/verbs
+        value: [list, watch]
   # The controller peaked at 46Mi over 14-16 Nov against the release's 128Mi
   # request; its 256Mi limit stays.
   - target:

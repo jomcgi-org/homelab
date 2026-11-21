@@ -288,3 +288,19 @@ def test_scenario_requirement_is_optional_for_conformance_stages(tmp_path):
     (step,) = _http_steps(stages[_FIXTURE])
     assert "scenarios" not in step["config"]["successExpression"]
     assert "response.body.verdict == 'pass'" in step["config"]["successExpression"]
+
+
+def test_idle_factory_install_has_only_namespaced_rbac():
+    docs = _render(["--values", str(_chart_dir() / "values-factory.yaml")])
+    kinds = {doc["kind"] for doc in docs}
+    assert "CustomResourceDefinition" in kinds
+    assert kinds.isdisjoint(
+        {
+            "ClusterRole",
+            "ClusterRoleBinding",
+            "Deployment",
+            "CronJob",
+            "ValidatingWebhookConfiguration",
+            "MutatingWebhookConfiguration",
+        }
+    )
