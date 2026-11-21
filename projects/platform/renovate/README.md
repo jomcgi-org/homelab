@@ -8,10 +8,11 @@ CronJob in namespace `renovate`. The factory has no Argo Workflows.
 **The CronJob runs daily.** Manual runs on 2026-11-15 verified the App's
 authentication, `jomcgi-factory-renovate[bot]` authorship and verified commits
 (#8075). #8041 then set `suspend: false` in `values-factory.yaml`; setting it
-back to `true` stops the scheduled writer. The hub's two suspended
-CronWorkflows remain in place; their removal is a follow-up to
-[#7945](https://github.com/jomcgi-org/homelab/issues/7945). The separate weekly
-maintenance helper is not deployed on the factory cluster.
+back to `true` stops the scheduled writer. The factory owns weekly apko lock PRs through the same App. The weekly
+CronJob runs Mondays at 01:00 America/Vancouver with auto-merge disabled.
+After rollout, verify the first scheduled Job and its PR or current-lock log,
+confirm both hub schedules are suspended, then retire the hub deployment
+through a reviewed GitOps change.
 
 ## GitHub credential
 

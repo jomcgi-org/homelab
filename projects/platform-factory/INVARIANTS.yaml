@@ -74,3 +74,10 @@ invariants:
   - bazel/helm/helm-template-test.sh
   test: //bazel/helm/content_rules:content_rules_test
   state: live
+- id: PLAT-14
+  statement: The weekly factory apko job uses the Renovate App and leaves maintenance PRs for review.
+  mechanism:
+  - projects/platform/renovate/templates/cronjob.yaml
+  - projects/platform/renovate/templates/apko-lock-script.yaml
+  test: //projects/platform/renovate:factory_deployment_test
+  state: unproven

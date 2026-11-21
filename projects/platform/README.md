@@ -44,7 +44,7 @@ to match. The hub's root is `projects/gke-cluster/`, which lists the
 | `kyverno`              | Policy engine for admission, resource audits, and cross-namespace Secret replication.                                       |
 | `priority-classes`     | Cluster-scoped `PriorityClass`es underpinning the memory-oversubscription policy (see ARCHITECTURE.md, section 6).           |
 | `argo-workflows`       | Namespace-scoped Argo Workflows engine for off-pod batch job execution, used by the monolith's job scheduler.                |
-| `renovate`             | Hub-only dependency and apko lock maintenance; both schedules suspended pending separately authorized verification and enablement (#7068, #7001). |
+| `renovate`             | Factory daily dependency updates and weekly apko lock maintenance. Both hub schedules are suspended pending factory verification and hub retirement (HOME-88). |
 | `spire`                | SPIFFE workload identity control plane (ADR embervm/041); hub only; the token broker's mTLS listener is its first consumer.                       |
 | `onepassword`          | 1Password Connect and the 1Password Operator, the secret broker every `OnePasswordItem` is reconciled through; hub only.     |
 | `authentik` | Identity provider at `auth.jomcgi.dev`; OAuth2 providers and applications are blueprints. |

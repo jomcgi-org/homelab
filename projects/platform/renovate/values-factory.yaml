@@ -12,3 +12,7 @@ onepassword:
 githubApp:
   enabled: true
   username: jomcgi-factory-renovate[bot]
+
+apkoLockMaintenance:
+  activeDeadlineSeconds: 3300
+  suspend: false
