@@ -27,8 +27,9 @@ import (
 // GitHub is the subset of the GitHub client delivery uses.
 type GitHub interface {
 	RevertedMerge(ctx context.Context, repo, branch, sha string, number int, since, until time.Time, before func(int) error) (*time.Time, error)
-	IssueComments(ctx context.Context, repo string, number int) ([]github.Comment, bool, error)
-	CreateIssueComment(ctx context.Context, repo string, number int, body string) (*github.Comment, error)
+	PullRequestReviews(context.Context, string, int) ([]github.PullRequestReview, error)
+	DraftStopReview(context.Context, string, int, string) (int64, error)
+	PublishStopReview(context.Context, string, int, int64, string) error
 	FindPullRequest(ctx context.Context, repo, branch string) (*github.PullRequest, error)
 	CreatePullRequest(ctx context.Context, repo string, n github.NewPullRequest) (*github.PullRequest, error)
 	UpdatePullRequest(ctx context.Context, repo string, number int, u github.PullRequestUpdate) (*github.PullRequest, error)
@@ -523,15 +524,62 @@ func (e *Engine) findOrOpenPR(ctx context.Context, repo string, wi *store.WorkIt
 
 // Record the attempt outside the work-item transaction so a failed response
 // or writer takeover cannot erase the send history.
-func (e *Engine) stoppedPRCall(ctx context.Context, id string) (bool, error) {
-	var confirmed bool
+func (e *Engine) stoppedPRCall(ctx context.Context, id string) (int64, error) {
+	var draft int64
 	err := e.st.DB.QueryRowContext(ctx, `INSERT INTO stopped_pr_attempt (message_id) VALUES ($1)
 		ON CONFLICT (message_id) DO UPDATE SET attempts = stopped_pr_attempt.attempts + 1
-		RETURNING confirmed`, id).Scan(&confirmed)
+		RETURNING coalesce(review_id, 0)`, id).Scan(&draft)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
-	return confirmed, e.guard(ctx)
+	return draft, e.guard(ctx)
+}
+
+// GitHub permits one pending review per author on a PR. Reserve that draft
+// before publishing and remember its ID outside the stop transaction. Both
+// a lost draft response and a lost submission response can then be retried.
+func (e *Engine) commentOnStoppedPR(ctx context.Context, repo string, number int, author, id, reason string) error {
+	marker := "<!-- " + id + " -->"
+	body := reason + "\n\n" + marker
+	if _, err := e.stoppedPRCall(ctx, id+"/list"); err != nil {
+		return err
+	}
+	reviews, err := e.gh.PullRequestReviews(ctx, repo, number)
+	if err != nil {
+		return err
+	}
+	var pending int64
+	for _, r := range reviews {
+		if r.Author == author && strings.Contains(r.Body, marker) {
+			if r.State != "PENDING" {
+				return nil
+			}
+			pending = r.ID
+		}
+	}
+	draft, err := e.stoppedPRCall(ctx, id+"/draft")
+	if err != nil {
+		return err
+	}
+	if draft == 0 {
+		draft = pending
+		if draft == 0 {
+			draft, err = e.gh.DraftStopReview(ctx, repo, number, body)
+			if err != nil {
+				return err
+			}
+			if draft == 0 {
+				return fmt.Errorf("missing draft review ID for PR #%d", number)
+			}
+		}
+		if _, err := e.st.DB.ExecContext(ctx, `UPDATE stopped_pr_attempt SET review_id = $2 WHERE message_id = $1`, id+"/draft", draft); err != nil {
+			return err
+		}
+	}
+	if _, err := e.stoppedPRCall(ctx, id+"/publish"); err != nil {
+		return err
+	}
+	return e.gh.PublishStopReview(ctx, repo, number, draft, body)
 }
 
 // invariant: FACT-14
@@ -581,51 +629,9 @@ func (e *Engine) checkStoppedCreate(ctx context.Context, wi *store.WorkItem, b *
 				return err
 			}
 			id += fmt.Sprintf("/%d", pr.Number)
-			commentID := id + "/comment"
-			marker := "<!-- " + commentID + " -->"
-			if _, err := e.stoppedPRCall(ctx, id+"/list-comments"); err != nil {
+			reason := fmt.Sprintf("Closing this factory PR because delivery of %s was stopped: %s.", wi.IssueKey, wi.StoppedReason)
+			if err := e.commentOnStoppedPR(ctx, b.repo(), pr.Number, factoryAuthor, id+"/comment", reason); err != nil {
 				return err
-			}
-			comments, complete, err := e.gh.IssueComments(ctx, b.repo(), pr.Number)
-			if err != nil {
-				return err
-			}
-			found := false
-			for _, c := range comments {
-				if c.Author == factoryAuthor && strings.Contains(c.Body, marker) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				if !complete {
-					return fmt.Errorf("incomplete stop comment list for PR #%d", pr.Number)
-				}
-				// Only the first reservation may send. A missing comment in a
-				// complete listing cannot resolve an earlier ambiguous POST.
-				var confirmed bool
-				var firstSend bool
-				err := e.st.DB.QueryRowContext(ctx, `INSERT INTO stopped_pr_attempt (message_id) VALUES ($1)
-					ON CONFLICT (message_id) DO UPDATE SET attempts = stopped_pr_attempt.attempts + 1
-					RETURNING confirmed, attempts = 1`, commentID).Scan(&confirmed, &firstSend)
-				if err != nil {
-					return err
-				}
-				if !confirmed && !firstSend {
-					return nil
-				}
-				if !confirmed {
-					if err := e.guard(ctx); err != nil {
-						return err
-					}
-					body := fmt.Sprintf("Closing this factory PR because delivery of %s was stopped: %s.\n\n%s", wi.IssueKey, wi.StoppedReason, marker)
-					if _, err := e.gh.CreateIssueComment(ctx, b.repo(), pr.Number, body); err != nil {
-						return err
-					}
-					if _, err := e.st.DB.ExecContext(ctx, `UPDATE stopped_pr_attempt SET confirmed = true WHERE message_id = $1`, commentID); err != nil {
-						return err
-					}
-				}
 			}
 			if _, err := e.stoppedPRCall(ctx, id+"/close"); err != nil {
 				return err

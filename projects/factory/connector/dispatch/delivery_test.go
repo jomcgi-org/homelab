@@ -48,6 +48,7 @@ type fakeGitHub struct {
 	delayCreate      bool
 	rejectCreate     bool
 	stopComment      string
+	rejectComment    bool
 	delayComment     bool
 	delayedComment   string
 	stopCommentCount int
@@ -343,19 +344,40 @@ func (g *fakeGitHub) CreatePullRequest(_ context.Context, _ string, n github.New
 	return &c, nil
 }
 
-func (g *fakeGitHub) IssueComments(context.Context, string, int) ([]github.Comment, bool, error) {
-	return []github.Comment{{Author: "jomcgi-factory[bot]", Body: g.stopComment}}, true, nil
+func (g *fakeGitHub) PullRequestReviews(context.Context, string, int) ([]github.PullRequestReview, error) {
+	if g.delayedComment == "" {
+		return nil, nil
+	}
+	state := "PENDING"
+	if g.stopComment != "" {
+		state = "COMMENTED"
+	}
+	return []github.PullRequestReview{{ID: 42, Author: "jomcgi-factory[bot]", State: state, Body: g.delayedComment}}, nil
 }
 
-func (g *fakeGitHub) CreateIssueComment(_ context.Context, _ string, _ int, body string) (*github.Comment, error) {
-	g.stopCommentCount++
+func (g *fakeGitHub) DraftStopReview(_ context.Context, _ string, _ int, body string) (int64, error) {
+	if g.delayedComment != "" {
+		return 0, &github.HTTPError{Status: 422}
+	}
+	g.delayedComment = body
+	return 42, nil
+}
+
+func (g *fakeGitHub) PublishStopReview(_ context.Context, _ string, _ int, id int64, body string) error {
+	if id != 42 || g.stopComment != "" {
+		return &github.HTTPError{Status: 422}
+	}
 	if g.delayComment {
 		g.delayComment = false
-		g.delayedComment = body
-		return nil, context.DeadlineExceeded
+		return context.DeadlineExceeded
 	}
+	if g.rejectComment {
+		g.rejectComment = false
+		return &github.HTTPError{Status: 429}
+	}
+	g.stopCommentCount++
 	g.stopComment = body
-	return &github.Comment{}, nil
+	return nil
 }
 
 func (g *fakeGitHub) UpdatePullRequest(_ context.Context, _ string, number int, u github.PullRequestUpdate) (*github.PullRequest, error) {
@@ -679,12 +701,12 @@ func TestStoppedCreateAppearsAfterTimeout(t *testing.T) {
 	v.clk.Advance(time.Hour)
 	v.gh.delayComment = true
 	v.tick(v.e)
+	v.gh.rejectComment = true
 	v.clk.Advance(time.Hour)
 	v.tick(v.e)
-	if v.gh.stopCommentCount != 1 || v.gh.byNumber(1).pr.State != "open" {
-		t.Fatal("ambiguous comment retried or PR closed before comment appeared")
+	if v.gh.stopCommentCount != 0 {
+		t.Fatal("rejected or lost submit published a comment")
 	}
-	v.gh.stopComment = v.gh.delayedComment
 	v.clk.Advance(time.Hour)
 	v.gh.failClose = true
 	v.tick(v.e)

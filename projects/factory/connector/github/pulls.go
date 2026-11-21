@@ -680,6 +680,23 @@ type PullRequestReview struct {
 	SubmittedAt time.Time
 }
 
+// DraftStopReview leaves the event unset so GitHub reserves the author's
+// one pending review on this PR without publishing a comment.
+func (c *Client) DraftStopReview(ctx context.Context, repo string, number int, body string) (int64, error) {
+	var draft struct {
+		ID int64 `json:"id"`
+	}
+	path := fmt.Sprintf("%s/pulls/%d/reviews", repoPath(repo), number)
+	err := c.do(ctx, repo, http.MethodPost, path, map[string]string{"body": body}, &draft)
+	return draft.ID, err
+}
+
+// PublishStopReview submits this specific draft as a conversation comment.
+func (c *Client) PublishStopReview(ctx context.Context, repo string, number int, draft int64, body string) error {
+	path := fmt.Sprintf("%s/pulls/%d/reviews/%d/events", repoPath(repo), number, draft)
+	return c.do(ctx, repo, http.MethodPost, path, map[string]string{"event": "COMMENT", "body": body}, nil)
+}
+
 // MaxReviewPages bounds a PR's review listing: 3000 reviews.
 const MaxReviewPages = 30
 

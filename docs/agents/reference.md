@@ -258,9 +258,9 @@ If GitHub is still processing a factory PR create when delivery stops, the
 connector checks the branch. A successful empty lookup at least five minutes
 after the last create attempt releases the handoff. The connector continues
 watching for a late PR. When the PR appears, the connector
-comments with the stop reason and closes it. If the comment POST timed out,
-the connector waits for the comment to appear. An operator can resolve a lost
-POST by commenting with the stop reason and closing that PR. If
+comments with the stop reason and closes it. The connector publishes the stop reason as a
+review comment. If GitHub loses the response, the connector resumes with
+the same draft review. If
 `factory-db-1` is not the primary, take the name from
 `KUBECONFIG=~/.kube/factory-sessions.yaml kubectl -n factory-db get cluster
 factory-db`.
