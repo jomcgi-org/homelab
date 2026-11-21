@@ -374,7 +374,7 @@ spec:
   validations:
     - expression: >-
         size(variables.reserved) == 0 ||
-        (request.subResource == '' &&
+        ((!has(request.subResource) || request.subResource == '') &&
          request.userInfo.username == 'system:serviceaccount:kube-system:replicaset-controller' &&
          request.namespace == 't3' &&
          object.spec.serviceAccountName == 't3-relay' &&
