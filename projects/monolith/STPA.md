@@ -1,6 +1,6 @@
 # STPA Control Analysis: monolith
 
-_logic @ ace3f0959 · security @ 5f9363262_
+_logic @ 166c911a6 · security @ 166c911a6_
 
 _Auto-generated STPA safety model: unsafe states this system can reach and control actions that get it there. Single or multiple lenses: logic (mission failure), security (deliberate attack), governance (data safety)._
 
@@ -37,7 +37,7 @@ flowchart TD
     factory-landing["Factory landing and queue observer (retired hub path)"]
     factory-refill["Queue-driven backlog refill controller (default-off) (retired hub path)"]
     factory-required-recovery["Required recovery issue producer (retired hub path)"]
-    health-alerts["Leader-owned health transition notifier (retired hub path)"]
+    health-alerts["Leader-owned health transition notifier"]
     kg-drainer["DBOS-scheduled routine drainer (qwen-drain, kg-drain)"]
     kg-feed["Leader-owned Ember session to knowledge raw exporter (retired hub path)"]
     leader-elector["Leader elector"]
@@ -64,7 +64,7 @@ flowchart TD
     docs-manifest-gen["Docs/posts manifest generator (CI Format stage)"]
   end
   subgraph serving["serving"]
-    backup-health["Private CNPG backup advisory evaluator (retired hub path)"]
+    backup-health["Private CNPG backup advisory evaluator"]
     factory-start-diagnostics["Read-only factory start and funding diagnostics (retired hub path)"]
     public-api["Public backend (read + bounded writes)"]
     public-frontend["Public SSR frontend"]
@@ -196,9 +196,9 @@ flowchart TD
   end
   backup-checker -- "backup-checker.publish" --> backup-status
   private-binary -- "backup-health.read" --> backup-status
-  public-binary -- "chatpublic.write" --> pg-primary
   frontend-ssr -- "frontend.proxy" --> public-binary
   migrations -- "grant.public-reader" --> pg-replica
+  public-binary -- "grimoire-chat.write" --> pg-primary
   private-binary -- "k8s.mutate" --> k8s-api
   cf-ingress -- "route.public" --> frontend-ssr
   onepassword -- "secret.deliver-public" --> public-binary
@@ -218,8 +218,7 @@ flowchart TD
 | `agent.submit` | logical | Submit a Discord-triggered agent turn to the runner | `bot` → `agent-runner` | built | projects/monolith/chat/bot.py:1172 |
 | `argo-workflows.verify-grimoire` | logical | Invoke the bounded report-only verifier with a workflow mutex | `argo-workflows` → `grimoire-verifier` | built | projects/monolith/chart/values.yaml:1153; projects/monolith/chart/templates/cronworkflows.yaml:69; projects/monolith/app/jobs_main.py:993; projects/monolith/grimoire/jobs.py:410 |
 | `backup-checker.publish` | physical | Publish bounded per-target observation to the named ConfigMap | `backup-checker` → `backup-status` | built | projects/platform/otel-collector/files/backup_check.py:216 |
-| `backup-health.read` | physical | Read the configured backup-status ConfigMap (historical hub action) | `private-binary` → `backup-status` | built | projects/monolith/factory/ops_health.py:732 |
-| `chatpublic.write` | physical | Write a bounded chat_public row to the primary as public_writer | `public-binary` → `pg-primary` | built | projects/monolith-public/chart/values.yaml:82 |
+| `backup-health.read` | physical | Read the configured backup-status ConfigMap | `private-binary` → `backup-status` | built | projects/monolith/factory/ops_health.py:732 |
 | `console.submit` | logical | Start or continue an agent session from the private console (historical hub action) | `console-caller` → `agent-runner` | built | projects/monolith/factory/execution/router.py:544 |
 | `docs.publish` | logical | Copy an allowlisted repo doc's full body into the public docs/posts manifest | `docs-manifest-gen` → `public-frontend` | built | projects/monolith/knowledge/tools/gen_docs_manifest.py:128 |
 | `factory-funding.resume-native-repair` | logical | Renew one repaired fixed role within original remaining allocation (historical hub action) | `factory-funding` → `postgres` | built | projects/monolith/factory/orchestration/factory_funding.py:2036 |
@@ -233,9 +232,10 @@ flowchart TD
 | `factory-required-recovery.publish` | logical | Record one bounded repair issue for an enabled recovery source (historical hub action) | `factory-required-recovery` → `github-issues` | built | projects/monolith/factory/orchestration/factory_problem_issues.py:964,1265 |
 | `frontend.proxy` | physical | Proxy SSR/API calls from the frontend to the public backend, in-cluster only | `frontend-ssr` → `public-binary` | built | projects/monolith-public/chart/templates/httproute-public.yaml:33 |
 | `grant.public-reader` | physical | Grant public_reader SELECT on a schema/view | `migrations` → `pg-replica` | built | projects/monolith/chart/migrations/20260617000000_public_reader_role.sql:24 |
+| `grimoire-chat.write` | physical | Write a bounded grimoire_chat row to the primary as public_writer | `public-binary` → `pg-primary` | built | projects/monolith/chart/migrations/20260706200000_grimoire_chat.sql:122 |
 | `grimoire-verifier.commit` | logical | Internal apply path: commit corrections or nulls with a version marker | `grimoire-verifier` → `postgres` | built | projects/monolith/grimoire/verifier.py:407,455,572; projects/monolith/grimoire/jobs.py:410 |
 | `grimoire-verifier.request` | logical | Request field verdicts from stored details and bounded mention-chunk evidence | `grimoire-verifier` → `grimoire-verifier-model` | built | projects/monolith/grimoire/verifier.py:197; projects/monolith/grimoire/verifier.py:539 |
-| `health-alerts.notify` | logical | Enqueue a health transition or six-hour reminder (historical hub action) | `health-alerts` → `outbox` | built | projects/monolith/factory/health_alerts.py:137 |
+| `health-alerts.notify` | logical | Enqueue a health transition or six-hour reminder | `health-alerts` → `outbox` | built | projects/monolith/factory/health_alerts.py:137 |
 | `k8s.mutate` | physical | Mutate cluster state via private MCP (ArgoCD sync) | `private-binary` → `k8s-api` | built | projects/monolith/cluster/mcp.py:163 |
 | `kg-drainer.dispatch` | logical | Claim a kg-drain job, run Luna extraction, apply the result (historical hub action) | `kg-drainer` → `agent-runner` | built | projects/monolith/factory/orchestration/drainer.py:538 |
 | `kg-feed.export` | logical | Export a finished Ember session as an ember-session raw (historical hub action) | `kg-feed` → `pg-primary` | built | projects/monolith/factory/execution/kg_feed.py:328 |
@@ -287,7 +287,7 @@ flowchart TD
 
 | ID | Loss |
 |----|------|
-| `L.integrity-loss` | Data is corrupted, or a side-effecting action (Discord post, agent run, chat_public write) is duplicated or forged |
+| `L.integrity-loss` | Data is corrupted, or a side-effecting action (Discord post, agent run, Grimoire chat write) is duplicated or forged |
 | `L.liveness-loss` | A queued turn or locked message never makes progress |
 | `L.provenance-loss` | An agent acts on incomplete or misattributed context, losing lineage of what it was told |
 | `L.secret-exposure` | A secret or token reaches a tier or surface that must not hold it |
@@ -321,7 +321,7 @@ flowchart TD
 | `phantom-stored-artifact` | logical | A caller treats the returned content-addressed URL as a durable reference when the SeaweedFS write actually failed, because the URL is computed from the content hash before the upload is attempted and is returned either way | L.silent-incorrectness | built |  |  |
 | `private-capture-retained` | physical | A captured screenshot, including of the private tier, is written to SeaweedFS with no expiry policy and persists indefinitely at a stable content-addressed URL after the request that produced it | L.unauthorized-access | built |  |  |
 | `public-route-exposes-private-path` | physical | The public HTTPRoute forwards an internal or unfiltered path to a served handler | L.unauthorized-access | built |  |  |
-| `public-write-admission-bypass` | physical | The internet-adjacent public tier can write outside the intended chat_public path, or bypasses Turnstile, per-session limits, and the cluster-wide inference cap | L.integrity-loss | built |  |  |
+| `public-write-admission-bypass` | physical | The internet-adjacent public tier can write outside the Grimoire chat write path, or bypasses Turnstile, per-session limits, and the cluster-wide inference cap | L.integrity-loss | built |  |  |
 | `receipt-attempt.false-execution-proof` | logical | A prepared row or cancelled promotion is treated as completed, ceased or never invoked, allowing duplicate execution or unsupported capacity release | L.integrity-loss, L.provenance-loss | built | shipped-off | #7583 |
 | `receipt-attempt.held-identity-retired` | logical | A retry preparation supersedes the exact attempted receipt named by the first response-loss hold, preventing normal result adoption | L.liveness-loss, L.provenance-loss | built | shipped-off | #7583 |
 | `sandbox-credential-egress` | logical | The scratch-Postgres feature, when enabled, injects a database DSN into the executed code's own process environment, so a Python run in the advertised zero-network sandbox gains credentialed, in-cluster network reach to a shared datastore; the tool's own docstring still claims there is no network at all | L.secret-exposure, L.unauthorized-access | built |  |  |
@@ -342,7 +342,6 @@ flowchart TD
 | ID | View | Control action | Guideword | Unsafe condition | Severity | → Hazards | Status | Issue | Evidence |
 |----|----|----|----|----|----|----|----|----|----|
 | `agent.reclaim.wrong-timing` | logical | `agent.reclaim` | wrong-timing | The reclaim lease and the local heartbeat check are computed from two different clocks (the lease cutoff from the pod's own monotonic-adjacent wall clock, the claimed_at write from the database's); a pod running ahead of the database clock reclaims a lease that is still being actively refreshed elsewhere, and the reclaiming replica's own self-check ('claim was stolen') only protects the replica that LOST the claim, not the window before the next 10s heartbeat catches it, so both replicas can execute the same turn concurrently for up to that window | medium | duplicate-agent-run, split-brain-singletons |  |  | projects/monolith/factory/execution/store.py:791 |
-| `chatpublic.write.providing` | physical | `chatpublic.write` | providing | The public tier accepts a write without the Turnstile/IP-hash admission gate or writes outside the constrained chat_public schema, poisoning or escaping the public boundary | high | public-write-admission-bypass |  |  | projects/monolith-public/chart/values.yaml:146 |
 | `docs.publish.providing` | logical | `docs.publish` | providing | The generator's only gate is an exact repo-path allowlist; it checks documents for certain markers (in-cluster hostnames, 1Password refs, private IPs, node/brick names, S3 URIs, .internal domains, secret env assignments) but internal identifiers not matching these patterns pass through unreviewed | medium | unredacted-public-doc |  |  | projects/monolith/knowledge/tools/gen_docs_manifest.py:128 |
 | `factory-funding.resume-native-repair.providing` | logical | `factory-funding.resume-native-repair` | providing | Retrying without room for all remaining roles or with obsolete authority exceeds the original task; pre-pause and atomic grant checks reserve the original turns and cost ceilings, bind exact machine pause and rollout, and authorize one 1-to-2 renewal only | high | native-repair-outside-original-authority |  |  | projects/monolith/factory/orchestration/backlog_refill_repair/__init__.py:23,179; projects/monolith/factory/orchestration/factory_funding.py:2036 |
 | `factory-funding.resume-native-repair.wrong-duration` | logical | `factory-funding.resume-native-repair` | wrong-duration | Reusing a repaired-task grant after its 30-minute deadline or renewing it again would prolong authority; effective-policy dispatch and publication deadlines plus the single authorization and exact graph renewal prevent further starts or output | high | native-repair-outside-original-authority |  |  | projects/monolith/factory/orchestration/backlog_refill_repair/__init__.py:335; projects/monolith/factory/orchestration/backlog_refill.py:772; projects/monolith/factory/orchestration/backlog_refill_producer.py:73 |
@@ -352,6 +351,7 @@ flowchart TD
 | `factory-landing.reserve-operator-arm.wrong-duration` | logical | `factory-landing.reserve-operator-arm` | wrong-duration | Reusing approval after an uncertain queue request or ejection could grant another factory arming attempt; an intent commits before external I/O and the same authorization cannot reserve a second attempt, while queue observations bind the first observed entry | high | landing-queued-with-stale-authority |  |  | projects/monolith/factory/orchestration/operator_landing_authorization.py:560; projects/monolith/factory/orchestration/operator_landing_authorization.py:600; projects/monolith/factory/orchestration/operator_landing_authorization.py:626 |
 | `factory-required-recovery.publish.not-providing` | logical | `factory-required-recovery.publish` | not-providing | An enabled retained recovery source is suppressed solely by optional surplus, remaining-quota or reset-horizon targets. Required discovery accepts validated not_due evidence only when one whole account also passes ordinary availability and the intrinsic short-window reserve | high | factory-required-recovery.discovery-stalled |  |  | projects/monolith/factory/orchestration/factory_problem_issues.py:83,996; factory_problem_issues_test.py: test_required_recovery_does_not_require_opportunistic_surplus |
 | `grant.public-reader.providing` | physical | `grant.public-reader` | providing | A grant on ALL TABLES or a view lacking the visibility filter exposes private rows to the anonymous tier | high | over-broad-public-grant |  |  | projects/monolith/chart/migrations/20260617000000_public_reader_role.sql:24 |
+| `grimoire-chat.write.providing` | physical | `grimoire-chat.write` | providing | The public tier accepts a write without the Turnstile/IP-hash admission gate or writes outside the grimoire_chat schema, poisoning or escaping the public boundary | high | public-write-admission-bypass |  |  | projects/monolith/grimoire_chat/router.py, projects/monolith/grimoire_chat/limits.py, projects/monolith/chart/migrations/20260706200000_grimoire_chat.sql:122 |
 | `grimoire-verifier.commit.providing` | logical | `grimoire-verifier.commit` | providing | The internal apply branch can commit unsupported corrections or null fields with missing or incomplete evidence without retaining their original values. The CLI requires --dry-run and its handler always selects the report branch, which cannot reach this write; #7190 remains required before exposing mutation | high | grimoire-unsupported-verification, grimoire-missing-evidence-erasure | shipped-off | #7190 | projects/monolith/grimoire/verifier.py:382,434,455,542,572; projects/monolith/grimoire/jobs.py:410; projects/monolith/app/jobs_main.py:993; #7190 |
 | `k8s.mutate.providing` | physical | `k8s.mutate` | providing | With MCP_GROUP_POLICY_ENFORCED disabled, a non-operator caller issues an ArgoCD sync through the shared MCP surface; the default-on GroupPolicyMiddleware prevents this call without requiring delegation | medium | unrestricted-tool-visibility, secret-in-wrong-tier |  |  | projects/monolith/core/mcp_policy.py:129 |
 | `lock.reclaim.wrong-timing` | logical | `lock.reclaim` | wrong-timing | A slow handler still processing past the 30s TTL is reclaimed and the message is reprocessed concurrently | medium | duplicate-agent-run |  |  | projects/monolith/chat/leader.py:109 |
@@ -492,7 +492,7 @@ flowchart TD
 - Revocation cannot undo an already completed GitHub merge. The native observer disarms/dequeues on its next tick, and failed external calls retain errors for observation; confirm this external-action boundary during parent-owned operational acceptance (#7601, #7597). Explicit operator expiry and revocation have the same asynchronous limit: GitHub may merge before the next successful observation, and unobserved external requeue races cannot be ruled out by a polling fence. A stronger final-action guarantee needs a trusted required queue check or final merge owner.
 - The framework is now built, but strict per-domain schema isolation and the cross-domain contract are still conventions. Re-run this analysis when those controls become enforceable rather than merely compositional.
 - The private chart enables HPA from 1 to 3 replicas; verify claim-lease behavior under real scale-out and termination, especially whether a terminating pod's in-flight claims are released promptly enough for the 30s lease to matter in practice.
-- The public backend has a deliberate primary write path and public FaaS invocation path. Confirm production database grants and service-account permissions match the chart claims: public_writer must remain limited to chat_public, and the public service account must remain identity-only with no Kubernetes RBAC. The removed Cilium templates provide no replacement network enforcement; that remains separate work under #5276 and #5277.
+- The public backend has a deliberate primary write path and public FaaS invocation path. Confirm production database grants and service-account permissions match the chart claims: public_writer requires DML on grimoire_chat and retains legacy chat_public grants; verify that the public binary mounts only the Grimoire chat writer, and the public service account must remain identity-only with no Kubernetes RBAC. The removed Cilium templates provide no replacement network enforcement; that remains separate work under #5276 and #5277.
 - When the scratch-Postgres feature is re-enabled (embervm side), should run_code's docstring be corrected to stop claiming zero network for python, or should the DSN injection move behind a separate, explicitly-network-capable tool so the isolation claim stays true for the tool most callers reach for?
 - Which shared MCP tools require caller-specific result filters beyond surface admission?
 
@@ -510,8 +510,8 @@ flowchart TD
 
 | ID | Loss |
 |----|------|
-| `L.capacity-exhaustion` | Attacker exhausts shared compute (GPU, sandbox, shotter) or causes denial of service |
-| `L.integrity-loss` | Data is corrupted, or a side-effecting action (Discord post, agent run, chat_public write) is duplicated or forged |
+| `L.capacity-exhaustion` | Public requests exhaust shared inference capacity or deny service to other users |
+| `L.integrity-loss` | Data is corrupted, or a side-effecting action (Discord post, agent run, Grimoire chat write) is duplicated or forged |
 | `L.secret-exposure` | A secret or token reaches a tier or surface that must not hold it |
 | `L.silent-incorrectness` | A controller serves stale or wrong data while believing it correct |
 | `L.unauthorized-access` | Anonymous or public-tier caller reads data it is not entitled to (private rows, ungoverned paths) |
@@ -521,10 +521,8 @@ flowchart TD
 | ID | View | Hazard (unsafe state) | → Losses | Maturity | Status | Issue |
 |----|----|----|----|----|----|----|
 | `over-broad-public-grant` | physical | The public_reader role reads public datasets and the public view of knowledge notes. | L.unauthorized-access, L.secret-exposure | built |  |  |
-| `private-capture-retained` | physical | The operators gate controls capture of private-tier screenshots stored in SeaweedFS. | L.unauthorized-access | built |  |  |
 | `public-route-exposes-private-path` | physical | Each public HTTPRoute sends its path to the designated public service. | L.unauthorized-access | built |  |  |
-| `public-write-admission-bypass` | physical | Public writes are confined to chat_public and its admission and inference budgets. | L.integrity-loss, L.capacity-exhaustion | built |  |  |
-| `sandbox-credential-egress` | logical | The operators gate controls access to scratch-database execution. | L.secret-exposure, L.unauthorized-access | built |  |  |
+| `public-write-admission-bypass` | physical | Grimoire chat writes use grimoire_chat with session admission and inference budgets. The database role retains grants on the legacy chat_public schema. | L.integrity-loss, L.capacity-exhaustion | built |  |  |
 | `secret-in-wrong-tier` | physical | Each tier receives only the credentials required by its role. | L.secret-exposure | built |  |  |
 | `unredacted-public-doc` | logical | Published documents must stay within the public content boundary. | L.secret-exposure | built |  |  |
 | `unrestricted-tool-visibility` | logical | GroupPolicyMiddleware restricts monolith MCP tool calls to operators. | L.unauthorized-access | built | enforced-prod | #4569 |
@@ -533,16 +531,13 @@ flowchart TD
 
 | ID | View | Control action | Guideword | Unsafe condition | Severity | → Hazards | Status | Issue | Evidence |
 |----|----|----|----|----|----|----|----|----|----|
-| `chatpublic.write.providing` | physical | `chatpublic.write` | providing | Public chat admission requires Turnstile verification and enforces session limits and a cluster-wide inference cap. | high | public-write-admission-bypass | enforced-prod |  | projects/monolith-public/chart/values.yaml:146 |
 | `docs.publish.providing` | logical | `docs.publish` | providing | The public manifest generator checks allowlisted content for internal identifiers before publication. | medium | unredacted-public-doc | enforced-prod | #5275 | projects/monolith/knowledge/tools/gen_docs_manifest.py:128 |
 | `grant.public-reader.providing` | physical | `grant.public-reader` | providing | Database grants scope public_reader to public tables and visibility-filtered views. | high | over-broad-public-grant | enforced-prod |  | projects/monolith/chart/migrations/20260617000000_public_reader_role.sql:24 |
+| `grimoire-chat.write.providing` | physical | `grimoire-chat.write` | providing | Public chat admission requires Turnstile verification and enforces session limits and a cluster-wide inference cap. | high | public-write-admission-bypass | enforced-prod |  | projects/monolith/grimoire_chat/router.py, projects/monolith/grimoire_chat/limits.py, projects/monolith/chart/migrations/20260706200000_grimoire_chat.sql:122 |
 | `k8s.mutate.providing` | physical | `k8s.mutate` | providing | GroupPolicyMiddleware gates ArgoCD sync and Kargo promotion calls on operators group membership. | high | unrestricted-tool-visibility | enforced-prod |  | projects/monolith/cluster/mcp.py:173, projects/monolith/cluster/mcp.py:258, projects/monolith/core/mcp_policy.py:75 |
-| `mcp.agent-session.providing` | logical | `mcp.agent-session` | providing | Starting or driving an agent session through MCP requires operators group membership. | high | unrestricted-tool-visibility | enforced-prod | #4569 | projects/monolith/factory/execution/mcp.py:1580 |
 | `mcp.chat-pardon.providing` | logical | `mcp.chat-pardon` | providing | Pardoning a chat user through MCP requires operators group membership. | high | unrestricted-tool-visibility | enforced-prod | #4569 | projects/monolith/agent/mcp.py:380 |
 | `route.public.providing` | physical | `route.public` | providing | The page route sends pages and client assets to the frontend. A separate HTTPRoute sends /functions/<name> directly to the invocation backend, which resolves only public functions. | high | public-route-exposes-private-path | enforced-prod |  | projects/monolith-public/chart/templates/httproute-public.yaml:41, projects/monolith-public/chart/templates/httproute-public.yaml:112 |
-| `sandbox.run.providing` | logical | `sandbox.run` | providing | Running sandbox code with scratch-database access requires operators group membership. | medium | unrestricted-tool-visibility, sandbox-credential-egress | enforced-prod | #4569 | projects/monolith/sandbox/mcp.py:15 |
 | `secret.deliver-public.providing` | physical | `secret.deliver-public` | providing | The public backend holds the Turnstile secret for verification. The frontend receives the public site key. | high | secret-in-wrong-tier | enforced-prod |  | projects/monolith/public_turnstile_secret_isolation_test.py:76 |
-| `shotter.capture.providing` | logical | `shotter.capture` | providing | Private-tier screenshots require an authorized operators-group caller. | high | unrestricted-tool-visibility, private-capture-retained | enforced-prod | #4569 | projects/monolith/shotter/mcp.py:123 |
 
 ### Unsafe feedback
 
@@ -559,6 +554,6 @@ flowchart TD
 - **Cluster layers below the monolith**: Ingress tunnel, CNI policy, admission control, secret operator are owned by docs/security.md
 - **Cluster-wide capacity exhaustion outside modeled admission and budget gates**: Not analyzed here
 - **Discord platform account compromise**: Outside the trust ledger's design
-- **EmberVM guest and hypervisor isolation**: Covered in projects/embervm/STPA.md (logic and security lenses); this document covers only monolith-side broker
+- **EmberVM guest and hypervisor isolation**: The hub retired EmberVM and its factory conductor. The current factory worker boundary is documented in docs/THREAT-MODEL.md.
 - **Supply chain of the monolith's own image build**: Not analyzed here
 </details>

@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "e35139e71",
+  "commit": "166c911a6",
   "nodes": [
     {
       "key": "console-caller",
@@ -230,7 +230,7 @@
     },
     {
       "key": "backup-health",
-      "label": "Private CNPG backup advisory evaluator (retired hub path)",
+      "label": "Private CNPG backup advisory evaluator",
       "view": "logical",
       "layer": "serving",
       "maturity": "built",
@@ -238,7 +238,7 @@
     },
     {
       "key": "health-alerts",
-      "label": "Leader-owned health transition notifier (retired hub path)",
+      "label": "Leader-owned health transition notifier",
       "view": "logical",
       "layer": "control_plane",
       "maturity": "built",
@@ -442,13 +442,13 @@
       "evidence": "projects/monolith/chat/bot.py:1172"
     },
     {
-      "key": "chatpublic.write",
-      "label": "Write a bounded chat_public row to the primary as public_writer",
+      "key": "grimoire-chat.write",
+      "label": "Write a bounded grimoire_chat row to the primary as public_writer",
       "view": "physical",
       "from": "public-binary",
       "to": "pg-primary",
       "maturity": "built",
-      "evidence": "projects/monolith-public/chart/values.yaml:82"
+      "evidence": "projects/monolith/chart/migrations/20260706200000_grimoire_chat.sql:122"
     },
     {
       "key": "console.submit",
@@ -686,7 +686,7 @@
     },
     {
       "key": "backup-health.read",
-      "label": "Read the configured backup-status ConfigMap (historical hub action)",
+      "label": "Read the configured backup-status ConfigMap",
       "view": "physical",
       "from": "private-binary",
       "to": "backup-status",
@@ -695,7 +695,7 @@
     },
     {
       "key": "health-alerts.notify",
-      "label": "Enqueue a health transition or six-hour reminder (historical hub action)",
+      "label": "Enqueue a health transition or six-hour reminder",
       "view": "logical",
       "from": "health-alerts",
       "to": "outbox",
