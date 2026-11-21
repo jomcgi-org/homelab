@@ -2,7 +2,7 @@
 // upstream services so activity, status history, notifications, schedules and
 // webhook outboxes retain the same behavior as its ordinary routes.
 import { Elysia, t } from "elysia";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db, agentRun, aiAgent, issue, label, projectColumn } from "@repo/db";
 import { factoryTransaction } from "../../../packages/db/src/client";
 import { guards, entityGuard } from "./shared/guards";
@@ -262,6 +262,72 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
     {
       workItem: "read",
       params: t.Object({ issueId: t.Numeric({ minimum: 1 }) }),
+    },
+  )
+  .get(
+    "/projects/:projectKey/factory-review-queue",
+    async ({ project, user, set }) => {
+      await assertPermission(project.id, user, "ai_agents", "read");
+      await assertPermission(project.id, user, "work_items", "read");
+      set.headers["cache-control"] = "no-store";
+      const endpoint = process.env.FACTORY_RUN_PHASE_URL;
+      if (!endpoint) throw new HttpError(503, "Review queue unavailable");
+      const url = new URL("project-reviews", endpoint);
+      url.searchParams.set("project", project.key);
+      let queue: {
+        observedAt: string;
+        complete: boolean;
+        items: {
+          issueId: number;
+          pullRequest: number;
+          head: string;
+          phase: "queued" | "reviewing" | "quota-held";
+          position?: number;
+        }[];
+      };
+      try {
+        const response = await fetch(url, {
+          signal: AbortSignal.timeout(2000),
+          redirect: "error",
+        });
+        if (!response.ok) throw new Error("Review queue unavailable");
+        queue = await response.json();
+      } catch {
+        throw new HttpError(503, "Review queue unavailable");
+      }
+      const { observedAt, complete, items } = queue;
+      if (!items.length) return { observedAt, complete, items: [] };
+      const rows = await db
+        .select({
+          id: issue.id,
+          sequenceNumber: issue.sequenceNumber,
+          title: issue.title,
+        })
+        .from(issue)
+        .where(
+          and(
+            eq(issue.projectId, project.id),
+            inArray(
+              issue.id,
+              items.map((r) => r.issueId),
+            ),
+          ),
+        );
+      const visible = new Map(rows.map((row) => [row.id, row]));
+      return {
+        observedAt,
+        complete,
+        items: items.flatMap((r) => {
+          const row = visible.get(r.issueId);
+          return row
+            ? [{ ...r, sequenceNumber: row.sequenceNumber, title: row.title }]
+            : [];
+        }),
+      };
+    },
+    {
+      memberAdmin: ["ai_agents", "read"],
+      params: t.Object({ projectKey: t.String({ minLength: 1 }) }),
     },
   )
   .post(
