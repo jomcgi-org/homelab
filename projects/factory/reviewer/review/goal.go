@@ -191,7 +191,7 @@ func (g *GoalCheck) ownershipFeedback() string {
 
 // invariant: FACT-13
 
-var missingEvidenceLine = regexp.MustCompile(`^Searched ([^[:space:]]+/[^[:space:]]+|[^[:space:]]+\.[[:alnum:]]+); missing (.+)$`)
+var missingEvidenceLine = regexp.MustCompile(`^Searched ([^[:space:]]+); missing (.+)$`)
 
 // explainsUnclear checks the private account for every effective unclear verdict.
 func (g *GoalCheck) explainsUnclear(reply string) bool {

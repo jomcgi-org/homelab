@@ -1084,3 +1084,11 @@ func TestUnclearNeedsItsOwnPrivateExplanation(t *testing.T) {
 		t.Fatal("accepted an unclear verdict without its evidence account")
 	}
 }
+
+func TestUnclearAcceptsExtensionlessRootPath(t *testing.T) {
+	g := GoalCheck{Overall: goalMet, Criteria: []GoalVerdict{{1, goalUnclear}}}
+	const reason = "Criterion 1: Searched LICENSE; missing retry guidance."
+	if !g.explainsUnclear(reason) || g.unclearEvidence != reason+"\n" {
+		t.Fatal("lost the explanation for a root-level extensionless file")
+	}
+}
