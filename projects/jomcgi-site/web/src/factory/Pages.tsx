@@ -1,5 +1,4 @@
 import { Heading } from "@astryxdesign/core/Heading";
-import { Text } from "@astryxdesign/core/Text";
 import type {
   Goal,
   Issue,
@@ -16,6 +15,8 @@ import type { Snapshot } from "./data";
 import { fillStats, formatNumber, paths } from "./data";
 import { DashboardChart } from "../DashboardChart";
 import { BurnUp } from "./Charts";
+
+const storyBarWidth = 32;
 
 export const withheldMessage =
   "This turn was withheld because it matched the secret scan.";
@@ -71,9 +72,9 @@ function IssueList({
     <ul className="records">
       {issues.map((issue) => (
         <li key={issue.issueKey}>
-          <div>
-            <a href={paths.issue(issue.issueKey)}>
-              {issue.issueKey}: {issue.title}
+          <div className="record-row">
+            <a className="record" href={paths.issue(issue.issueKey)}>
+              <span className="key">{issue.issueKey}:</span> {issue.title}
             </a>
             <Status state={issue.state} />
           </div>
@@ -99,7 +100,7 @@ export function StoryPage({
   return (
     <>
       <header className="lead">
-        <Text type="body">Homelab / Factory</Text>
+        <p className="eyebrow">Homelab / Factory</p>
         <Heading level={1}>{fillStats(story.headline, story.stats)}</Heading>
         <Narrative paragraphs={story.narrative} stats={story.stats} />
       </header>
@@ -108,35 +109,39 @@ export function StoryPage({
           The goals
         </Heading>
         {!story.goals.length && <p>No goals published yet.</p>}
-        {story.goals.map((goal) => (
-          <article className="chapter" key={goal.goalId}>
-            <div className="section-band">
-              <h3>
-                <a href={paths.goal(goal.goalId)}>{goal.title}</a>
-              </h3>
-              <Status state={goal.state} />
-            </div>
-            <Narrative paragraphs={goal.chapter} stats={story.stats} />
-            <p className="progress-label">
-              {goal.shipped} shipped of {goal.total} issues
-            </p>
-            {goal.total > 0 ? (
-              <progress
-                max={goal.total}
-                value={goal.shipped}
-                aria-label={`${goal.title}: ${goal.shipped} shipped of ${goal.total} issues`}
-              />
-            ) : (
-              <p>No issues yet.</p>
-            )}
-            <a className="more" href={paths.goal(goal.goalId)}>
-              Read the goal
-            </a>
-            {!lookup(snapshot.goals, goal.goalId) && (
-              <NotAvailable label={`Goal ${goal.goalId}`} />
-            )}
-          </article>
-        ))}
+        <div className="chapters">
+          {story.goals.map((goal) => (
+            <article className="chapter" key={goal.goalId}>
+              <div className="section-band">
+                <h3>
+                  <a href={paths.goal(goal.goalId)}>{goal.title}</a>
+                </h3>
+                <Status state={goal.state} />
+              </div>
+              <Narrative paragraphs={goal.chapter} stats={story.stats} />
+              <div className="progress">
+                {goal.total > 0 ? (
+                  <progress
+                    max={goal.total}
+                    value={goal.shipped}
+                    aria-label={`${goal.title}: ${goal.shipped} shipped of ${goal.total} issues`}
+                  />
+                ) : (
+                  <p>No issues yet.</p>
+                )}
+                <p className="progress-label">
+                  {goal.shipped} shipped of {goal.total} issues
+                </p>
+              </div>
+              <a className="more" href={paths.goal(goal.goalId)}>
+                Read the goal
+              </a>
+              {!lookup(snapshot.goals, goal.goalId) && (
+                <NotAvailable label={`Goal ${goal.goalId}`} />
+              )}
+            </article>
+          ))}
+        </div>
       </section>
       <section aria-labelledby="numbers-heading">
         <Heading level={2} id="numbers-heading">
@@ -158,18 +163,21 @@ export function StoryPage({
             title="Shipped per week"
             unit="issues"
             points={story.charts.shippedPerWeek}
+            maximumBarWidth={storyBarWidth}
           />
           <DashboardChart
             formatValue={formatNumber}
             title="Issue-to-merge time"
             unit="hours"
             points={story.charts.issueToMergeHours}
+            maximumBarWidth={storyBarWidth}
           />
           <DashboardChart
             formatValue={formatNumber}
             title="Review rounds per PR"
             unit="rounds"
             points={story.charts.reviewRounds}
+            maximumBarWidth={storyBarWidth}
           />
           <DashboardChart
             formatValue={formatNumber}
@@ -177,6 +185,7 @@ export function StoryPage({
             unit="%"
             points={story.charts.firstPassReviewRate}
             maximum={100}
+            maximumBarWidth={storyBarWidth}
           />
         </div>
       </section>
@@ -211,7 +220,7 @@ export function GoalPage({
     <>
       <Trail />
       <header className="lead">
-        <Text type="body">Goal / {goal.id}</Text>
+        <p className="eyebrow">Goal / {goal.id}</p>
         <Heading level={1}>{goal.title}</Heading>
         <Status state={goal.state} />
         <Narrative
@@ -307,7 +316,7 @@ export function IssuePage({
     <>
       <Trail goalId={issue.goalId} />
       <header className="lead">
-        <Text type="body">Issue / {issue.key}</Text>
+        <p className="eyebrow">Issue / {issue.key}</p>
         <Heading level={1}>{issue.title}</Heading>
         <Status state={issue.state} />
         <p>{issue.description}</p>
@@ -321,16 +330,18 @@ export function IssuePage({
           {[...issue.timeline]
             .sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
             .map((event, index) => (
-              <li key={index}>
+              <li key={index} data-kind={event.kind}>
                 <time dateTime={event.at}>{displayTime(event.at)}</time>
-                <div className="event-heading">
-                  <EventDetail event={event} />
+                <div className="event">
+                  <div className="event-heading">
+                    <EventDetail event={event} />
+                  </div>
+                  <p>{event.text}</p>
+                  {event.kind === "session" &&
+                    !lookup(snapshot.sessions, event.sessionId) && (
+                      <NotAvailable label={`Session ${event.sessionId}`} />
+                    )}
                 </div>
-                <p>{event.text}</p>
-                {event.kind === "session" &&
-                  !lookup(snapshot.sessions, event.sessionId) && (
-                    <NotAvailable label={`Session ${event.sessionId}`} />
-                  )}
               </li>
             ))}
         </ol>
@@ -400,12 +411,12 @@ export function SessionPage({ session }: { session: Session }) {
     <>
       <Trail goalId={session.goalId} issueKey={session.issueKey} />
       <header className="lead">
-        <Text type="body">Session / {session.id}</Text>
+        <p className="eyebrow">Session / {session.id}</p>
         <Heading level={1}>{session.title}</Heading>
         <Status state={session.state} />
         <p>{session.turns.length} turns. Tool calls open on request.</p>
       </header>
-      <nav aria-label="Transcript">
+      <nav className="jump" aria-label="Transcript">
         <a href="#transcript">Start of transcript</a>
         <a href="#transcript-end">End of transcript</a>
       </nav>
