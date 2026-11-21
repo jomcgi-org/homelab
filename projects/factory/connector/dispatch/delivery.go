@@ -2069,7 +2069,9 @@ func (e *Engine) abandonItem(ctx context.Context, it *store.OutboxItem, err erro
 	if it.Kind == store.OutboxIssueDone && json.Unmarshal(it.Payload, &p) == nil {
 		return e.abandonDone(ctx, it, p, "", fmt.Sprintf("the move kept failing for %d tries", outboxMaxTries), err)
 	}
-	return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, clip(err.Error(), maxErrorText))
+	return e.w.Tx(ctx, func(tx *sql.Tx) error {
+		return e.st.OutboxAbandon(ctx, tx, it.ID, clip(err.Error(), maxErrorText))
+	})
 }
 
 // doneRefused says on the issue, once, that it could not be moved to Done.

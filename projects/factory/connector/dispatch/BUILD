@@ -40,6 +40,8 @@ go_library(
 
 go_test(
     name = "dispatch_test",
+    # The full PostgreSQL suite can outlast the default five minutes on RBE.
+    timeout = "long",
     srcs = [
         "activation_test.go",
         "admission_test.go",
@@ -58,6 +60,7 @@ go_test(
         "reconciliation_test.go",
         "reconciliation_wire_test.go",
         "recovery_test.go",
+        "run_phase_test.go",
         "sessions_test.go",
         "task_metadata_test.go",
         "task_output_test.go",

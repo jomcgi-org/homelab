@@ -163,8 +163,9 @@ func (w *Writer) Tx(ctx context.Context, fn func(*sql.Tx) error) error {
 	return nil
 }
 
-// Release drops the lock by closing its session: driver.ErrBadConn makes
-// database/sql discard the connection instead of pooling it.
+// Release waits for PostgreSQL to acknowledge the advisory unlock. Discard
+// the connection even if the unlock fails, so it cannot be reused while
+// still holding the lock.
 func (w *Writer) Release() {
 	if w == nil {
 		return
@@ -172,6 +173,9 @@ func (w *Writer) Release() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.conn != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, _ = w.conn.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, writerLockKey)
+		cancel()
 		_ = w.conn.Raw(func(any) error { return driver.ErrBadConn })
 		w.conn.Close()
 		w.conn = nil
@@ -299,9 +303,18 @@ type ClaimedRun struct {
 // transport redelivery: the attempt moves forward, a stale run resumes and
 // the event offset restarts for the new attempt's transcript.
 func (s *Store) RecordClaim(ctx context.Context, c ClaimedRun) (*Run, ClaimOutcome, error) {
+	return recordClaim(ctx, s.Tx, c)
+}
+
+// RecordWriterClaim records a claim only while the connector still owns its epoch.
+func (s *Store) RecordWriterClaim(ctx context.Context, writer *Writer, c ClaimedRun) (*Run, ClaimOutcome, error) {
+	return recordClaim(ctx, writer.Tx, c)
+}
+
+func recordClaim(ctx context.Context, transact func(context.Context, func(*sql.Tx) error) error, c ClaimedRun) (*Run, ClaimOutcome, error) {
 	var run *Run
 	var outcome ClaimOutcome
-	err := s.Tx(ctx, func(tx *sql.Tx) error {
+	err := transact(ctx, func(tx *sql.Tx) error {
 		existing, err := scanRun(tx.QueryRowContext(ctx, `SELECT `+runCols+` FROM run WHERE id = $1 FOR UPDATE`, c.ID))
 		if errors.Is(err, sql.ErrNoRows) {
 			run, err = scanRun(tx.QueryRowContext(ctx, `
@@ -450,8 +463,8 @@ func (s *Store) SetRunState(ctx context.Context, q Querier, id int64, state, rea
 
 // MarkStale stops a run's writing when itsaplan reports a newer attempt than
 // the one held. A redelivery claim at that attempt resumes it.
-func (s *Store) MarkStale(ctx context.Context, id int64, attempt int) error {
-	_, err := s.DB.ExecContext(ctx,
+func (s *Store) MarkStale(ctx context.Context, q Querier, id int64, attempt int) error {
+	_, err := q.ExecContext(ctx,
 		`UPDATE run SET state = 'stale', updated_at = now() WHERE id = $1 AND attempt = $2 AND state <> 'closed'`, id, attempt)
 	return err
 }
@@ -823,9 +836,9 @@ func (s *Store) RecordQuotaReads(ctx context.Context, w *Writer, messageIDs []st
 // returns the cleared scopes. A credential failure needs a person: a grant
 // with a credential-blocked work item keeps its block, and that work item
 // stays blocked, until the operator's unblock (ClearGrantBlock).
-func (s *Store) ClearQuotaBlocks(ctx context.Context, before time.Time) ([]string, error) {
+func (s *Store) ClearQuotaBlocks(ctx context.Context, writer *Writer, before time.Time) ([]string, error) {
 	var scopes []string
-	err := s.Tx(ctx, func(tx *sql.Tx) error {
+	err := writer.Tx(ctx, func(tx *sql.Tx) error {
 		scopes = nil
 		rows, err := tx.QueryContext(ctx, `
 			UPDATE grant_block g SET cleared_at = now()
@@ -1557,8 +1570,8 @@ func (s *Store) OutboxSendCleared(ctx context.Context, id int64) error {
 }
 
 // OutboxFailed records a failed delivery and when to try again.
-func (s *Store) OutboxFailed(ctx context.Context, id int64, msg string, next time.Time, unavailableSince *time.Time) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE outbox SET tries = tries + 1, last_error = $2, next_attempt_at = $3,
+func (s *Store) OutboxFailed(ctx context.Context, q Querier, id int64, msg string, next time.Time, unavailableSince *time.Time) error {
+	_, err := q.ExecContext(ctx, `UPDATE outbox SET tries = tries + 1, last_error = $2, next_attempt_at = $3,
 		unavailable_since = CASE WHEN $4::timestamptz IS NULL THEN NULL ELSE coalesce(unavailable_since, $4) END WHERE id = $1`,
 		id, msg, next, unavailableSince)
 	return err

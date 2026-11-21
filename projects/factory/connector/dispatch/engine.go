@@ -512,10 +512,7 @@ func (e *Engine) checkQuota(ctx context.Context) error {
 	if len(blocks) == 0 || q.ReceivedAt.IsZero() {
 		return nil
 	}
-	if err := e.guard(ctx); err != nil {
-		return err
-	}
-	scopes, err := e.st.ClearQuotaBlocks(ctx, q.ReceivedAt)
+	scopes, err := e.st.ClearQuotaBlocks(ctx, e.w, q.ReceivedAt)
 	for _, scope := range scopes {
 		e.log.InfoContext(ctx, "quota block cleared", "scope", scope, "reading_received_at", q.ReceivedAt)
 	}
@@ -690,6 +687,61 @@ func (e *Engine) Heartbeats(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// RunPhases reads connector phases without taking the writer lock or changing a lease.
+func (e *Engine) RunPhases(ctx context.Context, issueID int64) ([]RunPhase, error) {
+	runs, err := e.st.IssueRunsForPhase(ctx, issueID)
+	if err != nil {
+		return nil, err
+	}
+	phases := make([]RunPhase, 0, len(runs))
+	for _, run := range runs {
+		phase := run.State
+		if phase == store.RunClaimed {
+			phase = "admission"
+		}
+		reason, err := e.runPhaseReason(ctx, run)
+		if err != nil {
+			return nil, err
+		}
+		phases = append(phases, RunPhase{RunID: run.ID, Attempt: run.Attempt, Phase: phase, Reason: clip(reason, 1024)})
+	}
+	return phases, nil
+}
+
+type RunPhase struct {
+	RunID   int64  `json:"runId"`
+	Attempt int    `json:"attempt"`
+	Phase   string `json:"phase"`
+	Reason  string `json:"reason"`
+}
+
+func (e *Engine) runPhaseReason(ctx context.Context, run *store.Run) (string, error) {
+	if run.State != store.RunWaiting || run.HoldReason != "" {
+		return run.HoldReason, nil
+	}
+	if run.WorkItemID != 0 {
+		work, err := e.st.GetWorkItem(ctx, run.WorkItemID)
+		if err != nil {
+			return "", err
+		}
+		paused, _, err := e.st.GrantBlocked(ctx, store.GrantScope(work.KagentNamespace, work.KagentAgent))
+		if err != nil {
+			return "", err
+		}
+		if paused {
+			return "Waiting for the agent grant to resume.", nil
+		}
+	}
+	busy, err := e.st.CountBusyRuns(ctx, run.AgentKey, run.ID)
+	if err != nil {
+		return "", err
+	}
+	if busy >= e.concurrency(run.AgentKey) {
+		return "Waiting for an agent slot.", nil
+	}
+	return "", nil
+}
+
 // heartbeatRun skips a run whose lock a slow step holds, so it does not
 // delay the other runs' heartbeats; the next pass tries again.
 func (e *Engine) heartbeatRun(ctx context.Context, id int64) (result error) {
@@ -788,7 +840,9 @@ func (e *Engine) runGone(ctx context.Context, r *store.Run) (gone bool, err erro
 		return true, e.startCancel(ctx, r, store.CancelRunCanceled, "run canceled")
 	case st.Status == "pending" && st.Attempts > r.Attempt:
 		e.log.InfoContext(ctx, "attempt is stale", "run", r.ID, "attempt", r.Attempt, "current", st.Attempts)
-		return true, e.st.MarkStale(ctx, r.ID, r.Attempt)
+		return true, e.w.Tx(ctx, func(tx *sql.Tx) error {
+			return e.st.MarkStale(ctx, tx, r.ID, r.Attempt)
+		})
 	case st.Status != "pending":
 		return true, e.startCancel(ctx, r, store.CancelRunClosed, "finished in itsaplan: "+st.Status)
 	}
@@ -833,7 +887,7 @@ func (e *Engine) startCancel(ctx context.Context, r *store.Run, reason, why stri
 	if err != nil {
 		return err
 	}
-	return e.st.Tx(ctx, func(tx *sql.Tx) error {
+	return e.w.Tx(ctx, func(tx *sql.Tx) error {
 		if a == nil || !a.Open() || (a.State == store.AttemptSending && a.Error == "") {
 			if a != nil && a.State == store.AttemptSending {
 				if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptCanceled, ClassCanceled, why); err != nil {
@@ -1019,10 +1073,10 @@ func (e *Engine) stopRun(ctx context.Context, r *store.Run, reason string) error
 	if err != nil {
 		return err
 	}
-	if a != nil && a.Open() && (a.State != store.AttemptSending || a.Error != "") {
-		return e.st.RequestCancellation(ctx, e.st.DB, a.ID, r.ID, store.CancelRoundStopped)
-	}
-	return e.st.Tx(ctx, func(tx *sql.Tx) error {
+	return e.w.Tx(ctx, func(tx *sql.Tx) error {
+		if a != nil && a.Open() && (a.State != store.AttemptSending || a.Error != "") {
+			return e.st.RequestCancellation(ctx, tx, a.ID, r.ID, store.CancelRoundStopped)
+		}
 		if a != nil && a.State == store.AttemptSending {
 			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptCanceled, ClassCanceled, "delivery stopped"); err != nil {
 				return err
@@ -1040,7 +1094,7 @@ func (e *Engine) checkCanceling(ctx context.Context, r *store.Run) error {
 		`SELECT EXISTS (SELECT 1 FROM cancellation WHERE run_id = $1 AND state = 'pending')`, r.ID).Scan(&pending); err != nil || pending {
 		return err
 	}
-	return e.st.Tx(ctx, func(tx *sql.Tx) error {
+	return e.w.Tx(ctx, func(tx *sql.Tx) error {
 		if err := abandonResult(ctx, tx, r.ID); err != nil {
 			return err
 		}
@@ -1057,7 +1111,7 @@ func (e *Engine) checkFinishing(ctx context.Context, r *store.Run) error {
 			AND delivered_at IS NULL AND abandoned_at IS NULL)`, r.ID).Scan(&queued); err != nil || queued {
 		return err
 	}
-	return e.st.SetRunState(ctx, e.st.DB, r.ID, store.RunClosed, "result not delivered")
+	return e.setRunState(ctx, r.ID, store.RunClosed, "result not delivered")
 }
 
 func (e *Engine) bindingFor(r *store.Run) (*Binding, error) {
@@ -1089,6 +1143,12 @@ func (e *Engine) binding(name string) *Binding {
 	return nil
 }
 
+func (e *Engine) setRunState(ctx context.Context, id int64, state, reason string) error {
+	return e.w.Tx(ctx, func(tx *sql.Tx) error {
+		return e.st.SetRunState(ctx, tx, id, state, reason)
+	})
+}
+
 // failRun queues a failed result for a run that cannot be delivered.
 func (e *Engine) failRun(ctx context.Context, q store.Querier, r *store.Run, msg string) error {
 	return e.finishRun(ctx, q, r, itsaplan.Result{Status: "failed", Error: clip(msg, maxErrorText)})
@@ -1099,6 +1159,9 @@ func (e *Engine) failRun(ctx context.Context, q store.Querier, r *store.Run, msg
 // one returns its work item to review, where the PR waits for a person,
 // unless another run already holds the work item.
 func (e *Engine) finishRun(ctx context.Context, q store.Querier, r *store.Run, res itsaplan.Result) error {
+	if q == e.st.DB {
+		return e.w.Tx(ctx, func(tx *sql.Tx) error { return e.finishRun(ctx, tx, r, res) })
+	}
 	usage, err := e.st.RunUsage(ctx, q, r.ID)
 	if err != nil {
 		return err
@@ -1176,7 +1239,7 @@ func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
 	if a, err := e.st.LatestAttempt(ctx, r.ID); err != nil {
 		return err
 	} else if a != nil && a.Open() {
-		if err := e.st.SetRunState(ctx, e.st.DB, r.ID, store.RunDispatched, ""); err != nil {
+		if err := e.setRunState(ctx, r.ID, store.RunDispatched, ""); err != nil {
 			return err
 		}
 		r.State = store.RunDispatched
@@ -1194,7 +1257,7 @@ func (e *Engine) dispatch(ctx context.Context, r *store.Run) error {
 		if r.State == store.RunDispatched {
 			return nil // an explicit recovery hold keeps its concurrency slot
 		}
-		return e.st.SetRunState(ctx, e.st.DB, r.ID, store.RunWaiting, "")
+		return e.setRunState(ctx, r.ID, store.RunWaiting, "")
 	}
 	return e.sendNext(ctx, r, wi, b, 0)
 }
@@ -1218,7 +1281,7 @@ func (e *Engine) slotsFull(ctx context.Context, r *store.Run) (bool, error) {
 		return false, err
 	}
 	if r.State != store.RunWaiting {
-		if err := e.st.SetRunState(ctx, e.st.DB, r.ID, store.RunWaiting, ""); err != nil {
+		if err := e.setRunState(ctx, r.ID, store.RunWaiting, ""); err != nil {
 			return true, err
 		}
 		r.State = store.RunWaiting
@@ -1404,7 +1467,7 @@ func (e *Engine) resumeQuotaFailure(ctx context.Context, r *store.Run, wi *store
 		}
 	}
 	var next *store.Attempt
-	err := e.st.Tx(ctx, func(tx *sql.Tx) error {
+	err := e.w.Tx(ctx, func(tx *sql.Tx) error {
 		var err error
 		next, err = e.record(ctx, tx, r, wi, kind, "quota-resume-"+strconv.Itoa(a.Seq), brief)
 		return err
@@ -1584,7 +1647,7 @@ func (e *Engine) sendNext(ctx context.Context, r *store.Run, wi *store.WorkItem,
 	}
 	var a *store.Attempt
 	var stopped bool
-	err = e.st.Tx(ctx, func(tx *sql.Tx) error {
+	err = e.w.Tx(ctx, func(tx *sql.Tx) error {
 		// Stops stand: a stop that committed during admission or the brief
 		// read leaves no attempt. The next step stops the run with its reason.
 		var err error
@@ -1687,7 +1750,7 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 		return e.st.MarkNotAccepted(ctx, a)
 	case errors.Is(err, kagent.ErrTaskNotFound) && a.Kind == "initial":
 		e.m.Sends.WithLabelValues(a.Kind, "not_found").Inc()
-		return e.st.Tx(ctx, func(tx *sql.Tx) error {
+		return e.w.Tx(ctx, func(tx *sql.Tx) error {
 			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, "", "kagent agent not found"); err != nil {
 				return err
 			}
@@ -1701,7 +1764,7 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 		return nil
 	case errors.Is(err, kagent.ErrRejected):
 		e.m.Sends.WithLabelValues(a.Kind, "rejected").Inc()
-		return e.st.Tx(ctx, func(tx *sql.Tx) error {
+		return e.w.Tx(ctx, func(tx *sql.Tx) error {
 			if err := e.st.FinishAttempt(ctx, tx, a.ID, store.AttemptFailed, "", clip(err.Error(), maxErrorText)); err != nil {
 				return err
 			}
@@ -1872,7 +1935,7 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 	// Its finished grant failure still requires waiting admission, including
 	// the reassignment fence for attempts that need no cancellation.
 	if grantFailure(a) {
-		if err := e.st.SetRunState(ctx, e.st.DB, r.ID, store.RunWaiting, ""); err != nil {
+		if err := e.setRunState(ctx, r.ID, store.RunWaiting, ""); err != nil {
 			return err
 		}
 		r.State = store.RunWaiting
@@ -2552,7 +2615,7 @@ func (e *Engine) HandleClaim(ctx context.Context, agent string, run *itsaplan.Ru
 	if run.IssueID != nil {
 		issueID = *run.IssueID
 	}
-	r, outcome, err := e.st.RecordClaim(ctx, store.ClaimedRun{
+	r, outcome, err := e.st.RecordWriterClaim(ctx, e.w, store.ClaimedRun{
 		ID: run.ID, AgentKey: agent, IssueID: issueID, IssueKey: run.IssueIdentifier, Trigger: run.Trigger,
 		Prompt: run.Prompt, SystemPrompt: run.SystemPrompt, Attempt: run.Attempts,
 	})
@@ -2592,7 +2655,9 @@ func (e *Engine) HandleClaim(ctx context.Context, agent string, run *itsaplan.Ru
 		// their read time first or taking an execution slot while queued.
 		e.admissionPolled.LoadOrStore(r.ID, time.Now())
 		if r.WorkItemID == 0 && r.HoldReason == "" {
-			return e.st.SetAdmissionHold(ctx, e.st.DB, r.ID, "Waiting for admission.", e.cfg.Now())
+			return e.w.Tx(ctx, func(tx *sql.Tx) error {
+				return e.st.SetAdmissionHold(ctx, tx, r.ID, "Waiting for admission.", e.cfg.Now())
+			})
 		}
 		return nil
 	}
@@ -2627,6 +2692,9 @@ func (e *Engine) flushOutbox(ctx context.Context) error {
 			}
 			if it.Tries+1 >= outboxMaxTries {
 				if aerr := e.abandonItem(ctx, it, err); aerr != nil {
+					if fatal(aerr) {
+						return aerr
+					}
 					e.log.ErrorContext(ctx, "abandoning outbox item failed", "outbox", it.ID, "kind", it.Kind, "error", aerr)
 				}
 			} else {
@@ -2636,7 +2704,7 @@ func (e *Engine) flushOutbox(ctx context.Context) error {
 				if itsaplan.IsUnavailable(err) {
 					since = &now
 				}
-				if saveErr := e.st.OutboxFailed(ctx, it.ID, clip(err.Error(), maxErrorText), now.Add(backoff), since); saveErr != nil {
+				if saveErr := e.recordOutboxFailure(ctx, it.ID, clip(err.Error(), maxErrorText), now.Add(backoff), since); saveErr != nil {
 					return errors.Join(err, saveErr)
 				}
 			}
@@ -2653,6 +2721,12 @@ func (e *Engine) flushOutbox(ctx context.Context) error {
 		e.m.ItsaplanUnavailable.DeleteLabelValues("outbox")
 	}
 	return errors.Join(errs...)
+}
+
+func (e *Engine) recordOutboxFailure(ctx context.Context, id int64, message string, next time.Time, since *time.Time) error {
+	return e.w.Tx(ctx, func(tx *sql.Tx) error {
+		return e.st.OutboxFailed(ctx, tx, id, message, next, since)
+	})
 }
 
 // terminalHTTP reports an itsaplan answer that a retry cannot change. A 401
@@ -2819,7 +2893,9 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 	case store.OutboxResult:
 		var res itsaplan.Result
 		if err := json.Unmarshal(it.Payload, &res); err != nil {
-			return e.st.OutboxAbandon(ctx, e.st.DB, it.ID, err.Error())
+			return e.w.Tx(ctx, func(tx *sql.Tx) error {
+				return e.st.OutboxAbandon(ctx, tx, it.ID, err.Error())
+			})
 		}
 		defer e.lockRun(it.RunID)()
 		r, err := e.st.GetRun(ctx, it.RunID)
@@ -2837,7 +2913,7 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 		switch {
 		case err == nil:
 			e.m.Results.WithLabelValues(res.Status).Inc()
-			return e.st.Tx(ctx, func(tx *sql.Tx) error {
+			return e.w.Tx(ctx, func(tx *sql.Tx) error {
 				if err := e.st.OutboxDelivered(ctx, tx, it.ID); err != nil {
 					return err
 				}
@@ -2851,13 +2927,13 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 				return err
 			}
 			if !gone {
-				return e.st.OutboxFailed(ctx, it.ID, "result not accepted; run still pending", e.cfg.Now().Add(e.cfg.Heartbeat), nil)
+				return e.recordOutboxFailure(ctx, it.ID, "result not accepted; run still pending", e.cfg.Now().Add(e.cfg.Heartbeat), nil)
 			}
 			r, err = e.st.GetRun(ctx, it.RunID)
 			if err != nil || r.State == store.RunStale {
 				return err
 			}
-			return e.st.Tx(ctx, func(tx *sql.Tx) error {
+			return e.w.Tx(ctx, func(tx *sql.Tx) error {
 				if err := e.st.OutboxAbandon(ctx, tx, it.ID, "run no longer accepts a result"); err != nil {
 					return err
 				}
@@ -2867,7 +2943,7 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 				return e.st.SetRunState(ctx, tx, r.ID, store.RunClosed, "result not accepted")
 			})
 		case e.refused(ctx, it, err):
-			return e.st.Tx(ctx, func(tx *sql.Tx) error {
+			return e.w.Tx(ctx, func(tx *sql.Tx) error {
 				if err := e.st.OutboxAbandon(ctx, tx, it.ID, clip(err.Error(), maxErrorText)); err != nil {
 					return err
 				}

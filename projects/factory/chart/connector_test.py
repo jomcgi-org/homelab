@@ -837,7 +837,8 @@ def test_landing_status_access() -> None:
     assert status_service["metadata"]["namespace"] == "factory"
     assert status_service["spec"]["selector"] == connector_labels
     assert status_service["spec"]["ports"] == [
-        {"name": "status", "port": 8082, "targetPort": 8082, "protocol": "TCP"}
+        {"name": "status", "port": 8082, "targetPort": 8082, "protocol": "TCP"},
+        {"name": "run-phases", "port": 8085, "targetPort": 8085, "protocol": "TCP"},
     ]
     status_policy = _in(docs, "CiliumNetworkPolicy", _NS, "factory-landing-status")
     assert status_policy["metadata"]["namespace"] == "factory"
@@ -860,9 +861,34 @@ def test_landing_status_access() -> None:
                     },
                 ],
                 "toPorts": ports,
-            }
+            },
+            {
+                "fromEndpoints": [
+                    {
+                        "matchLabels": {
+                            "k8s:io.kubernetes.pod.namespace": "factory",
+                            "app.kubernetes.io/name": "factory-itsaplan",
+                            "app.kubernetes.io/instance": "factory",
+                            "app.kubernetes.io/component": "api",
+                        }
+                    }
+                ],
+                "toPorts": [{"ports": [{"port": "8085", "protocol": "TCP"}]}],
+            },
         ],
     }
+    api_policy = _in(docs, "CiliumNetworkPolicy", _NS, "factory-itsaplan-api")
+    assert {
+        "toEndpoints": [
+            {
+                "matchLabels": {
+                    "k8s:io.kubernetes.pod.namespace": "factory",
+                    **connector_labels,
+                }
+            }
+        ],
+        "toPorts": [{"ports": [{"port": "8085", "protocol": "TCP"}]}],
+    } in api_policy["spec"]["egress"]
     for resource in (status_service, status_policy):
         options = resource["metadata"]["annotations"]["argocd.argoproj.io/sync-options"]
         assert "Prune=false" in options.split(",")

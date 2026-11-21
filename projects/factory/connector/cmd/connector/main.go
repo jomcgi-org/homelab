@@ -13,12 +13,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -390,6 +392,37 @@ func run(log *slog.Logger) error {
 		}
 	}()
 	defer statusServer.Close()
+
+	phaseMux := http.NewServeMux()
+	phaseMux.HandleFunc("GET /run-phases", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		issueID, err := strconv.ParseInt(r.URL.Query().Get("issueId"), 10, 64)
+		if err != nil || issueID < 1 {
+			http.Error(w, "Invalid issue ID", http.StatusBadRequest)
+			return
+		}
+		readCtx, cancel := context.WithTimeout(r.Context(), 1500*time.Millisecond)
+		defer cancel()
+		items, err := eng.RunPhases(readCtx, issueID)
+		if err != nil {
+			http.Error(w, "Run phases unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(struct {
+			Items []dispatch.RunPhase `json:"items"`
+		}{Items: items})
+	})
+	phaseServer := &http.Server{
+		Addr: ":8085", Handler: phaseMux, ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second,
+	}
+	go func() {
+		if err := phaseServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("run phase server", "error", err)
+		}
+	}()
+	defer phaseServer.Close()
 
 	wg.Add(1)
 	go func() {

@@ -252,6 +252,10 @@ spec:
                 name: {{ $name }}
           env:
             {{- include "factory.itsaplanSecretEnv" . | nindent 12 }}
+            {{- if .Values.connector.enabled }}
+            - name: FACTORY_RUN_PHASE_URL
+              value: {{ printf "http://factory-connector-status.%s.svc:8085/run-phases" .Values.broker.namespace | quote }}
+            {{- end }}
           # The root answers 200 once the server listens.
           readinessProbe:
             httpGet:

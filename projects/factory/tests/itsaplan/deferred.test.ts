@@ -95,6 +95,90 @@ async function fixture(email?: string) {
   };
 }
 
+test("run phase reads exclude stale attempts and require issue access", async () => {
+  const { id, coder, owner, send } = await fixture();
+  expect((await send()).status).toBe(200);
+  await db
+    .update(agentRun)
+    .set({ nextAttemptAt: new Date(0) })
+    .where(eq(agentRun.issueId, id));
+  const run = (await apiKeyApi(coder.apiKey!)["agent-runs"].claim.post()).data!
+    .run!;
+  let reads = 0;
+  let current = {
+    runId: run.id,
+    attempt: run.attempts,
+    phase: "waiting",
+    reason: "Waiting for an agent slot.",
+  };
+  const source = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      reads++;
+      expect(new URL(request.url).searchParams.get("issueId")).toBe(String(id));
+      return Response.json({
+        items: [
+          current,
+          { ...current, attempt: run.attempts - 1 },
+          { ...current, runId: run.id + 1 },
+        ],
+      });
+    },
+  });
+  process.env.FACTORY_RUN_PHASE_URL = source.url.href;
+  try {
+    const url = `http://localhost/issues/${id}/factory-run-phases`;
+    expect((await app.handle(new Request(url))).status).toBe(401);
+    expect(reads).toBe(0);
+    const response = await app.handle(
+      new Request(url, { headers: { cookie: owner.cookie } }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ items: [current] });
+    const read = () =>
+      app.handle(new Request(url, { headers: { cookie: owner.cookie } }));
+    current = { ...current, phase: "finishing", reason: "" };
+    expect(await (await read()).json()).toEqual({ items: [current] });
+    await db
+      .update(agentRun)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(eq(agentRun.id, run.id));
+    expect(await (await read()).json()).toEqual({ items: [current] });
+    await db
+      .update(agentRun)
+      .set({ nextAttemptAt: new Date(Date.now() + 60_000) })
+      .where(eq(agentRun.id, run.id));
+    const result = await apiKeyApi(coder.apiKey!)
+      ["agent-runs"]({
+        runId: run.id,
+      })
+      .result.post({
+        attempt: run.attempts,
+        status: "success",
+        output: "done",
+      });
+    expect(result.status).toBe(204);
+    expect(await (await read()).json()).toEqual({ items: [current] });
+    await db
+      .update(agentRun)
+      .set({ attempts: run.attempts + 1 })
+      .where(eq(agentRun.id, run.id));
+    expect(await (await read()).json()).toEqual({ items: [] });
+
+    const oldWrite = await app.handle(
+      new Request(`http://localhost/agent-runs/${run.id}/factory-phase`, {
+        method: "POST",
+        headers: { "x-api-key": coder.apiKey! },
+      }),
+    );
+    expect(oldWrite.status).toBe(404);
+  } finally {
+    delete process.env.FACTORY_RUN_PHASE_URL;
+    source.stop(true);
+  }
+});
+
 async function effects(id: number) {
   return {
     comments: await db

@@ -41,7 +41,7 @@ func TestEnqueueDeferredOnlyRecoversRollbackAbandonment(t *testing.T) {
 			if err := st.OutboxSendStarted(ctx, id); err != nil {
 				t.Fatal(err)
 			}
-			if err := st.OutboxFailed(ctx, id, "waiting", now.Add(time.Hour), nil); err != nil {
+			if err := st.OutboxFailed(ctx, st.DB, id, "waiting", now.Add(time.Hour), nil); err != nil {
 				t.Fatal(err)
 			}
 			if tc.reason != "" {
