@@ -1272,7 +1272,7 @@ type captureInline struct {
 	findings []github.InlineFinding
 }
 
-func (c *captureInline) SyncInline(_ context.Context, _ string, _ int, _ string, fs []github.InlineFinding, _ []string) (map[string]int64, error) {
+func (c *captureInline) SyncInline(_ context.Context, _ string, _ int, _ string, fs []github.InlineFinding, _, _ []string) (map[string]int64, error) {
 	c.findings = fs
 	return map[string]int64{inlineKey("a:correctness"): 123}, nil
 }
@@ -1294,5 +1294,31 @@ func TestInlineAnchorsAndSummary(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatal(body)
 		}
+	}
+}
+
+func TestOptionalFindingsBeyondCheckLimitAppearInlineAndInSummary(t *testing.T) {
+	writer := &captureInline{}
+	e := Engine{cfg: Config{Comments: writer}}
+	in := &inputs{files: []github.PullRequestFile{{Path: "a", Patch: "@@ -0,0 +1 @@\n+added"}}}
+	r := &Report{}
+	for i := 0; i <= MaxLow; i++ {
+		id := fmt.Sprintf("a:correctness:%d", i)
+		r.Findings = append(r.Findings, Finding{ID: id, Severity: SeverityLow, Path: "a", Line: 1, Title: id})
+	}
+	a := Assess(r, nil)
+	e.postInline(context.Background(), &Binding{}, github.PullRequest{}, &a, in, r)
+	body := findingsSection(a, r)
+	if len(writer.findings) != len(r.Findings) {
+		t.Fatal(writer.findings)
+	}
+	for _, f := range r.Findings {
+		if !strings.Contains(body, f.ID) {
+			t.Fatal(body)
+		}
+	}
+	ids := optionalReviewIDs(nil, r, a)
+	if len(optionalReviewIDs(ids, &Report{}, Assessment{})) != len(r.Findings) {
+		t.Fatal(ids)
 	}
 }

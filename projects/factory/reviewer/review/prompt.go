@@ -54,6 +54,7 @@ type PromptInput struct {
 	Rules           *Rules
 	// Previous are the blocking and human-gate findings of the review of
 	// PreviousHead.
+	OptionalIDs  []string
 	Previous     []Finding
 	PreviousHead string
 	// Cleared is what reviews of earlier heads cleared.
@@ -226,6 +227,12 @@ func Prompt(in PromptInput) string {
 	if in.PreviousHead != "" {
 		if in.PreviousUnknown == "" {
 			b.WriteString("## Previous review\n\n")
+		}
+		if len(in.OptionalIDs) > 0 {
+			b.WriteString("Check each prior optional finding against this head. Report its ID in previous as fixed only when the defect is gone, or report it again in findings if present.\n")
+			for _, id := range in.OptionalIDs {
+				fmt.Fprintf(&b, "- %s\n", quotePath(id))
+			}
 		}
 		if len(in.Previous) == 0 && in.PreviousUnknown == "" {
 			fmt.Fprintf(&b, "The review of the earlier head %s raised no blocking findings.\n", in.PreviousHead)

@@ -2433,7 +2433,9 @@ heads:
 		}
 		a := AssessDecided(report, prior.Previous(), decisions)
 		a.Earlier, a.EarlierPartial = decisions.Revalidate(prior.Cleared), true // Recovery cannot certify the complete cleared record.
+		optionalIDs := optionalReviewIDs(prior.OptionalIDs, report, a)
 		prior = stateOf(a, report, &Gate{Findings: a.Gated})
+		prior.OptionalIDs = optionalIDs
 	}
 	// Keep the current gate's approval baseline and sticky service holds.
 	// Its model findings come from the complete replay, never the lossy list.
@@ -2600,7 +2602,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 	text := Prompt(PromptInput{
 		Repo: repo, Number: pr.Number, URL: pr.URL, Base: b.BaseBranch, SHA: pr.HeadSHA,
 		Title: pr.Title, Body: pr.Body, Author: pr.Author, Files: in.files, Rules: rules,
-		Previous: in.prior.Previous(), Cleared: joeDecisions(b, pr, comments).Revalidate(in.prior.Cleared), PreviousHead: in.priorHead, Interdiff: interdiff, Scope: scope, PreviousUnknown: in.priorUnknown,
+		OptionalIDs: in.prior.OptionalIDs, Previous: in.prior.Previous(), Cleared: joeDecisions(b, pr, comments).Revalidate(in.prior.Cleared), PreviousHead: in.priorHead, Interdiff: interdiff, Scope: scope, PreviousUnknown: in.priorUnknown,
 		Resumed: plan.resume != nil, RulesHeld: plan.resume != nil && plan.rules != "" && plan.resume.Rules == plan.rules,
 		Comments: comments, DroppedComments: dropped, Cited: cited, Commits: &commits, Gate: in.gate, Attempt: attempt,
 		InvariantScopes: in.invariantScopes, InvariantBase: in.invariantBase, CheckName: e.cfg.CheckName, Semgrep: in.semgrep,
@@ -2848,6 +2850,7 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 			}
 		}
 		st := stateOf(a, r, gate)
+		st.OptionalIDs = optionalReviewIDs(in.prior.OptionalIDs, r, a)
 		if in.semgrep != nil {
 			// The goal check can run another model task after the code review.
 			// Check scan freshness after both tasks, before saving the verdict.

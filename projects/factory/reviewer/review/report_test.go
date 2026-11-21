@@ -1485,3 +1485,21 @@ func TestInvariantScopeNoticesNeverHideBlockingFindings(t *testing.T) {
 		t.Fatalf("findings section is %d bytes, over %d", len(body), maxFindings)
 	}
 }
+
+func TestBlockingSuggestionsFitAfterFindingTitles(t *testing.T) {
+	text := strings.Repeat("z", 16000)
+	var bs []Blocked
+	for i := 0; i < 4; i++ {
+		id := fmt.Sprintf("a:correctness:%d", i)
+		bs = append(bs, Blocked{Finding: Finding{ID: id, Title: id, Severity: SeverityHigh, Path: "a", Line: 1, Suggestion: &Suggestion{Start: 1, End: 1, Replacement: &text}}})
+	}
+	out := strings.Join(blockingEntries(bs, entryContext{}, 60000), "")
+	if len(out) > 60000 || strings.Count(out, text) != 3 {
+		t.Fatal(len(out), strings.Count(out, text))
+	}
+	for _, b := range bs {
+		if !strings.Contains(out, b.ID) {
+			t.Fatal(b.ID)
+		}
+	}
+}

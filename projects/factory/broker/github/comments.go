@@ -369,6 +369,7 @@ type inlineRequest struct {
 		Start, End      int
 	}
 	Active []string
+	Fixed  []string
 }
 
 const inlinePrefix = "<!-- factory-review:inline "
@@ -444,7 +445,10 @@ func (p *CommentProxy) threads(ctx context.Context, in inlineRequest) (map[strin
 			if !found || !strings.HasSuffix(key, " -->") || !strings.EqualFold(root.Author.Login, p.Author) {
 				continue
 			}
-			threads[strings.TrimSuffix(key, " -->")] = t
+			key = strings.TrimSuffix(key, " -->")
+			if existing, ok := threads[key]; !ok || existing.IsResolved || !t.IsResolved {
+				threads[key] = t
+			}
 			if root.OriginalCommit.Oid == in.Head {
 				count++
 			}
@@ -475,7 +479,7 @@ func (p *CommentProxy) inline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for key, t := range threads {
-		if slices.Contains(in.Active, key) || t.IsResolved || t.Comments.Nodes[0].OriginalCommit.Oid == in.Head {
+		if !slices.Contains(in.Fixed, key) || slices.Contains(in.Active, key) || t.IsResolved || t.Comments.Nodes[0].OriginalCommit.Oid == in.Head {
 			continue
 		}
 		err = p.graphql(ctx, in.Repository, `mutation($id:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$id,body:$body}){comment{id}} resolveReviewThread(input:{threadId:$id}){thread{id}}}`, map[string]any{"id": t.ID, "body": "Cleared on " + in.Head + "."}, nil)
@@ -486,7 +490,7 @@ func (p *CommentProxy) inline(w http.ResponseWriter, r *http.Request) {
 	}
 	var comments []map[string]any
 	for _, f := range in.Findings {
-		if _, ok := threads[f.Key]; ok || count >= 25 {
+		if t, ok := threads[f.Key]; count >= 25 || ok && (!t.IsResolved || t.Comments.Nodes[0].OriginalCommit.Oid == in.Head) {
 			continue
 		}
 		body := inlinePrefix + f.Key + " -->\n" + f.Body
@@ -515,7 +519,7 @@ func (p *CommentProxy) inline(w http.ResponseWriter, r *http.Request) {
 	}
 	links := map[string]int64{}
 	for _, key := range in.Active {
-		if t, ok := threads[key]; ok {
+		if t, ok := threads[key]; ok && !t.IsResolved {
 			_, fragment, ok := strings.Cut(t.Comments.Nodes[0].URL, "#discussion_r")
 			if ok {
 				id, err := strconv.ParseInt(fragment, 10, 64)

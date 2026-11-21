@@ -406,6 +406,7 @@ type Assessment struct {
 	Deferred []Finding
 	// DroppedLow counts low findings past MaxLow.
 	DroppedLow int
+	ExtraLow   []Finding
 	// Earlier is what earlier heads' reviews cleared; the State carries it
 	// on with this review's (clearedOf).
 	Earlier []Cleared
@@ -671,6 +672,7 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 		case f.Severity == SeverityLow:
 			if low++; low > MaxLow {
 				a.DroppedLow++
+				a.ExtraLow = append(a.ExtraLow, f)
 			} else if f.Defer {
 				a.Deferred = append(a.Deferred, f)
 			} else {
@@ -1052,6 +1054,7 @@ var stateRE = regexp.MustCompile(`<!-- factory-review:state v([12]) ([A-Za-z0-9+
 // findings and human gate on the completed check. The next round must
 // account for the findings; only a person clears the human gate.
 type State struct {
+	OptionalIDs   []string                     `json:"optional_ids,omitempty"`
 	Round         int                          `json:"round,omitempty"`
 	InvariantBase string                       `json:"invariant_base,omitempty"`
 	Semgrep       *SemgrepStamp                `json:"semgrep,omitempty"`
@@ -1475,11 +1478,23 @@ func blockingEntries(bs []Blocked, c entryContext, room int) []string {
 		entries = entries[:0]
 		total := 0
 		for _, b := range bs {
+			b.Suggestion = nil
 			e := blockingEntry(b, c, limit)
 			entries = append(entries, e)
 			total += len(e)
 		}
 		if total <= room {
+			for i, b := range bs {
+				if b.Suggestion == nil {
+					continue
+				}
+				full := blockingEntry(b, c, limit)
+				extra := len(full) - len(entries[i])
+				if extra <= room-total {
+					entries[i] = full
+					total += extra
+				}
+			}
 			break
 		}
 	}
@@ -1560,6 +1575,10 @@ func encodeState(st State) string {
 		return statePrefix + base64.StdEncoding.EncodeToString([]byte(strings.TrimSpace(b.String()))) + stateSuffix
 	}
 	out := enc(st)
+	if len(out) > maxState && len(st.OptionalIDs) > 0 {
+		st.OptionalIDs = nil
+		out = enc(st)
+	}
 	if len(out) > maxState && len(st.Cleared) > 0 {
 		bare := make([]Cleared, len(st.Cleared))
 		for i, c := range st.Cleared {
@@ -1890,4 +1909,32 @@ func advisorySection(a Assessment) string {
 	}
 	s.WriteString("\n")
 	return s.String()
+}
+
+// Keep optional IDs available to the next review without making them block.
+// An omitted finding remains available for an explicit fix on a later head.
+func optionalReviewIDs(prior []string, r *Report, a Assessment) []string {
+	ids := map[string]bool{}
+	for _, id := range prior {
+		ids[id] = true
+	}
+	for _, p := range r.Previous {
+		if p.Status == StatusFixed {
+			delete(ids, p.ID)
+		}
+	}
+	for _, b := range a.Blocking {
+		delete(ids, b.ID)
+	}
+	for _, group := range [][]Finding{a.Optional, a.Deferred, a.ExtraLow} {
+		for _, f := range group {
+			ids[f.ID] = true
+		}
+	}
+	var out []string
+	for id := range ids {
+		out = append(out, id)
+	}
+	slices.Sort(out)
+	return out
 }

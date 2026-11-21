@@ -327,7 +327,7 @@ func findingsSection(a Assessment, r *Report) string {
 		}
 		rows = append(rows, rw)
 	}
-	for _, f := range a.Optional {
+	for _, f := range append(slices.Clone(a.Optional), a.ExtraLow...) {
 		rows = append(rows, row{f: f})
 	}
 	for _, f := range a.Deferred {
@@ -351,7 +351,7 @@ func findingsSection(a Assessment, r *Report) string {
 	for omitted := 0; ; omitted++ {
 		shown := rows[:len(rows)-omitted]
 		for _, limit := range []int{maxDetail, 500, 0} {
-			body := findingsTable(shown, omitted, a.DroppedLow) + findingDetails(shown, limit)
+			body := findingsTable(shown, omitted, a.DroppedLow-len(a.ExtraLow)) + findingDetails(shown, limit)
 			if len(body) <= budget || (limit == 0 && len(shown) == 0) {
 				notices := ""
 				if room := budget - len(body) - len("…"); room > 0 {
@@ -1013,7 +1013,7 @@ func validateSuggestions(r *Report, b *Binding, in *inputs) {
 }
 
 type inlineWriter interface {
-	SyncInline(context.Context, string, int, string, []github.InlineFinding, []string) (map[string]int64, error)
+	SyncInline(context.Context, string, int, string, []github.InlineFinding, []string, []string) (map[string]int64, error)
 }
 
 func inlineKey(id string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(id))) }
@@ -1067,7 +1067,16 @@ func (e *Engine) postInline(ctx context.Context, b *Binding, pr github.PullReque
 	for i := range a.Deferred {
 		add(&a.Deferred[i], false)
 	}
-	links, err := writer.SyncInline(ctx, b.repo(), pr.Number, pr.HeadSHA, entries, active)
+	for i := range a.ExtraLow {
+		add(&a.ExtraLow[i], false)
+	}
+	var fixed []string
+	for _, p := range r.Previous {
+		if p.Status == StatusFixed {
+			fixed = append(fixed, inlineKey(p.ID))
+		}
+	}
+	links, err := writer.SyncInline(ctx, b.repo(), pr.Number, pr.HeadSHA, entries, active, fixed)
 	if err != nil {
 		e.commentFailed(ctx, e.prLog(b, pr), b, "inline", err)
 		return

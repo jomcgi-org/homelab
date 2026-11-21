@@ -437,6 +437,7 @@ func TestInlineReviewLifecycle(t *testing.T) {
 	h, _, p := newCommentHarness(t)
 	head := strings.Repeat("a", 40)
 	var nodes []map[string]any
+	wantComments := 25
 	var posted, resolved int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -463,7 +464,7 @@ func TestInlineReviewLifecycle(t *testing.T) {
 				Comments []map[string]any
 			}
 			_ = json.NewDecoder(r.Body).Decode(&in)
-			if r.Method != "POST" || in.Event != "COMMENT" || len(in.Comments) != 25 {
+			if r.Method != "POST" || in.Event != "COMMENT" || len(in.Comments) != wantComments {
 				t.Errorf("unexpected review %s: %d", in.Event, len(in.Comments))
 			}
 			for _, c := range in.Comments {
@@ -489,6 +490,8 @@ func TestInlineReviewLifecycle(t *testing.T) {
 		active = append(active, key)
 		items = append(items, map[string]any{"key": key, "path": "a", "start": 1, "end": 1, "body": "finding"})
 	}
+	in["fixed"] = []string{strings.Repeat("0", 64)}
+	nodes = append(nodes, testThread("unaccounted", bot, inlinePrefix+strings.Repeat("d", 64)+" -->\nopen", "prior"))
 	in["findings"], in["active"] = items, active
 	send := func() {
 		body, _ := json.Marshal(in)
@@ -508,6 +511,17 @@ func TestInlineReviewLifecycle(t *testing.T) {
 	in["findings"] = items[:25]
 	send()
 	if posted != 25 || resolved != 1 {
+		t.Fatal(posted, resolved)
+	}
+	// The first key returns on a new line after its earlier thread was cleared.
+	key := strings.Repeat("0", 64)
+	in["active"] = append(active, key)
+	in["fixed"] = nil
+	in["findings"] = []map[string]any{{"key": key, "path": "new.go", "start": 3, "end": 3, "body": "new occurrence"}}
+	wantComments = 1
+	send()
+	send()
+	if posted != 26 || resolved != 1 {
 		t.Fatal(posted, resolved)
 	}
 }
