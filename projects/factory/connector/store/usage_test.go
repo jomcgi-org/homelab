@@ -205,7 +205,8 @@ func TestDeliveryTimings(t *testing.T) {
 		INSERT INTO run (id,work_item_id,agent_key,trigger,prompt,system_prompt,attempt,state,origin,issue_key,created_at)
 		SELECT t.id, CASE WHEN t.id=1 THEN w.id END,'agent',t.trigger,'','',1,'closed',t.origin,w.issue_key,w.created_at+t.delay
 		FROM work_item w CROSS JOIN (VALUES (1,'itsaplan','issue_delegated',interval '1 minute'),
-		(-1,'reviewer','reviewer',interval '5 minutes')) t(id,origin,trigger,delay) WHERE w.id=1;
+		(-1,'reviewer','reviewer',interval '5 minutes'),
+		(-2,'reviewer','reviewer',interval '8 minutes')) t(id,origin,trigger,delay) WHERE w.id=1;
 		INSERT INTO delivery_attempt (run_id,seq,run_attempt,work_item_epoch,decision_id,kind,message_id,kagent_namespace,kagent_agent,state,writer_epoch,first_sent_at)
 		SELECT id,1,1,1,'d','initial','m','factory','coder','completed',1,created_at+interval '1 minute' FROM run WHERE id=1;
 		INSERT INTO pull_request (work_item_id,number,node_id,head_sha,state,created_at,merged_at)
@@ -219,7 +220,7 @@ func TestDeliveryTimings(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	want := map[string]float64{"queue wait": 60, "time to first PR": 180, "review wait": 120, "rework rounds": 0.5, "time to merge": 600}
+	want := map[string]float64{"queue wait": 60, "time to first PR": 180, "time to first recorded review dispatch attempt": 120, "rework rounds": 0.5, "time to merge": 600}
 	for rows.Next() {
 		var start, end any
 		var metric, unit string
