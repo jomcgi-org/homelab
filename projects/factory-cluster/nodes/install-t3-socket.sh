@@ -5,7 +5,7 @@ set -euo pipefail
 	echo "run as root on node-1" >&2
 	exit 2
 }
-if [[ "$#" != 1 || ( "$1" != "--stage" && "$1" != "--activate" ) ]]; then
+if [[ "$#" != 1 || ("$1" != "--stage" && "$1" != "--activate") ]]; then
 	echo "usage: install-t3-socket.sh --stage|--activate" >&2
 	exit 2
 fi
