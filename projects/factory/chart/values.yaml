@@ -284,7 +284,7 @@ agents:
     # github-git: https://github.com with the broker-minted token injected as
     # Authorization: Basic.
     egress: [github-git]
-    # invariant: FACT-13
+    # invariant: FACT-14
     systemPrompt: |
       You are a software engineer working on one GitHub repository. Make the
       requested change on the branch you are given, run the checks the

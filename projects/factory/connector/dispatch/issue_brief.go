@@ -12,7 +12,7 @@ import (
 // The bound includes headings, structured items and truncation notices.
 const maxIssueBriefBytes = 8000
 
-// invariant: FACT-13
+// invariant: FACT-14
 const issueBriefIntro = "## Issue\nThis session has no itsaplan tools, so the issue is quoted here. The factory " +
 	"reports your final message on the issue and opens the pull request from the work branch once you " +
 	"push commits to it.\n" +
