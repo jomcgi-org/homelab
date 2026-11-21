@@ -217,9 +217,11 @@ def test_substrate_sync_uses_the_chart_as_the_only_scanner_deployment() -> None:
 def test_the_receiver_route_keeps_substrate_authorization_and_scoped_mtls() -> None:
     docs = _docs()
     config_name = "atenet-egress-agentgateway-config"
-    current = yaml.safe_load(
-        _one(docs, "ConfigMap", config_name)["data"]["config.yaml"]
-    )
+    gateway = _one(docs, "Deployment", "atenet-egress")
+    volumes = gateway["spec"]["template"]["spec"]["volumes"]
+    mounted = next(v for v in volumes if v["name"] == "config")["configMap"]["name"]
+    assert mounted.startswith("atenet-egress-guard-config-")
+    current = yaml.safe_load(_one(docs, "ConfigMap", mounted)["data"]["config.yaml"])
     upstream_path = _HERE / "upstream/substrate/atenet-egress.yaml"
     upstream = [item for item in yaml.safe_load_all(upstream_path.read_text()) if item]
     original = yaml.safe_load(
