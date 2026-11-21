@@ -1,3 +1,4 @@
+// invariant: FACT-13
 package review
 
 import (
@@ -1073,5 +1074,111 @@ func TestUncountedAnswerKeepsMainRules(t *testing.T) {
 	applyGoal(r, prior, "HOME", "HOME-7", &GoalCheck{Overall: goalUnclear, Criteria: []GoalVerdict{{1, goalMet}, {2, goalMet}, {3, goalMet}}})
 	if a := Assess(r, prior); len(a.Fixed) != 2 || len(a.Withdrawn) != 0 {
 		t.Fatalf("met verdicts: fixed %+v withdrawn %+v", a.Fixed, a.Withdrawn)
+	}
+}
+
+func TestExposureAcknowledgment(t *testing.T) {
+	f := Finding{ID: "route.yaml:unverified:exposure", Severity: SeverityMedium, Title: "Route permits public access"}
+	for _, tc := range []struct {
+		name    string
+		trusted bool
+		id      string
+		clears  bool
+	}{
+		{"trusted", true, f.ID, true}, {"untrusted", false, f.ID, false}, {"unknown", true, "private unknown ID", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := &IssueContext{Issue: &IssueEvidence{Trusted: tc.trusted, Description: "Accept exposure: " + f.Title}}
+			answer, err := ParseGoal("```json\n{\"criteria\":[],\"overall\":\"met\",\"acknowledged\":[\"" + tc.id + "\"]}\n```")
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := &Report{Findings: []Finding{f}}
+			g := &GoalCheck{Overall: goalMet, Acknowledged: acknowledgedExposures(in, r.Findings, answer.Acknowledged)}
+			applyGoal(r, nil, "HOME", "HOME-633", g)
+			a := Assess(r, nil)
+			if tc.clears {
+				if len(a.Accepted) != 1 || a.Accepted[0].Note != "Trusted issue evidence acknowledges this exposure." || len(a.Blocking) != 0 {
+					t.Fatal(a)
+				}
+			} else if len(a.Accepted) != 0 || len(a.Blocking) != 1 || len(g.Acknowledged) != 0 {
+				t.Fatal(a)
+			}
+		})
+	}
+}
+
+func TestRevokedExposureRestored(t *testing.T) {
+	f := Finding{ID: "a:unverified:exposure", Severity: SeverityMedium, Title: "Public reports", Detail: "Reports readable without sign-in"}
+	in := &IssueContext{Issue: &IssueEvidence{Trusted: true}, Decisions: []DecisionEvidence{{Exists: true, Trusted: true, Text: "Accept exposure: Public reports"}}}
+	r := &Report{Findings: []Finding{f}, acknowledged: acknowledgedExposures(in, []Finding{f}, []string{f.ID})}
+	st := stateOf(Assess(r, nil), r, nil)
+	in.Decisions = nil
+	next := &Report{Previous: []Previous{{ID: f.ID, Status: StatusJustified, Note: "An ordinary justification"}}}
+	restoreExposures(next, st)
+	next.acknowledged = acknowledgedExposures(in, next.Findings, []string{f.ID})
+	a := Assess(next, st.Previous())
+	if len(a.Blocking) != 1 || a.Blocking[0].Finding != f {
+		t.Fatal(a)
+	}
+}
+
+func TestPlainExposureEvidence(t *testing.T) {
+	f := Finding{ID: "storage:unverified:exposure", Severity: SeverityMedium, Title: "Migration deletes old data"}
+	for _, tc := range []struct {
+		text     string
+		accepted bool
+	}{
+		{"This deletes the old data.", true},
+		{"This deletes the backup.", false},
+		{"Rejected option:\n\n```text\n\nThis deletes the old data.\n\n```", false},
+		{"<!--\n\nThis deletes the old data.\n\n-->", false},
+		{"> Example\nThis deletes the old data.", false},
+		{"    This deletes the old data.", false},
+	} {
+		in := &IssueContext{Issue: &IssueEvidence{Trusted: true, Description: tc.text}}
+		got := acknowledgedExposures(in, []Finding{f}, []string{f.ID})
+		if (len(got) > 0) != tc.accepted {
+			t.Errorf("%q: accepted %v", tc.text, got)
+		}
+	}
+}
+
+func TestPublicationAcknowledgmentBindsResource(t *testing.T) {
+	dashboard := Finding{ID: "dashboard:unverified:exposure", Severity: SeverityMedium, Title: "Dashboard becomes public"}
+	export := Finding{ID: "export:unverified:exposure", Severity: SeverityMedium, Title: "Account export becomes public"}
+	candidates := []Finding{dashboard, export}
+	for _, tc := range []struct {
+		title, body string
+		want        bool
+	}{
+		{"Dashboard", "Make it public.", true},
+		{"Signed-in dashboard", "Require sign-in.\n\nPublish the dashboard.", false},
+		{"Dashboard", "Publish the dashboard publicly.", true},
+		{"Publish a status page", "Status page.\n\nMake it public.", false},
+		{"Publish a status page", "Expose the dashboard to the internet.", true},
+		{"Dashboard", "Make it public.\n\nSee the account export.", false},
+		{"Publication", "Expose the admin dashboard to the internet.", false},
+	} {
+		in := &IssueContext{Issue: &IssueEvidence{Trusted: true, Title: tc.title, Description: tc.body}}
+		got := acknowledgedExposures(in, candidates, []string{dashboard.ID, export.ID})
+		if _, ok := got[dashboard.ID]; ok != tc.want || got[export.ID] != "" {
+			t.Errorf("%q / %q: %v", tc.title, tc.body, got)
+		}
+	}
+}
+
+func TestDeletionAcknowledgmentBindsWholeObject(t *testing.T) {
+	data := Finding{ID: "migration:unverified:exposure", Severity: SeverityMedium, Title: "Migration deletes old data"}
+	backups := Finding{ID: "backup:unverified:exposure", Severity: SeverityMedium, Title: "Migration deletes old data backups", Detail: "The migration deletes old data."}
+	candidates := []Finding{data, backups}
+	for _, tc := range []struct{ request, want string }{
+		{"Delete the old data.", data.ID}, {"This deletes the old data backups.", backups.ID},
+	} {
+		in := &IssueContext{Issue: &IssueEvidence{Trusted: true, Description: tc.request}}
+		accepted := acknowledgedExposures(in, candidates, []string{data.ID, backups.ID})
+		if len(accepted) != 1 || accepted[tc.want] == "" {
+			t.Errorf("%q accepted %v", tc.request, accepted)
+		}
 	}
 }

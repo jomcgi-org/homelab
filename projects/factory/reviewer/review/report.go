@@ -1,3 +1,4 @@
+// invariant: FACT-13
 package review
 
 import (
@@ -57,6 +58,7 @@ type InvariantScopeAnswer struct {
 // Report is the reviewer agent's findings and optional activation assessment.
 // The service decides the conclusion; any verdict the agent declares is ignored.
 type Report struct {
+	acknowledged    map[string]string
 	InvariantScopes []InvariantScopeAnswer `json:"-"`
 	Summary         string                 `json:"summary"`
 	// Activation is independently assessed text, never an instruction copied
@@ -598,7 +600,7 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 			return note, nil, false
 		}
 		if severity == SeverityMedium && !decisionNote(note) {
-			return note, nil, true
+			return note, nil, !exposureFinding(p)
 		}
 		st := d.decided(note, id, severity)
 		return note, st, st != nil
@@ -645,6 +647,8 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 			f.Severity, f.Lowered = sev, ""
 		}
 		switch {
+		case exposureFinding(f) && r.acknowledged[f.ID] == f.Title && f.Title != "":
+			a.Accepted = append(a.Accepted, Blocked{Finding: f, Repeated: priorByID[f.ID].ID != "", Note: "Trusted issue evidence acknowledges this exposure."})
 		case f.Severity == SeverityLow && (f.Lowered != "" || f.Verdict == goalOwned):
 			a.Deferred = append(a.Deferred, f)
 		case f.Severity == SeverityLow:
@@ -1031,6 +1035,7 @@ var stateRE = regexp.MustCompile(`<!-- factory-review:state v([12]) ([A-Za-z0-9+
 // findings and human gate on the completed check. The next round must
 // account for the findings; only a person clears the human gate.
 type State struct {
+	Exposures     []Finding                    `json:"exposures,omitempty"` // Accepted under this state's IssueDigest.
 	Round         int                          `json:"round,omitempty"`
 	InvariantBase string                       `json:"invariant_base,omitempty"`
 	Semgrep       *SemgrepStamp                `json:"semgrep,omitempty"`
@@ -1122,6 +1127,7 @@ const (
 // path or label, is found again on every head.
 func (st State) Previous() []Finding {
 	out := append([]Finding(nil), st.Blocking...)
+	out = append(out, st.Exposures...)
 	if st.Gate != nil {
 		out = append(out, st.Gate.Findings...)
 	}
@@ -1327,6 +1333,11 @@ func loweredNote(f Finding) string {
 func stateOf(a Assessment, r *Report, gate *Gate) State {
 	cleared, partial := clearedOf(a, r)
 	st := State{Blocking: []Finding{}, Cleared: cleared, ClearedPartial: partial || a.EarlierPartial, Gate: gate, Decisions: a.decisions(), Incomplete: a.Incomplete, Overflow: a.Overflow, TaskID: a.TaskID, IssueDigest: a.IssueDigest, Goal: a.Goal, GoalKey: a.GoalKey}
+	for _, b := range a.Accepted {
+		if r != nil && exposureFinding(b.Finding) && r.acknowledged[b.ID] == b.Title && b.Title != "" {
+			st.Exposures = append(st.Exposures, b.Finding)
+		}
+	}
 	if r != nil && r.ActivationHead != "" && r.Activation != "" {
 		st.Activation = &github.ActivationAssessment{HeadSHA: r.ActivationHead, Text: r.Activation}
 	}
