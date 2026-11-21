@@ -34,8 +34,8 @@ func (s *Store) AdmissionStopped(ctx context.Context, r *Run) (bool, error) {
 }
 
 // RecordAdmissionRead records an idempotent read before its external call.
-func (s *Store) RecordAdmissionRead(ctx context.Context, r *Run, epoch int64, messageID, operation, resource string) error {
-	_, err := s.DB.ExecContext(ctx, `
+func (s *Store) RecordAdmissionRead(ctx context.Context, q Querier, r *Run, epoch int64, messageID, operation, resource string) error {
+	_, err := q.ExecContext(ctx, `
 		INSERT INTO admission_read (message_id, run_id, run_attempt, operation, resource, writer_epoch)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (message_id) DO UPDATE SET attempts = admission_read.attempts + 1,

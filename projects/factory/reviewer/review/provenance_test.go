@@ -101,7 +101,7 @@ func TestReviewerQuotaRetryRecordsSentMessage(t *testing.T) {
 				return task != "" && RecordedTask(h.gh.check(shaA).Summary).ID == task
 			})
 			runs, sent := recorder.snapshot(), lastSend(h)
-			if len(runs) != 2 || runs[0] != first[0] || runs[1].MessageID != sent.MessageID || sent.ContextID != "" {
+			if len(runs) != 2 || runs[0] != first[0] || runs[1].MessageID != sent.MessageID || sent.ContextID == "" {
 				t.Fatal("quota retry changed the original receipt or sent an unrecorded message")
 			}
 			want := provenance.New(*h.cfg.Bindings[0].Runtime, h.gh.baseHead, sent.Parts[0].Text, "unclassified")

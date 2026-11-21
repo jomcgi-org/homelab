@@ -17,6 +17,7 @@ import (
 // Sessions is the part of kagent's SessionService and AgentService the
 // reviewer reads before it continues a recorded session.
 type Sessions interface {
+	PromptRevision(context.Context, kagent.AgentRef, string) (string, error)
 	GetSession(ctx context.Context, id string) (*kagent.Session, error)
 	// AgentRevision is the Agent's latest successful revision, which kagent
 	// pins a new session to.

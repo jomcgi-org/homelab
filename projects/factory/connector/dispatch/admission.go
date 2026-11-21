@@ -147,7 +147,7 @@ func (e *Engine) beginAdmissionRead(ctx context.Context, r *store.Run, operation
 		return err
 	}
 	id := fmt.Sprintf("admission/%d/%d/%s/%s", r.ID, r.Attempt, operation, resource)
-	if err := e.st.RecordAdmissionRead(ctx, r, e.w.Epoch, id, operation, resource); err != nil {
+	if err := e.st.RecordAdmissionRead(ctx, e.st.DB, r, e.w.Epoch, id, operation, resource); err != nil {
 		return err
 	}
 	return e.guard(ctx)

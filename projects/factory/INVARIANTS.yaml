@@ -67,3 +67,9 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-13
+  statement: Fresh dispatch uses a session pinned to a revision verified against the receipt’s system prompt.
+  mechanism:
+  - projects/factory/connector/kagent/session.go
+  test: //projects/factory/connector/dispatch:dispatch_test
+  state: live

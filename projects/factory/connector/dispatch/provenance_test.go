@@ -1,3 +1,4 @@
+// invariant: FACT-13
 package dispatch_test
 
 import (
@@ -33,6 +34,96 @@ func provenanceEnv(t *testing.T) *env {
 	v.e.Release()
 	v.e = v.engine("provenance")
 	return v
+}
+
+func (k *fakeKagent) PromptRevision(_ context.Context, _ kagent.AgentRef, prompt string) (string, error) {
+	if k.onPromptRead != nil {
+		k.onPromptRead()
+	}
+	if k.servedPrompt != "" && k.servedPrompt != prompt {
+		return "", errors.New("prompt rollout pending")
+	}
+	return "current", nil
+}
+
+func (k *fakeKagent) CreateSession(_ context.Context, agent kagent.AgentRef, id string) (*kagent.Session, error) {
+	ctxID := "ctx-" + id
+	if k.onPromptCreate != nil {
+		k.onPromptCreate(id)
+	}
+	if sess := k.sessions[ctxID]; sess != nil {
+		return sess, nil
+	}
+	revision := "current"
+	if k.createdRevision != "" {
+		revision = k.createdRevision
+	}
+
+	k.contexts[ctxID] = agent
+	k.sessions[ctxID] = &kagent.Session{ID: ctxID, ContextID: ctxID, AgentName: agent.Name, AgentNamespace: agent.Namespace, PreparedRevision: revision, Creator: k.identity.PrincipalID(), State: kagent.RuntimeReady}
+	return k.sessions[ctxID], nil
+}
+
+func TestWriterLostDuringPromptReadCannotCreateSession(t *testing.T) {
+	v := provenanceEnv(t)
+	v.kg.onPromptRead = func() {
+		var terminated bool
+		if err := v.st.DB.QueryRow(`SELECT pg_terminate_backend(pid, 5000) FROM pg_locks
+ WHERE locktype='advisory' AND granted AND database=(SELECT oid FROM pg_database WHERE datname=current_database())`).Scan(&terminated); err != nil || !terminated {
+			t.Fatalf("terminate writer: %v, %v", terminated, err)
+		}
+	}
+	v.kg.onPromptCreate = func(string) { t.Fatal("fenced writer created a session") }
+	v.its.add(1, "coder", 101, "HL-7", "Fix it.")
+	if err := v.e.Tick(v.ctx); !errors.Is(err, store.ErrNotWriter) {
+		t.Fatalf("tick: %v", err)
+	}
+}
+
+func TestPromptMismatchRetiresJournaledCreation(t *testing.T) {
+	v := provenanceEnv(t)
+	var keys []string
+	v.kg.onPromptCreate = func(key string) {
+		var count int
+		if err := v.st.DB.QueryRow("SELECT count(*) FROM admission_read WHERE message_id=$1 AND operation='create-prompt-session'", key).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("creation journal count=%d err=%v", count, err)
+		}
+		keys = append(keys, key)
+	}
+	v.kg.createdRevision = "other"
+	v.its.add(1, "coder", 101, "HL-7", "Fix it.")
+	v.tick(v.e)
+	if len(keys) == 0 || len(v.kg.Sends()) != 0 {
+		t.Fatal("mismatched session crossed dispatch gate")
+	}
+	v.e.Release()
+	v.e = v.engine("after-rollback")
+	v.kg.createdRevision = "current"
+	v.tick(v.e)
+	if len(v.kg.Sends()) != 1 || keys[len(keys)-1] == keys[0] {
+		t.Fatal("replacement reused the retired creation request")
+	}
+}
+
+func TestDispatchWaitsForServedPrompt(t *testing.T) {
+	v := provenanceEnv(t)
+	v.kg.servedPrompt = "previous system guidance"
+	v.its.add(1, "coder", 101, "HL-7", "Fix it.")
+	v.tick(v.e)
+	if len(v.kg.Sends()) != 0 || v.run(1).Provenance.PromptHash != "" {
+		t.Fatal("dispatch crossed the rollout gap")
+	}
+	v.kg.servedPrompt = v.cfg.Bindings[0].Runtime.SystemPrompt
+	v.clk.Advance(time.Minute)
+	v.tick(v.e)
+	sends := v.kg.Sends()
+	if len(sends) != 1 {
+		t.Fatalf("sends=%d", len(sends))
+	}
+	want := provenance.New(*v.cfg.Bindings[0].Runtime, strings.Repeat("a", 40), sends[0].msg.Parts[0].Text, "unclassified")
+	if v.run(1).Provenance != want {
+		t.Fatal("receipt differs from served prompt")
+	}
 }
 
 func TestCoderAndReworkRunProvenance(t *testing.T) {
@@ -166,7 +257,8 @@ func (k *fakeKagent) AgentRevision(context.Context, kagent.AgentRef) (string, er
 	return "current", nil
 }
 
-func TestLegacySessionProvenanceUsesFencedReplacement(t *testing.T) {
+func legacyProvenanceEnv(t *testing.T) (*env, string, string) {
+	t.Helper()
 	v := provenanceEnv(t)
 	v.its.add(1, "coder", 101, "HL-7", "Fix it.")
 	v.tick(v.e)
@@ -183,6 +275,32 @@ func TestLegacySessionProvenanceUsesFencedReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := v.work(101).SessionID
+	return v, head, session
+}
+
+func TestLegacyPinnedSessionReadIsJournaled(t *testing.T) {
+	v, head, session := legacyProvenanceEnv(t)
+	checked := false
+	v.kg.onPromptRead = func() {
+		v.kg.onSessionRead = func(id string) {
+			var exists bool
+			err := v.st.DB.QueryRow("SELECT EXISTS (SELECT 1 FROM admission_read WHERE operation='provenance-pinned-session' AND resource=$1)", id).Scan(&exists)
+			if err != nil || !exists || id != session {
+				t.Errorf("pin read %s journaled=%v error=%v", id, exists, err)
+			}
+			checked = true
+			v.kg.onSessionRead = nil
+		}
+	}
+	v.gh.review(1, "CHANGES_REQUESTED", "reviewer", head, "Handle timeout.")
+	v.poll()
+	if !checked || len(v.kg.Sends()) != 2 {
+		t.Fatal("legacy continuation did not dispatch through the journaled read")
+	}
+}
+
+func TestLegacySessionProvenanceUsesFencedReplacement(t *testing.T) {
+	v, head, session := legacyProvenanceEnv(t)
 	v.kg.sessions[session].PreparedRevision = "older"
 	v.gh.review(1, "CHANGES_REQUESTED", "reviewer", head, "Handle timeout.")
 	v.poll()

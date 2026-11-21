@@ -30,6 +30,8 @@ two thresholds count separately. For outcome attribution, group
 work items by `first_arm` and count `escalated`. Join runs on `work_item_id`
 to see the arm that actually handled each round.
 
+HOME-575 uses option (a). Before dispatch with current binding settings, the dispatcher waits for the Agent to report the current generation reconciled, matching desired and successful revisions, and the expected inline system prompt. It sends to a session pinned to that verified revision. Coder continuations with a saved runtime use their original session receipt.
+
 A session without an earlier snapshot can use current settings only if kagent
 confirms its pinned revision is still current. Otherwise the connector records
 a recovery hold. The existing operator fencing attestation permits a fresh

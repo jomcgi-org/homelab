@@ -26,6 +26,7 @@ type GoalSessionCreator interface {
 // An unused session from earlier settings must never pin a changed receipt.
 func (e *Engine) prepareGoalDispatch(ctx context.Context, b *Binding, in *inputs, base, prefix string, key []byte, d *GoalTask, msg *kagent.Message) error {
 	msg.MessageID = prefix
+	var revision string
 	var record provenance.ReviewerRun
 	if e.cfg.Runs != nil {
 		var err error
@@ -33,9 +34,15 @@ func (e *Engine) prepareGoalDispatch(ctx context.Context, b *Binding, in *inputs
 		if err != nil {
 			return err
 		}
+		revision, err = e.cfg.Sessions.PromptRevision(ctx, b.Agent, b.Runtime.SystemPrompt)
+		if err != nil {
+			return err
+		}
 		data, _ := json.Marshal(record)
 		mac := hmac.New(sha256.New, key)
 		mac.Write(data)
+		mac.Write([]byte{0})
+		mac.Write([]byte(revision))
 		msg.MessageID += "/inputs/" + hex.EncodeToString(mac.Sum(nil)[:16])
 	}
 	// A completed dispatch may have had its session deleted. A persisted
@@ -65,6 +72,16 @@ func (e *Engine) prepareGoalDispatch(ctx context.Context, b *Binding, in *inputs
 		if s == nil || !contextIDPattern.MatchString(s.ContextID) || s.ID != s.ContextID ||
 			s.AgentNamespace != b.Agent.Namespace || s.AgentName != b.Agent.Name || s.Gone() || s.Crashed() {
 			return errors.New("goal session unavailable")
+		}
+		if revision != "" && s.PreparedRevision != revision {
+			if s.PreparedRevision != "" {
+				next := sha256.Sum256([]byte(d.Nonce + "\x00" + s.ID))
+				d.Nonce = hex.EncodeToString(next[:16])
+				if err := e.cfg.GoalTasks.SaveGoalTask(*d); err != nil {
+					return err
+				}
+			}
+			return errors.New("goal session pinned a different revision")
 		}
 		d.ContextID = s.ContextID
 		if err := e.cfg.GoalTasks.SaveGoalTask(*d); err != nil {
@@ -109,6 +126,27 @@ func (e *Engine) recordProvenance(ctx context.Context, b *Binding, in *inputs, m
 		return nil
 	}
 	record, err := reviewProvenance(b, in, msg, base)
+	if err != nil {
+		return err
+	}
+	requestID := msg.MessageID
+	key := "review-session/" + msg.MessageID
+	if msg.ContextID == "" {
+		cursor, err := e.cfg.GoalTasks.LoadGoalTask(key)
+		if err != nil {
+			return err
+		}
+		if cursor != nil {
+			requestID = cursor.MessageID
+		}
+	}
+	msg.ContextID, err = kagent.PinPromptSession(ctx, kagent.PromptSessionReader{PromptRevision: e.cfg.Sessions.PromptRevision, GetSession: e.cfg.Sessions.GetSession}, b.Agent, requestID, msg.ContextID, b.Runtime.SystemPrompt, e.cfg.GoalSessions.CreateSession)
+	if errors.Is(err, kagent.ErrCreatedRevisionMismatch) {
+		next := sha256.Sum256([]byte(requestID))
+		if saveErr := e.cfg.GoalTasks.SaveGoalTask(GoalTask{Key: key, MessageID: hex.EncodeToString(next[:]), CreatedAt: e.cfg.Now().UTC()}); saveErr != nil {
+			return saveErr
+		}
+	}
 	if err != nil {
 		return err
 	}

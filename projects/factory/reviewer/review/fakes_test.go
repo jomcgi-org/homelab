@@ -1287,6 +1287,10 @@ func (s *fakeSessions) GetSession(_ context.Context, id string) (*kagent.Session
 	}, nil
 }
 
+func (s *fakeSessions) PromptRevision(ctx context.Context, a kagent.AgentRef, prompt string) (string, error) {
+	return s.AgentRevision(ctx, a)
+}
+
 // AgentRevision answers the fake kagent's current revision.
 func (s *fakeSessions) AgentRevision(_ context.Context, agent kagent.AgentRef) (string, error) {
 	s.mu.Lock()
