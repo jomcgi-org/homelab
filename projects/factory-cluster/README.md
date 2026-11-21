@@ -166,6 +166,10 @@ admission guard is live. The standalone installer reloads systemd and starts
 the socket without restarting k3s. Full node bootstrap restarts k3s on each
 node in turn.
 
+Publish the hostname in the tunnel only after the relay Deployment is
+available, the socket accepts connections, and the production admission guard
+denies a non-relay socket mount.
+
 The relay mounts only the dedicated socket directory and has no network egress.
 T3 listens on `127.0.0.1:3773`. Tailscale Serve uses that listener for mobile.
 
