@@ -21,7 +21,7 @@ flowchart TD
   subgraph actor["actor"]
     console-caller["Private /agents console (human operator)"]
     discord-user["Discord user"]
-    factory-start-diagnostics-operator["Standing human operator inspecting factory diagnostics (retired hub path)"]
+    factory-start-diagnostics-operator["Standing operator for retired hub diagnostics"]
     mcp-caller["MCP-authenticated caller (agent)"]
     standing-landing-operator["Standing human landing operator (retired hub path)"]
   end

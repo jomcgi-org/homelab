@@ -294,7 +294,7 @@
     },
     {
       "key": "factory-start-diagnostics-operator",
-      "label": "Standing human operator inspecting factory diagnostics (retired hub path)",
+      "label": "Standing operator for retired hub diagnostics",
       "view": "logical",
       "layer": "actor",
       "maturity": "built",
