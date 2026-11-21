@@ -17,10 +17,12 @@ Before bootstrap, provide the following inputs.
 
 ## GKE hub migration
 
-The table follows [the hub application list](../gke-apps/kustomization.yaml) in
-cutover order. The destination column records the disposition of each hub
-workload. Use [HOME-262](https://factory-plan.jomcgi.dev/factory/issue/HOME-262)
-to scale the hub to zero and retain its state once the cutovers are verified.
+[HOME-128](https://factory-plan.jomcgi.dev/factory/issue/HOME-128) inventories
+all six Applications in the [hub application list](../gke-apps/kustomization.yaml).
+The rows put the lower-risk cutovers first and list the data, credentials,
+routes and factory prerequisites for each workload. Use the listed issues
+for work already tracked. File the remaining embedding, agent tool and MCP
+gateway migrations from their rows before scheduling those cutovers.
 
 | Hub Application | State | Credentials and routes | Destination and prerequisites |
 | --- | --- | --- | --- |
@@ -31,11 +33,18 @@ to scale the hub to zero and retain its state once the cutovers are verified.
 | [monolith-agents](../gke-apps/monolith-agents/) | Shared `monolith-pg` and knowledge data. No separate database to copy. | Scoped Postgres and Authentik bearer credentials. No public hostname. | **Move remaining tool consumers.** Verify which tools have factory replacements and that they preserve each caller's permissions. Move those callers before stopping the hub profile. |
 | [context-forge-gateway](../gke-apps/context-forge-gateway/) | Separate `context-forge-pg` PVCs and GCS backups. Stores registrations and tool access mappings. | `context-forge` and `preview-oidc` 1Password items. `mcp.jomcgi.dev` and the gated friends preview route. | **Move after MCP backends.** Restore the gateway database and check registrations, team mapping, OAuth callbacks and tool visibility against the factory backends before moving the hostnames. |
 
-Stage and verify each factory cutover through Kargo. Record the hub revision
-and replica count before a scale-down. Stop recurring jobs and verify that
-each hub Application has zero workload pods before scaling its node pools to
-zero. Verify the persistent volumes have a retain policy or a recent
-snapshot, and record the costs of the retained resources in HOME-262.
+The factory has a Kargo controller. Before each remaining cutover, configure
+its Warehouse, Stage and verification under [HOME-116](https://factory-plan.jomcgi.dev/factory/issue/HOME-116).
+Promote the factory revision through that pipeline, then verify Argo CD
+sync and health and run the data and route checks in the workload's issue.
+Record the prior hub revision and replica count before changing traffic or
+suspending writers so the previous deployment can be restored.
+
+After the cutovers, [HOME-262](https://factory-plan.jomcgi.dev/factory/issue/HOME-262)
+tracks the scale-down. Suspend recurring jobs and verify zero workload pods
+before scaling the node pools to zero. Verify that each persistent volume
+has a retain policy or a recent snapshot, and record the costs of the
+retained resources there.
 
 ## Bootstrap and rebuild
 
