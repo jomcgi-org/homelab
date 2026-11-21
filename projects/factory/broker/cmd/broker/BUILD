@@ -14,6 +14,7 @@ go_library(
         "//projects/factory/broker/metrics",
         "//projects/factory/broker/relay",
         "//projects/factory/broker/usage",
+        "//projects/factory/taskpin",
         "//projects/shared/go/tokenbroker/metrics",
         "//projects/shared/go/tokenbroker/provider/codexchatgpt",
         "//projects/shared/go/tokenbroker/quota",

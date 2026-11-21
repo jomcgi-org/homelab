@@ -44,6 +44,9 @@ and metrics. Provider and GitHub credentials exist only in this pod.
   "tokenReview" (dict "audience" "factory-broker" "adminSubjects" $adminSubjects "connectorSubjects" $connectorSubjects)
   "bindings" $bindings
 }}
+{{- if .Values.connector.enabled }}
+{{- $_ := set $config "taskPinOwnerUrl" (printf "http://factory-connector-status.%s.svc.%s:8086" $ns .Values.clusterDomain) }}
+{{- end }}
 {{- if $github }}
 {{- $_ := set $config "github" (dict
   "appIdFile" "/etc/factory-github-app/app-id"
@@ -427,6 +430,11 @@ spec:
             - name: config
               mountPath: /etc/factory-broker
               readOnly: true
+            {{- if .Values.connector.enabled }}
+            - name: task-pin
+              mountPath: /var/run/secrets/factory-task-pin
+              readOnly: true
+            {{- end }}
             - name: substrate-servicedns
               mountPath: /run/substrate-servicedns
               readOnly: true
@@ -446,6 +454,15 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
+        {{- if .Values.connector.enabled }}
+        - name: task-pin
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: factory-task-pin
+                  path: token
+                  expirationSeconds: 3600
+        {{- end }}
         {{- if $b.claude.enabled }}
         - name: claude-cvp
           secret:

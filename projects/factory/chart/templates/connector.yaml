@@ -251,6 +251,10 @@ spec:
               value: /var/run/secrets/kagent/token
             - name: FACTORY_CONNECTOR_KAGENT_AUTHORITY
               value: {{ $kagentAuth.serviceAccount.authority | quote }}
+            {{- if .Values.broker.enabled }}
+            - name: FACTORY_CONNECTOR_TASK_PIN_SUBJECT
+              value: {{ printf "system:serviceaccount:%s:%s" $ns (include "factory.brokerName" .) | quote }}
+            {{- end }}
             {{- if $delivers }}
             - name: FACTORY_CONNECTOR_BROKER_URL
               value: {{ printf "http://%s.%s.svc:%d" (include "factory.brokerName" .) $ns (int .Values.broker.adminPort) | quote }}
@@ -274,6 +278,10 @@ spec:
           ports:
             - name: metrics
               containerPort: {{ $c.metricsPort }}
+            {{- if .Values.broker.enabled }}
+            - name: analysis-pin
+              containerPort: 8086
+            {{- end }}
           # Health is served before the key wait and the migrations; the
           # startup probe still allows five minutes before liveness counts.
           startupProbe:

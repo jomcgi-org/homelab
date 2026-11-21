@@ -45,6 +45,7 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/connector/notify"
 	"github.com/jomcgi/homelab/projects/factory/connector/status"
 	"github.com/jomcgi/homelab/projects/factory/connector/store"
+	"github.com/jomcgi/homelab/projects/factory/taskpin"
 )
 
 func main() {
@@ -423,6 +424,22 @@ func run(log *slog.Logger) error {
 		}
 	}()
 	defer phaseServer.Close()
+
+	if subject := os.Getenv("FACTORY_CONNECTOR_TASK_PIN_SUBJECT"); subject != "" {
+		reviewer := &auth.Reviewer{Client: kube, Audience: taskpin.Audience, Logger: log}
+		pinMux := http.NewServeMux()
+		pinMux.Handle(taskpin.Path, reviewer.Require([]string{subject}, taskpin.Owner(eng.ResolveAnalysisMain)))
+		pinServer := &http.Server{
+			Addr: ":8086", Handler: http.TimeoutHandler(pinMux, 5*time.Second, "task pin unavailable"),
+			ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 6 * time.Second,
+		}
+		go func() {
+			if err := pinServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("task pin server", "error", err)
+			}
+		}()
+		defer pinServer.Close()
+	}
 
 	wg.Add(1)
 	go func() {

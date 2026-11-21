@@ -499,6 +499,66 @@ def test_github_app_is_optional() -> None:
     assert config["github"]["privateKeyFile"] == "/etc/factory-github-app/private-key"
 
 
+def test_task_pin_uses_the_broker_service_account() -> None:
+    docs = _render()
+    broker = _in(docs, "Deployment", "factory", "factory-broker")["spec"]["template"][
+        "spec"
+    ]
+    projected = next(v for v in broker["volumes"] if v["name"] == "task-pin")
+    assert projected["projected"]["sources"] == [
+        {
+            "serviceAccountToken": {
+                "audience": "factory-task-pin",
+                "path": "token",
+                "expirationSeconds": 3600,
+            }
+        }
+    ]
+    assert {
+        "name": "task-pin",
+        "mountPath": "/var/run/secrets/factory-task-pin",
+        "readOnly": True,
+    } in broker["containers"][0]["volumeMounts"]
+    config = yaml.safe_load(
+        _in(docs, "ConfigMap", "factory", "factory-broker")["data"]["config.yaml"]
+    )
+    assert (
+        config["taskPinOwnerUrl"]
+        == "http://factory-connector-status.factory.svc.cluster.local:8086"
+    )
+    connector = _in(docs, "Deployment", "factory", "factory-connector")["spec"][
+        "template"
+    ]["spec"]
+    assert {
+        "name": "FACTORY_CONNECTOR_TASK_PIN_SUBJECT",
+        "value": "system:serviceaccount:factory:factory-broker",
+    } in connector["containers"][0]["env"]
+    service = _in(docs, "Service", "factory", "factory-connector-status")
+    assert {
+        "name": "analysis-pin",
+        "port": 8086,
+        "targetPort": 8086,
+        "protocol": "TCP",
+    } in service["spec"]["ports"]
+    policy = _in(docs, "CiliumNetworkPolicy", "factory", "factory-landing-status")
+    match = [
+        rule
+        for rule in policy["spec"]["ingress"]
+        if {"ports": [{"port": "8086", "protocol": "TCP"}]} in rule["toPorts"]
+    ]
+    assert [rule["fromEndpoints"] for rule in match] == [
+        [
+            {
+                "matchLabels": {
+                    "k8s:io.kubernetes.pod.namespace": "factory",
+                    "app.kubernetes.io/name": "factory-broker",
+                    "app.kubernetes.io/instance": "factory",
+                }
+            }
+        ]
+    ]
+
+
 @pytest.mark.parametrize("binding", [False, True])
 def test_claude_relay_is_absent_by_default(binding: bool) -> None:
     docs = _render(["broker.enabled=true"], binding=binding)
@@ -683,6 +743,18 @@ def test_broker_policy() -> None:
         },
     ]
     assert spec["egress"] == [
+        {
+            "toEndpoints": [
+                {
+                    "matchLabels": {
+                        ns: "factory",
+                        "app.kubernetes.io/name": "factory-connector",
+                        "app.kubernetes.io/instance": "factory",
+                    }
+                }
+            ],
+            "toPorts": [{"ports": [{"port": "8086", "protocol": "TCP"}]}],
+        },
         {
             "toEndpoints": [
                 {"matchLabels": {ns: "factory-db", "cnpg.io/cluster": "factory-db"}}

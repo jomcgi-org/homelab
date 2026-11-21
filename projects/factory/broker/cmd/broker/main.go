@@ -28,6 +28,7 @@ import (
 	"github.com/jomcgi/homelab/projects/factory/broker/metrics"
 	"github.com/jomcgi/homelab/projects/factory/broker/relay"
 	"github.com/jomcgi/homelab/projects/factory/broker/usage"
+	"github.com/jomcgi/homelab/projects/factory/taskpin"
 	sharedmetrics "github.com/jomcgi/homelab/projects/shared/go/tokenbroker/metrics"
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/provider/codexchatgpt"
 	"github.com/jomcgi/homelab/projects/shared/go/tokenbroker/quota"
@@ -174,6 +175,7 @@ type deps struct {
 	grants        *grant.Manager
 	relay         *relay.Relay
 	claude        *relay.Claude
+	taskPin       http.Handler
 	// usage keeps the grant's quota reading current between relayed calls.
 	usage  *relay.UsageRefresher
 	minter *github.Minter
@@ -227,6 +229,16 @@ func build(ctx context.Context, cfg config.Config, client kubernetes.Interface, 
 			Tokens: grants, Upstream: cfg.Codex.UpstreamURL, Quota: quotaStore, Metrics: m, Logger: logger,
 		},
 		reviewer: &auth.Reviewer{Client: client, Audience: cfg.TokenReview.Audience, Logger: logger},
+	}
+	if cfg.TaskPinOwnerURL != "" {
+		namespaces := make([]string, 0, len(cfg.Bindings))
+		for _, binding := range cfg.Bindings {
+			namespaces = append(namespaces, binding.Namespace)
+		}
+		d.taskPin = taskpin.Broker(verifier, namespaces, cfg.TaskPinOwnerURL+taskpin.Path, func() (string, error) {
+			token, err := os.ReadFile(taskpin.TokenFile)
+			return string(token), err
+		})
 	}
 	if cfg.Claude.Enabled {
 		d.claude = &relay.Claude{
@@ -293,6 +305,9 @@ func (d *deps) relayHandler() http.Handler {
 }
 
 func (d *deps) registerRelays(mux *http.ServeMux) {
+	if d.taskPin != nil {
+		mux.Handle(taskpin.Path, d.taskPin)
+	}
 	if d.claude != nil {
 		mux.Handle("/anthropic/", d.claude)
 	}

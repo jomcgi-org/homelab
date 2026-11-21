@@ -14,6 +14,12 @@ spec:
       port: 8082
       targetPort: 8082
       protocol: TCP
+    {{- if .Values.broker.enabled }}
+    - name: analysis-pin
+      port: 8086
+      targetPort: 8086
+      protocol: TCP
+    {{- end }}
     {{- if .Values.itsaplan.enabled }}
     - name: run-phases
       port: 8085
@@ -45,6 +51,16 @@ spec:
         - ports:
             - port: "8082"
               protocol: TCP
+    {{- if .Values.broker.enabled }}
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Values.broker.namespace }}
+            {{- include "factory.brokerSelector" . | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "8086"
+              protocol: TCP
+    {{- end }}
     {{- if .Values.itsaplan.enabled }}
     - fromEndpoints:
         - matchLabels:
