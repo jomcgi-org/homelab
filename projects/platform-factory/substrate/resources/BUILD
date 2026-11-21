@@ -17,6 +17,7 @@ py_venv_binary(
         "upstream/substrate/atenet-egress.yaml",
     ],
     main = "render_egress_gateway.py",
+    visibility = ["//:__subpackages__"],
     deps = ["@pip//pyyaml"],
 )
 
