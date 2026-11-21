@@ -23,8 +23,10 @@ import (
 // maxSnapshotBytes bounds each object read. An uncapped full-grid snapshot can
 // approach this limit even when valid. Verify size and refresh-memory headroom
 // before selecting it; an oversized object leaves the last-good dataset in use.
-const maxSnapshotBytes = 64 << 20
-const maxManifestBytes = 64 << 10
+const (
+	maxSnapshotBytes = 64 << 20
+	maxManifestBytes = 64 << 10
+)
 
 // Getter is the subset of the R2 client the store uses.
 type Getter interface {
