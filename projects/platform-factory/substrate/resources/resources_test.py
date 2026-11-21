@@ -29,23 +29,12 @@ def _docs() -> list[dict]:
 
 
 def _scanner() -> dict:
-    chart = _HERE.parent / "egress-scan" / "chart"
-    out = subprocess.run(
-        [
-            os.environ["HELM_BIN"],
-            "template",
-            "egress-scan",
-            str(chart),
-            "--namespace",
-            "ate-system",
-            "-f",
-            os.environ["SCANNER_VALUES"],
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    return _one([d for d in yaml.safe_load_all(out) if d], "Deployment", "egress-scan")
+    manifest = Path(os.environ["SCANNER_MANIFEST"]).read_text()
+    return _one(
+        [doc for doc in yaml.safe_load_all(manifest) if doc],
+        "Deployment",
+        "egress-scan",
+    )
 
 
 def _one(docs: list[dict], kind: str, name: str) -> dict:

@@ -20,5 +20,8 @@ helm_lint_test(
 filegroup(
     name = "image_values",
     srcs = [":chart.images_values"],
-    visibility = ["//projects/platform-factory/substrate/resources:__pkg__"],
+    visibility = [
+        "//projects/platform-factory/substrate/egress-scan/deploy:__pkg__",
+        "//projects/platform-factory/substrate/resources:__pkg__",
+    ],
 )

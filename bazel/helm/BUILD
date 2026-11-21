@@ -53,6 +53,7 @@ MANIFEST_SETS = [
     "//projects/monolith/dev/deploy:manifests/all.yaml",
     "//projects/operators/oci-model-cache/deploy:manifests/all.yaml",
     "//projects/platform-factory/prometheus/resources/alert-relay/deploy:manifests/all.yaml",
+    "//projects/platform-factory/substrate/egress-scan/deploy:manifests/all.yaml",
     "//projects/scotland-connector/deploy:manifests/all.yaml",
     # Platform charts rendered by argocd_app. The plain `manifests` target is
     # the chart's default-values render (the home overlay until #6914 retired
