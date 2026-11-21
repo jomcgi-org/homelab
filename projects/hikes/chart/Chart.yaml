@@ -2,7 +2,7 @@ apiVersion: v2
 name: hikes
 description: Publish WalkHighlands routes and daylight forecasts
 type: application
-version: 0.18.10
+version: 0.19.5
 dependencies:
   - name: factory-library
     version: "0.1.0"
