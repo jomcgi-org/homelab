@@ -515,6 +515,8 @@ func (e *Engine) findOrOpenPR(ctx context.Context, repo string, wi *store.WorkIt
 	return e.adoptPR(ctx, repo, b, found, body)
 }
 
+// invariant: FACT-14
+
 // checkStoppedCreate keeps looking across empty reads and writer restarts.
 // Lock the work item so a new delegation cannot resume it midway through close.
 func (e *Engine) checkStoppedCreate(ctx context.Context, wi *store.WorkItem, b *Binding) error {
