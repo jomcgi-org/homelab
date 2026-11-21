@@ -1,3 +1,4 @@
+// invariant: SHIPS-READER-1
 export function product(key, signal) {
   if (
     !/^(latest\.json|(?:snapshot|heat|tracks\/\d{1,15})-[a-f0-9]{64}(?:-[A-Z2-7]{26})?\.json)$/.test(
