@@ -54,6 +54,9 @@ spec:
         - matchName: registry.bazel.build
         - matchName: mirror.bazel.build
         - matchName: releases.bazel.build
+        - matchName: packages.wolfi.dev
+        - matchName: dl-cdn.alpinelinux.org
+        - matchName: alpinelinux.org
         # Helm sources in Chart.yaml and ArgoCD Applications, plus Helm itself.
         - matchName: helm.cilium.io
         - matchName: cloudnative-pg.github.io
