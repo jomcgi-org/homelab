@@ -56,6 +56,9 @@ def verify_checkout(root, expected):
     actual = git("rev-parse", "--verify", "HEAD").decode().strip()
     if actual != expected:
         raise ValueError(f"requested {expected}, checkout HEAD is {actual}")
+    entries = git("ls-files", "-v", "-z").split(b"\0")
+    if any(entry[:1].islower() or entry.startswith(b"S ") for entry in entries):
+        raise ValueError(f"index flags suppress checkout verification at {expected}")
     if git(
         "status",
         "--porcelain=v1",
