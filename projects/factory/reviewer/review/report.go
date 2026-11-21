@@ -791,6 +791,8 @@ func patchHunks(patch string) []lineRange {
 	return out
 }
 
+// invariant: FACT-13
+
 // LaterScope is the scope of a head reviewed after since, or nil when there
 // is none to enforce: a first review, or an interdiff that is missing,
 // truncated or spans a rebase (RebasedScope covers a rebase).
@@ -801,6 +803,9 @@ func LaterScope(since string, d *github.CommitComparison) *Scope {
 	}
 	s := &Scope{paths: map[string]bool{}, hunks: map[string][]lineRange{}}
 	for _, f := range d.Files {
+		if f.Path == "" || f.Status == "" || (f.Status == "renamed" && f.PreviousPath == "") {
+			return nil
+		}
 		s.add(f.Path, patchHunks(f.Patch))
 		if f.PreviousPath != "" {
 			s.add(f.PreviousPath, nil)
