@@ -432,6 +432,18 @@ func run(log *slog.Logger) error {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(review)
 		})
+		phaseMux.HandleFunc("GET /project-reviews", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-store")
+			readCtx, cancel := context.WithTimeout(r.Context(), 1500*time.Millisecond)
+			defer cancel()
+			reviews, err := eng.ProjectReviews(readCtx, r.URL.Query().Get("project"), reviewer, client)
+			if err != nil {
+				http.Error(w, "Review queue unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(reviews)
+		})
 	}
 
 	phaseServer := &http.Server{

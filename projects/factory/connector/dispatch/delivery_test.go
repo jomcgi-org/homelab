@@ -3753,6 +3753,11 @@ func TestIssueReviewQueueMatchesCurrentRepositoryAndHead(t *testing.T) {
 	if unrelated, err := v.e.IssueReviewQueue(v.ctx, 999, source.URL, source.Client()); err != nil || unrelated != nil {
 		t.Fatalf("unrelated issue review = %+v, %v", unrelated, err)
 	}
+	queue, err := v.e.ProjectReviews(v.ctx, binding.ItsaplanProject, source.URL, source.Client())
+	if err != nil || len(queue.Items) != 1 || queue.Items[0].IssueID != 101 || queue.Items[0].Position != 3 {
+		t.Fatalf("project queue = %+v, %v", queue, err)
+	}
+
 	v.e.Release()
 	if _, err := v.e.IssueReviewQueue(v.ctx, 101, source.URL, source.Client()); !errors.Is(err, store.ErrNotWriter) {
 		t.Fatalf("former writer could start a queue read: %v", err)
