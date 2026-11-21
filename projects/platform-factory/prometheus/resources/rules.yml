@@ -345,7 +345,7 @@ groups:
       - record: factory_connector:runnable_runs:max
         # An unavailable queue breaks the observed stall window.
         expr: max(factory_connector_runnable_runs{job="factory-connector"}) or vector(0)
-      # invariant: FACT-13
+      # invariant: FACT-14
       - alert: FactoryConnectorStalled
         expr: |
           factory_connector:runnable_runs:max > 0
