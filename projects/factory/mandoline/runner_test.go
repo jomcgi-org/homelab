@@ -19,32 +19,45 @@ if [ "$1" = --version ]; then
     echo 'mandoline 0.25.0 fixture'
     exit 0
 fi
+if [ "$1 $2" = 'pack list' ]; then
+    echo '{"command":"pack list","schema_version":1,"registries":[],"bundled":[{"name":"fixture","disabled":false}]}'
+    exit 0
+fi
+if [ "$1 $2 $3" = 'pack taint list' ]; then
+    echo '{"libraries":[{"name":"fixture","ecosystem":"go","bundled":true}]}'
+    exit 0
+fi
 test "$#" = 5 && test "$1 $2 $3 $4" = 'diff --json --no-cache --base' || exit 2
 printf '{"schemaVersion":1,"command":"slice","base":"%s"}\n' "$5"
 `), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	req := Request{Command: "diff", Commit: commit, Base: commit}
-	got := Run(context.Background(), workspace, root, program, false, req)
+	got := Run(context.Background(), workspace, program, false, req)
 	if got.Status != "complete" || got.ToolVersion != toolVersion || got.Commit != commit {
 		t.Fatalf("analysis: %+v", got)
+	}
+	for _, catalog := range []string{"bundled_pack_catalog", "bundled_taint_catalog"} {
+		if digest := got.PackDigests[catalog]; digest == "" || digest == got.ToolDigest {
+			t.Fatalf("%s was not independently identified", catalog)
+		}
 	}
 	cache, err := openCache(workspace)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tree := git(t, root, "rev-parse", "HEAD^{tree}")
-	key := cacheKey(tree, got.PackDigests["bundled"], req)
+	key := cacheKey(tree, got.ToolDigest, got.PackDigests, req)
 	cached, ok := cache.read(key, got)
 	if !ok || !json.Valid(cached.Result) {
 		t.Fatalf("complete analysis was not cached: %+v", cached)
 	}
 	req.Command = "edit-file"
-	if got := Run(context.Background(), workspace, root, program, false, req); got.Status != "unsupported" {
+	if got := Run(context.Background(), workspace, program, false, req); got.Status != "unsupported" {
 		t.Fatalf("edit-file escaped allowlist: %+v", got)
 	}
-	req.Command, req.Base = "audit", ""
-	if got := Run(context.Background(), workspace, root, program, false, req); got.Status != "error" {
+	req.Command = "audit"
+	if got := Run(context.Background(), workspace, program, false, req); got.Status != "unsupported" {
 		t.Fatalf("diff harness accepted a full audit: %+v", got)
 	}
 }
@@ -52,7 +65,7 @@ printf '{"schemaVersion":1,"command":"slice","base":"%s"}\n' "$5"
 func TestCheckoutRejectsDirtyTreeAndHiddenChanges(t *testing.T) {
 	for _, flag := range []string{"", "--assume-unchanged", "--skip-worktree"} {
 		t.Run(flag, func(t *testing.T) {
-			workspace, root, commit := checkout(t)
+			_, root, commit := checkout(t)
 			req := Request{Commit: commit, Base: commit}
 			if flag != "" {
 				git(t, root, "update-index", flag, "tracked.py")
@@ -60,10 +73,32 @@ func TestCheckoutRejectsDirtyTreeAndHiddenChanges(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "tracked.py"), []byte("changed\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := verifyCheckout(context.Background(), workspace, root, req, nil); err == nil {
+			if _, err := verifyCheckout(context.Background(), root, false, req, nil); err == nil {
 				t.Fatal("dirty checkout accepted")
 			}
 		})
+	}
+}
+
+func TestTaskCheckoutAndBaseCannotBeSubstituted(t *testing.T) {
+	workspace, root, base := checkout(t)
+	git(t, root, "commit", "--allow-empty", "-qm", "head")
+	head := git(t, root, "rev-parse", "HEAD")
+	if _, err := verifyCheckout(context.Background(), root, false, Request{Commit: head, Base: head}, nil); err == nil {
+		t.Fatal("accepted a substitute diff base")
+	}
+	if _, err := verifyCheckout(context.Background(), root, true, Request{Commit: head}, nil); err == nil {
+		t.Fatal("accepted an audit of a non-main commit")
+	}
+	if _, err := verifyCheckout(context.Background(), root, false, Request{Commit: head, Base: base}, nil); err != nil {
+		t.Fatal(err)
+	}
+	decoy := filepath.Join(workspace, "other")
+	if err := os.Rename(root, decoy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := selectCheckout(workspace, false); err == nil {
+		t.Fatal("accepted an arbitrary checkout")
 	}
 }
 
@@ -108,15 +143,24 @@ func TestPinnedAnalyzer(t *testing.T) {
 	git(t, root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "commit", "-qam", "head")
 	head := git(t, root, "rev-parse", "HEAD")
 	ctx := context.Background()
-	scoped := Run(ctx, workspace, root, program, false, Request{Command: "diff", Commit: head, Base: base})
+	scoped := Run(ctx, workspace, program, false, Request{Command: "diff", Commit: head, Base: base})
 	if scoped.Status != "complete" || scoped.ToolVersion != toolVersion || !json.Valid(scoped.Result) {
 		t.Fatalf("pinned diff: status %s, gaps %v", scoped.Status, scoped.Gaps)
 	}
-	audit := Run(ctx, workspace, root, program, true, Request{Command: "audit", Commit: head})
+	callers := Run(ctx, workspace, program, false, Request{Command: "callers", Commit: head, Base: base})
+	if (callers.Status != "complete" && callers.Status != "partial") || !json.Valid(callers.Result) {
+		t.Fatalf("pinned callers: status %s, gaps %v", callers.Status, callers.Gaps)
+	}
+	git(t, root, "update-ref", "refs/remotes/origin/main", head)
+	main := filepath.Join(workspace, "main")
+	if err := os.Rename(root, main); err != nil {
+		t.Fatal(err)
+	}
+	audit := Run(ctx, workspace, program, true, Request{Command: "audit", Commit: head})
 	if audit.Status != "partial" || len(audit.Gaps) == 0 || !json.Valid(audit.Result) {
 		t.Fatalf("pinned audit: status %s, gaps %v", audit.Status, audit.Gaps)
 	}
-	if git(t, root, "status", "--short", "--ignored") != "" {
+	if git(t, main, "status", "--short", "--ignored") != "" {
 		t.Fatal("analysis changed the checkout")
 	}
 }
@@ -130,12 +174,16 @@ func checkout(t *testing.T) (string, string, string) {
 		t.Fatal(err)
 	}
 	git(t, root, "init", "-q")
+	git(t, root, "config", "user.name", "fixture")
+	git(t, root, "config", "user.email", "fixture@example.com")
 	if err := os.WriteFile(filepath.Join(root, "tracked.py"), []byte("def value():\n    return 42\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	git(t, root, "add", ".")
-	git(t, root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "commit", "-qm", "base")
-	return workspace, root, git(t, root, "rev-parse", "HEAD")
+	git(t, root, "commit", "-qm", "base")
+	commit := git(t, root, "rev-parse", "HEAD")
+	git(t, root, "update-ref", "refs/remotes/origin/main", commit)
+	return workspace, root, commit
 }
 
 func git(t *testing.T, dir string, args ...string) string {

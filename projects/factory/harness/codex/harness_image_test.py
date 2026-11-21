@@ -74,6 +74,7 @@ def test_image_runs_the_factory_mandoline_command() -> None:
         ).stderr
     assert "-commit string" in out
     assert "-base string" in out
+    assert "<diff|callers>" in out
 
 
 def test_base_digest_matches_the_deployed_codex_harness() -> None:

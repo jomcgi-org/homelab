@@ -35,6 +35,7 @@ type Request struct {
 type Envelope struct {
 	Commit      string            `json:"commit"`
 	ToolVersion string            `json:"tool_version"`
+	ToolDigest  string            `json:"tool_digest"`
 	PackDigests map[string]string `json:"pack_digests"`
 	Status      string            `json:"status"`
 	Gaps        []string          `json:"gaps"`
@@ -43,12 +44,13 @@ type Envelope struct {
 
 // Run takes the workspace and tool from the installed launcher. They are
 // deliberately absent from the model-facing command-line arguments.
-func Run(parent context.Context, workspace, cwd, tool string, audit bool, req Request) Envelope {
+func Run(parent context.Context, workspace, tool string, audit bool, req Request) Envelope {
 	result := Envelope{Commit: req.Commit, PackDigests: map[string]string{}, Gaps: []string{}}
 	if !fullSHA.MatchString(req.Commit) || (!audit && !fullSHA.MatchString(req.Base)) || (audit && req.Base != "") {
 		return result.fail("error", "expected a full commit and the base required by this harness")
 	}
-	if req.Command != "audit" && req.Command != "surface" && (req.Command != "diff" || audit) {
+	if (audit && req.Command != "audit" && req.Command != "surface") ||
+		(!audit && req.Command != "diff" && req.Command != "callers") {
 		return result.fail("unsupported", "command outside the harness analysis scope")
 	}
 	ctx, cancel := context.WithTimeout(parent, runLimit)
@@ -58,9 +60,9 @@ func Run(parent context.Context, workspace, cwd, tool string, audit bool, req Re
 	if err != nil || resolvedWorkspace != workspace {
 		return result.fail("error", "task workspace unavailable")
 	}
-	cwd, err = filepath.EvalSymlinks(cwd)
-	if err != nil || !beneath(workspace, cwd) {
-		return result.fail("error", "working directory is outside the task workspace")
+	root, err := selectCheckout(workspace, audit)
+	if err != nil {
+		return result.fail("error", err.Error())
 	}
 	cache, err := openCache(workspace)
 	if err != nil {
@@ -78,7 +80,7 @@ func Run(parent context.Context, workspace, cwd, tool string, audit bool, req Re
 		"GIT_CONFIG_KEY_1=core.fsmonitor", "GIT_CONFIG_VALUE_1=false",
 		"GIT_OPTIONAL_LOCKS=0", "GIT_NO_REPLACE_OBJECTS=1",
 	}
-	root, tree, err := verifyCheckout(ctx, workspace, cwd, req, env)
+	tree, err := verifyCheckout(ctx, root, audit, req, env)
 	if err != nil {
 		return result.fail("error", err.Error())
 	}
@@ -97,16 +99,28 @@ func Run(parent context.Context, workspace, cwd, tool string, audit bool, req Re
 		return result.fail("error", "expected the pinned Mandoline version")
 	}
 	result.ToolVersion = toolVersion
-	// All active packs are bundled in these verified executable bytes. The
-	// sterile HOME and absence of checkout configuration exclude local packs.
-	result.PackDigests["bundled"] = digest
-	key := cacheKey(tree, digest, req)
+	result.ToolDigest = digest
+	packs, err := packInventory(ctx, tool, root, env)
+	if errors.Is(err, errPackInventoryTruncated) {
+		return result.fail("truncated", "pack inventory exceeded the byte limit")
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return result.fail("timeout", "pack inventory exceeded the wall-clock limit")
+	}
+	if err != nil {
+		return result.fail("unsupported", "cannot verify the bundled pack inventories")
+	}
+	result.PackDigests = packs
+	key := cacheKey(tree, digest, packs, req)
 	if cached, ok := cache.read(key, result); ok &&
 		classify(result, req.Command, captured{stdout: cached.Result}).Status == "complete" {
 		return cached
 	}
 
 	args := []string{req.Command, "--json", "--no-cache"}
+	if req.Command == "callers" {
+		args = []string{"diff", "--callers", "--json", "--no-cache"}
+	}
 	if !audit {
 		// With a verified HEAD, --base uses that exact tree without a
 		// temporary checkout and its Git checkout hooks and filters.
@@ -121,7 +135,7 @@ func Run(parent context.Context, workspace, cwd, tool string, audit bool, req Re
 		return result
 	}
 	// Detect checkout changes that happened while analysis read the tree.
-	if _, after, err := verifyCheckout(ctx, workspace, cwd, req, env); err != nil || tree != after {
+	if after, err := verifyCheckout(ctx, root, audit, req, env); err != nil || tree != after {
 		return result.fail("error", "checkout changed or could not be verified after analysis")
 	}
 	if result.Status == "complete" {
@@ -135,59 +149,83 @@ func (e Envelope) fail(status, reason string) Envelope {
 	return e
 }
 
-func verifyCheckout(ctx context.Context, workspace, cwd string, req Request, env []string) (string, string, error) {
-	git := func(dir string, args ...string) ([]byte, error) {
-		data := capture(ctx, "/usr/bin/git", dir, env, args)
+func selectCheckout(workspace string, audit bool) (string, error) {
+	// The review task writes pr/, the audit task uses main/, and coder
+	// clones use homelab/ or the workspace root. The caller's directory
+	// never selects a checkout.
+	taskDir := "pr"
+	if audit {
+		taskDir = "main"
+	}
+	for _, dir := range []string{taskDir, "homelab", "."} {
+		root := filepath.Join(workspace, dir)
+		_, err := os.Lstat(filepath.Join(root, ".git"))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		resolved, resolveErr := filepath.EvalSymlinks(root)
+		if err != nil || resolveErr != nil || resolved != root {
+			return "", errors.New("expected a physical checkout in the task workspace")
+		}
+		return root, nil
+	}
+	return "", errors.New("task checkout unavailable")
+}
+
+func verifyCheckout(ctx context.Context, root string, audit bool, req Request, env []string) (string, error) {
+	git := func(args ...string) ([]byte, error) {
+		data := capture(ctx, "/usr/bin/git", root, env, args)
 		return data.stdout, data.err
 	}
-	name, err := git(cwd, "rev-parse", "--show-toplevel")
-	if err != nil {
-		return "", "", errors.New("expected a Git checkout in the task workspace")
+	name, err := git("rev-parse", "--show-toplevel")
+	if err != nil || strings.TrimSpace(string(name)) != root {
+		return "", errors.New("expected the task's Git checkout")
 	}
-	root, err := filepath.EvalSymlinks(strings.TrimSpace(string(name)))
-	if err != nil || !beneath(workspace, root) {
-		return "", "", errors.New("checkout is outside the task workspace")
-	}
-	identity, err := git(root, "rev-parse", "--verify", "HEAD")
+	identity, err := git("rev-parse", "--verify", "HEAD")
 	if err != nil || strings.TrimSpace(string(identity)) != req.Commit {
-		return "", "", errors.New("checkout HEAD differs from the requested commit")
+		return "", errors.New("checkout HEAD differs from the requested commit")
 	}
-	if req.Base != "" {
-		if _, err := git(root, "merge-base", req.Base, req.Commit); err != nil {
-			return "", "", errors.New("base must be a local commit with a common ancestor")
+	const mainRef = "refs/remotes/origin/main"
+	if audit {
+		if main, err := git("rev-parse", "--verify", mainRef); err != nil || strings.TrimSpace(string(main)) != req.Commit {
+			return "", errors.New("a whole-tree audit requires the checked out origin/main commit")
+		}
+	} else {
+		if base, err := git("merge-base", mainRef, req.Commit); err != nil || strings.TrimSpace(string(base)) != req.Base {
+			return "", errors.New("diff base must match the merge base with origin/main")
 		}
 	}
-	index, err := git(root, "ls-files", "-v", "-z")
+	index, err := git("ls-files", "-v", "-z")
 	if err != nil {
-		return "", "", errors.New("cannot verify checkout index")
+		return "", errors.New("cannot verify checkout index")
 	}
 	for entry := range bytes.SplitSeq(index, []byte{0}) {
 		if len(entry) > 0 && (entry[0] == 'S' || (entry[0] >= 'a' && entry[0] <= 'z')) {
-			return "", "", errors.New("index flags suppress checkout verification")
+			return "", errors.New("index flags suppress checkout verification")
 		}
 	}
-	entries, err := git(root, "ls-files", "--stage", "-z")
+	entries, err := git("ls-files", "--stage", "-z")
 	if err != nil {
-		return "", "", errors.New("cannot verify checkout paths")
+		return "", errors.New("cannot verify checkout paths")
 	}
 	for entry := range bytes.SplitSeq(entries, []byte{0}) {
 		if bytes.HasPrefix(entry, []byte("120000 ")) {
 			_, name, _ := bytes.Cut(entry, []byte{'\t'})
 			target, err := filepath.EvalSymlinks(filepath.Join(root, string(name)))
 			if err != nil || !beneath(root, target) {
-				return "", "", errors.New("checkout symlink does not resolve inside the pinned tree")
+				return "", errors.New("checkout symlink does not resolve inside the pinned tree")
 			}
 		}
 	}
-	dirty, err := git(root, "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none")
+	dirty, err := git("status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none")
 	if err != nil || len(dirty) > 0 {
-		return "", "", errors.New("checkout must be clean")
+		return "", errors.New("checkout must be clean")
 	}
-	tree, err := git(root, "rev-parse", req.Commit+"^{tree}")
+	tree, err := git("rev-parse", req.Commit+"^{tree}")
 	if err != nil {
-		return "", "", errors.New("cannot verify checkout tree")
+		return "", errors.New("cannot verify checkout tree")
 	}
-	return root, strings.TrimSpace(string(tree)), nil
+	return strings.TrimSpace(string(tree)), nil
 }
 
 func beneath(root, path string) bool {
@@ -226,7 +264,7 @@ func classify(e Envelope, requested string, output captured) Envelope {
 		} `json:"warnings"`
 	}
 	want := requested
-	if requested == "diff" {
+	if requested == "diff" || requested == "callers" {
 		want = "slice"
 	}
 	if err := json.Unmarshal(output.stdout, &data); err != nil || data.Command != want || data.Version != 1 {
