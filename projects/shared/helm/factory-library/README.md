@@ -259,9 +259,12 @@ rebuilds. Narrower access revokes unwanted rights without rotating the key.
 Retiring a kept claim requires explicit Garage key revocation; deleting the
 chart does not revoke the key.
 
-Adding public creates a separate read-only Garage key, a OnePasswordItem and
-a mirror CronJob. Its default schedule is every minute with Forbid concurrency, its own
-ServiceAccount and no mounted token. It uses the stock rclone/rclone image at
+Adding public creates a separate read-only Garage key and a mirror CronJob.
+A configured public.itemPath creates a OnePasswordItem. The path may be absent
+while the root mirror and every source mirror are suspended. Each job retains
+its required Secret references and admission guard. The CronJob runs every
+minute by default with Forbid concurrency. It uses its own ServiceAccount
+without a mounted token. It uses the stock rclone/rclone image at
 the 1.76.0 multi-platform digest. The optional public.image accepts only the
 stock repository and a SHA-256 digest; tags fail rendering.
 Set public.suspend to true while checking a destination. Verify its bucket,
