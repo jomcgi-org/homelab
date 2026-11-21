@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Text } from "@astryxdesign/core/Text";
 
+// invariant: FACT-171
 export function Poll({ components, counts, vote }) {
   return components.map((c) => {
     if (c?.component !== "Text" || typeof c.text !== "string") return null;
