@@ -1,3 +1,4 @@
+# invariant: PLAT-14
 # The factory cluster's Kargo, layered on values.yaml
 # (projects/platform-factory/kargo/application.yaml).
 #
