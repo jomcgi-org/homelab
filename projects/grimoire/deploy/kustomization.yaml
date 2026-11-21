@@ -7,6 +7,7 @@ kind: Kustomization
 resources:
   - restore-cronjob.yaml
   - migration-check-cronjob.yaml
+  - migration-check-once.yaml
 
 configMapGenerator:
   - name: grimoire-restore-script
@@ -15,3 +16,19 @@ configMapGenerator:
       - restore.sh
       - migration.sh
       - inventory.sql
+
+# HOME-746 runs the existing checksum pod once. Keep the completed Job until
+# its result is recorded, then remove this resource and replacement.
+replacements:
+  - source:
+      kind: CronJob
+      name: grimoire-migration-check
+      fieldPath: spec.jobTemplate.spec.template
+    targets:
+      - select:
+          kind: Job
+          name: grimoire-migration-check-home-746
+        fieldPaths:
+          - spec.template
+        options:
+          create: true

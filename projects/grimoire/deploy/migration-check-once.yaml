@@ -1,0 +1,10 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: grimoire-migration-check-home-746
+  namespace: grimoire
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 14400

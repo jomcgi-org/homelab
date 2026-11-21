@@ -188,8 +188,7 @@ def test_runtime_and_restore_pods_select_their_policies(rendered):
 
 def on_demand_pod(rendered, name):
     cronjob = by_kind(rendered, "CronJob")[name]
-    # A sync starts no run: the CronJob is suspended, its schedule never
-    # occurs, and no Job of that name is rendered.
+    # The CronJob never starts a scheduled run or renders a Job of that name.
     assert cronjob["spec"]["suspend"] is True
     assert cronjob["spec"]["schedule"] == "0 0 31 2 *"
     assert name not in by_kind(rendered, "Job")
@@ -286,19 +285,31 @@ def test_the_migration_check_reads_r2_and_nothing_else(rendered):
     )
 
 
+def test_one_time_migration_check_reuses_the_read_only_template(rendered):
+    cronjob = by_kind(rendered, "CronJob")["grimoire-migration-check"]
+    job = by_kind(rendered, "Job")["grimoire-migration-check-home-746"]
+    assert job["spec"]["template"] == cronjob["spec"]["jobTemplate"]["spec"]["template"]
+    assert job["spec"]["backoffLimit"] == 0
+    assert "ttlSecondsAfterFinished" not in job["spec"]
+
+
 def test_the_r2_key_comes_from_its_1password_item(rendered):
     item = by_kind(rendered, "OnePasswordItem")[R2_SECRET]
     assert item["metadata"]["namespace"] == "grimoire"
     assert item["spec"] == {
         "itemPath": "vaults/k8s-homelab/items/grimoire-migration-r2"
     }
-    # Only the two R2 readers name the key.
+    # Only the restore and checksum workloads name the key.
     readers = set()
     for doc in rendered:
         if doc["kind"] in {"CronJob", "Job", "Deployment", "StatefulSet"}:
             if R2_SECRET in yaml.safe_dump(doc):
                 readers.add(doc["metadata"]["name"])
-    assert readers == {"grimoire-restore", "grimoire-migration-check"}
+    assert readers == {
+        "grimoire-restore",
+        "grimoire-migration-check",
+        "grimoire-migration-check-home-746",
+    }
 
 
 def test_database_admits_only_grimoire_identities():
