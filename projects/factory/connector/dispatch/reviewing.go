@@ -12,7 +12,7 @@ import (
 )
 
 type reviewingIssueMover interface {
-	MarkIssueReviewing(context.Context, int64, string) error
+	MarkIssueReviewing(context.Context, int64, string) (bool, error)
 }
 
 type reviewingIssue struct {
@@ -21,13 +21,14 @@ type reviewingIssue struct {
 	CheckID int64  `json:"checkId"`
 }
 
-func pendingReviewerCheck(check *Check, head string, checks []github.CheckRun) int64 {
+func pendingReviewerCheck(check *Check, repo string, number int, head string, checks []github.CheckRun) int64 {
 	if check == nil || check.AppID == 0 || head == "" {
 		return 0
 	}
+	externalID := fmt.Sprintf("factory-review/%s/%d/%s", repo, number, head)
 	var latest github.CheckRun
 	for _, run := range checks {
-		if run.HeadSHA == head && run.AppID == check.AppID && run.Name == check.Name && run.ID > latest.ID {
+		if run.HeadSHA == head && run.AppID == check.AppID && run.Name == check.Name && run.ExternalID == externalID && run.ID > latest.ID {
 			latest = run
 		}
 	}
@@ -44,7 +45,7 @@ func (e *Engine) queueIssueReviewing(ctx context.Context, wi *store.WorkItem, b 
 	if _, ok := e.its.(reviewingIssueMover); !ok {
 		return nil
 	}
-	check := pendingReviewerCheck(b.Review.ReviewerCheck, pr.HeadSHA, checks)
+	check := pendingReviewerCheck(b.Review.ReviewerCheck, b.repo(), pr.Number, pr.HeadSHA, checks)
 	if check == 0 {
 		return nil
 	}
@@ -107,7 +108,7 @@ func (e *Engine) deliverIssueReviewing(ctx context.Context, it *store.OutboxItem
 	if err != nil {
 		return err
 	}
-	if pendingReviewerCheck(b.Review.ReviewerCheck, pending.Head, checks) != pending.CheckID {
+	if pendingReviewerCheck(b.Review.ReviewerCheck, b.repo(), pr.Number, pending.Head, checks) != pending.CheckID {
 		return finish()
 	}
 	if err := e.w.Tx(ctx, func(tx *sql.Tx) error {
@@ -119,11 +120,15 @@ func (e *Engine) deliverIssueReviewing(ctx context.Context, it *store.OutboxItem
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
-	if err := mover.MarkIssueReviewing(ctx, work.IssueID, pending.Head); err != nil {
+	settled, err := mover.MarkIssueReviewing(ctx, work.IssueID, pending.Head)
+	if err != nil {
 		if e.refused(ctx, it, err) {
 			return e.abandonItem(ctx, it, err)
 		}
 		return err
+	}
+	if !settled {
+		return errors.New("issue is not ready to enter Reviewing")
 	}
 	return finish()
 }
