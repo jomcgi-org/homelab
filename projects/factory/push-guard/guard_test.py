@@ -15,8 +15,10 @@ def git(repo, *args, check=True):
 @pytest.fixture
 def receiver(tmp_path, monkeypatch):
     remote = tmp_path / "private.git"
-    git(tmp_path, "init", "--bare", remote)
+    git(tmp_path, "init", "--bare", "--template=", remote)
     hook = remote / "hooks/pre-receive"
+    hook.parent.mkdir()
+    git(remote, "config", "core.hooksPath", str(hook.parent))
     shutil.copy(Path(__file__).with_name("pre-receive"), hook)
     refs = [tmp_path / name for name in ("binary", "layer")]
     for path in refs:
