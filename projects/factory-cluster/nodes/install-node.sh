@@ -50,6 +50,12 @@ systemctl reload-or-restart factory-firewall
 # rpcbind serves NFS, which no node uses.
 systemctl disable --now --quiet rpcbind.socket rpcbind.service 2>/dev/null || true
 
+# The T3 server and relay are pinned to node-1. Install the local listener
+# before k3s tries to start the relay pod.
+if [[ "$(hostname -s)" == "node-1" ]]; then
+	bash "${HERE}/install-t3-socket.sh"
+fi
+
 # zram swap replaces the disk swap file (zram-generator.conf).
 if ! dpkg -s systemd-zram-generator >/dev/null 2>&1; then
 	apt-get update -qq

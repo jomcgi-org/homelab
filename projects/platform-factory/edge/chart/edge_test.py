@@ -442,9 +442,14 @@ def test_kagent_hostname_is_owned_and_published():
         == "request.namespace == 'edge'"
     )
     for doc in resources:
-        assert doc["metadata"]["annotations"]["argocd.argoproj.io/sync-options"] == (
-            "Delete=false"
+        metadata = doc["metadata"]
+        options = metadata["annotations"]["argocd.argoproj.io/sync-options"]
+        expected = (
+            "Prune=false,Delete=false"
+            if metadata["name"].startswith("factory-t3-")
+            else "Delete=false"
         )
+        assert options == expected
         if doc["kind"] == "ValidatingAdmissionPolicy":
             assert doc["spec"]["failurePolicy"] == "Fail"
         else:
