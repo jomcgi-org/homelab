@@ -75,3 +75,7 @@ https://next.jomcgi.dev/*
 /trips/*
   ! Content-Security-Policy
   Content-Security-Policy: default-src 'self'; script-src 'self' https://static.cloudflareinsights.com/beacon.min.js; style-src 'self'; img-src 'self' data: https://tiles.openfreemap.org https://factory-data.jomcgi.dev; font-src 'self'; connect-src 'self' https://cloudflareinsights.com https://data.jomcgi.dev https://tiles.openfreemap.org; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
+
+/app/ships
+  ! Content-Security-Policy
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://static.cloudflareinsights.com/beacon.min.js; style-src 'self'; img-src 'self' data: https://tiles.openfreemap.org; font-src 'self'; connect-src 'self' https://cloudflareinsights.com https://factory-data.jomcgi.dev https://tiles.openfreemap.org; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'
