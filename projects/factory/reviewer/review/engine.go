@@ -1227,6 +1227,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		}
 		l.InfoContext(ctx, "re-attaching to an in-progress review", "check_run", run.ID)
 	}
+	e.observeReviewTransition(ctx, b, pr, run, kind)
 	e.m.ReviewsStarted.WithLabelValues(b.Name, kind).Inc()
 	delete(e.waiting, prKey{b.Name, pr.Number})
 	e.wg.Add(1)
@@ -3260,8 +3261,20 @@ func (e *Engine) finish(ctx context.Context, b *Binding, pr github.PullRequest, 
 	if !e.complete(ctx, b, run, o, l) {
 		return false
 	}
+	e.observeReviewTransition(ctx, b, pr, run, o.Conclusion)
 	e.queueCompletedComment(ctx, b, pr, run, o.Output.Text, o.Comment)
 	return true
+}
+
+func (e *Engine) observeReviewTransition(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun, phase string) {
+	_, span := otel.Tracer("factory-reviewer").Start(ctx, "factory.review_transition", trace.WithAttributes(
+		attribute.String("repository", b.repo()),
+		attribute.Int("pr.number", pr.Number),
+		attribute.String("head.sha", run.HeadSHA),
+		attribute.Int64("review.check_id", run.ID),
+		attribute.String("review.transition", phase),
+	))
+	span.End()
 }
 
 // stop ends a review whose context ended. Shutdown leaves the check in
@@ -3277,10 +3290,12 @@ func (e *Engine) stop(ctx context.Context, b *Binding, pr github.PullRequest, ru
 	defer cancel()
 	l.InfoContext(cctx, "review cancelled", "task", taskID, "reason", cause.Error())
 	e.cancelTask(cctx, b, taskID, l)
-	e.complete(cctx, b, run, Outcome{Conclusion: ConclusionCancelled, Output: github.CheckRunOutput{
+	if e.complete(cctx, b, run, Outcome{Conclusion: ConclusionCancelled, Output: github.CheckRunOutput{
 		Title:   "Review cancelled",
 		Summary: "Cancelled: " + cause.Error() + ".\n\n" + e.footer(b, pr, taskID),
-	}}, l)
+	}}, l) {
+		e.observeReviewTransition(cctx, b, pr, run, ConclusionCancelled)
+	}
 }
 
 func (e *Engine) cancelTask(ctx context.Context, b *Binding, taskID string, l *slog.Logger) {
