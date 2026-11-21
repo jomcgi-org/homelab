@@ -102,15 +102,19 @@ The publisher reads kagent session text through the connector store and
 publishes it by default
 ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-414#comment-5459)).
 The connector journals each task's history in `task_transcript`. The
-read-only `storyboard_messages` view returns the text of each assistant
-message in a completed task, as the itsaplan run trace shows it. Artifact
-text is excluded. A review round has no journal, so it publishes no turn.
+read-only `storyboard_prose_messages` view returns assistant messages and completed
+Codex prose segments from the task journal
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-414#comment-5512)).
+The Codex harness emits tool calls and results separately as structured data.
+A review round has no journal, so it publishes no turn.
+Lowering the storyboard chart pin to its prior version selects
+`storyboard_messages` and stops publishing Codex prose on the next cycle.
 
 | Rule | Enforced by |
 | --- | --- |
-| Project HOME only | `storyboard_messages` view |
-| Completed tasks only | `storyboard_messages` view |
-| Only tasks that the HOME binding's own kagent Agent ran; never the security agent in namespace `factory-intsec` | `storyboard_messages` view |
+| Project HOME only | `storyboard_prose_messages` view |
+| Completed tasks only | `storyboard_prose_messages` view |
+| Only tasks that the HOME binding's own kagent Agent ran; never the security agent in namespace `factory-intsec` | `storyboard_prose_messages` view |
 | No issue labelled `private`, `security`, `security-finding` or `INTSEC`, in any letter case | Publisher, from the itsaplan labels |
 | No turn, title or description that the secret scan matches | Publisher, with gitleaks |
 
@@ -154,10 +158,10 @@ independently:
 
 ```mermaid
 flowchart LR
-  M[Merge] --> C["Connector applies 20261119215000_storyboard_messages"]
+  M[Merge] --> C["Connector applies 20261121125100_storyboard_artifact_prose"]
   M --> B["PostSync bootstrap writes the key Secret"]
   M --> S["Storyboard CronJob uses the new image"]
-  C --> R[storyboard_messages ready]
+  C --> R[storyboard_prose_messages ready]
   S -->|key absent| K["Cycle logs a warning and publishes nothing"]
   S -->|view absent| N["Cycle logs an error and publishes nothing"]
   S -->|key and view present| P[Cycle publishes]
@@ -168,7 +172,7 @@ flowchart LR
 1. The migration only adds. The chart 0.1.10 publisher keeps reading
    `storyboard_tasks` and `storyboard_task_messages`.
 2. A new publisher cycle that starts before the migration applies logs
-   `connector view storyboard_messages is absent` and writes nothing. The
+   `connector view storyboard_prose_messages is absent` and writes nothing. The
    last manifest stays. The next cycle after the migration publishes.
 3. A cycle that starts before the bootstrap writes the key logs
    `itsaplan key not bootstrapped yet; skipping this cycle` and exits 0.
@@ -258,7 +262,7 @@ KUBECONFIG=~/.kube/factory.yaml kubectl -n factory-db exec factory-db-1 -c postg
 
 The second command must print 0. Use the primary's pod name if
 `factory-db-1` is not the primary. The `storyboard_delivery` and
-`storyboard_messages` views and their grants stay, so a later redeploy works
+`storyboard_prose_messages` views and their grants stay, so a later redeploy works
 without a new migration. Until the HOME-518 follow-up, the chart 0.1.10
 views and their grants also stay. To remove the grants as well, add a forward
 migration that revokes them.

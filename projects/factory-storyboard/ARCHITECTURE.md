@@ -35,7 +35,7 @@ in place of per-message owner approval
 ```mermaid
 flowchart LR
   I["itsaplan (HOME issues and labels)"] -->|read-only key| P[Publisher]
-  V["storyboard_messages view (HOME, completed, binding agent)"] -->|read-only login| P
+  V["storyboard_prose_messages view (HOME, completed, binding agent)"] -->|read-only login| P
   P -->|redact, gitleaks| G[(Garage factory-public)]
   G -->|mirror| R[(R2 factory-data.jomcgi.dev)]
 ```
