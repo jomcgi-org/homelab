@@ -324,3 +324,27 @@ designs are deferred and are not implemented here.
 - [GitHub Pages custom workflows](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages)
 - [GitHub workflow events and workflow_run security](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)
 - [GitHub Actions secure use](https://docs.github.com/en/actions/reference/security/secure-use)
+
+## Staged fixture selector publisher (HOME-716)
+
+The candidate workflow lives in `bazel/tools/previews/pages-workflow.yml`.
+Each half-hour it builds a fresh Pages site from open main-targeting PRs. A PR
+opts in with `bazel/tools/previews/request.json` containing the exact selector
+`{"fixture":"mock-blog-v1"}` (surrounding whitespace is allowed). The selected
+page is a static synthetic blog sample owned by main. Closing the PR removes
+both URLs on the next successful snapshot. Interactive comparison artifacts
+continue to belong to the existing build workflow.
+
+Before switching, run the staged publisher test, confirm the expected open PR
+inventory opts in, and verify that this sample covers the intended preview needs.
+Review the protected main checkout, job permissions, Pages origin and main-only
+environment. Keep required CI, independent review, Joe's head approval for the
+gated workflow change, and merge queue checks. In a reviewed change replace
+the live publish workflow with the template, drain prior runs and dispatch from
+main. Verify the stable and SHA URLs, then close a fixture PR and confirm both
+return 404 after reconciliation while another PR remains accessible.
+
+To reverse, restore the previously reviewed publisher workflow, drain snapshot
+runs and dispatch the restored workflow on main. Verify the marked state branch,
+Pages origin, current open head links and removal of closed previews. Run a fresh
+fixture build for any open head absent from retained state.

@@ -17,3 +17,9 @@ invariants:
   statement: Every third-party GitHub Action is pinned by commit SHA.
   mechanism: []
   state: designed
+- id: ROOT-4
+  statement: The staged Pages snapshot renders only trusted fixture pages and drops closed PRs on reconciliation.
+  mechanism:
+  - bazel/tools/previews/staged.py
+  test: //bazel/tools/previews:staged_test
+  state: live
