@@ -73,7 +73,7 @@ func Scan(ctx context.Context, actors, journal *sql.DB, pods core.PodsGetter, le
 	if err != nil {
 		return err
 	}
-	// invariant: FACT-13
+	// invariant: FACT-14
 	type actorKey struct{ atespace, name string }
 	currentAttempts := make(map[actorKey][]int64)
 	defer attempts.Close()
