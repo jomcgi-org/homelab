@@ -18,6 +18,11 @@ BIN = ROOT / "node_modules/.bin"
 FIXTURE = ROOT / "fixture.html"
 
 
+def check_heading(snapshot):
+    if "Browser evidence fixture" not in snapshot:
+        raise RuntimeError("fixture heading missing from snapshot")
+
+
 def mcp(url):
     server = subprocess.Popen(
         [BIN / "playwright-mcp", "--config", "config.json", "--isolated"],
@@ -60,7 +65,7 @@ def mcp(url):
 
     tool("browser_navigate", dict(url=url))
     snapshot = tool("browser_snapshot", {})
-    assert "Browser evidence fixture" in json.dumps(snapshot)
+    check_heading(json.dumps(snapshot))
     tool("browser_take_screenshot", dict(type="png", filename="screen.png"))
     return server
 
@@ -73,7 +78,7 @@ def cli(url):
 
     run("open", url, "--config=config.json")
     run("snapshot", "--filename=snapshot.md")
-    assert "Browser evidence fixture" in Path("snapshot.md").read_text()
+    check_heading(Path("snapshot.md").read_text())
     run("screenshot", "--filename=screen.png")
 
 
@@ -81,16 +86,19 @@ def cleanup():
     # Linux reparents detached CLI daemons and Chromium grandchildren to us.
     children = Path(f"/proc/self/task/{os.getpid()}/children")
     deadline = time.monotonic() + 10
-    while children.read_text().strip():
+    while time.monotonic() < deadline:
+        try:
+            os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+
         for pid in map(int, children.read_text().split()):
             try:
                 os.kill(pid, signal.SIGKILL)
-                os.waitpid(pid, os.WNOHANG)
-            except (ProcessLookupError, ChildProcessError):
+            except ProcessLookupError:
                 pass
-        if time.monotonic() >= deadline:
-            raise RuntimeError("descendants survived cleanup")
         time.sleep(0.02)
+    raise RuntimeError("descendants survived cleanup")
 
 
 class Interrupted(Exception):
@@ -153,9 +161,16 @@ def trial(arm, mode, browser, url):
         )
 
 
+def adopt_descendants():
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
 def main():
     browser = os.environ["CHROMIUM"]
-    assert ctypes.CDLL(None).prctl(36, 1, 0, 0, 0) == 0  # PR_SET_CHILD_SUBREAPER
+    adopt_descendants()
     signal.signal(signal.SIGINT, interrupt)
     signal.signal(signal.SIGALRM, interrupt)
     version = subprocess.check_output([browser, "--version"], text=True).strip()
