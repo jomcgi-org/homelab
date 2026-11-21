@@ -35,3 +35,9 @@ apko_image(
     contents = "@itsaplan_web_lock//:contents",
     tars = [":standalone_tar"],
 )
+
+filegroup(
+    name = "repo_docs",
+    srcs = ["README.md"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
