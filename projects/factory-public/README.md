@@ -14,7 +14,7 @@ flowchart LR
   health["health CronJob (HOME-260)"] -- "write health.json" --> hgarage[("Garage factory-health")]
   garage -- "rclone, every minute" --> r2[("R2 factory-public")]
   hgarage -- "copy health.json only" --> r2
-  sources[("Garage stars-forecast and hikes")] -- "read-only, one mirror each, under its prefix" --> r2
+  sources[("Garage stars-forecast, hikes and ships")] -- "read-only, one mirror each, under its prefix" --> r2
   r2 --> cdn["factory-data.jomcgi.dev"]
 ```
 
@@ -22,7 +22,7 @@ flowchart LR
 
 The chart has two `buckets:` entries in `chart/values.yaml`: `factory-public`
 with its mirror, and `factory-health` for the health publisher. The mirror
-also lists the Garage buckets `stars-forecast` and `hikes` in
+also lists the Garage buckets `stars-forecast`, `hikes` and `ships` in
 `public.sources`. They render:
 
 - a Garage bucket claim and key Secret for each entry, which garage-init fills;
@@ -39,7 +39,7 @@ also lists the Garage buckets `stars-forecast` and `hikes` in
   its R2 Secret.
 
 Each root run copies every object except `manifest.json`, `health.json`,
-`stars-forecast/` and `hikes/` with
+`stars-forecast/`, `hikes/` and `ships/` with
 `Cache-Control: public, max-age=31536000, immutable`. Then it uploads the
 `manifest.json` that it saved before the copy, with
 `Cache-Control: public, max-age=60`. Only then does it delete the R2 objects
@@ -57,10 +57,12 @@ excludes ([library rule](../shared/helm/factory-library/README.md#one-public-r2-
 | --- | --- | --- | --- |
 | `stars-forecast` | `projects/stars-forecast` | `https://factory-data.jomcgi.dev/stars-forecast/latest.json` | HOME-478 |
 | `hikes` | `projects/hikes` | `https://factory-data.jomcgi.dev/hikes/latest.json` | HOME-477 |
+| `ships` | `projects/ships` | `https://factory-data.jomcgi.dev/ships/latest.json` | HOME-410, after HOME-537 |
 
-Both sources run since their activation. To stop one, set its `suspend` to
-`true`: R2 keeps what it has. To add a writer, add a `public.sources` entry
-here. The writer chart keeps a Garage bucket without `public:`.
+Stars and Hikes run since their activation. The `ships` source stays
+`suspend: true` until its activation. To stop a source, set its `suspend`
+to `true`: R2 keeps what it has. To add a writer, add a `public.sources`
+entry here. The writer chart keeps a Garage bucket without `public:`.
 
 ## Factory health
 

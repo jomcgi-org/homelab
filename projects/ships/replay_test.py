@@ -39,8 +39,8 @@ LOCK_WAIT = (
 )
 # The PostgreSQL server is shared by the tests, so these read one database.
 LEASE_PID = (
-    "select pid from pg_locks where locktype = 'advisory' and granted"
-    " and classid = 409 and objid = 1"
+    "select pid from pg_locks where locktype = 'relation' and granted"
+    " and relation = 'ships.ingest_lease'::regclass and mode = 'ExclusiveLock'"
     " and database = (select oid from pg_database where datname = current_database())"
 )
 CLAIM_WAIT = (

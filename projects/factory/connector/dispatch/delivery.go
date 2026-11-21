@@ -694,6 +694,12 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	if err != nil || started {
 		return err
 	}
+	if err := e.queueIssueReviewing(ctx, wi, b, d, checks); err != nil {
+		if fatal(err) {
+			return err
+		}
+		e.log.WarnContext(ctx, "could not queue issue review state", "issue", wi.IssueKey)
+	}
 	if d.Mergeable == "CONFLICTING" {
 		// A head already sent back never enters the queue, even with green
 		// checks. An idle rebase need not wait for checks that cannot merge.

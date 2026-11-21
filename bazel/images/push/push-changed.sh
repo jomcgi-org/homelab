@@ -288,6 +288,20 @@ while IFS= read -r image_row || [ -n "${image_row:-}" ]; do
 	[ -n "$label" ] || continue
 	echo ""
 	echo "==> push $label"
+	case "$label" in
+	//projects/factory/harness/claude:image.push | //projects/factory/harness/codex:image.push | //projects/factory/reviewer/harness:image.push)
+		expected="ghcr.io/jomcgi/homelab/${label#//}"
+		if [ "$repository" != "${expected%:image.push}" ]; then
+			echo "ERROR: $label has no matching harness package in the digest manifest" >&2
+			exit 1
+		fi
+		;;
+	esac
+	case "$repository" in
+	ghcr.io/jomcgi/homelab/projects/factory/harness/claude | ghcr.io/jomcgi/homelab/projects/factory/harness/codex | ghcr.io/jomcgi/homelab/projects/factory/reviewer/harness)
+		python3 "$WORKSPACE/bazel/images/push/private_harness_package.py" "$repository" "$CRANE"
+		;;
+	esac
 	"$BAZEL" run "$label" "${BAZEL_ARGS[@]}" "${CHECK_OUTPUTS[@]}" --build_runfile_links
 
 	# Resolve the stamped tag written by this successful push. Unlike the

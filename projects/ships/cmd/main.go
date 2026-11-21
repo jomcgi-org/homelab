@@ -291,28 +291,29 @@ func applyChunk(ctx context.Context, c *sql.Conn, isolate bool) (int, error) {
 	return len(frames), nil
 }
 
-// lease is the advisory lock (409, 1). Its connection runs only the lock and
-// the pings that confirm it, so a blocked write cannot delay a ping.
+// The transaction holds the lock on an ingester-owned table. Its connection
+// is reserved for lease checks so a blocked write cannot delay confirmation.
 type lease struct {
-	conn  *sql.Conn
-	until atomic.Pointer[time.Time] // The lease is confirmed until this time.
+	tx    *sql.Tx
+	until atomic.Pointer[time.Time]
 }
 
 func acquire(ctx context.Context, db *sql.DB) (*lease, error) {
-	conn, err := db.Conn(ctx)
+	// Older factory databases predate the lease table. The ingester owns
+	// this schema and the publisher has no grant on the new table.
+	if _, err := db.ExecContext(ctx, "create table if not exists ships.ingest_lease ()"); err != nil {
+		return nil, err
+	}
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	sent := time.Now()
-	var held bool
-	if err = conn.QueryRowContext(ctx, "select pg_try_advisory_lock(409,1)").Scan(&held); err == nil && !held {
-		err = errors.New("database lease unavailable")
-	}
-	if err != nil {
-		conn.Close()
+	if _, err := tx.ExecContext(ctx, "lock table ships.ingest_lease in exclusive mode nowait"); err != nil {
+		tx.Rollback()
 		return nil, err
 	}
-	l := &lease{conn: conn}
+	l := &lease{tx: tx}
 	l.confirm(sent)
 	return l, nil
 }
@@ -342,7 +343,7 @@ func (l *lease) keep(ctx context.Context, lost func()) {
 		case <-tick.C:
 		}
 		sent := time.Now()
-		if l.conn.PingContext(ctx) != nil {
+		if _, err := l.tx.ExecContext(ctx, "select 1"); err != nil {
 			lost()
 			return
 		}
@@ -477,7 +478,7 @@ func ingest(ctx context.Context, db *sql.DB, key string) error {
 	if err != nil {
 		return err
 	}
-	defer l.conn.Close()
+	defer l.tx.Rollback()
 	// The session ends when the lease is lost, and its end closes the socket.
 	session, endSession := context.WithCancelCause(ctx)
 	defer endSession(nil)
@@ -580,7 +581,7 @@ func main() {
 		log.Fatal("invalid database configuration")
 	}
 	defer db.Close()
-	db.SetMaxIdleConns(0) // Release the session lock whenever the socket closes.
+	db.SetMaxIdleConns(0)
 	for delay := time.Second; ctx.Err() == nil; {
 		started := time.Now()
 		if err := ingest(ctx, db, key); err != nil && ctx.Err() == nil {

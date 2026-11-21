@@ -17,7 +17,8 @@ filegroup(
     visibility = [
         "//projects/factory/chart:__pkg__",
         "//projects/factory/chart/admission:__pkg__",
-        "//projects/factory/reviewer/harness:__pkg__",
+        "//projects/factory/harness/claude:__pkg__",
+        "//projects/factory/harness/codex:__pkg__",
     ],
 )
 

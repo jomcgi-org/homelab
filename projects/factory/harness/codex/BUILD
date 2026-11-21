@@ -3,10 +3,12 @@ load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
 load("//bazel/tools/oci:providers.bzl", "oci_image_info")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
-# The private review Harness image (HOME-530): the pinned Codex harness plus
-# Semgrep mandoline. Push it only to a private package. The chart value
-# reviewer.harnessImage selects it; deploy values leave it empty until the
-# mandoline runner (HOME-529) and its enablement (HOME-531) land.
+# The private Codex+mandoline Harness image (HOME-530, HOME-652): the pinned
+# Codex harness plus Semgrep mandoline, shared by the reviewer and coders. Push
+# it only to a private package. The chart values reviewer.harnessImage and
+# repositories[].harnessImage select it; deploy values leave them empty until
+# the mandoline runner (HOME-529), its turn-on (HOME-531, HOME-653) and the
+# push guard (HOME-651) land.
 # gazelle:ignore
 
 oci_image(
@@ -25,11 +27,15 @@ expand_template(
     template = ["{STABLE_IMAGE_TAG}"],
 )
 
+# The package owner verified this destination was absent and approved its
+# first private publication.
+# https://github.com/jomcgi-org/homelab/pull/8455#issuecomment-7055830336
+# GHCR assigns private visibility on first publication.
 oci_push(
     name = "image.push",
     image = ":image",
     remote_tags = "image_stamped_tags",
-    repository = "ghcr.io/jomcgi/homelab/projects/factory/reviewer/harness",
+    repository = "ghcr.io/jomcgi/homelab/projects/factory/harness/codex",
     visibility = ["//bazel/images:__pkg__"],
 )
 
@@ -38,7 +44,7 @@ oci_image_info(
     image = ":image",
     image_digest = ":image.digest",
     image_tags = "image_stamped.tags.txt",
-    repository = "ghcr.io/jomcgi/homelab/projects/factory/reviewer/harness",
+    repository = "ghcr.io/jomcgi/homelab/projects/factory/harness/codex",
     visibility = ["//visibility:public"],
 )
 

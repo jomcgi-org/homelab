@@ -1,5 +1,8 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library")
 
+# publish_test runs the maintenance grants against an older database.
+exports_files(["maintenance.sql"])
+
 go_library(
     name = "cmd_lib",
     srcs = ["main.go"],

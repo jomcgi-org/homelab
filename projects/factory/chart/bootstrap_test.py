@@ -607,3 +607,34 @@ def test_deferred_labels_cover_all_bindings_and_resume(bootstrap, interrupted):
     assert labels["/projects/7.OTHER"] == [
         {"id": 9, "name": "deferred", "color": "red"}
     ]
+
+
+def test_reviewing_column_bootstrap_preserves_existing_settings(bootstrap):
+    script, _, _ = bootstrap
+
+    class Session:
+        columns = []
+        writes = []
+
+        def call(self, method, path, body=None):
+            if method == "GET":
+                assert path == _PROJECT
+                return {"columns": self.columns}
+            assert method == "POST" and path == f"{_PROJECT}/columns"
+            self.writes.append(body.copy())
+            self.columns.append({**body, "id": 8})
+            return self.columns[-1]
+
+    session = Session()
+    script.ensure_reviewing_column(session, 7)
+    assert session.writes == [
+        {"name": "Reviewing", "stateType": "started", "color": "#6366f1"}
+    ]
+    session.columns[0]["color"] = "#000000"
+    script.ensure_reviewing_column(session, 7)
+    assert len(session.writes) == 1
+    assert session.columns[0]["color"] == "#000000"
+    session.columns[0]["stateType"] = "unstarted"
+    with pytest.raises(RuntimeError, match="Reviewing must belong"):
+        script.ensure_reviewing_column(session, 7)
+    assert len(session.writes) == 1

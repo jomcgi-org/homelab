@@ -4,7 +4,7 @@ HOME-256 follows [Joe's decision of 2026-11-18](https://factory-plan.jomcgi.dev/
 
 ## Ingest and capacity
 
-Run one Go process on factory. A typed WebSocket decoder and bounded channels let the reader and batched PostgreSQL writer overlap without allocating an unbounded backlog. Go fits the repository's existing build and image pipeline. Back off on disconnect, count dropped or malformed reports, and record the last successful commit time. Use the hub's subscription box and message filters. Guard the subscription with a PostgreSQL advisory lock during rolling updates.
+Run one Go process on factory. A typed WebSocket decoder and bounded channels let the reader and batched PostgreSQL writer overlap without allocating an unbounded backlog. Go fits the repository's existing build and image pipeline. Back off on disconnect, count dropped or malformed reports, and record the last successful commit time. Use the hub's subscription box and message filters. Guard the subscription with an ingester-owned PostgreSQL table lock.
 
 Keep PostgreSQL. Track history and all-time heat need durable state across reconnects, deployments and partition expiry. Port the hub's deduplication, latest-position and vessel metadata upserts. Keep daily position partitions for seven days. Bank each expired day's distinct vessel counts by cell and drop its partition in one transaction. Import historical heat separately from live partitions and reconcile their UTC day boundary before enabling retention. The hub implementation defines the parity target. [Ingest and serving code](../monolith/ships/)
 
@@ -30,21 +30,39 @@ These values keep wide headroom, because no measurement sets them. [HOME-526](ht
 
 ## Publication contract
 
-AISStream.io publishes no terms of service or data license (checked 2026-11-18). Its site links only a [privacy policy](https://aisstream.io/privacypolicy), which says nothing about redistribution. Its [documentation](https://aisstream.io/documentation#limits) sets only operational limits, and tells apps to serve clients through their own server with only the data each client needs. So no published grant covers public position files. With no terms to link, this plan links the pages checked ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-256#comment-4186)). An inquiry in AISStream’s issue tracker asks specifically about public redistribution. Another reports that the usual terms URLs returned 404. Both are requests from users of the service. Neither supplies a license. [Redistribution inquiry](https://github.com/aisstream/issues/issues/223) · [Terms lookup report](https://github.com/aisstream/issues/issues/299)
+Ships data is public. [Joe decided](https://factory-plan.jomcgi.dev/factory/issue/HOME-256#comment-4484) that the factory publishes the snapshot, heat and track products as public files through the cluster to R2 sink. This replaces the earlier plan to keep them in private storage until a license covered redistribution. Anonymous readers get every product under `https://factory-data.jomcgi.dev/ships/`. No product has a private copy or an authenticated endpoint.
 
-Keep all three products in private Garage storage until the applicable terms or written permission covers the intended redistribution. Serve private data only to authorized readers through an authenticated endpoint with private, no-store caching. Keep the public static page in an unavailable state in that mode. Do not assume aggregation or delay grants redistribution rights. [AISStream](https://aisstream.io/)
+AISStream.io publishes no terms of service or data license (checked 2026-11-18). Its site links only a [privacy policy](https://aisstream.io/privacypolicy), which says nothing about redistribution, and its [documentation](https://aisstream.io/documentation#limits) sets only operational limits. Two user reports in its issue tracker ask about redistribution and the missing terms. Neither supplies a license. [Redistribution inquiry](https://github.com/aisstream/issues/issues/223) · [Terms lookup report](https://github.com/aisstream/issues/issues/299)
 
-If cleared, copy only the approved prefix through the HOME-137 Garage-to-R2 mirror. The following sizes are uncompressed JSON planning targets, except for the reported snapshot size. Measure actual byte distributions before cutover.
+```mermaid
+flowchart LR
+  db[(ships-db)] -->|read-only view, every 2 minutes| publisher[ships-publish CronJob]
+  publisher -->|tracks, heat, snapshot, then latest.json| garage[(Garage ships)]
+  garage -->|read-only key, every minute| mirror[factory-public ships mirror]
+  mirror -->|payloads, latest.json, then deletes| r2[(R2 factory-public, prefix ships)]
+  r2 -->|anonymous GET| reader[Ships page]
+```
 
-| Key under ships/v1/ | Contents and size | Publish interval | Public Cache-Control |
+| Key under `ships/` | Contents | Changes when | Cache-Control |
 | --- | --- | --- | --- |
-| snapshot.json | Latest position and metadata per vessel, roughly 2.9 MB | 120 seconds | public, max-age=0, s-maxage=120 |
-| heat.json | Occupied cells, live plus banked vessel-days and legend stops, target 1 MB | Hourly after rollup | public, max-age=300, s-maxage=3600 |
-| tracks/{mmsi}.json | Latest 1,000 retained points in map order, target 150 KB per vessel | Changed tracks every 120 seconds | public, max-age=0, s-maxage=120 |
+| `latest.json` | `schema_version`, `generated_at` and the keys of the snapshot and heat grid | Every run | `public, max-age=60` |
+| `snapshot-<sha256>.json` | `schema_version`, `generated_at` and the hub snapshot fields of each vessel. Each vessel adds `track`: its track key, or null without retained history | Every run | `public, max-age=31536000, immutable` |
+| `tracks/<mmsi>-<sha256>.json` | The hub track: up to 1,000 retained positions, newest first | A newer report, or the hourly rebuild | `public, max-age=31536000, immutable` |
+| `heat-<sha256>.json` | The hub heat grid and colour stops, and `computed_at` of the newest rollup | An hourly rollup | `public, max-age=31536000, immutable` |
 
-Public rollout requires a change to the HOME-137 mirror. Its [upload template](../shared/helm/factory-library/chart/templates/_mirror.tpl) currently gives every payload except the root manifest a one-year immutable lifetime. Add opt-in per-key header rules for the three mutable Ships keys. Before routing readers to R2, replace a fixture at each kind of key, read it through the edge with an existing browser cache, and verify both the table’s Cache-Control value and that the replacement becomes visible within its TTL.
+A reader fetches `latest.json` and the snapshot it names. It fetches the heat grid when it enters heat mode and one track when it selects a marker. It resolves each key `k` as `https://factory-data.jomcgi.dev/ships/k`. Timestamps use the hub format: UTC, ISO 8601 and `+00:00`. The page reads from a different host than the site, so HOME-411 checks that R2 allows reads from the site origin.
 
-Replace each key with a complete object and include a generation timestamp. Publish changed tracks before the snapshot, retry failed copies with the same body, and propagate expiry of tracks that age out even when no new reports arrive. Verify headers and ETags at the public edge. Keep bucket listing disabled. The browser fetches the snapshot on load and revalidates every two minutes, fetches heat on entering heat mode and one track on marker selection. Preserve map state and display the last successful timestamp on a failed refresh. A missing track leaves the selected vessel visible. Allow reads from the site origin if the mirror uses a separate hostname.
+The `ships-publish` CronJob runs `ships publish` every 2 minutes. It reads the database in one read-only REPEATABLE READ transaction, so the products come from one view. `generated_at` is the time of that view. It connects as `ships_publisher`, a login with SELECT on the five tables it reads and no other privilege. `chart/sql/bootstrap.sql` creates the role and its grants, and CloudNativePG sets its password from the `ships-publisher-login` Secret, which a sync hook fills once. HOME-516 created `ships-db` before the role existed, so its bootstrap ran no grants. CloudNativePG creates the role from `managed.roles`, and the ingester's maintenance (`cmd/maintenance.sql`) gives it the same grants at each lease and every hour. The publisher never gets the owner credential `ships-db-app`. Its network policies allow only Garage on 3900 and the database on 5432.
+
+The publisher rebuilds the track of each vessel whose latest position changed after the previous generation. A 2-minute margin covers an ingester transaction that committed after that view. The first run of each UTC hour rebuilds every track. That run picks up a report older than the latest position, and history that retention dropped. A payload key holds the SHA-256 of its bytes, so the publisher skips a key that the bucket already holds. It writes tracks, heat and the snapshot, then `latest.json` last.
+
+A payload stays in Garage for 30 minutes after it retires: the first committed generation that does not name it. This includes a track whose vessel has no track after retention. After each manifest write, the publisher records the retirement time of each unnamed payload in `publisher-state.json` and deletes the payloads that retired 30 minutes before. A payload without a recorded time, such as an orphan of a failed run, retires at that run. A lost or unreadable state restarts the 30 minutes for every unnamed payload, so it never deletes one early. The mirror also copies the state object to R2, where readers ignore it. The mirror deletes a payload from R2 after Garage loses it.
+
+If a run or a mirror copy stops part way, `latest.json` still names the previous generation, and every object it names is complete. The publisher writes the manifest last. The mirror copies the payloads without deletes, then the manifest, and only then deletes what Garage no longer holds. So at every step the public `latest.json` names only objects that R2 holds, also after a mirror outage longer than 30 minutes. The next run catches up. After such an outage, a reader that cached the old manifest can miss its objects for up to a minute. `publish/publish_test.go` and `projects/factory-public/chart/public_test.py` test these cases, the second with a stop at every mirror step. `publish_test.py` compares each product with the hub API on the same database.
+
+Each run logs one line with `vessels`, `tracks`, `rebuilt`, `full`, `puts`, `put_bytes`, `deletes` and `retired`: the bytes and object writes of the cycle, and the payloads in their grace period. The hub page on 2026-11-19 had 7,843 vessels in a 2.7 MB snapshot. 135 of them had a report in the 2 minutes before the read, and 1,234 in the 7 days before it. So a run writes about 135 tracks, the snapshot, the manifest and the state. HOME-410 replaces these estimates with measurements.
+
+HOME-410 enables the publisher and the `factory-public` source `ships` after HOME-537 starts the ingester. To pause publication, set `publisher.suspend: true` in the Ships chart and `suspend: true` on the source. R2 retains the last complete generation.
 
 ## Follow-up HOME issues
 
@@ -149,13 +167,13 @@ To roll back, confirm that no `ships-ingester` pod runs before the hub ingest st
 
 ### Garage sink and R2 mirror
 
-Tracked in [HOME-410](https://factory-plan.jomcgi.dev/factory/issue/HOME-410).
+Tracked in [HOME-410](https://factory-plan.jomcgi.dev/factory/issue/HOME-410). The publisher writes to its Garage bucket and the `factory-public` source mirrors it to R2 ([Publication contract](#publication-contract)).
 
 Done when
 
-1. Record the dated terms permalink and redistribution grant or implement the private delivery path. Verify anonymous access matches that decision for every product.
-2. Measure bytes and object writes per cycle and verify schema, timestamps, freshness, headers and expiry at the reader endpoint.
-3. Interrupt a copy and verify readers retain complete objects and the mirror catches up after recovery.
+1. The redistribution decision is linked, and anonymous access matches it for every product.
+2. After HOME-537 turns the ingester on: bytes and object writes per cycle are measured, and schema, timestamps, freshness, headers and expiry are correct at the reader endpoint.
+3. An interrupted copy leaves readers with complete objects, and the mirror catches up after recovery.
 
 ### Ships page
 
@@ -192,7 +210,7 @@ Done when
 | Component | Responsibility |
 | --- | --- |
 | cmd | Holds the database lease on its own connection, and commits received frames to `ships.inbox` on a second connection. A third connection claims them, applies them to history, latest positions and vessels, and runs partition maintenance and the heat refresh. |
-| publish | Runs as `ships publish`. Reads one database view and writes the snapshot, heat and track products to a Garage bucket ([Publication contract](#publication-contract)). A run holds the PostgreSQL advisory lock `(558, 1)` on the primary from before its bucket listing until it exits. A run that finds the lock held exits without a bucket request. A payload that returns after retirement gets a fresh key, so a delayed delete of the retired key cannot remove it. |
+| publish | Runs as `ships publish` in the `ships-publish` CronJob. Reads one database view and writes the snapshot, heat and track products to Garage bucket `ships` ([Publication contract](#publication-contract)). A run holds the PostgreSQL advisory lock `(558, 1)` on the primary from before its bucket listing until it exits. A run that finds the lock held exits without a bucket request. A payload that returns after retirement gets a fresh key, so a delayed delete of the retired key cannot remove it. |
 
 ```mermaid
 flowchart LR
@@ -205,7 +223,7 @@ flowchart LR
 
 The chart runs one ingester replica when `enabled` is true and none when it is false. HOME-537 set the default to true; `enabled=false` is the rollback. `chart/ingester_test.py` asserts both cases and the starting budgets in [Ingest and capacity](#ingest-and-capacity). CNPG creates the three-instance database from `chart/sql/bootstrap.sql` as the `ships` owner. The ingester connects with the owner URI from the `ships-db-app` Secret. Enable retention separately after importing and reconciling historical heat at a UTC boundary.
 
-A session subscribes only while it holds the PostgreSQL advisory lock `(409, 1)`. The lease connection holds that lock and runs nothing else. The writer pings it every second. A ping that succeeds confirms the lease for 5 seconds from the moment the writer sent it. If a ping fails or the confirmation expires, the writer closes its AISStream socket at once. A timer does the close at expiry, so a ping that hangs on a dead connection cannot delay it. The reader also drops each frame that it reads after the confirmation expires.
+A session subscribes only while its dedicated transaction holds the exclusive lock on `ships.ingest_lease`. Only the ingester owns the table. The writer checks that transaction every second. A check that succeeds confirms the lease for 5 seconds from the moment the writer sent it. If a check fails or the confirmation expires, the writer closes its AISStream socket at once. A timer does the close at expiry, so a check that hangs on a dead connection cannot delay it. The reader also drops each frame that it reads after the confirmation expires.
 
 After a writer takes the lock, it runs maintenance and applies the frames that `ships.inbox` still holds. It then waits 10 seconds (`leaseGrace` in `cmd/main.go`) before it subscribes. A writer that lost the lock sent its last confirmed ping before the loss, so it closes its socket less than 5 seconds after the loss. Thus at most one socket is open at any instant, also when PostgreSQL ends the lease session without notice. A database row cannot close a socket on AISStream, so this time bound is the fence. A stopped process cannot close its socket. When it resumes, its reader drops each frame that it reads after the deadline, so no report reaches the inbox from both sockets.
 
@@ -215,9 +233,9 @@ sequenceDiagram
   participant PG as PostgreSQL
   participant New as new writer
   participant Feed as AISStream
-  Old->>PG: ping the lease connection every second
+  Old->>PG: check the lease transaction every second
   PG--xOld: end the lease session
-  New->>PG: pg_try_advisory_lock(409, 1) succeeds
+  New->>PG: exclusive lock on ships.ingest_lease succeeds
   Old->>Feed: close the socket after a failed ping, or 5 s after the last confirmed ping
   New->>PG: run maintenance, then apply ships.inbox
   New->>New: wait 10 s

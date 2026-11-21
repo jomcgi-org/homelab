@@ -40,6 +40,13 @@ await db.transaction(async (tx) => {
       primary key (issue_id, start_date)
     )
   `);
+  await tx.execute(sql`
+    create table if not exists factory_reviewed_head (
+      issue_id integer not null references issue(id) on delete cascade,
+      head_sha text not null,
+      primary key (issue_id, head_sha)
+    )
+  `);
 });
 
 const conflict = (message: string) => new HttpError(409, message);
@@ -343,6 +350,66 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
         startDate: t.String({ format: "date" }),
         delegateUserId: t.String({ minLength: 1 }),
       }),
+    },
+  )
+  .post(
+    "/issues/:issueId/factory-reviewing",
+    async ({ params, body, user, projectId }) => {
+      const id = params.issueId;
+      const actor = user!.id;
+      return factoryTransaction(async () => {
+        const owned = await db.execute<{
+          columnId: number;
+          applied: boolean;
+        }>(sql`
+          select i.column_id as "columnId", exists (
+            select 1 from factory_reviewed_head h where h.issue_id = i.id
+              and h.head_sha = ${body.head}
+          ) as applied from issue i
+          join project p on p.id = i.project_id
+          join ai_agent a on a.team_id = p.team_id and a.user_id = ${actor}
+          where i.id = ${id} and p.id = ${projectId} and p.key = 'HOME'
+            and a.username = 'factory-coordinator'
+          for update of i
+        `);
+        if (!owned.length) throw new HttpError(403, "Review transition denied");
+        if (owned[0].applied) return { moved: false, settled: true };
+
+        const columns = await db.execute<{ id: number; name: string }>(sql`
+          select c.id, c.name from project_column c where c.project_id = ${projectId}
+            and c.state_type = 'started' and c.name in ('In Progress', 'Reviewing')
+          for share of c
+        `);
+        const names = new Map(Array.from(columns, (c) => [c.name, c.id]));
+        const reviewing = names.get("Reviewing");
+        if (!reviewing || !names.has("In Progress"))
+          throw new HttpError(503, "Review workflow columns unavailable");
+        if (owned[0].columnId !== names.get("In Progress"))
+          return { moved: false, settled: false };
+        const blocked = await db.execute(sql`
+          select 1 from issue i where i.id = ${id} and (
+            i.archived_at is not null
+            or exists (
+              select 1 from issue_label il join label l on l.id = il.label_id
+              where il.issue_id = i.id and lower(l.name) in ('human', 'needs-human')
+            )
+          )
+        `);
+        if (blocked.length) return { moved: false, settled: false };
+
+        const inserted = await db.execute(sql`
+          insert into factory_reviewed_head (issue_id, head_sha) values (${id}, ${body.head})
+          on conflict do nothing returning issue_id
+        `);
+        if (!inserted.length) return { moved: false, settled: true };
+        await updateIssue(id, { columnId: reviewing }, actor);
+        return { moved: true, settled: true };
+      });
+    },
+    {
+      workItem: "edit",
+      params: t.Object({ issueId: t.Numeric({ minimum: 1 }) }),
+      body: t.Object({ head: t.String({ pattern: "^[0-9a-f]{40}$" }) }),
     },
   )
   .patch(
