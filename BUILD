@@ -157,7 +157,6 @@ filegroup(
     srcs = glob(
         [
             "AGENTS.md",
-            "CLAUDE.md",
             "bazel/**/*.md",
             "docs/**/*.md",
         ],
