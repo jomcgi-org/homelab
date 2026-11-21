@@ -3725,3 +3725,59 @@ func TestUnconfirmedEjectionEmitsNoEjectionSpan(t *testing.T) {
 		})
 	}
 }
+
+type reviewingPlan struct {
+	dispatch.Itsaplan
+	heads []string
+	ready bool
+}
+
+func (p *reviewingPlan) MarkIssueReviewing(_ context.Context, issueID int64, head string) (bool, error) {
+	if issueID != 101 {
+		return false, fmt.Errorf("unexpected issue %d", issueID)
+	}
+	p.heads = append(p.heads, head)
+	return p.ready, nil
+}
+
+func TestCurrentPendingReviewerCheckQueuesNativeReviewingOnce(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.e.Release()
+	v.cfg.Bindings[0].ItsaplanProject = "HOME"
+	plan := &reviewingPlan{Itsaplan: v.its}
+	v.plan = plan
+	v.e = v.engine("connector-a")
+	v.its.add(1, "coder", 101, "HOME-7", "Fix the test.")
+	v.tick(v.e)
+	head := strings.Repeat("a", 40)
+	binding := v.cfg.Bindings[0]
+	checkPrefix := "factory-review/" + binding.Owner + "/" + binding.Repo
+	v.gh.push("factory/HOME-7", head, "fix(test): stop the flake")
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Pushed.", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	v.gh.mu.Lock()
+	v.gh.checks[head] = []github.CheckRun{
+		{ID: 5, ExternalID: checkPrefix + "/1/" + head, Name: "semgrep-review", AppID: 200, HeadSHA: head, Status: "completed"},
+		{ID: 10, ExternalID: checkPrefix + "/1/" + head, Name: "semgrep-review", AppID: 300, HeadSHA: head, Status: "in_progress"},
+		{ID: 12, ExternalID: checkPrefix + "/2/" + head, Name: "semgrep-review", AppID: 200, HeadSHA: head, Status: "in_progress"},
+	}
+	v.gh.mu.Unlock()
+	v.poll()
+	if len(plan.heads) != 0 {
+		t.Fatalf("a foreign check updated the issue: %v", plan.heads)
+	}
+	v.gh.mu.Lock()
+	v.gh.checks[head] = append(v.gh.checks[head], github.CheckRun{
+		ID: 11, ExternalID: checkPrefix + "/1/" + head, Name: "semgrep-review", AppID: 200, HeadSHA: head, Status: "in_progress",
+	})
+	v.gh.mu.Unlock()
+	v.poll()
+	plan.ready = true
+	v.clk.Advance(time.Minute)
+	v.poll()
+	v.poll()
+	if len(plan.heads) != 2 || plan.heads[0] != head || plan.heads[1] != head {
+		t.Fatalf("Reviewing transitions = %v, want retry then settlement for the current head", plan.heads)
+	}
+}

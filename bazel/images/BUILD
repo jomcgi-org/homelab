@@ -54,6 +54,7 @@ multirun(
         "//projects/factory/chart:chart.push",
         "//projects/factory/codex-code-mode:image.push",
         "//projects/factory/connector/image:image.push",
+        "//projects/factory/harness/claude:image.push",
         "//projects/factory/harness/codex:image.push",
         "//projects/factory/itsaplan-web:image.push",
         "//projects/factory/reviewer/image:image.push",

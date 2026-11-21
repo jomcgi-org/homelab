@@ -48,6 +48,19 @@ def test_scheduled_writer():
         "factory-itsaplan-agent-factory-storyboard",
         "factory-storyboard-db",
     }
+    (claim,) = [
+        d["data"]
+        for d in docs
+        if d["kind"] == "ConfigMap"
+        and d["metadata"].get("labels", {}).get("factory.jomcgi.dev/garage-claim")
+        == "true"
+    ]
+    assert claim == {
+        "access": "readwrite",
+        "bucket": "factory-public",
+        "namespace": "factory",
+        "secretName": "factory-storyboard-factory-public-s3",
+    }
     # The root filesystem stays read-only; the secret scan writes to /tmp.
     (container,) = pod["containers"]
     assert container["securityContext"]["readOnlyRootFilesystem"] is True

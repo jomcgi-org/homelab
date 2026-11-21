@@ -42,3 +42,16 @@ SELECT floor(lat/0.005),floor(lon/0.0075),count(DISTINCT mmsi)
 FROM retained JOIN movers USING(mmsi)
 WHERE lat BETWEEN -90 AND 90 AND lon BETWEEN -180 AND 180 AND (lat<>0 OR lon<>0)
 GROUP BY 1,2;
+
+-- The publisher's read-only login, with the grants of chart/sql/bootstrap.sql.
+-- HOME-516 created ships-db before the login existed, so its bootstrap ran
+-- no grants. CloudNativePG creates the role from managed.roles; until then
+-- this step does nothing.
+DO $$
+BEGIN
+  IF to_regrole('ships_publisher') IS NOT NULL THEN
+    GRANT USAGE ON SCHEMA ships TO ships_publisher;
+    GRANT SELECT ON ships.vessels, ships.positions, ships.latest_positions,
+      ships.heat_cells, ships.heat_cells_historical TO ships_publisher;
+  END IF;
+END $$;

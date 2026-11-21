@@ -109,7 +109,8 @@ private image is `//projects/factory/harness/codex:image`, the pinned Codex
 harness plus mandoline. The reviewer and coders can share its private package
 (HOME-530, HOME-652).
 
-**Why.** The INTSEC audit Harness runs a private image built by Bazel. The
+**Why.** Bazel builds the private INTSEC audit Harness at
+`//projects/factory/harness/claude:image` (HOME-234). The
 sandbox gets no GHCR token. Copies of the layer and binary in the BuildBuddy
 cache, which is private to the org, are accepted
 ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-234#comment-5555)).
