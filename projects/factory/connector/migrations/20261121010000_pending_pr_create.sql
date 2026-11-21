@@ -1,6 +1,4 @@
-ALTER TABLE work_item ADD COLUMN pr_create_check_at timestamptz,
-    ADD COLUMN pr_create_started_at timestamptz,
-    ADD COLUMN pr_create_absence_confirmed boolean NOT NULL DEFAULT false;
+ALTER TABLE work_item ADD COLUMN pr_create_check_at timestamptz;
 
 CREATE TABLE stopped_pr_attempt (
     message_id text PRIMARY KEY,
