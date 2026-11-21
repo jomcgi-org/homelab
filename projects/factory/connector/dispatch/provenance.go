@@ -30,12 +30,28 @@ func (e *Engine) ResolveAnalysisMain(ctx context.Context, namespace, session str
 	if err != nil {
 		return "", err
 	}
-	task, err := e.tasks.GetTaskMetadata(ctx, kagent.AgentRef{Namespace: namespace, Name: assigned.Agent}, assigned.TaskID)
+	if err := e.guard(ctx); err != nil {
+		return "", err
+	}
+	if e.cfg.Caller == nil {
+		return "", errCallerUncertain
+	}
+	ctx, identity, err := e.cfg.Caller.Pin(ctx)
+	if err != nil || !identity.Valid() || identity.Key() != assigned.CallerIdentity {
+		return "", callerUncertain(err)
+	}
+	task, err := e.taskMetadata(ctx, &store.Attempt{
+		ID: assigned.AttemptID, KagentNamespace: namespace, KagentAgent: assigned.Agent,
+		ContextID: assigned.ContextID, TaskID: assigned.TaskID,
+	})
 	if err != nil {
 		return "", err
 	}
-	if task == nil || task.ID != assigned.TaskID || task.ContextID != assigned.ContextID || task.Status.State != kagent.StateWorking {
+	if task.Status.State != kagent.StateWorking {
 		return "", sql.ErrNoRows
+	}
+	if err := e.guard(ctx); err != nil {
+		return "", err
 	}
 	current, err := e.st.CurrentAnalysisTask(ctx, namespace, session)
 	if err != nil {
@@ -121,11 +137,17 @@ func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.
 		}
 		analysisMain, err = gh.BranchHead(ctx, b.repo(), b.BaseBranch)
 		if err != nil {
-			// Branch provenance still permits the established dispatch.
-			// The analysis endpoint requires a verified pin.
-			e.log.WarnContext(ctx, "analysis main unavailable for task", "message_id", a.MessageID, "error", err)
-			analysisMain = ""
+			// The regular dispatch retry reads the branch again. A receipt
+			// that has issued its task cannot acquire a pin retroactively.
+			var refused *github.HTTPError
+			if errors.As(err, &refused) && (refused.Status == 401 || refused.Status == 403) {
+				return "", &github.HTTPError{Status: refused.Status}
+			}
+			return "", err
 		}
+	}
+	if !baseCommit.MatchString(analysisMain) {
+		return "", errors.New("analysis main commit is missing or invalid")
 	}
 	issue := r.AdmissionIssue
 	if issue == nil {

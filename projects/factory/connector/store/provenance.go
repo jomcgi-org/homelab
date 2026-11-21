@@ -34,10 +34,12 @@ func (s *Store) RecordProvenance(ctx context.Context, w *Writer, a *Attempt, p p
 
 // AnalysisTask is the accepted coder task that owns a session's analysis pin.
 type AnalysisTask struct {
-	Agent     string
-	ContextID string
-	TaskID    string
-	MainSHA   string
+	AttemptID      int64
+	Agent          string
+	ContextID      string
+	TaskID         string
+	MainSHA        string
+	CallerIdentity string
 }
 
 // CurrentAnalysisTask finds a unique accepted receipt for a verified actor
@@ -47,13 +49,14 @@ func (s *Store) CurrentAnalysisTask(ctx context.Context, namespace, session stri
 	var task AnalysisTask
 	err := s.DB.QueryRowContext(ctx, `
 		WITH matching AS (
-			SELECT a.kagent_agent, a.context_id, a.task_id, a.analysis_main_sha
+			SELECT a.id, a.kagent_agent, a.context_id, a.task_id, a.analysis_main_sha, w.caller_identity
 			FROM delivery_attempt a
 			JOIN run r ON r.id = a.run_id
 			JOIN work_item w ON w.id = r.work_item_id
 			WHERE a.kagent_namespace = $1 AND lower(a.context_id) = $2
 				AND a.state = 'accepted' AND a.task_id <> ''
 				AND a.analysis_main_sha IS NOT NULL
+				AND nullif(w.caller_identity,'') IS NOT NULL
 				AND r.state = 'dispatched' AND r.stopped_reason IS NULL
 				AND r.attempt = a.run_attempt AND w.epoch = a.work_item_epoch
 				AND w.session_id = a.context_id AND w.kagent_namespace = a.kagent_namespace
@@ -63,9 +66,9 @@ func (s *Store) CurrentAnalysisTask(ctx context.Context, namespace, session stri
 				)
 			LIMIT 2
 		)
-		SELECT kagent_agent, context_id, task_id, analysis_main_sha FROM matching
+		SELECT id, kagent_agent, context_id, task_id, analysis_main_sha, caller_identity FROM matching
 		WHERE (SELECT count(*) FROM matching) = 1`, namespace, session).
-		Scan(&task.Agent, &task.ContextID, &task.TaskID, &task.MainSHA)
+		Scan(&task.AttemptID, &task.Agent, &task.ContextID, &task.TaskID, &task.MainSHA, &task.CallerIdentity)
 	return task, err
 }
 

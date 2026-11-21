@@ -63,6 +63,11 @@ func TestCoderAndReworkRunProvenance(t *testing.T) {
 	if pin, err := v.e.ResolveAnalysisMain(v.ctx, firstAttempt.KagentNamespace, strings.ToLower(firstAttempt.ContextID)); err != nil || pin != active.MainSHA {
 		t.Fatalf("working task pin=%q err=%v", pin, err)
 	}
+	var readAttempt int64
+	if err := v.st.DB.QueryRowContext(v.ctx, `SELECT attempt_id FROM task_metadata_read WHERE message_id=$1`,
+		fmt.Sprintf("task-metadata/%d", firstAttempt.ID)).Scan(&readAttempt); err != nil || readAttempt != firstAttempt.ID {
+		t.Fatalf("task pin read was not journaled for attempt %d: %d, %v", firstAttempt.ID, readAttempt, err)
+	}
 	if _, err := v.st.CurrentAnalysisTask(v.ctx, "other-role", strings.ToLower(firstAttempt.ContextID)); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("analysis pin crossed a namespace boundary: %v", err)
 	}
@@ -126,20 +131,28 @@ func TestProvenanceFailurePreventsCoderSend(t *testing.T) {
 	}
 }
 
-func TestUnavailableAnalysisMainKeepsExistingBranchDispatch(t *testing.T) {
-	v := provenanceEnv(t)
-	head := strings.Repeat("b", 40)
-	v.gh.push("factory/HL-7", head, "work in progress")
-	v.gh.branchErr = map[string]error{"main": github.ErrNotFound}
-	v.its.add(1, "coder", 101, "HL-7", "Fix it.")
-	v.tick(v.e)
+func TestUnavailableAnalysisMainRetriesBeforeDispatch(t *testing.T) {
+	for _, status := range []int{401, 403, 404, 503} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			v := provenanceEnv(t)
+			head := strings.Repeat("b", 40)
+			v.gh.push("factory/HL-7", head, "work in progress")
+			v.gh.branchErr = map[string]error{"main": &github.HTTPError{Status: status}}
+			v.its.add(1, "coder", 101, "HL-7", "Fix it.")
+			v.tick(v.e)
 
-	a := v.latest(1)
-	if a.State != store.AttemptAccepted || a.Provenance.BaseSHA != head || a.AnalysisMainSHA != "" {
-		t.Fatalf("unexpected dispatch receipt: state=%q checkout=%q analysis=%q", a.State, a.Provenance.BaseSHA, a.AnalysisMainSHA)
-	}
-	if _, err := v.e.ResolveAnalysisMain(v.ctx, a.KagentNamespace, strings.ToLower(a.ContextID)); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("an unverified main commit was available to analysis: %v", err)
+			first := v.latest(1)
+			if len(v.kg.Sends()) != 0 || first.AnalysisMainSHA != "" {
+				t.Fatal("accepted work before its trusted main read succeeded")
+			}
+			delete(v.gh.branchErr, "main")
+			v.tick(v.e)
+			accepted := v.latest(1)
+			if accepted.ID != first.ID || accepted.State != store.AttemptAccepted ||
+				accepted.Provenance.BaseSHA != head || accepted.AnalysisMainSHA != strings.Repeat("a", 40) {
+				t.Fatalf("same attempt did not recover both commits: %+v", accepted)
+			}
+		})
 	}
 }
 
