@@ -551,7 +551,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			reviews[pr.Number] = nil
 			start = append(start, candidate{pr, run})
 		case trigger > 0:
-			// invariant: FACT-13
+			// invariant: FACT-14
 			// Persist the consumed comment with the new check, so scheduling
 			// retries remain possible until a slot and check actually exist.
 			next := *run
