@@ -1085,7 +1085,7 @@ func TestExposureAcknowledgment(t *testing.T) {
 		{"trusted", true, f.ID, true}, {"untrusted", false, f.ID, false}, {"unknown", true, "private unknown ID", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			in := &IssueContext{Issue: &IssueEvidence{Trusted: tc.trusted}}
+			in := &IssueContext{Issue: &IssueEvidence{Trusted: tc.trusted, Description: "Accept exposure: " + f.Title}}
 			answer, err := ParseGoal("```json\n{\"criteria\":[],\"overall\":\"met\",\"acknowledged\":[\"" + tc.id + "\"]}\n```")
 			if err != nil {
 				t.Fatal(err)
@@ -1102,5 +1102,20 @@ func TestExposureAcknowledgment(t *testing.T) {
 				t.Fatal(a)
 			}
 		})
+	}
+}
+
+func TestRevokedExposureRestored(t *testing.T) {
+	f := Finding{ID: "a:unverified:exposure", Severity: SeverityMedium, Title: "Public reports", Detail: "Reports readable without sign-in"}
+	in := &IssueContext{Issue: &IssueEvidence{Trusted: true}, Decisions: []DecisionEvidence{{Exists: true, Trusted: true, Text: "Accept exposure: Public reports"}}}
+	r := &Report{Findings: []Finding{f}, acknowledged: acknowledgedExposures(in, []Finding{f}, []string{f.ID})}
+	st := stateOf(Assess(r, nil), r, nil)
+	in.Decisions = nil
+	next := &Report{}
+	restoreExposures(next, st)
+	next.acknowledged = acknowledgedExposures(in, next.Findings, []string{f.ID})
+	a := Assess(next, st.Previous())
+	if len(a.Blocking) != 1 || a.Blocking[0].Finding != f {
+		t.Fatal(a)
 	}
 }

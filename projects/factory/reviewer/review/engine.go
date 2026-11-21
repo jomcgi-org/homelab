@@ -2380,6 +2380,7 @@ heads:
 			// The code review cannot clear goal findings, including during
 			// replay. Only a bound goal answer can resolve them. Re-add known
 			// service findings when an older snapshot has no bound answer.
+			restoreExposures(report, prior)
 			replayGoal(report, prior.Previous(), b.ItsaplanProject, key, goal)
 			known := &IssueContext{}
 			for _, f := range r.stored.Blocking {
@@ -2750,6 +2751,7 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 			l.WarnContext(ctx, "the review reply has no usable report", "task", task.ID, "error", err, "reply_bytes", len(reply))
 			return result{reason: "the reviewer's reply had no usable findings report: " + oneLine(err.Error(), maxTitle) + "."}
 		}
+		restoreExposures(r, in.prior)
 		findings, verdict := codeReviewResult(r, in.prior.Previous(), b.ItsaplanProject)
 		recordFindings(code, findings)
 		code.SetAttributes(attribute.String("review.verdict", verdict), attribute.String("review.outcome", "assessed"))
