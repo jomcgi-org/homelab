@@ -1168,7 +1168,12 @@ func (e *Engine) finishRun(ctx context.Context, q store.Querier, r *store.Run, r
 	}
 	res.Usage = usage
 	if !r.Connector() {
-		if err := e.st.Enqueue(ctx, q, store.OutboxResult, resultKey(r.ID), r.ID, r.AgentKey, res); err != nil {
+		// Cancellation and recovery can finish a run from a partial record.
+		// Bind the result to the lease stored in this writer transaction.
+		if err := q.QueryRowContext(ctx, `SELECT attempt FROM run WHERE id = $1 FOR UPDATE`, r.ID).Scan(&res.Attempt); err != nil {
+			return err
+		}
+		if err := e.st.Enqueue(ctx, q, store.OutboxResult, resultKey(r.ID, res.Attempt), r.ID, r.AgentKey, res); err != nil {
 			return err
 		}
 		return e.st.SetRunState(ctx, q, r.ID, store.RunFinishing, "")
@@ -1505,7 +1510,7 @@ func messageID(r *store.Run, decision string) string {
 	return "itsaplan-run/" + strconv.FormatInt(r.ID, 10) + "/" + decision
 }
 
-func resultKey(runID int64) string { return "result/" + strconv.FormatInt(runID, 10) }
+func resultKey(runID int64, attempt int) string { return fmt.Sprintf("result/%d/%d", runID, attempt) }
 
 func agentRef(wi *store.WorkItem) kagent.AgentRef {
 	return kagent.AgentRef{Namespace: wi.KagentNamespace, Name: wi.KagentAgent}
@@ -2905,7 +2910,27 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 		if r.State == store.RunStale {
 			return nil // a redelivery claim brings the current attempt
 		}
-		res.Attempt = r.Attempt
+		if r.State != store.RunFinishing {
+			return e.w.Tx(ctx, func(tx *sql.Tx) error {
+				return e.st.OutboxAbandon(ctx, tx, it.ID, "run is no longer finishing")
+			})
+		}
+		if res.Attempt != r.Attempt || res.Attempt == 0 {
+			// Reconcile the committed outcome into a separate intent for the
+			// claim we now own. Keep the original payload, including attempt
+			// zero for legacy rows whose originating attempt is unknown.
+			return e.w.Tx(ctx, func(tx *sql.Tx) error {
+				if res.Attempt > r.Attempt || r.Attempt <= 0 {
+					return e.st.OutboxAbandon(ctx, tx, it.ID, "result has no matching claim")
+				}
+				key := resultKey(r.ID, r.Attempt)
+				res.Attempt = r.Attempt
+				if err := e.st.Enqueue(ctx, tx, store.OutboxResult, key, r.ID, it.AgentKey, res); err != nil {
+					return err
+				}
+				return e.st.OutboxAbandon(ctx, tx, it.ID, "committed outcome reconciled into "+key)
+			})
+		}
 		if err := e.guard(ctx); err != nil {
 			return err
 		}
@@ -2952,6 +2977,9 @@ func (e *Engine) deliver(ctx context.Context, it *store.OutboxItem) error {
 		default:
 			return err
 		}
+	}
+	if it.Kind == store.OutboxIssueReviewing {
+		return e.deliverIssueReviewing(ctx, it)
 	}
 	if it.Kind == store.OutboxIssueDone {
 		return e.deliverIssueDone(ctx, it)

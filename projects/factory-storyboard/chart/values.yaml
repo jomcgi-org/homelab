@@ -3,7 +3,8 @@ image:
   digest: ""
 buckets:
   - name: factory-public
-    access: write
+    # Retention lists content-addressed objects after writing the manifest.
+    access: readwrite
 workloads:
   factory-storyboard:
     kind: CronJob

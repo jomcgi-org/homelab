@@ -1084,6 +1084,11 @@
             "type": "string",
             "minLength": 1
           },
+          "harnessImage": {
+            "description": "The coding Harness's workload image, pinned by digest. Omit for kagent's image. Not with codexCodeMode.",
+            "type": "string",
+            "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$"
+          },
           "codexCodeMode": {
             "description": "Set true for code mode or false for direct mode on the trial image. Omit for the normal harness.",
             "type": "boolean",

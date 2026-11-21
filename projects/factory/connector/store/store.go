@@ -335,7 +335,17 @@ func recordClaim(ctx context.Context, transact func(context.Context, func(*sql.T
 		}
 		state := existing.State
 		if state == RunStale {
+			var pendingResult bool
+			err := tx.QueryRowContext(ctx, `
+				SELECT EXISTS (SELECT 1 FROM outbox WHERE run_id = $1 AND kind = 'result'
+					AND delivered_at IS NULL AND abandoned_at IS NULL)`, c.ID).Scan(&pendingResult)
+			if err != nil {
+				return err
+			}
 			state = RunDispatched
+			if pendingResult {
+				state = RunFinishing
+			}
 		}
 		run, err = scanRun(tx.QueryRowContext(ctx, `
 			UPDATE run SET attempt = $2, state = $3, event_attempt = NULL, event_offset = 0,
@@ -1483,11 +1493,12 @@ func (s *Store) ConfirmCancellation(ctx context.Context, q Querier, id int64, ou
 
 // Outbox kinds.
 const (
-	OutboxResult        = "result"
-	OutboxComment       = "comment"
-	OutboxIssueDone     = "issue_done"
-	OutboxDeferredStart = "deferred_start"
-	OutboxActivation    = "activation"
+	OutboxResult         = "result"
+	OutboxComment        = "comment"
+	OutboxIssueDone      = "issue_done"
+	OutboxIssueReviewing = "issue_reviewing"
+	OutboxDeferredStart  = "deferred_start"
+	OutboxActivation     = "activation"
 )
 
 // OutboxItem is a side effect waiting for delivery.

@@ -707,8 +707,9 @@ reviewer:
   # Empty posts no comment.
   commentAuthor: ""
   # The review Harness's workload image (spec.workload.image), for example the
-  # private Codex harness plus mandoline from projects/factory/reviewer/harness.
-  # Empty keeps kagent's built-in harness image. Only the review Harness reads it.
+  # private Codex harness plus mandoline from projects/factory/harness/codex.
+  # Empty keeps kagent's built-in harness image. A coding binding sets its own
+  # with repositories[].harnessImage.
   harnessImage: ""
   # GitHub-only Semgrep evidence. Unset is off; enabling follows chart write-back.
   # semgrep: {appId: 4746654, checkName: semgrep-cloud-platform/scan, wait: 10m}

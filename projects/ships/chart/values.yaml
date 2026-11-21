@@ -23,3 +23,33 @@ database:
       memory: 512Mi
     limits:
       memory: 1Gi
+  # Generates the password of the publisher's read-only login once
+  # (templates/database.yaml). python:3.13-alpine3.22.
+  loginGenerator:
+    image:
+      repository: docker.io/library/python
+      digest: sha256:e81548ac35b07a3bd4805f275107592ef458b1e893c0e04d45aedaa19416cca5
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 64Mi
+# The publisher writes the snapshot, heat and track products here. The
+# factory-public release mirrors this bucket to R2 under ships/ (HOME-492,
+# HOME-410). This chart holds no R2 credential.
+buckets:
+  - name: ships
+    access: readwrite
+# The publisher CronJob runs after the ingester starts (HOME-537, HOME-410).
+# Set suspend to true to pause publication.
+publisher:
+  suspend: false
+  schedule: "*/2 * * * *"
+  # Trial allocations. HOME-410 measures a run and sets the budget.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
