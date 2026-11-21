@@ -233,9 +233,9 @@ def reconcile(findings, plan, alert, outbox):
                     staged.write_text(json.dumps({"key": key, "fields": fields}))
                     staged.replace(entry)
                 plan(
-                    PROJECT + "/issues",
+                    PROJECT + "/factory-semgrep",
                     "POST",
-                    {**desired, "columnId": backlog, "labelIds": [label]},
+                    {"finding": key, "description": description},
                 )
                 issues[key] = desired
                 if key.startswith("secrets/"):
