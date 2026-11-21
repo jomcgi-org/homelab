@@ -751,6 +751,28 @@ func TestDelayedTerminalResponseCannotOverwriteSuccessor(t *testing.T) {
 	}
 }
 
+func TestFormerWriterCannotChangeNativeRunAttempt(t *testing.T) {
+	v := newEnv(t)
+	issueID := int64(101)
+	claim := store.ClaimedRun{ID: 1, AgentKey: "coder", IssueID: issueID, IssueKey: "HL-1", Attempt: 1}
+	if _, _, err := v.st.RecordClaim(v.ctx, claim); err != nil {
+		t.Fatal(err)
+	}
+	former := v.e
+	former.Release()
+	v.e = v.engine("successor")
+	err := former.HandleClaim(v.ctx, "coder", &itsaplan.Run{
+		ID: 1, IssueID: &issueID, IssueIdentifier: "HL-1", Attempts: 2,
+	})
+	if !errors.Is(err, store.ErrNotWriter) {
+		t.Fatalf("former writer claim = %v, want ErrNotWriter", err)
+	}
+	phases, err := v.e.RunPhases(v.ctx, issueID)
+	if err != nil || len(phases) != 1 || phases[0].Attempt != 1 || phases[0].Phase != "admission" {
+		t.Fatalf("run phases after stale claim = %+v, %v", phases, err)
+	}
+}
+
 func TestDuplicateClaimIsIgnored(t *testing.T) {
 	v := newEnv(t)
 	v.its.add(1, "coder", 101, "HL-1", "Do it.")
@@ -1415,6 +1437,17 @@ func TestBlockedGrantKeepsRunsWaitingWithoutHoldingSlots(t *testing.T) {
 			t.Fatalf("run %d reported %+v while blocked", id, res)
 		}
 	}
+	// A sibling can still occupy the slot while a grant is paused.
+	if err := v.st.SetRunState(v.ctx, v.st.DB, 3, store.RunDispatched, ""); err != nil {
+		t.Fatal(err)
+	}
+	phases, err := v.e.RunPhases(v.ctx, 102)
+	if err != nil || len(phases) != 1 || phases[0].Reason != "Waiting for the agent grant to resume." {
+		t.Fatalf("paused grant phases = %+v, %v", phases, err)
+	}
+	if err := v.st.SetRunState(v.ctx, v.st.DB, 3, store.RunWaiting, ""); err != nil {
+		t.Fatal(err)
+	}
 	if n := len(v.kg.Sends()); n != 1 {
 		t.Fatalf("sends = %d while blocked", n)
 	}
@@ -1432,6 +1465,10 @@ func TestBlockedGrantKeepsRunsWaitingWithoutHoldingSlots(t *testing.T) {
 	v.tick(v.e)
 	if n := len(v.kg.Sends()); n != 2 {
 		t.Fatalf("sends = %d after unblock, want 2 within concurrency 1", n)
+	}
+	phases, err = v.e.RunPhases(v.ctx, 103)
+	if err != nil || len(phases) != 1 || phases[0].Reason != "Waiting for an agent slot." {
+		t.Fatalf("capacity phases = %+v, %v", phases, err)
 	}
 	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
 	v.clk.Advance(5 * time.Second)

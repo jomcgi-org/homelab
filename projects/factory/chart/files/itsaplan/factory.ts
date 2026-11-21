@@ -6,6 +6,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { db, agentRun, aiAgent, issue, label, projectColumn } from "@repo/db";
 import { factoryTransaction } from "../../../packages/db/src/client";
 import { guards, entityGuard } from "./shared/guards";
+import { assertPermission } from "./shared/access";
 import { authContext } from "./shared/auth-context";
 import { HttpError, errorAnswer } from "./shared/lib";
 import {
@@ -158,6 +159,75 @@ export const factoryRoutes = new Elysia({ name: "factory-deferred" })
       getIssueProjectId(Number(p.issueId)),
     ),
   })
+  .get(
+    "/issues/:issueId/factory-run-phases",
+    async ({ params, projectId, user, set }) => {
+      await assertPermission(projectId, user, "ai_agents", "read");
+      set.headers["cache-control"] = "no-store";
+      const endpoint = process.env.FACTORY_RUN_PHASE_URL;
+      if (!endpoint) throw new HttpError(503, "Factory run phases unavailable");
+      const url = new URL(endpoint);
+      url.searchParams.set("issueId", String(params.issueId));
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          signal: AbortSignal.timeout(2000),
+          redirect: "error",
+        });
+      } catch {
+        throw new HttpError(503, "Factory run phases unavailable");
+      }
+      if (!response.ok)
+        throw new HttpError(503, "Factory run phases unavailable");
+      const phases = (await response.json()) as {
+        items: {
+          runId: number;
+          attempt: number;
+          phase: string;
+          reason: string;
+        }[];
+      };
+      if (!phases.items.length) return { items: [] };
+      const runs = await db.execute<{
+        id: number;
+        attempts: number;
+        status: string;
+        leased: boolean;
+      }>(sql`
+        select r.id, r.attempts, r.status,
+          (r.status = 'pending' and r.next_attempt_at > now()
+            and r.execution_started_at is not null) as leased
+        from agent_run r
+        join issue i on i.id = r.issue_id and i.project_id = r.project_id
+        where r.issue_id = ${params.issueId} and r.project_id = ${projectId}
+          and r.document_id is null
+          and r.id in (${sql.join(
+            phases.items.map((phase) => sql`${phase.runId}`),
+            sql`, `,
+          )})
+      `);
+      const attempts = new Map(Array.from(runs, (row) => [row.id, row]));
+      return {
+        items: phases.items.filter((phase) => {
+          const run = attempts.get(phase.runId);
+          if (!run || run.attempts !== phase.attempt) return false;
+          // A lease may lapse or a result may reach itsaplan before the
+          // connector closes its outbox. Keep the same attempt visible.
+          return (
+            run.leased ||
+            (phase.phase === "finishing" &&
+              (run.status === "pending" ||
+                run.status === "success" ||
+                run.status === "failed"))
+          );
+        }),
+      };
+    },
+    {
+      workItem: "read",
+      params: t.Object({ issueId: t.Numeric({ minimum: 1 }) }),
+    },
+  )
   .post(
     "/issues/:issueId/factory-deferred-start",
     async ({ params, body, user, projectId }) => {

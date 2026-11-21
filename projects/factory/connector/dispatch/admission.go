@@ -398,7 +398,9 @@ func (e *Engine) admit(ctx context.Context, r *store.Run) (bool, error) {
 	if err := e.guard(ctx); err != nil {
 		return false, err
 	}
-	if err := e.st.SetAdmissionHold(ctx, e.st.DB, r.ID, "", e.cfg.Now()); err != nil {
+	if err := e.w.Tx(ctx, func(tx *sql.Tx) error {
+		return e.st.SetAdmissionHold(ctx, tx, r.ID, "", e.cfg.Now())
+	}); err != nil {
 		return false, err
 	}
 	r.HoldReason = ""
@@ -472,7 +474,7 @@ func (e *Engine) holdAdmission(ctx context.Context, r *store.Run, reason string,
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
-	err := e.st.Tx(ctx, func(tx *sql.Tx) error {
+	err := e.w.Tx(ctx, func(tx *sql.Tx) error {
 		if err := e.st.SetAdmissionHold(ctx, tx, r.ID, reason, e.cfg.Now()); err != nil {
 			return err
 		}

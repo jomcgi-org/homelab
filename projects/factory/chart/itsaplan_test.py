@@ -739,9 +739,9 @@ def test_policies_select_their_pods() -> None:
 def test_api_egress_is_database_s3_and_issuer() -> None:
     spec = _one(_render(), "CiliumNetworkPolicy", "factory-itsaplan-api")["spec"]
     ports = [r["toPorts"][0]["ports"][0]["port"] for r in spec["egress"]]
-    assert ports == ["5432", "3900", "443"]
-    assert spec["egress"][2]["toFQDNs"] == [{"matchName": "factory-auth.jomcgi.dev"}]
-    assert spec["egress"][0]["toEndpoints"] == [
+    assert ports == ["8085", "5432", "3900", "443"]
+    assert spec["egress"][3]["toFQDNs"] == [{"matchName": "factory-auth.jomcgi.dev"}]
+    assert spec["egress"][1]["toEndpoints"] == [
         {
             "matchLabels": {
                 "k8s:io.kubernetes.pod.namespace": "factory-db",

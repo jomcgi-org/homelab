@@ -76,3 +76,23 @@ func (s *Store) StatusItems(ctx context.Context, bindings []string) ([]StatusIte
 	}
 	return out, rows.Err()
 }
+
+// IssueRunsForPhase reads live native runs, excluding connector-only rounds.
+func (s *Store) IssueRunsForPhase(ctx context.Context, issueID int64) ([]*Run, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+runCols+` FROM run
+		WHERE issue_id = $1 AND origin = $2 AND state IN ('claimed', 'waiting', 'dispatched', 'finishing')
+		ORDER BY id`, issueID, OriginItsaplan)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Run
+	for rows.Next() {
+		run, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, run)
+	}
+	return out, rows.Err()
+}
