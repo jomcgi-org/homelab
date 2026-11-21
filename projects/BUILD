@@ -6,14 +6,6 @@ exports_files(
     visibility = ["//projects/platform-factory/kube-access/resources:__pkg__"],
 )
 
-exports_files(
-    ["platform-factory/network-policy/resources/argocd.yaml"],
-    visibility = [
-        "//projects/platform-factory/external-secrets/chart:__pkg__",
-        "//projects/platform-factory/network-policy/tests:__pkg__",
-    ],
-)
-
 filegroup(
     name = "backup_status_application",
     # application.yaml lives in the generated platform-gke package, which
@@ -108,8 +100,6 @@ exports_files(
         "platform-factory/cfgate/resources/network-policy.yaml",
         "platform-factory/cloudnative-pg/resources/network-policy.yaml",
         "platform-factory/kargo/resources/network-policy.yaml",
-        "platform-factory/network-policy/resources/kube-system.yaml",
-        "platform-factory/network-policy/resources/onepassword.yaml",
     ],
     visibility = ["//projects/platform-factory/network-policy/tests:__pkg__"],
 )

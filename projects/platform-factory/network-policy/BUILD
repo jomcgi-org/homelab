@@ -15,3 +15,19 @@ filegroup(
     srcs = ["README.md"],
     visibility = ["//projects/monolith:__pkg__"],
 )
+
+exports_files(
+    ["resources/argocd.yaml"],
+    visibility = [
+        "//projects/platform-factory/external-secrets/chart:__pkg__",
+        "//projects/platform-factory/network-policy/tests:__pkg__",
+    ],
+)
+
+exports_files(
+    [
+        "resources/kube-system.yaml",
+        "resources/onepassword.yaml",
+    ],
+    visibility = ["//projects/platform-factory/network-policy/tests:__pkg__"],
+)
