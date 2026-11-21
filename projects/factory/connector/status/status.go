@@ -59,14 +59,15 @@ type Shipped struct {
 // Snapshot.NeedsYou is nil (JSON null) when a bound project has no member
 // `joe`; In flight and Shipped recently still render.
 type Snapshot struct {
-	NeedsYou    []NeedsYou `json:"needsYou"`
-	InFlight    []InFlight `json:"inFlight"`
-	Shipped     []Shipped  `json:"shipped"`
-	GeneratedAt time.Time  `json:"generatedAt"`
+	NeedsYou      []NeedsYou `json:"needsYou"`
+	InFlight      []InFlight `json:"inFlight"`
+	InFlightTotal int        `json:"inFlightTotal,omitempty"`
+	Shipped       []Shipped  `json:"shipped"`
+	GeneratedAt   time.Time  `json:"generatedAt"`
 }
 
 type Store interface {
-	StatusItems(context.Context, []string) ([]store.StatusItem, error)
+	StatusItems(context.Context, []string) ([]store.StatusItem, int, error)
 }
 
 type Plan interface {
@@ -115,7 +116,7 @@ func (s *Source) Load(ctx context.Context) (*Snapshot, error) {
 		// A partial list would undercount Joe's tasks.
 		out.NeedsYou = nil
 	}
-	items, err := s.Store.StatusItems(ctx, names)
+	items, liveTotal, err := s.Store.StatusItems(ctx, names)
 	if err != nil {
 		return nil, &stageError{"work_items", err}
 	}
@@ -204,6 +205,9 @@ func (s *Source) Load(ctx context.Context) (*Snapshot, error) {
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if liveTotal > len(out.InFlight) {
+		out.InFlightTotal = liveTotal
 	}
 	sort.Slice(out.NeedsYou, func(i, j int) bool { return out.NeedsYou[i].CreatedAt < out.NeedsYou[j].CreatedAt })
 	sort.Slice(out.InFlight, func(i, j int) bool { return out.InFlight[i].Key < out.InFlight[j].Key })

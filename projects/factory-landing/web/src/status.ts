@@ -21,6 +21,7 @@ export interface Status {
     reviewRounds: number;
     pr: (PRLink & { ci: string; review: string; queue: string }) | null;
   }[];
+  inFlightTotal?: number;
   shipped: {
     key: string;
     title: string;
@@ -52,6 +53,10 @@ export function parseStatus(value: unknown): Status {
             (v.priority === null || typeof v.priority === "string"),
         ))) ||
     !Array.isArray(value.inFlight) ||
+    (value.inFlightTotal !== undefined &&
+      (typeof value.inFlightTotal !== "number" ||
+        !Number.isSafeInteger(value.inFlightTotal) ||
+        value.inFlightTotal < value.inFlight.length)) ||
     !value.inFlight.every(
       (v) =>
         item(v) &&
