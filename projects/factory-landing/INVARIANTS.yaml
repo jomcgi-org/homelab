@@ -1,0 +1,8 @@
+invariants:
+  - id: LANDING-1
+    statement: A decision submission requires Joe's configured Authentik subject from the edge and the landing page origin.
+    mechanism:
+      - projects/factory-landing/server.mjs
+      - projects/platform-factory/edge/chart/templates/_oidc.tpl
+    test: //projects/factory-landing:server_test
+    state: live

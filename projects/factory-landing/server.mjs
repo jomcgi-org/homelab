@@ -29,6 +29,8 @@ export const STATUS_TIMEOUT_MS = 2000;
 export function createLandingServer({
   root = resolve("build/static"),
   statusURL = process.env.CONNECTOR_STATUS_URL,
+  joeSubject = process.env.JOE_AUTHENTIK_SUBJECT,
+  readToken = () => readFile("/var/run/factory-decide/token", "utf8"),
   fetchStatus = fetch,
   timeout = STATUS_TIMEOUT_MS,
 } = {}) {
@@ -37,6 +39,57 @@ export function createLandingServer({
       const pathname = decodeURIComponent(
         new URL(request.url, "http://static").pathname,
       );
+      // invariant: LANDING-1
+      if (pathname === "/api/decide") {
+        if (request.method !== "POST") {
+          response.writeHead(405, { ...headers, Allow: "POST" }).end();
+          return;
+        }
+        if (
+          !joeSubject ||
+          request.headers["x-runbook-user"] !== joeSubject ||
+          request.headers.origin !== "https://factory.jomcgi.dev"
+        ) {
+          response.writeHead(403, headers).end();
+          return;
+        }
+        const revision = request.headers["if-match"];
+        if (
+          request.headers["content-type"] !== "application/json" ||
+          !/^"[a-f0-9]{64}"$/.test(revision ?? "")
+        ) {
+          response.writeHead(400, headers).end();
+          return;
+        }
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of request) {
+          size += chunk.length;
+          if (size > 4096) {
+            response.writeHead(413, headers).end();
+            return;
+          }
+          chunks.push(chunk);
+        }
+        try {
+          const upstream = await fetchStatus(new URL("/decide", statusURL), {
+            method: "POST",
+            redirect: "error",
+            signal: AbortSignal.timeout(35000),
+            headers: {
+              Authorization: `Bearer ${(await readToken()).trim()}`,
+              "If-Match": revision,
+              "Content-Type": "application/json",
+            },
+            body: Buffer.concat(chunks),
+          });
+          await upstream.body?.cancel();
+          response.writeHead(upstream.status, headers).end();
+        } catch {
+          response.writeHead(503, headers).end();
+        }
+        return;
+      }
       if (pathname === "/api/status") {
         if (request.method !== "GET") {
           response.writeHead(405, { ...headers, Allow: "GET" }).end();
