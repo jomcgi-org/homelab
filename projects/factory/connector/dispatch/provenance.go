@@ -23,6 +23,30 @@ var (
 	errRuntimeChanged = errors.New("unaccepted attempt runtime changed")
 )
 
+// ResolveAnalysisMain returns the canonical main commit for the coder task
+// currently working in a verified actor session.
+func (e *Engine) ResolveAnalysisMain(ctx context.Context, namespace, session string) (string, error) {
+	assigned, err := e.st.CurrentAnalysisTask(ctx, namespace, session)
+	if err != nil {
+		return "", err
+	}
+	task, err := e.tasks.GetTaskMetadata(ctx, kagent.AgentRef{Namespace: namespace, Name: assigned.Agent}, assigned.TaskID)
+	if err != nil {
+		return "", err
+	}
+	if task == nil || task.ID != assigned.TaskID || task.ContextID != assigned.ContextID || task.Status.State != kagent.StateWorking {
+		return "", sql.ErrNoRows
+	}
+	current, err := e.st.CurrentAnalysisTask(ctx, namespace, session)
+	if err != nil {
+		return "", err
+	}
+	if current != assigned {
+		return "", sql.ErrNoRows
+	}
+	return current.MainSHA, nil
+}
+
 func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.WorkItem, b *Binding, a *store.Attempt) (string, error) {
 	text := taskText(r, wi, b, a)
 	// Runtime is mandatory in production config. Old admitted runs retain NULL
@@ -44,10 +68,10 @@ func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.
 			return "", fmt.Errorf("assigned coder arm %q missing from binding", wi.FirstArm)
 		}
 	}
-	var sessionBase string
+	var sessionCommits store.SessionCommits
 	var err error
 	if a.ContextID != "" {
-		runtime, sessionBase, err = e.st.SessionRuntime(ctx, a.KagentNamespace, a.ContextID, runtime, len(b.Arms) > 0)
+		runtime, sessionCommits, err = e.st.SessionRuntime(ctx, a.KagentNamespace, a.ContextID, runtime, len(b.Arms) > 0)
 		if errors.Is(err, sql.ErrNoRows) {
 			err = e.verifyLegacyRuntime(ctx, r, wi, a)
 		}
@@ -69,22 +93,39 @@ func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.
 		return "", err
 	}
 	base, err := gh.BranchHead(ctx, b.repo(), wi.Branch)
+	var analysisMain string
+	if err == nil && wi.Branch == b.BaseBranch {
+		analysisMain = base
+	}
 	var h *github.HTTPError
 	if errors.Is(err, github.ErrNotFound) || (errors.As(err, &h) && h.Status == 404) {
 		switch {
-		case a.Kind == "continuation" && sessionBase != "":
+		case a.Kind == "continuation" && sessionCommits.Checkout != "":
 			// A verified session can fail before its first push. Its accepted
-			// receipt fixes the starting commit even if main has moved on.
-			base, err = sessionBase, nil
+			// receipt fixes both commits even if main has moved on.
+			base, analysisMain, err = sessionCommits.Checkout, sessionCommits.AnalysisMain, nil
 		case !r.Connector() && wi.SessionID == "":
 			if err := e.beginAdmissionRead(ctx, r, "provenance-base", b.repo()+"/"+b.BaseBranch); err != nil {
 				return "", err
 			}
 			base, err = gh.BranchHead(ctx, b.repo(), b.BaseBranch)
+			analysisMain = base
 		}
 	}
 	if err != nil {
 		return "", err
+	}
+	if analysisMain == "" {
+		if err := e.beginAdmissionRead(ctx, r, "provenance-analysis-main", b.repo()+"/"+b.BaseBranch); err != nil {
+			return "", err
+		}
+		analysisMain, err = gh.BranchHead(ctx, b.repo(), b.BaseBranch)
+		if err != nil {
+			// Branch provenance still permits the established dispatch.
+			// The analysis endpoint requires a verified pin.
+			e.log.WarnContext(ctx, "analysis main unavailable for task", "message_id", a.MessageID, "error", err)
+			analysisMain = ""
+		}
 	}
 	issue := r.AdmissionIssue
 	if issue == nil {
@@ -115,7 +156,7 @@ func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.
 	}
 	text += fmt.Sprintf("\nWorktree starting commit: %s\nStart the worktree at this exact commit before editing. Preserve the assigned work branch name and any uncommitted work.\n", base)
 	p := provenance.New(runtime, base, text, class)
-	if err := e.st.RecordProvenance(ctx, e.w, a, p, runtime.SystemPrompt, text); err != nil {
+	if err := e.st.RecordProvenance(ctx, e.w, a, p, runtime.SystemPrompt, text, analysisMain); err != nil {
 		return "", err
 	}
 	return a.RenderedPrompt, nil

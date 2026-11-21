@@ -52,6 +52,7 @@ type fakeGitHub struct {
 	baseFiles  map[string]string
 	baseReads  []string
 	baseErr    error
+	branchErr  map[string]error
 	// onEnqueue runs as an enqueue is accepted.
 	onEnqueue func()
 	onChecks  func()
