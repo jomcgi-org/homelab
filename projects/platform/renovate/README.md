@@ -93,9 +93,22 @@ unaffected dependency.
 
 Dependency PRs require manual landing through independent review, required
 checks and the merge queue. Both Renovate and the weekly factory apko job
-leave auto-merge disabled. Before rollout, audit existing Renovate PRs for
-previously armed requests or queue entries. The weekly job skips such PRs
-before regenerating or pushing locks.
+leave auto-merge disabled. The weekly job skips armed or queued PRs before
+regenerating or pushing locks.
+
+Before rollout, reconcile **all open Renovate PRs**, including daily dependency
+updates. Inspect both `autoMergeRequest` and `mergeQueueEntry` in GitHub.
+A queued PR can have an empty `autoMergeRequest`.
+
+1. For each PR with auto-merge enabled, disable auto-merge on GitHub.
+2. For each queued PR, check its timeline. Remove entries created by automatic
+   landing from the merge queue. Preserve deliberate manual submissions through
+   the normal review and queue controls. Resolve unclear provenance with the
+   landing owner before proceeding.
+3. Refresh the full list and confirm that no Renovate PR has an armed request
+   or an automatic queue entry. Record the PR numbers, actions and verification
+   time on HOME-88. Complete this check before rollout and repeat it after
+   the first daily scan under the new policy before relying on manual landing.
 
 The hub's weekly maintenance helper retains its separate default-off
 `MAINTENANCE_AUTOMERGE_ENABLED` flag. Its old dependency-evidence rollout
