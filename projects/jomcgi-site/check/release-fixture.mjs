@@ -85,13 +85,13 @@ objects.set(
   JSON.stringify({
     asOf: "2020-11-17T12:00:00.000Z",
     refreshSeconds: 86400,
-    photoMode: "snapshot",
-    photoBase: "/data/trips/photos",
-    photoCount: 0,
-    photoAssetCount: 0,
-    photoBytes: 0,
-    photoMaxBytes: 0,
-    images: [],
+    photoMode: "public",
+    photoBase: "https://factory-data.jomcgi.dev/trips/photos",
+    photoCount: 1,
+    photoAssetCount: 5,
+    photoBytes: 30 * 1024 ** 2,
+    photoMaxBytes: 26 * 1024 ** 2,
+    images: ["img_fixture.jpg"],
     files: {
       index: tripObject("index", { count: 1, trips: [fixtureTrip] }),
       trips: {
@@ -105,6 +105,7 @@ objects.set(
               lng: -125,
               elevation: 100,
               tags: [],
+              image: "img_fixture.jpg",
             },
           ],
         }),
@@ -112,6 +113,16 @@ objects.set(
     },
   }),
 );
+export function serveFixturePhoto(route) {
+  return route.fulfill({
+    contentType: "image/webp",
+    body: Buffer.from(
+      "UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==",
+      "base64",
+    ),
+  });
+}
+
 export async function fixtureObject(bucket, key) {
   const body = objects.get(key);
   if (!body && key.startsWith("trips/"))

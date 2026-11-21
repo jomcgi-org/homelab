@@ -88,6 +88,7 @@ export async function checkPage(
     colorScheme = "light",
     width = 1280,
     checkMap = false,
+    servePhoto,
     factoryEnabled = sources.httpsManifests.factory.enabled !== false,
   },
 ) {
@@ -113,9 +114,29 @@ export async function checkPage(
   let mapActive = false;
   let tiles = 0;
   try {
-    await context.route("**/*", (route) => {
+    await context.route("**/*", async (route) => {
       const requestOrigin = new URL(route.request().url()).origin;
       if (requestOrigin !== origin) {
+        const request = route.request();
+        // invariant: JOMCGI-SITE-1
+        if (
+          request.method() === "GET" &&
+          request.resourceType() === "image" &&
+          /^https:\/\/factory-data\.jomcgi\.dev\/trips\/photos\/img_[A-Za-z0-9_-]{1,64}\.jpg\/(thumb|gallery|preview|display|full)\.webp$/.test(
+            request.url(),
+          )
+        ) {
+          if (servePhoto) return servePhoto(route);
+          try {
+            const response = await route.fetch({ maxRedirects: 0 });
+            if (response.status() < 300 || response.status() >= 400)
+              return await route.fulfill({ response });
+            errors.push(`photo redirect: ${request.url()}`);
+          } catch (error) {
+            errors.push(`photo request: ${error.message}`);
+          }
+          return route.abort();
+        }
         if (mapActive && requestOrigin === tileOrigin) return route.fallback();
         if (isEdgeBeacon(route.request().url())) return route.abort();
         errors.push(`off-origin request: ${route.request().url()}`);
@@ -259,13 +280,14 @@ export const TIER2_CONCURRENCY = 2;
 
 export async function tier2(
   pages,
-  { concurrency = TIER2_CONCURRENCY, checkMaps = true } = {},
+  { concurrency = TIER2_CONCURRENCY, checkMaps = true, servePhoto } = {},
 ) {
   const browser = await launchBrowser();
   const checks = pages.flatMap((page) =>
     ["light", "dark"].flatMap((colorScheme) =>
       [390, 1280].map((width) => ({
         ...page,
+        servePhoto,
         colorScheme,
         width,
         checkMap: checkMaps && colorScheme === "light" && width === 1280,

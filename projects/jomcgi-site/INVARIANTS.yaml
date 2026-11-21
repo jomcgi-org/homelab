@@ -1,0 +1,7 @@
+invariants:
+- id: JOMCGI-SITE-1
+  statement: The browser check only permits public trip photo requests for GET image loads of named WebP derivatives on factory-data.jomcgi.dev.
+  mechanism:
+  - projects/jomcgi-site/check/browser.mjs
+  test: //projects/jomcgi-site/check:browser_test
+  state: live
