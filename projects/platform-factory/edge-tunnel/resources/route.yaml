@@ -25,6 +25,7 @@ spec:
     - factory.jomcgi.dev
     - factory-argocd.jomcgi.dev
     - factory-auth.jomcgi.dev
+    - factory-trips.jomcgi.dev
     - factory-plan.jomcgi.dev
     - factory-grafana.jomcgi.dev
     - factory-runbooks.jomcgi.dev

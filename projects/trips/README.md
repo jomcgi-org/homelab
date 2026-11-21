@@ -51,9 +51,8 @@ cutover. The production hub routing stays in place until step 4.
    `itemPath` to that path while the mirror is suspended. Verify the
    OnePasswordItem is Ready, then enable the mirror. Check root latest.json
    and payload cache headers at the public endpoint.
-3. Add an edge route for the upload path on a shadow hostname that the factory
-   edge owns, with gateway sign-in and tunnel ingress. This PR adds no edge
-   route. Replay the same upload corpus against both authenticated routes at
+3. With the published chart enabled, sign in through the factory gateway at
+   `factory-trips.jomcgi.dev`. Replay the same upload corpus against both authenticated routes at
    equal concurrency, including invalid and duplicate uploads. Compare rows,
    HTTP responses, cgroup CPU usage per accepted image and peak memory on fresh
    pods. Check that a missing credential is rejected.
