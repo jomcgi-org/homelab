@@ -27,6 +27,7 @@ import (
 // GitHub is the subset of the GitHub client delivery uses.
 type GitHub interface {
 	RevertedMerge(ctx context.Context, repo, branch, sha string, number int, since, until time.Time, before func(int) error) (*time.Time, error)
+	CreateIssueComment(ctx context.Context, repo string, number int, body string) (*github.Comment, error)
 	FindPullRequest(ctx context.Context, repo, branch string) (*github.PullRequest, error)
 	CreatePullRequest(ctx context.Context, repo string, n github.NewPullRequest) (*github.PullRequest, error)
 	UpdatePullRequest(ctx context.Context, repo string, number int, u github.PullRequestUpdate) (*github.PullRequest, error)
@@ -149,6 +150,11 @@ func (e *Engine) deliverWork(ctx context.Context, wi *store.WorkItem) error {
 	pr, err := e.st.PullRequestFor(ctx, wi.ID)
 	if err != nil {
 		return err
+	}
+	if wi.State == store.WorkStopped {
+		if err := e.checkStoppedCreate(ctx, wi, b); err != nil {
+			return err
+		}
 	}
 	if wi.State == store.WorkDone {
 		return e.followUp(ctx, wi, b, pr)
@@ -477,6 +483,20 @@ func (e *Engine) findOrOpenPR(ctx context.Context, repo string, wi *store.WorkIt
 	if err := e.guard(ctx); err != nil {
 		return nil, err
 	}
+	// Commit the intent before sending. A timeout or writer crash leaves
+	// it visible to the stopped-item reconciler.
+	res, err := e.st.DB.ExecContext(ctx, `UPDATE work_item SET pr_create_check_at = $2
+		WHERE id = $1 AND state = 'review' AND turn_attempt_id = $3`, wi.ID, e.cfg.Now(), wi.TurnAttemptID)
+	if err != nil {
+		return nil, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, fmt.Errorf("PR creation superseded for %s", wi.IssueKey)
+	}
 	created, err := e.gh.CreatePullRequest(ctx, repo, github.NewPullRequest{
 		Title: title, Head: wi.Branch, Base: b.BaseBranch, Body: body,
 	})
@@ -493,6 +513,51 @@ func (e *Engine) findOrOpenPR(ctx context.Context, repo string, wi *store.WorkIt
 		return nil, err
 	}
 	return e.adoptPR(ctx, repo, b, found, body)
+}
+
+// checkStoppedCreate keeps looking across empty reads and writer restarts.
+// Lock the work item so a new delegation cannot resume it midway through close.
+func (e *Engine) checkStoppedCreate(ctx context.Context, wi *store.WorkItem, b *Binding) error {
+	return e.st.Tx(ctx, func(tx *sql.Tx) error {
+		now := e.cfg.Now()
+		res, err := tx.ExecContext(ctx, `UPDATE work_item SET pr_create_check_at = $2
+			WHERE id = $1 AND state = 'stopped' AND pr_create_check_at <= $3`,
+			wi.ID, now, now.Add(-e.cfg.ReviewPoll))
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil || n == 0 {
+			return err
+		}
+		if err := e.guard(ctx); err != nil {
+			return err
+		}
+		pr, err := e.gh.FindPullRequest(ctx, b.repo(), wi.Branch)
+		if err != nil || pr == nil || pr.BaseRef != b.BaseBranch {
+			return err
+		}
+		if !strings.Contains(pr.Body, fmt.Sprintf("<!-- factory-connector work-item=%d -->", wi.ID)) {
+			return nil
+		}
+		if pr.State == "open" {
+			if err := e.guard(ctx); err != nil {
+				return err
+			}
+			body := fmt.Sprintf("Closing this factory PR because delivery of %s was stopped: %s.", wi.IssueKey, wi.StoppedReason)
+			if _, err := e.gh.CreateIssueComment(ctx, b.repo(), pr.Number, body); err != nil {
+				return err
+			}
+			if err := e.guard(ctx); err != nil {
+				return err
+			}
+			state := "closed"
+			if _, err := e.gh.UpdatePullRequest(ctx, b.repo(), pr.Number, github.PullRequestUpdate{State: &state}); err != nil {
+				return err
+			}
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE work_item SET pr_create_check_at = NULL WHERE id = $1`, wi.ID)
+		return err
+	})
 }
 
 // adoptPR takes a PR the connector did not just open: an open one against
@@ -517,6 +582,12 @@ func (e *Engine) recordPR(ctx context.Context, wi *store.WorkItem, a *store.Atte
 	var pr *store.PullRequest
 	err := e.st.Tx(ctx, func(tx *sql.Tx) error {
 		var err error
+		// Serialize acknowledgement with stop. If stop won, reconciliation
+		// must still close the PR even though its response arrived.
+		if _, err := tx.ExecContext(ctx, `UPDATE work_item SET pr_create_check_at = NULL
+			WHERE id = $1 AND state <> 'stopped'`, wi.ID); err != nil {
+			return err
+		}
 		pr, err = e.st.RecordPullRequest(ctx, tx, store.PullRequest{
 			WorkItemID: wi.ID, Number: got.Number, NodeID: got.NodeID, URL: got.URL, HeadSHA: got.HeadSHA, State: state,
 		})

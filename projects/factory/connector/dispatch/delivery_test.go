@@ -44,14 +44,17 @@ type fakeGitHub struct {
 	detailErr  error // fails every PR detail read while set
 	// loseCreate opens the next PR but loses the response; findErr fails
 	// the next lookups.
-	loseCreate bool
-	findErr    []error
-	checkErr   []error
-	statusErr  []error
-	dequeues   []string
-	baseFiles  map[string]string
-	baseReads  []string
-	baseErr    error
+	delayed     *github.NewPullRequest
+	delayCreate bool
+	stopComment string
+	loseCreate  bool
+	findErr     []error
+	checkErr    []error
+	statusErr   []error
+	dequeues    []string
+	baseFiles   map[string]string
+	baseReads   []string
+	baseErr     error
 	// onEnqueue runs as an enqueue is accepted.
 	onEnqueue func()
 	onChecks  func()
@@ -311,11 +314,16 @@ func (g *fakeGitHub) CreatePullRequest(_ context.Context, _ string, n github.New
 	if b == nil || b.ahead == 0 {
 		return nil, &github.HTTPError{Status: 422, Body: "No commits between main and " + n.Head}
 	}
+	if g.delayCreate {
+		g.delayCreate = false
+		g.delayed = &n
+		return nil, context.DeadlineExceeded
+	}
 	g.creates++
 	num := len(g.prs) + 1
 	p := &fakePR{body: n.Body, pr: github.PullRequest{
 		Number: num, NodeID: fmt.Sprintf("PR_%d", num), URL: fmt.Sprintf("https://github.com/example-org/homelab/pull/%d", num),
-		State: "open", HeadSHA: b.head, HeadRef: n.Head, BaseRef: n.Base, Title: n.Title,
+		Body: n.Body, State: "open", HeadSHA: b.head, HeadRef: n.Head, BaseRef: n.Base, Title: n.Title,
 	}}
 	g.prs = append(g.prs, p)
 	if g.loseCreate {
@@ -324,6 +332,11 @@ func (g *fakeGitHub) CreatePullRequest(_ context.Context, _ string, n github.New
 	}
 	c := p.pr
 	return &c, nil
+}
+
+func (g *fakeGitHub) CreateIssueComment(_ context.Context, _ string, _ int, body string) (*github.Comment, error) {
+	g.stopComment = body
+	return &github.Comment{}, nil
 }
 
 func (g *fakeGitHub) UpdatePullRequest(_ context.Context, _ string, number int, u github.PullRequestUpdate) (*github.PullRequest, error) {
@@ -599,6 +612,33 @@ func TestTurnWithoutCommitsOpensNoPullRequest(t *testing.T) {
 	}
 	if cs := v.its.Comments(); len(cs) != 1 || !strings.Contains(cs[0].body, "without commits") {
 		t.Fatalf("comments = %+v", cs)
+	}
+}
+
+func TestStoppedCreateAppearsAfterTimeout(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.its.add(1, "coder", 101, "HL-7", "Fix it.")
+	v.tick(v.e)
+	v.gh.push("factory/HL-7", "sha-1", "fix: one")
+	v.gh.delayCreate = true
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	if v.gh.delayed == nil {
+		t.Fatal("expected a timed-out create")
+	}
+	if _, err := v.st.StopIssue(v.ctx, "HL-7", "human takeover", "operator"); err != nil {
+		t.Fatal(err)
+	}
+	v.clk.Advance(time.Hour)
+	v.tick(v.e)
+	if _, err := v.gh.CreatePullRequest(v.ctx, "", *v.gh.delayed); err != nil {
+		t.Fatal(err)
+	}
+	v.clk.Advance(time.Hour)
+	v.tick(v.e)
+	if v.gh.byNumber(1).pr.State != "closed" || !strings.Contains(v.gh.stopComment, "human takeover") {
+		t.Fatalf("late PR state %s, comment %q", v.gh.byNumber(1).pr.State, v.gh.stopComment)
 	}
 }
 

@@ -67,3 +67,9 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-14
+  statement: A stopped work item reconciles an outstanding PR creation and comments on and closes its late open PR.
+  mechanism:
+  - projects/factory/connector/dispatch/delivery.go
+  test: //projects/factory/connector/dispatch:dispatch_test
+  state: live
