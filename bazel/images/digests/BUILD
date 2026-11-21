@@ -37,6 +37,7 @@ oci_digest_manifest(
         "//projects/factory/connector/image:image.info": "//projects/factory/connector/image:image.push",
         "//projects/factory/harness/claude:image.info": "//projects/factory/harness/claude:image.push",
         "//projects/factory/harness/codex:image.info": "//projects/factory/harness/codex:image.push",
+        "//projects/factory/itsaplan-web:image.info": "//projects/factory/itsaplan-web:image.push",
         "//projects/factory/reviewer/image:image.info": "//projects/factory/reviewer/image:image.push",
         "//projects/firecracker/sandbox/elixir:image.info": "//projects/firecracker/sandbox/elixir:image.push",
         "//projects/firecracker/sandbox/go:image.info": "//projects/firecracker/sandbox/go:image.push",

@@ -1,8 +1,9 @@
 {{- if .Values.itsaplan.enabled }}
 {{- /*
 itsaplan Community (ARCHITECTURE.md, "itsaplan"): the api, which applies the
-migrations in an init container before it starts, the web app and the worker,
-from the upstream images. Generated secrets come from itsaplan-jobs.yaml's
+migrations in an init container before it starts, and the worker use upstream
+images. CI builds the web app from the pinned upstream source.
+Generated secrets come from itsaplan-jobs.yaml's
 Jobs; the database, S3 key and OIDC client secret from outside the chart;
 the instance's admin, sign-in settings, project, sessions member and agents
 from its bootstrap. The namespace is not rendered here: the broker's template
@@ -325,7 +326,11 @@ spec:
         # The web app holds no secret: it reads the public origins and
         # reaches the api by Service.
         - name: web
+          {{- if $i.webImage.digest }}
+          image: {{ printf "%s@%s" $i.webImage.repository $i.webImage.digest | quote }}
+          {{- else }}
           image: {{ $i.images.web }}
+          {{- end }}
           command: [node, apps/web/server.js]
           ports:
             - name: http

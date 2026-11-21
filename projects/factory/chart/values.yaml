@@ -452,6 +452,11 @@ itsaplan:
   # and the session cookie stays host-only (__Host-).
   host: factory-plan.jomcgi.dev
   apiPath: /backend
+  # CI pins the rebuilt web image in published charts.
+  webImage:
+    repository: ghcr.io/jomcgi/homelab/projects/factory/itsaplan-web
+    tag: ""
+    digest: ""
   images:
     api: ghcr.io/croffasia/itsaplan-api:1.10.0@sha256:9f53d060db6594b2e51bc224183e8e8c60e544a1fd65dcd451c053568c642753
     web: ghcr.io/croffasia/itsaplan-web:1.10.0@sha256:be213d6861f66ac68320db2a1481c050bc811a740d558f5ebde576b34f78b289
