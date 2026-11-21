@@ -1397,3 +1397,43 @@ def test_extra_mcp_server() -> None:
         "server": {"kind": "RemoteMCPServer", "name": "grafana"},
         "tools": ["query_prometheus", "search_dashboards"],
     }
+
+
+def test_discord_activity_exposes_only_activity_api_when_enabled() -> None:
+    assert not any(
+        d["kind"] == "HTTPRoute" and d["metadata"]["name"] == "discord-activity"
+        for d in _render(_DISCORD)
+    )
+    docs = _render(
+        _DISCORD
+        + [
+            "discord.bridge.activity.enabled=true",
+            "string:discord.bridge.activity.clientId=123",
+        ]
+    )
+    route = _in(docs, "HTTPRoute", "edge", "discord-activity")
+    (rule,) = route["spec"]["rules"]
+    assert route["spec"]["hostnames"] == ["bosun-activity-api.jomcgi.dev"]
+    assert rule["matches"] == [
+        {"method": "POST", "path": {"type": "Exact", "value": "/activity/token"}},
+        {
+            "method": "GET",
+            "path": {"type": "PathPrefix", "value": "/activity/instances"},
+        },
+        {
+            "method": "POST",
+            "path": {"type": "PathPrefix", "value": "/activity/instances"},
+        },
+    ]
+    policy = _in(docs, "SecurityPolicy", "edge", "discord-activity")["spec"]
+    assert policy == {
+        "targetRefs": [
+            {
+                "group": "gateway.networking.k8s.io",
+                "kind": "HTTPRoute",
+                "name": "discord-activity",
+            }
+        ],
+        "authorization": {"defaultAction": "Allow"},
+    }
+    assert rule["backendRefs"][0]["name"] == "discord-activity"

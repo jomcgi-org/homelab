@@ -37,8 +37,16 @@ type REST struct {
 
 // TextDisplay is a Components V2 text display.
 type TextDisplay struct {
-	Type    int    `json:"type"`
-	Content string `json:"content"`
+	Type       int      `json:"type"`
+	Content    string   `json:"content,omitempty"`
+	Components []Button `json:"components,omitempty"`
+}
+
+type Button struct {
+	Type     int    `json:"type"`
+	Style    int    `json:"style"`
+	Label    string `json:"label"`
+	CustomID string `json:"custom_id"`
 }
 
 // AllowedMentions is Discord's mention filter. An empty Parse list with no
