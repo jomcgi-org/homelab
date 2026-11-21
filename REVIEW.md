@@ -162,7 +162,13 @@ page checks, and none of them was a defect in the site
    log or work that stops moving. Recoverable means a retry, a restart or a
    revert restores it with nothing lost.
 4. **Does the harm survive a revert, or does the change remove, skip or
-   loosen a check, a gate or a boundary?** Critical.
+   loosen a check, a gate or a boundary?** Critical. For a loosening of
+   review rule text in a `REVIEW.md` that "Joe decides" holds, report the
+   loosening only as `human-gate` at high. The change must name what
+   replaces the rule or link Joe's decision. If both are missing, report
+   the missing justification as a separate finding. Loosenings in code,
+   CI or other gates remain critical
+   ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-639)).
 5. **After merge, would someone notice?** Something a user or operator
    relies on fails on a default path, or stops working where it works on
    `main`. High. A default path runs without unusual input or
