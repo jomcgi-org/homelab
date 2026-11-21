@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# invariant: FACT-14
+# invariant: FACT-15
 """Hook for a private staging receiver with a trusted Mandoline fingerprint index."""
 
 import base64
@@ -72,16 +72,13 @@ def inspect():
         raise ValueError("empty reference index")
     updates = [line.split() for line in sys.stdin.buffer]
     tips = []
-    leases = []
     refspecs = []
-    for old, new, ref in updates:
+    for _, new, ref in updates:
         if not ref.startswith(b"refs/heads/factory/"):
             raise ValueError("expected a factory work branch")
-        previous = old if old.strip(b"0") else b""
         target = new if new.strip(b"0") else b""
         if target:
             tips.append(target)
-        leases.append(b"--force-with-lease=" + ref + b":" + previous)
         refspecs.append(target + b":" + ref)
     objects = git(
         "rev-list",
@@ -114,7 +111,7 @@ def inspect():
                 digest.update(block)
                 raw = raw_tail + block
                 compact = compact_tail + b"".join(block.split())
-                if matches(raw, index) or (compact != raw and matches(compact, index)):
+                if matches(raw, index) or matches(compact, index):
                     reader.stdout.close()
                     raise ValueError("protected content")
                 raw_tail, compact_tail = raw[-overlap:], compact[-overlap:]
@@ -122,6 +119,29 @@ def inspect():
                 raise ValueError("cannot read blob")
         if oversized and digest.hexdigest() not in allowed:
             raise ValueError("blob exceeds 1 MiB")
+
+    upstream = os.environ["PUSH_UPSTREAM"]
+    advertised = {
+        ref: oid
+        for oid, ref in (
+            line.split(b"\t", 1)
+            for line in git(
+                "ls-remote", "--refs", "--", upstream, *(ref for _, _, ref in updates)
+            ).splitlines()
+        )
+    }
+    leases = []
+    for old, new, ref in updates:
+        previous = old if old.strip(b"0") else b""
+        current = advertised.get(ref, b"")
+        if current != previous:
+            if not current or not new.strip(b"0"):
+                raise ValueError("reconcile the staging ref with upstream")
+            try:
+                git("merge-base", "--is-ancestor", current, new)
+            except subprocess.CalledProcessError:
+                raise ValueError("include the current upstream tip") from None
+        leases.append(b"--force-with-lease=" + ref + b":" + current)
 
     # Repack from validated object IDs. The guest's incoming pack can contain
     # unrelated objects and must never be relayed verbatim.
@@ -131,7 +151,7 @@ def inspect():
         "--no-follow-tags",
         *leases,
         "--",
-        os.environ["PUSH_UPSTREAM"],
+        upstream,
         *refspecs,
     )
 
