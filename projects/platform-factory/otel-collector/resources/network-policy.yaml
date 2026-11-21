@@ -62,6 +62,7 @@ spec:
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
+  # invariant: PLAT-14
   name: trace-gateway
   namespace: otel-collector
 spec:

@@ -1873,7 +1873,8 @@ def test_factory_audit_export_after_offline_rotation(tmp_path):
         assert exported.count(event_id) == 1
 
 
-def test_factory_trace_content_removed_before_sampling(tmp_path):
+@pytest.mark.parametrize("service_name", ["factory-reviewer", "homelab-codex"])
+def test_factory_trace_content_removed_before_sampling(tmp_path, service_name):
     config = _named_collector_config(_render_overlay("values-factory"), RELEASE)
     processors = config["service"]["pipelines"]["traces"]["processors"]
     clean = processors[1 : processors.index("tail_sampling")]
@@ -1919,7 +1920,7 @@ def test_factory_trace_content_removed_before_sampling(tmp_path):
             }
         ],
     }
-    service = {"key": "service.name", "value": {"stringValue": "factory-reviewer"}}
+    service = {"key": "service.name", "value": {"stringValue": service_name}}
     resource = {"attributes": [service]}
     scoped = {"scope": {}, "spans": [span]}
     batch = {"resourceSpans": [{"resource": resource, "scopeSpans": [scoped]}]}
