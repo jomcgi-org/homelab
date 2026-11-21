@@ -1,0 +1,42 @@
+name: Fixture snapshot publication
+
+on:
+  schedule:
+    - cron: "17,47 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+concurrency:
+  group: fixture-preview-pages
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: bazel/tools/previews
+      - run: python3 -m unittest discover -s bazel/tools/previews -p staged_test.py
+      - run: python3 bazel/tools/previews/staged.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: ${{ runner.temp }}/site
+  deploy:
+    needs: snapshot
+    runs-on: ubuntu-24.04
+    environment: github-pages
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
