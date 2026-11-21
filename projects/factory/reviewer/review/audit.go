@@ -98,6 +98,7 @@ type GoalTask struct {
 	State     string    `json:"state,omitempty"`
 	Nonce     string    `json:"nonce,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+	IssuedAt  time.Time `json:"issued_at,omitzero"`
 }
 
 const (

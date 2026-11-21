@@ -157,7 +157,9 @@ type Config struct {
 	// not answer with a task. One final send follows DispatchWindow after
 	// the last, once nothing sent earlier can still start, before the
 	// attempt ends without a report.
-	MaxSends       int
+	MaxSends int
+	// DispatchWindow also bounds read-only observation of an unconfirmed
+	// goal dispatch in its isolated session.
 	DispatchWindow time.Duration
 	// EnqueueBackoff spaces enqueue attempts for one head after a failure.
 	EnqueueBackoff time.Duration
