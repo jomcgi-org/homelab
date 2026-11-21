@@ -10,5 +10,8 @@ py_library(
 py_test(
     name = "execution_test",
     srcs = ["execution_test.py"],
-    deps = [":execution"],
+    deps = [
+        ":execution",
+        "@pip//pytest",
+    ],
 )
