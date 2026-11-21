@@ -96,7 +96,8 @@ async function fixture(email?: string) {
 }
 
 test("run phase reads exclude stale attempts and require issue access", async () => {
-  const { id, coder, owner, send } = await fixture();
+  const { id, coder, coordinator, owner, client, project, send } =
+    await fixture();
   expect((await send()).status).toBe(200);
   await db
     .update(agentRun)
@@ -202,6 +203,28 @@ test("run phase reads exclude stale attempts and require issue access", async ()
     const reviewURL = `http://localhost/issues/${id}/factory-review`;
     const readsBeforeDenial = reads;
     expect((await app.handle(new Request(reviewURL))).status).toBe(401);
+    for (const permission of ["work_items", "ai_agents"] as const) {
+      const role = await client
+        .teams({ teamId: project.project.teamId })
+        .roles.post({
+          name: `Read only ${permission}`,
+          permissions: { [permission]: { read: true } },
+        });
+      expect(role.status).toBe(201);
+      const membership = await setAgentProjectRole(
+        client,
+        "HOME",
+        coordinator.agent.userId,
+        role.data!.id,
+      );
+      expect(membership.status).toBe(204);
+      const response = await app.handle(
+        new Request(reviewURL, {
+          headers: { "x-api-key": coordinator.apiKey! },
+        }),
+      );
+      expect(response.status).toBe(403);
+    }
     expect(reads).toBe(readsBeforeDenial);
     const reviewResponse = await app.handle(
       new Request(reviewURL, { headers: { cookie: owner.cookie } }),

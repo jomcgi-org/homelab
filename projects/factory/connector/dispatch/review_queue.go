@@ -53,6 +53,19 @@ func (e *Engine) IssueReviewQueue(ctx context.Context, issueID int64, base strin
 	if err != nil {
 		return nil, err
 	}
+	if err := e.w.RecordDeliveryRead(ctx, pr.ID, messageID+"/current", "review-queue-pr", pr.HeadSHA); err != nil {
+		return nil, err
+	}
+	if err := e.guard(ctx); err != nil {
+		return nil, err
+	}
+	current, err := e.gh.PullRequestDetail(ctx, binding.repo(), pr.Number)
+	if err != nil {
+		return nil, err
+	}
+	if current.State != "open" || current.Draft || current.BaseRef != binding.BaseBranch || current.HeadSHA != pr.HeadSHA {
+		return nil, errors.New("review queue head needs reconciliation")
+	}
 	matches := func(item reviewSnapshotEntry) bool {
 		return item.Repository == binding.repo() && item.PullRequest == pr.Number && item.Head == pr.HeadSHA
 	}
