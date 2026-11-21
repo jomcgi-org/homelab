@@ -76,7 +76,7 @@ filegroup(
         ["**/*.md"],
         allow_empty = True,
         exclude = ["**/node_modules/**"],
-    ),
+    ) + ["//projects/factory/browser-comparison:repo_docs"],
     visibility = ["//projects/monolith:__pkg__"],
 )
 
