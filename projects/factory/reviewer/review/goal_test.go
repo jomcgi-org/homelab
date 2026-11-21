@@ -1,6 +1,8 @@
+// invariant: FACT-14
 package review
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/yuin/goldmark"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
@@ -929,14 +933,14 @@ func TestIssueCriteriaCount(t *testing.T) {
 		"Done when:\n1. a\n3. not the next number":                                    0,
 		"Done when:\n1. a\n2. b\n\nOut of scope:\n- c":                                0,
 		"Done when:\n1. a\n2. b\n\nOut of scope: c":                                   2,
-		"Example:\n```\nDone when:\n1. x\n```\nDone when:\n1. a\n2. b":                0,
+		"Example:\n```\nDone when:\n1. x\n```\nDone when:\n1. a\n2. b":                2,
 		"Done when:\n1. a\n```\n2. b\n```":                                            0,
 		"Done when:\n```\n1. a\n```":                                                  0,
 		"````\n```\nDone when:\n1. Example\n":                                         0,
 		"<!--\nDone when:\n1. A\n-->\nText.":                                          0,
-		"<!-- note -->\nDone when:\n1. a\n2. b":                                       0,
-		"```mermaid\nflowchart TD\n  A --> B\n```\n\nDone when:\n1. a\n2. b":          0,
-		"~~~\nDone when:\n1. x\n```\n~~~\nDone when:\n1. a":                           0,
+		"<!-- note -->\nDone when:\n1. a\n2. b":                                       2,
+		"```mermaid\nflowchart TD\n  A --> B\n```\n\nDone when:\n1. a\n2. b":          2,
+		"~~~\nDone when:\n1. x\n```\n~~~\nDone when:\n1. a":                           1,
 		"Done when:\n1. Show the literal `<!--`\n2. Verify the result":                0,
 		"Done when:\n1. a\n<div>\n2. b\n</div>":                                       0,
 		"Done when:\n1. Use `code` here\n2. b":                                        2,
@@ -944,13 +948,13 @@ func TestIssueCriteriaCount(t *testing.T) {
 		"\tDone when:\n1. a":                                                          0,
 		"Done when:\n* * *":                                                           0,
 		"Done when:\n- a\n- - -":                                                      0,
-		"Title\n===\nDone when:\n1. a":                                                0,
+		"Title\n===\nDone when:\n1. a":                                                1,
 		"Done when:\n1. 2\n2. b":                                                      2,
 		"Done when:\n1. 值\n2. é":                                                      2,
 		"Done when:\n1. ```go":                                                        0,
 		"Done when:\n1. a <b>\n2. c":                                                  0,
 		"Done when:\n1. Keep p95 latency < 200 ms.\n2. b":                             2,
-		"Title\n=\nDone when:\n1. a":                                                  0,
+		"Title\n=\nDone when:\n1. a":                                                  1,
 		"Done when:\r\n1. a\r\n2.\r\n   b\r\n":                                        0,
 		"Done when:\n1. a\n2.\tb":                                                     2,
 		"Done when:\n1) a\n2) b":                                                      2,
@@ -1073,5 +1077,55 @@ func TestUncountedAnswerKeepsMainRules(t *testing.T) {
 	applyGoal(r, prior, "HOME", "HOME-7", &GoalCheck{Overall: goalUnclear, Criteria: []GoalVerdict{{1, goalMet}, {2, goalMet}, {3, goalMet}}})
 	if a := Assess(r, prior); len(a.Fixed) != 2 || len(a.Withdrawn) != 0 {
 		t.Fatalf("met verdicts: fixed %+v withdrawn %+v", a.Fixed, a.Withdrawn)
+	}
+}
+
+func TestGeneratedCriteriaMatchRenderer(t *testing.T) {
+	for _, prefix := range []string{"", "```mermaid\nA --> B\n```\n", "<!-- hidden -->\n", "---\n", "    code\n\n"} {
+		for _, body := range []string{"1. one\n2. two", "- one\n- two", "* * *", "```\n- hidden\n```", "    code", "<!--\n- hidden\n-->"} {
+			desc := prefix + "Done when:\n" + body
+			var html bytes.Buffer
+			if err := goldmark.Convert([]byte(desc), &html); err != nil {
+				t.Fatal(err)
+			}
+			got := issueCriteria(&IssueContext{Issue: &IssueEvidence{Key: "HOME-1", Trusted: true, Description: desc}})
+			if want := strings.Count(html.String(), "<li>"); got != want {
+				t.Errorf("%q: counted %d, rendered %d", desc, got, want)
+			}
+		}
+	}
+}
+
+func TestWithdrawalCriteriaKeepsExcludedBlockers(t *testing.T) {
+	for _, desc := range []string{
+		"Done when:\n1. visible\n<div>\n2. hidden\n</div>",
+		"Done when:\n1. visible\n```\n2. hidden\n```",
+		"Done when:\n1. visible\n~~~\n2. hidden\n~~~",
+		"Done when:\n1. visible\n***",
+		"Done when:\n1. visible\n\nTitle\n--",
+	} {
+		in := &IssueContext{Issue: &IssueEvidence{Key: "HOME-1", Trusted: true, Description: desc}}
+		g := &GoalCheck{Counted: issueCriteria(in), Criteria: goalVerdicts(1, goalMet)}
+		for _, id := range []string{"HOME-1:goal:criterion-2", "HOME-2:goal"} {
+			if note := goalWithdrawn(id, "HOME-1", g); note != "" {
+				t.Errorf("%q withdrew %s: %s", desc, id, note)
+			}
+		}
+	}
+}
+
+func TestDiagramBeforeCriteriaAllowsWithdrawal(t *testing.T) {
+	h, api := issueHarness(t)
+	api.issue.Description = "```mermaid\nflowchart TD\n A --> B\n```\n\nDone when:\n1. one\n2. two"
+	h.k.goalReplies = []string{goalReply(`{"criteria":[{"criterion":1,"verdict":"met"},{"criterion":2,"verdict":"met"}],"overall":"met"}`)}
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	state, _ := LoadState(h.gh.check(shaA).Text)
+	if state.Goal == nil || state.Goal.Counted != 2 {
+		t.Fatalf("persisted goal = %+v, want two counted criteria", state.Goal)
+	}
+	if note := goalWithdrawn("HOME-58:goal:criterion-3", "HOME-58", state.Goal); note == "" {
+		t.Fatal("missing withdrawal for criterion 3 after the fenced diagram")
 	}
 }

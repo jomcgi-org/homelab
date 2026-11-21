@@ -73,3 +73,9 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-14
+  statement: A positive issue criteria count equals the direct item count of the rendered CommonMark criteria list in trusted, complete issue text.
+  mechanism:
+  - projects/factory/reviewer/review/goal.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live
