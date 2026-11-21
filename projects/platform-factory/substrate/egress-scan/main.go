@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -14,6 +15,8 @@ import (
 	"time"
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/viper"
 	"github.com/zricethezav/gitleaks/v8/config"
 	"github.com/zricethezav/gitleaks/v8/logging"
@@ -24,6 +27,7 @@ import (
 
 func main() {
 	addr := flag.String("listen", ":8080", "listen address")
+	metricsAddr := flag.String("metrics-listen", ":9090", "Prometheus metrics listen address")
 	rules := flag.String("rules", "", "path to operator-supplied Gitleaks TOML")
 	concurrency := flag.Int("concurrency", 8, "maximum simultaneous scans")
 	flag.Parse()
@@ -43,7 +47,26 @@ func main() {
 		log.Fatal(err)
 	}
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(maxCheckMessage))
-	authv3.RegisterAuthorizationServer(server, &scanner{detector: detector, slots: make(chan struct{}, *concurrency)})
+	registry := prometheus.NewRegistry()
+	authv3.RegisterAuthorizationServer(server, newMeteredScanner(&scanner{detector: detector, slots: make(chan struct{}, *concurrency)}, registry))
+	metricsListener, err := net.Listen("tcp", *metricsAddr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+	metricsServer := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+	}
+	defer metricsServer.Close()
+	go func() {
+		if err := metricsServer.Serve(metricsListener); !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("metrics server stopped: %v", err)
+		}
+	}()
+
 	healthServer := health.NewServer()
 	healthpb.RegisterHealthServer(server, healthServer)
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
