@@ -1,0 +1,104 @@
+{
+  "lens": "security",
+  "system_dir": "projects/platform-gke/polylane",
+  "commit": "d27644169",
+  "scope": {
+    "summary": "The third-party platform queries the hub through an outbound cloudflared tunnel. Cluster topology and pod logs cross the cluster boundary in responses. The permitted reads include ConfigMaps and pod logs across namespaces, so their contents enter the third-party trust boundary.",
+    "built": "The hub Application installs the wrapper in polylane. The chart binds the agent identity to enumerated cluster reads and a separate namespaced state Secret grant."
+  },
+  "losses": [
+    {
+      "key": "L.cluster-authority",
+      "title": "An external observation session gains unauthorized access to hub data or identity."
+    }
+  ],
+  "hazards": [
+    {
+      "key": "excess-authority",
+      "statement": "The observation path reaches resources or credentials outside the agent grant.",
+      "losses": [
+        "L.cluster-authority"
+      ],
+      "status": "enforced-prod",
+      "issue": "HOME-89",
+      "view": "logical",
+      "maturity": "built"
+    }
+  ],
+  "ucas": [
+    {
+      "key": "platform.query.provided",
+      "control_action": "platform.query",
+      "guideword": "provided",
+      "condition": "Direct pod ingress to the shim would add another caller path. The shim uses loopback and the enabled NetworkPolicy admits only operations ports.",
+      "evidence": "projects/platform/polylane/values.yaml:48",
+      "view": "logical",
+      "severity": "high",
+      "hazards": [
+        "excess-authority"
+      ],
+      "status": "enforced-prod",
+      "issue": "HOME-89"
+    },
+    {
+      "key": "agent.read.provided",
+      "control_action": "agent.read",
+      "guideword": "provided",
+      "condition": "Serving a request beyond the observation grant would disclose unrelated data. The ClusterRole enumerates resources and limits verbs to get and list.",
+      "evidence": "projects/platform/polylane/charts/polylane-k8s-0.2.3.tgz (templates/clusterrole.yaml: verbs: [get, list])",
+      "view": "logical",
+      "severity": "high",
+      "hazards": [
+        "excess-authority"
+      ],
+      "status": "enforced-prod",
+      "issue": "HOME-89"
+    },
+    {
+      "key": "agent.persist.provided",
+      "control_action": "agent.persist",
+      "guideword": "provided",
+      "condition": "A write to another Secret would change another identity. The Role grants get, update and patch on the named state Secret.",
+      "evidence": "projects/platform/polylane/charts/polylane-k8s-0.2.3.tgz (templates/role.yaml: resourceNames)",
+      "view": "logical",
+      "severity": "high",
+      "hazards": [
+        "excess-authority"
+      ],
+      "status": "enforced-prod",
+      "issue": "HOME-89"
+    },
+    {
+      "key": "argo.sync.provided",
+      "control_action": "argo.sync",
+      "guideword": "provided",
+      "condition": "Replacing agent-owned state during sync would invalidate tunnel registration. Server-side apply leaves the data field with its writer.",
+      "evidence": "projects/platform-gke/polylane/application.yaml:46",
+      "view": "logical",
+      "severity": "high",
+      "hazards": [
+        "excess-authority"
+      ],
+      "status": "enforced-prod",
+      "issue": "HOME-89"
+    }
+  ],
+  "unsafe_feedback": [
+    {
+      "key": "state-feedback.stale",
+      "guideword": "stale",
+      "condition": "Treating runtime registration as drift could trigger reconciliation of stale state. The Application excludes /data for the named Secret from comparison.",
+      "severity": "high",
+      "hazards": [
+        "excess-authority"
+      ],
+      "status": "enforced-prod",
+      "issue": "HOME-89",
+      "evidence": "projects/platform-gke/polylane/application.yaml:46",
+      "from": "state",
+      "to": "argo",
+      "signal": "Observed agent-owned Secret data",
+      "view": "logical"
+    }
+  ]
+}

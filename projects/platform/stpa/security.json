@@ -1,0 +1,160 @@
+{
+  "lens": "security",
+  "system_dir": "projects/platform",
+  "commit": "d27644169",
+  "scope": {
+    "summary": "From upstream packages, base images and PR-controlled build inputs through review, queue validation and OCI publication to the pins consumed by ArgoCD.",
+    "built": "BuildBuddy runs pr-checks on PR heads, queue candidates and main. The factory Renovate App requests native auto-merge. Hub apko maintenance is suspended. The monolith dependency evidence path is distinct from the required factory review."
+  },
+  "losses": [
+    {
+      "key": "L.release-integrity",
+      "title": "Unreviewed software gains deploy authority on a cluster."
+    }
+  ],
+  "hazards": [
+    {
+      "key": "unvalidated-release",
+      "statement": "A merge or deployment refers to inputs other than those validated.",
+      "losses": [
+        "L.release-integrity"
+      ],
+      "status": "enforced-prod",
+      "issue": "HOME-89",
+      "view": "logical",
+      "maturity": "built"
+    }
+  ],
+  "ucas": [
+    {
+      "key": "renovate.request-automerge.provided",
+      "control_action": "renovate.request-automerge",
+      "guideword": "provided",
+      "condition": "Requesting auto-merge for a protected path or major update would remove the manual decision. Renovate restricts eligible update classes and overrides eligibility for protected paths.",
+      "evidence": "renovate.json:216-234",
+      "view": "logical",
+      "severity": "high",
+      "hazards": [
+        "unvalidated-release"
+      ],
+      "status": "enforced-prod",
+      "issue": "HOME-14, HOME-61"
+    },
+    {
+      "key": "apko.refresh-lock.provided",
+      "control_action": "apko.refresh-lock",
+      "guideword": "provided",
+      "condition": "An unattended refresh could change image inputs during retirement. The hub CronWorkflow consumes the suspend flag and automatic merge is disabled.",
+      "evidence": "projects/platform/renovate/values-gke.yaml:6",
+      "view": "logical",
+      "severity": "high",
+      "hazards": [
+        "unvalidated-release"
+      ],
+      "status": "shipped-off",
+      "issue": "#7945"
+    },
+    {
+      "key": "intake.assess.provided",
+      "control_action": "intake.assess",
+      "guideword": "provided",
+      "condition": "Accepting a partial dependency graph would hide transitive changes. The intake parser refuses missing or truncated evidence.",
+      "evidence": "projects/monolith/factory/orchestration/dependency_prs.py:398",
+      "view": "logical",
+      "severity": "high",
+      "hazards": [
+        "unvalidated-release"
+      ],
+      "status": "enforced-dev",
+      "issue": "HOME-89"
+    },
+    {
+      "key": "reviewer.attest.provided",
+      "control_action": "reviewer.attest",
+      "guideword": "provided",
+      "condition": "A pass for another PR revision could authorize changed code. The reviewer matches the reviewed head to the queued PR head.",
+      "evidence": "projects/factory/reviewer/review/engine.go:3486",
+      "view": "logical",
+      "severity": "high",
+      "hazards": [
+        "unvalidated-release"
+      ],
+      "status": "enforced-prod",
+      "issue": "HOME-89"
+    },
+    {
+      "key": "queue.merge.provided",
+      "control_action": "queue.merge",
+      "guideword": "provided",
+      "condition": "Enqueue after the reviewed head moves would change the candidate. The connector supplies expectedHeadOid and the ruleset requires pr-checks and factory review.",
+      "evidence": "projects/factory/connector/github/client.go:695",
+      "view": "logical",
+      "severity": "high",
+      "hazards": [
+        "unvalidated-release"
+      ],
+      "status": "enforced-prod",
+      "issue": "HOME-89"
+    },
+    {
+      "key": "pr.validate.provided",
+      "control_action": "pr.validate",
+      "guideword": "provided",
+      "condition": "A success for a different tree could admit an untested build. PR checks use the PR head and queue pushes trigger a separate candidate build. Same-repository jobs cross the runner credential boundary (buildbuddy.yaml:44).",
+      "evidence": "buildbuddy.yaml:16",
+      "view": "logical",
+      "severity": "high",
+      "hazards": [
+        "unvalidated-release"
+      ],
+      "status": "enforced-prod",
+      "issue": "HOME-89"
+    },
+    {
+      "key": "runner.publish.provided",
+      "control_action": "runner.publish",
+      "guideword": "provided",
+      "condition": "Publishing during PR validation would promote candidate artifacts. The runner selects publication on main and build verification on PR and queue runs.",
+      "evidence": "buildbuddy.yaml:217",
+      "view": "logical",
+      "severity": "high",
+      "hazards": [
+        "unvalidated-release"
+      ],
+      "status": "enforced-prod",
+      "issue": "HOME-89"
+    },
+    {
+      "key": "runner.write-back.provided",
+      "control_action": "runner.write-back",
+      "guideword": "provided",
+      "condition": "Advancing a pin before publication would direct GitOps to an unconfirmed release. The runner passes publication records to write-back after publishing.",
+      "evidence": "buildbuddy.yaml:225",
+      "view": "logical",
+      "severity": "high",
+      "hazards": [
+        "unvalidated-release"
+      ],
+      "status": "enforced-prod",
+      "issue": "HOME-89"
+    }
+  ],
+  "unsafe_feedback": [
+    {
+      "key": "reviewer-feedback.stale",
+      "guideword": "stale",
+      "condition": "A stale approval could pass the queue candidate. The reviewer compares the head SHA before posting the merge-group check.",
+      "severity": "high",
+      "hazards": [
+        "unvalidated-release"
+      ],
+      "status": "enforced-prod",
+      "issue": "HOME-89",
+      "evidence": "projects/factory/reviewer/review/engine.go:3486",
+      "from": "reviewer",
+      "to": "queue",
+      "signal": "factory review conclusion for PR head",
+      "view": "logical"
+    }
+  ]
+}

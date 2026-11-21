@@ -55,3 +55,5 @@ to match. The hub's root is `projects/gke-cluster/`, which lists the
 Most components have their own README with configuration detail; where one doesn't
 exist yet, the `Chart.yaml` in that directory and its `projects/platform-gke/`
 Application are the source of truth.
+
+The `stpa` directory holds the source for the [CI and supply chain security model](STPA.md).
