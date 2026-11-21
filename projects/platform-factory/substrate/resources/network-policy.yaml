@@ -18,6 +18,10 @@ spec:
       app: ate-api-server
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     - toEndpoints:
         - matchLabels:
             app: postgres
@@ -61,6 +65,10 @@ spec:
       app: ate-controller
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     - toEndpoints:
         - matchLabels:
             app: ate-api-server
@@ -80,6 +88,10 @@ spec:
       app: atelet
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     - toEndpoints:
         - matchLabels:
             app: ate-api-server
@@ -263,6 +275,10 @@ spec:
       app: k8s-credential-provider
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -275,6 +291,10 @@ spec:
       app: ate-idp-server
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
 ---
 # The snapshot store: reached by the objectstore-plugin sidecars and the
 # bucket Job; it reaches nothing.
@@ -327,6 +347,10 @@ spec:
       app: podcertificate-controller
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
 ---
 # Worker pods: actor traffic leaves only through the egress gateway, which
 # admits only attested actors and allows each actor only its own egress

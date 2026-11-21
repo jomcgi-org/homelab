@@ -37,3 +37,8 @@ py_test(
         "@pip//pyyaml",
     ],
 )
+
+exports_files(
+    ["network-policy.yaml"],
+    visibility = ["//projects/platform-factory/network-policy/tests:__pkg__"],
+)

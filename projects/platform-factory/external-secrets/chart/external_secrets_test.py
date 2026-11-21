@@ -263,7 +263,6 @@ def test_cilium_allows_only_the_api_server_and_never_world(docs):
                 {
                     "ports": [
                         {"port": "6443", "protocol": "TCP"},
-                        {"port": "443", "protocol": "TCP"},
                     ]
                 }
             ],

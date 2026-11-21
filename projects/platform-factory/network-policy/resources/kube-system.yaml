@@ -1,3 +1,4 @@
+# invariant: PLAT-14
 # k3s add-ons and Cilium's in-cluster components in kube-system.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -22,6 +23,10 @@ spec:
             - port: "53"
               protocol: ANY
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -40,6 +45,10 @@ spec:
               protocol: TCP
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     # Each node's kubelet summary API.
     - toEntities: [host, remote-node]
       toPorts:
@@ -58,6 +67,10 @@ spec:
       app: local-path-provisioner
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -90,6 +103,10 @@ spec:
       k8s-app: hubble-generate-certs
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
 ---
 # k3s's helm-controller installs bundled charts (Gateway API CRDs among them)
 # with Jobs on the pod network. Each fetches its chart from the apiserver's
@@ -107,3 +124,7 @@ spec:
         operator: Exists
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP

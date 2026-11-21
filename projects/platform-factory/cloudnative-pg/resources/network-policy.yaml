@@ -19,6 +19,10 @@ spec:
               protocol: TCP
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     # Instances in any namespace.
     - toEndpoints:
         - matchExpressions:

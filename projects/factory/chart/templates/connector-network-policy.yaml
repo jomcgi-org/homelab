@@ -24,6 +24,10 @@ spec:
       {{- include "factory.connectorSelector" . | nindent 6 }}
   egress:
     - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
     {{- if .Values.runbookRevert.enabled }}
     - toEndpoints:
         - matchLabels:
