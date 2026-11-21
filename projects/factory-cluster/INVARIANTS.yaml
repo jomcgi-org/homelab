@@ -25,3 +25,9 @@ invariants:
   statement: A copy of each backup exists outside the cluster.
   mechanism: []
   state: designed
+- id: CLUS-6
+  statement: Substrate CA rotation preserves both trust roots across signer cutover until every leaf issued by the old signer has expired.
+  mechanism:
+  - projects/factory-cluster/substrate-ca-rotation.md
+  - projects/factory-cluster/rehearse-substrate-ca.sh
+  state: unproven
