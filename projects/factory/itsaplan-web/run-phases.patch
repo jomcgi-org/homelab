@@ -92,61 +92,6 @@
            </div>
            <Button
              variant="outline"
---- a/apps/web/src/features/runner-queue/components/RunnerQueueRunDetail.tsx
-+++ b/apps/web/src/features/runner-queue/components/RunnerQueueRunDetail.tsx
-@@ -1,4 +1,6 @@
- import { useTranslations } from 'next-intl';
-+import { useQuery } from '@tanstack/react-query';
-+import { ApiError, request } from '@/lib/api/core/client';
- import type { RunnerQueueRun } from '@/lib/api/endpoints/runnerQueue';
- import AgentRunExternalTrace from '@/components/common/agent-runs/AgentRunExternalTrace';
- import AgentRunInternalTrace from '@/components/common/agent-runs/AgentRunInternalTrace';
-@@ -7,8 +9,26 @@
- import RunnerQueueRunResult from './RunnerQueueRunResult';
- import RunnerQueueRunSection from './RunnerQueueRunSection';
-
-+type IssueReview = {
-+  pullRequest: number;
-+  head: string;
-+  phase: 'queued' | 'reviewing';
-+  position?: number;
-+  observedAt: string;
-+};
-+
- export default function RunnerQueueRunDetail({ run }: { run: RunnerQueueRun }) {
-   const t = useTranslations('issue.agentRuns');
-+  const reviewQuery = useQuery({
-+    queryKey: ['factoryIssueReview', run.issueId],
-+    queryFn: ({ signal }) =>
-+      request<IssueReview | null>(`/issues/${run.issueId}/factory-review`, { signal }),
-+    enabled: run.issueId != null && run.kind === 'external',
-+    refetchInterval: ({ state: { error } }) =>
-+      error instanceof ApiError && [401, 403, 404].includes(error.status) ? false : 15_000,
-+    retry: false,
-+  });
-+  const review = reviewQuery.isError ? null : reviewQuery.data;
-   const failing = run.executionState === 'failed' || run.executionState === 'queued';
-   return (
-     <article className="space-y-8">
-@@ -16,6 +36,18 @@
-         <RunnerQueueRunHeader run={run} />
-         <RunnerQueueRunFacts run={run} />
-       </div>
-+      {review && (
-+        <RunnerQueueRunSection title="Work item review">
-+          <p className="text-sm">
-+            {review.phase === 'reviewing' ? 'Reviewing' : `Position ${review.position} in the review queue`}
-+            {' · '}PR #{review.pullRequest}
-+            {' · '}<code>{review.head.slice(0, 12)}</code>
-+          </p>
-+          <p className="text-xs text-muted-foreground">
-+            Observed <time dateTime={review.observedAt}>{new Date(review.observedAt).toLocaleString()}</time>
-+          </p>
-+        </RunnerQueueRunSection>
-+      )}
-       {failing && run.lastError && (
-         <RunnerQueueRunSection title={t('error')}>
-           <p className="text-[15px] whitespace-pre-wrap text-destructive" dir="auto">
 --- a/apps/web/src/features/runner-queue/RunnerQueueRunPage.test.tsx
 +++ b/apps/web/src/features/runner-queue/RunnerQueueRunPage.test.tsx
 @@ -12,7 +12,7 @@
@@ -178,17 +123,10 @@
      sequenceNumber: null,
      issueTitle: null,
      scheduleName: null,
-@@ -107,6 +107,17 @@
+@@ -107,6 +107,10 @@
    const page = { items: [run], total: 1, page: 1, pageSize: 10, queued: 0, running: 0 };
    client.setQueryData(detailKey, page);
    client.setQueryData([...qk.externalRunTrace(1), null], null);
-+  client.setQueryData(['factoryIssueReview', run.issueId], {
-+    phase: 'queued',
-+    position: 3,
-+    pullRequest: 42,
-+    head: '1234567890123456789012345678901234567890',
-+    observedAt: new Date(0).toISOString(),
-+  });
 +  const phaseKey = ['factoryRunPhases', run.issueId];
 +  client.setQueryData(phaseKey, {
 +    items: [{ runId: run.id, attempt: run.attempts, phase: 'waiting', reason: 'Waiting for a blocker.' }],
@@ -196,13 +134,11 @@
    const { default: RunnerQueueRunPage } = await import('./RunnerQueueRunPage');
    const { createRoot } = await import('react-dom/client');
    const root = createRoot(document.getElementById('root')!);
-@@ -128,6 +139,18 @@
+@@ -128,6 +132,16 @@
        ),
      );
      assert.ok(document.body.textContent?.includes('Selected result'));
 +    assert.ok(document.body.textContent?.includes('Waiting for a blocker.'));
-+    assert.ok(document.body.textContent?.includes('Position 3 in the review queue'));
-+    assert.ok(document.body.textContent?.includes('PR #42'));
 +    assert.equal(document.querySelector('h2')?.textContent, 'Waiting to run');
 +    await act(async () => {
 +      client.setQueryData(phaseKey, {
@@ -215,11 +151,3 @@
      await act(async () => {
        client
          .getQueryCache()
-@@ -136,6 +159,7 @@
-       await new Promise((resolve) => setTimeout(resolve, 10));
-     });
-     assert.ok(!document.body.textContent?.includes('Selected result'));
-+    assert.ok(!document.body.textContent?.includes('PR #42'));
-   } finally {
-     await act(async () => root.unmount());
-     client.clear();

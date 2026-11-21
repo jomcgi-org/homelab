@@ -322,6 +322,9 @@ spec:
       automountServiceAccountToken: false
       securityContext:
         {{- include "factory.itsaplanPodSecurity" . | nindent 8 }}
+      {{- if $i.webImage.digest }}
+      {{- include "factory.imagePullSecrets" . | nindent 6 }}
+      {{- end }}
       containers:
         # The web app holds no secret: it reads the public origins and
         # reaches the api by Service.
