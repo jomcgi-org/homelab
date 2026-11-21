@@ -160,3 +160,7 @@ def test_packaged_render_matches_the_lock_with_published_images(
         (container,) = deployment["spec"]["template"]["spec"]["containers"]
         image = published[service][_IMAGES[service]]
         assert container["image"] == f"{image['repository']}@{image['digest']}"
+        if service == "itsaplan":
+            assert deployment["spec"]["template"]["spec"]["imagePullSecrets"] == [
+                {"name": published["imagePullSecret"]["name"]}
+            ]
