@@ -1,3 +1,4 @@
+// invariant: FACT-13
 package dispatch
 
 import (
@@ -9,7 +10,9 @@ import (
 	"strings"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
+	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/connector/planner"
+	"github.com/jomcgi/homelab/projects/factory/connector/store"
 )
 
 // Consume each final message once in the same transaction as its reservations.
@@ -225,4 +228,160 @@ func (c *plannerTrackerCall) result(ctx context.Context, result error) error {
 		return err
 	}
 	return result
+}
+
+// The cron prompt is the exact reviewed schedule name. Admission commits the
+// single send intent. On takeover, recover by message ID without resending.
+func (e *Engine) plannerSession(ctx context.Context, r *store.Run) error {
+	b := e.binding("homelab")
+	if r.Trigger != "schedule" || r.IssueID != 0 || b == nil || b.ItsaplanProject != "HOME" {
+		return e.failRun(ctx, e.st.DB, r, "Expected a HOME planner schedule")
+	}
+	id := fmt.Sprintf("planner-%d", r.ID)
+	ref := kagent.AgentRef{Name: "homelab-planner", Namespace: b.KagentNamespace + "-planner"}
+	var task *kagent.Task
+	if e.cfg.Caller == nil {
+		return errCallerUncertain
+	}
+	ctx, identity, err := e.cfg.Caller.Pin(ctx)
+	if err != nil || !identity.Valid() {
+		return callerUncertain(err)
+	}
+	read := func(ctx context.Context, op string) (context.Context, error) {
+		key := id + "/" + op
+		return kagent.WithRequestID(ctx, key), e.BeginStatusRead(ctx, key)
+	}
+	var sessionID, taskID string
+	if r.State == store.RunClaimed {
+		var admitted bool
+		var namespace, title, instructions string
+		err = e.w.Tx(ctx, func(tx *sql.Tx) error {
+			if err := tx.QueryRowContext(ctx, "SELECT admit_planner_run($1,$2)", r.Prompt, id).Scan(&admitted); err != nil {
+				return err
+			}
+			if !admitted {
+				return e.failRun(ctx, tx, r, "Planner admission refused")
+			}
+			if err := tx.QueryRowContext(ctx, "SELECT namespace,issue_title,instructions FROM planner_schedule WHERE name=$1", r.Prompt).Scan(&namespace, &title, &instructions); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, "UPDATE planner_run SET caller_identity=$2 WHERE run_id=$1", id, identity.Key()); err != nil {
+				return err
+			}
+			return e.st.SetRunState(ctx, tx, r.ID, store.RunDispatched, "")
+		})
+		if err != nil || !admitted {
+			return err
+		}
+		if err = e.guard(ctx); err != nil {
+			return err
+		}
+		prompt := fmt.Sprintf("Inspect %s/%s for %s. %s Return a JSON array of proposals with title, body, evidence (1-8 HTTPS URLs), priority (low, medium, high or urgent), fix (agent or human) and fingerprint (%s:<component>:<finding>). Return [] for no findings.", b.Owner, b.Repo, title, instructions, namespace)
+		task, err = e.tasks.Send(ctx, ref, kagent.Message{MessageID: id, Parts: []kagent.Part{{Text: prompt}}})
+	} else {
+		var owner string
+		if err := e.st.DB.QueryRowContext(ctx, "SELECT caller_identity,coalesce(session_id,''),coalesce(task_id,'') FROM planner_run WHERE run_id=$1", id).Scan(&owner, &sessionID, &taskID); err != nil {
+			return err
+		}
+		if owner != identity.Key() {
+			return errCallerUncertain
+		}
+		if taskID == "" {
+			task, err = e.findMessage(ctx, ref, "", id, read)
+		} else {
+			readCtx, errRead := read(ctx, "task/"+taskID)
+			if errRead != nil {
+				return errRead
+			}
+			task, err = e.tasks.GetTask(readCtx, ref, taskID)
+			if err == nil && (task == nil || task.ID != taskID || task.ContextID != sessionID) {
+				return errors.New("planner task identity mismatch")
+			}
+		}
+	}
+	if r.State == store.RunClaimed && err != nil && (errors.Is(err, kagent.ErrRejected) || errors.Is(err, kagent.ErrNotAccepted)) {
+		return e.failPlannerSession(ctx, r, id, "Planner dispatch refused")
+	}
+	if err == nil && task == nil {
+		var expired bool
+		if err := e.st.DB.QueryRowContext(ctx, "SELECT started_at < now() - $2 * interval '1 second' FROM planner_run WHERE run_id=$1", id, e.cfg.DispatchWindow.Seconds()).Scan(&expired); err != nil {
+			return err
+		}
+		if expired {
+			return e.failPlannerSession(ctx, r, id, "Planner dispatch was not accepted")
+		}
+		return nil
+	}
+	if err == nil && taskID == "" {
+		if task.ID == "" || task.ContextID == "" {
+			return errors.New("missing planner task identity")
+		}
+		err = e.w.Tx(ctx, func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, "UPDATE planner_run SET task_id=$2,session_id=$3 WHERE run_id=$1", id, task.ID, task.ContextID)
+			return err
+		})
+	}
+	if err == nil && r.State == store.RunCanceling {
+		if !kagent.Terminal(task.Status.State) {
+			requestID := id + "/cancel"
+			if err := e.w.Tx(ctx, func(tx *sql.Tx) error {
+				_, err := tx.ExecContext(ctx, "UPDATE planner_run SET cancel_request_id=$2,cancel_writer_epoch=$3,cancel_attempts=cancel_attempts+1 WHERE run_id=$1", id, requestID, e.w.Epoch)
+				return err
+			}); err != nil {
+				return err
+			}
+			if err := e.guard(ctx); err != nil {
+				return err
+			}
+			_, err = e.tasks.CancelTask(kagent.WithRequestID(ctx, requestID), ref, task.ID)
+			return err
+		}
+		return e.failPlannerSession(ctx, r, id, "Planner run stopped")
+	}
+	if err != nil || !kagent.Quiescent(task.Status.State) {
+		return err
+	}
+	if task.Status.State != kagent.StateCompleted {
+		return e.failPlannerSession(ctx, r, id, "Planner task "+task.Status.State)
+	}
+	return e.w.Tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "UPDATE planner_run SET final_message=$2 WHERE run_id=$1", id, plannerFinalMessage(task)); err != nil {
+			return err
+		}
+		return e.finishRun(ctx, tx, r, itsaplan.Result{Status: "success"})
+	})
+}
+
+func (e *Engine) failPlannerSession(ctx context.Context, r *store.Run, id, reason string) error {
+	return e.w.Tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "UPDATE planner_run SET processed=true WHERE run_id=$1", id); err != nil {
+			return err
+		}
+		if r.State == store.RunCanceling {
+			if _, err := tx.ExecContext(ctx, "SELECT finish_planner_run($1)", id); err != nil {
+				return err
+			}
+		}
+		if r.State == store.RunCanceling && !r.StopRequested {
+			if err := abandonResult(ctx, tx, r.ID); err != nil {
+				return err
+			}
+			return e.st.SetRunState(ctx, tx, r.ID, store.RunClosed, reason)
+		}
+		return e.failRun(ctx, tx, r, reason)
+	})
+}
+
+func plannerFinalMessage(task *kagent.Task) string {
+	if message := task.Status.Message; message != nil && message.Role != "ROLE_USER" {
+		if text := messageText(message); text != "" {
+			return itsaplanText(text)
+		}
+	}
+	for i := len(task.History) - 1; i >= 0; i-- {
+		if message := task.History[i]; message != nil && message.Role == "ROLE_AGENT" {
+			return itsaplanText(messageText(message))
+		}
+	}
+	return ""
 }

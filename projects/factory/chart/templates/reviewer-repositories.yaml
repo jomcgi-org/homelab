@@ -13,5 +13,10 @@
 {{- /* Only the review Harness takes a workload image (HOME-530). */}}
 {{- $_ := set $binding "workloadImage" $.Values.reviewer.harnessImage }}
 {{- include "factory.bindingResources" (dict "root" $ "binding" $binding "description" "Reviews pull requests in") }}
+{{- with include "factory.plannerNamespace" (dict "root" $ "binding" $r) }}
+{{- $_ := set $binding "namespace" . }}
+{{- $_ := set $binding "agent" "planner" }}
+{{- include "factory.bindingResources" (dict "root" $ "binding" $binding "description" "Inspects") }}
+{{- end }}
 {{- end }}
 {{- end }}

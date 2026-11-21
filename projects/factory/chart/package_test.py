@@ -43,7 +43,7 @@ def package(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
     return archive, values
 
 
-def test_application_keeps_git_values_until_a_compatible_release_exists() -> None:
+def test_application_requires_git_deployment_values() -> None:
     # This preparation release must still render with the pre-bundle chart
     # pin, including when an operator lowers the pin after publication.
     # The cutover PR changes this contract only after a bundled release is

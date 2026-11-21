@@ -195,6 +195,13 @@ func (c *taskListCoverage) complete() error {
 // A listing or history error, a repeated cursor, or a bounded scan timeout is
 // uncertainty, never proof that a previous send did not execute.
 func (e *Engine) taskWithMessage(ctx context.Context, ref kagent.AgentRef, contextID, messageID string) (*kagent.Task, error) {
+	return e.findMessage(ctx, ref, contextID, messageID, nil)
+}
+
+func (e *Engine) findMessage(ctx context.Context, ref kagent.AgentRef, contextID, messageID string, beforeRead func(context.Context, string) (context.Context, error)) (*kagent.Task, error) {
+	if beforeRead == nil {
+		beforeRead = func(ctx context.Context, _ string) (context.Context, error) { return ctx, e.guard(ctx) }
+	}
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	token := ""
@@ -203,10 +210,11 @@ func (e *Engine) taskWithMessage(ctx context.Context, ref kagent.AgentRef, conte
 	incomplete := false
 	var coverage taskListCoverage
 	for {
-		if err := e.guard(ctx); err != nil {
+		readCtx, err := beforeRead(ctx, "list/"+token)
+		if err != nil {
 			return nil, err
 		}
-		page, err := e.tasks.ListTasks(ctx, ref, contextID, "", token)
+		page, err := e.tasks.ListTasks(readCtx, ref, contextID, "", token)
 		if err != nil {
 			return nil, fmt.Errorf("reconcile original message: list tasks: %w", err)
 		}
@@ -218,10 +226,11 @@ func (e *Engine) taskWithMessage(ctx context.Context, ref kagent.AgentRef, conte
 			if c == nil || c.ID == "" || (contextID != "" && c.ContextID != contextID) {
 				return nil, errors.New("reconcile original message: invalid task listing")
 			}
-			if err := e.guard(ctx); err != nil {
+			readCtx, err := beforeRead(ctx, "task/"+c.ID)
+			if err != nil {
 				return nil, err
 			}
-			t, err := e.tasks.GetTask(ctx, ref, c.ID)
+			t, err := e.tasks.GetTask(readCtx, ref, c.ID)
 			if err != nil {
 				return nil, fmt.Errorf("reconcile original message: read task: %w", err)
 			}
@@ -254,10 +263,11 @@ func (e *Engine) taskWithMessage(ctx context.Context, ref kagent.AgentRef, conte
 			// rows. Verify every boundary still exists before treating an
 			// empty final page as a complete absence proof.
 			for _, cursor := range cursors {
-				if err := e.guard(ctx); err != nil {
+				readCtx, err := beforeRead(ctx, "task/"+cursor.ID)
+				if err != nil {
 					return nil, err
 				}
-				t, err := e.tasks.GetTask(ctx, ref, cursor.ID)
+				t, err := e.tasks.GetTask(readCtx, ref, cursor.ID)
 				if err != nil {
 					return nil, fmt.Errorf("reconcile original message: verify page boundary: %w", err)
 				}

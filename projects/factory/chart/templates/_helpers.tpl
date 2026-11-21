@@ -97,3 +97,10 @@ may expose the listener, so enabling it without them fails the render.
 {{- print "true" }}
 {{- end }}
 {{- end }}
+
+{{/* The namespace exists only for a configured planner on the homelab binding. */}}
+{{- define "factory.plannerNamespace" -}}
+{{- if and .root.Values.reviewer.enabled .root.Values.connector.enabled .root.Values.connector.plannerSchedules (eq .binding.name "homelab") -}}
+{{- printf "%s-planner" .binding.namespace -}}
+{{- end -}}
+{{- end -}}
