@@ -366,9 +366,10 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.NotFound(w, r)
-	case r.Method == http.MethodGet && path == "/activity":
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/") && strings.HasSuffix(r.URL.Path, "/activity"):
+		repo := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/repos/"), "/activity")
 		for _, pr := range f.prs {
-			if "refs/heads/"+pr.HeadRef == q.Get("ref") {
+			if pr.HeadRepo == repo && "refs/heads/"+pr.HeadRef == q.Get("ref") {
 				f.get(w, r, page(pr.Activity, q))
 				return
 			}

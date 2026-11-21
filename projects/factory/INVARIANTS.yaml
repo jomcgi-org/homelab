@@ -67,3 +67,9 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-13
+  statement: Within an author priority, the reviewer starts the longest eligible head wait across polls and forks. A shared-head hold resets that wait.
+  mechanism:
+  - projects/factory/reviewer/review/engine.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live

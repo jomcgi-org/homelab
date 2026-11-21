@@ -187,7 +187,7 @@ func TestHeadRefChangedAtUsesLatestMatchingActivity(t *testing.T) {
 			}))
 			defer srv.Close()
 			c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
-			got, err := c.HeadRefChangedAt(context.Background(), "example-org/homelab", "factory/test", "head")
+			got, err := c.HeadRefChangedAt(context.Background(), "example-org/homelab", "example-org/homelab", "factory/test", "head")
 			if (err == nil) != tc.ok || (tc.ok && !got.Equal(when)) {
 				t.Fatalf("head changed at = %v, error = %v", got, err)
 			}
