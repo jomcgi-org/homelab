@@ -1295,9 +1295,12 @@ func TestTreeHeadsAndTruncatedCompare(t *testing.T) {
 	// Five cancelled runs on d fill the read, and e has more suites than
 	// it lists: either may hide a completed review, so both are read. f's
 	// overflow is another App's.
-	want := []Head{{SHA: "a", Checked: true}, {SHA: "b"}, {SHA: "b"}, {SHA: "c"}, {SHA: "d", Checked: true}, {SHA: "e", Checked: true}, {SHA: "f"}}
+	want := []Head{{SHA: "a", Checked: true}, {SHA: "b"}, {SHA: "b"}, {SHA: "c"}, {SHA: "d", Checked: true}, {SHA: "e", Checked: true, Active: true}, {SHA: "f"}}
 	if fmt.Sprint(h.Heads) != fmt.Sprint(want) || !h.Truncated || gql["appId"] != float64(5758326) || gql["check"] != "factory review" {
 		t.Fatalf("heads = %+v, truncated %v, vars %v", h.Heads, h.Truncated, gql)
+	}
+	if !strings.Contains(query, "checkType: ALL, status: IN_PROGRESS") {
+		t.Fatal("active check lookup must include earlier runs")
 	}
 	if !strings.Contains(query, "checkRuns(last: 5,") {
 		t.Fatalf("the query does not read the newest check runs:\n%s", query)
