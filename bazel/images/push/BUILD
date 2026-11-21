@@ -1,3 +1,4 @@
+load("//bazel/tools/pytest:defs.bzl", "py_test")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
@@ -14,6 +15,7 @@ sh_binary(
     data = [
         "//bazel/helm:verify-published-images.sh",
         "//bazel/tools/ci:oci_push_layout.py",
+        "private_harness_package.py",
     ],
     visibility = ["//visibility:public"],
 )
@@ -22,4 +24,13 @@ sh_test(
     name = "push_changed_test",
     srcs = ["push-changed_test.sh"],
     data = [":push-changed.sh"],
+)
+
+py_test(
+    name = "private_harness_package_test",
+    srcs = [
+        "private_harness_package.py",
+        "private_harness_package_test.py",
+    ],
+    deps = ["@pip//pytest"],
 )
