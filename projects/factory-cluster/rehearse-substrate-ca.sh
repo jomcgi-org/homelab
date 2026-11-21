@@ -41,6 +41,7 @@ jq '.ActiveForSigning="new"' pool >next
 mv next pool
 issue new-leaf.pem 5
 verify old-leaf.pem new-leaf.pem
+# invariant: CLUS-6
 # Advance verifier time past the old leaf's expiry, still inside the new leaf's lifetime.
 later=$(($(date +%s) + 172800))
 if verify -attime "$later" old-leaf.pem; then exit 1; fi
