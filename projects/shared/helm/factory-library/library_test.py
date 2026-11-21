@@ -662,11 +662,12 @@ CHECK = b"a listed payload left Garage before the copy"
 class Mirror:
     """One mirror job, its Garage bucket and its R2 prefix, as directories."""
 
-    def __init__(self, chart, tmp_path, name, source):
+    def __init__(self, chart, tmp_path, name, source, repair_cache_key=None):
         config = bucket_config()
-        config["buckets"][0]["public"]["sources"] = [
-            {"bucket": "hikes", "r2Prefix": "hikes", "manifestName": name}
-        ]
+        entry = {"bucket": "hikes", "r2Prefix": "hikes", "manifestName": name}
+        if repair_cache_key is not None:
+            entry["repairCacheKey"] = repair_cache_key
+        config["buckets"][0]["public"]["sources"] = [entry]
         bucket, self.prefix, job = (
             "factory-public",
             "",
@@ -730,6 +731,35 @@ class Mirror:
         target = Path(tempfile.mkdtemp(dir=self.tmp)) / directory.name
         shutil.copytree(directory, target)
         return target
+
+
+def test_mirror_repairs_cache_metadata_without_changing_payload(chart, tmp_path):
+    body = b'{"history":[]}'
+    key = f"stars/history-map-{hashlib.sha256(body).hexdigest()}.json"
+    mirror = Mirror(chart, tmp_path, "latest.json", True, repair_cache_key=key)
+    for bucket in (mirror.bucket, mirror.public()):
+        target = bucket / key
+        target.parent.mkdir(parents=True)
+        target.write_bytes(body)
+    (mirror.bucket / mirror.name).write_text(json.dumps({"files": {"historyMap": key}}))
+
+    repaired = mirror.run()
+    assert repaired.returncode == 0, repaired.stderr
+    headers = repaired.state / "headers.json"
+    assert json.loads(headers.read_text()) == {
+        str(mirror.public() / key): [
+            "Cache-Control: public, max-age=31536000, immutable"
+        ],
+        str(mirror.public() / mirror.name): ["Cache-Control: public, max-age=60"],
+    }
+    assert (mirror.public() / key).read_bytes() == body
+
+    repeated = mirror.run(prior_headers=headers)
+    assert repeated.returncode == 0, repeated.stderr
+    assert str(mirror.public() / key) not in json.loads(
+        (repeated.state / "headers.json").read_text()
+    )
+    assert mirror.other.read_text() == "{}"
 
 
 @pytest.mark.parametrize("name", ["manifest.json", "latest.json"])
@@ -1242,6 +1272,16 @@ def test_source_prefix_refuses_anything_but_one_safe_segment(chart, prefix):
         (
             [{"bucket": "hikes", "r2Prefix": "hikes", "manifestName": "index.json"}],
             "public.sources manifestName must be manifest.json or latest.json",
+        ),
+        (
+            [
+                {
+                    "bucket": "hikes",
+                    "r2Prefix": "hikes",
+                    "repairCacheKey": "../walks-" + "a" * 64 + ".json",
+                }
+            ],
+            "public.sources repairCacheKey must be a relative, SHA-256-named JSON payload",
         ),
         # A source has no R2 settings of its own: the release supplies them.
         (
