@@ -76,8 +76,8 @@ tests:
               graph: "kagent:suspend_timeouts:sum{pod=\"kagent-controller-a\"}"
               threshold: "0"
               runbook: "https://factory-runbooks.jomcgi.dev/KagentSuspendTimedOut"
-              summary: A kagent session suspend passed the 30 s limit (1 since the controller started)
-              description: &suspend_description 'kagent keeps the session locked and its worker slot held until a person deletes the worker pod and reverts the session. Runbook: projects/factory-cluster/README.md, "Alerts".'
+              summary: A kagent session suspend passed the 120-second deadline (1 since the controller started)
+              description: &suspend_description 'The session can stay locked while the reaper waits five minutes. If the lock persists, use the suspend-timeout runbook.'
       - eval_time: 170m
         alertname: KagentSuspendTimedOut
         exp_alerts: *timeout_1
@@ -112,7 +112,7 @@ tests:
               graph: "kagent:suspend_timeouts:sum{pod=\"kagent-controller-a\"}"
               threshold: "0"
               runbook: "https://factory-runbooks.jomcgi.dev/KagentSuspendTimedOut"
-              summary: A kagent session suspend passed the 30 s limit (2 since the controller started)
+              summary: A kagent session suspend passed the 120-second deadline (2 since the controller started)
               description: *suspend_description
 
   # A later timeout on an existing series fires for an hour after it.
@@ -166,7 +166,7 @@ tests:
               graph: "kagent:suspend_timeouts:sum{pod=\"kagent-controller-a\"}"
               threshold: "0"
               runbook: "https://factory-runbooks.jomcgi.dev/KagentSuspendTimedOut"
-              summary: A kagent session suspend passed the 30 s limit (1 since the controller started)
+              summary: A kagent session suspend passed the 120-second deadline (1 since the controller started)
               description: *suspend_description
 
   # A timeout fires, then the controller restarts and its first scrape
@@ -198,7 +198,7 @@ tests:
               graph: "kagent:suspend_timeouts:sum{pod=\"kagent-controller-a\"}"
               threshold: "0"
               runbook: "https://factory-runbooks.jomcgi.dev/KagentSuspendTimedOut"
-              summary: A kagent session suspend passed the 30 s limit (1 since the controller started)
+              summary: A kagent session suspend passed the 120-second deadline (1 since the controller started)
               description: *suspend_description
       - eval_time: 165m
         alertname: KagentSuspendTimedOut
