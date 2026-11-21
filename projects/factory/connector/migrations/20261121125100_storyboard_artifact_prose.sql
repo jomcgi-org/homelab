@@ -2,8 +2,8 @@
 -- Joe's decision: https://factory-plan.jomcgi.dev/factory/issue/HOME-414#comment-5512
 -- The connector records prose as text and tool calls and results as data.
 -- A hashed message ID must match a closed cursor in this exact task journal.
--- The project, agent, finished-task and role boundaries stay on this view.
-CREATE OR REPLACE VIEW public.storyboard_messages WITH (security_barrier = true) AS
+-- The previous publisher continues to read storyboard_messages on rollback.
+CREATE VIEW public.storyboard_prose_messages WITH (security_barrier = true) AS
 SELECT binding.itsaplan_project, item.issue_id, task.session_id, journal.task_id,
        task.finished_at, journal.attempt AS journal_attempt,
        min(events.n) AS first_event,
@@ -62,3 +62,6 @@ WHERE binding.itsaplan_project = 'HOME'
   )
 GROUP BY binding.itsaplan_project, item.issue_id, task.session_id, journal.task_id,
          task.finished_at, journal.run_id, journal.attempt, events.event ->> 'messageId';
+
+REVOKE ALL ON public.storyboard_prose_messages FROM PUBLIC;
+GRANT SELECT ON public.storyboard_prose_messages TO factory_storyboard;
