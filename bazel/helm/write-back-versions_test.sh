@@ -299,6 +299,27 @@ git -C "$clone" fetch --quiet origin main
 expect "duplicate receipt leaves main untouched" "$source" \
 	"$(git -C "$clone" rev-parse origin/main)" "no completion claim on failure"
 
+# The rollback pin is seeded from the first build, independent of later
+# chart write-backs (including releases carrying a different primary image).
+clone=$(new_env explorer 0.9.40)
+(
+	cd "$clone"
+	git mv projects/demo projects/factory-explore-site
+	echo '              digest: "" # CI seeds the rollback image on first publication' >>projects/factory-explore-site/deploy/application.yaml
+	git commit -qam "fixture: stage rollback image"
+	git push -q origin main
+)
+first_digest=$(printf 'sha256:%064d' 1)
+for patch in 41 42; do
+	records="$TMP/explorer-records"
+	record "$records" factory-explore-site projects/factory-explore-site/chart "0.9.$patch"
+	printf 'sha256:%064d\n' "$((patch - 40))" >"$records/.factory-explore-site-image"
+	(cd "$clone" && bash "$SCRIPT" "$records" --record-publication >/dev/null)
+	git -C "$clone" fetch --quiet origin main
+	expect "rollback image on 0.9.$patch" "$first_digest" \
+		"$(git -C "$clone" show origin/main:projects/factory-explore-site/deploy/application.yaml | awk '/digest:/ {print $2}')" "first published image retained"
+done
+
 if [[ "$FAILURES" -gt 0 ]]; then
 	echo "${FAILURES} test(s) failed"
 	exit 1

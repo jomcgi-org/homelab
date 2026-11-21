@@ -15,6 +15,14 @@ spec:
     targetRevision: 0.19.11
     helm:
       releaseName: factory-explore-site
+      valuesObject:
+        manageHostname: false
+        workloads:
+          factory-explore-deploy:
+            image:
+              repository: ghcr.io/jomcgi/homelab/projects/factory-explore-site
+              digest: "" # CI seeds the rollback image on first publication
+            command: ["/app/projects/factory-explore-site/withdraw"]
   destination:
     server: https://kubernetes.default.svc
     namespace: factory-explore-site

@@ -1,18 +1,20 @@
+manageHostname: false
 publishEnabled: false
 image:
   repository: ghcr.io/jomcgi/homelab/projects/factory-explore-site
   digest: ''
+publishCommand: &publishCommand
+- /bin/sh
+- -ec
+- cp -R /app/site /tmp/site && cd /tmp/site && exec /app/projects/jomcgi-site/wrangler/wrangler
+  deploy
 workloads:
   factory-explore-deploy:
     kind: Job
     hook: Sync
     containerName: wrangler
     backoffLimit: 1
-    command:
-    - /bin/sh
-    - -ec
-    - cp -R /app/site /tmp/site && cd /tmp/site && exec /app/projects/jomcgi-site/wrangler/wrangler
-      deploy
+    command: *publishCommand
     env:
     - name: HOME
       value: /tmp
