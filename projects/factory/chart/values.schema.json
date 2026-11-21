@@ -58,6 +58,18 @@
     }
   },
   "properties": {
+    "pushGuard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "image", "indexSHA256", "storageClass", "storageSize"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": { "$ref": "#/properties/broker/properties/image" },
+        "indexSHA256": { "type": "string", "pattern": "^([a-f0-9]{64})?$" },
+        "storageClass": { "type": "string", "minLength": 1 },
+        "storageSize": { "type": "string", "minLength": 1 }
+      }
+    },
     "codexTrial": {
       "type": "object",
       "required": ["image"],

@@ -345,6 +345,16 @@ agents:
 #     tools: [query_prometheus, search_dashboards, get_dashboard_summary, alerting_rules_read]
 repositories: []
 
+# Private receive-pack service for the homelab coding binding.
+pushGuard:
+  enabled: false
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/factory/push-guard
+    digest: ""
+  indexSHA256: ""
+  storageClass: local-path
+  storageSize: 2Gi
+
 # The Substrate worker image for binding WorkerPools, matching Substrate's
 # release and its gVisor SandboxConfig.
 workers:

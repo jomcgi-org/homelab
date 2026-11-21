@@ -200,6 +200,16 @@ spec:
         - ports:
             - port: "8083"
               protocol: TCP
+    # Private Git writes for the homelab coding binding. Its receiver
+    # requires both the gateway's client certificate and the binding token.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: factory-r-homelab
+            app.kubernetes.io/name: factory-push-guard
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
     # The factory credential broker's Codex relay, with the actor JWT the
     # gateway injects (projects/factory/chart, broker-network-policy.yaml).
     - toEndpoints:

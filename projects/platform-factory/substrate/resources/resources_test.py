@@ -212,3 +212,37 @@ def test_substrate_sync_uses_the_chart_as_the_only_scanner_deployment() -> None:
         d["kind"] == "Deployment" and d["metadata"]["name"] == "egress-scan"
         for d in _docs()
     )
+
+
+def test_the_receiver_route_keeps_substrate_authorization_and_scoped_mtls() -> None:
+    docs = _docs()
+    config_name = "atenet-egress-agentgateway-config"
+    current = yaml.safe_load(
+        _one(docs, "ConfigMap", config_name)["data"]["config.yaml"]
+    )
+    upstream_path = _HERE / "upstream/substrate/atenet-egress.yaml"
+    upstream = [item for item in yaml.safe_load_all(upstream_path.read_text()) if item]
+    original = yaml.safe_load(
+        _one(upstream, "ConfigMap", config_name)["data"]["config.yaml"]
+    )
+    routes = current["binds"][0]["listeners"][0]["routes"]
+    route = routes.pop(0)
+    assert route["name"] == "factory-push-guard"
+    host = "factory-push-guard.factory-r-homelab.svc.cluster.local"
+    assert route["hostnames"] == [host]
+    assert route["backends"] == [
+        {
+            "host": f"{host}:443",
+            "policies": {
+                "backendTLS": {
+                    "hostname": host,
+                    "cert": "/run/podidentity.podcert.ate.dev/credential-bundle.pem",
+                    "key": "/run/podidentity.podcert.ate.dev/credential-bundle.pem",
+                    "root": "/run/servicedns.podcert.ate.dev/trust-bundle.pem",
+                }
+            },
+        }
+    ]
+    assert route["policies"] == routes[0]["policies"]
+    assert "substrateEgress" in route["policies"]
+    assert current == original
