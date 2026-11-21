@@ -33,6 +33,7 @@ import (
 
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
+	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/connector/provenance"
 	"github.com/jomcgi/homelab/projects/factory/reviewer/config"
@@ -156,7 +157,9 @@ type Config struct {
 	// not answer with a task. One final send follows DispatchWindow after
 	// the last, once nothing sent earlier can still start, before the
 	// attempt ends without a report.
-	MaxSends       int
+	MaxSends int
+	// DispatchWindow also bounds read-only observation of an unconfirmed
+	// goal dispatch in its isolated session.
 	DispatchWindow time.Duration
 	// EnqueueBackoff spaces enqueue attempts for one head after a failure.
 	EnqueueBackoff time.Duration
@@ -545,7 +548,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding, snapshot *QueueSna
 			// the pass, and review the head again until a review runs. Its
 			// State keeps the decisions, so every poll retries.
 			if run.Conclusion == ConclusionSuccess {
-				updated, err := e.gh.UpdateCheckRun(ctx, repo, run.ID, github.CheckRunWrite{
+				updated, err := e.updateReviewVerdict(ctx, b, run.ID, github.CheckRunWrite{
 					Status: "completed", Conclusion: ConclusionFailure,
 					Output: &github.CheckRunOutput{
 						Title:   "Joe's decision changed",
@@ -567,7 +570,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding, snapshot *QueueSna
 				st, _ := LoadState(run.Text)
 				st.Semgrep = nil                     // A new review stays required if the scan changes back.
 				st.TaskID = e.sourceTask(b, run, st) // The new summary drops a legacy task reference.
-				updated, err := e.gh.UpdateCheckRun(ctx, repo, run.ID, github.CheckRunWrite{
+				updated, err := e.updateReviewVerdict(ctx, b, run.ID, github.CheckRunWrite{
 					Status: "completed", Conclusion: ConclusionFailure,
 					Output: &github.CheckRunOutput{Title: "Semgrep evidence changed", Summary: "Semgrep evidence changed on this head. A new review is required before it can pass.", Text: encodeState(st)},
 				})
@@ -723,7 +726,7 @@ func (e *Engine) holdSharedHead(ctx context.Context, b *Binding, pr github.PullR
 	if pending == nil && sharedHeadHeld(prev) && o.Output.Text == prev.Text {
 		return prev
 	}
-	run, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
+	run, err := e.createReviewVerdict(ctx, b, github.CheckRunWrite{
 		Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
 		Status: "completed", Conclusion: o.Conclusion, StartedAt: &now, CompletedAt: &now, Output: &o.Output,
 	})
@@ -731,7 +734,7 @@ func (e *Engine) holdSharedHead(ctx context.Context, b *Binding, pr github.PullR
 		e.ghError(ctx, e.prLog(b, pr), b, "create_check", err)
 		// Revoke an existing pass even if creating its replacement failed.
 		if prev != nil && prev.ID > 0 {
-			run, err = e.gh.UpdateCheckRun(ctx, b.repo(), prev.ID, github.CheckRunWrite{
+			run, err = e.updateReviewVerdict(ctx, b, prev.ID, github.CheckRunWrite{
 				Status: "completed", Conclusion: o.Conclusion, CompletedAt: &now, Output: &o.Output,
 			})
 		}
@@ -1272,6 +1275,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		}
 		l.InfoContext(ctx, "re-attaching to an in-progress review", "check_run", run.ID)
 	}
+	e.observeReviewTransition(ctx, b, pr.Number, run, kind)
 	e.m.ReviewsStarted.WithLabelValues(b.Name, kind).Inc()
 	delete(e.waiting, prKey{b.Name, pr.Number})
 	e.wg.Add(1)
@@ -2916,6 +2920,10 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 			a.Incomplete = true
 		}
 		o.Comment = reviewComment(a, r, b, gate)
+		if summary := acceptanceSummary(st.Goal); !a.Incomplete && summary != "" && st.Goal.Head == pr.HeadSHA {
+			body := summary + "\n\n" + *o.Comment.Findings
+			o.Comment.Findings = &body
+		}
 		if in.priorUnknown != "" {
 			// Render left maxPreface for this note, so the summary's tail
 			// (the human-hold marker and footer) survives.
@@ -3221,9 +3229,12 @@ func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullReques
 	}
 	summary += "."
 	summary += ownedSection(st)
+	if !st.Incomplete && st.Goal != nil && st.Goal.Head == pr.HeadSHA && st.Goal.ReplyRevision > 0 {
+		summary += "\n\n" + itsaplan.GoalReplyReviewed(st.Goal.ReplyRevision)
+	}
 	summary = keepEnqueueHistory(summary, prev)
 	text = recordComment(text, prev.Text, pr.HeadSHA, u)
-	run, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
+	run, err := e.createReviewVerdict(ctx, b, github.CheckRunWrite{
 		Name: e.cfg.CheckName, HeadSHA: pr.HeadSHA, ExternalID: MessageID(b.repo(), pr.Number, pr.HeadSHA),
 		Status: "completed", Conclusion: conclusion, StartedAt: &now, CompletedAt: &now,
 		Output: &github.CheckRunOutput{Title: title, Summary: summary, Text: text},
@@ -3252,13 +3263,13 @@ func (e *Engine) complete(ctx context.Context, b *Binding, run *github.CheckRun,
 		o.Output.Text = run.Text // Cancellation must not erase findings needed after another hold.
 	}
 	w := github.CheckRunWrite{ExternalID: run.ExternalID, Status: "completed", Conclusion: o.Conclusion, CompletedAt: &now, Output: &o.Output}
-	_, err := e.gh.UpdateCheckRun(ctx, b.repo(), run.ID, w)
+	_, err := e.updateReviewVerdict(ctx, b, run.ID, w)
 	var he *github.HTTPError
 	if errors.As(err, &he) && he.Status == http.StatusUnprocessableEntity && len(o.Output.Annotations) > 0 {
 		l.WarnContext(ctx, "GitHub refused the review's annotations; completing without them", "error", err)
 		o.Output.Annotations = nil
 		o.Output.Summary += "\n\nGitHub refused this review's line annotations; the findings above are complete."
-		_, err = e.gh.UpdateCheckRun(ctx, b.repo(), run.ID, w)
+		_, err = e.updateReviewVerdict(ctx, b, run.ID, w)
 	}
 	if err != nil {
 		e.ghError(ctx, l, b, "update_check", err)
@@ -3300,6 +3311,47 @@ func (e *Engine) finish(ctx context.Context, b *Binding, pr github.PullRequest, 
 	}
 	e.queueCompletedComment(ctx, b, pr, run, o.Output.Text, o.Comment)
 	return true
+}
+
+// Record verdicts only after GitHub accepts a PR check write. Merge-group
+// checks and output-only updates do not represent PR review transitions.
+func (e *Engine) createReviewVerdict(ctx context.Context, b *Binding, write github.CheckRunWrite) (*github.CheckRun, error) {
+	run, err := e.gh.CreateCheckRun(ctx, b.repo(), write)
+	if err == nil {
+		e.observeReviewVerdict(ctx, b, run, write.Conclusion)
+	}
+	return run, err
+}
+
+func (e *Engine) updateReviewVerdict(ctx context.Context, b *Binding, id int64, write github.CheckRunWrite) (*github.CheckRun, error) {
+	run, err := e.gh.UpdateCheckRun(ctx, b.repo(), id, write)
+	if err == nil {
+		e.observeReviewVerdict(ctx, b, run, write.Conclusion)
+	}
+	return run, err
+}
+
+func (e *Engine) observeReviewVerdict(ctx context.Context, b *Binding, run *github.CheckRun, conclusion string) {
+	if run == nil || conclusion == "" {
+		return
+	}
+	if name, ok := strings.CutSuffix(run.ExternalID, "/"+run.HeadSHA); ok {
+		if number, ok := sessionPR(name, b.repo()); ok {
+			e.observeReviewTransition(ctx, b, number, run, conclusion)
+		}
+	}
+}
+
+func (e *Engine) observeReviewTransition(ctx context.Context, b *Binding, number int, run *github.CheckRun, phase string) {
+	_, span := otel.Tracer("factory-reviewer").Start(ctx, "factory.review_transition", trace.WithNewRoot(), trace.WithAttributes(
+		attribute.String("factory.lifecycle", "review_transition"),
+		attribute.String("repository", b.repo()),
+		attribute.Int("pr.number", number),
+		attribute.String("head.sha", run.HeadSHA),
+		attribute.Int64("review.check_id", run.ID),
+		attribute.String("review.transition", phase),
+	))
+	span.End()
 }
 
 // stop ends a review whose context ended. Shutdown leaves the check in

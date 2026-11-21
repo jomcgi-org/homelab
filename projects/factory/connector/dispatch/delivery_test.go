@@ -3495,6 +3495,29 @@ func pollEvents(exporter *tracetest.InMemoryExporter, from int, name string) []m
 	return out
 }
 
+func TestDeliveredHeadLinksTheFinishedImplementationRun(t *testing.T) {
+	exporter := captureWorkSpans(t)
+	v := newDeliveryEnv(t)
+	v.delivered()
+	b := v.cfg.Bindings[0]
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "factory.pr_head_delivery" {
+			continue
+		}
+		fields := map[string]string{}
+		for _, field := range span.Attributes {
+			fields[string(field.Key)] = field.Value.Emit()
+		}
+		if fields["repository"] != b.Owner+"/"+b.Repo || fields["pr.number"] != "1" ||
+			fields["head.sha"] != "sha-1" || fields["implementation.run_id"] != "1" ||
+			fields["delivery.attempt_id"] == "" {
+			t.Fatalf("delivery head attributes = %v", fields)
+		}
+		return
+	}
+	t.Fatal("missing delivery head event")
+}
+
 // A poll that only finds the PR still queued keeps the work on its root.
 func TestQueuedPollObservesPR(t *testing.T) {
 	exporter := captureWorkSpans(t)

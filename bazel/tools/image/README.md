@@ -6,8 +6,8 @@ Builds the multi-arch developer tools OCI image pushed to
 This is a single-purpose package. It does not expose reusable macros to the
 rest of the repo. The four `.bzl` files here are internal helpers for
 assembling per-platform tar layers; they are not loaded by any other package.
-If you are looking for macros to build application service images (Go services,
-Python services, nginx frontends), those live in [`//bazel/tools/oci`](../oci/README.md).
+If you are looking for macros to build application service images (Go and
+Python services), those live in [`//bazel/tools/oci`](../oci/README.md).
 
 ## What the image contains
 

@@ -23,19 +23,20 @@ import (
 )
 
 type fakeStore struct {
-	items []store.StatusItem
-	names []string
+	items     []store.StatusItem
+	names     []string
+	liveTotal int
 }
 
-func (s fakeStore) StatusItems(_ context.Context, names []string) ([]store.StatusItem, error) {
+func (s fakeStore) StatusItems(_ context.Context, names []string) ([]store.StatusItem, int, error) {
 	want := s.names
 	if want == nil {
 		want = []string{"homelab"}
 	}
 	if !reflect.DeepEqual(names, want) {
-		return nil, errors.New("wrong binding")
+		return nil, 0, errors.New("wrong binding")
 	}
-	return s.items, nil
+	return s.items, s.liveTotal, nil
 }
 
 type countingStatusGitHub struct{ calls int }
@@ -79,6 +80,28 @@ func (fakePlan) NeedsYou(_ context.Context, project, username string) ([]itsapla
 
 func (fakePlan) GetIssueSummary(_ context.Context, id int64) (*itsaplan.IssueSummary, error) {
 	return &itsaplan.IssueSummary{Title: "Change"}, nil
+}
+
+func TestStatusRemainsAvailableAboveLiveListingLimit(t *testing.T) {
+	rows := make([]store.StatusItem, 100)
+	for i := range rows {
+		rows[i] = store.StatusItem{BindingName: "homelab", IssueID: int64(i + 1), Key: fmt.Sprintf("HOME-%d", i+1), State: "active"}
+	}
+	source := &Source{
+		Store: fakeStore{items: rows, liveTotal: 110}, Plan: fakePlan{},
+		Bindings: []config.Binding{{Name: "homelab", ItsaplanProject: "HOME"}},
+	}
+	handler := &Handler{Load: source.Load}
+	handler.refresh(context.Background())
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("GET", "/status", nil))
+	var snapshot Snapshot
+	if err := json.Unmarshal(response.Body.Bytes(), &snapshot); response.Code != http.StatusOK || err != nil {
+		t.Fatalf("status=%d decode error=%v", response.Code, err)
+	}
+	if len(snapshot.InFlight) != 100 || snapshot.InFlightTotal != 110 || len(snapshot.NeedsYou) != 1 {
+		t.Fatalf("in flight=%d total=%d needs you=%d", len(snapshot.InFlight), snapshot.InFlightTotal, len(snapshot.NeedsYou))
+	}
 }
 
 type fakeGitHub struct{}

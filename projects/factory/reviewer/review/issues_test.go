@@ -135,6 +135,16 @@ func (a *issueAPI) LinkedComment(ctx context.Context, _ int64, id int64) (*itsap
 	return a.comments[id], nil
 }
 
+func (a *issueAPI) RecentComments(context.Context, int64) ([]itsaplan.FeedItem, error) {
+	var comments []itsaplan.FeedItem
+	for _, item := range a.comments {
+		if item != nil {
+			comments = append(comments, *item)
+		}
+	}
+	return comments, nil
+}
+
 // testMACSecret stands in for the mounted itsaplan key the MAC key derives from.
 func testMACSecret() (string, error) { return "test-itsaplan-key-0123456789", nil }
 
@@ -937,5 +947,38 @@ func TestOwnershipRejectsIndentedCodeExample(t *testing.T) {
 				t.Fatalf("verdict = %q, want %q", a.Criteria[0].Verdict, want)
 			}
 		})
+	}
+}
+
+func TestTicketReplyBindsEvidenceToTheExactPRAndCommit(t *testing.T) {
+	b := &Binding{Owner: "example-org", Repo: "homelab"}
+	pr := github.PullRequest{Number: 7, HeadSHA: shaA}
+	p := &itsaplan.Project{Assignees: []itsaplan.Assignee{{
+		UserID: "coordinator", Username: "factory-coordinator", Kind: "agent",
+	}}}
+	marker := itsaplan.GoalReplyMarker(b.repo(), pr.Number, pr.HeadSHA)
+	api := &issueAPI{comments: map[int64]*itsaplan.FeedItem{
+		1: {IssueID: 62, Kind: "comment", ActorUserID: "coordinator", EditedAt: []byte("null"), Body: marker + "1 -->\nother issue"},
+		2: {IssueID: 61, Kind: "comment", ActorUserID: "someone-else", EditedAt: []byte("null"), Body: marker + "2 -->\nwrong account"},
+		3: {IssueID: 61, Kind: "comment", ActorUserID: "coordinator", EditedAt: []byte(`"2026-11-20"`), Body: marker + "3 -->\nedited"},
+		4: {IssueID: 61, Kind: "comment", ActorUserID: "coordinator", EditedAt: []byte("null"), Body: itsaplan.GoalReplyMarker(b.repo(), pr.Number, strings.Repeat("b", 40)) + "4 -->\nold head"},
+	}}
+	e := &Engine{cfg: Config{Itsaplan: api, MACSecret: testMACSecret}}
+	ctx := context.Background()
+	before, _, err := e.ticketGoalReply(ctx, b, pr, p, 61)
+	if err != nil || before != "" {
+		t.Fatalf("accepted unmatched reply %q, %v", before, err)
+	}
+	api.comments[5] = &itsaplan.FeedItem{IssueID: 61, Kind: "comment", ActorUserID: "coordinator", EditedAt: []byte("null"), Body: marker + "5 -->\ncriterion 1: test"}
+	after, revision, err := e.ticketGoalReply(ctx, b, pr, p, 61)
+	if err != nil || after != "criterion 1: test" || revision != 5 {
+		t.Fatalf("matching reply = %q, %v", after, err)
+	}
+	older := &IssueContext{}
+	newer := &IssueContext{GoalReply: after}
+	e.sealIssues(older)
+	e.sealIssues(newer)
+	if issueDigest(older) == issueDigest(newer) {
+		t.Fatal("matching reply did not invalidate the earlier verdict")
 	}
 }

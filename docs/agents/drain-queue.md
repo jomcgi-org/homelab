@@ -221,7 +221,7 @@ deregister and re-register with the same payload keys.
 
 ## Inspecting outcomes
 
-1. **Open the drain console first**: `/private/agents/drain` in the UI, or
+1. **Open the drain console first**: `/private/factory/execution/drain` in the UI, or
    `GET /api/agents/drain/console` in-pod. It classifies lane state from step
    checkpoints (running under 120s of silence, quiet under 600s, wedged beyond
    that, plus a stranded state for ENQUEUED rows on a stale

@@ -110,7 +110,9 @@ export function App() {
           <Card>
             <VStack gap={3}>
               <Heading level={2} id="in-flight">
-                In flight{status ? ` (${status.inFlight.length})` : ""}
+                In flight
+                {status &&
+                  ` (${status.inFlight.length}${status.inFlightTotal ? ` of ${status.inFlightTotal}` : ""})`}
               </Heading>
               {status &&
                 (status.inFlight.length ? (

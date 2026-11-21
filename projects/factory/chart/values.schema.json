@@ -199,6 +199,19 @@
           "type": "string",
           "pattern": "^/[a-z0-9-]+$"
         },
+        "webImage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository", "tag", "digest"],
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string" },
+            "digest": {
+              "type": "string",
+              "pattern": "^$|^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
         "images": {
           "type": "object",
           "additionalProperties": false,

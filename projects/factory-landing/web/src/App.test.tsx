@@ -118,6 +118,20 @@ it("renders tasks, active work and recent merges before the tools", async () => 
   ).toBe(status.shipped[0]!.pr.url);
 });
 
+it("shows the total when the in-flight list is limited", async () => {
+  vi.mocked(fetch).mockResolvedValue({
+    ok: true,
+    json: async () => ({ ...status, inFlightTotal: 110 }),
+  } as Response);
+  renderApp();
+  expect(
+    await screen.findByRole("heading", { name: "In flight (2 of 110)" }),
+  ).toBeTruthy();
+  expect(
+    screen.getByRole("link", { name: "HOME-20: Choose the backup target" }),
+  ).toBeTruthy();
+});
+
 it("renders each empty state", async () => {
   renderApp();
   await screen.findByText("Nothing needs you right now.");

@@ -45,6 +45,13 @@ allowedServices:
 # 20M/month. Error and slow traffic is uncapped, so this is an estimate.
 sampling:
   policies:
+    # Each accepted GitHub transition or synced turn produces one small
+    # correlation span. Preserve these independently of diagnostic sampling.
+    - name: factory-lifecycle
+      type: string_attribute
+      string_attribute:
+        key: factory.lifecycle
+        values: [pr_head_delivery, review_transition]
     - name: errors
       type: status_code
       status_code:

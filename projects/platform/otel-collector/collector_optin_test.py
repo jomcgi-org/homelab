@@ -1410,7 +1410,21 @@ def test_factory_renders_gateway():
         "processors"
     ].index("tail_sampling")
     policies = config["processors"]["tail_sampling"]["policies"]
-    assert {p["type"] for p in policies} == {"status_code", "latency", "probabilistic"}
+    assert {p["type"] for p in policies} == {
+        "status_code",
+        "latency",
+        "probabilistic",
+        "string_attribute",
+    }
+    lifecycle = next(p for p in policies if p["name"] == "factory-lifecycle")
+    for event in ("pr_head_delivery", "review_transition"):
+        assert _matches_policy(
+            lifecycle, [{"attributes": {"factory.lifecycle": event}}]
+        )
+    assert not _matches_policy(
+        lifecycle, [{"attributes": {"factory.lifecycle": "other"}}]
+    )
+    assert not _matches_policy(lifecycle, [{"attributes": {}}])
     kinds = {(d["kind"], d["metadata"]["name"]) for d in docs}
     for kind in ("Deployment", "Service", "ConfigMap", "ServiceAccount"):
         assert (kind, RELEASE) in kinds
