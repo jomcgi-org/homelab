@@ -3449,6 +3449,29 @@ func TestLabelsObservedDuringADuplicateHoldStayStickyAcrossRestart(t *testing.T)
 	}
 }
 
+func TestFailedCheckWritesMarkQueueObservationIncomplete(t *testing.T) {
+	for _, scenario := range []string{"create", "recover"} {
+		t.Run(scenario, func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			write := "POST /repos/" + testRepo + "/check-runs"
+			if scenario == "recover" {
+				run := seedCheck(h, shaA, "", encodeState(State{
+					Gate: &Gate{RecoveryEpoch: "previous-process", RecoveryPR: 7},
+				}))
+				run.Status = "in_progress"
+				write = fmt.Sprintf("PATCH /repos/%s/check-runs/%d", testRepo, run.ID)
+			}
+			h.gh.failWith(write, 502)
+			e, ctx, _ := h.start()
+			e.Tick(ctx)
+			if snapshot := e.QueueSnapshot(); snapshot.Complete || len(snapshot.Active) != 0 {
+				t.Fatalf("failed check write published an authoritative observation: %+v", snapshot)
+			}
+		})
+	}
+}
+
 func TestFailedInitialDuplicateWriteFencesRecovery(t *testing.T) {
 	for _, failUpdate := range []bool{false, true} {
 		t.Run(fmt.Sprint("update fails ", failUpdate), func(t *testing.T) {

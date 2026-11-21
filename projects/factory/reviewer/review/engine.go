@@ -1240,7 +1240,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 			e.release(ctx, key, usage)
 			e.done(key)
 			close(r.done)
-			return false, false, false
+			return false, false, true
 		}
 		if created.StartedAt.IsZero() {
 			created.StartedAt = now
@@ -1266,7 +1266,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 				e.release(ctx, key, usage)
 				e.done(key)
 				close(r.done)
-				return false, false, false
+				return false, false, true
 			}
 			run = updated
 		}
