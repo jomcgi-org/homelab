@@ -126,7 +126,7 @@ func TestOperatorRules(t *testing.T) {
 id = "test-credential"
 description = "Synthetic pattern added by operator"
 regex = 'TEST_CREDENTIAL_[A-Z0-9]{12}'
-`), 0600); err != nil {
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	detector, err := newDetector(path)
@@ -136,7 +136,7 @@ regex = 'TEST_CREDENTIAL_[A-Z0-9]{12}'
 	if len(detector.DetectString("TEST_CREDENTIAL_AB12CD34EF56")) != 1 {
 		t.Fatal("configured rule did not match")
 	}
-	if err := os.WriteFile(path, []byte("rules = []"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("rules = []"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := newDetector(path); err == nil {
