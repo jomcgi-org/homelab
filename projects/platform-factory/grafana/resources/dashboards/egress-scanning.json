@@ -67,7 +67,8 @@
           "values": false
         },
         "colorMode": "value"
-      }
+      },
+      "description": "No targets is expected until the metrics-enabled scanner is deployed."
     },
     {
       "id": 2,
