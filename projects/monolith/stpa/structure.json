@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "e35139e71",
+  "commit": "20c7b96bc",
   "nodes": [
     {
       "key": "console-caller",
@@ -26,14 +26,14 @@
     },
     {
       "key": "embervm-sandbox",
-      "label": "EmberVM per-language sandbox task guests (see projects/embervm/STPA.md)",
+      "label": "EmberVM per-language sandbox task guests (see projects/embervm/STPA.md) (retired hub path)",
       "view": "logical",
       "layer": "boundary",
       "maturity": "built"
     },
     {
       "key": "embervm-shotter",
-      "label": "EmberVM shotter task guest (see projects/embervm/STPA.md)",
+      "label": "EmberVM shotter task guest (see projects/embervm/STPA.md) (retired hub path)",
       "view": "logical",
       "layer": "boundary",
       "maturity": "built"
@@ -153,14 +153,14 @@
     },
     {
       "key": "public-binary",
-      "label": "monolith-public backend (constrained DB + FaaS access)",
+      "label": "Public monolith backend",
       "view": "physical",
       "layer": "compute",
       "maturity": "built"
     },
     {
       "key": "embervm",
-      "label": "EmberVM / FaaS admission",
+      "label": "EmberVM / FaaS admission (retired hub path)",
       "view": "physical",
       "layer": "control_plane",
       "maturity": "built"
@@ -216,7 +216,7 @@
     },
     {
       "key": "kg-feed",
-      "label": "Leader-owned Ember session to knowledge raw exporter",
+      "label": "Leader-owned Ember session to knowledge raw exporter (retired hub path)",
       "view": "logical",
       "layer": "control_plane",
       "maturity": "built"
@@ -262,7 +262,7 @@
     },
     {
       "key": "factory-refill",
-      "label": "Queue-driven backlog refill controller (default-off)",
+      "label": "Queue-driven backlog refill controller (default-off) (retired hub path)",
       "view": "logical",
       "layer": "control_plane",
       "maturity": "built",
@@ -270,7 +270,7 @@
     },
     {
       "key": "refill-producer",
-      "label": "Trusted refill artifact and issue producer",
+      "label": "Trusted refill artifact and issue producer (retired hub path)",
       "view": "logical",
       "layer": "enforcement",
       "maturity": "built",
@@ -278,7 +278,7 @@
     },
     {
       "key": "github-issues",
-      "label": "GitHub repository issues",
+      "label": "GitHub repository issues (retired hub path)",
       "view": "logical",
       "layer": "store",
       "maturity": "built",
@@ -286,7 +286,7 @@
     },
     {
       "key": "factory-start-diagnostics",
-      "label": "Read-only factory start and funding diagnostics",
+      "label": "Read-only factory start and funding diagnostics (retired hub path)",
       "view": "logical",
       "layer": "serving",
       "maturity": "built",
@@ -294,7 +294,7 @@
     },
     {
       "key": "factory-start-diagnostics-operator",
-      "label": "Standing human operator inspecting factory diagnostics",
+      "label": "Standing operator for retired hub diagnostics",
       "view": "logical",
       "layer": "actor",
       "maturity": "built",
@@ -302,7 +302,7 @@
     },
     {
       "key": "standing-landing-operator",
-      "label": "Standing human landing operator",
+      "label": "Standing human landing operator (retired hub path)",
       "view": "logical",
       "layer": "actor",
       "maturity": "built",
@@ -310,7 +310,7 @@
     },
     {
       "key": "owner-pr-delegation",
-      "label": "Bounded owner PR landing delegation (default-off)",
+      "label": "Bounded owner PR landing delegation (default-off) (retired hub path)",
       "view": "logical",
       "layer": "enforcement",
       "maturity": "built",
@@ -318,7 +318,7 @@
     },
     {
       "key": "repair-delegation",
-      "label": "Bounded repair landing delegation (default-off)",
+      "label": "Bounded repair landing delegation (default-off) (retired hub path)",
       "view": "logical",
       "layer": "enforcement",
       "maturity": "built",
@@ -326,7 +326,7 @@
     },
     {
       "key": "factory-landing",
-      "label": "Factory landing and queue observer",
+      "label": "Factory landing and queue observer (retired hub path)",
       "view": "logical",
       "layer": "control_plane",
       "maturity": "built",
@@ -334,7 +334,7 @@
     },
     {
       "key": "github-pulls",
-      "label": "GitHub pull requests and protected merge queue",
+      "label": "GitHub pull requests and protected merge queue (retired hub path)",
       "view": "logical",
       "layer": "store",
       "maturity": "built",
@@ -342,7 +342,7 @@
     },
     {
       "key": "factory-owner-hold-text",
-      "label": "Existing owner PR text-hold check",
+      "label": "Existing owner PR text-hold check (retired hub path)",
       "view": "logical",
       "layer": "enforcement",
       "maturity": "built",
@@ -350,7 +350,7 @@
     },
     {
       "key": "factory-required-recovery",
-      "label": "Required recovery issue producer",
+      "label": "Required recovery issue producer (retired hub path)",
       "view": "logical",
       "layer": "control_plane",
       "maturity": "built",
@@ -358,7 +358,7 @@
     },
     {
       "key": "factory-required-recovery-quota",
-      "label": "Token broker per-account quota evidence",
+      "label": "Token broker per-account quota evidence (retired hub path)",
       "view": "logical",
       "layer": "feedback_source",
       "maturity": "built",
@@ -366,7 +366,7 @@
     },
     {
       "key": "receipt-attempt",
-      "label": "Exact receipt preparation and attempt-intent owner",
+      "label": "Exact receipt preparation and attempt-intent owner (retired hub path)",
       "view": "logical",
       "layer": "enforcement",
       "maturity": "built",
@@ -374,7 +374,7 @@
     },
     {
       "key": "permit-supervisor",
-      "label": "Exact uncertain permit settlement owner",
+      "label": "Exact uncertain permit settlement owner (retired hub path)",
       "view": "logical",
       "layer": "enforcement",
       "maturity": "built",
@@ -382,7 +382,7 @@
     },
     {
       "key": "factory-funding",
-      "label": "Factory allocation owner",
+      "label": "Factory allocation owner (retired hub path)",
       "view": "logical",
       "layer": "control_plane",
       "maturity": "built",
@@ -425,7 +425,7 @@
     },
     {
       "key": "agent.reclaim",
-      "label": "Reclaim stale turn claims left by a crashed replica (leader-owned 5s sweep)",
+      "label": "Reclaim stale turn claims left by a crashed replica (leader-owned 5s sweep) (historical hub action)",
       "view": "logical",
       "from": "leader-elector",
       "to": "agent-runner",
@@ -442,17 +442,17 @@
       "evidence": "projects/monolith/chat/bot.py:1172"
     },
     {
-      "key": "chatpublic.write",
-      "label": "Write a bounded chat_public row to the primary as public_writer",
+      "key": "grimoire-chat.write",
+      "label": "Write a bounded grimoire_chat row to the primary as public_writer",
       "view": "physical",
       "from": "public-binary",
       "to": "pg-primary",
       "maturity": "built",
-      "evidence": "projects/monolith-public/chart/values.yaml:82"
+      "evidence": "projects/monolith/chart/migrations/20260706200000_grimoire_chat.sql:122"
     },
     {
       "key": "console.submit",
-      "label": "Start or continue an agent session from the private console",
+      "label": "Start or continue an agent session from the private console (historical hub action)",
       "view": "logical",
       "from": "console-caller",
       "to": "agent-runner",
@@ -587,7 +587,7 @@
     },
     {
       "key": "shotter.dispatch",
-      "label": "Dispatch a fresh task-class guest to render the URL",
+      "label": "Dispatch a fresh task-class guest to render the URL (historical hub action)",
       "view": "logical",
       "from": "shotter-tool",
       "to": "embervm-shotter",
@@ -623,7 +623,7 @@
     },
     {
       "key": "mcp.agent-session",
-      "label": "Start or drive an agent session via MCP",
+      "label": "Start or drive an agent session via MCP (historical hub action)",
       "view": "logical",
       "from": "mcp-caller",
       "to": "agent-runner",
@@ -659,7 +659,7 @@
     },
     {
       "key": "kg-feed.export",
-      "label": "Export a finished Ember session as an ember-session raw",
+      "label": "Export a finished Ember session as an ember-session raw (historical hub action)",
       "view": "logical",
       "from": "kg-feed",
       "to": "pg-primary",
@@ -668,7 +668,7 @@
     },
     {
       "key": "kg-drainer.dispatch",
-      "label": "Claim a kg-drain job, run Luna extraction, apply the result",
+      "label": "Claim a kg-drain job, run Luna extraction, apply the result (historical hub action)",
       "view": "logical",
       "from": "kg-drainer",
       "to": "agent-runner",
@@ -704,7 +704,7 @@
     },
     {
       "key": "factory-refill.reserve",
-      "label": "Reserve one inventory receipt from fresh eligible backlog evidence",
+      "label": "Reserve one inventory receipt from fresh eligible backlog evidence (historical hub action)",
       "view": "logical",
       "from": "factory-refill",
       "to": "postgres",
@@ -713,7 +713,7 @@
     },
     {
       "key": "factory-refill.dispatch",
-      "label": "Dispatch pinned read-only collection and independent review with fresh role quota",
+      "label": "Dispatch pinned read-only collection and independent review with fresh role quota (historical hub action)",
       "view": "logical",
       "from": "factory-refill",
       "to": "agent-runner",
@@ -722,7 +722,7 @@
     },
     {
       "key": "refill-producer.collect",
-      "label": "Authenticate collection and independent review before storing approved plans",
+      "label": "Authenticate collection and independent review before storing approved plans (historical hub action)",
       "view": "logical",
       "from": "refill-producer",
       "to": "postgres",
@@ -731,7 +731,7 @@
     },
     {
       "key": "refill-producer.publish",
-      "label": "Commit an output intent and post one finding, summary or breaker issue",
+      "label": "Commit an output intent and post one finding, summary or breaker issue (historical hub action)",
       "view": "logical",
       "from": "refill-producer",
       "to": "github-issues",
@@ -740,7 +740,7 @@
     },
     {
       "key": "factory-refill.settle",
-      "label": "Settle yield once and update conclusive-run breaker streaks",
+      "label": "Settle yield once and update conclusive-run breaker streaks (historical hub action)",
       "view": "logical",
       "from": "factory-refill",
       "to": "postgres",
@@ -749,7 +749,7 @@
     },
     {
       "key": "mcp.restrict-receipt-models",
-      "label": "Remove unused model choices from one paused receipt after an exact operator preview",
+      "label": "Remove unused model choices from one paused receipt after an exact operator preview (historical hub action)",
       "view": "logical",
       "from": "mcp-caller",
       "to": "postgres",
@@ -758,7 +758,7 @@
     },
     {
       "key": "factory-refill.acknowledge-learning-cessation",
-      "label": "Acknowledge one positively ceased unknown attempt for cadence only",
+      "label": "Acknowledge one positively ceased unknown attempt for cadence only (historical hub action)",
       "view": "logical",
       "from": "mcp-caller",
       "to": "factory-refill",
@@ -767,7 +767,7 @@
     },
     {
       "key": "agent.reconcile-settled-retry",
-      "label": "Fence exact ceased lineage and fail one unknown factory attempt",
+      "label": "Fence exact ceased lineage and fail one unknown factory attempt (historical hub action)",
       "view": "logical",
       "from": "mcp-caller",
       "to": "agent-runner",
@@ -776,7 +776,7 @@
     },
     {
       "key": "standing-landing-operator.configure-owner",
-      "label": "Preview/apply or revoke bounded ongoing owner landing authority",
+      "label": "Preview/apply or revoke bounded ongoing owner landing authority (historical hub action)",
       "view": "logical",
       "from": "standing-landing-operator",
       "to": "owner-pr-delegation",
@@ -785,7 +785,7 @@
     },
     {
       "key": "standing-landing-operator.configure-repair",
-      "label": "Preview/apply or revoke bounded trial or ongoing repair landing authority",
+      "label": "Preview/apply or revoke bounded trial or ongoing repair landing authority (historical hub action)",
       "view": "logical",
       "from": "standing-landing-operator",
       "to": "repair-delegation",
@@ -794,7 +794,7 @@
     },
     {
       "key": "owner-pr-delegation.derive-grant",
-      "label": "Record separate exact-head owner grant within rolling and canonical PR limits",
+      "label": "Record separate exact-head owner grant within rolling and canonical PR limits (historical hub action)",
       "view": "logical",
       "from": "owner-pr-delegation",
       "to": "postgres",
@@ -803,7 +803,7 @@
     },
     {
       "key": "repair-delegation.derive-grant",
-      "label": "Record separate exact-head repair grant within trial or rolling and task/source limits",
+      "label": "Record separate exact-head repair grant within trial or rolling and task/source limits (historical hub action)",
       "view": "logical",
       "from": "repair-delegation",
       "to": "postgres",
@@ -812,7 +812,7 @@
     },
     {
       "key": "factory-landing.arm",
-      "label": "Arm the reviewed head through the protected queue after locked authority revalidation",
+      "label": "Arm the reviewed head through the protected queue after locked authority revalidation (historical hub action)",
       "view": "logical",
       "from": "factory-landing",
       "to": "github-pulls",
@@ -821,7 +821,7 @@
     },
     {
       "key": "factory-landing.dequeue",
-      "label": "Disarm and dequeue a known delivery whose authority no longer validates",
+      "label": "Disarm and dequeue a known delivery whose authority no longer validates (historical hub action)",
       "view": "logical",
       "from": "factory-landing",
       "to": "github-pulls",
@@ -830,7 +830,7 @@
     },
     {
       "key": "factory-required-recovery.publish",
-      "label": "Record one bounded repair issue for an enabled recovery source",
+      "label": "Record one bounded repair issue for an enabled recovery source (historical hub action)",
       "view": "logical",
       "from": "factory-required-recovery",
       "to": "github-issues",
@@ -839,7 +839,7 @@
     },
     {
       "key": "receipt-attempt.prepare",
-      "label": "Stage a receipt without retiring the last attempted receipt",
+      "label": "Stage a receipt without retiring the last attempted receipt (historical hub action)",
       "view": "logical",
       "from": "agent-runner",
       "to": "receipt-attempt",
@@ -848,7 +848,7 @@
     },
     {
       "key": "receipt-attempt.promote",
-      "label": "Promote the exact empty preparation under ownership locks and the handoff guard",
+      "label": "Promote the exact empty preparation under ownership locks and the handoff guard (historical hub action)",
       "view": "logical",
       "from": "agent-runner",
       "to": "receipt-attempt",
@@ -857,7 +857,7 @@
     },
     {
       "key": "receipt-attempt.hold",
-      "label": "Persist the first exact response-loss hold before cancellation",
+      "label": "Persist the first exact response-loss hold before cancellation (historical hub action)",
       "view": "logical",
       "from": "agent-runner",
       "to": "receipt-attempt",
@@ -866,7 +866,7 @@
     },
     {
       "key": "permit-supervisor.settle",
-      "label": "Settle exact interactive permit from complete terminal guest evidence",
+      "label": "Settle exact interactive permit from complete terminal guest evidence (historical hub action)",
       "view": "logical",
       "from": "permit-supervisor",
       "to": "postgres",
@@ -875,7 +875,7 @@
     },
     {
       "key": "factory-funding.resume-native-repair",
-      "label": "Renew one repaired fixed role within original remaining allocation",
+      "label": "Renew one repaired fixed role within original remaining allocation (historical hub action)",
       "view": "logical",
       "from": "factory-funding",
       "to": "postgres",
@@ -884,7 +884,7 @@
     },
     {
       "key": "standing-landing-operator.authorize-delivery",
-      "label": "Record explicit finite approval for one independently reviewed delivery",
+      "label": "Record explicit finite approval for one independently reviewed delivery (historical hub action)",
       "view": "logical",
       "from": "standing-landing-operator",
       "to": "postgres",
@@ -893,7 +893,7 @@
     },
     {
       "key": "standing-landing-operator.revoke-delivery",
-      "label": "Retain a revocation tombstone for one exact operator authorization audit",
+      "label": "Retain a revocation tombstone for one exact operator authorization audit (historical hub action)",
       "view": "logical",
       "from": "standing-landing-operator",
       "to": "postgres",
@@ -902,7 +902,7 @@
     },
     {
       "key": "factory-landing.reserve-operator-arm",
-      "label": "Commit one operator-authorized arming attempt before the external queue request",
+      "label": "Commit one operator-authorized arming attempt before the external queue request (historical hub action)",
       "view": "logical",
       "from": "factory-landing",
       "to": "postgres",
@@ -935,6 +935,15 @@
       "to": "postgres",
       "maturity": "built",
       "evidence": "projects/monolith/grimoire/verifier.py:407,455,572; projects/monolith/grimoire/jobs.py:410"
+    },
+    {
+      "key": "session-detail.read",
+      "label": "Read a retained session turn via MCP",
+      "view": "logical",
+      "from": "mcp-caller",
+      "to": "postgres",
+      "maturity": "built",
+      "evidence": "projects/monolith/factory/execution/mcp.py:2277"
     }
   ],
   "feedback": [

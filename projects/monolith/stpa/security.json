@@ -1,6 +1,6 @@
 {
   "lens": "security",
-  "commit": "5f9363262",
+  "commit": "20c7b96bc",
   "scope": {
     "summary": "Identity, MCP tool authorization, and the boundaries between the public and private tiers.",
     "built": "Separate public and private binaries (ADR security/004), public_reader role with visibility filters on the replica, Turnstile-gated chat with three nested budgets, PrincipalMiddleware bearer-token verification on every MCP message, GroupPolicyMiddleware denying every MCP tool call outside the operators group (no tool tagged mcp:public), Discord trust ledger with per-guild per-user scoring and heuristics-fed instant enforcement, Cloudflare Access lane projecting verified email to agents console, Kubernetes RBAC scoping cluster mutation (ArgoCD sync, per-Kargo-project promote Roles) to the private pod."
@@ -8,7 +8,7 @@
   "losses": [
     {
       "key": "L.integrity-loss",
-      "title": "Data is corrupted, or a side-effecting action (Discord post, agent run, chat_public write) is duplicated or forged"
+      "title": "Data is corrupted, or a side-effecting action (Discord post, agent run, Grimoire chat write) is duplicated or forged"
     },
     {
       "key": "L.unauthorized-access",
@@ -20,7 +20,7 @@
     },
     {
       "key": "L.capacity-exhaustion",
-      "title": "Attacker exhausts shared compute (GPU, sandbox, shotter) or causes denial of service"
+      "title": "Public requests exhaust shared inference capacity or deny service to other users"
     },
     {
       "key": "L.silent-incorrectness",
@@ -61,7 +61,7 @@
     {
       "key": "public-write-admission-bypass",
       "view": "physical",
-      "statement": "Public writes are confined to chat_public and its admission and inference budgets.",
+      "statement": "Grimoire chat writes use grimoire_chat with session admission and inference budgets. The database role retains grants on the legacy chat_public schema.",
       "losses": [
         "L.integrity-loss",
         "L.capacity-exhaustion"
@@ -85,25 +85,6 @@
         "L.secret-exposure"
       ],
       "maturity": "built"
-    },
-    {
-      "key": "sandbox-credential-egress",
-      "view": "logical",
-      "statement": "The operators gate controls access to scratch-database execution.",
-      "losses": [
-        "L.secret-exposure",
-        "L.unauthorized-access"
-      ],
-      "maturity": "built"
-    },
-    {
-      "key": "private-capture-retained",
-      "view": "physical",
-      "statement": "The operators gate controls capture of private-tier screenshots stored in SeaweedFS.",
-      "losses": [
-        "L.unauthorized-access"
-      ],
-      "maturity": "built"
     }
   ],
   "ucas": [
@@ -112,7 +93,7 @@
       "view": "physical",
       "control_action": "route.public",
       "guideword": "providing",
-      "condition": "The page route sends pages and client assets to the frontend. A separate HTTPRoute sends /functions/<name> directly to the invocation backend, which resolves only public functions.",
+      "condition": "The public chart separates page traffic from /functions/<name>, which it routes to the backend. The hub application root omits the EmberVM execution service.",
       "severity": "high",
       "hazards": [
         "public-route-exposes-private-path"
@@ -121,9 +102,9 @@
       "evidence": "projects/monolith-public/chart/templates/httproute-public.yaml:41, projects/monolith-public/chart/templates/httproute-public.yaml:112"
     },
     {
-      "key": "chatpublic.write.providing",
+      "key": "grimoire-chat.write.providing",
       "view": "physical",
-      "control_action": "chatpublic.write",
+      "control_action": "grimoire-chat.write",
       "guideword": "providing",
       "condition": "Public chat admission requires Turnstile verification and enforces session limits and a cluster-wide inference cap.",
       "severity": "high",
@@ -131,7 +112,7 @@
         "public-write-admission-bypass"
       ],
       "status": "enforced-prod",
-      "evidence": "projects/monolith-public/chart/values.yaml:146"
+      "evidence": "projects/monolith/grimoire_chat/router.py, projects/monolith/grimoire_chat/limits.py, projects/monolith/chart/migrations/20260706200000_grimoire_chat.sql:122"
     },
     {
       "key": "grant.public-reader.providing",
@@ -161,36 +142,6 @@
       "evidence": "projects/monolith/knowledge/tools/gen_docs_manifest.py:128"
     },
     {
-      "key": "shotter.capture.providing",
-      "view": "logical",
-      "control_action": "shotter.capture",
-      "guideword": "providing",
-      "condition": "Private-tier screenshots require an authorized operators-group caller.",
-      "severity": "high",
-      "hazards": [
-        "unrestricted-tool-visibility",
-        "private-capture-retained"
-      ],
-      "status": "enforced-prod",
-      "issue": "#4569",
-      "evidence": "projects/monolith/shotter/mcp.py:123"
-    },
-    {
-      "key": "sandbox.run.providing",
-      "view": "logical",
-      "control_action": "sandbox.run",
-      "guideword": "providing",
-      "condition": "Running sandbox code with scratch-database access requires operators group membership.",
-      "severity": "medium",
-      "hazards": [
-        "unrestricted-tool-visibility",
-        "sandbox-credential-egress"
-      ],
-      "status": "enforced-prod",
-      "issue": "#4569",
-      "evidence": "projects/monolith/sandbox/mcp.py:15"
-    },
-    {
       "key": "k8s.mutate.providing",
       "view": "physical",
       "control_action": "k8s.mutate",
@@ -202,20 +153,6 @@
       ],
       "status": "enforced-prod",
       "evidence": "projects/monolith/cluster/mcp.py:173, projects/monolith/cluster/mcp.py:258, projects/monolith/core/mcp_policy.py:75"
-    },
-    {
-      "key": "mcp.agent-session.providing",
-      "view": "logical",
-      "control_action": "mcp.agent-session",
-      "guideword": "providing",
-      "condition": "Starting or driving an agent session through MCP requires operators group membership.",
-      "severity": "high",
-      "hazards": [
-        "unrestricted-tool-visibility"
-      ],
-      "status": "enforced-prod",
-      "issue": "#4569",
-      "evidence": "projects/monolith/factory/execution/mcp.py:1580"
     },
     {
       "key": "mcp.chat-pardon.providing",
@@ -243,6 +180,19 @@
       ],
       "status": "enforced-prod",
       "evidence": "projects/monolith/public_turnstile_secret_isolation_test.py:76"
+    },
+    {
+      "key": "session-detail.read.providing",
+      "view": "logical",
+      "control_action": "session-detail.read",
+      "guideword": "providing",
+      "condition": "The shared MCP operators-group gate applies to monolith_agent_detail. It loads the selected database turn and returns its prompt, verbatim result and tool activities independently of guest execution.",
+      "severity": "high",
+      "hazards": [
+        "unrestricted-tool-visibility"
+      ],
+      "status": "enforced-prod",
+      "evidence": "projects/monolith/core/mcp_policy.py, projects/monolith/factory/module.py:49, projects/monolith/factory/execution/mcp.py:2277"
     }
   ],
   "unsafe_feedback": [
@@ -266,7 +216,7 @@
   "non_ucas": [
     {
       "item": "EmberVM guest and hypervisor isolation",
-      "reason": "Covered in projects/embervm/STPA.md (logic and security lenses); this document covers only monolith-side broker"
+      "reason": "The hub retired EmberVM and its factory conductor. The current factory worker boundary is documented in docs/THREAT-MODEL.md."
     },
     {
       "item": "Discord platform account compromise",
