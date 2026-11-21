@@ -49,3 +49,9 @@ go_test(
         "@org_golang_google_grpc//credentials/insecure",
     ],
 )
+
+filegroup(
+    name = "repo_docs",
+    srcs = ["README.md"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
