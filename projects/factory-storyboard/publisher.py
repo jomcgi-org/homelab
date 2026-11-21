@@ -152,6 +152,7 @@ def publish(s3, bucket, now, story, goals, issues, sessions, scan=gitleaks):
                 and re.fullmatch(r"objects/[a-f0-9]{64}\.json", key)
                 and now - entry["LastModified"] >= timedelta(hours=24)
             ):
+                # invariant: STORYBOARD-1
                 # Live puts clear this metadata when a digest returns.
                 # The post-commit copy starts a fresh LastModified interval.
                 head = s3.head_object(Bucket=bucket, Key=key)
