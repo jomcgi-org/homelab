@@ -687,6 +687,10 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	if err != nil {
 		return err
 	}
+	wait, late, err := e.ticketFeedback(ctx, wi, b, pr, checks)
+	if err != nil || (wait && !late && d.Mergeable != "CONFLICTING") {
+		return err
+	}
 	started, err := e.reviewEvents(ctx, wi, b, pr, d, checks, statuses)
 	if errors.Is(err, store.ErrNotReview) {
 		return nil // delivery stopped meanwhile; nothing started
@@ -710,6 +714,9 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 			return nil // CI or review is still running on this head
 		}
 		return e.idleRound(ctx, wi, b, pr, d)
+	}
+	if wait {
+		return nil
 	}
 	if wait, err := e.ownershipFeedback(ctx, wi, b, pr, d.HeadSHA, checks); err != nil || wait {
 		return err // A failed ownership read waits for the next poll.

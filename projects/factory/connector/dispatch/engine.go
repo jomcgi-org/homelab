@@ -2145,7 +2145,30 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 	switch state {
 	case kagent.StateCompleted, kagent.StateInputRequired:
 		res := itsaplan.Result{Status: "success", Output: Output(t)}
+		var reply commentPayload
+		var replyKey string
+		if r.Connector() && state == kagent.StateCompleted {
+			if head, evidence := goalReply(res.Output); head != "" {
+				pr, err := e.st.PullRequestFor(ctx, wi.ID)
+				if err != nil {
+					return err
+				}
+				if b := e.binding(wi.BindingName); b != nil && pr != nil && pr.State == "open" {
+					replyKey = goalReplyKey(wi, pr, head) + strconv.FormatInt(a.ID, 10)
+					reply = commentPayload{
+						IssueID: wi.IssueID, Once: true,
+						Body: itsaplan.GoalReplyMarker(b.repo(), pr.Number, head) + fmt.Sprintf("%d -->\n", a.ID) +
+							fmt.Sprintf("@factory-reviewer The implementer supplied evidence for PR #%d at `%s`.\n\n%s", pr.Number, head, evidence),
+					}
+				}
+			}
+		}
 		return e.st.AttemptTx(ctx, e.w, r, wi, a, func(tx *sql.Tx) error {
+			if replyKey != "" {
+				if err := e.st.Enqueue(ctx, tx, store.OutboxComment, replyKey, r.ID, "", reply); err != nil {
+					return err
+				}
+			}
 			if err := e.st.CompleteTask(ctx, tx, a.ID, state); err != nil {
 				return err
 			}

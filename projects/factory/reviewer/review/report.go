@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
+	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 )
 
@@ -1173,6 +1174,9 @@ func render(a Assessment, r *Report, gate *Gate, footer string, state *State) Ou
 	// and a tail of the human-hold marker and the footer. The connector reads
 	// the marker and the findings, so the tail is never clipped and the
 	// blocking findings get the space before the other sections.
+	if !stored.Incomplete && stored.Goal != nil && stored.Goal.ReplyRevision > 0 {
+		footer = itsaplan.GoalReplyReviewed(stored.Goal.ReplyRevision) + "\n\n" + footer
+	}
 	tail := footer
 	if !stored.Incomplete && gate != nil && gate.Authorship != "" {
 		tail = gate.Authorship + "\n\n" + tail
