@@ -56,6 +56,22 @@ LC_ALL=C sort -u -o "$scratch/keep" "$scratch/before" "$scratch/after"
 # keeps every object it names. A failed copy stops here.
 payloads copy "GARAGE:$GARAGE_BUCKET" "{{ .dest }}" \
   --header-upload "Cache-Control: public, max-age=31536000, immutable"
+{{- if .repairCacheKey }}
+# Copy skips matching bytes, even if the R2 object's metadata is old.
+# Repair only the exact content-addressed key while the captured manifest uses it.
+repair_key={{ .repairCacheKey | quote }}
+if [ "$manifest" = {{ .manifestName }} ] &&
+   grep -Fq "\"$repair_key\"" "$scratch/{{ .manifestName }}" &&
+   grep -Fxq "$repair_key" "$scratch/keep"; then
+  metadata=$(run lsjson --stat --metadata "{{ .dest }}/$repair_key")
+  if ! printf '%s\n' "$metadata" | grep -Eq '"cache-control"[[:space:]]*:[[:space:]]*"public, max-age=31536000, immutable"'; then
+    run copyto "{{ .dest }}/$repair_key" "$scratch/cache-repair.json"
+    expected=${repair_key##*-}
+    printf '%s  %s\n' "${expected%.json}" "$scratch/cache-repair.json" | sha256sum -c - >/dev/null
+    run copyto "$scratch/cache-repair.json" "{{ .dest }}/$repair_key" --ignore-times --header-upload "Cache-Control: public, max-age=31536000, immutable"
+  fi
+fi
+{{- end }}
 payloads lsf -R --files-only "{{ .dest }}" > "$scratch/r2"
 LC_ALL=C sort -o "$scratch/r2" "$scratch/r2"
 LC_ALL=C comm -23 "$scratch/keep" "$scratch/r2" > "$scratch/missing"
@@ -131,7 +147,7 @@ is one path segment, so a source cannot reach above or beside it. */}}
 {{- $seenSources := dict -}}
 {{- range $source := $sources -}}
 {{- if not (kindIs "map" $source) -}}{{- fail "factory-library: public.sources entries must be maps" -}}{{- end -}}
-{{- include "factory-library.keys" (dict "path" "public.sources entry" "value" $source "allowed" (list "bucket" "r2Prefix" "manifestName" "schedule" "suspend")) -}}
+{{- include "factory-library.keys" (dict "path" "public.sources entry" "value" $source "allowed" (list "bucket" "r2Prefix" "manifestName" "schedule" "suspend" "repairCacheKey")) -}}
 {{- if not (hasKey $source "bucket") -}}{{- fail "factory-library: public.sources bucket is required" -}}{{- end -}}
 {{- $from := $source.bucket -}}
 {{- if or (not (kindIs "string" $from)) (not (regexMatch "^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$" $from)) (eq $from $.bucket) (hasKey $seenSources (printf "bucket/%s" $from)) -}}{{- fail "factory-library: public.sources buckets must be unique Garage bucket names other than the mirrored bucket" -}}{{- end -}}
@@ -143,6 +159,10 @@ is one path segment, so a source cannot reach above or beside it. */}}
 {{- $_ := set $seenSources (printf "prefix/%s" $prefix) true -}}
 {{- if and (hasKey $source "suspend") (not (kindIs "bool" $source.suspend)) -}}{{- fail "factory-library: public.sources suspend must be a boolean" -}}{{- end -}}
 {{- if not (has (get $source "manifestName" | default "manifest.json") (list "manifest.json" "latest.json")) -}}{{- fail "factory-library: public.sources manifestName must be manifest.json or latest.json" -}}{{- end -}}
+{{- if hasKey $source "repairCacheKey" -}}
+{{- $key := $source.repairCacheKey -}}
+{{- if or (not (kindIs "string" $key)) (not (regexMatch "^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)*-[a-f0-9]{64}[.]json$" $key)) -}}{{- fail "factory-library: public.sources repairCacheKey must be a relative, SHA-256-named JSON payload" -}}{{- end -}}
+{{- end -}}
 {{- $prefixes = append $prefixes $prefix -}}
 {{- end -}}
 {{- $path := get $public "itemPath" -}}
@@ -154,7 +174,7 @@ is one path segment, so a source cannot reach above or beside it. */}}
 {{/* The root sync excludes every source prefix, so it never deletes their objects. */}}
 {{ include "factory-library.mirrorJob" (dict "root" .root "name" (printf "%s-mirror" .base) "bucket" .bucket "r2Bucket" $r2Bucket "prefix" "" "excludePrefixes" $prefixes "itemPath" $path "image" $image "manifestName" $manifest "copy" $copy "copySecrets" $copySecrets "schedule" $public.schedule "suspend" $public.suspend) }}
 {{- range $source := $sources }}
-{{ include "factory-library.mirrorJob" (dict "root" $.root "name" (printf "%s-%s-mirror" $.root.Release.Name $source.r2Prefix) "bucket" $source.bucket "r2Bucket" $r2Bucket "prefix" $source.r2Prefix "excludePrefixes" (list) "itemPath" $path "image" $image "manifestName" (get $source "manifestName" | default "manifest.json") "copy" (list) "copySecrets" (dict) "schedule" $source.schedule "suspend" $source.suspend) }}
+{{ include "factory-library.mirrorJob" (dict "root" $.root "name" (printf "%s-%s-mirror" $.root.Release.Name $source.r2Prefix) "bucket" $source.bucket "r2Bucket" $r2Bucket "prefix" $source.r2Prefix "excludePrefixes" (list) "itemPath" $path "image" $image "manifestName" (get $source "manifestName" | default "manifest.json") "copy" (list) "copySecrets" (dict) "schedule" $source.schedule "suspend" $source.suspend "repairCacheKey" $source.repairCacheKey) }}
 {{- end }}
 {{- end -}}
 
@@ -192,7 +212,7 @@ guard. Its R2 writes go to the bucket root, or only under .prefix. */}}
 {{- range $key, $field := dict "ACCESS_KEY_ID" "access-key-id" "SECRET_ACCESS_KEY" "secret-access-key" "ENDPOINT" "s3-api-endpoint" -}}
 {{- $env = append $env (dict "name" (printf "RCLONE_CONFIG_R2_%s" $key) "valueFrom" (dict "secretKeyRef" (dict "name" $r2Secret "key" $field))) -}}
 {{- end -}}
-{{- $workload := dict "kind" "CronJob" "schedule" (.schedule | default "* * * * *") "concurrencyPolicy" "Forbid" "backoffLimit" 1 "image" .image "containerName" "mirror" "resources" (dict "requests" (dict "cpu" "10m" "memory" "64Mi") "limits" (dict "memory" "256Mi")) "command" (list "/bin/sh" "-c" (include "factory-library.mirrorScript" (dict "manifestName" .manifestName "copyKeys" .copy "dest" $dest "prefix" .prefix "excludePrefixes" .excludePrefixes))) "env" $env "writablePaths" (list (dict "name" "tmp" "mountPath" "/tmp" "sizeLimit" "64Mi")) "network" (dict "egress" (list (dict "peer" "garage" "port" 3900) (dict "peer" "r2-s3" "fqdn" (include "factory-library.r2Host" .) "port" 443))) -}}
+{{- $workload := dict "kind" "CronJob" "schedule" (.schedule | default "* * * * *") "concurrencyPolicy" "Forbid" "backoffLimit" 1 "image" .image "containerName" "mirror" "resources" (dict "requests" (dict "cpu" "10m" "memory" "64Mi") "limits" (dict "memory" "256Mi")) "command" (list "/bin/sh" "-c" (include "factory-library.mirrorScript" (dict "manifestName" .manifestName "copyKeys" .copy "dest" $dest "prefix" .prefix "excludePrefixes" .excludePrefixes "repairCacheKey" .repairCacheKey))) "env" $env "writablePaths" (list (dict "name" "tmp" "mountPath" "/tmp" "sizeLimit" "64Mi")) "network" (dict "egress" (list (dict "peer" "garage" "port" 3900) (dict "peer" "r2-s3" "fqdn" (include "factory-library.r2Host" .) "port" 443))) -}}
 {{ include "factory-library.bucketSecret" (dict "root" .root "name" $garageSecret "bucket" .bucket "access" "read") }}
 {{- range $from, $remote := .copySecrets }}
 {{ include "factory-library.bucketSecret" (dict "root" $.root "name" (printf "%s-%s-s3" $name $from) "bucket" $from "access" "read") }}

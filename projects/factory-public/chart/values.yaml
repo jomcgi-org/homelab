@@ -22,6 +22,8 @@ buckets:
           r2Prefix: stars-forecast
           manifestName: latest.json
           suspend: false
+          # HOME-478: repair this legacy object's cache header in place.
+          repairCacheKey: stars/history-map-4d579082126a1923c0c90753db18cb0221fa4ec6353631bad1b496b3e76b7b23.json
         # https://factory-data.jomcgi.dev/hikes/latest.json
         # On since HOME-477. Set true to stop it; R2 keeps what it has.
         - bucket: hikes

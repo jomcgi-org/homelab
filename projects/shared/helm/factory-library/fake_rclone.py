@@ -35,6 +35,7 @@ roots = json.loads(os.environ["FAKE_REMOTES"])
 FLAGS = {
     "lsf": {"--exclude": True, "--include": True, "--max-depth": True},
     "cat": {},
+    "lsjson": {"--stat": False, "--metadata": False},
     "copy": {"--exclude": True, "--header-upload": True},
     "copyto": {"--ignore-times": False, "--header-upload": True},
     "delete": {"--include": True, "--files-from-raw": True},
@@ -155,6 +156,21 @@ if command == "lsf":
             print(name)
 elif command == "cat":
     sys.stdout.buffer.write(open(local(paths[0])[1], "rb").read())
+elif command == "lsjson":
+    assert flag("--stat") and flag("--metadata"), rest
+    _, target = local(paths[0])
+    headers = {}
+    for path in [
+        os.environ.get("FAKE_PRIOR_HEADERS"),
+        os.path.join(state, "headers.json"),
+    ]:
+        if path and os.path.exists(path):
+            headers.update(json.load(open(path)))
+    metadata = {
+        header.split(": ", 1)[0].lower(): header.split(": ", 1)[1]
+        for header in headers.get(target, [])
+    }
+    print(json.dumps({"IsDir": not os.path.isfile(target), "Metadata": metadata}))
 elif command == "copy":
     (_, source), (remote, target) = local(paths[0]), local(paths[1])
     # rclone copy never deletes. It retries a failed copy with a new listing
@@ -177,7 +193,11 @@ elif command == "copy":
         sys.exit("copy failed")
 elif command == "copyto":
     source = paths[0] if paths[0].startswith("/") else local(paths[0])[1]
-    upload(source, *local(paths[1]))
+    if paths[1].startswith("/"):
+        spend()
+        shutil.copyfile(source, paths[1])
+    else:
+        upload(source, *local(paths[1]))
 elif command == "delete":
     remote, root = local(paths[0])
     if flag("--files-from-raw"):
