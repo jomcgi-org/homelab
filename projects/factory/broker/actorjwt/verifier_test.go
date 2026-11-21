@@ -203,7 +203,7 @@ func TestAdminSubject(t *testing.T) {
 			claims[field] = bad
 		}
 		subject, err := v.AdminSubject(context.Background(), key.Sign(t, claims))
-		if (field == "valid" || field == "operator") != (err == nil && subject == "operator") {
+		if (field == "valid") != (err == nil && subject == "operator") {
 			t.Fatalf("%s: subject %q, err %v", field, subject, err)
 		}
 	}

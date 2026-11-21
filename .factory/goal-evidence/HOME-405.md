@@ -1,0 +1,5 @@
+1. The deploy profile leaves the route disabled. After the supporting chart is published and pinned, a follow-up can select `edge.codexAdminRouteEnabled: true`. `projects/factory/chart/chart_test.py::test_codex_admin_route_follows_broker_chart` renders both supported switches.
+2. Live device login and account visibility require a rolled-out chart and an Authentik admin session.
+3. projects/factory/broker/cmd/broker/main.go calls AdminSubject for both the browser page and device login. TestAdminSubject in //projects/factory/broker/actorjwt:actorjwt_test exercises signed claims for admins, operators and ordinary users.
+
+Before enabling the route, use a read-only Authentik admin session on factory-auth.jomcgi.dev to inspect the OAuth2 provider with client ID `factory-edge`. Record the verification time and whether its redirect URIs contain the strict entry `https://factory.jomcgi.dev/admin/codex/oauth2/callback`. The blueprint comparison in `projects/platform/authentik/blueprint_tags_test.py::test_factory_edge_and_argocd_callback_hosts` checks the desired configuration only.
