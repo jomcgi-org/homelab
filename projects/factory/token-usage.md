@@ -255,8 +255,9 @@ and measured work items out of all work items created in the displayed
 30-day window. Queue wait starts at the first coordinator run's creation and
 ends at its first attempt's first send. First PR and merge times start at
 work-item creation. PR time is when the connector recorded the PR. Review
-wait runs from PR recording to the first recorded review dispatch attempt for
-the issue. The reviewer records provenance while preparing the task message.
-Coverage counts an issue even if that send fails before acceptance. A later
-retry leaves the first attempt's timestamp in the sample. Rework rounds use the work item's recorded review-round counter
-as of query time. Missing endpoints and negative intervals reduce coverage.
+wait runs from PR recording to the first recorded request for changes that
+the connector acted on for that PR. It includes time spent reviewing and
+time until the connector observes the feedback. PRs with only an approval,
+a prepared review task, or no actionable review have no sample. Rework rounds
+use the work item's recorded review-round counter as of query time. Missing
+endpoints and negative intervals reduce coverage.
