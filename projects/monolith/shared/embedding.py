@@ -53,7 +53,7 @@ class EmbeddingClient:
 
         async def operation() -> list[list[float]]:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(  # nosemgrep: tainted-fastapi-http-request-httpx (self.base_url is a config value, not user input)
+                resp = await client.post(  # self.base_url is a config value, not user input
                     f"{self.base_url}/v1/embeddings",
                     json={"input": texts, "model": self.model},
                 )

@@ -28,7 +28,7 @@ _JSONB = JSONB().with_variant(JSON(), "sqlite")
 _STRING_ARRAY = PG_ARRAY(String).with_variant(JSON(), "sqlite")
 
 
-class Trip(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class Trip(SQLModel, table=True):
     __tablename__ = "trips"
     __table_args__ = {"schema": "trips", "extend_existing": True}
 
@@ -52,7 +52,7 @@ class Trip(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class TripPoint(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class TripPoint(SQLModel, table=True):
     __tablename__ = "points"
     __table_args__ = {"schema": "trips", "extend_existing": True}
 

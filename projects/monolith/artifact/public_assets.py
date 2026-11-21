@@ -63,7 +63,7 @@ def _client():
 
     return boto3.client(
         "s3",
-        endpoint_url=endpoint,  # nosemgrep: boto3-endpoint-url-missing-scheme
+        endpoint_url=endpoint,
         aws_access_key_id=os.environ["S3_ACCESS_KEY_ID"],
         aws_secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"],
         region_name=os.environ.get("AWS_REGION", "auto"),

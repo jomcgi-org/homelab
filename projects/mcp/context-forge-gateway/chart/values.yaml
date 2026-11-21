@@ -64,7 +64,7 @@ mcp-stack:
       tag: "v1.0.7"
       pullPolicy: IfNotPresent
 
-  redis: # nosemgrep: no-inline-subchart — bundled by mcp-stack upstream chart
+  redis: # bundled by mcp-stack upstream chart
     enabled: true
     resources:
       requests:
