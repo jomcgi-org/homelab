@@ -3271,6 +3271,36 @@ func TestDoneMoveOutageSurvivesIdleOutboxTicks(t *testing.T) {
 	}
 }
 
+func TestDoneMoveCooldownPreservesLastAttempt(t *testing.T) {
+	const lastAttempt = 19 // One failed delivery away from abandonment.
+	v := newDeliveryEnv(t)
+	v.mergedAtWIPLimit()
+	if _, err := v.st.DB.Exec("UPDATE outbox SET tries = $1 WHERE kind = $2", lastAttempt, store.OutboxIssueDone); err != nil {
+		t.Fatal(err)
+	}
+	v.its.moveErr = []error{itsaplan.ErrBackoff, itsaplan.ErrBackoff}
+	firstSkip := v.clk.Now().Add(time.Minute)
+	for range 2 {
+		v.clk.Advance(time.Minute)
+		v.tick(v.e)
+		var tries int
+		var unavailableSince time.Time
+		if err := v.st.DB.QueryRow(`SELECT tries, unavailable_since FROM outbox WHERE kind = $1
+			AND abandoned_at IS NULL AND delivered_at IS NULL AND next_attempt_at > $2`,
+			store.OutboxIssueDone, v.clk.Now()).Scan(&tries, &unavailableSince); err != nil {
+			t.Fatal(err)
+		}
+		if tries != lastAttempt || !unavailableSince.Equal(firstSkip) {
+			t.Fatalf("queued after cooldown: tries=%d unavailable since=%s", tries, unavailableSince)
+		}
+	}
+	v.clk.Advance(time.Minute)
+	v.tick(v.e)
+	if len(v.its.Moves()) != 1 || testutil.ToFloat64(v.m.ItsaplanUnavailable.WithLabelValues("outbox")) != 0 {
+		t.Fatal("cooldown recovery did not deliver the Done move and clear the outage")
+	}
+}
+
 func captureWorkSpans(t *testing.T) *tracetest.InMemoryExporter {
 	t.Helper()
 	exporter := tracetest.NewInMemoryExporter()
