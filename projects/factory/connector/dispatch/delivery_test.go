@@ -3742,7 +3742,7 @@ func TestIssueReviewQueueMatchesCurrentRepositoryAndHead(t *testing.T) {
 			"waiting":[
 				{"repository":"other/repo","pullRequest":1,"head":"sha-1","position":1},
 				{"repository":%q,"pullRequest":2,"head":"sha-1","position":2},
-				{"repository":%q,"pullRequest":1,"head":"sha-1","position":3}
+				{"repository":%q,"pullRequest":1,"head":"sha-1","position":3,"priority":"urgent"}
 			]}`, repo, repo, repo)
 	}))
 	defer source.Close()
@@ -3754,7 +3754,7 @@ func TestIssueReviewQueueMatchesCurrentRepositoryAndHead(t *testing.T) {
 		t.Fatalf("unrelated issue review = %+v, %v", unrelated, err)
 	}
 	queue, err := v.e.ProjectReviews(v.ctx, binding.ItsaplanProject, source.URL, source.Client())
-	if err != nil || len(queue.Items) != 1 || queue.Items[0].IssueID != 101 || queue.Items[0].Position != 3 {
+	if err != nil || len(queue.Items) != 1 || queue.Items[0].IssueID != 101 || queue.Items[0].Position != 3 || queue.Items[0].Priority != "urgent" || queue.Items[0].Reason == "" {
 		t.Fatalf("project queue = %+v, %v", queue, err)
 	}
 

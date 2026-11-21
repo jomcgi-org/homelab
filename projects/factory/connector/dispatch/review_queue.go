@@ -21,6 +21,7 @@ type IssueReview struct {
 	ObservedAt  time.Time `json:"observedAt"`
 	Complete    bool      `json:"complete"`
 	Reason      string    `json:"reason,omitempty"`
+	Priority    string    `json:"priority,omitempty"`
 }
 
 // IssueReviewQueue joins the reviewer snapshot to a work receipt by repository,
@@ -65,7 +66,8 @@ func (e *Engine) IssueReviewQueue(ctx context.Context, issueID int64, base strin
 	for _, item := range snapshot.Waiting {
 		if matches(item) {
 			answer.Phase = "queued"
-			answer.Reason = "Waiting for a review worker slot."
+			answer.Reason = reviewWaitReason(answer.Phase)
+			answer.Priority = item.Priority
 			if snapshot.Complete {
 				answer.Position = item.Position
 			}
@@ -75,7 +77,7 @@ func (e *Engine) IssueReviewQueue(ctx context.Context, issueID int64, base strin
 	for _, item := range snapshot.QuotaHeld {
 		if matches(item) {
 			answer.Phase = "quota-held"
-			answer.Reason = "Waiting for review quota."
+			answer.Reason = reviewWaitReason(answer.Phase)
 			return &answer, nil
 		}
 	}
@@ -85,11 +87,23 @@ func (e *Engine) IssueReviewQueue(ctx context.Context, issueID int64, base strin
 	return nil, nil
 }
 
+func reviewWaitReason(phase string) string {
+	switch phase {
+	case "queued":
+		return "Waiting for a review worker slot."
+	case "quota-held":
+		return "Waiting for review quota."
+	default:
+		return ""
+	}
+}
+
 type reviewSnapshotEntry struct {
 	Repository  string `json:"repository"`
 	PullRequest int    `json:"pullRequest"`
 	Head        string `json:"head"`
 	Position    int    `json:"position"`
+	Priority    string `json:"priority"`
 }
 
 type reviewSnapshot struct {
@@ -194,6 +208,7 @@ func (e *Engine) ProjectReviews(ctx context.Context, project, base string, clien
 					IssueReview: IssueReview{
 						PullRequest: entry.PullRequest, Head: entry.Head, Phase: phase,
 						Position: position, ObservedAt: snapshot.ObservedAt, Complete: snapshot.Complete,
+						Reason: reviewWaitReason(phase), Priority: entry.Priority,
 					},
 				})
 				delete(current, head)
