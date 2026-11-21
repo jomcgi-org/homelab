@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -698,6 +699,26 @@ func TestSupersededHeadCancelsTheOldReview(t *testing.T) {
 		t.Fatalf("old check = %+v", c)
 	}
 	e.Wait()
+	cancelled := 0
+	for _, span := range exporter.GetSpans() {
+		if span.Name != "factory.review_transition" {
+			continue
+		}
+		fields := map[string]string{}
+		for _, field := range span.Attributes {
+			fields[string(field.Key)] = field.Value.Emit()
+		}
+		if fields["review.transition"] == ConclusionCancelled && fields["head.sha"] == shaA {
+			cancelled++
+			if fields["repository"] != testRepo || fields["pr.number"] != "7" ||
+				fields["review.check_id"] != strconv.FormatInt(h.gh.check(shaA).ID, 10) {
+				t.Errorf("cancellation observation = %v", fields)
+			}
+		}
+	}
+	if cancelled != 1 {
+		t.Errorf("cancelled observations = %d, want 1", cancelled)
+	}
 	for _, span := range exporter.GetSpans() {
 		if span.Name != "review" || span.Parent.IsValid() {
 			continue

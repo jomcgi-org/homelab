@@ -256,7 +256,8 @@ func (e *Engine) observeDeliveryHead(ctx context.Context, b *Binding, wi *store.
 	if r == nil || r.Connector() || a.RunID != r.ID || pr.HeadSHA == "" {
 		return
 	}
-	_, span := tracing.Start(ctx, "factory.pr_head_delivery", trace.WithAttributes(
+	_, span := tracing.Start(ctx, "factory.pr_head_delivery", trace.WithNewRoot(), trace.WithAttributes(
+		attribute.String("factory.lifecycle", "pr_head_delivery"),
 		attribute.String("repository", b.repo()),
 		attribute.String("issue.key", wi.IssueKey),
 		attribute.Int("pr.number", pr.Number),
