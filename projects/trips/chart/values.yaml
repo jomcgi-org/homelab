@@ -13,6 +13,5 @@ buckets:
       suspend: true
       manifestName: latest.json
       r2Bucket: trips-public
-      itemPath: vaults/k8s-homelab/items/trips-public-mirror
 # Size the private volume from the hub inventory before migration.
 originalsSize: 128Gi
