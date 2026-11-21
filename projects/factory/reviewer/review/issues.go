@@ -29,6 +29,7 @@ type Itsaplan interface {
 	IssueAuthor(context.Context, int64) (string, error)
 	IssueTextAuthors(context.Context, *itsaplan.Issue) ([]string, error)
 	LinkedComment(context.Context, int64, int64) (*itsaplan.FeedItem, error)
+	RecentComments(context.Context, int64) ([]itsaplan.FeedItem, error)
 }
 
 const (
@@ -49,9 +50,11 @@ type DecisionEvidence struct {
 }
 
 type IssueContext struct {
-	Issue     *IssueEvidence
-	Decisions []DecisionEvidence
-	FollowUps map[string]string `json:",omitempty"`
+	Issue         *IssueEvidence
+	Decisions     []DecisionEvidence
+	FollowUps     map[string]string `json:",omitempty"`
+	GoalReply     string            `json:",omitempty"`
+	ReplyRevision int64             `json:",omitempty"`
 	// Findings are evidence failures that another read cannot fix, such as
 	// text over its bound or a reference to no issue. The review goes ahead
 	// and reports each one, so the author sees what to change.
@@ -91,7 +94,7 @@ func (e *Engine) evidenceKey() ([]byte, error) {
 func (e *Engine) sealIssues(in *IssueContext) {
 	key, err := e.evidenceKey()
 	if err != nil {
-		in.Issue, in.Decisions = nil, nil
+		in.Issue, in.Decisions, in.GoalReply, in.ReplyRevision = nil, nil, "", 0
 		in.unread("key", "The evidence key could not be read. The service will retry; no issue evidence was supplied.")
 		return
 	}
@@ -405,6 +408,10 @@ func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullReq
 				break
 			}
 			in.taskClass = class
+			in.GoalReply, in.ReplyRevision, err = e.ticketGoalReply(ctx, b, pr, p, goal.ID)
+			if err != nil {
+				in.unread("goal-reply", "The ticket replies could not be read. The service will retry.")
+			}
 			e.readFollowUps(ctx, b.ItsaplanProject, p, goal, in)
 			in.Issue = &IssueEvidence{
 				Key: key, Title: boundedIssueText(goal.Title, maxPromptTitle),
@@ -556,4 +563,39 @@ func (e *Engine) reconcileIssues(ctx context.Context, b *Binding, pr github.Pull
 		return run, true, ready
 	}
 	return e.holdIssues(ctx, b, pr, run, st, unread), true, ready
+}
+
+// ticketGoalReply selects one original coordinator comment matching this
+// issue and head. It is a source of evidence claims, never a decision.
+func (e *Engine) ticketGoalReply(ctx context.Context, b *Binding, pr github.PullRequest, p *itsaplan.Project, id int64) (string, int64, error) {
+	var coordinator string
+	for _, account := range p.Assignees {
+		if account.Kind == "agent" && account.Username == "factory-coordinator" {
+			coordinator = account.UserID
+			break
+		}
+	}
+	if coordinator == "" {
+		return "", 0, nil
+	}
+	items, err := e.cfg.Itsaplan.RecentComments(ctx, id)
+	if err != nil {
+		return "", 0, err
+	}
+	marker := itsaplan.GoalReplyMarker(b.repo(), pr.Number, pr.HeadSHA)
+	var best int64
+	var evidence string
+	for _, item := range items {
+		if item.IssueID != id || item.Kind != "comment" || item.ActorUserID != coordinator || !item.OriginalComment() {
+			continue
+		}
+		if remainder, ok := strings.CutPrefix(item.Body, marker); ok {
+			raw, text, ok := strings.Cut(remainder, " -->\n")
+			revision, err := strconv.ParseInt(raw, 10, 64)
+			if ok && err == nil && revision > best && strconv.FormatInt(revision, 10) == raw && strings.TrimSpace(text) != "" {
+				evidence, best = boundedIssueText(text, maxDecisionText), revision
+			}
+		}
+	}
+	return evidence, best, nil
 }

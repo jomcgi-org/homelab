@@ -33,6 +33,7 @@ import (
 
 	"github.com/jomcgi/homelab/projects/factory/connector/dispatch"
 	"github.com/jomcgi/homelab/projects/factory/connector/github"
+	"github.com/jomcgi/homelab/projects/factory/connector/itsaplan"
 	"github.com/jomcgi/homelab/projects/factory/connector/kagent"
 	"github.com/jomcgi/homelab/projects/factory/connector/provenance"
 	"github.com/jomcgi/homelab/projects/factory/reviewer/config"
@@ -2868,6 +2869,10 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 			a.Incomplete = true
 		}
 		o.Comment = reviewComment(a, r, b, gate)
+		if summary := acceptanceSummary(st.Goal); !a.Incomplete && summary != "" && st.Goal.Head == pr.HeadSHA {
+			body := summary + "\n\n" + *o.Comment.Findings
+			o.Comment.Findings = &body
+		}
 		if in.priorUnknown != "" {
 			// Render left maxPreface for this note, so the summary's tail
 			// (the human-hold marker and footer) survives.
@@ -3173,6 +3178,9 @@ func (e *Engine) gateCheck(ctx context.Context, b *Binding, pr github.PullReques
 	}
 	summary += "."
 	summary += ownedSection(st)
+	if !st.Incomplete && st.Goal != nil && st.Goal.Head == pr.HeadSHA && st.Goal.ReplyRevision > 0 {
+		summary += "\n\n" + itsaplan.GoalReplyReviewed(st.Goal.ReplyRevision)
+	}
 	summary = keepEnqueueHistory(summary, prev)
 	text = recordComment(text, prev.Text, pr.HeadSHA, u)
 	run, err := e.gh.CreateCheckRun(ctx, b.repo(), github.CheckRunWrite{
