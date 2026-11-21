@@ -10,12 +10,14 @@ export function DashboardChart({
   unit,
   points,
   maximum,
+  maximumBarWidth,
   formatValue,
 }: {
   title: string;
   unit: string;
   points: readonly ChartPoint[];
   maximum?: number;
+  maximumBarWidth?: number;
   formatValue: (value: number) => string;
 }) {
   const id = useId();
@@ -33,7 +35,12 @@ export function DashboardChart({
             aria-label={`${title}. Values are in the table below.`}
           >
             <Suspense>
-              <DashboardPlot points={points} unit={unit} maximum={maximum} />
+              <DashboardPlot
+                points={points}
+                unit={unit}
+                maximum={maximum}
+                maximumBarWidth={maximumBarWidth}
+              />
             </Suspense>
           </div>
           <details>

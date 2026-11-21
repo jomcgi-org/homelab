@@ -37,6 +37,7 @@ export function BurnUp({ points }: { points: BurnPoint[] }) {
             <text x="4" y="142">
               0
             </text>
+            <line x1="36" y1="20" x2="336" y2="20" className="grid" />
             <line x1="36" y1="140" x2="336" y2="140" className="axis" />
             <polyline points={coordinates("total")} className="scope-line" />
             <polyline

@@ -1,8 +1,5 @@
 import { Button } from "@astryxdesign/core/Button";
-import { Card } from "@astryxdesign/core/Card";
 import { Heading } from "@astryxdesign/core/Heading";
-import { HStack, VStack } from "@astryxdesign/core/Layout";
-import { Text } from "@astryxdesign/core/Text";
 import { useEffect, useState } from "react";
 import { paths } from "./paths";
 import { parseStatus, type Status } from "./status";
@@ -59,152 +56,148 @@ export function App() {
 
   return (
     <main className="factory-page">
-      <VStack gap={6}>
-        <header>
-          <Text type="body">Homelab</Text>
+      <header className="factory-head">
+        <div>
+          <p className="eyebrow">Homelab</p>
           <Heading level={1}>Factory</Heading>
-          <Text type="body">Your tasks and the factory's latest work.</Text>
-        </header>
-        {failed && (
-          <p role="status">
-            Factory status is unavailable. You can still open the tools below.
-          </p>
-        )}
-        {!status && !failed && <p role="status">Loading factory status…</p>}
-        <section aria-labelledby="needs-you">
-          <Card>
-            <VStack gap={3}>
-              <Heading level={2} id="needs-you">
-                Needs you
-                {status?.needsYou ? ` (${status.needsYou.length})` : ""}
-              </Heading>
-              {status &&
-                (status.needsYou === null ? (
-                  <Text type="body">
-                    Unavailable: no itsaplan member @joe in the factory's
-                    project.
-                  </Text>
-                ) : status.needsYou.length ? (
-                  <ul className="factory-list">
-                    {status.needsYou.map((item) => (
-                      <li key={item.key}>
-                        <a href={item.url}>
-                          {item.key}: {item.title}
-                        </a>
-                        <Text type="body">
-                          {item.priority || "No priority"} · Created{" "}
-                          <time dateTime={item.createdAt}>
-                            {date(item.createdAt)}
-                          </time>
-                        </Text>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <Text type="body">Nothing needs you right now.</Text>
-                ))}
-            </VStack>
-          </Card>
-        </section>
-        <section aria-labelledby="in-flight">
-          <Card>
-            <VStack gap={3}>
-              <Heading level={2} id="in-flight">
-                In flight
-                {status &&
-                  ` (${status.inFlight.length}${status.inFlightTotal ? ` of ${status.inFlightTotal}` : ""})`}
-              </Heading>
-              {status &&
-                (status.inFlight.length ? (
-                  <ul className="factory-list">
-                    {status.inFlight.map((item) => (
-                      <li key={item.key}>
-                        <Text type="body">
-                          {item.key}: {item.title}
-                        </Text>
-                        <Text type="body">
-                          {label(item.state)} · Review rounds:{" "}
-                          {item.reviewRounds}
-                        </Text>
-                        {item.pr ? (
-                          <>
-                            <a href={item.pr.url}>PR #{item.pr.number}</a>
-                            <Text type="body">
-                              Checks: {label(item.pr.ci)} · Review:{" "}
-                              {label(item.pr.review)} · Queue:{" "}
-                              {label(item.pr.queue)}
-                            </Text>
-                          </>
-                        ) : (
-                          <Text type="body">No pull request yet.</Text>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <Text type="body">No work in flight.</Text>
-                ))}
-            </VStack>
-          </Card>
-        </section>
-        <section aria-labelledby="shipped">
-          <Card>
-            <VStack gap={3}>
-              <Heading level={2} id="shipped">
-                Shipped recently
-              </Heading>
-              {status &&
-                (status.shipped.length ? (
-                  <ul className="factory-list">
-                    {status.shipped.map((item) => (
-                      <li key={item.key}>
-                        <a href={item.pr.url}>
-                          {item.key}: {item.title} (#{item.pr.number})
-                        </a>
-                        <Text type="body">
-                          Merged{" "}
-                          <time dateTime={item.mergedAt}>
-                            {date(item.mergedAt)}
-                          </time>
-                        </Text>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <Text type="body">No recent merges.</Text>
-                ))}
-            </VStack>
-          </Card>
-        </section>
+          <p className="meta">Your tasks and the factory's latest work.</p>
+        </div>
         {status && (
-          <Text type="body">
+          <p className="meta">
             Updated{" "}
             <time dateTime={status.generatedAt}>
               {new Date(status.generatedAt).toLocaleTimeString()}
             </time>
             . Refreshes every 30 seconds.
-          </Text>
+          </p>
         )}
-        <div className="factory-tools">
-          {tools.map((tool) => (
-            <Card key={tool.name}>
-              <VStack gap={3}>
-                <Heading level={2}>{tool.name}</Heading>
-                <Text type="body">{tool.purpose}</Text>
-                <HStack gap={2} wrap="wrap">
-                  <Button label={`Open ${tool.name}`} href={tool.href} />
-                  {tool.name === "GitHub" && (
-                    <Button
-                      label="Open factory PRs"
-                      href={paths.pullRequests}
-                    />
-                  )}
-                </HStack>
-              </VStack>
-            </Card>
+      </header>
+      {failed && (
+        <p role="status" className="factory-notice">
+          Factory status is unavailable. You can still open the tools below.
+        </p>
+      )}
+      {!status && !failed && (
+        <p role="status" className="factory-notice">
+          Loading factory status…
+        </p>
+      )}
+      <section aria-labelledby="needs-you" className="needs-you">
+        <Heading level={2} id="needs-you">
+          Needs you
+          {status?.needsYou ? ` (${status.needsYou.length})` : ""}
+        </Heading>
+        {status &&
+          (status.needsYou === null ? (
+            <p className="meta">
+              Unavailable: no itsaplan member @joe in the factory's project.
+            </p>
+          ) : status.needsYou.length ? (
+            <ul className="factory-list">
+              {status.needsYou.map((item) => (
+                <li key={item.key}>
+                  <a className="record" href={item.url}>
+                    <span className="key">{item.key}:</span> {item.title}
+                  </a>
+                  <p className="meta">
+                    {item.priority || "No priority"} · Created{" "}
+                    <time dateTime={item.createdAt}>
+                      {date(item.createdAt)}
+                    </time>
+                  </p>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="meta">Nothing needs you right now.</p>
           ))}
-        </div>
-      </VStack>
+      </section>
+      <section aria-labelledby="in-flight">
+        <Heading level={2} id="in-flight">
+          In flight
+          {status &&
+            ` (${status.inFlight.length}${status.inFlightTotal ? ` of ${status.inFlightTotal}` : ""})`}
+        </Heading>
+        {status &&
+          (status.inFlight.length ? (
+            <ul className="factory-list">
+              {status.inFlight.map((item) => (
+                <li key={item.key}>
+                  <p className="record">
+                    <span className="key">{item.key}:</span> {item.title}
+                  </p>
+                  <div className="detail">
+                    <p className="meta">
+                      {label(item.state)} · Review rounds: {item.reviewRounds}
+                    </p>
+                    {item.pr ? (
+                      <>
+                        <a href={item.pr.url}>PR #{item.pr.number}</a>
+                        <p className="meta">
+                          Checks: {label(item.pr.ci)} · Review:{" "}
+                          {label(item.pr.review)} · Queue:{" "}
+                          {label(item.pr.queue)}
+                        </p>
+                      </>
+                    ) : (
+                      <p className="meta">No pull request yet.</p>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="meta">No work in flight.</p>
+          ))}
+      </section>
+      <section aria-labelledby="shipped">
+        <Heading level={2} id="shipped">
+          Shipped recently
+        </Heading>
+        {status &&
+          (status.shipped.length ? (
+            <ul className="factory-list">
+              {status.shipped.map((item) => (
+                <li key={item.key}>
+                  <a className="record" href={item.pr.url}>
+                    <span className="key">{item.key}:</span> {item.title} (#
+                    {item.pr.number})
+                  </a>
+                  <p className="meta">
+                    Merged{" "}
+                    <time dateTime={item.mergedAt}>{date(item.mergedAt)}</time>
+                  </p>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="meta">No recent merges.</p>
+          ))}
+      </section>
+      <div className="factory-tools">
+        {tools.map((tool) => (
+          <section key={tool.name}>
+            <Heading level={2}>{tool.name}</Heading>
+            <p className="meta">{tool.purpose}</p>
+            <div className="actions">
+              <Button
+                variant="ghost"
+                size="sm"
+                label={`Open ${tool.name}`}
+                href={tool.href}
+              />
+              {tool.name === "GitHub" && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  label="Open factory PRs"
+                  href={paths.pullRequests}
+                />
+              )}
+            </div>
+          </section>
+        ))}
+      </div>
     </main>
   );
 }
