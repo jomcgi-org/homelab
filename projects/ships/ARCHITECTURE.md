@@ -4,7 +4,7 @@ HOME-256 follows [Joe's decision of 2026-11-18](https://factory-plan.jomcgi.dev/
 
 ## Ingest and capacity
 
-Run one Go process on factory. A typed WebSocket decoder and bounded channels let the reader and batched PostgreSQL writer overlap without allocating an unbounded backlog. Go fits the repository's existing build and image pipeline. Back off on disconnect, count dropped or malformed reports, and record the last successful commit time. Use the hub's subscription box and message filters. Guard the subscription with a PostgreSQL advisory lock during rolling updates.
+Run one Go process on factory. A typed WebSocket decoder and bounded channels let the reader and batched PostgreSQL writer overlap without allocating an unbounded backlog. Go fits the repository's existing build and image pipeline. Back off on disconnect, count dropped or malformed reports, and record the last successful commit time. Use the hub's subscription box and message filters. Guard the subscription with an ingester-owned PostgreSQL table lock.
 
 Keep PostgreSQL. Track history and all-time heat need durable state across reconnects, deployments and partition expiry. Port the hub's deduplication, latest-position and vessel metadata upserts. Keep daily position partitions for seven days. Bank each expired day's distinct vessel counts by cell and drop its partition in one transaction. Import historical heat separately from live partitions and reconcile their UTC day boundary before enabling retention. The hub implementation defines the parity target. [Ingest and serving code](../monolith/ships/)
 
@@ -223,7 +223,7 @@ flowchart LR
 
 The chart runs one ingester replica when `enabled` is true and none when it is false. HOME-537 set the default to true; `enabled=false` is the rollback. `chart/ingester_test.py` asserts both cases and the starting budgets in [Ingest and capacity](#ingest-and-capacity). CNPG creates the three-instance database from `chart/sql/bootstrap.sql` as the `ships` owner. The ingester connects with the owner URI from the `ships-db-app` Secret. Enable retention separately after importing and reconciling historical heat at a UTC boundary.
 
-A session subscribes only while it holds the PostgreSQL advisory lock `(409, 1)`. The lease connection holds that lock and runs nothing else. The writer pings it every second. A ping that succeeds confirms the lease for 5 seconds from the moment the writer sent it. If a ping fails or the confirmation expires, the writer closes its AISStream socket at once. A timer does the close at expiry, so a ping that hangs on a dead connection cannot delay it. The reader also drops each frame that it reads after the confirmation expires.
+A session subscribes only while its dedicated transaction holds the exclusive lock on `ships.ingest_lease`. Only the ingester owns the table. The writer checks that transaction every second. A check that succeeds confirms the lease for 5 seconds from the moment the writer sent it. If a check fails or the confirmation expires, the writer closes its AISStream socket at once. A timer does the close at expiry, so a check that hangs on a dead connection cannot delay it. The reader also drops each frame that it reads after the confirmation expires.
 
 After a writer takes the lock, it runs maintenance and applies the frames that `ships.inbox` still holds. It then waits 10 seconds (`leaseGrace` in `cmd/main.go`) before it subscribes. A writer that lost the lock sent its last confirmed ping before the loss, so it closes its socket less than 5 seconds after the loss. Thus at most one socket is open at any instant, also when PostgreSQL ends the lease session without notice. A database row cannot close a socket on AISStream, so this time bound is the fence. A stopped process cannot close its socket. When it resumes, its reader drops each frame that it reads after the deadline, so no report reaches the inbox from both sockets.
 
@@ -233,9 +233,9 @@ sequenceDiagram
   participant PG as PostgreSQL
   participant New as new writer
   participant Feed as AISStream
-  Old->>PG: ping the lease connection every second
+  Old->>PG: check the lease transaction every second
   PG--xOld: end the lease session
-  New->>PG: pg_try_advisory_lock(409, 1) succeeds
+  New->>PG: exclusive lock on ships.ingest_lease succeeds
   Old->>Feed: close the socket after a failed ping, or 5 s after the last confirmed ping
   New->>PG: run maintenance, then apply ships.inbox
   New->>New: wait 10 s
