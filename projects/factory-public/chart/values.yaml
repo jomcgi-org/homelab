@@ -29,12 +29,12 @@ buckets:
           manifestName: latest.json
           suspend: false
         # https://factory-data.jomcgi.dev/ships/latest.json
-        # Public by Joe's decision (HOME-256 comment 4484). HOME-410 sets
-        # suspend to false after HOME-537 turns the Ships ingester on.
+        # Public by Joe's decision (HOME-256 comment 4484). HOME-410 turns
+        # the mirror on after the Ships ingester starts (HOME-537).
         - bucket: ships
           r2Prefix: ships
           manifestName: latest.json
-          suspend: true
+          suspend: false
   # The health publisher's own bucket: its write key covers nothing in
   # factory-public (HOME-260).
   - name: factory-health

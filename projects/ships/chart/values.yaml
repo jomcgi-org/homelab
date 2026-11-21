@@ -41,11 +41,10 @@ database:
 buckets:
   - name: ships
     access: readwrite
-# The publisher CronJob (templates/publisher.yaml). HOME-410 sets suspend to
-# false after HOME-537 turns the ingester on, with the factory-public ships
-# source.
+# The publisher CronJob runs after the ingester starts (HOME-537, HOME-410).
+# Set suspend to true to pause publication.
 publisher:
-  suspend: true
+  suspend: false
   schedule: "*/2 * * * *"
   # Trial allocations. HOME-410 measures a run and sets the budget.
   resources:

@@ -109,11 +109,10 @@ def render_publisher(*overrides):
     return result, {(d["kind"], d["metadata"]["name"]): d for d in docs}
 
 
-def test_publisher_stays_suspended_until_activation():
-    # HOME-410 sets publisher.suspend=false after HOME-537 turns the ingester on.
+def test_publisher_schedule_and_suspend_override():
     for overrides, suspended in (
-        ([], True),
-        (["--set", "publisher.suspend=false"], False),
+        ([], False),
+        (["--set", "publisher.suspend=true"], True),
     ):
         _, docs = render_publisher(*overrides)
         job = docs["CronJob", "ships-publish"]["spec"]
