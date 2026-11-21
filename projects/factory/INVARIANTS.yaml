@@ -73,3 +73,9 @@ invariants:
   - projects/factory/chart/templates/reviewer-repositories.yaml
   test: //projects/factory/chart:reviewer_test
   state: live
+- id: FACT-15
+  statement: The private staging receiver checks new reachable blobs before accepting coder refs, including blobs removed at the tip.
+  mechanism:
+  - projects/factory/push-guard/pre-receive
+  test: //projects/factory/push-guard:guard_test
+  state: unproven

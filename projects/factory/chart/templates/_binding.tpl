@@ -10,6 +10,16 @@
 {{- $agent := include "factory.bindingAgentName" $r }}
 {{- $worker := printf "%s-worker" $agent }}
 {{- $toolchain := eq ($r.toolchain | default "") "homelab" }}
+{{- $guard := and .coder $r.guardedPush }}
+{{- $mandoline := regexMatch "^ghcr[.]io/jomcgi/homelab/projects/factory/(harness/(codex|claude)|reviewer/harness)@" ($r.harnessImage | default "") }}
+{{- if and .coder $mandoline (not $guard) }}
+{{- fail "Mandoline coding images require guardedPush" }}
+{{- end }}
+{{- if and $guard (or (not $.Values.pushGuard.enabled) (ne $ns "factory-r-homelab") (ne $r.owner "jomcgi-org") (ne $r.repo "homelab")) }}
+{{- fail "guarded homelab pushes require the private receiver in factory-r-homelab" }}
+{{- end }}
+{{- $receiver := printf "https://factory-push-guard.%s.svc.cluster.local" $ns }}
+{{- $gitOrigin := ternary $receiver "https://github.com" (not (empty $guard)) }}
 {{- $servers := list }}
 {{- if $r.memory }}
 {{- $servers = append $servers (merge (dict "name" "memory") $r.memory) }}
@@ -129,15 +139,21 @@ spec:
     - name: GIT_TERMINAL_PROMPT
       value: "0"
     - name: GIT_CONFIG_COUNT
-      value: "2"
+      value: {{ ternary "3" "2" (not (empty $guard)) | quote }}
     - name: GIT_CONFIG_KEY_0
-      value: http.https://github.com/.extraHeader
+      value: http.{{ $gitOrigin }}/.extraHeader
     - name: GIT_CONFIG_VALUE_0
       value: "Authorization: Basic factory-placeholder"
     - name: GIT_CONFIG_KEY_1
       value: credential.helper
     - name: GIT_CONFIG_VALUE_1
       value: ""
+    {{- if $guard }}
+    - name: GIT_CONFIG_KEY_2
+      value: url.{{ $receiver }}/.pushInsteadOf
+    - name: GIT_CONFIG_VALUE_2
+      value: "https://github.com/"
+    {{- end }}
   substrate:
     workerPoolRef:
       name: {{ $agent }}
@@ -159,6 +175,9 @@ metadata:
 spec:
   destinations:
     - origin: https://github.com
+    {{- if $guard }}
+    - origin: {{ $receiver }}
+    {{- end }}
       authentication:
         header: Authorization
         prefix: "Basic "
