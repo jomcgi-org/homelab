@@ -1,6 +1,7 @@
 # See https://pnpm.io/pnpm-workspace_yaml
 packages:
   - projects/design-system
+  - projects/factory/discord/activity
   - projects/factory-explore/ui
   - projects/factory-landing/web
   - projects/jomcgi-site/check

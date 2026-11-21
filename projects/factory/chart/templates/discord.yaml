@@ -193,6 +193,57 @@ spec:
 {{- $b := $d.bridge }}
 {{- $ns := $b.namespace }}
 {{- $name := "discord-bridge" }}
+{{- if $b.activity.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: discord-activity
+  namespace: {{ $ns }}
+spec:
+  selector:
+    app.kubernetes.io/component: discord-activity
+  ports:
+    - port: 8080
+      targetPort: health
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: discord-activity
+  namespace: edge
+spec:
+  parentRefs:
+    - name: edge
+      namespace: edge
+  hostnames:
+    - {{ $b.activity.hostname | quote }}
+  rules:
+    - matches:
+        - path: {type: PathPrefix, value: /activity}
+      backendRefs:
+        - name: discord-activity
+          namespace: {{ $ns }}
+          port: 8080
+      timeouts:
+        request: "0s"
+        backendRequest: "0s"
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: edge-discord-activity
+  namespace: {{ $ns }}
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: edge
+  to:
+    - group: ""
+      kind: Service
+      name: discord-activity
+{{- end }}
 ---
 # The bridge runs as this account; its only token is the projected
 # kagent-invocation token below.
@@ -258,6 +309,9 @@ spec:
   template:
     metadata:
       labels:
+        {{- if $b.activity.enabled }}
+        app.kubernetes.io/component: discord-activity
+        {{- end }}
         # hindsight-discord admits only this label (its network policies).
         app.kubernetes.io/name: factory-discord-bridge
       annotations:
@@ -282,6 +336,12 @@ spec:
           imagePullPolicy: {{ .Values.connector.image.pullPolicy }}
           command: [/usr/local/bin/discord-bridge]
           env:
+            {{- if $b.activity.enabled }}
+            - name: ACTIVITY_CLIENT_ID
+              value: {{ required "discord.bridge.activity.clientId is required" $b.activity.clientId | quote }}
+            - name: ACTIVITY_CLIENT_SECRET_FILE
+              value: /var/run/secrets/discord/client-secret
+            {{- end }}
             - name: DISCORD_POLICY_FILE
               value: /etc/discord-bridge/policy.json
             - name: DISCORD_TOKEN_FILE
@@ -333,6 +393,10 @@ spec:
           secret:
             secretName: discord-bot
             items:
+              {{- if $b.activity.enabled }}
+              - key: client-secret
+                path: client-secret
+              {{- end }}
               - key: token
                 path: token
         - name: hindsight
@@ -366,6 +430,16 @@ spec:
   endpointSelector:
     matchLabels:
       app.kubernetes.io/name: factory-discord-bridge
+  {{- if $b.activity.enabled }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: edge
+            gateway.envoyproxy.io/owning-gateway-name: edge
+            gateway.envoyproxy.io/owning-gateway-namespace: edge
+      toPorts:
+        - ports: [{port: "8080", protocol: TCP}]
+  {{- end }}
   egress:
     - toFQDNs:
         - matchName: discord.com

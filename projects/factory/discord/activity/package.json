@@ -1,0 +1,19 @@
+{
+  "name": "bosun-test-activity",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@astryxdesign/core": "0.7.11",
+    "@astryxdesign/theme-neutral": "0.7.11",
+    "@discord/embedded-app-sdk": "2.5.0",
+    "@stylexjs/stylex": "0.19.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "vite": "6.4.5"
+  }
+}

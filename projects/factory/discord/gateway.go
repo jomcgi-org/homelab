@@ -49,11 +49,12 @@ var freshCodes = map[websocket.StatusCode]bool{4007: true, 4009: true}
 
 // Gateway holds one connection to Discord's gateway and reconnects.
 type Gateway struct {
-	REST      *REST
-	Token     func() (string, error)
-	OnReady   func(User)
-	OnMessage func(Message)
-	Log       *slog.Logger
+	REST          *REST
+	Token         func() (string, error)
+	OnInteraction func(context.Context, Interaction)
+	OnReady       func(User)
+	OnMessage     func(Message)
+	Log           *slog.Logger
 	// Dial opens the connection; websocket.Dial when nil (tests replace it).
 	Dial func(ctx context.Context, url string) (*websocket.Conn, error)
 }
@@ -253,6 +254,11 @@ func (g *Gateway) dispatch(ctx context.Context, s *session, p payload) {
 		g.Log.InfoContext(ctx, "gateway ready", "bot", r.User.ID)
 		if g.OnReady != nil {
 			g.OnReady(r.User)
+		}
+	case "INTERACTION_CREATE":
+		var i Interaction
+		if g.OnInteraction != nil && json.Unmarshal(p.D, &i) == nil {
+			go g.OnInteraction(ctx, i)
 		}
 	case "RESUMED":
 		g.Log.InfoContext(ctx, "gateway resumed")

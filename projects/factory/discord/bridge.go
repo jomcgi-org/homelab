@@ -58,12 +58,13 @@ const (
 // message that tags the bot in an allowlisted server starts a turn; any
 // other message is neither answered nor retained (contract rule 5).
 type Bridge struct {
-	Config  Config
-	Agent   Agent
-	Memory  Memory
-	Replies Replier
-	Log     *slog.Logger
-	Now     func() time.Time
+	Activity *Activities
+	Config   Config
+	Agent    Agent
+	Memory   Memory
+	Replies  Replier
+	Log      *slog.Logger
+	Now      func() time.Time
 
 	mu      sync.Mutex
 	botID   string
@@ -204,13 +205,19 @@ func (b *Bridge) Turn(ctx context.Context, m Message) {
 		// Answer without memory rather than not at all.
 		l.WarnContext(ctx, "recall failed", "error", err)
 	}
-	answer, err := b.Agent.Turn(ctx, m.ID, Prompt(m, text, memories))
+	prompt := Prompt(m, text, memories)
+	if b.Activity != nil {
+		prompt = pollInstruction + prompt
+	}
+	answer, err := b.Agent.Turn(ctx, m.ID, prompt)
 	if err != nil {
 		l.WarnContext(ctx, "turn failed", "error", err)
 		b.reply(ctx, m, ReplyFailed)
 		return
 	}
-	b.reply(ctx, m, answer)
+	if b.Activity == nil || !b.Activity.publish(ctx, b.Replies, m, answer) {
+		b.reply(ctx, m, answer)
+	}
 	at := m.Timestamp
 	if at.IsZero() {
 		at = b.now()

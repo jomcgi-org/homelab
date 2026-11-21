@@ -108,6 +108,13 @@ func run(log *slog.Logger) error {
 	defer stop()
 
 	mux := http.NewServeMux()
+	var launch func(context.Context, discord.Interaction)
+	if secretFile := os.Getenv("ACTIVITY_CLIENT_SECRET_FILE"); secretFile != "" {
+		app := discord.NewActivities(bridge, rest, os.Getenv("ACTIVITY_CLIENT_ID"), fileValue(secretFile))
+		bridge.Activity = app
+		launch = app.Launch
+		mux.Handle("/activity/", app)
+	}
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	server := &http.Server{Addr: cfg.health, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
@@ -118,11 +125,12 @@ func run(log *slog.Logger) error {
 	defer server.Close()
 
 	gateway := &discord.Gateway{
-		REST:      rest,
-		Token:     botToken,
-		OnReady:   bridge.SetBot,
-		OnMessage: func(m discord.Message) { bridge.Handle(ctx, m) },
-		Log:       log,
+		REST:          rest,
+		Token:         botToken,
+		OnReady:       bridge.SetBot,
+		OnInteraction: launch,
+		OnMessage:     func(m discord.Message) { bridge.Handle(ctx, m) },
+		Log:           log,
 	}
 	log.Info("discord bridge starting", "guilds", len(policy.Guilds), "agent", cfg.agent)
 	err = gateway.Run(ctx)
