@@ -1111,11 +1111,32 @@ func TestRevokedExposureRestored(t *testing.T) {
 	r := &Report{Findings: []Finding{f}, acknowledged: acknowledgedExposures(in, []Finding{f}, []string{f.ID})}
 	st := stateOf(Assess(r, nil), r, nil)
 	in.Decisions = nil
-	next := &Report{}
+	next := &Report{Previous: []Previous{{ID: f.ID, Status: StatusJustified, Note: "An ordinary justification"}}}
 	restoreExposures(next, st)
 	next.acknowledged = acknowledgedExposures(in, next.Findings, []string{f.ID})
 	a := Assess(next, st.Previous())
 	if len(a.Blocking) != 1 || a.Blocking[0].Finding != f {
 		t.Fatal(a)
+	}
+}
+
+func TestPlainExposureEvidence(t *testing.T) {
+	f := Finding{ID: "storage:unverified:exposure", Severity: SeverityMedium, Title: "Migration deletes old data"}
+	for _, tc := range []struct {
+		text     string
+		accepted bool
+	}{
+		{"This deletes the old data.", true},
+		{"This deletes the backup.", false},
+		{"Rejected option:\n\n```text\n\nThis deletes the old data.\n\n```", false},
+		{"<!--\n\nThis deletes the old data.\n\n-->", false},
+		{"> Example\nThis deletes the old data.", false},
+		{"    This deletes the old data.", false},
+	} {
+		in := &IssueContext{Issue: &IssueEvidence{Trusted: true, Description: tc.text}}
+		got := acknowledgedExposures(in, []Finding{f}, []string{f.ID})
+		if (len(got) > 0) != tc.accepted {
+			t.Errorf("%q: accepted %v", tc.text, got)
+		}
 	}
 }

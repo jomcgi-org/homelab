@@ -600,7 +600,7 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 			return note, nil, false
 		}
 		if severity == SeverityMedium && !decisionNote(note) {
-			return note, nil, true
+			return note, nil, !exposureFinding(p)
 		}
 		st := d.decided(note, id, severity)
 		return note, st, st != nil
