@@ -12,5 +12,12 @@
     "base": "20d54bfb21810dc62f8c8c086dcfbdaffd514ffb",
     "head": "1059231786d6576eb36dd875edcd949fd72b1b1e",
     "answer": "Deploy values enable the broker before the pinned published chart can render those settings."
+  },
+  {
+    "pr": 7894,
+    "split": "scored",
+    "base": "57aed973baead6088f3f54a335b61f481df210ae",
+    "head": "6fa858810aa8eb663812447b8d3bfb7940cc79c3",
+    "answer": "A node bootstrap rerun writes the restricted registry mirror list without restarting k3s, leaving the old mirror configuration active."
   }
 ]
