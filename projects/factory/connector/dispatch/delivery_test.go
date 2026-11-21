@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -356,7 +357,17 @@ func (g *fakeGitHub) Compare(_ context.Context, _, _, head string) (*github.Comp
 	return &github.Comparison{AheadBy: b.ahead, HeadSHA: b.head, HeadSubject: b.subject}, nil
 }
 
-func (g *fakeGitHub) PullRequestDetail(_ context.Context, _ string, number int) (*github.PullRequestDetail, error) {
+func (g *fakeGitHub) PullRequestDetail(ctx context.Context, repo string, number int) (*github.PullRequestDetail, error) {
+	return g.PullRequestDetailWithReviews(ctx, repo, number, nil, nil)
+}
+
+func (g *fakeGitHub) PullRequestDetailWithReviews(_ context.Context, _ string, number int, limited []string, before func() error) (*github.PullRequestDetail, error) {
+	if before != nil {
+		if err := before(); err != nil {
+			return nil, err
+		}
+	}
+
 	if g.onRead != nil {
 		g.onRead("detail", fmt.Sprint(number))
 	}
@@ -379,11 +390,20 @@ func (g *fakeGitHub) PullRequestDetail(_ context.Context, _ string, number int) 
 		p.queue, p.pr.State, p.pr.Merged, p.mergeSHA, p.lagSHA = "", "closed", true, p.lagSHA, ""
 		return d, nil
 	}
+	reviews := p.reviews
+	if len(reviews) > 100 {
+		reviews = append([]github.Review(nil), reviews[len(reviews)-100:]...)
+		for _, review := range p.reviews[:len(p.reviews)-100] {
+			if slices.Contains(limited, review.NodeID) && review.State == "CHANGES_REQUESTED" {
+				reviews = append(reviews, review)
+			}
+		}
+	}
 	return &github.PullRequestDetail{
 		HeadMessage: g.branches[p.pr.HeadRef].message,
 		PullRequest: p.pr, MergedAt: p.mergedAt, MergeCommitSHA: p.mergeSHA, MergeQueueState: p.queue,
 		MergeGroupSHA: p.groupSHA, Mergeable: p.mergeable,
-		Reviews: append([]github.Review(nil), p.reviews...), Threads: append([]github.ReviewThread(nil), p.threads...),
+		Reviews: append([]github.Review(nil), reviews...), Threads: append([]github.ReviewThread(nil), p.threads...),
 	}, nil
 }
 
@@ -2133,22 +2153,39 @@ func TestEjectionDoesNotReadWhenItsAttemptCannotBeRecorded(t *testing.T) {
 	}
 }
 
+func TestLimitedConflictAllowsFreshReview(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.cfg.Bindings[0].Review.MaxRebaseRounds = 0
+	v.delivered()
+	v.gh.conflict(1)
+	v.poll()
+	v.gh.review(1, "CHANGES_REQUESTED", "reviewer", "sha-1", "Fix the review finding.")
+	v.poll()
+	if rounds := v.rounds(); len(rounds) != 1 || rounds[0].Trigger != "review" || !strings.Contains(rounds[0].Prompt, "Fix the review finding.") {
+		t.Fatalf("expected a fresh review round, got %+v", rounds)
+	}
+}
+
 func TestReviewRoundsAreBounded(t *testing.T) {
 	v := newDeliveryEnv(t)
+	v.cfg.Bindings[0].Review.MaxReviewRounds = 3
 	v.delivered()
-	for i := 1; i <= 3; i++ {
+	for i := 1; i <= 4; i++ {
 		head := fmt.Sprintf("sha-%d", i)
 		v.gh.review(1, "CHANGES_REQUESTED", "reviewer", head, fmt.Sprintf("Round %d feedback.", i))
+		if i == 4 {
+			v.gh.review(1, "CHANGES_REQUESTED", "reviewer", head, "Surviving feedback.")
+		}
 		v.poll()
-		if i <= 2 {
+		if i <= 3 {
 			v.gh.push("factory/HL-7", fmt.Sprintf("sha-%d", i+1), "fix: feedback")
 			v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
 			v.clk.Advance(5 * time.Second)
 			v.tick(v.e)
 		}
 	}
-	if n := len(v.rounds()); n != 2 {
-		t.Fatalf("rounds = %d, want the bound of 2", n)
+	if n := len(v.rounds()); n != 3 {
+		t.Fatalf("rounds = %d, want the bound of 3", n)
 	}
 	evs := v.events()
 	if last := evs[len(evs)-1]; last.Disposition != store.EventRoundLimit {
@@ -2156,13 +2193,33 @@ func TestReviewRoundsAreBounded(t *testing.T) {
 	}
 	var said bool
 	for _, c := range v.its.Comments() {
-		said = said || strings.Contains(c.body, "bound of 2 review rounds")
+		said = said || strings.Contains(c.body, "bound of 3 review rounds")
 	}
 	if !said {
 		t.Fatal("round bound not reported on the issue")
 	}
-	if w := v.work(101); w.State != store.WorkReview || w.ReviewRounds != 2 {
+	if w := v.work(101); w.State != store.WorkReview || w.ReviewRounds != 3 {
 		t.Fatalf("work item = %+v", w)
+	}
+	v.gh.mu.Lock()
+	reviews := v.gh.byNumber(1).reviews
+	reviews[len(reviews)-2].State = "DISMISSED"
+	v.gh.mu.Unlock()
+	for i := 0; i < 3001; i++ {
+		v.gh.review(1, "COMMENTED", "reader", "sha-4", "")
+	}
+	v.cfg.Bindings[0].Review.MaxReviewRounds = 6
+	v.poll()
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "No change.", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	v.poll()
+	after := v.events()
+	if len(after) != len(evs) || len(v.rounds()) != 4 || v.work(101).ReviewRounds != 4 {
+		t.Fatalf("events = %+v, rounds = %d", after, len(v.rounds()))
+	}
+	if last := after[len(after)-1]; last.NodeID != evs[len(evs)-1].NodeID || last.Disposition != store.EventActed || last.RoundRunID == 0 {
+		t.Fatalf("retried event = %+v", last)
 	}
 }
 

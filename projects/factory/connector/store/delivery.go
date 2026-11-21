@@ -230,14 +230,38 @@ type ReviewEvent struct {
 	RoundRunID  int64
 }
 
-// SeenEvents returns which of the node IDs are already recorded.
-func (s *Store) SeenEvents(ctx context.Context, nodeIDs []string) (map[string]bool, error) {
+// LimitedReviews identifies refused reviews for a live state check in the PR poll.
+func (s *Store) LimitedReviews(ctx context.Context, prID int64, head string) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT github_node_id FROM review_event
+		WHERE pull_request_id = $1 AND commit_sha = $2 AND kind = 'changes_requested'
+		AND disposition = 'round_limit' ORDER BY id`, prID, head)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// invariant: FACT-13
+
+// SeenEvents returns recorded node IDs, excluding retryable events on the current head.
+func (s *Store) SeenEvents(ctx context.Context, nodeIDs []string, head string, retryReview, retryRebase bool) (map[string]bool, error) {
 	seen := map[string]bool{}
 	if len(nodeIDs) == 0 {
 		return seen, nil
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT github_node_id FROM review_event WHERE github_node_id = ANY($1)`,
-		pq.Array(nodeIDs))
+	rows, err := s.DB.QueryContext(ctx, `SELECT github_node_id FROM review_event WHERE github_node_id = ANY($1)
+		AND NOT (commit_sha = $2 AND disposition = 'round_limit'
+			AND CASE WHEN kind = 'conflicting' THEN $4::boolean ELSE $3::boolean END)`,
+		pq.Array(nodeIDs), head, retryReview, retryRebase)
 	if err != nil {
 		return nil, err
 	}
@@ -262,13 +286,14 @@ func (s *Store) ActedOn(ctx context.Context, prID int64, commit, kind, source st
 	return ok, err
 }
 
-// RecordEvent records an event once, by its GitHub node ID. inserted is false
-// for a node already recorded.
-func (s *Store) RecordEvent(ctx context.Context, q Querier, ev ReviewEvent) (inserted bool, err error) {
+// RecordEvent records a new event or resolves a previously round-limited event.
+func (s *Store) RecordEvent(ctx context.Context, q Querier, ev ReviewEvent) (changed bool, err error) {
 	res, err := q.ExecContext(ctx, `
 		INSERT INTO review_event (pull_request_id, github_node_id, commit_sha, author, kind, source, disposition, round_run_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, nullif($8, 0))
-		ON CONFLICT (github_node_id) DO NOTHING`,
+		ON CONFLICT (github_node_id) DO UPDATE SET
+			disposition = excluded.disposition, round_run_id = excluded.round_run_id
+		WHERE review_event.disposition = 'round_limit' AND excluded.disposition <> 'round_limit'`,
 		ev.PullRequestID, ev.NodeID, ev.CommitSHA, ev.Author, ev.Kind, ev.Source, ev.Disposition, ev.RoundRunID)
 	if err != nil {
 		return false, err

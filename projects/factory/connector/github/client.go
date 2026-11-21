@@ -227,25 +227,30 @@ func (c *Client) base() string {
 // do sends one call with the repository's token. A 401 drops the cached
 // token and tries once more with a fresh one.
 func (c *Client) do(ctx context.Context, repo, method, path string, body, out any) error {
-	return c.send(ctx, repo, method, path, body, out, true, nil)
+	return c.send(ctx, repo, method, path, body, out, true, sendPolicy{})
 }
 
 // doUncached is do without the ETag cache, for large reads of immutable
 // resources that would only crowd it.
 func (c *Client) doUncached(ctx context.Context, repo, method, path string, body, out any) error {
-	return c.send(ctx, repo, method, path, body, out, false, nil)
+	return c.send(ctx, repo, method, path, body, out, false, sendPolicy{})
 }
 
-func (c *Client) send(ctx context.Context, repo, method, path string, body, out any, cache bool, before func() error) error {
+type sendPolicy struct {
+	before         func() error
+	retryForbidden bool
+}
+
+func (c *Client) send(ctx context.Context, repo, method, path string, body, out any, cache bool, policy sendPolicy) error {
 	for try := 0; ; try++ {
-		if before != nil {
-			if err := before(); err != nil {
+		if policy.before != nil {
+			if err := policy.before(); err != nil {
 				return err
 			}
 		}
 		err := c.once(ctx, repo, method, path, body, out, cache)
 		var h *HTTPError
-		if try == 0 && errors.As(err, &h) && h.Status == http.StatusUnauthorized {
+		if try == 0 && errors.As(err, &h) && (h.Status == http.StatusUnauthorized || (policy.retryForbidden && h.Status == http.StatusForbidden)) {
 			c.Tokens.Invalidate(repo)
 			continue
 		}
@@ -504,11 +509,15 @@ type gqlError struct {
 }
 
 func (c *Client) graphql(ctx context.Context, repo, query string, vars map[string]any, out any) error {
+	return c.graphqlWithPolicy(ctx, repo, query, vars, out, sendPolicy{})
+}
+
+func (c *Client) graphqlWithPolicy(ctx context.Context, repo, query string, vars map[string]any, out any, policy sendPolicy) error {
 	var resp struct {
 		Data   json.RawMessage `json:"data"`
 		Errors []gqlError      `json:"errors"`
 	}
-	if err := c.do(ctx, repo, http.MethodPost, "/graphql", map[string]any{"query": query, "variables": vars}, &resp); err != nil {
+	if err := c.send(ctx, repo, http.MethodPost, "/graphql", map[string]any{"query": query, "variables": vars}, &resp, false, policy); err != nil {
 		return err
 	}
 	if len(resp.Errors) > 0 {
@@ -521,7 +530,10 @@ func (c *Client) graphql(ctx context.Context, repo, query string, vars map[strin
 	return json.Unmarshal(resp.Data, out)
 }
 
-const pullRequestQuery = `query($owner: String!, $name: String!, $number: Int!) {
+const pullRequestQuery = `query($owner: String!, $name: String!, $number: Int!, $limited: [ID!]!) {
+  limited: nodes(ids: $limited) {
+    ... on PullRequestReview { id state body submittedAt author { login } commit { oid } pullRequest { id } }
+  }
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       id number url state merged mergedAt isDraft title headRefOid headRefName baseRefName baseRefOid mergeable
@@ -554,8 +566,28 @@ type oid struct {
 // PullRequestDetail reads a PR's state, merge queue entry, labels, reviews
 // and review threads with GraphQL.
 func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int) (*PullRequestDetail, error) {
+	return c.PullRequestDetailWithReviews(ctx, repo, number, nil, nil)
+}
+
+func (c *Client) PullRequestDetailWithReviews(ctx context.Context, repo string, number int, limited []string, before func() error) (*PullRequestDetail, error) {
+	if len(limited) > 0 && before == nil {
+		return nil, errors.New("targeted review read requires an attempt callback")
+	}
 	owner, name, _ := strings.Cut(repo, "/")
+	type reviewNode struct {
+		ID          string     `json:"id"`
+		State       string     `json:"state"`
+		Body        string     `json:"body"`
+		SubmittedAt *time.Time `json:"submittedAt"`
+		Author      *login     `json:"author"`
+		Commit      *oid       `json:"commit"`
+		PullRequest *struct{ ID string }
+	}
+	if limited == nil {
+		limited = []string{}
+	}
 	var out struct {
+		Limited    []reviewNode
 		Repository struct {
 			PullRequest *struct {
 				ID              string     `json:"id"`
@@ -591,14 +623,7 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 					} `json:"nodes"`
 				} `json:"labels"`
 				Reviews struct {
-					Nodes []struct {
-						ID          string     `json:"id"`
-						State       string     `json:"state"`
-						Body        string     `json:"body"`
-						SubmittedAt *time.Time `json:"submittedAt"`
-						Author      *login     `json:"author"`
-						Commit      *oid       `json:"commit"`
-					} `json:"nodes"`
+					Nodes []reviewNode `json:"nodes"`
 				} `json:"reviews"`
 				ReviewThreads struct {
 					Nodes []struct {
@@ -621,7 +646,7 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 			} `json:"pullRequest"`
 		} `json:"repository"`
 	}
-	if err := c.graphql(ctx, repo, pullRequestQuery, map[string]any{"owner": owner, "name": name, "number": number}, &out); err != nil {
+	if err := c.graphqlWithPolicy(ctx, repo, pullRequestQuery, map[string]any{"owner": owner, "name": name, "number": number, "limited": limited}, &out, sendPolicy{before: before, retryForbidden: len(limited) > 0}); err != nil {
 		return nil, err
 	}
 	p := out.Repository.PullRequest
@@ -656,6 +681,15 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 	}
 	for _, l := range p.Labels.Nodes {
 		d.Labels = append(d.Labels, l.Name)
+	}
+	seen := make(map[string]bool)
+	for _, r := range p.Reviews.Nodes {
+		seen[r.ID] = true
+	}
+	for _, r := range out.Limited {
+		if r.PullRequest != nil && r.PullRequest.ID == p.ID && r.State == "CHANGES_REQUESTED" && !seen[r.ID] {
+			p.Reviews.Nodes = append(p.Reviews.Nodes, r)
+		}
 	}
 	for _, r := range p.Reviews.Nodes {
 		rv := Review{NodeID: r.ID, State: r.State, Body: r.Body}

@@ -32,6 +32,7 @@ type GitHub interface {
 	UpdatePullRequest(ctx context.Context, repo string, number int, u github.PullRequestUpdate) (*github.PullRequest, error)
 	Compare(ctx context.Context, repo, base, head string) (*github.Comparison, error)
 	PullRequestDetail(ctx context.Context, repo string, number int) (*github.PullRequestDetail, error)
+	PullRequestDetailWithReviews(ctx context.Context, repo string, number int, limited []string, before func() error) (*github.PullRequestDetail, error)
 	CheckRuns(ctx context.Context, repo, sha string) ([]github.CheckRun, error)
 	Statuses(ctx context.Context, repo, sha string) ([]github.Status, error)
 	EnqueuePullRequest(ctx context.Context, repo, nodeID, headSHA string) (string, error)
@@ -606,10 +607,28 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 			}
 		}
 	}
-	if err := e.guard(ctx); err != nil {
-		return err
+	var limited []string
+	if wi.State == store.WorkReview && wi.ReviewRounds < b.Review.MaxReviewRounds {
+		var err error
+		limited, err = e.st.LimitedReviews(ctx, pr.ID, pr.HeadSHA)
+		if err != nil {
+			return err
+		}
 	}
-	d, err := e.gh.PullRequestDetail(ctx, repo, pr.Number)
+	before := func() error {
+		if err := e.guard(ctx); err != nil {
+			return err
+		}
+		if len(limited) > 0 {
+			id := fmt.Sprintf("limited-reviews/%d/%s", pr.ID, pr.HeadSHA)
+			if err := e.st.RecordDeliveryRead(ctx, pr.ID, e.w.Epoch, id, "limited-reviews", pr.HeadSHA); err != nil {
+				return err
+			}
+			return e.guard(ctx)
+		}
+		return nil
+	}
+	d, err := e.gh.PullRequestDetailWithReviews(ctx, repo, pr.Number, limited, before)
 	if err != nil {
 		return err
 	}
@@ -899,11 +918,13 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 	for _, c := range cands {
 		ids = append(ids, c.ev.NodeID)
 	}
-	seen, err := e.st.SeenEvents(ctx, ids)
+	// invariant: FACT-13
+	seen, err := e.st.SeenEvents(ctx, ids, d.HeadSHA, wi.ReviewRounds < p.MaxReviewRounds, wi.RebaseRounds < p.MaxRebaseRounds)
 	if err != nil {
 		return false, err
 	}
-	var record, acting []*candidate
+	selected := make(map[[2]string]bool) // All acting candidates share the current head.
+	var record, acting, sameSource []*candidate
 	var rebase bool
 	for i := range cands {
 		c := &cands[i]
@@ -922,10 +943,15 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 			if err != nil {
 				return false, err
 			}
+			key := [2]string{c.ev.Kind, c.ev.Source}
 			if done {
+				c.ev.Disposition = store.EventDuplicate
+			} else if selected[key] {
+				sameSource = append(sameSource, c)
 				c.ev.Disposition = store.EventDuplicate
 			} else {
 				c.ev.Disposition = store.EventActed
+				selected[key] = true
 				acting = append(acting, c)
 				rebase = rebase || c.ev.Kind == store.EventConflicting
 			}
@@ -944,7 +970,7 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 		limited = wi.SplitRounds >= p.MaxSplitRounds
 	}
 	if limited {
-		for _, c := range acting {
+		for _, c := range append(acting, sameSource...) {
 			c.ev.Disposition = store.EventRoundLimit
 		}
 	}
