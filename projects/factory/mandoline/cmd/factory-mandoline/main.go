@@ -21,7 +21,7 @@ func main() {
 	flags.StringVar(&req.Commit, "commit", "", "full commit SHA of the checkout")
 	command := "audit|surface"
 	if auditOnly != "true" {
-		flags.StringVar(&req.Base, "base", "", "full SHA of the merge base with origin/main")
+		flags.StringVar(&req.Base, "base", "", "full SHA of the merge base with trusted main")
 		command = "diff|callers"
 	}
 	flags.Usage = func() {
