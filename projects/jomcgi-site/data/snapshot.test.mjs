@@ -84,11 +84,13 @@ test("publishes a small summary and stamps HTML with the upstream forecast times
   }
 });
 
-test("sources name the stars and hikes objects on the account's R2 endpoint", () => {
+test("sources name the factory Stars manifest and hub Hikes object", () => {
   assert.match(
     SOURCES.endpoint,
     /^https:\/\/[0-9a-f]{32}\.r2\.cloudflarestorage\.com$/,
   );
+  assert.equal(SOURCES.sections.stars.bucket, "factory-public");
+  assert.equal(SOURCES.sections.stars.manifest, "stars-forecast/latest.json");
   assert.deepEqual(SOURCES.sections.stars.files, {
     sites: "sites.json",
     historyMap: "history-map.json",
@@ -144,7 +146,7 @@ test("writes content-named files and a latest.json index per section", async () 
   const out = await mkdtemp(join(tmpdir(), "snapshot-"));
   const sources = {
     sections: {
-      stars: SOURCES.sections.stars,
+      stars: { bucket: "stars", files: SOURCES.sections.stars.files },
       hikes: SOURCES.sections.hikes,
     },
   };
@@ -200,7 +202,7 @@ test("a failed object read fails the snapshot", async () => {
   const out = await mkdtemp(join(tmpdir(), "snapshot-"));
   await assert.rejects(
     snapshot(SOURCES, get, out),
-    /GET stars\/sites.json: 403/,
+    /GET factory-public\/stars-forecast\/latest.json: 403/,
   );
 });
 
@@ -301,11 +303,7 @@ test("rejects a manifest without generatedAt before reading any object", async (
 
 test("resolves and authenticates all three Stars manifest payloads", async () => {
   const out = await mkdtemp(join(tmpdir(), "stars-manifest-"));
-  const config = {
-    ...SOURCES.sections.stars,
-    bucket: "stars-forecast",
-    manifest: "latest.json",
-  };
+  const config = SOURCES.sections.stars;
   const body = Buffer.from('{"sites":[]}');
   const hash = createHash("sha256").update(body).digest("hex");
   const files = {
@@ -317,18 +315,25 @@ test("resolves and authenticates all three Stars manifest payloads", async () =>
     assert.equal(bucket, config.bucket);
     if (key === config.manifest)
       return { body: Buffer.from(JSON.stringify({ files })) };
-    assert.ok(Object.values(files).includes(key));
+    assert.ok(
+      Object.values(files).some((file) => key === `stars-forecast/${file}`),
+    );
     return { body };
   };
   const sources = { sections: { stars: config } };
   await snapshot(sources, get, out);
   const index = JSON.parse(await readFile(join(out, "stars/latest.json")));
-  assert.equal(index.sources.historyMap.key, files.historyMap);
+  assert.equal(
+    index.sources.historyMap.key,
+    `stars-forecast/${files.historyMap}`,
+  );
   await assert.rejects(
     snapshot(
       sources,
       async (b, k) =>
-        k === files.map ? { body: Buffer.from("{}") } : get(b, k),
+        k === `stars-forecast/${files.map}`
+          ? { body: Buffer.from("{}") }
+          : get(b, k),
       out,
     ),
     /Digest mismatch/,

@@ -39,19 +39,28 @@ After the first refresh:
 
 ## Reader switch and hub retirement
 
-HOME-521 switches the readers:
+[HOME-522](https://factory-plan.jomcgi.dev/factory/issue/HOME-522) switches the
+site snapshot to `factory-public/stars-forecast/latest.json`. The site resolves
+each manifest key under `stars-forecast/` and checks its SHA-256. The site R2
+credential needs read access to both `factory-public` and the legacy `stars`
+bucket while Hikes still uses the latter.
 
-1. Grant the site snapshot credential read access to R2 bucket `factory-public` while retaining Hikes access. The site snapshot resolves manifest keys from the bucket root: change it to resolve them under the manifest's prefix.
-2. Set the Stars section in `projects/jomcgi-site/data/sources.json` to bucket `factory-public` and add `"manifest": "stars-forecast/latest.json"`. Keep the logical file names. Check the published page. Roll back by restoring the previous Stars section.
+On 2026-11-21, the hub and factory published sites, map and history datasets
+with 14,234 sites each. All three factory payloads matched the SHA-256 in
+their object keys. The forecast samples used different fetch times
+(15:05 UTC on the hub, 16:06 UTC on the factory). The replay below compares the
+same inputs.
 
-HOME-522 retires the hub jobs. The Scotland connector still reads the old bucket. Account for its sites, history and optional uncapped feed, the hub public Stars endpoints and the shared grid used by aurora before retiring their input, refresh or prune jobs. Keep the separate Hikes writer and its walks object.
+Keep the hub jobs until the Scotland connector, legacy public endpoints and
+aurora grid have replacement sources. HOME-522 tracks this retirement after
+the site reader switch. Hikes uses a separate writer and [HOME-521](https://factory-plan.jomcgi.dev/factory/issue/HOME-521).
 
 ## Rollback
 
 1. To stop the refresh, set `refreshEnabled: false`. Argo CD removes the refresh CronJob and the `inputs` hook.
 2. To stop the mirror, set the `stars-forecast` source in `projects/factory-public/chart/values.yaml` to `suspend: true`. R2 keeps what it has.
 
-Readers use the hub until HOME-521, so neither step changes a public page.
+Before stopping the factory writer or mirror, restore the site's legacy Stars source and verify the site snapshot reads it.
 
 ## Same-input scoring measurement
 

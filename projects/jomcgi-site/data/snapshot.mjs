@@ -8,7 +8,7 @@
 import { createHash, createHmac } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { validate } from "../../factory-storyboard/schema/validate.ts";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 
 import { snapshotTrips, renderTrips } from "./trips.mjs";
 import { makeSummary, stampSummary } from "./stars-summary.mjs";
@@ -98,7 +98,7 @@ export async function snapshot(
             !new RegExp(`^stars/${stem}-[0-9a-f]{64}\\.json$`).test(key)
           )
             throw new Error(`Invalid Stars manifest key for ${name}`);
-          return [name, key];
+          return [name, posix.join(posix.dirname(config.manifest), key)];
         }),
       );
     }
