@@ -16,6 +16,7 @@ oci_image(
     base = "@codex_harness_linux_amd64",
     # Add the HOME-529 runner layer after mandoline.
     tars = ["//bazel/tools/mandoline:layer"],
+    visibility = ["//projects/factory/reviewer/harness:__pkg__"],
 )
 
 expand_template(
@@ -25,6 +26,7 @@ expand_template(
         "{STABLE_IMAGE_TAG}": "{{STABLE_IMAGE_TAG}}",
     },
     template = ["{STABLE_IMAGE_TAG}"],
+    visibility = ["//projects/factory/reviewer/harness:__pkg__"],
 )
 
 # The package owner verified this destination was absent and approved its

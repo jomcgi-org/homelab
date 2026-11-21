@@ -67,3 +67,9 @@ invariants:
   statement: Each actor has its own relay concurrency and spend limit.
   mechanism: []
   state: designed
+- id: FACT-13
+  statement: A reviewer harness image override affects only review Harness workloads.
+  mechanism:
+  - projects/factory/chart/templates/reviewer-repositories.yaml
+  test: //projects/factory/chart:reviewer_test
+  state: live
