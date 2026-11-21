@@ -1,3 +1,4 @@
+# invariant: ROOT-4
 """Build a clean Pages snapshot from open PRs with an approved fixture selector."""
 
 import base64
