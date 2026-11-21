@@ -61,7 +61,13 @@
     "pushGuard": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "image", "indexSHA256", "storageClass", "storageSize"],
+      "required": [
+        "enabled",
+        "image",
+        "indexSHA256",
+        "storageClass",
+        "storageSize"
+      ],
       "properties": {
         "enabled": { "type": "boolean" },
         "image": { "$ref": "#/properties/broker/properties/image" },
