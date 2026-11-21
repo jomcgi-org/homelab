@@ -10,8 +10,24 @@
 {{- if or (not $binding) (not .Values.networkPolicy.cilium) (ne .Values.substrate.namespace "ate-system") }}
   {{- fail "the push receiver requires the homelab binding and the Factory Substrate network policy" }}
 {{- end }}
+{{- if not .Values.imagePullSecret.enabled }}
+  {{- fail "the push receiver requires the private image pull secret" }}
+{{- end }}
 {{- $image := printf "%s@%s" $cfg.image.repository (required "pushGuard.image.digest must pin the published image" $cfg.image.digest) }}
 {{- $index := required "pushGuard.indexSHA256 must pin the private index" $cfg.indexSHA256 }}
+apiVersion: onepassword.com/v1
+kind: OnePasswordItem
+type: kubernetes.io/dockerconfigjson
+metadata:
+  name: {{ .Values.imagePullSecret.name }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "factory.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  itemPath: {{ .Values.imagePullSecret.itemPath | quote }}
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -64,6 +80,7 @@ spec:
     spec:
       serviceAccountName: factory-push-guard
       automountServiceAccountToken: false
+      {{- include "factory.imagePullSecrets" . | nindent 6 }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
