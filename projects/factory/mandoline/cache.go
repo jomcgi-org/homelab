@@ -16,7 +16,11 @@ import (
 type cache struct{ directory string }
 
 func openCache(workspace string) (cache, error) {
-	parent, err := filepath.EvalSymlinks(os.TempDir())
+	parent, err := filepath.Abs(os.TempDir())
+	if err != nil {
+		return cache{}, err
+	}
+	parent, err = filepath.EvalSymlinks(parent)
 	if err != nil {
 		return cache{}, err
 	}
