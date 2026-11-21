@@ -44,14 +44,23 @@ type fakeGitHub struct {
 	detailErr  error // fails every PR detail read while set
 	// loseCreate opens the next PR but loses the response; findErr fails
 	// the next lookups.
-	loseCreate bool
-	findErr    []error
-	checkErr   []error
-	statusErr  []error
-	dequeues   []string
-	baseFiles  map[string]string
-	baseReads  []string
-	baseErr    error
+	delayed          *github.NewPullRequest
+	delayCreate      bool
+	rejectCreate     bool
+	stopComment      string
+	rejectComment    bool
+	delayComment     bool
+	delayedComment   string
+	stopCommentCount int
+	failClose        bool
+	loseCreate       bool
+	findErr          []error
+	checkErr         []error
+	statusErr        []error
+	dequeues         []string
+	baseFiles        map[string]string
+	baseReads        []string
+	baseErr          error
 	// onEnqueue runs as an enqueue is accepted.
 	onEnqueue func()
 	onChecks  func()
@@ -311,11 +320,20 @@ func (g *fakeGitHub) CreatePullRequest(_ context.Context, _ string, n github.New
 	if b == nil || b.ahead == 0 {
 		return nil, &github.HTTPError{Status: 422, Body: "No commits between main and " + n.Head}
 	}
+	if g.rejectCreate {
+		g.rejectCreate = false
+		return nil, &github.HTTPError{Status: 422}
+	}
+	if g.delayCreate {
+		g.delayCreate = false
+		g.delayed = &n
+		return nil, context.DeadlineExceeded
+	}
 	g.creates++
 	num := len(g.prs) + 1
 	p := &fakePR{body: n.Body, pr: github.PullRequest{
 		Number: num, NodeID: fmt.Sprintf("PR_%d", num), URL: fmt.Sprintf("https://github.com/example-org/homelab/pull/%d", num),
-		State: "open", HeadSHA: b.head, HeadRef: n.Head, BaseRef: n.Base, Title: n.Title,
+		Author: "jomcgi-factory[bot]", Body: n.Body, State: "open", HeadSHA: b.head, HeadRef: n.Head, BaseRef: n.Base, Title: n.Title,
 	}}
 	g.prs = append(g.prs, p)
 	if g.loseCreate {
@@ -324,6 +342,42 @@ func (g *fakeGitHub) CreatePullRequest(_ context.Context, _ string, n github.New
 	}
 	c := p.pr
 	return &c, nil
+}
+
+func (g *fakeGitHub) PullRequestReviews(context.Context, string, int) ([]github.PullRequestReview, error) {
+	if g.delayedComment == "" {
+		return nil, nil
+	}
+	state := "PENDING"
+	if g.stopComment != "" {
+		state = "COMMENTED"
+	}
+	return []github.PullRequestReview{{ID: 42, Author: "jomcgi-factory[bot]", State: state, Body: g.delayedComment}}, nil
+}
+
+func (g *fakeGitHub) DraftStopReview(_ context.Context, _ string, _ int, body string) (int64, error) {
+	if g.delayedComment != "" {
+		return 0, &github.HTTPError{Status: 422}
+	}
+	g.delayedComment = body
+	return 42, nil
+}
+
+func (g *fakeGitHub) PublishStopReview(_ context.Context, _ string, _ int, id int64, body string) error {
+	if id != 42 || g.stopComment != "" {
+		return &github.HTTPError{Status: 422}
+	}
+	if g.delayComment {
+		g.delayComment = false
+		return context.DeadlineExceeded
+	}
+	if g.rejectComment {
+		g.rejectComment = false
+		return &github.HTTPError{Status: 429}
+	}
+	g.stopCommentCount++
+	g.stopComment = body
+	return nil
 }
 
 func (g *fakeGitHub) UpdatePullRequest(_ context.Context, _ string, number int, u github.PullRequestUpdate) (*github.PullRequest, error) {
@@ -338,6 +392,10 @@ func (g *fakeGitHub) UpdatePullRequest(_ context.Context, _ string, number int, 
 		p.body = *u.Body
 	}
 	if u.State != nil && !p.pr.Merged {
+		if g.failClose {
+			g.failClose = false
+			return nil, context.DeadlineExceeded
+		}
 		p.pr.State = *u.State
 	}
 	g.sync(p)
@@ -599,6 +657,82 @@ func TestTurnWithoutCommitsOpensNoPullRequest(t *testing.T) {
 	}
 	if cs := v.its.Comments(); len(cs) != 1 || !strings.Contains(cs[0].body, "without commits") {
 		t.Fatalf("comments = %+v", cs)
+	}
+}
+
+func TestStoppedCreateAppearsAfterTimeout(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.its.add(1, "coder", 101, "HL-7", "Fix it.")
+	v.tick(v.e)
+	v.gh.push("factory/HL-7", "sha-1", "fix: one")
+	v.gh.delayCreate = true
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	if v.gh.delayed == nil {
+		t.Fatal("expected a timed-out create")
+	}
+	if _, err := v.st.StopIssue(v.ctx, "HL-7", "human takeover", "operator"); err != nil {
+		t.Fatal(err)
+	}
+	checkPending := func(want bool) {
+		t.Helper()
+		var pending bool
+		if err := v.st.DB.QueryRowContext(v.ctx, `SELECT pr_create_check_at IS NOT NULL FROM work_item WHERE issue_id = 101`).Scan(&pending); err != nil || pending != want {
+			t.Fatalf("pending = %t, want %t: %v", pending, want, err)
+		}
+	}
+	v.clk.Advance(time.Minute)
+	v.tick(v.e)
+	checkPending(true)
+	v.clk.Advance(time.Hour)
+	v.tick(v.e)
+	checkPending(true)
+	if _, err := v.gh.CreatePullRequest(v.ctx, "", *v.gh.delayed); err != nil {
+		t.Fatal(err)
+	}
+	v.clk.Advance(time.Hour)
+	v.gh.byNumber(1).pr.Author = "person"
+	v.tick(v.e)
+	if v.gh.byNumber(1).pr.State != "open" || v.gh.stopCommentCount != 0 {
+		t.Fatal("acted on a human-authored PR with the factory body")
+	}
+	v.gh.byNumber(1).pr.Author = "jomcgi-factory[bot]"
+	v.clk.Advance(time.Hour)
+	v.gh.delayComment = true
+	v.tick(v.e)
+	v.gh.rejectComment = true
+	v.clk.Advance(time.Hour)
+	v.tick(v.e)
+	if v.gh.stopCommentCount != 0 {
+		t.Fatal("rejected or lost submit published a comment")
+	}
+	v.clk.Advance(time.Hour)
+	v.gh.failClose = true
+	v.tick(v.e)
+	v.clk.Advance(time.Hour)
+	v.tick(v.e)
+	if v.gh.stopCommentCount != 1 {
+		t.Fatalf("posted %d stop comments", v.gh.stopCommentCount)
+	}
+	if v.gh.byNumber(1).pr.State != "closed" || !strings.Contains(v.gh.stopComment, "human takeover") {
+		t.Fatalf("late PR state %s, comment %q", v.gh.byNumber(1).pr.State, v.gh.stopComment)
+	}
+	checkPending(false)
+}
+
+func TestRejectedCreateClearsPendingHandoff(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.its.add(1, "coder", 101, "HL-7", "Fix it.")
+	v.tick(v.e)
+	v.gh.push("factory/HL-7", "sha-1", "fix: one")
+	v.gh.rejectCreate = true
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	var pending bool
+	if err := v.st.DB.QueryRowContext(v.ctx, `SELECT pr_create_check_at IS NOT NULL FROM work_item WHERE issue_id = 101`).Scan(&pending); err != nil || pending || v.gh.rejectCreate {
+		t.Fatalf("rejected create pending=%t, rejection unused=%t: %v", pending, v.gh.rejectCreate, err)
 	}
 }
 

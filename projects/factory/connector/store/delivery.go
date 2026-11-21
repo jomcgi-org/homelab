@@ -37,6 +37,7 @@ func (s *Store) DeliveryWork(ctx context.Context, due time.Time) ([]*WorkItem, e
 				SELECT 1 FROM pull_request p WHERE p.work_item_id = w.id
 				AND (p.polled_at IS NULL OR p.polled_at <= $1))))
 			OR (state = 'done' AND turn_attempt_id IS DISTINCT FROM synced_attempt_id)
+			OR (state = 'stopped' AND pr_create_check_at <= $1)
 			OR (state = 'stopped' AND EXISTS (
 				SELECT 1 FROM pull_request p WHERE p.work_item_id = w.id AND p.state = 'open'
 				AND (p.polled_at IS NULL OR p.polled_at <= $1)))

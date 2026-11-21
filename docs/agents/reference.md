@@ -242,25 +242,27 @@ kubectl --kubeconfig="${FACTORY_OPERATOR_KUBECONFIG:?Set the operator kubeconfig
        AND r.state <> 'closed') AS open_runs,
     (SELECT count(*) FROM cancellation c JOIN run r ON r.id = c.run_id
        WHERE r.work_item_id = w.id AND c.state = 'pending') AS pending,
+    (w.pr_create_check_at IS NOT NULL) AS pending_pr_create,
     (SELECT p.number FROM pull_request p WHERE p.work_item_id = w.id) AS pr
   FROM work_item w WHERE w.issue_key = 'HOME-N'"
 ```
 
 The stop has settled when the state is `stopped`, `open_runs` and `pending`
-are 0 (a cancellation is confirmed only after kagent confirms the task
+are 0, `pending_pr_create` is false (a cancellation is confirmed only after kagent confirms the task
 stopped), and GitHub shows the PR closed or merged
 (`gh pr view <pr> --json state`). The connector's own PR fields are its last
 poll and can be stale. When the query shows no PR, look on GitHub for one
 from the issue's branch, which the connector may have opened after its last
 write: `gh pr list --head factory/HOME-N --state all`. Close any open one.
-A PR sync that began before the stop can still create a PR, even after the
-connector timed out. The sync checks the stop only at its start, then makes
-up to three GitHub calls, each with a 30-second client timeout
-(`projects/factory/connector/github/client.go`). GitHub ends any request it
-has not finished within 10 seconds
-([Timeouts](https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api#timeouts)).
-So wait five minutes after the stop settles, run the search again and close
-any open PR it finds. Only then is the handoff settled. If
+If GitHub is still processing a factory PR create when delivery stops, the
+connector keeps the stop pending across empty lookups. When the PR appears,
+the connector comments with the stop reason and closes it. A definitive
+create rejection also settles the request. If GitHub never reports an outcome,
+leave the old issue stopped and its branch reserved. To continue the work,
+use a new HOME issue and a different branch. The connector continues watching
+the old branch and closes a late factory PR there. The connector publishes the stop reason as a
+review comment. If GitHub loses the response, the connector resumes with
+the same draft review. If
 `factory-db-1` is not the primary, take the name from
 `KUBECONFIG=~/.kube/factory-sessions.yaml kubectl -n factory-db get cluster
 factory-db`.
