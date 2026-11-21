@@ -1054,7 +1054,7 @@ func (e *Engine) reviewEvents(ctx context.Context, wi *store.WorkItem, b *Bindin
 				c.ev.RoundRunID = round.ID
 			}
 			for _, g := range goals {
-				if err := e.enqueueGoalReasons(ctx, tx, wi, pr, round, g); err != nil {
+				if err := e.enqueueGoalReasons(ctx, tx, wi, pr, round.ID, g); err != nil {
 					return err
 				}
 			}

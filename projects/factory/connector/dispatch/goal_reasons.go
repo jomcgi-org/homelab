@@ -160,6 +160,13 @@ func goalReplyKey(wi *store.WorkItem, pr *store.PullRequest, head string) string
 	return fmt.Sprintf("comment/goal-reply/%d/%d/%s/", wi.ID, pr.Number, head)
 }
 
+func goalReasonsKey(wi *store.WorkItem, pr *store.PullRequest, head string, revision int64) string {
+	if revision > 0 {
+		return fmt.Sprintf("comment/goal-reply-result/%d/%d/%s/%d", wi.ID, pr.Number, head, revision)
+	}
+	return fmt.Sprintf("comment/goal-reasons/%d/%s", wi.ID, head)
+}
+
 // ticketFeedback records the assessment even when the PR remains blocked.
 // It also distinguishes an earlier verdict on this commit from a verdict
 // based on the latest recorded reply.
@@ -188,7 +195,7 @@ func (e *Engine) ticketFeedback(ctx context.Context, wi *store.WorkItem, b *Bind
 			c.Status != "completed" || !strings.Contains(c.Summary, itsaplan.GoalReplyReviewed(revision)) {
 			continue
 		}
-		resultKey := "comment/goal-reply-result/" + strings.TrimPrefix(key, "comment/goal-reply/")
+		resultKey := goalReasonsKey(wi, pr, pr.HeadSHA, revision)
 		var queued bool
 		if err := e.st.DB.QueryRowContext(ctx, `SELECT EXISTS (SELECT FROM outbox WHERE dedupe_key = $1)`, resultKey).Scan(&queued); err != nil || queued {
 			return false, false, err
@@ -202,8 +209,7 @@ func (e *Engine) ticketFeedback(ctx context.Context, wi *store.WorkItem, b *Bind
 			// Check it again before the PR leaves this delivery path.
 			break
 		}
-		return false, false, e.st.Enqueue(ctx, e.st.DB, store.OutboxComment, resultKey, 0, "",
-			commentPayload{IssueID: wi.IssueID, Once: true, Body: goalReasonsComment(wi, pr, g)})
+		return false, false, e.enqueueGoalReasons(ctx, e.st.DB, wi, pr, 0, g)
 	}
 	late = delivered.Valid && !e.cfg.Now().Before(delivered.Time.Add(10*time.Minute))
 	if late {
@@ -215,7 +221,7 @@ func (e *Engine) ticketFeedback(ctx context.Context, wi *store.WorkItem, b *Bind
 }
 
 // goalReasonsComment is the reasons as an issue comment.
-func goalReasonsComment(wi *store.WorkItem, pr *store.PullRequest, g *GoalReasons) string {
+func goalReasonsComment(pr *store.PullRequest, g *GoalReasons) string {
 	digest := g.Digest
 	if !digestText.MatchString(digest) {
 		digest = "unknown"
@@ -269,10 +275,14 @@ func (e *Engine) readGoalReasons(ctx context.Context, b *Binding, wi *store.Work
 	return g, false, nil
 }
 
-// enqueueGoalReasons posts a head's reasons on the issue once.
-func (e *Engine) enqueueGoalReasons(ctx context.Context, tx *sql.Tx, wi *store.WorkItem, pr *store.PullRequest, round *store.Run, g *GoalReasons) error {
-	return e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/goal-reasons/%d/%s", wi.ID, g.Head), round.ID, "",
-		commentPayload{IssueID: wi.IssueID, Once: true, Body: goalReasonsComment(wi, pr, g)})
+// enqueueGoalReasons posts one assessment per ticket reply, or per head for
+// reviews without a reply. A reply assessment survives cancellation of a round.
+func (e *Engine) enqueueGoalReasons(ctx context.Context, q store.Querier, wi *store.WorkItem, pr *store.PullRequest, runID int64, g *GoalReasons) error {
+	if g.ReplyRevision > 0 {
+		runID = 0
+	}
+	return e.st.Enqueue(ctx, q, store.OutboxComment, goalReasonsKey(wi, pr, g.Head, g.ReplyRevision), runID, "",
+		commentPayload{IssueID: wi.IssueID, Once: true, Body: goalReasonsComment(pr, g)})
 }
 
 // ownedFinding is the reviewer's fixed title end for a criterion that a
@@ -297,9 +307,7 @@ func (e *Engine) ownershipFeedback(ctx context.Context, wi *store.WorkItem, b *B
 		if err != nil || g == nil {
 			return owned && failed, err
 		}
-		key := fmt.Sprintf("comment/goal-reasons/%d/%s", wi.ID, g.Head)
-		return false, e.st.Enqueue(ctx, e.st.DB, store.OutboxComment, key, 0, "",
-			commentPayload{IssueID: wi.IssueID, Once: true, Body: goalReasonsComment(wi, pr, g)})
+		return false, e.enqueueGoalReasons(ctx, e.st.DB, wi, pr, 0, g)
 	}
 	return false, nil
 }
