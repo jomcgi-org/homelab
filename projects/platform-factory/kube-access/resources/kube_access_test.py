@@ -1,6 +1,7 @@
 """Check factory kubectl and explorer access."""
 
 import json
+import os
 import runpy
 import subprocess
 from pathlib import Path
@@ -87,6 +88,60 @@ FORBIDDEN = {
 
 def by_kind(kind):
     return [d for d in DOCS if d["kind"] == kind]
+
+
+@pytest.mark.parametrize("undeclared_allowed", [False, True])
+def test_session_verifier_checks_undeclared_group(tmp_path, undeclared_allowed):
+    kubectl = tmp_path / "kubectl"
+    kubectl.write_text(
+        """#!/bin/bash
+case "$1" in
+    get)
+        [[ "$2 $3" == "clusterrole factory-sessions" ]] || exit 2
+        printf '%s\\n' apps
+        ;;
+    api-resources)
+        printf '%s\\n' pods secrets deployments.apps policyreports.wgpolicyk8s.io
+        ;;
+    auth)
+        [[ "$2" == "can-i" ]] || exit 2
+        case " $* " in
+            *" policyreports.wgpolicyk8s.io "*)
+                if [[ "$ALLOW_POLICY_REPORTS" == 1 ]]; then
+                    echo yes
+                    exit 0
+                fi
+                ;;
+            *" --quiet "*) exit 0 ;;
+        esac
+        echo no
+        exit 1
+        ;;
+    *) exit 2 ;;
+esac
+"""
+    )
+    kubectl.chmod(0o700)
+    result = subprocess.run(
+        ["bash", str(HERE.parent / "check-session-access.sh")],
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+            "ALLOW_POLICY_REPORTS": str(int(undeclared_allowed)),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    if undeclared_allowed:
+        assert result.returncode != 0
+        assert (
+            "Unexpected cluster-wide get on policyreports.wgpolicyk8s.io" in result.stderr
+        )
+    else:
+        assert result.returncode == 0, result.stderr
 
 
 def test_only_admins_hold_cluster_admin():
