@@ -75,8 +75,10 @@ func (e *Engine) prepareGoalDispatch(ctx context.Context, b *Binding, in *inputs
 	return ctx.Err()
 }
 
-var errGoalDispatchUncertain = errors.New("goal dispatch acceptance is uncertain")
-var errGoalTaskNotVisible = errors.New("goal task is not visible")
+var (
+	errGoalDispatchUncertain = errors.New("goal dispatch acceptance is uncertain")
+	errGoalTaskNotVisible    = errors.New("goal task is not visible")
+)
 
 // An issued dispatch must never recover through Send: it could start fresh
 // under changed settings. Its isolated session contains only this goal's turn.
