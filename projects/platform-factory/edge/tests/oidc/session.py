@@ -110,6 +110,12 @@ while True:
     if status == 403:
         print("t3.jomcgi.dev admin without route policy 403")
         break
+    if status == 302:
+        # The Gateway OAuth filter can invalidate the route filter's cookie.
+        # Finish a fresh admin login to distinguish a redirect from denial.
+        session("t3.jomcgi.dev", "operator", expected=403)
+        print("t3.jomcgi.dev admin without route policy 403 after reauthentication")
+        break
     if time.monotonic() >= deadline:
         raise AssertionError(("T3 without route policy should deny the admin", status))
     time.sleep(1)
