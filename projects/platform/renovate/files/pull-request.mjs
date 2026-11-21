@@ -45,7 +45,32 @@ if (
   console.log(`Preserving held or owned PR #${pull.number}`);
   process.exit(3);
 }
-if (process.argv[2] === "preflight") process.exit(0);
+async function mergeState(pull) {
+  const observed = await request("graphql", {
+    query:
+      "query($id: ID!) { node(id: $id) { ... on PullRequest { autoMergeRequest { enabledAt } mergeQueueEntry { id } } } }",
+    variables: { id: pull.node_id },
+  });
+  const state = observed.data?.node;
+  if (
+    !state ||
+    !("autoMergeRequest" in state) ||
+    !("mergeQueueEntry" in state)
+  ) {
+    throw new Error("Current merge state was not confirmed");
+  }
+  return state;
+}
+if (process.argv[2] === "preflight") {
+  if (pull) {
+    const state = await mergeState(pull);
+    if (pull.auto_merge || state.autoMergeRequest || state.mergeQueueEntry) {
+      console.log(`Preserving armed or queued PR #${pull.number}`);
+      process.exit(3);
+    }
+  }
+  process.exit(0);
+}
 if (process.argv[2] !== "publish") throw new Error("Unknown operation");
 pull ||= await request(`repos/${repo}/pulls`, {
   title: `chore(deps): refresh ${mode} locks`,
@@ -62,19 +87,7 @@ await request(`repos/${repo}/issues/${pull.number}/labels`, {
 if (process.env.MAINTENANCE_AUTOMERGE_ENABLED === "true" && !pull.auto_merge) {
   // Queued PRs have autoMergeRequest:null. Reconcile an existing queue entry
   // before requesting a mutation, and accept immediate queueing as success.
-  const observed = await request("graphql", {
-    query:
-      "query($id: ID!) { node(id: $id) { ... on PullRequest { autoMergeRequest { enabledAt } mergeQueueEntry { id } } } }",
-    variables: { id: pull.node_id },
-  });
-  const state = observed.data?.node;
-  if (
-    !state ||
-    !("autoMergeRequest" in state) ||
-    !("mergeQueueEntry" in state)
-  ) {
-    throw new Error("Current merge state was not confirmed");
-  }
+  const state = await mergeState(pull);
   if (!state.autoMergeRequest && !state.mergeQueueEntry) {
     const result = await request("graphql", {
       query:

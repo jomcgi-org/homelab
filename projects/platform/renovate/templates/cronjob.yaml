@@ -1,28 +1,36 @@
+{{- /* invariant: PLAT-14 */ -}}
 {{- if eq .Values.workloadKind "CronJob" }}
+{{- $jobs := dict "renovate" .Values }}
+{{- if (.Values.githubApp | default dict).enabled }}
+{{- $_ := set $jobs "renovate-apko-lock-maintenance" .Values.apkoLockMaintenance }}
+{{- end }}
+{{- range $name, $job := $jobs }}
+{{- with $ }}
 {{- $githubApp := .Values.githubApp | default dict }}
-{{- if and $githubApp.enabled (or (le (int .Values.activeDeadlineSeconds) 0) (ge (int .Values.activeDeadlineSeconds) 3600)) }}
+{{- if and $githubApp.enabled (or (le (int $job.activeDeadlineSeconds) 0) (ge (int $job.activeDeadlineSeconds) 3600)) }}
 {{- fail "GitHub App Jobs require activeDeadlineSeconds between 1 and 3599" }}
 {{- end }}
+---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: renovate
+  name: {{ $name }}
   namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: renovate
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 spec:
-  schedule: {{ .Values.schedule | quote }}
-  timeZone: {{ .Values.timezone | quote }}
+  schedule: {{ $job.schedule | quote }}
+  timeZone: {{ $job.timezone | quote }}
   concurrencyPolicy: Forbid
-  suspend: {{ .Values.suspend }}
-  startingDeadlineSeconds: {{ .Values.startingDeadlineSeconds }}
+  suspend: {{ $job.suspend }}
+  startingDeadlineSeconds: {{ $job.startingDeadlineSeconds }}
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 5
   jobTemplate:
     spec:
-      activeDeadlineSeconds: {{ .Values.activeDeadlineSeconds }}
+      activeDeadlineSeconds: {{ $job.activeDeadlineSeconds }}
       backoffLimit: 2
       # Keep failed Jobs and their logs for a day, bounded by the history limit.
       ttlSecondsAfterFinished: 86400
@@ -78,7 +86,34 @@ spec:
           {{- end }}
           containers:
             - name: renovate
+              {{- if eq $name "renovate" }}
               {{- include "renovate.container" . | nindent 14 }}
+              {{- else }}
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              args: ["/bin/bash", "/opt/renovate-apko/maintain.sh"]
+              env:
+                - name: HOME
+                  value: /tmp/home
+                - name: XDG_CACHE_HOME
+                  value: /tmp/cache
+              resources:
+                {{- toYaml $job.resources | nindent 16 }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: [ALL]
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: github-token
+                  mountPath: /var/run/renovate-token
+                  readOnly: true
+                - name: script
+                  mountPath: /opt/renovate-apko
+                  readOnly: true
+                - name: workspace
+                  mountPath: /tmp
+              {{- end }}
           volumes:
             {{- if $githubApp.enabled }}
             - name: github-app
@@ -97,7 +132,14 @@ spec:
                 medium: Memory
                 sizeLimit: 1Mi
             {{- end }}
+            {{- if ne $name "renovate" }}
+            - name: script
+              configMap:
+                name: renovate-apko-lock-maintenance
+            {{- end }}
             - name: workspace
               emptyDir:
-                sizeLimit: {{ .Values.workspace.sizeLimit }}
+                sizeLimit: {{ $job.workspaceSizeLimit | default .Values.workspace.sizeLimit }}
+{{- end }}
+{{- end }}
 {{- end }}

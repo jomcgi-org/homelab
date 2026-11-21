@@ -9,7 +9,7 @@
   "semanticCommitScope": "deps",
   "dependencyDashboard": true,
   "automerge": false,
-  "platformAutomerge": true,
+  "platformAutomerge": false,
   "dependencyDashboardTitle": "Dependency updates and lock maintenance",
   "labels": ["dependencies"],
   "timezone": "America/Vancouver",
@@ -202,20 +202,6 @@
         "https://github.com/jomcgi-org/homelab.git"
       ],
       "enabled": false
-    },
-    {
-      "description": "Request native auto-merge for non-major updates through required pr-checks and factory review.",
-      "matchUpdateTypes": [
-        "minor",
-        "patch",
-        "pin",
-        "digest",
-        "pinDigest",
-        "lockFileMaintenance"
-      ],
-      "automerge": true,
-      "platformAutomerge": true,
-      "automergeType": "pr"
     },
     {
       "description": "Require review for platform and cluster updates.",

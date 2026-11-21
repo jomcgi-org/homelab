@@ -1,4 +1,5 @@
-{{- if eq .Values.workloadKind "CronWorkflow" }}
+{{- /* invariant: PLAT-14 */ -}}
+{{- if or (eq .Values.workloadKind "CronWorkflow") (.Values.githubApp | default dict).enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -32,11 +33,23 @@ data:
     export GIT_ASKPASS="$askpass"
     export GIT_TERMINAL_PROMPT=0
 
+    {{- if (.Values.githubApp | default dict).enabled }}
+    RENOVATE_TOKEN="$(cat /var/run/renovate-token/token)"
+    export RENOVATE_TOKEN
+    mkdir -p "$HOME"
+    {{- end }}
     git clone --depth=1 --branch main "$repo" "$workspace"
     cd "$workspace"
+    {{- if (.Values.githubApp | default dict).enabled }}
+    author="$(cat /var/run/renovate-token/git-author)"
+    git config user.name "${author% <*}"
+    email="${author##*<}"
+    git config user.email "${email%>}"
+    {{- else }}
     git config user.name "renovate[bot]"
     git config user.email "renovate[bot]@users.noreply.github.com"
 
+    {{- end }}
     maintain() (
       set -euo pipefail
       export MAINTENANCE_MODE="$1"
@@ -99,6 +112,9 @@ data:
     )
 
     result=0
+    {{- if (.Values.githubApp | default dict).enabled }}
+    maintain apko
+    {{- else }}
     for mode in apko python atlas helm op claude; do
       # Run each mode in its own shell: Bash suppresses errexit in an if-test
       # function, so invoke the child without a conditional around the function.
@@ -112,5 +128,6 @@ data:
       fi
     done
     exit "$result"
+    {{- end }}
 
 {{- end }}

@@ -71,7 +71,7 @@ The factory has separate Authentik and 1Password installations. Its admission po
 
 ## 9. Maintenance automation on the hub and factory home cluster
 
-Argo Workflows executes the hub monolith's scheduled jobs. The hub Renovate and apko lock maintenance CronWorkflows are configured with their schedules suspended. The factory home cluster declares a separate suspended Renovate CronJob. [Hub maintenance](../platform-gke/renovate/) · [Factory maintenance](../platform-factory/renovate/)
+Argo Workflows executes the hub monolith's scheduled jobs. The hub Renovate and apko lock maintenance CronWorkflows are configured with their schedules suspended. The factory home cluster owns daily Renovate and weekly apko CronJobs under the factory Renovate App. [Hub maintenance](../platform-gke/renovate/) · [Factory maintenance](../platform-factory/renovate/)
 
 ## Direction
 
