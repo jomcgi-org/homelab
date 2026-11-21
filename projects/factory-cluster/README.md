@@ -15,6 +15,28 @@ Before bootstrap, provide the following inputs.
    Account: Cloudflare Tunnel:Edit; Zone `jomcgi.dev`: DNS:Edit and Zone:Read.
 3. **DHCP reservations** for node-1 (192.168.4.80), node-2 (192.168.4.81) and node-3 (192.168.4.76).
 
+## GKE hub migration
+
+The table follows [the hub application list](../gke-apps/kustomization.yaml) in
+cutover order. The destination column records the disposition of each hub
+workload. Use [HOME-262](https://factory-plan.jomcgi.dev/factory/issue/HOME-262)
+to scale the hub to zero and retain its state once the cutovers are verified.
+
+| Hub Application | State | Credentials and routes | Destination and prerequisites |
+| --- | --- | --- | --- |
+| [scotland-connector](../gke-apps/scotland-connector/) | R2 forecast and walk snapshots in `stars`. The connector stores no local state. | `r2-s3-public-read`. The old `jomcgi.dev/scotland` MCP and API paths redirect to `scotland-mcp.jomcgi.dev`. | **Moved.** Keep the factory connector and redirects. The hub Deployment is set to zero in Git. Switch its remaining data reads with [HOME-521](https://factory-plan.jomcgi.dev/factory/issue/HOME-521) and [HOME-522](https://factory-plan.jomcgi.dev/factory/issue/HOME-522). |
+| [monolith-public](../gke-apps/monolith-public/) | Shared `monolith-pg` and its GCS backups. Public datasets and private Grimoire objects in R2. | Read-scoped Postgres login, R2 credentials and Turnstile. Serves legacy `jomcgi.dev` paths and signed illustration routes. | **Drop after replacement.** Move public pages and data to the static Worker and R2, and gated Grimoire routes to the factory. Verify the legacy redirects and catch-all in [HOME-261](https://factory-plan.jomcgi.dev/factory/issue/HOME-261). |
+| [inference](../gke-apps/inference/) | No database or PVC. The model comes from a GHCR image volume. | `ghcr-read-permissions`. Cluster-only embedding Service. | **Move for remaining consumers.** Place and size the embedding workload on factory nodes, then check each remaining consumer with the same model. The hub chart selects the EmberVM Spot pool. Keep that pool available while any hub consumer still needs the Service. |
+| [monolith](../gke-apps/monolith/) | Shared `monolith-pg` PVCs, GCS backups and app R2 buckets. Includes Grimoire and Trips rows with separate private objects. | Application Postgres and object credentials, Authentik, and app-specific integrations. Serves `private.jomcgi.dev` and gated friends paths. | **Move by app.** Rehearse private data restores, test authenticated paths under factory edge policy, and transfer each writer and schedule once. Keep the shared database and objects for rollback. See [Grimoire](https://factory-plan.jomcgi.dev/factory/issue/HOME-398) and [Trips](https://factory-plan.jomcgi.dev/factory/issue/HOME-554). |
+| [monolith-agents](../gke-apps/monolith-agents/) | Shared `monolith-pg` and knowledge data. No separate database to copy. | Scoped Postgres and Authentik bearer credentials. No public hostname. | **Move remaining tool consumers.** Verify which tools have factory replacements and that they preserve each caller's permissions. Move those callers before stopping the hub profile. |
+| [context-forge-gateway](../gke-apps/context-forge-gateway/) | Separate `context-forge-pg` PVCs and GCS backups. Stores registrations and tool access mappings. | `context-forge` and `preview-oidc` 1Password items. `mcp.jomcgi.dev` and the gated friends preview route. | **Move after MCP backends.** Restore the gateway database and check registrations, team mapping, OAuth callbacks and tool visibility against the factory backends before moving the hostnames. |
+
+Stage and verify each factory cutover through Kargo. Record the hub revision
+and replica count before a scale-down. Stop recurring jobs and verify that
+each hub Application has zero workload pods before scaling its node pools to
+zero. Verify the persistent volumes have a retain policy or a recent
+snapshot, and record the costs of the retained resources in HOME-262.
+
 ## Bootstrap and rebuild
 
 The scripts run from node-1, with SSH and passwordless sudo on the nodes.
