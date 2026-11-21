@@ -197,7 +197,7 @@ func (e *Engine) syncPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 			return nil, err
 		}
 		e.m.PullRequests.WithLabelValues("updated").Inc()
-		return e.settlePR(ctx, wi, b, a, got)
+		return e.settlePR(ctx, wi, b, a, r, got)
 	}
 	if err := e.guard(ctx); err != nil {
 		return nil, err
@@ -225,14 +225,14 @@ func (e *Engine) syncPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	if err != nil {
 		return nil, err
 	}
-	return e.settlePR(ctx, wi, b, a, got)
+	return e.settlePR(ctx, wi, b, a, r, got)
 }
 
 // settlePR records the PR a turn was synced to. A PR against another base
 // branch is not the factory's, and a closed, unmerged one was closed by a
 // person; either stops delivery for the work item, with a comment, and it
 // is not polled.
-func (e *Engine) settlePR(ctx context.Context, wi *store.WorkItem, b *Binding, a *store.Attempt, got *github.PullRequest) (*store.PullRequest, error) {
+func (e *Engine) settlePR(ctx context.Context, wi *store.WorkItem, b *Binding, a *store.Attempt, r *store.Run, got *github.PullRequest) (*store.PullRequest, error) {
 	if got.BaseRef != "" && got.BaseRef != b.BaseBranch {
 		e.m.PullRequests.WithLabelValues("stopped").Inc()
 		return nil, e.stopWork(ctx, wi, fmt.Sprintf("PR #%d (%s) targets %s, not %s", got.Number, got.URL, got.BaseRef, b.BaseBranch))
@@ -241,11 +241,29 @@ func (e *Engine) settlePR(ctx context.Context, wi *store.WorkItem, b *Binding, a
 	if err != nil {
 		return nil, err
 	}
+	e.observeDeliveryHead(ctx, b, a, r, pr)
 	if got.State == "closed" && !got.Merged {
 		e.m.PullRequests.WithLabelValues("stopped").Inc()
 		return nil, e.stopWork(ctx, wi, fmt.Sprintf("PR #%d (%s) was closed; reopen it and start a new run to resume", got.Number, got.URL))
 	}
 	return pr, nil
+}
+
+// observeDeliveryHead identifies the native run whose finished turn the
+// connector synced to this observed head. Manual pushes can contribute to
+// the same head, so this event does not attribute commit authorship.
+func (e *Engine) observeDeliveryHead(ctx context.Context, b *Binding, a *store.Attempt, r *store.Run, pr *store.PullRequest) {
+	if r == nil || r.Connector() || a.RunID != r.ID || pr.HeadSHA == "" {
+		return
+	}
+	_, span := tracing.Start(ctx, "factory.pr_head_delivery", trace.WithAttributes(
+		attribute.String("repository", b.repo()),
+		attribute.Int("pr.number", pr.Number),
+		attribute.String("head.sha", pr.HeadSHA),
+		attribute.Int64("implementation.run_id", r.ID),
+		attribute.Int64("delivery.attempt_id", a.ID),
+	))
+	span.End()
 }
 
 // stopWork stops delivery for a work item; dispatch then cancels its review

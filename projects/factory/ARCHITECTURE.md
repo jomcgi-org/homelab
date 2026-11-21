@@ -856,6 +856,12 @@ The PR comment explains the check. Ruleset 9180009 requires the check
 from reviewer App 5758326 alongside `pr-checks`.
 [Required-check decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6882698416)
 
+The reviewer emits `factory.review_transition` for check start, reattachment
+and terminal verdict. Both this event and the connector's
+`factory.pr_head_delivery` event carry the repository, PR number and head SHA.
+The delivery event identifies the native run whose turn the connector synced
+to that head. The exporters batch spans outside check and delivery processing.
+
 - **Review order (HOME-220).** Running reviews retain their slots. The poller
   reattaches in-progress checks before starting new reviews. Within each
   `enqueueAuthors` priority, heads first observed eligible in an earlier poll
