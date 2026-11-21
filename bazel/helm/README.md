@@ -209,6 +209,24 @@ lint tests run Helm's strict validation.
 | `lint.sh`                                         | Standalone strict lint for charts changed from a Git base                      |
 | `ci-diff-manifests.sh`                            | PR comment: dyff of manifests rendered from main and the PR                     |
 | `render-manifests.sh`                             | Pre-render manifests for inspection                                           |
+| `chart-admissibility-completeness-test.sh` | Check deploy values files for admissibility test coverage |
+| `chart-admissibility-completeness_test.sh` | Regression tests for chart admissibility completeness |
+| `chart-admissibility-test.sh` | Validate rendered resources against Kubernetes and CRD schemas |
+| `chart-version_test.sh` | Regression tests for chart version |
+| `check-missed-bump.sh` | Compare image pins when a chart version already exists |
+| `check-missed-bump_test.sh` | Regression tests for check missed bump |
+| `crd-schemas.py` | Extract kubeconform schemas from CRDs |
+| `lint-inputs_test.sh` | Regression tests for lint inputs |
+| `lint_test.sh` | Regression tests for lint |
+| `no-cilium-policies-test.sh` | Check renders for Cilium policies |
+| `publication-receipt.sh` | Summarize verified chart publication records |
+| `push_test.sh` | Regression tests for push |
+| `render_test.sh` | Regression tests for render |
+| `testlib.sh` | Shared shell test helpers |
+| `verify-published-images.sh` | Verify image pins in published charts |
+| `verify-published-images_test.sh` | Regression tests for verify published images |
+| `write-back-versions.sh` | Update chart and Application versions after publication |
+| `write-back-versions_test.sh` | Regression tests for write back versions |
 
 ## Conventions
 
