@@ -146,3 +146,10 @@ invariants:
   - projects/platform-factory/otel-collector/resources/network-policy.yaml
   test: //projects/platform-factory/otel-collector:ingress_test
   state: live
+- id: HOME-88-1
+  statement: The weekly factory apko job uses the Renovate App and leaves maintenance PRs for review.
+  mechanism:
+  - projects/platform/renovate/templates/cronjob.yaml
+  - projects/platform/renovate/templates/apko-lock-script.yaml
+  test: //projects/platform/renovate:factory_deployment_test
+  state: unproven

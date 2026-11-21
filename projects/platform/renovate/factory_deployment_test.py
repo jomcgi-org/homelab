@@ -76,10 +76,12 @@ def test_factory_root_reaches_the_shared_chart_and_namespace_policy():
     ]
 
 
-def test_factory_renders_only_a_scheduled_job_and_app_credential():
+def test_factory_renders_scheduled_jobs_and_app_credential():
     docs = _render()
     assert {(doc["kind"], doc["metadata"]["name"]) for doc in docs} == {
         ("CronJob", "renovate"),
+        ("CronJob", "renovate-apko-lock-maintenance"),
+        ("ConfigMap", "renovate-apko-lock-maintenance"),
         ("OnePasswordItem", "factory-renovate-gh-app"),
     }
     assert all(doc["metadata"]["namespace"] == "renovate" for doc in docs)
@@ -208,6 +210,32 @@ def test_factory_mints_the_token_in_the_renovate_image_before_startup():
     assert init["securityContext"]["capabilities"]["drop"] == ["ALL"]
     assert init["resources"]["requests"] == {"cpu": "100m", "memory": "64Mi"}
     assert init["resources"]["limits"]["memory"] == "128Mi"
+
+
+def test_factory_weekly_apko_uses_the_app_and_requires_review():
+    docs = _render()
+    weekly = next(
+        d for d in docs if d["kind"] == "CronJob" and "apko" in d["metadata"]["name"]
+    )
+    spec = weekly["spec"]
+    assert spec["schedule"] == "0 1 * * 1"
+    assert spec["timeZone"] == "America/Vancouver"
+    assert spec["suspend"] is False
+    assert spec["concurrencyPolicy"] == "Forbid"
+    job = spec["jobTemplate"]["spec"]
+    assert 0 < job["activeDeadlineSeconds"] < 3600
+    pod = job["template"]["spec"]
+    assert pod["initContainers"][0]["name"] == "github-app-token"
+    container = pod["containers"][0]
+    assert {m["name"] for m in container["volumeMounts"]} == {
+        "github-token",
+        "workspace",
+        "script",
+    }
+    assert container["args"] == ["/bin/bash", "/opt/renovate-apko/maintain.sh"]
+    assert "MAINTENANCE_AUTOMERGE_ENABLED" not in {e["name"] for e in container["env"]}
+    script = next(d["data"]["maintain.sh"] for d in docs if d["kind"] == "ConfigMap")
+    assert script.strip().endswith("maintain apko")
 
 
 def test_factory_token_check_accepts_current_installation_token_formats():
