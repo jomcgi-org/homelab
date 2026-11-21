@@ -11,7 +11,7 @@ py_test(
     name = "execution_test",
     srcs = ["execution_test.py"],
     deps = [
-        ":execution",
+        "//projects",
         "@pip//pytest",
     ],
 )
@@ -26,7 +26,16 @@ py_test(
     name = "cache_test",
     srcs = ["cache_test.py"],
     deps = [
-        ":cache",
+        "//projects",
         "@pip//pytest",
     ],
+)
+
+py_library(
+    name = "mandoline",
+    srcs = [
+        "cache.py",
+        "execution.py",
+    ],
+    visibility = ["//:__subpackages__"],
 )
