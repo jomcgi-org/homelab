@@ -198,6 +198,7 @@
     return { type: "FeatureCollection", features };
   }
 
+  // invariant: SHIPS-READER-1
   async function loadHeat() {
     if (heatLoaded || heatRequest || disposed || !layerReady) return;
     const request = new AbortController();

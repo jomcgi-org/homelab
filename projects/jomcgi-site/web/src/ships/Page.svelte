@@ -15,6 +15,7 @@
       if (!res.ok) throw new Error("Ships product unavailable");
       return res.json();
     }
+    // invariant: SHIPS-READER-1
     async function poll() {
       try {
         const latest = await read("latest.json");
