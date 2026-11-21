@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -14,6 +15,11 @@ def git(repo, *args, check=True):
 
 @pytest.fixture
 def receiver(tmp_path, monkeypatch):
+    # Git executes the hook by its python3 shebang, outside the pytest launcher.
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    (tools / "python3").symlink_to(sys.executable)
+    monkeypatch.setenv("PATH", str(tools), prepend=os.pathsep)
     remote = tmp_path / "private.git"
     git(tmp_path, "init", "--bare", "--template=", remote)
     hook = remote / "hooks/pre-receive"
