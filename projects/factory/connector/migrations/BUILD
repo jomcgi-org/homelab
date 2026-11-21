@@ -54,6 +54,7 @@ go_library(
         "20261122000000_run_provenance_opt_in.sql",
         "20261123000000_worker_pool_capacity.sql",
         "20261124010000_worktree_start.sql",
+        "20261121010000_pending_pr_create.sql",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/migrations",
     visibility = ["//visibility:public"],
