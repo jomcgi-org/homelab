@@ -1,3 +1,6 @@
+# The node installer uses this host script outside Bazel. Keep nodes in //projects.
+# gazelle:exclude factory-cluster/nodes/factory-session-token.py
+
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 
 exports_files(

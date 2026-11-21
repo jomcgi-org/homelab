@@ -36,7 +36,10 @@ try:
         timeout=15,
     )
     issued = json.loads(result.stdout)["status"]
-    status = {"token": issued["token"], "expirationTimestamp": issued["expirationTimestamp"]}
+    status = {
+        "token": issued["token"],
+        "expirationTimestamp": issued["expirationTimestamp"],
+    }
     if not all(isinstance(value, str) and value for value in status.values()):
         sys.exit("k3s returned an incomplete factory session credential")
 except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
