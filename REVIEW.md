@@ -292,10 +292,21 @@ finding still blocks as before.
   or rendered; the reviewer's verdict logic (how findings, the human gate
   and merge groups become a check conclusion, and which rules it loads);
   the Apps' permissions; `CODEOWNERS`; and anything that edits a ruleset or
-  its bypass list. Models, deploy values, the reviewer's prompt and agent,
+  its bypass list. Models, other deploy values, the reviewer's prompt and agent,
   and connector and broker code outside the permission config get normal
   review ([decision](https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6884458635)).
-- A change to `AGENTS.md` "Merge authority" or "Boundaries", or text that
+- Changes to any of the following paths require approval of the head.
+  - `projects/factory/deploy/values.yaml`
+  - `projects/factory/chart/templates/_reviewer.tpl`
+  - `projects/factory/chart/templates/broker.yaml`
+  - `projects/factory/reviewer/review/engine.go`
+  - `projects/factory/reviewer/cmd/**`
+  - `buildbuddy.yaml`
+  - `bazel/tools/ci/**`
+  - `AGENTS.md`
+  - `docs/agents/reference.md`
+  - `renovate.json`
+- Text that
   records a permission or decision of Joe's without a link to where Joe made
   it.
 - Work under an explicit human hold (`human`, `needs-human`).

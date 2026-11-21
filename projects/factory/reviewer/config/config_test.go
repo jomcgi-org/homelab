@@ -1,3 +1,5 @@
+// invariant: FACT-14
+
 package config
 
 import (
@@ -57,7 +59,12 @@ func TestParseAppliesDefaults(t *testing.T) {
 	}
 	gated := "REVIEW.md,**/REVIEW.md,.github/CODEOWNERS,projects/factory/reviewer/config/**," +
 		"projects/factory/reviewer/review/report.go,projects/factory/reviewer/review/gate.go," +
-		"projects/factory/reviewer/review/rules.go,projects/factory/reviewer/review/issues.go,projects/factory/broker/config/**"
+		"projects/factory/reviewer/review/rules.go,projects/factory/reviewer/review/issues.go,projects/factory/broker/config/**," +
+		"projects/factory/deploy/values.yaml,projects/factory/chart/templates/_reviewer.tpl," +
+		"projects/factory/chart/templates/broker.yaml,projects/factory/reviewer/review/engine.go," +
+		"projects/factory/reviewer/cmd/**,buildbuddy.yaml," +
+		"bazel/tools/ci/**,AGENTS.md," +
+		"docs/agents/reference.md,renovate.json"
 	if strings.Join(b.EnqueueAuthors, ",") != "jomcgi" || strings.Join(b.HumanGatePaths, ",") != gated ||
 		strings.Join(b.HumanGateLabels, ",") != "human,needs-human" || strings.Join(b.HumanApprovers, ",") != "jomcgi" ||
 		strings.Join(b.TrustedCommenters, ",") != "jomcgi" || strings.Join(b.ContextDocs, ",") != "AGENTS.md,docs/agents/reference.md" ||
