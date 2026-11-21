@@ -107,4 +107,7 @@ head SHAs as arguments and the git diff on stdin. It runs the candidate with
 its usual review context and writes a JSON object containing `findings`,
 `blocking_ids` and the service's `conclusion` on stdout. After each defect
 review with findings, enter the matching finding ID or press Enter for a miss.
+A successful replay saves every scored record, including controls and misses, in
+`results.json`. Use `--output PATH` to select a fresh evidence file for another run.
+Pass that file as the positional argument to reproduce the aggregate scores.
 Only the adjudicator sees the answer during this exchange.
