@@ -978,6 +978,26 @@ func TestWaitingHeadStartsBeforeUpdatedPRs(t *testing.T) {
 				t.Fatalf("waiting heads cancelled the running review: %v", cancels)
 			}
 
+			snapshot := e.QueueSnapshot()
+			if snapshot.InFlight != 3 || snapshot.Capacity != 3 || snapshot.ObservedAt != h.cfg.Now() ||
+				snapshot.Complete == tc.failCheckRead {
+				t.Fatalf("unexpected queue snapshot: %+v", snapshot)
+			}
+			want := []int{20, 2, 1, 3}
+			if tc.failCheckRead {
+				want = want[1:]
+			}
+			var got []int
+			for i, entry := range snapshot.Waiting {
+				if entry.Repository != testRepo || entry.Position != i+1 || entry.Resume {
+					t.Fatalf("unexpected candidate at position %d: %+v", i+1, entry)
+				}
+				got = append(got, entry.PullRequest)
+			}
+			if !slices.Equal(got, want) {
+				t.Fatalf("waiting order = %v, want %v", got, want)
+			}
+
 			h.gh.failWith(checkRead, 0)
 			h.k.finish(running, kagent.StateCompleted, report(t, passing))
 			eventually(t, "one free slot", func() bool { return testutil.ToFloat64(h.m.InFlight) == 2 })
@@ -3446,6 +3466,29 @@ func TestLabelsObservedDuringADuplicateHoldStayStickyAcrossRestart(t *testing.T)
 			failIf(t, h.gh.check(shaA).Conclusion != ConclusionFailure, "removed duplicate-period label was forgotten after restart")
 			eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
 			approveAndCheck(t, h, e, ctx, 7, shaA, "approve the retained hold", "fresh approval did not clear the retained hold")
+		})
+	}
+}
+
+func TestFailedCheckWritesMarkQueueObservationIncomplete(t *testing.T) {
+	for _, scenario := range []string{"create", "recover"} {
+		t.Run(scenario, func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			write := "POST /repos/" + testRepo + "/check-runs"
+			if scenario == "recover" {
+				run := seedCheck(h, shaA, "", encodeState(State{
+					Gate: &Gate{RecoveryEpoch: "previous-process", RecoveryPR: 7},
+				}))
+				run.Status = "in_progress"
+				write = fmt.Sprintf("PATCH /repos/%s/check-runs/%d", testRepo, run.ID)
+			}
+			h.gh.failWith(write, 502)
+			e, ctx, _ := h.start()
+			e.Tick(ctx)
+			if snapshot := e.QueueSnapshot(); snapshot.Complete || len(snapshot.Active) != 0 {
+				t.Fatalf("failed check write published an authoritative observation: %+v", snapshot)
+			}
 		})
 	}
 }

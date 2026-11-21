@@ -162,10 +162,26 @@ func TestQuotaReadFailureWaitsWithoutSending(t *testing.T) {
 	e.Tick(ctx)
 	rec := waitForQuotaCheck(t, h)
 	e.Tick(ctx)
+	snapshot := e.QueueSnapshot()
+	if len(snapshot.Waiting) != 0 || len(snapshot.QuotaHeld) != 1 ||
+		snapshot.QuotaHeld[0].Head != shaA || snapshot.QuotaHeld[0].Position != 0 {
+		t.Fatalf("quota-held review was not reported separately: %+v", snapshot)
+	}
+
 	if len(h.k.sent()) != 0 {
 		t.Fatal("unreadable quota allowed a send")
 	}
 	q.set(github.QuotaReading{ReceivedAt: rec.QuotaSince.Add(time.Second)}, nil)
+	capacity := e.cfg.Concurrency
+	e.cfg.Concurrency = 0 // Model an occupied pool before starting more tasks.
+	e.Tick(ctx)
+	snapshot = e.QueueSnapshot()
+	if len(snapshot.QuotaHeld) != 0 || len(snapshot.Waiting) != 1 ||
+		snapshot.Waiting[0].Head != shaA || snapshot.Waiting[0].Position != 1 {
+		t.Fatalf("recovered quota should expose capacity wait: %+v", snapshot)
+	}
+	e.cfg.Concurrency = capacity
+
 	runReview(t, h, e, ctx, 7, shaA)
 }
 
@@ -250,6 +266,9 @@ func TestQuotaWaitReleasesWorkerWhenDiffUnreadable(t *testing.T) {
 	if rec.Attempt != 1 || len(h.k.sent()) != 0 || testutil.ToFloat64(h.m.InFlight) != 0 ||
 		testutil.ToFloat64(h.m.Retries.WithLabelValues("homelab")) != 0 {
 		t.Fatal("unreadable diff spent an attempt or held a worker during quota exhaustion")
+	}
+	if e.QueueSnapshot().Complete {
+		t.Fatal("unreadable diff made an omitted quota candidate look absent")
 	}
 }
 

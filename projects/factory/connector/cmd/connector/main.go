@@ -413,6 +413,27 @@ func run(log *slog.Logger) error {
 			Items []dispatch.RunPhase `json:"items"`
 		}{Items: items})
 	})
+	if reviewer := cfg.File.ReviewerGoalURL; reviewer != "" {
+		client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		phaseMux.HandleFunc("GET /issue-review", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-store")
+			issueID, err := strconv.ParseInt(r.URL.Query().Get("issueId"), 10, 64)
+			if err != nil || issueID < 1 {
+				http.Error(w, "Invalid issue ID", http.StatusBadRequest)
+				return
+			}
+			readCtx, cancel := context.WithTimeout(r.Context(), 1500*time.Millisecond)
+			defer cancel()
+			review, err := eng.IssueReviewQueue(readCtx, issueID, reviewer, client)
+			if err != nil {
+				http.Error(w, "Review queue unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(review)
+		})
+	}
+
 	phaseServer := &http.Server{
 		Addr: ":8085", Handler: phaseMux, ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second,

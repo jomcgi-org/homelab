@@ -234,6 +234,9 @@ type Engine struct {
 	waiting      map[prKey]*waitingHead
 	waitPoll     uint64
 
+	// Under mu: the scheduling candidates left after the last poll.
+	queueSnapshot QueueSnapshot
+
 	// Under mu: each binding's last session sweep, and whether one runs.
 	swept    map[string]time.Time
 	sweeping map[string]bool
@@ -424,12 +427,16 @@ func (e *Engine) Tick(ctx context.Context) {
 	// A root that its check state records waits for that check instead
 	// (endSuperseded).
 	e.endParked(func(p *parkedRoot) bool { return now.Sub(p.since) > parkedLimit && !p.usage.persisted }, "abandoned")
+	snapshot := QueueSnapshot{ObservedAt: now.UTC(), Complete: true, Waiting: []QueueEntry{}, QuotaHeld: []QueueEntry{}}
 	for i := range e.cfg.Bindings {
 		if ctx.Err() != nil {
 			return
 		}
-		e.tickBinding(ctx, &e.cfg.Bindings[i])
+		e.tickBinding(ctx, &e.cfg.Bindings[i], &snapshot)
 	}
+	e.mu.Lock()
+	e.queueSnapshot = snapshot
+	e.mu.Unlock()
 	// The worker may discover a comment limit after a check was completed.
 	// Refresh its notice only after every binding's merge groups reconcile.
 	e.noteCommentLimits(ctx)
@@ -440,13 +447,14 @@ type candidate struct {
 	run *github.CheckRun
 }
 
-func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
+func (e *Engine) tickBinding(ctx context.Context, b *Binding, snapshot *QueueSnapshot) {
 	repo := b.repo()
 	bl := e.log.With("binding", b.Name, "repo", repo)
 	if b.startupBefore == nil {
 		boundary, err := e.gh.PullRequestCreationBoundary(ctx, repo)
 		if err != nil {
 			e.ghError(ctx, bl, b, "creation_boundary", err)
+			snapshot.Complete = false
 			e.mergeGroups(ctx, b, nil)
 			return
 		}
@@ -455,10 +463,12 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 	prs, complete, err := e.gh.ListPullRequests(ctx, repo, b.BaseBranch)
 	if err != nil {
 		e.ghError(ctx, bl, b, "list_pulls", err)
+		snapshot.Complete = false
 		e.mergeGroups(ctx, b, nil)
 		return
 	}
 	if !complete {
+		snapshot.Complete = false
 		bl.WarnContext(ctx, "the open PR listing is longer than the client reads; PRs past it are not reviewed this poll", "listed", len(prs))
 	}
 	e.supersede(b, prs, complete)
@@ -482,6 +492,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			if !held {
 				// Await the worker so it cannot overwrite the hold.
 				if !e.stopSharedHead(ctx, b, pr.HeadSHA) {
+					snapshot.Complete = false
 					return
 				}
 				if run, err := e.reviewCheck(ctx, b, pr.HeadSHA); err == nil {
@@ -499,6 +510,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 		}
 		run, err := e.reviewCheck(ctx, b, pr.HeadSHA)
 		if err != nil {
+			snapshot.Complete = false
 			reviews[pr.Number] = nil // Unknown approval must also fail a queued group.
 			continue
 		}
@@ -508,6 +520,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 		recovered := e.recoverPR(ctx, b, pr, scan)
 		switch {
 		case !recovered && (sharedHeadHeld(run) || !foreign):
+			snapshot.Complete = false
 			reviews[pr.Number] = nil // An unconfirmed context must also fail a queued group.
 		case sharedHeadHeld(run):
 			// A resolved duplicate needs its remaining PR reviewed afresh.
@@ -528,6 +541,7 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 			delete(e.waiting, prKey{b.Name, pr.Number})
 			attach = append(attach, candidate{pr, run})
 		case unread:
+			snapshot.Complete = false
 			reviews[pr.Number] = nil // An unconfirmed decision must not let a pass enqueue.
 		case revoked:
 			// Joe edited or deleted a decision this review relied on: withdraw
@@ -593,12 +607,43 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding) {
 	prioritizeResumed(b, attach)
 	waiting := append(attach, start...)
 	for i, c := range waiting {
-		if e.begin(ctx, b, c.pr, c.run) {
-			bl.DebugContext(ctx, "review slots full", "waiting", len(waiting)-i)
-			break
+		full, quotaHeld, incomplete := e.begin(ctx, b, c.pr, c.run)
+		if incomplete {
+			snapshot.Complete = false
 		}
+		if !full {
+			if quotaHeld {
+				snapshot.QuotaHeld = append(snapshot.QuotaHeld, QueueEntry{
+					Repository: repo, PullRequest: c.pr.Number, Head: c.pr.HeadSHA,
+				})
+			}
+			continue
+		}
+		bl.DebugContext(ctx, "review slots full", "waiting", len(waiting)-i)
+		for j, queued := range waiting[i:] {
+			if e.isRunning(headKey{b.Name, queued.pr.HeadSHA}) {
+				continue
+			}
+			entry := QueueEntry{
+				Repository: repo, PullRequest: queued.pr.Number, Head: queued.pr.HeadSHA,
+				Resume: i+j < len(attach),
+			}
+			if j > 0 && quotaRecorded(queued) {
+				// Capacity stopped this pass before checking this head's quota.
+				snapshot.Complete = false
+				continue
+			}
+			entry.Position = len(snapshot.Waiting) + 1
+			snapshot.Waiting = append(snapshot.Waiting, entry)
+		}
+		break
 	}
 	e.mergeGroups(ctx, b, reviews)
+}
+
+// quotaRecorded reports the pause recorded on this head's current check.
+func quotaRecorded(c candidate) bool {
+	return c.run != nil && !RecordedTask(c.run.Summary).QuotaSince.IsZero()
 }
 
 // readyHeads includes skipped PRs, which must not borrow a shared head's pass.
@@ -1105,7 +1150,7 @@ func (e *Engine) readRecovery(ctx context.Context, b *Binding, pr github.PullReq
 // begin starts a review in the background, creating its check run first
 // when the head has none. It reports true, starting nothing, when every
 // slot is taken; a head already under review starts nothing either.
-func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (full bool) {
+func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, run *github.CheckRun) (full, quotaHeld, incomplete bool) {
 	// Recheck the diff budget before a quota wait, without a review worker.
 	// This also handles checks that an older process paused before sizing.
 	if run != nil {
@@ -1115,10 +1160,13 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 			files, err := e.gh.PullRequestFiles(ctx, b.repo(), pr.Number)
 			if err != nil {
 				e.ghError(ctx, l, b, "files", err)
-				return false
+				return false, false, true
 			}
-			if e.requestSplit(ctx, b, pr, run, measure(b, files), l) || e.waitForQuota(ctx, b, run, rec, l) {
-				return false
+			if e.requestSplit(ctx, b, pr, run, measure(b, files), l) {
+				return false, false, false
+			}
+			if e.waitForQuota(ctx, b, run, rec, l) {
+				return false, true, false
 			}
 		}
 	}
@@ -1126,11 +1174,11 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 	e.mu.Lock()
 	if _, ok := e.inflight[key]; ok {
 		e.mu.Unlock()
-		return false
+		return false, false, false
 	}
 	if len(e.inflight) >= e.cfg.Concurrency {
 		e.mu.Unlock()
-		return true
+		return true, false, false
 	}
 	var root trace.Span
 	if p, ok := e.parked[key]; ok {
@@ -1195,7 +1243,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 			e.release(ctx, key, usage)
 			e.done(key)
 			close(r.done)
-			return false
+			return false, false, true
 		}
 		if created.StartedAt.IsZero() {
 			created.StartedAt = now
@@ -1221,7 +1269,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 				e.release(ctx, key, usage)
 				e.done(key)
 				close(r.done)
-				return false
+				return false, false, true
 			}
 			run = updated
 		}
@@ -1242,7 +1290,7 @@ func (e *Engine) begin(ctx context.Context, b *Binding, pr github.PullRequest, r
 		}
 		e.review(rctx, b, pr, run, l.With("check_run", run.ID))
 	}()
-	return false
+	return false, false, false
 }
 
 // recorded is the attempt an in-progress check run records, its task once

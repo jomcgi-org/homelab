@@ -97,7 +97,18 @@ func (s *Store) PullRequestFor(ctx context.Context, workID int64) (*PullRequest,
 // Repeating the same idempotent read keeps its message ID and counts the
 // attempt, including retries after a writer takeover.
 func (s *Store) RecordDeliveryRead(ctx context.Context, prID, epoch int64, messageID, operation, resource string) error {
-	_, err := s.DB.ExecContext(ctx, `
+	return recordDeliveryRead(ctx, s.DB, prID, epoch, messageID, operation, resource)
+}
+
+// RecordDeliveryRead records a read on the current writer's lock connection.
+func (w *Writer) RecordDeliveryRead(ctx context.Context, prID int64, messageID, operation, resource string) error {
+	return w.Tx(ctx, func(tx *sql.Tx) error {
+		return recordDeliveryRead(ctx, tx, prID, w.Epoch, messageID, operation, resource)
+	})
+}
+
+func recordDeliveryRead(ctx context.Context, q Querier, prID, epoch int64, messageID, operation, resource string) error {
+	_, err := q.ExecContext(ctx, `
 		INSERT INTO delivery_read (message_id, pull_request_id, operation, resource, writer_epoch)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (message_id) DO UPDATE SET attempts = delivery_read.attempts + 1,
