@@ -92,8 +92,16 @@ for role in ["factory-operator", "applicant"]:
 
 # The signed admin cookie used above must fail closed if the route policy is gone.
 subprocess.run(
-    ["kubectl", "--context", "kind-edge-oidc", "-n", "edge", "delete",
-     "securitypolicy", "t3-authentik-oidc"],
+    [
+        "kubectl",
+        "--context",
+        "kind-edge-oidc",
+        "-n",
+        "edge",
+        "delete",
+        "securitypolicy",
+        "t3-authentik-oidc",
+    ],
     check=True,
 )
 deadline = time.monotonic() + 60
