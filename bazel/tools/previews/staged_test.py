@@ -1,3 +1,4 @@
+# invariant: ROOT-4
 import base64
 import tempfile
 import unittest
