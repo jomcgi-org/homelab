@@ -125,7 +125,8 @@ func (r requestRule) match(ctx context.Context, text string, pos int) []int {
 }
 
 func (d *requestDetector) suppresses(ctx context.Context, rule config.Rule, text string, index []int) bool {
-	match := strings.Trim(text[index[0]:index[1]], "\n")
+	rawMatch := text[index[0]:index[1]]
+	match := strings.Trim(rawMatch, "\n")
 	secret := match
 	for i := 2; i < len(index); i += 2 {
 		if rule.SecretGroup == i/2 || (rule.SecretGroup == 0 && index[i] >= 0 && index[i] != index[i+1]) {
@@ -140,10 +141,19 @@ func (d *requestDetector) suppresses(ctx context.Context, rule config.Rule, text
 		return true
 	}
 	line := func() string {
-		start := strings.LastIndexAny(text[:index[0]], "\r\n") + 1
+		// A regex can consume a line ending. Only the lines containing the
+		// match belong to the allowlist target.
+		fromFirstLine := strings.TrimLeft(rawMatch, "\r\n")
+		trimmed := strings.TrimRight(fromFirstLine, "\r\n")
+		if trimmed == "" {
+			return ""
+		}
+		matchStart := index[1] - len(fromFirstLine)
+		matchEnd := matchStart + len(trimmed)
+		start := strings.LastIndexAny(text[:matchStart], "\r\n") + 1
 		end := len(text)
-		if offset := strings.IndexAny(text[index[1]:], "\r\n"); offset >= 0 {
-			end = index[1] + offset
+		if offset := strings.IndexAny(text[matchEnd:], "\r\n"); offset >= 0 {
+			end = matchEnd + offset
 		}
 		return text[start:end]
 	}

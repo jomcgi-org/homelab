@@ -152,6 +152,39 @@ regex = 'TEST_CREDENTIAL_[A-Z0-9]{12}'
 	}
 }
 
+func TestLineAllowlistUsesMatchedLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gitleaks.toml")
+	const config = `[[rules]]
+id = 'synthetic-marker'
+regex = '(?m)^MARK:[^\r\n]+\r?\n'
+[[rules.allowlists]]
+regexTarget = 'line'
+regexes = ['approved-line']
+`
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	detector, err := newDetector(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, endings := range []struct {
+		name string
+		text string
+	}{{"LF", "\n"}, {"CRLF", "\r\n"}} {
+		t.Run(endings.name, func(t *testing.T) {
+			matched, err := detector.find(context.Background(), "MARK:example"+endings.text+"approved-line")
+			if err != nil || !matched {
+				t.Fatalf("a marker on the next line suppressed the match: %v", err)
+			}
+			matched, err = detector.find(context.Background(), "MARK:example approved-line"+endings.text+"next line")
+			if err != nil || matched {
+				t.Fatalf("a marker on the matched line did not suppress the match: %v", err)
+			}
+		})
+	}
+}
+
 func TestDenseMatchesReleaseScanSlot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gitleaks.toml")
 	if err := os.WriteFile(path, []byte(`[[rules]]
