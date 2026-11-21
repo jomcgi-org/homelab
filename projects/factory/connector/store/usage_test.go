@@ -190,3 +190,58 @@ func TestPRDeliveryResults(t *testing.T) {
 		t.Fatalf("closed hold after stop: %v, %v", ok, err)
 	}
 }
+
+//go:embed delivery_timings.sql
+var deliveryTimings string
+
+func TestDeliveryTimings(t *testing.T) {
+	st := open(t)
+	_, err := st.DB.Exec(`
+		INSERT INTO repo_binding (name,owner,repo,base_branch,itsaplan_project,kagent_namespace,kagent_agent,branch_prefix,max_engineering_retries)
+		VALUES ('h','org','repo','main','HOME','factory','coder','factory/',2);
+		INSERT INTO work_item (id,binding_name,issue_id,issue_key,branch,agent_key,kagent_namespace,kagent_agent,state,review_rounds,created_at)
+		VALUES (1,'h',1,'H-1','b','coder','factory','coder','done',1,now()-interval '1 day'),
+		       (2,'h',2,'H-2','c','coder','factory','coder','active',0,now()-interval '2 days');
+		INSERT INTO run (id,work_item_id,agent_key,trigger,prompt,system_prompt,attempt,state,origin,issue_key,created_at)
+		SELECT t.id, CASE WHEN t.id=1 THEN w.id END,'agent',t.trigger,'','',1,'closed',t.origin,w.issue_key,w.created_at+t.delay
+		FROM work_item w CROSS JOIN (VALUES (1,'itsaplan','issue_delegated',interval '1 minute'),
+		(-1,'reviewer','reviewer',interval '5 minutes')) t(id,origin,trigger,delay) WHERE w.id=1;
+		INSERT INTO delivery_attempt (run_id,seq,run_attempt,work_item_epoch,decision_id,kind,message_id,kagent_namespace,kagent_agent,state,writer_epoch,first_sent_at)
+		SELECT id,1,1,1,'d','initial','m','factory','coder','completed',1,created_at+interval '1 minute' FROM run WHERE id=1;
+		INSERT INTO pull_request (work_item_id,number,node_id,head_sha,state,created_at,merged_at)
+		SELECT id,1,'node','sha','merged',created_at+interval '3 minutes',created_at+interval '10 minutes' FROM work_item WHERE id=1;
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.DB.Query(deliveryTimings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	want := map[string]float64{"queue wait": 60, "time to first PR": 180, "review wait": 120, "rework rounds": 0.5, "time to merge": 600}
+	for rows.Next() {
+		var start, end any
+		var metric, unit string
+		var eligible, measured int
+		var mean float64
+		if err := rows.Scan(&start, &end, &metric, &unit, &eligible, &measured, &mean); err != nil {
+			t.Fatal(err)
+		}
+		count := 1
+		if metric == "rework rounds" {
+			count = 2
+		}
+		expected, ok := want[metric]
+		if !ok || eligible != 2 || measured != count || mean != expected {
+			t.Errorf("%s: eligible=%d measured=%d mean=%v", metric, eligible, measured, mean)
+		}
+		delete(want, metric)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(want) > 0 {
+		t.Fatal("missing metrics", want)
+	}
+}

@@ -58,6 +58,7 @@ go_test(
     ],
     embedsrcs = [
         "delivered_issue_usage.sql",
+        "delivery_timings.sql",
         "planner_breaker_test.sql",
     ],
     deps = [
