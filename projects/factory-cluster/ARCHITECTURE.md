@@ -45,7 +45,7 @@ The tunnel publishes the route to Envoy from the labelled `edge` namespace. Envo
 | factory-plan.jomcgi.dev | `factory/factory-itsaplan` (`/backend` to the api, `/` to the web app) | Envoy OIDC (client `factory-edge`), then itsaplan's OIDC (client `factory-itsaplan`, invite-only) or its break-glass admin; both admit only `authentik Admins` |
 | factory-grafana.jomcgi.dev | `grafana/grafana` | Envoy OIDC (client `factory-edge`), then Grafana's OIDC (client `factory-grafana`); both admit only `authentik Admins` |
 | factory-agents.jomcgi.dev | `edge/kagent` to `kagent/kagent-ui:8080` | Envoy OIDC (client `factory-edge`), only `authentik Admins`; access token forwarded to kagent |
-| t3.jomcgi.dev (staged) | `t3/t3-relay` to the node-1 loopback T3 server through a Unix socket | Envoy OIDC and JWT authorization for `authentik Admins` only, followed by T3 pairing |
+| t3.jomcgi.dev | `t3/t3-relay` to the node-1 loopback T3 server through a Unix socket | Envoy OIDC and JWT authorization for `authentik Admins` only, followed by T3 pairing |
 | factory-kube.jomcgi.dev | `edge/kube-api` to `default/kubernetes:443` | No browser sign-in: Envoy checks the bearer ID token from client `factory-kubectl` for group `authentik Admins` or `factory-kube-viewers`, then the API server checks it again and RBAC applies (see the [kubectl procedure](README.md#kubectl-through-authentik)) |
 | scotland-mcp.jomcgi.dev | `edge/scotland-connector` to `scotland-connector/scotland-connector:80` (`/v1` and `/mcp` only) | None: the one public route ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-259#comment-3908)). Policy `scotland-connector-public` replaces gateway OIDC, refuses Cloudflare Worker subrequests, and per-IP rate limits apply |
 

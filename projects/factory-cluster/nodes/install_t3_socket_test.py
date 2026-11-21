@@ -17,7 +17,7 @@ command = Path(sys.argv[0]).name
 args = sys.argv[1:]
 directory = Path(os.environ["T3_INSTALL_TEST_DIR"])
 groups = directory / "groups"
-entry = "t3-cluster:x:65532:"
+entry = "t3-relay:x:65532:"
 
 if command == "id" and args == ["-u"]:
     print(0)
@@ -32,13 +32,13 @@ elif command == "getent" and args[0] == "group":
         if not rows:
             sys.exit(2)
     print("\\n".join(rows))
-elif command == "groupadd" and args == ["--system", "--gid", "65532", "t3-cluster"]:
+elif command == "groupadd" and args == ["--system", "--gid", "65532", "t3-relay"]:
     if any(row.split(":")[2] == "65532" for row in groups.read_text().splitlines()):
         sys.exit(4)
     with groups.open("a") as stream:
         stream.write(entry + "\\n")
 elif command == "install" and args[:2] == ["-m", "0644"]:
-    assert "SocketGroup=t3-cluster" in Path(args[2]).read_text().splitlines()
+    assert "SocketGroup=t3-relay" in Path(args[2]).read_text().splitlines()
     assert args[3:] == [str(Path(args[2]).with_suffix(".service")), "/etc/systemd/system/"]
 elif command == "systemctl" and args == ["daemon-reload"]:
     pass
@@ -84,12 +84,14 @@ def test_socket_installer():
 
         assert run("--stage") == ""
         created = run("--activate", starts=1)
-        assert created == "t3-cluster:x:65532:\n"
+        assert created == "t3-relay:x:65532:\n"
         assert run("--activate", groups=created, starts=1) == created
+        active = created + "t3-cluster:x:62939:\n"
+        assert run("--activate", groups=active, starts=1) == active
         for groups in (
             "other:x:65532:\n",
-            "t3-cluster:x:444:\n",
-            "t3-cluster:x:65532:host-user\n",
+            "t3-relay:x:444:\n",
+            "t3-relay:x:65532:host-user\n",
             created + "alias:x:65532:\n",
         ):
             assert run("--activate", groups=groups, succeeds=False) == groups

@@ -15,13 +15,14 @@ if [[ "$1" == "--activate" ]]; then
 		echo "T3 socket group 65532 already has a host account" >&2
 		exit 1
 	fi
-	if ! getent group t3-cluster >/dev/null; then
-		groupadd --system --gid 65532 t3-cluster
+	# The t3-cluster.service DynamicUser has its own transient group.
+	if ! getent group t3-relay >/dev/null; then
+		groupadd --system --gid 65532 t3-relay
 	fi
-	group=$(getent group t3-cluster)
+	group=$(getent group t3-relay)
 	IFS=: read -r _ _ gid members <<<"$group"
 	groups=$(getent group | awk -F: '$3 == 65532 { print $1 }')
-	if [[ "$gid" != 65532 || -n "$members" || "$groups" != "t3-cluster" ]]; then
+	if [[ "$gid" != 65532 || -n "$members" || "$groups" != "t3-relay" ]]; then
 		echo "expected the dedicated T3 socket group at GID 65532 with no members" >&2
 		exit 1
 	fi

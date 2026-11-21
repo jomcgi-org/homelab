@@ -468,7 +468,7 @@ def test_kagent_hostname_is_owned_and_published():
         "factory-kube.jomcgi.dev",
         "factory-explore-api.jomcgi.dev",
     } <= set(route["spec"]["hostnames"])
-    assert "t3.jomcgi.dev" not in route["spec"]["hostnames"]
+    assert "t3.jomcgi.dev" in route["spec"]["hostnames"]
     assert route["spec"]["rules"] == [
         {
             "matches": [{"path": {"type": "PathPrefix", "value": "/"}}],
