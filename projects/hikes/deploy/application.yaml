@@ -12,7 +12,7 @@ spec:
   source:
     repoURL: ghcr.io/jomcgi/homelab/charts
     chart: hikes
-    targetRevision: 0.23.12
+    targetRevision: 0.24.28
     helm:
       releaseName: hikes
   destination:
