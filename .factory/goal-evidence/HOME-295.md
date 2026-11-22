@@ -1,1 +1,0 @@
-Joe's decision of 2026-11-22 (factory PR triage) on HOME-295: Decision: criteria 1 and 2 are limited to Kargo and the cfgate Role split. The patched cfgate image and dropping its cluster-wide Secret list/watch move to HOME-783, which #8503 blocks. ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-295#comment-10435))
