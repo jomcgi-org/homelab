@@ -35,6 +35,7 @@ configMapGenerator:
       - dashboards/cilium-drops.json
       - dashboards/cnpg.json
       - dashboards/factory-delivery.json
+      - dashboards/factory-agents.json
       - dashboards/mandoline.json
       - dashboards/egress-scanning.json
   - name: runbooks
