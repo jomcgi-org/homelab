@@ -168,6 +168,10 @@ page checks, and none of them was a defect in the site
    check in code, CI or another gate also stays critical.
    When a `REVIEW.md` change held by "Joe decides" only loosens what a
    reviewer checks, report that loosening only as `human-gate` at high.
+   Do the same for a loosening in code, CI or another gate when the PR
+   links Joe's decision for that loosening. Joe's approval of the reviewed
+   head is still required
+   ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-798#comment-10741)).
    If the change neither names a replacement nor links Joe's decision,
    report the missing justification as a separate finding.
 5. **After merge, would someone notice?** Something a user or operator
