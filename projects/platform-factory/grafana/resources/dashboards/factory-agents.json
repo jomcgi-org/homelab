@@ -2,9 +2,7 @@
   "uid": "factory-agents",
   "title": "Factory agents",
   "description": "Coder and reviewer agents: resources per worker pool, review, rebase and split rounds, where work stops, and the reviewer's findings, sessions and tokens. Counters appear once first incremented. Coder token use is not exported.",
-  "tags": [
-    "factory"
-  ],
+  "tags": ["factory"],
   "timezone": "browser",
   "editable": false,
   "graphTooltip": 1,
@@ -34,12 +32,8 @@
         "includeAll": true,
         "current": {
           "selected": true,
-          "text": [
-            "All"
-          ],
-          "value": [
-            "$__all"
-          ]
+          "text": ["All"],
+          "value": ["$__all"]
         },
         "sort": 1
       }
@@ -85,9 +79,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -129,9 +121,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -173,9 +163,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -234,9 +222,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -898,9 +884,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
