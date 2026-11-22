@@ -6,6 +6,8 @@ py_test(
         "check_image_digests.py",
         "platform_images_test.py",
     ],
+    # Collect only this file: the chart data carries other charts' tests.
+    args = ["$(rootpath platform_images_test.py)"],
     data = [
         "//projects:platform-factory/authentik/application.yaml",
         "//projects:platform-factory/cert-manager/application.yaml",
