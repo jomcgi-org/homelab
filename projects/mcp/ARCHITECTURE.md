@@ -17,7 +17,7 @@ MCP endpoint. Its one in-cluster caller is the team-mapping CronJob, which uses
 the REST API with an admin JWT it mints itself.
 
 The direct `mcp.jomcgi.dev` route is staged, not live until the hub value flips
-([MONO-42](https://factory-plan.jomcgi.dev/factory/issue/MONO-42), which replaces #3832). The monolith chart gates it on `cfIngress.mcp.enabled: false` and uses
+([#3832](https://github.com/jomcgi-org/homelab/issues/3832) closed not planned; follow-up tracked in [MONO-42](https://factory-plan.jomcgi.dev/factory/issue/MONO-42), open on 2026-11-22). The monolith chart gates it on `cfIngress.mcp.enabled: false` and uses
 the private Gateway. Envoy serves RFC 9728 metadata at the exact well-known path
 and forwards `/mcp` unchanged to the monolith Service's API port, 8000.
 `PrincipalMiddleware` verifies the bearer; the route carries no ingress-tier
@@ -311,8 +311,8 @@ than RFC 8693 token exchange, which would mint a separate token per audience so
 a backend could not replay it elsewhere. Context Forge implements exchange but
 authentik does not advertise the grant. The replay path is **not** closed on
 the network on the hub: the inert token-replay Cilium template was removed
-in #5816 because the hub exposes no corresponding CRDs. [MONO-39](https://factory-plan.jomcgi.dev/factory/issue/MONO-39)
-tracks native-policy enforcement (it replaces #5277). The monolith has no code path
+in #5816 because the hub exposes no corresponding CRDs. [#5277](https://github.com/jomcgi-org/homelab/issues/5277)
+(native-policy enforcement) closed not planned; follow-up is tracked in [MONO-39](https://factory-plan.jomcgi.dev/factory/issue/MONO-39) (open on 2026-11-22). The monolith has no code path
 that calls the gateway, which is the only thing keeping that theoretical.
 
 **The token now reaches the monolith.** On 2026-09-05 the hub monolith logged
@@ -489,7 +489,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
-| Authentik federates identity and the monolith serves MCP directly, retiring Context Forge | ADR agents/059, Accepted 2026-09-11 | [MONO-42](https://factory-plan.jomcgi.dev/factory/issue/MONO-42) (cutover), [MONO-41](https://factory-plan.jomcgi.dev/factory/issue/MONO-41) (decommission) | chart route staged default-off in the monolith chart; live cutover and decommission remain open |
+| Authentik federates identity and the monolith serves MCP directly, retiring Context Forge | ADR agents/059, Accepted 2026-09-11 | [#3832](https://github.com/jomcgi-org/homelab/issues/3832) (cutover) and [#3833](https://github.com/jomcgi-org/homelab/issues/3833) (decommission), both closed not planned; follow-up tracked in [MONO-42](https://factory-plan.jomcgi.dev/factory/issue/MONO-42) and [MONO-41](https://factory-plan.jomcgi.dev/factory/issue/MONO-41) (open on 2026-11-22) | chart route staged default-off in the monolith chart; live cutover and decommission not done |
 
 ## Decision history
 
@@ -504,8 +504,8 @@ Rationale only. None of these describes current state.
 | `agents/005` | Role-based MCP access | Deprecated | deleted |
 | `agents/006` | OIDC auth for the gateway | Superseded by 011 | deleted |
 | `agents/011` | Cloudflare Managed OAuth | Deprecated; Access now fronts only the control plane | deleted |
-| `agents/020` | Deprecate Context Forge, serve MCP from the monolith | Superseded by 059. #3831 closed 2026-09-05. #3832 and #3833 closed not planned and moved to [MONO-42](https://factory-plan.jomcgi.dev/factory/issue/MONO-42) and [MONO-41](https://factory-plan.jomcgi.dev/factory/issue/MONO-41) | deleted |
+| `agents/020` | Deprecate Context Forge, serve MCP from the monolith | Superseded by 059. #3831 closed 2026-09-05. [#3832](https://github.com/jomcgi-org/homelab/issues/3832) and [#3833](https://github.com/jomcgi-org/homelab/issues/3833) closed not planned; follow-up tracked in [MONO-42](https://factory-plan.jomcgi.dev/factory/issue/MONO-42) and [MONO-41](https://factory-plan.jomcgi.dev/factory/issue/MONO-41) (open on 2026-11-22) | deleted |
 | `agents/034` | Per-tier guest MCP ACL at `/private/mcp/{tier}/` | Draft. #3838 closed as superseded: the agents tier (#5656) is the shape that shipped instead | deleted |
 | `agents/042` | Agent MCP v1 follow-ons | Accepted, partially shipped; #3844 closed as obsolete | deleted |
 | `agents/055` | Tool-mediated GitHub access on Context Forge | Superseded by 059. The GitHub registration here is disabled with no tools; #4940 closed as an umbrella, and no monolith broker is selected or shipped | deleted |
-| `agents/059` | Authentik federates identity, the monolith serves MCP directly | Accepted 2026-09-11. Chart route and RFC 9728 document staged default-off in the monolith chart. Context Forge remains the front door until [MONO-42](https://factory-plan.jomcgi.dev/factory/issue/MONO-42); decommission is [MONO-41](https://factory-plan.jomcgi.dev/factory/issue/MONO-41) | deleted |
+| `agents/059` | Authentik federates identity, the monolith serves MCP directly | Accepted 2026-09-11. Chart route and RFC 9728 document staged default-off in the monolith chart. Context Forge remains the front door; cutover follow-up is tracked in [MONO-42](https://factory-plan.jomcgi.dev/factory/issue/MONO-42) and decommission follow-up in [MONO-41](https://factory-plan.jomcgi.dev/factory/issue/MONO-41) (open on 2026-11-22) | deleted |
