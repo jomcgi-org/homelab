@@ -80,7 +80,7 @@ invariants:
   - projects/factory/reviewer/review/gate.go
   - projects/factory/connector/dispatch/delivery.go
   state: unproven
-- id: FACT-19
+- id: HOME-109-1
   statement: Raising the review round bound allows previously limited current-head feedback to start one round while delivery remains active.
   mechanism:
   - projects/factory/connector/dispatch/delivery.go
