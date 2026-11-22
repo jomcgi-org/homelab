@@ -210,7 +210,7 @@ func (e *Engine) replaceRuntimeAttempt(ctx context.Context, r *store.Run, wi *st
 	return e.issue(ctx, r, wi, b, next)
 }
 
-// invariant: FACT-18
+// invariant: FACT-19
 func reportedStart(t *kagent.Task, attemptID int64) string {
 	prefix := fmt.Sprintf("Worktree-Start-%d: ", attemptID)
 	read := func(m *kagent.Message) string {
