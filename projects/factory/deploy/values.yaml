@@ -252,6 +252,10 @@ connector:
     # 2026-11-20, so the bound covers a slow schedule too. A held send is not
     # issued, so no lease runs on it.
     workerWait: 5m
+  # PR bodies link the itsaplan run page. The page stays behind Authentik;
+  # only the URL is public (HOME-119).
+  links:
+    run: https://factory-plan.jomcgi.dev/factory/HOME/agents/queue/{run}
   bindings:
     homelab:
       itsaplanProject: HOME
