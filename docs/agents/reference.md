@@ -146,6 +146,9 @@ Follow [docs/writing.md](../writing.md) and
   Do not add an approval, the human gate or the merge as an item. The goal check
   cannot see an approval in the diff, and the human-gate hold covers it
   ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-759#comment-10159)).
+  Put a diagram or code block after the Done-when list, never before it. The
+  goal check counts no criteria in an issue with a fence, HTML or a rule line
+  before that list ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-436#comment-10910)).
 - **Long design or reference text:** put the full record in an itsaplan document. Summarize required design details in the description and link the document.
 - **Logs and screenshots:** add attachments. State the relevant errors, reproduction steps and visible results in **Problem**.
 - **Joe's decisions:** record each in a comment by `joe` or `joesessions`. State the decision under **Decisions** and link the comment.
