@@ -148,7 +148,8 @@ func (e *Engine) prepareProvenance(ctx context.Context, r *store.Run, wi *store.
 		return "", err
 	}
 	text += fmt.Sprintf("\nWorktree starting commit: %s\nStart the worktree at this exact commit before editing. Preserve the assigned work branch name and any uncommitted work.\n", base)
-	text += fmt.Sprintf("After checkout and before editing, run git rev-parse --verify HEAD and report its literal output on its own line as: Worktree-Start-%d: <sha>. Include the line in your final reply even on mismatch.\n", a.ID)
+	text += "\nImmediately after checkout and before editing, run this exact standalone shell command in the assigned worktree so the harness records its output:\n" + checkoutProbe + "\n"
+
 	p := provenance.New(runtime, base, text, class)
 	if err := e.st.RecordProvenance(ctx, e.w, a, p, runtime.SystemPrompt, text); err != nil {
 		return "", err
@@ -210,24 +211,40 @@ func (e *Engine) replaceRuntimeAttempt(ctx context.Context, r *store.Run, wi *st
 	return e.issue(ctx, r, wi, b, next)
 }
 
-// invariant: FACT-19
-func reportedStart(t *kagent.Task, attemptID int64) string {
-	prefix := fmt.Sprintf("Worktree-Start-%d: ", attemptID)
-	read := func(m *kagent.Message) string {
-		if m == nil || m.Role != "ROLE_AGENT" {
-			return ""
+const checkoutProbe = "git symbolic-ref --short HEAD && git rev-parse --verify HEAD"
+
+// invariant: FACT-20
+func observedStart(t *kagent.Task, branch string) string {
+	calls := map[string]bool{}
+	for _, artifact := range t.Artifacts {
+		if artifact == nil {
+			continue
 		}
-		for _, line := range strings.Split(messageText(m), "\n") {
-			if sha, ok := strings.CutPrefix(strings.TrimSpace(line), prefix); ok && baseCommit.MatchString(sha) {
-				return sha
+		for _, part := range artifact.Parts {
+			data, _ := part.Data.(map[string]any)
+			id, _ := data["id"].(string)
+			if id == "" || data["name"] != "command_execution" {
+				continue
+			}
+			switch part.Metadata[kagent.PartTypeKey] {
+			case kagent.PartToolCall:
+				args, _ := data["args"].(map[string]any)
+				command, _ := args["command"].(string)
+				calls[id] = command == checkoutProbe || command == "/bin/bash -lc '"+checkoutProbe+"'" || command == "/bin/sh -c '"+checkoutProbe+"'"
+			case kagent.PartToolResponse:
+				if !calls[id] {
+					continue
+				}
+				delete(calls, id)
+				response, _ := data["response"].(map[string]any)
+				result, _ := response["result"].(map[string]any)
+				output, _ := result["output"].(string)
+				ref, sha, ok := strings.Cut(strings.TrimSpace(output), "\n")
+				if result["status"] == "completed" && result["exitCode"] == float64(0) && ok && ref == branch && baseCommit.MatchString(sha) {
+					return sha
+				}
 			}
 		}
-		return ""
 	}
-	for _, m := range t.History {
-		if sha := read(m); sha != "" {
-			return sha
-		}
-	}
-	return read(t.Status.Message)
+	return ""
 }

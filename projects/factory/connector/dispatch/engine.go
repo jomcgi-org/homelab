@@ -2033,7 +2033,7 @@ func (e *Engine) progress(ctx context.Context, r *store.Run) error {
 		return errors.New("task transcript: invalid task identity")
 	}
 	if a.Provenance.BaseSHA != "" {
-		if sha := reportedStart(t, a.ID); sha != "" {
+		if sha := observedStart(t, wi.Branch); sha != "" {
 			if err := e.w.Tx(ctx, func(tx *sql.Tx) error {
 				_, err := tx.ExecContext(ctx, `UPDATE delivery_attempt SET actual_start_sha=$2 WHERE id=$1 AND actual_start_sha IS NULL`, a.ID, sha)
 				return err
