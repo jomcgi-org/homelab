@@ -373,6 +373,7 @@ spec:
       annotations:
         checksum/config: {{ $configYAML | sha256sum }}
     spec:
+      priorityClassName: factory-control
       serviceAccountName: {{ $name }}
       {{- include "factory.imagePullSecrets" . | nindent 6 }}
       securityContext:

@@ -206,6 +206,7 @@ spec:
       annotations:
         checksum/config: {{ $configYAML | sha256sum }}
     spec:
+      priorityClassName: factory-control
       serviceAccountName: {{ $name }}
       automountServiceAccountToken: false
       {{- include "factory.imagePullSecrets" . | nindent 6 }}
