@@ -1,0 +1,1 @@
+1. On 2026-11-22, `uv tool run --from pip-audit==2.9.0 pip-audit -r bazel/requirements/runtime.txt --no-deps --disable-pip` at b597405395 reported "No known vulnerabilities found". The lock pins every package with `--no-deps`, so the audit covers the full runtime lockfile.
