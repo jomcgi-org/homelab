@@ -1,1 +1,0 @@
-Joe's decision of 2026-11-22 (factory PR triage) on HOME-554: Decision: HOME-554 is limited to the authenticated shadow route (former criterion 3). The data move, export, switch and hub retirement (former criteria 1, 2 and 4) move to HOME-786, which #8535 blocks. ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-554#comment-10454))
