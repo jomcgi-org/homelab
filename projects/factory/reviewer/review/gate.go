@@ -421,12 +421,33 @@ func (p invariantPolicy) weakened(ctx context.Context, gh RulesReader, repo, hea
 				}
 				next = data
 			}
-			if weakensInvariants(name, p[name], next, name == f.Path && f.Status != "removed") {
+			present := name == f.Path && f.Status != "removed"
+			if weakensInvariants(name, p[name], next, present) || (present && !regularFileDiff(f, p[name], next)) {
 				out = append(out, name)
 			}
 		}
 	}
 	return out, nil
+}
+
+// regularFileDiff reports whether the head content GitHub returned is the
+// file the diff describes. The Contents API follows an in-repository symlink
+// to its target, so a policy file turned into a link would read as unchanged.
+// A regular file's line count moves by exactly the diff's additions minus its
+// deletions; a link's one-line target text does not.
+func regularFileDiff(f github.PullRequestFile, base, head []byte) bool {
+	if f.Status == "renamed" || f.Status == "copied" {
+		return false
+	}
+	return lineCount(head) == lineCount(base)+f.Additions-f.Deletions
+}
+
+func lineCount(data []byte) int {
+	n := bytes.Count(data, []byte("\n"))
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		n++
+	}
+	return n
 }
 
 func weakensInvariants(name string, base, head []byte, present bool) bool {
