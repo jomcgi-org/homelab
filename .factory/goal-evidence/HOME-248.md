@@ -2,3 +2,5 @@
 2. `projects/factory/chart/leaderboard_test.py` checks the public field set and rejects extra fields. `projects/jomcgi-site/web/src/leaderboard.test.tsx` checks the committed snapshot.
 3. `projects/jomcgi-site/web/src/leaderboard.test.tsx` renders arms with nine and ten outcomes and checks the insufficient-data label and interval.
 4. `projects/model-bench/README.md` records the freeze. `projects/model-bench/bench/cli_test.py::test_report_protects_public_snapshots` exercises both output options against each snapshot path.
+
+Joe's decision of 2026-11-22 (factory PR triage) on HOME-248: Decision: #8359 ships the publisher default-off. Enabling `leaderboard.enabled`, the first snapshot PR and the `/llm-leaderboard` check move to HOME-763, blocked by this issue. Criterion 1 is met when HOME-763 is Done. ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-248#comment-10294))
