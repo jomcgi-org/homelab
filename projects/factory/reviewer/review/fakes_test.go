@@ -909,7 +909,8 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 		if before, ok := req.Variables["before"].(string); ok {
 			end, _ = strconv.Atoi(before)
 		}
-		start := max(0, end-100)
+		last := int(req.Variables["last"].(float64))
+		start := max(0, end-last)
 		for _, h := range pr.Heads[start:end] {
 			active := 0
 			var runs []map[string]any

@@ -216,3 +216,9 @@ invariants:
   - projects/factory/reviewer/config/config.go
   test: //projects/factory/reviewer/config:config_test
   state: live
+- id: FACT-20
+  statement: After restart, the reviewer cancels a recently closed PR's persisted review root once a check completion succeeds.
+  mechanism:
+  - projects/factory/reviewer/review/engine.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live
