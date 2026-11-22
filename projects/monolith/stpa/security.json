@@ -1,6 +1,6 @@
 {
   "lens": "security",
-  "commit": "20c7b96bc",
+  "commit": "25d057c8f",
   "scope": {
     "summary": "Identity, MCP tool authorization, and the boundaries between the public and private tiers.",
     "built": "Separate public and private binaries (ADR security/004), public_reader role with visibility filters on the replica, Turnstile-gated chat with three nested budgets, PrincipalMiddleware bearer-token verification on every MCP message, GroupPolicyMiddleware denying every MCP tool call outside the operators group (no tool tagged mcp:public), Discord trust ledger with per-guild per-user scoring and heuristics-fed instant enforcement, Cloudflare Access lane projecting verified email to agents console, Kubernetes RBAC scoping cluster mutation (ArgoCD sync, per-Kargo-project promote Roles) to the private pod."
@@ -93,12 +93,12 @@
       "view": "physical",
       "control_action": "route.public",
       "guideword": "providing",
-      "condition": "The public chart separates page traffic from /functions/<name>, which it routes to the backend. The hub application root omits the EmberVM execution service.",
+      "condition": "The public chart separates page traffic from /functions/<name>, which it routes to the backend. The hub application root omits the EmberVM execution service. Declared in Git; unverified live on the hub (2026-11-22).",
       "severity": "high",
       "hazards": [
         "public-route-exposes-private-path"
       ],
-      "status": "enforced-prod",
+      "status": "enforced-dev",
       "evidence": "projects/monolith-public/chart/templates/httproute-public.yaml:41, projects/monolith-public/chart/templates/httproute-public.yaml:112"
     },
     {
@@ -106,12 +106,12 @@
       "view": "physical",
       "control_action": "grimoire-chat.write",
       "guideword": "providing",
-      "condition": "Public chat admission requires Turnstile verification and enforces session limits and a cluster-wide inference cap.",
+      "condition": "Public chat admission requires Turnstile verification and enforces session limits and a cluster-wide inference cap. Declared in Git; unverified live on the hub (2026-11-22).",
       "severity": "high",
       "hazards": [
         "public-write-admission-bypass"
       ],
-      "status": "enforced-prod",
+      "status": "enforced-dev",
       "evidence": "projects/monolith/grimoire_chat/router.py, projects/monolith/grimoire_chat/limits.py, projects/monolith/chart/migrations/20260706200000_grimoire_chat.sql:122"
     },
     {
@@ -186,12 +186,12 @@
       "view": "logical",
       "control_action": "session-detail.read",
       "guideword": "providing",
-      "condition": "The shared MCP operators-group gate applies to monolith_agent_detail. It loads the selected database turn and returns its prompt, verbatim result and tool activities independently of guest execution.",
+      "condition": "The shared MCP operators-group gate applies to monolith_agent_detail. It loads the selected database turn and returns its prompt, verbatim result and tool activities independently of guest execution. Declared in Git; unverified live on the hub (2026-11-22).",
       "severity": "high",
       "hazards": [
         "unrestricted-tool-visibility"
       ],
-      "status": "enforced-prod",
+      "status": "enforced-dev",
       "evidence": "projects/monolith/core/mcp_policy.py, projects/monolith/factory/module.py:49, projects/monolith/factory/execution/mcp.py:2277"
     }
   ],

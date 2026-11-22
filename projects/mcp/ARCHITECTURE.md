@@ -17,7 +17,7 @@ MCP endpoint. Its one in-cluster caller is the team-mapping CronJob, which uses
 the REST API with an admin JWT it mints itself.
 
 The direct `mcp.jomcgi.dev` route is staged, not live until the hub value flips
-(#3832). The monolith chart gates it on `cfIngress.mcp.enabled: false` and uses
+([MONO-42](https://factory-plan.jomcgi.dev/factory/issue/MONO-42), which replaces #3832). The monolith chart gates it on `cfIngress.mcp.enabled: false` and uses
 the private Gateway. Envoy serves RFC 9728 metadata at the exact well-known path
 and forwards `/mcp` unchanged to the monolith Service's API port, 8000.
 `PrincipalMiddleware` verifies the bearer; the route carries no ingress-tier
@@ -133,13 +133,14 @@ entirely. The other four are `team`-visible and not associated with the
 (on 2026-09-05: `grant_kg_burst`, `monolith_agent_run_decide`,
 `monolith_codex_broker_refresh`, `submit_product_update`). Both columns are
 hand edits in Context Forge's Postgres and exist in no repo file; Tool
-catalogue refresh below lists the gates a new tool has to clear. #5633 moves
-this filtering into the monolith, keyed on the principal's groups, and the
-agents tier already works that way.
+catalogue refresh below lists the gates a new tool has to clear. #5633 (completed)
+added the same filtering in the monolith, keyed on the principal's groups, and
+the agents tier works that way.
 
 The ACL is **tool-granular**: it decides whether you may call
-`search_knowledge`, never what `search_knowledge` returns. Per-caller scoping of
-results is a separate concern, and is not live (see Token forwarding).
+`search_knowledge`, never what `search_knowledge` returns. The ACL does not scope
+results. Each result handler applies its own check (see "Result authorization
+is tool-specific" below).
 
 **Why.** A single unrestricted catalogue gave every caller the same tools and
 could not attribute operations to one agent identity (ADR agents/005). Separate
@@ -310,8 +311,8 @@ than RFC 8693 token exchange, which would mint a separate token per audience so
 a backend could not replay it elsewhere. Context Forge implements exchange but
 authentik does not advertise the grant. The replay path is **not** closed on
 the network on the hub: the inert token-replay Cilium template was removed
-in #5816 because the hub exposes no corresponding CRDs. Native-policy
-enforcement has no open tracker (#5277 closed not planned). The monolith has no code path
+in #5816 because the hub exposes no corresponding CRDs. [MONO-39](https://factory-plan.jomcgi.dev/factory/issue/MONO-39)
+tracks native-policy enforcement (it replaces #5277). The monolith has no code path
 that calls the gateway, which is the only thing keeping that theoretical.
 
 **The token now reaches the monolith.** On 2026-09-05 the hub monolith logged
@@ -328,8 +329,8 @@ mount would pin `current_principal()` to the opener again (#4569 records the
 mechanism).
 
 **Result authorization is tool-specific.** The shared monolith surface
-requires `operators` for every current tool call: `GroupPolicyMiddleware` is
-enabled by default and the committed values do not disable it. No tool carries
+requires `operators` for every current tool call: the committed values
+enable `GroupPolicyMiddleware`. No tool carries
 `mcp:public`; anonymous catalogue refresh authorizes no call.
 `search_knowledge` applies `knowledge/retrieval_policy.py` to verified scopes
 and the explicit `homelab-admin` / `kg-agents` group mappings before querying.
@@ -433,8 +434,8 @@ links it to the `homelab-admin` virtual server, which refresh never writes;
 and `visibility` is `public`, where refresh leaves a new tool at `team`. The
 last two stopped being hand edits when `teamMapping.publishTools` shipped:
 the 15-minute CronJob does both writes, additively, and refuses to act on an
-empty catalogue. #5636 keeps federation off this path entirely by mounting
-upstream servers on the agents tier.
+empty catalogue. No upstream server federation is planned: #5636 closed
+when EmberVM (#8356) and the hub factory conductor (#8063) retired.
 
 Gate three is the quiet one. The validator refuses a description containing
 any of `TOOL_DESCRIPTION_FORBIDDEN_PATTERNS`, which the chart sets to
@@ -488,8 +489,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
-| Authentik federates identity and the monolith serves MCP directly, retiring Context Forge | ADR agents/059, Accepted 2026-09-11, execution #3832 | #3832, #3833 | chart route staged default-off in the monolith chart; live cutover and decommission remain open |
-| `monolith-agents` federates upstream MCP servers (BuildBuddy, Honeycomb, GitHub, and more) as namespaced tools on its own endpoint | Tool catalogue refresh | #5636 | not started |
+| Authentik federates identity and the monolith serves MCP directly, retiring Context Forge | ADR agents/059, Accepted 2026-09-11 | [MONO-42](https://factory-plan.jomcgi.dev/factory/issue/MONO-42) (cutover), [MONO-41](https://factory-plan.jomcgi.dev/factory/issue/MONO-41) (decommission) | chart route staged default-off in the monolith chart; live cutover and decommission remain open |
 
 ## Decision history
 
@@ -504,8 +504,8 @@ Rationale only. None of these describes current state.
 | `agents/005` | Role-based MCP access | Deprecated | deleted |
 | `agents/006` | OIDC auth for the gateway | Superseded by 011 | deleted |
 | `agents/011` | Cloudflare Managed OAuth | Deprecated; Access now fronts only the control plane | deleted |
-| `agents/020` | Deprecate Context Forge, serve MCP from the monolith | Superseded by 059; its execution issues #3832 and #3833 stay open, #3831 closed 2026-09-05 | deleted |
-| `agents/034` | Per-tier guest MCP ACL at `/private/mcp/{tier}/` | Draft; #3838 open. The agents tier (#5656) is the shape that shipped instead | deleted |
-| `agents/042` | Agent MCP v1 follow-ons | Accepted, partially shipped; #3844 | deleted |
+| `agents/020` | Deprecate Context Forge, serve MCP from the monolith | Superseded by 059. #3831 closed 2026-09-05. #3832 and #3833 closed not planned and moved to [MONO-42](https://factory-plan.jomcgi.dev/factory/issue/MONO-42) and [MONO-41](https://factory-plan.jomcgi.dev/factory/issue/MONO-41) | deleted |
+| `agents/034` | Per-tier guest MCP ACL at `/private/mcp/{tier}/` | Draft. #3838 closed as superseded: the agents tier (#5656) is the shape that shipped instead | deleted |
+| `agents/042` | Agent MCP v1 follow-ons | Accepted, partially shipped; #3844 closed as obsolete | deleted |
 | `agents/055` | Tool-mediated GitHub access on Context Forge | Superseded by 059. The GitHub registration here is disabled with no tools; #4940 closed as an umbrella, and no monolith broker is selected or shipped | deleted |
-| `agents/059` | Authentik federates identity, the monolith serves MCP directly | Accepted 2026-09-11, execution #3832; chart route and RFC 9728 document staged default-off in the monolith chart. Context Forge remains the front door until #3832; decommission is #3833 | deleted |
+| `agents/059` | Authentik federates identity, the monolith serves MCP directly | Accepted 2026-09-11. Chart route and RFC 9728 document staged default-off in the monolith chart. Context Forge remains the front door until [MONO-42](https://factory-plan.jomcgi.dev/factory/issue/MONO-42); decommission is [MONO-41](https://factory-plan.jomcgi.dev/factory/issue/MONO-41) | deleted |

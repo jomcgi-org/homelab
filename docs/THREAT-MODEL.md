@@ -78,7 +78,7 @@ The factory has no STPA security lens yet.
 
 ### GKE hub
 
-The hub application set is declared in `projects/gke-apps/kustomization.yaml`. The EmberVM guest boundary and the former hub factory conductor have retired.
+The hub application set is declared in `projects/gke-apps/kustomization.yaml`. #8063 stopped the former hub factory conductor's reconciler. #8356 removed EmberVM from the hub application set. This review did not read the live hub.
 
 ```mermaid
 graph LR
