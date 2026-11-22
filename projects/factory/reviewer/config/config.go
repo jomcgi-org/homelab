@@ -51,6 +51,10 @@ type Config struct {
 	// with the broker's comment token and edited only when this login wrote
 	// it. Empty posts no comments.
 	CommentAuthor string `yaml:"commentAuthor"`
+	// ReuseUnchangedTree keeps the earlier reviewed head's code review for a
+	// head with the same git tree, merge base and review inputs, and sends
+	// no review task for it.
+	ReuseUnchangedTree bool `yaml:"reuseUnchangedTree"`
 	// Concurrency bounds the reviews in flight across all bindings.
 	Concurrency int       `yaml:"concurrency"`
 	Intervals   Intervals `yaml:"intervals"`

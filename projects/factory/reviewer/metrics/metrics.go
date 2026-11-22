@@ -100,7 +100,8 @@ func New(reg prometheus.Registerer) *Metrics {
 		ReviewSessions: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_reviewer_review_sessions_total",
 			Help: "Review tasks kagent accepted, by binding, path (fresh, resumed: in the session that reviewed the PR's " +
-				"previous head) and reason: resumed, or why the task did not resume (none, retry, disabled, foreign, size, " +
+				"previous head; reused: no task ran, the earlier head's code review was kept) and reason: resumed, " +
+				"unchanged_tree, or why the task did not resume (none, retry, disabled, foreign, size, " +
 				"unaccounted, missing, deleted, crashed, failed, revision, unreadable, refused).",
 		}, []string{"binding", "path", "reason"}),
 		ReviewTaskBytes: prometheus.NewHistogramVec(prometheus.HistogramOpts{

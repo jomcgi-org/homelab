@@ -78,6 +78,9 @@ system:serviceaccount:{{ .Values.broker.namespace }}:{{ include "factory.reviewe
 {{- with $c.commentAuthor }}
 {{- $_ := set $config "commentAuthor" . }}
 {{- end }}
+{{- if $c.reuseUnchangedTree }}
+{{- $_ := set $config "reuseUnchangedTree" true }}
+{{- end }}
 {{- if include "factory.goalReasons" . }}
 {{- $_ := set $config "goalReasonsAddr" (printf ":%d" (int $c.goalReasons.port)) }}
 {{- end }}

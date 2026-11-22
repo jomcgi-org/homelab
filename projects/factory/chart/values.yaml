@@ -849,6 +849,12 @@ reviewer:
   # broker's comment token, which needs the App's Issues write permission.
   # Empty posts no comment.
   commentAuthor: ""
+  # A head whose git tree, merge base and review inputs (title, description,
+  # trusted comments, rules) equal those of the PR's last reviewed head keeps
+  # that head's code review: no review task runs for it. The goal check, human
+  # gate, evidence and Joe's decisions are checked again for the head. Off, every
+  # head gets a full review.
+  reuseUnchangedTree: false
   # The review Harness's workload image (spec.workload.image), for example the
   # private Codex harness plus mandoline from projects/factory/reviewer/harness.
   # Empty keeps kagent's built-in harness image. A coding binding sets its own
