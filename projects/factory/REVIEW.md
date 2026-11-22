@@ -40,6 +40,8 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   default, and the step turns it on and names the check that verifies it.
   A criterion that neither the diff nor the step addresses stays `not_met`
   ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-757#comment-10153)).
+  A later head whose step is added, changed or removed gets no earlier goal
+  verdicts, so the goal check judges each criterion again.
   Before reporting a missing fact,
   it searches the reviewed commit, including definitions outside the diff.
   The connector's private evidence reply is an exception to the restriction

@@ -52,10 +52,6 @@ func TestGoalPromptQuotesTheActivationStep(t *testing.T) {
 			t.Errorf("prompt lacks %q", s)
 		}
 	}
-	later := GoalPrompt("o/r", pr, nil, in, GoalContext{Activation: "turn on the scan", Previous: &GoalCheck{Head: strings.Repeat("b", 40), Overall: goalNotMet, Criteria: []GoalVerdict{{1, goalNotMet}}}})
-	if !strings.Contains(later, "judge again each criterion it stages, even when no file changed") {
-		t.Fatal("a later head keeps an earlier verdict despite a new Activation step")
-	}
 	without := GoalPrompt("o/r", pr, nil, in, GoalContext{})
 	if strings.Contains(without, "## Activation step of the head commit") {
 		t.Fatal("a head without a pending step quoted one")
@@ -105,6 +101,104 @@ func TestGoalCheckActivationStagedCriterion(t *testing.T) {
 			}
 			if blocked == staged {
 				t.Fatalf("criterion 1 blocking = %t with staged = %t: %+v", blocked, staged, st.Blocking)
+			}
+		})
+	}
+}
+
+// HOME-757: an earlier answer carries forward only to a head with the same
+// Activation step. An added, changed or removed step drops it, so the goal
+// check judges every criterion again.
+func TestEarlierGoalNeedsTheSameActivationStep(t *testing.T) {
+	const step = "set scan.enabled true; check: scan_runs_total rises"
+	prev := &GoalCheck{Head: "a", Digest: "d", Overall: goalLive, Criteria: []GoalVerdict{{1, goalLive}}, Activation: activationDigest(step)}
+	if earlierGoal(prev, "b", "d", step) != prev {
+		t.Fatal("the same step dropped the earlier answer")
+	}
+	for name, now := range map[string]string{"removed": "", "changed": step + " later"} {
+		if earlierGoal(prev, "b", "d", now) != nil {
+			t.Errorf("%s step kept the earlier answer", name)
+		}
+	}
+	none := &GoalCheck{Head: "a", Digest: "d", Overall: goalNotMet, Criteria: []GoalVerdict{{1, goalNotMet}}}
+	if earlierGoal(none, "b", "d", step) != nil {
+		t.Fatal("an added step kept the earlier answer")
+	}
+	if activationDigest("") != "" || len(activationDigest(step)) != 32 || strings.Contains(activationDigest(step), "scan") {
+		t.Fatalf("activationDigest(%q) = %q", step, activationDigest(step))
+	}
+}
+
+// HOME-757 review: two heads, where the second adds, changes or removes the
+// Activation step. The second goal check gets no earlier verdicts, so a
+// removed or changed step cannot carry an after_rollout pass forward, and an
+// added step's after_rollout verdict resolves the first head's blockers.
+func TestGoalCheckRejudgesWhenTheActivationStepChanges(t *testing.T) {
+	const step = "Set reviewer.scan.enabled to true after rollout; verify with the scan_runs_total metric on the next PR."
+	notMet := `{"criteria":[{"criterion":1,"verdict":"not_met"}],"overall":"not_met"}`
+	staged := `{"criteria":[{"criterion":1,"verdict":"after_rollout"}],"overall":"after_rollout"}`
+	for name, tc := range map[string]struct {
+		first, second   string // Activation trailers.
+		answers         []string
+		blockedOnSecond bool
+	}{
+		// A not_met answer after a clean code review gets a confirmation call.
+		"step removed": {step, "none", []string{staged, notMet, notMet}, true},
+		"step changed": {step, "Set reviewer.scan.enabled to true.", []string{staged, notMet, notMet}, true},
+		"step added":   {"none", step, []string{notMet, notMet, staged}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, api := issueHarness(t)
+			withComments(h)
+			api.issue.Description = "Done when:\n1. The reviewer scans each PR."
+			shaB := strings.Repeat("b", 40)
+			h.gh.withLock(func() {
+				pr := h.gh.prs[7]
+				pr.Commits[0].Commit.Message = "feat(reviewer): scan each PR\n\nRefs HOME-58\n\nActivation: " + tc.first
+				pr.Files = []github.PullRequestFile{
+					{Path: "projects/factory/reviewer/review/scan.go", Status: "added", Additions: 1, Patch: "+if cfg.Scan.Enabled { scan(head) }"},
+					{Path: "projects/factory/chart/values.yaml", Status: "modified", Additions: 1, Patch: "+  scan: {enabled: false}"},
+				}
+			})
+			for _, a := range tc.answers {
+				h.k.goalReplies = append(h.k.goalReplies, goalReply(a))
+			}
+			e, ctx, _ := h.start()
+			r := maps.Clone(passing)
+			if tc.first != "none" {
+				r["activation"] = tc.first
+			}
+			h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, r))
+			e.Wait()
+			first, _ := LoadState(h.gh.check(shaA).Text)
+			if first.Goal == nil || (first.Goal.Activation == "") != (tc.first == "none") {
+				t.Fatalf("first head goal = %+v", first.Goal)
+			}
+			h.gh.withLock(func() {
+				pr := h.gh.prs[7]
+				pr.Commits = append(pr.Commits, prCommit(shaB, "chore: restage\n\nRefs HOME-58\n\nActivation: "+tc.second))
+			})
+			h.gh.push(7, shaB)
+			r = maps.Clone(passing)
+			if tc.second != "none" {
+				r["activation"] = tc.second
+			}
+			h.k.finish(runReview(t, h, e, ctx, 7, shaB), kagent.StateCompleted, report(t, r))
+			e.Wait()
+			texts := goalTexts(h)
+			if len(texts) < 2 || strings.Contains(texts[len(texts)-1], "## Earlier goal check") {
+				t.Fatalf("the second head kept the earlier verdicts (goal calls %d)", len(texts))
+			}
+			st, _ := LoadState(h.gh.check(shaB).Text)
+			blocked := map[string]bool{}
+			for _, f := range st.Blocking {
+				blocked[f.ID] = true
+			}
+			if blocked["HOME-58:goal:criterion-1"] != tc.blockedOnSecond || blocked["HOME-58:goal"] != tc.blockedOnSecond {
+				t.Fatalf("second head blocking = %v, want criterion and goal blocked = %t", blocked, tc.blockedOnSecond)
+			}
+			if !tc.blockedOnSecond && (st.Goal == nil || st.Goal.Activation != activationDigest(step)) {
+				t.Fatalf("second head goal = %+v", st.Goal)
 			}
 		})
 	}

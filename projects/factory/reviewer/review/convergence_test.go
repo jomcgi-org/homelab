@@ -174,7 +174,7 @@ func TestGoalVerdictsCarryAcrossHeads(t *testing.T) {
 	if g := keepEarlier(&GoalCheck{Digest: "e", Overall: goalUnclear, Criteria: []GoalVerdict{{1, goalUnclear}}}, prev); g.Criteria[0].Verdict != goalUnclear {
 		t.Error("a verdict on other evidence was kept")
 	}
-	if earlierGoal(prev, "b", "e") != nil || earlierGoal(prev, "a", "d") != nil || earlierGoal(prev, "b", "d") != prev {
+	if earlierGoal(prev, "b", "e", "") != nil || earlierGoal(prev, "a", "d", "") != nil || earlierGoal(prev, "b", "d", "") != prev {
 		t.Error("earlierGoal matched the wrong head or evidence")
 	}
 
