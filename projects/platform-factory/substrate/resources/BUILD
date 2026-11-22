@@ -30,6 +30,7 @@ py_test(
     data = glob([
         "*.yaml",
         "egress-scan/*.yaml",
+        "microvm-assets/*",
         "patches/*.yaml",
         "upstream/**",
     ]) + [

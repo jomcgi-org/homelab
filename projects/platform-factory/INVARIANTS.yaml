@@ -32,6 +32,7 @@ invariants:
   statement: An agent worker reaches only the Substrate egress gateway and DNS.
   mechanism:
   - projects/platform-factory/substrate/resources/network-policy.yaml
+  - projects/platform-factory/substrate/resources/microvm-spike.yaml
   state: unproven
 - id: PLAT-7
   statement: 1Password Connect, ArgoCD redis and the repo-server accept requests only from their own controllers.

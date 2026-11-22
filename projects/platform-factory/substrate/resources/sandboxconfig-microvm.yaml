@@ -1,0 +1,44 @@
+# The microVM sandbox class (Kata guest on Cloud Hypervisor), amd64 only: the
+# factory home cluster's three nodes are amd64 and advertise ate.dev/kvm.
+# Modelled on manifests/ate-install/sandboxconfig-microvm.yaml.tmpl at the
+# release this install renders (kagent-dev/substrate v1.0.1), whose amd64
+# sha256 values these are.
+#
+# atelet fetches the four assets through its objectstore plugin from rustfs,
+# at digest-keyed paths in the snapshot bucket. They stay outside the
+# /atespaces/ snapshot prefix, which the plugin refuses to serve as assets.
+# microvm-assets.yaml stages them there; microvm-assets/assets.json holds the
+# same pins and the release sources. kata is 4.3.1 (not below 4.1.0, whose
+# virtiofsd fixes Cloud Hypervisor's snapshot restore) and Cloud Hypervisor
+# v53.0.
+#
+# A bump adds a version and points defaultVersion at it. Keep the previous
+# one: an actor restores its memory only on the version its snapshot was
+# taken with.
+apiVersion: ate.dev/v1
+kind: SandboxConfig
+metadata:
+  name: microvm
+  annotations:
+    sandboxconfig.ate.dev/is-class-default: "true"
+spec:
+  sandboxClass: microvm
+  defaultVersion: v2
+  versions:
+    - name: v2
+      state: Enabled
+      assets:
+        amd64:
+          cloud-hypervisor:
+            url: "s3://ate-snapshots/microvm-assets/amd64/448af3d4e59b22c2987f7df94c213ad40fb53a10d437e42b5ee6c4fce7c29ecc"
+            sha256: "448af3d4e59b22c2987f7df94c213ad40fb53a10d437e42b5ee6c4fce7c29ecc"
+          # Serves the actor's read-only rootfs lower over virtio-fs.
+          virtiofsd:
+            url: "s3://ate-snapshots/microvm-assets/amd64/15b2e72a78cc08a9bd8a6943e89fb69c88cb3cbeb63069efceade835342ac7d4"
+            sha256: "15b2e72a78cc08a9bd8a6943e89fb69c88cb3cbeb63069efceade835342ac7d4"
+          kata-kernel:
+            url: "s3://ate-snapshots/microvm-assets/amd64/f87d8359035cb7557b16a319e6431ea09b183e62268aef436bf8dc6530d786b6"
+            sha256: "f87d8359035cb7557b16a319e6431ea09b183e62268aef436bf8dc6530d786b6"
+          kata-image:
+            url: "s3://ate-snapshots/microvm-assets/amd64/6770db2cca5710593f27c9ac5e1d9d7aab836422695a5e5c4807496a92a0f24d"
+            sha256: "6770db2cca5710593f27c9ac5e1d9d7aab836422695a5e5c4807496a92a0f24d"

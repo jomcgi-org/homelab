@@ -1,0 +1,26 @@
+{
+  "bucket": "ate-snapshots",
+  "prefix": "microvm-assets",
+  "arch": "amd64",
+  "kata": {
+    "url": "https://github.com/kata-containers/kata-containers/releases/download/4.3.1/kata-static-4.3.1-amd64.tar.zst"
+  },
+  "assets": {
+    "cloud-hypervisor": {
+      "sha256": "448af3d4e59b22c2987f7df94c213ad40fb53a10d437e42b5ee6c4fce7c29ecc",
+      "url": "https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v53.0/cloud-hypervisor-static"
+    },
+    "virtiofsd": {
+      "sha256": "15b2e72a78cc08a9bd8a6943e89fb69c88cb3cbeb63069efceade835342ac7d4",
+      "kata": "opt/kata/libexec/virtiofsd"
+    },
+    "kata-kernel": {
+      "sha256": "f87d8359035cb7557b16a319e6431ea09b183e62268aef436bf8dc6530d786b6",
+      "kata": "opt/kata/share/kata-containers/vmlinux-6.18.56-208"
+    },
+    "kata-image": {
+      "sha256": "6770db2cca5710593f27c9ac5e1d9d7aab836422695a5e5c4807496a92a0f24d",
+      "kata": "opt/kata/share/kata-containers/kata-ubuntu-resolute.image"
+    }
+  }
+}

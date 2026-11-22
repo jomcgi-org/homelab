@@ -32,6 +32,9 @@ resources:
   - upstream/postgres.yaml
   - api-server-config.yaml
   - snapshot-store.yaml
+  - sandboxconfig-microvm.yaml
+  - microvm-assets.yaml
+  - microvm-spike.yaml
   - network-policy.yaml
   - kagent-identity-guard.yaml
   - ghcr-pull-secret.yaml
@@ -46,6 +49,12 @@ configMapGenerator:
     namespace: ate-system
     files:
       - config.yaml=atenet-egress-config.yaml
+  # The microVM asset pins and the script that stages them (microvm-assets.yaml).
+  - name: microvm-assets
+    namespace: ate-system
+    files:
+      - assets.json=microvm-assets/assets.json
+      - stage.py=microvm-assets/stage.py
   # The bundled PostgreSQL's roles and schema (pkg/postgressetup).
   - name: postgres-setup
     namespace: ate-system
