@@ -1,0 +1,1 @@
+Joe's decision of 2026-11-22 (factory PR triage) on HOME-651: Decision: the goal is to stage the guard, off by default as criterion 1 requires. Activation turns it on for coders before they get mandoline. ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-651#comment-10437))
