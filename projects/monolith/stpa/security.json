@@ -1,6 +1,6 @@
 {
   "lens": "security",
-  "commit": "e47f0874a",
+  "commit": "98432cb98",
   "scope": {
     "summary": "Identity, MCP tool authorization, and the boundaries between the public and private tiers.",
     "built": "Separate public and private binaries (ADR security/004), public_reader role with visibility filters on the replica, Turnstile-gated chat with three nested budgets, PrincipalMiddleware bearer-token verification on every MCP message, GroupPolicyMiddleware denying every MCP tool call outside the operators group (no tool tagged mcp:public), Discord trust ledger with per-guild per-user scoring and heuristics-fed instant enforcement, Cloudflare Access lane projecting verified email to agents console, Kubernetes RBAC scoping cluster mutation (ArgoCD sync, per-Kargo-project promote Roles) to the private pod."

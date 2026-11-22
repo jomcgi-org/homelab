@@ -159,8 +159,8 @@ shared-address, and multicast ranges but cannot deny an arbitrary public HTTPS
 host. That is an accepted GKE residual, not an exact replacement for Cilium's
 FQDN rules. Metadata-server access would remain denied.
 
-[#5277](https://github.com/jomcgi-org/homelab/issues/5277) and [#5276](https://github.com/jomcgi-org/homelab/issues/5276) closed not planned. Follow-up on native-policy
-enforcement is tracked in [MONO-39](https://factory-plan.jomcgi.dev/factory/issue/MONO-39) and [MONO-40](https://factory-plan.jomcgi.dev/factory/issue/MONO-40) (open on 2026-11-22).
+[#5277](https://github.com/jomcgi-org/homelab/issues/5277) and [#5276](https://github.com/jomcgi-org/homelab/issues/5276) closed not planned. Native-policy
+enforcement is not done.
 [#3897](https://github.com/jomcgi-org/homelab/issues/3897) closed completed for staged default-off private policy support.
 The staged native egress policy intentionally scopes default-deny to
 the private app endpoint. Searxng, CNPG, Atlas migration jobs, and
@@ -329,7 +329,7 @@ closure is pruned in `projects/monolith/BUILD` and asserted by
 
 The inert destination-scoped Cilium policy and its policy-only guard were
 removed in #5816. [#5276](https://github.com/jomcgi-org/homelab/issues/5276) (public native-policy enforcement) closed not
-planned; follow-up is tracked in [MONO-40](https://factory-plan.jomcgi.dev/factory/issue/MONO-40) (open on 2026-11-22) (Network
+planned, so the egress scope is not enforced (Network
 above). The unrelated OTEL endpoint assertion survives in the public render
 test. Kargo promotes `monolith-public` on the hub,
 so the live `targetRevision` on the Application, not the git pin, says what
@@ -456,7 +456,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
-| Public-tier egress scopes to its four documented destinations, enforced on the hub | Network | [#5276](https://github.com/jomcgi-org/homelab/issues/5276) closed not planned; follow-up tracked in [MONO-40](https://factory-plan.jomcgi.dev/factory/issue/MONO-40) (open on 2026-11-22) | not enforced on the hub |
+| Public-tier egress scopes to its four documented destinations, enforced on the hub | Network | [#5276](https://github.com/jomcgi-org/homelab/issues/5276) closed not planned | not enforced on the hub |
 
 ## Decision history
 
@@ -471,7 +471,7 @@ document carries what shipped.
 | security/001 Hermetic Semgrep via Bazel | vendor `semgrep-core` as an OCI artifact and run rules as cached Bazel tests | Superseded: the Bazel layer never scanned and was removed; CI scanning is Semgrep Managed Scans (#4777) | deleted |
 | security/002 Semgrep rule generation via RL | RL-finetuned model generates rules from CVEs | Deprecated; nothing live | deleted |
 | security/003 gVisor RuntimeClass | `runsc` for agent sandbox pods | Superseded by Firecracker guests; #3894 closed not planned | deleted |
-| security/004 Public read-only service isolation | separate public composition, `public_reader` on a replica, default-deny egress | Composition, role, replica, imports test and private rootfs hardening shipped; #3897 completed staged default-off policy support; [#5277](https://github.com/jomcgi-org/homelab/issues/5277) (private enforcement) closed not planned, with follow-up tracked in [MONO-39](https://factory-plan.jomcgi.dev/factory/issue/MONO-39) (open on 2026-11-22); umbrella #3895 closed not planned | deleted |
+| security/004 Public read-only service isolation | separate public composition, `public_reader` on a replica, default-deny egress | Composition, role, replica, imports test and private rootfs hardening shipped; #3897 completed staged default-off policy support; [#5277](https://github.com/jomcgi-org/homelab/issues/5277) (private enforcement) closed not planned, so private enforcement is not done; umbrella #3895 closed not planned | deleted |
 | security/005 Public chat adversarial hardening | Turnstile sessions, reserved headroom, server-side limits, DB-confined retrieval | Notes-chat retention and takedown built (#3899 completed); its public chat endpoint was later retired. Grimoire chat retains the budgets and off-cluster inference; the legacy purge covers only `chat_public` | deleted |
 | security/006 Friends authorization lane | `/moving` on `friends.jomcgi.dev` behind an authentik `family` group | Accepted, shipped (#4968) | deleted |
 | security/007 Aggregate threat model index | one ranked index over labelled issues, re-ranked by hand | Accepted; decisions 1, 2 and 4 live, decision 3 superseded by STPA lenses (#5294) | deleted |
