@@ -111,3 +111,75 @@ func TestJSONOnlyGoalAssessmentReturnsTicketFeedback(t *testing.T) {
 		t.Error("another issue answered")
 	}
 }
+
+// invariant: FACT-302
+// TestUnauditedGoalCheckRefreshesBeforeServingReasons holds a completed check
+// whose goal verdict names no audit record, as one published before
+// GoalCheck.AuditID. The API answers 404 until a fresh goal call on the same
+// head records an AuditID; the stored verdict is not reused for it.
+func TestUnauditedGoalCheckRefreshesBeforeServingReasons(t *testing.T) {
+	h, _ := issueHarness(t)
+	h.k.goal = "Overall: retries fail.\nCriterion 1: missing retry.\n" + goalReply(`{"criteria":[{"criterion":1,"verdict":"not_met"},{"criterion":2,"verdict":"met"}],"overall":"not_met"}`)
+	e, ctx, _ := h.start()
+	h.k.finish(runReview(t, h, e, ctx, 7, shaA), kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	goalCalls := func() (n int) {
+		for _, m := range h.k.sent() {
+			if strings.Contains(m.MessageID, "/goal/") {
+				n++
+			}
+		}
+		return n
+	}
+	before := goalCalls()
+	if before == 0 {
+		t.Fatal("no goal call")
+	}
+	// Make the check a legacy one: same verdict and digest, no AuditID.
+	h.gh.withLock(func() {
+		for _, c := range h.gh.checks {
+			if c.SHA != shaA || c.Name != "factory review" {
+				continue
+			}
+			st, ok := LoadState(c.Text)
+			if !ok || st.Goal == nil || st.Goal.AuditID == "" {
+				t.Fatalf("published goal = %+v", st.Goal)
+			}
+			st.Goal.AuditID = ""
+			c.Text = encodeState(st)
+		}
+	})
+	srv := httptest.NewServer(GoalReasonsHandler(e))
+	defer srv.Close()
+	status := func() int {
+		t.Helper()
+		resp, err := srv.Client().Get(srv.URL + GoalReasonsPath + "?repository=" + testRepo + "&pullRequest=7&head=" + shaA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := status(); got != http.StatusNotFound {
+		t.Fatalf("unaudited check answered %d", got)
+	}
+	reviews := func() int { return len(h.k.sent()) - goalCalls() }
+	started := reviews()
+	e.Tick(ctx)
+	eventually(t, "a fresh review on the same head", func() bool { return reviews() > started })
+	if got := status(); got != http.StatusNotFound {
+		t.Fatalf("held check answered %d", got)
+	}
+	h.k.finishOpen(kagent.StateCompleted, report(t, passing))
+	e.Wait()
+	if goalCalls() == before {
+		t.Fatal("the refresh reused the unaudited verdict")
+	}
+	st, _ := LoadState(h.gh.check(shaA).Text)
+	if st.IssuesPending || st.Goal == nil || !auditHash.MatchString(st.Goal.AuditID) {
+		t.Fatalf("refreshed goal = %+v", st.Goal)
+	}
+	if got := status(); got != http.StatusOK {
+		t.Fatalf("refreshed check answered %d", got)
+	}
+}

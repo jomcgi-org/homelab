@@ -545,6 +545,13 @@ func (e *Engine) issueContext(ctx context.Context, b *Binding, pr github.PullReq
 	return in
 }
 
+// unauditedGoal reports a goal verdict that names no audit record, as a
+// check published before GoalCheck.AuditID has. The goal reasons API cannot
+// tie it to a reply, so the check holds and its head gets a fresh goal call.
+func unauditedGoal(st State) bool {
+	return st.Goal != nil && st.Goal.AuditID == ""
+}
+
 func issuesPending(run *github.CheckRun) bool {
 	if run == nil {
 		return false
@@ -564,6 +571,9 @@ func (e *Engine) holdIssues(ctx context.Context, b *Binding, pr github.PullReque
 	// reference. Keep the reference in the state, so recovery can replay it.
 	st.TaskID = e.sourceTask(b, run, st)
 	why := "The issue evidence changed after the review read it."
+	if unauditedGoal(st) {
+		why = "The goal check's verdict names no audit record, so its reasons cannot reach the next revision round."
+	}
 	if len(pending) > 0 {
 		why = "Issue evidence could not be read:"
 		for _, f := range pending {
@@ -628,7 +638,7 @@ func (e *Engine) reconcileIssues(ctx context.Context, b *Binding, pr github.Pull
 		unread = fresh.Pending
 	}
 	ready = len(unread) == 0
-	if ready && !st.IssuesPending && st.IssueDigest == issueDigest(fresh) {
+	if ready && !st.IssuesPending && st.IssueDigest == issueDigest(fresh) && !unauditedGoal(st) {
 		return run, false, false
 	}
 	if st.IssuesPending && run.Conclusion == ConclusionFailure {

@@ -1941,7 +1941,9 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				sameSnapshot := false
 				if st, ok := LoadState(run.Text); ok {
 					in.promptVersions = st.PromptVersions
-					in.goal = st.Goal // goalCheck reuses it for the same evidence.
+					if !unauditedGoal(st) {
+						in.goal = st.Goal // goalCheck reuses it for the same evidence.
+					}
 					if st.Incomplete {
 						// A complete replay restores the state; otherwise
 						// it stays incomplete and keeps the check blocked.
