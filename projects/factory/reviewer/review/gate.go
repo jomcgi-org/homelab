@@ -345,7 +345,11 @@ func readInvariantPolicy(ctx context.Context, gh RulesReader, repo, commit strin
 			continue
 		}
 		if tree.Symlinks[file] {
-			return nil, fmt.Errorf("%s is a symlink; invariant policy must be a regular file", file)
+			// CI rejects a symlinked policy file, so one on base is a repair
+			// case: record it as present with no trusted content, so any PR
+			// that touches it is gated and other reviews continue.
+			policy[file] = nil
+			continue
 		}
 		data, err := gh.FileContent(ctx, repo, file, commit)
 		if err != nil {
@@ -422,6 +426,11 @@ func (p invariantPolicy) weakened(ctx context.Context, gh invariantReader, repo,
 	for _, f := range files {
 		for _, name := range []string{f.Path, f.PreviousPath} {
 			if name == "" || path.Base(name) != invariantFile || slices.Contains(out, name) {
+				continue
+			}
+			if data, ok := p[name]; ok && data == nil {
+				// The base copy is a symlink: gate any change to it, including a repair.
+				out = append(out, name)
 				continue
 			}
 			// Compare with the PR's merge base, not the base tip, so an

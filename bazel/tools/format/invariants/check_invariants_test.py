@@ -1,9 +1,11 @@
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 import yaml
 
-from check_invariants import InvariantLoader, eligible_tests, validate
+from check_invariants import InvariantLoader, check, eligible_tests, validate
 
 ROW = dict(
     id="DEMO-1",
@@ -297,3 +299,14 @@ def test_unreadable_target_file_is_skipped(tmp_path, monkeypatch):
     git("commit", "-qam", "break")
     git("checkout", "-q", "pr")
     check(records_only=True, target="main")
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+def test_symlinked_policy_file_is_rejected(tmp_path, monkeypatch):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "policy.yaml").write_text("invariants: []\n")
+    (tmp_path / "INVARIANTS.yaml").symlink_to("policy.yaml")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError, match="must be a regular file"):
+        check(records_only=True)
