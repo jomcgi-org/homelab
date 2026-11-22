@@ -1,6 +1,6 @@
 # Homelab Threat Model
 
-_Reviewed against commit 9c42d9c92._
+_Reviewed against commit ba14c060c._
 
 This page holds the structure of the threat model for both clusters: what
 is worth protecting, who attacks it, and where untrusted input crosses a
@@ -24,8 +24,7 @@ project's `STPA.md`.
 | Cluster state and backups | etcd, three Postgres clusters, Garage |
 | Public-site integrity: jomcgi.dev says what Joe published | The jomcgi-site Worker |
 | Hub: personal data (knowledge graph, notes, calendar, chat history) | Postgres, behind the monolith |
-| Hub: credentials held for workloads | 1Password Operator; the EmberVM egress sidecar |
-| Hub: tenant state and compute | EmberVM's object store; the hub nodes |
+| Hub: credentials held for workloads | 1Password Operator |
 
 ## Attacker positions
 
@@ -79,8 +78,7 @@ The factory has no STPA security lens yet.
 
 ### GKE hub
 
-The hub's boundaries are unchanged from the earlier model. HOME-93 and
-HOME-89 track its update.
+The hub application set is declared in `projects/gke-apps/kustomization.yaml`. The EmberVM guest boundary and the former hub factory conductor have retired.
 
 ```mermaid
 graph LR
@@ -94,8 +92,6 @@ graph LR
         GW --> PRIV["Private tier<br/>private.jomcgi.dev<br/>Cloudflare Access + authentik"]
         GW --> MCP["MCP gateway<br/>Context Forge<br/>authentik-issued tokens"]
         MCP --> MONO["Monolith"]
-        MONO --> EVM["EmberVM<br/>untrusted code in<br/>Firecracker VMs"]
-        PUB --> EVM
         POLY["Polylane agent<br/>cluster-wide read<br/>get/list, no secrets"]
     end
     POLY -- "outbound tunnel;<br/>topology and pod logs" --> PL["Polylane<br/>(third party)"]
@@ -108,7 +104,6 @@ These surfaces keep their deep models:
 | Public tier | Anyone on the internet | [monolith STPA, security lens](../projects/monolith/STPA.md); [public-tier checklist](runbooks/public-tier-checklist.md) |
 | Private tier | Signed-in humans, service tokens, GitHub webhooks (HMAC-gated) | [monolith STPA, security lens](../projects/monolith/STPA.md) |
 | MCP gateway | Agents, including prompt-injected ones | [monolith STPA, security lens](../projects/monolith/STPA.md) |
-| EmberVM | Untrusted code, by design | [embervm STPA, security lens](../projects/embervm/STPA.md) |
 | Polylane agent | None inbound; it reads the cluster and sends out | None yet |
 | Cluster baseline | Everything above sits on it | [security.md](security.md) |
 
