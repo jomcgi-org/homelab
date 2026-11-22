@@ -291,6 +291,6 @@ invariants:
   mechanism:
   - projects/factory/connector/dispatch/delivery.go
   - projects/factory/connector/store/delivery.go
-  - projects/factory/connector/migrations/20261122130000_home756_recuts.sql
+  - projects/factory/connector/migrations/20261124000000_home756_recuts.sql
   test: //projects/factory/connector/dispatch:dispatch_test
   state: unproven
