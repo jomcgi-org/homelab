@@ -1,0 +1,1 @@
+Joe's decision of 2026-11-22 (factory PR triage) on HOME-89: Decision: the criterion "new findings get their own issues" cannot be seen in a diff. It now reads: the change lists any new finding issues, or says there are none. The missing pr-checks feedback edge moves to HOME-782. ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-89#comment-10428))
