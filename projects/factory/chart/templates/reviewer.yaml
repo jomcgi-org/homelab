@@ -181,7 +181,7 @@ spec:
 {{- if include "factory.goalReasons" . }}
 ---
 # The goal reasons listener; reviewer-network-policy.yaml admits only the
-# connector. /metrics is on another port, which only Prometheus reaches.
+# connector, and /metrics stays unexposed.
 apiVersion: v1
 kind: Service
 metadata:
