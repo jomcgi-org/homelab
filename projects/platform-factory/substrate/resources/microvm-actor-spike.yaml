@@ -15,7 +15,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: microvm-actor-spike-2
+  name: microvm-actor-spike-3
   namespace: ate-system
   annotations:
     argocd.argoproj.io/sync-wave: "2"

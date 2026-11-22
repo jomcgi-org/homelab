@@ -435,7 +435,7 @@ _BOOTSTRAP_OWNERS = (
 
 
 def _spike_job(docs: list[dict]) -> dict:
-    return _one(docs, "Job", "microvm-actor-spike-2")
+    return _one(docs, "Job", "microvm-actor-spike-3")
 
 
 def test_spike_job_runs_as_ate_client_with_the_api_audience_token() -> None:
@@ -535,11 +535,31 @@ def test_spike_job_mounts_its_script_and_the_template_it_deletes() -> None:
     data = _one(docs, "ConfigMap", config["configMap"]["name"])["data"]
     assert set(data) == {"spike.py", "template.yaml"}
     template = yaml.safe_load(data["template.yaml"])
-    assert template["metadata"] == {"atespace": "microvm-spike", "name": "nginx"}
+    assert template["metadata"] == {"atespace": "microvm-spike", "name": "http"}
     assert template["workerSelector"]["matchLabels"] == {"workload": "microvm-spike"}
     assert template["resources"]["limits"]["memoryBytes"] == 256 * 1024 * 1024
     assert template["snapshotConfig"]["preferredFidelity"] == "SNAPSHOT_FIDELITY_MEMORY"
-    assert "@sha256:" in template["containers"][0]["image"]
+    (container,) = template["containers"]
+    # No new image: the workload is the Job's own python digest.
+    (spike,) = job["spec"]["template"]["spec"]["containers"]
+    assert container["image"] == spike["image"]
+    assert container["image"].endswith(
+        "@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f"
+    )
+    # `command` is the whole argv. Port 8080 needs no CAP_NET_BIND_SERVICE, and
+    # the default capability set is kept (no securityContext).
+    assert container["command"] == [
+        "/usr/local/bin/python3",
+        "-m",
+        "http.server",
+        "8080",
+        "--bind",
+        "0.0.0.0",
+    ]
+    assert "securityContext" not in container
+    probe = container["wakeupProbe"]
+    assert probe["httpGet"] == {"path": "/", "port": 8080}
+    assert probe["timeoutSeconds"] == 45
     # The template selects the spike pool.
     pool = _one(docs, "WorkerPool", "microvm-spike")
     assert pool["metadata"]["labels"] == template["workerSelector"]["matchLabels"]
@@ -577,15 +597,15 @@ case "$*" in
   "get workers --sandbox-class microvm -o json")
     echo '{"workers":[{"metadata":{"name":"w0"},"workerPool":"other","status":{"state":"WORKER_STATE_ACTIVE"}},{"metadata":{"name":"w1"},"workerPool":"microvm-spike","status":{"state":"'"${FAKE_WORKER_STATE:-WORKER_STATE_ACTIVE}"'"}}]}' ;;
   "create atespace microvm-spike"|"create actor-template -f "*) echo created ;;
-  "get actor-template nginx -a microvm-spike -o json")
+  "get actor-template http -a microvm-spike -o json")
     n=$(cat "$FAKE_STATE/golden" 2>/dev/null || echo 0); n=$((n+1))
     echo $n > "$FAKE_STATE/golden"
     if [ -n "$FAKE_GOLDEN_ERROR" ]; then
-      echo '{"status":{"goldenSnapshotStatus":{"errorMessage":"boom"}}}'
+      printf '{"status":{"goldenSnapshotStatus":{"errorMessage":"%s"}}}\n' "$FAKE_GOLDEN_ERROR"
     elif [ "$n" -ge 2 ]; then
       echo '{"status":{"goldenSnapshotStatus":{"goldenTag":{"name":"g1"}}}}'
     else echo '{"status":{}}'; fi ;;
-  "create actor spike-1 -a microvm-spike --template nginx")
+  "create actor spike-1 -a microvm-spike --template http")
     echo SUSPENDED > "$FAKE_STATE/state"; echo created ;;
   "resume actor spike-1 -a microvm-spike") echo RUNNING > "$FAKE_STATE/state"; echo ok ;;
   "suspend actor spike-1 -a microvm-spike --mode sync")
@@ -631,7 +651,7 @@ def _run_spike(
     }.items():
         monkeypatch.setenv(key, str(value))
     if golden_error:
-        monkeypatch.setenv("FAKE_GOLDEN_ERROR", "1")
+        monkeypatch.setenv("FAKE_GOLDEN_ERROR", "boom")
     for key, value in (env or {}).items():
         monkeypatch.setenv(key, value)
     spec = importlib.util.spec_from_file_location("spike", _SPIKE)
@@ -677,7 +697,7 @@ def test_spike_script_times_each_phase_and_cleans_up(
         deletes
         == [
             "delete actor spike-1 -a microvm-spike",
-            "delete actor-template nginx -a microvm-spike",
+            "delete actor-template http -a microvm-spike",
             "delete atespace microvm-spike",
         ]
         * 2
@@ -711,3 +731,12 @@ def test_spike_script_waits_for_its_own_pools_active_worker(
     out = capsys.readouterr().out
     assert "a microvm-spike worker: not ready after" in out
     assert "create atespace" not in calls.read_text()
+
+
+def test_spike_script_logs_a_long_golden_error_in_full(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    message = "start-" + "x" * 1500 + "-end"
+    module, _ = _run_spike(tmp_path, monkeypatch, env={"FAKE_GOLDEN_ERROR": message})
+    assert module.main() == 1
+    assert message in capsys.readouterr().out

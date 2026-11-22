@@ -1,21 +1,33 @@
-# ActorTemplate (protojson ateapi.ActorTemplate) for the microVM spike: the
-# smallest public workload, in a small guest. spike.py creates it in the spike
-# atespace and deletes it again.
+# ActorTemplate (protojson ateapi.ActorTemplate) for the microVM spike: a
+# Python HTTP server, from the image the Job itself runs, in a small guest.
+# spike.py creates it in the spike atespace and deletes it again.
+#
+# `command` is the whole argv: the image's ENTRYPOINT and CMD are ignored. The
+# server runs as root on port 8080 (no CAP_NET_BIND_SERVICE) with the default
+# capability set, and answers the wakeup probe with a directory listing of /.
 metadata:
   atespace: microvm-spike
-  name: nginx
+  name: http
 workerSelector:
   matchLabels:
     workload: microvm-spike
 containers:
-  - name: nginx
-    image: nginx:1.29.8-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+  - name: http
+    image: python:3.14.10-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f
+    command:
+      - /usr/local/bin/python3
+      - -m
+      - http.server
+      - "8080"
+      - --bind
+      - 0.0.0.0
     wakeupProbe:
       httpGet:
         path: /
-        port: 80
-      # A microVM guest boot is slow on a busy node.
-      timeoutSeconds: 120
+        port: 8080
+      # The probe retries in a tight loop, so a workload that never listens
+      # fails the golden build after this long.
+      timeoutSeconds: 45
 # The guest's RAM and vCPUs. With the microVM overhead this has to fit the
 # worker's limit (microvm-spike.yaml).
 resources:

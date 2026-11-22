@@ -527,13 +527,13 @@ namespace patch in `resources/kustomization.yaml` stops ArgoCD pruning it.
 `ate-system/ate-client`, an owner the ate API already authorizes, so no one
 gets a new grant. It authenticates with a projected token for the audience
 `api.ate-system.svc` and drives `kubectl-ate` (v1.0.1, staged in rustfs): it
-waits for a `microvm-spike` worker, builds the golden snapshot of an nginx
-template (256Mi guest), starts an actor, suspends it and restores it, then
+waits for a `microvm-spike` worker, builds the golden snapshot of a Python
+HTTP-server template (256Mi guest), starts an actor, suspends it and restores it, then
 deletes all of it. Each phase is timed, and two `hold` windows (90 s) are for
 sampling the worker pod's memory from outside:
 
 ```bash
-kubectl -n ate-system logs -f job/microvm-actor-spike-2 | grep '^SPIKE '
+kubectl -n ate-system logs -f job/microvm-actor-spike-3 | grep '^SPIKE '
 kubectl -n substrate-microvm-spike top pod      # during each hold line
 ```
 

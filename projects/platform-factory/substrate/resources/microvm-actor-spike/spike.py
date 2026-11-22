@@ -37,7 +37,7 @@ ENDPOINT = os.environ.get("ATE_ENDPOINT", "api.ate-system.svc:443")
 TOKEN_FILE = os.environ.get("ATE_TOKEN_FILE", "/var/run/ate/token")
 TEMPLATE_FILE = os.environ.get("TEMPLATE_FILE", "/config/template.yaml")
 ATESPACE = os.environ.get("ATESPACE", "microvm-spike")
-TEMPLATE = os.environ.get("TEMPLATE", "nginx")
+TEMPLATE = os.environ.get("TEMPLATE", "http")
 ACTOR = os.environ.get("ACTOR", "spike-1")
 POOL = os.environ.get("POOL", "microvm-spike")
 WORKER_WAIT = float(os.environ.get("WORKER_WAIT_SECONDS", "1800"))
@@ -215,7 +215,7 @@ def run() -> dict[str, float]:
     def golden_done() -> bool:
         tag, error = golden_status()
         if error:
-            raise Failed(f"golden build failed: {error[:300]}")
+            raise Failed(f"golden build failed: {error[:2000]}")
         return bool(tag)
 
     wait_for("golden tag", GOLDEN_WAIT, golden_done, golden_status)
