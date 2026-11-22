@@ -130,7 +130,7 @@ and the coder's actual start commit is not verified yet.
 After the connector migration and updated services roll out, select one new
 coder receipt and one new reviewer receipt. Confirm the reviewer message was
 accepted by kagent in the reviewer service logs. This query must show six
-non-empty inputs for each selected execution. For coder attempts, a null actual start means the connector has no checkout report.
+non-empty inputs for each selected execution. For coder attempts, a null actual start means the connector has no successful checkout probe for the assigned branch. The connector reads the SHA from the matching shell command result in the task artifacts.
 
 ```sql
 SELECT r.id, r.origin, r.trigger, r.issue_key, a.model, a.reasoning_effort, a.arm,

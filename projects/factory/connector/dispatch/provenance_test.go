@@ -143,7 +143,32 @@ func TestCoderAndReworkRunProvenance(t *testing.T) {
 	v.gh.push("factory/HL-7", head, "fix: issue")
 	attemptID := v.latest(1).ID
 	observed := strings.Repeat("c", 40)
-	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, fmt.Sprintf("Worktree-Start-%d: %s", attemptID, observed), nil)
+	taskID := v.kg.lastTask()
+	command := "git symbolic-ref --short HEAD && git rev-parse --verify HEAD"
+	if !strings.Contains(sends[0].msg.Parts[0].Text, command) {
+		t.Fatal("dispatch omitted the checkout probe")
+	}
+	call := kagent.Part{
+		Metadata: map[string]any{kagent.PartTypeKey: kagent.PartToolCall},
+		Data: map[string]any{
+			"id": "probe", "name": "command_execution",
+			"args": map[string]any{"command": "/bin/bash -lc '" + command + "'"},
+		},
+	}
+	result := kagent.Part{
+		Metadata: map[string]any{kagent.PartTypeKey: kagent.PartToolResponse},
+		Data: map[string]any{
+			"id": "probe", "name": "command_execution",
+			"response": map[string]any{"result": map[string]any{
+				"output": "factory/HL-7\n" + observed + "\n", "status": "completed", "exitCode": float64(0),
+			}},
+		},
+	}
+	artifactSnapshot(v, taskID, kagent.StateWorking,
+		&kagent.Artifact{ArtifactID: "probe-call", Parts: []kagent.Part{call}},
+		&kagent.Artifact{ArtifactID: "probe-result", Parts: []kagent.Part{result}},
+	)
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, fmt.Sprintf("Worktree-Start-%d: %s", attemptID, head), nil)
 	v.clk.Advance(5 * time.Second)
 	v.tick(v.e)
 	var actual string
