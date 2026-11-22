@@ -353,6 +353,10 @@ var ErrTooLarge = errors.New("github: file too large to read inline")
 // Tree is the files of a commit's tree.
 type Tree struct {
 	Files map[string]bool
+	// Symlinks marks the blobs whose mode is 120000. The Contents API
+	// follows such a link, so a caller that must read the path itself
+	// checks here first.
+	Symlinks map[string]bool
 	// Truncated is set when GitHub listed only part of the tree (over
 	// 100,000 entries or 7 MB); a path missing from Files may then exist.
 	Truncated bool
@@ -369,6 +373,7 @@ func (c *Client) Tree(ctx context.Context, repo, ref string) (*Tree, error) {
 		Tree []struct {
 			Path string `json:"path"`
 			Type string `json:"type"`
+			Mode string `json:"mode"`
 		} `json:"tree"`
 		Truncated bool `json:"truncated"`
 	}
@@ -376,10 +381,13 @@ func (c *Client) Tree(ctx context.Context, repo, ref string) (*Tree, error) {
 	if err := c.doUncached(ctx, repo, http.MethodGet, p, nil, &out); err != nil {
 		return nil, err
 	}
-	t := &Tree{Files: make(map[string]bool, len(out.Tree)), Truncated: out.Truncated}
+	t := &Tree{Files: make(map[string]bool, len(out.Tree)), Symlinks: map[string]bool{}, Truncated: out.Truncated}
 	for _, e := range out.Tree {
 		if e.Type == "blob" {
 			t.Files[e.Path] = true
+			if e.Mode == "120000" {
+				t.Symlinks[e.Path] = true
+			}
 		}
 	}
 	return t, nil
