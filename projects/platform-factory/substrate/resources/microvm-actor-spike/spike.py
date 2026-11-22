@@ -100,17 +100,20 @@ def get_json(*args: str) -> object:
         raise Failed(f"{' '.join(args)}: not JSON: {done.stdout[:200]!r}") from err
 
 
-def worker_ready() -> bool:
+def pool_workers() -> list[dict]:
+    """The pool's workers. A worker holds its pool name; its state is nested."""
     data = get_json("get", "workers", "--sandbox-class", "microvm")
-    for item in walk(data):
-        state = item.get("state")
-        if (
-            isinstance(state, str)
-            and state == "WORKER_STATE_ACTIVE"
-            and POOL in json.dumps(item)
-        ):
-            return True
-    return False
+    return [
+        w for w in walk(data) if POOL in (w.get("workerPool"), w.get("worker_pool"))
+    ]
+
+
+def worker_states() -> list[str]:
+    return [str(first(w, "state")) for w in pool_workers()]
+
+
+def worker_ready() -> bool:
+    return "WORKER_STATE_ACTIVE" in worker_states()
 
 
 def golden_status() -> tuple[str, str]:
@@ -129,13 +132,24 @@ def actor_state() -> str:
     return ""
 
 
-def wait_for(what: str, limit: float, ready) -> float:
+def wait_for(what: str, limit: float, ready, detail=None) -> float:
+    """Poll ready(); every minute log what is still missing."""
     start = time.monotonic()
+    next_note = start + 60
     while True:
         if ready():
             return time.monotonic() - start
-        if time.monotonic() - start > limit:
+        now = time.monotonic()
+        if now - start > limit:
             raise Failed(f"{what}: not ready after {limit:.0f}s")
+        if now >= next_note:
+            next_note = now + 60
+            log(
+                event="waiting",
+                what=repr(what),
+                elapsed=f"{now - start:.0f}",
+                seen=repr(detail() if detail else ""),
+            )
         time.sleep(POLL)
 
 
@@ -189,7 +203,9 @@ def run() -> dict[str, float]:
     times: dict[str, float] = {}
     check_binary()
     cleanup()
-    times["worker_wait"] = wait_for(f"a {POOL} worker", WORKER_WAIT, worker_ready)
+    times["worker_wait"] = wait_for(
+        f"a {POOL} worker", WORKER_WAIT, worker_ready, lambda: worker_states()
+    )
     log(phase="worker_wait", seconds=f"{times['worker_wait']:.2f}", status="ok")
 
     ate("create", "atespace", ATESPACE)
@@ -202,7 +218,7 @@ def run() -> dict[str, float]:
             raise Failed(f"golden build failed: {error[:300]}")
         return bool(tag)
 
-    wait_for("golden tag", GOLDEN_WAIT, golden_done)
+    wait_for("golden tag", GOLDEN_WAIT, golden_done, golden_status)
     times["golden_build"] = time.monotonic() - start
     log(phase="golden_build", seconds=f"{times['golden_build']:.2f}", status="ok")
 
