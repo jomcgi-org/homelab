@@ -1574,3 +1574,19 @@ func TestInstallationSecondaryRateLimitBlocksBothAPIs(t *testing.T) {
 		}
 	}
 }
+
+func TestETagCacheSkipsLargeBodies(t *testing.T) {
+	c := &ETagCache{MaxBody: 4}
+	c.put("/small", `"a"`, []byte("abcd"))
+	c.put("/big", `"b"`, []byte("abcde"))
+	if _, _, ok := c.get("/small"); !ok {
+		t.Fatal("small body not cached")
+	}
+	if _, _, ok := c.get("/big"); ok {
+		t.Fatal("large body cached")
+	}
+	c.put("/small", `"c"`, []byte("abcdef"))
+	if _, _, ok := c.get("/small"); ok {
+		t.Fatal("stale small body kept after a large update")
+	}
+}

@@ -221,9 +221,11 @@ sequenceDiagram
     C->>G: Poll current head for checks and review
 ```
 
-**Review.** Poll owned PRs every 60 s (no public webhook): GraphQL for the
-PR, its reviews and review threads, REST for check runs and statuses on the
-head. Delivery and status share the installation cooldown. The client tracks
+**Review.** Poll each owned PR every `reviewPoll` (no public webhook; 120 s
+in the homelab deploy): GraphQL for the PR, its reviews and review threads,
+REST for check runs and statuses on the head. REST reads are conditional, so
+an unchanged answer (304) costs no rate limit. Delivery and status share the
+installation cooldown. The client tracks
 REST and GraphQL primary limits separately and honors `Retry-After` for both.
 It logs each GitHub response with the operation, HTTP status and limit headers.
 Events that ask for changes are a `CHANGES_REQUESTED` review, or a

@@ -231,11 +231,19 @@ func run(log *slog.Logger) error {
 	// Delivery (PRs, review rounds, merge) needs the broker's GitHub tokens.
 	// The broker's quota reading resumes work a quota failure paused.
 	githubLimits := &github.RateLimit{Log: log}
+	// Repeated REST reads are conditional: GitHub answers an unchanged
+	// resource with 304, which costs no rate limit. Delivery re-reads each
+	// open PR's statuses and check runs every reviewPoll. At most 256
+	// bodies of up to 256 KiB: 64 MiB within the 256 MiB memory limit.
+	githubETags := &github.ETagCache{Max: 256, MaxBody: 256 << 10}
 	var gh dispatch.GitHub
 	var quota dispatch.QuotaSource
 	if cfg.BrokerURL != "" {
 		bearer := &kagent.TokenSource{Path: cfg.BrokerTokenFile}
-		gh = &github.Client{BaseURL: cfg.GitHubURL, RateLimit: githubLimits, Tokens: &github.BrokerTokens{URL: cfg.BrokerURL, Bearer: bearer}}
+		gh = &github.Client{
+			BaseURL: cfg.GitHubURL, RateLimit: githubLimits, ETags: githubETags,
+			Tokens: &github.BrokerTokens{URL: cfg.BrokerURL, Bearer: bearer},
+		}
 		quota = &github.BrokerQuota{URL: cfg.BrokerURL, Bearer: bearer}
 	} else {
 		log.Warn("FACTORY_CONNECTOR_BROKER_URL is unset; delivery (PRs, review and merge) is off")
@@ -341,7 +349,7 @@ func run(log *slog.Logger) error {
 	var statusGitHub status.GitHub
 	if cfg.BrokerURL != "" {
 		statusGitHub = &github.Client{
-			BaseURL: cfg.GitHubURL, HTTP: statusHTTP, RateLimit: githubLimits,
+			BaseURL: cfg.GitHubURL, HTTP: statusHTTP, RateLimit: githubLimits, ETags: githubETags,
 			Tokens: &github.BrokerTokens{
 				URL: cfg.BrokerURL, HTTP: statusHTTP,
 				Bearer: &kagent.TokenSource{Path: cfg.BrokerTokenFile},
