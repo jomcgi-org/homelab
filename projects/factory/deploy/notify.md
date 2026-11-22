@@ -10,8 +10,14 @@ field on each request. The bridge accepts only the factory-connector identity.
 The request contains Channel (homelab), Level (info, warn or error), and Text
 with Key, Title and optional Status, Count and canonical Link. Both ends validate
 the fixed vocabulary. Discord receives a Components V2 post with mentions
-disabled and a stable nonce for short-window retry deduplication. Confirm the
-connector startup smoke notification in the homelab channel after rollout.
+disabled, a stable nonce for short-window retry deduplication and a `ref` line
+with that nonce. Before it posts, the bridge reads the channel's messages from
+the start of the UTC day (at most 1,000) and skips a key that Bosun already
+posted there. The record is the channel itself, so a same-day restart of either
+workload posts nothing new. Bosun needs View Channel and Read Message History in
+the channel; a failed read returns 502 and the connector retries. Confirm the
+connector startup smoke notification in the homelab channel after rollout,
+restart the connector, and confirm there is still one message.
 
 This path ships off: the deploy values set neither the channel nor
 `connector.notify.enabled`. Agent sessions keep `monolith-agent-notify`
