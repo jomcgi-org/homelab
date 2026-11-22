@@ -77,7 +77,9 @@ arguments: a priority value, a position or a partition. Coder-facing text,
 the title and the description, comes only from a trusted writer, a `split`
 copy of a trusted writer's issue with unchanged hashes, or a reviewed
 template. No op adds an approval or the human gate as a `Done when` item:
-the human-gate hold covers them ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-759#comment-10159)). Model text reaches only the audit
+the human-gate hold covers them ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-759#comment-10159)).
+A diagram or code block goes after the `Done when` list, never before it
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-436#comment-10910)). Model text reaches only the audit
 `reason` and the evidence block of a proposal or card, quoted and sanitized.
 An instruction copied from a log, a PR or an untrusted edit therefore cannot
 reach a coder.
