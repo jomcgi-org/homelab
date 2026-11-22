@@ -155,7 +155,8 @@ def test_deploy_values_link_the_itsaplan_run() -> None:
     # stays behind Authentik; only the URL is public.
     links = _config(_render(enable=False))["links"]
     assert (
-        links["run"] == "https://factory-plan.jomcgi.dev/factory/HOME/agents/queue/{run}"
+        links["run"]
+        == "https://factory-plan.jomcgi.dev/factory/HOME/agents/queue/{run}"
     )
 
 
