@@ -435,7 +435,7 @@ _BOOTSTRAP_OWNERS = (
 
 
 def _spike_job(docs: list[dict]) -> dict:
-    return _one(docs, "Job", "microvm-actor-spike-1")
+    return _one(docs, "Job", "microvm-actor-spike-2")
 
 
 def test_spike_job_runs_as_ate_client_with_the_api_audience_token() -> None:
@@ -575,7 +575,7 @@ echo "$*" >> "$FAKE_STATE/calls"
 state() { cat "$FAKE_STATE/state" 2>/dev/null || echo SUSPENDED; }
 case "$*" in
   "get workers --sandbox-class microvm -o json")
-    echo '[{"name":"w1","pool":"microvm-spike","state":"WORKER_STATE_ACTIVE"}]' ;;
+    echo '{"workers":[{"metadata":{"name":"w0"},"workerPool":"other","status":{"state":"WORKER_STATE_ACTIVE"}},{"metadata":{"name":"w1"},"workerPool":"microvm-spike","status":{"state":"'"${FAKE_WORKER_STATE:-WORKER_STATE_ACTIVE}"'"}}]}' ;;
   "create atespace microvm-spike"|"create actor-template -f "*) echo created ;;
   "get actor-template nginx -a microvm-spike -o json")
     n=$(cat "$FAKE_STATE/golden" 2>/dev/null || echo 0); n=$((n+1))
@@ -598,7 +598,9 @@ esac
 """
 
 
-def _run_spike(tmp_path: Path, monkeypatch, golden_error: bool = False):
+def _run_spike(
+    tmp_path: Path, monkeypatch, golden_error: bool = False, env: dict | None = None
+):
     import hashlib
     import importlib.util
 
@@ -630,6 +632,8 @@ def _run_spike(tmp_path: Path, monkeypatch, golden_error: bool = False):
         monkeypatch.setenv(key, str(value))
     if golden_error:
         monkeypatch.setenv("FAKE_GOLDEN_ERROR", "1")
+    for key, value in (env or {}).items():
+        monkeypatch.setenv(key, value)
     spec = importlib.util.spec_from_file_location("spike", _SPIKE)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -689,3 +693,21 @@ def test_spike_script_cleans_up_and_fails_when_the_golden_build_fails(
     assert "result=fail" in out and "golden build failed: boom" in out
     assert "create actor spike-1" not in calls.read_text()
     assert calls.read_text().splitlines()[-1] == "delete atespace microvm-spike"
+
+
+def test_spike_script_waits_for_its_own_pools_active_worker(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    # Another pool's worker is ACTIVE in the fake; this pool's is not.
+    module, calls = _run_spike(
+        tmp_path,
+        monkeypatch,
+        env={
+            "FAKE_WORKER_STATE": "WORKER_STATE_UNAVAILABLE",
+            "WORKER_WAIT_SECONDS": "0.3",
+        },
+    )
+    assert module.main() == 1
+    out = capsys.readouterr().out
+    assert "a microvm-spike worker: not ready after" in out
+    assert "create atespace" not in calls.read_text()

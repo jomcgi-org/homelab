@@ -533,7 +533,7 @@ deletes all of it. Each phase is timed, and two `hold` windows (90 s) are for
 sampling the worker pod's memory from outside:
 
 ```bash
-kubectl -n ate-system logs -f job/microvm-actor-spike-1 | grep '^SPIKE '
+kubectl -n ate-system logs -f job/microvm-actor-spike-2 | grep '^SPIKE '
 kubectl -n substrate-microvm-spike top pod      # during each hold line
 ```
 
