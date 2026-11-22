@@ -1,4 +1,4 @@
-/* invariant: FACT-14 */
+/* invariant: FACT-17 */
 -- Private operator report. Run with psql -X -f delivery_timings.sql against
 -- the connector database. The cohort is work items created in the last 30 days.
 WITH bounds AS (
