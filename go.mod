@@ -19,6 +19,7 @@ require (
 	github.com/spf13/viper v1.19.0
 	github.com/spiffe/go-spiffe/v2 v2.7.0
 	github.com/stretchr/testify v1.12.1
+	github.com/yuin/goldmark v1.7.8
 	github.com/zricethezav/gitleaks/v8 v8.24.3
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.45.0

@@ -1,6 +1,8 @@
+// invariant: FACT-436
 package review
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -17,6 +19,9 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/text"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 
@@ -347,18 +352,70 @@ func countedCriteria(g *GoalCheck) bool {
 	return g != nil && g.Counted > 0 && g.Counted == len(g.Criteria)
 }
 
-// issueCriteria counts the criteria in the issue's one "Done when" or
-// "Acceptance criteria" list. Only trusted issue text counts: an untrusted
-// edit must not shorten the list. Items are top-level "1." or "1)" lines
-// numbered in sequence, or top-level "-", "*" or "+" bullets (task boxes
-// allowed), one marker style per list; an indented line that is not a list
-// marker continues an item, and another top-level line ends the list. Any
-// line that could be a list marker but is not the next item (a gap, another
-// style, a nested list, an item after the list ended) or a second list
-// heading makes the list uncountable: 0, which withdraws nothing.
+var excludedWithdrawalMarkdown = regexp.MustCompile("(?m)<[A-Za-z/!?]|```|~~~|" + `^[ \t]*(?:(?:[-*_][ \t]*){3,}|=+|-+)[ \t]*$`)
+
+// Count direct items of the one unambiguous list following the criteria label.
 func issueCriteria(in *IssueContext) int {
-	return len(criterionTexts(in, false))
+	if goalKey(in) == "" || !in.Issue.Trusted {
+		return 0
+	}
+	source := []byte(strings.ReplaceAll(strings.ReplaceAll(in.Issue.Description, "\r\n", "\n"), "\r", "\n"))
+	doc := goldmark.DefaultParser().Parse(text.NewReader(source))
+	count := 0
+	for block := doc.FirstChild(); block != nil; block = block.NextSibling() {
+		if block.Kind() == ast.KindList && count > 0 {
+			return 0
+		}
+		if block.Kind() != ast.KindParagraph && block.Kind() != ast.KindHeading {
+			continue
+		}
+		label := strings.ToLower(strings.TrimSpace(string(block.Lines().Value(source))))
+		if !criteriaLabel.MatchString(label) {
+			continue
+		}
+		// Earlier blocks cannot contain this top-level label. From the label
+		// onward, ambiguous markup could hide a removed criterion.
+		if excludedWithdrawalMarkdown.Match(source[block.Lines().At(0).Start:]) {
+			return 0
+		}
+		list, ok := block.NextSibling().(*ast.List)
+		if count > 0 || !ok || list.ChildCount() > maxCriteria {
+			return 0
+		}
+		for item := list.FirstChild(); item != nil; item = item.NextSibling() {
+			count++
+			first := item.FirstChild()
+			if first == nil || (first.Kind() != ast.KindParagraph && first.Kind() != ast.KindTextBlock) || first.Lines().Len() == 0 {
+				return 0
+			}
+			// CommonMark renumbers ordered items when rendering. Check the
+			// author's marker before using that number to withdraw a blocker.
+			line := first.Lines().At(0)
+			start := bytes.LastIndexByte(source[:line.Start], '\n') + 1
+			marker := strings.TrimSpace(string(source[start:line.Start]))
+			want := string(list.Marker)
+			if list.IsOrdered() {
+				want = strconv.Itoa(count) + want
+			}
+			words := strings.TrimSpace(string(line.Value(source)))
+			for _, box := range []string{"[ ]", "[x]", "[X]"} {
+				words = strings.TrimPrefix(words, box)
+			}
+			if marker != want || !strings.ContainsFunc(words, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) {
+				return 0
+			}
+			for child := item.FirstChild(); child != nil; child = child.NextSibling() {
+				if child.Kind() == ast.KindList {
+					return 0
+				}
+			}
+		}
+		block = list
+	}
+	return count
 }
+
+var criteriaLabel = regexp.MustCompile(`^(?:(?:done when|acceptance criteria):?|\*\*(?:done when|acceptance criteria):?\*\*:?)$`)
 
 func criterionTexts(in *IssueContext, ownership bool) []string {
 	if goalKey(in) == "" || !in.Issue.Trusted {
