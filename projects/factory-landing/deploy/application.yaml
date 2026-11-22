@@ -15,6 +15,10 @@ spec:
     targetRevision: 0.41.9
     helm:
       releaseName: factory-landing
+      valuesObject:
+        # Joe's factory-edge OIDC subject: the akadmin user's Authentik uid
+        # (HOME-440). It is an opaque ID and grants nothing by itself.
+        joeAuthentikSubject: 4e21eb1303b14a44819c3cba8f4939d5ff1cf671a9ad456f31f24fe89335e2d8
   destination:
     server: https://kubernetes.default.svc
     namespace: factory-landing
