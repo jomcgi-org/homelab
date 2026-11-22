@@ -1,4 +1,6 @@
 # invariant: PLAT-11
+# check_image_digests is a sibling source of this test target.
+# gazelle:ignore check_image_digests,check_image_digests.violations
 """Audit workloads rendered with the factory Applications' Helm values."""
 
 import os
