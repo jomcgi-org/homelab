@@ -1,0 +1,1 @@
+Joe's decision of 2026-11-22 (factory PR triage) on HOME-297: Decision: the Decisions line "the connector sets the PR title from a sanitized subject" moves to HOME-774. #8433 covers the diff and commit message scan. ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-297#comment-10351))
