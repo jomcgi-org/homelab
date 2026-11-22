@@ -2,7 +2,7 @@ image:
   repository: ghcr.io/jomcgi/homelab/projects/factory-landing
   digest: "" # CI supplies the content digest when packaging the chart.
 hostname: factory.jomcgi.dev
-joeAuthentikSubject: "" # Set to Joex27s verified factory-edge OIDC subject.
+joeAuthentikSubject: "" # Set to Joe's verified factory-edge OIDC subject.
 workloads:
   factory-landing:
     containerName: web
