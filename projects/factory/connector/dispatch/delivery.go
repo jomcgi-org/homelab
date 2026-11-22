@@ -557,7 +557,7 @@ func (e *Engine) deliveryDetail(ctx context.Context, repo string, number int) (*
 	return d, nil
 }
 
-// invariant: FACT-18
+// invariant: FACT-19
 func (e *Engine) checkDeliverySource(ctx context.Context, repo string, pr *github.PullRequest) error {
 	if strings.EqualFold(pr.Author, "jomcgi-factory[bot]") && strings.EqualFold(pr.HeadRepo, repo) {
 		return nil
