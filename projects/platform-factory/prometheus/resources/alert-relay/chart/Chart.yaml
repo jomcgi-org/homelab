@@ -2,4 +2,4 @@ apiVersion: v2
 name: alert-relay
 description: Factory Discord alert relay
 type: application
-version: 0.19.20
+version: 0.20.12

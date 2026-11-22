@@ -2,7 +2,7 @@ apiVersion: v2
 name: factory-explore-site
 description: Deploy the Factory Explorer Worker
 type: application
-version: 0.22.5
+version: 0.23.12
 appVersion: "1.0.0"
 dependencies:
   - name: factory-library
