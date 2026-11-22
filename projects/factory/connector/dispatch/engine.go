@@ -1647,6 +1647,12 @@ func (e *Engine) sendNext(ctx context.Context, r *store.Run, wi *store.WorkItem,
 	if err := e.guard(ctx); err != nil {
 		return err
 	}
+	if r.Trigger == "recut" {
+		// The capped PR closes before the fresh session can push to its branch.
+		if err := e.closeCapped(ctx, wi, b); err != nil {
+			return err
+		}
+	}
 	brief, err := e.issueBrief(ctx, r, wi)
 	if err != nil {
 		if !r.Connector() {

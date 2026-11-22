@@ -161,6 +161,18 @@ links:
 		} else if err != nil || *f.Bindings[0].MaxSplitRounds != bound {
 			t.Fatalf("maxSplitRounds %d: config = %+v, error = %v", bound, f, err)
 		}
+		// HOME-756: 0 turns re-cuts off; the default is 2.
+		f, err = Parse([]byte(sample + fmt.Sprintf("    maxRecuts: %d\n", bound)))
+		if bound < 0 {
+			if err == nil {
+				t.Fatal("negative re-cut bound accepted")
+			}
+		} else if err != nil || *f.Bindings[0].MaxRecuts != bound {
+			t.Fatalf("maxRecuts %d: config = %+v, error = %v", bound, f, err)
+		}
+	}
+	if f, err := Parse([]byte(sample)); err != nil || *f.Bindings[0].MaxRecuts != 2 {
+		t.Fatalf("default maxRecuts: config = %+v, error = %v", f, err)
 	}
 }
 

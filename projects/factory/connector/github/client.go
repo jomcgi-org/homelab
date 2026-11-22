@@ -213,6 +213,31 @@ func ReviewedActivation(text, head string) *ActivationAssessment {
 	return state.Activation
 }
 
+// ReviewedCap reads a reviewer check's cap reading (HOME-756): whether the
+// review applied the cap, how many findings still block outside the human
+// gate, and the incomplete flag. ok is false without one unambiguous state.
+// It does not establish trust in the check that carried it.
+func ReviewedCap(text string) (applied bool, blocking int, incomplete, ok bool) {
+	if len(text) > 65535 || strings.Count(text, ReviewStatePrefix) != 1 {
+		return false, 0, false, false
+	}
+	_, rest, _ := strings.Cut(text, ReviewStatePrefix)
+	encoded, _, found := strings.Cut(rest, ReviewStateSuffix)
+	if !found {
+		return false, 0, false, false
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	var state struct {
+		ReviewCap  string            `json:"review_cap"`
+		Blocking   []json.RawMessage `json:"blocking"`
+		Incomplete bool              `json:"incomplete"`
+	}
+	if err != nil || json.Unmarshal(data, &state) != nil {
+		return false, 0, false, false
+	}
+	return state.ReviewCap == "applied", len(state.Blocking), state.Incomplete, true
+}
+
 // Status is a commit status, the latest per context.
 type Status struct {
 	NodeID      string

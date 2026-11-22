@@ -74,6 +74,10 @@ type ReviewPolicy struct {
 	// github.ReviewCapMarker; the reviewer then defers its medium findings
 	// (HOME-756, review-cap.md).
 	DeferAtReviewCap bool
+	// MaxRecuts bounds re-cuts at the cap: a capped review that still fails
+	// on a critical or high finding closes the PR and starts the work again
+	// in a fresh session. Past the bound, the PR closes and delivery stops.
+	MaxRecuts int
 	// DoneColumn names the itsaplan column a merged issue moves to; empty
 	// picks the project's first completed column.
 	DoneColumn string
@@ -260,6 +264,21 @@ func (e *Engine) syncPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 				commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
 					"The factory's turn on %s finished without commits on %s ahead of %s, so there is no pull request yet.",
 					wi.IssueKey, wi.Branch, b.BaseBranch)}); err != nil {
+				return err
+			}
+			return e.st.MarkSynced(ctx, tx, wi.ID, a.ID)
+		})
+	}
+	if wi.RecutPR != 0 && cmp.HeadSHA == wi.RecutHead {
+		// A re-cut that pushed nothing new must not reopen delivery on the
+		// head the capped review rejected.
+		e.m.PullRequests.WithLabelValues("no_commits").Inc()
+		return nil, e.st.Tx(ctx, func(tx *sql.Tx) error {
+			if err := e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/recut-no-change/%d/%d", wi.ID, a.ID), 0, "",
+				commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
+					"The factory's re-cut of %s finished without a new commit on %s: its tip is still %s, the head the "+
+						"capped review of PR #%d rejected, so no new pull request opens.",
+					wi.IssueKey, wi.Branch, short(wi.RecutHead), wi.RecutPR)}); err != nil {
 				return err
 			}
 			return e.st.MarkSynced(ctx, tx, wi.ID, a.ID)
@@ -531,7 +550,7 @@ func (e *Engine) findOrOpenPR(ctx context.Context, repo string, wi *store.WorkIt
 	if err != nil {
 		return nil, err
 	}
-	if found != nil {
+	if found != nil && !replaced(wi, found) {
 		return e.adoptPR(ctx, repo, b, found, body)
 	}
 	title := cmp.HeadSubject
@@ -576,7 +595,7 @@ func (e *Engine) findOrOpenPR(ctx context.Context, repo string, wi *store.WorkIt
 		return nil, gerr
 	}
 	found, ferr := e.gh.FindPullRequest(ctx, repo, wi.Branch)
-	if ferr != nil || found == nil {
+	if ferr != nil || found == nil || replaced(wi, found) {
 		return nil, err
 	}
 	return e.adoptPR(ctx, repo, b, found, body)
@@ -721,6 +740,12 @@ func (e *Engine) checkStoppedCreate(ctx context.Context, wi *store.WorkItem, b *
 	})
 }
 
+// replaced reports the closed PR a re-cut replaces. It shares the work
+// branch, so a lookup finds it, but a person did not close it.
+func replaced(wi *store.WorkItem, pr *github.PullRequest) bool {
+	return wi.RecutPR != 0 && pr.Number == wi.RecutPR && pr.State == "closed" && !pr.Merged
+}
+
 // adoptPR takes a PR the connector did not just open: an open one against
 // the binding's base gets the current body. A merged, closed or foreign one
 // is returned as found, for settlePR to judge.
@@ -794,6 +819,8 @@ func (e *Engine) prBody(ctx context.Context, wi *store.WorkItem, a *store.Attemp
 			fmt.Fprintf(&s, "- Run: rebase round %d", wi.RebaseRounds)
 		case "split":
 			fmt.Fprintf(&s, "- Run: split round %d", wi.SplitRounds)
+		case "recut":
+			fmt.Fprintf(&s, "- Run: re-cut %d", wi.Recuts)
 		default:
 			fmt.Fprintf(&s, "- Run: review round %d", wi.ReviewRounds)
 		}
@@ -804,6 +831,9 @@ func (e *Engine) prBody(ctx context.Context, wi *store.WorkItem, a *store.Attemp
 	} else {
 		fmt.Fprintf(&s, "- Run: %s (itsaplan attempt %d)\n",
 			mdLink("itsaplan run "+strconv.FormatInt(r.ID, 10), e.expand(e.cfg.Links.Run, wi, r.ID, "")), r.Attempt)
+	}
+	if wi.RecutPR != 0 && wi.Recuts > 0 {
+		fmt.Fprintf(&s, "- Replaces: #%d, closed at the review-round cap (re-cut %d)\n", wi.RecutPR, wi.Recuts)
 	}
 	fmt.Fprintf(&s, "- Session: %s\n", mdLink(a.ContextID, e.expand(e.cfg.Links.Session, wi, 0, a.ContextID)))
 	fmt.Fprintf(&s, "- Attempt: `%s` (delivery attempt %d)\n", a.MessageID, a.Seq)
@@ -910,6 +940,9 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		pr.MergeGroupSHA = d.MergeGroupSHA
 	}
 	if wi.State == store.WorkStopped {
+		if err := e.closeCapped(ctx, wi, b); err != nil {
+			return err
+		}
 		return e.stoppedPR(ctx, wi, b, pr, d)
 	}
 	if wi.State == store.WorkMerging && hasHumanLabel(d.Labels) {
@@ -965,6 +998,15 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		return err
 	}
 	checks, err := e.gh.CheckRuns(ctx, repo, d.HeadSHA)
+	if err == nil {
+		var acted bool
+		if acted, err = e.capOutcome(ctx, wi, b, pr, d, checks); err != nil || acted {
+			if errors.Is(err, store.ErrNotReview) {
+				return nil // delivery moved on meanwhile
+			}
+			return err
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -1420,6 +1462,122 @@ func (e *Engine) startSplitRound(ctx context.Context, tx *sql.Tx, wi *store.Work
 	return round, err
 }
 
+// capOutcome acts on the current head's review at the cap (HOME-756). A
+// review that applied the cap and still fails outside the human gate (a
+// critical or high finding, an unaccounted or revoked one, or incomplete
+// history) starts a re-cut while MaxRecuts allows, else closes the PR and
+// stops delivery. It reads only the head's newest reviewer check, so it also
+// acts on a PR whose failure was recorded as round_limit before deferral
+// existed, and it is idempotent: StartRecut and JournalCapClose move only a
+// work item in review.
+func (e *Engine) capOutcome(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail, checks []github.CheckRun) (bool, error) {
+	p := &b.Review
+	if !p.atCap(wi) || wi.State != store.WorkReview || p.ReviewerCheck == nil || p.ReviewerCheck.AppID == 0 {
+		return false, nil
+	}
+	var latest *github.CheckRun
+	for i := range checks {
+		c := &checks[i]
+		if c.Name == p.ReviewerCheck.Name && c.AppID == p.ReviewerCheck.AppID && c.HeadSHA == d.HeadSHA &&
+			(latest == nil || c.ID > latest.ID) {
+			latest = c
+		}
+	}
+	if latest == nil || latest.Status != "completed" || !failedConclusion(latest.Conclusion) {
+		return false, nil
+	}
+	applied, blocking, incomplete, ok := github.ReviewedCap(latest.Text)
+	if !ok || !applied || (blocking == 0 && !incomplete) {
+		return false, nil // not capped yet, or only the human gate holds it
+	}
+	if wi.Recuts >= p.MaxRecuts {
+		reason := fmt.Sprintf("PR #%d (%s) still had a critical or high finding at the review-round cap after %d re-cuts; "+
+			"the factory closed it", pr.Number, pr.URL, wi.Recuts)
+		if err := e.st.JournalCapClose(ctx, e.st.DB, wi.ID, pr.Number, d.HeadSHA); err != nil {
+			return false, err
+		}
+		wi.RecutPR, wi.RecutHead, wi.RecutClosed = pr.Number, d.HeadSHA, false
+		if err := e.stopWork(ctx, wi, reason); err != nil {
+			return false, err
+		}
+		return true, e.closeCapped(ctx, wi, b)
+	}
+	prompt := recutPrompt(p, wi, b, pr, d, latest)
+	var round *store.Run
+	err := e.st.Tx(ctx, func(tx *sql.Tx) error {
+		var err error
+		if round, err = e.st.StartRecut(ctx, tx, wi, pr, prompt, d.HeadSHA); err != nil {
+			return err
+		}
+		return e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/recut/%d/%d", wi.ID, wi.Recuts+1), round.ID, "",
+			commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
+				"%s used its %d review rounds on PR #%d (%s), and the review of %s still fails on a critical or high finding. "+
+					"The factory closes that PR and starts re-cut %d of %d in a fresh kagent session; a new PR follows.",
+				wi.IssueKey, p.MaxReviewRounds, pr.Number, pr.URL, short(d.HeadSHA), wi.Recuts+1, p.MaxRecuts)})
+	})
+	if err != nil {
+		return false, err
+	}
+	return true, e.dispatchReviewRound(ctx, wi, round)
+}
+
+// recutPrompt asks a fresh session to deliver the issue again as one change
+// from the base, with the capped review's findings. The session has the
+// issue brief but none of the earlier turns.
+func recutPrompt(p *ReviewPolicy, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail, review *github.CheckRun) string {
+	var s strings.Builder
+	fmt.Fprintf(&s, "Re-cut %d for %s. Pull request #%d (%s) used all %d review rounds, and its review still fails on a "+
+		"critical or high finding, so the factory closes it. Its last head %s stays on %s.\n\n"+
+		"Deliver the issue again as one new change: start from origin/%s, reuse what is correct in the closed PR's "+
+		"diff (git diff origin/%s...%s), fix every finding below, commit, and force-push the result to %s. "+
+		"The factory opens a new PR only for a new tip.\n",
+		wi.Recuts+1, wi.IssueKey, pr.Number, pr.URL, p.MaxReviewRounds, d.HeadSHA, wi.Branch,
+		b.BaseBranch, b.BaseBranch, d.HeadSHA, wi.Branch)
+	s.WriteString("\n" + reviewResponse)
+	fmt.Fprintf(&s, "\n### Feedback on the closed PR\n\nCheck %q concluded %s (%s): %s\n\n%s\n",
+		review.Name, review.Conclusion, review.URL, review.Title, clip(review.Summary, maxCheckFeedback))
+	writeThreads(&s, d.Threads, p)
+	return s.String()
+}
+
+// invariant: HOME-756-3
+//
+// closeCapped closes the PR that StartRecut or JournalCapClose journaled,
+// before a re-cut session can push and before a stopped item is left. The
+// journal names the PR and head, so a retry after a lost response finds the
+// PR closed and only records the close. It changes only the PR's state.
+func (e *Engine) closeCapped(ctx context.Context, wi *store.WorkItem, b *Binding) error {
+	if wi.RecutPR == 0 || wi.RecutClosed || e.gh == nil {
+		return nil
+	}
+	if err := e.guard(ctx); err != nil {
+		return err
+	}
+	d, err := e.gh.PullRequestDetail(ctx, b.repo(), wi.RecutPR)
+	switch {
+	case errors.Is(err, github.ErrNotFound):
+	case err != nil:
+		return err
+	case d.State == "open":
+		if d.HeadSHA != wi.RecutHead {
+			e.log.WarnContext(ctx, "the capped PR moved since its review; closing it as journaled", "work_item", wi.ID,
+				"pr", wi.RecutPR, "journaled", wi.RecutHead, "head", d.HeadSHA)
+		}
+		if err := e.guard(ctx); err != nil {
+			return err
+		}
+		closed := "closed"
+		if _, err := e.gh.UpdatePullRequest(ctx, b.repo(), wi.RecutPR, github.PullRequestUpdate{State: &closed}); err != nil {
+			return fmt.Errorf("close capped PR %d: %w", wi.RecutPR, err)
+		}
+	}
+	if err := e.st.MarkRecutClosed(ctx, wi.ID); err != nil {
+		return err
+	}
+	wi.RecutClosed = true
+	return nil
+}
+
 // startReviewRound records the run and its announcement together with the
 // event that prompted it. Callers check the issue and round bound first.
 func (e *Engine) startReviewRound(ctx context.Context, tx *sql.Tx, wi *store.WorkItem, b *Binding,
@@ -1557,6 +1715,9 @@ func (e *Engine) reviewRoundLimit(ctx context.Context, tx *sql.Tx, wi *store.Wor
 
 func (e *Engine) dispatchReviewRound(ctx context.Context, wi *store.WorkItem, round *store.Run) error {
 	switch round.Trigger {
+	case "recut":
+		e.log.InfoContext(ctx, "re-cut started", "work_item", wi.ID, "run", round.ID, "recut", wi.Recuts+1)
+		return e.stepLocked(ctx, round.ID)
 	case "rebase":
 		e.m.RebaseRounds.WithLabelValues("started").Inc()
 		e.log.InfoContext(ctx, "rebase round started", "work_item", wi.ID, "run", round.ID, "round", wi.RebaseRounds+1)

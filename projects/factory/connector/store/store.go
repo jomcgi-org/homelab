@@ -512,8 +512,15 @@ const (
 
 // WorkItem is one issue delivered through one kagent session.
 type WorkItem struct {
-	FirstArm           string
-	Escalated          bool
+	FirstArm  string
+	Escalated bool
+	// Recuts counts re-cuts at the review cap (HOME-756). RecutPR and
+	// RecutHead journal the capped PR the connector closes, and RecutClosed
+	// records that the close is done.
+	Recuts             int
+	RecutPR            int
+	RecutHead          string
+	RecutClosed        bool
 	ID                 int64
 	BindingName        string
 	IssueID            int64
@@ -546,14 +553,15 @@ const workCols = `id, binding_name, issue_id, issue_key, branch, agent_key, kage
 	coalesce(session_id, ''), session_generation, epoch, engineering_retries, state,
 	coalesce(blocked_class, ''), coalesce(blocked_reason, ''), review_rounds, rebase_rounds, split_rounds,
 	coalesce(turn_attempt_id, 0), coalesce(synced_attempt_id, 0), coalesce(stopped_reason, ''),
-	coalesce(caller_identity, ''), first_arm, escalated`
+	coalesce(caller_identity, ''), first_arm, escalated, recuts, recut_pr, recut_head, recut_closed`
 
 func scanWork(row interface{ Scan(...any) error }) (*WorkItem, error) {
 	w := &WorkItem{}
 	err := row.Scan(&w.ID, &w.BindingName, &w.IssueID, &w.IssueKey, &w.Branch, &w.AgentKey,
 		&w.KagentNamespace, &w.KagentAgent, &w.SessionID, &w.SessionGeneration, &w.Epoch,
 		&w.EngineeringRetries, &w.State, &w.BlockedClass, &w.BlockedReason, &w.ReviewRounds, &w.RebaseRounds, &w.SplitRounds,
-		&w.TurnAttemptID, &w.SyncedAttemptID, &w.StoppedReason, &w.CallerIdentity, &w.FirstArm, &w.Escalated)
+		&w.TurnAttemptID, &w.SyncedAttemptID, &w.StoppedReason, &w.CallerIdentity, &w.FirstArm, &w.Escalated,
+		&w.Recuts, &w.RecutPR, &w.RecutHead, &w.RecutClosed)
 	return w, err
 }
 

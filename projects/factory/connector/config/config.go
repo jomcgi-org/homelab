@@ -131,8 +131,12 @@ type Binding struct {
 	// DeferAtReviewCap marks a PR at the review-round cap for the reviewer,
 	// which then defers its medium findings (HOME-756). It stays off until
 	// merge-time filing of deferred findings is live.
-	DeferAtReviewCap bool   `yaml:"deferAtReviewCap"`
-	DoneColumn       string `yaml:"doneColumn"`
+	DeferAtReviewCap bool `yaml:"deferAtReviewCap"`
+	// MaxRecuts bounds re-cuts of a PR whose review at the cap still has a
+	// critical or high finding (HOME-756, default 2). 0 stops delivery at
+	// the first such review instead.
+	MaxRecuts  *int   `yaml:"maxRecuts"`
+	DoneColumn string `yaml:"doneColumn"`
 
 	// HOME routes human-gate issues to joe by default. Other projects opt in;
 	// an explicit empty string disables the integration for a binding.
@@ -384,6 +388,13 @@ func Parse(b []byte) (*File, error) {
 		}
 		if *b.MaxRebaseRounds < 0 {
 			return nil, fmt.Errorf("config: binding %s: maxRebaseRounds must be non-negative", b.Name)
+		}
+		if b.MaxRecuts == nil {
+			two := 2
+			b.MaxRecuts = &two
+		}
+		if *b.MaxRecuts < 0 {
+			return nil, fmt.Errorf("config: binding %s: maxRecuts must be non-negative", b.Name)
 		}
 		if b.MaxSplitRounds == nil {
 			one := 1

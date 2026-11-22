@@ -1160,3 +1160,6 @@ def test_review_cap_deferral_reaches_both_services() -> None:
     on = _render(["connector.bindings.homelab.deferAtReviewCap=true"])
     assert _config(on, "factory-connector")["bindings"][0]["deferAtReviewCap"] is True
     assert _config(on, "factory-reviewer")["bindings"][0]["deferAtReviewCap"] is True
+    # The re-cut off switch passes the schema and reaches the connector.
+    off = _render(["connector.bindings.homelab.maxRecuts=0"])
+    assert _config(off, "factory-connector")["bindings"][0]["maxRecuts"] == 0

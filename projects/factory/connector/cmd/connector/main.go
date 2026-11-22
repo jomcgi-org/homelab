@@ -211,8 +211,8 @@ func run(log *slog.Logger) error {
 		review := dispatch.ReviewPolicy{
 			TrustedReviewers: b.TrustedReviewers, MaxReviewRounds: *b.MaxReviewRounds, DoneColumn: b.DoneColumn,
 			MaxRebaseRounds: *b.MaxRebaseRounds, MaxSplitRounds: *b.MaxSplitRounds,
-			DeferAtReviewCap: b.DeferAtReviewCap,
-			HoldLabels:       dispatch.DefaultHoldLabels,
+			DeferAtReviewCap: b.DeferAtReviewCap, MaxRecuts: *b.MaxRecuts,
+			HoldLabels: dispatch.DefaultHoldLabels,
 		}
 		for _, c := range b.RequiredChecks {
 			review.RequiredChecks = append(review.RequiredChecks, dispatch.Check(c))
