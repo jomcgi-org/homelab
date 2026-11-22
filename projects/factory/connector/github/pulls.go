@@ -58,7 +58,7 @@ func (c *Client) HeadRefChangedAt(ctx context.Context, repo, branch, head string
 	}
 }
 
-const pullRequestReadySinceQuery = `query($owner: String!, $name: String!, $number: Int!) {
+const pullRequestReadySinceQuery = `query PullRequestReadySince($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       createdAt headRefOid baseRefName isDraft state
@@ -425,7 +425,7 @@ type PullRequestQueue struct {
 	MergeQueueState string
 }
 
-const pullRequestQueueQuery = `query($owner: String!, $name: String!, $number: Int!) {
+const pullRequestQueueQuery = `query PullRequestQueue($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       id state isDraft headRefOid baseRefName
@@ -492,7 +492,7 @@ type MergeQueueEntry struct {
 	PRHeadSHA  string
 }
 
-const mergeQueueQuery = `query($owner: String!, $name: String!, $branch: String!) {
+const mergeQueueQuery = `query MergeQueue($owner: String!, $name: String!, $branch: String!) {
   repository(owner: $owner, name: $name) {
     mergeQueue(branch: $branch) {
       entries(first: 100) {
@@ -546,7 +546,7 @@ func (c *Client) MergeQueueEntries(ctx context.Context, repo, branch string) ([]
 	return entries, nil
 }
 
-const pullRequestHeadsQuery = `query($owner: String!, $name: String!, $number: Int!, $appId: Int!, $check: String!) {
+const pullRequestHeadsQuery = `query PullRequestHeads($owner: String!, $name: String!, $number: Int!, $appId: Int!, $check: String!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       timelineItems(last: 100, itemTypes: [PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT]) {
@@ -730,7 +730,7 @@ type ReviewAcknowledgement struct {
 	CommitSHA    string
 }
 
-const pullRequestReviewAcknowledgementQuery = `query($id: ID!) {
+const pullRequestReviewAcknowledgementQuery = `query PullRequestReviewAcknowledgement($id: ID!) {
   node(id: $id) {
     __typename
     ... on PullRequestReview {
@@ -987,7 +987,7 @@ type CitedPullRequest struct {
 	HeadSignedByGitHub bool
 }
 
-const citedPullRequestQuery = `query($owner: String!, $name: String!, $number: Int!) {
+const citedPullRequestQuery = `query CitedPullRequest($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       number state merged mergedAt baseRefName headRefOid

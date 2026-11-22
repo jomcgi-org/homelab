@@ -11,6 +11,7 @@ go_library(
         "client.go",
         "etag.go",
         "pulls.go",
+        "rate_limit.go",
         "recovery.go",
         "status.go",
         "tokens.go",

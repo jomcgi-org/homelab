@@ -106,7 +106,7 @@ func (c *Client) StatusesForLanding(ctx context.Context, repo string, numbers []
 func (c *Client) landingStatusBatch(ctx context.Context, repo string, numbers []int, reviewer CheckRunFilter) (map[int]*PRStatus, error) {
 	owner, name, _ := strings.Cut(repo, "/")
 	var query strings.Builder
-	query.WriteString(`query($owner: String!, $name: String!, $hasReviewer: Boolean!, $appId: Int!, $check: String!) {
+	query.WriteString(`query FactoryStatus($owner: String!, $name: String!, $hasReviewer: Boolean!, $appId: Int!, $check: String!) {
           repository(owner: $owner, name: $name) {`)
 	for _, number := range numbers {
 		fmt.Fprintf(&query, "p%d: pullRequest(number: %d) {%s}\n", number, number, statusFields)

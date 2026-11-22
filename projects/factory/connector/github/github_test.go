@@ -1,10 +1,12 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -12,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1492,5 +1495,82 @@ func TestRevertedMergeSkipsTheMergeCommitItself(t *testing.T) {
 	got, err := client.RevertedMerge(context.Background(), "org/repo", "main", "aaaa1111", 7, merged, merged.Add(time.Hour), func(int) error { return nil })
 	if err != nil || got != nil {
 		t.Fatalf("revert = %v, err = %v; the merge commit counted as its own revert", got, err)
+	}
+}
+
+func TestInstallationRateLimitIsSharedByClients(t *testing.T) {
+	var requests atomic.Int32
+	var output bytes.Buffer
+	limit := &RateLimit{Log: slog.New(slog.NewJSONHandler(&output, nil))}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method == http.MethodGet {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	}))
+	defer srv.Close()
+
+	delivery := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}, RateLimit: limit}
+	status := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}, RateLimit: limit}
+	ctx := context.Background()
+	const repo = "owner/repo"
+	const rest = "/repos/owner/repo/commits/private-ref/check-runs?per_page=100"
+	if err := delivery.do(ctx, repo, http.MethodGet, rest, nil, nil); err == nil {
+		t.Fatal("expected GitHub's 403")
+	}
+	if err := status.send(ctx, repo, http.MethodGet, rest, nil, nil, true, func() error {
+		t.Error("cooldown must skip the request journal")
+		return nil
+	}); err == nil || !strings.Contains(err.Error(), "installation rate limited until") {
+		t.Fatalf("expected shared cooldown, got %v", err)
+	}
+	if err := status.graphql(ctx, repo, "query FactoryStatus($id: ID!) { node(id: $id) { id } }", nil, &struct{}{}); err != nil {
+		t.Fatalf("REST primary limit must leave GraphQL available: %v", err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("sent %d requests, want 2", got)
+	}
+	log := output.String()
+	if !strings.Contains(log, `"operation":"commits/check-runs"`) ||
+		!strings.Contains(log, `"operation":"graphql/FactoryStatus"`) ||
+		!strings.Contains(log, `"remaining":"0"`) ||
+		strings.Contains(log, "private-ref") || strings.Contains(log, "owner/repo") {
+		t.Fatalf("unexpected request logs: %s", log)
+	}
+}
+
+func TestInstallationSecondaryRateLimitBlocksBothAPIs(t *testing.T) {
+	for _, retryAfter := range []string{"60", time.Now().Add(time.Minute).UTC().Format(http.TimeFormat)} {
+		var requests atomic.Int32
+		limit := &RateLimit{}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if requests.Add(1) == 1 {
+				w.Header().Set("Retry-After", retryAfter)
+				w.WriteHeader(http.StatusTooManyRequests)
+			}
+		}))
+		t.Cleanup(srv.Close)
+		c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}, RateLimit: limit}
+		ctx := context.Background()
+		const repo = "owner/repo"
+		if err := c.do(ctx, repo, http.MethodPost, "/graphql", nil, nil); err == nil {
+			t.Fatal("expected GitHub's 429")
+		}
+		for _, path := range []string{"/graphql", "/repos/owner/repo/pulls"} {
+			if err := c.do(ctx, repo, http.MethodGet, path, nil, nil); err == nil {
+				t.Fatalf("%s did not respect Retry-After", path)
+			}
+		}
+		limit.secondary = time.Now().Add(-time.Second)
+		if err := c.do(ctx, repo, http.MethodGet, "/repos/owner/repo/pulls", nil, nil); err != nil {
+			t.Fatalf("request after cooldown: %v", err)
+		}
+		if got := requests.Load(); got != 2 {
+			t.Fatalf("sent %d requests, want 2", got)
+		}
 	}
 }
