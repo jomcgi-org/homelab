@@ -1411,9 +1411,11 @@ def test_extra_mcp_server() -> None:
     }
 
 
-def test_discord_activity_exposes_only_activity_api_when_enabled() -> None:
+def test_discord_activity_leaves_edge_routes_to_the_edge_chart() -> None:
+    # The edge chart owns the Activity routes and their one exempt path
+    # (HOME-170). The factory chart only grants them its Service.
     assert not any(
-        d["kind"] == "HTTPRoute" and d["metadata"]["name"] == "discord-activity"
+        d["metadata"]["name"] in {"discord-activity", "edge-discord-activity"}
         for d in _render(_DISCORD)
     )
     docs = _render(
@@ -1423,29 +1425,23 @@ def test_discord_activity_exposes_only_activity_api_when_enabled() -> None:
             "string:discord.bridge.activity.clientId=123",
         ]
     )
-    route = _in(docs, "HTTPRoute", "edge", "discord-activity")
-    (rule,) = route["spec"]["rules"]
-    assert route["spec"]["hostnames"] == ["bosun-activity-api.jomcgi.dev"]
-    assert rule["matches"] == [
-        {"method": "POST", "path": {"type": "Exact", "value": "/activity/token"}},
-        {
-            "method": "GET",
-            "path": {"type": "PathPrefix", "value": "/activity/instances"},
-        },
-        {
-            "method": "POST",
-            "path": {"type": "PathPrefix", "value": "/activity/instances"},
-        },
+    assert not [
+        d
+        for d in docs
+        if d["kind"] == "SecurityPolicy"
+        or d["metadata"].get("namespace") == "edge"
+        or "bosun-activity-api.jomcgi.dev" in d.get("spec", {}).get("hostnames", [])
     ]
-    policy = _in(docs, "SecurityPolicy", "edge", "discord-activity")["spec"]
-    assert policy == {
-        "targetRefs": [
+    service = _in(docs, "Service", "factory-discord", "discord-activity")
+    assert service["spec"]["ports"] == [{"port": 8080, "targetPort": "health"}]
+    grant = _in(docs, "ReferenceGrant", "factory-discord", "edge-discord-activity")
+    assert grant["spec"] == {
+        "from": [
             {
                 "group": "gateway.networking.k8s.io",
                 "kind": "HTTPRoute",
-                "name": "discord-activity",
+                "namespace": "edge",
             }
         ],
-        "authorization": {"defaultAction": "Allow"},
+        "to": [{"group": "", "kind": "Service", "name": "discord-activity"}],
     }
-    assert rule["backendRefs"][0]["name"] == "discord-activity"

@@ -110,7 +110,7 @@ func run(log *slog.Logger) error {
 	mux := http.NewServeMux()
 	var launch func(context.Context, discord.Interaction)
 	if secretFile := os.Getenv("ACTIVITY_CLIENT_SECRET_FILE"); secretFile != "" {
-		app := discord.NewActivities(bridge, rest, os.Getenv("ACTIVITY_CLIENT_ID"), fileValue(secretFile))
+		app := discord.NewActivities(rest, os.Getenv("ACTIVITY_CLIENT_ID"), fileValue(secretFile))
 		bridge.Activity = app
 		launch = app.Launch
 		mux.Handle("/activity/", app)

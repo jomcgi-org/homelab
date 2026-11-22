@@ -192,6 +192,7 @@ def test_only_kagent_forwards_the_access_token(docs):
         "t3-authentik-oidc",
         "kube-api-authentik-jwt",
         "explore-api-authentik-jwt",
+        "bosun-activity-token-public",
     }
     assert {p["metadata"]["namespace"] for p in policies.values()} == {"edge"}
     gateway = policies["edge-authentik-oidc"]["spec"]
@@ -413,6 +414,88 @@ def test_proxy_reaches_only_the_kagent_ui(docs):
             "toPorts": [{"ports": [{"port": "6443", "protocol": "TCP"}]}],
         }
     ]
+
+
+_ACTIVITY_BACKEND = {
+    "group": "",
+    "kind": "Service",
+    "name": "discord-activity",
+    "namespace": "factory-discord",
+    "port": 8080,
+    "weight": 1,
+}
+
+
+def test_bosun_activity_exempts_only_the_token_exchange(docs):
+    # Joe's approved exception (HOME-170): POST /activity/token is the one
+    # Activity path that skips sign-in. A policy that sets neither OIDC nor
+    # JWT replaces the gateway-wide sign-in for the routes it targets.
+    open_routes = {
+        ref["name"]
+        for (kind, _), doc in docs.items()
+        if kind == "SecurityPolicy"
+        and not {"oidc", "jwt"} & set(doc["spec"])
+        for ref in doc["spec"]["targetRefs"]
+    }
+    assert open_routes == {"authentik", "bosun-activity-token"}
+    assert docs["SecurityPolicy", "bosun-activity-token-public"]["spec"] == {
+        "targetRefs": [
+            {
+                "group": "gateway.networking.k8s.io",
+                "kind": "HTTPRoute",
+                "name": "bosun-activity-token",
+            }
+        ],
+        "authorization": {"defaultAction": "Allow"},
+    }
+    parent = [
+        {"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": "edge"}
+    ]
+    assert docs["HTTPRoute", "bosun-activity-token"]["spec"] == {
+        "parentRefs": parent,
+        "hostnames": ["bosun-activity-api.jomcgi.dev"],
+        "rules": [
+            {
+                "matches": [
+                    {
+                        "method": "POST",
+                        "path": {"type": "Exact", "value": "/activity/token"},
+                    }
+                ],
+                "backendRefs": [_ACTIVITY_BACKEND],
+            }
+        ],
+    }
+    # Poll reads and votes keep the gateway-wide sign-in: no route policy.
+    targeted = {
+        ref["name"]
+        for (kind, _), doc in docs.items()
+        if kind == "SecurityPolicy"
+        for ref in doc["spec"]["targetRefs"]
+    }
+    assert "bosun-activity" not in targeted
+    prefix = {"type": "PathPrefix", "value": "/activity/instances"}
+    assert docs["HTTPRoute", "bosun-activity"]["spec"] == {
+        "parentRefs": parent,
+        "hostnames": ["bosun-activity-api.jomcgi.dev"],
+        "rules": [
+            {
+                "matches": [
+                    {"method": "GET", "path": prefix},
+                    {"method": "POST", "path": prefix},
+                ],
+                "timeouts": {"request": "0s", "backendRequest": "0s"},
+                "backendRefs": [_ACTIVITY_BACKEND],
+            }
+        ],
+    }
+    # No other edge route serves the Activity hostname.
+    assert {
+        name
+        for (kind, name), doc in docs.items()
+        if kind == "HTTPRoute"
+        and "bosun-activity-api.jomcgi.dev" in doc["spec"].get("hostnames", [])
+    } == {"bosun-activity-token", "bosun-activity"}
 
 
 def test_proxy_reaches_activity_bridge_on_its_api_port(docs):

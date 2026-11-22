@@ -30,11 +30,20 @@ boundary: a rule below broken on them is critical.
     only HTTPRoutes from `edge`. The API server checks the token again
     ([Joe's decision](https://github.com/jomcgi-org/homelab/pull/8237#issuecomment-6975000416)).
   - `scotland-connector-public` on the `scotland-connector` route
-    (scotland-mcp.jomcgi.dev), the one public route. It has no sign-in:
+    (scotland-mcp.jomcgi.dev), a public route. It has no sign-in:
     `authorization.defaultAction: Allow` with the hub's two deny rules for
     Cloudflare Worker subrequests. The route keeps the hub's rate limits.
     `chart_posture_test.py` in `projects/scotland-connector/chart` pins both
     ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-259#comment-3908)).
+  - `bosun-activity-token-public` on the `bosun-activity-token` route
+    (bosun-activity-api.jomcgi.dev). It has no sign-in:
+    `authorization.defaultAction: Allow`. The route has one rule with one
+    match, `POST` on the exact path `/activity/token`, where the bridge
+    exchanges a single-use Discord authorization code. The poll routes on
+    the same host (`bosun-activity`) keep the gateway-wide sign-in.
+    `test_bosun_activity_exempts_only_the_token_exchange` pins both routes
+    and proves no other Activity path is exempt
+    ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-170#comment-10620)).
 
   - `explore-api-authentik-jwt` admits tokens from the factory-explore client
     to explore-proxy. `test_explore_api_requires_explorer_token` pins its
@@ -46,13 +55,6 @@ boundary: a rule below broken on them is critical.
   and `test_kube_api_requires_an_authentik_token_from_a_kube_group` pins the
   bearer policy, route, grant and TLS check.
 
-
-  The optional `discord-activity` policy on bosun-activity-api.jomcgi.dev
-  delegates Discord sign-in to the bridge. Its POST token endpoint exchanges
-  a Discord authorization code. Its instance GET and POST endpoints require
-  a bearer token and a successful Discord membership lookup for the launch
-  guild. The factory chart creates the policy with the Activity route.
-  [HOME-170](https://factory-plan.jomcgi.dev/factory/issue/HOME-170).
 
   The Codex policy is reserved for a follow-up after the broker listener, ingress
   policy and exact Authentik callback are deployed. Its redirect URL must

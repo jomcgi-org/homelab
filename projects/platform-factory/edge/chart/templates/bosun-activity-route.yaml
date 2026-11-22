@@ -1,0 +1,84 @@
+# The Bosun Discord Activity's API at bosun-activity-api.jomcgi.dev. The
+# backend is the discord-bridge, whose Service and ReferenceGrant the factory
+# chart creates with discord.bridge.activity.enabled.
+#
+# One exact path skips the gateway-wide OIDC policy: POST /activity/token.
+# The Embedded App SDK cannot follow an OIDC redirect, so it exchanges a
+# single-use Discord authorization code there. Joe approved this exception:
+# https://factory-plan.jomcgi.dev/factory/issue/HOME-170#comment-10620
+# edge_test.py pins it as the only Activity path without sign-in.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: bosun-activity-token
+  namespace: {{ .Release.Namespace }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+  hostnames:
+    - bosun-activity-api.jomcgi.dev
+  rules:
+    - matches:
+        - method: POST
+          path:
+            type: Exact
+            value: /activity/token
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: discord-activity
+          namespace: factory-discord
+          port: 8080
+          weight: 1
+---
+# Replaces the gateway-wide OIDC policy for the token route only.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: bosun-activity-token-public
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: bosun-activity-token
+  authorization:
+    defaultAction: Allow
+---
+# Poll reads and votes. No route policy, so the gateway-wide OIDC policy
+# signs every request in. The bridge also checks launch-guild membership.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: bosun-activity
+  namespace: {{ .Release.Namespace }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: edge
+  hostnames:
+    - bosun-activity-api.jomcgi.dev
+  rules:
+    - matches:
+        - method: GET
+          path:
+            type: PathPrefix
+            value: /activity/instances
+        - method: POST
+          path:
+            type: PathPrefix
+            value: /activity/instances
+      # Poll reads stream for as long as the Activity is open.
+      timeouts:
+        request: "0s"
+        backendRequest: "0s"
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: discord-activity
+          namespace: factory-discord
+          port: 8080
+          weight: 1
