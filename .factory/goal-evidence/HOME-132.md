@@ -1,3 +1,5 @@
 1. The controller pin in `projects/factory/deploy/values.yaml` includes kagent's settlement-driven suspension. `projects/factory/connector/internal/reaper/reaper.go` handles a suspend stuck for five minutes. A running actor with no settlement event still needs controller-side reconciliation with task admission before suspension.
 2. `TestReservationBusyKeepsRetryBudgetBounded` and `TestSendPlacementWait` in `projects/factory/connector/kagent/a2a_test.go` distinguish the wire responses. The pinned gateway emits only the generic refusal. The distinct capacity reason needs a gateway release.
 3. `test_connector_matches_coder_pool_after_activation` in `projects/factory/chart/connector_test.py` renders the connector and WorkerPool with two pool sizes. Select `codexWorkers` in the deployment values after operational verification.
+
+Joe's decision of 2026-11-22 (factory PR triage) on HOME-132: Decision: criteria 1 and 2 need a kagent fork release. They move to HOME-764, blocked by this issue. #8381 lands the connector side, with `codexWorkers` off until HOME-764 is verified. ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-132#comment-10298))
