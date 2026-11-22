@@ -90,8 +90,8 @@ func (e *Engine) deliverIssueReviewing(ctx context.Context, it *store.OutboxItem
 	if err := e.BeginStatusRead(ctx, it.DedupeKey+"/pr"); err != nil {
 		return err
 	}
-	current, err := e.gh.PullRequestDetail(ctx, b.repo(), pr.Number)
-	if errors.Is(err, github.ErrNotFound) {
+	current, err := e.deliveryDetail(ctx, b.repo(), pr.Number)
+	if errors.Is(err, github.ErrNotFound) || errors.Is(err, errDeliverySource) {
 		return finish()
 	}
 	if err != nil {
