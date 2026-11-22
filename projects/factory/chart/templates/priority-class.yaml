@@ -1,0 +1,19 @@
+{{- /*
+factory-control lets the reviewer, connector and broker preempt agent
+workers, which run with no priority. Without it, a reviewer rollout on a
+full node stays Pending and no PR can merge, because the reviewer's
+check is required (2026-11-22). Platform data-plane pods rank higher
+(factory-platform, HOME-581).
+*/ -}}
+{{- if or .Values.reviewer.enabled .Values.connector.enabled .Values.broker.enabled }}
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: factory-control
+  labels:
+    app.kubernetes.io/part-of: factory
+value: 50000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: Factory control plane (reviewer, connector, broker); preempts agent workers.
+{{- end }}
