@@ -1431,7 +1431,7 @@ def test_default_and_hub_workflows_cannot_enable_maintenance_automerge(tmp_path)
     assert workflow["spec"]["suspend"] is True
 
 
-# invariant: PLAT-16
+# invariant: PLAT-17
 def test_factory_image_and_substrate_release_coverage():
     config = json.loads((ROOT / "renovate.json").read_text())
     manager = config["kubernetes"]
