@@ -34,7 +34,13 @@ Rules for `projects/factory/` on top of the root `REVIEW.md`.
   comment ([decision](https://github.com/jomcgi-org/homelab/pull/8116#issuecomment-6931275436)).
   The code-review prompt gets none. Only the goal check receives the issue
   and its decisions, in the same delimited and quoted blocks, with the diff
-  and no PR title, description or comment. Before reporting a missing fact,
+  and no PR title, description or comment. It also receives the head
+  commit's pending `Activation:` step in a quoted block. That step makes a
+  criterion `after_rollout` only when the tree implements it, ships it off by
+  default, and the step turns it on and names the check that verifies it.
+  A criterion that neither the diff nor the step addresses stays `not_met`
+  ([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-757#comment-10153)).
+  Before reporting a missing fact,
   it searches the reviewed commit, including definitions outside the diff.
   The connector's private evidence reply is an exception to the restriction
   on model text in issue comments. The connector may post the implementer's
