@@ -1,4 +1,4 @@
-# invariant: PLAT-15
+# invariant: PLAT-16
 """API server egress in the factory platform manifests and Helm releases."""
 
 import os
