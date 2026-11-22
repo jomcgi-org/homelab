@@ -221,31 +221,28 @@ sequenceDiagram
     C->>G: Poll current head for checks and review
 ```
 
-**Review.** Poll each owned PR every `reviewPoll` (no public webhook; 120 s
-in the homelab deploy): GraphQL for the PR, its reviews and review threads,
-REST for check runs and statuses on the head. REST reads are conditional, so
-an unchanged answer (304) costs no rate limit. Delivery and status share the
-installation cooldown. The client tracks
-REST and GraphQL primary limits separately and honors `Retry-After` for both.
-It logs each GitHub response with the operation, HTTP status and limit headers.
-Events that ask for changes are a `CHANGES_REQUESTED` review, or a
-failed run of a configured check or status. Each is recorded once by its
-GitHub node ID. It acts only if its commit is the current head and its
-author is trusted by the binding: a trusted reviewer login, a check run
-from the check's App ID, or a status from the check's creator login.
-Otherwise it is recorded `stale_head` or `untrusted`. A round acts once per
-head, kind and source (reviewer or check name); a later event with the same
-key, such as a re-run failing again on an unchanged head, is `duplicate`.
-Acting events start one review round with their text and the unresolved
-threads, and the start is announced on the issue. The repository is
-public, so only thread comments by trusted reviewer logins reach the
-prompt or a replacement's context; the rest are dropped and the text says
-how many. Thread paths are replaced with a fixed label, since the change
-author chooses them, even on threads with trusted comments. A reviewer
-App's comments reach the agent only if its bot login
-is listed in `trustedReviewers`. Rounds are bounded per
-work item (`maxReviewRounds`, default 3); past the bound events are
-`round_limit` and the PR waits for a person. Events are read only while
+**Review.** Poll each owned PR every `reviewPoll` (120 s in the homelab
+deploy; no public webhook): GraphQL for the PR, reviews and threads, and
+conditional REST reads (a 304 is free) of the head's check runs and statuses.
+Delivery and status share the installation cooldown, per REST and GraphQL
+limit, and honor `Retry-After`. Each GitHub response is logged with its
+operation, HTTP status and limit headers. Events that ask for changes are a
+`CHANGES_REQUESTED` review, or a failed run of a configured check or status.
+Each is recorded once by its GitHub node ID. It acts only if its commit is the
+current head and its author is trusted by the binding: a trusted reviewer
+login, a check run from the check's App ID, or a status from the check's
+creator login. Otherwise it is recorded `stale_head` or `untrusted`. A round
+acts once per head, kind and source (reviewer or check name); a later event
+with the same key, such as a re-run failing again on an unchanged head, is
+`duplicate`. Acting events start one review round with their text and the
+unresolved threads, and the start is announced on the issue. The repository is
+public, so only thread comments by trusted reviewer logins reach the prompt or
+a replacement's context; the rest are dropped and the text says how many.
+Thread paths are replaced with a fixed label, since the change author chooses
+them, even on threads with trusted comments. A reviewer App's comments reach
+the agent only if its bot login is listed in `trustedReviewers`. Rounds are
+bounded per work item (`maxReviewRounds`, default 3); past the bound events
+are `round_limit` and the PR waits for a person. Events are read only while
 the work item is in review, not while a turn runs.
 
 A review round is a connector-initiated continuation, not an itsaplan
@@ -441,25 +438,23 @@ links on the issue and moves it to the project's first `completed` column
 a hard WIP limit, is reported and retried with backoff. A move the connector
 gives up on is also reported, unless a person canceled the issue since then.
 
-A PR that leaves the queue unmerged, after a second read confirms it did
-not merge, starts a revision in the mapped session, counting against
-`maxReviewRounds`.
-The connector saves the queue entry's synthetic commit while queued, then
-reads its failing checks and statuses, matched against configured names,
-App IDs and status creators. The prompt uses the configured names and fixed
-failure states. Check links are built from the
-repository and numeric check ID; statuses link to the merge-group commit's
-checks page. CI-provided URLs, summaries and descriptions are omitted. If the
-queue entry disappeared before its commit was observed, the prompt says the
-evidence is unavailable.
-A conflicting ejection round asks the agent to rebase on `origin/<base>` and resolve.
-That review round consumes the head's conflict event. At the review cap the
-next poll handles the conflict against the separate rebase cap.
-HOME-460 traced premature `round_limit` events to `ejected` in
-[dispatch/delivery.go](dispatch/delivery.go). At the review cap it recorded
-`EventRoundLimit` even before GitHub reported a conflict. On the next poll,
-`reviewEvents` skipped the head's event ID at `SeenEvents`, before the rebase
-branch could set `limited` from `RebaseRounds >= MaxRebaseRounds`.
+A PR that leaves the queue unmerged, after a second read confirms it did not
+merge, starts a revision in the mapped session, counting against
+`maxReviewRounds`. The connector saves the queue entry's synthetic commit
+while queued, then reads its failing checks and statuses, matched against
+configured names, App IDs and status creators. The prompt uses the configured
+names and fixed failure states. Check links are built from the repository and
+numeric check ID; statuses link to the merge-group commit's checks page.
+CI-provided URLs, summaries and descriptions are omitted. If the queue entry
+disappeared before its commit was observed, the prompt says the evidence is
+unavailable. A conflicting ejection round asks the agent to rebase on
+`origin/<base>` and resolve. That review round consumes the head's conflict
+event. At the review cap the next poll handles the conflict against the
+separate rebase cap. HOME-460 traced premature `round_limit` events to
+`ejected` in [dispatch/delivery.go](dispatch/delivery.go). At the review cap
+it recorded `EventRoundLimit` even before GitHub reported a conflict. On the
+next poll, `reviewEvents` skipped the head's event ID at `SeenEvents`, before
+the rebase branch could set `limited` from `RebaseRounds >= MaxRebaseRounds`.
 For a CI infrastructure flake the agent can rebase and push the same change.
 The new head needs the usual checks and independent review.
 
