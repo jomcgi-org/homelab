@@ -450,8 +450,16 @@ func TestSafeStripsRunsInOnePass(t *testing.T) {
 // headRules serves invariant files at a base and a head commit.
 type headRules struct {
 	baseRules
-	headFiles map[string]string
-	headLinks map[string]bool // head paths stored as symlinks
+	headFiles  map[string]string
+	headLinks  map[string]bool   // head paths stored as symlinks
+	mergeFiles map[string]string // files at the merge base; nil means the base files
+}
+
+func (h *headRules) CompareCommits(_ context.Context, _, base, head string) (*github.CommitComparison, error) {
+	if base != h.head || head != "head-commit" {
+		return nil, github.ErrNotFound
+	}
+	return &github.CommitComparison{Status: "ahead", MergeBase: "merge-base"}, nil
 }
 
 func (h *headRules) Tree(ctx context.Context, repo, ref string) (*github.Tree, error) {
@@ -467,6 +475,17 @@ func (h *headRules) Tree(ctx context.Context, repo, ref string) (*github.Tree, e
 }
 
 func (h *headRules) FileContent(ctx context.Context, repo, path, ref string) ([]byte, error) {
+	if ref == "merge-base" {
+		files := h.mergeFiles
+		if files == nil {
+			files = h.files
+		}
+		c, ok := files[path]
+		if !ok {
+			return nil, github.ErrNotFound
+		}
+		return []byte(c), nil
+	}
 	if ref == "head-commit" {
 		c, ok := h.headFiles[path]
 		if !ok {
@@ -574,7 +593,7 @@ func TestInvariantGateOnlyForWeakening(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			weakened, err := policy.weakened(context.Background(), gh, testRepo, "head-commit", tc.files)
+			weakened, err := policy.weakened(context.Background(), gh, testRepo, gh.head, "head-commit", tc.files)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -587,6 +606,32 @@ func TestInvariantGateOnlyForWeakening(t *testing.T) {
 				t.Fatalf("gated paths = %q, want %q", got, tc.gated)
 			}
 		})
+	}
+}
+
+// The goal check on #8556: an invariant main added after the PR branched
+// is absent at the PR head but is not a removal by the PR.
+func TestInvariantAddedOnBaseAfterBranchIsNotARemoval(t *testing.T) {
+	mainLater := baseInvariants + "- id: X-9\n  statement: Added on main later.\n"
+	head := baseInvariants + "- id: X-2\n  statement: Added by the PR.\n"
+	gh := &headRules{
+		baseRules:  baseRules{head: "base-commit", files: map[string]string{"policy/INVARIANTS.yaml": mainLater}},
+		headFiles:  map[string]string{"policy/INVARIANTS.yaml": head},
+		mergeFiles: map[string]string{"policy/INVARIANTS.yaml": baseInvariants},
+	}
+	policy, err := loadInvariantPolicy(context.Background(), gh, testRepo, gh.head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := []github.PullRequestFile{{Status: "modified", Path: "policy/INVARIANTS.yaml", Additions: 2}}
+	weakened, err := policy.weakened(context.Background(), gh, testRepo, gh.head, "head-commit", files)
+	if err != nil || len(weakened) != 0 {
+		t.Fatalf("weakened = %v, err %v; want none", weakened, err)
+	}
+	// Removing an invariant the merge base has is still gated.
+	gh.headFiles["policy/INVARIANTS.yaml"] = "invariants: []\n"
+	if weakened, err := policy.weakened(context.Background(), gh, testRepo, gh.head, "head-commit", files); err != nil || len(weakened) != 1 {
+		t.Fatalf("removal: weakened = %v, err %v", weakened, err)
 	}
 }
 
@@ -611,7 +656,7 @@ func TestInvariantHeadReadErrorFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := []github.PullRequestFile{{Status: "modified", Path: "policy/INVARIANTS.yaml"}}
-	if _, err := policy.weakened(context.Background(), gh, testRepo, "head-commit", files); err == nil {
+	if _, err := policy.weakened(context.Background(), gh, testRepo, gh.head, "head-commit", files); err == nil {
 		t.Fatal("a missing head file gave no error")
 	}
 }

@@ -626,11 +626,16 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				pr = p
 			}
 		}
+		if pr != nil && base == f.baseHead {
+			// The base tip against a PR head: the PR branched from it.
+			f.get(w, r, map[string]any{"status": "ahead", "files": pr.Files, "merge_base_commit": map[string]string{"sha": f.baseHead}})
+			return
+		}
 		if pr == nil || !slices.Contains(pr.Heads, base) {
 			http.NotFound(w, r)
 			return
 		}
-		f.get(w, r, map[string]any{"status": "ahead", "files": []github.PullRequestFile{{Path: "interdiff-" + head[:4] + ".go", Status: "modified", Additions: 1}}})
+		f.get(w, r, map[string]any{"status": "ahead", "files": []github.PullRequestFile{{Path: "interdiff-" + head[:4] + ".go", Status: "modified", Additions: 1}}, "merge_base_commit": map[string]string{"sha": f.baseHead}})
 	case r.Method == http.MethodGet && path == "/git/ref/heads/main":
 		f.get(w, r, map[string]any{"ref": "refs/heads/main", "object": map[string]string{"sha": f.baseHead, "type": "commit"}})
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/git/trees/"):

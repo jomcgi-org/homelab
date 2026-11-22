@@ -1329,7 +1329,7 @@ func TestTreeHeadsAndTruncatedCompare(t *testing.T) {
 			for i := range MaxCompareFiles {
 				files = append(files, fmt.Sprintf(`{"filename": "f%d.go", "status": "modified"}`, i))
 			}
-			_, _ = w.Write([]byte(`{"status": "ahead", "files": [` + strings.Join(files, ",") + `]}`))
+			_, _ = w.Write([]byte(`{"status": "ahead", "merge_base_commit": {"sha": "mb-1"}, "files": [` + strings.Join(files, ",") + `]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -1360,7 +1360,7 @@ func TestTreeHeadsAndTruncatedCompare(t *testing.T) {
 		t.Fatalf("the query does not read the newest check runs:\n%s", query)
 	}
 	cmp, err := c.CompareCommits(ctx, "example-org/homelab", "a", "c")
-	if err != nil || !cmp.Truncated || len(cmp.Files) != MaxCompareFiles {
+	if err != nil || !cmp.Truncated || len(cmp.Files) != MaxCompareFiles || cmp.MergeBase != "mb-1" {
 		t.Fatalf("compare = %d files, truncated %v, err %v", len(cmp.Files), cmp.Truncated, err)
 	}
 }
