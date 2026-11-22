@@ -340,7 +340,7 @@ func run(log *slog.Logger) error {
 		Planner:          plannerRuntime(cfg.File.Planner),
 	}, st, its, a2a, sessions, gh, m, log)
 	notifier, err := notify.New(notify.Config{
-		URL: cfg.NotifyURL, TokenURL: cfg.NotifyTokenURL, AppPasswordFile: cfg.NotifyPasswordFile,
+		URL: cfg.NotifyURL, AppPasswordFile: cfg.NotifyPasswordFile,
 		BeforeRequest: eng.RecordNotifyAttempt,
 	})
 	if err != nil {

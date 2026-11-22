@@ -10,6 +10,7 @@ go_library(
         "hindsight.go",
         "history.go",
         "ingest.go",
+        "notification.go",
         "policy.go",
         "rest.go",
     ],
@@ -17,6 +18,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//projects/factory/connector/kagent",
+        "//projects/factory/connector/notify",
         "@io_nhooyr_websocket//:websocket",
     ],
 )
@@ -28,6 +30,7 @@ go_test(
         "clients_test.go",
         "history_test.go",
         "ingest_test.go",
+        "notification_test.go",
     ],
     embed = [":discord"],
     deps = [

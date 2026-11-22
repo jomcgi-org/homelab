@@ -543,6 +543,7 @@ discord:
     # digits). Every limit is required; the bridge refuses to start without
     # one.
     policy:
+      notificationChannels: {}
       guilds: {}
       userLimit: {count: 10, window: 1h}
       guildLimit: {count: 60, window: 1h}
@@ -699,13 +700,11 @@ connector:
   # OTLP/gRPC URL of the factory trace receiver. Empty disables export.
   traceEndpoint: ""
   memoryRetainURL: http://hindsight-api.hindsight.svc.cluster.local:8888/ext/connector/retain
-  # Staged off until the hub route and dedicated Authentik app password exist.
+  # Staged off until the dedicated bridge caller password exists.
   notify:
     enabled: false
-    hostname: factory-notify.jomcgi.dev
-    tokenHostname: auth.jomcgi.dev
     secretName: factory-notify
-    itemPath: vaults/k8s-homelab/items/factory-notify
+    itemPath: vaults/k8s-homelab/items/factory-bridge-notify
   # Off by default. Turning it on needs itsaplan and the broker on, and kagent
   # authenticating ServiceAccount tokens:
   # kagent.config.server.auth.serviceAccount.authority, which is part of every
