@@ -915,6 +915,7 @@ def test_goal_reasons_reach_the_connector_alone() -> None:
     (peer,) = rule["fromEndpoints"]
     want = dict(peer["matchLabels"])
     assert want.pop("k8s:io.kubernetes.pod.namespace") == "factory"
+    assert want == connector["spec"]["selector"]["matchLabels"]
     assert want.items() <= connector_labels.items()
 
     egress = _in(docs, "CiliumNetworkPolicy", "factory", "factory-connector")["spec"][

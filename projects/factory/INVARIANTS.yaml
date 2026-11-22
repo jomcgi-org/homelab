@@ -154,6 +154,13 @@ invariants:
   - projects/factory/chart/files/itsaplan/factory.ts
   test: //projects/factory/tests/itsaplan:integration_test
   state: live
+- id: FACT-302
+  statement: The goal reasons API serves only the reply the published check selected, for the reviewed head and its current issue evidence digest.
+  mechanism:
+  - projects/factory/reviewer/review/engine.go
+  - projects/factory/reviewer/review/goalapi.go
+  test: //projects/factory/reviewer/review:review_test
+  state: live
 - id: FACT-16
   statement: A local delivery pause preserves pending updates and their remaining retry budgets.
   mechanism:

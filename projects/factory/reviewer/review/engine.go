@@ -1167,6 +1167,63 @@ func (e *Engine) reviewCheck(ctx context.Context, b *Binding, sha string) (*gith
 	return latest, nil
 }
 
+// invariant: FACT-302
+// Reasons serves the goal reasons API (HOME-302). It answers only from the
+// reviewer's own completed check on this head: the check's goal verdicts
+// must judge the head on the evidence digest it published, and a fresh read
+// of the PR's issue evidence must still give that digest. It then reads the
+// audit record the check names, so no later or unused reply answers. The
+// reply is durable before the check publishes its AuditID.
+func (e *Engine) Reasons(ctx context.Context, repo string, number int, head string) (GoalReasons, bool, error) {
+	audit, ok := e.cfg.GoalAudit.(*FileGoalAudit)
+	if !ok {
+		return GoalReasons{}, false, errors.New("goal audit unavailable")
+	}
+	for i := range e.cfg.Bindings {
+		b := &e.cfg.Bindings[i]
+		if b.repo() != repo || b.ItsaplanProject == "" {
+			continue
+		}
+		run, err := e.reviewCheck(ctx, b, head)
+		if err != nil {
+			return GoalReasons{}, false, err
+		}
+		if run == nil || run.Status != "completed" || run.ExternalID != MessageID(repo, number, head) ||
+			(run.Conclusion != ConclusionFailure && run.Conclusion != ConclusionSuccess) {
+			continue
+		}
+		st, ok := LoadState(run.Text)
+		if !ok || st.IssuesPending || st.Goal == nil || st.Goal.Head != head || st.Goal.Digest != st.IssueDigest {
+			continue
+		}
+		prs, complete, err := e.gh.ListPullRequests(ctx, repo, b.BaseBranch)
+		if err != nil {
+			return GoalReasons{}, false, err
+		}
+		if !complete {
+			return GoalReasons{}, false, errors.New("incomplete pull request list")
+		}
+		for _, pr := range prs {
+			if pr.Number != number || pr.HeadSHA != head {
+				continue
+			}
+			files, err := e.gh.PullRequestFiles(ctx, repo, number)
+			if err != nil {
+				return GoalReasons{}, false, err
+			}
+			fresh := e.issueContext(ctx, b, pr, files)
+			if len(fresh.Pending) > 0 {
+				return GoalReasons{}, false, errors.New("goal evidence unreadable")
+			}
+			if goalKey(fresh) == "" || goalKey(fresh) != st.GoalKey || issueDigest(fresh) != st.IssueDigest {
+				return GoalReasons{}, false, nil // The issue changed; the next check answers.
+			}
+			return audit.reasons(repo, number, head, st.GoalKey, st.Goal)
+		}
+	}
+	return GoalReasons{}, false, nil
+}
+
 // recovery is what this process established about a PR whose observations
 // an earlier process may have held only in memory. A restart loses only the
 // shared-head observations whose check writes all failed: labels have
