@@ -119,7 +119,7 @@ func (m *Manager) Grant() string { return m.opts.Grant }
 
 var discardRefreshLogs = slog.New(slog.DiscardHandler)
 
-// invariant: FACT-19
+// invariant: HOME-649-1
 //
 // Grant diagnostics contain provider errors. Only a fixed event goes on the span.
 func (m *Manager) diagnostics(ctx context.Context) (context.Context, *slog.Logger, func()) {
