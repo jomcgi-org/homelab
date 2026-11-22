@@ -6,10 +6,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 py_test(
     name = "platform_images_test",
-    srcs = [
-        "check_image_digests.py",
-        "platform_images_test.py",
-    ],
+    srcs = ["platform_images_test.py"],
     # Collect only this file: the chart data carries other charts' tests.
     args = ["$(rootpath platform_images_test.py)"],
     data = [
