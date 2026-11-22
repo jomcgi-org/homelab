@@ -344,6 +344,9 @@ func readInvariantPolicy(ctx context.Context, gh RulesReader, repo, commit strin
 		if path.Base(file) != invariantFile {
 			continue
 		}
+		if tree.Symlinks[file] {
+			return nil, fmt.Errorf("%s is a symlink; invariant policy must be a regular file", file)
+		}
 		data, err := gh.FileContent(ctx, repo, file, commit)
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", file, err)
@@ -408,6 +411,7 @@ func ParseMechanisms(file string, data []byte, paths map[string]bool) error {
 // also reads as weakened until the PR is rebased.
 func (p invariantPolicy) weakened(ctx context.Context, gh RulesReader, repo, head string, files []github.PullRequestFile) ([]string, error) {
 	var out []string
+	var headTree *github.Tree
 	for _, f := range files {
 		for _, name := range []string{f.Path, f.PreviousPath} {
 			if name == "" || path.Base(name) != invariantFile || slices.Contains(out, name) {
@@ -415,6 +419,22 @@ func (p invariantPolicy) weakened(ctx context.Context, gh RulesReader, repo, hea
 			}
 			var next []byte
 			if f.Status != "removed" && name == f.Path {
+				// The Contents API follows a symlink, so read the head
+				// tree's entry mode before trusting the returned text.
+				if headTree == nil {
+					t, err := gh.Tree(ctx, repo, head)
+					if err != nil {
+						return nil, fmt.Errorf("read the head tree: %w", err)
+					}
+					if t.Truncated {
+						return nil, errors.New("cannot check invariant file modes in a truncated head tree")
+					}
+					headTree = t
+				}
+				if headTree.Symlinks[name] {
+					out = append(out, name)
+					continue
+				}
 				data, err := gh.FileContent(ctx, repo, name, head)
 				if err != nil {
 					return nil, fmt.Errorf("read %s at head: %w", name, err)
@@ -422,32 +442,12 @@ func (p invariantPolicy) weakened(ctx context.Context, gh RulesReader, repo, hea
 				next = data
 			}
 			present := name == f.Path && f.Status != "removed"
-			if weakensInvariants(name, p[name], next, present) || (present && !regularFileDiff(f, p[name], next)) {
+			if weakensInvariants(name, p[name], next, present) || (present && (f.Status == "renamed" || f.Status == "copied")) {
 				out = append(out, name)
 			}
 		}
 	}
 	return out, nil
-}
-
-// regularFileDiff reports whether the head content GitHub returned is the
-// file the diff describes. The Contents API follows an in-repository symlink
-// to its target, so a policy file turned into a link would read as unchanged.
-// A regular file's line count moves by exactly the diff's additions minus its
-// deletions; a link's one-line target text does not.
-func regularFileDiff(f github.PullRequestFile, base, head []byte) bool {
-	if f.Status == "renamed" || f.Status == "copied" {
-		return false
-	}
-	return lineCount(head) == lineCount(base)+f.Additions-f.Deletions
-}
-
-func lineCount(data []byte) int {
-	n := bytes.Count(data, []byte("\n"))
-	if len(data) > 0 && data[len(data)-1] != '\n' {
-		n++
-	}
-	return n
 }
 
 func weakensInvariants(name string, base, head []byte, present bool) bool {

@@ -1298,7 +1298,7 @@ func TestTreeHeadsAndTruncatedCompare(t *testing.T) {
 		switch {
 		case r.URL.Path == "/repos/example-org/homelab/git/trees/base-1" && r.URL.Query().Get("recursive") == "1":
 			_, _ = w.Write([]byte(`{"tree": [{"path": "REVIEW.md", "type": "blob"}, {"path": "docs", "type": "tree"},
-				{"path": "docs/REVIEW.md", "type": "blob"}], "truncated": false}`))
+				{"path": "docs/REVIEW.md", "type": "blob", "mode": "100644"}, {"path": "x/INVARIANTS.yaml", "type": "blob", "mode": "120000"}], "truncated": false}`))
 		case r.URL.Path == "/graphql":
 			var req struct {
 				Query     string         `json:"query"`
@@ -1338,7 +1338,8 @@ func TestTreeHeadsAndTruncatedCompare(t *testing.T) {
 	c := &Client{BaseURL: gh.URL, Tokens: fixedTokens{}, ETags: &ETagCache{}}
 	ctx := context.Background()
 	tree, err := c.Tree(ctx, "example-org/homelab", "base-1")
-	if err != nil || !tree.Has("docs/REVIEW.md") || tree.Has("docs") || tree.Has("x/REVIEW.md") || c.ETags.Len() != 0 {
+	if err != nil || !tree.Has("docs/REVIEW.md") || tree.Has("docs") || tree.Has("x/REVIEW.md") || c.ETags.Len() != 0 ||
+		!tree.Symlinks["x/INVARIANTS.yaml"] || tree.Symlinks["docs/REVIEW.md"] {
 		t.Fatalf("tree = %+v, err %v, cached %d", tree, err, c.ETags.Len())
 	}
 	h, err := c.PullRequestHeads(ctx, "example-org/homelab", 7, CheckRunFilter{Name: "factory review", AppID: 5758326})

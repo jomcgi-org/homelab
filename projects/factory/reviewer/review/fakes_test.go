@@ -636,14 +636,28 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/git/trees/"):
 		ref := strings.TrimPrefix(path, "/git/trees/")
 		f.contentRefs = append(f.contentRefs, "tree:"+ref)
-		if ref != f.baseHead || q.Get("recursive") != "1" {
+		if q.Get("recursive") != "1" {
 			http.NotFound(w, r)
 			return
 		}
+		files := f.baseFiles
+		if ref != f.baseHead {
+			// A PR head's tree holds its head files.
+			files = map[string]string{}
+			for k, v := range f.headFiles {
+				if p, ok := strings.CutPrefix(k, ref+":"); ok {
+					files[p] = v
+				}
+			}
+			if len(files) == 0 {
+				http.NotFound(w, r)
+				return
+			}
+		}
 		var entries []map[string]string
 		dirs := map[string]bool{}
-		for p := range f.baseFiles {
-			entries = append(entries, map[string]string{"path": p, "type": "blob"})
+		for p := range files {
+			entries = append(entries, map[string]string{"path": p, "type": "blob", "mode": "100644"})
 			for d := p; strings.Contains(d, "/"); {
 				d = d[:strings.LastIndex(d, "/")]
 				dirs[d] = true
