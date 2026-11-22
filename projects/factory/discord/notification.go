@@ -1,4 +1,5 @@
-// invariant: FACT-228, HOME-228-1
+// invariant: FACT-228
+// invariant: HOME-228-1
 package discord
 
 import (
