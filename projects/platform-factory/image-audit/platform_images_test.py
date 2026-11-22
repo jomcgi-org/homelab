@@ -1,3 +1,4 @@
+# invariant: PLAT-11
 """Audit workloads rendered with the factory Applications' Helm values."""
 
 import os

@@ -1,4 +1,5 @@
 """Check a YAML stream of rendered factory manifests or kubectl get pods -A -o yaml."""
+# invariant: PLAT-11
 
 import re
 import sys
