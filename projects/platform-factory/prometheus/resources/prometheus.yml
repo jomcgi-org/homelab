@@ -242,6 +242,29 @@ scrape_configs:
       - source_labels: [__meta_kubernetes_pod_name]
         target_label: pod
 
+  # Hindsight's API serves /metrics on its HTTP port, with no tenant key
+  # (HOME-130). Two instances: hindsight (the agents' memory) and
+  # hindsight-discord.
+  - job_name: hindsight
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [hindsight, hindsight-discord]
+        selectors:
+          - role: pod
+            label: app.kubernetes.io/name=hindsight
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_port_name, __meta_kubernetes_pod_container_port_number]
+        regex: http;8888
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+
   # The broker's admin port; every path there but /healthz and /metrics needs
   # a reviewed ServiceAccount token this Prometheus does not hold.
   - job_name: factory-broker

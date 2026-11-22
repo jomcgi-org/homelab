@@ -38,6 +38,7 @@ configMapGenerator:
       - dashboards/factory-agents.json
       - dashboards/mandoline.json
       - dashboards/egress-scanning.json
+      - dashboards/hindsight.json
   - name: runbooks
     namespace: grafana
     files:
