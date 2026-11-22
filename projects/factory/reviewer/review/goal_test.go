@@ -938,7 +938,7 @@ func TestIssueCriteriaCount(t *testing.T) {
 		"Done when:\n```\n1. a\n```":                                                  0,
 		"````\n```\nDone when:\n1. Example\n":                                         0,
 		"<!--\nDone when:\n1. A\n-->\nText.":                                          0,
-		"<!-- note -->\nDone when:\n1. a\n2. b":                                       2,
+		"<!-- note -->\nDone when:\n1. a\n2. b":                                       0,
 		"```mermaid\nflowchart TD\n  A --> B\n```\n\nDone when:\n1. a\n2. b":          2,
 		"~~~\nDone when:\n1. x\n```\n~~~\nDone when:\n1. a":                           1,
 		"Done when:\n1. Show the literal `<!--`\n2. Verify the result":                0,
@@ -948,13 +948,19 @@ func TestIssueCriteriaCount(t *testing.T) {
 		"\tDone when:\n1. a":                                                          0,
 		"Done when:\n* * *":                                                           0,
 		"Done when:\n- a\n- - -":                                                      0,
-		"Title\n===\nDone when:\n1. a":                                                1,
+		"Title\n===\nDone when:\n1. a":                                                0,
 		"Done when:\n1. 2\n2. b":                                                      2,
 		"Done when:\n1. 值\n2. é":                                                      2,
 		"Done when:\n1. ```go":                                                        0,
 		"Done when:\n1. a <b>\n2. c":                                                  0,
 		"Done when:\n1. Keep p95 latency < 200 ms.\n2. b":                             2,
-		"Title\n=\nDone when:\n1. a":                                                  1,
+		"Title\n=\nDone when:\n1. a":                                                  0,
+		"---\n\nDone when:\n1. a":                                                     0,
+		"```\nopen fence\nDone when:\n1. a":                                           0,
+		"> ```\n> x\n> ```\n\nDone when:\n1. a":                                       0,
+		"```\n---\n<b>\n```\n\nDone when:\n1. a\n2. b":                                2,
+		"Done when:\n1. First\n\n       2. Second":                                    0,
+		"Done when:\n1. First\n\n       code":                                         1,
 		"Done when:\r\n1. a\r\n2.\r\n   b\r\n":                                        0,
 		"Done when:\n1. a\n2.\tb":                                                     2,
 		"Done when:\n1) a\n2) b":                                                      2,
@@ -1089,8 +1095,12 @@ func TestGeneratedCriteriaMatchRenderer(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := issueCriteria(&IssueContext{Issue: &IssueEvidence{Key: "HOME-1", Trusted: true, Description: desc}})
-			if want := strings.Count(html.String(), "<li>"); got != want {
+			if want := strings.Count(html.String(), "<li>"); got != 0 && got != want {
 				t.Errorf("%q: counted %d, rendered %d", desc, got, want)
+			}
+			// Before the label, only a closed fenced diagram is exempt.
+			if excluded := prefix == "<!-- hidden -->\n" || prefix == "---\n"; excluded && got != 0 {
+				t.Errorf("%q: counted %d after excluded markup", desc, got)
 			}
 		}
 	}
@@ -1103,6 +1113,10 @@ func TestWithdrawalCriteriaKeepsExcludedBlockers(t *testing.T) {
 		"Done when:\n1. visible\n~~~\n2. hidden\n~~~",
 		"Done when:\n1. visible\n***",
 		"Done when:\n1. visible\n\nTitle\n--",
+		"Done when:\n1. visible\n\n       2. hidden",
+		"<!-- note -->\nDone when:\n1. visible",
+		"***\n\nDone when:\n1. visible",
+		"Title\n===\nDone when:\n1. visible",
 	} {
 		in := &IssueContext{Issue: &IssueEvidence{Key: "HOME-1", Trusted: true, Description: desc}}
 		g := &GoalCheck{Counted: issueCriteria(in), Criteria: goalVerdicts(1, goalMet)}

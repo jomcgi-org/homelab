@@ -373,13 +373,14 @@ func issueCriteria(in *IssueContext) int {
 		if !criteriaLabel.MatchString(label) {
 			continue
 		}
-		// Earlier blocks cannot contain this top-level label. From the label
-		// onward, ambiguous markup could hide a removed criterion.
-		if excludedWithdrawalMarkdown.Match(source[block.Lines().At(0).Start:]) {
+		// Before the label, only a closed fenced diagram is exempt. From the
+		// label onward, ambiguous markup could hide a removed criterion.
+		labelStart := block.Lines().At(0).Start
+		if !onlyFencesExcluded(doc, block, source[:labelStart]) || excludedWithdrawalMarkdown.Match(source[labelStart:]) {
 			return 0
 		}
 		list, ok := block.NextSibling().(*ast.List)
-		if count > 0 || !ok || list.ChildCount() > maxCriteria {
+		if count > 0 || !ok || list.ChildCount() > maxCriteria || listShapedCode(list, source) {
 			return 0
 		}
 		for item := list.FirstChild(); item != nil; item = item.NextSibling() {
@@ -414,6 +415,62 @@ func issueCriteria(in *IssueContext) int {
 	}
 	return count
 }
+
+// onlyFencesExcluded reports whether the text before the label has no
+// excluded markup outside closed top-level fenced code blocks. The fences
+// found in the source lines must be the ones goldmark parsed, or the text
+// counts as excluded.
+func onlyFencesExcluded(doc, label ast.Node, before []byte) bool {
+	parsed := 0
+	for n := doc.FirstChild(); n != nil && n != label; n = n.NextSibling() {
+		if n.Kind() == ast.KindFencedCodeBlock {
+			parsed++
+		}
+	}
+	var outside strings.Builder
+	found, fence := 0, ""
+	for line := range strings.SplitSeq(string(before), "\n") {
+		m := fenceLine.FindStringSubmatch(line)
+		switch {
+		case fence == "" && m != nil && !(m[1][0] == '`' && strings.Contains(m[2], "`")):
+			fence = m[1]
+			found++
+		case fence != "" && m != nil && m[1][0] == fence[0] && len(m[1]) >= len(fence) && strings.TrimSpace(m[2]) == "":
+			fence = ""
+		case fence == "":
+			outside.WriteString(line + "\n")
+		}
+	}
+	return fence == "" && found == parsed && !excludedWithdrawalMarkdown.MatchString(outside.String())
+}
+
+// listShapedCode reports whether an indented code block from the criteria
+// list onward holds a line shaped like a list item. CommonMark reads such a
+// line as code, but an author may mean it as a criterion.
+func listShapedCode(list ast.Node, source []byte) bool {
+	for block := list; block != nil; block = block.NextSibling() {
+		found := false
+		_ = ast.Walk(block, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+			if !entering || n.Kind() != ast.KindCodeBlock {
+				return ast.WalkContinue, nil
+			}
+			for i := 0; i < n.Lines().Len(); i++ {
+				if line := n.Lines().At(i); listMarker.Match(line.Value(source)) {
+					found = true
+					return ast.WalkStop, nil
+				}
+			}
+			return ast.WalkContinue, nil
+		})
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+// fenceLine is a fence opening or closing line: the fence and the rest.
+var fenceLine = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})(.*)$")
 
 var criteriaLabel = regexp.MustCompile(`^(?:(?:done when|acceptance criteria):?|\*\*(?:done when|acceptance criteria):?\*\*:?)$`)
 
