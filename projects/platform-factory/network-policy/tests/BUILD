@@ -7,12 +7,12 @@ py_test(
     args = ["$(rootpath policies_test.py)"],
     data = [
         "//projects:platform-factory/cert-manager/resources/network-policy.yaml",
-        "//projects/platform-factory/cfgate/resources:network-policy.yaml",
         "//projects:platform-factory/cloudnative-pg/resources/network-policy.yaml",
         "//projects:platform-factory/kargo/resources/network-policy.yaml",
         "//projects/factory-explore/chart",
         "//projects/factory/chart",
         "//projects/platform-factory/authentik/resources:network-policy.yaml",
+        "//projects/platform-factory/cfgate/resources:network-policy.yaml",
         "//projects/platform-factory/edge/chart",
         "//projects/platform-factory/external-secrets/chart",
         "//projects/platform-factory/factory-db/resources:network-policy.yaml",
