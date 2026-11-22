@@ -80,6 +80,15 @@ def test_global_duplicate():
         validate({"a": {"invariants": [ROW]}, "b": {"invariants": [ROW]}})
 
 
+def test_issue_key_ids_do_not_collide():
+    # HOME-758: two PRs for different issues add IDs without coordination.
+    first = ROW | {"id": "HOME-123-1"}
+    second = ROW | {"id": "HOME-124-1"}
+    validate({"a": {"invariants": [first, second]}})
+    with pytest.raises(ValueError, match="duplicate HOME-123-1"):
+        validate({"a": {"invariants": [first]}, "b": {"invariants": [first]}})
+
+
 @pytest.mark.parametrize(
     "rule, expected",
     [

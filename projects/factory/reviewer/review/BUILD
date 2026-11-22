@@ -51,6 +51,7 @@ go_test(
         "fakes_test.go",
         "goal_test.go",
         "goalapi_test.go",
+        "invariant_ids_test.go",
         "issues_test.go",
         "provenance_test.go",
         "quota_test.go",
