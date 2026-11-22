@@ -51,7 +51,8 @@ type Client struct {
 	HTTP    *http.Client
 	Tokens  Tokens
 	// ETags, when set, makes every REST GET conditional (etag.go).
-	ETags *ETagCache
+	ETags     *ETagCache
+	RateLimit *RateLimit
 }
 
 // PullRequest is the part of a PR the factory reads.
@@ -238,6 +239,9 @@ func (c *Client) doUncached(ctx context.Context, repo, method, path string, body
 
 func (c *Client) send(ctx context.Context, repo, method, path string, body, out any, cache bool, before func() error) error {
 	for try := 0; ; try++ {
+		if err := c.RateLimit.check(path); err != nil {
+			return err
+		}
 		if before != nil {
 			if err := before(); err != nil {
 				return err
@@ -288,12 +292,16 @@ func (c *Client) once(ctx context.Context, repo, method, path string, body, out 
 	if hc == nil {
 		hc = &http.Client{Timeout: 30 * time.Second}
 	}
+	if err := c.RateLimit.check(path); err != nil {
+		return err
+	}
 	resp, err := hc.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	c.RateLimit.observe(req, resp, body, data)
 	if err != nil {
 		return err
 	}
@@ -521,7 +529,7 @@ func (c *Client) graphql(ctx context.Context, repo, query string, vars map[strin
 	return json.Unmarshal(resp.Data, out)
 }
 
-const pullRequestQuery = `query($owner: String!, $name: String!, $number: Int!) {
+const pullRequestQuery = `query PullRequestDetail($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       id number url state merged mergedAt isDraft title headRefOid headRefName baseRefName baseRefOid mergeable
@@ -691,7 +699,7 @@ func (c *Client) PullRequestDetail(ctx context.Context, repo string, number int)
 	return d, nil
 }
 
-const enqueueMutation = `mutation($id: ID!, $head: GitObjectID!) {
+const enqueueMutation = `mutation EnqueuePullRequest($id: ID!, $head: GitObjectID!) {
   enqueuePullRequest(input: {pullRequestId: $id, expectedHeadOid: $head}) {
     mergeQueueEntry { state }
   }
@@ -716,7 +724,7 @@ func (c *Client) EnqueuePullRequest(ctx context.Context, repo, nodeID, headSHA s
 	return "", errors.New("github: enqueuePullRequest returned no merge queue entry")
 }
 
-const dequeueMutation = `mutation($id: ID!) {
+const dequeueMutation = `mutation DequeuePullRequest($id: ID!) {
   dequeuePullRequest(input: {id: $id}) { mergeQueueEntry { state } }
 }`
 

@@ -223,7 +223,10 @@ sequenceDiagram
 
 **Review.** Poll owned PRs every 60 s (no public webhook): GraphQL for the
 PR, its reviews and review threads, REST for check runs and statuses on the
-head. Events that ask for changes are a `CHANGES_REQUESTED` review, or a
+head. Delivery and status share the installation cooldown. The client tracks
+REST and GraphQL primary limits separately and honors `Retry-After` for both.
+It logs each GitHub response with the operation, HTTP status and limit headers.
+Events that ask for changes are a `CHANGES_REQUESTED` review, or a
 failed run of a configured check or status. Each is recorded once by its
 GitHub node ID. It acts only if its commit is the current head and its
 author is trusted by the binding: a trusted reviewer login, a check run
