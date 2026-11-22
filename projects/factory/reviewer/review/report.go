@@ -652,12 +652,17 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 		priorByID[p.ID] = p
 	}
 	reauthorizeAfter := map[string]int64{}
+	unverifiable := map[string]bool{}
 	for _, p := range prior {
 		reauthorizeAfter[p.ID] = p.ReauthorizeAfter
+		unverifiable[p.ID] = p.ReauthorizeAfter > 0
 	}
+	// A carried decision whose comment changed cannot clear its finding
+	// again: hash-only and versioned stamps alike need a newer comment.
 	for _, st := range d.Carried {
-		if st.UpdatedAt == "" && !d.holds(st) {
+		if !d.holds(st) {
 			reauthorizeAfter[st.Finding] = max(reauthorizeAfter[st.Finding], st.ID)
+			unverifiable[st.Finding] = unverifiable[st.Finding] || st.UpdatedAt == ""
 		}
 	}
 	// justified judges a justification by the finding's severity on this
@@ -821,7 +826,9 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 	for i := range a.Blocking {
 		if cutoff := reauthorizeAfter[a.Blocking[i].ID]; cutoff > 0 {
 			a.Blocking[i].ReauthorizeAfter = cutoff
-			a.Blocking[i].Reason = "the original comment version cannot be verified; fix the finding or link a new decision comment from Joe"
+			if unverifiable[a.Blocking[i].ID] {
+				a.Blocking[i].Reason = "the original comment version cannot be verified; fix the finding or link a new decision comment from Joe"
+			}
 		}
 	}
 	sortBlocked(a.Blocking)
