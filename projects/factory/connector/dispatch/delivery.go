@@ -256,7 +256,7 @@ func (e *Engine) syncPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 		})
 	}
 	got, err := e.findOrOpenPR(ctx, repo, wi, b, cmp, body)
-	if err != nil {
+	if err != nil || got == nil {
 		return nil, err
 	}
 	return e.settlePR(ctx, wi, b, a, r, got)
@@ -533,14 +533,15 @@ func (e *Engine) findOrOpenPR(ctx context.Context, repo string, wi *store.WorkIt
 	}
 	// Commit the intent before sending. A timeout or writer crash leaves
 	// it visible to the stopped-item reconciler.
-	var previouslyPending bool
-	err = e.st.DB.QueryRowContext(ctx, `WITH prior AS (
-		SELECT id, pr_create_check_at IS NOT NULL AS pending FROM work_item
-		WHERE id = $1 AND state = 'review' AND turn_attempt_id = $3 FOR UPDATE
-	) UPDATE work_item w SET pr_create_check_at = $2 FROM prior
-		WHERE w.id = prior.id RETURNING prior.pending`, wi.ID, e.cfg.Now(), wi.TurnAttemptID).Scan(&previouslyPending)
+	res, err := e.st.DB.ExecContext(ctx, `UPDATE work_item SET pr_create_check_at = $2
+		WHERE id = $1 AND state = 'review' AND turn_attempt_id = $3
+		AND pr_create_check_at IS NULL`, wi.ID, e.cfg.Now(), wi.TurnAttemptID)
 	if err != nil {
-		return nil, fmt.Errorf("record PR creation for %s: %w", wi.IssueKey, err)
+		return nil, err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		// A later pass can discover the PR. Only the reservation owner sends.
+		return nil, err
 	}
 	created, err := e.gh.CreatePullRequest(ctx, repo, github.NewPullRequest{
 		Title: title, Head: wi.Branch, Base: b.BaseBranch, Body: body,
@@ -553,8 +554,9 @@ func (e *Engine) findOrOpenPR(ctx context.Context, repo string, wi *store.WorkIt
 		return created, nil
 	}
 	var rejected *github.HTTPError
-	if !previouslyPending && (errors.Is(err, github.ErrPRExists) || errors.Is(err, github.ErrNotFound) ||
-		(errors.As(err, &rejected) && rejected.Status >= 400 && rejected.Status < 500 && rejected.Status != 408)) {
+	var unsent *github.RequestNotSentError
+	if errors.As(err, &unsent) || errors.Is(err, github.ErrPRExists) || errors.Is(err, github.ErrNotFound) ||
+		(errors.As(err, &rejected) && rejected.Status >= 400 && rejected.Status < 500 && rejected.Status != 408) {
 		if _, clearErr := e.st.DB.ExecContext(ctx, `UPDATE work_item SET pr_create_check_at = NULL WHERE id = $1`, wi.ID); clearErr != nil {
 			return nil, errors.Join(err, clearErr)
 		}

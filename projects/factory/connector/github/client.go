@@ -29,6 +29,12 @@ var ErrNotFound = errors.New("github: not found")
 // ErrPRExists is GitHub's 422 for a second PR from the same head branch.
 var ErrPRExists = errors.New("github: a pull request already exists for this branch")
 
+// RequestNotSentError reports a failure before the API request was sent.
+type RequestNotSentError struct{ Cause error }
+
+func (e *RequestNotSentError) Error() string { return e.Cause.Error() }
+func (e *RequestNotSentError) Unwrap() error { return e.Cause }
+
 // HTTPError carries any other non-2xx answer.
 type HTTPError struct {
 	Status int
@@ -245,7 +251,7 @@ type sendPolicy struct {
 func (c *Client) send(ctx context.Context, repo, method, path string, body, out any, cache bool, policy sendPolicy) error {
 	for try := 0; ; try++ {
 		if err := c.RateLimit.check(path); err != nil {
-			return err
+			return &RequestNotSentError{Cause: err}
 		}
 		if policy.before != nil {
 			if err := policy.before(); err != nil {
@@ -265,19 +271,19 @@ func (c *Client) send(ctx context.Context, repo, method, path string, body, out 
 func (c *Client) once(ctx context.Context, repo, method, path string, body, out any, cache bool) error {
 	tok, err := c.Tokens.Token(ctx, repo)
 	if err != nil {
-		return err
+		return &RequestNotSentError{Cause: err}
 	}
 	var rd io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return &RequestNotSentError{Cause: err}
 		}
 		rd = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.base()+path, rd)
 	if err != nil {
-		return err
+		return &RequestNotSentError{Cause: err}
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -298,7 +304,7 @@ func (c *Client) once(ctx context.Context, repo, method, path string, body, out 
 		hc = &http.Client{Timeout: 30 * time.Second}
 	}
 	if err := c.RateLimit.check(path); err != nil {
-		return err
+		return &RequestNotSentError{Cause: err}
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
