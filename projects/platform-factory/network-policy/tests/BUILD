@@ -3,6 +3,8 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 py_test(
     name = "policies_test",
     srcs = ["policies_test.py"],
+    # The chart targets carry their own Python tests; collect only this file.
+    args = ["$(rootpath policies_test.py)"],
     data = [
         "//projects:platform-factory/cert-manager/resources/network-policy.yaml",
         "//projects:platform-factory/cfgate/resources/network-policy.yaml",
