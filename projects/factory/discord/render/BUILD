@@ -3,6 +3,10 @@ load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 
+# fidelity.py runs by hand against a live renderer (README.md), so it has no
+# Bazel target. Gazelle would generate a py_venv_binary without main.
+# gazelle:exclude fidelity.py
+
 exports_files([
     "Cargo.lock",
     "Cargo.toml",
@@ -80,4 +84,16 @@ apko_image(
         ":fonts",
         ":licenses",
     ],
+)
+
+# Markdown read by the monolith doc-manifest genrules (#6446). See
+# //projects/monolith:repo_docs_srcs.
+filegroup(
+    name = "repo_docs",
+    srcs = glob(
+        ["**/*.md"],
+        allow_empty = True,
+        exclude = ["**/node_modules/**"],
+    ),
+    visibility = ["//projects/monolith:__pkg__"],
 )
