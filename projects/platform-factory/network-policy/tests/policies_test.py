@@ -45,13 +45,20 @@ def test_platform_manifest_api_ports():
     assert matches
 
 
-@pytest.mark.parametrize("release", ["edge", "external-secrets", "factory"])
-def test_rendered_api_ports(release):
-    chart = PLATFORM / release / "chart"
+@pytest.mark.parametrize(
+    "release,chart",
+    [
+        ("edge", PLATFORM / "edge/chart"),
+        ("external-secrets", PLATFORM / "external-secrets/chart"),
+        ("factory", PROJECTS / "factory/chart"),
+        ("factory-explore", PROJECTS / "factory-explore/chart"),
+        ("ships", PROJECTS / "ships/chart"),
+    ],
+)
+def test_rendered_api_ports(release, chart):
     args = []
     namespace = release
     if release == "factory":
-        chart = PROJECTS / "factory/chart"
         args = [
             "-f",
             str(chart / "values-homelab.yaml"),
@@ -59,6 +66,9 @@ def test_rendered_api_ports(release):
             "runbookRevert.enabled=true",
         ]
         namespace = "kagent"
+    elif release in {"factory-explore", "ships"}:
+        # Packaging supplies the image digest; the Applications use chart defaults.
+        args = ["--set", "image.digest=sha256:" + "0" * 64]
     rendered = subprocess.check_output(
         [
             os.environ.get("HELM_BIN", "helm"),
