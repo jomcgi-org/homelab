@@ -433,8 +433,7 @@ def test_bosun_activity_exempts_only_the_token_exchange(docs):
     open_routes = {
         ref["name"]
         for (kind, _), doc in docs.items()
-        if kind == "SecurityPolicy"
-        and not {"oidc", "jwt"} & set(doc["spec"])
+        if kind == "SecurityPolicy" and not {"oidc", "jwt"} & set(doc["spec"])
         for ref in doc["spec"]["targetRefs"]
     }
     assert open_routes == {"authentik", "bosun-activity-token"}
@@ -448,9 +447,7 @@ def test_bosun_activity_exempts_only_the_token_exchange(docs):
         ],
         "authorization": {"defaultAction": "Allow"},
     }
-    parent = [
-        {"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": "edge"}
-    ]
+    parent = [{"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": "edge"}]
     assert docs["HTTPRoute", "bosun-activity-token"]["spec"] == {
         "parentRefs": parent,
         "hostnames": ["bosun-activity-api.jomcgi.dev"],
