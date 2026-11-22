@@ -312,6 +312,10 @@ finding still blocks as before.
 
 - A change to this file, the deletion of a `REVIEW.md`, or a rule removed or
   loosened without naming the CI check or test that replaces it.
+- An `INVARIANTS.yaml` invariant removed, or its statement, mechanism or test
+  changed. A new invariant, an `unproven` to `live` move, and edits to
+  mechanism files get normal review
+  ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-755#comment-10149)).
 - A change that could weaken the gate itself: the human gate's path, label
   and approver lists and the trusted reviewer lists, wherever they are set
   or rendered; the reviewer's verdict logic (how findings, the human gate
