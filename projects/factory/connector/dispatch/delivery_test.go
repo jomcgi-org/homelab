@@ -714,7 +714,7 @@ func TestStoppedCreateAppearsAfterTimeout(t *testing.T) {
 	v.clk.Advance(time.Hour)
 	v.tick(v.e)
 	checkPending(true)
-	if _, err := v.gh.CreatePullRequest(v.ctx, "", *v.gh.delayed); err != nil {
+	if _, err := v.gh.CreatePullRequest(v.ctx, "jomcgi-org/homelab", *v.gh.delayed); err != nil {
 		t.Fatal(err)
 	}
 	v.clk.Advance(time.Hour)
@@ -724,6 +724,13 @@ func TestStoppedCreateAppearsAfterTimeout(t *testing.T) {
 		t.Fatal("acted on a human-authored PR with the factory body")
 	}
 	v.gh.byNumber(1).pr.Author = "jomcgi-factory[bot]"
+	v.gh.byNumber(1).pr.HeadRepo = "fork/homelab"
+	v.clk.Advance(time.Hour)
+	v.tick(v.e)
+	if v.gh.byNumber(1).pr.State != "open" || v.gh.stopCommentCount != 0 {
+		t.Fatal("acted on a fork PR with the factory body")
+	}
+	v.gh.byNumber(1).pr.HeadRepo = "jomcgi-org/homelab"
 	v.clk.Advance(time.Hour)
 	v.gh.delayComment = true
 	v.tick(v.e)
