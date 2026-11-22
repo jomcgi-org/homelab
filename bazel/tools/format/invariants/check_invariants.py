@@ -246,7 +246,9 @@ def check(records_only=False, base=None, target=None):
         if path.is_symlink():
             # A link would let a change to its target weaken policy without
             # touching the policy path (HOME-755). No approval waives this.
-            raise ValueError(f"{path}: an invariant file must be a regular file, not a symlink")
+            raise ValueError(
+                f"{path}: an invariant file must be a regular file, not a symlink"
+            )
         if path.exists():
             try:
                 documents[path] = yaml.load(path.read_text(), Loader=InvariantLoader)
