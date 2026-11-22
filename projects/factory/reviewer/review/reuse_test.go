@@ -180,24 +180,36 @@ func TestReuseFailsClosed(t *testing.T) {
 		{name: "another merge base", tree: "tree-1", base: "base-2"},
 		{name: "an unreadable tree", tree: "", base: "base-1"},
 		{name: "an unreadable merge base", tree: "tree-1", base: ""},
-		{name: "an edited description", tree: "tree-1", base: "base-1",
-			setup: func(h *harness) { h.gh.prs[7].Body += "\n\nThe author's evidence: it is fine." }},
-		{name: "a new trusted comment", tree: "tree-1", base: "base-1",
+		{
+			name: "an edited description", tree: "tree-1", base: "base-1",
+			setup: func(h *harness) { h.gh.prs[7].Body += "\n\nThe author's evidence: it is fine." },
+		},
+		{
+			name: "a new trusted comment", tree: "tree-1", base: "base-1",
 			setup: func(h *harness) {
 				h.gh.prs[7].Comments = append(h.gh.prs[7].Comments, github.Comment{ID: 9, Author: "jomcgi", Body: "Decision: accept projects/factory/x.go:correctness."})
-			}},
-		{name: "a changed rule", tree: "tree-1", base: "base-1",
+			},
+		},
+		{
+			name: "a changed rule", tree: "tree-1", base: "base-1",
 			// Rules are read at the base commit, so a changed rule is a new base commit.
 			setup: func(h *harness) {
 				h.gh.baseFiles["AGENTS.md"] = "Stricter agent rules."
 				h.gh.baseHead = "base-2"
-			}},
-		{name: "a review response in the commit", tree: "tree-1", base: "base-1",
-			commit: "chore: re-review\n\nReview response: projects/factory/x.go:correctness is a false positive."},
-		{name: "a commit that names a finding", tree: "tree-1", base: "base-1",
-			commit: "fix: projects/factory/x.go:correctness"},
-		{name: "an activation to assess", tree: "tree-1", base: "base-1",
-			commit: "chore: re-review\n\nActivation: after rollout, compare the rate"},
+			},
+		},
+		{
+			name: "a review response in the commit", tree: "tree-1", base: "base-1",
+			commit: "chore: re-review\n\nReview response: projects/factory/x.go:correctness is a false positive.",
+		},
+		{
+			name: "a commit that names a finding", tree: "tree-1", base: "base-1",
+			commit: "fix: projects/factory/x.go:correctness",
+		},
+		{
+			name: "an activation to assess", tree: "tree-1", base: "base-1",
+			commit: "chore: re-review\n\nActivation: after rollout, compare the rate",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, _ := reuseHarness(t)
