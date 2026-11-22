@@ -1,0 +1,81 @@
+# invariant: PLAT-6
+# A one-worker microVM pool for the Semgrep memory-restore spike. It runs
+# nothing until an actor template names it (workload: microvm-spike).
+#
+# The namespace carries the label the cluster-wide substrate-workers policy
+# selects, so worker egress is the gateway only. Delete the WorkerPool and the
+# namespace by hand to remove the spike: the Namespace patch in
+# kustomization.yaml keeps namespaces from being pruned.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: substrate-microvm-spike
+  labels:
+    factory.jomcgi.dev/substrate-workers: "true"
+---
+# Worker pods run as this account, with no API token.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: microvm-worker
+  namespace: substrate-microvm-spike
+automountServiceAccountToken: false
+---
+# The same allowlist the factory chart gives each binding namespace: actor
+# traffic arrives only from the router and leaves only through the egress
+# gateway.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: substrate-workers
+  namespace: substrate-microvm-spike
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: ate.dev/worker-pool
+        operator: Exists
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: ate-system
+            app: atenet-router
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: ate-system
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+---
+apiVersion: ate.dev/v1
+kind: WorkerPool
+metadata:
+  name: microvm-spike
+  namespace: substrate-microvm-spike
+  labels:
+    workload: microvm-spike
+spec:
+  replicas: 1
+  workerImage: ghcr.io/kagent-dev/substrate/ateworker-microvm:v1.0.1@sha256:0090d0420d34537e885e8453cf3dccf57e6e479a77fc736d29c417ef05e486c3
+  sandboxClasses:
+    - name: microvm
+      configRef:
+        name: microvm
+  template:
+    serviceAccountName: microvm-worker
+    # The worker's limit is the per-actor ceiling; the guest's own memory
+    # comes from the ActorTemplate. Memory is not compressible, so the
+    # request matches the limit.
+    resources:
+      limits:
+        cpu: "1"
+        memory: 1Gi
+      requests:
+        cpu: 250m
+        memory: 1Gi

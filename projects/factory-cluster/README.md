@@ -492,6 +492,35 @@ placeholder.
 Check Hubble for drops while it runs (see Network policy). Then delete the
 actor, the template, the atespace, the WorkerPool and the namespace.
 
+### microVM class (spike)
+
+SandboxConfig `microvm` runs actors in a Kata 4.3.1 guest on Cloud Hypervisor
+v53.0 (amd64 only; the nodes advertise `ate.dev/kvm`). WorkerPool
+`microvm-spike` in namespace `substrate-microvm-spike` runs one worker; an
+ActorTemplate selects it with `workload: microvm-spike`. The gVisor class is
+unchanged.
+
+atelet fetches four assets from rustfs at
+`s3://ate-snapshots/microvm-assets/amd64/<sha256>`, outside the `/atespaces/`
+snapshot prefix: `cloud-hypervisor`, `virtiofsd`, `kata-kernel` and
+`kata-image`. Their sha256 values are in
+`projects/platform-factory/substrate/resources/sandboxconfig-microvm.yaml` and
+`microvm-assets/assets.json`, and match upstream's template at the rendered
+release. PostSync Job `microvm-assets-init` downloads each missing asset from
+the official release, checks its sha256 and uploads it; a sync that finds all
+four keys downloads nothing. To bump a version, add a SandboxConfig version
+(keep the old one for restores), update `assets.json` and sync.
+
+```bash
+export KUBECONFIG=~/.kube/factory-sessions.yaml
+kubectl get sandboxconfig microvm                        # v2 Enabled
+kubectl -n ate-system logs job/microvm-assets-init -c upload   # all four keys
+kubectl -n substrate-microvm-spike get workerpool,pods -o wide # Ready on a KVM node
+```
+
+Delete the WorkerPool and the namespace by hand to remove the spike; the
+namespace patch in `resources/kustomization.yaml` stops ArgoCD pruning it.
+
 ## Observability
 
 Useful starting points in the `metrics` dataset, all filtered on

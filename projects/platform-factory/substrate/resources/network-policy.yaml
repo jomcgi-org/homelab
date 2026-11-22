@@ -307,7 +307,7 @@ spec:
               protocol: TCP
 ---
 # The snapshot store: reached by the objectstore-plugin sidecars and the
-# bucket Job; it reaches nothing.
+# bucket and microVM asset Jobs; it reaches nothing.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -322,7 +322,11 @@ spec:
         - matchExpressions:
             - key: app
               operator: In
-              values: [ate-api-server, atelet, rustfs-bucket-init]
+              values:
+                - ate-api-server
+                - atelet
+                - rustfs-bucket-init
+                - microvm-assets-init
       toPorts:
         - ports:
             - port: "9000"

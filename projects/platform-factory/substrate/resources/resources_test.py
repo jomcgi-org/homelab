@@ -1,7 +1,9 @@
-"""Validate the Substrate resources rendered for ArgoCD."""
+"""Validate the Substrate resources rendered for ArgoCD: the atelet's ghcr.io
+pull path, the egress scanner pilot and the microVM sandbox class."""
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -16,6 +18,18 @@ _IMAGE = (
 _SCANNER_IMAGE = (
     "ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan"
 )
+
+
+_ASSETS = json.loads((_HERE / "microvm-assets" / "assets.json").read_text())
+# The amd64 values in manifests/ate-install/sandboxconfig-microvm.yaml.tmpl of
+# kagent-dev/substrate v1.0.1 (and agent-substrate/substrate main).
+_UPSTREAM_AMD64 = {
+    "cloud-hypervisor": "448af3d4e59b22c2987f7df94c213ad40fb53a10d437e42b5ee6c4fce7c29ecc",
+    "virtiofsd": "15b2e72a78cc08a9bd8a6943e89fb69c88cb3cbeb63069efceade835342ac7d4",
+    "kata-kernel": "f87d8359035cb7557b16a319e6431ea09b183e62268aef436bf8dc6530d786b6",
+    "kata-image": "6770db2cca5710593f27c9ac5e1d9d7aab836422695a5e5c4807496a92a0f24d",
+}
+_SPIKE_NS = "substrate-microvm-spike"
 
 
 def _docs() -> list[dict]:
@@ -238,3 +252,171 @@ def test_the_receiver_route_keeps_substrate_authorization_and_scoped_mtls() -> N
     assert route["policies"] == routes[0]["policies"]
     assert "substrateEgress" in route["policies"]
     assert current == original
+
+
+def _microvm_job(docs: list[dict]) -> dict:
+    return _one(docs, "Job", "microvm-assets-init")
+
+
+def _containers(job: dict) -> list[dict]:
+    pod = job["spec"]["template"]["spec"]
+    return pod["initContainers"] + pod["containers"]
+
+
+def test_microvm_sandboxconfig_pins_the_upstream_amd64_assets() -> None:
+    docs = _docs()
+    config = _one(docs, "SandboxConfig", "microvm")
+    assert config["spec"]["sandboxClass"] == "microvm"
+    assert config["spec"]["defaultVersion"] == "v2"
+    (version,) = config["spec"]["versions"]
+    assert version["name"] == "v2"
+    assert version["state"] == "Enabled"
+    assert list(version["assets"]) == ["amd64"]
+    assets = version["assets"]["amd64"]
+    assert {n: a["sha256"] for n, a in assets.items()} == _UPSTREAM_AMD64
+    bucket, prefix = _ASSETS["bucket"], _ASSETS["prefix"]
+    for name, asset in assets.items():
+        # Digest-keyed, and outside the /atespaces/ snapshot prefix the
+        # objectstore plugin refuses to serve as assets.
+        assert asset["url"] == f"s3://{bucket}/{prefix}/amd64/{asset['sha256']}", name
+        assert "/atespaces/" not in asset["url"]
+    # The staging Job's pins are the SandboxConfig's pins.
+    assert {n: a["sha256"] for n, a in _ASSETS["assets"].items()} == _UPSTREAM_AMD64
+    # gVisor is untouched: its class default stays the only gvisor config.
+    names = {d["metadata"]["name"] for d in docs if d["kind"] == "SandboxConfig"}
+    assert names == {"gvisor-default", "microvm"}
+
+
+def test_microvm_assets_come_from_pinned_official_releases() -> None:
+    assets = _ASSETS["assets"]
+    assert _ASSETS["kata"]["url"].startswith(
+        "https://github.com/kata-containers/kata-containers/releases/download/4.3.1/"
+    )
+    assert assets["cloud-hypervisor"]["url"] == (
+        "https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/"
+        "v53.0/cloud-hypervisor-static"
+    )
+    kata = {n: a["kata"] for n, a in assets.items() if "kata" in a}
+    assert set(kata) == {"virtiofsd", "kata-kernel", "kata-image"}
+    assert all("sha256" in a for a in assets.values())
+
+
+def test_microvm_asset_job_is_a_postsync_hook_with_pinned_images() -> None:
+    job = _microvm_job(_docs())
+    annotations = job["metadata"]["annotations"]
+    assert annotations["argocd.argoproj.io/hook"] == "PostSync"
+    assert annotations["argocd.argoproj.io/hook-delete-policy"] == "BeforeHookCreation"
+    for container in _containers(job):
+        assert "@sha256:" in container["image"], container["name"]
+        assert not container["image"].endswith(":latest")
+
+
+def test_microvm_asset_job_is_bounded_and_locked_down() -> None:
+    pod = _microvm_job(_docs())["spec"]["template"]["spec"]
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    assert pod["securityContext"]["seccompProfile"] == {"type": "RuntimeDefault"}
+    for container in pod["initContainers"] + pod["containers"]:
+        name = container["name"]
+        limits = container["resources"]["limits"]
+        assert "memory" in limits and "ephemeral-storage" in limits, name
+        assert container["resources"]["requests"]["ephemeral-storage"], name
+        context = container["securityContext"]
+        assert context["allowPrivilegeEscalation"] is False, name
+        assert context["capabilities"] == {"drop": ["ALL"]}, name
+    (work,) = [v for v in pod["volumes"] if v["name"] == "work"]
+    assert "sizeLimit" in work["emptyDir"]
+
+
+def test_microvm_asset_job_mounts_its_generated_config_and_matches_the_pins() -> None:
+    docs = _docs()
+    job = _microvm_job(docs)
+    (volume,) = [
+        v for v in job["spec"]["template"]["spec"]["volumes"] if v["name"] == "config"
+    ]
+    config = _one(docs, "ConfigMap", volume["configMap"]["name"])
+    assert set(config["data"]) == {"assets.json", "stage.py"}
+    assert json.loads(config["data"]["assets.json"]) == _ASSETS
+    # The shell steps take the bucket and key prefix from env, not assets.json.
+    for container in _containers(job):
+        env = {e["name"]: e["value"] for e in container.get("env", []) if "value" in e}
+        if "BUCKET" in env:
+            assert env["BUCKET"] == _ASSETS["bucket"]
+            assert env["PREFIX"] == _ASSETS["prefix"]
+            assert env["ARCH"] == _ASSETS["arch"]
+    # The bucket is the snapshot bucket rustfs-bucket-init creates.
+    init = _one(docs, "Job", "rustfs-bucket-init")
+    assert f"--bucket {_ASSETS['bucket']} " in json.dumps(init)
+
+
+def test_microvm_asset_job_reaches_only_rustfs_and_github_releases() -> None:
+    docs = _docs()
+    policy = _one(docs, "CiliumNetworkPolicy", "microvm-assets-init")["spec"]
+    assert policy["endpointSelector"]["matchLabels"] == {"app": "microvm-assets-init"}
+    assert "ingress" not in policy
+    rustfs, github = policy["egress"]
+    assert rustfs["toEndpoints"] == [{"matchLabels": {"app": "rustfs"}}]
+    assert rustfs["toPorts"] == [{"ports": [{"port": "9000", "protocol": "TCP"}]}]
+    assert {f["matchName"] for f in github["toFQDNs"]} == {
+        "github.com",
+        "release-assets.githubusercontent.com",
+        "objects.githubusercontent.com",
+    }
+    assert github["toPorts"] == [{"ports": [{"port": "443", "protocol": "TCP"}]}]
+    pod_labels = _microvm_job(docs)["spec"]["template"]["metadata"]["labels"]
+    assert pod_labels == {"app": "microvm-assets-init"}
+    (admit,) = _one(docs, "CiliumNetworkPolicy", "rustfs")["spec"]["ingress"]
+    (expression,) = admit["fromEndpoints"][0]["matchExpressions"]
+    assert "microvm-assets-init" in expression["values"]
+
+
+def test_microvm_spike_pool_runs_one_pinned_microvm_worker() -> None:
+    docs = _docs()
+    namespace = _one(docs, "Namespace", _SPIKE_NS)
+    assert (
+        namespace["metadata"]["labels"]["factory.jomcgi.dev/substrate-workers"]
+        == "true"
+    )
+    pool = _one(docs, "WorkerPool", "microvm-spike")
+    assert pool["metadata"]["namespace"] == _SPIKE_NS
+    assert pool["metadata"]["labels"] == {"workload": "microvm-spike"}
+    assert pool["spec"]["replicas"] == 1
+    assert pool["spec"]["sandboxClasses"] == [
+        {"name": "microvm", "configRef": {"name": "microvm"}}
+    ]
+    assert pool["spec"]["workerImage"] == (
+        "ghcr.io/kagent-dev/substrate/ateworker-microvm:v1.0.1"
+        "@sha256:0090d0420d34537e885e8453cf3dccf57e6e479a77fc736d29c417ef05e486c3"
+    )
+    template = pool["spec"]["template"]
+    account = _one(docs, "ServiceAccount", template["serviceAccountName"])
+    assert account["metadata"]["namespace"] == _SPIKE_NS
+    assert account["automountServiceAccountToken"] is False
+    assert template["resources"]["limits"]["memory"] == "1Gi"
+    # No gVisor pool shares the spike namespace.
+    pools = [d for d in docs if d["kind"] == "WorkerPool"]
+    assert [p["metadata"]["namespace"] for p in pools] == [_SPIKE_NS]
+
+
+def test_microvm_spike_namespace_allows_only_the_router_and_the_gateway() -> None:
+    policy = _one(_docs(), "CiliumNetworkPolicy", "substrate-workers")["spec"]
+    (ingress,) = policy["ingress"]
+    (egress,) = policy["egress"]
+    assert ingress["fromEndpoints"] == [
+        {
+            "matchLabels": {
+                "k8s:io.kubernetes.pod.namespace": "ate-system",
+                "app": "atenet-router",
+            }
+        }
+    ]
+    assert egress["toEndpoints"] == [
+        {
+            "matchLabels": {
+                "k8s:io.kubernetes.pod.namespace": "ate-system",
+                "app": "atenet-egress",
+            }
+        }
+    ]
+    for rule in (ingress, egress):
+        assert rule["toPorts"] == [{"ports": [{"port": "8443", "protocol": "TCP"}]}]
