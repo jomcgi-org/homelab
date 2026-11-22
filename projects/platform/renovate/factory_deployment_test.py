@@ -1,4 +1,4 @@
-# invariant: PLAT-14
+# invariant: PLAT-15
 """Verify factory enrollment, the rendered Job and its default-deny boundary."""
 
 from __future__ import annotations
