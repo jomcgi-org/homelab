@@ -49,4 +49,5 @@ def test_rendered_host_access_audit(tmp_path):
         "factory-r-homelab-review",
         "kube-system",
         "otel-collector",
+        "t3",  # platform-factory/t3/resources/relay.yaml mounts a hostPath.
     }

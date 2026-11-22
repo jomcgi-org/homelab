@@ -43,3 +43,4 @@ spec:
             - factory-r-homelab-review
             - kube-system
             - otel-collector
+            - t3
