@@ -1572,10 +1572,10 @@ func TestInstallationRateLimitIsSharedByClients(t *testing.T) {
 	if err := delivery.do(ctx, repo, http.MethodGet, rest, nil, nil); err == nil {
 		t.Fatal("expected GitHub's 403")
 	}
-	if err := status.send(ctx, repo, http.MethodGet, rest, nil, nil, true, func() error {
+	if err := status.send(ctx, repo, http.MethodGet, rest, nil, nil, true, sendPolicy{before: func() error {
 		t.Error("cooldown must skip the request journal")
 		return nil
-	}); err == nil || !strings.Contains(err.Error(), "installation rate limited until") {
+	}}); err == nil || !strings.Contains(err.Error(), "installation rate limited until") {
 		t.Fatalf("expected shared cooldown, got %v", err)
 	}
 	if err := status.graphql(ctx, repo, "query FactoryStatus($id: ID!) { node(id: $id) { id } }", nil, &struct{}{}); err != nil {
