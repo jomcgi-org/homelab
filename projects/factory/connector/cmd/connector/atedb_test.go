@@ -108,12 +108,18 @@ func fakePostgres(t *testing.T, ca, server *testCert) (string, <-chan string) {
 // pod user. lib/pq's sslkey file path refuses it; the inline connector
 // presents it.
 func TestPEMConnectorPresentsGroupReadableKey(t *testing.T) {
-	ca := issue(t, &x509.Certificate{Subject: pkix.Name{CommonName: "ca"}, IsCA: true, BasicConstraintsValid: true,
-		KeyUsage: x509.KeyUsageCertSign}, nil)
-	server := issue(t, &x509.Certificate{Subject: pkix.Name{CommonName: "postgres"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}, ca)
-	client := issue(t, &x509.Certificate{Subject: pkix.Name{CommonName: "factory_reaper"},
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, ca)
+	ca := issue(t, &x509.Certificate{
+		Subject: pkix.Name{CommonName: "ca"}, IsCA: true, BasicConstraintsValid: true,
+		KeyUsage: x509.KeyUsageCertSign,
+	}, nil)
+	server := issue(t, &x509.Certificate{
+		Subject: pkix.Name{CommonName: "postgres"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}, ca)
+	client := issue(t, &x509.Certificate{
+		Subject:     pkix.Name{CommonName: "factory_reaper"},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}, ca)
 
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "ca.pem"), ca.certPEM(), 0o640); err != nil {
