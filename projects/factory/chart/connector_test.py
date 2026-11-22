@@ -150,6 +150,15 @@ def test_deploy_values_turn_the_connector_on() -> None:
     _in(docs, "ClusterRoleBinding", None, "kagent-kagent-invocation-auth")
 
 
+def test_deploy_values_link_the_itsaplan_run() -> None:
+    # HOME-119: PR bodies and assessment comments link the run page. The page
+    # stays behind Authentik; only the URL is public.
+    links = _config(_render(enable=False))["links"]
+    assert (
+        links["run"] == "https://factory-plan.jomcgi.dev/factory/HOME/agents/queue/{run}"
+    )
+
+
 def test_broker_uses_its_own_accounting_login() -> None:
     docs = _render()
     broker = _in(docs, "Deployment", _NS, "factory-broker")
@@ -527,7 +536,7 @@ def test_bindings_derive_from_repositories() -> None:
     }
     assert config["links"] == {
         "issue": "https://factory-plan.jomcgi.dev/issue/{issueId}",
-        "run": "",
+        "run": "https://factory-plan.jomcgi.dev/factory/HOME/agents/queue/{run}",
         "session": "",
     }
 
