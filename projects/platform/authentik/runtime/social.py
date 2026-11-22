@@ -49,8 +49,13 @@ for filename in (
         )
     # The worker applies Authentik's default blueprints in the background, so
     # an object a factory blueprint looks up can appear a little later.
+    # Until then 2026.5.6 can raise while it logs an unresolved !KeyOf (such
+    # as edge-app), so a raise counts as not valid yet.
     for _ in range(30):
-        valid, logs = importer.validate()
+        try:
+            valid, logs = importer.validate()
+        except Exception as error:
+            valid, logs = False, [error]
         if valid:
             break
         sleep(2)
