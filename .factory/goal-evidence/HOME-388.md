@@ -2,3 +2,5 @@
 2. `projects/factory-explore/ui/public/_headers` supplies the asset cache policy. After sync, sign in from a fresh browser, list an allowed resource, and check the response headers of a hashed asset requested by that page.
 
 For criterion 1, compare `projects/factory-explore-site/chart/templates/workloads.yaml` at `9d2cf7f85` and the reviewed head. With the activated Application values, the former uses the independently pinned workload image and withdrawal command. The latter publishes with the release image. `bazel/helm/write-back-versions_test.sh` checks that CI seeds the rollback digest and retains it on the next chart advance. See `test_managed_publish_uses_release_image_over_rollback_image` in `projects/factory-explore-site/chart/explorer_test.py`.
+
+Joe's decision of 2026-11-22 (factory PR triage) on HOME-388: Decision: #8385 ships publishing and `manageHostname` off. Activation (the token check, the HOME-358 checks, then enable) moves to HOME-765. Criteria 1 and 2 are checked there. ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-388#comment-10302))
