@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 
 import pytest
+
 # FastMCP 3.4 wraps argument validation errors in its own ValidationError.
 from fastmcp.exceptions import ValidationError
 
