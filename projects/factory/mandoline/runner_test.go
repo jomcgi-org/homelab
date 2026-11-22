@@ -232,6 +232,43 @@ func TestMissingAssignedObjectIsFetchedWithoutChangingTheCheckout(t *testing.T) 
 	}
 }
 
+func TestRunCompletesWithFetchedAssignedMain(t *testing.T) {
+	workspace, root, base := checkout(t)
+	remote := t.TempDir()
+	git(t, root, "clone", "--quiet", ".", remote)
+	git(t, remote, "config", "uploadpack.allowFilter", "true")
+	git(t, remote, "config", "uploadpack.allowAnySHA1InWant", "true")
+	git(t, remote, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "commit", "--allow-empty", "-qm", "assigned main")
+	assigned := git(t, remote, "rev-parse", "HEAD")
+	previous := mainRemote
+	mainRemote = remote
+	t.Cleanup(func() { mainRemote = previous })
+	program := filepath.Join(t.TempDir(), "mandoline")
+	if err := os.WriteFile(program, []byte(`#!/bin/sh
+if [ "$1" = --version ]; then
+    echo 'mandoline 0.25.0 fixture'
+    exit 0
+fi
+if [ "$1 $2" = 'pack list' ]; then
+    echo '{"command":"pack list","schema_version":1,"registries":[],"bundled":[{"name":"fixture","disabled":false}]}'
+    exit 0
+fi
+if [ "$1 $2 $3" = 'pack taint list' ]; then
+    echo '{"libraries":[{"name":"fixture","ecosystem":"go","bundled":true}]}'
+    exit 0
+fi
+printf '{"schemaVersion":1,"command":"slice","base":"%s"}\n' "$5"
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	req := Request{Command: "diff", Commit: base, Base: base}
+	// The assigned main is absent locally, so both checkout checks need the
+	// fetched object store.
+	if got := run(context.Background(), workspace, program, false, req, fixtureMain(assigned)); got.Status != "complete" {
+		t.Fatalf("analysis with a fetched main: %+v", got)
+	}
+}
+
 func fixtureMain(commit string) func(context.Context) (string, error) {
 	return func(context.Context) (string, error) {
 		return commit, nil

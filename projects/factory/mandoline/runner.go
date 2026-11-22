@@ -29,6 +29,10 @@ const (
 
 var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
+// mainRemote is where a missing assigned main commit is fetched from. Tests
+// replace it with a local repository.
+var mainRemote = trustedRepo
+
 type Request struct {
 	Command string
 	Commit  string
@@ -117,7 +121,7 @@ func run(ctx context.Context, workspace, tool string, audit bool, req Request, r
 	}
 	gitEnv := env
 	if !audit {
-		gitEnv, err = ensureMainObject(ctx, root, home, trustedRepo, main, env)
+		gitEnv, err = ensureMainObject(ctx, root, home, mainRemote, main, env)
 		if err != nil {
 			return result.fail("error", err.Error())
 		}
@@ -177,7 +181,8 @@ func run(ctx context.Context, workspace, tool string, audit bool, req Request, r
 		return result
 	}
 	// Detect checkout changes that happened while analysis read the tree.
-	if after, err := verifyCheckout(ctx, root, main, audit, req, env); err != nil || tree != after {
+	// gitEnv sees the fetched main object, as the first check did.
+	if after, err := verifyCheckout(ctx, root, main, audit, req, gitEnv); err != nil || tree != after {
 		return result.fail("error", "checkout changed or could not be verified after analysis")
 	}
 	if result.Status == "complete" {
