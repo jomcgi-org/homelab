@@ -171,3 +171,25 @@ func TestPEMConnectorReportsMissingBundle(t *testing.T) {
 		t.Fatalf("error = %v, want the missing CA file", err)
 	}
 }
+
+func TestPEMConnectorRefusesBroadKeyModes(t *testing.T) {
+	for _, mode := range []os.FileMode{0o644, 0o660, 0o604} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "ca.pem"), []byte("ca"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		key := filepath.Join(dir, "client.pem")
+		if err := os.WriteFile(key, []byte("key"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(key, mode); err != nil {
+			t.Fatal(err)
+		}
+		db := sql.OpenDB(pemConnector{dsn: actorDB, dir: dir})
+		err := db.PingContext(context.Background())
+		db.Close()
+		if err == nil || !strings.Contains(err.Error(), "want 0640 or less") {
+			t.Fatalf("mode %#o: error = %v, want the key mode refusal", mode, err)
+		}
+	}
+}
