@@ -1035,6 +1035,10 @@
             "type": "string",
             "minLength": 1
           },
+          "reasoningEffort": {
+            "description": "Overrides the broker's default effort for this agent's model calls.",
+            "enum": ["low", "medium", "high", "xhigh"]
+          },
           "resources": {
             "description": "The actor's limits; must equal kagent.config.runtimeDefaults.",
             "type": "object",

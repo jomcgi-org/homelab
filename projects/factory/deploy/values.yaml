@@ -137,9 +137,14 @@ agents:
   # which Codex 0.169.1 has in its
   # catalogue; before that it ran gpt-6.1-terra to spend less of the Codex
   # quota (https://github.com/jomcgi-org/homelab/issues/7817#issuecomment-6881930021).
-  # Reviews use the broker default effort (xhigh).
+  # Reviews ran at the broker default effort (xhigh) until 2026-11-22, when
+  # the reviewer made 71% of Codex calls and the quota neared its cap; they
+  # now run at high until the review model is chosen from measured escapes
+  # (HOME-171). Codex usage decision:
+  # https://factory-plan.jomcgi.dev/factory/issue/HOME-809#comment-11012
   reviewer:
     model: gpt-6.2-sol
+    reasoningEffort: high
     # Two more workers than reviewer.concurrency: goal check sessions and
     # idle review sessions hold workers too.
     concurrency: 5
@@ -209,11 +214,13 @@ itsaplan:
 connector:
   traceEndpoint: http://otel-collector.otel-collector.svc.cluster.local:4317
   enabled: true
-  # homelab-codex claims up to 10 runs at once, two fewer than the
+  # homelab-codex claims up to 3 runs at once until the Codex quota resets
+  # (2026-11-24), so the remaining quota reviews the PRs already open
+  # (HOME-809). The normal value is 10, two fewer than the
   # agents.codex.concurrency workers that hold them (see there).
   agents:
     - username: homelab-codex
-      concurrency: 10
+      concurrency: 3
   # 120 s between polls of one open PR, up from 60 s. On 2026-11-22 about 45
   # open PRs at 60 s used about 5,400 GraphQL points an hour against the
   # installation's 5,000, so delivery stopped for part of every hour

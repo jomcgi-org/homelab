@@ -239,7 +239,7 @@ spec:
         key: token
 {{- end }}
 {{- $ctx := . }}
-{{- $arms := list (dict "name" "control" "model" $a.model) }}
+{{- $arms := list (dict "name" "control" "model" $a.model "reasoningEffort" ($a.reasoningEffort | default "")) }}
 {{- if .coder }}
 {{- with (index ($.Values.connector.bindings | default dict) $r.name) }}
 {{- if .arms }}{{- $arms = .arms }}{{- end }}

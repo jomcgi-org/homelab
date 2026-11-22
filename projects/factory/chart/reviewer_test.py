@@ -464,7 +464,7 @@ def test_review_binding_gets_isolated_agent_and_egress_credentials() -> None:
         "model": "gpt-6.2-sol",
         "openAI": {
             "apiFormat": "responses",
-            "baseUrl": "http://factory-broker.factory.svc.cluster.local/v1",
+            "baseUrl": "http://factory-broker.factory.svc.cluster.local/v1/effort/high",
         },
         "actorJwt": {"audiences": ["factory-broker"]},
     }
