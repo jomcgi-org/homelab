@@ -889,6 +889,64 @@ def test_polylane_cloudflared_keeps_the_separate_digest_in_the_update():
     }
 
 
+def test_factory_digest_pins_outside_helm_images_are_extracted_with_their_digest():
+    config = json.loads((ROOT / "renovate.json").read_text())
+    digest = "sha256:" + "b" * 64
+    onepassword = (
+        "connect:\n"
+        "  connect:\n"
+        "    # Each container's tag, pinned by digest.\n"
+        "    api:\n"
+        f'      version: "1.8.1@{digest}"\n'
+        "    sync:\n"
+        f'      version: "1.8.2@{digest}"\n'
+        "  operator:\n"
+        "    # The operator's chart tag.\n"
+        f'    version: "1.9.1@{digest}"\n'
+    )
+    managers = {
+        manager["depNameTemplate"]: manager
+        for manager in config["customManagers"]
+        if manager.get("depNameTemplate", "").startswith("1password/")
+    }
+    assert set(managers) == {
+        "1password/connect-api",
+        "1password/connect-sync",
+        "1password/onepassword-operator",
+    }
+    versions = {}
+    for name, manager in managers.items():
+        assert manager["datasourceTemplate"] == "docker"
+        (pattern,) = manager["matchStrings"]
+        pattern = re.sub(r"\(\?<([a-zA-Z]+)>", r"(?P<\1>", pattern)
+        (match,) = re.finditer(pattern, onepassword)
+        assert match["currentDigest"] == digest
+        versions[name] = match["currentValue"]
+    assert versions == {
+        "1password/connect-api": "1.8.1",
+        "1password/connect-sync": "1.8.2",
+        "1password/onepassword-operator": "1.9.1",
+    }
+    cluster = (
+        "spec:\n"
+        "  imageName: ghcr.io/cloudnative-pg/postgresql:"
+        f"18.4-system-trixie@{digest}\n"
+    )
+    deps = _custom_extract(
+        config, "projects/platform-factory/x/resources/cluster.yaml", cluster
+    )
+    assert deps == [
+        {
+            "depName": "ghcr.io/cloudnative-pg/postgresql",
+            "currentValue": "18.4-system-trixie",
+            "currentDigest": digest,
+        }
+    ]
+    pin_rule = next(r for r in config["packageRules"] if r.get("pinDigests") is True)
+    assert "ghcr.io/cloudnative-pg/postgresql" in pin_rule["matchPackageNames"]
+    assert "1password/connect-api" in pin_rule["matchPackageNames"]
+
+
 def _pins_module():
     import importlib.machinery
     import importlib.util
