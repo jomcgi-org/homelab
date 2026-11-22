@@ -393,6 +393,7 @@ def test_microvm_spike_pool_runs_one_pinned_microvm_worker() -> None:
     assert account["metadata"]["namespace"] == _SPIKE_NS
     assert account["automountServiceAccountToken"] is False
     assert template["resources"]["limits"]["memory"] == "1Gi"
+    assert template["resources"]["requests"]["memory"] == "256Mi"
     # No gVisor pool shares the spike namespace.
     pools = [d for d in docs if d["kind"] == "WorkerPool"]
     assert [p["metadata"]["namespace"] for p in pools] == [_SPIKE_NS]
