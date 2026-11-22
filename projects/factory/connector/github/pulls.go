@@ -1216,3 +1216,107 @@ func (c *Client) RevertedMerge(ctx context.Context, repo, branch, sha string, nu
 		}
 	}
 }
+
+// BodyProof is a PR body with its author and last editor, read together.
+// A login is empty when GitHub names no actor; Bot is set for an App actor.
+type BodyProof struct {
+	Author, Editor       string
+	AuthorBot, EditorBot bool
+	Edited               bool
+	Body, HeadSHA        string
+}
+
+const pullRequestBodyProofQuery = `query PullRequestBodyProof($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      number author { __typename login } editor { __typename login } lastEditedAt body headRefOid
+    }
+  }
+}`
+
+// PullRequestBodyProof reads a PR's body with its author and last editor in
+// one query, so the body cannot change between the two reads. The reviewer
+// trusts a connector marker in the body only when the factory App wrote the
+// body last (HOME-756).
+//
+// invariant: HOME-756-1
+func (c *Client) PullRequestBodyProof(ctx context.Context, repo string, number int) (*BodyProof, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" || number <= 0 {
+		return nil, errors.New("github: incomplete PR body context")
+	}
+	type actor struct {
+		Type  string `json:"__typename"`
+		Login string `json:"login"`
+	}
+	var out struct {
+		Repository *struct {
+			PullRequest *struct {
+				Number       int             `json:"number"`
+				Author       *actor          `json:"author"`
+				Editor       json.RawMessage `json:"editor"`
+				LastEditedAt json.RawMessage `json:"lastEditedAt"`
+				Body         *string         `json:"body"`
+				HeadRefOid   string          `json:"headRefOid"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	}
+	if err := c.graphql(ctx, repo, pullRequestBodyProofQuery, map[string]any{"owner": owner, "name": name, "number": number}, &out); err != nil {
+		return nil, err
+	}
+	if out.Repository == nil || out.Repository.PullRequest == nil {
+		return nil, ErrNotFound
+	}
+	p := out.Repository.PullRequest
+	// Null is valid; an omitted editor or time cannot prove the body unedited.
+	if p.Number != number || len(p.Editor) == 0 || len(p.LastEditedAt) == 0 || p.Body == nil || p.HeadRefOid == "" {
+		return nil, errors.New("github: incomplete PR body proof")
+	}
+	var editor *actor
+	var edited *time.Time
+	if err := json.Unmarshal(p.Editor, &editor); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(p.LastEditedAt, &edited); err != nil {
+		return nil, err
+	}
+	proof := &BodyProof{Body: *p.Body, HeadSHA: p.HeadRefOid, Edited: edited != nil}
+	if p.Author != nil {
+		proof.Author, proof.AuthorBot = p.Author.Login, p.Author.Type == "Bot"
+	}
+	if editor != nil {
+		proof.Editor, proof.EditorBot = editor.Login, editor.Type == "Bot"
+	}
+	if proof.Edited && proof.Editor == "" {
+		return nil, errors.New("github: PR body edited by an unknown actor")
+	}
+	return proof, nil
+}
+
+// WrittenBy reports a body that the App with this REST login ("name[bot]")
+// wrote last: it authored the PR and no one else edited the body since.
+// GraphQL names a Bot without the "[bot]" suffix.
+func (p *BodyProof) WrittenBy(app string) bool {
+	name := strings.TrimSuffix(app, "[bot]")
+	is := func(login string, bot bool) bool {
+		return bot && name != "" && (strings.EqualFold(login, name) || strings.EqualFold(login, app))
+	}
+	return p != nil && is(p.Author, p.AuthorBot) && (!p.Edited || is(p.Editor, p.EditorBot))
+}
+
+// ReviewCapMarker is the line the connector adds to a factory PR's body once
+// the work item spent its review rounds. With it, and only when the factory
+// App wrote the body last (BodyProof.WrittenBy), the reviewer defers the PR's
+// medium and low findings (HOME-756, projects/factory/connector/review-cap.md).
+const ReviewCapMarker = "<!-- factory-connector review-cap -->"
+
+// HasReviewCapMarker reports a body with the marker exactly once, on its own line.
+func HasReviewCapMarker(body string) bool {
+	n := 0
+	for _, line := range strings.Split(body, "\n") {
+		if strings.TrimSpace(line) == ReviewCapMarker {
+			n++
+		}
+	}
+	return n == 1 && strings.Count(body, ReviewCapMarker) == 1
+}

@@ -191,7 +191,7 @@ func run(log *slog.Logger) error {
 			HumanGatePaths: b.HumanGatePaths, HumanGateLabels: b.HumanGateLabels, HumanApprovers: b.HumanApprovers,
 			TrustedCommenters: b.TrustedCommenters, ContextDocs: b.ContextDocs,
 			ItsaplanProject: b.ItsaplanProject, BranchPrefix: b.BranchPrefix, TrustedItsaplanAuthors: b.TrustedItsaplanAuthors,
-			GeneratedPaths: b.GeneratedPaths, MaxDiffLines: b.MaxDiffLines, MaxDiffFiles: b.MaxDiffFiles,
+			GeneratedPaths: b.GeneratedPaths, MaxDiffLines: b.MaxDiffLines, MaxDiffFiles: b.MaxDiffFiles, DeferAtReviewCap: b.DeferAtReviewCap,
 		}
 		for _, c := range b.RequiredChecks {
 			rb.RequiredChecks = append(rb.RequiredChecks, review.Check(c))

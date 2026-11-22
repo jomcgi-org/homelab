@@ -462,7 +462,7 @@ func (g *fakeGitHub) PullRequestDetailWithReviews(_ context.Context, _ string, n
 	}
 	return &github.PullRequestDetail{
 		HeadMessage: g.branches[p.pr.HeadRef].message,
-		PullRequest: p.pr, MergedAt: p.mergedAt, MergeCommitSHA: p.mergeSHA, MergeQueueState: p.queue,
+		PullRequest: withBody(p.pr, p.body), MergedAt: p.mergedAt, MergeCommitSHA: p.mergeSHA, MergeQueueState: p.queue,
 		MergeGroupSHA: p.groupSHA, Mergeable: p.mergeable,
 		Reviews: append([]github.Review(nil), reviews...), Threads: append([]github.ReviewThread(nil), p.threads...),
 	}, nil
@@ -4178,5 +4178,63 @@ func TestCurrentPendingReviewerCheckQueuesNativeReviewingOnce(t *testing.T) {
 	v.poll()
 	if len(plan.heads) != 2 || plan.heads[0] != head || plan.heads[1] != head {
 		t.Fatalf("Reviewing transitions = %v, want retry then settlement for the current head", plan.heads)
+	}
+}
+
+func withBody(pr github.PullRequest, body string) github.PullRequest {
+	pr.Body = body
+	return pr
+}
+
+// TestReviewCapMarksThePR covers HOME-756: once a work item spends its review
+// rounds on a binding that defers at the cap, the connector adds the review
+// cap marker to the PR body for the reviewer, and the issue hears that the
+// reviewer defers medium findings. Without deferral, nothing changes.
+func TestReviewCapMarksThePR(t *testing.T) {
+	for _, deferral := range []bool{true, false} {
+		t.Run(fmt.Sprint(deferral), func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.cfg.Bindings[0].Review.DeferAtReviewCap = deferral
+			v.e.Release()
+			v.e = v.engine("connector-a")
+			v.delivered()
+			for i := 1; i <= 3; i++ {
+				head := fmt.Sprintf("sha-%d", i)
+				v.gh.review(1, "CHANGES_REQUESTED", "reviewer", head, fmt.Sprintf("Round %d feedback.", i))
+				v.poll()
+				if i <= 2 {
+					v.gh.push("factory/HL-7", fmt.Sprintf("sha-%d", i+1), "fix: feedback")
+					v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+					v.clk.Advance(5 * time.Second)
+					v.tick(v.e)
+				}
+			}
+			v.poll()
+			if w := v.work(101); w.State != store.WorkReview || w.ReviewRounds != 2 {
+				t.Fatalf("work item = %+v", w)
+			}
+			v.gh.mu.Lock()
+			body := v.gh.byNumber(1).body
+			v.gh.mu.Unlock()
+			if github.HasReviewCapMarker(body) != deferral {
+				t.Fatalf("marker = %v, want %v:\n%s", !deferral, deferral, body)
+			}
+			var deferred, waits bool
+			for _, c := range v.its.Comments() {
+				deferred = deferred || strings.Contains(c.body, "The reviewer defers its medium findings")
+				waits = waits || strings.Contains(c.body, "bound of 2 review rounds; PR #1")
+			}
+			if deferred != deferral || waits == deferral {
+				t.Fatalf("round-limit comment: deferred %v, waits %v", deferred, waits)
+			}
+			// A later poll leaves a marked body alone.
+			v.poll()
+			v.gh.mu.Lock()
+			again := v.gh.byNumber(1).body
+			v.gh.mu.Unlock()
+			if again != body {
+				t.Fatalf("the body changed again:\n%s", again)
+			}
+		})
 	}
 }

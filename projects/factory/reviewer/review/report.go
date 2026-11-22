@@ -119,6 +119,9 @@ type Finding struct {
 	// Lowered is the severity the agent gave a finding Scope lowered; the
 	// agent cannot set it.
 	Lowered string `json:"-"`
+	// Capped is the severity of a finding AtCap deferred at the review-round
+	// cap; the agent cannot set it.
+	Capped string `json:"-"`
 	// Verdict is the goal-check verdict the service rendered a goal finding
 	// from (goalFindings); the agent cannot set it. A goal finding reported
 	// again as after_rollout takes that verdict's low severity: like met, it
@@ -725,7 +728,7 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 		}
 		current[f.ID] = true
 		if sev, ok := revoked[f.ID]; ok && rank(f.Severity) > rank(sev) {
-			reason[f.ID] = fmt.Sprintf("reported again as %s after Joe's decision changed; it stays %s", f.Severity, sev)
+			reason[f.ID] = fmt.Sprintf("reported again as %s after %s; it stays %s", f.Severity, blockDecisionChanged, sev)
 			f.Severity, f.Lowered = sev, ""
 		}
 		switch {
@@ -786,7 +789,7 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 		b := Blocked{Finding: p, Carried: true, Note: note}
 		switch {
 		case !ok:
-			b.Reason = "not accounted for"
+			b.Reason = blockUnaccounted
 		case s.Status == StatusFixed:
 			a.Fixed = append(a.Fixed, p)
 			continue
@@ -820,7 +823,7 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 				ID: st.Finding, Severity: sev, Title: "Joe's decision on this finding was edited or deleted",
 				Detail: "An earlier head passed on Joe's decision for this finding. Its comment has changed, so the finding blocks until it is fixed or decided again.",
 			},
-			Carried: true, Reason: "Joe's decision changed",
+			Carried: true, Reason: blockDecisionChanged,
 		})
 	}
 	for i := range a.Blocking {
@@ -842,6 +845,41 @@ func AssessDecided(r *Report, prior []Finding, d Decisions) Assessment {
 		}
 	}
 	return a
+}
+
+// Reasons that keep a previous finding blocking at the review-round cap: the
+// report did not account for it, or Joe's decision on it changed.
+const (
+	blockUnaccounted     = "not accounted for"
+	blockDecisionChanged = "Joe's decision changed"
+)
+
+// AtCap defers the open medium findings of a factory PR at the connector's
+// review-round cap to follow-ups, so they no longer block ([Joe's decision],
+// HOME-756). Critical and high findings, the human gate, a previous finding
+// the report did not account for, and a finding whose decision Joe changed
+// keep blocking. stateOf keeps the deferred findings (State.Capped), so the
+// next head must still account for them, and the merge files them.
+//
+// invariant: HOME-756-2
+//
+// [Joe's decision]: https://factory-plan.jomcgi.dev/factory/issue/HOME-756#comment-10150
+func (a *Assessment) AtCap() {
+	var keep []Blocked
+	for _, b := range a.Blocking {
+		if isGate(b.Finding) || b.Severity != SeverityMedium || b.Reason == blockUnaccounted || strings.Contains(b.Reason, blockDecisionChanged) {
+			keep = append(keep, b)
+			continue
+		}
+		f := b.Finding
+		f.Capped = f.Severity
+		a.Deferred = append(a.Deferred, f)
+	}
+	a.Blocking = keep
+	a.Conclusion = ConclusionSuccess
+	if len(a.Blocking) > 0 {
+		a.Conclusion = ConclusionFailure
+	}
 }
 
 // Scope is what a later head changed since the previous reviewed head. A new
@@ -1141,7 +1179,14 @@ type State struct {
 	Semgrep            *SemgrepStamp                `json:"semgrep,omitempty"`
 	Activation         *github.ActivationAssessment `json:"activation,omitempty"`
 	Blocking           []Finding                    `json:"blocking"`
-	Cleared            []Cleared                    `json:"cleared,omitempty"`
+	// Capped are the medium findings AtCap deferred on this head. They stay
+	// unresolved: the next head accounts for them as for Blocking.
+	Capped []Finding `json:"capped,omitempty"`
+	// ReviewCap records whether this review read the connector's review-cap
+	// marker (HOME-756): capApplied, capUnverified, or empty when the PR had
+	// no marker or the read failed.
+	ReviewCap string    `json:"review_cap,omitempty"`
+	Cleared   []Cleared `json:"cleared,omitempty"`
 	// ClearedPartial marks a cleared record that has lost entries, on this
 	// head or an earlier one, so it cannot show every fixed finding.
 	ClearedPartial bool  `json:"cleared_partial,omitempty"`
@@ -1228,7 +1273,7 @@ const (
 // findings and the agent's human-gate findings. The service's own gate, by
 // path or label, is found again on every head.
 func (st State) Previous() []Finding {
-	out := append([]Finding(nil), st.Blocking...)
+	out := append(append([]Finding(nil), st.Blocking...), st.Capped...)
 	out = append(out, st.Exposures...)
 	if st.Gate != nil {
 		out = append(out, st.Gate.Findings...)
@@ -1369,8 +1414,11 @@ func render(a Assessment, r *Report, gate *Gate, footer string, state *State) Ou
 		s.WriteString("### Deferred\n\n")
 		for _, f := range a.Deferred {
 			writeFinding(&s, f)
-			if f.Lowered != "" {
+			switch {
+			case f.Lowered != "":
 				fmt.Fprintf(&s, "  %s\n", loweredNote(f))
+			case f.Capped != "":
+				fmt.Fprintf(&s, "  Reported %s; deferred to a follow-up issue because the PR reached the review-round cap (HOME-756).\n", oneLine(f.Capped, 20))
 			}
 		}
 		s.WriteString("\n")
@@ -1448,6 +1496,11 @@ func stateOf(a Assessment, r *Report, gate *Gate) State {
 			continue
 		}
 		st.Blocking = append(st.Blocking, storable(b.Finding))
+	}
+	for _, f := range a.Deferred {
+		if f.Capped != "" {
+			st.Capped = append(st.Capped, storable(f))
+		}
 	}
 	return st
 }
@@ -1742,7 +1795,7 @@ func encodeState(st State) string {
 		checkpoint := State{
 			Incomplete: true, Overflow: true, Cleanup: st.Cleanup, PendingResolutions: st.PendingResolutions, TaskID: st.TaskID, LegacyTask: st.LegacyTask,
 			IssueDigest: st.IssueDigest, IssuesPending: st.IssuesPending, Goal: st.Goal, GoalKey: st.GoalKey, Semgrep: st.Semgrep,
-			Decisions: st.Decisions, Gate: gate,
+			Decisions: st.Decisions, Gate: gate, ReviewCap: st.ReviewCap,
 		}
 		out = enc(checkpoint)
 		if len(out) > maxState {
@@ -1780,6 +1833,8 @@ func LoadState(text string) (st State, ok bool) {
 	st.LegacyTask = st.LegacyTask || m[1] == "1"
 	ids := map[string]int{}
 	var recovered []Finding
+	capped := st.Capped
+	st.Capped = nil // Validated below, apart from Blocking.
 	for _, f := range st.Previous() {
 		if !validID(f.ID) || rank(f.Severity) == len(Severities) || (!isGate(f) && !blocks(f.Severity)) {
 			st.Incomplete = true
@@ -1810,6 +1865,15 @@ func LoadState(text string) (st State, ok bool) {
 		} else {
 			st.Blocking = append(st.Blocking, f)
 		}
+	}
+	for _, f := range capped {
+		_, duplicate := ids[f.ID]
+		if !validID(f.ID) || f.Severity != SeverityMedium || duplicate {
+			st.Incomplete = true
+			continue
+		}
+		ids[f.ID] = -1
+		st.Capped = append(st.Capped, f)
 	}
 	return st, true
 }

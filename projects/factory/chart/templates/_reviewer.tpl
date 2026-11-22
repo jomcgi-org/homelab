@@ -45,6 +45,10 @@ system:serviceaccount:{{ .Values.broker.namespace }}:{{ include "factory.reviewe
 {{- $_ := set $binding "itsaplanProject" $project }}
 {{- $_ := set $binding "branchPrefix" ($connector.branchPrefix | default "factory/") }}
 {{- end }}
+{{- /* The connector marks a PR at its review-round cap; the reviewer then defers medium findings (HOME-756). */}}
+{{- if $connector.deferAtReviewCap }}
+{{- $_ := set $binding "deferAtReviewCap" true }}
+{{- end }}
 {{- range $k, $v := omit $b "namespace" }}
 {{- $_ := set $binding $k $v }}
 {{- end }}

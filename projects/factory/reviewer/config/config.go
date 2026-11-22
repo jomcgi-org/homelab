@@ -129,6 +129,11 @@ type Binding struct {
 	GeneratedPaths []string `yaml:"generatedPaths"`
 	MaxDiffLines   int      `yaml:"maxDiffLines"`
 	MaxDiffFiles   int      `yaml:"maxDiffFiles"`
+	// DeferAtReviewCap defers a factory PR's medium findings once the
+	// connector marks it at its review-round cap (HOME-756). The chart sets
+	// it from the connector binding; it stays off until merge-time filing of
+	// deferred findings is live.
+	DeferAtReviewCap bool `yaml:"deferAtReviewCap"`
 
 	Runtime *provenance.Runtime `yaml:"runtime"`
 }

@@ -63,6 +63,7 @@ type GitHub interface {
 	PullRequestsUpdatedSince(ctx context.Context, repo string, since time.Time) ([]github.UpdatedPullRequest, bool, error)
 	CommitPullRequests(ctx context.Context, repo, sha string) ([]github.PullRequest, bool, error)
 	PullRequestReviewAcknowledgement(ctx context.Context, repo string, number int, nodeID string) (*github.ReviewAcknowledgement, error)
+	PullRequestBodyProof(ctx context.Context, repo string, number int) (*github.BodyProof, error)
 	PullRequestComments(ctx context.Context, repo string, number int) ([]github.Comment, error)
 	CompareCommits(ctx context.Context, repo, base, head string) (*github.CommitComparison, error)
 	Statuses(ctx context.Context, repo, sha string) ([]github.Status, error)
@@ -129,6 +130,67 @@ type Binding struct {
 	GeneratedPaths         []string
 	MaxDiffLines           int
 	MaxDiffFiles           int
+	// DeferAtReviewCap defers a factory PR's medium findings once the
+	// connector marks the PR at its review-round cap (HOME-756). It stays
+	// off until merge-time filing of deferred findings is live.
+	DeferAtReviewCap bool
+}
+
+// Review-cap readings saved in State.ReviewCap (HOME-756).
+const (
+	capApplied    = "applied"
+	capUnverified = "unverified"
+)
+
+// capCandidate reports a factory PR whose listed body has the connector's
+// review-cap marker, on a binding that defers at the cap.
+func capCandidate(b *Binding, pr github.PullRequest) bool {
+	return b.DeferAtReviewCap && pr.Author == factoryAuthor && github.HasReviewCapMarker(pr.Body)
+}
+
+// reviewCap reads the connector's review-cap marker of a factory PR. The
+// connector writes the PR body with the factory App; a coder's token cannot
+// write PR bodies. So the marker counts (capApplied) only in a body the App
+// wrote last, read with its editor in one query, on the head under review.
+// A body anyone else edited is capUnverified, and the review keeps the
+// normal verdict. A failed read returns "", so the poll can try again.
+//
+// invariant: HOME-756-1
+func (e *Engine) reviewCap(ctx context.Context, b *Binding, pr github.PullRequest, l *slog.Logger) string {
+	if !capCandidate(b, pr) {
+		return ""
+	}
+	proof, err := e.gh.PullRequestBodyProof(ctx, b.repo(), pr.Number)
+	if err != nil {
+		e.ghError(ctx, l, b, "body_proof", err)
+		return ""
+	}
+	if proof.HeadSHA != pr.HeadSHA || !proof.WrittenBy(factoryAuthor) || !github.HasReviewCapMarker(proof.Body) {
+		l.WarnContext(ctx, "the review-cap marker is not in a body the factory App wrote last; the normal verdict applies", "editor", proof.Editor)
+		return capUnverified
+	}
+	return capApplied
+}
+
+// capRecheck reports a failed review of a capped factory PR that did not read
+// the cap: the connector marked the PR after this review began. The head is
+// reviewed once more per process, so a failed read cannot loop.
+func (e *Engine) capRecheck(b *Binding, pr github.PullRequest, run *github.CheckRun) bool {
+	if run.Conclusion != ConclusionFailure || !capCandidate(b, pr) {
+		return false
+	}
+	if st, ok := LoadState(run.Text); !ok || st.ReviewCap != "" {
+		return false
+	}
+	key := headKey{b.Name, pr.HeadSHA}
+	if e.capRechecked[key] {
+		return false
+	}
+	if len(e.capRechecked) > maxGroups {
+		clear(e.capRechecked)
+	}
+	e.capRechecked[key] = true
+	return true
 }
 
 func (b *Binding) repo() string { return b.Owner + "/" + b.Repo }
@@ -245,9 +307,11 @@ type Engine struct {
 	commitRefs map[string]string
 
 	// Only the polling goroutine uses these.
-	groups          map[string]string    // merge group commit: the conclusion of its review check
-	enqueueAfter    map[string]time.Time // repo#pr@sha: next enqueue attempt after a failure
-	waiting         map[prKey]*waitingHead
+	groups       map[string]string    // merge group commit: the conclusion of its review check
+	enqueueAfter map[string]time.Time // repo#pr@sha: next enqueue attempt after a failure
+	waiting      map[prKey]*waitingHead
+	// capRechecked are the heads capRecheck sent for another review.
+	capRechecked    map[headKey]bool
 	readyCache      map[readyKey]readyEntry
 	cleanupChecks   map[int64]cleanupCheck // Running probes by GitHub check run ID.
 	cleanupQueue    []int64                // Oldest unserved request first, across bindings.
@@ -414,7 +478,7 @@ func New(cfg Config, gh GitHub, tasks Tasks, m *metrics.Metrics, log *slog.Logge
 		cfg: cfg, gh: gh, tasks: tasks, m: m, log: log, rules: rules, epoch: rand.Text(),
 		cleanupRequests: make(map[int64]cleanupRequest), cleanupChecks: make(map[int64]cleanupCheck), cleanupSlots: make(chan struct{}, cfg.Concurrency),
 		inflight: map[headKey]*running{}, parked: map[headKey]*parkedRoot{}, pendingHolds: map[headKey]*github.CheckRun{}, contexts: map[string]*heldContext{}, recoveries: map[prKey]recovery{}, rootScans: map[prKey]rootScan{},
-		groups: map[string]string{}, enqueueAfter: map[string]time.Time{}, waiting: map[prKey]*waitingHead{},
+		groups: map[string]string{}, enqueueAfter: map[string]time.Time{}, waiting: map[prKey]*waitingHead{}, capRechecked: map[headKey]bool{},
 		heads: map[prKey]string{}, comments: map[prKey]*commentState{}, commentLimits: map[prKey]bool{}, commentReplays: map[prKey]int64{},
 		swept: map[string]time.Time{}, sweeping: map[string]bool{},
 	}
@@ -628,6 +692,11 @@ func (e *Engine) tickBinding(ctx context.Context, b *Binding, snapshot *QueueSna
 			st.DecisionComment = trigger
 			next.Text = encodeState(st)
 			start = append(start, candidate{pr, &next})
+		case e.capRecheck(b, pr, run):
+			// HOME-756: the connector marked the PR at its review cap after
+			// this failed review; review the head again with the cap.
+			reviews[pr.Number] = nil
+			start = append(start, candidate{pr, run})
 		case e.semgrepChanged(ctx, b, pr, run):
 			// Withdraw a stale pass even when all review slots are occupied.
 			if run.Conclusion == ConclusionSuccess {
@@ -2502,7 +2571,7 @@ func (e *Engine) statefulReview(ctx context.Context, b *Binding, pr int, sha str
 			}
 			if inherited == nil {
 				inherited, merged = r, st
-				merged.Blocking = slices.Clone(st.Blocking)
+				merged.Blocking, merged.Capped = slices.Clone(st.Blocking), slices.Clone(st.Capped)
 				if merged.Gate != nil {
 					g := *merged.Gate
 					g.Findings = slices.Clone(g.Findings)
@@ -2513,6 +2582,7 @@ func (e *Engine) statefulReview(ctx context.Context, b *Binding, pr int, sha str
 			merged.Incomplete = merged.Incomplete || st.Incomplete
 			merged.Overflow = merged.Overflow || st.Overflow
 			merged.Blocking = mergeFindings(merged.Blocking, st.Blocking)
+			merged.Capped = mergeFindings(merged.Capped, st.Capped)
 			if st.Gate != nil {
 				if merged.Gate == nil {
 					merged.Gate = &Gate{}
@@ -3270,6 +3340,10 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 		a := AssessDecided(r, prior, decisions)
 		a.Earlier, a.EarlierPartial = decisions.Revalidate(in.prior.Cleared), !in.prior.ClearedComplete()
 		a.Later = in.priorHead != "" && in.priorHead != pr.HeadSHA
+		capped := e.reviewCap(ctx, b, pr, l)
+		if capped == capApplied {
+			a.AtCap()
+		}
 		for _, f := range a.Deferred {
 			if f.Lowered != "" {
 				l.InfoContext(ctx, "lowered a new finding outside the interdiff", "id", f.ID, "severity", f.Lowered)
@@ -3339,6 +3413,7 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 		if stored, _ := LoadState(encodeState(st)); !a.Incomplete && !stored.Incomplete {
 			st.PendingResolutions = e.postInline(ctx, b, pr, &a, in, r)
 		}
+		st.ReviewCap = capped
 		o := render(a, r, gate, footer, &st)
 		session := sessionAfter(b, pr, in, task)
 		o.Output.Text = withSession(o.Output.Text, session)
