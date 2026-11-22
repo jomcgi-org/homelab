@@ -1,0 +1,42 @@
+--- a/connect/templates/connect-deployment.yaml
++++ b/connect/templates/connect-deployment.yaml
+@@ -59,7 +59,7 @@
+       {{- toYaml .Values.connect.tolerations | nindent 8 }}
+       containers:
+         - name: {{ .Values.connect.api.name }}
+-          image: {{ .Values.connect.api.imageRepository }}:{{ tpl .Values.connect.version . }}
++          image: {{ .Values.connect.api.imageRepository }}:{{ tpl (.Values.connect.api.version | default .Values.connect.version) . }}
+           imagePullPolicy: {{ .Values.connect.imagePullPolicy }}
+           securityContext:
+             runAsUser: 999
+@@ -121,7 +121,7 @@
+               mountPath: /home/opuser/.op/certs
+             {{- end }}
+         - name: connect-sync
+-          image: {{ .Values.connect.sync.imageRepository }}:{{ tpl .Values.connect.version . }}
++          image: {{ .Values.connect.sync.imageRepository }}:{{ tpl (.Values.connect.sync.version | default .Values.connect.version) . }}
+           imagePullPolicy: {{ .Values.connect.imagePullPolicy }}
+           securityContext:
+             runAsUser: 999
+--- a/connect/values.yaml
++++ b/connect/values.yaml
+@@ -18,6 +18,9 @@
+     name: connect-api
+     # The 1Password Connect API repository
+     imageRepository: 1password/connect-api
++    # homelab patch (HOME-287): this container's own tag, which may carry
++    # a digest (tag@sha256:...). Empty uses connect.version.
++    version: ""
+     resources:
+       limits:
+         memory: 128Mi
+@@ -50,6 +53,9 @@
+   sync:
+     name: connect-sync
+     imageRepository: 1password/connect-sync
++    # homelab patch (HOME-287): this container's own tag, which may carry
++    # a digest (tag@sha256:...). Empty uses connect.version.
++    version: ""
+     resources: {}
+     httpPort: 8081
+     logLevel: info

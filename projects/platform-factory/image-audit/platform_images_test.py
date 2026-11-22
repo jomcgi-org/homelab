@@ -12,15 +12,6 @@ from check_image_digests import violations
 HERE = Path(__file__).absolute().parents[1]
 ROOT = HERE.parents[1]
 
-# The 1Password Connect chart renders both containers from one shared
-# connect.version value, so values cannot give connect-api and connect-sync
-# their own digests. These two stay tag-only until Joe chooses a chart
-# change (HOME-287). Any other tag-only image still fails.
-PENDING = {
-    "onepassword/onepassword-connect: 1password/connect-api:1.8.1",
-    "onepassword/onepassword-connect: 1password/connect-sync:1.8.1",
-}
-
 
 @pytest.mark.parametrize(
     "component",
@@ -58,7 +49,7 @@ def test_factory_platform_images(component):
     missing = [
         msg for doc in yaml.safe_load_all(rendered) if doc for msg in violations(doc)
     ]
-    assert not [msg for msg in missing if msg not in PENDING], missing
+    assert not missing, missing
 
 
 @pytest.mark.parametrize(

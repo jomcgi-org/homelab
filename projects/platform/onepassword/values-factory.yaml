@@ -4,13 +4,17 @@
 # limit, at about three times each peak.
 connect:
   connect:
+    # Each container's tag, pinned by digest (HOME-287). The vendored chart
+    # patch (connect.patch) gives api and sync their own version.
     api:
+      version: "1.8.1@sha256:8fe7bcd50c9e73899e0a1aa5aa43421ca75fbceacb33dd07f6418c4116e637a1"
       resources:
         requests:
           memory: 96Mi
         limits:
           memory: 96Mi
     sync:
+      version: "1.8.1@sha256:d5e937b2b7e314dbbaffacf469dc8f30376b5954a3ad836c8d96e6cb579d7fab"
       resources:
         requests:
           memory: 64Mi

@@ -56,6 +56,9 @@ projects/monolith/web/grimoire/src/theme/sheet.*
 # Vendored upstream release manifests are kept byte-for-byte so their
 # recorded sha256 still matches.
 **/upstream/*-install.yaml
+# The vendored 1Password Connect chart is upstream bytes plus connect.patch;
+# vendor-connect.sh is its only writer.
+projects/platform/onepassword/charts/connect/**
 
 # Copies of public-app performance workflow artifact files are kept
 # byte-for-byte so the SHA-256 in the evidence manifest still matches.
