@@ -2,9 +2,7 @@
   "uid": "factory-hindsight",
   "title": "Hindsight memory",
   "description": "Prometheus metrics for Hindsight, the agents' shared memory: operations, retained documents, LLM use and service health. Counters restart with the pod.",
-  "tags": [
-    "factory"
-  ],
+  "tags": ["factory"],
   "timezone": "browser",
   "editable": false,
   "graphTooltip": 1,
@@ -34,12 +32,8 @@
         "includeAll": true,
         "current": {
           "selected": true,
-          "text": [
-            "All"
-          ],
-          "value": [
-            "$__all"
-          ]
+          "text": ["All"],
+          "value": ["$__all"]
         },
         "sort": 1
       }
@@ -98,9 +92,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -142,9 +134,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -186,9 +176,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
@@ -247,9 +235,7 @@
       },
       "options": {
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
+          "calcs": ["lastNotNull"],
           "fields": "",
           "values": false
         },
