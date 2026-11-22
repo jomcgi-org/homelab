@@ -26,7 +26,7 @@ func client(t *testing.T, handler http.HandlerFunc) *Client {
 		t.Fatal(err)
 	}
 	c, err := New(Config{
-		URL: srv.URL + "/mcp/", TokenURL: srv.URL + "/token", AppPasswordFile: path,
+		URL: srv.URL + "/notify", AppPasswordFile: path,
 		BeforeRequest: func(context.Context, string, string) error { return nil },
 	})
 	if err != nil {
@@ -38,54 +38,29 @@ func client(t *testing.T, handler http.HandlerFunc) *Client {
 }
 
 func protocol(t *testing.T, tool func(http.ResponseWriter, map[string]any)) http.HandlerFunc {
-	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/token" {
-			if err := r.ParseForm(); err != nil {
-				t.Error(err)
-			}
-			if r.Form.Get("username") != "factory-notify-sa" || r.Form.Get("client_id") != "factory-notify" || r.Form.Get("password") != "test-app-password" {
-				t.Error("wrong credential request")
-			}
-			fmt.Fprint(w, `{"access_token":"test-bearer","expires_in":300}`)
-			return
+		user, password, ok := r.BasicAuth()
+		if !ok || user != "factory-connector" || password != "test-app-password" {
+			t.Error("wrong caller")
 		}
-		if r.Header.Get("Authorization") != "Bearer test-bearer" {
-			t.Error("missing bearer")
-		}
-		var request struct {
-			Method string
-			Params map[string]any
-		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		var req Request
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Error(err)
 		}
-		switch request.Method {
-		case "initialize":
-			fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{},"serverInfo":{"name":"test","version":"1"}}}`)
-		case "notifications/initialized":
-			w.WriteHeader(http.StatusAccepted)
-		case "tools/call":
-			if request.Params["name"] != "monolith_agent_notify" {
-				t.Error("wrong tool")
-			}
-			tool(w, request.Params["arguments"].(map[string]any))
-		default:
-			t.Error("unexpected MCP request")
+		if req.Channel != "homelab" {
+			t.Error("wrong channel")
 		}
+		tool(w, map[string]any{"dedupe_key": req.Text.Key, "message": req.Text.Title, "level": req.Level})
 	}
 }
-
-func accepted(w http.ResponseWriter) {
-	fmt.Fprint(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"structuredContent\":{\"ok\":true,\"queued\":true}}}\n\n")
-}
+func accepted(w http.ResponseWriter) { w.WriteHeader(204) }
 
 func TestFixedFields(t *testing.T) {
 	var value Text
 	if err := json.Unmarshal([]byte(`{"Key":"caller-secret","Title":"Scheduled agent digest","Status":"failed","Count":3,"Link":"https://github.com/jomcgi-org/homelab/issues/7935","body":"private issue body","logs":"private logs","secret":"private token"}`), &value); err != nil {
 		t.Fatal(err)
 	}
-	text, err := value.render()
+	text, err := value.Render()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +86,7 @@ func TestFixedFields(t *testing.T) {
 	} {
 		v := value
 		mutate(&v)
-		if _, err := v.render(); err == nil {
+		if _, err := v.Render(); err == nil {
 			t.Fatal("unsafe field accepted")
 		}
 	}
@@ -128,7 +103,7 @@ func TestOffAndPartialConfiguration(t *testing.T) {
 	for _, cfg := range []Config{
 		{URL: "http://example.com"},
 		{AppPasswordFile: "password"},
-		{URL: "https://user:password@example.com", TokenURL: "https://auth.example.com", AppPasswordFile: "password"},
+		{URL: "https://user:password@example.com", AppPasswordFile: "password"},
 	} {
 		if _, err := New(cfg); err == nil {
 			t.Fatal("partial or insecure configuration accepted")
@@ -137,29 +112,16 @@ func TestOffAndPartialConfiguration(t *testing.T) {
 }
 
 func TestEveryRequestRequiresWriterAdmission(t *testing.T) {
-	for _, refused := range []string{"token", "initialize", "notifications/initialized", "tools/call"} {
-		t.Run(refused, func(t *testing.T) {
-			sent := 0
-			base := protocol(t, func(w http.ResponseWriter, _ map[string]any) { accepted(w) })
-			c := client(t, func(w http.ResponseWriter, r *http.Request) { sent++; base(w, r) })
-			admitted := 0
-			c.config.BeforeRequest = func(_ context.Context, key, phase string) error {
-				if !strings.HasPrefix(key, "factory/") {
-					t.Error("missing stable key")
-				}
-				if phase == refused {
-					return errors.New("lost writer")
-				}
-				admitted++
-				return nil
-			}
-			if err := c.Notify(context.Background(), "info", smoke()); err == nil {
-				t.Fatal("lost writer sent")
-			}
-			if sent != admitted {
-				t.Fatalf("sent %d, admitted %d", sent, admitted)
-			}
-		})
+	sent := false
+	c := client(t, func(w http.ResponseWriter, r *http.Request) { sent = true })
+	c.config.BeforeRequest = func(_ context.Context, key, phase string) error {
+		if !strings.HasPrefix(key, "factory/") || phase != "tools/call" {
+			t.Error("incorrect audit key or phase")
+		}
+		return errors.New("lost writer")
+	}
+	if err := c.Notify(context.Background(), "info", smoke()); err == nil || sent {
+		t.Fatal("lost writer sent")
 	}
 }
 
@@ -292,33 +254,5 @@ func TestFailureIsNotCachedOrLeaked(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatal("permanent failure retried or cached")
-	}
-}
-
-func TestRedirectAndResponseBounds(t *testing.T) {
-	for _, reply := range []string{"redirect", "large", "tool-error", "false", "duplicate"} {
-		t.Run(reply, func(t *testing.T) {
-			calls := 0
-			c := client(t, protocol(t, func(w http.ResponseWriter, args map[string]any) {
-				calls++
-				switch reply {
-				case "redirect":
-					w.Header().Set("Location", "https://example.com")
-					w.WriteHeader(302)
-				case "large":
-					fmt.Fprint(w, strings.Repeat("x", 65537))
-				case "tool-error":
-					fmt.Fprint(w, `{"id":2,"result":{"isError":true,"content":[{"type":"text","text":"secret"}]}}`)
-				case "false":
-					fmt.Fprint(w, `{"id":2,"result":{"structuredContent":{"ok":false,"queued":false}}}`)
-				case "duplicate":
-					fmt.Fprint(w, `{"id":2,"result":{"content":[{"type":"text","text":"{\"ok\":true,\"queued\":false}"}]}}`)
-				}
-			}))
-			err := c.Notify(context.Background(), "info", smoke())
-			if (err == nil) != (reply == "duplicate") || calls != 1 {
-				t.Fatalf("calls=%d err=%v", calls, err)
-			}
-		})
 	}
 }

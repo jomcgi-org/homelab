@@ -1,10 +1,7 @@
-// Package notify sends bounded, fixed-field notifications to monolith-agent-notify.
-// The zero configuration is disabled. Caller keys are deduplicated per UTC day,
-// both locally and durably by the monolith's Discord outbox across restarts.
+// Package notify sends fixed-field notifications to the factory Discord bridge.
 package notify
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -12,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -40,7 +36,7 @@ type Text struct {
 
 var itemLink = regexp.MustCompile(`^https://(github\.com/jomcgi-org/homelab/(issues|pull)/[1-9][0-9]{0,9}|factory-plan\.jomcgi\.dev/issue/([1-9][0-9]{0,9}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))$`)
 
-func (t Text) render() (string, error) {
+func (t Text) Render() (string, error) {
 	if len(t.Key) < 1 || len(t.Key) > 256 || t.Count < 0 || t.Count > 9999 {
 		return "", errors.New("notify: invalid key or count")
 	}
@@ -74,11 +70,10 @@ func (t Text) render() (string, error) {
 }
 
 // Config is supplied only when the chart's connector.notify.enabled is true.
-// AppPasswordFile is an Authentik service account app password from 1Password,
-// read for every mint so rotation does not require a connector restart.
+// AppPasswordFile contains the connector’s bridge credential,
+// read for every request so rotation does not require a connector restart.
 type Config struct {
 	URL             string
-	TokenURL        string
 	AppPasswordFile string
 	// BeforeRequest checks the writer epoch and durably records each attempt.
 	BeforeRequest func(context.Context, string, string) error
@@ -96,14 +91,12 @@ type Client struct {
 }
 
 func New(cfg Config) (*Client, error) {
-	if cfg.URL == "" && cfg.TokenURL == "" && cfg.AppPasswordFile == "" {
+	if cfg.URL == "" && cfg.AppPasswordFile == "" {
 		return &Client{}, nil
 	}
-	for _, endpoint := range []string{cfg.URL, cfg.TokenURL} {
-		u, err := url.Parse(endpoint)
-		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return nil, errors.New("notify: endpoints require HTTPS without userinfo, query or fragment")
-		}
+	u, err := url.Parse(cfg.URL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return nil, errors.New("notify: invalid bridge URL")
 	}
 	if cfg.AppPasswordFile == "" {
 		return nil, errors.New("notify: app password file required")
@@ -119,8 +112,7 @@ func New(cfg Config) (*Client, error) {
 	}, nil
 }
 
-// Notify is the only send operation. It includes token minting, the MCP
-// handshake, bounded retries and dedupe. Errors contain no response bodies,
+// Notify is the only send operation. It bounds retries and deduplicates successful sends per UTC day. Errors contain no response bodies,
 // caller content, URLs or credentials. A disabled client performs no I/O.
 func (c *Client) Notify(ctx context.Context, level string, text Text) error {
 	if c.config.URL == "" {
@@ -131,7 +123,7 @@ func (c *Client) Notify(ctx context.Context, level string, text Text) error {
 	if level != "info" && level != "warn" && level != "error" {
 		return errors.New("notify: invalid level")
 	}
-	message, err := text.render()
+	_, err := text.Render()
 	if err != nil {
 		return err
 	}
@@ -151,10 +143,9 @@ func (c *Client) Notify(ctx context.Context, level string, text Text) error {
 		return nil
 	}
 	for attempt := 0; attempt < 3; attempt++ {
-		retry, err := c.send(ctx, level, message, key)
+		retry, err := c.send(ctx, level, text, key)
 		if err == nil {
-			// This cache is just an optimization. Server dedupe remains durable
-			// when a busy day fills it or a connector process restarts.
+			// Discord also deduplicates recent retries by nonce.
 			if len(c.seen) < 1024 {
 				c.seen[key] = true
 			}
@@ -177,147 +168,38 @@ func (c *Client) Notify(ctx context.Context, level string, text Text) error {
 	return errors.New("notify: attempts exhausted")
 }
 
-func (c *Client) send(ctx context.Context, level, message, key string) (bool, error) {
+type Request struct {
+	Channel string
+	Level   string
+	Text    Text
+}
+
+func (c *Client) send(ctx context.Context, level string, text Text, key string) (bool, error) {
 	password, err := os.ReadFile(c.config.AppPasswordFile)
+	if err != nil || len(bytes.TrimSpace(password)) == 0 {
+		return false, errors.New("notify: missing caller credential")
+	}
+	text.Key = key
+	body, err := json.Marshal(Request{Channel: "homelab", Level: level, Text: text})
 	if err != nil {
-		return false, errors.New("notify: cannot read app password")
+		return false, err
 	}
-	if len(bytes.TrimSpace(password)) == 0 {
-		return false, errors.New("notify: empty app password")
-	}
-	form := url.Values{
-		"grant_type": {"client_credentials"}, "client_id": {"factory-notify"},
-		"username": {"factory-notify-sa"}, "password": {strings.TrimSpace(string(password))},
-		"scope": {"openid profile"},
-	}
-	body, retry, err := c.post(ctx, c.config.TokenURL, "application/x-www-form-urlencoded", "", []byte(form.Encode()), key, "token")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.URL, bytes.NewReader(body))
 	if err != nil {
-		return retry, err
+		return false, errors.New("notify: invalid request")
 	}
-	var token struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int    `json:"expires_in"`
-	}
-	if json.Unmarshal(body, &token) != nil || token.AccessToken == "" || token.ExpiresIn <= 0 {
-		return false, errors.New("notify: invalid token response")
-	}
-	_, retry, err = c.rpc(ctx, token.AccessToken, key, "initialize", 1, map[string]any{
-		"protocolVersion": "2025-03-26", "capabilities": map[string]any{},
-		"clientInfo": map[string]string{"name": "factory-notify", "version": "1"},
-	})
-	if err != nil {
-		return retry, err
-	}
-	_, retry, err = c.rpc(ctx, token.AccessToken, key, "notifications/initialized", 0, nil)
-	if err != nil {
-		return retry, err
-	}
-	result, retry, err := c.rpc(ctx, token.AccessToken, key, "tools/call", 2, map[string]any{
-		"name": "monolith_agent_notify", "arguments": map[string]string{
-			"message": message, "level": level, "dedupe_key": key,
-		},
-	})
-	if err != nil {
-		return retry, err
-	}
-	var call struct {
-		IsError           bool            `json:"isError"`
-		StructuredContent json.RawMessage `json:"structuredContent"`
-		Content           []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if json.Unmarshal(result, &call) != nil || call.IsError {
-		return false, errors.New("notify: tool refused notification")
-	}
-	data := call.StructuredContent
-	if len(data) == 0 && len(call.Content) == 1 && call.Content[0].Type == "text" {
-		data = []byte(call.Content[0].Text)
-	}
-	var status struct {
-		OK     bool  `json:"ok"`
-		Queued *bool `json:"queued"`
-	}
-	if json.Unmarshal(data, &status) != nil || !status.OK || status.Queued == nil {
-		return false, errors.New("notify: invalid tool result")
-	}
-	return false, nil
-}
-
-func (c *Client) rpc(ctx context.Context, token, key, method string, id int, params any) (json.RawMessage, bool, error) {
-	request := map[string]any{"jsonrpc": "2.0", "method": method}
-	if id != 0 {
-		request["id"] = id
-	}
-	if params != nil {
-		request["params"] = params
-	}
-	payload, _ := json.Marshal(request)
-	body, retry, err := c.post(ctx, c.config.URL, "application/json", token, payload, key, method)
-	if err != nil {
-		return nil, retry, err
-	}
-	if id == 0 {
-		return nil, false, nil
-	}
-	// Streamable HTTP may reply with JSON or an SSE message event. Stateless
-	// monolith closes the response after its result; all reads are bounded.
-	if !json.Valid(body) {
-		scanner := bufio.NewScanner(bytes.NewReader(body))
-		for scanner.Scan() {
-			if line := scanner.Text(); strings.HasPrefix(line, "data:") {
-				candidate := []byte(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-				var event struct {
-					ID int `json:"id"`
-				}
-				if json.Unmarshal(candidate, &event) == nil && event.ID == id {
-					body = candidate
-					break
-				}
-			}
-		}
-	}
-	var response struct {
-		ID     int             `json:"id"`
-		Result json.RawMessage `json:"result"`
-		Error  json.RawMessage `json:"error"`
-	}
-	if json.Unmarshal(body, &response) != nil || response.ID != id || len(response.Error) != 0 || len(response.Result) == 0 {
-		return nil, false, errors.New("notify: invalid MCP response")
-	}
-	return response.Result, false, nil
-}
-
-func (c *Client) post(ctx context.Context, endpoint, contentType, bearer string, body []byte, key, phase string) ([]byte, bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, false, errors.New("notify: invalid request")
-	}
-	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	if bearer != "" {
-		req.Header.Set("Authorization", "Bearer "+bearer)
-		req.Header.Set("MCP-Protocol-Version", "2025-03-26")
-	}
-	if err := c.config.BeforeRequest(ctx, key, phase); err != nil {
-		return nil, false, errors.New("notify: writer admission failed")
+	req.SetBasicAuth("factory-connector", strings.TrimSpace(string(password)))
+	req.Header.Set("Content-Type", "application/json")
+	if err := c.config.BeforeRequest(ctx, key, "tools/call"); err != nil {
+		return false, errors.New("notify: writer admission failed")
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, true, errors.New("notify: transport failed")
+		return true, errors.New("notify: transport failed")
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		retry := resp.StatusCode == 429 || resp.StatusCode == 500 || resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504
-		return nil, retry, fmt.Errorf("notify: HTTP %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusNoContent {
+		return resp.StatusCode == 429 || resp.StatusCode >= 500, fmt.Errorf("notify: HTTP %d", resp.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 65537))
-	if err != nil {
-		return nil, true, errors.New("notify: response read failed")
-	}
-	if len(data) > 65536 {
-		return nil, false, errors.New("notify: response exceeds limit")
-	}
-	return data, false, nil
+	return false, nil
 }

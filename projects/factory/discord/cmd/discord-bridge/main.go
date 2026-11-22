@@ -128,6 +128,7 @@ func run(log *slog.Logger) error {
 	}
 
 	mux := http.NewServeMux()
+	mux.Handle("POST /notify", discord.NotificationHandler(policy.NotificationChannels, fileValue("/var/run/secrets/factory-notify/app-password"), rest))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	server := &http.Server{Addr: cfg.health, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
