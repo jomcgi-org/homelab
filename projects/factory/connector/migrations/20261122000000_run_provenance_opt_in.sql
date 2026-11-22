@@ -1,4 +1,4 @@
-/* invariant: FACT-13 */
+/* invariant: FACT-17 */
 -- Older connectors omit the marker on insert, including during rollback.
 ALTER TABLE run ALTER COLUMN provenance_required SET DEFAULT false;
 

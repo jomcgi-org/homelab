@@ -12,7 +12,7 @@ import (
 // run snapshot may change only while every send is definitively unaccepted;
 // MarkIssued makes it immutable before execution or an ambiguous response.
 //
-// invariant: FACT-13
+// invariant: FACT-17
 func (s *Store) RecordProvenance(ctx context.Context, w *Writer, a *Attempt, p provenance.Record, system, text string) error {
 	if err := p.Validate(); err != nil {
 		return err
