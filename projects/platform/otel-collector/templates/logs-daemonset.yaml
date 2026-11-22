@@ -28,7 +28,7 @@ spec:
       {{- end }}
       containers:
         - name: otel-collector
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}{{ with .Values.image.digest }}@{{ . }}{{ end }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --config=/conf/collector.yaml

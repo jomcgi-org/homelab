@@ -24,6 +24,9 @@ resources:
     memory: 256Mi
 
 webhook:
+  image:
+    repository: ghcr.io/external-secrets/external-secrets
+    tag: "v2.15.0@sha256:6888f243e5f8f7592c6d7fae2a5547c9e33531441b47b53807b9093b25a00e31"
   create: true
   port: 10250
   resources:
@@ -34,6 +37,9 @@ webhook:
       memory: 128Mi
 
 certController:
+  image:
+    repository: ghcr.io/external-secrets/external-secrets
+    tag: "v2.15.0@sha256:6888f243e5f8f7592c6d7fae2a5547c9e33531441b47b53807b9093b25a00e31"
   create: true
   resources:
     requests:
@@ -41,3 +47,7 @@ certController:
       memory: 128Mi
     limits:
       memory: 128Mi
+
+image:
+  repository: ghcr.io/external-secrets/external-secrets
+  tag: "v2.15.0@sha256:6888f243e5f8f7592c6d7fae2a5547c9e33531441b47b53807b9093b25a00e31"

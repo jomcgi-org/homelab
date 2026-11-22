@@ -1,6 +1,6 @@
 {{- define "renovate.container" -}}
 {{- $githubApp := .Values.githubApp | default dict -}}
-image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}{{ with .Values.image.digest }}@{{ . }}{{ end }}"
 imagePullPolicy: {{ .Values.image.pullPolicy }}
 {{- if $githubApp.enabled }}
 # Preserve the image entrypoint; its command loads the per-run credentials.

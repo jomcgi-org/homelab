@@ -1,0 +1,36 @@
+load("//bazel/tools/pytest:defs.bzl", "py_test")
+
+py_test(
+    name = "platform_images_test",
+    srcs = [
+        "check_image_digests.py",
+        "platform_images_test.py",
+    ],
+    data = [
+        "//projects:platform-factory/authentik/application.yaml",
+        "//projects:platform-factory/cert-manager/application.yaml",
+        "//projects:platform-factory/edge/application.yaml",
+        "//projects:platform-factory/kargo/application.yaml",
+        "//projects/platform-factory/argocd:application.yaml",
+        "//projects/platform-factory/edge/chart",
+        "//projects/platform-factory/factory-db/resources:cluster.yaml",
+        "//projects/platform-factory/grimoire-data/resources:database.yaml",
+        "//projects/platform-factory/kagent-postgres/resources:cluster.yaml",
+        "//projects/platform-factory/onepassword:application.yaml",
+        "//projects/platform-factory/otel-collector:application.yaml",
+        "//projects/platform-factory/renovate:application.yaml",
+        "//projects/platform/argocd:chart",
+        "//projects/platform/authentik:chart",
+        "//projects/platform/cert-manager:chart",
+        "//projects/platform/kargo:chart",
+        "//projects/platform/onepassword:chart",
+        "//projects/platform/otel-collector:chart",
+        "//projects/platform/renovate:chart",
+        "@multitool//tools/helm",
+    ],
+    env = {"HELM_BIN": "$(rootpath @multitool//tools/helm)"},
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)

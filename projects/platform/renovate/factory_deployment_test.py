@@ -105,7 +105,7 @@ def test_factory_renders_only_a_scheduled_job_and_app_credential():
     assert pod["automountServiceAccountToken"] is False
     assert pod["securityContext"]["runAsNonRoot"] is True
     container = pod["containers"][0]
-    values = _load(HERE / "values.yaml")
+    values = _load(HERE / "values-factory.yaml")
     assert container["image"] == (
         f"{values['image']['repository']}:{values['image']['tag']}"
     )

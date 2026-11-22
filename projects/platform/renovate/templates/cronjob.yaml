@@ -44,7 +44,7 @@ spec:
           {{- if $githubApp.enabled }}
           initContainers:
             - name: github-app-token
-              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}{{ with .Values.image.digest }}@{{ . }}{{ end }}"
               imagePullPolicy: {{ .Values.image.pullPolicy }}
               command: ["node", "--input-type=module", "--eval"]
               args:

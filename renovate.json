@@ -161,6 +161,38 @@
   ],
   "packageRules": [
     {
+      "description": "Pin factory platform container images by digest.",
+      "matchDatasources": ["docker"],
+      "matchFileNames": [
+        "projects/platform/*/values-factory.yaml",
+        "projects/platform-factory/**"
+      ],
+      "matchPackageNames": [
+        "1password/connect-api",
+        "1password/connect-sync",
+        "1password/onepassword-operator",
+        "docker.io/envoyproxy/envoy",
+        "docker.io/envoyproxy/envoy-distroless",
+        "docker.io/envoyproxy/gateway",
+        "docker.io/envoyproxy/ratelimit",
+        "docker.io/library/redis",
+        "ghcr.io/akuity/kargo",
+        "ghcr.io/cloudnative-pg/cloudnative-pg",
+        "ghcr.io/cloudnative-pg/postgresql",
+        "ghcr.io/dexidp/dex",
+        "ghcr.io/external-secrets/external-secrets",
+        "ghcr.io/renovatebot/renovate",
+        "ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib",
+        "quay.io/argoproj/argocd",
+        "quay.io/jetstack/cert-manager-acmesolver",
+        "quay.io/jetstack/cert-manager-cainjector",
+        "quay.io/jetstack/cert-manager-controller",
+        "quay.io/jetstack/cert-manager-startupapicheck",
+        "quay.io/jetstack/cert-manager-webhook"
+      ],
+      "pinDigests": true
+    },
+    {
       "description": "Identify upstream chart updates in the broader dependency stream.",
       "matchManagers": ["argocd", "helmv3"],
       "addLabels": ["upstream-chart"]

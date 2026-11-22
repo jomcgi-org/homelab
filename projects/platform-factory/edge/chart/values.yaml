@@ -3,6 +3,15 @@
 # namespace, the only namespace the cfgate tunnel Gateway accepts routes from.
 
 gateway-helm:
+  # Each image names its digest next to the chart's tag (HOME-287). The
+  # chart's helpers keep everything after the first ":" as the tag, so
+  # "tag@digest" renders as repo:tag@digest. Renovate keeps them current.
+  global:
+    images:
+      envoyGateway:
+        image: docker.io/envoyproxy/gateway:v1.8.3@sha256:e7a8c70537628bf996e5dec5c4c835704b4b9f4f715a74cf361bea30608c49ac
+      ratelimit:
+        image: docker.io/envoyproxy/ratelimit:1e50889b@sha256:5bb3741fd6709bab1d498eae1a5807faa2113b712dfb236fb76c04a00871ffc9
   # Gateway API CRDs belong to k3s; Envoy Gateway's own come from
   # gateway-crds-helm below.
   crds:
@@ -92,6 +101,10 @@ kubeAPI:
     - factory-kube-sessions
 
 proxy:
+  # Envoy Gateway's v1.8.3 default proxy image, pinned by digest (HOME-287).
+  image:
+    repository: docker.io/envoyproxy/envoy
+    tag: "distroless-v1.38.3@sha256:574348fada8eb1130b448132287d76626dfb07525b16668075382f8e154a45a8"
   # Name of the Service Envoy Gateway creates for the proxy. The tunnel route
   # and the edge-admission policy name it.
   serviceName: edge-proxy

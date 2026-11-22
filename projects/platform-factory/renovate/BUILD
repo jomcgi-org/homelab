@@ -26,3 +26,8 @@ filegroup(
     ],
     visibility = ["//projects/platform/renovate:__pkg__"],
 )
+
+exports_files(
+    ["application.yaml"],
+    visibility = ["//projects/platform-factory/image-audit:__pkg__"],
+)

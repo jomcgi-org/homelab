@@ -27,3 +27,8 @@ exports_files(
     ["policy.yaml"],
     visibility = ["//projects/platform-factory/network-policy/tests:__pkg__"],
 )
+
+exports_files(
+    ["database.yaml"],
+    visibility = ["//projects/platform-factory/image-audit:__pkg__"],
+)
