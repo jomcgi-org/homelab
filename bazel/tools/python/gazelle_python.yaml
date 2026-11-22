@@ -49,7 +49,7 @@ manifest:
     email_validator: email_validator
     exceptiongroup: exceptiongroup
     fastapi: fastapi
-    fastmcp: fastmcp
+    fastmcp: fastmcp_slim
     frozenlist: frozenlist
     genai_prices: genai_prices
     geopandas: geopandas
@@ -135,7 +135,6 @@ manifest:
     httpx_sse: httpx_sse
     icalendar: icalendar
     idna: idna
-    importlib_metadata: importlib_metadata
     iniconfig: iniconfig
     isapi: pywin32
     jaraco.classes: jaraco.classes
@@ -168,6 +167,8 @@ manifest:
     opentelemetry.baggage: opentelemetry_api
     opentelemetry.context: opentelemetry_api
     opentelemetry.environment_variables: opentelemetry_api
+    opentelemetry.exporter.http.transport: opentelemetry_exporter_http_transport
+    opentelemetry.exporter.otlp.common: opentelemetry_exporter_otlp_common
     opentelemetry.exporter.otlp.proto.common: opentelemetry_exporter_otlp_proto_common
     opentelemetry.exporter.otlp.proto.grpc: opentelemetry_exporter_otlp_proto_grpc
     opentelemetry.exporter.otlp.proto.http: opentelemetry_exporter_otlp_proto_http
@@ -176,12 +177,14 @@ manifest:
     opentelemetry.instrumentation.auto_instrumentation: opentelemetry_instrumentation
     opentelemetry.instrumentation.bootstrap: opentelemetry_instrumentation
     opentelemetry.instrumentation.bootstrap_gen: opentelemetry_instrumentation
+    opentelemetry.instrumentation.cidict: opentelemetry_instrumentation
     opentelemetry.instrumentation.dependencies: opentelemetry_instrumentation
     opentelemetry.instrumentation.distro: opentelemetry_instrumentation
     opentelemetry.instrumentation.environment_variables: opentelemetry_instrumentation
     opentelemetry.instrumentation.fastapi: opentelemetry_instrumentation_fastapi
     opentelemetry.instrumentation.httpx: opentelemetry_instrumentation_httpx
     opentelemetry.instrumentation.instrumentor: opentelemetry_instrumentation
+    opentelemetry.instrumentation.log_utils: opentelemetry_instrumentation
     opentelemetry.instrumentation.propagators: opentelemetry_instrumentation
     opentelemetry.instrumentation.sqlcommenter_utils: opentelemetry_instrumentation
     opentelemetry.instrumentation.utils: opentelemetry_instrumentation
@@ -426,7 +429,6 @@ manifest:
     wrapt: wrapt
     yaml: pyyaml
     yarl: yarl
-    zipp: zipp
   pip_repository:
     name: pip
-integrity: b59331e939d1118b5f357f1539b3eb4b7c45a3b286363099136c01670cbed39d
+integrity: 0241d42fd78ef91c37a4dac95240e093b13630328b9b9d291136a7acea89c378
