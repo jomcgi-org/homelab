@@ -1244,7 +1244,7 @@ to that head. The exporters batch spans outside check and delivery processing.
   counts these heads. The effort of a review is set per kagent Agent by its
   ModelConfig URL (`/effort/<level>`), so a smaller effort for a small
   interdiff needs a second Agent and is not built.
-  ([Decision](https://github.com/jomcgi-org/homelab/pull/8574): Joe chose cheaper re-reviews in his session on
+  ([Decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-800#comment-10837): Joe chose cheaper re-reviews in his session on
   2026-11-22, after the reviewer made 71% of Codex calls over 26 hours.)
 
 For issue-backed reviews, the service verifies the provenance of decision
