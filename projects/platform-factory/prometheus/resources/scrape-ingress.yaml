@@ -103,6 +103,30 @@ spec:
             - port: "9101"
               protocol: TCP
 ---
+# Hindsight's HTTP port, for /metrics. The same port carries the REST API,
+# which takes only the tenant key, and MCP, which takes the agents' token.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: prometheus-scrape-hindsight
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight
+    matchExpressions:
+      - key: k8s:io.kubernetes.pod.namespace
+        operator: In
+        values: [hindsight, hindsight-discord]
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: prometheus
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
+---
 # Every CloudNativePG instance: kagent-pg, factory-db and authentik-pg.
 apiVersion: cilium.io/v2
 kind: CiliumClusterwideNetworkPolicy

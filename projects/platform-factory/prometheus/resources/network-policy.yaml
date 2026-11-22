@@ -126,6 +126,17 @@ spec:
               protocol: TCP
     - toEndpoints:
         - matchLabels:
+            k8s:io.kubernetes.pod.namespace: hindsight
+            app.kubernetes.io/name: hindsight
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: hindsight-discord
+            app.kubernetes.io/name: hindsight
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
             k8s:io.kubernetes.pod.namespace: kagent-pg
             cnpg.io/podRole: instance
         - matchLabels:
