@@ -229,7 +229,7 @@ invariants:
   - projects/factory/connector/migrations/20261124010000_worktree_start.sql
   test: //projects/factory/connector/dispatch:dispatch_test
   state: live
-- id: FACT-19
+- id: HOME-138-1
   statement: A stopped work item reconciles an outstanding PR creation and comments on and closes its late open PR.
   mechanism:
   - projects/factory/connector/dispatch/delivery.go

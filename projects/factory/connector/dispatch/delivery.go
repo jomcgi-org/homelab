@@ -656,7 +656,7 @@ func (e *Engine) commentOnStoppedPR(ctx context.Context, repo string, number int
 	return e.gh.PublishStopReview(ctx, repo, number, draft, body)
 }
 
-// invariant: FACT-19
+// invariant: HOME-138-1
 
 // checkStoppedCreate keeps looking across empty reads and writer restarts.
 // Lock the work item so a new delegation cannot resume it midway through close.
