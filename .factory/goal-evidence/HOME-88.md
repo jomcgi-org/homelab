@@ -1,0 +1,1 @@
+Joe's decision of 2026-11-22 (factory PR triage) on HOME-88: Decision: criterion 3 (retire the hub Renovate deployment and update the docs) is a separate change after verification. It moves to HOME-785, which #8514 blocks. ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-88#comment-10447))
