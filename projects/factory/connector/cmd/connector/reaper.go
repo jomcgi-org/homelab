@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"log/slog"
 	"os/signal"
@@ -14,8 +13,6 @@ import (
 	core "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 )
-
-const actorDB = "postgresql://factory_reaper@postgres.ate-system.svc:5432/atepg?sslmode=verify-full&sslrootcert=/var/run/ate/ca.pem&sslcert=/var/run/ate/client.pem&sslkey=/var/run/ate/client.pem"
 
 func runReaper(log *slog.Logger) error {
 	cfg, err := rest.InClusterConfig()
@@ -32,10 +29,7 @@ func runReaper(log *slog.Logger) error {
 		return err
 	}
 	defer st.DB.Close()
-	actors, err := sql.Open("postgres", actorDB)
-	if err != nil {
-		return err
-	}
+	actors := openActorDB()
 	defer actors.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
