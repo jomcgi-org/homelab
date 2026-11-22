@@ -307,7 +307,8 @@ func TestGoalReplyGoesToTicketAndWaitsForFreshReview(t *testing.T) {
 	head := strings.Repeat("a", 40)
 	v.gh.push("factory/HL-7", head, "fix(retry): cover retry path")
 	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted,
-		"Private summary excluded.\nGoal evidence for "+head+"\n2. Check retry_test.go. @coder",
+		"Private summary excluded.\nGoal evidence for "+head+"\n2. Check retry_test.go. @coder\n"+
+			`{"head":"`+head+`","lesson":"Use the fixture clock."}`,
 		nil)
 	v.gh.green(head)
 	v.poll()
@@ -321,10 +322,14 @@ func TestGoalReplyGoesToTicketAndWaitsForFreshReview(t *testing.T) {
 			posted++
 			if !strings.Contains(c.body, "@"+head+" ") || !strings.Contains(c.body, "@factory-reviewer") ||
 				!strings.Contains(c.body, "retry_test.go") || strings.Contains(c.body, "Private summary excluded") ||
-				strings.Contains(c.body, "@coder") {
+				strings.Contains(c.body, "@coder") || strings.Contains(c.body, "Use the fixture clock.") || strings.Contains(c.body, `"lesson"`) {
 				t.Fatalf("unexpected ticket reply: %q", c.body)
 			}
 		}
+	}
+	var saved string
+	if err := v.st.DB.QueryRow(`SELECT lesson FROM merge_lesson WHERE work_item_id=$1 AND head_sha=$2`, v.work(101).ID, head).Scan(&saved); err != nil || saved != "Use the fixture clock." {
+		t.Fatalf("staged lesson = %q, err = %v", saved, err)
 	}
 	if posted != 1 {
 		t.Fatalf("ticket replies = %d", posted)

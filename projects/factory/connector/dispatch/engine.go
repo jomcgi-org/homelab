@@ -2175,7 +2175,7 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 	state := t.Status.State
 	switch state {
 	case kagent.StateCompleted, kagent.StateInputRequired:
-		answer := taskAnswer(t)
+		answer, lesson := splitLesson(taskAnswer(t))
 		res := itsaplan.Result{Status: "success", Output: clip(itsaplanText(answer), maxOutput)}
 		var reply commentPayload
 		var replyKey string
@@ -2205,7 +2205,7 @@ func (e *Engine) complete(ctx context.Context, r *store.Run, wi *store.WorkItem,
 				return err
 			}
 			if state == kagent.StateCompleted {
-				if err := saveLesson(ctx, tx, wi.ID, answer); err != nil {
+				if err := saveLesson(ctx, tx, wi.ID, lesson); err != nil {
 					return err
 				}
 				// The turn finished; delivery opens or updates the PR from the

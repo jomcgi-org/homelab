@@ -2782,15 +2782,25 @@ func (e *Engine) startQueueAction(ctx context.Context, wi *store.WorkItem, pr *s
 
 var lessonHead = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
-func saveLesson(ctx context.Context, tx *sql.Tx, workID int64, output string) error {
-	output = strings.TrimSpace(output)
-	lastLine := output[strings.LastIndexByte(output, '\n')+1:]
-	var field struct{ Head, Lesson string }
-	if json.Unmarshal([]byte(lastLine), &field) != nil || !lessonHead.MatchString(field.Head) {
-		return nil
+type answerLesson struct {
+	Head   string
+	Lesson string
+}
+
+// splitLesson removes the optional final lesson field before any display clipping.
+func splitLesson(answer string) (string, answerLesson) {
+	trimmed := strings.TrimSpace(answer)
+	start := strings.LastIndexByte(trimmed, '\n') + 1
+	var field answerLesson
+	if json.Unmarshal([]byte(trimmed[start:]), &field) != nil || field.Lesson == "" {
+		return answer, answerLesson{}
 	}
+	return strings.TrimSpace(trimmed[:start]), field
+}
+
+func saveLesson(ctx context.Context, tx *sql.Tx, workID int64, field answerLesson) error {
 	field.Lesson = strings.TrimSpace(field.Lesson)
-	if field.Lesson == "" || len(field.Lesson) > 4096 || strings.ContainsRune(field.Lesson, 0) {
+	if !lessonHead.MatchString(field.Head) || field.Lesson == "" || len(field.Lesson) > 4096 || strings.ContainsRune(field.Lesson, 0) {
 		return nil
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO merge_lesson(work_item_id,head_sha,lesson) VALUES($1,$2,$3) ON CONFLICT(work_item_id,head_sha) DO UPDATE SET lesson=excluded.lesson`, workID, field.Head, field.Lesson)
