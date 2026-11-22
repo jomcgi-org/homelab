@@ -22,7 +22,7 @@ spec:
   sources:
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: egress-scan
-      targetRevision: 0.2.12
+      targetRevision: 0.2.17
       helm:
         releaseName: egress-scan
     - repoURL: https://github.com/jomcgi-org/homelab.git
