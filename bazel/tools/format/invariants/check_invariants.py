@@ -70,7 +70,10 @@ def validate_rows(document, source, ids, live):
         ):
             raise ValueError(f"{where}: invalid id")
         if ident in ids:
-            raise ValueError(f"{where}: duplicate {ident}, also in {ids[ident]}")
+            raise ValueError(
+                f"{where}: duplicate {ident}, also in {ids[ident]}. "
+                "Give a new invariant the ID <issue key>-<n>, such as HOME-123-1"
+            )
         ids[ident] = source
         where = f"{source}: {ident}"
         if not isinstance(row["statement"], str) or not row["statement"].strip():

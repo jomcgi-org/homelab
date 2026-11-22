@@ -4,7 +4,9 @@
 # renumber one. docs/THREAT-MODEL.md cites them.
 #
 # Fields:
-#   id         Permanent ID: a prefix for the directory and a number.
+#   id         Permanent ID. A new one is the issue key and a number,
+#              for example HOME-123-1, so parallel PRs do not collide.
+#              Older IDs keep their directory prefix (FACT-1).
 #   statement  A guarantee and its scope, in one sentence.
 #              Name a condition or exception when it changes the guarantee.
 #              Keep this sentence true if the enforcement mechanism changes.

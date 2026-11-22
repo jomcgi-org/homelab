@@ -357,13 +357,18 @@ func readInvariantPolicy(ctx context.Context, gh RulesReader, repo, commit strin
 	return paths, nil
 }
 
-// ParseMechanisms validates one invariant file and collects its repository paths.
+// ParseMechanisms validates one invariant file and collects its repository
+// paths. Two invariants with the same ID in one file void it (HOME-758):
+// parallel PRs that each take the next free number collide on merge.
 func ParseMechanisms(file string, data []byte, paths map[string]bool) error {
 	if len(data) > maxInvariantBytes {
 		return fmt.Errorf("%s exceeds the 1 MiB GitHub Contents API limit: %w", file, github.ErrTooLarge)
 	}
 	var doc struct {
-		Invariants []struct{ Mechanism []string }
+		Invariants []struct {
+			ID        string
+			Mechanism []string
+		}
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	if err := dec.Decode(&doc); err != nil {
@@ -375,7 +380,12 @@ func ParseMechanisms(file string, data []byte, paths map[string]bool) error {
 	if err := dec.Decode(new(any)); err != io.EOF {
 		return fmt.Errorf("unexpected trailing YAML in %s", file)
 	}
+	ids := map[string]bool{}
 	for _, inv := range doc.Invariants {
+		if inv.ID != "" && ids[inv.ID] {
+			return fmt.Errorf("duplicate invariant ID in %s: give a new invariant the ID <issue key>-<n>, such as HOME-123-1", file)
+		}
+		ids[inv.ID] = true
 		for _, mechanism := range inv.Mechanism {
 			p := strings.TrimSuffix(mechanism, "/")
 			if _, ok := lookupPath(p); !ok {

@@ -82,6 +82,10 @@ Refs HOME-N
 
 Update an invariant when the PR establishes or changes a system guarantee.
 Use the existing invariant ID when a fix restores that guarantee.
+Give a new invariant the ID `<issue key>-<n>`, for example `HOME-123-1` for the
+first invariant that HOME-123 adds. Parallel PRs that take the next free
+directory number (`FACT-14`) collide on merge. Existing IDs do not change.
+The invariant checkers reject an ID that occurs twice.
 If enforcement changes, update the mechanism and test under the same ID.
 Describe implementation choices in the Change section and show regression tests in Evidence.
 
