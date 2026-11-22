@@ -1,0 +1,38 @@
+name: Python dependency audit
+
+# pip-audit needs the network, which Bazel test sandboxes do not have, so
+# the runtime lockfile is audited here (HOME-95). Each runner evaluates the
+# lockfile's environment markers for its own platform.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/python-audit.yml
+      - bazel/requirements/runtime.txt
+  push:
+    branches: [main]
+    paths:
+      - bazel/requirements/runtime.txt
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-audit-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: pip-audit runtime.txt (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Audit the runtime lockfile
+        run: pipx run pip-audit==2.9.0 -r bazel/requirements/runtime.txt --no-deps --disable-pip --progress-spinner off
