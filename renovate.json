@@ -138,6 +138,55 @@
     },
     {
       "customType": "regex",
+      "description": "Factory 1Password Connect api image: the chart tag and digest ride on one version value (HOME-287).",
+      "managerFilePatterns": [
+        "/^projects/platform/onepassword/values-factory\\.yaml$/"
+      ],
+      "matchStrings": [
+        "\\bapi:(?:\\s*#[^\\n]*\\n)*\\s+version: \"(?<currentValue>[^\"@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})\""
+      ],
+      "depNameTemplate": "1password/connect-api",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Factory 1Password Connect sync image: the chart tag and digest ride on one version value (HOME-287).",
+      "managerFilePatterns": [
+        "/^projects/platform/onepassword/values-factory\\.yaml$/"
+      ],
+      "matchStrings": [
+        "\\bsync:(?:\\s*#[^\\n]*\\n)*\\s+version: \"(?<currentValue>[^\"@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})\""
+      ],
+      "depNameTemplate": "1password/connect-sync",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Factory 1Password operator image: the chart tag and digest ride on one version value (HOME-287).",
+      "managerFilePatterns": [
+        "/^projects/platform/onepassword/values-factory\\.yaml$/"
+      ],
+      "matchStrings": [
+        "\\boperator:(?:\\s*#[^\\n]*\\n)*\\s+version: \"(?<currentValue>[^\"@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})\""
+      ],
+      "depNameTemplate": "1password/onepassword-operator",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Factory CloudNativePG operand images in spec.imageName, pinned by digest (HOME-287).",
+      "managerFilePatterns": ["/^projects/platform-factory/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "imageName: (?<depName>[^\\s:@]+(?:/[^\\s:@]+)*):(?<currentValue>[^\\s@]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
       "description": "Pinned tools installed in the isolated browser workflow.",
       "managerFilePatterns": [
         "/^\\.github/workflows/factory-mobile-preview\\.yml$/"

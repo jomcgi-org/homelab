@@ -50,7 +50,10 @@ filegroup(
         "restore.sh",
         "restore-cronjob.yaml",
     ],
-    visibility = ["//projects/platform-factory/grimoire-data:__pkg__"],
+    visibility = [
+        "//projects/platform-factory/grimoire-data:__pkg__",
+        "//projects/platform-factory/image-audit:__pkg__",
+    ],
 )
 
 filegroup(

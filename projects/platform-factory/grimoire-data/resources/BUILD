@@ -20,7 +20,10 @@ filegroup(
         "setup.yaml",
         "storage.yaml",
     ],
-    visibility = ["//projects/platform-factory/grimoire-data:__pkg__"],
+    visibility = [
+        "//projects/platform-factory/grimoire-data:__pkg__",
+        "//projects/platform-factory/image-audit:__pkg__",
+    ],
 )
 
 exports_files(

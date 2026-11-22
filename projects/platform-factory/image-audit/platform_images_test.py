@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from check_image_digests import violations
+from check_image_digests import images, violations
 
 HERE = Path(__file__).absolute().parents[1]
 ROOT = HERE.parents[1]
@@ -52,6 +52,44 @@ def test_factory_platform_images(component):
     missing = [
         msg for doc in yaml.safe_load_all(rendered) if doc for msg in violations(doc)
     ]
+    assert not missing, missing
+
+
+# Kustomize Applications whose manifests hold workloads. The remote charts
+# (CloudNativePG, External Secrets, Cilium) cannot render without network;
+# HOME-582 and HOME-583 move their render coverage to their vendoring.
+KUSTOMIZE_APPLICATIONS = [
+    "authentik",
+    "cfgate",
+    "factory-db",
+    "garage",
+    "grafana",
+    "grimoire-data",
+    "hindsight",
+    "hindsight-discord",
+    "kagent-postgres",
+    "prometheus",
+    "substrate",
+    "t3",
+]
+
+
+@pytest.mark.parametrize("application", KUSTOMIZE_APPLICATIONS)
+def test_factory_kustomize_images(application):
+    path = HERE / application / "resources"
+    rendered = subprocess.check_output(
+        [
+            str(Path(os.environ["KUSTOMIZE_BIN"]).absolute())
+            if "KUSTOMIZE_BIN" in os.environ
+            else "kustomize",
+            "build",
+            str(path),
+        ],
+        text=True,
+    )
+    docs = [doc for doc in yaml.safe_load_all(rendered) if doc]
+    assert any(list(images(doc.get("spec", {}))) for doc in docs), "no workload"
+    missing = [msg for doc in docs for msg in violations(doc)]
     assert not missing, missing
 
 
