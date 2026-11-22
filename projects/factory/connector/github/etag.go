@@ -12,6 +12,9 @@ const DefaultETagEntries = 1024
 type ETagCache struct {
 	// Max bounds the entries kept, DefaultETagEntries when 0.
 	Max int
+	// MaxBody, when above 0, bounds the body size kept. A larger response
+	// is not cached, and its next read is unconditional.
+	MaxBody int
 	// Observe, when set, is told whether each conditional read was answered
 	// 304 (true) or with a changed body (false).
 	Observe func(notModified bool)
@@ -42,6 +45,10 @@ func (c *ETagCache) get(key string) (string, []byte, bool) {
 func (c *ETagCache) put(key, etag string, body []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.MaxBody > 0 && len(body) > c.MaxBody {
+		delete(c.entries, key) // an older, smaller body is stale now
+		return
+	}
 	if c.entries == nil {
 		c.entries = map[string]*etagEntry{}
 	}
