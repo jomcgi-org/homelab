@@ -1,4 +1,4 @@
-{{- /* invariant: PLAT-17 */ -}}
+{{- /* invariant: HOME-88-1 */ -}}
 {{- if or (eq .Values.workloadKind "CronWorkflow") (.Values.githubApp | default dict).enabled }}
 apiVersion: v1
 kind: ConfigMap
