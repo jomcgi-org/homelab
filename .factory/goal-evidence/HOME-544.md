@@ -11,5 +11,3 @@ and enables trace sanitization. The collector test
 `test_factory_trace_content_removed_before_sampling` in
 `projects/platform/otel-collector/collector_optin_test.py` exercises the
 rendered filter and transform with sensitive span and event attributes.
-
-Joe's decision of 2026-11-22 (factory PR triage) on HOME-544: Decision: HOME-544 covers the collector admission test (#8410). Producer isolation, the actor-gateway denial and trace export move to HOME-768. ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-544#comment-10315))
