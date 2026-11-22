@@ -129,7 +129,8 @@ agents:
   # Reviews use the broker default effort (xhigh).
   reviewer:
     model: gpt-6.2-sol
-    # One worker per concurrent review (reviewer.concurrency).
+    # Two more workers than reviewer.concurrency: goal check sessions and
+    # idle review sessions hold workers too.
     concurrency: 5
     # The review binding has no toolchain and runs no PR code, so its
     # workers stay small: 1.2Gi at most for one worker and 2.7Gi for all
@@ -252,8 +253,12 @@ connector:
 reviewer:
   traceEndpoint: http://otel-collector.otel-collector.svc.cluster.local:4317
   enabled: true
-  # Reviews at once; agents.reviewer.concurrency gives each a worker.
-  concurrency: 5
+  # Reviews at once. Each review also starts a goal check session on the
+  # same agent, and an idle session's actor keeps its worker after its turn,
+  # so agents.reviewer.concurrency keeps two workers spare: with five reviews
+  # on five workers, goal sends waited for a worker and timed out (23 of 70
+  # goal checks gave no answer in 2 h on 2026-11-22).
+  concurrency: 3
   # The coder gets the goal check's private reasons in its next revision
   # round, posted on the issue by the connector (HOME-251).
   goalReasons:

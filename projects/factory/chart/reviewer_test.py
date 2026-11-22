@@ -319,7 +319,7 @@ def test_tokens_and_config_paths_match_the_pod() -> None:
     assert config["metricsAddr"] == ":9090"
     assert config["appId"] == 5758326
     assert config["checkName"] == "factory review"
-    assert config["concurrency"] == 5
+    assert config["concurrency"] == 3
     assert config["bindings"] == [
         {
             "name": "homelab",
