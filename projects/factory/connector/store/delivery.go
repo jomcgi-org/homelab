@@ -250,7 +250,7 @@ func (s *Store) LimitedReviews(ctx context.Context, prID int64, head string) ([]
 	return ids, rows.Err()
 }
 
-// invariant: FACT-13
+// invariant: FACT-17
 
 // SeenEvents returns recorded node IDs, excluding retryable events on the current head.
 func (s *Store) SeenEvents(ctx context.Context, nodeIDs []string, head string, retryReview, retryRebase bool) (map[string]bool, error) {
