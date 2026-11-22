@@ -2255,7 +2255,7 @@ func (e *Engine) gather(ctx context.Context, b *Binding, pr github.PullRequest, 
 		e.ghError(ctx, l, b, "invariants", err)
 		return nil, err
 	}
-	weakened, err := policy.weakened(ctx, e.gh, b.repo(), pr.HeadSHA, files)
+	weakened, err := policy.weakened(ctx, e.gh, b.repo(), base, pr.HeadSHA, files)
 	if err != nil {
 		e.ghError(ctx, l, b, "invariants", err)
 		return nil, err
@@ -3609,7 +3609,7 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 		}
 		var weakened []string
 		if err == nil {
-			weakened, err = policy.weakened(ctx, e.gh, b.repo(), pr.HeadSHA, files)
+			weakened, err = policy.weakened(ctx, e.gh, b.repo(), base, pr.HeadSHA, files)
 		}
 		if err == nil {
 			if current := humanGate(b, changedPaths(files), nil, weakened); current != nil {

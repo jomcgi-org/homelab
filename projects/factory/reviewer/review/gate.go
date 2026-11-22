@@ -407,15 +407,41 @@ func ParseMechanisms(file string, data []byte, paths map[string]bool) error {
 // invariant, or moving one from unproven to live, gets normal review; any
 // other change to an invariant that exists at base, a removed or renamed
 // file, or a head file that does not parse, needs Joe (REVIEW.md "Joe
-// decides", HOME-755). A file that changed on base after the PR's merge base
-// also reads as weakened until the PR is rebased.
-func (p invariantPolicy) weakened(ctx context.Context, gh RulesReader, repo, head string, files []github.PullRequestFile) ([]string, error) {
+// decides", HOME-755). Each file is compared with its copy at the PR's merge
+// base, so invariants main added after the PR branched do not count.
+// invariantReader reads the trees, files and merge base the gate compares.
+type invariantReader interface {
+	RulesReader
+	CompareCommits(ctx context.Context, repo, base, head string) (*github.CommitComparison, error)
+}
+
+func (p invariantPolicy) weakened(ctx context.Context, gh invariantReader, repo, base, head string, files []github.PullRequestFile) ([]string, error) {
 	var out []string
 	var headTree *github.Tree
+	mergeBase := ""
 	for _, f := range files {
 		for _, name := range []string{f.Path, f.PreviousPath} {
 			if name == "" || path.Base(name) != invariantFile || slices.Contains(out, name) {
 				continue
+			}
+			// Compare with the PR's merge base, not the base tip, so an
+			// invariant main added after the PR branched is not read as
+			// removed (HOME-755).
+			if mergeBase == "" {
+				cmp, err := gh.CompareCommits(ctx, repo, base, head)
+				if err != nil {
+					return nil, fmt.Errorf("read the merge base: %w", err)
+				}
+				if cmp.MergeBase == "" {
+					return nil, errors.New("the comparison named no merge base")
+				}
+				mergeBase = cmp.MergeBase
+			}
+			old, err := gh.FileContent(ctx, repo, name, mergeBase)
+			if errors.Is(err, github.ErrNotFound) {
+				old = nil
+			} else if err != nil {
+				return nil, fmt.Errorf("read %s at the merge base: %w", name, err)
 			}
 			var next []byte
 			if f.Status != "removed" && name == f.Path {
@@ -442,7 +468,7 @@ func (p invariantPolicy) weakened(ctx context.Context, gh RulesReader, repo, hea
 				next = data
 			}
 			present := name == f.Path && f.Status != "removed"
-			if weakensInvariants(name, p[name], next, present) || (present && (f.Status == "renamed" || f.Status == "copied")) {
+			if weakensInvariants(name, old, next, present) || (present && (f.Status == "renamed" || f.Status == "copied")) {
 				out = append(out, name)
 			}
 		}

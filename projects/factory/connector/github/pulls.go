@@ -990,20 +990,25 @@ type CommitComparison struct {
 	// Truncated is set when GitHub listed MaxCompareFiles files, so more may
 	// differ.
 	Truncated bool
+	// MergeBase is the merge base commit of the two refs.
+	MergeBase string
 }
 
 // CompareCommits lists the files that differ between two commits (the first
 // 300 GitHub lists). A commit GitHub no longer has is ErrNotFound.
 func (c *Client) CompareCommits(ctx context.Context, repo, base, head string) (*CommitComparison, error) {
 	var out struct {
-		Status string            `json:"status"`
-		Files  []PullRequestFile `json:"files"`
+		Status    string            `json:"status"`
+		Files     []PullRequestFile `json:"files"`
+		MergeBase struct {
+			SHA string `json:"sha"`
+		} `json:"merge_base_commit"`
 	}
 	path := repoPath(repo) + "/compare/" + url.PathEscape(base) + "..." + url.PathEscape(head) + "?per_page=100"
 	if err := c.do(ctx, repo, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
 	}
-	return &CommitComparison{Status: out.Status, Files: out.Files, Truncated: len(out.Files) >= MaxCompareFiles}, nil
+	return &CommitComparison{Status: out.Status, Files: out.Files, Truncated: len(out.Files) >= MaxCompareFiles, MergeBase: out.MergeBase.SHA}, nil
 }
 
 // CitedPullRequest is fixed-class evidence about a pull request another PR
