@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -21,8 +23,9 @@ const (
 // new connection and gives them to lib/pq inline. lib/pq refuses a key file
 // that is not 0600 unless root owns it. With a pod fsGroup, kubelet adds
 // group read to the projected key (0640, owned by the pod user), so a file
-// path DSN fails before it connects. The key stays in the pod's own
-// read-only volume; only the file-mode check is skipped.
+// path DSN fails before it connects. readKey applies its own check in
+// place of lib/pq's: the owner may read and write, the group may only read,
+// and others get nothing.
 type pemConnector struct {
 	dsn string
 	dir string
@@ -37,7 +40,7 @@ func (c pemConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	bundle, err := os.ReadFile(filepath.Join(c.dir, "client.pem"))
+	bundle, err := readKey(filepath.Join(c.dir, "client.pem"))
 	if err != nil {
 		return nil, err
 	}
@@ -58,4 +61,27 @@ func (pemConnector) Driver() driver.Driver { return &pq.Driver{} }
 // openActorDB opens the ATE actor database with the pod certificate.
 func openActorDB() *sql.DB {
 	return sql.OpenDB(pemConnector{dsn: actorDB, dir: ateCerts})
+}
+
+// keyModeMask is the access a private key file must not grant: group write
+// or execute, and any access for others. 0600, 0640 and 0440 pass.
+const keyModeMask = 0o037
+
+// readKey reads a private key file, refusing one that grants more than
+// group read. It checks the opened file, so a swap after the check cannot
+// change what is read.
+func readKey(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if perm := info.Mode().Perm(); perm&keyModeMask != 0 {
+		return nil, fmt.Errorf("private key %s has mode %#o; want 0640 or less", path, perm)
+	}
+	return io.ReadAll(f)
 }
