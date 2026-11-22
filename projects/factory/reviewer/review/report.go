@@ -792,7 +792,7 @@ func patchHunks(patch string) []lineRange {
 	return out
 }
 
-// invariant: FACT-13
+// invariant: FACT-17
 
 // LaterScope is the scope of a head reviewed after since, or nil when there
 // is none to enforce: a first review, or an interdiff that is missing,
