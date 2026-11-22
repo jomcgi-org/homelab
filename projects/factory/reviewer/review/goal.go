@@ -76,6 +76,20 @@ type GoalCheck struct {
 	// removed criterion without relying on the goal check's word.
 	Counted       int   `json:"counted,omitempty"`
 	ReplyRevision int64 `json:"replyRevision,omitempty"`
+	// Activation is activationDigest of the head commit's pending
+	// Activation: step this answer judged, or "" when there was none. A later
+	// head with another step, or none, judges every criterion again.
+	Activation string `json:"activation,omitempty"`
+}
+
+// activationDigest names an Activation step in the public State without
+// copying its text. "" stays "".
+func activationDigest(step string) string {
+	if step == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(step))
+	return hex.EncodeToString(sum[:16])
 }
 
 func goalReplyRevision(in *IssueContext) int64 {
@@ -543,7 +557,7 @@ func (e *Engine) goalCheck(ctx context.Context, b *Binding, pr github.PullReques
 	if g := in.goal; g != nil && g.Head == pr.HeadSHA && g.Digest == digest && len(candidates) == 0 {
 		return g
 	}
-	prev := earlierGoal(in.prior.Goal, pr.HeadSHA, digest)
+	prev := earlierGoal(in.prior.Goal, pr.HeadSHA, digest, activation)
 	history := GoalContext{Exposures: candidates}
 	if prev != nil {
 		history.Previous = prev
@@ -590,15 +604,19 @@ func (e *Engine) goalCheck(ctx context.Context, b *Binding, pr github.PullReques
 	}
 	if g != nil {
 		g.unclearEvidence = ""
-		g.followUps = nil
-	} // Only the private audit retains ownership keys.
+		g.followUps = nil // Only the private audit retains ownership keys.
+		g.Activation = activationDigest(activation)
+	}
 	return keepEarlier(g, prev)
 }
 
 // earlierGoal is the previous head's goal check when it judged the same
-// issue evidence, or nil: an issue edit may renumber its criteria.
-func earlierGoal(g *GoalCheck, head, digest string) *GoalCheck {
-	if g == nil || g.Head == "" || g.Head == head || g.Digest != digest {
+// issue evidence and the same Activation step, or nil: an issue edit may
+// renumber its criteria, and an added, changed or removed step can stage or
+// unstage any criterion (HOME-757). Without it, the goal check judges every
+// criterion again and keeps no earlier verdict.
+func earlierGoal(g *GoalCheck, head, digest, activation string) *GoalCheck {
+	if g == nil || g.Head == "" || g.Head == head || g.Digest != digest || g.Activation != activationDigest(activation) {
 		return nil
 	}
 	return g
@@ -1152,9 +1170,6 @@ func GoalPrompt(repo string, pr github.PullRequest, files []github.PullRequestFi
 		b.WriteString("Start from these verdicts. Keep each one unless a change since that head affects its criterion, or you can name " +
 			"the error in the earlier reasons. An evidence-only revision can identify that error: when a cited unchanged definition contradicts a prior finding, verify it at this head and correct the verdict even if no implementation changed. A met or after_rollout verdict does not become unclear: give unclear only for a " +
 			"criterion nothing settled before. When you change a verdict, say in your reasoning which change or which error caused it.\n\n")
-		if history.Activation != "" {
-			b.WriteString("The head commit's Activation step above is a change too: judge again each criterion it stages, even when no file changed.\n\n")
-		}
 	}
 
 	if len(history.Exposures) > 0 {
