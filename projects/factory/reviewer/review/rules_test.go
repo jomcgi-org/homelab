@@ -635,10 +635,24 @@ func TestInvariantAddedOnBaseAfterBranchIsNotARemoval(t *testing.T) {
 	}
 }
 
-func TestInvariantPolicyRejectsSymlinkOnBase(t *testing.T) {
-	gh := &baseRules{head: "base-commit", files: map[string]string{"policy/INVARIANTS.yaml": baseInvariants}, links: map[string]bool{"policy/INVARIANTS.yaml": true}}
-	if _, err := loadInvariantPolicy(context.Background(), gh, testRepo, gh.head); err == nil {
-		t.Fatal("accepted a symlinked invariant file on base")
+// A symlinked policy file on base must not stall unrelated reviews, and any
+// PR that touches it, including one that repairs it, is gated.
+func TestSymlinkOnBaseGatesOnlyThatFile(t *testing.T) {
+	gh := &headRules{
+		baseRules: baseRules{head: "base-commit", files: map[string]string{"policy/INVARIANTS.yaml": baseInvariants, "other/INVARIANTS.yaml": baseInvariants}, links: map[string]bool{"policy/INVARIANTS.yaml": true}},
+		headFiles: map[string]string{"policy/INVARIANTS.yaml": baseInvariants, "other/INVARIANTS.yaml": baseInvariants},
+	}
+	policy, err := loadInvariantPolicy(context.Background(), gh, testRepo, gh.head)
+	if err != nil {
+		t.Fatalf("a base symlink stalled the policy read: %v", err)
+	}
+	unrelated := []github.PullRequestFile{{Status: "modified", Path: "src/a.go"}}
+	if w, err := policy.weakened(context.Background(), gh, testRepo, gh.head, "head-commit", unrelated); err != nil || len(w) != 0 {
+		t.Fatalf("unrelated PR: weakened = %v, err %v", w, err)
+	}
+	repair := []github.PullRequestFile{{Status: "modified", Path: "policy/INVARIANTS.yaml"}}
+	if w, err := policy.weakened(context.Background(), gh, testRepo, gh.head, "head-commit", repair); err != nil || strings.Join(w, ",") != "policy/INVARIANTS.yaml" {
+		t.Fatalf("repair PR: weakened = %v, err %v", w, err)
 	}
 }
 
