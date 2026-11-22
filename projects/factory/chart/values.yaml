@@ -759,7 +759,8 @@ connector:
   # maxRebaseRounds (3, separate from review rounds), maxSplitRounds (1,
   # separate rounds for the reviewer's split request), deferAtReviewCap
   # (false; at the review-round cap the reviewer defers medium findings,
-  # HOME-756 connector/review-cap.md), doneColumn;
+  # HOME-756 connector/review-cap.md), maxRecuts (2; re-cuts of a PR whose
+  # capped review still has a critical or high finding), doneColumn;
   # the review policy trustedReviewers (GitHub logins), requiredChecks and
   # reviewerCheck (each {name, appId} or {name, statusCreator}). Without a
   # reviewer check or trusted reviewers no PR is ever enqueued.

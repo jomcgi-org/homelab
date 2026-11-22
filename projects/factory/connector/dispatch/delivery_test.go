@@ -3,6 +3,8 @@ package dispatch_test
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -3565,7 +3567,6 @@ func TestDoneMoveOutageSurvivesIdleOutboxTicks(t *testing.T) {
 	if alarms != 0 || testutil.ToFloat64(v.m.ItsaplanUnavailable.WithLabelValues("outbox")) != 1 {
 		t.Fatal("retry wait interrupted outage evidence")
 	}
-	v.clk.Advance(time.Minute)
 	v.tick(v.e)
 	if alarms != 1 {
 		t.Fatalf("outbox alarms after ten minutes = %d", alarms)
@@ -3600,7 +3601,6 @@ func TestDoneMoveCooldownPreservesLastAttempt(t *testing.T) {
 			t.Fatalf("queued after cooldown: tries=%d unavailable since=%s", tries, unavailableSince)
 		}
 	}
-	v.clk.Advance(time.Minute)
 	v.tick(v.e)
 	if len(v.its.Moves()) != 1 || testutil.ToFloat64(v.m.ItsaplanUnavailable.WithLabelValues("outbox")) != 0 {
 		t.Fatal("cooldown recovery did not deliver the Done move and clear the outage")
@@ -4173,7 +4173,6 @@ func TestCurrentPendingReviewerCheckQueuesNativeReviewingOnce(t *testing.T) {
 	v.gh.mu.Unlock()
 	v.poll()
 	plan.ready = true
-	v.clk.Advance(time.Minute)
 	v.poll()
 	v.poll()
 	if len(plan.heads) != 2 || plan.heads[0] != head || plan.heads[1] != head {
@@ -4236,5 +4235,186 @@ func TestReviewCapMarksThePR(t *testing.T) {
 				t.Fatalf("the body changed again:\n%s", again)
 			}
 		})
+	}
+}
+
+// reviewerState sets the reviewer check's persisted state on a commit: its
+// cap reading and blocking findings of the given severities (HOME-756).
+func (g *fakeGitHub) reviewerState(sha string, capped bool, severities ...string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	blocking := []map[string]string{}
+	for i, s := range severities {
+		blocking = append(blocking, map[string]string{"id": fmt.Sprintf("a.go:rule%d", i), "severity": s})
+	}
+	state := map[string]any{"blocking": blocking}
+	if capped {
+		state["review_cap"] = "applied"
+	}
+	raw, _ := json.Marshal(state)
+	for i := range g.checks[sha] {
+		if g.checks[sha][i].Name == "semgrep-review" {
+			g.checks[sha][i].Text = github.ReviewStatePrefix + base64.StdEncoding.EncodeToString(raw) + github.ReviewStateSuffix
+		}
+	}
+}
+
+// capEnv is newDeliveryEnv with deferral at the cap and maxRecuts re-cuts.
+func capEnv(t *testing.T, maxRecuts int) *env {
+	t.Helper()
+	v := newDeliveryEnv(t)
+	v.cfg.Bindings[0].Review.DeferAtReviewCap = true
+	v.cfg.Bindings[0].Review.MaxRecuts = maxRecuts
+	v.e.Release()
+	v.e = v.engine("connector-a")
+	return v
+}
+
+// capRounds spends both review rounds of the current PR on reviewer
+// failures with a medium finding, from head first. The returned head is the
+// one after the last round, still unreviewed.
+func capRounds(v *env, first int) string {
+	v.t.Helper()
+	for i := first; i < first+2; i++ {
+		head := fmt.Sprintf("sha-%d", i)
+		v.gh.check(head, "semgrep-review", 200, "failure")
+		v.gh.reviewerState(head, false, "medium")
+		v.poll()
+		v.gh.push("factory/HL-7", fmt.Sprintf("sha-%d", i+1), "fix: feedback")
+		v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+		v.clk.Advance(5 * time.Second)
+		v.tick(v.e)
+	}
+	if w := v.work(101); w.ReviewRounds != 2 || w.State != store.WorkReview {
+		v.t.Fatalf("work item before the cap = %+v", w)
+	}
+	return fmt.Sprintf("sha-%d", first+2)
+}
+
+// TestCappedHighFindingStartsRecut covers HOME-756: a capped review that
+// still fails on a high finding journals and closes the PR, and delivers the
+// issue again in a fresh session, whose new PR names the closed one. With
+// the re-cuts spent, the next such review closes the PR and stops delivery.
+func TestCappedHighFindingStartsRecut(t *testing.T) {
+	v := capEnv(t, 1)
+	v.delivered()
+	head := capRounds(v, 1)
+	v.gh.check(head, "semgrep-review", 200, "failure")
+	v.gh.reviewerState(head, true, "high")
+	v.poll()
+
+	w := v.work(101)
+	if w.Recuts != 1 || w.RecutPR != 1 || w.RecutHead != head || !w.RecutClosed || w.ReviewRounds != 0 {
+		t.Fatalf("work item after the re-cut = %+v", w)
+	}
+	prs := v.gh.PRs()
+	if prs[0].pr.State != "closed" || !github.HasReviewCapMarker(prs[0].body) {
+		t.Fatalf("capped PR = %s: %s", prs[0].pr.State, prs[0].body)
+	}
+	sends := v.kg.Sends()
+	last := sends[len(sends)-1]
+	if last.msg.ContextID != "" || !strings.Contains(last.msg.Parts[0].Text, "Re-cut 1 for HL-7") ||
+		!strings.Contains(last.msg.Parts[0].Text, "force-push") {
+		t.Fatalf("re-cut send = %+v", last.msg)
+	}
+	var said bool
+	for _, c := range v.its.Comments() {
+		said = said || strings.Contains(c.body, "starts re-cut 1 of 1")
+	}
+	if !said {
+		t.Fatal("re-cut not announced on the issue")
+	}
+
+	v.gh.push("factory/HL-7", "sha-10", "fix: deliver again")
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Re-cut pushed.", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	prs = v.gh.PRs()
+	if len(prs) != 2 || prs[1].pr.State != "open" || !strings.Contains(prs[1].body, "Replaces: #1") {
+		t.Fatalf("PRs after the re-cut = %+v", prs)
+	}
+	if w := v.work(101); w.State != store.WorkReview || w.ReviewRounds != 0 {
+		t.Fatalf("work item after the new PR = %+v", w)
+	}
+
+	head = capRounds(v, 10)
+	v.gh.check(head, "semgrep-review", 200, "failure")
+	v.gh.reviewerState(head, true, "high")
+	v.poll()
+	if w := v.work(101); w.State != store.WorkStopped || w.Recuts != 1 || w.RecutPR != 2 || !w.RecutClosed {
+		t.Fatalf("work item past the re-cut bound = %+v", w)
+	}
+	if prs := v.gh.PRs(); prs[1].pr.State != "closed" {
+		t.Fatalf("PR past the re-cut bound = %s", prs[1].pr.State)
+	}
+	var stopped bool
+	for _, c := range v.its.Comments() {
+		stopped = stopped || strings.Contains(c.body, "after 1 re-cuts")
+	}
+	if !stopped {
+		t.Fatal("the stop at the re-cut bound was not reported on the issue")
+	}
+}
+
+// TestRecutWithoutNewTipOpensNoPR covers HOME-756: a re-cut session that
+// pushes nothing new leaves the rejected head without a replacement PR.
+func TestRecutWithoutNewTipOpensNoPR(t *testing.T) {
+	v := capEnv(t, 1)
+	v.delivered()
+	head := capRounds(v, 1)
+	v.gh.check(head, "semgrep-review", 200, "failure")
+	v.gh.reviewerState(head, true, "high")
+	v.poll()
+	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "Nothing to change.", nil)
+	v.clk.Advance(5 * time.Second)
+	v.tick(v.e)
+	if prs := v.gh.PRs(); len(prs) != 1 {
+		t.Fatalf("a re-cut without a new tip opened a PR: %+v", prs)
+	}
+	var said bool
+	for _, c := range v.its.Comments() {
+		said = said || strings.Contains(c.body, "without a new commit")
+	}
+	if !said {
+		t.Fatal("the unchanged re-cut was not reported on the issue")
+	}
+}
+
+// TestCapOutcomeActsOnARecordedRoundLimit covers HOME-756: a PR that hit the
+// cap before deferral, with its failure already recorded as round_limit, is
+// marked for the reviewer, and its later capped review starts a re-cut. A
+// capped review held only by the human gate starts none.
+func TestCapOutcomeActsOnARecordedRoundLimit(t *testing.T) {
+	v := newDeliveryEnv(t)
+	v.cfg.Bindings[0].Review.MaxRecuts = 1
+	v.e.Release()
+	v.e = v.engine("connector-a")
+	v.delivered()
+	head := capRounds(v, 1)
+	v.gh.check(head, "semgrep-review", 200, "failure")
+	v.gh.reviewerState(head, false, "medium")
+	v.poll()
+	evs := v.events()
+	if last := evs[len(evs)-1]; last.Disposition != store.EventRoundLimit {
+		t.Fatalf("last event = %+v, want round_limit", last)
+	}
+
+	v.cfg.Bindings[0].Review.DeferAtReviewCap = true
+	v.e.Release()
+	v.e = v.engine("connector-b")
+	v.poll()
+	if !github.HasReviewCapMarker(v.gh.PRs()[0].body) {
+		t.Fatalf("a PR already at the cap was not marked:\n%s", v.gh.PRs()[0].body)
+	}
+	// The reviewer reviews the same check again: only the human gate holds.
+	v.gh.reviewerState(head, true)
+	v.poll()
+	if w := v.work(101); w.Recuts != 0 || w.State != store.WorkReview {
+		t.Fatalf("a gate-only capped review started a re-cut: %+v", w)
+	}
+	v.gh.reviewerState(head, true, "high")
+	v.poll()
+	if w := v.work(101); w.Recuts != 1 || w.RecutPR != 1 {
+		t.Fatalf("a recorded round_limit PR did not start a re-cut: %+v", w)
 	}
 }

@@ -85,9 +85,10 @@ func scanPR(row interface{ Scan(...any) error }) (*PullRequest, error) {
 	return p, err
 }
 
-// PullRequestFor returns the work item's PR, or nil.
+// PullRequestFor returns the work item's PR, or nil. A PR a re-cut replaces
+// (state 'recut') is no longer the work item's.
 func (s *Store) PullRequestFor(ctx context.Context, workID int64) (*PullRequest, error) {
-	p, err := scanPR(s.DB.QueryRowContext(ctx, `SELECT `+prCols+` FROM pull_request WHERE work_item_id = $1`, workID))
+	p, err := scanPR(s.DB.QueryRowContext(ctx, `SELECT `+prCols+` FROM pull_request WHERE work_item_id = $1 AND state <> 'recut'`, workID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -514,6 +515,52 @@ func (s *Store) startRound(ctx context.Context, q Querier, w *WorkItem, prompt, 
 			attempt, state, seen_visible, provenance_required, round_head_sha)
 		VALUES (nextval('connector_run_id'), 'connector', $1, $2, $3, $4, $7, $5, '', 1, 'waiting', true, true, nullif($6, ''))
 		RETURNING `+runCols, w.AgentKey, w.ID, w.IssueID, w.IssueKey, prompt, head, trigger))
+}
+
+// invariant: HOME-756-3
+//
+// StartRecut records a re-cut at the review cap (HOME-756) in one
+// transaction: the close of the capped PR at head is journaled, the PR row
+// stops being the work item's, all round counters return to zero and the
+// session is cleared, so the re-cut run opens a fresh session.
+func (s *Store) StartRecut(ctx context.Context, q Querier, w *WorkItem, pr *PullRequest, prompt, head string) (*Run, error) {
+	res, err := q.ExecContext(ctx, `
+		UPDATE work_item SET session_id = NULL, review_rounds = 0, rebase_rounds = 0, split_rounds = 0,
+			ci_fix_rounds = 0, recuts = recuts + 1, recut_pr = $2, recut_head = $3, recut_closed = false,
+			state = 'active', updated_at = now()
+		WHERE id = $1 AND state = 'review'`, w.ID, pr.Number, head)
+	if err != nil {
+		return nil, err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		if err == nil {
+			err = ErrNotReview
+		}
+		return nil, err
+	}
+	if _, err := q.ExecContext(ctx, `UPDATE pull_request SET state = 'recut', updated_at = now() WHERE id = $1`, pr.ID); err != nil {
+		return nil, err
+	}
+	return scanRun(q.QueryRowContext(ctx, `
+		INSERT INTO run (id, origin, agent_key, work_item_id, issue_id, issue_key, trigger, prompt, system_prompt,
+			attempt, state, seen_visible, provenance_required, round_head_sha)
+		VALUES (nextval('connector_run_id'), 'connector', $1, $2, $3, $4, 'recut', $5, '', 1, 'waiting', true, true, nullif($6, ''))
+		RETURNING `+runCols, w.AgentKey, w.ID, w.IssueID, w.IssueKey, prompt, head))
+}
+
+// JournalCapClose records that the connector closes the capped PR at head
+// when the work item's re-cuts are spent; delivery stops after it.
+func (s *Store) JournalCapClose(ctx context.Context, q Querier, workID int64, number int, head string) error {
+	_, err := q.ExecContext(ctx, `
+		UPDATE work_item SET recut_pr = $2, recut_head = $3, recut_closed = false, updated_at = now()
+		WHERE id = $1 AND state = 'review'`, workID, number, head)
+	return err
+}
+
+// MarkRecutClosed records the journaled PR close as done.
+func (s *Store) MarkRecutClosed(ctx context.Context, workID int64) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE work_item SET recut_closed = true, updated_at = now() WHERE id = $1`, workID)
+	return err
 }
 
 // Round is a work item's latest review round: its run, state and the head it

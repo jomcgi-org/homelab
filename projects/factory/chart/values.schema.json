@@ -950,6 +950,7 @@
               "maxRebaseRounds": { "type": "integer", "minimum": 0 },
               "maxSplitRounds": { "type": "integer", "minimum": 0 },
               "deferAtReviewCap": { "type": "boolean" },
+              "maxRecuts": { "type": "integer", "minimum": 0 },
               "doneColumn": { "type": "string", "minLength": 1 },
               "trustedReviewers": {
                 "type": "array",
