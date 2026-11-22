@@ -1,4 +1,4 @@
--- invariant: HOME-756-3
+/* invariant: HOME-756-3 */
 -- HOME-756: a review-capped PR whose review still has a critical or high
 -- finding is re-cut in a fresh session. recuts bounds the re-cuts of a work
 -- item. recut_pr and recut_head journal the close of the capped PR before
