@@ -1,6 +1,8 @@
 """Warn on secret patterns in PR additions and PR commit messages."""
 
-# invariant: ROOT-4
+# invariant: ROOT-5
+import codecs
+import difflib
 import os
 import re
 import subprocess
@@ -32,21 +34,52 @@ def report(path, content):
             print(f"warning: {ascii(path)}: {label}")
 
 
+def blob_lines(mode, oid):
+    if mode in (b"000000", b"160000"):
+        return []
+    data = git("cat-file", "blob", oid)
+    if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return data.decode("utf-16", errors="replace").splitlines()
+    if b"\0" in data:
+        # BOM-less UTF-16 configuration text commonly has an ASCII first line.
+        sample = data[:256]
+        for offset, encoding in ((1, "utf-16-le"), (0, "utf-16-be")):
+            lane = sample[offset::2]
+            if (
+                lane
+                and lane.count(0) > len(lane) // 2
+                and 0 not in sample[1 - offset :: 2]
+            ):
+                return data.decode(encoding, errors="replace").splitlines()
+        return []
+    return data.decode("utf-8-sig", errors="replace").splitlines()
+
+
 def scan(base, head):
     start = git("merge-base", base, head).decode().strip()
-    diff = ["diff", "--no-ext-diff", "--no-textconv", "--no-renames"]
-    paths = git(*diff, "--name-only", "--diff-filter=AMT", "-z", start, head, "--")
-    for raw in paths.split(b"\0")[:-1]:
-        path = os.fsdecode(raw)
-        patch = git("--literal-pathspecs", *diff, "-U0", start, head, "--", path)
-        in_hunk = False
+    changes = git(
+        "diff",
+        "--raw",
+        "--no-abbrev",
+        "--no-renames",
+        "--diff-filter=AMT",
+        "-z",
+        start,
+        head,
+        "--",
+    )
+    records = iter(changes.split(b"\0")[:-1])
+    for header, path in zip(records, records):
+        old_mode, new_mode, old_oid, new_oid, _ = header[1:].split()
+        before = blob_lines(old_mode, old_oid)
+        after = blob_lines(new_mode, new_oid)
         additions = []
-        for line in patch.decode(errors="replace").split("\n"):
-            if line.startswith("@@ "):
-                in_hunk = True
-            elif in_hunk and line.startswith("+"):
-                additions.append(line[1:])
-        report(path, "\n".join(additions))
+        for op, _, _, first, last in difflib.SequenceMatcher(
+            None, before, after, autojunk=False
+        ).get_opcodes():
+            if op in ("replace", "insert"):
+                additions.extend(after[first:last])
+        report(os.fsdecode(path), "\n".join(additions))
 
     messages = git("log", "-z", "--format=%H%x00%B", f"{start}..{head}", "--")
     records = iter(messages.decode(errors="replace").split("\0")[:-1])
