@@ -2,7 +2,7 @@ apiVersion: v2
 name: trips
 description: Private Trips ingestion and daily public export
 type: application
-version: 0.11.1
+version: 0.11.7
 dependencies:
   - name: factory-library
     version: "0.1.0"

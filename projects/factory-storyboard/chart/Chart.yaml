@@ -2,7 +2,7 @@ apiVersion: v2
 name: factory-storyboard
 description: Scheduled public storyboard publisher
 type: application
-version: 0.21.1
+version: 0.21.7
 dependencies:
   - name: factory-library
     version: "0.1.0"
