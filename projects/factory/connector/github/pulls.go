@@ -546,10 +546,10 @@ func (c *Client) MergeQueueEntries(ctx context.Context, repo, branch string) ([]
 	return entries, nil
 }
 
-const pullRequestHeadsQuery = `query PullRequestHeads($owner: String!, $name: String!, $number: Int!, $appId: Int!, $check: String!, $before: String) {
+const pullRequestHeadsQuery = `query PullRequestHeads($owner: String!, $name: String!, $number: Int!, $appId: Int!, $check: String!, $before: String, $last: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      timelineItems(last: 100, before: $before, itemTypes: [PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT]) {
+      timelineItems(last: $last, before: $before, itemTypes: [PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT]) {
         pageInfo { hasPreviousPage startCursor }
         nodes {
           __typename
@@ -603,6 +603,11 @@ func (c *Client) PullRequestHeads(ctx context.Context, repo string, number int, 
 
 // PullRequestHeadsBefore reads one page of timeline events preceding before.
 func (c *Client) PullRequestHeadsBefore(ctx context.Context, repo string, number int, f CheckRunFilter, before string) (*HeadHistory, error) {
+	return c.PullRequestHeadsPage(ctx, repo, number, f, before, 100)
+}
+
+// PullRequestHeadsPage reads one page of possible heads before the cursor.
+func (c *Client) PullRequestHeadsPage(ctx context.Context, repo string, number int, f CheckRunFilter, before string, last int) (*HeadHistory, error) {
 	owner, name, _ := strings.Cut(repo, "/")
 	type commit struct {
 		OID         string `json:"oid"`
@@ -632,8 +637,8 @@ func (c *Client) PullRequestHeadsBefore(ctx context.Context, repo string, number
 			PullRequest *struct {
 				TimelineItems struct {
 					PageInfo struct {
-						StartCursor     string
-						HasPreviousPage bool `json:"hasPreviousPage"`
+						StartCursor     string `json:"startCursor"`
+						HasPreviousPage bool   `json:"hasPreviousPage"`
 					} `json:"pageInfo"`
 					Nodes []struct {
 						Type         string  `json:"__typename"`
@@ -646,6 +651,7 @@ func (c *Client) PullRequestHeadsBefore(ctx context.Context, repo string, number
 		} `json:"repository"`
 	}
 	vars := map[string]any{"owner": owner, "name": name, "number": number, "appId": f.AppID, "check": f.Name}
+	vars["last"] = last
 	if before != "" {
 		vars["before"] = before
 	}
