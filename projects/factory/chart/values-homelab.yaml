@@ -202,6 +202,12 @@ connector:
   agents:
     - username: homelab-codex
       concurrency: 10
+  # 120 s between polls of one open PR, up from 60 s. On 2026-11-22 about 45
+  # open PRs at 60 s used about 5,400 GraphQL points an hour against the
+  # installation's 5,000, so delivery stopped for part of every hour
+  # (HOME-751).
+  intervals:
+    reviewPoll: 120s
   bindings:
     homelab:
       itsaplanProject: HOME
