@@ -1,4 +1,4 @@
-{{- /* invariant: PLAT-15 */ -}}
+{{- /* invariant: PLAT-16 */ -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
