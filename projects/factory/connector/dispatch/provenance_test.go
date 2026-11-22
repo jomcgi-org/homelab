@@ -1,4 +1,4 @@
-// invariant: FACT-18
+// invariant: FACT-575
 package dispatch_test
 
 import (
