@@ -50,10 +50,30 @@ type FeedItem struct {
 		From *struct {
 			ID json.RawMessage `json:"id"`
 		} `json:"from"`
-		To *struct {
-			Value *string `json:"value"`
-		} `json:"to"`
+		To *feedSide `json:"to"`
+		// Set on "created" only: the text the issue was filed with
+		// (croffasia/itsaplan#979). Older creation events carry neither.
+		Title       *feedSide `json:"title"`
+		Description *feedSide `json:"description"`
 	} `json:"payload"`
+}
+
+type feedSide struct {
+	Value *string `json:"value"`
+}
+
+// textSide reports whether the entry set field, and the value it set. A
+// "created" entry sets both fields; a nil side gives no value.
+func (f *FeedItem) textSide(field string) (*feedSide, bool) {
+	switch {
+	case f.Action == field:
+		return f.Payload.To, true
+	case f.Action == "created" && field == "title":
+		return f.Payload.Title, true
+	case f.Action == "created" && field == "description":
+		return f.Payload.Description, true
+	}
+	return nil, false
 }
 
 // OriginalComment requires the API's explicit null stamp. An edited comment
@@ -63,11 +83,13 @@ func (f *FeedItem) OriginalComment() bool {
 }
 
 // IssueTextAuthors authenticates current text against immutable change-log
-// snapshots, never against the issue's creator. Creation events have no text;
-// absence of a snapshot therefore grants no authority. Read newest first so an
-// older trusted value cannot mask a later untrusted edit of the same field.
+// snapshots, never against the issue's creator alone. The creation event's
+// snapshot attributes a never-edited field to the creator; a creation event
+// without one grants no authority. Read newest first so an older trusted value
+// cannot mask a later untrusted edit of the same field.
 func (c *Client) IssueTextAuthors(ctx context.Context, issue *Issue) ([]string, error) {
 	q := url.Values{"filter": {"history"}, "order": {"desc"}, "limit": {"100"}}
+	fields := []string{"title", "description"}
 	want := map[string]string{"title": issue.Title, "description": issue.Description}
 	seen := map[string]bool{}
 	authors := map[string]string{}
@@ -78,13 +100,18 @@ func (c *Client) IssueTextAuthors(ctx context.Context, issue *Issue) ([]string, 
 			return nil, err
 		}
 		for _, item := range out.Items {
-			value, relevant := want[item.Action]
-			if !relevant || seen[item.Action] || item.Kind != "activity" || item.IssueID != issue.ID {
+			if item.Kind != "activity" || item.IssueID != issue.ID {
 				continue
 			}
-			seen[item.Action] = true
-			if item.Payload.To != nil && item.Payload.To.Value != nil && *item.Payload.To.Value == value {
-				authors[item.Action] = item.ActorUserID
+			for _, field := range fields {
+				side, sets := item.textSide(field)
+				if !sets || seen[field] {
+					continue
+				}
+				seen[field] = true
+				if side != nil && side.Value != nil && *side.Value == want[field] {
+					authors[field] = item.ActorUserID
+				}
 			}
 		}
 		if len(seen) == 2 || out.NextCursor == nil {

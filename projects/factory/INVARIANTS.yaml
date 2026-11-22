@@ -333,3 +333,9 @@ invariants:
   - projects/factory/chart/files/itsaplan/factory.ts
   test: //projects/factory/connector/dispatch:dispatch_test
   state: live
+- id: HOME-538-1
+  statement: An issue field takes its author from the newest change-log entry that set it, the creation snapshot included, and only when that entry's value matches the current text.
+  mechanism:
+  - projects/factory/connector/itsaplan/review.go
+  test: //projects/factory/connector/itsaplan:itsaplan_test
+  state: live

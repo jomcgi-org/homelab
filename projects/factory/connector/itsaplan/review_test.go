@@ -117,6 +117,10 @@ func TestIssueTextAuthorsRequireMatchingImmutableSnapshots(t *testing.T) {
 		name, items, wantTitle, wantDescription string
 	}{
 		{"creation has no text", `{"kind":"activity","action":"created","actorUserId":"joe"}`, "", ""},
+		{"creation snapshot", `{"kind":"activity","action":"created","actorUserId":"joe","payload":{"title":{"value":"Goal"},"description":{"value":"Criteria"}}}`, "joe", "joe"},
+		{"original title, edited description", `{"kind":"activity","action":"description","actorUserId":"sessions","payload":{"to":{"value":"Criteria"}}},{"kind":"activity","action":"created","actorUserId":"joe","payload":{"title":{"value":"Goal"},"description":{"value":"Draft"}}}`, "joe", "sessions"},
+		{"untrusted edit after creation", `{"kind":"activity","action":"title","actorUserId":"agent","payload":{"to":{"value":"Goal"}}},{"kind":"activity","action":"created","actorUserId":"joe","payload":{"title":{"value":"Goal"},"description":{"value":"Criteria"}}}`, "agent", "joe"},
+		{"creation snapshot mismatch", `{"kind":"activity","action":"created","actorUserId":"joe","payload":{"title":{"value":"Old goal"},"description":{"value":"Criteria"}}}`, "", "joe"},
 		{"trusted edits", `{"kind":"activity","action":"title","actorUserId":"joe","payload":{"to":{"value":"Goal"}}},{"kind":"activity","action":"description","actorUserId":"sessions","payload":{"to":{"value":"Criteria"}}}`, "joe", "sessions"},
 		{"later edit wins", `{"kind":"activity","action":"description","actorUserId":"agent","payload":{"to":{"value":"Criteria"}}},{"kind":"activity","action":"description","actorUserId":"joe","payload":{"to":{"value":"Criteria"}}}`, "", "agent"},
 		{"snapshot mismatch", `{"kind":"activity","action":"title","actorUserId":"joe","payload":{"to":{"value":"Old goal"}}}`, "", ""},
