@@ -135,8 +135,25 @@ fi
 	cat "${tmp}/src/pkg/postgressetup/setup.sql"
 } >"${OUT}/postgres-setup.sql"
 if [[ "${refresh}" == --refresh ]]; then
+	# The grouped update also refreshed the factory chart's kagent-crds
+	# archive. Keep crds/ byte-identical to its templates (chart_test.py).
+	factory_chart="${HERE}/../../factory/chart"
+	archive="${factory_chart}/charts/kagent-crds-${VERSION}.tgz"
+	if [[ ! -f "${archive}" ]]; then
+		echo "missing ${archive}; update kagent-crds to ${VERSION} first" >&2
+		exit 1
+	fi
+	mkdir -p "${tmp}/kagent-crds" "${tmp}/factory-crds"
+	tar -xzf "${archive}" -C "${tmp}/kagent-crds"
+	find "${tmp}/kagent-crds" -path '*/templates/*' -type f -exec cp {} "${tmp}/factory-crds/" \;
+	if [[ -z "$(ls -A "${tmp}/factory-crds")" ]]; then
+		echo "${archive} has no CRD templates" >&2
+		exit 1
+	fi
 	mv "${tmp}/renderer" "${BASH_SOURCE[0]}"
 	cat "${tmp}/bootstrap" >"${bootstrap}"
+	rm -rf "${factory_chart}/crds"
+	mv "${tmp}/factory-crds" "${factory_chart}/crds"
 fi
 rm -rf "${target}"
 mv "${OUT}" "${target}"

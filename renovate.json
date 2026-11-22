@@ -423,7 +423,8 @@
         "fileFilters": [
           "projects/platform-factory/substrate/resources/upstream/**",
           "projects/platform-factory/substrate/render-upstream.sh",
-          "projects/factory-cluster/bootstrap-substrate.sh"
+          "projects/factory-cluster/bootstrap-substrate.sh",
+          "projects/factory/chart/crds/**"
         ],
         "executionMode": "branch"
       },

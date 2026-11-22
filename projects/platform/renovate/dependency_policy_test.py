@@ -1472,3 +1472,4 @@ def test_factory_image_and_substrate_release_coverage():
     )
     assert task["commands"] == [script + " --refresh"]
     assert upstream + "/**" in task["fileFilters"]
+    assert "projects/factory/chart/crds/**" in task["fileFilters"]
