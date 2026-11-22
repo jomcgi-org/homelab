@@ -689,14 +689,13 @@ func (e *Engine) checkStoppedCreate(ctx context.Context, wi *store.WorkItem, b *
 		if pr == nil || pr.BaseRef != b.BaseBranch {
 			return nil
 		}
-		const factoryAuthor = "jomcgi-factory[bot]"
-		if pr.Author != factoryAuthor || !strings.Contains(pr.Body, fmt.Sprintf("<!-- factory-connector work-item=%d -->", wi.ID)) {
+		if e.checkDeliverySource(ctx, b.repo(), pr) != nil || !strings.Contains(pr.Body, fmt.Sprintf("<!-- factory-connector work-item=%d -->", wi.ID)) {
 			return nil
 		}
 		if pr.State == "open" {
 			id += fmt.Sprintf("/%d", pr.Number)
 			reason := fmt.Sprintf("Closing this factory PR because delivery of %s was stopped: %s.", wi.IssueKey, wi.StoppedReason)
-			if err := e.commentOnStoppedPR(ctx, b.repo(), pr.Number, factoryAuthor, id+"/comment", reason); err != nil {
+			if err := e.commentOnStoppedPR(ctx, b.repo(), pr.Number, pr.Author, id+"/comment", reason); err != nil {
 				return err
 			}
 			if _, err := e.stoppedPRCall(ctx, id+"/close"); err != nil {
