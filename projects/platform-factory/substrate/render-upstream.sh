@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# invariant: PLAT-17
+# invariant: PLAT-RENOVATE-1
 # Render Agent Substrate's install manifests at the pinned release into
 # resources/upstream/.
 #
