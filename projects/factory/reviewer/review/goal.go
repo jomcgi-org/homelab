@@ -64,13 +64,16 @@ type goalAnswer struct {
 // GoalCheck is a validated answer for one head and evidence digest. It holds
 // public finding IDs and titles alongside criterion numbers and verdicts.
 type GoalCheck struct {
-	Acknowledged    map[string]string `json:"acknowledged,omitempty"`
-	unclearEvidence string            // Private labelled lines from the reply supplying these verdicts.
-	followUps       map[int]string    // Private keys for combining answers before audit.
-	Head            string            `json:"head"`
-	Digest          string            `json:"digest"`
-	Criteria        []GoalVerdict     `json:"criteria"`
-	Overall         string            `json:"overall,omitempty"`
+	Acknowledged map[string]string `json:"acknowledged,omitempty"`
+	// AuditID names the private reply this check used (auditID). It is a
+	// hash, so the public State can keep it.
+	AuditID         string         `json:"audit_id,omitempty"`
+	unclearEvidence string         // Private labelled lines from the reply supplying these verdicts.
+	followUps       map[int]string // Private keys for combining answers before audit.
+	Head            string         `json:"head"`
+	Digest          string         `json:"digest"`
+	Criteria        []GoalVerdict  `json:"criteria"`
+	Overall         string         `json:"overall,omitempty"`
 	// Counted is the number of criteria the service counted in the issue's
 	// list (issueCriteria), or 0 when it could not count them. It shows a
 	// removed criterion without relying on the goal check's word.
@@ -607,7 +610,7 @@ func (e *Engine) goalCheck(ctx context.Context, b *Binding, pr github.PullReques
 		g.followUps = nil // Only the private audit retains ownership keys.
 		g.Activation = activationDigest(activation)
 	}
-	return keepEarlier(g, prev)
+	return g
 }
 
 // earlierGoal is the previous head's goal check when it judged the same
@@ -622,13 +625,11 @@ func earlierGoal(g *GoalCheck, head, digest, activation string) *GoalCheck {
 	return g
 }
 
-// settled reports a verdict that says the diff makes the change it needs.
-func settled(v string) bool { return v == goalMet || v == goalLive }
-
-// confirmOnly takes from the confirmation call only the verdicts it
-// re-checked: the initial answer's not_met ones. The confirmation checks a
-// not_met against a clean code review; it is no second review of the
-// criteria the initial answer found met. A nil confirmation is unavailable.
+// confirmOnly takes from the confirmation call the verdicts it re-checked,
+// the initial answer's not_met ones, and any new not_met it found. The
+// confirmation checks a not_met against a clean code review, so an initial
+// met stands unless the confirmation finds that criterion not met. A nil
+// confirmation is unavailable.
 func confirmOnly(initial, confirmed *GoalCheck) *GoalCheck {
 	if confirmed == nil || len(confirmed.Criteria) < len(initial.Criteria) {
 		return nil
@@ -644,38 +645,13 @@ func confirmOnly(initial, confirmed *GoalCheck) *GoalCheck {
 		byNumber[c.Criterion] = c.Verdict
 	}
 	for i, c := range out.Criteria {
-		if v, ok := byNumber[c.Criterion]; ok && v != goalNotMet {
+		if v, ok := byNumber[c.Criterion]; ok && v != goalNotMet && c.Verdict != goalNotMet {
 			out.Criteria[i].Verdict = v
 			out.followUps[c.Criterion] = initial.followUps[c.Criterion]
 		}
 	}
-	if initial.Overall != goalNotMet {
+	if initial.Overall != goalNotMet && confirmed.Overall != goalNotMet {
 		out.Overall = initial.Overall
-	}
-	return &out
-}
-
-// keepEarlier keeps an earlier head's met or after_rollout verdict on the
-// same issue evidence where this answer is only unclear: an unclear verdict
-// shows no failure, so it does not reopen what an earlier head settled. A
-// not_met answer, a new criterion, or another verdict stands.
-func keepEarlier(g, prev *GoalCheck) *GoalCheck {
-	if g == nil || prev == nil || g.Digest != prev.Digest {
-		return g
-	}
-	out := *g
-	out.Criteria = slices.Clone(g.Criteria)
-	was := map[int]string{}
-	for _, c := range prev.Criteria {
-		was[c.Criterion] = c.Verdict
-	}
-	for i, c := range out.Criteria {
-		if v := was[c.Criterion]; c.Verdict == goalUnclear && settled(v) {
-			out.Criteria[i].Verdict = v
-		}
-	}
-	if out.Overall == goalUnclear && settled(prev.Overall) {
-		out.Overall = prev.Overall
 	}
 	return &out
 }
@@ -1039,6 +1015,7 @@ func (e *Engine) goalCall(ctx context.Context, b *Binding, pr github.PullRequest
 			why = "answer"
 			break
 		}
+		g.AuditID = auditID(msg.MessageID, t.ID)
 		l.InfoContext(ctx, "goal check answered", "task", t.ID, "criteria", len(a.Criteria))
 		return g
 	}

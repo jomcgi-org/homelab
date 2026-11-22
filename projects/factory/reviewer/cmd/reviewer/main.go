@@ -235,7 +235,7 @@ func run(log *slog.Logger) error {
 	if cfg.GoalReasonsAddr != "" {
 		// Apart from /metrics: the network policy admits only the connector.
 		internal := http.NewServeMux()
-		internal.Handle(review.GoalReasonsPath, review.GoalReasonsHandler(audit))
+		internal.Handle(review.GoalReasonsPath, review.GoalReasonsHandler(eng))
 		internal.HandleFunc("GET "+review.QueuePath, eng.ServeQueue)
 		goal := &http.Server{Addr: cfg.GoalReasonsAddr, Handler: internal, ReadHeaderTimeout: 5 * time.Second}
 		go func() {

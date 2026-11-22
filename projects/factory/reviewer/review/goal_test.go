@@ -671,7 +671,7 @@ func TestGoalCheckPublishesOnlyServiceWording(t *testing.T) {
 			t.Fatal("the goal message ID carries an unkeyed hash of the issue text")
 		}
 	}
-	private, ok, _ := h.cfg.GoalAudit.(*FileGoalAudit).Reasons(h.cfg.Bindings[0].repo(), 7, shaA)
+	private, ok, _ := e.Reasons(ctx, h.cfg.Bindings[0].repo(), 7, shaA)
 	if !ok || !strings.Contains(private.Reasons, "Criterion 3: Searched manifest.yaml; missing PRIVATE-THREE image digest.") || len(private.Findings) != 1 || private.Findings[0] != "Criterion 2: PRIVATE-TWO is missing." {
 		t.Fatalf("private feedback = %+v", private)
 	}
