@@ -301,11 +301,15 @@ def test_microvm_assets_come_from_pinned_official_releases() -> None:
     assert all("sha256" in a for a in assets.values())
 
 
-def test_microvm_asset_job_is_a_postsync_hook_with_pinned_images() -> None:
-    job = _microvm_job(_docs())
+def test_microvm_asset_job_is_a_wave_1_sync_hook_with_pinned_images() -> None:
+    docs = _docs()
+    job = _microvm_job(docs)
     annotations = job["metadata"]["annotations"]
-    assert annotations["argocd.argoproj.io/hook"] == "PostSync"
+    assert annotations["argocd.argoproj.io/hook"] == "Sync"
     assert annotations["argocd.argoproj.io/hook-delete-policy"] == "BeforeHookCreation"
+    # After the bucket Job (wave 0), before the one-off Jobs that use its CLI.
+    bucket = _one(docs, "Job", "rustfs-bucket-init")
+    assert _wave(bucket) < _wave(job) < _wave(_spike_job(docs))
     for container in _containers(job):
         assert "@sha256:" in container["image"], container["name"]
         assert not container["image"].endswith(":latest")
@@ -420,3 +424,267 @@ def test_microvm_spike_namespace_allows_only_the_router_and_the_gateway() -> Non
     ]
     for rule in (ingress, egress):
         assert rule["toPorts"] == [{"ports": [{"port": "8443", "protocol": "TCP"}]}]
+
+
+_SPIKE = _HERE / "microvm-actor-spike" / "spike.py"
+_BOOTSTRAP_OWNERS = (
+    "--authz-bootstrap-owners=system:serviceaccount:ate-system:ate-client,"
+    "spiffe://cluster.local/ns/kagent/sa/kagent-controller"
+)
+
+
+def _spike_job(docs: list[dict]) -> dict:
+    return _one(docs, "Job", "microvm-actor-spike-1")
+
+
+def test_spike_job_runs_as_ate_client_with_the_api_audience_token() -> None:
+    docs = _docs()
+    job = _spike_job(docs)
+    pod = job["spec"]["template"]["spec"]
+    assert job["metadata"]["namespace"] == "ate-system"
+    assert pod["serviceAccountName"] == "ate-client"
+    # One-off: ArgoCD creates it once. It is not a hook that reruns each sync.
+    assert "argocd.argoproj.io/hook" not in job["metadata"]["annotations"]
+    assert job["spec"]["backoffLimit"] == 0
+    assert job["spec"]["activeDeadlineSeconds"] <= 3600
+    (token,) = [v for v in pod["volumes"] if v["name"] == "ate-token"]
+    (source,) = token["projected"]["sources"]
+    audiences = yaml.safe_load(
+        _one(docs, "ConfigMap", "ate-api-authentication")["data"]["authentication.yaml"]
+    )["jwtProviders"][0]["audiences"]
+    assert [source["serviceAccountToken"]["audience"]] == audiences
+    # The Kubernetes API token is mounted only for the ClusterTrustBundle list.
+    assert pod["automountServiceAccountToken"] is True
+    # The container that runs the CLI holds no credential in its env.
+    (spike,) = job["spec"]["template"]["spec"]["containers"]
+    assert "envFrom" not in spike
+    assert all("valueFrom" not in e for e in spike["env"])
+    assert not [
+        e for e in spike["env"] if "TOKEN" in e["name"] or "SECRET" in e["name"]
+    ]
+    assert "hostNetwork" not in pod
+
+
+def test_spike_job_grants_nothing_new() -> None:
+    docs = _docs()
+    server = _one(docs, "Deployment", "ate-api-server")
+    args = server["spec"]["template"]["spec"]["containers"][0]["args"]
+    assert _BOOTSTRAP_OWNERS in args
+    for doc in docs:
+        if doc["kind"] in ("RoleBinding", "ClusterRoleBinding"):
+            assert "ate-client" not in json.dumps(doc.get("subjects", [])), doc[
+                "metadata"
+            ]["name"]
+
+
+def test_spike_job_is_bounded_pinned_and_locked_down() -> None:
+    job = _spike_job(_docs())
+    pod = job["spec"]["template"]["spec"]
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    assert pod["securityContext"]["seccompProfile"] == {"type": "RuntimeDefault"}
+    for container in _containers(job):
+        name = container["name"]
+        assert "@sha256:" in container["image"], name
+        limits = container["resources"]["limits"]
+        assert "memory" in limits and "ephemeral-storage" in limits, name
+        assert container["resources"]["requests"]["ephemeral-storage"], name
+        context = container["securityContext"]
+        assert context["allowPrivilegeEscalation"] is False, name
+        assert context["capabilities"] == {"drop": ["ALL"]}, name
+    for volume in pod["volumes"]:
+        if "emptyDir" in volume:
+            assert "sizeLimit" in volume["emptyDir"], volume["name"]
+
+
+def test_spike_job_runs_the_pinned_cli_staged_in_rustfs() -> None:
+    docs = _docs()
+    job = _spike_job(docs)
+    tool = _ASSETS["tools"]["kubectl-ate"]
+    assert tool["url"].startswith(
+        "https://github.com/kagent-dev/substrate/releases/download/v1.0.1/"
+    )
+    (fetch,) = job["spec"]["template"]["spec"]["initContainers"]
+    env = {e["name"]: e.get("value") for e in fetch["env"]}
+    assert env["BUCKET"] == _ASSETS["bucket"]
+    assert (
+        env["OBJECT_KEY"] == f"{_ASSETS['prefix']}/{_ASSETS['arch']}/{tool['sha256']}"
+    )
+    # The assets Job stages the CLI beside the sandbox assets.
+    config = _one(docs, "ConfigMap", _generated(docs, "microvm-assets"))
+    assert json.loads(config["data"]["assets.json"])["tools"] == _ASSETS["tools"]
+
+
+def _generated(docs: list[dict], prefix: str) -> str:
+    (name,) = [
+        d["metadata"]["name"]
+        for d in docs
+        if d["kind"] == "ConfigMap"
+        and d["metadata"]["name"].startswith(prefix + "-")
+        and not d["metadata"]["name"].startswith(prefix + "-actor")
+        and d["metadata"]["name"].count("-") == prefix.count("-") + 1
+    ]
+    return name
+
+
+def test_spike_job_mounts_its_script_and_the_template_it_deletes() -> None:
+    docs = _docs()
+    job = _spike_job(docs)
+    pod = job["spec"]["template"]["spec"]
+    (config,) = [v for v in pod["volumes"] if v["name"] == "config"]
+    data = _one(docs, "ConfigMap", config["configMap"]["name"])["data"]
+    assert set(data) == {"spike.py", "template.yaml"}
+    template = yaml.safe_load(data["template.yaml"])
+    assert template["metadata"] == {"atespace": "microvm-spike", "name": "nginx"}
+    assert template["workerSelector"]["matchLabels"] == {"workload": "microvm-spike"}
+    assert template["resources"]["limits"]["memoryBytes"] == 256 * 1024 * 1024
+    assert template["snapshotConfig"]["preferredFidelity"] == "SNAPSHOT_FIDELITY_MEMORY"
+    assert "@sha256:" in template["containers"][0]["image"]
+    # The template selects the spike pool.
+    pool = _one(docs, "WorkerPool", "microvm-spike")
+    assert pool["metadata"]["labels"] == template["workerSelector"]["matchLabels"]
+
+
+def test_spike_job_reaches_only_the_ate_api_the_kube_api_and_rustfs() -> None:
+    docs = _docs()
+    policy = _one(docs, "CiliumNetworkPolicy", "microvm-actor-spike")["spec"]
+    assert policy["endpointSelector"]["matchLabels"] == {"app": "microvm-actor-spike"}
+    assert "ingress" not in policy
+    kube, api, rustfs = policy["egress"]
+    assert kube["toEntities"] == ["kube-apiserver"]
+    assert kube["toPorts"] == [{"ports": [{"port": "6443", "protocol": "TCP"}]}]
+    assert api["toEndpoints"] == [{"matchLabels": {"app": "ate-api-server"}}]
+    assert api["toPorts"] == [{"ports": [{"port": "443", "protocol": "TCP"}]}]
+    assert rustfs["toEndpoints"] == [{"matchLabels": {"app": "rustfs"}}]
+    assert rustfs["toPorts"] == [{"ports": [{"port": "9000", "protocol": "TCP"}]}]
+    assert not any("toFQDNs" in rule or "toCIDR" in rule for rule in policy["egress"])
+    # The API admits this Job's pods, and no other pod in ate-system.
+    admit = _one(docs, "CiliumNetworkPolicy", "ate-api-server-microvm-actor-spike")
+    (ingress,) = admit["spec"]["ingress"]
+    assert ingress["fromEndpoints"] == [{"matchLabels": {"app": "microvm-actor-spike"}}]
+    assert ingress["toPorts"] == [{"ports": [{"port": "443", "protocol": "TCP"}]}]
+    (rustfs_in,) = _one(docs, "CiliumNetworkPolicy", "rustfs")["spec"]["ingress"]
+    (expression,) = rustfs_in["fromEndpoints"][0]["matchExpressions"]
+    assert "microvm-actor-spike" in expression["values"]
+
+
+# A kubectl-ate stand-in: the calls spike.py makes, over a state directory.
+_FAKE_CLI = """#!/bin/sh
+shift 4
+echo "$*" >> "$FAKE_STATE/calls"
+state() { cat "$FAKE_STATE/state" 2>/dev/null || echo SUSPENDED; }
+case "$*" in
+  "get workers --sandbox-class microvm -o json")
+    echo '[{"name":"w1","pool":"microvm-spike","state":"WORKER_STATE_ACTIVE"}]' ;;
+  "create atespace microvm-spike"|"create actor-template -f "*) echo created ;;
+  "get actor-template nginx -a microvm-spike -o json")
+    n=$(cat "$FAKE_STATE/golden" 2>/dev/null || echo 0); n=$((n+1))
+    echo $n > "$FAKE_STATE/golden"
+    if [ -n "$FAKE_GOLDEN_ERROR" ]; then
+      echo '{"status":{"goldenSnapshotStatus":{"errorMessage":"boom"}}}'
+    elif [ "$n" -ge 2 ]; then
+      echo '{"status":{"goldenSnapshotStatus":{"goldenTag":{"name":"g1"}}}}'
+    else echo '{"status":{}}'; fi ;;
+  "create actor spike-1 -a microvm-spike --template nginx")
+    echo SUSPENDED > "$FAKE_STATE/state"; echo created ;;
+  "resume actor spike-1 -a microvm-spike") echo RUNNING > "$FAKE_STATE/state"; echo ok ;;
+  "suspend actor spike-1 -a microvm-spike --mode sync")
+    echo SUSPENDED > "$FAKE_STATE/state"; echo ok ;;
+  "get actor spike-1 -a microvm-spike -o json")
+    printf '{"status":{"state":"ACTOR_STATE_%s"}}\n' "$(state)" ;;
+  delete*) echo deleted ;;
+  *) echo "unexpected: $*" >&2; exit 2 ;;
+esac
+"""
+
+
+def _run_spike(tmp_path: Path, monkeypatch, golden_error: bool = False):
+    import hashlib
+    import importlib.util
+
+    cli = tmp_path / "kubectl-ate"
+    cli.write_text(_FAKE_CLI)
+    cli.chmod(0o755)
+    config = tmp_path / "assets.json"
+    config.write_text(
+        json.dumps(
+            {
+                "tools": {
+                    "kubectl-ate": {
+                        "sha256": hashlib.sha256(cli.read_bytes()).hexdigest()
+                    }
+                }
+            }
+        )
+    )
+    state = tmp_path / "state"
+    state.mkdir()
+    for key, value in {
+        "ATE_BIN": cli,
+        "ASSETS_CONFIG": config,
+        "TEMPLATE_FILE": tmp_path / "template.yaml",
+        "FAKE_STATE": state,
+        "HOLD_SECONDS": "0",
+        "POLL_SECONDS": "0.01",
+    }.items():
+        monkeypatch.setenv(key, str(value))
+    if golden_error:
+        monkeypatch.setenv("FAKE_GOLDEN_ERROR", "1")
+    spec = importlib.util.spec_from_file_location("spike", _SPIKE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module, (state / "calls")
+
+
+def test_spike_script_times_each_phase_and_cleans_up(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    module, calls = _run_spike(tmp_path, monkeypatch)
+    assert module.main() == 0
+    out = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("SPIKE ")
+    ]
+    phases = [line.split("phase=")[1].split()[0] for line in out if "phase=" in line]
+    assert phases == [
+        "worker_wait",
+        "golden_build",
+        "create_actor",
+        "first_start_call",
+        "first_start",
+        "suspend",
+        "restore_call",
+        "restore",
+    ]
+    assert [
+        line
+        for line in out
+        if "event=hold" in line and "name=idle_after_restore" in line
+    ]
+    summary = out[-1]
+    assert "event=summary result=ok" in summary or " result=ok " in summary
+    for phase in ("golden_build", "first_start", "suspend", "restore"):
+        assert f"{phase}=" in summary
+    seen = calls.read_text().splitlines()
+    # Cleaned before and after the run, in dependency order.
+    deletes = [c for c in seen if c.startswith("delete")]
+    assert (
+        deletes
+        == [
+            "delete actor spike-1 -a microvm-spike",
+            "delete actor-template nginx -a microvm-spike",
+            "delete atespace microvm-spike",
+        ]
+        * 2
+    )
+
+
+def test_spike_script_cleans_up_and_fails_when_the_golden_build_fails(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    module, calls = _run_spike(tmp_path, monkeypatch, golden_error=True)
+    assert module.main() == 1
+    out = capsys.readouterr().out
+    assert "result=fail" in out and "golden build failed: boom" in out
+    assert "create actor spike-1" not in calls.read_text()
+    assert calls.read_text().splitlines()[-1] == "delete atespace microvm-spike"

@@ -2,9 +2,10 @@ load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 # gazelle:python_generation_mode file
-# The Job's script and pins run in a container, not under Bazel; the test reads
+# The Jobs' scripts and pins run in containers, not under Bazel; the test reads
 # them through the glob below.
 # gazelle:exclude microvm-assets
+# gazelle:exclude microvm-actor-spike
 
 exports_files(
     ["network-policy.yaml"],
@@ -33,6 +34,7 @@ py_test(
     data = glob([
         "*.yaml",
         "egress-scan/*.yaml",
+        "microvm-actor-spike/*",
         "microvm-assets/*",
         "patches/*.yaml",
         "upstream/**",

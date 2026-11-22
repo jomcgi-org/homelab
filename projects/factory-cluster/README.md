@@ -506,9 +506,9 @@ snapshot prefix: `cloud-hypervisor`, `virtiofsd`, `kata-kernel` and
 `kata-image`. Their sha256 values are in
 `projects/platform-factory/substrate/resources/sandboxconfig-microvm.yaml` and
 `microvm-assets/assets.json`, and match upstream's template at the rendered
-release. PostSync Job `microvm-assets-init` downloads each missing asset from
-the official release, checks its sha256 and uploads it; a sync that finds all
-four keys downloads nothing. To bump a version, add a SandboxConfig version
+release. Sync hook `microvm-assets-init` (wave 1) downloads each missing asset
+and the `kubectl-ate` CLI from the official releases, checks each sha256 and
+uploads it; a sync that finds every key downloads nothing. To bump a version, add a SandboxConfig version
 (keep the old one for restores), update `assets.json` and sync.
 
 ```bash
@@ -520,6 +520,28 @@ kubectl -n substrate-microvm-spike get workerpool,pods -o wide # Ready on a KVM 
 
 Delete the WorkerPool and the namespace by hand to remove the spike; the
 namespace patch in `resources/kustomization.yaml` stops ArgoCD pruning it.
+
+#### Actor smoke test
+
+`microvm-actor-spike.yaml` is a one-off Job (wave 2) that runs as
+`ate-system/ate-client`, an owner the ate API already authorizes, so no one
+gets a new grant. It authenticates with a projected token for the audience
+`api.ate-system.svc` and drives `kubectl-ate` (v1.0.1, staged in rustfs): it
+waits for a `microvm-spike` worker, builds the golden snapshot of an nginx
+template (256Mi guest), starts an actor, suspends it and restores it, then
+deletes all of it. Each phase is timed, and two `hold` windows (90 s) are for
+sampling the worker pod's memory from outside:
+
+```bash
+kubectl -n ate-system logs -f job/microvm-actor-spike-1 | grep '^SPIKE '
+kubectl -n substrate-microvm-spike top pod      # during each hold line
+```
+
+The log holds `worker_wait`, `golden_build`, `create_actor`, `first_start`,
+`suspend` and `restore` in seconds, and a `summary` line with `result=ok`. It
+sends the actor no request: that needs a router certificate this account lacks.
+To run again, change the run suffix in the Job's name; to remove the test, read
+the log, then delete the Job file and its kustomization entries.
 
 ## Observability
 

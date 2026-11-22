@@ -307,7 +307,7 @@ spec:
               protocol: TCP
 ---
 # The snapshot store: reached by the objectstore-plugin sidecars and the
-# bucket and microVM asset Jobs; it reaches nothing.
+# bucket, microVM asset and actor spike Jobs; it reaches nothing.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -327,6 +327,7 @@ spec:
                 - atelet
                 - rustfs-bucket-init
                 - microvm-assets-init
+                - microvm-actor-spike
       toPorts:
         - ports:
             - port: "9000"
