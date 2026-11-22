@@ -4,10 +4,9 @@ description: "1Password Connect and the 1Password Operator, the cluster secret b
 type: application
 version: 0.1.0
 appVersion: "1.8.1"
-dependencies:
-  - name: connect
-    repository: https://1password.github.io/connect-helm-charts/
-    version: "2.0.5"
+# The connect subchart is the upstream 1Password Connect chart 2.0.5,
+# vendored in charts/connect/ with connect.patch applied (HOME-287).
+# vendor-connect.sh pulls and patches it again.
 annotations:
   org.opencontainers.image.source: "https://github.com/jomcgi-org/homelab"
   org.opencontainers.image.url: "https://github.com/jomcgi-org/homelab"
