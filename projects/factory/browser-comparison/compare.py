@@ -109,7 +109,7 @@ def interrupt(signum, frame):
     raise Interrupted(signum)
 
 
-# invariant: FACT-14
+# invariant: FACT-BROWSER-1
 def trial(arm, mode, browser, url):
     with tempfile.TemporaryDirectory(dir="/tmp") as work:
         os.chdir(work)
