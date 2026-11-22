@@ -82,7 +82,9 @@ records; retain their IDs and comments. Do not file replacements.
 Every model job uses a separate `homelab-planner` identity and fresh,
 repository-bound session. It gets read-only repository access, no push, no
 coding-agent key, no itsaplan tools and no column moves. It returns only
-`{title, body, evidence links, fingerprint, priority}` proposals. The
+`{title, body, evidence links, fingerprint, priority}` proposals. A body
+never lists an approval or the human gate as an acceptance check; the
+human-gate hold covers them ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-759#comment-10159)). The
 connector validates each one and files it at or below its schedule's
 ceiling: delegated fix, Joe task or Backlog
 ([decision](https://github.com/jomcgi-org/homelab/issues/7935#issuecomment-6891325789)). Identity and
