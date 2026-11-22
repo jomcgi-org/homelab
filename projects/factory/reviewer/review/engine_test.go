@@ -2787,7 +2787,7 @@ func TestWeakeningInvariantFileRequiresApprovalOnHead(t *testing.T) {
 			h.gh.mu.Lock()
 			h.gh.headFiles = map[string]string{shaA + ":" + file: "invariants: []\n"}
 			h.gh.mu.Unlock()
-			h.gh.addPR(&fakePR{Number: 7, Head: shaA, Author: "jomcgi-factory[bot]", Files: []github.PullRequestFile{{Path: file, Status: "modified", Additions: 1}}})
+			h.gh.addPR(&fakePR{Number: 7, Head: shaA, Author: "jomcgi-factory[bot]", Files: []github.PullRequestFile{{Path: file, Status: "modified", Additions: 1, Deletions: 3}}})
 			h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
 			h.gh.review(7, "jomcgi", "APPROVED", "older-head", "Reviewed a prior revision.")
 			e, ctx, _ := h.start()
@@ -2808,6 +2808,32 @@ func TestWeakeningInvariantFileRequiresApprovalOnHead(t *testing.T) {
 				t.Fatal("approved invariant-only edit did not enqueue")
 			}
 		})
+	}
+}
+
+// HOME-755 criterion 1: adding an invariant gets normal review, not the gate.
+func TestAddingInvariantGetsNormalReview(t *testing.T) {
+	const file = "projects/example/INVARIANTS.yaml"
+	const base = "invariants:\n- id: X-1\n  statement: Kept.\n"
+	const head = base + "- id: X-2\n  statement: Added.\n  mechanism: [projects/example/a.go]\n"
+	h := newHarness(t)
+	h.cfg.Bindings[0].HumanGatePaths = nil
+	h.cfg.Bindings[0].EnqueueAuthors = []string{"jomcgi-factory[bot]"}
+	h.gh.setBaseFile(file, base)
+	h.gh.mu.Lock()
+	h.gh.headFiles = map[string]string{shaA + ":" + file: head}
+	h.gh.mu.Unlock()
+	h.gh.addPR(&fakePR{Number: 7, Head: shaA, Author: "jomcgi-factory[bot]", Files: []github.PullRequestFile{
+		{Path: file, Status: "modified", Additions: 3},
+		{Path: "projects/example/a.go", Status: "modified", Additions: 1},
+	}})
+	h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
+	e, ctx, _ := h.start()
+	completeReview(t, h, runReview(t, h, e, ctx, 7, shaA), shaA, "review of an added invariant")
+	c := h.gh.check(shaA)
+	st, _ := LoadState(c.Text)
+	if c.Conclusion != ConclusionSuccess || st.Gate.Needed() {
+		t.Fatalf("an added invariant was held: %s %+v", c.Conclusion, st.Gate)
 	}
 }
 

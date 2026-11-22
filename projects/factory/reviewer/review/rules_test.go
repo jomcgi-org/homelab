@@ -477,6 +477,7 @@ func TestInvariantGateOnlyForWeakening(t *testing.T) {
 	for name, tc := range map[string]struct {
 		head  map[string]string
 		files []github.PullRequestFile
+		raw   bool // keep the file's counts as given
 		gated string
 	}{
 		"mechanism file edit": {
@@ -520,12 +521,25 @@ func TestInvariantGateOnlyForWeakening(t *testing.T) {
 		"renamed file": {
 			head:  map[string]string{"moved/INVARIANTS.yaml": baseInvariants},
 			files: []github.PullRequestFile{{Status: "renamed", Path: "moved/INVARIANTS.yaml", PreviousPath: "policy/INVARIANTS.yaml"}},
-			gated: "policy/INVARIANTS.yaml",
+			gated: "moved/INVARIANTS.yaml,policy/INVARIANTS.yaml",
 		},
 		"unparsable head": {
 			head:  map[string]string{"policy/INVARIANTS.yaml": "invariants: ["},
 			files: []github.PullRequestFile{{Status: "modified", Path: "policy/INVARIANTS.yaml"}},
 			gated: "policy/INVARIANTS.yaml",
+		},
+		"symlink to identical policy": {
+			// The Contents API follows the link and returns the target's text.
+			head:  map[string]string{"policy/INVARIANTS.yaml": baseInvariants},
+			files: []github.PullRequestFile{{Status: "modified", Path: "policy/INVARIANTS.yaml", Additions: 1, Deletions: 6}},
+			raw:   true,
+			gated: "policy/INVARIANTS.yaml",
+		},
+		"added symlink file": {
+			head:  map[string]string{"new/INVARIANTS.yaml": baseInvariants},
+			files: []github.PullRequestFile{{Status: "added", Path: "new/INVARIANTS.yaml", Additions: 1}},
+			raw:   true,
+			gated: "new/INVARIANTS.yaml",
 		},
 		"duplicate id": {
 			head:  map[string]string{"policy/INVARIANTS.yaml": baseInvariants + "- id: X-1\n  statement: Other.\n"},
@@ -535,6 +549,11 @@ func TestInvariantGateOnlyForWeakening(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			gh := &headRules{baseRules: baseRules{head: "base-commit", files: map[string]string{"policy/INVARIANTS.yaml": baseInvariants}}, headFiles: tc.head}
+			if !tc.raw {
+				for i, f := range tc.files {
+					tc.files[i].Additions, tc.files[i].Deletions = diffCounts(gh.files[f.Path], tc.head[f.Path])
+				}
+			}
 			policy, err := loadInvariantPolicy(context.Background(), gh, testRepo, gh.head)
 			if err != nil {
 				t.Fatal(err)
@@ -553,6 +572,32 @@ func TestInvariantGateOnlyForWeakening(t *testing.T) {
 			}
 		})
 	}
+}
+
+// diffCounts returns a line diff's additions and deletions, as GitHub reports
+// them for a regular file.
+func diffCounts(base, head string) (int, int) {
+	split := func(s string) []string {
+		if s == "" {
+			return nil
+		}
+		return strings.Split(strings.TrimSuffix(s, "\n"), "\n")
+	}
+	a, b := split(base), split(head)
+	lcs := make([][]int, len(a)+1)
+	for i := range lcs {
+		lcs[i] = make([]int, len(b)+1)
+	}
+	for i := len(a) - 1; i >= 0; i-- {
+		for j := len(b) - 1; j >= 0; j-- {
+			if a[i] == b[j] {
+				lcs[i][j] = lcs[i+1][j+1] + 1
+			} else {
+				lcs[i][j] = max(lcs[i+1][j], lcs[i][j+1])
+			}
+		}
+	}
+	return len(b) - lcs[0][0], len(a) - lcs[0][0]
 }
 
 func TestInvariantPolicyRejectsMalformedBase(t *testing.T) {
