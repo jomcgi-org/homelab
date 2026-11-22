@@ -1,4 +1,4 @@
-# invariant: PLAT-14
+# invariant: PLAT-15
 # k3s add-ons and Cilium's in-cluster components in kube-system.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy

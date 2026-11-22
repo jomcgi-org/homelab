@@ -1,5 +1,5 @@
 {{- /* invariant: FACT-6 */ -}}
-{{- /* invariant: PLAT-14 */ -}}
+{{- /* invariant: PLAT-15 */ -}}
 {{- if and (include "factory.kagentInstall" .) .Values.networkPolicy.cilium }}
 {{- /*
 The kagent namespace's allowlist under the cluster-wide default-deny
