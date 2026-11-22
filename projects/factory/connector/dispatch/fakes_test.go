@@ -718,7 +718,7 @@ func (k *fakeKagent) accept(agent kagent.AgentRef, msg kagent.Message) (*kagent.
 		k.nctx++
 		ctxID = fmt.Sprintf("ctx-%d", k.nctx)
 		k.contexts[ctxID] = agent
-		k.sessions[ctxID] = &kagent.Session{ID: ctxID, ContextID: ctxID, Creator: k.identity.PrincipalID(), State: kagent.RuntimeReady}
+		k.sessions[ctxID] = &kagent.Session{ID: ctxID, ContextID: ctxID, AgentNamespace: agent.Namespace, AgentName: agent.Name, Creator: k.identity.PrincipalID(), State: kagent.RuntimeReady}
 	} else {
 		owner, ok := k.contexts[msg.ContextID]
 		if !ok || owner != agent {

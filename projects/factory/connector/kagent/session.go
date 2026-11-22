@@ -1,4 +1,4 @@
-// invariant: FACT-17
+// invariant: FACT-18
 package kagent
 
 import (
