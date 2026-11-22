@@ -70,12 +70,14 @@ spec:
   template:
     serviceAccountName: microvm-worker
     # The worker's limit is the per-actor ceiling; the guest's own memory
-    # comes from the ActorTemplate. Memory is not compressible, so the
-    # request matches the limit.
+    # comes from the ActorTemplate. The request is a scheduling reservation
+    # only: on 2026-11-22 the nodes had 509Mi, 257Mi and 13Mi of memory left
+    # to request (usage was about half of allocatable), so a 1Gi request left
+    # the pod Pending. A burst above the request uses free node memory.
     resources:
       limits:
         cpu: "1"
         memory: 1Gi
       requests:
         cpu: 250m
-        memory: 1Gi
+        memory: 256Mi
