@@ -1,4 +1,4 @@
-{{- /* invariant: PLAT-15 */ -}}
+{{- /* invariant: PLAT-16 */ -}}
 {{- if eq .Values.workloadKind "CronJob" }}
 {{- $jobs := dict "renovate" .Values }}
 {{- if (.Values.githubApp | default dict).enabled }}
