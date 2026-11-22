@@ -623,6 +623,9 @@
           "type": "string",
           "pattern": "^[^\\s/]*$"
         },
+        "reuseUnchangedTree": {
+          "type": "boolean"
+        },
         "harnessImage": {
           "type": "string",
           "pattern": "^(|[^\\s@]+@sha256:[0-9a-f]{64})$"

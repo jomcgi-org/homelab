@@ -1207,6 +1207,9 @@ type State struct {
 	// IssuesPending revokes that report until a fresh review can run.
 	IssueDigest   string `json:"issueDigest,omitempty"`
 	IssuesPending bool   `json:"issuesPending,omitempty"`
+	// Basis digests what the code review read besides the tree (reviewBasis).
+	// A head with the same tree and the same basis keeps this review.
+	Basis string `json:"basis,omitempty"`
 	// Goal caches the goal check for this head and IssueDigest's evidence.
 	Goal *GoalCheck `json:"goal,omitempty"`
 	// GoalKey lets recovery account for goal findings without private text.

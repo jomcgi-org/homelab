@@ -67,6 +67,8 @@ type GitHub interface {
 	PullRequestBodyProof(ctx context.Context, repo string, number int) (*github.BodyProof, error)
 	PullRequestComments(ctx context.Context, repo string, number int) ([]github.Comment, error)
 	CompareCommits(ctx context.Context, repo, base, head string) (*github.CommitComparison, error)
+	CommitTree(ctx context.Context, repo, sha string) (string, error)
+	MergeBase(ctx context.Context, repo, base, head string) (string, error)
 	Statuses(ctx context.Context, repo, sha string) ([]github.Status, error)
 	PullRequestQueue(ctx context.Context, repo string, number int) (*github.PullRequestQueue, error)
 	EnqueuePullRequest(ctx context.Context, repo, nodeID, headSHA string) (string, error)
@@ -251,6 +253,9 @@ type Config struct {
 	// comment on each PR showing its review; either unset posts none.
 	Comments      Comments
 	CommentAuthor string
+	// ReuseUnchangedTree keeps the earlier reviewed head's code review for a
+	// head with the same tree (reuse.go), instead of starting a new task.
+	ReuseUnchangedTree bool
 	// Sessions reads kagent sessions, so a later head's review can resume
 	// the session that reviewed the previous head; nil starts every review
 	// in a fresh session.
@@ -1812,6 +1817,11 @@ type inputs struct {
 	// decisionComment is the highest approver comment ID that message put
 	// in the prompt.
 	decisionComment int64
+	// reuse is the earlier head's code review this head keeps, when it does
+	// (reuse.go). basis digests what the review read besides the tree
+	// (reviewBasis), set once the message is built or reuse is decided.
+	reuse *reuse
+	basis string
 }
 
 // review drives one head's review to a completed check run. It makes at
@@ -1857,12 +1867,13 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 		}
 	}
 	var (
-		in       *inputs
-		msg      *kagent.Message
-		pinBound string
-		sends    int
-		lastSend time.Time
-		refused  = rec.QuotaRetry > 0
+		in         *inputs
+		msg        *kagent.Message
+		pinBound   string
+		sends      int
+		lastSend   time.Time
+		refused    = rec.QuotaRetry > 0
+		reuseTried bool
 	)
 	// endFinished records a finished task's report on the code span before
 	// an exit that does not assess it, such as a failed PR read.
@@ -1922,6 +1933,9 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 		ctx, code = startCode()
 		codeRecorded = false
 		rec, msg, sends = recorded{Attempt: attempt}, nil, 0
+		if in != nil {
+			in.reuse = nil // A retry reviews the head in full.
+		}
 		e.recordProgress(ctx, b, run, gate, rec, note, l)
 		e.sleep(ctx, e.cfg.RetryBackoff)
 		began = e.cfg.Now()
@@ -2053,7 +2067,28 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				continue
 			}
 		}
-		if rec.ID == "" {
+		if rec.ID == "" && in.reuse == nil && !reuseTried {
+			// Only a head's first attempt may keep the earlier code review.
+			reuseTried = true
+			if attempt == 1 && e.cfg.ReuseUnchangedTree {
+				if why := e.reusable(ctx, b, pr, in, l); why != "" {
+					if why != notReusedNoPrior {
+						l.InfoContext(ctx, "the earlier code review is not reused", "reason", why, "previous_head", in.priorHead)
+					}
+				} else {
+					// The check binds to the evidence this head was assessed against.
+					if b.ItsaplanProject != "" {
+						rec.Issues = issueDigest(in.issues)
+					}
+					if in.semgrep != nil {
+						rec.Semgrep = in.semgrep.stamp().Digest
+					}
+					e.m.ReviewSessions.WithLabelValues(b.Name, PathReused, reasonUnchangedTree).Inc()
+					l.InfoContext(ctx, "reusing the earlier head's code review; no review task is sent", "previous_head", in.priorHead, "task", in.reuse.task.ID)
+				}
+			}
+		}
+		if rec.ID == "" && in.reuse == nil {
 			if e.waitForQuota(ctx, b, run, rec, l) {
 				codeExit = "quota_wait"
 				return
@@ -2139,7 +2174,13 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 			}
 			continue
 		}
-		t, err := e.tasks.GetTask(ctx, b.Agent, rec.ID)
+		var t *kagent.Task
+		var err error
+		if in.reuse != nil {
+			t = in.reuse.task // The earlier head's review stands in for a task.
+		} else {
+			t, err = e.tasks.GetTask(ctx, b.Agent, rec.ID)
+		}
 		if err == nil && e.cfg.TaskPins != nil && t != nil && t.ID == rec.ID &&
 			t.ID != pinBound && t.Status.State == kagent.StateWorking {
 			if id := recordedReviewMessage(b, pr, run.ID, rec, t); id != "" && e.bindReviewTask(ctx, b, id, t, l) {
@@ -2261,8 +2302,15 @@ func (e *Engine) review(ctx context.Context, b *Binding, pr github.PullRequest, 
 				}
 			}
 			if e.finish(parent, b, currentPR, run, res.o, l) {
-				e.observe(ctx, b, res.r, res.a, l)
-				e.observeSession(ctx, b, t, res.session, l)
+				if in.reuse != nil {
+					// No task ran: its findings and usage were counted with the review that made them.
+					if slices.ContainsFunc(res.a.Blocking, func(x Blocked) bool { return isGate(x.Finding) }) {
+						e.notifyGate(ctx, b, l, "the review")
+					}
+				} else {
+					e.observe(ctx, b, res.r, res.a, l)
+					e.observeSession(ctx, b, t, res.session, l)
+				}
 			}
 			return
 		case errors.Is(err, kagent.ErrTaskNotFound):
@@ -3207,6 +3255,7 @@ func (e *Engine) message(ctx context.Context, b *Binding, pr github.PullRequest,
 			in.promptVersions = append(in.promptVersions, DecisionStamp{ID: c.ID, Hash: bodyHash(c.Body), UpdatedAt: c.UpdatedAt})
 		}
 	}
+	in.basis = reviewBasis(b, pr, comments, rules)
 	cited := e.citedEvidence(ctx, b, pr, l)
 	interdiff, err := e.interdiff(ctx, b, pr, in, l)
 	if err != nil {
@@ -3376,11 +3425,17 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 	footer := e.footer(b, pr, task.ID)
 	switch task.Status.State {
 	case kagent.StateCompleted, kagent.StateInputRequired:
-		reply := ReplyText(task)
-		r, err := ParseReport(reply)
-		if err != nil {
-			l.WarnContext(ctx, "the review reply has no usable report", "task", task.ID, "error", err, "reply_bytes", len(reply))
-			return result{reason: "the reviewer's reply had no usable findings report: " + oneLine(err.Error(), maxTitle) + "."}
+		var r *Report
+		var err error
+		if in.reuse != nil {
+			r = in.reuse.report(in.prior)
+		} else {
+			reply := ReplyText(task)
+			r, err = ParseReport(reply)
+			if err != nil {
+				l.WarnContext(ctx, "the review reply has no usable report", "task", task.ID, "error", err, "reply_bytes", len(reply))
+				return result{reason: "the reviewer's reply had no usable findings report: " + oneLine(err.Error(), maxTitle) + "."}
+			}
 		}
 		restoreExposures(r, in.prior)
 		validateSuggestions(r, b, in)
@@ -3511,8 +3566,12 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 			st.PendingResolutions = e.postInline(ctx, b, pr, &a, in, r)
 		}
 		st.ReviewCap = capped
+		st.Basis = in.basis
 		o := render(a, r, gate, footer, &st)
 		session := sessionAfter(b, pr, in, task)
+		if in.reuse != nil {
+			session = reuseSession(in.prior.Session, pr)
+		}
 		o.Output.Text = withSession(o.Output.Text, session)
 		if stored, _ := LoadState(o.Output.Text); stored.Incomplete {
 			a.Incomplete = true
@@ -3527,6 +3586,9 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 		// Its identity may be absent from the bounded check output.
 		if !a.Incomplete && a.DroppedLow == 0 {
 			e.triageSemgrep(ctx, b, pr, in.semgrep, r, &o, a.Optional, a.Deferred)
+		}
+		if in.reuse != nil {
+			o.Output.Summary = clip(in.reuse.note(), maxPreface) + o.Output.Summary
 		}
 		if in.priorUnknown != "" {
 			// Render left maxPreface for this note, so the summary's tail

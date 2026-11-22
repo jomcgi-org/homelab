@@ -173,6 +173,8 @@ def test_deploy_values_enable_the_reviewer() -> None:
     assert deploy["reviewer"]["commentAuthor"] == "jomcgi-factory-review[bot]"
     # Revision rounds quote the goal check's private reasons (HOME-251).
     assert deploy["reviewer"]["goalReasons"]["enabled"] is True
+    # A head with an earlier reviewed head's tree keeps that review.
+    assert deploy["reviewer"]["reuseUnchangedTree"] is True
     assert deploy["connector"]["bindings"]["homelab"]["reviewerCheck"] == {
         "name": "factory review",
         "appId": 5758326,
@@ -204,6 +206,16 @@ def test_comments_are_off_unless_an_author_is_set() -> None:
     assert broker["commentAuthor"] == bot
     assert "commentPermissions" not in broker
     assert "connectorPermissions" not in broker
+
+
+def test_unchanged_tree_reuse_is_off_unless_set() -> None:
+    # The chart default sends every head to a full review; the deploy values
+    # turn reuse on, and the reviewer reads it from its config.
+    values = yaml.safe_load((_CHART / "values.yaml").read_text())
+    assert values["reviewer"]["reuseUnchangedTree"] is False
+    off = _render(["reviewer.reuseUnchangedTree=false"])
+    assert "reuseUnchangedTree" not in _config(off, "factory-reviewer")
+    assert _config(_render(), "factory-reviewer")["reuseUnchangedTree"] is True
 
 
 def test_one_kept_identity_and_private_image() -> None:

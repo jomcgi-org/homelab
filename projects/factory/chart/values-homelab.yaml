@@ -313,6 +313,12 @@ reviewer:
   # The reviewer keeps one comment on each PR it reviews (verdict and
   # findings), written with the broker's Issues-write comment token.
   commentAuthor: jomcgi-factory-review[bot]
+  # A head with the tree of the PR's last reviewed head, and unchanged review
+  # inputs, keeps that review and sends no code review task. Over 26 hours on
+  # 21-22 Nov the reviewer made 71% of the Codex calls (4,424 against 1,755
+  # for coders) and 63% of model time, because every new head got a full xhigh
+  # review (projects/factory/reviewer/review/reuse.go).
+  reuseUnchangedTree: true
   bindings:
     homelab:
       # Joe 2026-11-24: his own PRs pass without a model review (his sessions

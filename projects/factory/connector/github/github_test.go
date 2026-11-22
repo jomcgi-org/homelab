@@ -1749,3 +1749,39 @@ func TestMergedReviewHistoryPages(t *testing.T) {
 		t.Fatalf("runs=%d pages=%v err=%v", len(runs), pages, err)
 	}
 }
+
+func TestCommitTreeAndMergeBaseReadTheNamedCommits(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/example-org/homelab/git/commits/head":
+			_ = json.NewEncoder(w).Encode(map[string]any{"sha": "head", "tree": map[string]string{"sha": "tree-1"}})
+		case r.URL.Path == "/repos/example-org/homelab/git/commits/bare":
+			_ = json.NewEncoder(w).Encode(map[string]any{"sha": "bare"})
+		case r.URL.Path == "/repos/example-org/homelab/compare/main...head" && r.URL.Query().Get("per_page") == "1":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ahead", "merge_base_commit": map[string]string{"sha": "base-1"}})
+		case r.URL.Path == "/repos/example-org/homelab/compare/main...bare":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ahead"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+	ctx := context.Background()
+	if tree, err := c.CommitTree(ctx, "example-org/homelab", "head"); err != nil || tree != "tree-1" {
+		t.Fatalf("tree = %q, %v", tree, err)
+	}
+	if base, err := c.MergeBase(ctx, "example-org/homelab", "main", "head"); err != nil || base != "base-1" {
+		t.Fatalf("merge base = %q, %v", base, err)
+	}
+	// A missing commit is ErrNotFound; an answer without the field is an error, never an empty match.
+	if _, err := c.CommitTree(ctx, "example-org/homelab", "gone"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing commit error = %v", err)
+	}
+	if tree, err := c.CommitTree(ctx, "example-org/homelab", "bare"); err == nil {
+		t.Fatalf("tree without a SHA = %q", tree)
+	}
+	if base, err := c.MergeBase(ctx, "example-org/homelab", "main", "bare"); err == nil {
+		t.Fatalf("merge base without a SHA = %q", base)
+	}
+}

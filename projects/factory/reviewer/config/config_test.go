@@ -44,6 +44,12 @@ func TestParseAppliesDefaults(t *testing.T) {
 	if err != nil || c.CommentAuthor != "jomcgi-factory-review[bot]" {
 		t.Fatalf("comment author = %q, %v", c.CommentAuthor, err)
 	}
+	if c.ReuseUnchangedTree {
+		t.Fatal("reuse of an unchanged tree is on by default")
+	}
+	if on, err := Parse([]byte(sample + "reuseUnchangedTree: true\n")); err != nil || !on.ReuseUnchangedTree {
+		t.Fatalf("reuseUnchangedTree = %+v, %v", on.ReuseUnchangedTree, err)
+	}
 	iv := c.Intervals
 	if time.Duration(iv.Poll) != 30*time.Second || time.Duration(iv.TaskPoll) != 15*time.Second ||
 		time.Duration(iv.Reissue) != 15*time.Second || time.Duration(iv.Timeout) != 45*time.Minute ||

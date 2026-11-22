@@ -1011,6 +1011,43 @@ func (c *Client) CompareCommits(ctx context.Context, repo, base, head string) (*
 	return &CommitComparison{Status: out.Status, Files: out.Files, Truncated: len(out.Files) >= MaxCompareFiles, MergeBase: out.MergeBase.SHA}, nil
 }
 
+// CommitTree is the SHA of the git tree a commit holds. Two commits with the
+// same tree hold the same files, whatever their history. A commit GitHub no
+// longer has is ErrNotFound.
+func (c *Client) CommitTree(ctx context.Context, repo, sha string) (string, error) {
+	var out struct {
+		Tree struct {
+			SHA string `json:"sha"`
+		} `json:"tree"`
+	}
+	if err := c.do(ctx, repo, http.MethodGet, repoPath(repo)+"/git/commits/"+url.PathEscape(sha), nil, &out); err != nil {
+		return "", err
+	}
+	if out.Tree.SHA == "" {
+		return "", errors.New("github: commit without a tree")
+	}
+	return out.Tree.SHA, nil
+}
+
+// MergeBase is the commit where head leaves base's history: the point a
+// pull request's diff starts from. Two heads with one merge base and one
+// tree make the same diff. A commit GitHub no longer has is ErrNotFound.
+func (c *Client) MergeBase(ctx context.Context, repo, base, head string) (string, error) {
+	var out struct {
+		MergeBase struct {
+			SHA string `json:"sha"`
+		} `json:"merge_base_commit"`
+	}
+	path := repoPath(repo) + "/compare/" + url.PathEscape(base) + "..." + url.PathEscape(head) + "?per_page=1"
+	if err := c.do(ctx, repo, http.MethodGet, path, nil, &out); err != nil {
+		return "", err
+	}
+	if out.MergeBase.SHA == "" {
+		return "", errors.New("github: comparison without a merge base")
+	}
+	return out.MergeBase.SHA, nil
+}
+
 // CitedPullRequest is fixed-class evidence about a pull request another PR
 // cites: states, flags, times, commit IDs and account logins. It never holds
 // a title, body, branch name or other text an author chose.

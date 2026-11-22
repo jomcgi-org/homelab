@@ -104,8 +104,12 @@ type fakeGitHub struct {
 	headFiles map[string]string // ref:path -> file at an immutable PR head
 	// compares override the compare answer for "base...head".
 	compares map[string]map[string]any
-	queue    []github.MergeQueueEntry
-	queued   map[int]string // PR number -> merge queue state
+	// trees and mergeBases answer the tree and merge-base reads by commit;
+	// a commit with no entry is not found, so the reads fail closed.
+	trees      map[string]string
+	mergeBases map[string]string
+	queue      []github.MergeQueueEntry
+	queued     map[int]string // PR number -> merge queue state
 	// queueHead overrides the head the GraphQL PR read reports.
 	queueHead map[int]string
 	// cited answers the cited-PR read by number with a PullRequest's
@@ -116,6 +120,7 @@ type fakeGitHub struct {
 	calls       []string
 	gql         []string // GraphQL calls by kind
 	contentRefs []string // ref:path of each file read, tree:ref of each tree read
+	gitReads    []string // tree:sha of each commit tree read, base:sha of each merge-base read
 	notModified int
 	// refuseAnnotations answers a check run write with annotations 422.
 	refuseAnnotations bool
@@ -621,6 +626,24 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		http.NotFound(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/git/commits/"):
+		sha := strings.TrimPrefix(path, "/git/commits/")
+		f.gitReads = append(f.gitReads, "tree:"+sha)
+		tree, ok := f.trees[sha]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		f.get(w, r, map[string]any{"sha": sha, "tree": map[string]string{"sha": tree}})
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/compare/") && q.Get("per_page") == "1":
+		_, head, _ := strings.Cut(strings.TrimPrefix(path, "/compare/"), "...")
+		f.gitReads = append(f.gitReads, "base:"+head)
+		mb, ok := f.mergeBases[head]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		f.get(w, r, map[string]any{"status": "ahead", "merge_base_commit": map[string]string{"sha": mb}})
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/compare/"):
 		base, head, _ := strings.Cut(strings.TrimPrefix(path, "/compare/"), "...")
 		if c, ok := f.compares[base+"..."+head]; ok {

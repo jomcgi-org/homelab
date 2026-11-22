@@ -1222,6 +1222,31 @@ to that head. The exporters batch spans outside check and delivery processing.
   poll that discovers an older eligible fork head. `TestReattachmentsKeepOrderBeforeWaitingHeads`
   checks the order of resumed reviews before new starts.
 
+- **Unchanged-tree reuse.** With `reviewer.reuseUnchangedTree`, a head that
+  holds the git tree of the PR's last reviewed head sends no code review
+  task. It keeps that head's blocking findings and verdict
+  (`reviewer/review/reuse.go`). The reviewer compares commit trees and merge
+  bases through the GitHub API, and a digest of what the code review also
+  read: the binding and its runtime, the PR title and description, the
+  trusted comments and the rules. The saved State holds that digest as
+  `basis`. Anything that differs, is unreadable or is missing (a State from
+  before this change) gives the head a full review. So does an earlier
+  blocking finding that needs evidence or a hold, a commit message that
+  answers a finding or names an Activation, and a retry attempt. The
+  reviewer still checks again the goal check, the human gate and approval,
+  labels, the issue and Semgrep evidence, CI and Joe's decisions for the
+  head. A decision clears a finding only after the agent reads Joe's comment
+  and links it (REVIEW.md "Clearing a finding without a fix"), so a new or
+  edited trusted comment changes the digest and the head is reviewed in
+  full. A pass that rests on a decision carries to later reused heads, and
+  the decision is revalidated each poll. The check summary says that no
+  review task ran. `factory_reviewer_review_sessions_total{path="reused"}`
+  counts these heads. The effort of a review is set per kagent Agent by its
+  ModelConfig URL (`/effort/<level>`), so a smaller effort for a small
+  interdiff needs a second Agent and is not built.
+  ([Decision](PR_LINK): Joe chose cheaper re-reviews in his session on
+  2026-11-22, after the reviewer made 71% of Codex calls over 26 hours.)
+
 For issue-backed reviews, the service verifies the provenance of decision
 evidence. Only the goal assessment receives private issue text. Its public
 result uses fixed wording. The connector owns feedback to the delivery

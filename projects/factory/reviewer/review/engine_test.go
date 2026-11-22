@@ -2691,6 +2691,8 @@ func TestStoredFindingsSurviveTheCheckRun(t *testing.T) {
 	st.TaskID = "" // Assert the finding payload independently of its source.
 	failIf(t, st.InvariantBase == "", "stored state has no invariant base")
 	st.InvariantBase = ""
+	failIf(t, st.Basis == "", "stored state has no review basis")
+	st.Basis = ""
 	b, _ := json.Marshal(st)
 	if !ok || session == nil || string(b) != `{"optional_ids":["a.go#l1"],"round":1,"blocking":[{"id":"a.go#m1","severity":"medium","path":"a.go","title":"M1","detail":"Detail."}]}` {
 		t.Fatalf("stored = %s, %v, session %+v", b, ok, session)
