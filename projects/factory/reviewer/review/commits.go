@@ -50,6 +50,25 @@ func assessActivation(r *Report, head string, commits Commits) {
 	}
 }
 
+// headActivation is the head commit's pending Activation: step, or "" for
+// Activation: none, no trailer or unread commits. The goal check reads it as
+// untrusted staging evidence (HOME-757).
+func headActivation(head string, commits Commits) string {
+	if commits.Unread {
+		return ""
+	}
+	for _, c := range commits.List {
+		if c.SHA != head {
+			continue
+		}
+		if trailer, ok := github.ActivationTrailer(c.Commit.Message); ok && trailer != "none" {
+			return trailer
+		}
+		return ""
+	}
+	return ""
+}
+
 // splitOnlyMarker marks a check that failed only because the diff is over
 // the size budget, so no review task was sent. The connector counts the
 // round it starts against its separate split bound; the conclusion is the

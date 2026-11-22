@@ -3294,13 +3294,13 @@ func (e *Engine) outcome(ctx context.Context, code trace.Span, round int, b *Bin
 		code.End()
 		// Only a usable code review starts the goal check, which costs a
 		// second model call.
+		commits := e.commitMessages(ctx, b, pr, "", l)
 		key := goalKey(in.issues)
 		if key == "" {
 			in.goal = nil // The State keeps no answer for another issue.
 		} else {
-			in.goal = e.goalCheck(ctx, b, pr, round, in, r, l)
+			in.goal = e.goalCheck(ctx, b, pr, round, in, r, headActivation(pr.HeadSHA, commits), l)
 		}
-		commits := e.commitMessages(ctx, b, pr, "", l)
 		assessActivation(r, pr.HeadSHA, commits)
 		prior := in.prior.Previous()
 		if _, err := e.interdiff(ctx, b, pr, in, l); err != nil {

@@ -52,6 +52,7 @@ go_test(
         "convergence_test.go",
         "engine_test.go",
         "fakes_test.go",
+        "goal_activation_test.go",
         "goal_test.go",
         "goalapi_test.go",
         "invariant_ids_test.go",
