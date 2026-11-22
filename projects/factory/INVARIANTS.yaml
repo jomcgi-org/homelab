@@ -379,3 +379,9 @@ invariants:
   - projects/factory/discord/notification.go
   test: //projects/factory/discord:discord_test
   state: live
+- id: HOME-228-1
+  statement: The bridge posts a notification key at most once per channel and UTC day, across connector and bridge restarts.
+  mechanism:
+  - projects/factory/discord/notification.go
+  test: //projects/factory/discord:discord_test
+  state: live
