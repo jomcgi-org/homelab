@@ -1,1 +1,0 @@
-Joe's decision of 2026-11-22 (factory PR triage) on HOME-392: Decision: HOME-392 is limited to the precondition. Enabling the sync and the first live run move to HOME-784, which #8513 blocks. ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-392#comment-10442))
