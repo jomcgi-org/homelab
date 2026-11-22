@@ -1,3 +1,7 @@
+# The test target lists both sources; gazelle would add a binary for the
+# script's __main__ block with no main attribute.
+# gazelle:exclude check_image_digests.py
+
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 py_test(
