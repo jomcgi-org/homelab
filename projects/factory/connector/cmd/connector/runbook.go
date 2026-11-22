@@ -434,10 +434,7 @@ func runRevert(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	db, err := sql.Open("postgres", actorDB)
-	if err != nil {
-		return err
-	}
+	db := openActorDB()
 	defer db.Close()
 	if owner := os.Getenv("RUNBOOK_OWNER"); owner != "" {
 		source := &kagent.TokenSource{Path: "/var/run/secrets/kagent/token"}

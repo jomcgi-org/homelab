@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 go_library(
     name = "connector_lib",
     srcs = [
+        "atedb.go",
         "main.go",
         "reaper.go",
         "recovery.go",
@@ -27,6 +28,7 @@ go_library(
         "//projects/factory/connector/runbookadmission",
         "//projects/factory/connector/status",
         "//projects/factory/connector/store",
+        "@com_github_lib_pq//:pq",
         "@com_github_prometheus_client_golang//prometheus",
         "@com_github_prometheus_client_golang//prometheus/collectors",
         "@com_github_prometheus_client_golang//prometheus/promhttp",
@@ -49,6 +51,7 @@ go_binary(
 go_test(
     name = "connector_test",
     srcs = [
+        "atedb_test.go",
         "decision_test.go",
         "recovery_test.go",
         "runbook_test.go",
