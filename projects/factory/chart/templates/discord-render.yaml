@@ -1,4 +1,4 @@
-{{- /* invariant: FACT-13 */ -}}
+{{- /* invariant: FACT-15 */ -}}
 {{- if and .Values.discord.bridge.enabled .Values.networkPolicy.cilium }}
 {{- $image := .Values.discordRender.image }}
 {{- $name := "factory-discord-render" }}
@@ -14,7 +14,7 @@ spec:
   endpointSelector:
     matchLabels:
       app.kubernetes.io/name: {{ $name }}
-  # Deny takes precedence over cluster-wide DNS allowances (FACT-13).
+  # Deny takes precedence over cluster-wide DNS allowances (FACT-15).
   egressDeny:
     - toEntities: [all]
   ingress:
