@@ -287,6 +287,28 @@ scrape_configs:
       - source_labels: [__meta_kubernetes_pod_node_name]
         target_label: node
 
+  # The reviewer's metrics port (factory_reviewer_*), one series set per
+  # repository binding.
+  - job_name: factory-reviewer
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [factory]
+        selectors:
+          - role: pod
+            label: app.kubernetes.io/name=factory-reviewer
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_port_name, __meta_kubernetes_pod_container_port_number]
+        regex: metrics;9090
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+
   # Every CloudNativePG instance's exporter.
   - job_name: cnpg
     kubernetes_sd_configs:

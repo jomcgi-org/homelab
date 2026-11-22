@@ -1,7 +1,7 @@
 {{- if and .Values.reviewer.enabled .Values.networkPolicy.cilium }}
 {{- /* With reviewer.goalReasons, the connector alone reaches that port (HOME-251). */}}
-# No inbound connections yet: metrics use a port-forward, and kubelet health
-# probes are host traffic. DNS is allowed by the cluster's default policy.
+# Inbound: Prometheus scrapes the metrics port through the cluster-wide policy
+# prometheus-scrape-factory-reviewer. Kubelet health probes are host traffic. DNS is allowed by the cluster's default policy.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:

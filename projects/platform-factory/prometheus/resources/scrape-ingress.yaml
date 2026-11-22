@@ -64,6 +64,27 @@ spec:
             - port: "9090"
               protocol: TCP
 ---
+# The reviewer's metrics listener. Its goal reasons port has a separate policy
+# (projects/factory/chart/templates/reviewer-network-policy.yaml).
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: prometheus-scrape-factory-reviewer
+spec:
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: factory
+      app.kubernetes.io/name: factory-reviewer
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: prometheus
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "9090"
+              protocol: TCP
+---
 # The egress scanner's metrics listener. Its gRPC port has a separate policy.
 apiVersion: cilium.io/v2
 kind: CiliumClusterwideNetworkPolicy
