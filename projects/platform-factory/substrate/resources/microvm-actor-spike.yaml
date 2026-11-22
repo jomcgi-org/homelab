@@ -1,0 +1,205 @@
+# One-off actor smoke test for the microVM class: a worker, a golden build, a
+# first start, a suspend and a restore, each timed. It runs as ate-system/
+# ate-client, which the ate API already authorizes (ateApi.authorization
+# .bootstrapOwners in ../values/substrate.yaml), so nothing here grants anyone
+# anything. The log is the result: grep '^SPIKE ' (microvm-actor-spike/spike.py).
+#
+# A plain Job in wave 2, after microvm-assets-init (wave 1) has staged the CLI.
+# ArgoCD creates it once. A Job's pod template is immutable: to run again,
+# change the run suffix in the name. To remove the test, delete this file and
+# its kustomization entries after reading the log; ArgoCD then prunes the Job.
+#
+# The Job reaches the ate API (443), the Kubernetes API (kubectl-ate lists the
+# ClusterTrustBundles that verify the API's certificate, which every
+# ServiceAccount may do) and rustfs (the CLI). It reaches nothing else.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: microvm-actor-spike-1
+  namespace: ate-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  backoffLimit: 0
+  # The worker wait (1200 s) and the golden build (900 s) plus two holds.
+  activeDeadlineSeconds: 3000
+  template:
+    metadata:
+      labels:
+        app: microvm-actor-spike
+    spec:
+      serviceAccountName: ate-client
+      restartPolicy: Never
+      # The in-cluster Kubernetes config kubectl-ate needs for the
+      # ClusterTrustBundles. The ate API takes the audience token below.
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: fetch-cli
+          image: amazon/aws-cli:2.38.5@sha256:c8156a0e74e13929a42d7e60f0d4e14e7d28d980cd21822505d4bff80e5460c1
+          env:
+            - name: HOME
+              value: /tmp
+            - name: AWS_REGION
+              value: us-east-1
+            - name: AWS_ENDPOINT_URL
+              value: http://rustfs.ate-system.svc:9000
+            - name: BUCKET
+              value: ate-snapshots
+            - name: OBJECT_KEY
+              value: microvm-assets/amd64/455a3c465e9473575083cb54d5646eac0ba6f299f8e1b7e42077a3997c17afaa
+          envFrom:
+            - secretRef:
+                name: snapshot-store-credentials
+          # spike.py checks the sha256 before it runs the file.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              for i in $(seq 1 120); do
+                if aws s3api head-object --bucket "$BUCKET" --key "$OBJECT_KEY" >/dev/null 2>&1; then
+                  aws s3 cp --only-show-errors "s3://$BUCKET/$OBJECT_KEY" /work/kubectl-ate
+                  echo "kubectl-ate fetched"
+                  exit 0
+                fi
+                echo "waiting for the staged CLI ($i/120)"
+                sleep 10
+              done
+              echo "the CLI is not in the bucket"
+              exit 1
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+              ephemeral-storage: 256Mi
+            limits:
+              memory: 512Mi
+              ephemeral-storage: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: work
+              mountPath: /work
+      containers:
+        - name: spike
+          image: python:3.14.10-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f
+          command: [python3, -I, /config/spike.py]
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: HOME
+              value: /tmp
+            - name: WORKER_WAIT_SECONDS
+              value: "1200"
+            - name: HOLD_SECONDS
+              value: "90"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+              ephemeral-storage: 64Mi
+            limits:
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: work
+              mountPath: /work
+            - name: tmp
+              mountPath: /tmp
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: assets
+              mountPath: /assets
+              readOnly: true
+            - name: ate-token
+              mountPath: /var/run/ate
+              readOnly: true
+      volumes:
+        - name: work
+          emptyDir:
+            sizeLimit: 512Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: config
+          configMap:
+            name: microvm-actor-spike
+        - name: assets
+          configMap:
+            name: microvm-assets
+        # The ate API's JWT provider accepts this audience (api-server-config.yaml).
+        - name: ate-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: api.ate-system.svc
+                  expirationSeconds: 3600
+                  path: token
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: microvm-actor-spike
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: microvm-actor-spike
+  egress:
+    - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app: ate-api-server
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app: rustfs
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP
+---
+# Upstream's NetworkPolicy admits ate-api-server callers only from its own
+# components and from namespaces labelled ate.dev/api-access, which ate-system
+# is not. Cilium adds this rule to it: the Job, and nothing else in ate-system.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ate-api-server-microvm-actor-spike
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: ate-api-server
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app: microvm-actor-spike
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

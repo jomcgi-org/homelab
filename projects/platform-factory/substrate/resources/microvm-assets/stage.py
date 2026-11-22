@@ -1,10 +1,11 @@
-"""Fetch the microVM sandbox assets that the asset bucket still lacks.
+"""Fetch the microVM sandbox assets and tools that the asset bucket still lacks.
 
 Runs in the microvm-assets-init Job between the key listing and the upload
 (snapshot-store.yaml's sibling, microvm-assets.yaml). It reads assets.json,
-skips every asset whose key is already in /work/existing.txt, downloads the
-rest from the official releases, checks each against its pinned sha256 and
-leaves the verified bytes at /work/assets/<sha256>. It also writes
+skips every asset and tool whose key is already in /work/existing.txt,
+downloads the rest from the official releases, checks each against its pinned
+sha256 and leaves the verified bytes at /work/assets/<sha256>. The tools are
+the CLIs that one-off Jobs run, so those Jobs need no internet access. It also writes
 /work/expected.txt, the key of every pinned asset, for the upload step's final
 check. A hash mismatch fails the Job before anything reaches the bucket.
 
@@ -102,7 +103,7 @@ def fetch_from_kata(url: str, wanted: dict[str, tuple[str, str]]) -> None:
 def main() -> None:
     cfg = json.loads(CONFIG.read_text())
     existing = set((WORK / "existing.txt").read_text().split())
-    assets = cfg["assets"]
+    assets = {**cfg["assets"], **cfg.get("tools", {})}
     (WORK / "expected.txt").write_text(
         "".join(key_for(cfg, a["sha256"]) + "\n" for a in assets.values())
     )

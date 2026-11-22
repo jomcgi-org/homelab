@@ -22,5 +22,11 @@
       "sha256": "6770db2cca5710593f27c9ac5e1d9d7aab836422695a5e5c4807496a92a0f24d",
       "kata": "opt/kata/share/kata-containers/kata-ubuntu-resolute.image"
     }
+  },
+  "tools": {
+    "kubectl-ate": {
+      "sha256": "455a3c465e9473575083cb54d5646eac0ba6f299f8e1b7e42077a3997c17afaa",
+      "url": "https://github.com/kagent-dev/substrate/releases/download/v1.0.1/kubectl-ate-linux-amd64"
+    }
   }
 }

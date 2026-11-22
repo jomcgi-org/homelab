@@ -34,6 +34,7 @@ resources:
   - snapshot-store.yaml
   - sandboxconfig-microvm.yaml
   - microvm-assets.yaml
+  - microvm-actor-spike.yaml
   - microvm-spike.yaml
   - network-policy.yaml
   - kagent-identity-guard.yaml
@@ -55,6 +56,12 @@ configMapGenerator:
     files:
       - assets.json=microvm-assets/assets.json
       - stage.py=microvm-assets/stage.py
+  # The actor smoke test and its template (microvm-actor-spike.yaml).
+  - name: microvm-actor-spike
+    namespace: ate-system
+    files:
+      - spike.py=microvm-actor-spike/spike.py
+      - template.yaml=microvm-actor-spike/template.yaml
   # The bundled PostgreSQL's roles and schema (pkg/postgressetup).
   - name: postgres-setup
     namespace: ate-system

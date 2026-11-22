@@ -1,0 +1,27 @@
+# ActorTemplate (protojson ateapi.ActorTemplate) for the microVM spike: the
+# smallest public workload, in a small guest. spike.py creates it in the spike
+# atespace and deletes it again.
+metadata:
+  atespace: microvm-spike
+  name: nginx
+workerSelector:
+  matchLabels:
+    workload: microvm-spike
+containers:
+  - name: nginx
+    image: nginx:1.29.8-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+    wakeupProbe:
+      httpGet:
+        path: /
+        port: 80
+      # A microVM guest boot is slow on a busy node.
+      timeoutSeconds: 120
+# The guest's RAM and vCPUs. With the microVM overhead this has to fit the
+# worker's limit (microvm-spike.yaml).
+resources:
+  limits:
+    cpuMillicores: 500
+    memoryBytes: 268435456
+snapshotConfig:
+  # A suspend captures guest memory, so a resume restores it.
+  preferredFidelity: SNAPSHOT_FIDELITY_MEMORY

@@ -1,20 +1,24 @@
-# Stages the microVM sandbox assets (sandboxconfig-microvm.yaml) in rustfs.
+# Stages the microVM sandbox assets (sandboxconfig-microvm.yaml) and the
+# kubectl-ate CLI (assets.json "tools") in rustfs.
 #
-# A PostSync hook, so a failed download never blocks the rest of the sync, and
-# recreated on each sync because a Job's pod template is immutable. Three
-# steps share one volume:
+# A Sync hook in wave 1: it runs after the wave-0 resources (rustfs and its
+# bucket Job) and finishes before the wave-2 one-off Jobs that run the CLI it
+# stages (microvm-actor-spike.yaml). A failed download blocks only those Jobs,
+# because every other resource is wave 0 and already applied. Recreated on each
+# sync because a Job's pod template is immutable. Three steps share one volume:
 #   list   the keys already under the asset prefix (aws-cli)
 #   fetch  every pinned asset that is not there, from the official GitHub
 #          releases, checked against its sha256 (microvm-assets/stage.py)
-#   upload what fetch kept, then check all four keys exist (aws-cli)
-# A sync that finds all four keys downloads nothing.
+#   upload what fetch kept, then check every pinned key exists (aws-cli)
+# A sync that finds every key downloads nothing.
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: microvm-assets-init
   namespace: ate-system
   annotations:
-    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/sync-wave: "1"
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 spec:
   backoffLimit: 3
@@ -150,7 +154,7 @@ spec:
               while read -r key; do
                 grep -q "^$key[[:space:]]" /work/final.txt || { echo "missing $key"; exit 1; }
               done </work/expected.txt
-              echo "all pinned microVM assets are in the bucket"
+              echo "all pinned microVM assets and tools are in the bucket"
           resources:
             requests:
               cpu: 50m
