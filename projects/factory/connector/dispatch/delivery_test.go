@@ -47,7 +47,7 @@ type fakeGitHub struct {
 	// the next lookups.
 	delayed          *github.NewPullRequest
 	delayCreate      bool
-	rejectCreate     bool
+	rejectCreate     error
 	stopComment      string
 	rejectComment    bool
 	delayComment     bool
@@ -321,9 +321,10 @@ func (g *fakeGitHub) CreatePullRequest(_ context.Context, repo string, n github.
 	if b == nil || b.ahead == 0 {
 		return nil, &github.HTTPError{Status: 422, Body: "No commits between main and " + n.Head}
 	}
-	if g.rejectCreate {
-		g.rejectCreate = false
-		return nil, &github.HTTPError{Status: 422}
+	if g.rejectCreate != nil {
+		err := g.rejectCreate
+		g.rejectCreate = nil
+		return nil, err
 	}
 	if g.delayCreate {
 		g.delayCreate = false
@@ -692,6 +693,11 @@ func TestStoppedCreateAppearsAfterTimeout(t *testing.T) {
 	if v.gh.delayed == nil {
 		t.Fatal("expected a timed-out create")
 	}
+	v.clk.Advance(time.Minute)
+	v.tick(v.e)
+	if v.gh.creates != 0 {
+		t.Fatal("sent a second create before the timed-out request settled")
+	}
 	if _, err := v.st.StopIssue(v.ctx, "HL-7", "human takeover", "operator"); err != nil {
 		t.Fatal(err)
 	}
@@ -742,17 +748,24 @@ func TestStoppedCreateAppearsAfterTimeout(t *testing.T) {
 }
 
 func TestRejectedCreateClearsPendingHandoff(t *testing.T) {
-	v := newDeliveryEnv(t)
-	v.its.add(1, "coder", 101, "HL-7", "Fix it.")
-	v.tick(v.e)
-	v.gh.push("factory/HL-7", "sha-1", "fix: one")
-	v.gh.rejectCreate = true
-	v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
-	v.clk.Advance(5 * time.Second)
-	v.tick(v.e)
-	var pending bool
-	if err := v.st.DB.QueryRowContext(v.ctx, `SELECT pr_create_check_at IS NOT NULL FROM work_item WHERE issue_id = 101`).Scan(&pending); err != nil || pending || v.gh.rejectCreate {
-		t.Fatalf("rejected create pending=%t, rejection unused=%t: %v", pending, v.gh.rejectCreate, err)
+	for name, rejection := range map[string]error{
+		"remote":    &github.HTTPError{Status: 422},
+		"preflight": &github.RequestNotSentError{Cause: errors.New("installation rate limited")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			v := newDeliveryEnv(t)
+			v.its.add(1, "coder", 101, "HL-7", "Fix it.")
+			v.tick(v.e)
+			v.gh.push("factory/HL-7", "sha-1", "fix: one")
+			v.gh.rejectCreate = rejection
+			v.kg.finish(v.kg.lastTask(), kagent.StateCompleted, "done", nil)
+			v.clk.Advance(5 * time.Second)
+			v.tick(v.e)
+			var pending bool
+			if err := v.st.DB.QueryRowContext(v.ctx, `SELECT pr_create_check_at IS NOT NULL FROM work_item WHERE issue_id = 101`).Scan(&pending); err != nil || pending || v.gh.rejectCreate != nil {
+				t.Fatalf("rejected create pending=%t, rejection unused=%v: %v", pending, v.gh.rejectCreate, err)
+			}
+		})
 	}
 }
 

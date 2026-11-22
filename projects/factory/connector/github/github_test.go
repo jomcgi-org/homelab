@@ -1581,6 +1581,10 @@ func TestInstallationRateLimitIsSharedByClients(t *testing.T) {
 	}}); err == nil || !strings.Contains(err.Error(), "installation rate limited until") {
 		t.Fatalf("expected shared cooldown, got %v", err)
 	}
+	var unsent *RequestNotSentError
+	if _, err := delivery.CreatePullRequest(ctx, repo, NewPullRequest{}); !errors.As(err, &unsent) {
+		t.Fatalf("create in cooldown: %v", err)
+	}
 	if err := status.graphql(ctx, repo, "query FactoryStatus($id: ID!) { node(id: $id) { id } }", nil, &struct{}{}); err != nil {
 		t.Fatalf("REST primary limit must leave GraphQL available: %v", err)
 	}
