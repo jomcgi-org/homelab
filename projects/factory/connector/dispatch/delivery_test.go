@@ -3567,6 +3567,7 @@ func TestDoneMoveOutageSurvivesIdleOutboxTicks(t *testing.T) {
 	if alarms != 0 || testutil.ToFloat64(v.m.ItsaplanUnavailable.WithLabelValues("outbox")) != 1 {
 		t.Fatal("retry wait interrupted outage evidence")
 	}
+	v.clk.Advance(time.Minute)
 	v.tick(v.e)
 	if alarms != 1 {
 		t.Fatalf("outbox alarms after ten minutes = %d", alarms)
@@ -3601,6 +3602,7 @@ func TestDoneMoveCooldownPreservesLastAttempt(t *testing.T) {
 			t.Fatalf("queued after cooldown: tries=%d unavailable since=%s", tries, unavailableSince)
 		}
 	}
+	v.clk.Advance(time.Minute)
 	v.tick(v.e)
 	if len(v.its.Moves()) != 1 || testutil.ToFloat64(v.m.ItsaplanUnavailable.WithLabelValues("outbox")) != 0 {
 		t.Fatal("cooldown recovery did not deliver the Done move and clear the outage")
@@ -4173,6 +4175,7 @@ func TestCurrentPendingReviewerCheckQueuesNativeReviewingOnce(t *testing.T) {
 	v.gh.mu.Unlock()
 	v.poll()
 	plan.ready = true
+	v.clk.Advance(time.Minute)
 	v.poll()
 	v.poll()
 	if len(plan.heads) != 2 || plan.heads[0] != head || plan.heads[1] != head {
