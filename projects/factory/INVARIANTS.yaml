@@ -210,7 +210,7 @@ invariants:
   - projects/factory/reviewer/review/report.go
   test: //projects/factory/reviewer/review:review_test
   state: live
-- id: FACT-19
+- id: HOME-546-1
   statement: A planner schedule starts at most one session per itsaplan run and only after database admission.
   mechanism:
   - projects/factory/connector/dispatch/planner.go

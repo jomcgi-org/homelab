@@ -16,6 +16,7 @@
 {{- with include "factory.plannerNamespace" (dict "root" $ "binding" $r) }}
 {{- $_ := set $binding "namespace" . }}
 {{- $_ := set $binding "agent" "planner" }}
+{{- $_ := unset $binding "workloadImage" }}
 {{- include "factory.bindingResources" (dict "root" $ "binding" $binding "description" "Inspects") }}
 {{- end }}
 {{- end }}

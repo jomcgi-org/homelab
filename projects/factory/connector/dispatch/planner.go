@@ -1,4 +1,4 @@
-// invariant: FACT-14
+// invariant: HOME-546-1
 package dispatch
 
 import (
