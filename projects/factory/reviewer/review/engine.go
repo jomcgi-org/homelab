@@ -2250,12 +2250,17 @@ func (e *Engine) gather(ctx context.Context, b *Binding, pr github.PullRequest, 
 			}
 		}
 	}
-	mechanisms, err := readInvariantPolicy(ctx, e.gh, b.repo(), base, scopes)
+	policy, err := readInvariantPolicy(ctx, e.gh, b.repo(), base, scopes)
 	if err != nil {
 		e.ghError(ctx, l, b, "invariants", err)
 		return nil, err
 	}
-	gate := humanGate(b, changedPaths(files), pr.Labels, mechanisms)
+	weakened, err := policy.weakened(ctx, e.gh, b.repo(), pr.HeadSHA, files)
+	if err != nil {
+		e.ghError(ctx, l, b, "invariants", err)
+		return nil, err
+	}
+	gate := humanGate(b, changedPaths(files), pr.Labels, weakened)
 	if prior.Gate.held() {
 		if gate == nil {
 			gate = &Gate{ObservedLabels: gateLabels(b, pr.Labels)}
@@ -3596,23 +3601,26 @@ func (e *Engine) reconcileGate(ctx context.Context, b *Binding, pr github.PullRe
 	base, err := e.gh.BranchHead(ctx, b.repo(), b.BaseBranch)
 	pathsChanged := false
 	if err == nil && (base == "" || st.InvariantBase != base) {
-		var mechanisms mechanismPaths
-		mechanisms, err = loadMechanisms(ctx, e.gh, b.repo(), base)
+		var policy invariantPolicy
+		policy, err = loadInvariantPolicy(ctx, e.gh, b.repo(), base)
+		var files []github.PullRequestFile
 		if err == nil {
-			var files []github.PullRequestFile
 			files, err = e.gh.PullRequestFiles(ctx, b.repo(), pr.Number)
-			if err == nil {
-				current := humanGate(b, changedPaths(files), nil, mechanisms)
-				if current != nil {
-					for _, p := range current.Paths {
-						if !slices.Contains(gate.Paths, p) {
-							gate.Paths = append(gate.Paths, p)
-							pathsChanged = true
-						}
+		}
+		var weakened []string
+		if err == nil {
+			weakened, err = policy.weakened(ctx, e.gh, b.repo(), pr.HeadSHA, files)
+		}
+		if err == nil {
+			if current := humanGate(b, changedPaths(files), nil, weakened); current != nil {
+				for _, p := range current.Paths {
+					if !slices.Contains(gate.Paths, p) {
+						gate.Paths = append(gate.Paths, p)
+						pathsChanged = true
 					}
 				}
-				st.InvariantBase = base
 			}
+			st.InvariantBase = base
 		}
 	}
 	if err != nil {

@@ -320,15 +320,17 @@ const invariantFile = "INVARIANTS.yaml"
 // GitHub's Contents API returns inline file data up to 1 MiB.
 const maxInvariantBytes = 1 << 20
 
-type mechanismPaths map[string]bool
+// invariantPolicy holds each INVARIANTS.yaml at the base commit, so the gate
+// can tell an added invariant from a removed or weakened one (HOME-755).
+type invariantPolicy map[string][]byte
 
-func loadMechanisms(ctx context.Context, gh RulesReader, repo, commit string) (mechanismPaths, error) {
+func loadInvariantPolicy(ctx context.Context, gh RulesReader, repo, commit string) (invariantPolicy, error) {
 	return readInvariantPolicy(ctx, gh, repo, commit, nil)
 }
 
 // scopes contains the ancestor policy paths needed for added files. Fill them
-// during the same base-tree read that determines the mechanism gate.
-func readInvariantPolicy(ctx context.Context, gh RulesReader, repo, commit string, scopes map[string]*RuleFile) (mechanismPaths, error) {
+// during the same base-tree read that loads the invariant policy.
+func readInvariantPolicy(ctx context.Context, gh RulesReader, repo, commit string, scopes map[string]*RuleFile) (invariantPolicy, error) {
 	tree, err := gh.Tree(ctx, repo, commit)
 	if err != nil {
 		return nil, err
@@ -336,7 +338,7 @@ func readInvariantPolicy(ctx context.Context, gh RulesReader, repo, commit strin
 	if tree.Truncated {
 		return nil, errors.New("cannot discover invariant files in a truncated tree")
 	}
-	paths := mechanismPaths{}
+	policy := invariantPolicy{}
 	budget := maxRules
 	for _, file := range slices.Sorted(maps.Keys(tree.Files)) {
 		if path.Base(file) != invariantFile {
@@ -346,15 +348,16 @@ func readInvariantPolicy(ctx context.Context, gh RulesReader, repo, commit strin
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", file, err)
 		}
-		if err := ParseMechanisms(file, data, paths); err != nil {
+		if err := ParseMechanisms(file, data, map[string]bool{}); err != nil {
 			return nil, err
 		}
+		policy[file] = data
 		if _, wanted := scopes[file]; wanted {
 			f := bounded(file, data, &budget, maxRuleFile)
 			scopes[file] = &f
 		}
 	}
-	return paths, nil
+	return policy, nil
 }
 
 // ParseMechanisms validates one invariant file and collects its repository
@@ -397,20 +400,98 @@ func ParseMechanisms(file string, data []byte, paths map[string]bool) error {
 	return nil
 }
 
-func (m mechanismPaths) covers(p string) bool {
-	for ; p != "."; p = path.Dir(p) {
-		if m[p] {
+// weakened returns the invariant files a head removes or weakens. Adding an
+// invariant, or moving one from unproven to live, gets normal review; any
+// other change to an invariant that exists at base, a removed or renamed
+// file, or a head file that does not parse, needs Joe (REVIEW.md "Joe
+// decides", HOME-755). A file that changed on base after the PR's merge base
+// also reads as weakened until the PR is rebased.
+func (p invariantPolicy) weakened(ctx context.Context, gh RulesReader, repo, head string, files []github.PullRequestFile) ([]string, error) {
+	var out []string
+	for _, f := range files {
+		for _, name := range []string{f.Path, f.PreviousPath} {
+			if name == "" || path.Base(name) != invariantFile || slices.Contains(out, name) {
+				continue
+			}
+			var next []byte
+			if f.Status != "removed" && name == f.Path {
+				data, err := gh.FileContent(ctx, repo, name, head)
+				if err != nil {
+					return nil, fmt.Errorf("read %s at head: %w", name, err)
+				}
+				next = data
+			}
+			if weakensInvariants(name, p[name], next, name == f.Path && f.Status != "removed") {
+				out = append(out, name)
+			}
+		}
+	}
+	return out, nil
+}
+
+func weakensInvariants(name string, base, head []byte, present bool) bool {
+	if !present {
+		return base != nil
+	}
+	if ParseMechanisms(name, head, map[string]bool{}) != nil {
+		return true
+	}
+	if base == nil {
+		return false
+	}
+	before, okBefore := invariantsByID(base)
+	after, okAfter := invariantsByID(head)
+	if !okBefore || !okAfter {
+		return true
+	}
+	for id, old := range before {
+		cur, ok := after[id]
+		if !ok {
+			return true
+		}
+		if old["state"] == "unproven" && cur["state"] == "live" {
+			old = maps.Clone(old)
+			old["state"] = "live"
+		}
+		if !jsonEqual(old, cur) {
 			return true
 		}
 	}
-	return m["."]
+	return false
+}
+
+// invariantsByID indexes a file's invariants. An entry without a unique
+// string id cannot be compared, so the caller treats the file as weakened.
+func invariantsByID(data []byte) (map[string]map[string]any, bool) {
+	var doc struct {
+		Invariants []map[string]any `yaml:"invariants"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, false
+	}
+	out := make(map[string]map[string]any, len(doc.Invariants))
+	for _, inv := range doc.Invariants {
+		id, ok := inv["id"].(string)
+		if !ok || id == "" || out[id] != nil {
+			return nil, false
+		}
+		out[id] = inv
+	}
+	return out, true
+}
+
+func jsonEqual(a, b any) bool {
+	x, errA := json.Marshal(a)
+	y, errB := json.Marshal(b)
+	return errA == nil && errB == nil && bytes.Equal(x, y)
 }
 
 // humanGate finds the gated paths among a head's changed paths (both sides
 // of the diff) and the gate labels on its PR. A path of any characters is
 // matched as it is; one with an empty or ".." segment, which no rule can be
-// looked up for, is gated.
-func humanGate(b *Binding, paths, labels []string, mechanisms mechanismPaths) *Gate {
+// looked up for, is gated. weakened names the invariant files the head
+// removes or weakens; other invariant edits get normal review (HOME-755).
+func humanGate(b *Binding, paths, labels []string, weakened []string) *Gate {
 	g := &Gate{}
 	seen := map[string]bool{}
 	for _, p := range paths {
@@ -418,7 +499,7 @@ func humanGate(b *Binding, paths, labels []string, mechanisms mechanismPaths) *G
 		if !ok {
 			c = p
 		}
-		if !seen[c] && (!ok || path.Base(c) == invariantFile || mechanisms.covers(c) || matchAny(b.HumanGatePaths, c)) {
+		if !seen[c] && (!ok || slices.Contains(weakened, c) || matchAny(b.HumanGatePaths, c)) {
 			seen[c] = true
 			g.Paths = append(g.Paths, c)
 		}

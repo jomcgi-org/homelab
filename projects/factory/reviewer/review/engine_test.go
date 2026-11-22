@@ -2777,13 +2777,16 @@ func TestGateCheckKeepsOwnedCriteria(t *testing.T) {
 	}
 }
 
-func TestEditingInvariantFileRequiresApprovalOnHead(t *testing.T) {
+func TestWeakeningInvariantFileRequiresApprovalOnHead(t *testing.T) {
 	for _, file := range []string{"INVARIANTS.yaml", "projects/example/policy/INVARIANTS.yaml"} {
 		t.Run(file, func(t *testing.T) {
 			h := newHarness(t)
 			h.cfg.Bindings[0].HumanGatePaths = nil
 			h.cfg.Bindings[0].EnqueueAuthors = []string{"jomcgi-factory[bot]"}
-			h.gh.setBaseFile(file, "invariants: []")
+			h.gh.setBaseFile(file, "invariants:\n- id: X-1\n  statement: Kept.\n")
+			h.gh.mu.Lock()
+			h.gh.headFiles = map[string]string{shaA + ":" + file: "invariants: []\n"}
+			h.gh.mu.Unlock()
 			h.gh.addPR(&fakePR{Number: 7, Head: shaA, Author: "jomcgi-factory[bot]", Files: []github.PullRequestFile{{Path: file, Status: "modified", Additions: 1}}})
 			h.gh.setStatus(shaA, "pr-checks", "success", ciCreator)
 			h.gh.review(7, "jomcgi", "APPROVED", "older-head", "Reviewed a prior revision.")
@@ -2824,7 +2827,8 @@ func TestCompletedPassRechecksChangedInvariantBase(t *testing.T) {
 	e.Tick(ctx)
 	c := h.gh.check(shaA)
 	st, _ := LoadState(c.Text)
-	if c.Conclusion != ConclusionFailure || st.InvariantBase != "base-2" || st.Gate == nil || !slices.Contains(st.Gate.Paths, "projects/old/y.go") {
+	// A new mechanism on base gets normal review, not the human gate (HOME-755).
+	if c.Conclusion != ConclusionSuccess || st.Gate.Needed() {
 		t.Fatalf("reconciled check = %s, state = %+v", c.Conclusion, st)
 	}
 }
@@ -4646,7 +4650,8 @@ func TestAddedFileInvariantAnswerInCompletedCheck(t *testing.T) {
 					{Path: sibling, Status: "added", Additions: 1},
 				}
 				if gated {
-					files = append(files, github.PullRequestFile{Path: "pkg/old.go", Status: "modified"})
+					// Deleting an invariant file weakens it (HOME-755).
+					files = append(files, github.PullRequestFile{Path: "pkg/INVARIANTS.yaml", Status: "removed"})
 				}
 				h.gh.addPR(&fakePR{Number: 7, Head: shaA, Author: "jomcgi-factory[bot]", Files: files})
 				const policy = "invariants:\n  - mechanism: [pkg/old.go]"

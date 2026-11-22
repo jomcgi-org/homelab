@@ -445,30 +445,132 @@ func TestSafeStripsRunsInOnePass(t *testing.T) {
 	}
 }
 
-func TestInvariantGateFromBase(t *testing.T) {
-	gh := &baseRules{head: "base-commit", files: map[string]string{"policy/INVARIANTS.yaml": "invariants:\n  - mechanism: [a.go, src/]"}}
-	m, err := loadMechanisms(context.Background(), gh, testRepo, gh.head)
-	if err != nil {
-		t.Fatal(err)
+// headRules serves invariant files at a base and a head commit.
+type headRules struct {
+	baseRules
+	headFiles map[string]string
+}
+
+func (h *headRules) FileContent(ctx context.Context, repo, path, ref string) ([]byte, error) {
+	if ref == "head-commit" {
+		c, ok := h.headFiles[path]
+		if !ok {
+			return nil, github.ErrNotFound
+		}
+		return []byte(c), nil
 	}
-	files := []github.PullRequestFile{{Path: "elsewhere", PreviousPath: "a.go"}, {Path: "src/sub/x"}, {Path: "src2/y"}, {Path: "new/INVARIANTS.yaml"}, {Path: "policy/INVARIANTS.yaml"}}
-	gate := humanGate(&Binding{}, changedPaths(files), nil, m)
-	if gate == nil || strings.Join(gate.Paths, ",") != "a.go,new/INVARIANTS.yaml,policy/INVARIANTS.yaml,src/sub/x" {
-		t.Fatalf("gate = %+v", gate)
+	return h.baseRules.FileContent(ctx, repo, path, ref)
+}
+
+const baseInvariants = `invariants:
+- id: X-1
+  statement: Tokens name one repository.
+  mechanism: [a.go]
+  test: //a:a_test
+  state: unproven
+`
+
+// HOME-755: the human gate covers removed or weakened invariants, not added
+// ones or edits to mechanism files.
+func TestInvariantGateOnlyForWeakening(t *testing.T) {
+	added := baseInvariants + "- id: X-2\n  statement: New.\n  mechanism: [b.go]\n  state: live\n"
+	for name, tc := range map[string]struct {
+		head  map[string]string
+		files []github.PullRequestFile
+		gated string
+	}{
+		"mechanism file edit": {
+			files: []github.PullRequestFile{{Status: "modified", Path: "a.go"}, {Status: "modified", Path: "src/sub/x"}},
+		},
+		"added invariant": {
+			head:  map[string]string{"policy/INVARIANTS.yaml": added},
+			files: []github.PullRequestFile{{Status: "modified", Path: "policy/INVARIANTS.yaml"}},
+		},
+		"unproven to live": {
+			head:  map[string]string{"policy/INVARIANTS.yaml": strings.Replace(baseInvariants, "unproven", "live", 1)},
+			files: []github.PullRequestFile{{Status: "modified", Path: "policy/INVARIANTS.yaml"}},
+		},
+		"new invariant file": {
+			head:  map[string]string{"new/INVARIANTS.yaml": baseInvariants},
+			files: []github.PullRequestFile{{Status: "added", Path: "new/INVARIANTS.yaml"}},
+		},
+		"removed invariant": {
+			head:  map[string]string{"policy/INVARIANTS.yaml": "invariants: []\n"},
+			files: []github.PullRequestFile{{Status: "modified", Path: "policy/INVARIANTS.yaml"}},
+			gated: "policy/INVARIANTS.yaml",
+		},
+		"weakened statement": {
+			head:  map[string]string{"policy/INVARIANTS.yaml": strings.Replace(baseInvariants, "one repository", "any repository", 1)},
+			files: []github.PullRequestFile{{Status: "modified", Path: "policy/INVARIANTS.yaml"}},
+			gated: "policy/INVARIANTS.yaml",
+		},
+		"dropped test": {
+			head:  map[string]string{"policy/INVARIANTS.yaml": strings.Replace(baseInvariants, "  test: //a:a_test\n", "", 1)},
+			files: []github.PullRequestFile{{Status: "modified", Path: "policy/INVARIANTS.yaml"}},
+			gated: "policy/INVARIANTS.yaml",
+		},
+		"live to unproven": {
+			head:  map[string]string{"policy/INVARIANTS.yaml": strings.Replace(added, "state: live", "state: unproven", 1)},
+			files: []github.PullRequestFile{{Status: "modified", Path: "policy/INVARIANTS.yaml"}},
+		},
+		"deleted file": {
+			files: []github.PullRequestFile{{Status: "removed", Path: "policy/INVARIANTS.yaml"}},
+			gated: "policy/INVARIANTS.yaml",
+		},
+		"renamed file": {
+			head:  map[string]string{"moved/INVARIANTS.yaml": baseInvariants},
+			files: []github.PullRequestFile{{Status: "renamed", Path: "moved/INVARIANTS.yaml", PreviousPath: "policy/INVARIANTS.yaml"}},
+			gated: "policy/INVARIANTS.yaml",
+		},
+		"unparsable head": {
+			head:  map[string]string{"policy/INVARIANTS.yaml": "invariants: ["},
+			files: []github.PullRequestFile{{Status: "modified", Path: "policy/INVARIANTS.yaml"}},
+			gated: "policy/INVARIANTS.yaml",
+		},
+		"duplicate id": {
+			head:  map[string]string{"policy/INVARIANTS.yaml": baseInvariants + "- id: X-1\n  statement: Other.\n"},
+			files: []github.PullRequestFile{{Status: "modified", Path: "policy/INVARIANTS.yaml"}},
+			gated: "policy/INVARIANTS.yaml",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			gh := &headRules{baseRules: baseRules{head: "base-commit", files: map[string]string{"policy/INVARIANTS.yaml": baseInvariants}}, headFiles: tc.head}
+			policy, err := loadInvariantPolicy(context.Background(), gh, testRepo, gh.head)
+			if err != nil {
+				t.Fatal(err)
+			}
+			weakened, err := policy.weakened(context.Background(), gh, testRepo, "head-commit", tc.files)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gate := humanGate(&Binding{}, changedPaths(tc.files), nil, weakened)
+			got := ""
+			if gate != nil {
+				got = strings.Join(gate.Paths, ",")
+			}
+			if got != tc.gated {
+				t.Fatalf("gated paths = %q, want %q", got, tc.gated)
+			}
+		})
 	}
-	gh.files["policy/INVARIANTS.yaml"] = "invariants: ["
-	if _, err := loadMechanisms(context.Background(), gh, testRepo, gh.head); err == nil {
+}
+
+func TestInvariantPolicyRejectsMalformedBase(t *testing.T) {
+	gh := &baseRules{head: "base-commit", files: map[string]string{"policy/INVARIANTS.yaml": "invariants: ["}}
+	if _, err := loadInvariantPolicy(context.Background(), gh, testRepo, gh.head); err == nil {
 		t.Fatal("accepted malformed invariants")
 	}
 }
 
-func TestInvariantFileEditAloneRequiresHuman(t *testing.T) {
-	for _, p := range []string{"INVARIANTS.yaml", "deep/nested/INVARIANTS.yaml"} {
-		files := []github.PullRequestFile{{Status: "modified", Path: p}}
-		g := humanGate(&Binding{}, changedPaths(files), nil, nil)
-		if g == nil || !g.Needed() || len(g.Paths) != 1 || g.Paths[0] != p {
-			t.Errorf("edit to %s: gate = %+v", p, g)
-		}
+func TestInvariantHeadReadErrorFailsClosed(t *testing.T) {
+	gh := &headRules{baseRules: baseRules{head: "base-commit", files: map[string]string{"policy/INVARIANTS.yaml": baseInvariants}}}
+	policy, err := loadInvariantPolicy(context.Background(), gh, testRepo, gh.head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := []github.PullRequestFile{{Status: "modified", Path: "policy/INVARIANTS.yaml"}}
+	if _, err := policy.weakened(context.Background(), gh, testRepo, "head-commit", files); err == nil {
+		t.Fatal("a missing head file gave no error")
 	}
 }
 
