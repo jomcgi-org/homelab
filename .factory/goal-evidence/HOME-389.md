@@ -6,3 +6,5 @@
    gh api --paginate repos/jomcgi-org/homelab/pulls/8439/reviews |
      jq --arg head "$head" '.[] | select(.user.login == "jomcgi" and .state == "APPROVED" and .commit_id == $head) | .html_url'
    ```
+
+Joe's decision of 2026-11-22 (factory PR triage) on HOME-389: Decision: criterion 3 (Joe's APPROVED review covers the PR head) is removed from Done when. The goal check cannot see an approval in the diff, and the human gate already enforces it. Decisions keeps the rule that the PR lands only after Joe's APPROVED review. ([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-389#comment-10363))
