@@ -242,7 +242,7 @@ Thread paths are replaced with a fixed label, since the change author chooses
 them, even on threads with trusted comments. A reviewer App's comments reach
 the agent only if its bot login is listed in `trustedReviewers`. Rounds are
 bounded per work item (`maxReviewRounds`, default 3); past the bound events
-are `round_limit` and the PR waits for a person. Events are read only while
+are `round_limit` ([review cap](review-cap.md)). Events are read only while
 the work item is in review, not while a turn runs.
 
 A review round is a connector-initiated continuation, not an itsaplan

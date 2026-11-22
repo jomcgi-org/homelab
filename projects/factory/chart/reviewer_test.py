@@ -1147,3 +1147,16 @@ def test_reviewer_trace_endpoint_configures_export_and_gateway_egress() -> None:
         ],
         "toPorts": [{"ports": [{"port": "4317", "protocol": "TCP"}]}],
     } in policy["spec"]["egress"]
+
+
+def test_review_cap_deferral_reaches_both_services() -> None:
+    # HOME-756: one connector binding flag turns on deferral at the review
+    # cap in the connector (the marker) and in the reviewer (the verdict).
+    # It stays off in the deploy values until merge-time filing is live.
+    docs = _render()
+    connector = _config(docs, "factory-connector")["bindings"][0]
+    assert "deferAtReviewCap" not in connector
+    assert "deferAtReviewCap" not in _config(docs, "factory-reviewer")["bindings"][0]
+    on = _render(["connector.bindings.homelab.deferAtReviewCap=true"])
+    assert _config(on, "factory-connector")["bindings"][0]["deferAtReviewCap"] is True
+    assert _config(on, "factory-reviewer")["bindings"][0]["deferAtReviewCap"] is True

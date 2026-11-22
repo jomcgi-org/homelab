@@ -4980,3 +4980,131 @@ func TestEditedPromptDecision(t *testing.T) {
 		})
 	}
 }
+
+// capReviewRound reviews sha of PR 7 with the given report and returns its
+// completed check (HOME-756 tests).
+func capReviewRound(t *testing.T, h *harness, e *Engine, ctx context.Context, sha string, findings, previous []any) *fakeCheck {
+	t.Helper()
+	if h.gh.prs[7].Head != sha {
+		h.gh.push(7, sha)
+	}
+	h.k.finish(runReview(t, h, e, ctx, 7, sha), kagent.StateCompleted,
+		report(t, map[string]any{"summary": "s", "findings": findings, "previous": previous}))
+	eventually(t, "the check on "+sha, func() bool { return h.gh.check(sha).Status == "completed" })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	return h.gh.check(sha)
+}
+
+// TestReviewCapDefersMedium covers HOME-756: with the connector's review-cap
+// marker in a body the factory App wrote last, a factory PR's medium
+// findings are deferred, stay in the saved state, and only critical or high
+// findings block.
+func TestReviewCapDefersMedium(t *testing.T) {
+	medium := map[string]any{"id": "a.go:validation", "severity": "medium", "path": "a.go", "title": "No regression test"}
+	high := map[string]any{"id": "b.go:correctness", "severity": "high", "path": "b.go", "title": "Drops the error"}
+	capBody := "Factory delivery.\n\n" + github.ReviewCapMarker + "\n"
+	for _, tc := range []struct {
+		name      string
+		author    string
+		body      string
+		editor    string
+		bot, flag bool
+		findings  []any
+		want, cap string
+	}{
+		{name: "capped factory PR", author: factoryAuthor, body: capBody, flag: true, findings: []any{medium}, want: ConclusionSuccess, cap: capApplied},
+		{name: "edited by the App", author: factoryAuthor, body: capBody, editor: "jomcgi-factory", bot: true, flag: true, findings: []any{medium}, want: ConclusionSuccess, cap: capApplied},
+		{name: "high still blocks", author: factoryAuthor, body: capBody, flag: true, findings: []any{medium, high}, want: ConclusionFailure, cap: capApplied},
+		{name: "body edited by another actor", author: factoryAuthor, body: capBody, editor: "github-actions", bot: true, flag: true, findings: []any{medium}, want: ConclusionFailure, cap: capUnverified},
+		{name: "deferral off", author: factoryAuthor, body: capBody, findings: []any{medium}, want: ConclusionFailure},
+		{name: "no marker", author: factoryAuthor, body: "Factory delivery.", flag: true, findings: []any{medium}, want: ConclusionFailure},
+		{name: "another author", author: "someone", body: capBody, flag: true, findings: []any{medium}, want: ConclusionFailure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			addPR7(h)
+			pr := h.gh.prs[7]
+			pr.Author, pr.Body, pr.BodyEditor, pr.BodyEditorBot = tc.author, tc.body, tc.editor, tc.bot
+			h.cfg.Bindings[0].DeferAtReviewCap = tc.flag
+			e, ctx, _ := h.start()
+			c := capReviewRound(t, h, e, ctx, shaA, tc.findings, nil)
+			st, _ := LoadState(c.Text)
+			if c.Conclusion != tc.want || st.ReviewCap != tc.cap {
+				t.Fatalf("conclusion %s, cap %q; want %s, %q\n%s", c.Conclusion, st.ReviewCap, tc.want, tc.cap, c.Summary)
+			}
+			deferred := strings.Contains(c.Summary, "deferred to a follow-up issue because the PR reached the review-round cap")
+			if deferred != (tc.cap == capApplied) {
+				t.Fatalf("deferred note = %v\n%s", deferred, c.Summary)
+			}
+			// A deferred medium stays unresolved: the next head must account for it.
+			ids := map[string]bool{}
+			for _, f := range st.Previous() {
+				ids[f.ID+"/"+f.Severity] = true
+			}
+			if !ids["a.go:validation/medium"] {
+				t.Fatalf("the medium finding left the saved state: %+v", st)
+			}
+		})
+	}
+}
+
+// TestReviewCapKeepsAccountingHolds covers HOME-756: at the cap a deferred
+// medium the next head's report omits still blocks as not accounted for.
+func TestReviewCapKeepsAccountingHolds(t *testing.T) {
+	medium := map[string]any{"id": "a.go:validation", "severity": "medium", "path": "a.go", "title": "No regression test"}
+	h := newHarness(t)
+	addPR7(h)
+	pr := h.gh.prs[7]
+	pr.Author, pr.Body = factoryAuthor, "Factory delivery.\n\n"+github.ReviewCapMarker+"\n"
+	h.cfg.Bindings[0].DeferAtReviewCap = true
+	e, ctx, _ := h.start()
+	if c := capReviewRound(t, h, e, ctx, shaA, []any{medium}, nil); c.Conclusion != ConclusionSuccess {
+		t.Fatalf("first head: %s\n%s", c.Conclusion, c.Summary)
+	}
+	shaB := strings.Repeat("b", 40)
+	c := capReviewRound(t, h, e, ctx, shaB, []any{}, nil)
+	st, _ := LoadState(c.Text)
+	if c.Conclusion != ConclusionFailure || len(st.Blocking) != 1 || st.Blocking[0].ID != "a.go:validation" {
+		t.Fatalf("an omitted deferred finding passed: %s, %+v\n%s", c.Conclusion, st.Blocking, c.Summary)
+	}
+	open := map[string]any{"id": "a.go:validation", "status": "open", "note": "Still open."}
+	shaC := strings.Repeat("c", 40)
+	if c := capReviewRound(t, h, e, ctx, shaC, []any{}, []any{open}); c.Conclusion != ConclusionSuccess {
+		t.Fatalf("an accounted deferred finding still blocks: %s\n%s", c.Conclusion, c.Summary)
+	}
+}
+
+// TestReviewCapRechecksAFailedHead covers HOME-756: when the connector marks
+// the PR after a failed review, the reviewer reviews that head once more.
+func TestReviewCapRechecksAFailedHead(t *testing.T) {
+	medium := map[string]any{"id": "a.go:validation", "severity": "medium", "path": "a.go", "title": "No regression test"}
+	h := newHarness(t)
+	addPR7(h)
+	pr := h.gh.prs[7]
+	pr.Author, pr.Body = factoryAuthor, "Factory delivery."
+	h.cfg.Bindings[0].DeferAtReviewCap = true
+	e, ctx, _ := h.start()
+	first := capReviewRound(t, h, e, ctx, shaA, []any{medium}, nil)
+	if first.Conclusion != ConclusionFailure {
+		t.Fatalf("uncapped head passed: %s", first.Conclusion)
+	}
+	h.gh.mu.Lock()
+	pr.Body += "\n\n" + github.ReviewCapMarker + "\n"
+	h.gh.mu.Unlock()
+	open := map[string]any{"id": "a.go:validation", "status": "open", "note": "Not fixed."}
+	e.Tick(ctx)
+	eventually(t, "a second review of the head", func() bool { c := h.gh.check(shaA); return c != nil && c.ID != first.ID })
+	var task string
+	eventually(t, "the second review task", func() bool { task = h.taskOn(7, shaA, 1); return task != "" })
+	h.k.finish(task, kagent.StateCompleted, report(t, map[string]any{"summary": "s", "findings": []any{medium}, "previous": []any{open}}))
+	eventually(t, "the second check", func() bool { return h.gh.check(shaA).Status == "completed" })
+	eventually(t, "the review slot to free", func() bool { return testutil.ToFloat64(h.m.InFlight) == 0 })
+	if c := h.gh.check(shaA); c.Conclusion != ConclusionSuccess {
+		t.Fatalf("recheck at the cap: %s\n%s", c.Conclusion, c.Summary)
+	}
+	checks := len(h.gh.checks)
+	e.Tick(ctx)
+	if len(h.gh.checks) != checks {
+		t.Fatal("a reviewed cap head was reviewed again")
+	}
+}

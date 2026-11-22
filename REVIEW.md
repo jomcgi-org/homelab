@@ -199,6 +199,11 @@ page checks, and none of them was a defect in the site
 | Medium | A failure on an edge input or a non-default path. A rare failure that passes silently or loses data. A dependency on code an open issue retires (#7914). A bug fix with no regression test. An error path that hides a failure. A documented command that does not work. Missing evidence in the repository that a rule requires, or an exposure that "Facts outside the repository" lists with no evidence. A stated or omitted outside fact under that section is not one. | Blocks until fixed or justified. |
 | Low | Naming, wording, prose style, an optional refactor, a test for trivial code. A rare failure that is loud and recoverable (`defer`). | Never blocks. |
 
+At the review-round cap of a factory PR, the service defers open medium
+findings to follow-up issues; critical and high findings still block
+([Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-756#comment-10150),
+[review cap](projects/factory/connector/review-cap.md)).
+
 A severity a scoped rule names covers a violation that needs no unusual
 timing or scale; test 3 rates the rest, so the two never conflict. Within
 that reach, a scoped rule that names a severity sets it, and a violated

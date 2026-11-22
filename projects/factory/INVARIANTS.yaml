@@ -273,3 +273,16 @@ invariants:
   - projects/factory/discord/render/src/main.rs
   test: //projects/factory/discord/render:input_test
   state: live
+- id: HOME-756-1
+  statement: The reviewer defers a factory PR's medium findings at the review cap only when the cap marker is in a PR body the factory App wrote last.
+  mechanism:
+  - projects/factory/reviewer/review/engine.go
+  - projects/factory/connector/github/pulls.go
+  test: //projects/factory/reviewer/review:review_test
+  state: unproven
+- id: HOME-756-2
+  statement: A medium finding deferred at the review cap stays in the review state until a later head accounts for it.
+  mechanism:
+  - projects/factory/reviewer/review/report.go
+  test: //projects/factory/reviewer/review:review_test
+  state: unproven

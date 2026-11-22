@@ -76,7 +76,7 @@ type PullRequest struct {
 	BaseRef  string
 	BaseSHA  string
 	Title    string
-	// Body, CreatedAt and UpdatedAt come from REST reads only; Author and
+	// CreatedAt and UpdatedAt come from REST reads only; Body, Author and
 	// Labels from REST reads and PullRequestDetail.
 	Body      string
 	Author    string
@@ -550,7 +550,7 @@ const pullRequestQuery = `query PullRequestDetail($owner: String!, $name: String
   }
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      id number url state merged mergedAt isDraft title headRefOid headRefName headRepository { nameWithOwner } baseRefName baseRefOid mergeable
+      id number url state merged mergedAt isDraft title body headRefOid headRefName headRepository { nameWithOwner } baseRefName baseRefOid mergeable
       author { __typename login }
       mergeCommit { oid }
       commits(last: 1) { nodes { commit { oid message } } }
@@ -613,6 +613,7 @@ func (c *Client) PullRequestDetailWithReviews(ctx context.Context, repo string, 
 				MergedAt       *time.Time `json:"mergedAt"`
 				IsDraft        bool       `json:"isDraft"`
 				Title          string     `json:"title"`
+				Body           string     `json:"body"`
 				HeadRefOid     string     `json:"headRefOid"`
 				HeadRepository struct {
 					NameWithOwner string `json:"nameWithOwner"`
@@ -673,7 +674,7 @@ func (c *Client) PullRequestDetailWithReviews(ctx context.Context, repo string, 
 	}
 	d := &PullRequestDetail{PullRequest: PullRequest{
 		Number: p.Number, NodeID: p.ID, URL: p.URL, State: strings.ToLower(p.State), Merged: p.Merged,
-		HeadRepo: p.HeadRepository.NameWithOwner, Draft: p.IsDraft, Title: p.Title, HeadSHA: p.HeadRefOid, HeadRef: p.HeadRefName, BaseRef: p.BaseRefName, BaseSHA: p.BaseRefOid,
+		HeadRepo: p.HeadRepository.NameWithOwner, Draft: p.IsDraft, Title: p.Title, Body: p.Body, HeadSHA: p.HeadRefOid, HeadRef: p.HeadRefName, BaseRef: p.BaseRefName, BaseSHA: p.BaseRefOid,
 	}}
 	d.Mergeable = p.Mergeable
 	if p.Author != nil {

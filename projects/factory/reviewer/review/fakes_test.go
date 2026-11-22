@@ -58,10 +58,14 @@ type fakePR struct {
 	Files                []github.PullRequestFile
 	// Heads is the timeline's head history, oldest first; the current head
 	// is appended when it changes.
-	Heads          []string
-	Reviews        []github.PullRequestReview
-	LabelEvents    []github.LabelEvent
-	ReviewEditors  map[int64]string
+	Heads         []string
+	Reviews       []github.PullRequestReview
+	LabelEvents   []github.LabelEvent
+	ReviewEditors map[int64]string
+	// BodyEditor is the last editor of the PR body, a Bot login when
+	// BodyEditorBot; empty means never edited.
+	BodyEditor     string
+	BodyEditorBot  bool
 	ReviewEditedAt map[int64]time.Time
 	Comments       []github.Comment
 	// TimelineTruncated reports older timeline events than GitHub lists.
@@ -821,6 +825,29 @@ func (f *fakeGitHub) graphql(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	switch {
+	case strings.Contains(req.Query, "query PullRequestBodyProof"):
+		kind = "body_proof"
+		pr := f.prs[number]
+		if pr == nil {
+			reply(map[string]any{"repository": map[string]any{"pullRequest": nil}})
+			return
+		}
+		authorType := "User"
+		if strings.HasSuffix(pr.Author, "[bot]") {
+			authorType = "Bot"
+		}
+		var editor, edited any
+		if pr.BodyEditor != "" {
+			editorType := "User"
+			if pr.BodyEditorBot {
+				editorType = "Bot"
+			}
+			editor, edited = map[string]string{"__typename": editorType, "login": pr.BodyEditor}, "2026-11-22T12:00:00Z"
+		}
+		reply(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
+			"number": number, "author": map[string]string{"__typename": authorType, "login": strings.TrimSuffix(pr.Author, "[bot]")},
+			"editor": editor, "lastEditedAt": edited, "body": pr.Body, "headRefOid": pr.Head,
+		}}})
 	case strings.Contains(req.Query, "ADDED_TO_MERGE_QUEUE_EVENT"):
 		kind = "cited"
 		item, ok := f.cited[number]

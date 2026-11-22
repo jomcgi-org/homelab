@@ -128,7 +128,11 @@ type Binding struct {
 	MaxReviewRounds  *int     `yaml:"maxReviewRounds"`
 	MaxRebaseRounds  *int     `yaml:"maxRebaseRounds"`
 	MaxSplitRounds   *int     `yaml:"maxSplitRounds"`
-	DoneColumn       string   `yaml:"doneColumn"`
+	// DeferAtReviewCap marks a PR at the review-round cap for the reviewer,
+	// which then defers its medium findings (HOME-756). It stays off until
+	// merge-time filing of deferred findings is live.
+	DeferAtReviewCap bool   `yaml:"deferAtReviewCap"`
+	DoneColumn       string `yaml:"doneColumn"`
 
 	// HOME routes human-gate issues to joe by default. Other projects opt in;
 	// an explicit empty string disables the integration for a binding.

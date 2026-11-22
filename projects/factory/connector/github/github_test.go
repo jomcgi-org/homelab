@@ -1647,3 +1647,81 @@ func TestETagCacheSkipsLargeBodies(t *testing.T) {
 		t.Fatal("stale small body kept after a large update")
 	}
 }
+
+func bodyProofServer(t *testing.T, pr map[string]any) *Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if r.URL.Path != "/graphql" || req.Variables["owner"] != "example-org" || req.Variables["name"] != "homelab" || req.Variables["number"] != float64(7) {
+			t.Errorf("wrong body proof request: %s, variables %+v", r.URL.Path, req.Variables)
+		}
+		for _, field := range []string{"pullRequest(number:", "author { __typename login }", "editor { __typename login }", "lastEditedAt", "body", "headRefOid"} {
+			if !strings.Contains(req.Query, field) {
+				t.Errorf("body proof query omitted %s", field)
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": pr}}})
+	}))
+	t.Cleanup(srv.Close)
+	return &Client{BaseURL: srv.URL, Tokens: fixedTokens{}}
+}
+
+// TestPullRequestBodyProof covers HOME-756: the reviewer trusts the review
+// cap marker only in a body the factory App wrote last.
+func TestPullRequestBodyProof(t *testing.T) {
+	bot := map[string]string{"__typename": "Bot", "login": "jomcgi-factory"}
+	for name, tc := range map[string]struct {
+		author, editor any
+		edited         any
+		trusted        bool
+	}{
+		"never edited":           {bot, nil, nil, true},
+		"edited by the App":      {bot, bot, "2026-11-22T12:00:00Z", true},
+		"edited by a person":     {bot, map[string]string{"__typename": "User", "login": "jomcgi"}, "2026-11-22T12:00:00Z", false},
+		"edited by another App":  {bot, map[string]string{"__typename": "Bot", "login": "github-actions"}, "2026-11-22T12:00:00Z", false},
+		"a user with the name":   {map[string]string{"__typename": "User", "login": "jomcgi-factory"}, nil, nil, false},
+		"authored by a person":   {map[string]string{"__typename": "User", "login": "jomcgi"}, nil, nil, false},
+		"edited, editor deleted": {bot, nil, "2026-11-22T12:00:00Z", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := bodyProofServer(t, map[string]any{"number": 7, "author": tc.author, "editor": tc.editor, "lastEditedAt": tc.edited, "body": "b\n" + ReviewCapMarker, "headRefOid": "sha-1"})
+			got, err := c.PullRequestBodyProof(context.Background(), "example-org/homelab", 7)
+			if name == "edited, editor deleted" {
+				clientCheck(t, err != nil && got == nil, "unknown editor returned a proof: %+v", got)
+				return
+			}
+			clientCheck(t, err == nil && got.HeadSHA == "sha-1" && HasReviewCapMarker(got.Body), "proof = %+v, %v", got, err)
+			clientCheck(t, got.WrittenBy("jomcgi-factory[bot]") == tc.trusted, "WrittenBy = %v, want %v (%+v)", !tc.trusted, tc.trusted, got)
+		})
+	}
+	for name, pr := range map[string]map[string]any{
+		"missing editor field": {"number": 7, "author": bot, "lastEditedAt": nil, "body": "b", "headRefOid": "sha-1"},
+		"missing body":         {"number": 7, "author": bot, "editor": nil, "lastEditedAt": nil, "headRefOid": "sha-1"},
+		"wrong PR":             {"number": 8, "author": bot, "editor": nil, "lastEditedAt": nil, "body": "b", "headRefOid": "sha-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := bodyProofServer(t, pr).PullRequestBodyProof(context.Background(), "example-org/homelab", 7)
+			clientCheck(t, err != nil && got == nil, "incomplete proof returned: %+v", got)
+		})
+	}
+}
+
+func TestHasReviewCapMarker(t *testing.T) {
+	for body, want := range map[string]bool{
+		"x\n" + ReviewCapMarker + "\n":           true,
+		"x":                                      false,
+		"x " + ReviewCapMarker:                   false,
+		ReviewCapMarker + "\n" + ReviewCapMarker: false,
+		"`" + ReviewCapMarker + "`\n" + ReviewCapMarker + "\n": false,
+	} {
+		clientCheck(t, HasReviewCapMarker(body) == want, "HasReviewCapMarker(%q) = %v", body, !want)
+	}
+}

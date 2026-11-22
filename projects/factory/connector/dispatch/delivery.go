@@ -70,9 +70,19 @@ type ReviewPolicy struct {
 	// MaxSplitRounds separately bounds rounds whose only cause is the
 	// reviewer's request to split a PR over its size budget.
 	MaxSplitRounds int
+	// DeferAtReviewCap marks a PR whose work item spent MaxReviewRounds with
+	// github.ReviewCapMarker; the reviewer then defers its medium findings
+	// (HOME-756, review-cap.md).
+	DeferAtReviewCap bool
 	// DoneColumn names the itsaplan column a merged issue moves to; empty
 	// picks the project's first completed column.
 	DoneColumn string
+}
+
+// atCap reports a work item whose PR the reviewer reviews at the review
+// cap: it spent its review rounds on a binding that defers at the cap.
+func (p *ReviewPolicy) atCap(wi *store.WorkItem) bool {
+	return p.DeferAtReviewCap && wi.ReviewRounds >= p.MaxReviewRounds
 }
 
 // Links are URL templates for the PR body and the Done comment. {issue},
@@ -799,7 +809,36 @@ func (e *Engine) prBody(ctx context.Context, wi *store.WorkItem, a *store.Attemp
 	fmt.Fprintf(&s, "- Attempt: `%s` (delivery attempt %d)\n", a.MessageID, a.Seq)
 	fmt.Fprintf(&s, "\nAfter merge, `Activation: none` in the head commit allows the issue to become Done. "+
 		"Any outstanding activation step keeps it In Progress and becomes a delegated follow-up issue that blocks it.\n\n<!-- factory-connector work-item=%d -->\n", wi.ID)
+	if b := e.binding(wi.BindingName); b != nil && b.Review.atCap(wi) {
+		s.WriteString(capNote + github.ReviewCapMarker + "\n")
+	}
 	return s.String()
+}
+
+// capNote explains the review-cap marker in the PR body.
+const capNote = "\nThis PR used its review rounds. The reviewer defers its medium findings to follow-up issues; " +
+	"a critical or high finding still blocks (HOME-756).\n\n"
+
+// markReviewCap adds the review-cap marker to the body of a PR whose work
+// item spent its review rounds, also one that reached the cap before
+// deferral existed. The reviewer then reviews a failed head again with the
+// cap. The edit makes the factory App the body's last editor, which the
+// reviewer requires; a body that already has one marker is left alone.
+func (e *Engine) markReviewCap(ctx context.Context, wi *store.WorkItem, b *Binding, pr *store.PullRequest, d *github.PullRequestDetail) error {
+	if !b.Review.atCap(wi) || wi.State != store.WorkReview || github.HasReviewCapMarker(d.Body) {
+		return nil
+	}
+	body := strings.ReplaceAll(d.Body, github.ReviewCapMarker, "")
+	body = strings.TrimRight(body, "\n") + "\n" + capNote + github.ReviewCapMarker + "\n"
+	if err := e.guard(ctx); err != nil {
+		return err
+	}
+	if _, err := e.gh.UpdatePullRequest(ctx, b.repo(), pr.Number, github.PullRequestUpdate{Body: &body}); err != nil {
+		return fmt.Errorf("mark PR %d at the review cap: %w", pr.Number, err)
+	}
+	d.Body = body
+	e.log.InfoContext(ctx, "PR marked at the review cap", "work_item", wi.ID, "pr", pr.Number, "head", d.HeadSHA)
+	return nil
 }
 
 func (e *Engine) lastItsaplanRun(ctx context.Context, workID int64) int64 {
@@ -915,6 +954,9 @@ func (e *Engine) pollPR(ctx context.Context, wi *store.WorkItem, b *Binding, pr 
 	case d.MergeQueueState != "":
 		// Queued although the enqueue's answer was lost.
 		return e.reconcileEnqueue(ctx, wi, b, pr, d)
+	}
+	if err := e.markReviewCap(ctx, wi, b, pr, d); err != nil {
+		return err
 	}
 	if d.Mergeable == "UNKNOWN" {
 		return nil // GitHub is still computing mergeability; poll again
@@ -1500,6 +1542,13 @@ func finished(c Check, head string, checks []github.CheckRun, statuses []github.
 }
 
 func (e *Engine) reviewRoundLimit(ctx context.Context, tx *sql.Tx, wi *store.WorkItem, b *Binding, pr *store.PullRequest) error {
+	if b.Review.DeferAtReviewCap {
+		return e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/round-limit/%d", wi.ID), 0, "",
+			commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
+				"%s reached its bound of %d review rounds on PR #%d (%s). The reviewer defers its medium findings "+
+					"to follow-up issues; the PR lands if no critical or high finding remains (HOME-756).",
+				wi.IssueKey, b.Review.MaxReviewRounds, pr.Number, pr.URL)})
+	}
 	return e.st.Enqueue(ctx, tx, store.OutboxComment, fmt.Sprintf("comment/round-limit/%d", wi.ID), 0, "",
 		commentPayload{IssueID: wi.IssueID, Body: fmt.Sprintf(
 			"%s reached its bound of %d review rounds; PR #%d (%s) waits for a person.",

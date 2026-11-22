@@ -757,7 +757,9 @@ connector:
   # binding. Keys: itsaplanProject and agents (required); branchPrefix
   # (factory/), maxEngineeringRetries (2), maxReviewRounds (3),
   # maxRebaseRounds (3, separate from review rounds), maxSplitRounds (1,
-  # separate rounds for the reviewer's split request), doneColumn;
+  # separate rounds for the reviewer's split request), deferAtReviewCap
+  # (false; at the review-round cap the reviewer defers medium findings,
+  # HOME-756 connector/review-cap.md), doneColumn;
   # the review policy trustedReviewers (GitHub logins), requiredChecks and
   # reviewerCheck (each {name, appId} or {name, statusCreator}). Without a
   # reviewer check or trusted reviewers no PR is ever enqueued.
