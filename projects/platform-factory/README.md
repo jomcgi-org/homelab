@@ -9,3 +9,5 @@ T3 socket on node-1. See [T3 browser access](../factory-cluster/README.md#t3-bro
 
 The [pod host access policy](pod-host-access/) warns and audits when application
 pods request host networking, host PID, hostPath volumes or privileged containers.
+
+The [image audit](image-audit/) checks rendered platform workloads for digest-pinned images.

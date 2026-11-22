@@ -21,6 +21,7 @@ spec:
         releaseName: cert-manager
         valueFiles:
           - values.yaml
+          - values-factory.yaml
         ignoreMissingValueFiles: false
     - repoURL: https://github.com/jomcgi-org/homelab.git
       targetRevision: HEAD

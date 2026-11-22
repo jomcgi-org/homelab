@@ -28,3 +28,8 @@ exports_files(
     ["network-policy.yaml"],
     visibility = ["//projects/platform-factory/network-policy/tests:__pkg__"],
 )
+
+exports_files(
+    ["cluster.yaml"],
+    visibility = ["//projects/platform-factory/image-audit:__pkg__"],
+)

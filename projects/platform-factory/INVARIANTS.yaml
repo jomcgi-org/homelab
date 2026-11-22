@@ -59,9 +59,11 @@ invariants:
   mechanism: []
   state: designed
 - id: PLAT-11
-  statement: Every pod image names a digest.
-  mechanism: []
-  state: designed
+  statement: Every factory platform pod image names a digest, excluding k3s add-ons.
+  mechanism:
+  - projects/platform-factory/image-audit/check_image_digests.py
+  - projects/platform-factory/image-audit/platform_images_test.py
+  state: unproven
 - id: PLAT-12
   statement: Each application namespace has a ResourceQuota and a LimitRange.
   mechanism: []
