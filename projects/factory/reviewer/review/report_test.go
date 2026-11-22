@@ -1564,3 +1564,28 @@ func TestUpgradeHashOnlyDecisionCheckpoint(t *testing.T) {
 		t.Fatal("fresh authorization failed")
 	}
 }
+
+// The edited comment behind a versioned decision cannot clear the revoked
+// finding again on the same head's rerun.
+func TestEditedVersionedDecisionNeedsNewComment(t *testing.T) {
+	const id = "a.go:rollout"
+	c := github.Comment{ID: 42, Body: "Accept a.go:rollout.", CreatedAt: "2026-11-18T10:00:00Z", UpdatedAt: "2026-11-18T10:00:00Z"}
+	stamp := DecisionStamp{Finding: id, ID: c.ID, Hash: bodyHash(c.Body), UpdatedAt: c.UpdatedAt, Severity: SeverityHigh}
+	c.Body = "Accept a.go:rollout, edited."
+	c.UpdatedAt = "2026-11-19T10:00:00Z"
+	d := Decisions{Repo: "o/r", Number: 7, Comments: []github.Comment{c}, Carried: []DecisionStamp{stamp}}
+	if d.Hold(d.Carried) {
+		t.Fatal("edited comment held the versioned decision")
+	}
+	prior := []Finding{{ID: id, Severity: SeverityHigh, Title: "rollout"}}
+	r := &Report{Previous: []Previous{{ID: id, Status: StatusJustified, Note: "decision: https://github.com/o/r/pull/7#issuecomment-42"}}}
+	got := AssessDecided(r, prior, d)
+	if len(got.Accepted) != 0 || len(got.Blocking) != 1 || got.Blocking[0].ReauthorizeAfter != 42 {
+		t.Fatalf("edited comment cleared the finding again: accepted %+v, blocking %+v", got.Accepted, got.Blocking)
+	}
+	d.Comments = append(d.Comments, github.Comment{ID: 43, Body: "Accept a.go:rollout.", CreatedAt: "2026-11-19T11:00:00Z", UpdatedAt: "2026-11-19T11:00:00Z"})
+	r.Previous[0].Note = "decision: https://github.com/o/r/pull/7#issuecomment-43"
+	if got := AssessDecided(r, prior, d); len(got.Accepted) != 1 {
+		t.Fatalf("new decision comment failed: %+v", got.Blocking)
+	}
+}
