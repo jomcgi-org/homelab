@@ -97,7 +97,6 @@ sh_test(
 exports_files(
     [
         "platform-factory/cert-manager/resources/network-policy.yaml",
-        "platform-factory/cfgate/resources/network-policy.yaml",
         "platform-factory/cloudnative-pg/resources/network-policy.yaml",
         "platform-factory/kargo/resources/network-policy.yaml",
     ],
