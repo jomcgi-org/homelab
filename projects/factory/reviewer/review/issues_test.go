@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -1010,5 +1012,48 @@ func TestTicketReplyBindsEvidenceToTheExactPRAndCommit(t *testing.T) {
 	e.sealIssues(newer)
 	if issueDigest(older) == issueDigest(newer) {
 		t.Fatal("matching reply did not invalidate the earlier verdict")
+	}
+}
+
+// HOME-538: itsaplan's creation snapshot (croffasia/itsaplan#979) attributes the
+// never-edited title to the creator, read through the real client.
+func TestOriginalTitleAndEditedDescriptionTrust(t *testing.T) {
+	for _, tc := range []struct {
+		creator string
+		trusted bool
+		count   int
+	}{{"human", true, 1}, {"bot", false, 0}} {
+		t.Run(tc.creator, func(t *testing.T) {
+			e, b, api, pr := issueSetup()
+			api.issue.Description = "Done when\n1. Publish the report."
+			created := fmt.Sprintf(`{"issueId":95,"kind":"activity","action":"created","actorUserId":%q,"payload":{"title":{"value":%q},"description":{"value":"Draft"}}}`, tc.creator, api.issue.Title)
+			edit := fmt.Sprintf(`{"issueId":95,"kind":"activity","action":"description","actorUserId":"sessions","payload":{"to":{"value":%q}}}`, api.issue.Description)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/projects/HOME":
+					_ = json.NewEncoder(w).Encode(api.project)
+				case "/projects/HOME/issues/58":
+					_ = json.NewEncoder(w).Encode(api.issue)
+				case "/issues/95/feed":
+					items := created
+					if r.URL.Query().Get("order") == "desc" {
+						items = edit + "," + created
+					}
+					fmt.Fprintf(w, `{"items":[%s]}`, items)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			e.cfg.Itsaplan = &itsaplan.Client{BaseURL: srv.URL, HTTP: srv.Client(), Coordinator: "reviewer", Keys: map[string]string{"reviewer": "test"}}
+			in := e.issueContext(context.Background(), b, pr, nil)
+			if in.Issue == nil || in.Issue.Trusted != tc.trusted || issueCriteria(in) != tc.count {
+				t.Fatalf("issue = %+v, count = %d", in.Issue, issueCriteria(in))
+			}
+			goal := &GoalCheck{Counted: issueCriteria(in), Criteria: []GoalVerdict{{}}}
+			if withdrawn := goalWithdrawn("HOME-57:goal", goalKey(in), goal) != ""; withdrawn != tc.trusted {
+				t.Fatalf("old goal withdrawn = %v", withdrawn)
+			}
+		})
 	}
 }
