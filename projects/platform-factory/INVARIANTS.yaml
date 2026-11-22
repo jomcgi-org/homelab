@@ -91,6 +91,8 @@ invariants:
 - id: PLAT-16
   statement: Factory and platform policies restrict egress to the kube-apiserver entity to TCP port 6443.
   mechanism:
+  - projects/factory-explore/chart/templates/proxy.yaml
+  - projects/ships/chart/templates/database.yaml
   - projects/factory/chart/templates
   - projects/platform-factory/network-policy
   test: //projects/platform-factory/network-policy/tests:policies_test
