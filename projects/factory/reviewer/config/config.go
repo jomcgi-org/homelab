@@ -1,4 +1,4 @@
-// invariant: FACT-14
+// invariant: FACT-19
 
 // Package config loads the reviewer's settings from one YAML file, strictly:
 // an unknown field is an error.
