@@ -24,3 +24,5 @@ echo "${SHA256}  ${tmp}/connect-${VERSION}.tgz" | sha256sum --check --quiet
 rm -rf "${HERE}/charts/connect"
 tar -xzf "${tmp}/connect-${VERSION}.tgz" -C "${HERE}/charts"
 patch --quiet --strip=1 --directory="${HERE}/charts" <"${HERE}/connect.patch"
+# The repo allows only the document names in docs/templates/bundles.yaml.
+rm -f "${HERE}/charts/connect/CHANGELOG.md"
