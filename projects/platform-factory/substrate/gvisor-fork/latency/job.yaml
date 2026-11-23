@@ -16,7 +16,7 @@
 #
 # Capacity: the pool books each child at the template's CPU and memory limits
 # (1000m and 144 MiB with the fork overhead), and the seed books 1000m and
-# 256 MiB. The staged pool (kvm-pool.yaml: 2 CPU, 1280Mi) holds the seed and one
+# 512 MiB. The staged pool (kvm-pool.yaml: 2 CPU, 1280Mi) holds the seed and one
 # child. The defaults here (K up to 4, batches of 4, one child of headroom) need
 # 5 children, so resize the pool first: the egress scanner design sets 9 CPU.
 # latency.py stops with a capacity error otherwise.

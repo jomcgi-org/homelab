@@ -45,12 +45,14 @@ snapshotConfig:
     mode: GOLDEN_SNAPSHOT_MODE_DISABLED
 forkConfig:
   mode: FORK_MODE_SEED_AND_FORK
-  # What the seed holds on the worker: the engine's ~150 MB template with
-  # headroom (seed 171 MB resident, 192 MB peak in the Round 5 runs).
+  # What the seed holds on the worker: a 512 MiB cap, as the pool design books
+  # it (egress-scan/ARCHITECTURE.md). The seed measured 171 MB resident and
+  # 192 MB peak in the Round 5 runs; a seed killed at its cap would leave the
+  # seed wait (C3) running to its deadline.
   seedResources:
     limits:
       cpuMillicores: 1000
-      memoryBytes: 268435456
+      memoryBytes: 536870912
   singleUse: true
   maxLifetimeSeconds: 120
   pidsLimit: 256

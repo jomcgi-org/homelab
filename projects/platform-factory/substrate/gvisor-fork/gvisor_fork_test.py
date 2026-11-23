@@ -500,7 +500,7 @@ _TEMPLATE = _HERE / "conformance" / "template.yaml"
 
 
 def _conformance_job() -> dict:
-    return _one(_docs(), "Job", "gvisor-fork-conformance-4")
+    return _one(_docs(), "Job", "gvisor-fork-conformance-5")
 
 
 def test_conformance_job_runs_once_as_ate_client() -> None:
@@ -1208,7 +1208,7 @@ def test_latency_jobs_grant_nothing_new() -> None:
 
 def test_latency_jobs_use_the_conformance_cli_by_digest() -> None:
     reference = {}
-    for name in [*_LATENCY_JOBS, "gvisor-fork-conformance-4"]:
+    for name in [*_LATENCY_JOBS, "gvisor-fork-conformance-5"]:
         pod = (_latency_job(name) if name in _LATENCY_JOBS else _conformance_job())[
             "spec"
         ]["template"]["spec"]

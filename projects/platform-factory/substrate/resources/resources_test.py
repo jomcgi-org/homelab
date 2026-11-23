@@ -763,7 +763,7 @@ _FORK_OBJECTS = {
     ("CiliumNetworkPolicy", "ate-system", "rustfs-gvisor-fork-assets"),
     ("CiliumNetworkPolicy", _FORK_NS, "substrate-workers"),
     ("Job", "ate-system", "gvisor-fork-assets-init"),
-    ("Job", "ate-system", "gvisor-fork-conformance-4"),
+    ("Job", "ate-system", "gvisor-fork-conformance-5"),
     ("Namespace", None, _FORK_NS),
     ("SandboxConfig", None, "gvisor-fork"),
     ("ServiceAccount", _FORK_NS, "fork-worker"),
@@ -828,7 +828,7 @@ def test_gvisor_fork_slice_is_wired() -> None:
     # its own (and deletes it), so the worker holds no seed.
     pool = _one(docs, "WorkerPool", "gvisor-fork")
     assert pool["spec"]["replicas"] == 1
-    conformance = _one(docs, "Job", "gvisor-fork-conformance-4")
+    conformance = _one(docs, "Job", "gvisor-fork-conformance-5")
     assert conformance["spec"]["suspend"] is False
     # A Pending Job leaves the Application Degraded and the cluster is request
     # tight, so the pod requests little.
@@ -847,7 +847,7 @@ def test_gvisor_fork_slice_is_wired() -> None:
         if v["name"] == "config"
     ]
     assert config_volume["configMap"]["name"] == conformance_map
-    assert conformance_map == "gvisor-fork-conformance-kh98262d7c"
+    assert conformance_map == "gvisor-fork-conformance-tgf4tdtbht"
     assert not [
         d for d in docs if d["metadata"]["name"].startswith("gvisor-fork-latency")
     ]
@@ -1013,7 +1013,7 @@ def test_fork_images_share_one_fork_commit_tag() -> None:
     refs["workerpool/gvisor-fork"] = _one(docs, "WorkerPool", "gvisor-fork")["spec"][
         "workerImage"
     ]
-    job = _one(docs, "Job", "gvisor-fork-conformance-4")
+    job = _one(docs, "Job", "gvisor-fork-conformance-5")
     (cli,) = [
         v["image"]["reference"]
         for v in job["spec"]["template"]["spec"]["volumes"]

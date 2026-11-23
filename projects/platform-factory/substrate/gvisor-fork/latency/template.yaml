@@ -54,7 +54,7 @@ forkConfig:
   seedResources:
     limits:
       cpuMillicores: 1000
-      memoryBytes: 268435456
+      memoryBytes: 536870912
   singleUse: true
   # A pool child waits for its request: the worker kills it at this deadline.
   maxLifetimeSeconds: 300

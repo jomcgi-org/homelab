@@ -4,22 +4,26 @@
 # check). Run it only after the enable steps. The log is the result:
 # grep '^CONFORMANCE '.
 #
-# Runs once: the directory is wired since step 5, the Job was created suspended,
-# and step 8 of the enable steps sets suspend to false. ../resources/
-# resources_test.py is the wiring guard. While the Job was suspended, Argo showed
-# health Suspended. It runs one pod (backoffLimit 0) and stays Complete or
-# Failed until it is removed: a Complete Job is Healthy, and a Failed or
-# Pending one leaves the Application Degraded. The enable steps are in
+# Runs once: the directory is wired since step 5, the Job was created
+# suspended, and step 8 of the enable steps sets suspend to false.
+# ../resources/resources_test.py is the wiring guard. While the Job was
+# suspended, Argo showed health Suspended. It runs one pod (backoffLimit 0) and
+# stays Complete or Failed until it is removed. A Complete Job is Healthy, and a
+# Failed one leaves the Application Degraded. The enable steps are in
 # projects/factory-cluster/README.md, "gVisor sandbox fork".
-# A Job's pod template is immutable: to run again, change the run suffix in
-# the name. Editing anything under conformance/ changes the generated
-# ConfigMap's hash, and so the Job's config volume and its pod template: bump
-# the run suffix in the same change (resources_test.py pins the hash). The
-# suffix is 4: -2 named the first fork build, and -3 failed at its first API call
-# because its template did not disable golden snapshots. To suspend it again, set suspend back
-# to true, which Kubernetes allows before the pod is done. To remove the test,
-# delete this file and its kustomization entries after reading the log; ArgoCD
-# then prunes the Job.
+#
+# A Job's pod template is immutable: to run again, change the run suffix in the
+# name. Editing anything under conformance/ changes the generated ConfigMap's
+# hash, and so the Job's config volume and its pod template: bump the run suffix
+# in the same change (resources_test.py pins the hash).
+#
+# The suffix is 5. -2 named the first fork build. -3 failed at its first API
+# call, because its template did not disable golden snapshots. -4 was never
+# applied: review raised the seed memory limit to 512 MiB first.
+#
+# To suspend a running Job, set suspend back to true, which Kubernetes allows
+# before the pod is done. To remove the test, delete this file and its
+# kustomization entries after reading the log. ArgoCD then prunes the Job.
 #
 # It runs as ate-system/ate-client, which the ate API already authorizes
 # (ateApi.authorization.bootstrapOwners in ../values/substrate.yaml), so it
@@ -31,7 +35,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: gvisor-fork-conformance-4
+  name: gvisor-fork-conformance-5
   namespace: ate-system
   annotations:
     argocd.argoproj.io/sync-wave: "2"
