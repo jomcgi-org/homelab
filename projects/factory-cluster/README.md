@@ -459,7 +459,7 @@ Secret key presence are checked after deployment.
 
 ## Agent Substrate
 
-To upgrade Substrate, rerun `projects/platform-factory/substrate/render-upstream.sh` and review the rendered diff. Verify the installation:
+To upgrade Substrate, rerun `projects/platform-factory/substrate/render-upstream.sh` and review the rendered diff. The script renders the release charts, then applies the fork overlay: the `ateapi`, `atecontroller` and `atelet` images and the WorkerPool CRD come from jomcgi-org/substrate at `b6b0ec3e2`. Verify the installation:
 
 ```bash
 export KUBECONFIG=~/.kube/factory.yaml
@@ -588,17 +588,25 @@ flowchart LR
 2. Done. The `Substrate fork images` workflow (run 45140822019) published the
    five images at fork commit `b6b0ec3e217c`. The packages are public. The
    digests are in `kvm-pool.yaml` (`ateworker-gvisor`) and
-   `conformance-job.yaml` (`kubectl-ate`). Step 4 uses the `ateapi`,
-   `atecontroller` and `atelet` digests from the run summary.
+   `conformance-job.yaml` (`kubectl-ate`). Step 4 pins the `ateapi`,
+   `atecontroller` and `atelet` digests in `render-upstream.sh`.
 3. Done. The `Substrate fork engine image` workflow (run 45140818290) published
    `engine-oss:1.186.0-946d07e5597c`, and `conformance/template.yaml` names it by
    digest. The package is public.
-4. Cluster-affecting, Joe approves. Render the fork's charts at `b6b0ec3e2`:
-   the CRD with `platform`, then `ateapi`, `atecontroller` and `atelet` at the
-   fork digests. Check that no factory runs are dispatched before the roll, as
-   it replaces workers. Merge it with the gate off. After the merge, verify that
-   an existing actor still starts and runs, and that the control plane is
-   healthy.
+4. Cluster-affecting, Joe approves. Merge the fork overlay that
+   `render-upstream.sh` renders, with the gate off. It changes four rendered
+   objects: the WorkerPool CRD (an optional `platform` field and one validation
+   rule) and the images of Deployments `ate-api-server` and `ate-controller` and
+   DaemonSet `atelet`. The roll replaces both `ate-api-server` pods one at a
+   time, the `ate-controller` pod, and the `atelet` pod on each of the three
+   nodes, one node at a time. Existing worker pods keep their spec. Check that
+   no factory runs are dispatched before the roll. After the merge, verify that
+   the pods are Ready and every WorkerPool is Ready. Then verify that an
+   existing actor still starts and runs, with the smoke test in "Agent
+   Substrate". The first `ate-api-server` start writes a new OpenFGA authorization
+   model (the fork adds `can_create_fork_template`). To roll back, revert the
+   PR: the images return to their v1.0.1 digests, and the old server writes its
+   own model again at start.
 5. Wire `../gvisor-fork` in `resources/kustomization.yaml`. The pool's
    `workerImage` already names the published digest. Keep `replicas` at 0. In
    `resources_test.py`, replace `test_gvisor_fork_slice_is_staged_and_not_wired`

@@ -767,5 +767,74 @@ def test_gvisor_fork_slice_is_staged_and_not_wired() -> None:
 def test_fork_seed_gate_is_off() -> None:
     # The gate stays off until step 7 of the enable steps
     # (projects/factory-cluster/README.md, "gVisor sandbox fork"): no rendered
-    # component takes it in --preview.
-    assert "ForkSeed" not in json.dumps(_docs())
+    # component takes it in --preview. The WorkerPool CRD's field text names the
+    # gate, so only container arguments are read.
+    args = [
+        arg
+        for doc in _docs()
+        if doc["kind"] in {"Deployment", "DaemonSet", "StatefulSet"}
+        for container in doc["spec"]["template"]["spec"]["containers"]
+        for arg in container.get("args", [])
+    ]
+    previews = [a for a in args if a.startswith("--preview")]
+    assert previews, "no component reads --preview any more"
+    assert "ForkSeed" not in "".join(previews)
+
+
+_FORK_IMAGES = "ghcr.io/jomcgi-org/homelab/substrate-fork/"
+_FORK_TAG = "fork-b6b0ec3e217c"
+_FORK_DIGESTS = {
+    "ateapi": "7e72ec9e879d37c193c08fc061149a8b092c38dcb3629596b713593886c96b23",
+    "atecontroller": "beaef40fc51129077fcfd7bc288f009f47696d8520616de2b0149f079f95e71e",
+    "atelet": "451afacda427d9e811c599655eeaebe6f80bf79821aaa2ee9d7e3eb30d0b7a68",
+}
+
+
+def _images(docs: list[dict]) -> dict[str, str]:
+    """Every container image in the rendered Deployments, DaemonSets and
+    StatefulSets, keyed by workload and container name."""
+    out = {}
+    for doc in docs:
+        if doc["kind"] not in {"Deployment", "DaemonSet", "StatefulSet"}:
+            continue
+        pod = doc["spec"]["template"]["spec"]
+        for container in pod.get("initContainers", []) + pod["containers"]:
+            key = f"{doc['metadata']['name']}/{container['name']}"
+            out[key] = container["image"]
+    return out
+
+
+def test_control_plane_and_atelet_run_the_fork_images_by_digest() -> None:
+    images = _images(_docs())
+    expected = {
+        "ate-api-server/ate-api-server": "ateapi",
+        "ate-controller/ate-controller": "atecontroller",
+        "atelet/atelet": "atelet",
+    }
+    for key, component in expected.items():
+        assert images[key] == (
+            f"{_FORK_IMAGES}{component}:{_FORK_TAG}@sha256:{_FORK_DIGESTS[component]}"
+        ), key
+    # Nothing else moved off the v1.0.1 release.
+    forked = {k for k, v in images.items() if v.startswith(_FORK_IMAGES)}
+    assert forked == set(expected)
+    for key, image in images.items():
+        if key not in expected:
+            assert "@sha256:" in image, key
+
+
+def test_workerpool_crd_has_the_fork_platform_field() -> None:
+    crd = _one(
+        _docs(),
+        "CustomResourceDefinition",
+        "workerpools.ate.dev",
+    )
+    (version,) = crd["spec"]["versions"]
+    item = version["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"][
+        "sandboxClasses"
+    ]["items"]
+    assert item["properties"]["platform"]["enum"] == ["systrap", "kvm"]
+    (rule,) = item["x-kubernetes-validations"]
+    assert rule["rule"] == "!has(self.platform) || self.name == 'gvisor'"
+    # Existing pools set no platform, so the new rule changes none of them.
+    assert "platform" not in item["required"]

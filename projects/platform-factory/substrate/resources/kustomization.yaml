@@ -4,7 +4,8 @@ kind: Kustomization
 # Agent Substrate 1.0.1 from the kagent-dev fork, the release line kagent
 # v1.0.1 uses: its four Helm charts rendered by ../render-upstream.sh with ../values/
 # into upstream/, every image pinned by digest, plus the fork's bundled
-# PostgreSQL. The patches below and the files beside this one are what this
+# PostgreSQL. ateapi, atecontroller, atelet and the WorkerPool CRD come from the
+# jomcgi-org/substrate fork (render-upstream.sh, "fork overlay"). The patches below and the files beside this one are what this
 # cluster adds; the generated CA and JWT pools and the snapshot store's key
 # come from projects/factory-cluster/bootstrap-substrate.sh.
 resources:

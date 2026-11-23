@@ -1,5 +1,5 @@
-# Rendered by render-upstream.sh from oci://ghcr.io/kagent-dev/substrate/helm/substrate-crds:1.0.1
-# (sha256:3ed670bacd5680ecbcafc9d4a6c95ef90a20f96568b1ba621d0c9c7e411eb084) templates/ate.dev_workerpools.yaml. Do not edit.
+# Rendered by render-upstream.sh from https://github.com/jomcgi-org/substrate charts/substrate-crds
+# at b6b0ec3e217c4363eaa3f8dda237e90fc3408124 templates/ate.dev_workerpools.yaml. Do not edit.
 ---
 # Copyright 2026 The Agent Substrate Authors
 #
@@ -115,9 +115,23 @@ spec:
                       - gvisor
                       - microvm
                       type: string
+                    platform:
+                      description: |-
+                        platform selects the platform of a gVisor pool. "kvm" gives the worker
+                        pods /dev/kvm so they can hold seed sandboxes and fork actors from them
+                        (preview gate ForkSeed), and also the SYS_CHROOT and SETPCAP capabilities
+                        forkd needs. Actors that are not forked still run on systrap. Unset is
+                        "systrap". Only the gvisor class has a platform.
+                      enum:
+                      - systrap
+                      - kvm
+                      type: string
                   required:
                   - name
                   type: object
+                  x-kubernetes-validations:
+                  - message: platform is only for the gvisor class
+                    rule: '!has(self.platform) || self.name == ''gvisor'''
                 maxItems: 1
                 minItems: 1
                 type: array
