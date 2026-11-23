@@ -581,9 +581,13 @@ st = json.load(open(S)) if os.path.exists(S) else {
     "atespaces": [], "templates": {}, "actors": {}, "listed": {}, "calls": [],
     "next": 0}
 a = sys.argv[1:]
-while a and a[0] in ("--endpoint", "--token-file"):
-    a = a[2:]
-st["calls"].append(" ".join(a))
+preview = False
+while a and a[0] in ("--endpoint", "--token-file", "--preview"):
+    if a[0] == "--preview":
+        preview, a = True, a[1:]
+    else:
+        a = a[2:]
+st["calls"].append(("preview " if preview else "") + " ".join(a))
 def save(): json.dump(st, open(S, "w"))
 def flag(name):
     return a[a.index(name) + 1] if name in a else None
@@ -634,8 +638,16 @@ if verb == ["get", "actor-template"]:
     out({"actorTemplates": rows})
 if verb == ["create", "actor"]:
     ns, template = flag("-a"), flag("--template")
+    if not preview:
+        fail("rpc error: code = FailedPrecondition desc = ActorTemplate uses fork_config, "
+             "which needs the ForkSeed preview gate to be enabled on the server and "
+             "the client to opt in to preview features")
+    if "/" in template and template.split("/")[0] != ns and env("FAKE_OTHER_REASON"):
+        fail("rpc error: code = FailedPrecondition desc = some other refusal")
     if "/" in template and template.split("/")[0] != ns and not env("FAKE_ALLOW_CROSS"):
-        fail("rpc error: code = PermissionDenied desc = template is in another atespace")
+        fail("rpc error: code = PermissionDenied desc = ActorTemplate " + template +
+             " uses fork_config, so only Actors in atespace '" + template.split("/")[0] +
+             "' may use it")
     st["actors"][ns + "/" + a[2]] = {"name": a[2], "ns": ns, "state": "ACTOR_STATE_SUSPENDED"}
     out({})
 if verb == ["resume", "actor"]:
@@ -733,7 +745,12 @@ def test_conformance_passes_all_eight_checks(tmp_path: Path) -> None:
     # The log carries the API's reason for each refusal.
     assert "InvalidArgument" in run.stdout and "PermissionDenied" in run.stdout
     assert "event=summary result=ok" in run.stdout
-    assert "create actor fork-3 -a fork-conformance --template engine" in state["calls"]
+    assert (
+        "preview create actor fork-3 -a fork-conformance --template engine"
+        in state["calls"]
+    )
+    # Every call carries --preview: the API refuses fork actors without it.
+    assert all(c.startswith("preview ") for c in state["calls"])
     # Both atespaces went, so no actor or template was left to refuse it.
     assert _nothing_left(state)
 
@@ -776,6 +793,10 @@ def test_conformance_refuses_an_unpinned_engine_image(
         ({"FAKE_ACCEPT_BAD": "1"}, "C2: the API accepted a template with secret_env"),
         ({"FAKE_INFRA_REFUSAL": "1"}, "failed, but not as a refusal"),
         ({"FAKE_ALLOW_CROSS": "1"}, "C5: the API accepted an actor of another"),
+        (
+            {"FAKE_OTHER_REASON": "1"},
+            "C5: an actor of another atespace using the template was refused for another reason",
+        ),
         ({"FAKE_ALLOW_SUSPEND": "1"}, "C6: the API accepted a suspend"),
         ({"FAKE_NO_EXPIRE": "1"}, "forks deleted by their lifetime: not ready"),
         ({"FAKE_WORKER_STATE": "WORKER_STATE_UNAVAILABLE"}, "an ACTIVE gvisor-fork"),
