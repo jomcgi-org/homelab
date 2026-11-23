@@ -190,7 +190,7 @@ spec:
             cpu: 100m
             memory: 256Mi
         args:
-        - "--preview=PerTemplateSnapshotLocation,GoldenEgressPolicy"
+        - "--preview=PerTemplateSnapshotLocation,GoldenEgressPolicy,ForkSeed"
         - --objectstore-plugin-socket=/run/objectstore-plugin/control.sock
         - --snapshot-location=@env
         - "--grpc-listen-addr=0.0.0.0:443"

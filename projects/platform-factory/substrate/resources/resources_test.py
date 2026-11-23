@@ -777,7 +777,7 @@ def test_gvisor_fork_slice_is_wired_and_off() -> None:
     # this directory, and since step 5 of the enable steps it lists the slice.
     # The slice runs no actor: the pool has one idle worker (step 6), the
     # conformance Job is suspended and the ForkSeed gate is separate (step 7:
-    # test_fork_seed_gate_is_off). Step 8 sets suspend to false: it changes its
+    # test_fork_seed_gate_is_on). Step 8 sets suspend to false: it changes its
     # assertion here in the same change.
     app = yaml.safe_load(Path(os.environ["SCANNER_APPLICATION"]).read_text())
     paths = [s["path"] for s in app["spec"]["sources"] if "path" in s]
@@ -851,21 +851,38 @@ def test_gvisor_fork_slice_is_wired_and_off() -> None:
     assert max(init, main) <= 256
 
 
-def test_fork_seed_gate_is_off() -> None:
-    # The gate stays off until step 7 of the enable steps
-    # (projects/factory-cluster/README.md, "gVisor sandbox fork"): no rendered
-    # component takes it in --preview. The WorkerPool CRD's field text names the
-    # gate, so only container arguments are read.
-    args = [
-        arg
-        for doc in _docs()
-        if doc["kind"] in {"Deployment", "DaemonSet", "StatefulSet"}
-        for container in doc["spec"]["template"]["spec"]["containers"]
-        for arg in container.get("args", [])
+_PREVIEW = ["PerTemplateSnapshotLocation", "GoldenEgressPolicy", "ForkSeed"]
+
+
+def test_fork_seed_gate_is_on() -> None:
+    # Step 7 of the enable steps (projects/factory-cluster/README.md, "gVisor
+    # sandbox fork"): the API server, the controller and atelet all take
+    # ForkSeed in --preview. The controller passes its --preview to every
+    # worker pod, so the workers read it too. The WorkerPool CRD's field text
+    # names the gate, so only container arguments are read.
+    previews = {}
+    for doc in _docs():
+        if doc["kind"] not in {"Deployment", "DaemonSet", "StatefulSet"}:
+            continue
+        for container in doc["spec"]["template"]["spec"]["containers"]:
+            for arg in container.get("args", []):
+                if arg.startswith("--preview"):
+                    previews[doc["metadata"]["name"]] = arg
+    expected = "--preview=" + ",".join(_PREVIEW)
+    assert previews == {
+        "ate-api-server": expected,
+        "ate-controller": expected,
+        "atelet": expected,
+    }
+    # Only the gvisor-fork pool can hold a seed: no other pool runs on the KVM
+    # platform.
+    kvm_pools = [
+        d["metadata"]["name"]
+        for d in _docs()
+        if d["kind"] == "WorkerPool"
+        and any(c.get("platform") == "kvm" for c in d["spec"]["sandboxClasses"])
     ]
-    previews = [a for a in args if a.startswith("--preview")]
-    assert previews, "no component reads --preview any more"
-    assert "ForkSeed" not in "".join(previews)
+    assert kvm_pools == ["gvisor-fork"]
 
 
 _FORK_IMAGES = "ghcr.io/jomcgi-org/homelab/substrate-fork/"

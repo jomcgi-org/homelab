@@ -22,9 +22,9 @@
 # every other object and image stays at VERSION. The fork publishes no charts:
 # the CRD is rendered from the checkout. The images are the ones the manual
 # workflow .github/workflows/substrate-fork-images.yml published, pinned by
-# digest. ForkSeed (values/common.yaml) stays off: with the gate off the fork
-# changes no actor's behaviour. The overlay is not optional: every run renders
-# the fork images. To return to the release, revert the change or edit this
+# digest. ForkSeed (values/common.yaml) is on since step 7: it changes no actor
+# without a template that sets fork_config. The overlay is not optional: every
+# run renders the fork images. To return to the release, revert the change or edit this
 # script.
 #
 # Rerun after changing VERSION, COMMIT, FORK_COMMIT or a chart digest; review

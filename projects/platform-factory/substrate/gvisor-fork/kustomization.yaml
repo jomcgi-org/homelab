@@ -4,8 +4,9 @@ kind: Kustomization
 # The gVisor sandbox-fork slice 1, wired and OFF. ArgoCD applies it through
 # ../resources/kustomization.yaml (egress-scan/deploy/application.yaml, path
 # projects/platform-factory/substrate/resources), which lists this directory
-# since step 5. It runs no actor: the WorkerPool's one worker holds no seed, the conformance
-# Job is suspended and ForkSeed is not in the preview gates. The asset Job is a
+# since step 5. It runs no actor: the WorkerPool's one worker holds no seed, the
+# conformance Job is suspended and no template sets fork_config, so ForkSeed (on
+# since step 7) starts no fork. The asset Job is a
 # Sync hook and runs at once. ../resources/resources_test.py is the wiring guard:
 # it lists the objects rendered here, the off switches and that gvisor-default
 # stays the class default. The enable steps, the isolation gates and the

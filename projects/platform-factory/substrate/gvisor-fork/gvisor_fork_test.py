@@ -2,7 +2,7 @@
 build, and the staging Job and its script check what they fetch. The slice is
 wired with one idle worker; the wired resources' own test
 (../resources/resources_test.py) lists the objects it applies and checks the
-off switches (the suspended Job, no ForkSeed)."""
+off switches (the suspended Job, ForkSeed on with no fork template)."""
 
 from __future__ import annotations
 
@@ -384,8 +384,8 @@ def _pool() -> dict:
 def test_kvm_pool_has_one_worker_and_uses_the_fork_config() -> None:
     pool = _pool()
     assert pool["metadata"]["namespace"] == _NS
-    # Step 6 of the enable steps: one worker, with ForkSeed still off. The pool
-    # has no autoscaler, so the count is fixed.
+    # Step 6 of the enable steps: one worker. The pool has no autoscaler, so
+    # the count is fixed.
     assert pool["spec"]["replicas"] == 1
     (klass,) = pool["spec"]["sandboxClasses"]
     assert klass == {

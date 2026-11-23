@@ -4,9 +4,16 @@
 # The preview gates kagent v1.0.1 needs: per-Harness snapshot locations and
 # the golden egress policy its runtime bootstrap depends on. Set here so
 # ate-api-server, ate-controller (and its workers) and atelet agree.
+# ForkSeed (step 7 of the gVisor sandbox fork enable steps, projects/factory-cluster/README.md)
+# lets a template with fork_config start actors by forking a seed. It is a
+# process-wide flag: every component and every worker reads it. Only workers of
+# a pool with --fork-platform=kvm (WorkerPool gvisor-fork) can hold seeds, and
+# no template has fork_config yet. To turn it off, delete the line only after
+# the fork templates are gone (README, "Roll back").
 preview:
   - PerTemplateSnapshotLocation
   - GoldenEgressPolicy
+  - ForkSeed
 
 # No collector yet: no OTLP push. Each component still serves Prometheus
 # /metrics for the observability work in projects/factory-cluster/README.md.
