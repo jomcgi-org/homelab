@@ -69,6 +69,7 @@ export function StarsPage() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [index, setIndex] = useState<DataIndex | null>(null);
   const [view, setView] = useState(DEFAULT_VIEW);
+  // False only in the static render; true from the first effect on.
   const [dataWanted, setDataWanted] = useState(false);
   const [mapWanted, setMapWanted] = useState(false);
   const [selectedId, setSelectedId] = useState<Site["id"] | null>(null);
@@ -89,8 +90,6 @@ export function StarsPage() {
     const readView = () => {
       const value = readStarsParams(new URLSearchParams(location.search));
       setView(value);
-      if (value.mode === "historical" || value.selectedNight !== "all")
-        setDataWanted(true);
     };
     readView();
     // Forecasts and the map load on arrival; nothing waits for a click.
@@ -263,7 +262,6 @@ export function StarsPage() {
     [view.mode, view.selectedMonth, effectiveNight],
   );
   function change(next: Partial<typeof view>) {
-    setDataWanted(true);
     const value = { ...view, ...next };
     setView(value);
     if (value.mode !== view.mode) setSelectedId(null);
