@@ -459,8 +459,10 @@ p95 of one burst of 4 would equal its maximum.
 Each step stays off until its predecessor is verified. Steps 1 to 8 of
 [gVisor sandbox fork](../../../factory-cluster/README.md#gvisor-sandbox-fork)
 come first: they end with the conformance Job. The isolation gates X1 to X7 and
-X9, and the X8 waiver (README steps 9 and 10), come before step 6 below, the
-engine atespace. They do not come before the latency runs.
+X9 (README step 9) run as a safety check before the engine atespace is created
+(step 6 below). They no longer hold back the merge of the router grant or the
+provisioning PR (Decided 6). The X8 waiver is granted. They do not come before
+the latency runs.
 
 1. Resize the pool in a PR for `kvm-pool.yaml`: 9 CPU and 2 GiB limits, 4 CPU and
    1 GiB requests. This comes before every run.
@@ -473,9 +475,10 @@ engine atespace. They do not come before the latency runs.
    this is two router rollouts.
 5. Delete the latency template and atespace. Restart the pool pod. Build
    `engine-pro` and check that an anonymous pull fails.
-6. After the X gates and the waiver pass, a global owner creates the atespace
-   `egress-scan-engine`, its access policy for the gate and the fork template.
-   Check that the read login pulls the image.
+6. A global owner creates the atespace `egress-scan-engine`, its access policy
+   for the gate and the fork template (`gate/provision/`, suspended until the
+   X1 to X7 and X9 results and the pool restart order are in). Check that the
+   read login pulls the image.
 7. Build the `engine-gate` StatefulSet and the network rules. Point the tier at
    the gate.
 8. Turn the tier on in observe mode (`semgrep.mode: observe`) for 7 days. The
@@ -503,6 +506,7 @@ them yet.
 | 3 | Policy: all 1586 rules, deny on any finding, observe mode for 7 days first, deny when the engine is out | Joe, 2026-11-23 |
 | 4 | Token: a placeholder in the image, the real dedicated token only in the build environment secret. Joe handles the licence terms himself | Joe, 2026-11-23 |
 | 5 | The `engine-pro` package is private | Joe, 2026-11-23 |
+| 6 | The router grant PR (the `engine-gate` SPIFFE ID in `atenetRouter.ingressAllowedSPIFFEIDs`), the X8 waiver for gVisor-only use, and the grants: the atespace `egress-scan-engine`, the editor binding for `system:serviceaccount:ate-system:engine-gate` and the template `engine`. This supersedes "after the X gates" in rows 1 and 2: the gates X1 to X7 and X9 still run at step 9 of the fork README as a safety check, and no longer gate the merge of these PRs. The provisioning Job stays suspended until their results and the pool restart order are in, and Joe un-suspends it | Joe, 2026-11-23, in session |
 
 Still open: the engine body limit and the Hindsight route timeout. The enforce
 PR sets them from observe data. The v1 values are 32 KiB of raw body and 310 ms.
