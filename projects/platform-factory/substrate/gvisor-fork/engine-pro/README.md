@@ -182,11 +182,14 @@ package to the public repository, and the package could inherit its access.
 ## What Joe does once
 
 1. **Create the environment.** Repository settings, Environments, new
-   `semgrep-pro-build`. Set "Deployment branches" to `main` only, and add
-   yourself as a required reviewer. A branch of this public repository must not
-   be able to read the secret: someone who can push a branch could change the
-   workflow to print it. (Before this workflow is on `main`, a branch run cannot
-   read the secret at all. Merge it first: nothing runs on a merge.)
+   `semgrep-pro-build`. Set "Deployment branches" to `main` only. A branch of
+   this public repository must not be able to read the secret: someone who can
+   push a branch could change the workflow to print it. That main-only branch
+   policy is the real gate. A required reviewer is optional: with Joe as the
+   only reviewer and the only person who starts the workflow, leave "Prevent
+   self-review" **off**, or Joe could never approve his own run. (Before this
+   workflow is on `main`, a branch run cannot read the secret at all. Merge it
+   first: nothing runs on a merge.)
 2. **Make a dedicated token.** In Semgrep, create a token only for this build,
    not a personal one. It needs the narrowest scope that accepts the two calls:
    download the Pro engine (the deployment must have the Pro engine) and read
@@ -336,6 +339,6 @@ Until Joe decides, run the workflow with `publish` off only.
 | Private check: stub `crane` and `gh`: proof first, then refusal; pass, no-proof fail, delete and fail, delete fails | `engine_pro_test.py` |
 | Canary: pushed to a local `crane registry serve`, one empty layer, the label | `engine_pro_test.py` (skips without `crane`) |
 | Download: local fake of the two endpoints; header only, sorted rules, no token in files | `engine_pro_test.py` |
-| Workflow guards: manual only, `persist-credentials: false`, job permissions, token in two steps, no `${{ }}` in `run`, main-only publish, canary before the Pro push, check present | `engine_pro_test.py`, only in a plain `pytest` run from a checkout: the Bazel runfiles hold no `.github`, so the test skips there |
+| Workflow guards: manual only, `persist-credentials: false`, job permissions, token in two steps, no `${{ }}` in `run`, main-only publish, canary before the Pro push, check present | `engine_pro_test.py`; the workflow file is test data (`//:.github/workflows/substrate-fork-engine-pro.yml`), so `bazel test` runs them. They skip only when the file is missing |
 | The Pro engine starts with the placeholder, finds planted secrets, finds none in a clean body | the workflow only (it needs the Pro engine) |
 | The real download, the real push, the anonymous refusal | the workflow only; not run yet |

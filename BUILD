@@ -129,6 +129,13 @@ exports_files(
     visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
 )
 
+# The guard tests of the Pro engine image workflow read this file (they used to
+# skip under Bazel, which had no .github in the runfiles).
+exports_files(
+    [".github/workflows/substrate-fork-engine-pro.yml"],
+    visibility = ["//projects/platform-factory/substrate/gvisor-fork/engine-pro:__pkg__"],
+)
+
 exports_files(
     ["renovate.json"],
     visibility = ["//projects/platform/renovate:__pkg__"],
