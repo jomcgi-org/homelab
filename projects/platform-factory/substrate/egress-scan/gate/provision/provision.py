@@ -422,7 +422,12 @@ def delete(failures: list[str], *args: str) -> None:
     text = (done.stderr or done.stdout).strip()
     if _NOT_FOUND.search(text):
         return
-    log(event="delete_failed", args=repr(" ".join(args)), code=done.returncode, output=repr(text[-300:]))
+    log(
+        event="delete_failed",
+        args=repr(" ".join(args)),
+        code=done.returncode,
+        output=repr(text[-300:]),
+    )
     failures.append(" ".join(args))
 
 
@@ -438,7 +443,13 @@ def teardown() -> None:
     if done.returncode == 0:
         for t in walk(json.loads(done.stdout or "{}")):
             if isinstance(t.get("metadata"), dict) and "containers" in t:
-                delete(failures, "actor-template", str(t["metadata"]["name"]), "-a", ATESPACE)
+                delete(
+                    failures,
+                    "actor-template",
+                    str(t["metadata"]["name"]),
+                    "-a",
+                    ATESPACE,
+                )
     try:
         wait_for(
             "the seeds removed",

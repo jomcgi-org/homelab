@@ -275,7 +275,9 @@ class FakeAte:
         self.worker_ready = True
         self.version = 0
         self.flaky_workers = 0  # the next N "get workers" calls fail
-        self.fail_deletes: set[str] = set()  # kinds whose delete fails (not as "not found")
+        self.fail_deletes: set[str] = (
+            set()
+        )  # kinds whose delete fails (not as "not found")
 
     def out(self, obj: object, code: int = 0):
         return subprocess.CompletedProcess([], code, json.dumps(obj), "")
@@ -410,7 +412,9 @@ def test_apply_refuses_to_edit_a_template_in_place(tmp_path: Path) -> None:
 def test_template_json_is_the_template_yaml() -> None:
     # provision.py compares the stored template to template.json, because the
     # container cannot parse YAML. The two files must be the same template.
-    assert json.loads((_HERE / "template.json").read_text()) == yaml.safe_load(_TEMPLATE)
+    assert json.loads((_HERE / "template.json").read_text()) == yaml.safe_load(
+        _TEMPLATE
+    )
 
 
 def test_apply_compares_the_whole_template_when_it_exists(tmp_path: Path) -> None:
@@ -426,12 +430,18 @@ def test_apply_compares_the_whole_template_when_it_exists(tmp_path: Path) -> Non
     # Any one value that differs, with the image unchanged, is refused.
     edits = {
         "resources": lambda s: s["resources"]["limits"].update(memoryBytes=1),
-        "seed": lambda s: s["forkConfig"]["seedResources"]["limits"].update(cpuMillicores=500),
+        "seed": lambda s: s["forkConfig"]["seedResources"]["limits"].update(
+            cpuMillicores=500
+        ),
         "lifetime": lambda s: s["forkConfig"].update(maxLifetimeSeconds=300),
         "port": lambda s: s["containers"][0]["command"].__setitem__(2, "0.0.0.0:8080"),
         "probe": lambda s: s["containers"][0]["wakeupProbe"].update(timeoutSeconds=5),
-        "golden": lambda s: s["snapshotConfig"]["goldenSnapshotConfig"].update(mode="GOLDEN_SNAPSHOT_MODE_ENABLED"),
-        "selector": lambda s: s["workerSelector"]["matchLabels"].update(workload="other"),
+        "golden": lambda s: s["snapshotConfig"]["goldenSnapshotConfig"].update(
+            mode="GOLDEN_SNAPSHOT_MODE_ENABLED"
+        ),
+        "selector": lambda s: s["workerSelector"]["matchLabels"].update(
+            workload="other"
+        ),
         "removed key": lambda s: s["forkConfig"].pop("pidsLimit"),
     }
     import copy
@@ -488,7 +498,11 @@ def test_names_are_fixed_in_code_not_read_from_the_environment() -> None:
     os.environ.update(ATESPACE="x", EDITOR_MEMBER="user:evil", TEMPLATE="evil")
     try:
         mod = _load()
-        assert (mod.ATESPACE, mod.EDITOR, mod.TEMPLATE) == ("egress-scan-engine", _EDITOR, "engine")
+        assert (mod.ATESPACE, mod.EDITOR, mod.TEMPLATE) == (
+            "egress-scan-engine",
+            _EDITOR,
+            "engine",
+        )
     finally:
         for name in ("ATESPACE", "EDITOR_MEMBER", "TEMPLATE"):
             os.environ.pop(name)
@@ -497,7 +511,9 @@ def test_names_are_fixed_in_code_not_read_from_the_environment() -> None:
 def test_the_atespace_check_is_anchored() -> None:
     mod = _load()
     for other in ("egress-scan-engine-other", "xegress-scan-engine"):
-        assert mod.template_checks(_TEMPLATE.replace("atespace: egress-scan-engine", f"atespace: {other}"))
+        assert mod.template_checks(
+            _TEMPLATE.replace("atespace: egress-scan-engine", f"atespace: {other}")
+        )
     assert mod.template_checks(_TEMPLATE.replace("  atespace:", "  # atespace:", 1))
 
 
@@ -572,7 +588,10 @@ def _provisioned(mod, tmp_path: Path):
     fake.actors = [
         {
             "metadata": {"name": "eg-engine-gate-0-1-1"},
-            "status": {"state": "ACTOR_STATE_RUNNING", "fork": {"role": "FORK_ROLE_FORK"}},
+            "status": {
+                "state": "ACTOR_STATE_RUNNING",
+                "fork": {"role": "FORK_ROLE_FORK"},
+            },
         },
     ]
     fake.calls.clear()

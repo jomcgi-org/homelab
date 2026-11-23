@@ -12,11 +12,7 @@
     {
       "name": "engine",
       "image": "ghcr.io/jomcgi-org/homelab/substrate-fork/engine-pro:1.186.0-0adcac4b1419@sha256:2235edd728528d00ae623be2200d9c29e44e8015300ad2368f7a303b4492f481",
-      "command": [
-        "/usr/local/bin/forksrv-net",
-        "--listen",
-        "0.0.0.0:80"
-      ],
+      "command": ["/usr/local/bin/forksrv-net", "--listen", "0.0.0.0:80"],
       "wakeupProbe": {
         "httpGet": {
           "path": "/healthz",
