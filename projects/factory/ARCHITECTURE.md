@@ -61,7 +61,8 @@ Before removing the Git values source in #7909, render both the published cutove
 named after its namespace, so the binding namespace is also the atespace that
 Substrate's credential provider grants. A Harness needs a Substrate
 WorkerPool in its own namespace, so each binding has one. Its replicas
-are the agent's concurrency, with one actor per worker. kagent sets
+are the agent's concurrency, with one actor per worker, unless
+[autoscaling](#worker-pool-autoscaling) owns them. kagent sets
 one CPU and memory limit for every runtime (`config.runtimeDefaults`), so
 each agent's resource limits must equal it, and the chart refuses others. A
 worker's capacity is its pod memory limit less a 64Mi reserve, and each actor
@@ -115,6 +116,100 @@ Five minutes since the latest mutation therefore gives a lower bound on time
 spent in that state. [Wire schema](https://github.com/kagent-dev/substrate/blob/7ce6f439239c568285f6d897aaa4afd47752c775/api/ateapi/v1/ateapi.proto#L412-L1015),
 [suspend transition](https://github.com/kagent-dev/substrate/blob/7ce6f439239c568285f6d897aaa4afd47752c775/cmd/ateapi/internal/controlapi/workflow_suspend.go#L182-L191),
 [update timestamp](https://github.com/kagent-dev/substrate/blob/7ce6f439239c568285f6d897aaa4afd47752c775/cmd/ateapi/internal/store/atepg/atepg.go#L438-L450).
+
+### Worker pool autoscaling
+
+A pool can scale to zero when idle. The nodes request 98% of memory while
+the coder and reviewer pools hold about 12 GiB of idle workers. The design
+uses the Kubernetes HorizontalPodAutoscaler on the WorkerPool, through the
+CRD's scale subresource. Kubernetes 1.37 lets an HPA with `minReplicas: 0`
+scale a workload to and from zero from an Object or External metric
+(`HPAScaleToZero`, beta, on by default;
+[post](https://kubernetes.io/blog/2026/09/02/kubernetes-v1-37-hpa-scale-to-zero-beta/)).
+The feature is staged and off: `agents.<name>.autoscaling.enabled` is false.
+
+```mermaid
+flowchart LR
+  conn["connector · unsent sends"] -->|"demand pending"| prom[Prometheus]
+  reaper["reaper · actors, spare"] -->|"demand actors"| prom
+  prom --> adapter["Prometheus Adapter"]
+  adapter -->|"workers_wanted"| hpa[HPA]
+  hpa -->|"spec.replicas"| pool[WorkerPool]
+  reaper -->|"capacity row"| conn
+  reaper -->|"deletion cost"| pods["worker pods"]
+```
+
+**Demand.** The HPA scales the pool to `workers_wanted`, which is
+`actors + pending + spare × (actors + pending > 0)`.
+
+- `actors`: worker pods that host an actor. The reaper counts them from
+  Substrate's actor table each 15 s, for every pool, whoever sent the work.
+  Substrate's own `ate.workerpool.workers` goes to Honeycomb, not Prometheus.
+- `pending`: delivery attempts the connector recorded and kagent has not
+  accepted. The row commits before the send, so a run that arrives at zero
+  workers raises demand before it is sent.
+- `spare`: `autoscaling.spare` (default 2), kept while a pool has any
+  demand. An idle pool asks for 0.
+
+Prometheus Adapter sums the sources in one rule and serves the result as an
+External metric. The HPA uses `AverageValue: 1`, so replicas equal the metric.
+If a source is missing or stale, the metric has no value and the HPA holds
+the replica count.
+
+**Scale-down.** The HPA lowers `spec.replicas` and the ReplicaSet picks the
+pods to remove. A removed worker with a live actor leaves that actor CRASHED.
+The worker drain sends SIGTERM to the actor's container and kills it after up
+to 30 min. The connector holds a run on a CRASHED session for recovery. A turn
+in progress is lost, and the reaper's lease path frees the run. A SUSPENDED
+actor holds no worker and is unaffected.
+
+- The floor covers every live actor, so the HPA never asks for fewer workers
+  than there are actors.
+- The pool follows the highest demand of the last 30 min, and one worker
+  leaves each 5 min.
+- The reaper marks a worker that hosts an actor with a higher
+  `pod-deletion-cost`, so the ReplicaSet removes idle workers first.
+
+An actor placed on a worker between two reaper passes (15 s) can still lose
+its worker. The turn then recovers as any lost worker does.
+
+**Cold start.** A run that arrives at zero waits for a worker: demand, the
+HPA's 15 s sync, pod start and worker registration. The connector holds the
+send, which stays `sending` and counts as `pending`, until the reaper's
+capacity row shows a free worker. `intervals.workerWait` bounds the wait
+(unset: off). A missing or stale row sends at once. A new session needs a
+ready worker with no actor. A continuation needs a ready worker.
+
+**Failure modes.**
+
+| Failure | Effect | Recovery |
+| --- | --- | --- |
+| Adapter or reaper down | The metric has no value. The HPA holds its replicas (`ScalingActive=False`). | A pool at zero stays at zero. Scale it by hand, or set `minReplicas: 1`. |
+| Reaper capacity row stale | The connector sends without waiting. | The send can fail with "no worker has room", as before. |
+| `HPAScaleToZero` off | A pool at zero reads as paused and stays there. | Set `minReplicas: 1` before any gate change. |
+
+**Rollout.** The chart renders an HPA only for a pool with
+`autoscaling.enabled`. Each step is its own reviewed change:
+
+1. Deploy the adapter, the reaper census and the connector series. Nothing
+   scales.
+2. Set `FACTORY_REAPER_POOLS` through `autoscaling.enabled` with
+   `minReplicas: 1` on one pool. The pool can shrink to one worker and no
+   lower, so a metric failure costs nothing.
+3. Raise that pool to `minReplicas: 0` after a full day of correct metrics.
+
+The enabling change also adds an `ignoreDifferences` entry for the pool's
+`/spec/replicas` in `factory/deploy/application.yaml`. Argo CD uses server-side
+apply with self-heal and would reset the HPA's value. `autoscaling_test.py`
+fails when a pool in the deploy values has no entry.
+
+To revert, set the pool's `minReplicas: 1`, or turn `enabled` off and set
+`spec.replicas` back to `concurrency` by hand. Removing the HPA leaves the
+last replica count in place.
+
+The reviewer and Bosun pools have no `pending` source yet: the reviewer and
+the Discord bot send without the connector. At zero, their first send would
+fail and nothing would wake the pool. Keep them at `minReplicas: 1`.
 
 ### Sandbox checks
 

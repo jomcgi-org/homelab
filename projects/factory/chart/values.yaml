@@ -280,6 +280,27 @@ agents:
           memory: 9Gi
     # Actors running at once: one Substrate worker each.
     concurrency: 1
+    # Scale this pool with demand instead of holding `concurrency` workers
+    # (ARCHITECTURE.md, "Worker pool autoscaling"). Off: replicas stay
+    # `concurrency`. On: a HorizontalPodAutoscaler owns the pool's replicas
+    # between minReplicas and maxReplicas, so Argo CD must ignore the pool's
+    # /spec/replicas (factory/deploy/application.yaml). Enable a pool only
+    # after Prometheus Adapter serves factory_worker_pool_workers_wanted and the
+    # reaper's pool list covers it.
+    autoscaling:
+      enabled: false
+      # 0 lets an idle pool scale to zero. The pool must be at one replica or
+      # more when the HPA is created: a pool left at zero by hand is paused.
+      minReplicas: 0
+      # Workers kept beyond the demand while a pool has any.
+      spare: 2
+      # Defaults to concurrency + spare when unset.
+      # maxReplicas: 14
+      scaleDown:
+        # The pool follows the highest demand of this window.
+        stabilizationSeconds: 1800
+        # At most one worker leaves per period.
+        periodSeconds: 300
     # Egress grants (EgressPolicies rendered in the binding's namespace).
     # github-git: https://github.com with the broker-minted token injected as
     # Authorization: Basic.
@@ -319,6 +340,27 @@ agents:
           cpu: "4"
           memory: 9Gi
     concurrency: 2
+    # Scale this pool with demand instead of holding `concurrency` workers
+    # (ARCHITECTURE.md, "Worker pool autoscaling"). Off: replicas stay
+    # `concurrency`. On: a HorizontalPodAutoscaler owns the pool's replicas
+    # between minReplicas and maxReplicas, so Argo CD must ignore the pool's
+    # /spec/replicas (factory/deploy/application.yaml). Enable a pool only
+    # after Prometheus Adapter serves factory_worker_pool_workers_wanted and the
+    # reaper's pool list covers it.
+    autoscaling:
+      enabled: false
+      # 0 lets an idle pool scale to zero. The pool must be at one replica or
+      # more when the HPA is created: a pool left at zero by hand is paused.
+      minReplicas: 0
+      # Workers kept beyond the demand while a pool has any.
+      spare: 2
+      # Defaults to concurrency + spare when unset.
+      # maxReplicas: 14
+      scaleDown:
+        # The pool follows the highest demand of this window.
+        stabilizationSeconds: 1800
+        # At most one worker leaves per period.
+        periodSeconds: 300
     egress: [github-git]
     systemPrompt: |
       you review pull requests read-only per the rules in your task; you never push, commit or open PRs
