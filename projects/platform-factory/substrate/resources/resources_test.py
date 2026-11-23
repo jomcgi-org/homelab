@@ -935,7 +935,9 @@ def test_engine_provisioning_is_wired_and_runs_once() -> None:
     assert ("ConfigMap", _PROVISION_CONFIGMAP) in names, [
         n for k, n in names if k == "ConfigMap" and n.startswith("egress-engine")
     ]
-    assert {n for k, n in names if k == "CiliumNetworkPolicy" and "engine-provision" in n} == {
+    assert {
+        n for k, n in names if k == "CiliumNetworkPolicy" and "engine-provision" in n
+    } == {
         "egress-engine-provision",
         "ate-api-server-egress-engine-provision",
     }
