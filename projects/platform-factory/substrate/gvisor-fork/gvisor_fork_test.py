@@ -444,8 +444,8 @@ def test_kvm_pool_requests_1gi_and_limits_for_a_seed_and_8_children() -> None:
     # The egress-scan design (egress-scan/ARCHITECTURE.md, "Capacity"): a
     # scheduling reservation of 1Gi and 4 CPU: with 4 scans in flight, a
     # smaller CPU request gives them a fraction of a core's shares under
-    # contention. On 2026-11-23 node-1 had 5173Mi and 8275m left to request,
-    # node-3 2601Mi and 6010m, node-2 1981Mi and 6975m.
+    # contention. On 2026-11-23 node-1 had 5237Mi and 8235m left to request,
+    # node-3 2857Mi and 6210m, node-2 1981Mi and 6925m.
     assert resources["requests"] == {"cpu": "4", "memory": "1Gi"}
     # The seed (1000m, 512 MiB cap) and 8 children (1000m, 128 MiB + 16 MiB of
     # overhead each) are booked against the limits.
