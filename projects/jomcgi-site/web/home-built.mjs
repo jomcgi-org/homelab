@@ -80,8 +80,9 @@ export function checkHome(dist) {
     ]),
   );
   const sitemap = read("sitemap.xml").toString();
+  // Both pages are unlisted, so the sitemap leaves them out.
   for (const path of ["/engineering", "/llm-leaderboard"]) {
-    assert(sitemap.includes(`<loc>${PUBLIC_BASE}${path}</loc>`), path);
+    assert(!sitemap.includes(`<loc>${PUBLIC_BASE}${path}</loc>`), path);
   }
   const portrait = attr(".portrait-still", "src");
   assert.deepEqual(read(portrait.slice(1)), original("static/joe-grey.png"));

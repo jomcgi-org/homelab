@@ -1,5 +1,5 @@
-// Only imported after the map button is activated. No style or tile request
-// occurs before intent. GeoJSON stays an object, never a data: URL.
+// Loaded when a trip page opens its map, which it does on arrival.
+// GeoJSON stays an object, never a data: URL.
 import * as maplibregl from "maplibre-gl";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";

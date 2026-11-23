@@ -130,19 +130,16 @@ export function LazyMap({
       if (alive.current) setState("error");
     }
   }
+  // The map loads on arrival. A button shows only to retry a failure.
+  useEffect(() => {
+    void open();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   return (
     <section aria-label="Route map">
-      {state !== "ready" && (
-        <button
-          type="button"
-          onClick={() => void open()}
-          disabled={state === "loading"}
-        >
-          {state === "loading"
-            ? "Loading map…"
-            : state === "error"
-              ? "Retry map"
-              : "Load interactive map"}
+      {state === "error" && (
+        <button type="button" onClick={() => void open()}>
+          Retry map
         </button>
       )}
       <div

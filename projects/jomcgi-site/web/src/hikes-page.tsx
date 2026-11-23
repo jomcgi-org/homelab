@@ -56,6 +56,10 @@ export function HikesPage({
       window.removeEventListener("popstate", restore);
     };
   }, [explore]);
+  // The planner loads on arrival; the published walks show until it does.
+  useEffect(() => {
+    void explore();
+  }, [explore]);
   useEffect(() => {
     const tick = () => {
       const snapshot = summary.current?.querySelector<HTMLElement>(
@@ -92,14 +96,12 @@ export function HikesPage({
             the days the weather allows.
           </p>
         </header>
-        {!Planner && (
-          <button type="button" onClick={explore} disabled={loading}>
-            {loading ? "Loading planner…" : "Explore walks"}
-          </button>
-        )}
         {error && (
           <p role="status">
-            Couldn’t load the planner. Try again; the published walks are below.
+            Couldn’t load the planner. The published walks are below.{" "}
+            <button type="button" onClick={explore} disabled={loading}>
+              Retry planner
+            </button>
           </p>
         )}
         {Planner && <Planner />}

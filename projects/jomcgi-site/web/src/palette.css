@@ -1,20 +1,30 @@
+/* Inter, variable weight, Latin. SIL Open Font License 1.1: see
+ * assets/fonts/Inter-LICENSE.txt. */
+@font-face {
+  font-family: "Inter";
+  src: url("./assets/fonts/Inter.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* Sheet palette and typography, copied as values so this app stands alone.
  * The pinned neutral theme supplies the built component CSS and spacing.
  */
 [data-astryx-theme="neutral"] {
-  --color-accent: light-dark(#1f4f9f, #d3a45f);
-  --color-on-accent: light-dark(#ffffff, #181a20);
-  --color-text-accent: light-dark(#1f4f9f, #d3a45f);
-  --color-icon-accent: light-dark(#1f4f9f, #d3a45f);
-  --color-background-body: light-dark(#ffffff, #181a20);
-  --color-background-surface: light-dark(#ffffff, #181a20);
-  --color-background-card: light-dark(#ffffff, #181a20);
-  --color-background-muted: light-dark(#f5f6f8, #1c1e26);
-  --color-text-primary: light-dark(#26231c, #e8e5dc);
-  --color-text-secondary: light-dark(#625d50, #a5a297);
-  --color-border: light-dark(#d5d7dc, #393b43);
-  --color-border-emphasized: light-dark(#77766f, #82847e);
-  --focus-outline-color: light-dark(#1f4f9f, #d3a45f);
+  --color-accent: light-dark(#16161a, #ededf0);
+  --color-on-accent: light-dark(#ffffff, #101012);
+  --color-text-accent: light-dark(#16161a, #ededf0);
+  --color-icon-accent: light-dark(#16161a, #ededf0);
+  --color-background-body: light-dark(#fbfbfa, #101012);
+  --color-background-surface: light-dark(#ffffff, #17171a);
+  --color-background-card: light-dark(#ffffff, #17171a);
+  --color-background-muted: light-dark(#f2f2ef, #1d1d21);
+  --color-text-primary: light-dark(#16161a, #ededf0);
+  --color-text-secondary: light-dark(#63636b, #a3a3ab);
+  --color-border: light-dark(#e4e4e0, #2a2a2f);
+  --color-border-emphasized: light-dark(#86868c, #7c7c84);
+  --focus-outline-color: light-dark(#2f6bff, #7da2ff);
   --color-blog-success: light-dark(#24613e, #8dd5a6);
   --color-blog-warning: light-dark(#904218, #efb68f);
   --font-family-code: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -30,9 +40,13 @@
   --color-stars-low: light-dark(#155e75, #67e8f9);
   --color-stars-mid: light-dark(#854d0e, #fde047);
   --color-stars-high: light-dark(#9f1239, #fda4af);
-  --font-family-body: "Avenir Next", "Segoe UI", system-ui, sans-serif;
-  --font-family-heading:
-    "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  /* The site: a near-white page, hairlines, ink for text and links. Blue is
+   * the one accent. */
+  --font-family-body: "Inter", system-ui, "Segoe UI", sans-serif;
+  /* Diagram layouts are measured with this stack. Keep it apart from the
+   * page typeface so a label still fits its node. */
+  --font-family-diagram: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --font-family-heading: "Inter", system-ui, "Segoe UI", sans-serif;
   --font-family-home:
     "Schibsted Grotesk", "Avenir Next", "Segoe UI", system-ui, sans-serif;
   --font-family-home-code: ui-monospace, "SF Mono", "Cascadia Mono", monospace;
@@ -66,9 +80,9 @@
   --portrait-green-1: #3d8f5f;
   --portrait-warm-0: #4d3a00;
   --portrait-warm-1: #e0a800;
-  --radius-inner: 0;
-  --radius-element: 0;
-  --radius-container: 0;
+  --radius-inner: 3px;
+  --radius-element: 6px;
+  --radius-container: 10px;
   --radius-page: 0;
   --shadow-low: none;
   --shadow-med: none;

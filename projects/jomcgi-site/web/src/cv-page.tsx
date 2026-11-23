@@ -2,7 +2,6 @@ import { Heading } from "@astryxdesign/core/Heading";
 import { VStack } from "@astryxdesign/core/Layout";
 import { Text } from "@astryxdesign/core/Text";
 import {
-  LOCATION,
   contact,
   earlierCareer,
   jobs,
@@ -15,16 +14,6 @@ import {
 } from "./cv-data";
 import { Inline } from "./Inline";
 import { Shell } from "./Shell";
-
-const IDENTITY = [
-  "Senior Platform Engineer @ Semgrep",
-  "AWS / EKS",
-  "eBPF & Cilium",
-  "Distributed Systems",
-  "OpenTelemetry Contributor",
-  "K3S Homelab",
-  `${LOCATION.short}, ${LOCATION.country}`,
-];
 
 const PARTS = [
   { id: "profile", label: "Profile" },
@@ -98,7 +87,6 @@ export function CvPage() {
             <Text type="body">
               <Inline text={summary} />
             </Text>
-            <Tags items={IDENTITY} label="Background" />
           </VStack>
         </section>
 

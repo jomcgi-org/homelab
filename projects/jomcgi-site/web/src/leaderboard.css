@@ -1,8 +1,7 @@
 /* Shared report typography, controls and surfaces; paint stays in palette.css. */
 .lb-page {
-  font:
-    0.8rem/1.5 ui-monospace,
-    monospace;
+  font: 0.875rem/1.5 var(--font-family-body);
+  font-variant-numeric: tabular-nums;
 }
 .lb-page :is(p, ol, h1, h2) {
   margin: 0;
@@ -19,10 +18,10 @@
   color: var(--color-text-secondary);
 }
 .lb-page :is(.caption, .stats .m, .slug, .meta, em) {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
 }
 .lb-page :is(.sec-label, .stats .k, legend) {
-  font-size: 0.8rem;
+  font-size: 0.875rem;
   font-weight: 500;
 }
 .lb-page :is(.sec-label, .caption) {
@@ -38,11 +37,20 @@
 .lb-page :is(.aside, .panel-head .b, em) {
   margin-left: auto;
 }
-.lb-page :is(.panel, .stats, details, fieldset, .seg) {
-  border: 1px solid var(--color-border-emphasized);
+/* A panel is a hairline with a soft corner. Controls keep a stronger edge. */
+.lb-page :is(.panel, .stats, details, fieldset) {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-container);
 }
-.lb-page
-  :is(.panel-head, summary, th, .tasks li:target, button[aria-pressed="true"]) {
+.lb-page .seg {
+  border: 1px solid var(--color-border-emphasized);
+  border-radius: var(--radius-element);
+  overflow: hidden;
+}
+.lb-page :is(.panel-head, th) {
+  color: var(--color-text-secondary);
+}
+.lb-page :is(.tasks li:target, button[aria-pressed="true"]) {
   background: var(--color-background-muted);
 }
 .lb-page

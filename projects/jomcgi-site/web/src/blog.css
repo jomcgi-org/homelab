@@ -3,16 +3,8 @@
   gap: 1.5rem;
   min-width: 0;
 }
-.blog h1 {
-  font-size: clamp(2rem, 5vw, 3.5rem);
-  line-height: 1.15;
-}
-.blog h2 {
-  font-size: 1.8rem;
-  margin-block: 1.5rem 1rem;
-}
+.blog h2,
 .blog h3 {
-  font-size: 1.3rem;
   margin-block: 1.5rem 1rem;
 }
 .blog h1,
@@ -49,14 +41,22 @@
   list-style: none;
   padding: 0;
 }
+/* A tag is a hairline chip. The current one is solid ink. */
 .blog-tags a {
   display: inline-block;
-  padding: 0.35rem 0.6rem;
-  border: 1px solid var(--color-border-emphasized);
+  padding: 0.25rem 0.7rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-element);
+  font-size: 0.875rem;
+  text-decoration: none;
+}
+.blog-tags a:hover {
+  border-color: var(--color-border-emphasized);
 }
 .blog-tags [aria-current] {
   color: var(--color-on-accent);
   background: var(--color-accent);
+  border-color: var(--color-accent);
 }
 .blog-subsection {
   margin-left: 1.5rem;
@@ -102,6 +102,7 @@
 .blog .fig {
   margin: 1.5rem 0;
   border: 1px solid var(--color-border);
+  border-radius: var(--radius-container);
 }
 .blog figcaption {
   padding: 0.75rem 1rem;

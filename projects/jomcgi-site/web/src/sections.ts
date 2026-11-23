@@ -95,6 +95,9 @@ export const SECTIONS: readonly Section[] = [
     path: "/llm-leaderboard",
     legacy: "/app/llm-leaderboard",
     live: true,
+    // Unlisted until the agent factory supplies its data. The page stays at
+    // its address.
+    listed: false,
     summary:
       "Models doing real tasks in my monorepos, graded by the repo's own tests.",
   },
@@ -129,6 +132,9 @@ export const SECTIONS: readonly Section[] = [
     path: "/engineering",
     legacy: "/engineering",
     live: true,
+    // Unlisted: Docs covers these systems from the repository. The page
+    // stays at its address.
+    listed: false,
     summary: "How this site and its cluster are engineered.",
   },
   {
