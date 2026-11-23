@@ -4,8 +4,9 @@
 #
 # The image goes to ghcr.io/jomcgi-org/homelab/substrate-fork/engine-oss and to
 # no other name. A run with publish off builds the image, tests it and discards
-# it. A run with publish on pushes it under the tag
-# <semgrep version>-<commit>, and fails if that tag already exists. No
+# it. A run with publish on, on main only, pushes it under the tag
+# <semgrep version>-<commit>, and fails if that tag exists or if the registry
+# answers with anything but "not found". No
 # deployment pin changes here: the enable step of projects/factory-cluster/README.md
 # copies the digest of this run into the conformance template.
 #
@@ -60,9 +61,11 @@ jobs:
         run: ./build.sh layer "${RUNNER_TEMP}/engine"
       - name: Build the image
         run: ./build.sh image "${RUNNER_TEMP}/engine"
-      # One engine start per body size: the server is single-use. The network is
-      # internal (no route out), so the run also shows that the image needs none.
-      # The container runs as the image user with a read-only root.
+      # One engine start per run: the server is single-use. Three runs scan
+      # bodies of 1 KB, 16 KB and 512 KiB. A fourth sends bad and slow requests
+      # (edge.py) and then one scan. The network is internal (no route out), so
+      # the runs also show that the image needs none. The container runs as the
+      # image user with a read-only root.
       - name: Test the image
         env:
           NET: engine-net
@@ -70,40 +73,57 @@ jobs:
           set -euo pipefail
           docker load --input "${RUNNER_TEMP}/engine/image.tar"
           docker network create --internal "${NET}"
-          for size in 1024 16384 524288; do
-            name="engine-${size}"
+          check() { # check NAME SCRIPT ARGS...: start the engine, run the client, expect exit 0
+            local name="$1" script="$2"
+            shift 2
             docker run --detach --name "${name}" --network "${NET}" \
               --read-only --tmpfs /tmp --cap-drop ALL \
               --security-opt no-new-privileges \
               --memory 512m --pids-limit 64 \
               --env FORKSRV_CHECKPOINT=0 \
               engine-oss:local /usr/local/bin/forksrv-net --listen 0.0.0.0:8080 >/dev/null
+            local ip
             ip="$(docker inspect --format "{{ (index .NetworkSettings.Networks \"${NET}\").IPAddress }}" "${name}")"
-            if ! python3 -I smoke.py "${ip}" 8080 "${size}"; then
+            if ! python3 -I "${script}" "${ip}" 8080 "$@"; then
               docker logs "${name}" >&2 || true
               exit 1
             fi
+            local code
             code="$(timeout 30 docker wait "${name}")"
-            echo "SMOKE exit_code=${code} body_bytes=${size}"
+            echo "${script} ${name} exit_code=${code}"
             test "${code}" = "0"
             docker rm "${name}" >/dev/null
+          }
+          for size in 1024 16384 524288; do
+            check "engine-${size}" smoke.py "${size}"
           done
+          check engine-edge edge.py
+      - name: Refuse to publish from a branch other than main
+        if: inputs.publish && github.ref != 'refs/heads/main'
+        run: |
+          echo "publish runs only on main; this run is on ${GITHUB_REF}" >&2
+          exit 1
       - name: Log in to ghcr.io
-        if: inputs.publish
+        if: inputs.publish && github.ref == 'refs/heads/main'
         env:
           TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
         run: crane auth login ghcr.io --username "${ACTOR}" --password-stdin <<<"${TOKEN}"
       - name: Publish the image
-        if: inputs.publish
+        if: inputs.publish && github.ref == 'refs/heads/main'
         env:
           COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
           . ./pins.env
           ref="${IMAGE_REPOSITORY}:${SEMGREP_VERSION}-${COMMIT:0:12}"
-          if crane digest "${ref}" >/dev/null 2>&1; then
-            echo "${ref} exists. Never overwrite a published tag: commit a change and run again." >&2
+          # Only "not found" means the tag is free. Any other error (network,
+          # auth, a registry fault) stops the run instead of risking an overwrite.
+          if found="$(crane digest "${ref}" 2>&1)"; then
+            echo "${ref} exists (${found}). Never overwrite a published tag: commit a change and run again." >&2
+            exit 1
+          elif ! grep -qE 'MANIFEST_UNKNOWN|NAME_UNKNOWN|status code 404' <<<"${found}"; then
+            echo "Cannot tell whether ${ref} exists: ${found}" >&2
             exit 1
           fi
           ./build.sh push "${RUNNER_TEMP}/engine" "${ref}"
