@@ -6,10 +6,13 @@
 # ate-api-server, ate-controller (and its workers) and atelet agree.
 # ForkSeed (step 7 of the gVisor sandbox fork enable steps, projects/factory-cluster/README.md)
 # lets a template with fork_config start actors by forking a seed. It is a
-# process-wide flag: every component and every worker reads it. Only workers of
-# a pool with --fork-platform=kvm (WorkerPool gvisor-fork) can hold seeds, and
-# no template has fork_config yet. To turn it off, delete the line only after
-# the fork templates are gone (README, "Roll back").
+# flag of the control plane: ate-api-server, ate-controller and atelet read it.
+# The fork controller (substrate 1e7a877d0ca3) adds it to the --preview of
+# workers of KVM pools only, because a worker built before the gate (the
+# v1.0.1 ateworker-gvisor and ateworker-microvm) exits on an unknown gate. Only
+# workers of a pool with --fork-platform=kvm (WorkerPool gvisor-fork) can hold
+# seeds, and no template has fork_config yet. To turn it off, delete the line
+# only after the fork templates are gone (README, "Roll back").
 preview:
   - PerTemplateSnapshotLocation
   - GoldenEgressPolicy
