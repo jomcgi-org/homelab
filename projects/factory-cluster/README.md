@@ -563,16 +563,19 @@ server, controller and atelet are not deployed, so `platform: kvm` cannot apply.
 #### Enable
 
 Joe approves each step that changes the cluster. Steps 1 and 2 touch no
-cluster object. Step 3 rolls the control plane and changes nothing for actors.
+cluster object. Step 3 is cluster-affecting: it replaces the `ateapi`,
+`atecontroller` and `atelet` images, so Joe approves it before it merges.
 
 ```mermaid
 flowchart LR
   R[1 Publish gVisor release] --> I[2 Publish images]
   I --> C[3 Fork control plane, gate off]
-  C --> P[4 Wire directory, replicas 1]
-  P --> J[5 Conformance Job]
-  J --> X[6 X1 to X7 in the pod]
-  X --> G[7 Joe turns ForkSeed on]
+  C --> W[4 Wire the dev pool, replicas 0]
+  W --> S[5 Start one worker]
+  S --> G[6 Gate on, dev pool only]
+  G --> J[7 Conformance Job]
+  J --> X[8 X1 to X9 in the pod]
+  X --> F[9 Joe allows factory use of fork templates]
 ```
 
 1. Create the GitHub release `fork-seed-slice1-0250f9acf` on jomcgi-org/gvisor
@@ -580,38 +583,52 @@ flowchart LR
    `6850279d7a50b7c047fedf1ad631c65d05eb4b091b0b28c9a28a6abfb7534460`.
 2. Dispatch `Substrate fork images` with `publish` off, then on. Record the
    five digests. Make the packages pullable by atelet.
-3. Cluster-affecting PR: render the fork's charts at `b6b0ec3e2` (CRD with
-   `platform`, then `ateapi`, `atecontroller`, `atelet` at the fork digests).
-   Merge it with the gate off. Verify the control plane and an existing actor
-   behave as before.
+3. Cluster-affecting, Joe approves. Render the fork's charts at `b6b0ec3e2`:
+   the CRD with `platform`, then `ateapi`, `atecontroller` and `atelet` at the
+   fork digests. Merge it with the gate off. After the merge, verify that an
+   existing actor still starts and runs, and that the control plane is healthy.
 4. Wire `../gvisor-fork` in `resources/kustomization.yaml`. Set the pool's
-   `workerImage` digest to the published one and `replicas` to 1. Add
-   `ForkSeed` to `preview` in `values/common.yaml`. Check that forkd starts in
-   the pod: its `hello` assertions (capabilities, cgroup parent, Unconfined
-   seccomp, `/dev/kvm`) and that `memory`, `pids` and `cpu` are delegated below
+   `workerImage` to the published digest. Keep `replicas` at 0.
+5. Set the pool's `replicas` to 1. Check that forkd starts in the pod. Its
+   `hello` assertions cover capabilities, cgroup parent, Unconfined seccomp and
+   `/dev/kvm`. Also check that `memory`, `pids` and `cpu` are delegated below
    `/sys/fs/cgroup/forkd`.
-5. Build the public engine image with its listen-after-fork server, pin its
-   digest in `conformance/template.yaml`, set the Job's `suspend` to `false`
-   and read `kubectl -n ate-system logs job/gvisor-fork-conformance-1 | grep '^CONFORMANCE '`.
-6. Re-run X1 to X7 inside the pod from node-1, with a worker restart, a node
-   drain and a forkd crash, and compare `fork_overhead` with the measured use.
-7. Joe decides whether factory work may use fork templates.
+6. Add `ForkSeed` to `preview` in `values/common.yaml`. The gate is then on.
+   Only the dev pool holds fork-capable workers, and no factory template has
+   `fork_config` until step 9.
+7. Replace the engine digest in `conformance/template.yaml` and the
+   `kubectl-ate` digest in `conformance-job.yaml`. Set `suspend` to `false`.
+   Read `kubectl -n ate-system logs job/gvisor-fork-conformance-1 | grep '^CONFORMANCE '`.
+   Until then Argo shows the suspended Job with health Suspended.
+8. Run X1 to X7 and X9 inside the pod from node-1. Add a worker restart, a node
+   drain and a forkd crash. Compare `fork_overhead` with the measured use.
+9. Joe allows factory use of fork templates. Joe's rule from the 2026-11-22
+   design session: nothing is enabled on the factory until the gates pass. No
+   HOME ticket or decision comment records it yet.
 
 #### Isolation gates
 
-All of X1 to X8 pass before step 7. Off-cluster runs on node-1 (production
-mode, real forkd and runsc) passed X1, X3, X4 and X7. No gate has run in the cluster.
+X1 to X7 and X9 pass in the cluster before step 9, and Joe waives X8 (it covers
+the microVM fallback only) for gVisor-only use. Off-cluster runs on node-1
+(production mode, real forkd and runsc) covered X1, X3, X4 and X7. No gate has
+run in the cluster.
 
 | Gate | Checks | State |
 | --- | --- | --- |
-| X1 | Child seccomp equals a normal sandbox's; caps 0; `NoNewPrivs` | node-1 only |
+| X1 | Child seccomp equals a normal sandbox's except 2 instructions (the control fd number); caps 0; `NoNewPrivs` | node-1 only |
 | X2 | No writable `MAP_SHARED` between children; KSM off | partial |
 | X3 | No inherited descriptors to the seed or siblings | node-1 only |
-| X4 | Random state and identity differ per child | node-1 only |
+| X4 | Differs per child: `getrandom`, `urandom`, uuid, `boot_id`. Same in every child: ASLR, stack canary, `AT_RANDOM` | node-1 only |
 | X5 | A 512 KiB body through router and atunnel; egress NONE incl. DNS | partial |
 | X6 | `pids.max`, memory charging, kill paths, no leak after 1000 forks | partial |
 | X7 | A canary in the seed is readable by children (why the seed holds no secret) | node-1 only |
-| X8 | microVM golden is read-only and hash-checked | not done |
+| X8 | The microVM golden is read-only and hash-checked | waiver needed: Joe decides it for gVisor-only use |
+| X9 | Cross-atespace and forged-seed requests refused by API, atelet and worker; altered image refused | worker only |
+
+Known gaps against a normal sandbox stay open: children share the seed's user
+and cgroup namespace and UID, the seed and each child run unfiltered for 20 to
+50 ms, the worker keeps `CAP_SYS_ADMIN`, siblings share clean seed pages, and
+every child has the same ASLR, canary and `AT_RANDOM`.
 
 The Job checks the API side of X6 and X9 only. A request through the router
 (X5) needs a router client certificate, a new grant for Joe to decide. X1 to X4
@@ -619,11 +636,12 @@ and X7 need node access.
 
 #### Roll back
 
-- Set the pool's `replicas` to 0. Keep the gate on until the fork templates are
-  deleted: deleting a template deletes its seeds, and only the gate-on
-  reconciler and reaper do the cleanup.
-- Then remove `ForkSeed` from `preview`, lower the three image pins to the v1.0.1
-  digests, and unwire the directory.
+- Delete the fork templates, then set the pool's `replicas` to 0. Deleting a
+  template deletes its seeds, and only the gate-on reconciler and reaper do
+  that cleanup, so the gate stays on until the templates are gone.
+- Then remove `ForkSeed` from `preview`, lower the three image pins to the
+  v1.0.1 digests and unwire the directory. The WorkerPool CRD stays: it only
+  gains an optional field, and removing it would delete every WorkerPool.
 
 #### Tenancy
 
@@ -634,7 +652,7 @@ runs code that is not ours, a second tenant appears or an untrusted author
 writes a template. Per-tenant pools are then mandatory: siblings share clean seed
 pages, so they share a cache-timing channel. Request bodies are untrusted input
 to the engine. A child is contained by its own sandbox, single use, no egress
-and short-lived tokens, and every child has the same ASLR.
+and short-lived tokens.
 
 ## Observability
 
