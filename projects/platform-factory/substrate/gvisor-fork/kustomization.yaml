@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The gVisor sandbox-fork slice 1, staged and OFF. Nothing here reaches the
+# cluster: ArgoCD applies only ../resources (egress-scan/deploy/application.yaml,
+# path projects/platform-factory/substrate/resources), and that directory does
+# not list this one. gvisor_fork_test.py fails if it ever does. The enable
+# steps, the isolation gates and the rollback are in
+# projects/factory-cluster/README.md, "gVisor sandbox fork (staged, off)".
+resources:
+  - sandboxconfig-gvisor-fork.yaml
+  - gvisor-assets-job.yaml
+
+configMapGenerator:
+  # The fork build pins and the script that stages them (gvisor-assets-job.yaml).
+  - name: gvisor-fork-assets
+    namespace: ate-system
+    files:
+      - assets.json=assets/assets.json
+      - stage.py=assets/stage.py

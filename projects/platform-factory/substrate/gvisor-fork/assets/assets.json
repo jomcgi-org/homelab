@@ -1,0 +1,27 @@
+{
+  "bucket": "ate-snapshots",
+  "prefix": "gvisor-fork-assets",
+  "arch": "amd64",
+  "source": {
+    "url": "https://github.com/jomcgi-org/gvisor/releases/download/fork-seed-slice1-0250f9acf/runsc-release.tar.gz",
+    "sha256": "6850279d7a50b7c047fedf1ad631c65d05eb4b091b0b28c9a28a6abfb7534460",
+    "strip": "release/"
+  },
+  "assets": {
+    "gvisor": {
+      "sha256": "e4372aa444b22a8569d4fd94166da5cc282060e3ea8db9ec7a9833cbc104687c",
+      "suffix": ".tar"
+    }
+  },
+  "members": {
+    "containerd-shim-runsc-v1": "c752686158e9d4a03e6a1abbd8d2a21afff0f6a2785d63e3da105aaee69dbfb6",
+    "gvisor-bin/checkpointgofer": "7679cc0993ee4061e146aeaf54c0e810e0a9496c279a01ca3c458de0cf59016f",
+    "gvisor-bin/forkd": "1d6387aa2c5b89232b1b8ae7698d9578b18a25c0d65a0724faf51ac8aa46fd92",
+    "gvisor-bin/gvisor-proc-umounter": "f8bcc91a9ea695c817cab5e401f93d02b791717385c95ac5d4d9b4d2ff42f7ab",
+    "gvisor-bin/gvisor-sentry-prewarmer": "fd80f1972b1d4284cf489ae54c8250a820ac5a9edb81d73affbf2faea755aebf",
+    "gvisor-bin/gvisor_sentry": "fa43f82ae89f4d50c312c425a99f4bf49e48b8df85dfadd061cc0ba3987e148f",
+    "gvisor-bin/runsc-fd-parking": "c367c27ce0da4ce8529c9ba0b091eda0e159e966062137e963d451c37d25880a",
+    "gvisor-bin/runsc-metric-server": "cf012d711b0245f17ed4292d9cfb107111ab3fd9301f86c5884d82a0b73a116b",
+    "runsc": "c05198aa51e61416ac73463168ab03130057fccf0ab0bf7c3ce066a7eec8a1a5"
+  }
+}
