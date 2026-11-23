@@ -181,6 +181,11 @@ export function HikesPlanner() {
       setMapLoading(false);
     }
   }
+  // The map loads as soon as there are walks to draw.
+  const haveWalks = snapshot !== null;
+  useEffect(() => {
+    if (haveWalks) void showMap();
+  }, [haveWalks]);
   return (
     <section aria-label="Walk planner">
       {snapshot ? (
@@ -285,14 +290,16 @@ export function HikesPlanner() {
           No walks match these filters. Reset the limits to see them all.
         </p>
       )}
-      {snapshot && !MapView && (
-        <button type="button" onClick={showMap} disabled={mapLoading}>
-          {mapLoading ? "Loading map…" : "Show map"}
-        </button>
+      {snapshot && !MapView && !mapError && (
+        // The map loads with the walks. This holds its place until then.
+        <div className="hikes-map-pending" aria-hidden="true" />
       )}
       {mapError && (
         <p role="status">
-          Couldn’t load the map. Try again or choose a walk from the list.
+          Couldn’t load the map. Choose a walk from the list.{" "}
+          <button type="button" onClick={showMap} disabled={mapLoading}>
+            Retry map
+          </button>
         </p>
       )}
       {MapView && (

@@ -14,6 +14,19 @@ export async function withSiteBrowser(
 ) {
   const headers = await readFile("public/_headers", "utf8");
   const policy = headers.match(/Content-Security-Policy: (.+)/)[1];
+  // A route with its own policy (the map pages) is served with that policy,
+  // as the host does. Maps load on arrival, so the site policy would block
+  // them here but not in production.
+  const routePolicies = new Map(
+    [
+      ...headers.matchAll(
+        /^(\/[a-z-]+)\n(?:  .*\n)*?  Content-Security-Policy: (.+)$/gm,
+      ),
+    ].map(([, route, value]) => [route, value]),
+  );
+  const policyFor = (path) =>
+    routePolicies.get("/" + path.split("/")[1].replace(/\.html$/, "")) ??
+    policy;
   const server = createServer(async (req, res) => {
     try {
       const path = new URL(req.url, "http://localhost").pathname;
@@ -31,7 +44,7 @@ export async function withSiteBrowser(
           extname(file)
         ] ?? "application/octet-stream",
       );
-      if (csp) res.setHeader("Content-Security-Policy", policy);
+      if (csp) res.setHeader("Content-Security-Policy", policyFor(path));
       res.end(await readFile(file));
     } catch {
       res.writeHead(404).end();
@@ -91,7 +104,15 @@ export async function withSiteBrowser(
       const url = request.url();
       if (url === "https://static.cloudflareinsights.com/beacon.min.js") {
         void request.respond({ contentType: "text/javascript", body: "" });
-      } else if (!url.startsWith(origin + "/") && !url.startsWith("data:")) {
+      } else if (url.startsWith("https://tiles.openfreemap.org/")) {
+        // The run is offline. The map's tile host answers "not found", and
+        // the page must stay usable without a base map.
+        void request.respond({ status: 404, body: "" });
+      } else if (
+        !url.startsWith(origin + "/") &&
+        !url.startsWith("data:") &&
+        !url.startsWith("blob:")
+      ) {
         unexpected.push(url);
         void request.abort();
       } else if (

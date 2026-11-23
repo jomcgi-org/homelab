@@ -84,7 +84,7 @@ const advance = (milliseconds: number) =>
   });
 
 describe("stars static and interactive page", () => {
-  it("keeps a stale publication timestamp when a visitor loads its full forecast", async () => {
+  it("keeps a stale publication timestamp when the full forecast loads", async () => {
     vi.useFakeTimers();
     page();
     await advance(50);
@@ -92,9 +92,6 @@ describe("stars static and interactive page", () => {
     await advance(60 * 60_000);
     expect(screen.getByLabelText("Forecast snapshot").textContent).toContain(
       "Stale site snapshot",
-    );
-    fireEvent.click(
-      screen.getByRole("button", { name: "Load live forecasts" }),
     );
     await advance(50);
     expect(screen.getByRole("button", { name: "Galloway" })).toBeTruthy();
@@ -104,13 +101,14 @@ describe("stars static and interactive page", () => {
     expect(summary).not.toContain("Stale —");
   });
 
-  it("refreshes the default summary every 30 minutes, retains it on failure and retries without loading large data", async () => {
+  it("refreshes the default summary every 30 minutes, retains it on failure and retries", async () => {
     vi.useFakeTimers();
     const { unmount } = page();
     await advance(50);
     expect(fetcher.mock.calls.map(([path]) => path)).toEqual([
       "/data/stars/latest.json",
       index.files.summary,
+      index.files.sites,
     ]);
     const updatedIndex = {
       ...index,
@@ -150,25 +148,18 @@ describe("stars static and interactive page", () => {
     expect(screen.getByLabelText("Forecast snapshot").textContent).toContain(
       "Stale",
     );
-    expect(screen.getByRole("button", { name: "Retry summary" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry forecast" })).toBeTruthy();
     nextSummary();
-    fireEvent.click(screen.getByRole("button", { name: "Retry summary" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry forecast" }));
     await advance(50);
-    expect(screen.queryByRole("button", { name: "Retry summary" })).toBeNull();
-    expect(
-      fetcher.mock.calls.every(
-        ([path]) =>
-          path === "/data/stars/latest.json" || path.includes("/summary-"),
-      ),
-    ).toBe(true);
-    expect(screen.queryByText("Interactive map loaded")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry forecast" })).toBeNull();
     const requests = fetcher.mock.calls.length;
     unmount();
     await advance(30 * 60_000);
     expect(fetcher).toHaveBeenCalledTimes(requests);
   });
 
-  it("restores a historical deep link and never requires a map to inspect sites", async () => {
+  it("restores a historical deep link", async () => {
     window.history.replaceState(null, "", "/stars?mode=historical&month=12");
     page();
     await screen.findByRole("button", { name: "Galloway" });
@@ -177,7 +168,6 @@ describe("stars static and interactive page", () => {
         .getByRole("button", { name: "December" })
         .getAttribute("aria-pressed"),
     ).toBe("true");
-    expect(screen.queryByText("Interactive map loaded")).toBeNull();
   });
   it("dates history by its own file and re-dates it when republished unchanged", async () => {
     vi.useFakeTimers();
@@ -201,9 +191,6 @@ describe("stars static and interactive page", () => {
   it("keeps existing data when a refresh fails and marks it stale as the clock advances", async () => {
     vi.useFakeTimers();
     page();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Load live forecasts" }),
-    );
     await advance(50);
     expect(screen.getByRole("button", { name: "Galloway" })).toBeTruthy();
     fetcher.mockRejectedValueOnce(new Error("offline"));

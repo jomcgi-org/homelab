@@ -438,16 +438,19 @@ remains pending until this revision is deployed.
 
 ## Site look
 
-`web/src/palette.css` and `web/src/site.css` set one look for every page:
+`web/src/palette.css` and `web/src/site.css` set one look for every page,
+the same on a phone and a desktop:
 
 | Part | Rule |
 | --- | --- |
-| Ground | Warm paper (`--color-background-body`). A surface is white (`--color-background-surface`). |
-| Lines | No outline around a panel. A hairline separates rows. |
-| Type | Schibsted Grotesk, self-hosted. Five steps, the same on a phone and a desktop: title (`h1`, 2rem to 3.25rem, upper case), section (`h2`, 1.5rem, upper case), heading (`h3`, 1.125rem, semibold), body (1rem / 1.6), small (0.875rem). A page sets no heading size of its own. |
+| Ground | A near-white page (`--color-background-body`). A surface is white. |
+| Lines | Hairlines (`--color-border`) separate rows and outline a panel. Nothing is boxed in ink. Corners are soft (`--radius-*`). |
+| Type | Inter, self-hosted (`web/src/assets/fonts`, SIL OFL 1.1). Size and tight tracking carry the hierarchy: title (`h1`, 2rem to 3.25rem, semibold), section (`h2`, 1.25rem), heading (`h3`, 1rem), body (1rem / 1.6), small (0.875rem). A page sets no heading size of its own. |
+| Colour | Ink for text, links and selected controls. Blue is the one accent: the focus ring, and on Factory the mark for work in review. |
 | Space | The page gutter is 1rem on a phone and 1.5rem above it. The title is the first thing under the nav. On a phone, secondary navigation becomes one row so it does not push the title down. |
-| Links | Ink, underlined in text. The accent tokens are ink. |
-| Nav | One row of ink links. A hairline separates the groups. |
+| Nav | One row of quiet links. A hairline separates the groups. |
+| Loading | A page shows its value on arrival. Maps, the hike planner and the full star forecast load without a click, into space held for them, so nothing shifts. A button shows only to retry a failure. Star history waits for the Historical view. A blog recording loads as it nears the screen. |
+| Order | The thing the reader came for is first under the title. Controls come after what they control. |
 | Diagrams | Keep `--font-family-diagram`, the stack their layouts are measured with. |
 
 ## Factory preview (HOME-224)
@@ -483,10 +486,9 @@ The story opens with a statement and the floor: one square for each issue,
 coloured by state, linked to that issue. Each measure is one row: a sentence
 written from the snapshot, then its chart. The exporter's narrative shows
 when the snapshot has one.
-The Factory pages use the site look (see "Site look" below) and add one flat
-fill for each state (`--factory-*` in `palette.css`). The fills sit on the
-dark floor and carry no text. The measures sit on a full-width band. Phone
-gutters are 16px.
+The Factory pages use the site look (see "Site look" below). On the floor a
+shipped issue is ink, work in review is blue and work in progress is a
+lighter blue (`--factory-*` in `palette.css`). A fill carries no text.
 
 The [Factory acceptance evidence](validation/factory.md) maps each required
 case to its test and records the local commands and results.

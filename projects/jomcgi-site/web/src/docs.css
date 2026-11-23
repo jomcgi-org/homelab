@@ -168,3 +168,9 @@
     flex-basis: 100%;
   }
 }
+
+/* A cell never splits a word; the table's scroll wrapper takes the width. */
+.docs-content :is(th, td) {
+  overflow-wrap: normal;
+  word-break: normal;
+}

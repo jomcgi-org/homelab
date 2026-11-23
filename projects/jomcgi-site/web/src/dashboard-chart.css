@@ -3,14 +3,13 @@
 }
 /* The plot uses the page's typeface. Axis text is quiet; values are ink. */
 .dashboard-chart-plot svg text {
-  font: 0.8125rem var(--font-family-home);
+  font: 0.8125rem var(--font-family-body);
   fill: var(--color-text-secondary);
 }
 .dashboard-chart-plot [aria-label="bottom axis"] line {
-  stroke: var(--color-text-primary);
+  stroke: var(--color-border);
 }
 .dashboard-chart-plot .dashboard-chart-values text {
   fill: var(--color-text-primary);
-  font-size: 0.9375rem;
   font-weight: 600;
 }

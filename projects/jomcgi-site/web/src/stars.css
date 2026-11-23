@@ -3,17 +3,34 @@
 }
 #stars-summary,
 .stars-card {
-  padding: 1rem;
+  padding: 1rem 1.25rem;
+  margin-block: 1rem;
   border: 1px solid var(--color-border);
-  background: var(--color-background-muted);
+  border-radius: var(--radius-container);
 }
 #stars-summary ol {
   padding-inline-start: 1.5rem;
 }
+/* Mode, night and month sit in one wrapping row. */
 .stars-controls {
-  display: grid;
-  gap: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
   margin-block: 1.5rem;
+}
+/* A retry inside a status line reads as a link, not a default button. */
+.site-main p[role="status"] {
+  color: var(--color-text-secondary);
+}
+.site-main p[role="status"] button {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--color-text-primary);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+  cursor: pointer;
 }
 .stars-chips {
   display: flex;
@@ -45,9 +62,12 @@
   height: clamp(24rem, 65vh, 48rem);
   background: var(--color-background-muted);
 }
-.stars-load-map {
-  width: 100%;
-  min-height: 8rem;
+.stars-map {
+  border-radius: var(--radius-container);
+  overflow: hidden;
+}
+.stars-map-section {
+  margin-top: 1rem;
 }
 .stars-legend {
   display: flex;

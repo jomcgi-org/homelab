@@ -1,5 +1,5 @@
-// This whole module (including the style and worker) is requested only by the
-// Show map button. Passing GeoJSON objects avoids a data: connect-src exception.
+// This whole module (including the style and worker) loads with the walks,
+// after the first paint. Passing GeoJSON objects avoids a data: connect-src exception.
 import { useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import type { GeoJSONSource } from "maplibre-gl";

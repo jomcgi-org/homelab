@@ -30,12 +30,16 @@ test("the Factory shell is pre-rendered with unavailable states and local assets
       "Work in progress",
       "Recently shipped",
     ]) {
+      // The shell names each section and stays quiet while data loads.
       assert.ok(
-        doc
-          .querySelector("main")
-          ?.textContent.includes(`${label} not available.`),
+        [...doc.querySelectorAll("main h2")].some(
+          (heading) => heading.textContent === label,
+        ),
       );
     }
+    assert.ok(
+      !doc.querySelector("main")?.textContent.includes("not available"),
+    );
     assert.equal(doc.querySelectorAll("[style], style").length, 0);
     assert.equal(
       doc.querySelector("link[rel='canonical']")?.getAttribute("href"),

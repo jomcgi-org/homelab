@@ -93,7 +93,12 @@ export function FactoryPage() {
               ].map((label) => (
                 <section key={label}>
                   <Heading level={2}>{label}</Heading>
-                  <NotAvailable label={label} />
+                  {/* Quiet while the first snapshot loads. */}
+                  {error ? (
+                    <NotAvailable label={label} />
+                  ) : (
+                    <div className="pending" aria-hidden="true" />
+                  )}
                 </section>
               ))}
             </>

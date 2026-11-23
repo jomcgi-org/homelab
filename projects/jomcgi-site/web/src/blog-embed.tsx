@@ -72,8 +72,25 @@ export function BlogEmbed({
       host.remove();
     };
   }, [requested, loader, kind]);
+  // A recording loads as it nears the screen. The button stays for a retry
+  // and for a browser with no IntersectionObserver.
+  const section = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!section.current || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setRequested(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "600px" },
+    );
+    observer.observe(section.current);
+    return () => observer.disconnect();
+  }, []);
   return (
-    <section className="blog-embed" aria-label={label}>
+    <section className="blog-embed" aria-label={label} ref={section}>
       {state !== "ready" && (
         <button
           type="button"

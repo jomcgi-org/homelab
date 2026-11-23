@@ -72,15 +72,13 @@ function mockData(walks = [FIXTURE_WALK]) {
   vi.stubGlobal("fetch", fetch);
   return fetch;
 }
-it("requests no large data before intent and retains a published summary on failure", async () => {
+it("loads the planner on arrival and retains a published summary on failure", async () => {
   visit("?ref=shared&walk=invalid");
   const fetch = vi.fn().mockRejectedValue(new Error("offline"));
   vi.stubGlobal("fetch", fetch);
   const published =
     '<p>Data as of <time datetime="2026-06-15T06:00:00Z">2026-06-15T06:00:00Z</time></p><ul><li>Published Ben Vorlich</li></ul>';
   mount(<HikesPage published={published} />);
-  expect(fetch).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Explore walks" }));
   await screen.findByRole("button", { name: "Retry data" });
   expect(screen.getByText("Published Ben Vorlich")).toBeTruthy();
   expect(document.body.textContent).not.toContain("unavailable");
@@ -235,8 +233,7 @@ it("holds a shared location selection until coordinates arrive and then applies 
   const location = getLocation();
   visit("?near=__me__&walk=" + FIXTURE_WALK.id);
   mount();
-  await screen.findByRole("button", { name: "Show map" });
-  expect(screen.getByText("Finding your location…")).toBeTruthy();
+  await screen.findByText("Finding your location…");
   expect(button()).toBeNull();
   expect(button(far.name)).toBeNull();
   expect(screen.queryByText(/No walks match/)).toBeNull();
@@ -288,7 +285,7 @@ it.each([
     '<span data-snapshot-freshness data-generated-at="2026-06-15T06:00:00Z">Site refreshes every 30 minutes</span>',
   ],
 ] as const)(
-  "ages published data after %i ms (%s) before planner intent",
+  "ages published data after %i ms (%s) while the planner cannot load",
   async (age, kind, status) => {
     vi.spyOn(Date, "now").mockReturnValue(FIXTURE_NOW + age - 1);
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
@@ -307,6 +304,5 @@ it.each([
     await advance(age, 60_000);
     expect(screen.getByText(stale)).toBeTruthy();
     expect(screen.getByText("Published Ben Vorlich")).toBeTruthy();
-    expect(fetch).not.toHaveBeenCalled();
   },
 );
