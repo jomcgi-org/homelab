@@ -404,7 +404,20 @@ def test_kvm_pool_template_sets_only_the_account_the_placement_and_the_resources
     # No tolerations, hard node selector, volumes, host namespaces or security
     # context: the controller shapes the pod, and a new field is a review item.
     template = _pool()["spec"]["template"]
-    assert set(template) == {"serviceAccountName", "nodeAffinity", "resources"}
+    assert set(template) == {
+        "annotations",
+        "serviceAccountName",
+        "nodeAffinity",
+        "resources",
+    }
+    # The restart handle: the controller copies template annotations into the
+    # Deployment's pod template, so changing the value replaces the worker pod
+    # (README, step 8, "The atespace pin"). The CRD refuses keys under ate.dev.
+    assert set(template["annotations"]) == {"factory.jomcgi.dev/worker-restart"}
+    assert all(
+        v.strip() and not k.startswith("ate.dev/") and ".ate.dev/" not in k
+        for k, v in template["annotations"].items()
+    )
     # Node-1 is preferred, not required: a drained or tainted node-1 must not
     # leave the single worker pending.
     assert set(template["nodeAffinity"]) == {
