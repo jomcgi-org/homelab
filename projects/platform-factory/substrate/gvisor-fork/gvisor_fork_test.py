@@ -392,6 +392,22 @@ def test_kvm_pool_has_no_workers_and_uses_the_fork_config() -> None:
     assert klass["configRef"]["name"] != "gvisor-default"
 
 
+def test_kvm_pool_template_sets_only_the_account_and_the_resources() -> None:
+    # No tolerations, node selector, volumes, host namespaces or security
+    # context: the controller shapes the pod, and a new field is a review item.
+    assert set(_pool()["spec"]["template"]) == {"serviceAccountName", "resources"}
+
+
+def test_kvm_pool_with_workers_has_a_real_worker_image_digest() -> None:
+    # The all-zero placeholder is for the staged state only: a pool that
+    # starts workers must name a published image.
+    pool = _pool()
+    if pool["spec"]["replicas"] > 0:
+        digest = pool["spec"]["workerImage"].split("@sha256:")[1]
+        assert set(digest) != {"0"}
+        assert len(digest) == 64
+
+
 def test_kvm_pool_runs_the_fork_worker_image_by_digest() -> None:
     image = _pool()["spec"]["workerImage"]
     assert image.startswith(_FORK_IMAGES + "ateworker-gvisor:")

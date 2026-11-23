@@ -16,7 +16,9 @@
 #   - the gVisor worker capabilities NET_ADMIN, SYS_ADMIN, SETUID, SETGID,
 #     DAC_OVERRIDE, FOWNER, CHOWN, NET_RAW, SETFCAP, plus SYS_CHROOT and SETPCAP
 #     for forkd's chroot and bounding-set drop;
-#   - seccomp Unconfined at pod level (the sentry installs its own filter).
+#   - seccomp and AppArmor Unconfined on the worker container (runsc pivots
+#     root and the worker remounts /sys/fs/cgroup; the sentry installs its own
+#     seccomp filter). The container runs as root, not privileged.
 # forkd refuses to start unless these hold, so a missing grant fails closed.
 #
 # The pod holds the seed and every forked child, so its memory limit is the
