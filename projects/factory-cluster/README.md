@@ -778,8 +778,17 @@ flowchart LR
    kubectl get workerpools -A                           # gvisor-fork READY 1; the others unchanged
    kubectl -n substrate-gvisor-fork get pod -o jsonpath='{.items[0].spec.containers[0].resources}'
    kubectl -n substrate-gvisor-fork get pod -o yaml | grep -E 'fork-platform|ate.dev/kvm|seccomp|CAP|SYS_ADMIN'
+   kubectl -n substrate-gvisor-fork get pod -o jsonpath='{.items[0].status.containerStatuses[*].imageID}'   # the ateworker-gvisor digest below
    kubectl describe node node-1 | sed -n '/Allocated resources/,/Events/p'
    ```
+
+   The worker image is the `workerImage` of `kvm-pool.yaml`:
+   `ateworker-gvisor:fork-1e7a877d0ca3@sha256:f208bf5a…7d1`, from the re-pin PR.
+   That PR must be merged and verified first: it rolls the control plane and
+   moves the pin, so this step starts a worker on the new build. The step does
+   not depend on its code, and the two PRs are separate. Check that the pod's
+   `imageID` ends in that digest. A pod on the old digest
+   (`65f14b69…`) means the re-pin is not live.
 
    The worker pod runs with `/dev/kvm` (the `ate.dev/kvm` limit),
    `--fork-platform=kvm`, the KVM capabilities and seccomp Unconfined. forkd
