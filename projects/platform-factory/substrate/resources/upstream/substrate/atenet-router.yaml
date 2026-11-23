@@ -29,7 +29,7 @@ data:
       networkAuthorization:
         rules:
         - allow: >-
-            source.spiffeId in ["spiffe://cluster.local/ns/ate-system/sa/atenet-client","spiffe://cluster.local/ns/kagent/sa/kagent-controller"]
+            source.spiffeId in ["spiffe://cluster.local/ns/ate-system/sa/atenet-client","spiffe://cluster.local/ns/kagent/sa/kagent-controller","spiffe://cluster.local/ns/ate-system/sa/engine-gate"]
 
     backends:
     - name: dynamic

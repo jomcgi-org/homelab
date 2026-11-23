@@ -438,6 +438,42 @@ def test_microvm_spike_namespace_allows_only_the_router_and_the_gateway() -> Non
         assert rule["toPorts"] == [{"ports": [{"port": "8443", "protocol": "TCP"}]}]
 
 
+_ROUTER_CLIENTS = [
+    "spiffe://cluster.local/ns/ate-system/sa/atenet-client",
+    "spiffe://cluster.local/ns/kagent/sa/kagent-controller",
+    "spiffe://cluster.local/ns/ate-system/sa/engine-gate",
+]
+
+
+def test_router_allows_exactly_the_three_client_identities() -> None:
+    # The router checks a client by its SPIFFE ID alone, and an allowed ID can
+    # reach any actor in any atespace. engine-gate is the only holder of its ID
+    # (egress-scan/gate/README.md): egress-scan, which parses untrusted bytes,
+    # must never be in this list, nor a wildcard. The rendered ConfigMap carries
+    # the list values/substrate.yaml sets.
+    config = yaml.safe_load(
+        _one(_docs(), "ConfigMap", "atenet-router-agentgateway-config")["data"]["config.yaml"]
+    )
+    (rule,) = config["frontendPolicies"]["networkAuthorization"]["rules"]
+    ids = re.search(r"source\.spiffeId in \[(.*?)\]", rule["allow"]).group(1)
+    assert re.findall(r'"([^"]+)"', ids) == _ROUTER_CLIENTS
+    assert "egress-scan" not in rule["allow"] and "*" not in rule["allow"]
+
+
+def test_engine_gate_is_not_a_global_owner() -> None:
+    # The gate gets the editor role of one atespace, not a bootstrap owner seat.
+    args = [
+        a
+        for d in _docs()
+        if d["kind"] == "Deployment" and d["metadata"]["name"] == "ate-api-server"
+        for c in d["spec"]["template"]["spec"]["containers"]
+        for a in c.get("args", [])
+    ]
+    owners = [a for a in args if a.startswith("--authz-bootstrap-owners=")]
+    assert owners == [_BOOTSTRAP_OWNERS]
+    assert "engine-gate" not in _BOOTSTRAP_OWNERS
+
+
 _SPIKE = _HERE / "microvm-actor-spike" / "spike.py"
 _BOOTSTRAP_OWNERS = (
     "--authz-bootstrap-owners=system:serviceaccount:ate-system:ate-client,"
