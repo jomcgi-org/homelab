@@ -476,9 +476,9 @@ the latency runs.
 5. Delete the latency template and atespace. Restart the pool pod. Build
    `engine-pro` and check that an anonymous pull fails.
 6. A global owner creates the atespace `egress-scan-engine`, its access policy
-   for the gate and the fork template (`gate/provision/`, suspended until the
-   X1 to X7 and X9 results and the pool restart order are in). Check that the
-   read login pulls the image.
+   for the gate and the fork template (`gate/provision/`). Joe's merge of the
+   PR that wires it is the start of the Job: merge it after the pool pod
+   restart. Check that the read login pulls the image.
 7. Build the `engine-gate` StatefulSet and the network rules. Point the tier at
    the gate.
 8. Turn the tier on in observe mode (`semgrep.mode: observe`) for 7 days. The
@@ -506,7 +506,7 @@ them yet.
 | 3 | Policy: all 1586 rules, deny on any finding, observe mode for 7 days first, deny when the engine is out | Joe, 2026-11-23 |
 | 4 | Token: a placeholder in the image, the real dedicated token only in the build environment secret. Joe handles the licence terms himself | Joe, 2026-11-23 |
 | 5 | The `engine-pro` package is private | Joe, 2026-11-23 |
-| 6 | The router grant PR (the `engine-gate` SPIFFE ID in `atenetRouter.ingressAllowedSPIFFEIDs`), the X8 waiver for gVisor-only use, and the grants: the atespace `egress-scan-engine`, the editor binding for `system:serviceaccount:ate-system:engine-gate` and the template `engine`. This supersedes "after the X gates" in rows 1 and 2: the gates X1 to X7 and X9 still run at step 9 of the fork README as a safety check, and no longer gate the merge of these PRs. The provisioning Job stays suspended until their results and the pool restart order are in, and Joe un-suspends it | Joe, 2026-11-23, in session |
+| 6 | The router grant PR (the `engine-gate` SPIFFE ID in `atenetRouter.ingressAllowedSPIFFEIDs`), the X8 waiver for gVisor-only use, and the grants: the atespace `egress-scan-engine`, the editor binding for `system:serviceaccount:ate-system:engine-gate` and the template `engine`. This supersedes "after the X gates" in rows 1 and 2: the gates X1 to X7 and X9 still run at step 9 of the fork README as a safety check, and no longer gate the merge of these PRs. The PR that wires the provisioning Job runs it when it merges (the Job is not suspended), so Joe merges it after the pool restart. The X gates do not hold it back | Joe, 2026-11-23, in session |
 
 Still open: the engine body limit and the Hindsight route timeout. The enforce
 PR sets them from observe data. The v1 values are 32 KiB of raw body and 310 ms.

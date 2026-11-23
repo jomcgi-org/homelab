@@ -337,13 +337,17 @@ refused). The atelet pulls actor and seed images itself, so a pod
   tokens do not cover GitHub packages). Joe is the package admin and creates
   nothing in the cluster. If the existing login belongs to another account than
   the one that can read `jomcgi-org` packages, Joe adds a 1Password item field
-  and the operator syncs it. That is not known today.
+  and the operator syncs it. Joe stated on 2026-11-23, in session, that the login
+  should have Read on the package. That is **unverified by `crane`**.
 - **Check once, before step 3.** With the read login, `crane manifest
   ghcr.io/jomcgi-org/homelab/substrate-fork/engine-pro:1.186.0-0adcac4b1419`
   must resolve (the workflow checked the push with its own login, not this one).
   If it does not, the seed never becomes ready: `provision.py` times out at the
-  seed wait, and the atelet log shows an `UNAUTHORIZED` pull. The plugin caches a
-  login for 5 minutes (`defaultCacheDuration`).
+  seed wait after 600 s (about 10 min), the Job fails, the Application is
+  Degraded, and the atelet log shows an `UNAUTHORIZED` pull. Fix the package
+  access, then bump the Job suffix to run it again (an edit of the Job's pod
+  template is not allowed in place). The plugin caches a login for 5 minutes
+  (`defaultCacheDuration`).
 - **What it does not need.** No new Secret, namespace or RBAC. The real Semgrep
   token is never in the cluster.
 
