@@ -111,7 +111,10 @@ export async function checkPage(
       response.status() === 200
     );
   }
-  let mapActive = false;
+  // A map page loads its map on arrival. The map check lets its tile
+  // requests through; any other visit answers them with an empty style, so
+  // the run makes no request off the site.
+  const mapPage = /^\/(stars|hikes|trips)(\/|$)/.test(new URL(url).pathname);
   let tiles = 0;
   try {
     await context.route("**/*", async (route) => {
@@ -136,7 +139,16 @@ export async function checkPage(
           }
           return route.abort();
         }
-        if (mapActive && requestOrigin === tileOrigin) return route.fallback();
+        if (mapPage && requestOrigin === tileOrigin) {
+          if (checkMap) return route.fallback();
+          // An empty style: the map draws nothing and reports no error.
+          return route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            headers: { "access-control-allow-origin": "*" },
+            body: '{"version":8,"sources":{},"layers":[]}',
+          });
+        }
         if (isEdgeBeacon(route.request().url())) return route.abort();
         errors.push(`off-origin request: ${route.request().url()}`);
         return route.abort();
@@ -190,7 +202,7 @@ export async function checkPage(
       );
     });
     page.on("response", (response) => {
-      if (mapActive && isVectorTile(response)) tiles++;
+      if (isVectorTile(response)) tiles++;
       if (
         response.status() >= 400 &&
         !(response.url() === url && response.status() === status) &&
@@ -228,23 +240,12 @@ export async function checkPage(
       );
     const path = new URL(url).pathname;
     if (checkMap && ["/stars", "/hikes"].includes(path)) {
-      const button = (name) => page.getByRole("button", { name, exact: true });
-      if (path === "/hikes") await button("Explore walks").click();
-      mapActive = true;
-      const firstTile = page
-        .waitForEvent("response", {
-          predicate: isVectorTile,
-          timeout: 15000,
-        })
-        .catch(() => undefined);
-      await button(
-        path === "/stars" ? "Load interactive map" : "Show map",
-      ).click();
       await page
         .locator("canvas.maplibregl-canvas")
         .waitFor({ state: "visible" });
       // The canvas can appear before the worker requests its first tile.
-      await firstTile;
+      for (let waited = 0; !tiles && waited < 15_000; waited += 250)
+        await page.waitForTimeout(250);
       await page.waitForLoadState("networkidle");
       console.log(`tier 2 ${path}: ${tiles} vector tile responses (HTTP 200)`);
       if (!tiles) errors.push("no successful vector tile response");
