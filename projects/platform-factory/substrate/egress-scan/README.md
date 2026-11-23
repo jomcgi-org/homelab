@@ -246,3 +246,6 @@ The scanner talks to the `Engine` interface in `semgrep.go`
 for one URL. A per-request Substrate actor, a warm pool or a direct service
 each need only a new `Engine`, or an endpoint that fronts them. Nothing else in
 the scanner changes.
+
+The [architecture](ARCHITECTURE.md) designs the endpoint that fronts a warm pool
+of forked gVisor children. It is `designed`: nothing in it is enabled.

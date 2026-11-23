@@ -623,6 +623,7 @@ Nothing below runs on the cluster.
 | SandboxConfig `gvisor-fork` (fork build `0250f9acf`) and its asset Job | `projects/platform-factory/substrate/gvisor-fork/` | `resources/kustomization.yaml` does not list the directory; `resources_test.py` fails if it does |
 | WorkerPool `gvisor-fork` (`platform: kvm`) | `gvisor-fork/kvm-pool.yaml` | unwired, and `replicas: 0` |
 | Conformance Job `gvisor-fork-conformance-2` | `gvisor-fork/conformance-job.yaml` | unwired, and `suspend: true` |
+| Latency Jobs `gvisor-fork-latency-1` and `gvisor-fork-latency-data-1` | `gvisor-fork/latency/` | a kustomization the directory does not list, and `suspend: true` |
 | Fork images (`ateapi`, `atecontroller`, `atelet`, `ateworker-gvisor`, `kubectl-ate`) | `.github/workflows/substrate-fork-images.yml` | manual dispatch only; no pin changes |
 | `ForkSeed` preview gate | `substrate/values/common.yaml` | not listed |
 
@@ -713,6 +714,15 @@ flowchart LR
      `hello` assertions (capabilities, cgroup parent, Unconfined seccomp,
      `/dev/kvm`) and that `memory`, `pids` and `cpu` are delegated below
      `/sys/fs/cgroup/forkd`.
+   - The latency Jobs measure the control plane and the request path for the
+     egress scanner design
+     ([engine path](../platform-factory/substrate/egress-scan/ARCHITECTURE.md#engine-path)).
+     They stay out of step 5. Two suspended Jobs would keep the Application in
+     health Suspended. To run them, list `latency` in
+     `gvisor-fork/kustomization.yaml` and set `suspend` to `false` in the same
+     change. `gvisor-fork-latency-data-1` also needs the `ate-client` SPIFFE ID
+     in `atenet-router.ingressAllowedSPIFFEIDs`, which Joe decides. Read the log
+     with `grep '^LATENCY '`.
 9. Run X1 to X7 and X9 inside the pod from node-1. Add a worker restart, a node
    drain and a forkd crash. Compare `fork_overhead` with the measured use.
 10. Joe allows factory use of fork templates. This needs Joe's waiver of X8 as

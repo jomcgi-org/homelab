@@ -1,0 +1,319 @@
+# Latency measurement for fork slice 1: the real control-plane path and the
+# request path of a fork template, with the public Semgrep OSS engine
+# (latency.py lists the phases and the metrics). Two Jobs share one script and
+# one template: gvisor-fork-latency-1 reaches only the ate API (MODE=control),
+# and gvisor-fork-latency-data-1 also sends requests through the router
+# (MODE=all). The design they measure is in
+# projects/platform-factory/substrate/egress-scan/ARCHITECTURE.md, "Engine path".
+# Run them after the enable steps of projects/factory-cluster/README.md and the
+# conformance Job. The log is the result: grep '^LATENCY '.
+#
+# Off twice: this directory is not wired, and both Jobs are created suspended.
+# ../resources/resources_test.py is the wiring guard. A Job's pod template is
+# immutable: to run again, change the run suffix in the name. To remove the test,
+# delete this directory's files and their kustomization entries after reading
+# the log; ArgoCD then prunes the Jobs.
+#
+# Both run as ate-system/ate-client, which the ate API already authorizes
+# (ateApi.authorization.bootstrapOwners in ../../values/substrate.yaml), so
+# they grant nobody anything. The data Job also needs one new grant that this
+# file does not make: the router accepts only the SPIFFE IDs in
+# atenet-router.ingressAllowedSPIFFEIDs (../../values/substrate.yaml). The data
+# Job's pod certificate has the ID
+# spiffe://cluster.local/ns/ate-system/sa/ate-client. Joe decides whether to
+# add it for the run (ARCHITECTURE.md of the egress scanner, "Rollout"). Without it the router refuses the TLS handshake, the first
+# request fails and the Job reports it. If the pod certificate signer refuses
+# the pod, the pod stays in ContainerCreating: delete the Job and run the
+# control Job alone.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gvisor-fork-latency-1
+  namespace: ate-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  suspend: true
+  backoffLimit: 0
+  # The worker wait (900 s), the seed (600 s), the phases and their cleanup.
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        app: gvisor-fork-latency
+    spec:
+      serviceAccountName: ate-client
+      restartPolicy: Never
+      # SIGTERM (the deadline, a delete) runs the script's cleanup: the
+      # children, the template, the seed wait (up to 120 s) and the atespace.
+      terminationGracePeriodSeconds: 300
+      automountServiceAccountToken: true
+      imagePullSecrets:
+        - name: ghcr-imagepull-secret
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: latency
+          image: python:3.14.10-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f
+          command: [python3, -I, /config/latency.py]
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: HOME
+              value: /tmp
+            - name: MODE
+              value: control
+            - name: SEQUENTIAL
+              value: "20"
+            - name: CONCURRENCY
+              value: "4,16"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+              ephemeral-storage: 64Mi
+            limits:
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: cli
+              mountPath: /cli
+              readOnly: true
+            - name: ate-token
+              mountPath: /var/run/ate
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: config
+          configMap:
+            name: gvisor-fork-latency
+        # The fork build of kubectl-ate, as in conformance-job.yaml.
+        - name: cli
+          image:
+            reference: ghcr.io/jomcgi-org/homelab/substrate-fork/kubectl-ate:fork-b6b0ec3e217c@sha256:ea22fcf01640627601669506be390d614122f131fadd39de33e1e6da1a7e614f
+            pullPolicy: IfNotPresent
+        # The ate API's JWT provider accepts this audience (api-server-config.yaml).
+        - name: ate-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: api.ate-system.svc
+                  expirationSeconds: 3600
+                  path: token
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gvisor-fork-latency-data-1
+  namespace: ate-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  suspend: true
+  backoffLimit: 0
+  # The worker wait (900 s), the seed (600 s), the phases and their cleanup.
+  activeDeadlineSeconds: 3000
+  template:
+    metadata:
+      labels:
+        app: gvisor-fork-latency-data
+    spec:
+      serviceAccountName: ate-client
+      restartPolicy: Never
+      # SIGTERM (the deadline, a delete) runs the script's cleanup: the
+      # children, the template, the seed wait (up to 120 s) and the atespace.
+      terminationGracePeriodSeconds: 300
+      automountServiceAccountToken: true
+      imagePullSecrets:
+        - name: ghcr-imagepull-secret
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: latency
+          image: python:3.14.10-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f
+          command: [python3, -I, /config/latency.py]
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: HOME
+              value: /tmp
+            - name: MODE
+              value: all
+            - name: SEQUENTIAL
+              value: "20"
+            - name: CONCURRENCY
+              value: "4,16"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+              ephemeral-storage: 64Mi
+            limits:
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: cli
+              mountPath: /cli
+              readOnly: true
+            - name: ate-token
+              mountPath: /var/run/ate
+              readOnly: true
+            - name: router
+              mountPath: /var/run/router
+              readOnly: true
+            - name: router-ca
+              mountPath: /var/run/router-ca
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: config
+          configMap:
+            name: gvisor-fork-latency
+        # The fork build of kubectl-ate, as in conformance-job.yaml.
+        - name: cli
+          image:
+            reference: ghcr.io/jomcgi-org/homelab/substrate-fork/kubectl-ate:fork-b6b0ec3e217c@sha256:ea22fcf01640627601669506be390d614122f131fadd39de33e1e6da1a7e614f
+            pullPolicy: IfNotPresent
+        # The ate API's JWT provider accepts this audience (api-server-config.yaml).
+        - name: ate-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: api.ate-system.svc
+                  expirationSeconds: 3600
+                  path: token
+        # The client certificate the router checks (SPIFFE ID of this
+        # ServiceAccount) and the CA that signed the router's serving
+        # certificate. Same signers as atenet-router.yaml.
+        - name: router
+          projected:
+            sources:
+              - podCertificate:
+                  signerName: podidentity.podcert.ate.dev/identity
+                  keyType: ECDSAP256
+                  credentialBundlePath: credential-bundle.pem
+        - name: router-ca
+          projected:
+            sources:
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: trust-bundle.pem
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: gvisor-fork-latency
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: gvisor-fork-latency
+  egress:
+    - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app: ate-api-server
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: gvisor-fork-latency-data
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: gvisor-fork-latency-data
+  egress:
+    - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app: ate-api-server
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app: atenet-router
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+---
+# Upstream's NetworkPolicy admits ate-api-server callers only from its own
+# components and from namespaces labelled ate.dev/api-access, which ate-system
+# is not. Cilium adds this rule to it: the two Jobs, and nothing else in
+# ate-system. The router admits any source on its listener ports already.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ate-api-server-gvisor-fork-latency
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: ate-api-server
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app: gvisor-fork-latency
+        - matchLabels:
+            app: gvisor-fork-latency-data
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

@@ -6,6 +6,8 @@ this reaches the cluster."""
 from __future__ import annotations
 
 import hashlib
+import http.server
+import importlib.util
 import io
 import json
 import os
@@ -13,6 +15,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -853,3 +856,441 @@ def test_staged_images_name_the_published_fork_digests() -> None:
         + "ateworker-gvisor:fork-b6b0ec3e217c@sha256:"
         + "65f14b6900ee64c6dae2e03a7063d9fb0384e1f62becca5a275421b891870e94",
     }
+
+
+# The latency Jobs and their script.
+
+_LATENCY = _HERE / "latency" / "latency.py"
+_LATENCY_TEMPLATE = _HERE / "latency" / "template.yaml"
+_LATENCY_JOBS = {
+    "gvisor-fork-latency-1": ("gvisor-fork-latency", "control"),
+    "gvisor-fork-latency-data-1": ("gvisor-fork-latency-data", "all"),
+}
+
+
+def _latency_docs() -> list[dict]:
+    return _kustomize(_HERE / "latency")
+
+
+def _latency_job(name: str) -> dict:
+    return _one(_latency_docs(), "Job", name)
+
+
+def _env(container: dict) -> dict:
+    return {e["name"]: e.get("value") for e in container["env"]}
+
+
+def test_latency_directory_is_staged_and_not_listed_by_the_parent() -> None:
+    parent = yaml.safe_load((_HERE / "kustomization.yaml").read_text())
+    assert not [r for r in parent["resources"] if "latency" in r]
+    assert "gvisor-fork-latency" not in {
+        d["metadata"]["name"] for d in _docs() if d["kind"] in ("Job", "ConfigMap")
+    }
+    # Both Jobs are suspended: wired, they would hold the Application in health
+    # Suspended, so the change that runs them lists the directory.
+    for name in _LATENCY_JOBS:
+        assert _latency_job(name)["spec"]["suspend"] is True
+
+
+@pytest.mark.parametrize("name", list(_LATENCY_JOBS))
+def test_latency_jobs_are_suspended_and_run_as_ate_client(name: str) -> None:
+    label, mode = _LATENCY_JOBS[name]
+    job = _latency_job(name)
+    assert job["spec"]["suspend"] is True
+    assert job["spec"]["backoffLimit"] == 0
+    assert job["spec"]["activeDeadlineSeconds"] <= 3600
+    pod = job["spec"]["template"]["spec"]
+    assert job["spec"]["template"]["metadata"]["labels"] == {"app": label}
+    assert pod["serviceAccountName"] == "ate-client"
+    assert pod["restartPolicy"] == "Never"
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    assert pod["securityContext"]["seccompProfile"] == {"type": "RuntimeDefault"}
+    # SIGTERM cleanup waits up to STATE_WAIT_SECONDS (120) for the seed to go.
+    assert pod["terminationGracePeriodSeconds"] >= 240
+    (container,) = pod["containers"]
+    assert "@sha256:" in container["image"]
+    assert not [e for e in container["env"] if "valueFrom" in e]
+    assert _env(container)["MODE"] == mode
+    context = container["securityContext"]
+    assert context["allowPrivilegeEscalation"] is False
+    assert context["readOnlyRootFilesystem"] is True
+    assert context["capabilities"] == {"drop": ["ALL"]}
+    assert {"memory", "ephemeral-storage"} <= set(container["resources"]["limits"])
+    # The only API credential is the audience-bound token, as in conformance.
+    (token,) = [v for v in pod["volumes"] if v["name"] == "ate-token"]
+    (source,) = token["projected"]["sources"]
+    assert source["serviceAccountToken"]["audience"] == "api.ate-system.svc"
+
+
+def test_latency_jobs_grant_nothing_new() -> None:
+    kinds = {d["kind"] for d in _latency_docs()}
+    assert not kinds & {"Role", "ClusterRole", "RoleBinding", "ClusterRoleBinding"}
+
+
+def test_latency_jobs_use_the_conformance_cli_by_digest() -> None:
+    reference = {}
+    for name in [*_LATENCY_JOBS, "gvisor-fork-conformance-2"]:
+        pod = (_latency_job(name) if name in _LATENCY_JOBS else _conformance_job())[
+            "spec"
+        ]["template"]["spec"]
+        (cli,) = [v for v in pod["volumes"] if v["name"] == "cli"]
+        reference[name] = cli["image"]["reference"]
+        assert pod["imagePullSecrets"] == [{"name": "ghcr-imagepull-secret"}]
+    assert len(set(reference.values())) == 1
+
+
+def test_only_the_data_job_holds_a_router_identity() -> None:
+    control = _latency_job("gvisor-fork-latency-1")["spec"]["template"]["spec"]
+    assert {v["name"] for v in control["volumes"]} == {
+        "tmp",
+        "config",
+        "cli",
+        "ate-token",
+    }
+    data = _latency_job("gvisor-fork-latency-data-1")["spec"]["template"]["spec"]
+    volumes = {v["name"]: v for v in data["volumes"]}
+    (cert,) = volumes["router"]["projected"]["sources"]
+    # The client certificate the router checks, from the signer the router's
+    # own manifest names for pod identity.
+    assert cert["podCertificate"]["signerName"] == (
+        "podidentity.podcert.ate.dev/identity"
+    )
+    (ca,) = volumes["router-ca"]["projected"]["sources"]
+    assert ca["clusterTrustBundle"]["signerName"] == (
+        "servicedns.podcert.ate.dev/identity"
+    )
+    (container,) = data["containers"]
+    paths = {m["name"]: m["mountPath"] for m in container["volumeMounts"]}
+    # The script's default paths are the mounts the Job makes.
+    latency = _load_latency()
+    assert latency.ROUTER_CERT == paths["router"] + "/credential-bundle.pem"
+    assert latency.ROUTER_CA == paths["router-ca"] + "/trust-bundle.pem"
+    assert latency.ROUTER_URL == "https://atenet-router.ate-system.svc:443"
+    assert paths["router"] == "/var/run/router"
+    assert paths["router-ca"] == "/var/run/router-ca"
+
+
+def test_latency_jobs_reach_only_the_api_and_the_data_job_the_router() -> None:
+    docs = _latency_docs()
+    control = _one(docs, "CiliumNetworkPolicy", "gvisor-fork-latency")["spec"]
+    data = _one(docs, "CiliumNetworkPolicy", "gvisor-fork-latency-data")["spec"]
+    assert control["endpointSelector"]["matchLabels"] == {"app": "gvisor-fork-latency"}
+    assert data["endpointSelector"]["matchLabels"] == {
+        "app": "gvisor-fork-latency-data"
+    }
+    assert "ingress" not in control and "ingress" not in data
+    kube, api = control["egress"]
+    assert kube["toEntities"] == ["kube-apiserver"]
+    assert api["toEndpoints"] == [{"matchLabels": {"app": "ate-api-server"}}]
+    assert api["toPorts"] == [{"ports": [{"port": "443", "protocol": "TCP"}]}]
+    assert data["egress"][:2] == control["egress"]
+    (router,) = data["egress"][2:]
+    assert router["toEndpoints"] == [{"matchLabels": {"app": "atenet-router"}}]
+    assert router["toPorts"] == [{"ports": [{"port": "8443", "protocol": "TCP"}]}]
+    admit = _one(docs, "CiliumNetworkPolicy", "ate-api-server-gvisor-fork-latency")
+    (rule,) = admit["spec"]["ingress"]
+    assert rule["fromEndpoints"] == [
+        {"matchLabels": {"app": "gvisor-fork-latency"}},
+        {"matchLabels": {"app": "gvisor-fork-latency-data"}},
+    ]
+
+
+def test_latency_jobs_mount_their_generated_config() -> None:
+    docs = _latency_docs()
+    for name in _LATENCY_JOBS:
+        pod = _latency_job(name)["spec"]["template"]["spec"]
+        (volume,) = [v for v in pod["volumes"] if v["name"] == "config"]
+        config = _one(docs, "ConfigMap", volume["configMap"]["name"])
+        assert config["data"] == {
+            "latency.py": _LATENCY.read_text(),
+            "template.yaml": _LATENCY_TEMPLATE.read_text(),
+        }
+
+
+def test_latency_template_is_a_fork_template_with_no_egress_and_no_env() -> None:
+    template = yaml.safe_load(_LATENCY_TEMPLATE.read_text())
+    fork = template["forkConfig"]
+    assert fork["mode"] == "FORK_MODE_SEED_AND_FORK"
+    assert fork["singleUse"] is True
+    assert fork["egress"] == "FORK_EGRESS_NONE"
+    # A pool child waits for its request: the lifetime must cover the wait.
+    assert 60 <= fork["maxLifetimeSeconds"] <= 3600
+    (container,) = template["containers"]
+    assert "env" not in container
+    # The same public engine image the conformance Job forks.
+    conformance = yaml.safe_load(_TEMPLATE.read_text())
+    assert container["image"] == conformance["containers"][0]["image"]
+    assert template["workerSelector"] == conformance["workerSelector"]
+    # The router sends a request to port 80 unless the client names another.
+    assert container["command"][-1] == "0.0.0.0:80"
+    assert container["wakeupProbe"]["httpGet"] == {"path": "/healthz", "port": 80}
+    assert template["metadata"]["atespace"] == "fork-latency"
+    assert template["metadata"]["atespace"] != conformance["metadata"]["atespace"]
+    assert (
+        template["resources"]["limits"]["memoryBytes"]
+        < (fork["seedResources"]["limits"]["memoryBytes"])
+    )
+
+
+def _load_latency():
+    spec = importlib.util.spec_from_file_location("latency_under_test", _LATENCY)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_percentiles_are_nearest_rank() -> None:
+    latency = _load_latency()
+    values = [float(i) for i in range(1, 101)]
+    assert [latency.percentile(values, q) for q in (0.5, 0.95, 0.99)] == [50, 95, 99]
+    # With fewer than 100 samples p99 is the maximum.
+    twenty = [float(i) for i in range(1, 21)]
+    assert latency.percentile(twenty, 0.99) == 20
+    assert latency.percentile(twenty, 0.95) == 19
+    assert latency.percentile([7.0], 0.5) == 7.0
+
+
+def test_request_body_has_the_exact_size_and_one_fake_secret() -> None:
+    latency = _load_latency()
+    for size in (1024, 16384, 524288):
+        body = latency.body_of(size)
+        assert len(body) == size
+        assert body.count(b"AKIAIOSFODNN7EXAMPLE") == 1
+        body.decode("utf-8")
+
+
+# latency.py against a fake kubectl-ate and a fake router. The fake CLI keeps
+# its state in a file under a lock, because the script calls it from threads.
+
+_LATENCY_FAKE = """\
+import fcntl, json, os, re, sys
+S = os.environ["FAKE_STATE"]
+lock = open(S + ".lock", "w")
+fcntl.flock(lock, fcntl.LOCK_EX)
+st = json.load(open(S)) if os.path.exists(S) else {
+    "atespaces": [], "templates": {}, "actors": {}, "calls": [], "next": 0}
+a = sys.argv[1:]
+preview = False
+while a and a[0] in ("--endpoint", "--token-file", "--preview"):
+    if a[0] == "--preview":
+        preview, a = True, a[1:]
+    else:
+        a = a[2:]
+st["calls"].append(("preview " if preview else "") + " ".join(a))
+def save(): json.dump(st, open(S, "w"))
+def flag(name):
+    return a[a.index(name) + 1] if name in a else None
+def fail(msg):
+    save(); print(msg, file=sys.stderr); sys.exit(1)
+def out(obj):
+    save(); print(json.dumps(obj)); sys.exit(0)
+consumed = set()
+if os.path.exists(S + ".consumed"):
+    consumed = set(open(S + ".consumed").read().split())
+# A child exits after its one request and the API deletes its actor.
+for gone in consumed:
+    st["actors"].pop(gone, None)
+verb = a[:2]
+if verb == ["get", "workers"]:
+    seeds = [{"seedActor": {"atespace": t["ns"], "name": "seed-" + t["name"]},
+              "seedActorUid": "u-seed", "templateUid": t["uid"], "workerEpoch": 1}
+             for t in st["templates"].values()]
+    out({"workers": [{"workerPool": "gvisor-fork",
+                      "status": {"state": "WORKER_STATE_ACTIVE", "seeds": seeds}}]})
+if verb == ["create", "atespace"]:
+    st["atespaces"].append(a[2]); out({})
+if verb == ["create", "actor-template"]:
+    text = open(a[3]).read()
+    ns = re.search(r"(?m)^  atespace: (.*)$", text).group(1)
+    name = re.search(r"(?m)^  name: (.*)$", text).group(1)
+    st["next"] += 1
+    st["templates"][ns + "/" + name] = {"ns": ns, "name": name, "uid": "u-t%d" % st["next"]}
+    out({})
+if verb == ["get", "actor-template"]:
+    rows = [{"metadata": {"atespace": t["ns"], "name": t["name"], "uid": t["uid"]}}
+            for t in st["templates"].values() if t["ns"] == flag("-a")]
+    out(rows[0] if len(a) > 2 and not a[2].startswith("-") else {"actorTemplates": rows})
+if verb == ["create", "actor"]:
+    if not preview:
+        fail("rpc error: code = FailedPrecondition desc = needs the ForkSeed preview gate")
+    st["actors"][a[2]] = {"name": a[2], "state": "ACTOR_STATE_SUSPENDED"}
+    out({})
+if verb == ["resume", "actor"]:
+    st["actors"][a[2]]["state"] = "ACTOR_STATE_RUNNING"; out({})
+if verb == ["get", "actors"]:
+    if flag("-a") not in st["atespaces"]:
+        fail("rpc error: code = NotFound desc = atespace")
+    rows = [{"metadata": {"atespace": flag("-a"), "name": x["name"]},
+             "status": {"state": x["state"], "fork": {"role": "FORK_ROLE_FORK"}}}
+            for x in st["actors"].values() if x["name"] not in consumed]
+    for t in st["templates"].values():
+        rows.append({"metadata": {"atespace": t["ns"], "name": "seed-" + t["name"]},
+                     "status": {"state": "ACTOR_STATE_RUNNING",
+                                "fork": {"role": "FORK_ROLE_SEED"}}})
+    out({"actors": rows})
+if verb == ["delete", "actor"]:
+    st["actors"].pop(a[2], None); out({})
+if verb == ["delete", "actor-template"]:
+    st["templates"].pop(flag("-a") + "/" + a[2], None); out({})
+if verb == ["delete", "atespace"]:
+    if st["actors"]:
+        fail("rpc error: code = FailedPrecondition desc = atespace is not empty")
+    st["atespaces"].remove(a[2]); out({})
+fail("fake: unknown " + " ".join(a))
+"""
+
+
+class _Router:
+    """A router that answers like the engine and records what it was sent."""
+
+    def __init__(self, state: Path, status: int = 200) -> None:
+        self.requests: list[tuple[str, int]] = []
+        router = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                length = int(self.headers["Content-Length"])
+                self.rfile.read(length)
+                actor = self.headers["ate-target-actor"]
+                router.requests.append((actor, length))
+                with open(str(state) + ".consumed", "a") as consumed:
+                    consumed.write(actor.split("/")[1] + "\n")
+                payload = b'.\n{"results": [{"check_id": "x"}], "errors": []}'
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args) -> None:
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def _latency(tmp_path: Path, template=None, router_status=200, **env):
+    fake = tmp_path / "kubectl-ate"
+    fake.write_text(f"#!{sys.executable}\n" + _LATENCY_FAKE)
+    fake.chmod(0o755)
+    path = tmp_path / "template.yaml"
+    path.write_text(_LATENCY_TEMPLATE.read_text() if template is None else template)
+    state = tmp_path / "state.json"
+    router = _Router(state, router_status)
+    try:
+        run = subprocess.run(
+            [sys.executable, "-I", str(_LATENCY)],
+            env={
+                "ATE_BIN": str(fake),
+                "FAKE_STATE": str(state),
+                "TEMPLATE_FILE": str(path),
+                "ROUTER_URL": router.url,
+                "POLL_SECONDS": "0.01",
+                "WORKER_WAIT_SECONDS": "2",
+                "SEED_WAIT_SECONDS": "2",
+                "STATE_WAIT_SECONDS": "5",
+                "REQUEST_TIMEOUT_SECONDS": "5",
+                "SEQUENTIAL": "3",
+                "CONCURRENCY": "2,3",
+                "BODY_BYTES": "1024,4096",
+                "LARGE_SAMPLES": "2",
+                "FLOOR_SAMPLES": "2",
+                **env,
+            },
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    finally:
+        router.close()
+    final = json.loads(state.read_text()) if state.exists() else None
+    return run, final, router
+
+
+def _stats(stdout: str) -> dict[tuple[str, str, str], dict[str, str]]:
+    """Map (phase, mode, metric) to the key=value pairs of its stats line."""
+    found = {}
+    for line in stdout.splitlines():
+        if line.startswith("LATENCY ") and "event=stats" in line:
+            pairs = dict(p.split("=", 1) for p in line.split()[1:])
+            found[(pairs["phase"], pairs["mode"], pairs["metric"])] = pairs
+    return found
+
+
+def _left(state: dict) -> bool:
+    return bool(state["atespaces"] or state["templates"] or state["actors"])
+
+
+def test_latency_control_mode_reports_the_api_path_and_skips_requests(
+    tmp_path: Path,
+) -> None:
+    run, state, router = _latency(tmp_path, MODE="control")
+    assert run.returncode == 0, run.stdout + run.stderr
+    found = _stats(run.stdout)
+    for metric in ("create_ms", "resume_ms", "create_to_ready_ms", "delete_ms"):
+        row = found[("control_seq", "control", metric)]
+        assert row["n"] == "3" and row["unit"] == "ms"
+        assert {"p50", "p95", "p99", "max"} <= set(row)
+    assert found[("control_k3", "control", "create_to_ready_ms")]["n"] == "3"
+    assert ("floor", "api", "cli_floor_ms") in found
+    assert "event=burst k=2" in run.stdout and "per_second=" in run.stdout
+    assert "event=data_phase result=skipped reason=MODE=control" in run.stdout
+    assert "event=summary result=ok" in run.stdout
+    assert router.requests == []
+    assert not _left(state)
+
+
+def test_latency_all_mode_measures_pool_ondemand_and_cold_requests(
+    tmp_path: Path,
+) -> None:
+    run, state, router = _latency(tmp_path, MODE="all")
+    assert run.returncode == 0, run.stdout + run.stderr
+    found = _stats(run.stdout)
+    # The pool: a request to a child that already waits, for both body sizes.
+    pool = found[("pool_seq", "pool", "send_to_result_ms")]
+    assert pool["n"] in ("2", "3") and pool["body"] in ("1024", "4096")
+    assert ("pool_k3", "pool", "send_to_result_ms") in found
+    assert ("pool_seq", "pool", "connect_ms") in found
+    # On demand: the three numbers the design compares.
+    for metric in ("create_to_ready_ms", "send_to_result_ms", "total_ms"):
+        assert ("ondemand_k1", "ondemand", metric) in found
+        assert ("ondemand_k2", "ondemand", metric) in found
+    # Cold: the router resumes the actor, so only the total is meaningful.
+    assert ("cold_k1", "cold", "total_ms") in found
+    assert ("cold_k3", "cold", "total_ms") in found
+    assert ("cold_k1", "cold", "create_to_ready_ms") not in found
+    # The request names the actor in the template's atespace and carries the body.
+    assert router.requests
+    assert all(a.startswith("fork-latency/lat-") for a, _ in router.requests)
+    assert {n for _, n in router.requests} == {1024, 4096}
+    # Every actor got one request: single use.
+    names = [a for a, _ in router.requests]
+    assert len(names) == len(set(names))
+    assert "event=summary result=ok" in run.stdout
+    assert not _left(state)
+    # Every API call carries --preview, as the API requires for a fork template.
+    assert all(c.startswith("preview ") for c in state["calls"])
+
+
+def test_latency_refuses_a_placeholder_engine_image_before_any_api_call(
+    tmp_path: Path,
+) -> None:
+    text = re.sub(
+        r"@sha256:[0-9a-f]{64}", "@sha256:" + "0" * 64, _LATENCY_TEMPLATE.read_text()
+    )
+    run, state, _ = _latency(tmp_path, template=text)
+    assert run.returncode == 1
+    assert "no real sha256 digest" in run.stdout
+    assert state is None  # the fake CLI never ran
+
+
+def test_latency_fails_on_a_router_error_and_leaves_nothing(tmp_path: Path) -> None:
+    run, state, _ = _latency(tmp_path, router_status=503, MODE="all")
+    assert run.returncode == 1
+    assert "HTTP 503" in run.stdout
+    assert "event=summary result=fail" in run.stdout
+    assert not _left(state)
