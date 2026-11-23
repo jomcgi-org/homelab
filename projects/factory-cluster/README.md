@@ -527,7 +527,7 @@ Secret key presence are checked after deployment.
 
 ## Agent Substrate
 
-To upgrade Substrate, rerun `projects/platform-factory/substrate/render-upstream.sh` and review the rendered diff. The script renders the release charts, then applies the fork overlay: the `ateapi`, `atecontroller` and `atelet` images and the WorkerPool CRD come from jomcgi-org/substrate at `b6b0ec3e2`. The overlay is not opt-in. Every run renders the fork images. To return to the release, revert the change or edit the script. Verify the installation:
+To upgrade Substrate, rerun `projects/platform-factory/substrate/render-upstream.sh` and review the rendered diff. The script renders the release charts, then applies the fork overlay: the `ateapi`, `atecontroller` and `atelet` images and the WorkerPool CRD come from jomcgi-org/substrate at `1e7a877d0`. The overlay is not opt-in. Every run renders the fork images. To return to the release, revert the change or edit the script. Verify the installation:
 
 ```bash
 export KUBECONFIG=~/.kube/factory.yaml
@@ -624,7 +624,7 @@ off.
 | --- | --- | --- |
 | SandboxConfig `gvisor-fork` (fork build `0250f9acf`) and its asset Job | `projects/platform-factory/substrate/gvisor-fork/` | wired (step 5). No pool uses the config until step 6. `gvisor-default` stays the class default |
 | WorkerPool `gvisor-fork` (`platform: kvm`) | `gvisor-fork/kvm-pool.yaml` | `replicas: 0` until step 6 |
-| Conformance Job `gvisor-fork-conformance-2` | `gvisor-fork/conformance-job.yaml` | `suspend: true` until step 8 |
+| Conformance Job `gvisor-fork-conformance-3` | `gvisor-fork/conformance-job.yaml` | `suspend: true` until step 8 |
 | Latency Jobs `gvisor-fork-latency-1` and `gvisor-fork-latency-data-1` | `gvisor-fork/latency/` | a kustomization the directory does not list, and `suspend: true` |
 | Fork images (`ateapi`, `atecontroller`, `atelet`, `ateworker-gvisor`, `kubectl-ate`) | `.github/workflows/substrate-fork-images.yml` | the three control-plane images are pinned and live (step 4); the other two have no pod until steps 6 and 8 |
 | `ForkSeed` preview gate | `substrate/values/common.yaml` | not listed until step 7 |
@@ -658,8 +658,10 @@ flowchart LR
    holds `runsc-release.tar.gz`. Its sha256 is
    `6850279d7a50b7c047fedf1ad631c65d05eb4b091b0b28c9a28a6abfb7534460`.
 2. Done. The `Substrate fork images` workflow (run 45140822019) published the
-   five images at fork commit `b6b0ec3e217c`. The packages are public. The
-   digests are in `kvm-pool.yaml` (`ateworker-gvisor`) and
+   five images at fork commit `b6b0ec3e217c`. The re-pin PR moved all five to
+   `1e7a877d0ca3`, where the controller gives `ForkSeed` only to workers of KVM
+   pools (a worker built before the gate fails on it). The packages are public.
+   The digests are in `kvm-pool.yaml` (`ateworker-gvisor`) and
    `conformance-job.yaml` (`kubectl-ate`). Step 4 pins the `ateapi`,
    `atecontroller` and `atelet` digests in `render-upstream.sh`.
 3. Done. The `Substrate fork engine image` workflow (run 45140818290) published
@@ -679,7 +681,7 @@ flowchart LR
    model (the fork adds `can_create_fork_template`). To roll back, revert the
    PR: the images return to their v1.0.1 digests, and the old server writes its
    own model again at start. Live check: the three images carry the fork tag
-   `fork-b6b0ec3e217c`, no component reads `ForkSeed`, and the CRD lists
+   `fork-1e7a877d0ca3`, no component reads `ForkSeed`, and the CRD lists
    `platform`.
 5. Cluster-affecting, Joe approves. Wire `../gvisor-fork` in
    `resources/kustomization.yaml`. The pool's `workerImage` already names the
@@ -700,7 +702,7 @@ flowchart LR
    | Job `gvisor-fork-assets-init` | `ate-system` | new Sync hook (wave 1): runs at once, see below |
    | CiliumNetworkPolicy `gvisor-fork-assets-init` | `ate-system` | new; the asset Job reaches rustfs 9000 and `github.com`, `release-assets.githubusercontent.com`, `objects.githubusercontent.com` 443 |
    | CiliumNetworkPolicy `rustfs-gvisor-fork-assets` | `ate-system` | adds ingress to the existing `rustfs` pod: the asset Job, port 9000 |
-   | Job `gvisor-fork-conformance-2` | `ate-system` | new, `suspend: true`: no pod. Argo shows health Suspended |
+   | Job `gvisor-fork-conformance-3` | `ate-system` | new, `suspend: true`: no pod. Argo shows health Suspended |
    | CiliumNetworkPolicy `gvisor-fork-conformance` | `ate-system` | new; matches no pod while the Job is suspended |
    | CiliumNetworkPolicy `ate-api-server-gvisor-fork-conformance` | `ate-system` | adds ingress to the existing `ate-api-server` pods: the conformance Job, port 443 |
 
@@ -723,7 +725,7 @@ flowchart LR
 
    ```sh
    kubectl -n argocd get application substrate          # Synced; health Suspended until step 8
-   kubectl -n ate-system get job gvisor-fork-assets-init gvisor-fork-conformance-2
+   kubectl -n ate-system get job gvisor-fork-assets-init gvisor-fork-conformance-3
    kubectl -n ate-system logs job/gvisor-fork-assets-init -c upload   # "the pinned gVisor fork tarball is in the bucket"
    kubectl get sandboxconfig                            # gvisor-default stays DEFAULT v7
    kubectl -n substrate-gvisor-fork get workerpool,pod  # replicas 0, no pod
@@ -756,11 +758,11 @@ flowchart LR
    must opt in to preview features (`kubectl-ate --preview`) to use a fork
    template.
 8. Run the Job. The engine image, the `kubectl-ate` digest, the Job name
-   (`gvisor-fork-conformance-2`) and the placeholder test are already in git.
+   (`gvisor-fork-conformance-3`) and the placeholder test are already in git.
    - Set `suspend` to `false`. In `gvisor_fork_test.py`, update
      `test_conformance_job_is_suspended_and_runs_as_ate_client`, which asserts
      `suspend is True`, in the same change.
-   - Read `kubectl -n ate-system logs job/gvisor-fork-conformance-2 | grep '^CONFORMANCE '`.
+   - Read `kubectl -n ate-system logs job/gvisor-fork-conformance-3 | grep '^CONFORMANCE '`.
    - When the seed starts, find `forkd started` in the worker log. Check forkd's
      `hello` assertions (capabilities, cgroup parent, Unconfined seccomp,
      `/dev/kvm`) and that `memory`, `pids` and `cpu` are delegated below

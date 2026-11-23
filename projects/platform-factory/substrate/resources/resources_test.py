@@ -763,7 +763,7 @@ _FORK_OBJECTS = {
     ("CiliumNetworkPolicy", "ate-system", "rustfs-gvisor-fork-assets"),
     ("CiliumNetworkPolicy", _FORK_NS, "substrate-workers"),
     ("Job", "ate-system", "gvisor-fork-assets-init"),
-    ("Job", "ate-system", "gvisor-fork-conformance-2"),
+    ("Job", "ate-system", "gvisor-fork-conformance-3"),
     ("Namespace", None, _FORK_NS),
     ("SandboxConfig", None, "gvisor-fork"),
     ("ServiceAccount", _FORK_NS, "fork-worker"),
@@ -827,7 +827,7 @@ def test_gvisor_fork_slice_is_wired_and_off() -> None:
     # Off: no worker, and the conformance Job does not run.
     pool = _one(docs, "WorkerPool", "gvisor-fork")
     assert pool["spec"]["replicas"] == 0
-    assert _one(docs, "Job", "gvisor-fork-conformance-2")["spec"]["suspend"] is True
+    assert _one(docs, "Job", "gvisor-fork-conformance-3")["spec"]["suspend"] is True
     # The namespace is kept when the Application goes, like every Namespace.
     namespace = _one(docs, "Namespace", _FORK_NS)
     assert (
@@ -869,11 +869,11 @@ def test_fork_seed_gate_is_off() -> None:
 
 
 _FORK_IMAGES = "ghcr.io/jomcgi-org/homelab/substrate-fork/"
-_FORK_TAG = "fork-b6b0ec3e217c"
+_FORK_TAG = "fork-1e7a877d0ca3"
 _FORK_DIGESTS = {
-    "ateapi": "7e72ec9e879d37c193c08fc061149a8b092c38dcb3629596b713593886c96b23",
-    "atecontroller": "beaef40fc51129077fcfd7bc288f009f47696d8520616de2b0149f079f95e71e",
-    "atelet": "451afacda427d9e811c599655eeaebe6f80bf79821aaa2ee9d7e3eb30d0b7a68",
+    "ateapi": "e75fd2f786480cdaf89714864e00b431ecd8546925c8276dfa9d3efaf347d2df",
+    "atecontroller": "306cc8a469d801599e11fcf669b70498986d04c2c5adcffceb6483da4d024803",
+    "atelet": "f0431ed81243929959d026023515eb2eb3aa470ef296b425d9a2a1a934d90aff",
 }
 
 
@@ -908,6 +908,38 @@ def test_control_plane_and_atelet_run_the_fork_images_by_digest() -> None:
     for key, image in images.items():
         if key not in expected:
             assert "@sha256:" in image, key
+
+
+def test_fork_images_share_one_fork_commit_tag() -> None:
+    # The control plane, the pool's worker and the conformance Job's kubectl-ate
+    # are built from one fork commit. A worker and a controller from different
+    # commits can disagree on the preview gates or the fork wire (the
+    # controller passes --preview to the worker).
+    docs = _docs()
+    images = _images(docs)
+    refs = {
+        key: images[key]
+        for key in (
+            "ate-api-server/ate-api-server",
+            "ate-controller/ate-controller",
+            "atelet/atelet",
+        )
+    }
+    refs["workerpool/gvisor-fork"] = _one(docs, "WorkerPool", "gvisor-fork")["spec"][
+        "workerImage"
+    ]
+    job = _one(docs, "Job", "gvisor-fork-conformance-3")
+    (cli,) = [
+        v["image"]["reference"]
+        for v in job["spec"]["template"]["spec"]["volumes"]
+        if v["name"] == "cli"
+    ]
+    refs["conformance/cli"] = cli
+    tags = {key: ref.split("@")[0].rsplit(":", 1)[1] for key, ref in refs.items()}
+    assert set(tags.values()) == {_FORK_TAG}, tags
+    for key, ref in refs.items():
+        assert ref.startswith(_FORK_IMAGES), key
+        assert re.search(r"@sha256:[0-9a-f]{64}$", ref), key
 
 
 def test_workerpool_crd_has_the_fork_platform_field() -> None:
