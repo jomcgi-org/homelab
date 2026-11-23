@@ -851,6 +851,17 @@ def test_gvisor_fork_slice_is_wired_and_off() -> None:
     assert max(init, main) <= 256
 
 
+def test_engine_gate_is_staged_and_not_wired() -> None:
+    # engine-gate lives in ../egress-scan/gate/staged, with no replica. The
+    # directory reaches the cluster only when a later change lists it here
+    # (../egress-scan/gate/README.md, "Enable steps").
+    kustomization = yaml.safe_load((_HERE / "kustomization.yaml").read_text())
+    listed = kustomization["resources"] + kustomization.get("components", [])
+    assert not [r for r in listed if "engine-gate" in r or "egress-scan/gate" in r]
+    rendered = json.dumps(_docs())
+    assert "engine-gate" not in rendered
+
+
 _PREVIEW = ["PerTemplateSnapshotLocation", "GoldenEgressPolicy", "ForkSeed"]
 
 

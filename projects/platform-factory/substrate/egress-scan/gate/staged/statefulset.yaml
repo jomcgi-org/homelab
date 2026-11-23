@@ -1,0 +1,156 @@
+# engine-gate: the service behind the Semgrep tier of the egress scanner. It
+# keeps a warm pool of single-use fork children of the template `engine` in the
+# atespace `egress-scan-engine`, and sends each scan request to one child.
+# Design: ../../ARCHITECTURE.md, "Engine path". Behaviour: ../README.md.
+#
+# Staged and OFF. This directory is not wired into any ArgoCD source, and the
+# StatefulSet has no replicas. The cluster grants, the atespace, the template
+# and the wiring steps are in ../README.md, "Enable steps".
+#
+# Identity. This pod holds the only router identity and the only editor role in
+# its atespace. Its pod certificate has the SPIFFE ID
+#   spiffe://cluster.local/ns/ate-system/sa/engine-gate
+# and its ServiceAccount token is a bearer token for the ate API. egress-scan,
+# which parses untrusted bytes, gets neither. The pod has no Kubernetes API
+# access (automountServiceAccountToken is false), no Secret and no secret in
+# its environment: POD_NAME is the only variable.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: engine-gate
+  namespace: ate-system
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: engine-gate
+  namespace: ate-system
+spec:
+  selector:
+    app: engine-gate
+  ports:
+    # The scan endpoint. Only egress-scan reaches it (networkpolicy.yaml).
+    - name: scan
+      port: 8080
+      targetPort: scan
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: engine-gate
+  namespace: ate-system
+spec:
+  # Off: the factory-style hold. Wiring sets this to 1. The gate runs one
+  # replica in v1: the pool books 8 children, and a second replica needs its
+  # own pool (ARCHITECTURE.md, "Pool lifecycle"). A StatefulSet keeps the pod
+  # name, and the children are named eg-<pod name>-<start epoch>-<n>, so a
+  # restart finds and deletes its own leftovers.
+  replicas: 0
+  serviceName: engine-gate
+  selector:
+    matchLabels:
+      app: engine-gate
+  template:
+    metadata:
+      labels:
+        app: engine-gate
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: /metrics
+    spec:
+      serviceAccountName: engine-gate
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # SIGTERM stops the listener, finishes the requests in flight (at most
+      # --shutdown-grace) and deletes the pool.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: engine-gate
+          # The kustomization names the repository. The wiring change pins the
+          # tag that CI published for the commit it wires.
+          image: engine-gate
+          args:
+            - --atespace=egress-scan-engine
+            - --template=engine
+            - --target-waiting=2
+            - --max-inflight=4
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - name: scan
+              containerPort: 8080
+            - name: admin
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: ate-token
+              mountPath: /var/run/ate
+              readOnly: true
+            - name: router
+              mountPath: /var/run/router
+              readOnly: true
+            - name: router-ca
+              mountPath: /var/run/router-ca
+              readOnly: true
+      volumes:
+        # The ate API's JWT provider accepts this audience
+        # (../../../resources/api-server-config.yaml).
+        - name: ate-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: api.ate-system.svc
+                  expirationSeconds: 3600
+                  path: token
+        # The client certificate that the router checks: the SPIFFE ID of this
+        # ServiceAccount. The signer is the one atenet-router.yaml trusts.
+        - name: router
+          projected:
+            sources:
+              - podCertificate:
+                  signerName: podidentity.podcert.ate.dev/identity
+                  keyType: ECDSAP256
+                  credentialBundlePath: credential-bundle.pem
+        # The CA of the serving certificates of the ate API and the router.
+        - name: router-ca
+          projected:
+            sources:
+              - clusterTrustBundle:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: trust-bundle.pem
