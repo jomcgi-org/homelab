@@ -1,0 +1,118 @@
+// A minimal subset of the Agent Substrate control API, for engine-gate.
+//
+// Source: github.com/jomcgi-org/substrate, branch fork/seed-slice1, commit
+// b6b0ec3e217c, file api/ateapi/v1/ateapi.proto (Apache License 2.0, The Agent
+// Substrate Authors). This file keeps only the messages that engine-gate
+// reads or writes, and drops every other field. The package, service and
+// method names and the field numbers are those of the source, so the wire
+// format is the same: the server ignores fields that this file leaves out, and
+// this client ignores fields that the server adds.
+//
+// Regenerate the Go code with ./generate.sh. Never edit the *.pb.go files.
+
+syntax = "proto3";
+
+package substrate.ateapi.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/gate/ateapi;ateapi";
+
+service Control {
+  rpc GetActor(GetActorRequest) returns (Actor) {}
+  rpc CreateActor(CreateActorRequest) returns (Actor) {}
+  rpc ResumeActor(ResumeActorRequest) returns (ResumeActorResponse) {}
+  rpc DeleteActor(DeleteActorRequest) returns (Actor) {}
+  rpc ListActors(ListActorsRequest) returns (ListActorsResponse) {}
+}
+
+message ObjectRef {
+  string atespace = 1;
+  string name = 2;
+}
+
+message ResourceMetadata {
+  string atespace = 1;
+  string name = 2;
+  string uid = 3;
+  int64 version = 4;
+  google.protobuf.Timestamp create_time = 5;
+  google.protobuf.Timestamp update_time = 6;
+}
+
+enum ActorState {
+  ACTOR_STATE_UNSPECIFIED = 0;
+  ACTOR_STATE_RESUMING = 1;
+  ACTOR_STATE_RUNNING = 2;
+  ACTOR_STATE_SUSPENDING = 3;
+  ACTOR_STATE_SUSPENDED = 4;
+  ACTOR_STATE_CRASHED = 5;
+  ACTOR_STATE_DELETING = 6;
+  ACTOR_STATE_REVERTING = 7;
+}
+
+enum ForkRole {
+  FORK_ROLE_UNSPECIFIED = 0;
+  FORK_ROLE_SEED = 1;
+  FORK_ROLE_FORK = 2;
+}
+
+message ActorFork {
+  ForkRole role = 1;
+  google.protobuf.Timestamp start_time = 2;
+  int32 exit_code = 3;
+  google.protobuf.Timestamp exit_time = 4;
+}
+
+message ActorStatus {
+  ActorState state = 1;
+  ActorFork fork = 8;
+}
+
+message Actor {
+  ResourceMetadata metadata = 1;
+  ObjectRef actor_template = 2;
+  ActorStatus status = 5;
+}
+
+message GetActorRequest {
+  ObjectRef actor = 1;
+}
+
+message CreateActorRequest {
+  Actor actor = 1;
+}
+
+message ResumeActorRequest {
+  ObjectRef actor = 1;
+}
+
+message ResumeActorResponse {
+  Actor actor = 1;
+  bool resumed = 2;
+}
+
+message DeleteOptions {
+  int64 version = 1;
+  string uid = 2;
+}
+
+message DeleteActorRequest {
+  ObjectRef actor = 1;
+  DeleteOptions options = 2;
+}
+
+message ListOptions {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListActorsRequest {
+  string atespace = 1;
+  ListOptions options = 2;
+}
+
+message ListActorsResponse {
+  repeated Actor actors = 1;
+  string next_page_token = 2;
+}
