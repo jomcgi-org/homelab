@@ -1,0 +1,123 @@
+# Builds the public Semgrep OSS engine image that the gVisor sandbox-fork
+# conformance Job forks (projects/platform-factory/substrate/gvisor-fork/engine).
+# Manual only: nothing runs on a push or a pull request.
+#
+# The image goes to ghcr.io/jomcgi-org/homelab/substrate-fork/engine-oss and to
+# no other name. A run with publish off builds the image, tests it and discards
+# it. A run with publish on pushes it under the tag
+# <semgrep version>-<commit>, and fails if that tag already exists. No
+# deployment pin changes here: the enable step of projects/factory-cluster/README.md
+# copies the digest of this run into the conformance template.
+#
+# The image holds the unmodified OSS engine, 40 regex rules and a small server.
+# It holds no Pro engine, no token and no proprietary rule. The build reads the
+# network (PyPI, the base image registry); the image does not.
+name: Substrate fork engine image
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Push the image (off builds and tests it, then discards it)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: substrate-fork-engine
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/jomcgi-org/homelab/substrate-fork/engine-oss
+
+jobs:
+  image:
+    name: Build and test the engine image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        working-directory: projects/platform-factory/substrate/gvisor-fork/engine
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install crane
+        run: |
+          set -euo pipefail
+          . ./pins.env
+          curl --fail --silent --show-error --location --output "${RUNNER_TEMP}/crane.tgz" "${CRANE_URL}"
+          echo "${CRANE_SHA256}  ${RUNNER_TEMP}/crane.tgz" | sha256sum --check --strict
+          mkdir -p "${RUNNER_TEMP}/bin"
+          tar -xzf "${RUNNER_TEMP}/crane.tgz" -C "${RUNNER_TEMP}/bin" crane
+          echo "${RUNNER_TEMP}/bin" >>"${GITHUB_PATH}"
+      - name: Build the layer
+        run: ./build.sh layer "${RUNNER_TEMP}/engine"
+      - name: Build the image
+        run: ./build.sh image "${RUNNER_TEMP}/engine"
+      # One engine start per body size: the server is single-use. The network is
+      # internal (no route out), so the run also shows that the image needs none.
+      # The container runs as the image user with a read-only root.
+      - name: Test the image
+        env:
+          NET: engine-net
+        run: |
+          set -euo pipefail
+          docker load --input "${RUNNER_TEMP}/engine/image.tar"
+          docker network create --internal "${NET}"
+          for size in 1024 16384 524288; do
+            name="engine-${size}"
+            docker run --detach --name "${name}" --network "${NET}" \
+              --read-only --tmpfs /tmp --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --memory 512m --pids-limit 64 \
+              --env FORKSRV_CHECKPOINT=0 \
+              engine-oss:local /usr/local/bin/forksrv-net --listen 0.0.0.0:8080 >/dev/null
+            ip="$(docker inspect --format "{{ (index .NetworkSettings.Networks \"${NET}\").IPAddress }}" "${name}")"
+            if ! python3 -I smoke.py "${ip}" 8080 "${size}"; then
+              docker logs "${name}" >&2 || true
+              exit 1
+            fi
+            code="$(timeout 30 docker wait "${name}")"
+            echo "SMOKE exit_code=${code} body_bytes=${size}"
+            test "${code}" = "0"
+            docker rm "${name}" >/dev/null
+          done
+      - name: Log in to ghcr.io
+        if: inputs.publish
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: crane auth login ghcr.io --username "${ACTOR}" --password-stdin <<<"${TOKEN}"
+      - name: Publish the image
+        if: inputs.publish
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          . ./pins.env
+          ref="${IMAGE_REPOSITORY}:${SEMGREP_VERSION}-${COMMIT:0:12}"
+          if crane digest "${ref}" >/dev/null 2>&1; then
+            echo "${ref} exists. Never overwrite a published tag: commit a change and run again." >&2
+            exit 1
+          fi
+          ./build.sh push "${RUNNER_TEMP}/engine" "${ref}"
+          digest="$(crane digest "${ref}")"
+          {
+            echo "### Engine image published"
+            echo
+            echo "\`${IMAGE_REPOSITORY}:${SEMGREP_VERSION}-${COMMIT:0:12}@${digest}\`"
+            echo
+            echo "Next: set the package public once in the GitHub package settings,"
+            echo "then put this reference in conformance/template.yaml (see the README"
+            echo "of this directory)."
+          } >>"${GITHUB_STEP_SUMMARY}"
+          echo "published ${IMAGE_REPOSITORY}@${digest}"
+      - name: Summary
+        if: '!inputs.publish'
+        run: echo "Built and tested. Not published." >>"${GITHUB_STEP_SUMMARY}"
