@@ -40,7 +40,9 @@ def _docs() -> list[dict]:
 
 
 def _one(kind: str, name: str) -> dict:
-    (found,) = [d for d in _docs() if d["kind"] == kind and d["metadata"]["name"] == name]
+    (found,) = [
+        d for d in _docs() if d["kind"] == kind and d["metadata"]["name"] == name
+    ]
     return found
 
 
@@ -70,7 +72,10 @@ def test_template_listens_on_port_80_with_no_env_and_no_egress() -> None:
     assert fork["singleUse"] is True
     assert fork["egress"] == "FORK_EGRESS_NONE"
     assert fork["maxLifetimeSeconds"] == 900
-    assert fork["seedResources"]["limits"] == {"cpuMillicores": 1000, "memoryBytes": 512 << 20}
+    assert fork["seedResources"]["limits"] == {
+        "cpuMillicores": 1000,
+        "memoryBytes": 512 << 20,
+    }
     assert t["resources"]["limits"] == {"cpuMillicores": 1000, "memoryBytes": 128 << 20}
     assert t["workerSelector"] == {"matchLabels": {"workload": "gvisor-fork"}}
 
@@ -86,7 +91,10 @@ def test_template_checks_pass_and_catch_each_edit() -> None:
         "egress": ("egress: FORK_EGRESS_NONE", "egress: FORK_EGRESS_GATEWAY"),
         "lifetime": ("maxLifetimeSeconds: 900", "maxLifetimeSeconds: 300"),
         "atespace": ("atespace: egress-scan-engine", "atespace: other"),
-        "env": ("    wakeupProbe:", "    env:\n      - name: X\n        value: y\n    wakeupProbe:"),
+        "env": (
+            "    wakeupProbe:",
+            "    env:\n      - name: X\n        value: y\n    wakeupProbe:",
+        ),
     }
     for name, (old, new) in edits.items():
         assert old in _TEMPLATE, name
@@ -109,9 +117,14 @@ def test_editor_member_has_the_user_prefix() -> None:
 def test_policy_with_editor() -> None:
     mod = _load()
     manifest, changed = mod.policy_with_editor(None, _EDITOR)
-    assert changed and manifest == {"bindings": [{"role": "editor", "members": [_EDITOR]}]}
+    assert changed and manifest == {
+        "bindings": [{"role": "editor", "members": [_EDITOR]}]
+    }
     # Already there: no change.
-    cur = {"metadata": {"uid": "u1", "version": "3"}, "bindings": [{"role": "editor", "members": [_EDITOR]}]}
+    cur = {
+        "metadata": {"uid": "u1", "version": "3"},
+        "bindings": [{"role": "editor", "members": [_EDITOR]}],
+    }
     assert mod.policy_with_editor(cur, _EDITOR)[1] is False
     # Other bindings and members stay, and the update carries its preconditions.
     cur = {
@@ -152,22 +165,36 @@ class FakeAte:
         atespace = rest[rest.index("-a") + 1] if "-a" in rest else None
         if verb == "get" and kind == "workers":
             seeds = [
-                {"seedActor": {"atespace": "egress-scan-engine"}, "templateUid": t["metadata"]["uid"]}
+                {
+                    "seedActor": {"atespace": "egress-scan-engine"},
+                    "templateUid": t["metadata"]["uid"],
+                }
                 for t in self.templates.values()
             ]
-            state = "WORKER_STATE_ACTIVE" if self.worker_ready else "WORKER_STATE_STARTING"
-            return self.out([{"workerPool": "gvisor-fork", "state": state, "seeds": seeds}])
+            state = (
+                "WORKER_STATE_ACTIVE" if self.worker_ready else "WORKER_STATE_STARTING"
+            )
+            return self.out(
+                [{"workerPool": "gvisor-fork", "state": state, "seeds": seeds}]
+            )
         if verb == "get" and kind == "atespace":
             return self.out({}, 0 if rest[0] in self.atespaces else 1)
         if verb == "create" and kind == "atespace":
             self.atespaces.add(rest[0])
             return self.out({})
         if verb == "get" and kind == "access-policy":
-            return self.out(self.policy) if self.policy else subprocess.CompletedProcess([], 0, "", "no access policy")
+            return (
+                self.out(self.policy)
+                if self.policy
+                else subprocess.CompletedProcess([], 0, "", "no access policy")
+            )
         if verb in ("create", "update") and kind == "access-policy":
             body = json.loads(Path(rest[rest.index("-f") + 1]).read_text())
             self.version += 1
-            self.policy = {"metadata": {"uid": "pol-1", "version": str(self.version)}, **body}
+            self.policy = {
+                "metadata": {"uid": "pol-1", "version": str(self.version)},
+                **body,
+            }
             return self.out({})
         if verb == "delete" and kind == "access-policy":
             self.policy = None
@@ -267,8 +294,20 @@ def test_teardown_removes_everything_in_order_and_is_safe_twice(tmp_path: Path) 
     mod, fake = _load(), FakeAte()
     assert _run(mod, fake, tmp_path) == 0
     fake.actors = [
-        {"metadata": {"name": "eg-engine-gate-0-1-1"}, "status": {"state": "ACTOR_STATE_RUNNING", "fork": {"role": "FORK_ROLE_FORK"}}},
-        {"metadata": {"name": "seed-abc"}, "status": {"state": "ACTOR_STATE_RUNNING", "fork": {"role": "FORK_ROLE_SEED"}}},
+        {
+            "metadata": {"name": "eg-engine-gate-0-1-1"},
+            "status": {
+                "state": "ACTOR_STATE_RUNNING",
+                "fork": {"role": "FORK_ROLE_FORK"},
+            },
+        },
+        {
+            "metadata": {"name": "seed-abc"},
+            "status": {
+                "state": "ACTOR_STATE_RUNNING",
+                "fork": {"role": "FORK_ROLE_SEED"},
+            },
+        },
     ]
     fake.calls.clear()
     # The seed goes with its template, as in the API.
@@ -277,7 +316,9 @@ def test_teardown_removes_everything_in_order_and_is_safe_twice(tmp_path: Path) 
     def with_seed_removal(*args: str):
         out = orig(*args)
         if args[:2] == ("delete", "actor-template"):
-            fake.actors = [a for a in fake.actors if a["metadata"]["name"] != "seed-abc"]
+            fake.actors = [
+                a for a in fake.actors if a["metadata"]["name"] != "seed-abc"
+            ]
         return out
 
     assert _run_teardown(mod, with_seed_removal, tmp_path) == 0
@@ -306,7 +347,10 @@ def _run_teardown(mod, ate, tmp_path: Path):
 
 
 def test_both_jobs_are_suspended_and_use_the_ate_client() -> None:
-    for name, mode in (("egress-engine-provision-1", "apply"), ("egress-engine-teardown-1", "teardown")):
+    for name, mode in (
+        ("egress-engine-provision-1", "apply"),
+        ("egress-engine-teardown-1", "teardown"),
+    ):
         job = _one("Job", name)
         assert job["spec"]["suspend"] is True
         assert job["spec"]["backoffLimit"] == 0
@@ -332,7 +376,9 @@ def test_jobs_are_unprivileged_and_hold_no_secret() -> None:
         assert "envFrom" not in c
         assert not [v for v in pod["volumes"] if "secret" in v]
         assert not re.search(r"(?i)token|secret|password", json.dumps(c["env"]))
-        token = [v for v in pod["volumes"] if v["name"] == "ate-token"][0]["projected"]["sources"][0]
+        token = [v for v in pod["volumes"] if v["name"] == "ate-token"][0]["projected"][
+            "sources"
+        ][0]
         assert token["serviceAccountToken"]["audience"] == "api.ate-system.svc"
         # Images are pinned by digest.
         assert "@sha256:" in c["image"]
@@ -345,15 +391,24 @@ def test_config_map_holds_the_script_and_the_template() -> None:
     assert set(cm["data"]) == {"provision.py", "template.yaml"}
     assert cm["data"]["template.yaml"] == _TEMPLATE
     for name in ("egress-engine-provision-1", "egress-engine-teardown-1"):
-        vol = [v for v in _one("Job", name)["spec"]["template"]["spec"]["volumes"] if v["name"] == "config"][0]
+        vol = [
+            v
+            for v in _one("Job", name)["spec"]["template"]["spec"]["volumes"]
+            if v["name"] == "config"
+        ][0]
         assert vol["configMap"]["name"] == cm["metadata"]["name"]
 
 
 def test_jobs_reach_only_the_kubernetes_api_and_the_ate_api() -> None:
     policy = _one("CiliumNetworkPolicy", "egress-engine-provision")["spec"]
-    assert policy["endpointSelector"]["matchLabels"] == {"app": "egress-engine-provision"}
+    assert policy["endpointSelector"]["matchLabels"] == {
+        "app": "egress-engine-provision"
+    }
     assert policy["egress"] == [
-        {"toEntities": ["kube-apiserver"], "toPorts": [{"ports": [{"port": "6443", "protocol": "TCP"}]}]},
+        {
+            "toEntities": ["kube-apiserver"],
+            "toPorts": [{"ports": [{"port": "6443", "protocol": "TCP"}]}],
+        },
         {
             "toEndpoints": [{"matchLabels": {"app": "ate-api-server"}}],
             "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}],
@@ -361,9 +416,10 @@ def test_jobs_reach_only_the_kubernetes_api_and_the_ate_api() -> None:
     ]
     api = _one("CiliumNetworkPolicy", "ate-api-server-egress-engine-provision")["spec"]
     (rule,) = api["ingress"]
-    assert rule["fromEndpoints"] == [{"matchLabels": {"app": "egress-engine-provision"}}]
+    assert rule["fromEndpoints"] == [
+        {"matchLabels": {"app": "egress-engine-provision"}}
+    ]
     assert rule["toPorts"][0]["ports"] == [{"port": "443", "protocol": "TCP"}]
     for name in ("egress-engine-provision-1", "egress-engine-teardown-1"):
         labels = _one("Job", name)["spec"]["template"]["metadata"]["labels"]
         assert labels == {"app": "egress-engine-provision"}
-

@@ -50,7 +50,9 @@ TEMPLATE = os.environ.get("TEMPLATE", "engine")
 POOL = os.environ.get("POOL", "gvisor-fork")
 # The members of the editor binding. The API wants "user:<principal>". The
 # principal of a ServiceAccount token is system:serviceaccount:<ns>:<name>.
-EDITOR = os.environ.get("EDITOR_MEMBER", "user:system:serviceaccount:ate-system:engine-gate")
+EDITOR = os.environ.get(
+    "EDITOR_MEMBER", "user:system:serviceaccount:ate-system:engine-gate"
+)
 MODE = os.environ.get("MODE", "apply")
 WORKER_WAIT = float(os.environ.get("WORKER_WAIT_SECONDS", "900"))
 SEED_WAIT = float(os.environ.get("SEED_WAIT_SECONDS", "600"))
@@ -72,9 +74,19 @@ class Failed(Exception):
 
 def ate(*args: str) -> subprocess.CompletedProcess:
     # --preview sends the Ate-Preview-Allowed header, which fork templates need.
-    cmd = [str(ATE_BIN), "--endpoint", ENDPOINT, "--token-file", TOKEN_FILE, "--preview", *args]
+    cmd = [
+        str(ATE_BIN),
+        "--endpoint",
+        ENDPOINT,
+        "--token-file",
+        TOKEN_FILE,
+        "--preview",
+        *args,
+    ]
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=CALL_TIMEOUT, check=False)
+        return subprocess.run(
+            cmd, capture_output=True, text=True, timeout=CALL_TIMEOUT, check=False
+        )
     except subprocess.TimeoutExpired as err:
         raise Failed(f"{' '.join(args)}: no answer in {CALL_TIMEOUT}s") from err
     except OSError as err:
@@ -128,7 +140,12 @@ def wait_for(what: str, limit: float, ready, detail=None) -> float:
             raise Failed(f"{what}: not ready after {limit:.0f}s")
         if now >= next_note:
             next_note = now + 60
-            log(event="waiting", what=repr(what), elapsed=f"{now - start:.0f}", seen=repr(detail() if detail else ""))
+            log(
+                event="waiting",
+                what=repr(what),
+                elapsed=f"{now - start:.0f}",
+                seen=repr(detail() if detail else ""),
+            )
         time.sleep(POLL)
 
 
@@ -164,7 +181,9 @@ def template_checks(text: str) -> list[str]:
         if not re.search(pattern, text):
             problems.append(why)
     if re.search(r"(?m)^\s+env:", text):
-        problems.append("the template names an env (the placeholder token is in the image)")
+        problems.append(
+            "the template names an env (the placeholder token is in the image)"
+        )
     return problems
 
 
@@ -179,7 +198,9 @@ def policy_with_editor(current: object, member: str) -> tuple[dict, bool]:
     bindings = []
     for b in (first(current, "bindings") or []) if current else []:
         if isinstance(b, dict) and "role" in b:
-            bindings.append({"role": b["role"], "members": list(b.get("members") or [])})
+            bindings.append(
+                {"role": b["role"], "members": list(b.get("members") or [])}
+            )
     changed = True
     for b in bindings:
         if b["role"] == "editor":
@@ -198,7 +219,9 @@ def policy_with_editor(current: object, member: str) -> tuple[dict, bool]:
 
 def template_matches(existing: object, text: str) -> bool:
     """The stored template has the image digest of the wanted one."""
-    return image_digests(json.dumps(existing)) == image_digests(text) and bool(image_digests(text))
+    return image_digests(json.dumps(existing)) == image_digests(text) and bool(
+        image_digests(text)
+    )
 
 
 # --- the cluster steps ------------------------------------------------------
@@ -230,7 +253,9 @@ def template_json() -> object | None:
 
 def pool_workers() -> list[dict]:
     data = get_json("get", "workers", "--sandbox-class", "gvisor")
-    return [w for w in walk(data) if POOL in (w.get("workerPool"), w.get("worker_pool"))]
+    return [
+        w for w in walk(data) if POOL in (w.get("workerPool"), w.get("worker_pool"))
+    ]
 
 
 def seeded(uid: str) -> bool:
@@ -246,7 +271,9 @@ def apply(workdir: Path, text: str) -> None:
     wait_for(
         f"an ACTIVE {POOL} worker",
         WORKER_WAIT,
-        lambda: "WORKER_STATE_ACTIVE" in [str(first(w, "state")) for w in pool_workers()],
+        lambda: (
+            "WORKER_STATE_ACTIVE" in [str(first(w, "state")) for w in pool_workers()]
+        ),
     )
 
     if atespace_exists():
@@ -312,17 +339,42 @@ def teardown() -> None:
     if done.returncode == 0:
         for t in walk(json.loads(done.stdout or "{}")):
             if isinstance(t.get("metadata"), dict) and "containers" in t:
-                ate("delete", "actor-template", str(t["metadata"]["name"]), "-a", ATESPACE)
+                ate(
+                    "delete",
+                    "actor-template",
+                    str(t["metadata"]["name"]),
+                    "-a",
+                    ATESPACE,
+                )
     try:
-        wait_for("the seeds removed", STATE_WAIT, lambda: not [a for a in actors() if role(a) == "FORK_ROLE_SEED"])
+        wait_for(
+            "the seeds removed",
+            STATE_WAIT,
+            lambda: not [a for a in actors() if role(a) == "FORK_ROLE_SEED"],
+        )
     except Failed as err:
         log(event="teardown_wait", message=repr(str(err)))
-    log(step="access_policy", result="deleted", code=ate("delete", "access-policy", "-a", ATESPACE).returncode)
-    log(step="atespace", result="deleted", code=ate("delete", "atespace", ATESPACE).returncode)
+    log(
+        step="access_policy",
+        result="deleted",
+        code=ate("delete", "access-policy", "-a", ATESPACE).returncode,
+    )
+    log(
+        step="atespace",
+        result="deleted",
+        code=ate("delete", "atespace", ATESPACE).returncode,
+    )
 
 
 def main() -> int:
-    log(event="start", mode=MODE, endpoint=ENDPOINT, atespace=ATESPACE, template=TEMPLATE, pool=POOL)
+    log(
+        event="start",
+        mode=MODE,
+        endpoint=ENDPOINT,
+        atespace=ATESPACE,
+        template=TEMPLATE,
+        pool=POOL,
+    )
     if MODE not in ("apply", "teardown"):
         log(event="error", message=repr(f"MODE must be apply or teardown, not {MODE}"))
         return 2
