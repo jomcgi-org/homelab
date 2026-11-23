@@ -244,7 +244,7 @@ equals the Bazel image digest.
 
 Read-only checks, with `KUBECONFIG=~/.kube/factory-sessions.yaml`:
 
-- The provisioning Job succeeded: `kubectl -n ate-system logs job/egress-engine-provision-1 | grep '^PROVISION '` ends with `event=summary mode=apply result=ok`, and `step=seed result=ready`.
+- **DONE:** the provisioning Job succeeded at 23:54Z on 2026-11-23: the atespace `egress-scan-engine`, its access policy and the template `engine` exist, and the log has `step=seed result=ready seconds=12.3` (the private engine image pulled, and the worker is pinned to `egress-scan-engine`). To read it again: `kubectl -n ate-system logs job/egress-engine-provision-1 | grep '^PROVISION '` ends with `event=summary mode=apply result=ok`.
 - Node room for the pod (100m CPU, 128Mi memory): `kubectl describe nodes | grep -A8 'Allocated resources'`. If no node has room the pod stays Pending (`EngineGateDown`).
 - No `edit` or `admin` binding reaches `ate-system`, and nobody holds `create` on `serviceaccounts/token`, `pods/exec` or `pods/ephemeralcontainers` there (the admission guard does not cover them).
 - The priority class: the router, the ate API and the scanner set none, and the repo has no suitable non-system class. The gate sets none.
