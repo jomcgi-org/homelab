@@ -47,6 +47,8 @@ spec:
   # name, and the children are named eg-<pod name>-<start epoch>-<n>, so a
   # restart finds and deletes its own leftovers.
   replicas: 0
+  # The ClusterIP Service of this name. The pod needs no stable DNS name: its
+  # name is stable (children carry it), and the scanner calls the Service.
   serviceName: engine-gate
   selector:
     matchLabels:
@@ -63,6 +65,9 @@ spec:
       serviceAccountName: engine-gate
       automountServiceAccountToken: false
       enableServiceLinks: false
+      # The same read login as the live egress-scan Deployment.
+      imagePullSecrets:
+        - name: ghcr-imagepull-secret
       # SIGTERM stops the listener, finishes the requests in flight (at most
       # --shutdown-grace) and deletes the pool.
       terminationGracePeriodSeconds: 30
@@ -70,6 +75,9 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        # As the latency Job: kubelet makes the projected token, certificate
+        # and trust bundle readable by this group.
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:

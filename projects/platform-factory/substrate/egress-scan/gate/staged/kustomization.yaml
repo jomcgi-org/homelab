@@ -9,10 +9,13 @@ kind: Kustomization
 resources:
   - statefulset.yaml
   - networkpolicy.yaml
+  - admission.yaml
 
 images:
-  # The tag is "unpinned" until the wiring change sets the tag that CI
-  # published. Never hand-pin a digest for this repository's images.
+  # The tag is a placeholder. Nobody pins this image by hand: the wiring change
+  # packages these manifests like the egress-scan chart, and CI pins
+  # repository@digest at build time (the push step skips a digest that is
+  # already published). Never hand-pin a digest for this repository's images.
   - name: engine-gate
     newName: ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/gate
     newTag: unpinned

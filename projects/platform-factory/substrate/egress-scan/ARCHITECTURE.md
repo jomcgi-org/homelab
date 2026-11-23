@@ -26,7 +26,7 @@ flowchart LR
 | Component | Role | Code | Pin | Untrusted input | Credentials held |
 | --- | --- | --- | --- | --- | --- |
 | egress-scan | Gitleaks verdict, plus the engine tier when on. Gitleaks and the engine run at the same time | `main.go`, `scan.go`, `semgrep.go` | chart `0.4.32`, image by digest | Request bytes from actors, through the gateway | None. `automountServiceAccountToken` is false |
-| engine-gate | Designed StatefulSet. Keeps a pool of waiting children, sends one body to one child, relays the engine reply | none yet | none yet | Text from egress-scan, which holds actor bytes | ate API token (editor of one atespace), router client certificate |
+| engine-gate | StatefulSet, built and staged off. Keeps a pool of waiting children, sends one body to one child, relays the engine reply | `gate/` ([README](gate/README.md)) | image `ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/gate`, pinned by CI when wired | Text from egress-scan, which holds actor bytes | ate API token (editor of one atespace), router client certificate |
 | atenet-router | Routes a request to an actor by `ate-target-actor`. Resumes a suspended actor | `../resources/upstream/substrate/atenet-router.yaml` | Substrate chart `1.0.1` | Any client with an allowed SPIFFE ID | Pod identity certificate for atunnel |
 | Pool worker | Staged off. Holds the seed and forks the children | `../gvisor-fork/kvm-pool.yaml` | fork build `1e7a877d0ca3`, gVisor `0250f9acf` | None: only the router reaches it | KVM device, capabilities for forkd |
 | Engine image | Designed. Semgrep Pro Secrets engine, rules and a small server | none yet | Semgrep `1.186.0` | Request text, after the child's seccomp filter is on | A token file, real or placeholder (see "Pro engine image") |
@@ -514,8 +514,8 @@ closes.
 
 | Direction | Tracks | State |
 | --- | --- | --- |
-| Pool of waiting children for the engine path | HOME-TBD | `designed` |
-| `engine-gate` StatefulSet | HOME-TBD | `designed` |
+| Pool of waiting children for the engine path | HOME-TBD | built in `gate/`, staged off |
+| `engine-gate` StatefulSet | HOME-TBD | built in `gate/`, staged off (`replicas: 0`, unwired) |
 | Pro engine image, private package | HOME-TBD | `designed` |
 | The private `engine-pro` workflow | HOME-TBD | `designed` |
 | Latency Jobs `gvisor-fork-latency-1` and `-data-1` | HOME-TBD | `staged off`, suspended and unwired |

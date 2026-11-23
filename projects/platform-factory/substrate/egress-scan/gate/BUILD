@@ -32,7 +32,7 @@ go_binary(
     embed = [":gate_lib"],
     pure = "on",
     static = "on",
-    visibility = ["//visibility:private"],
+    visibility = ["//projects/platform-factory/substrate/egress-scan/gate/image:__pkg__"],
 )
 
 go_test(
