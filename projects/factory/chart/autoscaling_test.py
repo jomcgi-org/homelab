@@ -76,11 +76,19 @@ def _hpas(docs):
     return [d for d in docs if d["kind"] == "HorizontalPodAutoscaler"]
 
 
-def _reaper_pools(docs) -> str | None:
+def _reaper_env(docs, name: str) -> str | None:
     reaper = _one(docs, "Deployment", "factory", "factory-reaper")
     (c,) = reaper["spec"]["template"]["spec"]["containers"]
     env = {e["name"]: e.get("value") for e in c["env"]}
-    return env.get("FACTORY_REAPER_POOLS")
+    return env.get(name)
+
+
+def _reaper_pools(docs) -> str | None:
+    return _reaper_env(docs, "FACTORY_REAPER_POOLS")
+
+
+def _reaper_unbound(docs) -> str | None:
+    return _reaper_env(docs, "FACTORY_REAPER_UNBOUND_POOLS")
 
 
 def test_off_by_default_renders_no_autoscaler_and_no_reaper_pools():
@@ -171,20 +179,83 @@ def test_reaper_may_patch_pods_only_where_a_pool_autoscales():
     assert _reaper_verbs(on, _REVIEW[0]) == ["get", "list", "watch", "delete"]
 
 
-def test_the_reviewer_pool_cannot_be_enabled():
-    # The reviewer sends to kagent itself, not through the connector, so no
-    # pending demand series exists for its pool and the metric never has a
-    # value. Refuse it, at any minReplicas.
-    for min_replicas in ("0", "1"):
-        with pytest.raises(RuntimeError, match="reviewer pool cannot autoscale"):
+_REVIEWER_ON = [
+    "agents.reviewer.autoscaling.enabled=true",
+    "agents.reviewer.autoscaling.minReplicas=3",
+    "agents.reviewer.autoscaling.spare=2",
+    "agents.reviewer.autoscaling.maxReplicas=5",
+]
+
+
+def test_the_reviewer_pool_autoscales_between_its_concurrency_and_its_workers():
+    # The reviewer sends to kagent itself, so the connector publishes no
+    # pending demand for its pool: the reaper publishes pending 0 for it
+    # (FACTORY_REAPER_UNBOUND_POOLS) and the pool never starts below the
+    # reviews it runs at once.
+    docs = _render(["reviewer.concurrency=3", *_REVIEWER_ON])
+    (hpa,) = _hpas(docs)
+    ns, name = _REVIEW
+    assert hpa["metadata"]["namespace"] == ns and hpa["metadata"]["name"] == name
+    assert hpa["spec"]["minReplicas"] == 3
+    assert hpa["spec"]["maxReplicas"] == 5
+    assert hpa["spec"]["scaleTargetRef"]["name"] == name
+    assert _reaper_pools(docs) == f"{ns}/{name}=2"
+    assert _reaper_unbound(docs) == f"{ns}/{name}"
+    # The reaper patches pods only in the namespace of an autoscaled pool.
+    assert _reaper_verbs(docs, ns) == ["get", "list", "watch", "delete", "patch"]
+    assert _reaper_verbs(docs, _CODER[0]) == ["get", "list", "watch", "delete"]
+
+
+def test_only_the_reviewer_pool_is_unbound():
+    # The connector publishes pending for the coder pool, and a second 0 from
+    # the reaper would hide a failed connector read.
+    docs = _render(["agents.codex.autoscaling.enabled=true", *_REVIEWER_ON])
+    assert _reaper_pools(docs) == (
+        f"{_CODER[0]}/{_CODER[1]}=2,{_REVIEW[0]}/{_REVIEW[1]}=2"
+    )
+    assert _reaper_unbound(docs) == f"{_REVIEW[0]}/{_REVIEW[1]}"
+    coder_only = _render(["agents.codex.autoscaling.enabled=true"])
+    assert _reaper_unbound(coder_only) is None
+
+
+def test_the_reviewer_pool_minimum_covers_its_concurrency():
+    # A burst of reviews cannot wait for a scale-up the reviewer cannot ask for.
+    for min_replicas in ("0", "2"):
+        with pytest.raises(RuntimeError, match="at least reviewer.concurrency"):
             _render(
                 [
+                    "reviewer.concurrency=3",
                     "agents.reviewer.autoscaling.enabled=true",
                     f"agents.reviewer.autoscaling.minReplicas={min_replicas}",
                 ]
             )
-    # Off, nothing changes.
-    assert _hpas(_render(["agents.reviewer.autoscaling.minReplicas=0"])) == []
+    # Without a minimum the chart's default is 0: refused.
+    with pytest.raises(RuntimeError, match="at least reviewer.concurrency"):
+        _render(["agents.reviewer.autoscaling.enabled=true"])
+    _render(["reviewer.concurrency=3", *_REVIEWER_ON])
+    # A larger reviewer concurrency raises the floor.
+    with pytest.raises(RuntimeError, match=r"concurrency \(4\), got 3"):
+        _render(["reviewer.concurrency=4", *_REVIEWER_ON])
+
+
+def test_the_reviewer_pool_needs_a_spare():
+    # With no spare the pool never exceeds its actors, so the goal check
+    # session that follows a review would find no free worker.
+    with pytest.raises(RuntimeError, match="spare of at least 1"):
+        _render(
+            [
+                "reviewer.concurrency=3",
+                "agents.reviewer.autoscaling.enabled=true",
+                "agents.reviewer.autoscaling.minReplicas=3",
+                "agents.reviewer.autoscaling.spare=0",
+            ]
+        )
+
+
+def test_reviewer_autoscaling_off_changes_nothing():
+    off = _render(["agents.reviewer.autoscaling.minReplicas=0"])
+    assert _hpas(off) == []
+    assert _reaper_pools(off) is None and _reaper_unbound(off) is None
 
 
 def test_scale_down_period_stays_within_the_hpa_maximum():

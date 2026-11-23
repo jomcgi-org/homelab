@@ -15,9 +15,15 @@ serves (projects/platform-factory/prometheus-adapter).
 {{- if hasKey $as "spare" }}{{ $spare = int $as.spare }}{{ end -}}
 {{- $min := 0 -}}
 {{- if hasKey $as "minReplicas" }}{{ $min = int $as.minReplicas }}{{ end -}}
-{{- /* The reviewer is not a connector binding, so no pending series exists for its pool and the all-sources metric never has a value. */ -}}
+{{- /* The reviewer is not a connector binding: it sends to kagent itself, so the connector publishes no pending demand for its pool and the reaper publishes pending 0 in its place (FACTORY_REAPER_UNBOUND_POOLS). The pool then grows only from the actors it hosts, which two floors cover. */ -}}
 {{- if and (eq (toString $as.enabled) "true") (eq (.key | default "") "reviewer") -}}
-{{- fail "autoscaling: the reviewer pool cannot autoscale yet: it sends to kagent itself, not through the connector, so no pending demand series exists for it and the metric never has a value" -}}
+{{- $burst := int .root.Values.reviewer.concurrency -}}
+{{- if lt $min $burst -}}
+{{- fail (printf "autoscaling: the reviewer pool needs minReplicas of at least reviewer.concurrency (%d), got %d: its sends reach kagent without the connector, so a burst of reviews cannot wait for a scale-up" $burst $min) -}}
+{{- end -}}
+{{- if lt $spare 1 -}}
+{{- fail "autoscaling: the reviewer pool needs a spare of at least 1: it grows from the actors it hosts, and a goal check session needs a worker beside the review session's" -}}
+{{- end -}}
 {{- end -}}
 {{- $max := add (int $a.concurrency) $spare -}}
 {{- if $as.maxReplicas }}{{ $max = int $as.maxReplicas }}{{ end -}}
@@ -38,7 +44,7 @@ The HorizontalPodAutoscaler of one WorkerPool, or nothing. It emits a leading
 off pool renders byte for byte as before.
 */}}
 {{- define "factory.workerPoolAutoscaler" -}}
-{{- $s := include "factory.workerAutoscaling" (dict "agent" .agent "key" .key) | fromJson -}}
+{{- $s := include "factory.workerAutoscaling" (dict "agent" .agent "key" .key "root" .root) | fromJson -}}
 {{- if $s.enabled -}}
 {{ "\n" }}---
 # Scales the WorkerPool of the same name on the workers it needs. The HPA owns
@@ -101,21 +107,23 @@ spec:
 {{- end -}}
 
 {{/*
-The pools whose autoscaling is on, as JSON: [{namespace, name, spare}]. The
-reaper publishes demand and capacity for exactly these.
+The pools whose autoscaling is on, as JSON: [{namespace, name, spare,
+unbound}]. The reaper publishes demand and capacity for exactly these.
+unbound marks a pool no connector binding sends to (the reviewer's): the
+reaper also publishes its pending demand, at 0.
 */}}
 {{- define "factory.autoscaledPools" -}}
 {{- $ := . -}}
 {{- $out := list -}}
 {{- range $r := .Values.repositories -}}
-{{- $coder := include "factory.workerAutoscaling" (dict "agent" (index $.Values.agents $r.agent) "key" $r.agent) | fromJson -}}
+{{- $coder := include "factory.workerAutoscaling" (dict "agent" (index $.Values.agents $r.agent) "key" $r.agent "root" $) | fromJson -}}
 {{- if $coder.enabled -}}
-{{- $out = append $out (dict "namespace" $r.namespace "name" (include "factory.bindingAgentName" $r) "spare" $coder.spare) -}}
+{{- $out = append $out (dict "namespace" $r.namespace "name" (include "factory.bindingAgentName" $r) "spare" $coder.spare "unbound" false) -}}
 {{- end -}}
 {{- if $.Values.reviewer.enabled -}}
-{{- $review := include "factory.workerAutoscaling" (dict "agent" (index $.Values.agents "reviewer") "key" "reviewer") | fromJson -}}
+{{- $review := include "factory.workerAutoscaling" (dict "agent" (index $.Values.agents "reviewer") "key" "reviewer" "root" $) | fromJson -}}
 {{- if $review.enabled -}}
-{{- $out = append $out (dict "namespace" (include "factory.reviewerNamespace" (dict "root" $ "binding" $r)) "name" (include "factory.bindingAgentName" (dict "name" $r.name "agent" "reviewer")) "spare" $review.spare) -}}
+{{- $out = append $out (dict "namespace" (include "factory.reviewerNamespace" (dict "root" $ "binding" $r)) "name" (include "factory.bindingAgentName" (dict "name" $r.name "agent" "reviewer")) "spare" $review.spare "unbound" true) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

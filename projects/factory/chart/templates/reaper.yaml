@@ -91,6 +91,19 @@ spec:
             # their spare workers (agents.<name>.autoscaling).
             - name: FACTORY_REAPER_POOLS
               value: {{ join "," $entries | quote }}
+            {{- $unbound := list }}
+            {{- range $p := $pools }}
+            {{- if $p.unbound }}
+            {{- $unbound = append $unbound (printf "%s/%s" $p.namespace $p.name) }}
+            {{- end }}
+            {{- end }}
+            {{- if $unbound }}
+            # Pools no connector binding sends to (the reviewer's): the reaper
+            # publishes their pending demand at 0, so the autoscaler's metric
+            # has a value.
+            - name: FACTORY_REAPER_UNBOUND_POOLS
+              value: {{ join "," $unbound | quote }}
+            {{- end }}
             {{- end }}
             - name: FACTORY_CONNECTOR_DATABASE_URL
               valueFrom:
