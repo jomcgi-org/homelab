@@ -248,7 +248,7 @@ Read-only checks, with `KUBECONFIG=~/.kube/factory-sessions.yaml`:
 - Node room for the pod (100m CPU, 128Mi memory): `kubectl describe nodes | grep -A8 'Allocated resources'`. On 2026-11-23 the nodes were about 98% requested; if no node has room the pod stays Pending (`EngineGateDown`).
 - No `edit` or `admin` binding reaches `ate-system`, and nobody holds `create` on `serviceaccounts/token`, `pods/exec` or `pods/ephemeralcontainers` there (the admission guard does not cover them).
 - The priority class: the router, the ate API and the scanner set none, and the repo has no suitable non-system class. The gate sets none.
-- The read login can pull the private image (see "Private image pull").
+- The read login can pull the private engine image (see "Private image pull"), and the gate image exists: `crane manifest ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/gate@sha256:7cb0f51e767b45eb75de72e75d2788eb7d7d1603b525ea807bfb4da6102e0f83` with the same login resolves (the package is private; main's CI pushed the image when the gate image merged, and the digest is the Bazel image digest that `resources_test.py` checks).
 
 ## Verify the admission guard
 
