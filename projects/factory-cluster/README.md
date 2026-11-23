@@ -48,7 +48,7 @@ retained resources there.
 
 ## Bootstrap and rebuild
 
-The scripts run from node-1, with SSH and passwordless sudo on the nodes.
+The scripts run from node-1, with SSH and root access on the nodes.
 They are idempotent. The host firewall admits only the node IPs and the
 tailnet, so reach node-1 over Tailscale and run them there; another LAN
 machine cannot reach the nodes.
@@ -333,8 +333,9 @@ for a ten-minute token for `kube-system/factory-node1-sessions`, then returns
 the token and its expiry to kubectl. The account reuses the two
 `factory-sessions` roles. Its grants cover cluster reads, the tracker
 relay and the named tracker Secret. The helper uses the root-only k3s
-kubeconfig with a fixed TokenRequest and takes no arguments. The operator's
-existing passwordless sudo access runs the helper.
+kubeconfig with a fixed TokenRequest and takes no arguments. The kubeconfig in
+`nodes/factory-session-kubeconfig.yaml` runs the helper through a privileged
+wrapper.
 [Joe's decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-710#comment-9315)
 
 After the `kube-access` Application reconciles, install the helper and config
