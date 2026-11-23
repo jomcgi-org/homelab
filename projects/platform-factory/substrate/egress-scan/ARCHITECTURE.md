@@ -353,6 +353,11 @@ Details of the check:
   With option (a), a failed check forces a token rotation.
 - Confirm that the package setting "inherit access from repository" is off. That
   state lives outside the repo and is unverified here.
+- "Inherit access from repository" and the Actions access of the package are
+  different settings. The first decides who can read the package and must be
+  off. The second decides whether a later `GITHUB_TOKEN` push may write to the
+  package, and it must grant this repository Write. Check both after the first
+  publish (see `engine-pro/README.md`).
 
 **Token handling: a placeholder token in the image (decided).** A fork template
 has no volumes (`validateForkTemplate`) and no egress. The API refuses env names

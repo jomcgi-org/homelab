@@ -207,6 +207,15 @@ package to the public repository, and the package could inherit its access.
    - "Inherit access from source repository" is **off** (if it is on, switch it
      off: the repository is public). The image has no source label, so it
      should be off;
+   - "Manage Actions access" is a different setting, and it must be **on** for
+     this repository (`jomcgi-org/homelab`, role Write). It decides whether the
+     `GITHUB_TOKEN` of a later run may push to this package. A package that a
+     workflow created normally gives its repository access, but a package that
+     was created another way, or whose Actions access was removed, refuses the
+     next push (a `denied` or `permission_denied` error in the canary step).
+     Check it now, so the second run does not fail on it. Do not use "inherit
+     access" to fix a push error: that setting is about reading, and it must
+     stay off;
    - the package grants the atelet's login read access (below).
 
    These settings live outside the repository. This change could not verify
