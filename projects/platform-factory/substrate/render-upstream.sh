@@ -16,8 +16,17 @@
 # Factory-specific settings are values/ and kustomize patches in resources/.
 # Generated key material comes from projects/factory-cluster/bootstrap-substrate.sh.
 #
-# Rerun after changing VERSION, COMMIT or a chart digest; review the diff of
-# upstream/. Needs git, helm and crane.
+# Fork overlay (gVisor sandbox fork slice 1). The ateapi, atecontroller and
+# atelet images and the WorkerPool CRD come from the jomcgi-org/substrate fork
+# at FORK_COMMIT instead of the release. The fork changes no other chart, so
+# every other object and image stays at VERSION. The fork publishes no charts:
+# the CRD is rendered from the checkout. The images are the ones the manual
+# workflow .github/workflows/substrate-fork-images.yml published, pinned by
+# digest. ForkSeed (values/common.yaml) stays off: with the gate off the fork
+# changes no actor's behaviour.
+#
+# Rerun after changing VERSION, COMMIT, FORK_COMMIT or a chart digest; review
+# the diff of upstream/. Needs git, helm and crane.
 set -euo pipefail
 
 # Keep VERSION in step with SUBSTRATE_VERSION in
@@ -32,6 +41,16 @@ declare -A CHART_DIGEST=(
 	["substrate-podcert"]="sha256:366b0431ed99cd4ff74f49cb7746329a722c9f8ec9ce0ab4d0670817b34deb80"
 	["substrate-atelet"]="sha256:233e1ed8f74a202abca851c43adee88849482d8ce37760b8be65f4d96fbc8ca3"
 	["substrate"]="sha256:336c12f7f265e1b6400529eb1ef69c8d0765872d810f18f97525c66d2ba90f86"
+)
+
+FORK_REPO="https://github.com/jomcgi-org/substrate.git"
+FORK_COMMIT="b6b0ec3e217c4363eaa3f8dda237e90fc3408124"
+FORK_IMAGES="ghcr.io/jomcgi-org/homelab/substrate-fork"
+FORK_TAG="fork-${FORK_COMMIT:0:12}"
+declare -A FORK_DIGEST=(
+	["ateapi"]="sha256:7e72ec9e879d37c193c08fc061149a8b092c38dcb3629596b713593886c96b23"
+	["atecontroller"]="sha256:beaef40fc51129077fcfd7bc288f009f47696d8520616de2b0149f079f95e71e"
+	["atelet"]="sha256:451afacda427d9e811c599655eeaebe6f80bf79821aaa2ee9d7e3eb30d0b7a68"
 )
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -106,4 +125,42 @@ fi
 	echo "-- (${COMMIT}) pkg/postgressetup/setup.sql. Do not edit."
 	cat "${tmp}/src/pkg/postgressetup/setup.sql"
 } >"${OUT}/postgres-setup.sql"
+# Fork overlay: the CRD from the fork's chart, then the three images.
+mkdir "${tmp}/fork"
+git -C "${tmp}/fork" init --quiet
+git -C "${tmp}/fork" fetch --quiet --depth 1 "${FORK_REPO}" "${FORK_COMMIT}"
+git -C "${tmp}/fork" -c advice.detachedHead=false checkout --quiet FETCH_HEAD
+if [[ "$(git -C "${tmp}/fork" rev-parse HEAD)" != "${FORK_COMMIT}" ]]; then
+	echo "fetched commit is not ${FORK_COMMIT}" >&2
+	exit 1
+fi
+overlay_note="# Overlaid by render-upstream.sh from ${FORK_REPO%.git} ${FORK_COMMIT} (fork overlay)."
+helm template substrate-crds "${tmp}/fork/charts/substrate-crds" --namespace ate-system 	--output-dir "${tmp}/fork-rendered" >/dev/null
+{
+	echo "# Rendered by render-upstream.sh from ${FORK_REPO%.git} charts/substrate-crds"
+	echo "# at ${FORK_COMMIT} templates/ate.dev_workerpools.yaml. Do not edit."
+	grep -v '^# Source: ' "${tmp}/fork-rendered/substrate-crds/templates/ate.dev_workerpools.yaml"
+} >"${OUT}/substrate-crds/ate.dev_workerpools.yaml"
+declare -A fork_files=(
+	["ateapi"]="substrate/ate-api-server.yaml"
+	["atecontroller"]="substrate/ate-controller.yaml"
+	["atelet"]="substrate-atelet/atelet.yaml"
+)
+for component in "${!FORK_DIGEST[@]}"; do
+	got="$(crane digest "${FORK_IMAGES}/${component}:${FORK_TAG}")"
+	if [[ "${got}" != "${FORK_DIGEST[${component}]}" ]]; then
+		echo "${FORK_IMAGES}/${component}:${FORK_TAG} is ${got}, not ${FORK_DIGEST[${component}]}" >&2
+		exit 1
+	fi
+	file="${OUT}/${fork_files[${component}]}"
+	old="${pinned[${IMAGES}/${component}:v${VERSION}]}"
+	new="${FORK_IMAGES}/${component}:${FORK_TAG}@${FORK_DIGEST[${component}]}"
+	if [[ "$(grep -cF "image: ${old}" "${file}")" != 1 ]]; then
+		echo "${file} does not hold ${old} once" >&2
+		exit 1
+	fi
+	sed -i "s#image: ${old}#image: ${new}#" "${file}"
+	sed -i "2a\\${overlay_note}\n# The ${component} image is the fork build." "${file}"
+done
+
 echo "rendered $(find "${OUT}" -name '*.yaml' | wc -l) manifests and postgres-setup.sql into ${OUT}"
