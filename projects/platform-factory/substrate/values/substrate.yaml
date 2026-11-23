@@ -50,11 +50,17 @@ objectStorePlugin:
           key: AWS_SECRET_ACCESS_KEY
 
 atenetRouter:
-  # mTLS client identities allowed to reach actors: `kubectl ate proxy actor`
-  # and the kagent controller.
+  # mTLS client identities allowed to reach actors: `kubectl ate proxy actor`,
+  # the kagent controller and engine-gate. The router checks a client by its
+  # SPIFFE ID alone, and an allowed ID can reach any actor in any atespace.
+  # engine-gate (projects/platform-factory/substrate/egress-scan/gate) is the
+  # only holder of the ID: egress-scan, which parses untrusted bytes, gets none.
+  # Joe approved the entry (egress-scan/ARCHITECTURE.md, "Decided" 2) after the
+  # isolation gates of the fork README (the X gates, step 9).
   ingressAllowedSPIFFEIDs:
     - spiffe://cluster.local/ns/ate-system/sa/atenet-client
     - spiffe://cluster.local/ns/kagent/sa/kagent-controller
+    - spiffe://cluster.local/ns/ate-system/sa/engine-gate
 
 # Which Secrets each atespace may inject at the egress gateway. kagent runs each
 # Agent in the atespace named after its namespace and reads credentials from
