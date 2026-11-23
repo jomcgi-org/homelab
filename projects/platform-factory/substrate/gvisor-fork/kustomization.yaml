@@ -11,6 +11,7 @@ resources:
   - sandboxconfig-gvisor-fork.yaml
   - gvisor-assets-job.yaml
   - kvm-pool.yaml
+  - conformance-job.yaml
 
 configMapGenerator:
   # The fork build pins and the script that stages them (gvisor-assets-job.yaml).
@@ -19,3 +20,9 @@ configMapGenerator:
     files:
       - assets.json=assets/assets.json
       - stage.py=assets/stage.py
+  # The conformance Job's script and template (conformance-job.yaml).
+  - name: gvisor-fork-conformance
+    namespace: ate-system
+    files:
+      - conformance.py=conformance/conformance.py
+      - template.yaml=conformance/template.yaml

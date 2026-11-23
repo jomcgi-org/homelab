@@ -1,0 +1,51 @@
+# ActorTemplate (protojson ateapi.ActorTemplate) for the fork conformance Job:
+# the public Semgrep OSS engine (semgrep-core 1.186.0), run by a small server
+# that starts listening after the seed's checkpoint (the FORKSRV_NET shim of
+# the Round 5 tests). conformance.py creates it in its own atespace and deletes
+# it again.
+#
+# image: a digest-pinned build of that engine and shim, public code only (no
+# token, rule or proprietary file). The all-zero digest below is a
+# placeholder: no such image is published yet, and conformance.py refuses to
+# run until the enable step replaces it.
+#
+# `command` is the whole argv. The seed holds no secret and the template names
+# no env (an env named like a secret is refused, and the Job checks that).
+# The probe serves /healthz without consuming the child's one connection.
+metadata:
+  atespace: fork-conformance
+  name: engine
+workerSelector:
+  matchLabels:
+    workload: gvisor-fork
+containers:
+  - name: engine
+    image: ghcr.io/jomcgi-org/homelab/substrate-fork/semgrep-engine:1.186.0@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    command:
+      - /usr/local/bin/forksrv-net
+      - --listen
+      - 0.0.0.0:8080
+    wakeupProbe:
+      httpGet:
+        path: /healthz
+        port: 8080
+      timeoutSeconds: 45
+# The private limits of one forked actor. The kernel kills it above the limit
+# plus the 16 MiB fork overhead. A scanning child holds about 37 MB.
+resources:
+  limits:
+    cpuMillicores: 1000
+    memoryBytes: 134217728
+forkConfig:
+  mode: FORK_MODE_SEED_AND_FORK
+  # What the seed holds on the worker: the engine's ~150 MB template with
+  # headroom (seed 171 MB resident, 192 MB peak in the Round 5 runs).
+  seedResources:
+    limits:
+      cpuMillicores: 1000
+      memoryBytes: 268435456
+  singleUse: true
+  maxLifetimeSeconds: 120
+  pidsLimit: 256
+  logBytesLimit: 1048576
+  egress: FORK_EGRESS_NONE
