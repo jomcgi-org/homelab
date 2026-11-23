@@ -459,3 +459,265 @@ def test_kvm_pool_namespace_allows_only_the_router_and_the_gateway() -> None:
     ]
     for rule in (ingress, egress):
         assert rule["toPorts"] == [{"ports": [{"port": "8443", "protocol": "TCP"}]}]
+
+
+# The conformance Job and its script.
+
+_CONFORMANCE = _HERE / "conformance" / "conformance.py"
+_TEMPLATE = _HERE / "conformance" / "template.yaml"
+
+
+def _conformance_job() -> dict:
+    return _one(_docs(), "Job", "gvisor-fork-conformance-1")
+
+
+def test_conformance_job_is_suspended_and_runs_as_ate_client() -> None:
+    job = _conformance_job()
+    assert job["spec"]["suspend"] is True
+    assert job["spec"]["backoffLimit"] == 0
+    assert job["spec"]["activeDeadlineSeconds"] <= 3600
+    pod = job["spec"]["template"]["spec"]
+    assert pod["serviceAccountName"] == "ate-client"
+    assert pod["restartPolicy"] == "Never"
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    assert pod["securityContext"]["seccompProfile"] == {"type": "RuntimeDefault"}
+    # The only credential is the audience-bound token for the ate API.
+    (token,) = [v for v in pod["volumes"] if v["name"] == "ate-token"]
+    (source,) = token["projected"]["sources"]
+    assert source["serviceAccountToken"]["audience"] == "api.ate-system.svc"
+    (container,) = pod["containers"]
+    assert "@sha256:" in container["image"]
+    assert not [e for e in container["env"] if "valueFrom" in e]
+    context = container["securityContext"]
+    assert context["allowPrivilegeEscalation"] is False
+    assert context["readOnlyRootFilesystem"] is True
+    assert context["capabilities"] == {"drop": ["ALL"]}
+    assert {"memory", "ephemeral-storage"} <= set(container["resources"]["limits"])
+
+
+def test_conformance_job_takes_the_cli_from_the_fork_image_by_digest() -> None:
+    pod = _conformance_job()["spec"]["template"]["spec"]
+    (cli,) = [v for v in pod["volumes"] if v["name"] == "cli"]
+    reference = cli["image"]["reference"]
+    assert reference.startswith(_FORK_IMAGES + "kubectl-ate:")
+    assert "@sha256:" in reference
+    (container,) = pod["containers"]
+    (mount,) = [m for m in container["volumeMounts"] if m["name"] == "cli"]
+    assert mount["readOnly"] is True
+    assert pod["imagePullSecrets"] == [{"name": "ghcr-imagepull-secret"}]
+
+
+def test_conformance_job_reaches_only_the_ate_api_and_the_kube_api() -> None:
+    docs = _docs()
+    policy = _one(docs, "CiliumNetworkPolicy", "gvisor-fork-conformance")["spec"]
+    assert policy["endpointSelector"]["matchLabels"] == {
+        "app": "gvisor-fork-conformance"
+    }
+    assert "ingress" not in policy
+    kube, api = policy["egress"]
+    assert kube["toEntities"] == ["kube-apiserver"]
+    assert kube["toPorts"] == [{"ports": [{"port": "6443", "protocol": "TCP"}]}]
+    assert api["toEndpoints"] == [{"matchLabels": {"app": "ate-api-server"}}]
+    assert api["toPorts"] == [{"ports": [{"port": "443", "protocol": "TCP"}]}]
+    admit = _one(docs, "CiliumNetworkPolicy", "ate-api-server-gvisor-fork-conformance")
+    (rule,) = admit["spec"]["ingress"]
+    assert rule["fromEndpoints"] == [
+        {"matchLabels": {"app": "gvisor-fork-conformance"}}
+    ]
+    labels = _conformance_job()["spec"]["template"]["metadata"]["labels"]
+    assert labels == {"app": "gvisor-fork-conformance"}
+
+
+def test_conformance_job_grants_nothing_new() -> None:
+    kinds = {d["kind"] for d in _docs()}
+    assert not kinds & {"Role", "ClusterRole", "RoleBinding", "ClusterRoleBinding"}
+
+
+def test_conformance_job_mounts_its_generated_config() -> None:
+    docs = _docs()
+    pod = _conformance_job()["spec"]["template"]["spec"]
+    (volume,) = [v for v in pod["volumes"] if v["name"] == "config"]
+    config = _one(docs, "ConfigMap", volume["configMap"]["name"])
+    assert config["data"] == {
+        "conformance.py": _CONFORMANCE.read_text(),
+        "template.yaml": _TEMPLATE.read_text(),
+    }
+
+
+def test_conformance_template_is_a_fork_template_with_no_egress_and_no_env() -> None:
+    template = yaml.safe_load(_TEMPLATE.read_text())
+    fork = template["forkConfig"]
+    assert fork["mode"] == "FORK_MODE_SEED_AND_FORK"
+    assert fork["singleUse"] is True
+    assert fork["egress"] == "FORK_EGRESS_NONE"
+    assert 1 <= fork["maxLifetimeSeconds"] <= 3600
+    (container,) = template["containers"]
+    assert "env" not in container
+    assert "@sha256:" in container["image"]
+    assert container["wakeupProbe"]["httpGet"]["path"] == "/healthz"
+    assert template["workerSelector"] == {"matchLabels": {"workload": "gvisor-fork"}}
+    # The pool the template selects is the one kvm-pool.yaml defines.
+    assert _pool()["metadata"]["labels"] == {"workload": "gvisor-fork"}
+    # A forked actor's private limit fits the seed's.
+    private = template["resources"]["limits"]["memoryBytes"]
+    assert private < fork["seedResources"]["limits"]["memoryBytes"]
+
+
+# conformance.py against a fake kubectl-ate.
+
+_FAKE = """\
+import json, os, re, sys
+S = os.environ["FAKE_STATE"]
+st = json.load(open(S)) if os.path.exists(S) else {
+    "atespaces": [], "templates": {}, "actors": {}, "listed": {}, "calls": []}
+a = sys.argv[1:]
+while a and a[0] in ("--endpoint", "--token-file"):
+    a = a[2:]
+st["calls"].append(" ".join(a))
+def save(): json.dump(st, open(S, "w"))
+def flag(name):
+    return a[a.index(name) + 1] if name in a else None
+def fail(msg):
+    save(); print(msg, file=sys.stderr); sys.exit(1)
+def out(obj):
+    save(); print(json.dumps(obj)); sys.exit(0)
+env = os.environ.get
+verb = a[:2]
+if verb == ["get", "workers"]:
+    seeds = [{"template": n} for n in st["templates"]]
+    state = env("FAKE_WORKER_STATE", "WORKER_STATE_ACTIVE")
+    out({"workers": [
+        {"workerPool": "other", "status": {"state": "WORKER_STATE_ACTIVE"}},
+        {"workerPool": "gvisor-fork", "status": {"state": state, "seeds": seeds}}]})
+if verb == ["create", "atespace"]:
+    st["atespaces"].append(a[2]); out({})
+if verb == ["create", "actor-template"]:
+    text = open(a[3]).read()
+    bad = ("API_TOKEN" in text or "singleUse: false" in text
+           or "FORK_EGRESS_GATEWAY" in text)
+    if bad and not env("FAKE_ACCEPT_BAD"):
+        fail("rejected: invalid fork template")
+    name = re.search(r"(?m)^  name: (.*)$", text).group(1)
+    st["templates"][name] = text; out({})
+if verb == ["create", "actor"]:
+    ns, template = flag("-a"), flag("--template")
+    if "/" in template and template.split("/")[0] != ns and not env("FAKE_ALLOW_CROSS"):
+        fail("permission denied: template is in another atespace")
+    st["actors"][ns + "/" + a[2]] = {"name": a[2], "ns": ns, "state": "ACTOR_STATE_SUSPENDED"}
+    out({})
+if verb == ["resume", "actor"]:
+    actor = st["actors"][flag("-a") + "/" + a[2]]
+    if actor["state"] == "ACTOR_STATE_RUNNING":
+        fail("failed precondition: a forked actor runs once")
+    actor["state"] = "ACTOR_STATE_RUNNING"; out({})
+if verb == ["suspend", "actor"]:
+    if not env("FAKE_ALLOW_SUSPEND"):
+        fail("failed precondition: a forked actor cannot suspend")
+    out({})
+if verb == ["get", "actors"]:
+    ns = flag("-a")
+    rows = []
+    for key, actor in list(st["actors"].items()):
+        if actor["ns"] != ns:
+            continue
+        st["listed"][key] = st["listed"].get(key, 0) + 1
+        if st["listed"][key] > 4 and not env("FAKE_NO_EXPIRE"):
+            del st["actors"][key]  # the lifetime passed
+            continue
+        rows.append({"name": actor["name"], "state": actor["state"],
+                     "status": {"fork": {"role": "FORK_ROLE_FORK"}}})
+    if st["templates"] and ns == "fork-conformance":
+        rows.append({"name": "seed-engine", "state": "ACTOR_STATE_RUNNING",
+                     "status": {"fork": {"role": "FORK_ROLE_SEED"}}})
+    out({"actors": rows})
+if verb == ["delete", "actor"]:
+    st["actors"].pop(flag("-a") + "/" + a[2], None); out({})
+if verb == ["delete", "actor-template"]:
+    st["templates"].pop(a[2], None); out({})
+if verb == ["delete", "atespace"]:
+    out({})
+fail("fake: unknown " + " ".join(a))
+"""
+
+
+def _conformance(tmp_path: Path, template=None, **env):
+    fake = tmp_path / "kubectl-ate"
+    fake.write_text(f"#!{sys.executable}\n" + _FAKE)
+    fake.chmod(0o755)
+    text = _TEMPLATE.read_text() if template is None else template
+    path = tmp_path / "template.yaml"
+    path.write_text(text)
+    work = tmp_path / "work"
+    work.mkdir(exist_ok=True)
+    state = tmp_path / "state.json"
+    run = subprocess.run(
+        [sys.executable, "-I", str(_CONFORMANCE)],
+        env={
+            "ATE_BIN": str(fake),
+            "FAKE_STATE": str(state),
+            "TEMPLATE_FILE": str(path),
+            "WORK_DIR": str(work),
+            "POLL_SECONDS": "0.01",
+            "WORKER_WAIT_SECONDS": "0.5",
+            "SEED_WAIT_SECONDS": "0.5",
+            "STATE_WAIT_SECONDS": "1",
+            "LIFETIME_WAIT_SECONDS": "2",
+            "FORKS": "3",
+            **env,
+        },
+        capture_output=True,
+        text=True,
+    )
+    calls = json.loads(state.read_text())["calls"] if state.exists() else []
+    return run, calls
+
+
+def _engine_template() -> str:
+    return _TEMPLATE.read_text().replace("0" * 64, "1" * 64)
+
+
+def test_conformance_passes_all_eight_checks(tmp_path: Path) -> None:
+    run, calls = _conformance(tmp_path, _engine_template())
+    assert run.returncode == 0, run.stdout + run.stderr
+    for check in ("C1", "C3", "C4", "C5", "C6", "C7", "C8"):
+        assert f"check={check} result=pass" in run.stdout, check
+    assert run.stdout.count("check=C2 result=pass") == 3
+    assert "event=summary result=ok" in run.stdout
+    assert calls[-1] == "delete atespace fork-conformance-other"
+    assert "create actor fork-3 -a fork-conformance --template engine" in calls
+
+
+def test_conformance_refuses_the_placeholder_engine_image(tmp_path: Path) -> None:
+    run, calls = _conformance(tmp_path)
+    assert run.returncode == 1
+    assert "placeholder digest" in run.stdout
+    assert not [c for c in calls if c.startswith("create")]
+
+
+@pytest.mark.parametrize(
+    "env, message",
+    [
+        ({"FAKE_ACCEPT_BAD": "1"}, "C2: the API accepted a template with secret_env"),
+        ({"FAKE_ALLOW_CROSS": "1"}, "C5: an actor of another atespace"),
+        ({"FAKE_ALLOW_SUSPEND": "1"}, "C6: a forked actor was suspended"),
+        ({"FAKE_NO_EXPIRE": "1"}, "forks deleted by their lifetime: not ready"),
+        ({"FAKE_WORKER_STATE": "WORKER_STATE_UNAVAILABLE"}, "an ACTIVE gvisor-fork"),
+    ],
+)
+def test_conformance_fails_on_each_broken_guarantee(
+    tmp_path: Path, env: dict, message: str
+) -> None:
+    run, calls = _conformance(tmp_path, _engine_template(), **env)
+    assert run.returncode == 1
+    assert message in run.stdout
+    assert "event=summary result=fail" in run.stdout
+    # Cleanup runs on every path.
+    assert calls[-1] == "delete atespace fork-conformance-other"
+
+
+def test_conformance_refuses_a_template_it_cannot_edit(tmp_path: Path) -> None:
+    run, _ = _conformance(
+        tmp_path, _engine_template().replace("singleUse: true", "singleUse: yes")
+    )
+    assert run.returncode == 1
+    assert "has no 'singleUse: true' to edit" in run.stdout

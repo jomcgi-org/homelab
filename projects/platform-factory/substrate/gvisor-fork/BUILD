@@ -4,6 +4,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # The staging script runs in a container, not under Bazel; the test reads it
 # through the glob below.
 # gazelle:exclude assets
+# gazelle:exclude conformance
 
 py_test(
     name = "gvisor_fork_test",
@@ -11,6 +12,7 @@ py_test(
     data = glob([
         "*.yaml",
         "assets/*",
+        "conformance/*",
     ]) + [
         "@multitool//tools/kustomize",
     ],
