@@ -74,6 +74,17 @@ spec:
             capabilities:
               drop: ["ALL"]
           env:
+            {{- $pools := include "factory.autoscaledPools" . | fromJsonArray }}
+            {{- if $pools }}
+            {{- $entries := list }}
+            {{- range $p := $pools }}
+            {{- $entries = append $entries (printf "%s/%s=%d" $p.namespace $p.name (int $p.spare)) }}
+            {{- end }}
+            # The pools whose demand and capacity the reaper publishes, with
+            # their spare workers (agents.<name>.autoscaling).
+            - name: FACTORY_REAPER_POOLS
+              value: {{ join "," $entries | quote }}
+            {{- end }}
             - name: FACTORY_CONNECTOR_DATABASE_URL
               valueFrom:
                 secretKeyRef:

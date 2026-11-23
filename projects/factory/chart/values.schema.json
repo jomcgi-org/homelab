@@ -955,6 +955,11 @@
             "toolLease": {
               "type": "string",
               "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+            },
+            "workerWait": {
+              "description": "How long a send waits for its WorkerPool to have a free worker. Unset turns the wait off.",
+              "type": "string",
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
             }
           }
         },
@@ -1048,6 +1053,33 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 16
+          },
+          "autoscaling": {
+            "description": "Scale the pool's WorkerPool with an HPA on factory_worker_pool_workers_wanted. Off by default.",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "minReplicas": { "type": "integer", "minimum": 0, "maximum": 16 },
+              "maxReplicas": { "type": "integer", "minimum": 1, "maximum": 32 },
+              "spare": { "type": "integer", "minimum": 0, "maximum": 16 },
+              "scaleDown": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "stabilizationSeconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3600
+                  },
+                  "periodSeconds": {
+                    "type": "integer",
+                    "minimum": 15,
+                    "maximum": 3600
+                  }
+                }
+              }
+            }
           },
           "egress": {
             "type": "array",

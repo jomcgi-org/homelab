@@ -172,6 +172,34 @@ py_test(
 )
 
 py_test(
+    name = "autoscaling_test",
+    srcs = ["autoscaling_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.schema.json",
+        "values.yaml",
+        "//projects/factory/deploy:application.yaml",
+        "//projects/factory/deploy:deploy_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "charts/**",
+        "crds/**",
+        "files/**",
+        "templates/**",
+    ]),
+    env = {
+        "APPLICATION": "$(rootpath //projects/factory/deploy:application.yaml)",
+        "DEPLOY_VALUES": "$(rootpath //projects/factory/deploy:deploy_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
     name = "connector_test",
     srcs = ["connector_test.py"],
     data = [
