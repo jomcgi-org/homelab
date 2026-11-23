@@ -23,9 +23,11 @@ type stubAPI struct {
 func (s *stubAPI) Create(_ context.Context, name string) (actor, error) {
 	return actor{Name: name}, nil
 }
+
 func (s *stubAPI) Resume(_ context.Context, name string) (actor, error) {
 	return actor{Name: name, Running: true}, nil
 }
+
 func (s *stubAPI) Get(_ context.Context, name string) (actor, error) {
 	return actor{Name: name, Running: true}, nil
 }

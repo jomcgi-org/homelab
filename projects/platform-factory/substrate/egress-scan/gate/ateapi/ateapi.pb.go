@@ -19,12 +19,13 @@
 package ateapi
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -996,27 +997,29 @@ func file_ateapi_proto_rawDescGZIP() []byte {
 	return file_ateapi_proto_rawDescData
 }
 
-var file_ateapi_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_ateapi_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
-var file_ateapi_proto_goTypes = []any{
-	(ActorState)(0),               // 0: substrate.ateapi.v1.ActorState
-	(ForkRole)(0),                 // 1: substrate.ateapi.v1.ForkRole
-	(*ObjectRef)(nil),             // 2: substrate.ateapi.v1.ObjectRef
-	(*ResourceMetadata)(nil),      // 3: substrate.ateapi.v1.ResourceMetadata
-	(*ActorFork)(nil),             // 4: substrate.ateapi.v1.ActorFork
-	(*ActorStatus)(nil),           // 5: substrate.ateapi.v1.ActorStatus
-	(*Actor)(nil),                 // 6: substrate.ateapi.v1.Actor
-	(*GetActorRequest)(nil),       // 7: substrate.ateapi.v1.GetActorRequest
-	(*CreateActorRequest)(nil),    // 8: substrate.ateapi.v1.CreateActorRequest
-	(*ResumeActorRequest)(nil),    // 9: substrate.ateapi.v1.ResumeActorRequest
-	(*ResumeActorResponse)(nil),   // 10: substrate.ateapi.v1.ResumeActorResponse
-	(*DeleteOptions)(nil),         // 11: substrate.ateapi.v1.DeleteOptions
-	(*DeleteActorRequest)(nil),    // 12: substrate.ateapi.v1.DeleteActorRequest
-	(*ListOptions)(nil),           // 13: substrate.ateapi.v1.ListOptions
-	(*ListActorsRequest)(nil),     // 14: substrate.ateapi.v1.ListActorsRequest
-	(*ListActorsResponse)(nil),    // 15: substrate.ateapi.v1.ListActorsResponse
-	(*timestamppb.Timestamp)(nil), // 16: google.protobuf.Timestamp
-}
+var (
+	file_ateapi_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+	file_ateapi_proto_msgTypes  = make([]protoimpl.MessageInfo, 14)
+	file_ateapi_proto_goTypes   = []any{
+		(ActorState)(0),               // 0: substrate.ateapi.v1.ActorState
+		(ForkRole)(0),                 // 1: substrate.ateapi.v1.ForkRole
+		(*ObjectRef)(nil),             // 2: substrate.ateapi.v1.ObjectRef
+		(*ResourceMetadata)(nil),      // 3: substrate.ateapi.v1.ResourceMetadata
+		(*ActorFork)(nil),             // 4: substrate.ateapi.v1.ActorFork
+		(*ActorStatus)(nil),           // 5: substrate.ateapi.v1.ActorStatus
+		(*Actor)(nil),                 // 6: substrate.ateapi.v1.Actor
+		(*GetActorRequest)(nil),       // 7: substrate.ateapi.v1.GetActorRequest
+		(*CreateActorRequest)(nil),    // 8: substrate.ateapi.v1.CreateActorRequest
+		(*ResumeActorRequest)(nil),    // 9: substrate.ateapi.v1.ResumeActorRequest
+		(*ResumeActorResponse)(nil),   // 10: substrate.ateapi.v1.ResumeActorResponse
+		(*DeleteOptions)(nil),         // 11: substrate.ateapi.v1.DeleteOptions
+		(*DeleteActorRequest)(nil),    // 12: substrate.ateapi.v1.DeleteActorRequest
+		(*ListOptions)(nil),           // 13: substrate.ateapi.v1.ListOptions
+		(*ListActorsRequest)(nil),     // 14: substrate.ateapi.v1.ListActorsRequest
+		(*ListActorsResponse)(nil),    // 15: substrate.ateapi.v1.ListActorsResponse
+		(*timestamppb.Timestamp)(nil), // 16: google.protobuf.Timestamp
+	}
+)
 var file_ateapi_proto_depIdxs = []int32{
 	16, // 0: substrate.ateapi.v1.ResourceMetadata.create_time:type_name -> google.protobuf.Timestamp
 	16, // 1: substrate.ateapi.v1.ResourceMetadata.update_time:type_name -> google.protobuf.Timestamp

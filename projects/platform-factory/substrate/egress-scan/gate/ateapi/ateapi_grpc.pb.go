@@ -20,6 +20,7 @@ package ateapi
 
 import (
 	context "context"
+
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -129,15 +130,19 @@ type UnimplementedControlServer struct{}
 func (UnimplementedControlServer) GetActor(context.Context, *GetActorRequest) (*Actor, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetActor not implemented")
 }
+
 func (UnimplementedControlServer) CreateActor(context.Context, *CreateActorRequest) (*Actor, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateActor not implemented")
 }
+
 func (UnimplementedControlServer) ResumeActor(context.Context, *ResumeActorRequest) (*ResumeActorResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ResumeActor not implemented")
 }
+
 func (UnimplementedControlServer) DeleteActor(context.Context, *DeleteActorRequest) (*Actor, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteActor not implemented")
 }
+
 func (UnimplementedControlServer) ListActors(context.Context, *ListActorsRequest) (*ListActorsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListActors not implemented")
 }
