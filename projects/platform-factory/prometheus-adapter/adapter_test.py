@@ -34,7 +34,10 @@ def test_the_chart_is_pinned_and_reads_prometheus_in_its_namespace():
     source = APPLICATION["spec"]["sources"][0]
     assert source["chart"] == "prometheus-adapter"
     assert source["targetRevision"] == "5.4.2"
-    assert VALUES["prometheus"] == {"url": "http://prometheus.prometheus.svc", "port": 9090}
+    assert VALUES["prometheus"] == {
+        "url": "http://prometheus.prometheus.svc",
+        "port": 9090,
+    }
 
 
 def test_network_policy_admits_only_the_api_server_in_and_prometheus_out():
@@ -67,18 +70,15 @@ def _expect(series, want):
     """promtool prints the sample it got on a mismatch; assert on exp_samples."""
     matchers = ",".join(f'{k}="{v}"' for k, v in POOL.items())
     expr = RULE["metricsQuery"].replace("<<.LabelMatchers>>", matchers)
-    exp = (
-        []
-        if want is None
-        else [{"labels": "{" + _series() + "}", "value": want}]
-    )
+    exp = [] if want is None else [{"labels": "{" + _series() + "}", "value": want}]
     test = {
         "evaluation_interval": "1m",
         "tests": [
             {
                 "interval": "1m",
                 "input_series": [
-                    {"series": name, "values": values} for name, values in series.items()
+                    {"series": name, "values": values}
+                    for name, values in series.items()
                 ],
                 "promql_expr_test": [
                     {"expr": expr, "eval_time": "2m", "exp_samples": exp}
@@ -131,7 +131,15 @@ OTHER = 'factory_worker_pool_demand{pool_namespace="factory-r-homelab-review",po
         # No spare series (the reaper stopped): no value, so the HPA holds.
         ({demand("actors"): "3 3 3", demand("pending"): "0 0 0"}, None),
     ],
-    ids=["idle", "wake", "live-actors", "sources-add", "other-pool", "pending-only", "no-spare"],
+    ids=[
+        "idle",
+        "wake",
+        "live-actors",
+        "sources-add",
+        "other-pool",
+        "pending-only",
+        "no-spare",
+    ],
 )
 def test_query_adds_demand_and_spare_while_the_pool_has_demand(series, want):
     _expect(series, want)
