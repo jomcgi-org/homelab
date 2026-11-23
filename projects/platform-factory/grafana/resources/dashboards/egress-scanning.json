@@ -1,7 +1,7 @@
 {
   "uid": "egress-scanning",
   "title": "Egress secret scanning",
-  "description": "Credential checks that reach the private egress scanner. Check duration covers the authorization handler. The gateway allows 80 ms for the full RPC, or the engine deadline plus 10 ms when the second scan tier is on.",
+  "description": "Credential checks that reach the private egress scanner. Check duration covers the authorization handler. The gateway allows 80 ms for the full RPC, or the engine deadline plus 10 ms when the second scan tier is on in enforce mode. In observe mode the engine is off the request path and the gateway keeps 80 ms.",
   "tags": ["factory", "security"],
   "timezone": "browser",
   "editable": false,
@@ -507,6 +507,307 @@
         }
       },
       "description": "The full handler time, which includes the wait for the engine."
+    },
+    {
+      "id": 14,
+      "type": "row",
+      "title": "Observe mode (semgrep.mode = observe)",
+      "gridPos": {
+        "x": 0,
+        "y": 37,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 15,
+      "type": "text",
+      "title": "How to read the observe panels",
+      "gridPos": {
+        "x": 0,
+        "y": 38,
+        "w": 24,
+        "h": 4
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "In observe mode the engine runs in the background and **never changes a reply**: Gitleaks decides alone, and the engine adds no latency. These panels show what enforce mode would have changed. Watch them for 7 days before the switch to enforce.\n\n- **would_deny** is a finding of the engine on a request that Gitleaks allowed. Triage each rule id in the pod log (`semgrep tier observed a finding`) as a true positive or a false positive.\n- **would_fail** is an engine failure (timeout, error, shed, breaker open, oversize). In enforce mode with failure mode deny, each one is a 503.\n- Compare the engine p95 with the deadline. See the README of the egress scanner for the exit criteria. No data in these panels means that the tier is off or in enforce mode."
+      }
+    },
+    {
+      "id": 16,
+      "type": "stat",
+      "title": "Would-deny in range",
+      "gridPos": {
+        "x": 0,
+        "y": 42,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(factory_egress_scan_semgrep_observe_total{job=\"egress-scan\",result=\"would_deny\"}[$__range]))",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value"
+      },
+      "description": "Requests that the engine would have denied and Gitleaks allowed."
+    },
+    {
+      "id": 17,
+      "type": "stat",
+      "title": "Would-fail in range",
+      "gridPos": {
+        "x": 6,
+        "y": 42,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(factory_egress_scan_semgrep_observe_total{job=\"egress-scan\",result=\"would_fail\"}[$__range]))",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value"
+      },
+      "description": "Requests where the engine gave no verdict. Enforce mode with failure mode deny would answer 503."
+    },
+    {
+      "id": 18,
+      "type": "stat",
+      "title": "Observed requests in range",
+      "gridPos": {
+        "x": 12,
+        "y": 42,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(factory_egress_scan_semgrep_observe_total{job=\"egress-scan\"}[$__range]))",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value"
+      },
+      "description": "Requests that Gitleaks decided and the engine call ended for. The denominator of the two rates."
+    },
+    {
+      "id": 19,
+      "type": "stat",
+      "title": "Observe mode active",
+      "gridPos": {
+        "x": 18,
+        "y": 42,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(factory_egress_scan_semgrep_observe_mode{job=\"egress-scan\"}) or vector(0)",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value"
+      },
+      "description": "1 when a scanner pod runs the tier in observe mode. 0 when the tier is off or in enforce mode."
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Would-deny and would-fail rate",
+      "gridPos": {
+        "x": 0,
+        "y": 46,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (result) (rate(factory_egress_scan_semgrep_observe_total{job=\"egress-scan\",result=~\"would_deny|would_fail\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "Enforce mode would change these requests. The target before the switch: would_deny explained by true positives, would_fail near zero."
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Engine failures by outcome",
+      "gridPos": {
+        "x": 12,
+        "y": 46,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (outcome) (rate(factory_egress_scan_semgrep_requests_total{job=\"egress-scan\",outcome=~\"timeout|error|shed|breaker_open|oversize\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "Which failure the engine tier had. In observe mode each is only counted and logged."
+    },
+    {
+      "id": 22,
+      "type": "heatmap",
+      "title": "Engine latency distribution",
+      "gridPos": {
+        "x": 0,
+        "y": 54,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (le) (increase(factory_egress_scan_semgrep_duration_seconds_bucket{job=\"egress-scan\",outcome=~\"found|clean\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{le}}",
+          "format": "heatmap"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "calculate": false,
+        "cellGap": 1,
+        "color": {
+          "mode": "scheme",
+          "scheme": "Oranges",
+          "fill": "dark-orange",
+          "scale": "exponential",
+          "exponent": 0.5,
+          "steps": 64
+        },
+        "yAxis": {
+          "unit": "s",
+          "axisPlacement": "left"
+        },
+        "legend": {
+          "show": true
+        }
+      },
+      "description": "Engine calls that returned a verdict, by time. Compare the upper band with the deadline in the engine latency panel above: a call near the deadline is a would_fail in waiting."
     }
   ]
 }

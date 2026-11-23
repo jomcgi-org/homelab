@@ -6,6 +6,7 @@ go_library(
     srcs = [
         "main.go",
         "metrics.go",
+        "observe.go",
         "rules.go",
         "scan.go",
         "semgrep.go",
@@ -44,6 +45,7 @@ go_image(
 go_test(
     name = "egress-scan_test",
     srcs = [
+        "observe_test.go",
         "scan_test.go",
         "semgrep_test.go",
     ],

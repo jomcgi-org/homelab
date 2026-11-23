@@ -840,9 +840,12 @@ def test_workerpool_crd_has_the_fork_platform_field() -> None:
     assert "platform" not in item["required"]
 
 
-# The second scan tier waits for the engine up to semgrep.deadline. The gateway
-# gives the whole check requestTimeout. If the gateway timeout is shorter, the
-# gateway cancels the check first and the tier deadline never applies.
+# In enforce mode the second scan tier waits for the engine up to
+# semgrep.deadline. The gateway gives the whole check requestTimeout. If the
+# gateway timeout is shorter, the gateway cancels the check first and the tier
+# deadline never applies. In observe mode the engine is off the request path:
+# the reply comes from Gitleaks alone, so the timeout stays at the Gitleaks
+# value or above and does not depend on the deadline.
 _GATEWAY_MARGIN_MS = 10
 _GATEWAY_TIMEOUT_TIER_OFF_MS = 80
 
@@ -854,8 +857,9 @@ def _ms(duration: str) -> int:
 
 
 def _check_gateway_covers_tier(
-    enabled: bool, deadline: str, gateway_timeout: str
+    enabled: bool, deadline: str, gateway_timeout: str, mode: str = "enforce"
 ) -> None:
+    assert mode in ("enforce", "observe"), f"unknown semgrep.mode {mode!r}"
     timeout_ms = _ms(gateway_timeout)
     if not enabled:
         # The tier is staged off, so the gateway timeout must not change.
@@ -864,10 +868,18 @@ def _check_gateway_covers_tier(
             f" it must stay {_GATEWAY_TIMEOUT_TIER_OFF_MS}ms until the tier is on"
         )
         return
+    if mode == "observe":
+        # The engine is off the request path. Gitleaks alone needs its 80ms.
+        assert timeout_ms >= _GATEWAY_TIMEOUT_TIER_OFF_MS, (
+            f"requestTimeout {gateway_timeout} is below the Gitleaks value"
+            f" {_GATEWAY_TIMEOUT_TIER_OFF_MS}ms"
+        )
+        return
     needed = _ms(deadline) + _GATEWAY_MARGIN_MS
     assert timeout_ms >= needed, (
         f"requestTimeout {gateway_timeout} is below semgrep.deadline {deadline}"
-        f" + {_GATEWAY_MARGIN_MS}ms; the gateway would cancel the check first"
+        f" + {_GATEWAY_MARGIN_MS}ms in enforce mode; the gateway would cancel"
+        " the check first"
     )
 
 
@@ -895,6 +907,7 @@ def test_gateway_timeout_is_coupled_to_the_semgrep_deadline() -> None:
         bool(semgrep["enabled"]),
         semgrep["deadline"],
         check["policies"]["http"]["requestTimeout"],
+        semgrep["mode"],
     )
 
 
@@ -902,6 +915,7 @@ def test_the_coupling_check_fails_when_the_gateway_is_too_short() -> None:
     _check_gateway_covers_tier(False, "300ms", "80ms")
     _check_gateway_covers_tier(True, "300ms", "310ms")
     _check_gateway_covers_tier(True, "75ms", "1s")
+    _check_gateway_covers_tier(True, "300ms", "310ms", "enforce")
     for enabled, deadline, timeout in (
         (True, "300ms", "80ms"),
         (True, "300ms", "309ms"),
@@ -913,3 +927,29 @@ def test_the_coupling_check_fails_when_the_gateway_is_too_short() -> None:
         except AssertionError:
             continue
         raise AssertionError(f"accepted {enabled} {deadline} {timeout}")
+
+
+def test_observe_mode_needs_only_the_gitleaks_timeout() -> None:
+    # The engine is off the request path, so a long deadline needs no longer
+    # gateway timeout.
+    _check_gateway_covers_tier(True, "300ms", "80ms", "observe")
+    _check_gateway_covers_tier(True, "10s", "80ms", "observe")
+    _check_gateway_covers_tier(True, "300ms", "310ms", "observe")
+    # The same values fail in enforce mode.
+    for deadline, timeout in (("300ms", "80ms"), ("10s", "80ms"), ("300ms", "309ms")):
+        try:
+            _check_gateway_covers_tier(True, deadline, timeout, "enforce")
+        except AssertionError:
+            continue
+        raise AssertionError(f"enforce accepted {deadline} {timeout}")
+    # Gitleaks needs its 80ms in both modes, and the tier off keeps it exact.
+    for enabled, mode, timeout in (
+        (True, "observe", "79ms"),
+        (False, "observe", "310ms"),
+        (True, "audit", "80ms"),
+    ):
+        try:
+            _check_gateway_covers_tier(enabled, "300ms", timeout, mode)
+        except AssertionError:
+            continue
+        raise AssertionError(f"accepted {enabled} {mode} {timeout}")

@@ -36,11 +36,15 @@ spec:
 {{- if not (has .failureMode (list "deny" "allow")) }}
 {{- fail "semgrep.failureMode must be deny or allow" }}
 {{- end }}
+{{- if not (has .mode (list "enforce" "observe")) }}
+{{- fail "semgrep.mode must be enforce or observe" }}
+{{- end }}
           args:
             - --semgrep-enabled
             - {{ printf "--semgrep-endpoint=%s" (required "semgrep.endpoint is required when semgrep.enabled" .endpoint) | quote }}
             - {{ printf "--semgrep-deadline=%s" .deadline | quote }}
             - {{ printf "--semgrep-failure-mode=%s" .failureMode | quote }}
+            - {{ printf "--semgrep-mode=%s" .mode | quote }}
             - {{ printf "--semgrep-max-body=%d" (int .maxBodyBytes) | quote }}
             - {{ printf "--semgrep-concurrency=%d" (int .concurrency) | quote }}
             - {{ printf "--semgrep-max-response=%d" (int .maxResponseBytes) | quote }}

@@ -6,14 +6,21 @@ image:
 # Off by default. With the tier off, the render and the scanner behave as
 # before. When enabled, the gateway requestTimeout in
 # projects/platform-factory/substrate/resources/egress-scan/gateway-policy.yaml
-# must be at least deadline + 10ms (a test enforces this). See the README.
+# must be at least deadline + 10ms in enforce mode (a test enforces this). See
+# the README.
 semgrep:
   enabled: false
   # URL of the engine (cluster address). The scanner adds no TLS or credentials.
   endpoint: ""
   # Engine deadline per request. Gitleaks keeps its own 75ms.
   deadline: 300ms
-  # What happens when the engine gives no verdict: deny or allow.
+  # enforce: the engine verdict can deny a request. observe: the engine runs in
+  # the background, never changes a reply and is only counted and logged. In
+  # observe mode the engine is off the request path, so the gateway
+  # requestTimeout can stay at 80ms.
+  mode: enforce
+  # What happens when the engine gives no verdict in enforce mode: deny or
+  # allow. Observe mode ignores it.
   failureMode: deny
   # Largest request body in bytes sent to the engine (512 KiB at most).
   maxBodyBytes: 524288

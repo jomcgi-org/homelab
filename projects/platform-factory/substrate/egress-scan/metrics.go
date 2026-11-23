@@ -27,9 +27,12 @@ func newMeteredScanner(scanner *scanner, registry prometheus.Registerer) *metere
 	buckets := []float64{.001, .0025, .005, .01, .025, .05, .075, .08, .1, .25}
 	outcomes := []string{"allowed", "credential_blocked", "invalid_request", "capacity_limited", "work_limit", "cancelled", "error"}
 	if scanner.semgrep != nil {
-		// The tier can hold a check for its full deadline.
-		buckets = append(buckets, .3, .4, .5, 1)
-		outcomes = append(outcomes, engineUnavailableOutcome)
+		if !scanner.semgrep.observing() {
+			// The tier can hold a check for its full deadline. In observe mode
+			// the engine is off the request path and the check does not change.
+			buckets = append(buckets, .3, .4, .5, 1)
+			outcomes = append(outcomes, engineUnavailableOutcome)
+		}
 		scanner.semgrep.metrics.register(registry)
 	}
 	checks := prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -97,6 +100,11 @@ type tierMetrics struct {
 	agreement   *prometheus.CounterVec
 	breakerOpen prometheus.GaugeFunc
 	deadline    prometheus.Gauge
+
+	// The observe series exist only in observe mode.
+	observedTotal *prometheus.CounterVec
+	observeMode   prometheus.Gauge
+	observing     bool
 }
 
 func newTierMetrics(t *semgrepTier) *tierMetrics {
@@ -137,6 +145,21 @@ func newTierMetrics(t *semgrepTier) *tierMetrics {
 		}),
 	}
 	m.deadline.Set(t.cfg.Deadline.Seconds())
+	if t.observing() {
+		m.observing = true
+		m.observedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_egress_scan_semgrep_observe_total",
+			Help: "Observe mode: requests that Gitleaks decided, by what enforce mode would have changed. would_deny: the engine found a credential that Gitleaks did not. would_fail: the engine gave no verdict and the failure mode would apply. no_change: nothing.",
+		}, []string{"result"})
+		m.observeMode = prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "factory_egress_scan_semgrep_observe_mode",
+			Help: "1 while the tier runs in observe mode. The engine never changes a reply.",
+		})
+		m.observeMode.Set(1)
+		for _, result := range observeResults {
+			m.observedTotal.WithLabelValues(result)
+		}
+	}
 	for _, outcome := range engineOutcomes {
 		m.requests.WithLabelValues(outcome)
 		m.duration.WithLabelValues(outcome)
@@ -153,7 +176,29 @@ func newTierMetrics(t *semgrepTier) *tierMetrics {
 }
 
 func (m *tierMetrics) register(registry prometheus.Registerer) {
+	if m.observing {
+		// No failure mode applies in observe mode, so its series would only
+		// show zeros.
+		registry.MustRegister(m.requests, m.duration, m.inflight, m.agreement, m.breakerOpen, m.deadline, m.observedTotal, m.observeMode)
+		return
+	}
 	registry.MustRegister(m.requests, m.duration, m.inflight, m.failureMode, m.agreement, m.breakerOpen, m.deadline)
+}
+
+// record counts one observed request after both sides are known. It counts
+// the agreement of the tiers and what enforce mode would have changed.
+func (m *tierMetrics) record(gitleaksFound bool, res engineResult) {
+	m.agree(gitleaksFound, res)
+	result := observeNoChange
+	switch {
+	case gitleaksFound:
+		// Gitleaks denied, so the engine changes nothing.
+	case res.outcome == engineFound:
+		result = observeWouldDeny
+	case res.failed():
+		result = observeWouldFail
+	}
+	m.observedTotal.WithLabelValues(result).Inc()
 }
 
 func (m *tierMetrics) observe(outcome string, elapsed time.Duration) {
