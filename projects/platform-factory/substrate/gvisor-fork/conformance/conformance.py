@@ -54,7 +54,13 @@ STATE_WAIT = float(os.environ.get("STATE_WAIT_SECONDS", "120"))
 LIFETIME_WAIT = float(os.environ.get("LIFETIME_WAIT_SECONDS", "300"))
 POLL = float(os.environ.get("POLL_SECONDS", "3"))
 CALL_TIMEOUT = float(os.environ.get("CALL_TIMEOUT_SECONDS", "300"))
-PLACEHOLDER = "@sha256:" + "0" * 64
+IMAGE_DIGEST = re.compile(r"@sha256:([0-9a-f]{64})\b")
+# A refusal must come from the API's validation, not from a broken call.
+INFRASTRUCTURE = re.compile(
+    r"unavailable|unauthenticated|deadline|connection|connect:|no route|"
+    r"timed? ?out|unknown command|unknown flag|no such file",
+    re.IGNORECASE,
+)
 
 
 def log(**fields: object) -> None:
@@ -126,26 +132,63 @@ def worker_states() -> list[str]:
     return [str(first(w, "state")) for w in pool_workers()]
 
 
-def seeded() -> bool:
-    """A ready seed of the template is listed on a worker of the pool."""
+def template_uid() -> str:
+    data = get_json("get", "actor-template", TEMPLATE, "-a", ATESPACE)
+    uid = first(first(data, "metadata") or {}, "uid")
+    if not uid:
+        raise Failed(f"actor-template {TEMPLATE}: no metadata.uid")
+    return str(uid)
+
+
+def seeded(uid: str) -> bool:
+    """A ready seed of this template, in this atespace, is listed on a worker.
+
+    WorkerSeed is {seedActor: {atespace, name}, seedActorUid, templateUid,
+    workerEpoch}; a template's UID names its generation.
+    """
     for worker in pool_workers():
-        seeds = first(worker, "seeds")
-        if seeds and TEMPLATE in json.dumps(seeds):
-            return True
+        for seed in first(worker, "seeds") or []:
+            actor = seed.get("seedActor") or {}
+            if actor.get("atespace") == ATESPACE and seed.get("templateUid") == uid:
+                return True
     return False
 
 
 def actors(atespace: str) -> list[dict]:
+    """Actor JSON: {metadata: {name}, actorTemplate, status: {state, fork: {role}}}."""
     data = get_json("get", "actors", "-a", atespace)
-    return [a for a in walk(data) if isinstance(a.get("state"), str)]
+    return [
+        a
+        for a in walk(data)
+        if isinstance(a.get("metadata"), dict)
+        and isinstance(a.get("status"), dict)
+        and isinstance(a["status"].get("state"), str)
+    ]
+
+
+def name_of(item: dict) -> str:
+    return str(item["metadata"]["name"])
+
+
+def state_of(actor: dict) -> str:
+    return actor["status"]["state"]
 
 
 def role(actor: dict) -> str:
-    return str(first(actor, "role") or "")
+    return str((actor["status"].get("fork") or {}).get("role") or "")
 
 
 def forks() -> list[dict]:
     return [a for a in actors(ATESPACE) if role(a) == "FORK_ROLE_FORK"]
+
+
+def templates(atespace: str) -> list[dict]:
+    data = get_json("get", "actor-template", "-a", atespace)
+    return [
+        t
+        for t in walk(data)
+        if isinstance(t.get("metadata"), dict) and "containers" in t
+    ]
 
 
 def wait_for(what: str, limit: float, ready, detail=None) -> float:
@@ -196,38 +239,57 @@ def variants(text: str) -> dict[str, str]:
     return out
 
 
-def create_template(path: Path) -> subprocess.CompletedProcess:
-    return ate("create", "actor-template", "-f", str(path))
+def refused(check: str, done: subprocess.CompletedProcess, what: str) -> str:
+    """Fail unless the API refused the call for a reason, and return the reason."""
+    if done.returncode == 0:
+        raise Failed(f"{check}: the API accepted {what}")
+    reason = " ".join((done.stderr or done.stdout).split())[:300]
+    if not reason or INFRASTRUCTURE.search(reason):
+        raise Failed(f"{check}: {what} failed, but not as a refusal: {reason!r}")
+    return reason
+
+
+def seed_gone(atespace: str) -> bool:
+    return not [a for a in actors(atespace) if role(a) == "FORK_ROLE_SEED"]
 
 
 def cleanup() -> None:
+    """Delete what a run leaves, in the order the API allows.
+
+    Fork actors first, then the templates (deleting a template deletes its
+    seed), then the wait for the seed to go, then the atespace, which the API
+    refuses while it holds an actor or a template.
+    """
     for atespace in (ATESPACE, OTHER_ATESPACE):
-        for actor in _safe_actors(atespace):
-            name = first(actor, "name")
-            if name:
-                ate("delete", "actor", str(name), "-a", atespace)
+        listed = ate("get", "actors", "-a", atespace, "-o", "json")
+        if listed.returncode != 0:
+            log(
+                event="cleanup",
+                atespace=atespace,
+                code=listed.returncode,
+                note="absent",
+            )
+            continue
+        for actor in actors(atespace):
+            if role(actor) != "FORK_ROLE_SEED":
+                ate("delete", "actor", name_of(actor), "-a", atespace)
+        for template in templates(atespace):
+            ate("delete", "actor-template", name_of(template), "-a", atespace)
+        try:
+            wait_for("the seed removed", STATE_WAIT, lambda a=atespace: seed_gone(a))
+        except Failed as err:
+            log(event="cleanup_wait", message=repr(str(err)))
         done = ate("delete", "atespace", atespace)
         log(event="cleanup", atespace=atespace, code=done.returncode)
 
 
-def _safe_actors(atespace: str) -> list[dict]:
-    done = ate("get", "actors", "-a", atespace, "-o", "json")
-    if done.returncode != 0:
-        return []
-    try:
-        return [
-            a
-            for a in walk(json.loads(done.stdout))
-            if "name" in a and isinstance(a.get("state"), str)
-        ]
-    except ValueError:
-        return []
+def engine_image_is_pinned(text: str) -> bool:
+    """The template names its engine image by a real digest, not all zeros."""
+    found = IMAGE_DIGEST.findall(text)
+    return bool(found) and all(set(digest) != {"0"} for digest in found)
 
 
-def run(workdir: Path) -> None:
-    text = TEMPLATE_FILE.read_text()
-    if PLACEHOLDER in text:
-        raise Failed("the template's engine image is still the placeholder digest")
+def run(workdir: Path, text: str) -> None:
     cleanup()
     waited = wait_for(
         f"an ACTIVE {POOL} worker",
@@ -240,12 +302,13 @@ def run(workdir: Path) -> None:
     ate_ok("create", "atespace", ATESPACE)
     ate_ok("create", "atespace", OTHER_ATESPACE)
     ate_ok("create", "actor-template", "-f", str(TEMPLATE_FILE))
-    passed("C1", template=TEMPLATE)
+    uid = template_uid()
+    passed("C1", template=TEMPLATE, uid=uid)
 
     for name, body in variants(text).items():
         path = workdir / f"{name}.yaml"
         path.write_text(body)
-        done = create_template(path)
+        done = ate("create", "actor-template", "-f", str(path))
         if done.returncode == 0:
             ate(
                 "delete",
@@ -254,10 +317,13 @@ def run(workdir: Path) -> None:
                 "-a",
                 ATESPACE,
             )
-            raise Failed(f"C2: the API accepted a template with {name}")
-        passed("C2", refused=name)
+        passed(
+            "C2",
+            refused=name,
+            reason=repr(refused("C2", done, f"a template with {name}")),
+        )
 
-    seconds = wait_for("a ready seed", SEED_WAIT, seeded)
+    seconds = wait_for("a ready seed", SEED_WAIT, lambda: seeded(uid))
     passed("C3", seed_ready_seconds=f"{seconds:.2f}")
 
     start = time.monotonic()
@@ -268,8 +334,8 @@ def run(workdir: Path) -> None:
     wait_for(
         f"{FORKS} RUNNING forks",
         STATE_WAIT,
-        lambda: sum(a.get("state") == "ACTOR_STATE_RUNNING" for a in forks()) >= FORKS,
-        lambda: [a.get("state") for a in forks()],
+        lambda: sum(state_of(a) == "ACTOR_STATE_RUNNING" for a in forks()) >= FORKS,
+        lambda: [state_of(a) for a in forks()],
     )
     passed("C4", forks=FORKS, seconds=f"{time.monotonic() - start:.2f}")
 
@@ -282,42 +348,61 @@ def run(workdir: Path) -> None:
         "--template",
         f"{ATESPACE}/{TEMPLATE}",
     )
-    if done.returncode == 0:
-        raise Failed("C5: an actor of another atespace used the template")
-    passed("C5", refused="cross-atespace create")
+    reason = refused("C5", done, "an actor of another atespace using the template")
+    passed("C5", refused="cross-atespace create", reason=repr(reason))
 
-    if ate("suspend", "actor", names[0], "-a", ATESPACE).returncode == 0:
-        raise Failed("C6: a forked actor was suspended")
-    if ate("resume", "actor", names[0], "-a", ATESPACE).returncode == 0:
-        raise Failed("C6: a forked actor was resumed twice")
-    passed("C6", refused="suspend and second resume")
+    first_fork = names[0]
+    reason = refused(
+        "C6",
+        ate("suspend", "actor", first_fork, "-a", ATESPACE),
+        "a suspend of a forked actor",
+    )
+    passed("C6", refused="suspend", reason=repr(reason))
+    reason = refused(
+        "C6",
+        ate("resume", "actor", first_fork, "-a", ATESPACE),
+        "a second resume of a forked actor",
+    )
+    passed("C6", refused="second resume", reason=repr(reason))
 
     seconds = wait_for(
         "forks deleted by their lifetime",
         LIFETIME_WAIT,
         lambda: not forks(),
-        lambda: [a.get("state") for a in forks()],
+        lambda: [state_of(a) for a in forks()],
     )
     passed("C7", seconds=f"{seconds:.2f}")
 
     ate_ok("delete", "actor-template", TEMPLATE, "-a", ATESPACE)
-    wait_for("the seed removed", STATE_WAIT, lambda: not seeded())
+    wait_for("the seed removed", STATE_WAIT, lambda: not seeded(uid))
     wait_for(
         "no actor left",
         STATE_WAIT,
         lambda: not actors(ATESPACE),
-        lambda: [a.get("state") for a in actors(ATESPACE)],
+        lambda: [state_of(a) for a in actors(ATESPACE)],
     )
     passed("C8", left=0)
 
 
 def main() -> int:
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     log(event="start", endpoint=ENDPOINT, atespace=ATESPACE, pool=POOL, forks=FORKS)
+    # Before any API contact: a template that names no real engine image makes
+    # no call, and leaves nothing to clean up.
+    text = TEMPLATE_FILE.read_text()
+    if not engine_image_is_pinned(text):
+        log(
+            event="error",
+            message=repr(
+                "the template's image has no real sha256 digest (placeholder?)"
+            ),
+        )
+        log(event="summary", result="fail")
+        return 1
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     status = "fail"
     work = Path(os.environ.get("WORK_DIR", "/work"))
     try:
-        run(work)
+        run(work, text)
         status = "ok"
     except Failed as err:
         log(event="error", message=repr(str(err)))

@@ -5,9 +5,13 @@
 # grep '^CONFORMANCE '.
 #
 # Off twice: this directory is not wired, and the Job is created suspended.
-# To run it, set suspend to false (in the same change that wires the directory
-# or in a later one). A Job's pod template is immutable: to run again, change
-# the run suffix in the name. To remove the test, delete this file and its
+# ../resources/resources_test.py is the wiring guard. In Argo a suspended Job
+# has health Suspended, and the Application then reports Suspended instead of
+# Healthy until the Job runs or goes. Wire it, set suspend to false and read
+# the log in one sequence. The enable steps are in
+# projects/factory-cluster/README.md, "gVisor sandbox fork (staged, off)".
+# A Job's pod template is immutable: to run again, change the run suffix in
+# the name. To remove the test, delete this file and its
 # kustomization entries after reading the log; ArgoCD then prunes the Job.
 #
 # It runs as ate-system/ate-client, which the ate API already authorizes
@@ -15,7 +19,8 @@
 # grants nobody anything. It reaches the ate API (443) and the Kubernetes API
 # (kubectl-ate lists the ClusterTrustBundles that verify the API's
 # certificate). It needs no rustfs: kubectl-ate comes from the fork build as an
-# image volume (the kubectl-ate image of .github/workflows/substrate-fork-images.yml).
+# image volume. The image is built by .github/workflows/substrate-fork-images.yml
+# (PR #8584, not in git until it merges).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -36,6 +41,9 @@ spec:
     spec:
       serviceAccountName: ate-client
       restartPolicy: Never
+      # SIGTERM (the deadline, a delete) runs the script's cleanup: the forks,
+      # the templates, the seed wait (up to 120 s) and the atespaces.
+      terminationGracePeriodSeconds: 300
       # The in-cluster Kubernetes config kubectl-ate needs for the
       # ClusterTrustBundles. The ate API takes the audience token below.
       automountServiceAccountToken: true
@@ -99,8 +107,8 @@ spec:
           configMap:
             name: gvisor-fork-conformance
         # The fork build of kubectl-ate: /cli/ko-app/kubectl-ate. The digest is
-        # a placeholder until the images workflow publishes it; the enable step
-        # replaces it.
+        # a placeholder until substrate-fork-images.yml publishes the image; the
+        # enable step replaces it (PR #8584).
         - name: cli
           image:
             reference: ghcr.io/jomcgi-org/homelab/substrate-fork/kubectl-ate:fork-b6b0ec3e217c@sha256:0000000000000000000000000000000000000000000000000000000000000000
