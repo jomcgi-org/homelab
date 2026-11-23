@@ -215,6 +215,53 @@ func TestHTTPEngineVerdicts(t *testing.T) {
 	}
 }
 
+// An engine that never ends its response must not hold the scanner. The
+// response has no Content-Length and no end. io.LimitReader stops the read.
+func TestHTTPEngineStopsAnEndlessResponse(t *testing.T) {
+	stopped := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(stopped)
+		flusher := w.(http.Flusher)
+		chunk := []byte(strings.Repeat("a", 1024))
+		io.WriteString(w, `{"results":[],"pad":"`)
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			default:
+			}
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}))
+	defer srv.Close()
+	engine, err := newHTTPEngine(srv.URL+"/", 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No deadline on the context: only the size limit can end the call.
+	done := make(chan error, 1)
+	go func() {
+		_, err := engine.Scan(context.Background(), []byte("body"))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errEngineTooLarge) {
+			t.Fatalf("got %v, want the size limit error", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("an endless response was not stopped by the size limit")
+	}
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the connection to the endless engine stayed open")
+	}
+}
+
 func TestHTTPEngineSendsOnePostWithTheText(t *testing.T) {
 	var got struct {
 		method, contentType, path string
@@ -794,6 +841,44 @@ func TestBreakerOpensAndProbes(t *testing.T) {
 	}
 	if counter(t, registry, "factory_egress_scan_semgrep_breaker_open", nil) != 0 {
 		t.Error("breaker stayed open after a good probe")
+	}
+}
+
+// When the caller ends the check, the tier result is "cancelled" and the select
+// in checkTwoTiers can see the result before ctx.Done. The cancelled guard in
+// checkTwoTiers is defence in depth: it keeps such a result from reaching the
+// allow path. This test cancels while the engine returns at once and requires
+// that no run allows.
+func TestCancelledResultNeverAllows(t *testing.T) {
+	engine := engineFunc(func(ctx context.Context, body []byte) (Verdict, error) {
+		<-ctx.Done()
+		return Verdict{}, ctx.Err()
+	})
+	cfg := testConfig()
+	cfg.Deadline = 5 * time.Second
+	s, _ := newTierScanner(t, cfg, engine)
+	for i := 0; i < 200; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			time.Sleep(time.Duration(i%5) * time.Millisecond)
+			cancel()
+		}()
+		reply, err := s.Check(ctx, cleanRequest("fine"))
+		cancel()
+		if err == nil || reply != nil {
+			t.Fatalf("run %d: a cancelled check returned a verdict: %v %v", i, reply, err)
+		}
+	}
+}
+
+// The guard itself, called with a cancelled result and a live context.
+func TestCancelledGuardDeniesWithoutACancelledContext(t *testing.T) {
+	s, _ := newTierScanner(t, testConfig(), engineFunc(func(ctx context.Context, body []byte) (Verdict, error) {
+		return Verdict{}, nil
+	}))
+	reply, err := s.finishTwoTiers(context.Background(), engineResult{outcome: engineCancelled})
+	if err != nil || reply.GetStatus().GetCode() == int32(codes.OK) {
+		t.Fatalf("a cancelled result with a live context was allowed: %v %v", reply, err)
 	}
 }
 
