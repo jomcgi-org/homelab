@@ -2,8 +2,9 @@
 
 They check the pins, the rules, the layer maker (byte-reproducible, right
 files, refuses a wrong wheel), the smoke client's bodies and, when the repository
-checkout is visible, the manual workflow. The image itself is tested by the
-workflow ("Test the image") and by the fork tests on a node.
+checkout is visible (a plain `pytest` run from the repository; under Bazel the
+runfiles hold no `.github`, so the workflow test skips there). The image itself
+is tested by the workflow ("Test the image") and by the fork tests on a node.
 """
 
 from __future__ import annotations
@@ -219,10 +220,18 @@ def test_workflow_is_manual_and_publishes_only_the_engine_name() -> None:
     for step in steps:
         run = step.get("run", "")
         if re.search(r"crane auth login|build\.sh push|crane push", run):
-            assert step["if"] == "inputs.publish", step["name"]
+            assert step["if"] == (
+                "inputs.publish && github.ref == 'refs/heads/main'"
+            ), step["name"]
+    assert any(
+        s.get("if") == "inputs.publish && github.ref != 'refs/heads/main'"
+        for s in steps
+    ), "a publish from another branch fails loudly"
     # The only push is the one in build.sh, to the one repository.
     assert "docker push" not in text
     assert "docker login" not in text
     assert text.count("build.sh push") == 1
-    # It never overwrites a tag.
-    assert "crane digest" in text and "exit 1" in text
+    # It never overwrites a tag, and only "not found" means the tag is free.
+    assert "crane digest" in text
+    assert "MANIFEST_UNKNOWN|NAME_UNKNOWN" in text
+    assert "Cannot tell whether" in text
