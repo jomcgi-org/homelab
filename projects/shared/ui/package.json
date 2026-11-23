@@ -1,0 +1,16 @@
+{
+  "name": "@homelab/ui",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./ui.css": "./src/ui.css"
+  },
+  "peerDependencies": {
+    "react": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "react": "19.3.1"
+  }
+}

@@ -18,6 +18,7 @@
     "@astryxdesign/charts": "0.7.17-canary.g12f81bd",
     "@astryxdesign/core": "0.7.17-canary.g12f81bd",
     "@astryxdesign/theme-neutral": "0.7.17-canary.g12f81bd",
+    "@homelab/ui": "workspace:*",
     "@stylexjs/stylex": "0.19.1",
     "maplibre-gl": "6.9.0",
     "react": "19.3.1",

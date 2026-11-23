@@ -186,6 +186,9 @@ importers:
       '@astryxdesign/theme-neutral':
         specifier: 0.7.17-canary.g12f81bd
         version: 0.7.17-canary.g12f81bd(@astryxdesign/core@0.7.17-canary.g12f81bd(@stylexjs/stylex@0.19.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@types/react@19.3.0)(react@19.3.1)
+      '@homelab/ui':
+        specifier: workspace:*
+        version: link:../../shared/ui
       '@stylexjs/stylex':
         specifier: 0.19.1
         version: 0.19.1
@@ -375,6 +378,15 @@ importers:
       vitest:
         specifier: 4.1.12
         version: 4.1.12(@opentelemetry/api@1.9.1)(@types/node@22.19.7)(happy-dom@21.0.4(patch_hash=8828327337fcb7e7ae0ec3d5184c2fd0f188852f611c461caf93fb490f2726e3))(vite@6.4.5(@types/node@22.19.7)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0))
+
+  projects/shared/ui:
+    devDependencies:
+      '@types/react':
+        specifier: 19.3.0
+        version: 19.3.0
+      react:
+        specifier: 19.3.1
+        version: 19.3.1
 
 packages:
 
@@ -1253,7 +1265,6 @@ packages:
     resolution: {integrity: sha512-GDOmvgephpRCNyNGRQOZh0KD2gTyRVM1Bb1iOo759xeCUpCAoRCmJioOOSu2MwyWfNOocGd0V5I9vYLfteC6/A==}
     cpu: [x64]
     os: [linux]
-    libc: [glibc]
 
   '@rollup/rollup-linux-x64-musl@4.68.0':
     resolution: {integrity: sha512-HADRxkvl5eg3hbemCmv81UwTfdQy/CiSJDOabLE+p5tpm3OTjuRtzpLXy5zPfGY9FQD4Qv7qHptXmG/YjmNmyw==}

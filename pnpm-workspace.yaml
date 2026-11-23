@@ -8,6 +8,7 @@ packages:
   - projects/jomcgi-site/wrangler
   - projects/monolith/frontend
   - projects/monolith/web/grimoire
+  - projects/shared/ui
 
 # Dependency admission policy for new resolutions:
 # - Delay new registry releases for three days, matching Renovate's default.
