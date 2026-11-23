@@ -185,9 +185,12 @@ type semgrepOutput struct {
 			Offset int `json:"offset"`
 		} `json:"end"`
 	} `json:"results"`
-	Errors []struct {
-		Level string `json:"level"`
-	} `json:"errors"`
+	// The scanner counts errors and skipped paths. It does not read their
+	// content, which can name files and rules.
+	Errors []json.RawMessage `json:"errors"`
+	Paths  struct {
+		Skipped []json.RawMessage `json:"skipped"`
+	} `json:"paths"`
 }
 
 var ruleIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,160}$`)
@@ -200,7 +203,10 @@ var ruleIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,160}$`)
 // controlled, so an actor can add a "nosemgrep" marker; a suppressed result
 // must still deny. The tier does not weigh a result by its secret validation:
 // an invalid or unvalidated credential still must not leave. A document with
-// no "results" key is garbage.
+// no "results" key is garbage. With no finding, any "errors" entry (at any
+// level: the CLI reports rule timeouts and out-of-memory at "warn") or any
+// skipped path (for example text over the default target size limit) means a
+// partial scan, so the verdict is unknown.
 func parseSemgrepJSON(data []byte) (Verdict, error) {
 	start := bytes.IndexByte(data, '{')
 	if start < 0 {
@@ -218,12 +224,8 @@ func parseSemgrepJSON(data []byte) (Verdict, error) {
 		}
 		verdict.Findings = append(verdict.Findings, Finding{RuleID: id, Start: max(r.Start.Offset, 0), End: max(r.End.Offset, 0)})
 	}
-	if len(verdict.Findings) == 0 {
-		for _, e := range out.Errors {
-			if e.Level == "" || strings.EqualFold(e.Level, "error") {
-				return Verdict{}, errEngineIncomplete
-			}
-		}
+	if len(verdict.Findings) == 0 && (len(out.Errors) > 0 || len(out.Paths.Skipped) > 0) {
+		return Verdict{}, errEngineIncomplete
 	}
 	return verdict, nil
 }
