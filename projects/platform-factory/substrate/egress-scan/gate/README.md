@@ -3,8 +3,8 @@
 `engine-gate` is the service behind the Semgrep tier of the egress scanner
 (`semgrep.endpoint`, tier merged as #8612, off by default). It keeps a warm pool
 of single-use gVisor fork children of the engine template and sends each scan
-request to one child. State: **built and staged off**. The StatefulSet has no
-replicas and no ArgoCD source lists it. The design is
+request to one child. State: **code only, not deployed**. Nothing runs it: the
+image, the manifests and the wiring are separate changes. The design is
 [`../ARCHITECTURE.md`](../ARCHITECTURE.md), "Engine path" (path B).
 
 ```mermaid
@@ -26,7 +26,7 @@ One endpoint: `POST /scan` on port 8080. It is the whole contract of
 
 | Item | Rule |
 | --- | --- |
-| Request | The text body, `Content-Length` set. At most `--max-body` (2 MiB). Empty gets 400, too large gets 413. |
+| Request | The text body, `Content-Length` set. At most `--max-body` (1.2 MiB; the tier sends at most about 1.1 MiB). Empty gets 400. A body over the limit gets 413 from `Content-Length` before the gate reads a byte or takes a scan slot. |
 | Deadline | `X-Deadline-Ms` (1 or more, capped at `--max-deadline`), else `--default-deadline` (300 ms). The scanner cancels the request when its own deadline passes. The gate stops at the first of the two. |
 | Success | `200`, `Content-Type: application/json`, the engine reply byte for byte: the `.` progress line, then the JSON. The gate never parses it. |
 | Failure | Any other status. The body is one word (the outcome), never a detail. The tier counts every non-200 status as `error`. |
@@ -56,11 +56,11 @@ under one mutex, and no two requests can get the same child.
 | It keeps `--target-waiting` (2) fresh children, created and forked in the background (`--create-concurrency` at once, back-off 200 ms to 5 s after a failure). | A request never waits for a create. |
 | A claim takes the newest child. | The newest has the most lifetime left. |
 | A child that served exits, and the control plane deletes it. The gate does not delete it. A sweep every `--sweep-interval` deletes a child that the gate no longer tracks, after two sightings and `--sweep-grace` after its handout. | A lost exit report must not keep a booking. |
-| A waiting child older than `--recycle-after` (600 s) is deleted when fresh ones wait. No child older than `--hard-after` (780 s) is ever handed out. | The template lifetime is 900 s. The worker reports an expired child as a crash, and a delete is no crash. Old children stay claimable until their replacements wait, so the pool is never empty during a recycle. |
+| A waiting child older than `--recycle-after` (600 s) is deleted when fresh ones wait. Old children are replaced one at a time, oldest first, so children made together do not recycle together. No child older than `--hard-after` (780 s) is ever handed out. | The template lifetime is 900 s. The worker reports an expired child as a crash, and a delete is no crash. Old children stay claimable until their replacements wait, so the pool is never empty during a recycle. |
 | If the body has not left the gate when the scanner cancels, or the router is out of reach, the child goes back to the pool. | The child is unspent. |
 | If the child fails after the body left, the gate deletes it and sends the same body to the next child once, when more than `--retry-min-remaining` (120 ms) is left. | A dead or spent child holds nothing the next one needs. Both children belong to the gate. |
 | An empty pool is path A: create and fork now, at most `--max-fallback` (2) at once, only with `--fallback-min-remaining` (200 ms) left. After a failed create, path A is refused for `--fail-fast` (5 s). | One create code path, and no queue of slow creates. |
-| On SIGTERM the gate stops the listener, finishes the requests in flight and deletes every child with its prefix. | No leftovers after a normal stop. |
+| On SIGTERM `/readyz` fails first. After `--drain-delay` (5 s) the gate closes the scan listener, finishes the requests in flight (at most `--shutdown-grace`, 10 s) and deletes every child with its prefix. | The Service drops the pod before the listener closes, and no child is left after a normal stop. |
 
 Admission: `--max-inflight` (4) scans at once. A fifth request waits
 `--queue-wait` (25 ms) for a slot, then gets 503.
@@ -94,8 +94,8 @@ parses untrusted bytes) has none.
   `servicedns.podcert.ate.dev/identity` trust bundle and the expected name
   before it sends a byte. `TestAPIClientVerifiesTheServerBeforeSendingItsToken`
   proves it.
-- **The pod has no Kubernetes API access** and no Secret (see
-  `staged/statefulset.yaml`).
+- **The pod needs no Kubernetes API access and no Secret.** The manifests that
+  enforce this are a separate change.
 
 Residual: an editor can create templates and egress policies in its atespace
 (ARCHITECTURE.md, "Why a separate `engine-gate`"). The compensating alert is
@@ -110,10 +110,13 @@ The gate reaches two services.
 | ate API (`api.ate-system.svc:443`, gRPC) | TLS, checked against the trust bundle. A bearer token: the projected ServiceAccount token, audience `api.ate-system.svc`, read on each call. Every call carries `ate-preview-allowed: true`, because `CreateActor` of a fork template needs it. | The editor role in the atespace |
 | atenet-router (`atenet-router.ate-system.svc:443`, HTTPS, pod port 8443) | mTLS. The client certificate is the projected `podCertificate` of signer `podidentity.podcert.ate.dev/identity`. The server is checked against the `servicedns` trust bundle. | An entry in `ingressAllowedSPIFFEIDs` |
 
-The router sends a request to port 80 of the actor, so **the engine template
-listens on port 80**, as the latency template does (`gvisor-fork/latency/template.yaml`).
-Another port needs the router's CONNECT listener (8444), which this gate does
-not use.
+The router sends a request to port 80 of the actor, its default actor port. So
+**the engine template's child listens on port 80**, as the latency template
+does (`gvisor-fork/latency/template.yaml`). gVisor's netstack checks no
+privileged-port capability, so uid 65532 can bind it. The router's CONNECT
+listener (8444) reaches another port, and this gate does not use it. It is the
+fallback only if the live latency Job shows that the wakeup probe on port 80
+fails.
 
 **Cluster grants. This change makes none of them.** Each is a separate cluster
 change that Joe decides (ARCHITECTURE.md, "Needs Joe", items 3 and 5):
@@ -167,12 +170,16 @@ All values are flags. Defaults suit the design.
 | `--fallback-min-remaining`, `--retry-min-remaining`, `--fail-fast` | 200 ms, 120 ms, 5 s | Path A and retry limits |
 | `--recycle-after`, `--hard-after` | 600 s, 780 s | Child age limits |
 | `--api-call-timeout`, `--sweep-interval`, `--sweep-grace`, `--shutdown-grace` | 10 s, 15 s, 60 s, 10 s | Housekeeping |
-| `--max-body`, `--max-response` | 2 MiB, 1 MiB | Size limits |
+| `--max-body`, `--max-response` | 1.2 MiB, 1 MiB | Size limits. The tier sends at most about 1.1 MiB |
+| `--drain-delay` | 5 s | On SIGTERM: time between `/readyz` failing and the listener closing |
 
 ## Health and metrics
 
-`/healthz` says the process runs. `/readyz` says the startup cleanup is done, at
-least one child waits, and the ate API answered within two sweep intervals.
+`/healthz` says the process runs. `/readyz` says the startup cleanup is done,
+the pool has held a waiting child at least once, and the ate API answered within
+two sweep intervals. After the first fill an empty pool does not make the pod
+unready, because path A still serves and a burst must not take the only replica
+out of the Service. While the pod drains, `/readyz` fails.
 
 Series on the admin port. No label holds a request value.
 
@@ -193,44 +200,8 @@ The ARCHITECTURE.md failure table names `engine_ready_children`,
 Here they are `children{state="waiting"}`, `pool_misses_total`,
 `requests_total{outcome="shed"}` and `child_errors_total`.
 
-## Staged manifests
-
-[`staged/`](staged) holds the StatefulSet (`replicas: 0`), Service,
-ServiceAccount and network rules. `staged/staged_test.py` renders them and
-checks the isolation rules above, and `../../resources/resources_test.py`
-fails if the wired kustomization lists them.
-
-| Item | Choice |
-| --- | --- |
-| Replicas | 1 in v1. The pool books 8 children, and a second replica needs its own pool. A rollout or a drain is an outage, so there is no PodDisruptionBudget: it would block drains. |
-| Resources | Request 100m CPU and 128Mi. Memory limit 256Mi. The pool pod is another change. |
-| Egress | The ate API on 443 and the router on 8443. DNS is open to every pod by the cluster-wide default-deny. |
-| Ingress | The scanner on 8080. Prometheus on 9090 (a cluster-wide scrape rule, as `prometheus/resources/scrape-ingress.yaml`). |
-
-## Enable steps
-
-Each step stays off until the one before it is verified. They follow the
-rollout in ARCHITECTURE.md (step 7 and after).
-
-1. Joe approves the cluster grants above. The atespace, the access policy and
-   the template exist, the pool pod runs and its seed is ready.
-2. Wiring change: list `staged/` in a source that ArgoCD applies, pin the image
-   tag that CI published, set `replicas: 1`, add the Prometheus egress rule and
-   scrape job.
-3. Check: `/readyz` is 200, `children{state="waiting"}` is 2, and a test
-   request through `POST /scan` returns the engine JSON.
-4. Point `semgrep.endpoint` of the scanner at `http://engine-gate.ate-system.svc:8080/scan`
-   with the tier still off, then follow the observe period of ARCHITECTURE.md.
-
-To roll back, set `semgrep.enabled: false`, then `replicas: 0`. The gate
-deletes its children on SIGTERM. Delete the template only after that.
-
 ## Packaging
 
-- **Image:** apko plus `rules_apko`, `image/`. The config is the one of
-  `projects/factory/alert-relay/image/` with the binary renamed. Its lock file
-  has the same package set and its own config checksum, so
-  `image_lock_test` checks the pair.
 - **Go dependency:** a minimal client in `ateapi/`. It is generated from
   `ateapi/ateapi.proto`, a subset of `api/ateapi/v1/ateapi.proto` at fork commit
   `b6b0ec3e217c` (`jomcgi-org/substrate`, branch `fork/seed-slice1`). It keeps
@@ -245,7 +216,7 @@ deletes its children on SIGTERM. Delete the template only after that.
 
 ## Tests
 
-`bazel test //projects/platform-factory/substrate/egress-scan/gate/...` runs
+`bazel test //projects/platform-factory/substrate/egress-scan/gate:gate_test` runs
 them, and `go test -race -count=3` passes. No cluster is needed.
 
 - A fake ate API speaks gRPC (`bufconn`), so the real client code runs. It pages
@@ -253,11 +224,12 @@ them, and `go test -race -count=3` passes. No cluster is needed.
   demand. A fake router and child answer the gate.
 - Pool: fill, names, leftover cleanup (and nothing else deleted), start with
   the API down, claim and replenish off the request path, 64 racing claimers
-  that never share a child, release, recycle without a gap, stale children
-  kept while the create fails, back-off, a failed fork, a slow fork, the sweep,
+  that never share a child, release, recycle without a gap and one at a time, stale
+  children kept while the create fails, readiness after a burst and while
+  draining, bounded delete workers, back-off, a failed fork, a slow fork, the sweep,
   shutdown.
 - Gate: reply unchanged, forged actor names, limits, deadline header
-  (default, cap, bad values, propagation), scanner leaving, shed, path A and its
+  (default, cap, overflow, bad values, propagation), early 413 with a full gate, scanner leaving, shed, path A and its
   bounds, the API down, router error, child crash mid-request (retry, no time
   left, both fail), logs without body, log rate limit, probes.
 - Transport: a real mTLS server checks the client certificate and the single
@@ -270,8 +242,8 @@ CPU (`go test -bench . -benchtime 5000x`):
 
 | Benchmark | p50 | p95 | p99 | Allocations |
 | --- | --- | --- | --- | --- |
-| In process (`ServeHTTP`) | 15 µs | 37 µs | 100 µs | 55 |
-| Loopback HTTP, new connection each time | 143 µs | 226 µs | 370 µs | 183 |
+| In process (`ServeHTTP`) | 15 us | 37 us | 100 us | 55 |
+| Loopback HTTP, new connection each time | 143 us | 226 us | 370 us | 183 |
 
 The gate costs about 0.15 ms of the 11 ms that hops 3 and 4 of the latency
 budget allow. The router and the child dominate.

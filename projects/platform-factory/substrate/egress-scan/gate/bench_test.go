@@ -83,9 +83,9 @@ func BenchmarkGateOverhead(b *testing.B) {
 	}
 	b.StopTimer()
 	sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
-	b.ReportMetric(percentile(lat, 0.50), "p50_µs")
-	b.ReportMetric(percentile(lat, 0.95), "p95_µs")
-	b.ReportMetric(percentile(lat, 0.99), "p99_µs")
+	b.ReportMetric(percentile(lat, 0.50), "p50_us")
+	b.ReportMetric(percentile(lat, 0.95), "p95_us")
+	b.ReportMetric(percentile(lat, 0.99), "p99_us")
 }
 
 // BenchmarkGateOverLoopback adds a real HTTP connection with no keep-alive, as
@@ -115,7 +115,7 @@ func BenchmarkGateOverLoopback(b *testing.B) {
 	}
 	b.StopTimer()
 	sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
-	b.ReportMetric(percentile(lat, 0.50), "p50_µs")
-	b.ReportMetric(percentile(lat, 0.95), "p95_µs")
-	b.ReportMetric(percentile(lat, 0.99), "p99_µs")
+	b.ReportMetric(percentile(lat, 0.50), "p50_us")
+	b.ReportMetric(percentile(lat, 0.95), "p95_us")
+	b.ReportMetric(percentile(lat, 0.99), "p99_us")
 }

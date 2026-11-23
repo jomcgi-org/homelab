@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -291,5 +292,88 @@ func TestShutdownDeletesEveryChild(t *testing.T) {
 	e.pool.shutdown(context.Background())
 	if got := e.api.names("eg-gate-0-"); len(got) != 0 {
 		t.Fatalf("children left after shutdown: %v", got)
+	}
+}
+
+func TestOldChildrenRecycleOneAtATime(t *testing.T) {
+	e := newEnv(t, nil)
+	e.start()
+	old := e.waitingNames()
+	// Both children were made together and grow old together.
+	e.api.createDelay.Store(int64(150 * time.Millisecond))
+	e.clock.advance(e.cfg.RecycleAfter + time.Second)
+	isOld := func(n string) bool { return n == old[0] || n == old[1] }
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		e.pool.mu.Lock()
+		creating, waiting := len(e.pool.creating), len(e.pool.waiting)
+		e.pool.mu.Unlock()
+		if creating > 1 {
+			t.Fatalf("%d children are made at once while two old ones recycle", creating)
+		}
+		if waiting == 0 {
+			t.Fatal("the pool was empty while it recycled")
+		}
+		fresh := 0
+		for _, n := range e.waitingNames() {
+			if !isOld(n) {
+				fresh++
+			}
+		}
+		if fresh == 2 && e.waitingCount() == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("recycle did not finish: %v", e.waitingNames())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := testutil.ToFloat64(e.m.recycled); got != 2 {
+		t.Fatalf("recycled = %v", got)
+	}
+}
+
+func TestReadyStaysTrueAfterABurstEmptiesThePool(t *testing.T) {
+	e := newEnv(t, nil)
+	if e.pool.ready() {
+		t.Fatal("ready before the first fill")
+	}
+	e.start()
+	if !e.pool.ready() {
+		t.Fatal("not ready with a full pool")
+	}
+	// A burst takes both children, and creation is slow.
+	e.api.createDelay.Store(int64(300 * time.Millisecond))
+	e.pool.claim()
+	e.pool.claim()
+	if e.waitingCount() != 0 || !e.pool.ready() {
+		t.Fatalf("waiting %d, ready %v: a burst must not make the pod unready", e.waitingCount(), e.pool.ready())
+	}
+	// Only a dead API does.
+	e.clock.advance(time.Minute)
+	if e.pool.ready() {
+		t.Fatal("ready with no API answer")
+	}
+}
+
+func TestDrainFailsReadiness(t *testing.T) {
+	e := newEnv(t, nil)
+	e.start()
+	e.pool.drain()
+	if e.pool.ready() {
+		t.Fatal("ready while draining")
+	}
+}
+
+func TestDeletesRunOnAFewWorkers(t *testing.T) {
+	e := newEnv(t, nil)
+	e.api.deleteDelay.Store(int64(10 * time.Millisecond))
+	for i := 0; i < 40; i++ {
+		e.api.add(fmt.Sprintf("eg-gate-0-9-%d", i), 2)
+		e.pool.deleteAsync(fmt.Sprintf("eg-gate-0-9-%d", i))
+	}
+	e.eventually("all deleted", func() bool { return len(e.api.names("eg-gate-0-9-")) == 0 })
+	if got := e.api.deleteMax.Load(); got > deleteWorkers || got < 2 {
+		t.Fatalf("up to %d deletes at once, want 2 to %d", got, deleteWorkers)
 	}
 }

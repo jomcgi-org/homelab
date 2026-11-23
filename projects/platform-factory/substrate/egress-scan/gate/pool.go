@@ -44,6 +44,11 @@ type pool struct {
 	baseCtx context.Context
 	bg      sync.WaitGroup
 	fbSem   chan struct{}
+	delQ    chan string
+	delOnce sync.Once
+	// draining is set when the pod is told to stop: /readyz fails first, so the
+	// endpoints drop the pod before the listener closes.
+	draining atomic.Bool
 
 	mu        sync.Mutex
 	waiting   []*child // oldest first
@@ -51,6 +56,7 @@ type pool struct {
 	served    map[string]time.Time // handed out, until the sweep finds them gone
 	orphans   map[string]bool      // names seen untracked by the last sweep
 	started   bool                 // the startup cleanup finished
+	filled    bool                 // the pool held a waiting child at least once
 	lastFail  time.Time
 	backoff   time.Duration
 	retryAt   time.Time
@@ -63,6 +69,7 @@ func newPool(ctx context.Context, cfg config, api actorAPI, m *metrics, log *lim
 		cfg: cfg, api: api, m: m, log: log, now: time.Now,
 		baseCtx:  ctx,
 		fbSem:    make(chan struct{}, cfg.MaxFallback),
+		delQ:     make(chan string, 256),
 		creating: map[string]struct{}{},
 		served:   map[string]time.Time{},
 		orphans:  map[string]bool{},
@@ -96,12 +103,21 @@ func (p *pool) gaugesLocked() {
 }
 
 // ready reports whether the gate may take traffic: the startup cleanup is
-// done, one child waits and the API answered recently.
+// done, the pool has filled once, and the ate API answered recently. After the
+// first fill an empty pool does not make the pod unready: path A still serves,
+// and a burst must not take the only replica out of the Service. It is not
+// ready while the pod drains.
 func (p *pool) ready() bool {
+	if p.draining.Load() {
+		return false
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.started && len(p.waiting) >= 1 && p.now().Sub(p.lastAPIOK) < 2*p.cfg.SweepInterval
+	return p.started && (p.filled || len(p.waiting) >= 1) && p.now().Sub(p.lastAPIOK) < 2*p.cfg.SweepInterval
 }
+
+// drain makes /readyz fail. It is the first step of a shutdown.
+func (p *pool) drain() { p.draining.Store(true) }
 
 // run does the startup cleanup, then keeps the pool full until ctx ends.
 func (p *pool) run(ctx context.Context) {
@@ -176,16 +192,34 @@ func (p *pool) deleteOne(ctx context.Context, name string) error {
 	return nil
 }
 
-// deleteAsync deletes a child off the request path, with a context that no
-// request can cancel.
+// deleteAsync queues a delete for a few background workers. They use a context
+// that no request can cancel. At most deleteWorkers deletes run at once, so a
+// burst of failures cannot start a goroutine for each child. A full queue drops
+// the delete: the sweep finds the child again.
+const deleteWorkers = 4
+
 func (p *pool) deleteAsync(name string) {
-	p.bg.Add(1)
-	go func() {
-		defer p.bg.Done()
-		if err := p.deleteOne(context.WithoutCancel(p.baseCtx), name); err != nil {
-			p.log.warn("delete", "child delete failed", "child", name, "error", err.Error())
+	p.delOnce.Do(func() {
+		for i := 0; i < deleteWorkers; i++ {
+			go func() {
+				for {
+					select {
+					case n := <-p.delQ:
+						if err := p.deleteOne(context.WithoutCancel(p.baseCtx), n); err != nil {
+							p.log.warn("delete", "child delete failed", "child", n, "error", err.Error())
+						}
+					case <-p.baseCtx.Done():
+						return
+					}
+				}
+			}()
 		}
-	}()
+	})
+	select {
+	case p.delQ <- name:
+	default:
+		p.log.warn("delete-queue", "delete queue is full, the sweep will find the child", "child", name)
+	}
 }
 
 // reconcile keeps TargetWaiting fresh children, replaces the old ones and
@@ -198,23 +232,32 @@ func (p *pool) reconcile() {
 		p.mu.Unlock()
 		return
 	}
-	fresh := 0
-	for _, c := range p.waiting {
-		if now.Sub(c.started) < p.cfg.RecycleAfter {
-			fresh++
-		}
-	}
-	keep := p.waiting[:0]
+	// Old children are replaced one at a time, oldest first, so that children
+	// created together never recycle together. The other old children count as
+	// fresh until their turn. A delete is no crash; an expiry is reported as
+	// one, so no child may reach its maximum lifetime.
+	fresh, keep := 0, p.waiting[:0]
+	var recycling *child
 	for _, c := range p.waiting {
 		age := now.Sub(c.started)
-		// An old child is replaced when fresh ones wait, or when it comes close
-		// to the maximum lifetime. A delete is no crash; an expiry is reported
-		// as one.
-		if age >= p.cfg.HardAfter || (age >= p.cfg.RecycleAfter && fresh >= p.cfg.TargetWaiting) {
+		switch {
+		case age >= p.cfg.HardAfter:
 			drop = append(drop, c)
-			continue
+		case age >= p.cfg.RecycleAfter && recycling == nil:
+			recycling = c
+		default:
+			fresh++
+			keep = append(keep, c)
 		}
-		keep = append(keep, c)
+	}
+	if recycling != nil {
+		if fresh >= p.cfg.TargetWaiting {
+			drop = append(drop, recycling)
+		} else {
+			// Still claimable until its replacement waits. It keeps its place:
+			// it is older than every child kept so far.
+			keep = append([]*child{recycling}, keep...)
+		}
 	}
 	p.waiting = keep
 	need := min(p.cfg.TargetWaiting-fresh-len(p.creating), p.cfg.CreateConcurrency-len(p.creating))
@@ -253,6 +296,7 @@ func (p *pool) replenish(name string) {
 	} else {
 		p.backoff, p.lastFail = 0, time.Time{}
 		p.waiting = append(p.waiting, c)
+		p.filled = true
 		sort.SliceStable(p.waiting, func(i, j int) bool { return p.waiting[i].started.Before(p.waiting[j].started) })
 	}
 	p.gaugesLocked()

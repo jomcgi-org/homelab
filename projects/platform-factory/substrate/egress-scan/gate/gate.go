@@ -52,6 +52,12 @@ func (g *gate) serveScan(w http.ResponseWriter, r *http.Request) {
 		g.fail(w, outcomeBadRequest, http.StatusBadRequest, began)
 		return
 	}
+	// The size limit applies before the gate reads a byte, and before the
+	// request takes a scan slot.
+	if r.ContentLength > g.cfg.MaxBody {
+		g.fail(w, outcomeOversize, http.StatusRequestEntityTooLarge, began)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), deadline)
 	defer cancel()
 
@@ -108,11 +114,16 @@ func (g *gate) deadline(r *http.Request) (time.Duration, bool) {
 	if v == "" {
 		return g.cfg.DefaultDeadline, true
 	}
-	ms, err := strconv.Atoi(v)
+	ms, err := strconv.ParseInt(v, 10, 64)
 	if err != nil || ms < 1 {
 		return 0, false
 	}
-	return min(time.Duration(ms)*time.Millisecond, g.cfg.MaxDeadline), true
+	// Clamp in milliseconds before the multiplication: a huge value would
+	// overflow time.Duration and wrap negative.
+	if limit := g.cfg.MaxDeadline.Milliseconds(); ms > limit {
+		ms = limit
+	}
+	return time.Duration(ms) * time.Millisecond, true
 }
 
 // admit takes a scan slot. A full gate queues the request for QueueWait, then
