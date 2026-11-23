@@ -197,7 +197,8 @@ type semgrepOutput struct {
 var ruleIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,160}$`)
 
 // parseSemgrepJSON reads the engine output. The engine writes a "." progress
-// line before the JSON, so parsing starts at the first "{".
+// line before the JSON, so parsing starts at the first "{". Only dots and
+// white space may come before it. Other text is no scan result.
 //
 // Mapping: each result is a finding, whatever its severity or validation
 // state, and also when "is_ignored" is true. The scanned text is actor
@@ -210,7 +211,7 @@ var ruleIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,160}$`)
 // partial scan, so the verdict is unknown.
 func parseSemgrepJSON(data []byte) (Verdict, error) {
 	start := bytes.IndexByte(data, '{')
-	if start < 0 {
+	if start < 0 || len(bytes.Trim(data[:start], ".\r\n\t ")) > 0 {
 		return Verdict{}, errEngineGarbage
 	}
 	var out semgrepOutput
