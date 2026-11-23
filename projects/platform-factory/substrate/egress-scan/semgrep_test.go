@@ -534,6 +534,55 @@ func TestEngineFailuresApplyTheFailureMode(t *testing.T) {
 	}
 }
 
+func TestEnginePanicIsAnEngineErrorNotACrash(t *testing.T) {
+	logs := captureLog(t)
+	engine := engineFunc(func(ctx context.Context, body []byte) (Verdict, error) {
+		panic("boom " + string(body))
+	})
+	for _, mode := range []string{failureDeny, failureAllow} {
+		cfg := testConfig()
+		cfg.FailureMode = mode
+		cfg.BreakerFailures = 2
+		s, registry := newTierScanner(t, cfg, engine)
+		for i := 0; i < 3; i++ {
+			reply, err := s.Check(context.Background(), cleanRequest("fine SENSITIVE-BODY-TEXT"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if allowed := reply.GetStatus().GetCode() == int32(codes.OK); allowed != (mode == failureAllow) {
+				t.Fatalf("mode %s allowed=%v", mode, allowed)
+			}
+		}
+		// Two panics are two failures: the breaker opened for the third call.
+		if got := counter(t, registry, "factory_egress_scan_semgrep_requests_total", map[string]string{"outcome": "error"}); got != 2 {
+			t.Errorf("error = %v", got)
+		}
+		if got := counter(t, registry, "factory_egress_scan_semgrep_inflight", nil); got != 0 {
+			t.Errorf("inflight = %v after a panic", got)
+		}
+	}
+	if !strings.Contains(logs.String(), "engine panicked") || strings.Contains(logs.String(), "SENSITIVE-BODY-TEXT") {
+		t.Fatalf("log must name the panic and hold no body: %q", logs.String())
+	}
+}
+
+// The start goroutine has its own recover for a panic outside Engine.Scan.
+func TestStartRecoversAPanicOutsideTheEngine(t *testing.T) {
+	tier, err := newSemgrepTier(testConfig(), engineFunc(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tier.metrics = nil // run dereferences the metrics, so it panics
+	select {
+	case res := <-tier.start(context.Background(), []byte("x"), 1):
+		if res.outcome != engineError || !errors.Is(res.err, errEnginePanic) {
+			t.Fatalf("got %+v", res)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no result after a panic")
+	}
+}
+
 func TestConnectionRefusedDeniesOrAllows(t *testing.T) {
 	listener, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := listener.Addr().String()
