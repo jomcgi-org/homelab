@@ -125,6 +125,15 @@ spec:
       namespace: factory-r-homelab
       name: homelab-codex
       jsonPointers: [/spec/replicas]
+    # The reviewer pool's HorizontalPodAutoscaler owns its replicas
+    # (agents.reviewer.autoscaling in values.yaml), for the same reason.
+    # Remove this entry together with `enabled: false` to put the pool back
+    # at `concurrency` (5).
+    - group: ate.dev
+      kind: WorkerPool
+      namespace: factory-r-homelab-review
+      name: homelab-reviewer
+      jsonPointers: [/spec/replicas]
   syncPolicy:
     automated:
       prune: true

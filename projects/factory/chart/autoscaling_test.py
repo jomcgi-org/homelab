@@ -25,12 +25,13 @@ _REVIEW = ("factory-r-homelab-review", "homelab-reviewer")
 
 
 def _without_autoscaling() -> Path:
-    """The deploy values with the coder pool's autoscaling removed, so a test
+    """The deploy values with both pools' autoscaling removed, so a test
     of the chart's behavior starts from the chart's own defaults, whatever the
     deploy values enable. The one test of the deploy values themselves renders
     them as they are."""
     values = yaml.safe_load(_DEPLOY_VALUES.read_text())
-    values["agents"]["codex"].pop("autoscaling", None)
+    for agent in ("codex", "reviewer"):
+        values["agents"][agent].pop("autoscaling", None)
     path = Path(tempfile.mkdtemp()) / "values.yaml"
     path.write_text(yaml.safe_dump(values))
     return path
@@ -356,20 +357,63 @@ def test_deploy_values_let_the_coder_pool_scale_to_zero_behind_a_send_wait():
     # HPA sync (15 s), pod schedule and start, reaper row (15 s), and one slow
     # schedule seen on 2026-11-20 (161 s), so it is at least 3 min.
     docs = _render(defaults=False)
-    (hpa,) = _hpas(docs)
-    assert hpa["metadata"]["name"] == _CODER[1]
+    hpas = {h["metadata"]["name"]: h for h in _hpas(docs)}
+    assert set(hpas) == {_CODER[1], _REVIEW[1]}
+    hpa = hpas[_CODER[1]]
     assert hpa["spec"]["minReplicas"] == 0
     assert (
         hpa["spec"]["maxReplicas"]
         == _one(docs, "WorkerPool", *_CODER)["spec"]["replicas"]
     )
-    assert _reaper_pools(docs) == f"{_CODER[0]}/{_CODER[1]}=2"
+    assert _reaper_pools(docs) == (
+        f"{_CODER[0]}/{_CODER[1]}=2,{_REVIEW[0]}/{_REVIEW[1]}=2"
+    )
     cm = _one(docs, "ConfigMap", "factory", "factory-connector")
     wait = yaml.safe_load(cm["data"]["config.yaml"])["intervals"]["workerWait"]
     assert wait == "5m"
     # A held send is not issued, so no task lease runs on it. A bound above
     # 5 min would only delay the failure of a pool that cannot start.
     assert 3 * 60 <= _seconds(wait) <= 5 * 60
+
+
+def test_deploy_values_let_the_reviewer_pool_follow_its_reviews():
+    # The reviewer pool holds its concurrency (3) at least and never more than
+    # the 5 workers it ran fixed. Only it is "unbound": the connector
+    # publishes the coder pool's pending series, and a second 0 from the reaper
+    # would hide a failed connector read.
+    docs = _render(defaults=False)
+    hpa = _one(docs, "HorizontalPodAutoscaler", *_REVIEW)["spec"]
+    pool = _one(docs, "WorkerPool", *_REVIEW)
+    assert hpa["minReplicas"] == 3
+    assert hpa["maxReplicas"] == 5 == pool["spec"]["replicas"]
+    assert _reaper_unbound(docs) == f"{_REVIEW[0]}/{_REVIEW[1]}"
+    # The reaper may patch pods (the deletion cost) in the review namespace.
+    assert _reaper_verbs(docs, _REVIEW[0]) == ["get", "list", "watch", "delete", "patch"]
+    # The values and the chart's concurrency floor agree.
+    values = yaml.safe_load(_DEPLOY_VALUES.read_text())
+    assert hpa["minReplicas"] >= values["reviewer"]["concurrency"]
+
+
+def test_the_reviewer_pool_needs_room_to_grow():
+    # With maxReplicas at minReplicas the spare never starts.
+    for max_replicas in ("3", "2"):
+        with pytest.raises(RuntimeError, match="maxReplicas above minReplicas"):
+            _render(
+                [
+                    "reviewer.concurrency=3",
+                    "agents.reviewer.autoscaling.enabled=true",
+                    "agents.reviewer.autoscaling.minReplicas=3",
+                    f"agents.reviewer.autoscaling.maxReplicas={max_replicas}",
+                ]
+            )
+    _render(
+        [
+            "reviewer.concurrency=3",
+            "agents.reviewer.autoscaling.enabled=true",
+            "agents.reviewer.autoscaling.minReplicas=3",
+            "agents.reviewer.autoscaling.maxReplicas=4",
+        ]
+    )
 
 
 def _render_with_trial(sets: list[str]) -> subprocess.CompletedProcess:

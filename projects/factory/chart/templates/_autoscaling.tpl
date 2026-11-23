@@ -27,6 +27,9 @@ serves (projects/platform-factory/prometheus-adapter).
 {{- end -}}
 {{- $max := add (int $a.concurrency) $spare -}}
 {{- if $as.maxReplicas }}{{ $max = int $as.maxReplicas }}{{ end -}}
+{{- if and (eq (toString $as.enabled) "true") (eq (.key | default "") "reviewer") (le $max $min) -}}
+{{- fail (printf "autoscaling: the reviewer pool needs maxReplicas above minReplicas (%d), got %d: with no room to grow, the spare for goal check sessions never starts" $min $max) -}}
+{{- end -}}
 {{- $down := $as.scaleDown | default dict -}}
 {{- $stabilization := 1800 -}}
 {{- if hasKey $down "stabilizationSeconds" }}{{ $stabilization = int $down.stabilizationSeconds }}{{ end -}}
