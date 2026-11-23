@@ -851,6 +851,17 @@ def test_gvisor_fork_slice_is_wired_and_off() -> None:
     assert max(init, main) <= 256
 
 
+def test_engine_provisioning_is_staged_and_not_wired() -> None:
+    # The provisioning Jobs of the engine atespace and template live in
+    # ../egress-scan/gate/provision, suspended and unwired.
+    kustomization = yaml.safe_load((_HERE / "kustomization.yaml").read_text())
+    listed = kustomization["resources"] + kustomization.get("components", [])
+    assert not [r for r in listed if "egress-scan/gate" in r]
+    rendered = json.dumps(_docs())
+    assert "egress-engine" not in rendered
+    assert "egress-scan-engine" not in rendered
+
+
 def test_engine_gate_is_staged_and_not_wired() -> None:
     # engine-gate lives in ../egress-scan/gate/staged, with no replica. The
     # directory reaches the cluster only when a later change lists it here
@@ -860,10 +871,6 @@ def test_engine_gate_is_staged_and_not_wired() -> None:
     assert not [r for r in listed if "engine-gate" in r or "egress-scan/gate" in r]
     rendered = json.dumps(_docs())
     assert "engine-gate" not in rendered
-    # The provisioning Jobs of the engine atespace and template are staged the
-    # same way (../egress-scan/gate/provision, suspended and unwired).
-    assert "egress-engine" not in rendered
-    assert "egress-scan-engine" not in rendered
 
 
 _PREVIEW = ["PerTemplateSnapshotLocation", "GoldenEgressPolicy", "ForkSeed"]
