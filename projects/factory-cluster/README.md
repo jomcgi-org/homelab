@@ -1044,17 +1044,20 @@ Remove caches only. For each step, check that no process uses the data first.
 
 ```bash
 # Go build cache: list the processes that use it. If none, remove files not
-# used for 2 days. A running build only rebuilds what it needs.
+# used for 2 days. Go trims entries unused for 5 days itself, so expect little
+# from this step. To empty the cache, run the second command: a running build
+# then rebuilds everything it needs.
 pgrep -a -f 'go (build|test|vet)|/compile|/link'
-find ~/.cache/go-build -type f -atime +2 -delete
+find ~/.cache/go-build -type f -mtime +2 -delete
+find ~/.cache/go-build -mindepth 1 -delete
 
 # Bazel disk cache: entries not read for 7 days. Bazel's own limit is 10 GB.
 find ~/.cache/bazel/disk_cache -type f -atime +7 -delete
 
 # Test directories: yours, older than 12 h. A tmp* name counts only when it
 # holds a PG_VERSION file (a Postgres data directory). The loop skips a
-# directory that a postgres process names, that has an open file, or that has
-# a mount under it. Test databases make files read-only, so make them
+# directory that a postgres process names, that has an open file (lsof prints
+# a line for it), or that has a mount under it. Test databases make files read-only, so make them
 # writable first.
 find /tmp -maxdepth 1 -type d -user "$USER" \( -name 'pgdata*' -o -name 'tmp*' \) -mmin +720 -print0 |
   while IFS= read -r -d '' dir; do
@@ -1063,16 +1066,22 @@ find /tmp -maxdepth 1 -type d -user "$USER" \( -name 'pgdata*' -o -name 'tmp*' \
     esac
     pgrep -af postgres | grep -qF -- "$dir" && { echo "postgres uses: $dir"; continue; }
     findmnt -rn -o TARGET | grep -qF -- "$dir" && { echo "mount under: $dir"; continue; }
-    lsof +D "$dir" >/dev/null 2>&1 && { echo "in use: $dir"; continue; }
+    command -v lsof >/dev/null || { echo "no lsof, skipped: $dir"; continue; }
+    [ -n "$(lsof +D "$dir" 2>/dev/null)" ] && { echo "in use: $dir"; continue; }
     chmod -R u+w "$dir" && rm -rf --one-file-system -- "$dir"
   done
 
-# Session scratch: list the directories older than 1 day, check that no
-# process uses the one you pick (lsof prints nothing), and remove it only if
-# it is still older than 1 day.
-find /tmp/claude-1000 -mindepth 2 -maxdepth 2 -type d -mmin +1440 -exec ls -ldt {} +
-lsof +D /tmp/claude-1000/<project>/<session>
-find /tmp/claude-1000/<project>/<session> -maxdepth 0 -mmin +1440 -exec rm -rf --one-file-system {} +
+# Session scratch: list the session directories (the name is a UUID) in which
+# no file changed in the last 24 h. A directory's own time does not show a
+# change deeper inside it, so the list uses the files. Read the list and
+# confirm for each session that it has finished. That check is manual. Then
+# remove the directories you confirmed.
+for dir in /tmp/claude-1000/*/*/; do
+  dir=${dir%/}
+  [[ "${dir##*/}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || continue
+  [ -z "$(find "$dir" -type f -mmin -1440 -print -quit 2>/dev/null)" ] && echo "$dir"
+done
+rm -rf --one-file-system /tmp/claude-1000/<project>/<session>
 ```
 
 Then check `df -h /`. The taint clears a few minutes after usage falls below
