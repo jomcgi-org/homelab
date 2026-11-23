@@ -3,7 +3,7 @@
   "httpsManifests": {
     "factory": {
       "url": "https://factory-data.jomcgi.dev/manifest.json",
-      "enabled": false
+      "enabled": true
     }
   },
   "sections": {
