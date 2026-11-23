@@ -82,17 +82,27 @@ func run(cfg config, logger *slog.Logger) error {
 			return err
 		}
 	}
-	// Fail /readyz first and wait, so that the Service drops the pod before the
-	// listener closes. Then stop taking requests, finish the ones in flight and
-	// delete the pool. The admin port stays up until the end.
+	shutdownInOrder(cfg, p, scan, admin, func() { cancelLoop(); loop.Wait() })
+	return nil
+}
+
+// server is the part of http.Server that the shutdown uses.
+type server interface{ Shutdown(context.Context) error }
+
+// shutdownInOrder is the stop sequence. /readyz fails first and the gate waits
+// DrainDelay, so that the Service drops the pod before the listener closes.
+// Then it stops the scan listener and finishes the requests in flight, stops
+// the pool loop, deletes every child, and last closes the admin port, so
+// probes and metrics work to the end. The whole sequence takes about
+// DrainDelay + ShutdownGrace and the cleanup, so terminationGracePeriodSeconds
+// must stay at 30 s or more.
+func shutdownInOrder(cfg config, p *pool, scan, admin server, stopLoop func()) {
 	p.drain()
 	time.Sleep(cfg.DrainDelay)
 	grace, cancel := context.WithTimeout(context.Background(), cfg.ShutdownGrace)
 	defer cancel()
 	_ = scan.Shutdown(grace)
-	cancelLoop()
-	loop.Wait()
+	stopLoop()
 	p.shutdown(grace)
 	_ = admin.Shutdown(grace)
-	return nil
 }

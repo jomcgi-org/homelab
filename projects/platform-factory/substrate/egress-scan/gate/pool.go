@@ -113,7 +113,13 @@ func (p *pool) ready() bool {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.started && (p.filled || len(p.waiting) >= 1) && p.now().Sub(p.lastAPIOK) < 2*p.cfg.SweepInterval
+	if !p.started || !(p.filled || len(p.waiting) >= 1) || p.now().Sub(p.lastAPIOK) >= 2*p.cfg.SweepInterval {
+		return false
+	}
+	// An empty pool is ready only while creates work: path A still serves. When
+	// creates fail and the back-off is active, every request would get 503, so
+	// the pod must leave the Service until one create succeeds.
+	return len(p.waiting) > 0 || p.backoff == 0
 }
 
 // drain makes /readyz fail. It is the first step of a shutdown.
@@ -440,7 +446,13 @@ func (p *pool) fallbackChild(ctx context.Context) (*child, error) {
 	p.served[name] = p.now()
 	p.mu.Unlock()
 	c, err := p.createOne(ctx, name)
-	if err != nil && ctx.Err() == nil {
+	switch {
+	case err == nil:
+		// A create worked: the back-off and the unready state end.
+		p.mu.Lock()
+		p.backoff, p.lastFail = 0, time.Time{}
+		p.mu.Unlock()
+	case ctx.Err() == nil:
 		// A late answer to a caller that gave up says nothing about the worker.
 		p.mu.Lock()
 		p.noteFailureLocked()

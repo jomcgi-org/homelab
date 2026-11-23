@@ -55,6 +55,9 @@ func (g *gate) serveScan(w http.ResponseWriter, r *http.Request) {
 	// The size limit applies before the gate reads a byte, and before the
 	// request takes a scan slot.
 	if r.ContentLength > g.cfg.MaxBody {
+		// Close the connection: net/http would otherwise read up to 256 KiB of
+		// the unread body before it sends this answer.
+		w.Header().Set("Connection", "close")
 		g.fail(w, outcomeOversize, http.StatusRequestEntityTooLarge, began)
 		return
 	}
