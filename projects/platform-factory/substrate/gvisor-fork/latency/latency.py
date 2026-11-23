@@ -32,6 +32,13 @@ Every result line starts with "LATENCY " and holds key=value pairs, so
 `kubectl -n ate-system logs job/<name> | grep '^LATENCY '` reads the run.
 A line with event=sample is one measurement; a line with event=stats is the
 nearest-rank p50, p95 and p99 of one metric (p99 equals max below 100 samples).
+The pool books every child at the template's CPU and memory limits, and a
+child that served its request keeps its booking until the worker reports its
+exit and the API deletes the actor. The script reads the worker's free capacity
+after the seed is ready and stops with a capacity error when the largest burst
+plus one child of headroom does not fit. A worker also pins the atespace of its
+first seed for the life of the process, so restart the pool pod between runs
+that use different atespaces (conformance, latency, the engine).
 The atespace is deleted at the end, on failure and on SIGTERM, and before the
 run in case an earlier one died.
 """
@@ -63,7 +70,9 @@ TEMPLATE = os.environ.get("TEMPLATE", "engine")
 POOL = os.environ.get("POOL", "gvisor-fork")
 MODE = os.environ.get("MODE", "control")  # control | all
 SEQUENTIAL = int(os.environ.get("SEQUENTIAL", "20"))
-CONCURRENCY = [int(k) for k in os.environ.get("CONCURRENCY", "4,16").split(",") if k]
+CONCURRENCY = [int(k) for k in os.environ.get("CONCURRENCY", "2,4").split(",") if k]
+# Waiting children prepared at once in the sequential pool phase.
+POOL_BATCH = int(os.environ.get("POOL_BATCH", "4"))
 BODY_BYTES = [int(b) for b in os.environ.get("BODY_BYTES", "16384,524288").split(",")]
 LARGE_SAMPLES = int(os.environ.get("LARGE_SAMPLES", "10"))
 FLOOR_SAMPLES = int(os.environ.get("FLOOR_SAMPLES", "10"))
@@ -367,6 +376,59 @@ def run_k(k: int, work, items: list) -> tuple[list, float]:
     return results, ms(start)
 
 
+FORK_OVERHEAD = 16 << 20  # booked on top of a child's memory limit
+
+
+def child_booking(template_text: str) -> tuple[int, int]:
+    """CPU millicores and memory bytes one child books: its template limits."""
+    found = re.search(
+        r"(?m)^resources:\n  limits:\n    cpuMillicores: (\d+)\n    memoryBytes: (\d+)",
+        template_text,
+    )
+    if not found:
+        raise Failed("the template has no resources.limits to book")
+    return int(found.group(1)), int(found.group(2)) + FORK_OVERHEAD
+
+
+def free_capacity() -> tuple[int, int] | None:
+    """Free CPU millicores and memory bytes of the pool's worker, if it reports them."""
+    for worker in pool_workers():
+        capacity = first(worker, "capacity")
+        allocated = first(worker, "allocated") or {}
+        if isinstance(capacity, dict) and "cpuMillicores" in capacity:
+            return (
+                int(capacity["cpuMillicores"]) - int(allocated.get("cpuMillicores", 0)),
+                int(capacity.get("memoryBytes", 0))
+                - int(allocated.get("memoryBytes", 0)),
+            )
+    return None
+
+
+def check_capacity(template_text: str) -> None:
+    """Fail early when the pool cannot book the largest burst plus one child."""
+    peak = max([*CONCURRENCY, POOL_BATCH]) + 1
+    cpu, memory = child_booking(template_text)
+    free = free_capacity()
+    if free is None:
+        log(event="capacity", result="unknown", note="the worker reports no capacity")
+        return
+    need = (peak * cpu, peak * memory)
+    log(
+        event="capacity",
+        children=peak,
+        need_cpu_m=need[0],
+        free_cpu_m=free[0],
+        need_mem_mib=need[1] >> 20,
+        free_mem_mib=free[1] >> 20,
+    )
+    if free[0] < need[0] or free[1] < need[1]:
+        raise Failed(
+            f"capacity: {peak} children book {need[0]}m CPU and {need[1] >> 20} MiB, "
+            f"and the pool has {free[0]}m and {free[1] >> 20} MiB free: "
+            "resize the pool (kvm-pool.yaml) or lower CONCURRENCY and POOL_BATCH"
+        )
+
+
 def phase_floor() -> None:
     values = []
     for _ in range(FLOOR_SAMPLES):
@@ -435,12 +497,16 @@ def phase_pool(router: Router) -> None:
     for size in BODY_BYTES:
         count = SEQUENTIAL if size <= 65536 else LARGE_SAMPLES
         names = [NAMES() for _ in range(count)]
-        run_k(min(8, count), prepare, names)
         rows = []
-        for name in names:
-            row = send(router, name, size)
-            rows.append(row)
-            sample("pool", "pool", 1, body=size, **row)
+        for start in range(0, count, POOL_BATCH):
+            batch = names[start : start + POOL_BATCH]
+            run_k(len(batch), prepare, batch)
+            for name in batch:
+                row = send(router, name, size)
+                rows.append(row)
+                sample("pool", "pool", 1, body=size, **row)
+            # A served child keeps its booking until its actor is deleted.
+            drained(STATE_WAIT)
         stats(
             "pool_seq",
             "pool",
@@ -466,7 +532,7 @@ def phase_pool(router: Router) -> None:
     size = BODY_BYTES[0]
     for k in CONCURRENCY:
         names = [NAMES() for _ in range(k)]
-        run_k(min(8, k), prepare, names)
+        run_k(k, prepare, names)
         rows, wall = run_k(k, lambda n: send(router, n, size), names)
         stats(
             f"pool_k{k}",
@@ -571,6 +637,7 @@ def run() -> None:
         raise Failed(f"actor-template {TEMPLATE}: no metadata.uid")
     seconds = wait_for("a ready seed", SEED_WAIT, lambda: seeded(str(uid)))
     log(event="seed", seed_ready_seconds=f"{seconds:.2f}")
+    check_capacity(TEMPLATE_FILE.read_text())
     phase_floor()
     phase_control()
     if MODE != "all":

@@ -34,7 +34,10 @@ containers:
         port: 80
       timeoutSeconds: 20
 # The private limits of one forked actor. The kernel kills it above the limit
-# plus the 16 MiB fork overhead. A scanning child holds about 37 MB.
+# plus the 16 MiB fork overhead. A scanning child holds about 37 MB. The
+# scheduler books exactly these limits for every child, waiting or not, and the
+# seed books seedResources below: with 1000m each, a pod of N CPU holds the seed
+# and N-1 children. A cpu.max below 1000m throttles a 60 to 80 ms scan.
 resources:
   limits:
     cpuMillicores: 1000
