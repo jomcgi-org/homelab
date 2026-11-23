@@ -30,6 +30,15 @@ def test_one_external_rule_and_no_resource_or_custom_metrics():
     assert RULE["resources"] == {"namespaced": False}
 
 
+def test_the_deployment_is_pinned_critical_and_reads_one_metric():
+    assert VALUES["priorityClassName"] == "system-cluster-critical"
+    assert VALUES["image"]["tag"].startswith("v0.12.0@sha256:")
+    assert VALUES["rbac"]["externalMetrics"]["resources"] == [
+        "factory_worker_pool_workers_wanted"
+    ]
+    assert POLICY["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] == "-1"
+
+
 def test_the_chart_is_pinned_and_reads_prometheus_in_its_namespace():
     source = APPLICATION["spec"]["sources"][0]
     assert source["chart"] == "prometheus-adapter"
@@ -126,10 +135,30 @@ OTHER = 'factory_worker_pool_demand{pool_namespace="factory-r-homelab-review",po
             },
             1,
         ),
-        # The connector's source alone (the reaper's is missing) still wakes the pool.
-        ({demand("pending"): "1 1 1", SPARE: "1 1 1"}, 2),
-        # No spare series (the reaper stopped): no value, so the HPA holds.
-        ({demand("actors"): "3 3 3", demand("pending"): "0 0 0"}, None),
+        # A source missing means no value: the sum would undercount, and the
+        # HPA would remove workers under live actors. It holds instead.
+        ({demand("pending"): "1 1 1", SPARE: "1 1 1"}, None),  # actors missing
+        ({demand("actors"): "3 3 3", SPARE: "1 1 1"}, None),  # pending missing
+        (
+            {demand("actors"): "3 3 3", demand("pending"): "0 0 0"},
+            None,
+        ),  # spare missing
+        ({}, None),
+        # A series that goes stale (a source stops) drops the value too.
+        (
+            {demand("actors"): "3 3 stale", demand("pending"): "0 0 0", SPARE: "1 1 1"},
+            None,
+        ),
+        # Two scrapes of one source (an instance label) count once.
+        (
+            {
+                demand("actors"): "3 3 3",
+                demand("actors").replace("{", '{instance="b",'): "3 3 3",
+                demand("pending"): "0 0 0",
+                SPARE: "2 2 2",
+            },
+            5,
+        ),
     ],
     ids=[
         "idle",
@@ -137,8 +166,12 @@ OTHER = 'factory_worker_pool_demand{pool_namespace="factory-r-homelab-review",po
         "live-actors",
         "sources-add",
         "other-pool",
-        "pending-only",
-        "no-spare",
+        "actors-missing",
+        "pending-missing",
+        "spare-missing",
+        "nothing",
+        "stale-source",
+        "duplicate-scrape",
     ],
 )
 def test_query_adds_demand_and_spare_while_the_pool_has_demand(series, want):

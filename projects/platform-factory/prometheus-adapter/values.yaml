@@ -8,9 +8,14 @@
 #   factory_worker_pool_demand{source="pending"}  the connector's unsent sends
 #   factory_worker_pool_demand{source="actors"}   the reaper's workers that host an actor
 # Spare workers (factory_worker_pool_spare, the reaper's) join only while the
-# pool has demand, so an idle pool asks for 0. A missing series, from a reaper
-# that stopped or a failed read, returns no value: the HPA then holds the
-# replica count (ScalingActive=False, FailedGetExternalMetric).
+# pool has demand, so an idle pool asks for 0.
+#
+# The metric has a value only when BOTH demand sources and the spare series
+# exist for the pool. A sum over the series that remain would undercount when
+# one source disappears (the reaper's census went stale, or the connector's read
+# failed) and let the HPA remove workers under live actors. With no value the
+# HPA holds the replica count (ScalingActive=False, FailedGetExternalMetric).
+# max by source first, so two scrapes of one source never add twice.
 #
 # namespaced: false because the series name the pool in labels, not in a
 # Namespace: the HPA lives in the pool's namespace, the series in factory's.
@@ -20,6 +25,22 @@ prometheus:
 
 replicas: 1
 logLevel: 2
+
+# It must schedule on nodes that request 98% of memory, or the HPA loses its
+# metric: a cluster add-on, like metrics-server.
+priorityClassName: system-cluster-critical
+
+# Pinned by digest (crane digest, 2026-11-23). The chart renders
+# image:tag, so the digest rides on the tag.
+image:
+  tag: v0.12.0@sha256:932eae60e2bcf9c4660d6442da066ef1a79b4ea7cc232c61c7303069216ca006
+
+# The HPA controller reads this one metric; the chart's default is every
+# external metric. The adapter's own resource-reader ClusterRole stays (a
+# follow-up).
+rbac:
+  externalMetrics:
+    resources: ["factory_worker_pool_workers_wanted"]
 
 # The adapter re-lists series names each minute. It does not cache values: the
 # HPA's read (every 15 s) is a live query.
@@ -41,9 +62,18 @@ rules:
         as: "factory_worker_pool_workers_wanted"
       resources:
         namespaced: false
-      # demand + spare * (demand > 0), per pool. `> bool 0` keeps the series
-      # at 0 instead of dropping it, so an idle pool reads 0, not "no data".
+      # (demand and count == 2) + spare * (demand > 0), per pool. `> bool 0`
+      # keeps the series at 0 instead of dropping it, so an idle pool reads 0,
+      # not "no data".
       metricsQuery: |-
-        sum by (pool_namespace, pool) (factory_worker_pool_demand{<<.LabelMatchers>>})
-        + sum by (pool_namespace, pool) (factory_worker_pool_spare{<<.LabelMatchers>>})
-          * (sum by (pool_namespace, pool) (factory_worker_pool_demand{<<.LabelMatchers>>}) > bool 0)
+        (
+          sum by (pool_namespace, pool) (max by (pool_namespace, pool, source) (factory_worker_pool_demand{source=~"actors|pending",<<.LabelMatchers>>}))
+          and on (pool_namespace, pool)
+          (count by (pool_namespace, pool) (max by (pool_namespace, pool, source) (factory_worker_pool_demand{source=~"actors|pending",<<.LabelMatchers>>})) == 2)
+        )
+        + on (pool_namespace, pool)
+        (
+          max by (pool_namespace, pool) (factory_worker_pool_spare{<<.LabelMatchers>>})
+          * on (pool_namespace, pool)
+          (sum by (pool_namespace, pool) (max by (pool_namespace, pool, source) (factory_worker_pool_demand{source=~"actors|pending",<<.LabelMatchers>>})) > bool 0)
+        )
