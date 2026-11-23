@@ -400,8 +400,8 @@ def test_kvm_pool_template_sets_only_the_account_and_the_resources() -> None:
 
 
 def test_kvm_pool_with_workers_has_a_real_worker_image_digest() -> None:
-    # The all-zero placeholder is for the staged state only: a pool that
-    # starts workers must name a published image.
+    # An all-zero digest names no image: a pool that starts workers must not
+    # carry one.
     pool = _pool()
     if pool["spec"]["replicas"] > 0:
         digest = pool["spec"]["workerImage"].split("@sha256:")[1]
@@ -469,7 +469,7 @@ _TEMPLATE = _HERE / "conformance" / "template.yaml"
 
 
 def _conformance_job() -> dict:
-    return _one(_docs(), "Job", "gvisor-fork-conformance-1")
+    return _one(_docs(), "Job", "gvisor-fork-conformance-2")
 
 
 def test_conformance_job_is_suspended_and_runs_as_ate_client() -> None:
@@ -728,7 +728,12 @@ def _conformance(tmp_path: Path, template=None, **env):
 
 
 def _engine_template() -> str:
-    return _TEMPLATE.read_text().replace("0" * 64, "1" * 64)
+    return _TEMPLATE.read_text()
+
+
+def _placeholder_template() -> str:
+    # The all-zero digest that stood in before the engine image existed.
+    return re.sub(r"@sha256:[0-9a-f]{64}", "@sha256:" + "0" * 64, _TEMPLATE.read_text())
 
 
 def _nothing_left(state: dict) -> bool:
@@ -768,7 +773,7 @@ def test_conformance_matches_the_seed_by_atespace_and_template_uid(
 def test_conformance_refuses_a_placeholder_engine_image_before_any_api_call(
     tmp_path: Path,
 ) -> None:
-    run, state = _conformance(tmp_path)
+    run, state = _conformance(tmp_path, _placeholder_template())
     assert run.returncode == 1
     assert "no real sha256 digest" in run.stdout
     assert state is None  # the fake CLI never ran
@@ -822,3 +827,28 @@ def test_conformance_refuses_a_template_it_cannot_edit(tmp_path: Path) -> None:
     assert run.returncode == 1
     assert "has no 'singleUse: true' to edit" in run.stdout
     assert _nothing_left(state)
+
+
+def test_staged_images_name_the_published_fork_digests() -> None:
+    # Published by the substrate-fork-images and substrate-fork-engine
+    # workflows, and pullable anonymously.
+    template = yaml.safe_load(_TEMPLATE.read_text())
+    (container,) = template["containers"]
+    pod = _conformance_job()["spec"]["template"]["spec"]
+    (cli,) = [v for v in pod["volumes"] if v["name"] == "cli"]
+    images = {
+        "engine": container["image"],
+        "cli": cli["image"]["reference"],
+        "worker": _pool()["spec"]["workerImage"],
+    }
+    assert images == {
+        "engine": _FORK_IMAGES
+        + "engine-oss:1.186.0-946d07e5597c@sha256:"
+        + "dbffb4d73f072b2a71a05356a657a595bd147357bc85a538139f2634be47b238",
+        "cli": _FORK_IMAGES
+        + "kubectl-ate:fork-b6b0ec3e217c@sha256:"
+        + "ea22fcf01640627601669506be390d614122f131fadd39de33e1e6da1a7e614f",
+        "worker": _FORK_IMAGES
+        + "ateworker-gvisor:fork-b6b0ec3e217c@sha256:"
+        + "65f14b6900ee64c6dae2e03a7063d9fb0384e1f62becca5a275421b891870e94",
+    }

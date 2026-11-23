@@ -4,10 +4,10 @@
 # the Round 5 tests). conformance.py creates it in its own atespace and deletes
 # it again.
 #
-# image: a digest-pinned build of that engine and shim, public code only (no
-# token, rule or proprietary file). The all-zero digest below is a
-# placeholder: no such image is published yet, and conformance.py refuses to
-# run until the enable step replaces it.
+# image: the digest-pinned build of that engine and shim from the workflow
+# "Substrate fork engine image" (engine/README.md), public code only (no
+# token, rule or proprietary file). conformance.py makes no API call unless
+# the image names a real sha256 digest.
 #
 # `command` is the whole argv. The seed holds no secret and the template names
 # no env (an env named like a secret is refused, and the Job checks that).
@@ -20,7 +20,7 @@ workerSelector:
     workload: gvisor-fork
 containers:
   - name: engine
-    image: ghcr.io/jomcgi-org/homelab/substrate-fork/semgrep-engine:1.186.0@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    image: ghcr.io/jomcgi-org/homelab/substrate-fork/engine-oss:1.186.0-946d07e5597c@sha256:dbffb4d73f072b2a71a05356a657a595bd147357bc85a538139f2634be47b238
     command:
       - /usr/local/bin/forksrv-net
       - --listen

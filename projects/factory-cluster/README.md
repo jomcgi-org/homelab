@@ -554,7 +554,7 @@ Nothing below runs on the cluster.
 | --- | --- | --- |
 | SandboxConfig `gvisor-fork` (fork build `0250f9acf`) and its asset Job | `projects/platform-factory/substrate/gvisor-fork/` | `resources/kustomization.yaml` does not list the directory; `resources_test.py` fails if it does |
 | WorkerPool `gvisor-fork` (`platform: kvm`) | `gvisor-fork/kvm-pool.yaml` | unwired, and `replicas: 0` |
-| Conformance Job `gvisor-fork-conformance-1` (renamed `-2` at step 8) | `gvisor-fork/conformance-job.yaml` | unwired, and `suspend: true` |
+| Conformance Job `gvisor-fork-conformance-2` | `gvisor-fork/conformance-job.yaml` | unwired, and `suspend: true` |
 | Fork images (`ateapi`, `atecontroller`, `atelet`, `ateworker-gvisor`, `kubectl-ate`) | `.github/workflows/substrate-fork-images.yml` | manual dispatch only; no pin changes |
 | `ForkSeed` preview gate | `substrate/values/common.yaml` | not listed |
 
@@ -582,18 +582,17 @@ flowchart LR
   X --> F[10 Joe allows factory use]
 ```
 
-1. Create the GitHub release `fork-seed-slice1-0250f9acf` on jomcgi-org/gvisor
-   from CI run 45119532914. Its `runsc-release.tar.gz` must hash to
+1. Done. The GitHub release `fork-seed-slice1-0250f9acf` on jomcgi-org/gvisor
+   holds `runsc-release.tar.gz`. Its sha256 is
    `6850279d7a50b7c047fedf1ad631c65d05eb4b091b0b28c9a28a6abfb7534460`.
-2. Dispatch `Substrate fork images` with `publish` off, then on. The workflow
-   file comes from #8584 (merged). Record the five digests. Make the
-   packages pullable by atelet.
-3. Publish the public engine image with its listen-after-fork server. Run the
-   workflow `Substrate fork engine image` with `publish` on (#8588, merged).
-   In the GitHub package settings of `substrate-fork/engine-oss`, make the
-   package public. The workflow token cannot do that. Record the reference from
-   the run summary. `projects/platform-factory/substrate/gvisor-fork/engine/README.md`,
-   "Replace the placeholder digest", lists how it replaces the placeholder.
+2. Done. The `Substrate fork images` workflow (run 45140822019) published the
+   five images at fork commit `b6b0ec3e217c`. The packages are public. The
+   digests are in `kvm-pool.yaml` (`ateworker-gvisor`) and
+   `conformance-job.yaml` (`kubectl-ate`). Step 4 uses the `ateapi`,
+   `atecontroller` and `atelet` digests from the run summary.
+3. Done. The `Substrate fork engine image` workflow (run 45140818290) published
+   `engine-oss:1.186.0-946d07e5597c`, and `conformance/template.yaml` names it by
+   digest. The package is public.
 4. Cluster-affecting, Joe approves. Render the fork's charts at `b6b0ec3e2`:
    the CRD with `platform`, then `ateapi`, `atecontroller` and `atelet` at the
    fork digests. Check that no factory runs are dispatched before the roll, as
@@ -601,7 +600,7 @@ flowchart LR
    an existing actor still starts and runs, and that the control plane is
    healthy.
 5. Wire `../gvisor-fork` in `resources/kustomization.yaml`. Set the pool's
-   `workerImage` to the published digest. Keep `replicas` at 0. In
+   `workerImage` is already the published digest. Keep `replicas` at 0. In
    `resources_test.py`, replace `test_gvisor_fork_slice_is_staged_and_not_wired`
    with a test of the wired objects in the same change. Keep
    `test_fork_seed_gate_is_off` until step 7. The directory renders 13
@@ -628,20 +627,11 @@ flowchart LR
    workers, and no factory template has `fork_config` until step 10. A client
    must opt in to preview features (`kubectl-ate --preview`) to use a fork
    template.
-8. Prepare the Job, then run it.
-   - Replace the `image:` line (`conformance/template.yaml:23`) with the
-     reference from the engine run summary. The staged name
-     `semgrep-engine:1.186.0` differs from the published
-     `substrate-fork/engine-oss:<tag>`.
-   - Replace the `kubectl-ate` digest in `conformance-job.yaml`.
-   - Change the Job name to `gvisor-fork-conformance-2`, and set `suspend` to
-     `false`. The pod template and the generated ConfigMap name change, and a
-     Job's pod template is immutable, so the same name fails to sync.
-   - In `gvisor_fork_test.py`, update
+8. Run the Job. The engine image, the `kubectl-ate` digest, the Job name
+   (`gvisor-fork-conformance-2`) and the placeholder test are already in git.
+   - Set `suspend` to `false`. In `gvisor_fork_test.py`, update
      `test_conformance_job_is_suspended_and_runs_as_ate_client`, which asserts
-     `suspend is True`. Change the `_conformance_job()` name to `-2`. Give
-     `test_conformance_refuses_a_placeholder_engine_image_before_any_api_call`
-     its own placeholder digest, as the engine README step 4 says.
+     `suspend is True`, in the same change.
    - Read `kubectl -n ate-system logs job/gvisor-fork-conformance-2 | grep '^CONFORMANCE '`.
    - When the seed starts, find `forkd started` in the worker log. Check forkd's
      `hello` assertions (capabilities, cgroup parent, Unconfined seccomp,
