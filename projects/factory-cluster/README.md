@@ -749,22 +749,29 @@ flowchart LR
    | --- | --- | --- | --- |
    | limits | 2 CPU, 1280Mi | 9 CPU, 2Gi | seed (1000m, 512 MiB cap) and 8 children (1000m, 144 MiB booked each) |
    | requests | 100m, 256Mi | 4 CPU, 1Gi | the design's scheduling reservation. 4 CPU matches the in-flight cap of 4: a 500m request would give four scans half a core's shares under contention |
-   | `nodeAffinity` | none | prefer `kubernetes.io/hostname: node-1`, weight 100 | node-1 has the most request room. Soft, so a drained node-1 does not leave the pod pending |
+   | `nodeAffinity` | none | prefer `kubernetes.io/hostname: node-1`, weight 100 | Joe asked that the pool land on node-1 (the design has no selector): it has the most request room, and one node keeps latency runs comparable. Soft, so a drained node-1 does not leave the pod pending |
 
-   Request room on 2026-11-23 (allocatable minus requests, from `kubectl
-   describe nodes`):
+   Request room on 2026-11-23, after the re-pin (allocatable minus requests,
+   from `kubectl describe nodes`):
 
    | Node | Memory left | After 1Gi | CPU left | After 4 CPU |
    | --- | --- | --- | --- | --- |
-   | node-1 | 5173Mi | 4149Mi | 8275m | 4275m |
-   | node-2 | 1981Mi | 957Mi | 6975m | 2975m |
-   | node-3 | 2601Mi | 1577Mi | 6010m | 2010m |
+   | node-1 | 5237Mi | 4213Mi | 8235m | 4235m |
+   | node-2 | 1981Mi | 957Mi | 6925m | 2925m |
+   | node-3 | 2857Mi | 1833Mi | 6210m | 2210m |
 
    The pod fits every node, so the preference never blocks it. The scheduler
    starts one pod and nothing rolls: no WorkerPool is edited but this one. Read
-   the room again before you merge, because the cluster changes (node-1 held
-   about 5.1 GiB on the day of the check). `kvm-pool.yaml` states the same
-   numbers. In `gvisor_fork_test.py`, the tests that named the staged state
+   the room again before you merge. `kvm-pool.yaml` states the same numbers.
+
+   Trade-off: the request takes 1Gi of node-1's request room (5237Mi to
+   4213Mi). At the full coder peak (10 to 12 workers at 768Mi each, and a fifth
+   reviewer) one or two coder workers may stay Pending for lack of request room.
+   Nothing is evicted: requests only decide scheduling, and the running pods
+   keep their memory. If it hurts, lower the memory request to 768Mi (the seed
+   and the expected use are 586 MB). After the first busy period, check for
+   Pending workers:
+   `kubectl get pods -A -l ate.dev/worker-pool --field-selector=status.phase=Pending`. In `gvisor_fork_test.py`, the tests that named the staged state
    change in the same change: `test_kvm_pool_has_one_worker_and_uses_the_fork_config`
    (was `..._has_no_workers_...`, asserted `replicas == 0`),
    `test_kvm_pool_template_sets_only_the_account_the_placement_and_the_resources`
@@ -775,6 +782,7 @@ flowchart LR
 
    ```sh
    kubectl -n substrate-gvisor-fork get pod -o wide     # 1 pod, Running, on node-1
+   kubectl -n substrate-gvisor-fork get deploy gvisor-fork -o jsonpath='{.spec.template.spec.containers[0].args}'   # --preview=GoldenEgressPolicy,PerTemplateSnapshotLocation: no ForkSeed
    kubectl get workerpools -A                           # gvisor-fork READY 1; the others unchanged
    kubectl -n substrate-gvisor-fork get pod -o jsonpath='{.items[0].spec.containers[0].resources}'
    kubectl -n substrate-gvisor-fork get pod -o yaml | grep -E 'fork-platform|ate.dev/kvm|seccomp|CAP|SYS_ADMIN'
@@ -783,12 +791,9 @@ flowchart LR
    ```
 
    The worker image is the `workerImage` of `kvm-pool.yaml`:
-   `ateworker-gvisor:fork-1e7a877d0ca3@sha256:f208bf5a…7d1`, from the re-pin PR.
-   That PR must be merged and verified first: it rolls the control plane and
-   moves the pin, so this step starts a worker on the new build. The step does
-   not depend on its code, and the two PRs are separate. Check that the pod's
-   `imageID` ends in that digest. A pod on the old digest
-   (`65f14b69…`) means the re-pin is not live.
+   `ateworker-gvisor:fork-1e7a877d0ca3@sha256:f208bf5a…7d1`, from the re-pin
+   (merged and live: #8623). Check that the pod's `imageID` ends in that digest.
+   A pod on the old digest (`65f14b69…`) means the pool did not take the pin.
 
    The worker pod runs with `/dev/kvm` (the `ate.dev/kvm` limit),
    `--fork-platform=kvm`, the KVM capabilities and seccomp Unconfined. forkd
