@@ -348,15 +348,31 @@ def test_the_ignore_check_catches_a_pool_with_no_entry():
     assert _unignored(on, app) == set()
 
 
-def test_deploy_values_keep_the_coder_pool_at_one_worker_or_more():
-    # The first enabling change: minReplicas 1, so a pool never reaches zero
-    # and needs no send wait; maxReplicas 12 is the fixed pool's size today.
+def test_deploy_values_let_the_coder_pool_scale_to_zero_behind_a_send_wait():
+    # The coder pool follows demand between 0 and 12 workers (12 is the fixed
+    # pool's size). A pool at zero needs the connector's send wait, which holds
+    # a send until a worker is ready: without it the send fails with "no worker
+    # has room". The wait must cover a cold start: Prometheus scrape (30 s),
+    # HPA sync (15 s), pod schedule and start, reaper row (15 s), and one slow
+    # schedule seen on 2026-11-20 (161 s), so it is at least 3 min.
     docs = _render(defaults=False)
     (hpa,) = _hpas(docs)
     assert hpa["metadata"]["name"] == _CODER[1]
-    assert hpa["spec"]["minReplicas"] == 1
+    assert hpa["spec"]["minReplicas"] == 0
     assert (
         hpa["spec"]["maxReplicas"]
         == _one(docs, "WorkerPool", *_CODER)["spec"]["replicas"]
     )
     assert _reaper_pools(docs) == f"{_CODER[0]}/{_CODER[1]}=2"
+    cm = _one(docs, "ConfigMap", "factory", "factory-connector")
+    wait = yaml.safe_load(cm["data"]["config.yaml"])["intervals"]["workerWait"]
+    assert wait == "5m"
+    # A held send is not issued, so no task lease runs on it. A bound above
+    # 5 min would only delay the failure of a pool that cannot start.
+    assert 3 * 60 <= _seconds(wait) <= 5 * 60
+
+
+def _seconds(duration: str) -> int:
+    """A Go duration of whole minutes or seconds, in seconds."""
+    unit = {"s": 1, "m": 60}[duration[-1]]
+    return int(duration[:-1]) * unit

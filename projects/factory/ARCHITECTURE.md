@@ -127,21 +127,20 @@ scale a workload to and from zero from an Object or External metric
 (`HPAScaleToZero`, beta, on by default;
 [post](https://kubernetes.io/blog/2026/09/02/kubernetes-v1-37-hpa-scale-to-zero-beta/)).
 
-**State.** The switch is off: `agents.<name>.autoscaling.enabled` is false and
-the render is unchanged. Three parts are on main. The rest are open PRs, merged
-in this order:
+**State.** The chart renders an HPA only for a pool with
+`agents.<name>.autoscaling.enabled`. The coder pool (`homelab-codex`) has it on.
+All parts are on main:
 
-| Part | PR | State | Adds |
-| --- | --- | --- | --- |
-| Connector series | #8591 | on main | `factory_worker_pool_demand{source="pending"}` |
-| Reaper census | #8592 | on main | `demand{source="actors"}`, `factory_worker_pool_spare`, the scrape job |
-| Adapter | #8594 | on main | the External Metrics API; no HPA uses it yet |
-| Send wait | #8593 | open | the `worker_pool_capacity` row and `intervals.workerWait` |
-| Deletion cost | #8596 | open | `pod-deletion-cost` on workers that host an actor |
-| This switch | #8595 | open | the HPA, `FACTORY_REAPER_POOLS`, the reaper's `patch` on pods |
-
-This PR must merge after #8593: the connector on main rejects the
-`workerWait` key that the chart's schema accepts.
+| Part | PR | Adds |
+| --- | --- | --- |
+| Connector series | #8591 | `factory_worker_pool_demand{source="pending"}` |
+| Reaper census | #8592 | `demand{source="actors"}`, `factory_worker_pool_spare`, the scrape job |
+| Send wait | #8593 | the `worker_pool_capacity` row and `intervals.workerWait` |
+| Adapter | #8594 | the External Metrics API |
+| This switch | #8595 | the HPA, `FACTORY_REAPER_POOLS`, the reaper's `patch` on pods |
+| Deletion cost | #8596 | `pod-deletion-cost` on workers that host an actor |
+| First enabling change | #8597 | the coder pool between 1 and 12 workers |
+| Repo-server egress | #8599 | the chart repository the HPA's chart needs |
 
 ```mermaid
 flowchart LR
@@ -198,13 +197,41 @@ actor holds no worker and is unaffected.
 An actor placed on a worker between two reaper passes (15 s) can still lose
 its worker. The turn then recovers as any lost worker does.
 
-**Cold start.** A run that arrives at zero waits for a worker: demand, the
-HPA's 15 s sync, pod start and worker registration. The connector holds the
-send, which stays `sending` and counts as `pending`, until the reaper's
-capacity row shows a free worker. `intervals.workerWait` bounds the wait
-(unset: off). A missing or stale row sends at once. A new session needs a
-ready worker with no actor, less the sends the connector let through since the
-row was written. A continuation needs a ready worker.
+**Cold start.** A run that arrives at zero waits for a worker. The path:
+
+```mermaid
+sequenceDiagram
+  participant E as connector engine
+  participant P as Prometheus + adapter
+  participant H as HPA
+  participant W as WorkerPool
+  participant R as reaper
+  E->>E: attempt row "sending" (counts as pending)
+  E->>E: awaitWorker: row ready 0, hold
+  P->>H: workers_wanted = pending + spare (scrape 30 s)
+  H->>W: spec.replicas = 3 (sync 15 s, no scale-up delay)
+  W-->>R: pod Ready (about 10 s after it starts)
+  R->>E: capacity row ready 3, busy 0 (each 15 s)
+  E->>E: awaitWorker: free worker, release the send
+```
+
+The held send stays `sending` (never issued), so no task lease runs on it and
+no ambiguous outcome is recorded. `intervals.workerWait` bounds the wait
+(unset: off). A new session needs a ready worker with no actor, less the sends
+the connector let through since the row was written. A continuation needs a
+ready worker.
+
+The reaper writes a row for each pool it is given (`FACTORY_REAPER_POOLS`),
+also a pool with no pods: `ready 0, busy 0`. A pool at zero therefore holds
+the send. The gate sends at once, and the send can fail with "no worker has
+room", in only these cases:
+
+- No row exists: the reaper has never written the pool.
+- The row is older than 45 s: the census failed or the reaper is not the
+  leader. The HPA has no value then either, because its `actors` series comes
+  from the same census, so a pool at zero stays at zero. Fix the reaper first.
+- `workerWait` passed with no worker: the pool could not start in time (no
+  node fits the pod, or the metric has no value).
 
 Known limit: the reservation counts only the sends of one connector process.
 An actor that another caller places in the same 15 s window can still take the
@@ -251,19 +278,21 @@ before the 11-22 fix. The pool leaves 5 only after 30 min with no actor.
 
 | Failure | Effect | Recovery |
 | --- | --- | --- |
-| Adapter, reaper or connector series missing | The metric has no value. The HPA holds its replicas (`ScalingActive=False`). | A pool above zero keeps its workers. A pool at zero stays at zero until someone runs `kubectl scale workerpool <name> --replicas=1`. |
+| Adapter, reaper or connector series missing | The metric has no value. The HPA holds its replicas (`ScalingActive=False`). | A pool above zero keeps its workers. A pool at zero stays at zero until someone revives it (see below). |
 | Reaper capacity row stale | The connector sends without waiting. | The send can fail with "no worker has room", as before. |
+| `workerWait` passes with no worker | The send goes and can fail as above. | Find why the pool did not start: `describe hpa`, pod events. |
 | `HPAScaleToZero` off | A pool at zero reads as paused and stays there. | Set `minReplicas: 1` while the pool is still at 1 or more. |
 
-**Rollout.** The chart renders an HPA only for a pool with
-`autoscaling.enabled`. Each step is its own reviewed change:
+**Rollout.** Each step is its own reviewed change:
 
-1. Merge the open parts above in order. The adapter is on main, and nothing
-   scales yet.
-2. Enable one pool with `autoscaling.enabled` and `minReplicas: 1`. The pool
-   can shrink to one worker and no lower, so a metric failure costs little.
-3. Raise the coder pool to `minReplicas: 0` after a full day of correct
-   metrics.
+1. Merge the parts above in order. Done.
+2. Enable one pool with `autoscaling.enabled` and `minReplicas: 1`. Done
+   (#8597).
+3. Raise the coder pool to `minReplicas: 0` and set `intervals.workerWait` in
+   the same change. Check the metric first.
+   The HPA takes the pool from 1 to 0 itself after the 30 min scale-down
+   window, so the connector rolls out with `workerWait` well before the first
+   zero.
 4. Enable the reviewer pool, after the chart and connector image that
    publish `pending` at 0 are live: `autoscaling: {enabled: true,
    minReplicas: 3, spare: 2, maxReplicas: 5}` under `agents.reviewer` in
@@ -274,24 +303,49 @@ before the 11-22 fix. The pool leaves 5 only after 30 min with no actor.
    before values"). To roll back, revert that change: Argo CD then restores
    `concurrency` (5).
 
-`maxReplicas` defaults to `concurrency + spare`: 14 for the coder pool, above
-the 12 fixed workers today, on nodes that request 98% of memory. Set
-`maxReplicas` to `concurrency` in the first enabling change.
+`maxReplicas` is 12 for the coder pool, the fixed pool's size, on nodes that
+request 98% of memory.
 
-The enabling change also adds an `ignoreDifferences` entry (group `ate.dev`,
-kind `WorkerPool`, `/spec/replicas`) for the pool in
-`factory/deploy/application.yaml`. Argo CD uses server-side apply with
-self-heal and would reset the HPA's value. `autoscaling_test.py` renders the
-deploy values and fails when an HPA's pool has no entry.
+`application.yaml` has an `ignoreDifferences` entry (group `ate.dev`, kind
+`WorkerPool`, `/spec/replicas`) for the pool. Argo CD uses server-side apply
+with self-heal and would reset the HPA's value. `autoscaling_test.py` renders
+the deploy values and fails when an HPA's pool has no entry.
+
+**Revive a paused pool.** An HPA scales a pool to zero and records
+`ScaledToZero=True` on itself. A target at zero without that condition counts
+as paused, and the HPA does not wake it. This happens when the pool was set to
+zero by hand, or the HPA was deleted or replaced at zero. To revive it, use
+one of:
+
+- `kubectl scale workerpool <name> -n <namespace> --replicas=1` (someone with
+  the rights). The HPA then resumes control.
+- Remove the pool's `ignoreDifferences` entry together with `enabled: false`,
+  so Argo CD restores `concurrency`.
+
+Setting `enabled: false` alone prunes the HPA and leaves the pool at its last
+replica count, and a pool at zero stays at zero while the entry exists.
 
 To revert a pool that is at 1 or more, set its `minReplicas: 1`. That does not
-revive a pool already at zero: the HPA controller treats a target at zero with
-`minReplicas` above 0 as disabled. To revive one, run
-`kubectl scale workerpool <name> --replicas=1` (a manual action by someone
-with the rights), or remove its `ignoreDifferences` entry together with
-`enabled: false`, so Argo CD restores `concurrency`. Setting `enabled: false`
-alone prunes the HPA and leaves the pool at its last replica count, and a pool
-at zero stays at zero while the entry exists.
+revive a pool already at zero (same rule).
+
+**Verify.** Sessions use `KUBECONFIG=~/.kube/factory-sessions.yaml`, which
+reads the HPA and pods but cannot read the External Metrics API, and cannot
+create or edit HPAs.
+
+```bash
+kubectl -n factory-r-homelab describe hpa homelab-codex
+#   Conditions: ScalingActive=True, ScaledToZero=True at zero
+#   Metrics: "factory_worker_pool_workers_wanted" 0 / 1 (avg) when idle
+kubectl -n factory-r-homelab get hpa homelab-codex \
+  -o jsonpath='{.status.conditions[?(@.type=="ScaledToZero")]}'
+kubectl -n factory-r-homelab get workerpool homelab-codex
+kubectl -n factory-r-homelab get pods -l ate.dev/worker-pool=homelab-codex
+```
+
+A cold start leaves these traces: the pool's `describe` events show
+`New size: 3`, a pod reaches Ready in about 2 min, and the connector's
+`factory_connector_worker_waits_total` counts `waiting` then `ready`.
+`timeout` means the bound passed.
 
 ### Sandbox checks
 
