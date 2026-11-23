@@ -1284,7 +1284,9 @@ def test_scanner_tier_is_on_in_observe_mode_and_points_at_the_gate() -> None:
         "concurrency": {"concurrency": 8},
     }
     for name, change in mutations.items():
-        assert _observe_problems({**values, **change}, port["port"], inflight, replicas), name
+        assert _observe_problems(
+            {**values, **change}, port["port"], inflight, replicas
+        ), name
     # The endpoint follows the Service port.
     assert _observe_problems(values, 9999, inflight, replicas)
 
