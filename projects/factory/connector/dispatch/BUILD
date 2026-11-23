@@ -51,6 +51,7 @@ go_test(
         "deferred_test.go",
         "delivery_test.go",
         "engine_test.go",
+        "export_test.go",
         "fakes_test.go",
         "goal_reasons_test.go",
         "human_gate_commit_test.go",
