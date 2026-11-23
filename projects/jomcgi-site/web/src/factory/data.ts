@@ -152,3 +152,113 @@ export function useSnapshot() {
   }, []);
   return { snapshot, error };
 }
+
+const short = new Intl.NumberFormat("en-GB", { maximumFractionDigits: 1 });
+/** Headline figures and chart labels: one decimal place at most. */
+export const formatShort = (value: number) => short.format(value);
+
+const instant = new Intl.DateTimeFormat("en-GB", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+  timeZone: "UTC",
+});
+export function formatInstant(value: string): string {
+  const time = Date.parse(value);
+  return Number.isNaN(time) ? value : `${instant.format(time)} UTC`;
+}
+const day = new Intl.DateTimeFormat("en-GB", {
+  day: "numeric",
+  month: "short",
+  timeZone: "UTC",
+});
+/** "Week of 2026-11-09" and "2026-11-09" both read "9 Nov" on an axis. */
+export function axisLabel(label: string): string {
+  const date = /(\d{4}-\d{2}-\d{2})$/.exec(label)?.[1];
+  const time = date ? Date.parse(`${date}T00:00:00Z`) : NaN;
+  return Number.isNaN(time) ? label : day.format(time);
+}
+/** A generated session id shows its first eight digits; a named one stays. */
+export const sessionLabel = (id: string) =>
+  /^session-[a-f0-9]{16,}$/.test(id) ? id.slice(8, 16) : id;
+
+export function median(values: readonly number[]): number | undefined {
+  if (!values.length) return undefined;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = sorted.length >> 1;
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1]! + sorted[middle]!) / 2;
+}
+export type Tally = { label: string; value: number };
+const hourBins: [string, number][] = [
+  ["Under 6 h", 6],
+  ["6–12 h", 12],
+  ["12–24 h", 24],
+  ["1–2 d", 48],
+  ["2–4 d", 96],
+  ["Over 4 d", Infinity],
+];
+/** Counts durations in fixed bins, so one chart reads the same at any size. */
+export function tallyHours(values: readonly number[]): Tally[] {
+  const counts = hourBins.map(() => 0);
+  for (const value of values)
+    counts[hourBins.findIndex(([, limit]) => value < limit)]!++;
+  return hourBins.map(([label], index) => ({ label, value: counts[index]! }));
+}
+/** Counts whole numbers from 1 to the largest value, at most eight columns. */
+export function tallyCounts(values: readonly number[]): Tally[] {
+  if (!values.length) return [];
+  const last = Math.min(8, Math.max(1, ...values.map(Math.round)));
+  const counts = Array.from({ length: last }, () => 0);
+  let over = false;
+  for (const value of values) {
+    const count = Math.max(1, Math.round(value));
+    if (count > last) over = true;
+    counts[Math.min(last, count) - 1]!++;
+  }
+  return counts.map((value, index) => ({
+    label: index === last - 1 && over ? `${last}+` : String(index + 1),
+    value,
+  }));
+}
+
+/* Sentences written from the snapshot. Each states one fact, or nothing
+ * when the snapshot has no measurement for it. */
+const duration = (hours: number) =>
+  hours < 48
+    ? `${formatShort(hours)} ${hours === 1 ? "hour" : "hours"}`
+    : `${formatShort(hours / 24)} days`;
+export function shippedSentence(shipped: number, total: number) {
+  return total > 0 ? `${shipped} of ${total} issues shipped.` : undefined;
+}
+export function weekSentence(points: readonly Tally[]) {
+  const last = points.at(-1);
+  const before = points.at(-2);
+  if (!last) return undefined;
+  const now = `${formatShort(last.value)} shipped in the week of ${axisLabel(last.label)}`;
+  return before
+    ? `${now}, after ${formatShort(before.value)} the week before.`
+    : `${now}.`;
+}
+export function mergeSentence(hours: readonly number[]) {
+  const middle = median(hours);
+  return middle === undefined
+    ? undefined
+    : `Half of the issues merge within ${duration(middle)}.`;
+}
+export function roundsSentence(rounds: readonly number[]) {
+  const middle = median(rounds);
+  return middle === undefined
+    ? undefined
+    : `A typical PR takes ${formatShort(middle)} review ${middle === 1 ? "round" : "rounds"}.`;
+}
+export function firstPassSentence(points: readonly Tally[]) {
+  const last = points.at(-1);
+  return last
+    ? `${formatShort(last.value)}% of PRs passed review the first time in the week of ${axisLabel(last.label)}.`
+    : undefined;
+}

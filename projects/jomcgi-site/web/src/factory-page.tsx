@@ -2,7 +2,7 @@ import { useEffect, useState, type MouseEvent } from "react";
 import { Heading } from "@astryxdesign/core/Heading";
 import { Shell } from "./Shell";
 import { Pages, NotAvailable } from "./factory/Pages";
-import { useSnapshot } from "./factory/data";
+import { formatInstant, useSnapshot } from "./factory/data";
 import "./factory/page.css";
 
 /** All deep links hydrate the same pre-rendered shell before reading the URL. */
@@ -93,7 +93,12 @@ export function FactoryPage() {
               ].map((label) => (
                 <section key={label}>
                   <Heading level={2}>{label}</Heading>
-                  <NotAvailable label={label} />
+                  {/* Quiet while the first snapshot loads. */}
+                  {error ? (
+                    <NotAvailable label={label} />
+                  ) : (
+                    <div className="pending" aria-hidden="true" />
+                  )}
                 </section>
               ))}
             </>
@@ -105,9 +110,7 @@ export function FactoryPage() {
             <p>
               Snapshot:{" "}
               <time dateTime={snapshot.manifest.generatedAt}>
-                {snapshot.manifest.generatedAt
-                  .replace("T", " ")
-                  .replace("Z", " UTC")}
+                {formatInstant(snapshot.manifest.generatedAt)}
               </time>
             </p>
           )}

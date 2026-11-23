@@ -41,7 +41,11 @@
   --color-stars-mid: light-dark(#854d0e, #fde047);
   --color-stars-high: light-dark(#9f1239, #fda4af);
   /* The site: a near-white page, hairlines, ink for text and links. Blue is
-   * the one accent. */
+   * the one accent. On Factory it marks work in review, and as an outline
+   * work in progress; grey outlines stopped work. Both marks meet 3:1 on
+   * every background, and a name always sits beside them. */
+  --factory-review: light-dark(#2f6bff, #5b8cff);
+  --factory-stopped: light-dark(#85858c, #77777f);
   --font-family-body: "Inter", system-ui, "Segoe UI", sans-serif;
   /* Diagram layouts are measured with this stack. Keep it apart from the
    * page typeface so a label still fits its node. */
