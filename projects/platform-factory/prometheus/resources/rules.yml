@@ -421,6 +421,74 @@ groups:
           runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory/ARCHITECTURE.md#worker-pool-autoscaling"
           summary: "The connector's worker wait ended as {{ $labels.outcome }} {{ $value | humanize }} time(s) in the last 15 min"
 
+  - name: engine-gate
+    rules:
+      # engine-gate (projects/platform-factory/substrate/egress-scan/gate) holds
+      # a pool of waiting engine children for the egress scanner's Semgrep tier.
+      # In observe mode a failure here changes no reply. In enforce mode with
+      # failureMode deny each failed call is a 503 on the scanned request. The
+      # runbook for each alert is the gate README, "Alerts".
+      - alert: EngineGateDown
+        expr: absent(up{job="engine-gate"} == 1)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          action: "Check the engine-gate pod (get pod, describe, logs) and the ate API."
+          graph: 'up{job="engine-gate"}'
+          threshold: "1"
+          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/platform-factory/substrate/egress-scan/gate/README.md#alerts"
+          summary: "No engine-gate pod has been scraped for 5 min"
+          description: >-
+            The gate is down or its metrics port is unreachable. The scanner
+            gets no engine verdict.
+      - alert: EngineGateNotReady
+        expr: min(kube_pod_status_ready{namespace="ate-system", pod=~"engine-gate-[0-9]+", condition="true"}) == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          action: "Read /readyz reasons in the pod log: the startup cleanup, the pool, the ate API."
+          graph: 'min(kube_pod_status_ready{namespace="ate-system",pod=~"engine-gate-[0-9]+",condition="true"})'
+          threshold: "1"
+          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/platform-factory/substrate/egress-scan/gate/README.md#alerts"
+          summary: "The engine-gate pod has not been Ready for 10 min"
+          description: >-
+            Not ready means: the startup cleanup did not finish, the pool never
+            filled, the ate API did not answer, or the pool is empty while
+            creates fail. The pod leaves the Service, so the scanner gets
+            connection errors.
+      - alert: EngineGatePoolEmpty
+        expr: sum(factory_engine_gate_children{job="engine-gate", state="waiting"}) == 0
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          action: "Check the create and resume failures of the pool and the worker's capacity (the seed and 8 children book 9 CPU)."
+          graph: 'sum(factory_engine_gate_children{job="engine-gate",state="waiting"})'
+          threshold: "1"
+          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/platform-factory/substrate/egress-scan/gate/README.md#alerts"
+          summary: "engine-gate has had no waiting child for 3 min"
+          description: >-
+            Requests take path A (create on demand), which is slower than the
+            deadline when the control plane is slow, or fail with 503.
+      - alert: EngineGateFailing
+        expr: |
+          sum(rate(factory_engine_gate_requests_total{job="engine-gate", outcome!~"ok|bad_request|oversize|client_gone"}[10m]))
+            / sum(rate(factory_engine_gate_requests_total{job="engine-gate"}[10m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          action: "Read the failing outcome (shed, pool_empty, no_worker, router_error, child_error, deadline) and its runbook row."
+          graph: 'sum by (outcome) (rate(factory_engine_gate_requests_total{job="engine-gate",outcome!~"ok|bad_request|oversize|client_gone"}[10m]))'
+          threshold: "0.05"
+          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/platform-factory/substrate/egress-scan/gate/README.md#alerts"
+          summary: "{{ $value | humanizePercentage }} of engine-gate requests failed for 10 min (threshold 5%)"
+          description: >-
+            Caller errors (bad_request, oversize) and scanner disconnects are
+            not counted.
+
   - name: capacity-shadow
     interval: 5m
     rules:

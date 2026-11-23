@@ -223,6 +223,26 @@ scrape_configs:
       - source_labels: [__meta_kubernetes_pod_name]
         target_label: pod
 
+  # engine-gate (egress-scan/gate): the pool, the requests and the router and
+  # engine latencies. Its admin port (probes and metrics) is named admin.
+  - job_name: engine-gate
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [ate-system]
+        selectors:
+          - role: pod
+            label: app=engine-gate
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_port_name, __meta_kubernetes_pod_container_port_number]
+        regex: admin;9090
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+
   # The private native Mandoline server is discovered when deployed.
   - job_name: mandoline
     kubernetes_sd_configs:
