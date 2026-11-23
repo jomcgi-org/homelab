@@ -126,7 +126,7 @@ spec:
         # The fork build of kubectl-ate, as in conformance-job.yaml.
         - name: cli
           image:
-            reference: ghcr.io/jomcgi-org/homelab/substrate-fork/kubectl-ate:fork-1e7a877d0ca3@sha256:ce43eb79787738134a3de680fb660da96eb4a9ad13e48a088bc899d0a654d4ed
+            reference: ghcr.io/jomcgi-org/homelab/substrate-fork/kubectl-ate:fork-8cf248b96e08@sha256:bfb9cf01712dd691232298cc19767a7536c00f2cfe0c76b41ac6945f2d2885f7
             pullPolicy: IfNotPresent
         # The ate API's JWT provider accepts this audience (api-server-config.yaml).
         - name: ate-token
@@ -231,7 +231,7 @@ spec:
         # The fork build of kubectl-ate, as in conformance-job.yaml.
         - name: cli
           image:
-            reference: ghcr.io/jomcgi-org/homelab/substrate-fork/kubectl-ate:fork-1e7a877d0ca3@sha256:ce43eb79787738134a3de680fb660da96eb4a9ad13e48a088bc899d0a654d4ed
+            reference: ghcr.io/jomcgi-org/homelab/substrate-fork/kubectl-ate:fork-8cf248b96e08@sha256:bfb9cf01712dd691232298cc19767a7536c00f2cfe0c76b41ac6945f2d2885f7
             pullPolicy: IfNotPresent
         # The ate API's JWT provider accepts this audience (api-server-config.yaml).
         - name: ate-token
