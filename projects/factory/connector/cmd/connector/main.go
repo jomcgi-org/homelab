@@ -180,7 +180,7 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
-	// Workers the connector's unfinished sends need, per pool (HOME-TBD).
+	// Workers the connector's unfinished sends need, per pool.
 	// The collector reads on each scrape, so a recorded send shows at once.
 	var pools []metrics.Pool
 	seenPools := map[metrics.Pool]bool{}

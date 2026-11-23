@@ -13,7 +13,7 @@ type Pool struct{ Namespace, Name string }
 
 // PoolDemandSourcePending is the source label of the workers the connector's
 // own unfinished sends need. The worker reaper publishes the other sources of
-// the same series (HOME-TBD, ARCHITECTURE.md "Worker pool autoscaling").
+// the same series (ARCHITECTURE.md "Worker pool autoscaling").
 const PoolDemandSourcePending = "pending"
 
 const poolDemandTimeout = 5 * time.Second
