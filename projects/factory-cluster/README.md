@@ -223,7 +223,8 @@ The scan runs again right before each removal when the last scan is more than
 2 s old. Removal does not cross a mount point. Known gaps: the script cannot
 see a process that another user runs, or a process that holds a directory only
 by a relative path (a unix socket bound with a relative path, or a relative
-argument after a `chdir`). It matches command-line and environment text as
+argument after a `chdir`), or a process that is not dumpable (a setuid
+program). It matches command-line and environment text as
 written, so text that names the directory through a symlink does not match
 (open files, working directories and mappings are real paths, so they do).
 If it cannot remove a directory, it prints `failed: <directory>` and goes on.

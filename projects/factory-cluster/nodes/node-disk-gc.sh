@@ -28,7 +28,8 @@
 #      puts the old mode back if it keeps the directory. A dry run keeps it.
 #      Known gaps: a process that holds a directory only by a relative path (a
 #      unix socket bound with a relative path, a relative argument after a
-#      chdir) is not seen, and a command-line argument or environment value
+#      chdir) is not seen, a process that is not dumpable (a setuid program)
+#      is not seen, and a command-line argument or environment value
 #      that names the directory through a symlink is not matched (open files,
 #      working directories and mappings are real paths, so they match).
 #   3. Bazel disk cache files (ac/ and cas/ only) not modified for
