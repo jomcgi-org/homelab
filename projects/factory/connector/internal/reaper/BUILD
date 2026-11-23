@@ -6,6 +6,7 @@ go_library(
         "capacity.go",
         "census.go",
         "lease.go",
+        "protect.go",
         "reaper.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/factory/connector/internal/reaper",
@@ -26,6 +27,7 @@ go_test(
     srcs = [
         "capacity_test.go",
         "census_test.go",
+        "protect_test.go",
         "reaper_test.go",
     ],
     data = ["@postgres_test//:postgres"],
