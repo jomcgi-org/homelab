@@ -509,7 +509,11 @@ test("routes off on a zone that matches the files writes nothing", async () => {
   // The live rules equal cache-rules.json and routes are off, so the sync
   // needs no write permission at all.
   const zone = fakeZone({
-    rules: RULES.rules.map((rule, i) => ({ id: `r${i}`, version: "1", ...rule })),
+    rules: RULES.rules.map((rule, i) => ({
+      id: `r${i}`,
+      version: "1",
+      ...rule,
+    })),
   });
   const log = await apply(zone.call, ROUTES, RULES, { serveRoutes: false });
   assert.deepEqual(zone.state.writes, []);
