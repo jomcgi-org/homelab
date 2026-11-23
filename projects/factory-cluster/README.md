@@ -668,13 +668,16 @@ flowchart LR
 3. Done. The `Substrate fork engine image` workflow (run 45140818290) published
    `engine-oss:1.186.0-946d07e5597c`, and `conformance/template.yaml` names it by
    digest. The package is public.
-4. Done (PR #8590, merged 2026-11-23 10:05Z). The fork overlay that
-   `render-upstream.sh` renders is merged, with the gate off. It changed four
+4. Done (PR #8590, merged 2026-11-23 10:05Z; re-pinned to fork `1e7a877d0ca3`
+   by #8623, live). The fork overlay that `render-upstream.sh` renders is
+   merged, with the gate off. It changed four
    rendered objects: the WorkerPool CRD (an optional `platform` field and one validation
    rule) and the images of Deployments `ate-api-server` and `ate-controller` and
    DaemonSet `atelet`. The roll replaces both `ate-api-server` pods one at a
    time, the `ate-controller` pod, and the `atelet` pod on each of the three
-   nodes, one node at a time. Existing worker pods keep their spec. Check that
+   nodes, one node at a time. No worker pod changed: the controller builds a
+   worker's `--preview` from its own flags, and the gate was off, so every
+   worker kept its image and args. Check that
    no factory runs are dispatched before the roll. After the merge, verify that
    the pods are Ready and every WorkerPool is Ready. Then verify that an
    existing actor still starts and runs, with the smoke test in "Agent
