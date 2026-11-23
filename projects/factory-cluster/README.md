@@ -615,10 +615,11 @@ the log, then delete the Job file and its kustomization entries.
 
 Fork slice 1 starts an actor by forking a per-worker gVisor seed instead of
 booting it. A scanner child answers its first request 109 to 198 ms after the
-fork (N = 1 to 16). It holds about 37 MB of private memory. State: `off`. The
-fork control plane runs (step 4) and the slice is wired (step 5). No actor
-uses the fork: the pool's one worker is idle (step 6), the Job is suspended
-and the gate is off.
+fork (N = 1 to 16). It holds about 37 MB of private memory. State: `gate on,
+no fork template`. The fork control plane runs (step 4), the slice is wired
+(step 5), the pool's one worker is idle (step 6) and `ForkSeed` is on (step 7).
+No actor uses the fork: the Job is suspended and no template sets
+`fork_config`.
 
 | Piece | Where | Off because |
 | --- | --- | --- |
@@ -627,7 +628,7 @@ and the gate is off.
 | Conformance Job `gvisor-fork-conformance-3` | `gvisor-fork/conformance-job.yaml` | `suspend: true` until step 8 |
 | Latency Jobs `gvisor-fork-latency-1` and `gvisor-fork-latency-data-1` | `gvisor-fork/latency/` | a kustomization the directory does not list, and `suspend: true` |
 | Fork images (`ateapi`, `atecontroller`, `atelet`, `ateworker-gvisor`, `kubectl-ate`) | `.github/workflows/substrate-fork-images.yml` | the three control-plane images are pinned and live (step 4); the other two have no pod until steps 6 and 8 |
-| `ForkSeed` preview gate | `substrate/values/common.yaml` | not listed until step 7 |
+| `ForkSeed` preview gate | `substrate/values/common.yaml` | on (step 7). It starts no fork until a template sets `fork_config` (step 10) |
 
 Existing gVisor pools stay on systrap and `gvisor-default`. The fork's CRD, API
 server, controller and atelet run since step 4, so `platform: kvm` applies.
@@ -681,7 +682,7 @@ flowchart LR
    model (the fork adds `can_create_fork_template`). To roll back, revert the
    PR: the images return to their v1.0.1 digests, and the old server writes its
    own model again at start. Live check: the three images carry the fork tag
-   `fork-1e7a877d0ca3`, no component reads `ForkSeed`, and the CRD lists
+   `fork-1e7a877d0ca3`, no component read `ForkSeed` (before step 7), and the CRD lists
    `platform`.
 5. Cluster-affecting, Joe approves. Wire `../gvisor-fork` in
    `resources/kustomization.yaml`. The pool's `workerImage` already names the
@@ -801,15 +802,68 @@ flowchart LR
    starts. Roll back by setting `replicas` to 0 (the resize can stay).
 7. Cluster-affecting, Joe approves. Add `ForkSeed` to `preview` in
    `values/common.yaml`, then rerun `render-upstream.sh`. The guard test reads
-   `resources/upstream/`, so it fails only on the rendered files. The values feed
-   `ateapi`, `atecontroller` and `atelet`, and the controller passes
-   `--preview=` to every worker pod. The change rolls the control plane and the
-   workers of every WorkerPool. Check that no factory runs are dispatched before
-   the roll. After the roll, verify that an existing actor still starts and
-   runs. The gate is cluster-wide once on. Only the dev pool holds fork-capable
-   workers, and no factory template has `fork_config` until step 10. A client
-   must opt in to preview features (`kubectl-ate --preview`) to use a fork
-   template.
+   `resources/upstream/`, so it fails only on the rendered files:
+   `test_fork_seed_gate_is_off` becomes `test_fork_seed_gate_is_on` in the same
+   change. The render changes three lines and nothing else: `--preview=` gains
+   `,ForkSeed` in `ate-api-server`, `ate-controller` and `atelet`. The
+   controller passes its `--preview=` to every worker pod, so the workers read
+   it too. The gate is cluster-wide once on. Only the `gvisor-fork` pool holds
+   fork-capable workers, and no factory template has `fork_config` until step
+   10. A client must opt in to preview features (`kubectl-ate --preview`) to use
+   a fork template.
+
+   What rolls, from the cluster on 2026-11-23:
+
+   | Component | Count | Roll |
+   | --- | --- | --- |
+   | Deployment `ate-api-server` | 2 | rolling update, one pod at a time |
+   | Deployment `ate-controller` | 1 | replaced: no pool reconciles while it restarts |
+   | DaemonSet `atelet` | 3 | one node at a time (the DaemonSet default) |
+   | Workers of every WorkerPool | `bosun` 1, `homelab-reviewer` 4 (HPA 3 to 5), `homelab-codex` 0 (HPA 0 to 12), `microvm-spike` 1, `gvisor-fork` 1 | the controller changes the worker pod template, so each pool's worker Deployment rolls |
+
+   The factory is mostly idle: the coder pool is at zero, and the reviewer
+   pool has a floor of 3. A replaced worker takes its actors with it:
+   a review or Discord session in flight can fail or restart, which is why the
+   checks below come first. Roll order, as
+   Argo and the controller run it:
+
+   ```mermaid
+   flowchart LR
+     S[Argo sync: 3 rendered files] --> A[ate-api-server, ate-controller, atelet roll together]
+     A --> C[new controller starts]
+     C --> W[each pool's worker Deployment rolls]
+   ```
+
+   Argo sets no wave between the three, so they roll together. The old and new
+   components agree for as long as no template sets `fork_config`, so the order
+   does not matter. Surge pods during the worker roll need request room (a
+   reviewer worker's request, once per pool). Check, before the merge:
+
+   ```sh
+   kubectl get workerpools -A                              # all Ready; note each READY count
+   kubectl -n factory-r-homelab get pods                   # none: the coder pool is at zero
+   kubectl -n factory-r-homelab-review get pods            # an idle reviewer pool
+   kubectl get hpa -A                                      # no pool is scaling up
+   kubectl -n factory-discord-agent logs deploy/bosun --since=15m | tail   # no turn in flight
+   ```
+
+   Also check that no connector run is dispatched: the open runs (state
+   `accepted` with `tool_running`) in `factory_connector`, by the query in
+   "Measure recovery after a busy coder pod disappears". Do not merge while a
+   run is open. After the merge, verify:
+
+   ```sh
+   kubectl -n argocd get application substrate            # Synced; Healthy or Suspended
+   kubectl -n ate-system get deploy,ds                    # all Ready
+   kubectl get workerpools -A                             # every pool back to its READY count
+   kubectl -n ate-system get deploy,ds -o yaml | grep -- '--preview='   # three lines, each with ForkSeed
+   kubectl -n substrate-gvisor-fork get pod -o wide       # the fork worker Running, on node-1
+   ```
+
+   Then verify that an existing actor still starts and runs: a reviewer
+   session on an idle pool, and the smoke test in "Agent Substrate". Run the
+   fork conformance Job only at step 8. To roll back, remove `ForkSeed` from
+   `preview` and rerender; see "Roll back" (delete the fork templates first).
 8. Run the Job. The engine image, the `kubectl-ate` digest, the Job name
    (`gvisor-fork-conformance-3`) and the placeholder test are already in git.
    - Set `suspend` to `false`. In `gvisor_fork_test.py`, update

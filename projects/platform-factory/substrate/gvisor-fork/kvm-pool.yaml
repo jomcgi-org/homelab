@@ -8,9 +8,9 @@
 #
 # platform: kvm exists only in the fork's WorkerPool CRD (jomcgi-org/substrate
 # fork/seed-slice1), which came with the fork control plane and atelet images
-# (step 4). ForkSeed (preview gate)
-# stays off in ../values/common.yaml until step 7, after a worker has started.
-# The gates X1 to X9 run at step 9 with the gate on cluster-wide. Only this
+# (step 4). ForkSeed (preview gate) is on in ../values/common.yaml since
+# step 7, after a worker had started. The gates X1 to X9 run at step 9 with the
+# gate on cluster-wide. Only this
 # pool's workers can hold seeds. ForkSeed is a process-wide flag that ateapi,
 # atecontroller, atelet and every worker read, and only this pool's workers
 # have --fork-platform=kvm. Factory use of fork templates waits for step 10.
@@ -98,8 +98,7 @@ metadata:
   labels:
     workload: gvisor-fork
 spec:
-  # One worker, with the fork control plane running and ForkSeed still off
-  # (step 6 of the enable steps). Setting it back to 0 is part of the rollback,
+  # One worker, started at step 6 of the enable steps. Setting it back to 0 is part of the rollback,
   # after the fork templates are deleted. The pool needs no autoscaler: replicas
   # stays fixed, and it must never scale to zero while the engine tier is on.
   replicas: 1

@@ -87,7 +87,7 @@ spec:
             cpu: 50m
             memory: 128Mi
         args:
-        - "--preview=PerTemplateSnapshotLocation,GoldenEgressPolicy"
+        - "--preview=PerTemplateSnapshotLocation,GoldenEgressPolicy,ForkSeed"
         # The atecontroller binary defaults --ateapi-conn-spec to
         # dns:///api.ate-system.svc:443, which is correct only for the
         # canonical render (release name "substrate" in namespace

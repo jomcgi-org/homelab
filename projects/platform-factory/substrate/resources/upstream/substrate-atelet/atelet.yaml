@@ -211,7 +211,7 @@ spec:
       - name: atelet
         image: ghcr.io/jomcgi-org/homelab/substrate-fork/atelet:fork-1e7a877d0ca3@sha256:f0431ed81243929959d026023515eb2eb3aa470ef296b425d9a2a1a934d90aff
         args:
-        - "--preview=PerTemplateSnapshotLocation,GoldenEgressPolicy"
+        - "--preview=PerTemplateSnapshotLocation,GoldenEgressPolicy,ForkSeed"
         - --objectstore-plugin-socket=/run/objectstore-plugin/node.sock
         - --image-credential-provider-config=/run/image-credential-provider/config.yaml
         - --image-credential-provider-bin-dir=/run/image-credential-provider/bin
