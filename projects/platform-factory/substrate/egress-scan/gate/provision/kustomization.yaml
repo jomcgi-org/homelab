@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The engine atespace and template provisioning, staged and OFF. Nothing here
+# reaches the cluster: ArgoCD applies only ../../../resources
+# (egress-scan/deploy/application.yaml), and that directory does not list this
+# one. provision_test.py checks the manifests, and
+# ../../../resources/resources_test.py fails if the wired kustomization lists
+# them. Both Jobs are suspended. What the wiring changes, and what Joe approves:
+# ../README.md, "Enable steps".
+resources:
+  - job.yaml
+
+configMapGenerator:
+  # The script and the template of both Jobs (job.yaml).
+  - name: egress-engine-provision
+    namespace: ate-system
+    files:
+      - provision.py=provision.py
+      - template.yaml=template.yaml

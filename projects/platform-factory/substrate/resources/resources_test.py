@@ -438,6 +438,44 @@ def test_microvm_spike_namespace_allows_only_the_router_and_the_gateway() -> Non
         assert rule["toPorts"] == [{"ports": [{"port": "8443", "protocol": "TCP"}]}]
 
 
+_ROUTER_CLIENTS = [
+    "spiffe://cluster.local/ns/ate-system/sa/atenet-client",
+    "spiffe://cluster.local/ns/kagent/sa/kagent-controller",
+    "spiffe://cluster.local/ns/ate-system/sa/engine-gate",
+]
+
+
+def test_router_allows_exactly_the_three_client_identities() -> None:
+    # The router checks a client by its SPIFFE ID alone, and an allowed ID can
+    # reach any actor in any atespace. engine-gate is the only holder of its ID
+    # (egress-scan/gate/README.md): egress-scan, which parses untrusted bytes,
+    # must never be in this list, nor a wildcard. The rendered ConfigMap carries
+    # the list values/substrate.yaml sets.
+    config = yaml.safe_load(
+        _one(_docs(), "ConfigMap", "atenet-router-agentgateway-config")["data"][
+            "config.yaml"
+        ]
+    )
+    (rule,) = config["frontendPolicies"]["networkAuthorization"]["rules"]
+    ids = re.search(r"source\.spiffeId in \[(.*?)\]", rule["allow"]).group(1)
+    assert re.findall(r'"([^"]+)"', ids) == _ROUTER_CLIENTS
+    assert "egress-scan" not in rule["allow"] and "*" not in rule["allow"]
+
+
+def test_engine_gate_is_not_a_global_owner() -> None:
+    # The gate gets the editor role of one atespace, not a bootstrap owner seat.
+    args = [
+        a
+        for d in _docs()
+        if d["kind"] == "Deployment" and d["metadata"]["name"] == "ate-api-server"
+        for c in d["spec"]["template"]["spec"]["containers"]
+        for a in c.get("args", [])
+    ]
+    owners = [a for a in args if a.startswith("--authz-bootstrap-owners=")]
+    assert owners == [_BOOTSTRAP_OWNERS]
+    assert "engine-gate" not in _BOOTSTRAP_OWNERS
+
+
 _SPIKE = _HERE / "microvm-actor-spike" / "spike.py"
 _BOOTSTRAP_OWNERS = (
     "--authz-bootstrap-owners=system:serviceaccount:ate-system:ate-client,"
@@ -763,7 +801,7 @@ _FORK_OBJECTS = {
     ("CiliumNetworkPolicy", "ate-system", "rustfs-gvisor-fork-assets"),
     ("CiliumNetworkPolicy", _FORK_NS, "substrate-workers"),
     ("Job", "ate-system", "gvisor-fork-assets-init"),
-    ("Job", "ate-system", "gvisor-fork-conformance-3"),
+    ("Job", "ate-system", "gvisor-fork-conformance-6"),
     ("Namespace", None, _FORK_NS),
     ("SandboxConfig", None, "gvisor-fork"),
     ("ServiceAccount", _FORK_NS, "fork-worker"),
@@ -828,7 +866,7 @@ def test_gvisor_fork_slice_is_wired() -> None:
     # its own (and deletes it), so the worker holds no seed.
     pool = _one(docs, "WorkerPool", "gvisor-fork")
     assert pool["spec"]["replicas"] == 1
-    conformance = _one(docs, "Job", "gvisor-fork-conformance-3")
+    conformance = _one(docs, "Job", "gvisor-fork-conformance-6")
     assert conformance["spec"]["suspend"] is False
     # A Pending Job leaves the Application Degraded and the cluster is request
     # tight, so the pod requests little.
@@ -847,7 +885,7 @@ def test_gvisor_fork_slice_is_wired() -> None:
         if v["name"] == "config"
     ]
     assert config_volume["configMap"]["name"] == conformance_map
-    assert conformance_map == "gvisor-fork-conformance-hbht65tgk9"
+    assert conformance_map == "gvisor-fork-conformance-tgf4tdtbht"
     assert not [
         d for d in docs if d["metadata"]["name"].startswith("gvisor-fork-latency")
     ]
@@ -874,6 +912,17 @@ def test_gvisor_fork_slice_is_wired() -> None:
     assert max(init, main) <= 256
 
 
+def test_engine_provisioning_is_staged_and_not_wired() -> None:
+    # The provisioning Jobs of the engine atespace and template live in
+    # ../egress-scan/gate/provision, suspended and unwired.
+    kustomization = yaml.safe_load((_HERE / "kustomization.yaml").read_text())
+    listed = kustomization["resources"] + kustomization.get("components", [])
+    assert not [r for r in listed if "egress-scan/gate" in r]
+    rendered = json.dumps(_docs())
+    assert "egress-engine" not in rendered
+    assert "egress-scan-engine" not in rendered
+
+
 def test_engine_gate_is_staged_and_not_wired() -> None:
     # engine-gate lives in ../egress-scan/gate/staged, with no replica. The
     # directory reaches the cluster only when a later change lists it here
@@ -881,8 +930,10 @@ def test_engine_gate_is_staged_and_not_wired() -> None:
     kustomization = yaml.safe_load((_HERE / "kustomization.yaml").read_text())
     listed = kustomization["resources"] + kustomization.get("components", [])
     assert not [r for r in listed if "engine-gate" in r or "egress-scan/gate" in r]
-    rendered = json.dumps(_docs())
-    assert "engine-gate" not in rendered
+    # No object of the gate renders. The router ConfigMap names the gate's
+    # SPIFFE ID since the router grant, so the check is on object names.
+    names = {d["metadata"]["name"] for d in _docs()}
+    assert not [n for n in names if "engine-gate" in n]
 
 
 _PREVIEW = ["PerTemplateSnapshotLocation", "GoldenEgressPolicy", "ForkSeed"]
@@ -952,13 +1003,15 @@ def test_fork_seed_gate_is_on() -> None:
             assert ":v1.0.1@sha256:" in image, image
 
 
-_KVM_ONLY_GATE_BUILDS = {"fork-1e7a877d0ca3"}
+# 8cf248b96e08 contains the earlier KVM-only ForkSeed patch (1e7a877d0ca3), so
+# both builds give the gate to KVM pools' workers only.
+_KVM_ONLY_GATE_BUILDS = {"fork-1e7a877d0ca3", "fork-8cf248b96e08"}
 _FORK_IMAGES = "ghcr.io/jomcgi-org/homelab/substrate-fork/"
-_FORK_TAG = "fork-1e7a877d0ca3"
+_FORK_TAG = "fork-8cf248b96e08"
 _FORK_DIGESTS = {
-    "ateapi": "e75fd2f786480cdaf89714864e00b431ecd8546925c8276dfa9d3efaf347d2df",
-    "atecontroller": "306cc8a469d801599e11fcf669b70498986d04c2c5adcffceb6483da4d024803",
-    "atelet": "f0431ed81243929959d026023515eb2eb3aa470ef296b425d9a2a1a934d90aff",
+    "ateapi": "b4feb50d685dbaedaa5433ba77ae9b6c9181c30b81bd3e0522cca102b9865835",
+    "atecontroller": "d8386836296bb7554a0dc12ba9415c154e17f933ecee37f70cb1fe715efcb55a",
+    "atelet": "f72e25955d72f2475ac15342b6073857c603eabd5486c7ddd77344999f40a1e0",
 }
 
 
@@ -1013,7 +1066,7 @@ def test_fork_images_share_one_fork_commit_tag() -> None:
     refs["workerpool/gvisor-fork"] = _one(docs, "WorkerPool", "gvisor-fork")["spec"][
         "workerImage"
     ]
-    job = _one(docs, "Job", "gvisor-fork-conformance-3")
+    job = _one(docs, "Job", "gvisor-fork-conformance-6")
     (cli,) = [
         v["image"]["reference"]
         for v in job["spec"]["template"]["spec"]["volumes"]

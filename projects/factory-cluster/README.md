@@ -625,7 +625,7 @@ makes a fork template, in its own atespace, and deletes it.
 | --- | --- | --- |
 | SandboxConfig `gvisor-fork` (fork build `0250f9acf`) and its asset Job | `projects/platform-factory/substrate/gvisor-fork/` | wired (step 5). No pool uses the config until step 6. `gvisor-default` stays the class default |
 | WorkerPool `gvisor-fork` (`platform: kvm`) | `gvisor-fork/kvm-pool.yaml` | one worker (step 6). It holds no seed while no template sets `fork_config` (the conformance Job makes one for its run) |
-| Conformance Job `gvisor-fork-conformance-3` | `gvisor-fork/conformance-job.yaml` | runs once (step 8); `suspend: false` |
+| Conformance Job `gvisor-fork-conformance-6` | `gvisor-fork/conformance-job.yaml` | runs once (step 8); `suspend: false` |
 | Latency Jobs `gvisor-fork-latency-1` and `gvisor-fork-latency-data-1` | `gvisor-fork/latency/` | a kustomization the directory does not list, and `suspend: true` |
 | Fork images (`ateapi`, `atecontroller`, `atelet`, `ateworker-gvisor`, `kubectl-ate`) | `.github/workflows/substrate-fork-images.yml` | the three control-plane images are pinned and live (step 4); `ateworker-gvisor` runs in the pool (step 6) and `kubectl-ate` in the conformance Job (step 8) |
 | `ForkSeed` preview gate | `substrate/values/common.yaml` | on (step 7). The controller gives it to KVM pools' workers only. It starts no fork until a template sets `fork_config` (step 10) |
@@ -685,7 +685,7 @@ flowchart LR
    model (the fork adds `can_create_fork_template`). To roll back, revert the
    PR: the images return to their v1.0.1 digests, and the old server writes its
    own model again at start. Live check: the three images carry the fork tag
-   `fork-1e7a877d0ca3`, no component read `ForkSeed` (before step 7), and the CRD lists
+   `fork-8cf248b96e08`, no component read `ForkSeed` (before step 7), and the CRD lists
    `platform`.
 5. Cluster-affecting, Joe approves. Wire `../gvisor-fork` in
    `resources/kustomization.yaml`. The pool's `workerImage` already names the
@@ -706,7 +706,7 @@ flowchart LR
    | Job `gvisor-fork-assets-init` | `ate-system` | new Sync hook (wave 1): runs at once, see below |
    | CiliumNetworkPolicy `gvisor-fork-assets-init` | `ate-system` | new; the asset Job reaches rustfs 9000 and `github.com`, `release-assets.githubusercontent.com`, `objects.githubusercontent.com` 443 |
    | CiliumNetworkPolicy `rustfs-gvisor-fork-assets` | `ate-system` | adds ingress to the existing `rustfs` pod: the asset Job, port 9000 |
-   | Job `gvisor-fork-conformance-3` | `ate-system` | new, `suspend: true`: no pod. Argo shows health Suspended |
+   | Job `gvisor-fork-conformance-3` (history: replaced at step 8) | `ate-system` | new, `suspend: true`: no pod. Argo shows health Suspended |
    | CiliumNetworkPolicy `gvisor-fork-conformance` | `ate-system` | new; matches no pod while the Job is suspended |
    | CiliumNetworkPolicy `ate-api-server-gvisor-fork-conformance` | `ate-system` | adds ingress to the existing `ate-api-server` pods: the conformance Job, port 443 |
 
@@ -729,7 +729,7 @@ flowchart LR
 
    ```sh
    kubectl -n argocd get application substrate          # Synced; health Suspended until step 8
-   kubectl -n ate-system get job gvisor-fork-assets-init gvisor-fork-conformance-3
+   kubectl -n ate-system get job gvisor-fork-assets-init            # and the suspended conformance Job (history: step 8 renames it)
    kubectl -n ate-system logs job/gvisor-fork-assets-init -c upload   # "the pinned gVisor fork tarball is in the bucket"
    kubectl get sandboxconfig                            # gvisor-default stays DEFAULT v7
    kubectl -n substrate-gvisor-fork get workerpool,pod  # replicas 0, no pod
@@ -797,8 +797,8 @@ flowchart LR
    ```
 
    The worker image is the `workerImage` of `kvm-pool.yaml`:
-   `ateworker-gvisor:fork-1e7a877d0ca3@sha256:f208bf5a…7d1`, from the re-pin
-   (merged and live: #8623). Check that the pod's `imageID` ends in that digest.
+   `ateworker-gvisor:fork-8cf248b96e08@sha256:779fb7dd…80f8`, from the
+   re-pins (#8623, then the re-pin of step 8). Check that the pod's `imageID` ends in that digest.
    A pod on the old digest (`65f14b69…`) means the pool did not take the pin.
 
    The worker pod runs with `/dev/kvm` (the `ate.dev/kvm` limit),
@@ -883,14 +883,54 @@ flowchart LR
    a reviewer session on an idle pool, and the smoke test in "Agent Substrate".
    Run the fork conformance Job only at step 8.
 8. Cluster-affecting, Joe approves. Run the conformance Job. The engine image,
-   the `kubectl-ate` digest, the Job name (`gvisor-fork-conformance-3`) and the
+   the `kubectl-ate` digest, the Job name (`gvisor-fork-conformance-6`) and the
    placeholder test are already in git.
 
-   What changes: one field, `spec.suspend` of Job `gvisor-fork-conformance-3`
-   in `ate-system`, from `true` to `false`. No other object, value or grant
-   changes, and no pod rolls. The test `test_conformance_job_runs_once_as_ate_client`
-   (was `..._is_suspended_and_...`) and the wiring guard assert `suspend` is
-   `false`.
+   History:
+
+   | Job | Result |
+   | --- | --- |
+   | `-3` | Failed at its first API call. The API refuses a fork template unless `snapshotConfig.goldenSnapshotConfig.mode` is `GOLDEN_SNAPSHOT_MODE_DISABLED` (`apivalidation/fork.go`, `validateForkTemplate`) |
+   | `-4` | Never applied (review raised the seed limit to 512 MiB first) |
+   | `-5` | C1 (template accepted) and C2 (the 3 unsafe variants refused, each for its own rule) passed. C3 failed: no seed could start |
+   | `-6` | This change. The re-pin below fixes the C3 cause |
+
+   The C3 cause was two bugs in the fork's worker. It launched `forkd` from the
+   assets directory of the first seed Actor, which is mode 0700, so `exec` failed
+   with `EACCES` for uid 65534. Later seeds then looked in that directory after it
+   was deleted. Substrate `8cf248b96e08` ("ateworker-gvisor: run forkd from a
+   worker-owned binary directory", `forkd_bin.go`) stages `runsc` and `gvisor-bin`
+   into `/var/lib/ate/forkd-bin/release-<hash>/` (mode 0755, hard link or copy,
+   checked against the sha pins). Only `ateworker-gvisor` has changed code. All
+   five images are re-tagged `fork-8cf248b96e08`, and the commit contains the
+   earlier KVM-only `ForkSeed` patch (`1e7a877d0ca3`). The other fork rules and
+   C6 were fixed earlier (every rule is mirrored in `gvisor_fork_test.py`,
+   `_fork_template_errors`).
+
+   What changes: the three control-plane pins, the pool's `workerImage` and the
+   `kubectl-ate` image of the Jobs move to `fork-8cf248b96e08`. Argo prunes the
+   Failed Job `gvisor-fork-conformance-5` and creates
+   `gvisor-fork-conformance-6` (not suspended, new `kubectl-ate` digest) with
+   the same ConfigMap `gvisor-fork-conformance-tgf4tdtbht`, because `conformance/`
+   is unchanged. No grant or value changes.
+
+   What rolls (read this before you merge):
+
+   | Component | Count | Roll |
+   | --- | --- | --- |
+   | Deployment `ate-api-server` | 2 | rolling update, one pod at a time |
+   | Deployment `ate-controller` | 1 | replaced: no pool reconciles while it restarts |
+   | DaemonSet `atelet` | 3 | one node at a time |
+   | Worker of the `gvisor-fork` pool | 1 | new image, so the pod is replaced. This also clears the atespace pin of the old worker process |
+   | Workers of every other pool | 6 | none: their image and args do not change |
+
+   This is the second `ate-api-server`, `ate-controller` and `atelet` roll of the
+   day. The reviewer and `bosun` pods survived the earlier ones, but check again
+   before the merge: no connector run dispatched, reviewer `busy 0` (Joe or an
+   operator session runs those queries, as in step 7), and `kubectl get
+   workerpools -A` Ready. One in-flight create or resume can see a transient
+   error while `ate-api-server` rolls: retry it once. Do not merge while a run is
+   dispatched.
 
    What runs: one pod as `ate-system/ate-client`, which is already a
    `bootstrapOwners` identity (`values/substrate.yaml`). It needs no new grant:
@@ -901,7 +941,8 @@ flowchart LR
    C1 to C8 (`conformance/conformance.py`), and deletes everything, also on
    failure and on SIGTERM. The worker pins the atespace of its first seed
    (`fork-conformance`), so restart the pool pod before any later run in
-   another atespace (the latency Jobs).
+   another atespace (the latency Jobs). The re-pin replaces the pod, so the
+   pin starts clear for this run.
 
    What this change does not do:
 
@@ -928,14 +969,31 @@ flowchart LR
 
    Read the result:
 
+   First, after the sync (read-only):
+
    ```sh
-   kubectl -n ate-system get job gvisor-fork-conformance-3          # Complete 1/1, or Failed
-   kubectl -n ate-system logs job/gvisor-fork-conformance-3 | grep '^CONFORMANCE '
+   kubectl -n argocd get application substrate                      # Synced
+   kubectl -n ate-system get deploy,ds                              # all Ready, images fork-8cf248b96e08
+   kubectl get workerpools -A                                       # every pool Ready
+   kubectl -n substrate-gvisor-fork get pod -o jsonpath='{.items[0].status.containerStatuses[*].imageID}'   # ends in 779fb7dd9e03...80f8
+   kubectl get pods -A -l ate.dev/worker-pool -o wide               # only the gvisor-fork pod is new
+   ```
+
+   The worker's `imageID` must end in `779fb7dd9e036adfd22cb4642d91d3a1283cb03c37ce57cc0d39957497ad80f8`.
+   A pod on `f208bf5a…` did not roll. `forkd` starts with the first seed, a few
+   seconds after C1, so it does not run before the Job: check the worker log
+   while the Job runs, then read the Job.
+
+   ```sh
+   kubectl -n substrate-gvisor-fork logs deploy/gvisor-fork | grep 'forkd started'   # forkd started
+   kubectl -n ate-system get job gvisor-fork-conformance-6          # Complete 1/1, or Failed
+   kubectl -n ate-system logs job/gvisor-fork-conformance-6 | grep '^CONFORMANCE '
    kubectl -n argocd get application substrate                      # Healthy again once the Job is Complete
    ```
 
-   Pass: eight lines `check=C1 result=pass` to `check=C8 result=pass`, then
-   `event=summary result=ok`, and the Job is Complete. Fail: an `event=error`
+   Pass: a `check=C<n> result=pass` line for each of C1 to C8 (C2 has three,
+   one for each refused variant, and C6 has two), then `event=summary result=ok`,
+   and the Job is Complete. Fail: an `event=error`
    line with the reason, then `event=summary result=fail`, and the Job is
    Failed. `event=cleanup` lines show the atespaces were deleted. A line
    `event=waiting` every 60 s shows what the run waits for (the worker, the
@@ -946,7 +1004,7 @@ flowchart LR
 
    On failure: read the log, then fix the cause in a PR. A Failed Job does not
    run again, and its pod template is immutable: bump the run suffix in the name
-   (`-4`) and in the tests, which prunes `-3` and creates the new Job. To stop a
+   (`-7`) and in the tests, which prunes `-6` and creates the new Job. To stop a
    run in progress, set `suspend` back to `true` (Kubernetes allows it while the
    pod runs; the pod gets SIGTERM and the script cleans up). After a pass,
    delete `conformance-job.yaml` and its kustomization entries (a separate PR)
@@ -958,7 +1016,7 @@ flowchart LR
    Editing anything under `conformance/` changes the hash in the name of the
    generated ConfigMap, and so the Job's pod template (its config volume): bump
    the run suffix in the same change. `resources_test.py` pins the ConfigMap
-   name (`gvisor-fork-conformance-hbht65tgk9`) so such an edit fails CI.
+   name (`gvisor-fork-conformance-tgf4tdtbht`) so such an edit fails CI.
    - When the seed starts, find `forkd started` in the worker log. Check forkd's
      `hello` assertions (capabilities, cgroup parent, Unconfined seccomp,
      `/dev/kvm`) and that `memory`, `pids` and `cpu` are delegated below

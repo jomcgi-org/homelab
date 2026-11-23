@@ -4,21 +4,28 @@
 # check). Run it only after the enable steps. The log is the result:
 # grep '^CONFORMANCE '.
 #
-# Runs once: the directory is wired since step 5, the Job was created suspended,
-# and step 8 of the enable steps sets suspend to false. ../resources/
-# resources_test.py is the wiring guard. While the Job was suspended, Argo showed
-# health Suspended. It runs one pod (backoffLimit 0) and stays Complete or
-# Failed until it is removed: a Complete Job is Healthy, and a Failed or
-# Pending one leaves the Application Degraded. The enable steps are in
+# Runs once: the directory is wired since step 5, the Job was created
+# suspended, and step 8 of the enable steps sets suspend to false.
+# ../resources/resources_test.py is the wiring guard. While the Job was
+# suspended, Argo showed health Suspended. It runs one pod (backoffLimit 0) and
+# stays Complete or Failed until it is removed. A Complete Job is Healthy, and a
+# Failed one leaves the Application Degraded. The enable steps are in
 # projects/factory-cluster/README.md, "gVisor sandbox fork".
-# A Job's pod template is immutable: to run again, change the run suffix in
-# the name. Editing anything under conformance/ changes the generated
-# ConfigMap's hash, and so the Job's config volume and its pod template: bump
-# the run suffix in the same change (resources_test.py pins the hash). The suffix is 3 because the fork re-pin changed the kubectl-ate
-# image (-2 named the first fork build). To suspend it again, set suspend back
-# to true, which Kubernetes allows before the pod is done. To remove the test,
-# delete this file and its kustomization entries after reading the log; ArgoCD
-# then prunes the Job.
+#
+# A Job's pod template is immutable: to run again, change the run suffix in the
+# name. Editing anything under conformance/ changes the generated ConfigMap's
+# hash, and so the Job's config volume and its pod template: bump the run suffix
+# in the same change (resources_test.py pins the hash).
+#
+# The suffix is 6. -2 named the first fork build. -3 failed at its first API
+# call, because its template did not disable golden snapshots. -4 was never
+# applied. -5 passed C1 and C2 and failed C3: the fork worker could not start a
+# seed (forkd's binaries sat in a 0700 directory). -6 runs on the fork build
+# 8cf248b96e08, which stages them in a worker-owned directory.
+#
+# To suspend a running Job, set suspend back to true, which Kubernetes allows
+# before the pod is done. To remove the test, delete this file and its
+# kustomization entries after reading the log. ArgoCD then prunes the Job.
 #
 # It runs as ate-system/ate-client, which the ate API already authorizes
 # (ateApi.authorization.bootstrapOwners in ../values/substrate.yaml), so it
@@ -30,7 +37,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: gvisor-fork-conformance-3
+  name: gvisor-fork-conformance-6
   namespace: ate-system
   annotations:
     argocd.argoproj.io/sync-wave: "2"
@@ -113,10 +120,10 @@ spec:
           configMap:
             name: gvisor-fork-conformance
         # The fork build of kubectl-ate: /cli/ko-app/kubectl-ate, published by
-        # substrate-fork-images.yml at fork commit 1e7a877d0ca3.
+        # substrate-fork-images.yml at fork commit 8cf248b96e08.
         - name: cli
           image:
-            reference: ghcr.io/jomcgi-org/homelab/substrate-fork/kubectl-ate:fork-1e7a877d0ca3@sha256:ce43eb79787738134a3de680fb660da96eb4a9ad13e48a088bc899d0a654d4ed
+            reference: ghcr.io/jomcgi-org/homelab/substrate-fork/kubectl-ate:fork-8cf248b96e08@sha256:bfb9cf01712dd691232298cc19767a7536c00f2cfe0c76b41ac6945f2d2885f7
             pullPolicy: IfNotPresent
         # The ate API's JWT provider accepts this audience (api-server-config.yaml).
         - name: ate-token

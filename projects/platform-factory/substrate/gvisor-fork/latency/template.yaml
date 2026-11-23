@@ -42,12 +42,19 @@ resources:
   limits:
     cpuMillicores: 1000
     memoryBytes: 134217728
+# A fork template disables golden snapshots: a forked actor is ready when its
+# wakeup probe passes and has no snapshots to restore. The API refuses the
+# template otherwise (cmd/ateapi/internal/apivalidation/fork.go, validateForkTemplate:
+# snapshot_config.golden_snapshot_config.mode must be DISABLED).
+snapshotConfig:
+  goldenSnapshotConfig:
+    mode: GOLDEN_SNAPSHOT_MODE_DISABLED
 forkConfig:
   mode: FORK_MODE_SEED_AND_FORK
   seedResources:
     limits:
       cpuMillicores: 1000
-      memoryBytes: 268435456
+      memoryBytes: 536870912
   singleUse: true
   # A pool child waits for its request: the worker kills it at this deadline.
   maxLifetimeSeconds: 300
