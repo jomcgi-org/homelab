@@ -177,7 +177,10 @@ def template_checks(text: str) -> list[str]:
         (r"(?m)^\s+singleUse: true$", "singleUse is not true"),
         (r"(?m)^\s+egress: FORK_EGRESS_NONE$", "egress is not none"),
         (r"(?m)^\s+maxLifetimeSeconds: 900$", "maxLifetimeSeconds is not 900"),
-        (r"(?m)^\s+mode: GOLDEN_SNAPSHOT_MODE_DISABLED$", "golden snapshots are not disabled"),
+        (
+            r"(?m)^\s+mode: GOLDEN_SNAPSHOT_MODE_DISABLED$",
+            "golden snapshots are not disabled",
+        ),
     ):
         if not re.search(pattern, text):
             problems.append(why)
