@@ -954,7 +954,9 @@ def test_engine_provisioning_is_wired_and_runs_once() -> None:
     assert "envFrom" not in c
 
 
-_GATE_IMAGE = "ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/gate"
+_GATE_IMAGE = (
+    "ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/gate"
+)
 # Every object ../egress-scan/gate/manifests renders. A new object there changes
 # the cluster, so it must be listed here in the same change.
 _GATE_OBJECTS = {
@@ -990,7 +992,9 @@ def test_engine_gate_is_wired_with_its_image_pinned_to_the_build() -> None:
     # gate's code or its image config changes the digest: update the pin in
     # egress-scan/gate/manifests/kustomization.yaml in the same change.
     assert container["image"] == f"{_GATE_IMAGE}@{digest}"
-    assert {"name": "ghcr-imagepull-secret"} in sts["spec"]["template"]["spec"]["imagePullSecrets"]
+    assert {"name": "ghcr-imagepull-secret"} in sts["spec"]["template"]["spec"][
+        "imagePullSecrets"
+    ]
 
 
 _PREVIEW = ["PerTemplateSnapshotLocation", "GoldenEgressPolicy", "ForkSeed"]
