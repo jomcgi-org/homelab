@@ -129,7 +129,7 @@ caller. State of this boundary: `designed`.
 | --- | --- | --- |
 | `egress-scan` | None. Network rules only | Egress to `engine-gate` on one port |
 | `engine-gate` ServiceAccount | Editor role from the atespace access policy `default` | Atespace `egress-scan-engine` only: create, resume, get, list and delete actors |
-| `engine-gate` pod certificate | Entry in `ingressAllowedSPIFFEIDs` | Cluster-wide actor ingress. Joe decides this grant |
+| `engine-gate` pod certificate | Entry in `ingressAllowedSPIFFEIDs` | Cluster-wide actor ingress. Joe approved this grant (Decided 2) |
 | Template owner | Global owner (`ate-client`) | Creates the atespace and the fork template. An editor cannot: `can_create_fork_template` needs a global owner |
 
 Network rules are new, because the cluster default-deny blocks egress. The
@@ -158,18 +158,23 @@ queue pop.
 
 | Rule | Reason |
 | --- | --- |
-| The gate runs as a StatefulSet and names children `eg-<pod name>-<n>` | The name survives a restart. A Deployment pod gets a new name, so its children would stay booked |
-| On start the gate lists the atespace and deletes every actor with its own name prefix | A leftover child keeps its booking until it expires |
+| The gate runs as a StatefulSet and names children `eg-<pod name>-<start epoch>-<n>` | The pod name survives a restart, so the new gate can find old children. A Deployment pod gets a new name, so its children would stay booked. The start epoch keeps a new name from meeting an old child that is still deleting |
+| On start the gate lists the atespace and deletes every actor with its pod prefix and another epoch | A leftover child keeps its booking until it expires |
 | The template sets `maxLifetimeSeconds: 900`. The gate deletes a waiting child at 600 s and creates a new one | The worker reports a child that ends by `max_lifetime` as a crash (`ReportCrashed`, "forked sandbox ended: max_lifetime"). A delete is no crash |
 | Every API call carries the preview opt-in header (`Ate-Preview-Allowed`) | `CreateActor` of a fork template needs it (`forkForCreate`) |
 | One replica in v1 | The pool books 8 children (see capacity). A second replica needs its own pool |
 
 ## Latency budget
 
-The tier deadline is 300 ms. The gateway `requestTimeout` is the deadline plus
-10 ms, so 310 ms with the tier on (`resources_test.py` enforces the pair). The
-gateway timeout is 80 ms today. Each Hindsight call through the gateway can
-wait the longer time. Joe decides this change (item 10 below).
+The tier has two modes (observe mode is `designed`: another change adds it). In
+observe mode the engine call runs off the request path. It is detached and
+bounded, and nobody waits for it. The gateway `requestTimeout` stays 80 ms, so a
+Hindsight call sees no added latency. `resources_test.py` requires a timeout of
+at least the deadline plus 10 ms in enforce mode only. In enforce mode the tier
+waits for the engine. The deadline is 300 ms and `requestTimeout` is 310 ms. The
+PR that flips the mode to enforce raises the timeout in the same change. The
+budget below is the enforce-mode path. In observe mode it is the time the
+detached call takes.
 
 Path B, pool hit, 16 KiB body, Pro engine with all 1586 rules, at most 4 requests
 in flight. Gitleaks runs beside the engine call and is not on this path.
@@ -202,21 +207,27 @@ result replaces hops 4 to 8. It took 161 ms at p95 for N=4 with the 221-rule
 subset, so 173 ms with 1586 rules. The total p95 is 209 ms. Nothing can build
 path C safely today.
 
-Body size, end to end, with the 1586 rules:
+Body size, end to end, with the 1586 rules. The engine scans the engine text, not
+the raw body. When a JSON body holds a backslash, `scan.go` appends the decoded
+JSON strings (`engineText`), so escaped JSON can reach twice the raw body. The
+limit `semgrep.maxBodyBytes` applies to the raw body.
 
-| Body | Added scan time | Added copy across hops | Total p95 (ms) |
-| --- | --- | --- | --- |
-| 16 KiB | 0 | 0 | 216 |
-| 64 KiB | about 17 | about 8, over four hops | about 241 |
-| 128 KiB | about 39 | about 12 | about 267 |
-| 512 KiB | 170 or more | 20 or more | Over 300: 276 to 292 ms for the scan alone at N=1 |
+| Raw body | Engine text, plain | Engine text, escaped JSON | Total p95, plain (ms) | Total p95, escaped (ms) |
+| --- | --- | --- | --- | --- |
+| 16 KiB | about 17 KiB | about 33 KiB | 216 | about 226 |
+| 32 KiB | about 33 KiB | about 65 KiB | about 226 | about 241 |
+| 64 KiB | about 65 KiB | about 129 KiB | about 241 | about 267 |
+| 128 KiB | about 129 KiB | about 257 KiB | about 267 | about 324, over the deadline |
+| 512 KiB | | | Over 300: 276 to 292 ms for the scan alone at N=1 | |
 
-The scan grows by about 0.35 ms per KiB. Gitleaks on a large body runs beside
-the engine and adds nothing while it stays under its 75 ms deadline. The v1
-limit is 64 KiB (`semgrep.maxBodyBytes: 65536`). It leaves about 77 ms under
-the deadline for the growth the N=4 and N=16 runs show. Raise it to 128 KiB only
-after the data Job measures the router hops. A larger body is `oversize`, and
-deny mode returns 503.
+The scan grows by about 0.35 ms per KiB of engine text, and each copy across a
+hop adds about 3 ms per 64 KiB. Gitleaks on a large body runs beside the engine
+and adds nothing while it stays under its 75 ms deadline. The v1 limit is 32 KiB
+of raw body (`semgrep.maxBodyBytes: 32768`). Its worst case, escaped JSON, costs
+what a plain 64 KiB body costs. That leaves about 77 ms under the 300 ms
+deadline. A larger body is `oversize`, and deny mode returns 503. Observe mode
+sets the final limit from real sizes. No metric records body sizes today, so the
+observe change needs one.
 
 - **CPU.** A child uses one vCPU for 60 to 80 ms. The measurements ran on a
   12-core host. N=16 was CPU bound there (239 ms median). Inference: a pod with
@@ -253,9 +264,9 @@ HorizontalPodAutoscaler on `factory_worker_pool_workers_wanted`. This pool
 needs no autoscaler: the in-flight cap is 4 and `replicas` stays fixed. The
 factory autoscaler would need `minReplicas: 1` to serve this pool.
 
-The failure mode stays `deny` in v1. The Hindsight route has the only policy
-today, and a deny there blocks memory writes, not safety. The tier's `allow`
-mode is for a soak (decision 9).
+Joe decided that an engine outage denies the request. The Hindsight route has
+the only policy today, and a deny there blocks memory writes, not safety. In
+observe mode no engine failure changes a verdict.
 
 ## Capacity and scheduling
 
@@ -271,10 +282,10 @@ the actor. Until then a replacement can be refused.
 | Child | 1000m CPU limit, 128 MiB memory limit | A `cpu.max` below 1000m would throttle a 60 to 80 ms scan. The memory limit covers 80 MB at 512 KiB |
 | Child, measured use | 31 MB scanning at 16 KiB, 3.5 MB waiting | Measured |
 | Pool | 2 waiting, 4 scanning, 2 of headroom: 8 children | Matches the in-flight cap. Headroom covers served children that wait for deletion |
-| Booked CPU | 1000 + 8 x 1000 = 9000m | Pod CPU limit 9: the pod holds the seed and N-1 children |
-| Booked memory | 512 + 8 x 144 = 1664 MiB | 128 MiB limit plus 16 MiB overhead. Pod memory limit 2 GiB |
+| Booked CPU | Seed 1000m + 8 children x 1000m = 9000m | All of the 9000m pod capacity |
+| Booked memory | Seed 512 MiB + 8 x 144 MiB = 1664 MiB | 128 MiB limit plus 16 MiB overhead. Capacity is the pod limit minus a 64 MiB reserve: 1984 MiB for 2 GiB |
 | Expected use | 358 + 4 x 37 + 4 x 4 + 64 = 586 MB | 16 KiB bodies, `forkd` and worker 64 MB |
-| Pod request | 1 GiB memory, 500m CPU | Scheduling reservation. Needs a request-room check: the nodes are about 80% requested and each has 11 CPU |
+| Pod request | 1 GiB memory, 4 CPU | Scheduling reservation. Memory is the tight dimension. CPU requests are 19%, 36% and 49% of the three nodes (design review, 2026-11-23), so 4 CPU fits |
 | Staged pool today | 2 CPU limit, 1280Mi limit, 256Mi request | Books the seed and one child. It cannot hold the engine pool |
 | Latency Jobs, default | K up to 4, batches of 4, one child of headroom: 5 children | 6000m booked with the seed. K=16 needs 17000m and 2816 MiB |
 
@@ -282,15 +293,20 @@ The pool needs a resize before any latency run. That is a change to
 `kvm-pool.yaml`, in its own PR, after a request-room check.
 
 Placement: the pod has no node selector. Node-1 had about 4.9 GiB of memory
-request room and nodes 2 and 3 about 2 GiB. A 1 GiB request fits any node. CPU
-room per node is not measured. One replica runs in v1, so a drain is an outage.
+request room and nodes 2 and 3 about 2 GiB. A 1 GiB request fits any node. Under CPU
+contention a pod gets shares in proportion to its request. A 500m request would
+give four scans the shares of half a core. A 4 CPU request matches the
+in-flight cap. One replica runs in v1, so a drain is an outage.
 
 **Atespace pin.** A worker pins the atespace of its first seed for the life of
 the process (`cmd/ateworker-gvisor/fork.go`, `seed`). It refuses a seed of
 another atespace with `PermissionDenied`, and nothing resets the pin, not even a
 dropped seed. The rollout uses three atespaces on one single-replica pool:
 `fork-conformance`, `fork-latency` and `egress-scan-engine`. The pool pod
-restarts between them. One shared atespace is not an option: the conformance
+restarts between them, after the templates of the previous atespace are deleted.
+The seed reconciler seeds every live fork template on a restarted worker, so a
+leftover template pins its atespace again. A Job that dies before its cleanup
+leaves its template. Delete it by hand before the restart. One shared atespace is not an option: the conformance
 Job deletes its atespace, and test actors would share the engine's atespace
 and its editor grant.
 
@@ -319,36 +335,46 @@ flowchart LR
 | How the build gets the rules | The Secrets config of the Semgrep deployment, fetched with the real token | The spike used `GET /api/agent/deployments/scans/config?is_secrets_scan=true` |
 | What is pinned | The Pro binary sha256 in `pins.env` after the first build. The rules sha256 as an image label and in the tag | The rules are proprietary content and stay out of the public repo |
 | What the build checks | Fail if `install-semgrep-pro` or the rules fetch fails. Run the engine once, expect exit 0 and a finding on a fake secret | The build proves the engine works with the token file the image holds |
-| Private package check | After the push, an anonymous pull must be refused (`crane manifest` with no login). If it succeeds, the workflow fails and deletes the pushed version | The repo is public, and a package published by a workflow can inherit the repo's visibility |
+| Private package check | After the push, an anonymous pull must be refused. If it succeeds, the workflow fails and deletes the pushed version | The repo is public, and a package published by a workflow can inherit the repo's visibility |
 
-Confirm that the package setting "inherit access from repository" is off. That
-state lives outside the repo and is unverified here.
+Details of the check:
 
-**Token handling is an open decision (decision 6).** A fork template has no
-volumes (`validateForkTemplate`) and no egress. The API refuses env names that
-hold `TOKEN`, `KEY`, `SECRET` or `PASSWORD`, and every child can read the
+- The workflow uses `GITHUB_TOKEN` with `packages: write`, as
+  `substrate-fork-engine.yml` does. Whether that token can delete a version it
+  just created is unverified.
+- The anonymous `crane manifest` runs with a fresh, empty `DOCKER_CONFIG`.
+- The package API URL needs the slashes of the package name encoded (`%2F`).
+- The image is public between the push and the check. With the placeholder
+  token, that exposes the Pro binary and the rules. With option (a), a failed
+  check forces a token rotation.
+- Confirm that the package setting "inherit access from repository" is off. That
+  state lives outside the repo and is unverified here.
+
+**Token handling: a placeholder token in the image (decided).** A fork template
+has no volumes (`validateForkTemplate`) and no egress. The API refuses env names
+that hold `TOKEN`, `KEY`, `SECRET` or `PASSWORD`, and every child can read the
 template env. So no mounted-secret option exists. The engine needs a file at
-start (`/semgrep/.tok`), and that file lives in the image. Two options:
+start (`/semgrep/.tok`), and that file lives in the image.
 
-| | (a) Real token in the image | (b) Placeholder token in the image |
+| | (a) Real token in the image | (b) Placeholder token in the image. Chosen |
 | --- | --- | --- |
 | What the image holds | The real token, mode 0444 | A dummy token file. The real token stays in the build environment secret |
 | Who can read the real token | Anyone with pull access, the node's image cache, and every child through seed memory | Nobody outside the build workflow |
 | Rotation | Rebuild the image and roll the template | Rotate the environment secret. No image change |
 | Depends on | Nothing | The engine checking only that a token is present at start |
-| Licence | The token is used as issued | Needs Joe's reading of the terms. This note assumes nothing |
-| Recommended | | Yes, with the licence check first |
+| Licence | The token is used as issued | Joe handles the terms himself. This note assumes nothing |
 
-The evidence for (b) is the spike. The engine checks only that a token file is
-present at start. A native `strace` shows no `connect` or `socket` call. The
-engine never checks again after the fork (`results3/README.md`, "Licence"). A Semgrep
-update could add an online check. The build smoke test must prove the engine
-accepts the placeholder on every build, and the build fails if it does not. A
-failure then returns the choice to option (a).
+The evidence for (b) is a spike run of Semgrep 1.186.0. A native `strace` of the
+engine showed no `connect` or `socket` call. Without a token file the engine
+exited with code 13 and the message "You must log in with `semgrep login` to
+use the Pro features". The engine never checked the token again after the fork.
+A Semgrep update could add an online check. The build smoke test must prove the
+engine accepts the placeholder on every build, and the build fails if it does
+not. A failure then returns the choice to option (a).
 
-Scope of the real token: use a dedicated token with the narrowest scope that
-`install-semgrep-pro` and the rules fetch accept, not a personal token. Rotate it
-on any change of package access.
+The real token is a dedicated token, not a personal one, with the narrowest scope
+that `install-semgrep-pro` and the rules fetch accept. Rotate it on any change of
+package access.
 
 **Rule set: use all 1586.** Detection coverage is the point of an egress
 gate. The cost is small:
@@ -372,9 +398,12 @@ mode that counts the engine verdict and enforces Gitleaks only. The existing
 
 **Rebuild and rotation.** A new template is a new template UID, so the seed is
 new. Rebuild on a Semgrep version bump, a rules refresh, a base image fix or a
-new `runsc` or `forkd` build. Roll it blue and green by template name. Create
-`engine-v2` and wait for its seed. Point the gate at it with one config value.
-Drain the pool, then delete `engine-v1`.
+new `runsc` or `forkd` build. Roll it blue and green by template name. The seed reconciler seeds every live
+fork template, so `engine-v2` needs a second seed (1000m, 512 MiB) while
+`engine-v1` lives. At peak, `engine-v1` books all 9000m and `engine-v2` gets no
+seed. Roll at low traffic with the `engine-v1` pool drained to its minimum, or
+size the pod at 10 to 11 CPU. Create `engine-v2` and wait for its seed. Point the
+gate at it with one config value. Drain the pool, then delete `engine-v1`.
 
 ## Measurement
 
@@ -413,51 +442,61 @@ Read the result with these rules:
 | Pool `send_to_result_ms` p95 at k=4 above 160 ms | Raise the pool pod CPU or lower the in-flight cap |
 | `control_k4` throughput under 5 times the peak request rate | Run two replenishers, or defer the pool |
 
+Each burst runs 5 rounds (`ROUNDS`), so the p95 of K=4 comes from 20 samples. The
+p95 of one burst of 4 would equal its maximum.
+
 ## Rollout
 
-Each step stays off until its predecessor is verified. Steps 5 to 10 of
+Each step stays off until its predecessor is verified. Steps 1 to 8 of
 [gVisor sandbox fork](../../../factory-cluster/README.md#gvisor-sandbox-fork-staged-off)
-come first.
+come first: they end with the conformance Job. The isolation gates X1 to X7 and
+X9, and the X8 waiver (README steps 9 and 10), come before step 6 below, the
+engine atespace. They do not come before the latency runs.
 
-1. Joe decides the items below. Nothing changes the cluster.
-2. Resize the pool in a PR for `kvm-pool.yaml`: 9 CPU and 2 GiB limits, after a
-   request-room check. This comes before every run.
-3. Run the conformance Job (atespace `fork-conformance`).
-4. Restart the pool pod, because the worker pinned `fork-conformance`. List
-   `latency` in the `gvisor-fork` kustomization and run `gvisor-fork-latency-1`
-   (atespace `fork-latency`).
-5. If Joe approves the grant, add the `ate-client` SPIFFE ID to
-   `ingressAllowedSPIFFEIDs`, run `gvisor-fork-latency-data-1`, then remove it.
-   Each change rolls the router, so this is two router rollouts.
-6. Restart the pool pod. Build `engine-pro` and check that an anonymous pull
-   fails. As a global owner, create the atespace `egress-scan-engine`, its
-   access policy for the gate and the fork template. Check that the read login
-   pulls the image.
-7. Build the `engine-gate` StatefulSet and the network rules. Add the observe
-   mode to the tier. Point the tier at the gate with the tier still off.
-8. Observe mode for 7 days: the scanner records the engine verdict and enforces
-   Gitleaks only.
-9. Enforce on the Hindsight route. Set `semgrep.deadline: 300ms`,
-   `semgrep.maxBodyBytes: 65536`, `semgrep.concurrency: 2` and the gateway
-   `requestTimeout: 310ms` in one PR.
+1. Resize the pool in a PR for `kvm-pool.yaml`: 9 CPU and 2 GiB limits, 4 CPU and
+   1 GiB requests. This comes before every run.
+2. Run the conformance Job (atespace `fork-conformance`).
+3. Delete the conformance template and atespace. Restart the pool pod, because
+   the worker pinned `fork-conformance`. List `latency` in the `gvisor-fork`
+   kustomization and run `gvisor-fork-latency-1` (atespace `fork-latency`).
+4. Add the `ate-client` SPIFFE ID to `ingressAllowedSPIFFEIDs`, run
+   `gvisor-fork-latency-data-1`, then remove it. Each change rolls the router, so
+   this is two router rollouts.
+5. Delete the latency template and atespace. Restart the pool pod. Build
+   `engine-pro` and check that an anonymous pull fails.
+6. After the X gates and the waiver pass, a global owner creates the atespace
+   `egress-scan-engine`, its access policy for the gate and the fork template.
+   Check that the read login pulls the image.
+7. Build the `engine-gate` StatefulSet and the network rules. Another change adds
+   observe mode to the tier. Point the tier at the gate.
+8. Turn the tier on in observe mode (`semgrep.mode: observe`) for 7 days. The
+   engine call runs off the request path, the gateway timeout stays 80 ms and
+   Gitleaks alone decides. The scanner records the engine verdict and the body
+   sizes.
+9. One PR flips the tier to enforce. It sets `semgrep.mode: enforce`,
+   `semgrep.deadline: 300ms`, `semgrep.maxBodyBytes`, `semgrep.concurrency: 2` and
+   the gateway `requestTimeout: 310ms`. `resources_test.py` fails if the timeout
+   and the mode do not move together.
 
-To roll back, turn the tier off (`semgrep.enabled: false`) and restore the 80 ms
-timeout in the same PR. Delete the pool templates only after that.
+To roll back from enforce, set `semgrep.mode: observe` and restore the 80 ms
+timeout in the same PR. To turn the tier off, set `semgrep.enabled: false`. Delete
+the pool templates only after that.
 
-## Needs Joe
+## Decided
 
-| # | Decision | Rule that requires it | Recommended |
-| --- | --- | --- | --- |
-| 1 | Turn on the `ForkSeed` gate, which rolls the control plane and every worker pool | Fork README step 7 | Yes, after the conformance run |
-| 2 | Waive X8 for gVisor-only use, and allow factory use of fork templates | Fork README step 10 | Yes |
-| 3 | Allow the `engine-gate` SPIFFE ID in `ingressAllowedSPIFFEIDs` (reaches every actor), and give its ServiceAccount the editor role in one atespace | Router allowlist is cluster-wide. Editor is the narrowest role that creates actors | Yes, with the separate gate |
-| 4 | Allow the `ate-client` SPIFFE ID in `ingressAllowedSPIFFEIDs` for one data run, then remove it. `ate-client` is a global owner, and each change is a router rollout | Router allowlist is cluster-wide | Yes, once the control Job passes |
-| 5 | Resize the pool (9 CPU and 2 GiB limits, 1 GiB and 500m requests), and restart the pool pod between atespaces | Booking covers CPU. Nodes are about 80% requested. A pod restart is a cluster action | Yes, after a request-room check |
-| 6 | Token handling: (a) real token in the image, or (b) placeholder in the image with the real token in the build secret. Also the token scope | Token never enters the repo. Licence terms | (b), after Joe reads the terms. A dedicated token |
-| 7 | Private `engine-pro` package, with "inherit access" off, and whether the terms allow the Pro binary in a private registry | Package visibility and licence | Private |
-| 8 | Rule set and verdict: 1586 rules, deny on any finding, observe mode first | Coverage against false positives | 1586, observe 7 days |
-| 9 | Failure mode: `deny`, or `allow` for a soak | Fail-closed scanner | `deny` |
-| 10 | On the Hindsight route: timeout 80 ms to 310 ms, and the engine body limit 64 KiB. A larger body is denied | Added latency on each call, and larger bodies denied | Yes, after the observe period |
+Joe decided these on 2026-11-23, after review of this PR. No HOME issue records
+them yet.
+
+| # | Decision | Record |
+| --- | --- | --- |
+| 1 | The cluster steps package is approved after review: the `ForkSeed` gate (fork README step 7), the X8 waiver for gVisor-only use, factory use of fork templates (step 10) and the pool resize to 9 CPU and 2 GiB with a pod restart between atespaces | Joe, 2026-11-23 |
+| 2 | The `engine-gate` SPIFFE ID and its editor role in one atespace, and the `ate-client` SPIFFE ID for one data run (two router rollouts) | Joe, 2026-11-23 |
+| 3 | Policy: all 1586 rules, deny on any finding, observe mode for 7 days first, deny when the engine is out | Joe, 2026-11-23 |
+| 4 | Token: a placeholder in the image, the real dedicated token only in the build environment secret. Joe handles the licence terms himself | Joe, 2026-11-23 |
+| 5 | The `engine-pro` package is private | Joe, 2026-11-23 |
+
+Still open: the engine body limit and the Hindsight route timeout. The enforce
+PR sets them from observe data. The v1 values are 32 KiB of raw body and 310 ms.
 
 ## Direction
 
@@ -469,9 +508,9 @@ closes.
 | Pool of waiting children for the engine path | HOME-TBD | `designed` |
 | `engine-gate` StatefulSet | HOME-TBD | `designed` |
 | Pro engine image, private package | HOME-TBD | `designed` |
-| Observe mode in the scanner tier | HOME-TBD | `designed` |
+| Observe mode in the scanner tier, and the private `engine-pro` workflow | HOME-TBD | `designed`, another change implements them |
 | Latency Jobs `gvisor-fork-latency-1` and `-data-1` | HOME-TBD | `staged off`, suspended and unwired |
-| Per-client atespace rule in the router | HOME-TBD | `designed`, replaces decisions 3 and 4 |
+| Per-client atespace rule in the router | HOME-TBD | `designed`, replaces the two router grants (Decided 2) |
 
 ## Decision history
 
@@ -480,4 +519,5 @@ closes.
 | Fork pools run on the KVM platform in a dedicated WorkerPool | 2026-11-22 | [Fork README, Tenancy](../../../factory-cluster/README.md#tenancy) |
 | One seed serves one atespace. No per-tenant pool, because the code is ours | 2026-11-22 | [Fork README, Tenancy](../../../factory-cluster/README.md#tenancy) |
 | The request body travels over HTTP into the child's own network | 2026-11-22 | [Fork README, enable steps](../../../factory-cluster/README.md#gvisor-sandbox-fork-staged-off) |
-| Request path B with a separate gate | 2026-11-23 | This note. No Joe decision recorded yet |
+| Request path B with a separate gate | 2026-11-23 | This note, reviewed with the cluster steps package |
+| Cluster steps, policy, placeholder token and private package | 2026-11-23 | The "Decided" table above. No HOME issue yet |
