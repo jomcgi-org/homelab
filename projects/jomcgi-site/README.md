@@ -447,7 +447,7 @@ the same on a phone and a desktop:
 | Ground | A near-white page (`--color-background-body`). A surface is white. |
 | Lines | Hairlines (`--color-border`) separate rows and outline a panel. Nothing is boxed in ink. Corners are soft (`--radius-*`). |
 | Type | Inter, self-hosted (`web/src/assets/fonts`, SIL OFL 1.1). Size and tight tracking carry the hierarchy: title (`h1`, 2rem to 3.25rem, semibold), section (`h2`, 1.25rem), heading (`h3`, 1rem), body (1rem / 1.6), small (0.875rem). A page sets no heading size of its own. |
-| Colour | Ink for text, links and selected controls. Blue is the one accent: the focus ring. |
+| Colour | Ink for text, links and selected controls. Blue is the one accent: the focus ring, and on Factory the mark for work in review and work in progress. |
 | Space | The page gutter is 1rem on a phone and 1.5rem above it. The title is the first thing under the nav. On a phone, secondary navigation becomes one row so it does not push the title down. |
 | Nav | One row of quiet links. A group with more than three links folds into one menu. |
 | Loading | A page shows its value on arrival. Maps, the hike planner and the full star forecast load without a click. A map holds its space while it loads. On Hikes the published walks fold away when the planner arrives. A button shows only to retry a failure. Star history waits for the Historical view. A blog recording loads as it nears the screen. |
