@@ -834,7 +834,9 @@ def test_gvisor_fork_slice_is_wired() -> None:
     # tight, so the pod requests little.
     (container,) = conformance["spec"]["template"]["spec"]["containers"]
     assert container["resources"]["requests"]["memory"] == "64Mi"
-    assert not [d for d in docs if d["metadata"]["name"].startswith("gvisor-fork-latency")]
+    assert not [
+        d for d in docs if d["metadata"]["name"].startswith("gvisor-fork-latency")
+    ]
     # The namespace is kept when the Application goes, like every Namespace.
     namespace = _one(docs, "Namespace", _FORK_NS)
     assert (
