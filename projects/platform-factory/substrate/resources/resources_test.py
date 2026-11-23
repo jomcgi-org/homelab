@@ -982,8 +982,22 @@ def test_engine_gate_is_wired_with_its_image_pinned_to_the_build() -> None:
     def key(d: dict) -> tuple:
         return (d["kind"], d["metadata"].get("namespace"), d["metadata"]["name"])
 
-    rendered = {key(d) for d in docs}
-    assert _GATE_OBJECTS <= rendered
+    # Build the gate's own directory: every object it renders is listed in
+    # _GATE_OBJECTS exactly (a new or a removed object is a cluster change), and
+    # ../resources renders each of them.
+    gate_docs = subprocess.run(
+        [
+            os.environ["KUSTOMIZE_BIN"],
+            "build",
+            str(_HERE.parent / "egress-scan" / "gate" / "manifests"),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    own = {key(d) for d in yaml.safe_load_all(gate_docs) if d}
+    assert own == _GATE_OBJECTS
+    assert own <= {key(d) for d in docs}
     sts = _one(docs, "StatefulSet", "engine-gate")
     assert sts["spec"]["replicas"] == 1
     (container,) = sts["spec"]["template"]["spec"]["containers"]
@@ -1215,6 +1229,64 @@ def _semgrep_values() -> dict:
         given = {**yaml.safe_load(helm["values"]), **given}
     values.update(given.get("semgrep", {}))
     return values
+
+
+_OBSERVE_ENDPOINT = "http://engine-gate.ate-system.svc:{port}/scan"
+
+
+def _observe_problems(
+    values: dict, service_port: int, max_inflight: int, scanner_replicas: int
+) -> list[str]:
+    """What the scanner's tier values must say for the observe rollout."""
+    bad = []
+    if values.get("enabled") is not True:
+        bad.append("semgrep.enabled is not true")
+    if values.get("mode") != "observe":
+        bad.append("semgrep.mode is not observe")
+    if values.get("endpoint") != _OBSERVE_ENDPOINT.format(port=service_port):
+        bad.append("semgrep.endpoint is not the engine-gate Service and its one path")
+    if values.get("deadline") != "300ms":
+        bad.append("semgrep.deadline is not 300ms")
+    if values.get("maxBodyBytes") != 65536:
+        bad.append("semgrep.maxBodyBytes is not 65536")
+    if int(values.get("concurrency", 0)) * scanner_replicas > max_inflight:
+        bad.append("scanner concurrency x pods is over the gate's --max-inflight")
+    return bad
+
+
+def test_scanner_tier_is_on_in_observe_mode_and_points_at_the_gate() -> None:
+    docs = _docs()
+    service = _one(docs, "Service", "engine-gate")
+    (port,) = service["spec"]["ports"]
+    sts = _one(docs, "StatefulSet", "engine-gate")
+    (container,) = sts["spec"]["template"]["spec"]["containers"]
+    (inflight,) = [
+        int(a.split("=", 1)[1])
+        for a in container["args"]
+        if a.startswith("--max-inflight=")
+    ]
+    manifest = Path(os.environ["SCANNER_MANIFEST"]).read_text()
+    deployment = _one(
+        [d for d in yaml.safe_load_all(manifest) if d], "Deployment", "egress-scan"
+    )
+    replicas = deployment["spec"]["replicas"]
+    values = _semgrep_values()
+    assert _observe_problems(values, port["port"], inflight, replicas) == []
+    # Each mutation must be caught, so that the check cannot pass on a wrong value.
+    mutations = {
+        "tier off": {"enabled": False},
+        "enforce mode": {"mode": "enforce"},
+        "endpoint typo": {"endpoint": "http://engine-gate.ate-system.svc:8080/scn"},
+        "wrong host": {"endpoint": "http://engine.ate-system.svc:8080/scan"},
+        "no path": {"endpoint": "http://engine-gate.ate-system.svc:8080"},
+        "deadline": {"deadline": "3s"},
+        "body limit": {"maxBodyBytes": 524288},
+        "concurrency": {"concurrency": 8},
+    }
+    for name, change in mutations.items():
+        assert _observe_problems({**values, **change}, port["port"], inflight, replicas), name
+    # The endpoint follows the Service port.
+    assert _observe_problems(values, 9999, inflight, replicas)
 
 
 def test_gateway_timeout_is_coupled_to_the_semgrep_deadline() -> None:

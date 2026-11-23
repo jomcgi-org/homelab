@@ -432,7 +432,7 @@ groups:
         expr: absent(up{job="engine-gate"} == 1)
         for: 5m
         labels:
-          severity: critical
+          severity: warning
         annotations:
           action: "Check the engine-gate pod (get pod, describe, logs) and the ate API."
           graph: 'up{job="engine-gate"}'
@@ -441,7 +441,9 @@ groups:
           summary: "No engine-gate pod has been scraped for 5 min"
           description: >-
             The gate is down or its metrics port is unreachable. The scanner
-            gets no engine verdict.
+            gets no engine verdict. After a rollback to zero replicas this
+            alert fires for good: remove the group and the scrape job in the
+            rollback PR (gate README, "Rollback").
       - alert: EngineGateNotReady
         expr: min(kube_pod_status_ready{namespace="ate-system", pod=~"engine-gate-[0-9]+", condition="true"}) == 0
         for: 10m

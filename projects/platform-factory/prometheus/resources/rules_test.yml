@@ -1407,7 +1407,7 @@ tests:
           - labels: 'capacity:workload_pod_memory_budget_exceeded{namespace="factory-r-homelab-review",workload="homelab-reviewer",policy="timestral"}'
             value: 1
 
-  # engine-gate: no scrape for 5 min is EngineGateDown (critical). A scraped
+  # engine-gate: no scrape for 5 min is EngineGateDown (warning). A scraped
   # pod, even one that is not ready, is not down.
   - interval: 1m
     input_series:
@@ -1423,14 +1423,14 @@ tests:
         alertname: EngineGateDown
         exp_alerts:
           - exp_labels:
-              severity: critical
+              severity: warning
             exp_annotations:
               action: "Check the engine-gate pod (get pod, describe, logs) and the ate API."
               graph: 'up{job="engine-gate"}'
               threshold: "1"
               runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/platform-factory/substrate/egress-scan/gate/README.md#alerts"
               summary: "No engine-gate pod has been scraped for 5 min"
-              description: "The gate is down or its metrics port is unreachable. The scanner gets no engine verdict."
+              description: "The gate is down or its metrics port is unreachable. The scanner gets no engine verdict. After a rollback to zero replicas this alert fires for good: remove the group and the scrape job in the rollback PR (gate README, \"Rollback\")."
 
   # engine-gate: not Ready for 10 min is a warning; Ready is not.
   - interval: 1m

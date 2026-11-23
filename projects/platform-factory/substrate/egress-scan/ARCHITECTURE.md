@@ -25,11 +25,17 @@ flowchart LR
 
 | Component | Role | Code | Pin | Untrusted input | Credentials held |
 | --- | --- | --- | --- | --- | --- |
-| egress-scan | Gitleaks verdict, plus the engine tier when on. Gitleaks and the engine run at the same time | `main.go`, `scan.go`, `semgrep.go` | chart `0.4.32`, image by digest | Request bytes from actors, through the gateway | None. `automountServiceAccountToken` is false |
-| engine-gate | StatefulSet, one replica. Keeps a pool of waiting children, sends one body to one child, relays the engine reply | `gate/` ([README](gate/README.md)) | image `ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/gate`, pinned by CI when wired | Text from egress-scan, which holds actor bytes | ate API token (editor of one atespace), router client certificate |
+| egress-scan | Gitleaks verdict, plus the engine tier when on. Gitleaks and the engine run at the same time | `main.go`, `scan.go`, `semgrep.go` | live chart `0.7.26` (CI bumps it), image by digest | Request bytes from actors, through the gateway | None. `automountServiceAccountToken` is false |
+| engine-gate | StatefulSet, one replica. Keeps a pool of waiting children, sends one body to one child, relays the engine reply | `gate/` ([README](gate/README.md)) | image `ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/gate`, pinned by digest in `gate/manifests/kustomization.yaml`, a hand pin that `resources_test.py` checks against the Bazel image digest | Text from egress-scan, which holds actor bytes | ate API token (editor of one atespace), router client certificate |
 | atenet-router | Routes a request to an actor by `ate-target-actor`. Resumes a suspended actor | `../resources/upstream/substrate/atenet-router.yaml` | Substrate chart `1.0.1` | Any client with an allowed SPIFFE ID | Pod identity certificate for atunnel |
 | Pool worker | Staged off. Holds the seed and forks the children | `../gvisor-fork/kvm-pool.yaml` | fork build `8cf248b96e08`, gVisor `0250f9acf` | None: only the router reaches it | KVM device, capabilities for forkd |
 | Engine image | Designed. Semgrep Pro Secrets engine, rules and a small server | none yet | Semgrep `1.186.0` | Request text, after the child's seccomp filter is on | A token file, real or placeholder (see "Pro engine image") |
+
+The gateway calls the scanner for the Hindsight route only
+(`../resources/atenet-egress-config.yaml`, `hindsight-api.hindsight.svc:8888`).
+Other egress is not scanned. So the scanner, and the gate behind it, see the text
+of Hindsight requests, and the observe data and the enforce decision describe that
+traffic.
 
 ## Engine path
 
@@ -471,8 +477,8 @@ the latency runs.
    the worker pinned `fork-conformance`. List `latency` in the `gvisor-fork`
    kustomization and run `gvisor-fork-latency-1` (atespace `fork-latency`).
 4. Add the `ate-client` SPIFFE ID to `ingressAllowedSPIFFEIDs`, run
-   `gvisor-fork-latency-data-1`, then remove it. Each change rolls the router, so
-   this is two router rollouts.
+   `gvisor-fork-latency-data-1`, then remove it. Each change edits the router ConfigMap, which agentgateway reloads without a restart (observed 2026-11-23 22:01:00Z), so
+   this is two ConfigMap changes.
 5. Delete the latency template and atespace. Restart the pool pod. Build
    `engine-pro` and check that an anonymous pull fails.
 6. A global owner creates the atespace `egress-scan-engine`, its access policy
