@@ -310,6 +310,30 @@ scrape_configs:
       - source_labels: [__meta_kubernetes_pod_node_name]
         target_label: node
 
+  # The worker reaper's metrics port: the workers that host an actor, per
+  # WorkerPool (factory_worker_pool_demand{source="actors"}).
+  - job_name: factory-reaper
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [factory]
+        selectors:
+          - role: pod
+            label: app.kubernetes.io/name=factory-reaper
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_container_port_number]
+        regex: "9090"
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
+
   # The reviewer's metrics port (factory_reviewer_*), one series set per
   # repository binding.
   - job_name: factory-reviewer

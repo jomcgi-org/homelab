@@ -60,6 +60,10 @@ spec:
         - name: reaper
           image: {{ include "factory.connectorImage" . | quote }}
           args: ["reaper"]
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
           resources:
             requests:
               cpu: 10m
