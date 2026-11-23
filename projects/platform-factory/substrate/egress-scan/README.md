@@ -89,15 +89,14 @@ progress line, then the Semgrep JSON. The client reads from the first `{`.
 
 | Engine result | Tier result |
 | --- | --- |
-| Result with `is_ignored` false | finding. The request is denied (403) whatever the severity or `validation_state`. A key that is invalid or not validated still must not leave. |
-| Result with `is_ignored` true | no finding |
+| Any result | finding. The request is denied (403) whatever the severity or `validation_state`. A key that is invalid or not validated still must not leave. |
+| Result with `is_ignored` true | finding. The text is actor-controlled, so an actor can add a `nosemgrep` marker. A suppressed result still denies. |
 | No findings, `errors` with level `error` | no verdict (`error`): the scan was partial |
 | No findings, `errors` with level `warn` or `info` | clean |
 | HTTP status other than 200, redirect, no `results` key, not JSON | no verdict (`error`) |
 | Response over `--semgrep-max-response` | no verdict (`error`) |
 
-The scanner reads only `check_id`, `start.offset`, `end.offset` and
-`extra.is_ignored`. It does not read `extra.lines` or any other field that can
+The scanner reads only `check_id`, `start.offset` and `end.offset`. It does not read `extra.lines` or any other field that can
 hold the matched text. A log line holds the rule id and the offsets, for
 example `aws-key-0@4-24`. It never holds the matched text. The denial that the
 actor sees is the same text as for a Gitleaks finding, so the actor learns no

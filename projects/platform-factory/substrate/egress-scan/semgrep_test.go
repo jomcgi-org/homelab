@@ -133,9 +133,10 @@ func TestHTTPEngineVerdicts(t *testing.T) {
 		{name: "findings with progress line", handler: func(w http.ResponseWriter, r *http.Request) {
 			io.WriteString(w, engineFindingJSON)
 		}, findings: []Finding{{"aws-key-0", 4, 24}, {"generic-token-3", 40, 48}}},
-		{name: "ignored result is not a finding", handler: func(w http.ResponseWriter, r *http.Request) {
+		{name: "ignored result is still a finding", handler: func(w http.ResponseWriter, r *http.Request) {
+			// An actor controls the text, so it can add a nosemgrep marker.
 			io.WriteString(w, `{"results":[{"check_id":"a","start":{"offset":1},"end":{"offset":2},"extra":{"is_ignored":true}}],"errors":[]}`)
-		}},
+		}, findings: []Finding{{"a", 1, 2}}},
 		{name: "unsafe rule id is replaced", handler: func(w http.ResponseWriter, r *http.Request) {
 			io.WriteString(w, `{"results":[{"check_id":"x y\n`+secretFixture+`","start":{"offset":-3},"end":{"offset":2},"extra":{}}]}`)
 		}, findings: []Finding{{"invalid-rule-id", 0, 2}}},
