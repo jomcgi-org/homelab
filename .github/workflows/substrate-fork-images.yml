@@ -5,8 +5,9 @@
 # The fork's release workflow publishes only for agent-substrate/substrate and
 # kagent-dev/substrate, so it cannot do this. These images go to
 # ghcr.io/jomcgi-org/homelab/substrate-fork/<component>:fork-<commit>, never to
-# the ghcr.io/kagent-dev/substrate names the cluster runs. No deployment pin
-# changes here. Switching the control plane to these images is a separate,
+# the ghcr.io/kagent-dev/substrate names the cluster runs. Tags are not
+# immutable: a later run with the same commit replaces them, so consumers pin
+# the digest the job summary prints. No deployment pin changes here. Switching the control plane to these images is a separate,
 # reviewed step (projects/factory-cluster/README.md, "gVisor sandbox fork
 # (staged, off)").
 name: Substrate fork images
@@ -66,9 +67,14 @@ jobs:
           # The job can write packages, so it restores no cache.
           cache: false
       # atelet builds a seed's root image with this static mkfs.erofs; ko copies
-      # cmd/atelet/kodata into the image.
+      # cmd/atelet/kodata into the image. The images are amd64 only, so only the
+      # amd64 binary is built (the fork's release script builds arm64 as well).
       - name: Build mkfs.erofs for the atelet image
-        run: .github/scripts/release/build-mkfs-erofs.sh
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            autoconf automake libtool pkg-config gcc
+          hack/build-mkfs-erofs.sh amd64
       - name: Log in to ghcr.io
         if: inputs.publish
         env:
@@ -95,7 +101,8 @@ jobs:
           for component in ${COMPONENTS}; do
             ref="$(KO_DOCKER_REPO="${KO_DOCKER_REPO}" "${ko}" build \
               --base-import-paths --push="${push}" --tags="${tag}" \
-              --image-label="org.opencontainers.image.source=https://github.com/jomcgi-org/substrate" \
+              --image-label="org.opencontainers.image.source=https://github.com/jomcgi-org/homelab" \
+              --image-label="org.opencontainers.image.url=https://github.com/jomcgi-org/substrate/tree/${REF}" \
               --image-label="org.opencontainers.image.revision=${REF}" \
               "./cmd/${component}" | tail -n 1)"
             echo "${component}: ${ref}"
