@@ -177,18 +177,7 @@ func (s *scanner) checkTwoTiers(ctx, scanCtx context.Context, release func(), fi
 
 	select {
 	case res := <-pending:
-		if res.outcome == engineCancelled {
-			// Only the caller ends the call before this point. Never allow on it.
-			return scanBudgetResponse(ctx)
-		}
-		s.semgrep.metrics.agree(false, res)
-		if d := s.semgrep.decide(res); d != nil {
-			if d.found {
-				return deny(codes.PermissionDenied, typev3.StatusCode_Forbidden, d.reason), nil
-			}
-			return deny(codes.ResourceExhausted, typev3.StatusCode_ServiceUnavailable, d.reason), nil
-		}
-		return &authv3.CheckResponse{Status: &statuspb.Status{}}, nil
+		return s.finishTwoTiers(ctx, res)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -233,4 +222,26 @@ func deny(code codes.Code, status typev3.StatusCode, reason string) *authv3.Chec
 			Body:   reason,
 		}},
 	}
+}
+
+// finishTwoTiers turns the engine result into the reply, after Gitleaks gave a
+// clean verdict.
+func (s *scanner) finishTwoTiers(ctx context.Context, res engineResult) (*authv3.CheckResponse, error) {
+	if res.outcome == engineCancelled {
+		// Defence in depth. Only the caller ends the call before this point, so
+		// ctx is done and the caller gets its error. A cancelled result must
+		// never reach the allow path, so with a live ctx it denies.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return deny(codes.ResourceExhausted, typev3.StatusCode_ServiceUnavailable, engineUnavailableReason), nil
+	}
+	s.semgrep.metrics.agree(false, res)
+	if d := s.semgrep.decide(res); d != nil {
+		if d.found {
+			return deny(codes.PermissionDenied, typev3.StatusCode_Forbidden, d.reason), nil
+		}
+		return deny(codes.ResourceExhausted, typev3.StatusCode_ServiceUnavailable, d.reason), nil
+	}
+	return &authv3.CheckResponse{Status: &statuspb.Status{}}, nil
 }
