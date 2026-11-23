@@ -284,7 +284,7 @@ def test_microvm_sandboxconfig_pins_the_upstream_amd64_assets() -> None:
     assert {n: a["sha256"] for n, a in _ASSETS["assets"].items()} == _UPSTREAM_AMD64
     # gVisor is untouched: its class default stays the only default gvisor
     # config. The fork's config is not a default (see
-    # test_gvisor_fork_slice_is_wired_and_off).
+    # test_gvisor_fork_slice_is_wired).
     names = {d["metadata"]["name"] for d in docs if d["kind"] == "SandboxConfig"}
     assert names == {"gvisor-default", "microvm", "gvisor-fork"}
 
@@ -772,13 +772,13 @@ _FORK_OBJECTS = {
 _GVISOR_DEFAULT = "sandboxconfig.ate.dev/is-class-default"
 
 
-def test_gvisor_fork_slice_is_wired_and_off() -> None:
+def test_gvisor_fork_slice_is_wired() -> None:
     # The gVisor sandbox-fork slice lives in ../gvisor-fork. ArgoCD reads only
     # this directory, and since step 5 of the enable steps it lists the slice.
-    # The slice runs no actor: the pool has one idle worker (step 6), the
-    # conformance Job is suspended and the ForkSeed gate is separate (step 7:
-    # test_fork_seed_gate_is_on). Step 8 sets suspend to false: it changes its
-    # assertion here in the same change.
+    # The slice runs no factory actor: the pool has one worker (step 6), the
+    # ForkSeed gate is on (step 7: test_fork_seed_gate_is_on) and the
+    # conformance Job runs once (step 8). The latency Jobs stay out of the render:
+    # they need a pool restart first, and the data Job a router grant.
     app = yaml.safe_load(Path(os.environ["SCANNER_APPLICATION"]).read_text())
     paths = [s["path"] for s in app["spec"]["sources"] if "path" in s]
     assert paths == ["projects/platform-factory/substrate/resources"]
@@ -824,10 +824,17 @@ def test_gvisor_fork_slice_is_wired_and_off() -> None:
     assert _GVISOR_DEFAULT not in configs["gvisor-fork"]["metadata"].get(
         "annotations", {}
     )
-    # Off: one worker that holds no seed, and the conformance Job does not run.
+    # One worker. No template sets fork_config until the conformance Job makes
+    # its own (and deletes it), so the worker holds no seed.
     pool = _one(docs, "WorkerPool", "gvisor-fork")
     assert pool["spec"]["replicas"] == 1
-    assert _one(docs, "Job", "gvisor-fork-conformance-3")["spec"]["suspend"] is True
+    conformance = _one(docs, "Job", "gvisor-fork-conformance-3")
+    assert conformance["spec"]["suspend"] is False
+    # A Pending Job leaves the Application Degraded and the cluster is request
+    # tight, so the pod requests little.
+    (container,) = conformance["spec"]["template"]["spec"]["containers"]
+    assert container["resources"]["requests"]["memory"] == "64Mi"
+    assert not [d for d in docs if d["metadata"]["name"].startswith("gvisor-fork-latency")]
     # The namespace is kept when the Application goes, like every Namespace.
     namespace = _one(docs, "Namespace", _FORK_NS)
     assert (
@@ -918,7 +925,8 @@ def test_fork_seed_gate_is_on() -> None:
     # only: add a later build here when the fork controller changes.
     controller = _images(_docs())["ate-controller/ate-controller"]
     assert controller.split("@")[0].rsplit(":", 1)[1] in _KVM_ONLY_GATE_BUILDS
-    # Every pool that is not the KVM pool runs an upstream v1.0.1 worker, which
+    # Every other pool in this render (the repository's other WorkerPools are
+    # in the factory chart) runs an upstream v1.0.1 worker, which
     # does not know ForkSeed. Its --preview must stay as it is with the gate
     # off, which only the build above guarantees.
     for doc in _docs():

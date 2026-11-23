@@ -3,7 +3,7 @@
 Runs in the gvisor-fork-conformance Job as the ate-system/ate-client
 ServiceAccount, with the fork's kubectl-ate (an image volume of the fork build).
 Run it only after the enable steps (projects/factory-cluster/README.md,
-"gVisor sandbox fork (staged, off)"). It checks the control plane and the
+"gVisor sandbox fork"). It checks the control plane and the
 worker, through the API only:
 
   C1  a fork template is accepted                              (I7)

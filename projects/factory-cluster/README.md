@@ -611,23 +611,23 @@ sends the actor no request: that needs a router certificate this account lacks.
 To run again, change the run suffix in the Job's name; to remove the test, read
 the log, then delete the Job file and its kustomization entries.
 
-### gVisor sandbox fork (staged, off)
+### gVisor sandbox fork
 
 Fork slice 1 starts an actor by forking a per-worker gVisor seed instead of
 booting it. A scanner child answers its first request 109 to 198 ms after the
 fork (N = 1 to 16). It holds about 37 MB of private memory. State: `gate on,
-no fork template`. The fork control plane runs (step 4), the slice is wired
-(step 5), the pool's one worker is idle (step 6) and `ForkSeed` is on (step 7).
-No actor uses the fork: the Job is suspended and no template sets
-`fork_config`.
+conformance Job runs` (step 8). The fork control plane runs (step 4), the slice
+is wired (step 5), the pool has one worker (step 6) and `ForkSeed` is on
+(step 7). No factory template sets `fork_config`: only the conformance Job
+makes a fork template, in its own atespace, and deletes it.
 
 | Piece | Where | Off because |
 | --- | --- | --- |
 | SandboxConfig `gvisor-fork` (fork build `0250f9acf`) and its asset Job | `projects/platform-factory/substrate/gvisor-fork/` | wired (step 5). No pool uses the config until step 6. `gvisor-default` stays the class default |
-| WorkerPool `gvisor-fork` (`platform: kvm`) | `gvisor-fork/kvm-pool.yaml` | one worker (step 6) that holds no seed, because the gate is off |
-| Conformance Job `gvisor-fork-conformance-3` | `gvisor-fork/conformance-job.yaml` | `suspend: true` until step 8 |
+| WorkerPool `gvisor-fork` (`platform: kvm`) | `gvisor-fork/kvm-pool.yaml` | one worker (step 6). It holds no seed while no template sets `fork_config` (the conformance Job makes one for its run) |
+| Conformance Job `gvisor-fork-conformance-3` | `gvisor-fork/conformance-job.yaml` | runs once (step 8); `suspend: false` |
 | Latency Jobs `gvisor-fork-latency-1` and `gvisor-fork-latency-data-1` | `gvisor-fork/latency/` | a kustomization the directory does not list, and `suspend: true` |
-| Fork images (`ateapi`, `atecontroller`, `atelet`, `ateworker-gvisor`, `kubectl-ate`) | `.github/workflows/substrate-fork-images.yml` | the three control-plane images are pinned and live (step 4); the other two have no pod until steps 6 and 8 |
+| Fork images (`ateapi`, `atecontroller`, `atelet`, `ateworker-gvisor`, `kubectl-ate`) | `.github/workflows/substrate-fork-images.yml` | the three control-plane images are pinned and live (step 4); `ateworker-gvisor` runs in the pool (step 6) and `kubectl-ate` in the conformance Job (step 8) |
 | `ForkSeed` preview gate | `substrate/values/common.yaml` | on (step 7). The controller gives it to KVM pools' workers only. It starts no fork until a template sets `fork_config` (step 10) |
 
 Existing gVisor pools stay on systrap and `gvisor-default`. The fork's CRD, API
@@ -690,7 +690,7 @@ flowchart LR
 5. Cluster-affecting, Joe approves. Wire `../gvisor-fork` in
    `resources/kustomization.yaml`. The pool's `workerImage` already names the
    published digest. Keep `replicas` at 0. In `resources_test.py`,
-   `test_gvisor_fork_slice_is_wired_and_off` replaces
+   `test_gvisor_fork_slice_is_wired` replaces
    `test_gvisor_fork_slice_is_staged_and_not_wired` and lists the objects below.
    `test_fork_seed_gate_is_off` stays until step 7. The merge applies these 13
    objects and no others, and rolls no pod:
@@ -805,8 +805,10 @@ flowchart LR
    `--fork-platform=kvm`, the KVM capabilities and seccomp Unconfined. forkd
    does not start yet: it starts with the first seed. An existing actor still
    starts. Roll back by setting `replicas` to 0 (the resize can stay).
-7. Cluster-affecting, Joe approves. The re-pin (fork `1e7a877d0ca3`, #8623) and
-   step 6 (#8617) are merged and live. Add `ForkSeed` to `preview` in `values/common.yaml`, then rerun
+7. Done (PR #8618, merged and live 2026-11-23 about 21:00Z: `ForkSeed` only in
+   `ate-api-server` (2), `ate-controller`, `atelet` (3) and the `gvisor-fork`
+   worker; every pool Ready). The re-pin (fork `1e7a877d0ca3`, #8623) and
+   step 6 (#8617) were live first. Add `ForkSeed` to `preview` in `values/common.yaml`, then rerun
    `render-upstream.sh`. The guard test reads `resources/upstream/`:
    `test_fork_seed_gate_is_off` becomes `test_fork_seed_gate_is_on` in the same
    change. The render changes three lines and nothing else: `--preview=` gains
@@ -857,8 +859,13 @@ flowchart LR
    `accepted` with `tool_running`) in `factory_connector`, by the query in
    "Measure recovery after a busy coder pod disappears", and the reviewer
    pool's capacity row shows `busy 0` (see "Worker pool autoscaling" in
-   `projects/factory/ARCHITECTURE.md`). Do not merge while a run is open or a
-   reviewer is busy. After the merge, verify:
+   `projects/factory/ARCHITECTURE.md`). Joe or an operator session runs these
+   two queries. The node-1 sessions account cannot read Secrets, so it holds no
+   credential for the connector database: it runs only the `kubectl` checks above.
+   Do not merge while a run is open or a reviewer is busy. A create or resume
+   that is in flight while `ate-api-server` rolls (two pods, one at a time) can
+   see one transient error. Retry it once before you count it as a failure.
+   After the merge, verify:
 
    ```sh
    kubectl -n argocd get application substrate            # Synced; health Suspended until step 8
@@ -875,28 +882,80 @@ flowchart LR
    failure: roll back. Then verify that an existing actor still starts and runs:
    a reviewer session on an idle pool, and the smoke test in "Agent Substrate".
    Run the fork conformance Job only at step 8.
-8. Run the Job. The engine image, the `kubectl-ate` digest, the Job name
-   (`gvisor-fork-conformance-3`) and the placeholder test are already in git.
-   - Set `suspend` to `false`. In `gvisor_fork_test.py`, update
-     `test_conformance_job_is_suspended_and_runs_as_ate_client`, which asserts
-     `suspend is True`, in the same change.
-   - Read `kubectl -n ate-system logs job/gvisor-fork-conformance-3 | grep '^CONFORMANCE '`.
+8. Cluster-affecting, Joe approves. Run the conformance Job. The engine image,
+   the `kubectl-ate` digest, the Job name (`gvisor-fork-conformance-3`) and the
+   placeholder test are already in git.
+
+   What changes: one field, `spec.suspend` of Job `gvisor-fork-conformance-3`
+   in `ate-system`, from `true` to `false`. No other object, value or grant
+   changes, and no pod rolls. The test `test_conformance_job_runs_once_as_ate_client`
+   (was `..._is_suspended_and_...`) and the wiring guard assert `suspend` is
+   `false`.
+
+   What runs: one pod as `ate-system/ate-client`, which is already a
+   `bootstrapOwners` identity (`values/substrate.yaml`). It needs no new grant:
+   its two CiliumNetworkPolicies (to the ate API and the Kubernetes API) exist
+   since step 5. It creates the atespaces `fork-conformance` and
+   `fork-conformance-other`, a fork template `engine` (the public Semgrep OSS
+   engine, no secret) and 4 forked actors in the `gvisor-fork` pool, checks
+   C1 to C8 (`conformance/conformance.py`), and deletes everything, also on
+   failure and on SIGTERM. The worker pins the atespace of its first seed
+   (`fork-conformance`), so restart the pool pod before any later run in
+   another atespace (the latency Jobs).
+
+   What this change does not do:
+
+   - The latency Jobs (`gvisor-fork-latency-1`, `gvisor-fork-latency-data-1`)
+     stay out. They need the pool pod restarted after this run, `latency`
+     listed in `gvisor-fork/kustomization.yaml`, and, for the data Job, the
+     `ate-client` SPIFFE ID in `atenet-router.ingressAllowedSPIFFEIDs` (Joe
+     approved it for one run; it rolls the router, and again when removed).
+     They are a separate PR after you have read this log.
+   - No router grant: C1 to C8 use the API only. X5 (a request through the
+     router into a child) needs a router client certificate and is a new grant
+     for Joe to decide.
+
+   Resources. The Job pod requests 50m of CPU and 64Mi of memory (limit 256Mi),
+   so it fits any node: on 2026-11-23 node-1 had 5109Mi, node-2 1853Mi and
+   node-3 1833Mi left to request. The seed and the 4 children run inside the
+   `gvisor-fork` worker pod, which already holds its 1Gi request and 2Gi limit
+   (the pod runs on node-3 today, because the node-1 preference is soft). The
+   seed is capped at 512 MiB and each child books 144 MiB, so the run uses up
+   to about 1.1 GiB of the 2Gi limit, above the request. No request room is
+   added. The Job's limit is `activeDeadlineSeconds: 2400` (40 min): the worker
+   wait takes up to 15 min, the seed up to 10, the forks 2, and the lifetime
+   wait 5. A healthy run takes minutes, because the worker is already Running.
+
+   Read the result:
+
+   ```sh
+   kubectl -n ate-system get job gvisor-fork-conformance-3          # Complete 1/1, or Failed
+   kubectl -n ate-system logs job/gvisor-fork-conformance-3 | grep '^CONFORMANCE '
+   kubectl -n argocd get application substrate                      # Healthy again once the Job is Complete
+   ```
+
+   Pass: eight lines `check=C1 result=pass` to `check=C8 result=pass`, then
+   `event=summary result=ok`, and the Job is Complete. Fail: an `event=error`
+   line with the reason, then `event=summary result=fail`, and the Job is
+   Failed. `event=cleanup` lines show the atespaces were deleted. A line
+   `event=waiting` every 60 s shows what the run waits for (the worker, the
+   seed). A Failed Job leaves the `substrate` Application Degraded until the Job
+   is removed or replaced. A Pending pod keeps it Progressing, holds the sync,
+   and ends Failed at the 40 min deadline. If the pod stays Pending, read its
+   events; the usual cause is request room.
+
+   On failure: read the log, then fix the cause in a PR. A Failed Job does not
+   run again, and its pod template is immutable: bump the run suffix in the name
+   (`-4`) and in the tests, which prunes `-3` and creates the new Job. To stop a
+   run in progress, set `suspend` back to `true` (Kubernetes allows it while the
+   pod runs; the pod gets SIGTERM and the script cleans up). After a pass,
+   delete `conformance-job.yaml` and its kustomization entries (a separate PR)
+   so the Application is not left holding a finished Job.
    - When the seed starts, find `forkd started` in the worker log. Check forkd's
      `hello` assertions (capabilities, cgroup parent, Unconfined seccomp,
      `/dev/kvm`) and that `memory`, `pids` and `cpu` are delegated below
-     `/sys/fs/cgroup/forkd`.
-   - The latency Jobs measure the control plane and the request path for the
-     egress scanner design
-     ([engine path](../platform-factory/substrate/egress-scan/ARCHITECTURE.md#engine-path)).
-     They stay out of step 5. Two suspended Jobs would keep the Application in
-     health Suspended. To run them, list `latency` in
-     `gvisor-fork/kustomization.yaml` and set `suspend` to `false` in the same
-     change. They book up to 5 children, so they need a larger pool than the
-     staged one (2 CPU holds the seed and one child). Restart the pool pod
-     before them: a worker pins the atespace of its first seed. The
-     `gvisor-fork-latency-data-1` Job also needs the `ate-client` SPIFFE ID
-     in `atenet-router.ingressAllowedSPIFFEIDs`, which Joe approved for one run. Read the log
-     with `grep '^LATENCY '`.
+     `/sys/fs/cgroup/forkd`. The worker's pod name comes from
+     `kubectl -n substrate-gvisor-fork get pod`.
 9. Run X1 to X7 and X9 inside the pod from node-1. Add a worker restart, a node
    drain and a forkd crash. Compare `fork_overhead` with the measured use.
 10. Joe allows factory use of fork templates. This needs Joe's waiver of X8 as
@@ -954,7 +1013,10 @@ X1 to X4 and X7 need node access.
 Order matters: the gate stays on until nothing uses it.
 
 - Delete every actor that uses a fork template, then the fork templates
-  (`kubectl ate --preview delete actor-template`). `DeleteActorTemplate`
+  (`kubectl ate --preview delete actor-template`). These calls need an owner
+  identity (`ate-client` or the kagent controller, `bootstrapOwners`), not the
+  node-1 sessions account: run them from a Job as `ate-client`, as the
+  conformance Job does, or as Joe. `DeleteActorTemplate`
   deletes the template's seeds itself, while the gate is on. Only the gate-on
   reconciler and reaper do that cleanup.
 - Confirm that no forked actor remains: `kubectl ate get actors -a <atespace>`

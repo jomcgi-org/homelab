@@ -3,7 +3,7 @@
 Runs in the gvisor-fork-latency Jobs as the ate-system/ate-client ServiceAccount,
 with the fork's kubectl-ate (an image volume of the fork build). Run it only
 after the enable steps of projects/factory-cluster/README.md, "gVisor sandbox
-fork (staged, off)". The design it measures is in
+fork". The design it measures is in
 projects/platform-factory/substrate/egress-scan/ARCHITECTURE.md, "Engine path":
 a warm pool of waiting children (mode pool) against one fork for each request
 (mode ondemand and mode cold).
