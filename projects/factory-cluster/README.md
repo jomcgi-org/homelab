@@ -820,7 +820,7 @@ curl -s -X POST -H 'Content-Type: application/json' http://localhost:9093/api/v2
 
 | Alert | Fires when |
 | --- | --- |
-| `NodeDiskFilling` | A node's root filesystem is more than 72% full by `df` for 10 min (warning). The kubelet taints the node for disk pressure at about 80%, image garbage collection starts at 85% and the kubelet evicts pods at 90% |
+| `NodeDiskFilling` | A node's root filesystem is more than 72% full by `df` for 10 min (warning). The disk-pressure taint was observed at about 80%, image garbage collection starts at 85% and the kubelet evicts pods at 90% |
 | `NodeDiskCritical` | A node's root filesystem is more than 78% full by `df` for 5 min (critical) |
 | `NodeDiskPressure` | A node has the `DiskPressure` condition or the `node.kubernetes.io/disk-pressure` taint for 2 min (critical). No new pod starts there |
 | `PodsUnschedulable` | At least one pod has been unschedulable (the state of a `FailedScheduling` event) for 20 min |
@@ -1028,11 +1028,12 @@ divided by 0.95, so their value matches `df`. The cluster has no
 node-exporter, so no alert reads inodes or other mounts.
 
 Find the largest directories: `du -xh --max-depth=3 / 2>/dev/null | sort -h | tail -20`.
-The usual users, on node-1, are:
+Reading `/var/lib/rancher` needs the operator's elevated access. The usual
+users, on node-1, are:
 
 | Use | Typical size | Action |
 | --- | --- | --- |
-| Go build cache (`go env GOCACHE`) | 17 GB | Cache. Remove it below |
+| Go build cache (`~/.cache/go-build`) | 17 GB | Cache. Remove it below |
 | `/tmp/pgdata*` and `/tmp/tmp*` test directories (test Postgres) | 22 GB | Cache. Remove it below |
 | `~/.cache/bazel/disk_cache` | 8.5 GB | Cache. Remove it below |
 | `/tmp/claude-1000/<project>/<session>` session scratch | 22 GB | Remove it below, only for a finished session |
@@ -1042,34 +1043,41 @@ The usual users, on node-1, are:
 Remove caches only. For each step, check that no process uses the data first.
 
 ```bash
-# Go build cache: list the processes that use it. If none, remove it. A running
-# build only rebuilds what it needs.
+# Go build cache: list the processes that use it. If none, remove files not
+# used for 2 days. A running build only rebuilds what it needs.
 pgrep -a -f 'go (build|test|vet)|/compile|/link'
-go clean -cache
+find ~/.cache/go-build -type f -atime +2 -delete
 
 # Bazel disk cache: entries not read for 7 days. Bazel's own limit is 10 GB.
 find ~/.cache/bazel/disk_cache -type f -atime +7 -delete
 
-# Test directories: older than 12 h, no open file, and no postgres process
-# that uses the directory (skip any directory in the pgrep output). Test
-# databases make files read-only, so make them writable first.
-pgrep -a postgres
-find /tmp -maxdepth 1 -type d \( -name 'pgdata*' -o -name 'tmp*' \) -mmin +720 -print0 |
+# Test directories: yours, older than 12 h. A tmp* name counts only when it
+# holds a PG_VERSION file (a Postgres data directory). The loop skips a
+# directory that a postgres process names, that has an open file, or that has
+# a mount under it. Test databases make files read-only, so make them
+# writable first.
+find /tmp -maxdepth 1 -type d -user "$USER" \( -name 'pgdata*' -o -name 'tmp*' \) -mmin +720 -print0 |
   while IFS= read -r -d '' dir; do
+    case "${dir##*/}" in
+    tmp*) [ -n "$(find "$dir" -maxdepth 2 -name PG_VERSION -print -quit)" ] || continue ;;
+    esac
+    pgrep -af postgres | grep -qF -- "$dir" && { echo "postgres uses: $dir"; continue; }
+    findmnt -rn -o TARGET | grep -qF -- "$dir" && { echo "mount under: $dir"; continue; }
     lsof +D "$dir" >/dev/null 2>&1 && { echo "in use: $dir"; continue; }
-    chmod -R u+w "$dir" && rm -rf "$dir"
+    chmod -R u+w "$dir" && rm -rf --one-file-system -- "$dir"
   done
 
-# Session scratch: list it with its age, then name each directory of a
-# finished session. Run the lsof check first; it prints nothing for a
-# directory that no process uses.
-ls -ltd /tmp/claude-1000/*/*
+# Session scratch: list the directories older than 1 day, check that no
+# process uses the one you pick (lsof prints nothing), and remove it only if
+# it is still older than 1 day.
+find /tmp/claude-1000 -mindepth 2 -maxdepth 2 -type d -mmin +1440 -exec ls -ldt {} +
 lsof +D /tmp/claude-1000/<project>/<session>
-rm -rf /tmp/claude-1000/<project>/<session>
+find /tmp/claude-1000/<project>/<session> -maxdepth 0 -mmin +1440 -exec rm -rf --one-file-system {} +
 ```
 
-Then check `df -h /`. When the node has the taint, it clears a few minutes
-after usage falls below the kubelet threshold. Images on any node: `k3s crictl rmi --prune`.
+Then check `df -h /`. The taint clears a few minutes after usage falls below
+the kubelet threshold. Pruning unused images on a node
+(`k3s crictl rmi --prune`) needs the operator's elevated access.
 
 For `PodsUnschedulable`, find the pods and the reason, and check the node taints.
 The usual cause is the disk-pressure taint on a node:
