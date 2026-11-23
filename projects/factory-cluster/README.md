@@ -827,6 +827,7 @@ curl -s -X POST -H 'Content-Type: application/json' http://localhost:9093/api/v2
 | `FactoryCodexQuotaExhausted` | A Codex grant is out of quota for 5 min. Coder and review turns fail until a person resets the plan or changes the account. The message gives, for each window the grant has used up, its reset time or that it has none; when no window reads 100%, every window's reset |
 | `FactoryCodexGrantNotReady` | A Codex grant is in a state other than `ready` (`login_required`, `refresh_blocked`, `error` or `missing`) for 10 min, also across a move between those states. The message names the current state |
 | `FactoryCodexQuotaReadingStale` | The broker's newest Codex quota reading is more than 2 h old, or there is no reading at all, for 15 min, so the quota alerts could not fire |
+| `FactoryWorkerWaitNotHolding` | The connector's send wait recorded a `timeout` or `unknown` in the last 15 min: a send went with no free worker, or with no fresh capacity row. A pool at zero can then fail the send with "no worker has room". Check the reaper and the pool's HPA ([verify steps](../factory/ARCHITECTURE.md#worker-pool-autoscaling)). |
 | `SemgrepSyncFailed` | The newest Semgrep to INTSEC sync Job in its namespace has failed |
 | `AlertRelayDown` | No ready relay replica for 5 min |
 | `FactoryHealthUnhealthy` | The public `health.json` reports a `status` other than `healthy` for 5 min. The message names each down component |

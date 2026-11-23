@@ -365,7 +365,8 @@ After the change that sets `minReplicas: 0`, watch in this order:
    in about 2 min, and `factory_connector_worker_waits_total` counts `waiting`
    then `ready`.
 
-`timeout` or `unknown` means the gate did not hold.
+`timeout` or `unknown` means the gate did not hold; the warning alert
+`FactoryWorkerWaitNotHolding` fires on either in 15 min.
 
 ### Sandbox checks
 

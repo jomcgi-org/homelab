@@ -340,6 +340,22 @@ groups:
           runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory/deploy/notify.md#home-385-rollout-verification"
           summary: "Factory {{ $labels.phase }} has been failing on itsaplan for ten minutes"
 
+      # The send wait (intervals.workerWait) holds a send until its pool has a
+      # free worker. "timeout" sent after the bound with no worker, and
+      # "unknown" sent with no fresh capacity row: either way the send can fail
+      # with "no worker has room". A pool that scales to zero needs the wait to
+      # hold (projects/factory/ARCHITECTURE.md, "Worker pool autoscaling").
+      - alert: FactoryWorkerWaitNotHolding
+        expr: sum by (outcome) (increase(factory_connector_worker_waits_total{job="factory-connector",outcome=~"timeout|unknown"}[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          action: "Check the capacity row (ready, busy, age) and the reaper, then the HPA of the pool (describe hpa, ScaledToZero, events)."
+          graph: 'sum(increase(factory_connector_worker_waits_total{job="factory-connector",outcome={{ printf "%q" $labels.outcome }}}[15m]))'
+          threshold: "0"
+          runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory/ARCHITECTURE.md#worker-pool-autoscaling"
+          summary: "The connector's worker wait ended as {{ $labels.outcome }} {{ $value | humanize }} time(s) in the last 15 min"
+
   - name: capacity-shadow
     interval: 5m
     rules:
