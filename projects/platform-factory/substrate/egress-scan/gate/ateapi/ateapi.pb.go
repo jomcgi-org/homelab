@@ -1020,6 +1020,7 @@ var (
 		(*timestamppb.Timestamp)(nil), // 16: google.protobuf.Timestamp
 	}
 )
+
 var file_ateapi_proto_depIdxs = []int32{
 	16, // 0: substrate.ateapi.v1.ResourceMetadata.create_time:type_name -> google.protobuf.Timestamp
 	16, // 1: substrate.ateapi.v1.ResourceMetadata.update_time:type_name -> google.protobuf.Timestamp
