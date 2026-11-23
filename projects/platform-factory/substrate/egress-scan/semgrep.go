@@ -184,9 +184,6 @@ type semgrepOutput struct {
 		End struct {
 			Offset int `json:"offset"`
 		} `json:"end"`
-		Extra struct {
-			IsIgnored bool `json:"is_ignored"`
-		} `json:"extra"`
 	} `json:"results"`
 	Errors []struct {
 		Level string `json:"level"`
@@ -198,11 +195,12 @@ var ruleIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,160}$`)
 // parseSemgrepJSON reads the engine output. The engine writes a "." progress
 // line before the JSON, so parsing starts at the first "{".
 //
-// Mapping: each result that is not ignored is a finding, whatever its severity
-// or validation state. The tier does not weigh a result by its secret
-// validation: an invalid or unvalidated credential still must not leave. A
-// document with no "results" key is garbage. Errors of level "error" with no
-// finding mean a partial scan, so the verdict is unknown.
+// Mapping: each result is a finding, whatever its severity or validation
+// state, and also when "is_ignored" is true. The scanned text is actor
+// controlled, so an actor can add a "nosemgrep" marker; a suppressed result
+// must still deny. The tier does not weigh a result by its secret validation:
+// an invalid or unvalidated credential still must not leave. A document with
+// no "results" key is garbage.
 func parseSemgrepJSON(data []byte) (Verdict, error) {
 	start := bytes.IndexByte(data, '{')
 	if start < 0 {
@@ -214,9 +212,6 @@ func parseSemgrepJSON(data []byte) (Verdict, error) {
 	}
 	var verdict Verdict
 	for _, r := range *out.Results {
-		if r.Extra.IsIgnored {
-			continue
-		}
 		id := r.CheckID
 		if !ruleIDPattern.MatchString(id) {
 			id = "invalid-rule-id"
