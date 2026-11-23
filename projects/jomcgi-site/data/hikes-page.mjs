@@ -62,7 +62,7 @@ export async function publishHikesSummary(out, now = new Date()) {
     (unknown
       ? `<p>${unknown} walks have unknown forecast age; weather windows use retained data.</p>`
       : "") +
-    `<p>${walks.length} Scottish walks in the published forecast. Explore walks to find their weather windows.</p>` +
+    `<p>${walks.length} Scottish walks in the published forecast. The planner shows their weather windows.</p>` +
     `<ul>${walks
       .slice(0, 8)
       .map(

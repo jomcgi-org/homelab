@@ -8,7 +8,6 @@ import {
 } from "react";
 import { Shell } from "./Shell";
 import { forecastStatus, snapshotStatus } from "../../data/hikes-freshness.mjs";
-import { readFilters } from "./hikes/filters";
 import "./hikes.css";
 
 // Hydrate the exact inert summary HTML filled by the deploy-time snapshot.
@@ -34,28 +33,6 @@ export function HikesPage({
       setLoading(false);
     }
   }, []);
-  useEffect(() => {
-    // A shared planner query is intent. Let the page paint before importing it.
-    // Ordinary visits (including unrelated query parameters) remain idle.
-    let frame = 0;
-    const restore = () => {
-      cancelAnimationFrame(frame);
-      if (
-        Object.values(
-          readFilters(new URLSearchParams(window.location.search)),
-        ).some(Boolean)
-      )
-        frame = requestAnimationFrame(() => {
-          frame = requestAnimationFrame(() => void explore());
-        });
-    };
-    restore();
-    window.addEventListener("popstate", restore);
-    return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener("popstate", restore);
-    };
-  }, [explore]);
   // The planner loads on arrival; the published walks show until it does.
   useEffect(() => {
     void explore();

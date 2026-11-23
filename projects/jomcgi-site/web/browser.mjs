@@ -99,19 +99,26 @@ export async function withSiteBrowser(
     });
     const page = await browser.newPage();
     const unexpected = [];
+    // Only a map page may reach the tile host or start a blob worker. On any
+    // other page those requests stay unexpected, as its policy forbids them.
+    const mapPage = () =>
+      /^\/(stars|hikes|trips)(\.html|\/|$)/.test(new URL(page.url()).pathname);
     await page.setRequestInterception(true);
     page.on("request", (request) => {
       const url = request.url();
       if (url === "https://static.cloudflareinsights.com/beacon.min.js") {
         void request.respond({ contentType: "text/javascript", body: "" });
-      } else if (url.startsWith("https://tiles.openfreemap.org/")) {
-        // The run is offline. The map's tile host answers "not found", and
-        // the page must stay usable without a base map.
+      } else if (
+        mapPage() &&
+        url.startsWith("https://tiles.openfreemap.org/")
+      ) {
+        // The run is offline. On a map page the tile host answers "not
+        // found", and the page must stay usable without a base map.
         void request.respond({ status: 404, body: "" });
       } else if (
         !url.startsWith(origin + "/") &&
         !url.startsWith("data:") &&
-        !url.startsWith("blob:")
+        !(mapPage() && url.startsWith("blob:"))
       ) {
         unexpected.push(url);
         void request.abort();

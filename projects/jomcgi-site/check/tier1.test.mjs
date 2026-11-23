@@ -438,7 +438,7 @@ test("a stamped hikes summary passes; an unstamped or altered page fails", () =>
     `<main><!--hikes-summary:start-->${body}<!--hikes-summary:end--></main>`;
   const release = Buffer.from(slot("<p>build</p>"));
   const published =
-    "<p>Data as of <time>t</time></p><p>1 Scottish walks in the published forecast. Explore walks.</p>";
+    "<p>Data as of <time>t</time></p><p>1 Scottish walks in the published forecast. The planner shows their weather windows.</p>";
   checkReleasePage(Buffer.from(slot(published)), release, "/hikes");
   assert.throws(
     () => checkReleasePage(release, release, "/hikes"),

@@ -1,4 +1,5 @@
-// This module, the MapLibre CSS and its worker are loaded only after map intent.
+// This module, the MapLibre CSS and its worker load when the page arrives,
+// after the first paint.
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Map as LibreMap,
