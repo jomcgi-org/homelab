@@ -13,6 +13,8 @@
 //                       16 MiB. The shim keeps the body in a memfd and answers
 //                       "200 OK" with a JSON content type.
 //        anything else  an error answer, then close, and wait for the next one.
+//      A client has 10 s in total for the request head and 30 s in total for
+//      the body; a connection that is slower is dropped.
 //   3. The open of the target returns the memfd instead, so the engine scans the
 //      body. The engine's stdout is the connection: it writes its JSON result
 //      there. When the scan ends the shim shuts the connection and the process
@@ -31,6 +33,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,13 +42,15 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
-#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
 #define MAX_HEAD 16384
 #define MAX_BODY ((size_t)16 << 20)
-#define IO_TIMEOUT_S 10
+// Total time a client has for each phase of one request. A client that sends a
+// byte at a time still ends at the deadline.
+#define HEAD_DEADLINE_MS 10000
+#define BODY_DEADLINE_MS 30000
 
 static char subst[64];
 static int resolved = 0;
@@ -111,36 +116,82 @@ static void reply(int c, const char *status, const char *body) {
   (void)!write(c, b, (size_t)l);
 }
 
-// Read one request head into hdr (NUL terminated). Returns the offset of the
-// first body byte, or -1 if the connection ended, timed out or sent a head that
-// is too long.
+static long long now_ms(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+// read(2) that gives up at an absolute deadline (now_ms clock). Returns the
+// bytes read, 0 on end of stream, -1 on error or when the deadline passes.
+static ssize_t read_by(int c, void *buf, size_t n, long long deadline) {
+  for (;;) {
+    long long left = deadline - now_ms();
+    if (left <= 0) return -1;
+    struct pollfd p = {c, POLLIN, 0};
+    int r = poll(&p, 1, left > 1000000 ? 1000000 : (int)left);
+    if (r < 0 && errno == EINTR) continue;
+    if (r <= 0) continue;  // timeout: the loop re-checks the deadline
+    ssize_t k = read(c, buf, n);
+    if (k < 0 && errno == EINTR) continue;
+    return k;
+  }
+}
+
+// Read one request head into hdr. On success the head ends in "\r\n" and a NUL
+// (so a search of hdr never reaches the body), and the return value is the
+// offset of the first body byte; *have is the number of bytes read. Returns -1
+// if the connection ended, the deadline passed or the head is too long.
 static long read_head(int c, char *hdr, size_t *have) {
+  long long deadline = now_ms() + HEAD_DEADLINE_MS;
   size_t hn = 0;
   for (;;) {
-    ssize_t r = read(c, hdr + hn, MAX_HEAD - 1 - hn);
+    ssize_t r = read_by(c, hdr + hn, MAX_HEAD - 1 - hn, deadline);
     if (r <= 0) return -1;
     hn += (size_t)r;
     hdr[hn] = 0;
     char *eoh = strstr(hdr, "\r\n\r\n");
-    if (eoh) { *have = hn; return (eoh + 4) - hdr; }
+    if (eoh) {
+      *have = hn;
+      long off = (eoh + 4) - hdr;
+      hdr[off - 2] = 0;  // end the head after its last header line
+      return off;
+    }
     if (hn >= MAX_HEAD - 1) return -1;
   }
+}
+
+// Parse the Content-Length header of a head. Returns 0 and sets *out, or -1 if
+// the header is absent, has no digit, has anything after the digits but spaces,
+// or overflows.
+static int content_length(const char *hdr, unsigned long long *out) {
+  const char *cl = strcasestr(hdr, "\r\ncontent-length:");
+  if (!cl) return -1;
+  cl += 17;
+  while (*cl == ' ' || *cl == '\t') cl++;
+  if (*cl < '0' || *cl > '9') return -1;
+  char *end;
+  errno = 0;
+  unsigned long long v = strtoull(cl, &end, 10);
+  if (errno == ERANGE) return -1;
+  while (*end == ' ' || *end == '\t') end++;
+  if (*end != '\r' && *end != 0) return -1;
+  *out = v;
+  return 0;
 }
 
 // Serve one connection. Returns the connection to hand to the engine, or -1 if
 // the connection was not a scan request. On success *memfd holds the body.
 static int serve_conn(int c, int *memfd) {
   static char hdr[MAX_HEAD];
-  struct timeval tv = {IO_TIMEOUT_S, 0};
-  setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
   size_t hn = 0;
   long off = read_head(c, hdr, &hn);
   if (off < 0) return -1;
   if (strncmp(hdr, "GET /healthz ", 13) == 0) { reply(c, "200 OK", "ok\n"); return -1; }
   if (strncmp(hdr, "POST ", 5) != 0) { reply(c, "405 Method Not Allowed", "POST a scan request\n"); return -1; }
-  const char *cl = strcasestr(hdr, "\r\ncontent-length:");
-  if (strcasestr(hdr, "\r\ntransfer-encoding:") || !cl) { reply(c, "411 Length Required", "send a Content-Length body\n"); return -1; }
-  unsigned long long want = strtoull(cl + 17, 0, 10);
+  if (strcasestr(hdr, "\r\ntransfer-encoding:")) { reply(c, "411 Length Required", "send a Content-Length body\n"); return -1; }
+  unsigned long long want;
+  if (content_length(hdr, &want) != 0) { reply(c, "400 Bad Request", "bad or missing Content-Length\n"); return -1; }
   if (want > MAX_BODY) { reply(c, "413 Payload Too Large", "body over 16 MiB\n"); return -1; }
   int mf = (int)syscall(SYS_memfd_create, "body", 0);
   if (mf < 0) { reply(c, "500 Internal Server Error", "no memfd\n"); return -1; }
@@ -148,9 +199,10 @@ static int serve_conn(int c, int *memfd) {
   if (got > want) got = (size_t)want;
   if (got && write(mf, hdr + off, got) != (ssize_t)got) { close(mf); return -1; }
   static char chunk[65536];
+  long long deadline = now_ms() + BODY_DEADLINE_MS;
   while (got < want) {
     size_t n = (size_t)want - got < sizeof chunk ? (size_t)want - got : sizeof chunk;
-    ssize_t r = read(c, chunk, n);
+    ssize_t r = read_by(c, chunk, n, deadline);
     if (r <= 0) { fprintf(stderr, "shim: short body read got=%zu want=%llu\n", got, want); close(mf); return -1; }
     if (write(mf, chunk, (size_t)r) != r) { close(mf); return -1; }
     got += (size_t)r;
