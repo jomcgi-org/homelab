@@ -1,4 +1,7 @@
 # Route policy read by render_egress_gateway.py.
+# requestTimeout is coupled to semgrep.deadline of the egress-scan chart. With
+# the second scan tier off it is 80ms. With the tier on it must be at least the
+# deadline + 10ms. resources_test.py enforces both. See egress-scan/README.md.
 conditional:
   - condition: destination.hostname == "hindsight-api.hindsight.svc.cluster.local" && destination.port == 8888
     host: egress-scan.ate-system.svc:8080

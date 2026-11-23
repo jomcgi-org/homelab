@@ -31,6 +31,23 @@ spec:
       containers:
         - name: scanner
           image: {{ printf "%s@%s" .Values.image.repository (required "image.digest is required" .Values.image.digest) | quote }}
+{{- with .Values.semgrep }}
+{{- if .enabled }}
+{{- if not (has .failureMode (list "deny" "allow")) }}
+{{- fail "semgrep.failureMode must be deny or allow" }}
+{{- end }}
+          args:
+            - --semgrep-enabled
+            - {{ printf "--semgrep-endpoint=%s" (required "semgrep.endpoint is required when semgrep.enabled" .endpoint) | quote }}
+            - {{ printf "--semgrep-deadline=%s" .deadline | quote }}
+            - {{ printf "--semgrep-failure-mode=%s" .failureMode | quote }}
+            - {{ printf "--semgrep-max-body=%d" (int .maxBodyBytes) | quote }}
+            - {{ printf "--semgrep-concurrency=%d" (int .concurrency) | quote }}
+            - {{ printf "--semgrep-max-response=%d" (int .maxResponseBytes) | quote }}
+            - {{ printf "--semgrep-breaker-failures=%d" (int .breaker.failures) | quote }}
+            - {{ printf "--semgrep-breaker-cooldown=%s" .breaker.cooldown | quote }}
+{{- end }}
+{{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
