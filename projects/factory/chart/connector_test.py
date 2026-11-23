@@ -918,6 +918,20 @@ def test_reaper_uses_its_own_database_login():
     assert refs == ["factory-reaper-db"]
 
 
+def test_reaper_serves_metrics_for_the_demand_census():
+    # Prometheus scrapes this port (platform-factory/prometheus/resources
+    # prometheus.yml job factory-reaper, admitted by name in its network
+    # policies).
+    docs = _render()
+    reaper = _in(docs, "Deployment", "factory", "factory-reaper")
+    ports = [
+        p
+        for c in reaper["spec"]["template"]["spec"]["containers"]
+        for p in c.get("ports", [])
+    ]
+    assert ports == [{"name": "metrics", "containerPort": 9090, "protocol": "TCP"}]
+
+
 def test_reaper_pod_permissions():
     docs = _render()
     namespaces = {"factory-r-homelab", "factory-r-homelab-review"}
