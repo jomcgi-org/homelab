@@ -111,6 +111,15 @@ spec:
       configRef:
         name: gvisor-fork
   template:
+    # Restart handle. The controller copies these annotations into the
+    # Deployment's pod template, so a new value makes a new ReplicaSet and
+    # replaces the worker pod (the pool has one pod, maxSurge 0: the old pod
+    # stops first). A worker pins the atespace of its first seed for the life of
+    # the process, so the pod is replaced between atespaces: the value names why.
+    # Keys under ate.dev are reserved (the CRD refuses them). README, step 8,
+    # "The atespace pin".
+    annotations:
+      factory.jomcgi.dev/worker-restart: "2026-11-23 clear the conformance atespace pin"
     serviceAccountName: fork-worker
     nodeAffinity:
       preferredDuringSchedulingIgnoredDuringExecution:
