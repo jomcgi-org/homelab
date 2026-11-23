@@ -628,7 +628,7 @@ No actor uses the fork: the Job is suspended and no template sets
 | Conformance Job `gvisor-fork-conformance-3` | `gvisor-fork/conformance-job.yaml` | `suspend: true` until step 8 |
 | Latency Jobs `gvisor-fork-latency-1` and `gvisor-fork-latency-data-1` | `gvisor-fork/latency/` | a kustomization the directory does not list, and `suspend: true` |
 | Fork images (`ateapi`, `atecontroller`, `atelet`, `ateworker-gvisor`, `kubectl-ate`) | `.github/workflows/substrate-fork-images.yml` | the three control-plane images are pinned and live (step 4); the other two have no pod until steps 6 and 8 |
-| `ForkSeed` preview gate | `substrate/values/common.yaml` | on (step 7). It starts no fork until a template sets `fork_config` (step 10) |
+| `ForkSeed` preview gate | `substrate/values/common.yaml` | on (step 7). The controller gives it to KVM pools' workers only. It starts no fork until a template sets `fork_config` (step 10) |
 
 Existing gVisor pools stay on systrap and `gvisor-default`. The fork's CRD, API
 server, controller and atelet run since step 4, so `platform: kvm` applies.
@@ -638,8 +638,8 @@ server, controller and atelet run since step 4, so `platform: kvm` applies.
 Joe approves each step that changes the cluster. Steps 1 to 3 touch no cluster
 object. Steps 5, 6 and 8 also change the cluster. Steps 4 and 7
 also roll the control plane: step 4 replaced the `ateapi`, `atecontroller` and
-`atelet` images, and step 7 changes the preview gates that every
-control-plane component and worker reads. Joe approves both before they merge.
+`atelet` images, and step 7 changes the preview gates that the control plane
+reads and the KVM pool's worker gets. Joe approves both before they merge.
 Each step is one PR. Merge it, verify it on the cluster, then start the next.
 
 ```mermaid
@@ -800,17 +800,22 @@ flowchart LR
    `--fork-platform=kvm`, the KVM capabilities and seccomp Unconfined. forkd
    does not start yet: it starts with the first seed. An existing actor still
    starts. Roll back by setting `replicas` to 0 (the resize can stay).
-7. Cluster-affecting, Joe approves. Add `ForkSeed` to `preview` in
-   `values/common.yaml`, then rerun `render-upstream.sh`. The guard test reads
-   `resources/upstream/`, so it fails only on the rendered files:
+7. Cluster-affecting, Joe approves. Needs the re-pin (fork `1e7a877d0ca3`) and
+   step 6 live. Add `ForkSeed` to `preview` in `values/common.yaml`, then rerun
+   `render-upstream.sh`. The guard test reads `resources/upstream/`:
    `test_fork_seed_gate_is_off` becomes `test_fork_seed_gate_is_on` in the same
    change. The render changes three lines and nothing else: `--preview=` gains
-   `,ForkSeed` in `ate-api-server`, `ate-controller` and `atelet`. The
-   controller passes its `--preview=` to every worker pod, so the workers read
-   it too. The gate is cluster-wide once on. Only the `gvisor-fork` pool holds
-   fork-capable workers, and no factory template has `fork_config` until step
-   10. A client must opt in to preview features (`kubectl-ate --preview`) to use
-   a fork template.
+   `,ForkSeed` in `ate-api-server`, `ate-controller` and `atelet`.
+
+   The gate is process-wide in the control plane, but the fork controller gives
+   it to workers of KVM pools only (substrate `1e7a877d0ca3`, "atecontroller:
+   give ForkSeed only to workers of KVM pools"; its test is
+   `TestBuildDeploymentPreviewForkSeed`, which checks that a non-KVM pool's
+   `--preview` args equal the gate-off args). A worker built before the gate
+   (the v1.0.1 `ateworker-gvisor` and `ateworker-microvm`) exits on an unknown
+   gate, so every non-KVM worker must keep its args. No factory template has
+   `fork_config` until step 10. A client must opt in to preview features
+   (`kubectl-ate --preview`) to use a fork template.
 
    What rolls, from the cluster on 2026-11-23:
 
@@ -819,25 +824,20 @@ flowchart LR
    | Deployment `ate-api-server` | 2 | rolling update, one pod at a time |
    | Deployment `ate-controller` | 1 | replaced: no pool reconciles while it restarts |
    | DaemonSet `atelet` | 3 | one node at a time (the DaemonSet default) |
-   | Workers of every WorkerPool | `bosun` 1, `homelab-reviewer` 4 (HPA 3 to 5), `homelab-codex` 0 (HPA 0 to 12), `microvm-spike` 1, `gvisor-fork` 1 | the controller changes the worker pod template, so each pool's worker Deployment rolls |
-
-   The factory is mostly idle: the coder pool is at zero, and the reviewer
-   pool has a floor of 3. A replaced worker takes its actors with it:
-   a review or Discord session in flight can fail or restart, which is why the
-   checks below come first. Roll order, as
-   Argo and the controller run it:
+   | Worker of the `gvisor-fork` pool (KVM) | 1 | its `--preview` gains `ForkSeed`, so its Deployment rolls |
+   | Workers of every other pool: `bosun` 1, `homelab-reviewer` 4 (HPA 3 to 5), `homelab-codex` 0 (HPA 0 to 12), `microvm-spike` 1 | 6 | **none**: their args do not change |
 
    ```mermaid
    flowchart LR
      S[Argo sync: 3 rendered files] --> A[ate-api-server, ate-controller, atelet roll together]
      A --> C[new controller starts]
-     C --> W[each pool's worker Deployment rolls]
+     C --> K[KVM pool worker rolls]
+     C -.-> N[other pools: no change]
    ```
 
    Argo sets no wave between the three, so they roll together. The old and new
    components agree for as long as no template sets `fork_config`, so the order
-   does not matter. Surge pods during the worker roll need request room (a
-   reviewer worker's request, once per pool). Check, before the merge:
+   does not matter. Check before the merge (read-only):
 
    ```sh
    kubectl get workerpools -A                              # all Ready; note each READY count
@@ -845,25 +845,31 @@ flowchart LR
    kubectl -n factory-r-homelab-review get pods            # an idle reviewer pool
    kubectl get hpa -A                                      # no pool is scaling up
    kubectl -n factory-discord-agent logs deploy/bosun --since=15m | tail   # no turn in flight
+   kubectl get pods -A -l ate.dev/worker-pool -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}'   # the worker pods to compare after the roll
    ```
 
    Also check that no connector run is dispatched: the open runs (state
    `accepted` with `tool_running`) in `factory_connector`, by the query in
-   "Measure recovery after a busy coder pod disappears". Do not merge while a
-   run is open. After the merge, verify:
+   "Measure recovery after a busy coder pod disappears", and the reviewer
+   pool's capacity row shows `busy 0` (see "Worker pool autoscaling" in
+   `projects/factory/ARCHITECTURE.md`). Do not merge while a run is open or a
+   reviewer is busy. After the merge, verify:
 
    ```sh
-   kubectl -n argocd get application substrate            # Synced; Healthy or Suspended
+   kubectl -n argocd get application substrate            # Synced; health Suspended until step 8
    kubectl -n ate-system get deploy,ds                    # all Ready
    kubectl get workerpools -A                             # every pool back to its READY count
    kubectl -n ate-system get deploy,ds -o yaml | grep -- '--preview='   # three lines, each with ForkSeed
-   kubectl -n substrate-gvisor-fork get pod -o wide       # the fork worker Running, on node-1
+   # Worker pods' --preview: only the KVM pool's includes ForkSeed.
+   kubectl get pods -A -l ate.dev/worker-pool -o json | jq -r '.items[] | .metadata.namespace + "/" + .metadata.name + " " + ([.spec.containers[].args[]? | select(startswith("--preview"))] | join(" "))'
+   kubectl get pods -A -l ate.dev/worker-pool    # the same pod names and AGE as before, except the substrate-gvisor-fork pod (new)
    ```
 
-   Then verify that an existing actor still starts and runs: a reviewer
-   session on an idle pool, and the smoke test in "Agent Substrate". Run the
-   fork conformance Job only at step 8. To roll back, remove `ForkSeed` from
-   `preview` and rerender; see "Roll back" (delete the fork templates first).
+   The expected output has `ForkSeed` only on the `substrate-gvisor-fork` pod.
+   A non-KVM worker with `ForkSeed`, a restart count above 0 or a new age is a
+   failure: roll back. Then verify that an existing actor still starts and runs:
+   a reviewer session on an idle pool, and the smoke test in "Agent Substrate".
+   Run the fork conformance Job only at step 8.
 8. Run the Job. The engine image, the `kubectl-ate` digest, the Job name
    (`gvisor-fork-conformance-3`) and the placeholder test are already in git.
    - Set `suspend` to `false`. In `gvisor_fork_test.py`, update
@@ -940,12 +946,21 @@ X1 to X4 and X7 need node access.
 
 #### Roll back
 
-- Delete the fork templates, then set the pool's `replicas` to 0. Deleting a
-  template deletes its seeds. Only the gate-on reconciler and reaper do that
-  cleanup, so the gate stays on until the templates are gone.
-- Then remove `ForkSeed` from `preview`. This is cluster-affecting like step 7:
-  it rolls the control plane and every worker. Joe approves it. Verify an
-  existing actor after the roll.
+Order matters: the gate stays on until nothing uses it.
+
+- Delete every actor that uses a fork template, then the fork templates
+  (`kubectl ate --preview delete actor-template`). `DeleteActorTemplate`
+  deletes the template's seeds itself, while the gate is on. Only the gate-on
+  reconciler and reaper do that cleanup.
+- Confirm that no forked actor remains: `kubectl ate get actors -a <atespace>`
+  lists none for each fork atespace, and `kubectl ate get actor-template -a
+  <atespace>` lists no fork template.
+- Set the pool's `replicas` to 0 and check that its pod is gone, before the
+  next step.
+- Then remove `ForkSeed` from `preview` and rerender. This is cluster-affecting
+  like step 7: it rolls the control plane. Joe approves it. The controller
+  gives the gate to KVM workers only, so no other pool's worker changes (the
+  KVM pool has no pod by now). Verify an existing actor after the roll.
 - Then lower the three image pins to the v1.0.1 digests and unwire the
   directory. The WorkerPool CRD stays. It only gains an optional field, and
   removing it would delete every WorkerPool.

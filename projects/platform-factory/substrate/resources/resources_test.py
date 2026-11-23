@@ -857,9 +857,16 @@ _PREVIEW = ["PerTemplateSnapshotLocation", "GoldenEgressPolicy", "ForkSeed"]
 def test_fork_seed_gate_is_on() -> None:
     # Step 7 of the enable steps (projects/factory-cluster/README.md, "gVisor
     # sandbox fork"): the API server, the controller and atelet all take
-    # ForkSeed in --preview. The controller passes its --preview to every
-    # worker pod, so the workers read it too. The WorkerPool CRD's field text
-    # names the gate, so only container arguments are read.
+    # ForkSeed in --preview. The controller passes its --preview to worker
+    # pods. An upstream v1.0.1 worker does not know ForkSeed and exits on it,
+    # so the control plane must be the fork build that gives the gate to
+    # workers of KVM pools only (substrate 1e7a877d0ca3, test
+    # TestBuildDeploymentPreviewForkSeed: "non-KVM args equal gate-off
+    # args"). This test cannot run the controller. It pins that build and
+    # checks that the gate is only ever in the three components' --preview
+    # and that no non-KVM pool names a worker image that knows the gate. The
+    # WorkerPool CRD's field text names the gate, so only container arguments
+    # are read.
     previews = {}
     for doc in _docs():
         if doc["kind"] not in {"Deployment", "DaemonSet", "StatefulSet"}:
@@ -883,8 +890,34 @@ def test_fork_seed_gate_is_on() -> None:
         and any(c.get("platform") == "kvm" for c in d["spec"]["sandboxClasses"])
     ]
     assert kvm_pools == ["gvisor-fork"]
+    # ForkSeed is nowhere else: no other container argument or variable of a
+    # rendered workload names it.
+    for doc in _docs():
+        if doc["kind"] not in {"Deployment", "DaemonSet", "StatefulSet", "Job"}:
+            continue
+        pod = doc["spec"]["template"]["spec"]
+        for container in pod.get("initContainers", []) + pod["containers"]:
+            texts = [*container.get("args", []), *container.get("command", [])]
+            texts += [e.get("value", "") for e in container.get("env", [])]
+            named = [x for x in texts if "ForkSeed" in x]
+            if doc["metadata"]["name"] in previews:
+                named = [x for x in named if not x.startswith("--preview=")]
+            assert not named, (doc["metadata"]["name"], named)
+    # The control plane is a build that gives the gate to KVM pools' workers
+    # only: add a later build here when the fork controller changes.
+    controller = _images(_docs())["ate-controller/ate-controller"]
+    assert controller.split("@")[0].rsplit(":", 1)[1] in _KVM_ONLY_GATE_BUILDS
+    # Every pool that is not the KVM pool runs an upstream v1.0.1 worker, which
+    # does not know ForkSeed. Its --preview must stay as it is with the gate
+    # off, which only the build above guarantees.
+    for doc in _docs():
+        if doc["kind"] == "WorkerPool" and doc["metadata"]["name"] != "gvisor-fork":
+            image = doc["spec"]["workerImage"]
+            assert image.startswith("ghcr.io/kagent-dev/substrate/ateworker-"), image
+            assert ":v1.0.1@sha256:" in image, image
 
 
+_KVM_ONLY_GATE_BUILDS = {"fork-1e7a877d0ca3"}
 _FORK_IMAGES = "ghcr.io/jomcgi-org/homelab/substrate-fork/"
 _FORK_TAG = "fork-1e7a877d0ca3"
 _FORK_DIGESTS = {

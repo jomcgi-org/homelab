@@ -10,10 +10,10 @@
 # fork/seed-slice1), which came with the fork control plane and atelet images
 # (step 4). ForkSeed (preview gate) is on in ../values/common.yaml since
 # step 7, after a worker had started. The gates X1 to X9 run at step 9 with the
-# gate on cluster-wide. Only this
-# pool's workers can hold seeds. ForkSeed is a process-wide flag that ateapi,
-# atecontroller, atelet and every worker read, and only this pool's workers
-# have --fork-platform=kvm. Factory use of fork templates waits for step 10.
+# gate on. Only this pool's workers can hold seeds. ForkSeed is a flag that
+# ateapi, atecontroller and atelet read. The controller gives it to workers of
+# KVM pools only, and only this pool's workers have --fork-platform=kvm.
+# Factory use of fork templates waits for step 10.
 #
 # What the fork's controller gives a worker of this pool (atecontroller
 # workerpool_apply.go, not set here):
