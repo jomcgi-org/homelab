@@ -288,3 +288,24 @@ func TestDemandPublishesNoPendingByDefault(t *testing.T) {
 		t.Fatalf("series = %d, want actors and spare only", n)
 	}
 }
+
+func TestCheckUnboundNeedsEachPoolConfigured(t *testing.T) {
+	coder := Pool{"factory-r-homelab", "homelab-codex"}
+	review := Pool{"factory-r-homelab-review", "homelab-reviewer"}
+	pools := map[Pool]int{coder: 2, review: 2}
+	if err := CheckUnbound(map[Pool]int{review: 0}, pools); err != nil {
+		t.Fatalf("a configured pool was refused: %v", err)
+	}
+	if err := CheckUnbound(nil, pools); err != nil {
+		t.Fatalf("no unbound pools was refused: %v", err)
+	}
+	err := CheckUnbound(map[Pool]int{review: 0, {"b", "z"}: 0, {"a", "y"}: 0}, map[Pool]int{coder: 2})
+	if err == nil {
+		t.Fatal("pools missing from FACTORY_REAPER_POOLS were accepted")
+	}
+	// Sorted, so the message is stable.
+	want := "reaper: FACTORY_REAPER_UNBOUND_POOLS names a/y, b/z, factory-r-homelab-review/homelab-reviewer, which FACTORY_REAPER_POOLS does not"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+}

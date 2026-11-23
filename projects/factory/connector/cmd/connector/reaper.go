@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -37,10 +36,8 @@ func runReaper(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	for p := range unbound {
-		if _, ok := pools[p]; !ok {
-			return fmt.Errorf("FACTORY_REAPER_UNBOUND_POOLS names %s/%s, which FACTORY_REAPER_POOLS does not", p.Namespace, p.Name)
-		}
+	if err := reaper.CheckUnbound(unbound, pools); err != nil {
+		return err
 	}
 	demand := reaper.NewDemand(pools).Unbound(unbound)
 	poolList := make([]reaper.Pool, 0, len(pools))

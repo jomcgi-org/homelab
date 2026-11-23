@@ -299,14 +299,25 @@ before the 11-22 fix. The pool leaves 5 only after 30 min with no actor.
    that long goes from 1 to 0 at the first HPA sync after the new spec
    applies, not 30 min later.
 4. Enable the reviewer pool, after the chart and connector image that
-   publish `pending` at 0 are live: `autoscaling: {enabled: true,
-   minReplicas: 3, spare: 2, maxReplicas: 5}` under `agents.reviewer` in
+   publish `pending` at 0 are live (chart 0.126.4): `autoscaling: {enabled:
+   true, minReplicas: 3, spare: 2, maxReplicas: 5}` under `agents.reviewer` in
    `deploy/values.yaml` (and its `values-homelab.yaml` mirror), an
-   `ignoreDifferences` entry for `homelab-reviewer` in
-   `application.yaml`, and the new `render.sha256`. The values must not
-   merge before the chart that accepts them is pinned (REVIEW.md "Chart
-   before values"). To roll back, revert that change: Argo CD then restores
-   `concurrency` (5).
+   `ignoreDifferences` entry for `homelab-reviewer` in `application.yaml`, and
+   the new `render.sha256`. The pool starts at 5. After the 30 min window the
+   HPA removes 2 workers, one per 5 min, and the deletion cost keeps the
+   workers that host an actor. To roll back, revert that change: Argo CD then
+   restores `concurrency` (5). Read-only checks after merge, in order:
+   - `factory_worker_pool_demand{source="pending",pool="homelab-reviewer"}`
+     exists (0) beside the `actors` and `spare` series. Without it the metric
+     has no value and the HPA reports `ScalingActive=False`.
+   - `describe hpa homelab-reviewer` shows `ScalingActive=True` and a current
+     metric.
+   - `factory_worker_pool_demand{source="actors",pool="homelab-reviewer"}`
+     over a day: the pool should reach 0 actors for 30 min or more. If it
+     never does (idle actors never suspend), the pool stays at 5 and the
+     change saves nothing.
+   - Goal checks keep answering: no rise in "goal check unavailable" with
+     reason `rejected` after the pool shrinks.
 
 **Precondition for trial arms.** A coder pool with `minReplicas: 0` cannot
 serve a binding that has a non-control arm. The connector stores such a send

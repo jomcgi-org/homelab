@@ -152,6 +152,18 @@ agents:
       resources:
         requests:
           memory: 640Mi
+    # The pool follows the reviews between 3 and 5 workers instead of holding
+    # 5 (ARCHITECTURE.md, "Worker pool autoscaling"). The reviewer sends to
+    # kagent itself, so no signal precedes a burst: minReplicas is
+    # reviewer.concurrency, and the spare of 2 keeps the goal check sessions
+    # that follow a review turn from finding no worker (2026-11-22). The reaper
+    # publishes the pool's pending demand at 0. Argo CD ignores the pool's
+    # /spec/replicas (application.yaml), because the HPA owns it.
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      spare: 2
+      maxReplicas: 5
 
 # jomcgi-org/homelab. Its namespace is also granted in Substrate's
 # credentialProvider.namespacePolicies

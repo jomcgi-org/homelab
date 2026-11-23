@@ -86,6 +86,8 @@ def _helm(
         # tests rename namespaces, so they leave autoscaling to its own tests.
         "--set",
         "agents.codex.autoscaling.enabled=false",
+        "--set",
+        "agents.reviewer.autoscaling.enabled=false",
     ]
     if enable:
         args += [
