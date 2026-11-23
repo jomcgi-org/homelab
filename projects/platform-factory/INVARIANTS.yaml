@@ -33,6 +33,8 @@ invariants:
   mechanism:
   - projects/platform-factory/substrate/resources/network-policy.yaml
   - projects/platform-factory/substrate/resources/microvm-spike.yaml
+  # Staged, not live: kvm-pool.yaml is unwired until the enable step
+  # (projects/factory-cluster/README.md, "gVisor sandbox fork").
   - projects/platform-factory/substrate/gvisor-fork/kvm-pool.yaml
   state: unproven
 - id: PLAT-7
