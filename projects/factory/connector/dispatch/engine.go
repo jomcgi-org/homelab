@@ -188,8 +188,8 @@ type Engine struct {
 	starts                   sync.Mutex // serialize slot checks and starts across admission and delivery
 	// checked holds when each running attempt's session was last checked.
 	checked sync.Map // attempt ID -> sessionCheck
-	// workerWaits holds when each held send first found no worker.
-	workerWaits     sync.Map // attempt ID -> time.Time
+	// workers is the state of the worker wait (workers.go).
+	workers         workerHolds
 	admissionPolled sync.Map // run ID -> wall time; oldest admission is polled first
 	admissionCtx    context.Context
 	admissionCancel context.CancelFunc
@@ -383,6 +383,7 @@ func (e *Engine) pruneLocks(open map[int64]bool) {
 		}
 		return true
 	})
+	e.workers.prune(open)
 	e.admissionPolled.Range(func(k, v any) bool {
 		if !open[k.(int64)] {
 			e.admissionPolled.Delete(k)
