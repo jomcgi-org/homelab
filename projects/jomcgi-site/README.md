@@ -461,8 +461,12 @@ numbers come from the story's named stats. Unknown stats show an en dash.
 
 Vite serves the invented fixtures on `/data/factory/` in development. Tests
 use the same files. Production builds include no fixtures and show unavailable
-states until HOME-213 publishes snapshots. SVG charts have value tables;
-the layout uses the shared light/dark palette and 16px phone gutters.
+states until HOME-213 publishes snapshots. Charts use the shared chart
+library and have value tables. Per-issue and per-PR measurements show as
+counts in fixed columns, with the median in the caption. Issue and transcript
+text renders a Markdown subset as elements, and links only this repository.
+The layout uses the shared light/dark palette, ink rules and joined panels,
+and 16px phone gutters.
 
 The [Factory acceptance evidence](validation/factory.md) maps each required
 case to its test and records the local commands and results.

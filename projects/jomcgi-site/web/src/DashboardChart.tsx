@@ -5,26 +5,35 @@ export type ChartPoint = { label: string; value: number };
 
 const DashboardPlot = lazy(() => import("./DashboardPlot"));
 
+/** A titled column chart with its values as a table. */
 export function DashboardChart({
   title,
+  note,
   unit,
+  category = "Period",
   points,
   maximum,
-  maximumBarWidth,
   formatValue,
+  formatLabel,
 }: {
   title: string;
+  /** One short line under the title, such as a median. */
+  note?: string;
   unit: string;
+  /** The table heading for the labels. */
+  category?: string;
   points: readonly ChartPoint[];
   maximum?: number;
-  maximumBarWidth?: number;
   formatValue: (value: number) => string;
+  /** A shorter label for the axis. The table keeps the full label. */
+  formatLabel?: (label: string) => string;
 }) {
   const id = useId();
 
   return (
     <figure className="chart" aria-labelledby={id}>
       <figcaption id={id}>{title}</figcaption>
+      {note && <p className="chart-note">{note}</p>}
       {points.length === 0 ? (
         <p>No measurements yet.</p>
       ) : (
@@ -39,7 +48,8 @@ export function DashboardChart({
                 points={points}
                 unit={unit}
                 maximum={maximum}
-                maximumBarWidth={maximumBarWidth}
+                formatValue={formatValue}
+                formatLabel={formatLabel}
               />
             </Suspense>
           </div>
@@ -51,7 +61,7 @@ export function DashboardChart({
               </caption>
               <thead>
                 <tr>
-                  <th scope="col">Period or record</th>
+                  <th scope="col">{category}</th>
                   <th scope="col">{unit}</th>
                 </tr>
               </thead>

@@ -2,7 +2,7 @@ import { useEffect, useState, type MouseEvent } from "react";
 import { Heading } from "@astryxdesign/core/Heading";
 import { Shell } from "./Shell";
 import { Pages, NotAvailable } from "./factory/Pages";
-import { useSnapshot } from "./factory/data";
+import { formatInstant, useSnapshot } from "./factory/data";
 import "./factory/page.css";
 
 /** All deep links hydrate the same pre-rendered shell before reading the URL. */
@@ -105,9 +105,7 @@ export function FactoryPage() {
             <p>
               Snapshot:{" "}
               <time dateTime={snapshot.manifest.generatedAt}>
-                {snapshot.manifest.generatedAt
-                  .replace("T", " ")
-                  .replace("Z", " UTC")}
+                {formatInstant(snapshot.manifest.generatedAt)}
               </time>
             </p>
           )}

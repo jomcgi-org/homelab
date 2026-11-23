@@ -12,11 +12,23 @@ import type {
 } from "../../../../factory-storyboard/schema/types";
 import { states } from "../../../../factory-storyboard/schema/types";
 import type { Snapshot } from "./data";
-import { fillStats, formatNumber, paths } from "./data";
+import {
+  axisLabel,
+  fillStats,
+  formatInstant,
+  formatShort,
+  median,
+  paths,
+  sessionLabel,
+  tallyCounts,
+  tallyHours,
+} from "./data";
 import { DashboardChart } from "../DashboardChart";
 import { BurnUp } from "./Charts";
+import { Text } from "./Text";
 
-const storyBarWidth = 32;
+/** A long list shows this many rows; the rest open on request. */
+const listLimit = 12;
 
 export const withheldMessage =
   "This turn was withheld because it matched the secret scan.";
@@ -60,14 +72,33 @@ function Trail({ goalId, issueKey }: { goalId?: string; issueKey?: string }) {
     </nav>
   );
 }
-function IssueList({
+function SectionHead({
+  id,
+  title,
+  count,
+}: {
+  id: string;
+  title: string;
+  count?: number;
+}) {
+  return (
+    <div className="section-head">
+      <Heading level={2} id={id}>
+        {title}
+      </Heading>
+      {count !== undefined && <p className="count">{count}</p>}
+    </div>
+  );
+}
+function IssueRows({
   issues,
   snapshot,
+  showGoal,
 }: {
   issues: IssueSummary[];
   snapshot?: Snapshot;
+  showGoal: boolean;
 }) {
-  if (!issues.length) return <p>No issues here yet.</p>;
   return (
     <ul className="records">
       {issues.map((issue) => (
@@ -78,15 +109,73 @@ function IssueList({
             </a>
             <Status state={issue.state} />
           </div>
-          <a className="record-parent" href={paths.goal(issue.goalId)}>
-            Goal: {issue.goalId}
-          </a>
+          {showGoal && (
+            <a className="record-parent" href={paths.goal(issue.goalId)}>
+              Goal: {issue.goalId}
+            </a>
+          )}
           {snapshot && !lookup(snapshot.issues, issue.issueKey) && (
             <NotAvailable label={`Issue ${issue.issueKey}`} />
           )}
         </li>
       ))}
     </ul>
+  );
+}
+function IssueList({
+  issues,
+  snapshot,
+  showGoal = true,
+}: {
+  issues: IssueSummary[];
+  snapshot?: Snapshot;
+  showGoal?: boolean;
+}) {
+  if (!issues.length) return <p>No issues here yet.</p>;
+  const rest = issues.slice(listLimit);
+  return (
+    <>
+      <IssueRows
+        issues={issues.slice(0, listLimit)}
+        snapshot={snapshot}
+        showGoal={showGoal}
+      />
+      {rest.length > 0 && (
+        <details className="more-records">
+          <summary>
+            Show {rest.length} more of {issues.length}
+          </summary>
+          <IssueRows issues={rest} snapshot={snapshot} showGoal={showGoal} />
+        </details>
+      )}
+    </>
+  );
+}
+function Progress({
+  title,
+  shipped,
+  total,
+}: {
+  title: string;
+  shipped: number;
+  total: number;
+}) {
+  if (total <= 0) return <p>No issues yet.</p>;
+  return (
+    <div className="progress">
+      <p className="progress-figure">
+        {Math.round((shipped / total) * 100)}
+        <span>%</span>
+      </p>
+      <progress
+        max={total}
+        value={shipped}
+        aria-label={`${title}: ${shipped} shipped of ${total} issues`}
+      />
+      <p className="progress-label">
+        {shipped} shipped of {total} issues
+      </p>
+    </div>
   );
 }
 
@@ -97,6 +186,9 @@ export function StoryPage({
   story: Story;
   snapshot: Snapshot;
 }) {
+  const mergeHours = story.charts.issueToMergeHours.map(({ value }) => value);
+  const reviewRounds = story.charts.reviewRounds.map(({ value }) => value);
+  const manyGoals = story.goals.length > 1;
   return (
     <>
       <header className="lead">
@@ -105,9 +197,11 @@ export function StoryPage({
         <Narrative paragraphs={story.narrative} stats={story.stats} />
       </header>
       <section aria-labelledby="goals-heading">
-        <Heading level={2} id="goals-heading">
-          The goals
-        </Heading>
+        <SectionHead
+          id="goals-heading"
+          title="The goals"
+          count={story.goals.length}
+        />
         {!story.goals.length && <p>No goals published yet.</p>}
         <div className="chapters">
           {story.goals.map((goal) => (
@@ -119,20 +213,11 @@ export function StoryPage({
                 <Status state={goal.state} />
               </div>
               <Narrative paragraphs={goal.chapter} stats={story.stats} />
-              <div className="progress">
-                {goal.total > 0 ? (
-                  <progress
-                    max={goal.total}
-                    value={goal.shipped}
-                    aria-label={`${goal.title}: ${goal.shipped} shipped of ${goal.total} issues`}
-                  />
-                ) : (
-                  <p>No issues yet.</p>
-                )}
-                <p className="progress-label">
-                  {goal.shipped} shipped of {goal.total} issues
-                </p>
-              </div>
+              <Progress
+                title={goal.title}
+                shipped={goal.shipped}
+                total={goal.total}
+              />
               <a className="more" href={paths.goal(goal.goalId)}>
                 Read the goal
               </a>
@@ -144,65 +229,86 @@ export function StoryPage({
         </div>
       </section>
       <section aria-labelledby="numbers-heading">
-        <Heading level={2} id="numbers-heading">
-          The numbers
-        </Heading>
+        <SectionHead id="numbers-heading" title="The numbers" />
         <dl className="stats">
           {Object.entries(story.stats).map(([key, stat]) => (
             <div key={key}>
               <dt>{stat.label}</dt>
               <dd>
-                {formatNumber(stat.value)} <span>{stat.unit}</span>
+                {formatShort(stat.value)}
+                <span data-unit={stat.unit}>{stat.unit}</span>
               </dd>
             </div>
           ))}
         </dl>
         <div className="charts">
           <DashboardChart
-            formatValue={formatNumber}
+            formatValue={formatShort}
+            formatLabel={axisLabel}
             title="Shipped per week"
             unit="issues"
+            category="Week"
             points={story.charts.shippedPerWeek}
-            maximumBarWidth={storyBarWidth}
           />
           <DashboardChart
-            formatValue={formatNumber}
-            title="Issue-to-merge time"
-            unit="hours"
-            points={story.charts.issueToMergeHours}
-            maximumBarWidth={storyBarWidth}
-          />
-          <DashboardChart
-            formatValue={formatNumber}
-            title="Review rounds per PR"
-            unit="rounds"
-            points={story.charts.reviewRounds}
-            maximumBarWidth={storyBarWidth}
-          />
-          <DashboardChart
-            formatValue={formatNumber}
+            formatValue={formatShort}
+            formatLabel={axisLabel}
             title="First-pass review rate"
             unit="%"
+            category="Week"
             points={story.charts.firstPassReviewRate}
             maximum={100}
-            maximumBarWidth={storyBarWidth}
+          />
+          <DashboardChart
+            formatValue={formatShort}
+            title="Issue-to-merge time"
+            note={medianNote(mergeHours, "hours")}
+            unit="issues"
+            category="Time from issue to merge"
+            points={tallyHours(mergeHours)}
+          />
+          <DashboardChart
+            formatValue={formatShort}
+            title="Review rounds per PR"
+            note={medianNote(reviewRounds, "rounds")}
+            unit="PRs"
+            category="Review rounds"
+            points={tallyCounts(reviewRounds)}
           />
         </div>
       </section>
       <section aria-labelledby="working-heading">
-        <Heading level={2} id="working-heading">
-          Work in progress
-        </Heading>
-        <IssueList issues={story.workInProgress} snapshot={snapshot} />
+        <SectionHead
+          id="working-heading"
+          title="Work in progress"
+          count={story.workInProgress.length}
+        />
+        <IssueList
+          issues={story.workInProgress}
+          snapshot={snapshot}
+          showGoal={manyGoals}
+        />
       </section>
       <section aria-labelledby="shipped-heading">
-        <Heading level={2} id="shipped-heading">
-          Recently shipped
-        </Heading>
-        <IssueList issues={story.recentlyShipped} snapshot={snapshot} />
+        <SectionHead
+          id="shipped-heading"
+          title="Recently shipped"
+          count={story.recentlyShipped.length}
+        />
+        <IssueList
+          issues={story.recentlyShipped}
+          snapshot={snapshot}
+          showGoal={manyGoals}
+        />
       </section>
     </>
   );
+}
+function medianNote(values: number[], unit: string) {
+  const middle = median(values);
+  return middle === undefined
+    ? undefined
+    : `Median ${formatShort(middle)} ${unit} across ${values.length}`;
 }
 
 export function GoalPage({
@@ -216,6 +322,23 @@ export function GoalPage({
     key,
     issue: lookup(snapshot.issues, key),
   }));
+  const groups = states
+    .map((state) => ({
+      state,
+      members: issues.flatMap(({ issue }) =>
+        issue?.state === state
+          ? [
+              {
+                issueKey: issue.key,
+                goalId: issue.goalId,
+                title: issue.title,
+                state: issue.state,
+              },
+            ]
+          : [],
+      ),
+    }))
+    .filter(({ members }) => members.length > 0);
   return (
     <>
       <Trail />
@@ -231,32 +354,35 @@ export function GoalPage({
       </header>
       <BurnUp points={goal.burnUp} />
       <section aria-labelledby="issues-heading">
-        <Heading level={2} id="issues-heading">
-          Issues by state
-        </Heading>
+        <SectionHead
+          id="issues-heading"
+          title="Issues by state"
+          count={issues.length}
+        />
         {!issues.length && <p>No issues yet.</p>}
-        {states.map((state) => {
-          const members = issues.flatMap(({ issue }) =>
-            issue?.state === state
-              ? [
-                  {
-                    issueKey: issue.key,
-                    goalId: issue.goalId,
-                    title: issue.title,
-                    state: issue.state,
-                  },
-                ]
-              : [],
-          );
-          return (
-            members.length > 0 && (
-              <section className="state-group" key={state}>
-                <Heading level={3}>{state}</Heading>
-                <IssueList issues={members} />
-              </section>
-            )
-          );
-        })}
+        {groups.length > 1 && (
+          <nav className="tally" aria-label="Issue states">
+            {groups.map(({ state, members }) => (
+              <a key={state} href={`#${stateId(state)}`} data-state={state}>
+                <strong>{members.length}</strong> {state}
+              </a>
+            ))}
+          </nav>
+        )}
+        {groups.map(({ state, members }) => (
+          <section
+            className="state-group"
+            key={state}
+            id={stateId(state)}
+            tabIndex={-1}
+          >
+            <div className="section-band">
+              <Heading level={3}>{state}</Heading>
+              <p className="count">{members.length}</p>
+            </div>
+            <IssueList issues={members} showGoal={false} />
+          </section>
+        ))}
         {issues
           .filter(({ issue }) => !issue)
           .map(({ key }) => (
@@ -270,16 +396,41 @@ export function GoalPage({
   );
 }
 
-function EventDetail({ event }: { event: TimelineEvent }) {
+const stateId = (state: State) =>
+  `state-${state.toLowerCase().replaceAll(" ", "-")}`;
+
+type SessionEvent = Extract<TimelineEvent, { kind: "session" }>;
+type TimelineRow =
+  | { kind: "event"; event: Exclude<TimelineEvent, SessionEvent> }
+  | { kind: "session"; sessionId: string; events: SessionEvent[] };
+/** Consecutive turns of one session read as one row. */
+function timelineRows(timeline: TimelineEvent[]): TimelineRow[] {
+  const rows: TimelineRow[] = [];
+  for (const event of [...timeline].sort(
+    (a, b) => Date.parse(a.at) - Date.parse(b.at),
+  )) {
+    const last = rows.at(-1);
+    if (event.kind !== "session") rows.push({ kind: "event", event });
+    else if (last?.kind === "session" && last.sessionId === event.sessionId)
+      last.events.push(event);
+    else
+      rows.push({
+        kind: "session",
+        sessionId: event.sessionId,
+        events: [event],
+      });
+  }
+  return rows;
+}
+
+function EventDetail({
+  event,
+}: {
+  event: Exclude<TimelineEvent, SessionEvent>;
+}) {
   switch (event.kind) {
     case "opened":
       return <strong>Issue opened</strong>;
-    case "session":
-      return (
-        <a href={`${paths.session(event.sessionId)}#turn-${event.turn}`}>
-          Session {event.sessionId}, turn {event.turn}
-        </a>
-      );
     case "pullRequest":
       return <a href={paths.pr(event.prNumber)}>PR #{event.prNumber} opened</a>;
     case "review":
@@ -315,11 +466,11 @@ export function IssuePage({
   return (
     <>
       <Trail goalId={issue.goalId} />
-      <header className="lead">
+      <header className="lead record-lead">
         <p className="eyebrow">Issue / {issue.key}</p>
         <Heading level={1}>{issue.title}</Heading>
         <Status state={issue.state} />
-        <p>{issue.description}</p>
+        <Text text={issue.description} />
       </header>
       <section aria-labelledby="timeline-heading">
         <Heading level={2} id="timeline-heading">
@@ -327,46 +478,82 @@ export function IssuePage({
         </Heading>
         {!issue.timeline.length && <p>No events published yet.</p>}
         <ol className="timeline">
-          {[...issue.timeline]
-            .sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
-            .map((event, index) => (
-              <li key={index} data-kind={event.kind}>
-                <time dateTime={event.at}>{displayTime(event.at)}</time>
+          {timelineRows(issue.timeline).map((row, index) =>
+            row.kind === "event" ? (
+              <li key={index} data-kind={row.event.kind}>
+                <time dateTime={row.event.at}>
+                  {formatInstant(row.event.at)}
+                </time>
                 <div className="event">
                   <div className="event-heading">
-                    <EventDetail event={event} />
+                    <EventDetail event={row.event} />
                   </div>
-                  <p>{event.text}</p>
-                  {event.kind === "session" &&
-                    !lookup(snapshot.sessions, event.sessionId) && (
-                      <NotAvailable label={`Session ${event.sessionId}`} />
-                    )}
+                  {/* The exporter's default text repeats the heading. */}
+                  {!(
+                    row.event.kind === "opened" &&
+                    row.event.text === "Issue opened"
+                  ) && <p>{row.event.text}</p>}
                 </div>
               </li>
-            ))}
+            ) : (
+              <li key={index} data-kind="session">
+                <time dateTime={row.events[0]!.at}>
+                  {formatInstant(row.events[0]!.at)}
+                </time>
+                <div className="event">
+                  <div className="event-heading">
+                    <a href={paths.session(row.sessionId)}>
+                      Session {sessionLabel(row.sessionId)}
+                    </a>
+                    <span>
+                      {row.events.length}{" "}
+                      {row.events.length === 1 ? "turn" : "turns"}
+                    </span>
+                  </div>
+                  <div className="turns">
+                    {row.events.map((event) => (
+                      <a
+                        key={event.turn}
+                        href={`${paths.session(row.sessionId)}#turn-${event.turn}`}
+                        aria-label={`Session ${sessionLabel(row.sessionId)}, turn ${event.turn}`}
+                        title={event.text}
+                      >
+                        {event.turn}
+                      </a>
+                    ))}
+                  </div>
+                  {!lookup(snapshot.sessions, row.sessionId) && (
+                    <NotAvailable label={`Session ${row.sessionId}`} />
+                  )}
+                </div>
+              </li>
+            ),
+          )}
         </ol>
       </section>
     </>
   );
 }
-function displayTime(value: string) {
-  return value.replace("T", " ").replace(/(?:\.\d+)?Z$/, " UTC");
-}
 
 export function TranscriptTurn({ turn }: { turn: Turn }) {
   return (
-    <article className="turn" id={`turn-${turn.number}`} tabIndex={-1}>
+    <article
+      className="turn"
+      id={`turn-${turn.number}`}
+      tabIndex={-1}
+      data-role={turn.role}
+    >
       <div className="section-band">
         <h2>
           Turn {turn.number} / {turn.role}
         </h2>
-        <time dateTime={turn.at}>{displayTime(turn.at)}</time>
+        <time dateTime={turn.at}>{formatInstant(turn.at)}</time>
       </div>
       {turn.withheld ? (
         <p className="withheld">{withheldMessage}</p>
       ) : (
         <>
-          <p className="transcript-text">{turn.text}</p>
+          <Text text={turn.text} />
           {turn.toolCalls.map((tool, index) => (
             <details className="tool" key={index}>
               <summary>Tool call: {tool.name}</summary>
@@ -410,8 +597,8 @@ export function SessionPage({ session }: { session: Session }) {
   return (
     <>
       <Trail goalId={session.goalId} issueKey={session.issueKey} />
-      <header className="lead">
-        <p className="eyebrow">Session / {session.id}</p>
+      <header className="lead record-lead">
+        <p className="eyebrow">Session / {sessionLabel(session.id)}</p>
         <Heading level={1}>{session.title}</Heading>
         <Status state={session.state} />
         <p>{session.turns.length} turns. Tool calls open on request.</p>

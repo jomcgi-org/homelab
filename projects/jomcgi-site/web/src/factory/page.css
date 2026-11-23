@@ -1,3 +1,5 @@
+/* Factory pages: ink rules, joined panels, mono labels, heavy figures.
+ * Each border and block marks a boundary or carries a value. */
 .factory {
   font: 1rem/1.6 var(--font-family-body);
   overflow-wrap: anywhere;
@@ -21,7 +23,8 @@
   outline-offset: 4px;
 }
 /* The page focus target spans the whole chapter; links keep visible outlines. */
-.factory #factory-content:focus {
+.factory #factory-content:focus,
+.factory .state-group:focus {
   outline: none;
 }
 .factory .skip-link {
@@ -45,35 +48,60 @@
 .factory .factory-footer p {
   font-size: inherit;
 }
+.factory h1,
+.factory h2,
+.factory h3 {
+  font-family: var(--font-family-body);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
 .factory h2 {
   font-size: 1.5rem;
-  line-height: 1.3;
-  margin: 0;
+  line-height: 1.2;
 }
 .factory h3 {
   font-size: 1.125rem;
-  line-height: 1.35;
-  margin: 0;
+  line-height: 1.3;
+}
+/* Labels: small, mono, upper case. */
+.factory .eyebrow,
+.factory .stats dt,
+.factory figcaption,
+.factory .state,
+.factory .count,
+.factory .trail,
+.factory .jump,
+.factory summary,
+.factory thead th,
+.factory .progress-label,
+.factory .event-heading > span,
+.factory .legend,
+.factory-footer {
+  font: 600 0.75rem/1.5 var(--font-family-code);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 .factory .eyebrow,
 .factory .stats dt,
-.factory .state-group > h3 {
-  font: 0.75rem/1.5 var(--font-family-body);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+.factory .progress-label,
+.factory .event-heading > span {
   color: var(--color-text-secondary);
 }
 .factory time,
-.factory .progress-label,
 .factory .record-parent,
 .factory figure p {
   font-size: 0.875rem;
   color: var(--color-text-secondary);
   font-variant-numeric: tabular-nums;
 }
+.factory time {
+  font-family: var(--font-family-code);
+  font-size: 0.8125rem;
+}
 .factory .key {
-  font: 0.8125rem/1.95 var(--font-family-code);
-  color: var(--color-text-secondary);
+  font: 600 0.8125rem/1.95 var(--font-family-code);
+  color: var(--color-text-accent);
 }
 
 /* Notices and missing records */
@@ -84,7 +112,7 @@
   font-size: 0.875rem;
   white-space: pre-wrap;
   background: var(--color-background-muted);
-  border-left: 2px solid var(--color-border-emphasized);
+  border-left: 0.5rem solid var(--color-text-primary);
 }
 
 /* Breadcrumb and transcript jumps */
@@ -92,7 +120,6 @@
   display: flex;
   flex-wrap: wrap;
   gap: 0 0.75rem;
-  font-size: 0.875rem;
 }
 .factory nav a {
   max-width: 100%;
@@ -114,36 +141,98 @@
 /* Page lead */
 .factory .lead {
   margin-block: 1.5rem 3rem;
-  max-width: 46rem;
 }
 .factory .lead h1 {
-  font-size: clamp(2rem, 5vw, 3rem);
-  line-height: 1.1;
+  font-size: clamp(2.5rem, 7vw, 4.5rem);
+  line-height: 1;
+  letter-spacing: -0.04em;
   margin-block: 0.5rem 1rem;
+  max-width: 18ch;
+}
+.factory .record-lead h1 {
+  font-size: clamp(1.75rem, 4vw, 2.5rem);
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  max-width: 30ch;
 }
 .factory .lead .eyebrow {
   margin: 0;
 }
+.factory .lead .state {
+  margin-bottom: 0.5rem;
+}
 .factory .narrative {
-  max-width: 46rem;
+  max-width: 44rem;
   white-space: pre-wrap;
 }
 .factory .lead .narrative p:first-child {
   font-size: 1.125rem;
 }
 
-/* A section starts at a rule; the heading names it. */
-.factory #factory-content > section {
-  margin-block: 3.5rem;
-  border-top: 1px solid var(--color-border-emphasized);
-  padding-top: 0.75rem;
+/* Markdown text: issue descriptions and transcript turns */
+.factory .text {
+  max-width: 44rem;
+}
+.factory .text p {
+  white-space: pre-wrap;
+}
+.factory .text .text-heading {
+  font-weight: 700;
+  margin-top: 1.25rem;
+}
+.factory .text :is(ul, ol) {
+  margin-block: 0.5rem;
+  padding-left: 1.5rem;
+}
+.factory .text li {
+  margin-block: 0.35rem;
+  white-space: pre-wrap;
+}
+.factory .text ul {
+  list-style: square;
+}
+.factory .text ol {
+  list-style: decimal;
+}
+.factory .text code {
+  font: 0.875em var(--font-family-code);
+  background: var(--color-background-muted);
+  padding: 0.1em 0.3em;
+}
+.factory .text strong {
+  font-weight: 700;
 }
 
-/* State: a square marker and a word */
+/* A section starts at an ink rule. The heading names it; the box counts it. */
+.factory #factory-content > section {
+  margin-block: 4rem;
+  border-top: 2px solid var(--color-text-primary);
+  padding-top: 0.75rem;
+}
+.factory .section-head,
+.factory .section-band {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem 1rem;
+}
+.factory .section-head {
+  margin-bottom: 1.25rem;
+}
+.factory .count {
+  margin: 0;
+  padding: 0.1rem 0.5rem;
+  background: var(--color-text-primary);
+  color: var(--color-background-body);
+  font-variant-numeric: tabular-nums;
+}
+
+/* State: a square marker and a word, in a box */
 .factory .state {
   display: inline-block;
-  font-size: 0.8125rem;
-  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border: 1px solid var(--color-text-primary);
   white-space: nowrap;
 }
 .factory .state::before {
@@ -151,57 +240,83 @@
   display: inline-block;
   width: 0.5rem;
   height: 0.5rem;
-  margin-right: 0.5rem;
+  margin-right: 0.45rem;
   background: var(--color-accent);
 }
-.factory .state[data-state="Shipped"] {
-  color: var(--color-blog-success);
+.factory .state[data-state="Shipped"]::before {
+  background: var(--color-blog-success);
 }
 .factory .state[data-state="Stopped"] {
   color: var(--color-text-secondary);
+  border-color: var(--color-border-emphasized);
 }
-.factory .state[data-state="Shipped"]::before,
 .factory .state[data-state="Stopped"]::before {
-  background: currentcolor;
+  background: var(--color-border-emphasized);
+}
+
+/* Joined panels. Each cell draws its own 2px ink edge; the gap makes
+ * neighbours share one, at any column count. */
+.factory .chapters,
+.factory .stats,
+.factory .charts,
+.factory .tally {
+  display: grid;
+  gap: 2px;
+  padding: 2px;
+}
+.factory .chapter,
+.factory .stats > div,
+.factory .charts > .chart,
+.factory .tally > a,
+.factory .burn-up {
+  box-shadow: 0 0 0 2px var(--color-text-primary);
 }
 
 /* Goal chapters */
 .factory .chapters {
-  display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
-  gap: 0 3rem;
 }
 .factory .chapter {
   display: flex;
   flex-direction: column;
-  padding-block: 1.25rem 0.5rem;
-  border-bottom: 1px solid var(--color-border);
+  padding: 1rem 1.25rem 0.5rem;
 }
-.factory .section-band {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.25rem 1rem;
+.factory .chapter h3 {
+  font-size: 1.5rem;
+}
+.factory .chapter h3 a {
+  color: inherit;
 }
 .factory .progress {
   margin-top: auto;
-  padding-top: 0.5rem;
+  padding-top: 0.75rem;
 }
 .factory .progress p {
-  margin-block: 0.4rem 0;
+  margin: 0;
+}
+.factory .progress .progress-figure {
+  font: 800 4rem/1 var(--font-family-body);
+  letter-spacing: -0.04em;
+  margin-bottom: 0.75rem;
+}
+.factory .progress-figure span {
+  font-size: 0.5em;
+  letter-spacing: 0;
+}
+.factory .progress .progress-label {
+  margin-top: 0.5rem;
 }
 .factory progress {
   display: block;
   width: 100%;
-  height: 4px;
-  border: 0;
+  height: 1.25rem;
+  border: 2px solid var(--color-text-primary);
   appearance: none;
-  background: var(--color-border);
+  background: var(--color-background-body);
   accent-color: var(--color-accent);
 }
 .factory progress::-webkit-progress-bar {
-  background: var(--color-border);
+  background: var(--color-background-body);
 }
 .factory progress::-webkit-progress-value {
   background: var(--color-accent);
@@ -212,70 +327,76 @@
 
 /* Numbers */
 .factory .stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
-  gap: 1.5rem 2rem;
-  margin-block: 1.5rem 3rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+  margin-block: 0 2rem;
+}
+.factory .stats > div {
+  padding: 0.75rem 1rem 1rem;
 }
 .factory .stats dd {
-  margin: 0;
-  font: 2.5rem/1.15 var(--font-family-heading);
-  font-variant-numeric: tabular-nums;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.4rem;
+  margin: 0.5rem 0 0;
+  font: 800 3rem/1 var(--font-family-body);
+  letter-spacing: -0.04em;
 }
 .factory .stats dd span {
-  font: 0.875rem var(--font-family-body);
+  white-space: nowrap;
+  font: 600 0.75rem var(--font-family-code);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: var(--color-text-secondary);
 }
+.factory .stats dd span[data-unit="%"] {
+  margin-left: -0.3rem;
+  font: 800 1.5rem var(--font-family-body);
+  color: inherit;
+}
 .factory .charts {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
-  gap: 2rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 28rem), 1fr));
 }
 .factory .chart {
   margin: 0;
-  max-width: 34rem;
+  padding: 0.75rem 1rem 0.25rem;
 }
-.factory figcaption {
-  font-size: 0.875rem;
-  font-weight: 600;
+.factory figure .chart-note {
+  margin: 0.15rem 0 0;
 }
-.factory .burn-up-plot {
-  display: block;
-  width: 100%;
-  margin-block: 0.5rem 0;
+.factory .burn-up {
+  margin: 2px;
 }
-.factory .burn-up-plot text {
-  fill: var(--color-text-primary);
-  font-size: 11px;
-  font-family: var(--font-family-body);
+.factory .legend {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.5rem;
+  margin: 0.5rem 0;
+  padding: 0;
+  color: var(--color-text-secondary);
 }
-.factory .axis {
-  stroke: var(--color-border-emphasized);
+.factory .legend strong {
+  color: var(--color-text-primary);
+  font-weight: 700;
 }
-.factory .grid {
-  stroke: var(--color-border);
-  stroke-dasharray: 2 3;
+.factory .legend li::before {
+  content: "";
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  margin-right: 0.5rem;
+  vertical-align: -0.05rem;
+  background: var(--color-accent);
 }
-.factory .bar {
-  fill: var(--color-accent);
-}
-.factory .shipped-line,
-.factory .scope-line {
-  fill: none;
-  stroke: var(--color-accent);
-  stroke-width: 2;
-}
-.factory .scope-line {
-  stroke: var(--color-text-secondary);
-  stroke-width: 1.5;
-  stroke-dasharray: 5 4;
+.factory .legend [data-series="scope"]::before {
+  background: var(--color-text-secondary);
 }
 .factory summary {
   display: list-item;
   list-style-position: inside;
   padding-block: 0.6rem;
   cursor: pointer;
-  font-size: 0.875rem;
   color: var(--color-text-accent);
 }
 .factory table {
@@ -298,21 +419,25 @@
   font-variant-numeric: tabular-nums;
 }
 .factory thead th {
-  font-weight: 600;
+  border-bottom: 2px solid var(--color-text-primary);
 }
 
 /* Record lists: key, title, goal, state on one line */
 .factory .records {
   list-style: none;
-  margin: 0.5rem 0 0;
+  margin: 0;
   padding: 0;
+  border-top: 2px solid var(--color-text-primary);
 }
 .factory .records li {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0 1.5rem;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border-emphasized);
+}
+.factory .records li:hover {
+  background: var(--color-background-muted);
 }
 .factory .record-row {
   display: contents;
@@ -322,8 +447,13 @@
   display: grid;
   grid-template-columns: 6rem 1fr;
   align-items: baseline;
-  padding-block: 0.6rem;
+  padding: 0.6rem 0.5rem;
   min-height: 44px;
+  color: var(--color-text-primary);
+  text-decoration: none;
+}
+.factory .record:hover {
+  text-decoration: underline;
 }
 .factory .record-parent {
   display: inline-flex;
@@ -332,23 +462,71 @@
 }
 .factory .records .state {
   order: 1;
-  min-width: 8.5rem;
-  text-align: right;
+  margin-right: 0.5rem;
 }
 .factory .records .unavailable {
   flex-basis: 100%;
   margin-top: 0;
 }
-/* A goal page groups its issues by state, so each row repeats neither. */
-.factory .state-group {
-  margin-top: 1.75rem;
+/* The rest of a long list opens under a full-width bar. */
+.factory .more-records > summary {
+  list-style: none;
+  padding: 0.75rem 0.5rem;
+  border-bottom: 2px solid var(--color-text-primary);
+  color: var(--color-text-primary);
 }
-.factory .state-group .state,
-.factory .state-group .record-parent {
+.factory .more-records > summary::-webkit-details-marker {
+  display: none;
+}
+.factory .more-records > summary::before {
+  content: "+ ";
+}
+.factory .more-records[open] > summary::before {
+  content: "− ";
+}
+.factory .more-records > summary:hover {
+  background: var(--color-text-primary);
+  color: var(--color-background-body);
+}
+.factory .more-records .records {
+  border-top: 0;
+}
+
+/* A goal page counts its states, then lists each. A row repeats neither. */
+.factory .tally {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+  margin-bottom: 2.5rem;
+}
+.factory .tally > a {
+  display: block;
+  padding: 0.75rem 1rem;
+  color: var(--color-text-primary);
+  text-decoration: none;
+  font: 600 0.75rem/1.5 var(--font-family-code);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.factory .tally strong {
+  display: block;
+  font: 800 2.25rem/1.1 var(--font-family-body);
+  letter-spacing: -0.04em;
+}
+.factory .tally > a:hover {
+  background: var(--color-text-primary);
+  color: var(--color-background-body);
+}
+.factory .state-group {
+  margin-top: 2.5rem;
+  scroll-margin-top: 1rem;
+}
+.factory .state-group .section-band {
+  margin-bottom: 0.5rem;
+}
+.factory .state-group .state {
   display: none;
 }
 
-/* Timeline: time, rail, event. Milestones carry a marker. */
+/* Timeline: time, rail, event. Each event carries a square marker. */
 .factory .timeline {
   list-style: none;
   margin: 1rem 0 0;
@@ -359,28 +537,28 @@
   grid-template-columns: 12.5rem 1fr;
 }
 .factory .timeline time {
-  padding-top: 0.7rem;
+  padding-top: 0.75rem;
 }
 .factory .event {
   position: relative;
-  border-left: 1px solid var(--color-border-emphasized);
-  padding: 0 0 0.75rem 1.5rem;
+  border-left: 2px solid var(--color-text-primary);
+  padding: 0 0 1rem 1.5rem;
 }
 .factory .event::before {
   content: "";
   position: absolute;
-  top: 1.1rem;
-  left: -0.3rem;
-  width: 0.5rem;
-  height: 0.5rem;
-  background: var(--color-accent);
+  top: 0.95rem;
+  left: calc(-0.375rem - 1px);
+  width: 0.75rem;
+  height: 0.75rem;
+  background: var(--color-text-primary);
 }
 .factory [data-kind="session"] .event::before {
-  left: -0.15rem;
-  width: 0.25rem;
-  height: 0.25rem;
-  top: 1.25rem;
-  background: var(--color-border-emphasized);
+  background: var(--color-background-body);
+  border: 2px solid var(--color-text-primary);
+}
+.factory [data-kind="merged"] .event::before {
+  background: var(--color-blog-success);
 }
 .factory .timeline > li:last-child .event {
   padding-bottom: 0;
@@ -396,47 +574,82 @@
   display: inline-flex;
   align-items: center;
   min-height: 44px;
+  font-weight: 700;
 }
 .factory .event p {
   margin-block: 0 0.5rem;
   font-size: 0.875rem;
   color: var(--color-text-secondary);
 }
-.factory [data-kind="session"] .event-heading {
-  font-size: 0.875rem;
+/* One square for each turn of a session. */
+.factory .turns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+.factory .turns a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2rem;
+  height: 2rem;
+  padding-inline: 0.25rem;
+  border: 1px solid var(--color-text-primary);
+  color: var(--color-text-primary);
+  font: 600 0.75rem var(--font-family-code);
+  text-decoration: none;
+}
+.factory .turns a:hover {
+  background: var(--color-text-primary);
+  color: var(--color-background-body);
 }
 
-/* Transcript */
+/* Transcript: one ink box for each turn. The band names the speaker. */
 .factory #transcript {
   max-width: 50rem;
 }
 .factory .turn {
-  margin-block: 0;
-  padding-block: 1rem 1.25rem;
-  border-top: 1px solid var(--color-border);
+  margin-block: 0 1rem;
+  border: 2px solid var(--color-text-primary);
   scroll-margin-top: 1rem;
 }
+.factory .turn > :not(.section-band) {
+  margin-inline: 1rem;
+}
+.factory .turn > :last-child {
+  margin-bottom: 1rem;
+}
+.factory .turn .section-band {
+  padding: 0.4rem 1rem;
+  margin-bottom: 0.75rem;
+  border-bottom: 2px solid var(--color-text-primary);
+  background: var(--color-background-muted);
+}
+.factory .turn[data-role="user"] .section-band {
+  background: var(--color-text-primary);
+  color: var(--color-background-body);
+}
+.factory .turn[data-role="user"] time {
+  color: inherit;
+}
 .factory .turn .section-band h2 {
-  font: 600 0.75rem/1.5 var(--font-family-body);
-  letter-spacing: 0.08em;
+  font: 600 0.75rem/1.5 var(--font-family-code);
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
-.factory .transcript-text {
-  white-space: pre-wrap;
-}
 .factory .tool {
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-text-primary);
   padding-inline: 0.75rem;
   margin-top: 0.5rem;
 }
 .factory .tool summary {
-  font-family: var(--font-family-code);
-  font-size: 0.8125rem;
+  text-transform: none;
+  letter-spacing: 0;
 }
 .factory .tool h3,
 .factory .diff h3 {
-  font: 600 0.75rem/1.5 var(--font-family-body);
-  letter-spacing: 0.08em;
+  font: 600 0.75rem/1.5 var(--font-family-code);
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--color-text-secondary);
 }
@@ -462,15 +675,14 @@
 }
 
 .factory-footer {
-  border-top: 1px solid var(--color-border-emphasized);
+  border-top: 2px solid var(--color-text-primary);
   padding-block: 0.5rem;
-  margin-top: 3.5rem;
+  margin-top: 4rem;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 0 1rem;
-  font-size: 0.875rem;
 }
 
 /* Wrap transcripts and table cells inside the phone gutters, without clipping. */
@@ -489,6 +701,6 @@
   }
   .factory .timeline time {
     padding: 0.5rem 0 0 1.5rem;
-    border-left: 1px solid var(--color-border-emphasized);
+    border-left: 2px solid var(--color-text-primary);
   }
 }

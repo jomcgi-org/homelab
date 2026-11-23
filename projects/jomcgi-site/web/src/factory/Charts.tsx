@@ -1,59 +1,35 @@
-import { useId } from "react";
+import { lazy, Suspense, useId } from "react";
 import type { BurnPoint } from "../../../../factory-storyboard/schema/types";
+
+const BurnUpPlot = lazy(() => import("./BurnUpPlot"));
 
 export function BurnUp({ points }: { points: BurnPoint[] }) {
   const id = useId();
-  const max = Math.max(
-    1,
-    ...points.flatMap((point) => [point.shipped, point.total]),
-  );
-  const coordinates = (field: "shipped" | "total") =>
-    points
-      .map(
-        (point, index) =>
-          `${36 + (index / Math.max(1, points.length - 1)) * 300},${140 - (point[field] / max) * 120}`,
-      )
-      .join(" ");
+  const last = points.at(-1);
   return (
-    <figure className="chart" aria-labelledby={id}>
+    <figure className="chart burn-up" aria-labelledby={id}>
       <figcaption id={id}>Goal burn-up</figcaption>
-      {points.length === 0 ? (
+      {!last ? (
         <p>No measurements yet.</p>
       ) : (
         <>
-          <p>
-            {points.at(-1)!.shipped} shipped of {points.at(-1)!.total} issues.
-            Solid line: shipped. Dashed line: total scope.
-          </p>
-          <svg
+          <ul className="legend">
+            <li data-series="shipped">
+              Shipped <strong>{last.shipped}</strong>
+            </li>
+            <li data-series="scope">
+              Scope <strong>{last.total}</strong>
+            </li>
+          </ul>
+          <div
             className="burn-up-plot"
-            viewBox="0 0 340 160"
             role="img"
             aria-label="Shipped issues and total scope over time. Values are in the table below."
           >
-            <text x="4" y="14">
-              {max}
-            </text>
-            <text x="4" y="142">
-              0
-            </text>
-            <line x1="36" y1="20" x2="336" y2="20" className="grid" />
-            <line x1="36" y1="140" x2="336" y2="140" className="axis" />
-            <polyline points={coordinates("total")} className="scope-line" />
-            <polyline
-              points={coordinates("shipped")}
-              className="shipped-line"
-            />
-            {points.map((point, index) => (
-              <circle
-                key={index}
-                className="bar"
-                r="3"
-                cx={36 + (index / Math.max(1, points.length - 1)) * 300}
-                cy={140 - (point.shipped / max) * 120}
-              />
-            ))}
-          </svg>
+            <Suspense>
+              <BurnUpPlot points={points} />
+            </Suspense>
+          </div>
           <details>
             <summary>View burn-up values</summary>
             <table>

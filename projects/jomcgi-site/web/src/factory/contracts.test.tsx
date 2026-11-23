@@ -61,16 +61,16 @@ describe.each(["light", "dark"] as const)("%s theme", (mode) => {
             container.querySelectorAll(".dashboard-chart-plot svg"),
           ).toHaveLength(4),
         );
-        const singleBar = screen
-          .getByRole("img", { name: /^Issue-to-merge time\./ })
+        const bar = screen
+          .getByRole("img", { name: /^Shipped per week\./ })
           .querySelector("svg path[fill]");
-        // The rounded path starts at the left edge. Its second curve
-        // reaches the right edge of the same bar.
-        const edges = singleBar
+        // Three columns in 360px are wider than the cap. The square path
+        // runs from the left edge to the right edge of one column.
+        const edges = bar
           ?.getAttribute("d")
-          ?.match(/^M([\d.]+),[^H]+H[^Q]+Q([\d.]+),/);
+          ?.match(/^M([\d.]+),[^H]+H([\d.]+)V/);
         expect(edges).not.toBeNull();
-        expect(Number(edges?.[2]) - Number(edges?.[1])).toBeCloseTo(32);
+        expect(Number(edges?.[2]) - Number(edges?.[1])).toBeCloseTo(48);
       }
       // Include every chart table and tool call in the accessibility check.
       for (const details of container.querySelectorAll("details"))
