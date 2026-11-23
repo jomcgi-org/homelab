@@ -19,11 +19,20 @@
 #      A directory also stays if a postgres process names it, if a mount
 #      point lies under it, or if its name holds a newline. The scan runs again
 #      right before each removal. Removal never crosses a mount point.
+#      GC_TMP_DIR is resolved to its real path first, so a symlinked path
+#      cannot hide a mount point. A subdirectory that the caller cannot read
+#      is opened with chmod before the age check (only with --apply), and a
+#      directory that stays unreadable is kept.
+#      Known gap: a process that holds a directory only by a relative path (a
+#      unix socket bound with a relative path, a relative argument after a
+#      chdir) is not seen.
 #   3. Bazel disk cache files (ac/ and cas/ only) not modified for
 #      --bazel-days (default 7), under BAZEL_DISK_CACHE.
 #
-# It touches nothing else. It refuses to run as root, and it does not install
-# a timer. Dry run is the default.
+# It touches nothing else. It does not install a timer. Dry run is the default.
+# It refuses to run as root, unless GOCACHE, BAZEL_DISK_CACHE and GC_TMP_DIR are
+# all set and GC_TMP_DIR is not /tmp. A root run then touches only those three
+# paths, and GC_TMP_DIR matches directories that root owns.
 #
 # Usage:
 #   node-disk-gc.sh [--apply] [--go-days N] [--tmp-hours N] [--bazel-days N]
@@ -32,10 +41,6 @@
 #   GOCACHE            Go build cache (default: ~/.cache/go-build)
 #   BAZEL_DISK_CACHE   Bazel disk cache (default: ~/.cache/bazel/disk_cache)
 #   GC_TMP_DIR         Directory that holds the test directories (default: /tmp)
-#   GC_MOUNTINFO       Mount table to read (default: /proc/self/mountinfo; a
-#                      test hook)
-#   GC_ALLOW_ROOT      Set to 1 to run as root (a test hook: CI runs the tests
-#                      as root)
 set -euo pipefail
 
 apply=false
@@ -84,21 +89,46 @@ while [[ $# -gt 0 ]]; do
 	shift
 done
 
-if [[ "$(id -u)" == 0 && "${GC_ALLOW_ROOT:-}" != 1 ]]; then
-	echo "run as the node operator, not as root" >&2
-	exit 2
-fi
-
 go_cache="${GOCACHE:-$HOME/.cache/go-build}"
 bazel_cache="${BAZEL_DISK_CACHE:-$HOME/.cache/bazel/disk_cache}"
 tmp_root="${GC_TMP_DIR:-/tmp}"
-mountinfo="${GC_MOUNTINFO:-/proc/self/mountinfo}"
+mountinfo=/proc/self/mountinfo
 
 # The directory that holds the test directories: an absolute path with no
-# trailing slash, and neither / nor the home directory.
-if [[ "$tmp_root" != /* || "$tmp_root" == / || "$tmp_root" == */ || "$tmp_root" == "$HOME" ]]; then
-	echo "GC_TMP_DIR must be an absolute path without a trailing slash, and not / or \$HOME: $tmp_root" >&2
+# trailing slash.
+if [[ "$tmp_root" != /* || "$tmp_root" == / || "$tmp_root" == */ ]]; then
+	echo "GC_TMP_DIR must be an absolute path without a trailing slash, and not /: $tmp_root" >&2
 	exit 2
+fi
+
+realdir() {
+	(cd "$1" 2>/dev/null && pwd -P)
+}
+
+# Real paths: a symlink in a path must not hide a mount point, and the checks
+# on HOME must see through one.
+home_real="$(realdir "$HOME" || true)"
+tmp_real="$(realdir "$tmp_root" || true)"
+
+# Neither / nor the home directory nor a directory that holds it.
+holds_home() {
+	[[ -n "$home_real" && ("$1" == / || "$1" == "$home_real" || "$home_real" == "$1"/*) ]]
+}
+
+if [[ -n "$tmp_real" ]] && holds_home "$tmp_real"; then
+	echo "GC_TMP_DIR must not be / or the home directory or a directory that holds it: $tmp_root" >&2
+	exit 2
+fi
+
+# From here on, every path in the test directories is a real path.
+[[ -z "$tmp_real" ]] || tmp_root=$tmp_real
+
+if [[ "$(id -u)" == 0 ]]; then
+	if [[ -z "${GOCACHE:-}" || -z "${BAZEL_DISK_CACHE:-}" || -z "${GC_TMP_DIR:-}" || "$tmp_real" == /tmp || -z "$tmp_real" ]]; then
+		echo "run as the node operator, not as root (a root run needs GOCACHE, BAZEL_DISK_CACHE and GC_TMP_DIR set, and GC_TMP_DIR not /tmp)" >&2
+		exit 2
+	fi
+	echo "running as root on $tmp_real, $go_cache and $bazel_cache only"
 fi
 
 # The checks below read /proc and the mount table. Without them the script
@@ -160,13 +190,17 @@ report_files() {
 }
 
 # 1. Go build cache. Go refreshes a used entry's time, so an old file is unused.
-if [[ "$go_cache" == /* && "$go_cache" != "$HOME" && -f "$go_cache/README" ]] &&
-	grep -q "cached build artifacts from the Go build system" "$go_cache/README"; then
-	find "$go_cache" -xdev -type f ! -name README ! -name trim.txt ! -path "$go_cache/fuzz/*" \
+# The path loses its trailing slashes, and it must not be the home directory or
+# a directory that holds it.
+while [[ "$go_cache" == */ ]]; do go_cache=${go_cache%/}; done
+go_real="$(realdir "$go_cache" || true)"
+if [[ "$go_cache" == /* && -n "$go_real" && -f "$go_real/README" ]] && ! holds_home "$go_real" &&
+	grep -q "cached build artifacts from the Go build system" "$go_real/README"; then
+	find "$go_real" -xdev -type f ! -name README ! -name trim.txt ! -path "$go_real/fuzz/*" \
 		-mmin "+$((go_days * 1440))" -print0 >"$scratch/go" 2>/dev/null || true
-	report_files "Go build cache $go_cache (older than $go_days days)" "$scratch/go"
+	report_files "Go build cache $go_real (older than $go_days days)" "$scratch/go"
 else
-	echo "Go build cache $go_cache: skipped (not a Go build cache)"
+	echo "Go build cache $go_cache: skipped (not a Go build cache, or it holds the home directory)"
 fi
 
 # 2. Test directories.
@@ -237,15 +271,14 @@ keep_reason() {
 	local dir=$1
 	if has_mount "$dir"; then
 		echo "mount"
-	elif in_use "$dir" || in_use "$tmp_real/${dir##*/}"; then
+	elif in_use "$dir"; then
 		echo "in use"
 	fi
 }
 
 tmp_total=0
 tmp_count=0
-if [[ -d "$tmp_root" ]]; then
-	tmp_real="$(cd "$tmp_root" && pwd -P)"
+if [[ -n "$tmp_real" ]]; then
 	scan
 	while IFS= read -r -d '' dir; do
 		[[ "$(dirname "$dir")" == "$tmp_root" ]] || continue
@@ -255,13 +288,28 @@ if [[ -d "$tmp_root" ]]; then
 			printf '  keep (name has a newline): %q\n' "$dir"
 			continue
 		fi
-		if [[ -n "$(find "$dir" -mmin "-$((tmp_hours * 60))" -print -quit 2>/dev/null)" ]]; then
-			echo "  keep (newer file): $dir"
-			continue
-		fi
 		reason=$(keep_reason "$dir")
 		if [[ -n "$reason" ]]; then
 			echo "  keep ($reason): $dir"
+			continue
+		fi
+		# A subdirectory that the caller cannot read hides its files from the
+		# age check. With --apply, chmod opens it and the check runs again.
+		newer=$(find "$dir" -mmin "-$((tmp_hours * 60))" -print -quit 2>"$scratch/err" || true)
+		if [[ -s "$scratch/err" && -z "$newer" ]]; then
+			if ! $apply; then
+				echo "  keep (unreadable; --apply opens it first): $dir"
+				continue
+			fi
+			chmod -R u+rwX -- "$dir" 2>/dev/null || true
+			newer=$(find "$dir" -mmin "-$((tmp_hours * 60))" -print -quit 2>"$scratch/err" || true)
+			if [[ -s "$scratch/err" && -z "$newer" ]]; then
+				echo "  keep (unreadable): $dir"
+				continue
+			fi
+		fi
+		if [[ -n "$newer" ]]; then
+			echo "  keep (newer file): $dir"
 			continue
 		fi
 		size=$(du -sb "$dir" 2>/dev/null | awk '{ print $1 }' || true)

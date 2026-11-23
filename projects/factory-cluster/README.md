@@ -194,6 +194,9 @@ projects/factory-cluster/nodes/node-disk-gc.sh --apply  # remove it
 Options `--go-days` (3), `--tmp-hours` (12) and `--bazel-days` (7) set the age
 limits, in whole units of time (`--go-days 3` keeps a file that is 2.9 days old).
 `--tmp-hours` must be at least 1. The Go fuzz corpus (`fuzz/`) always stays.
+`GOCACHE`, `BAZEL_DISK_CACHE` and `GC_TMP_DIR` set the three paths. The script
+resolves `GC_TMP_DIR` to its real path first, and skips a Go cache that is the
+home directory or holds it.
 
 A test directory stays when any of these is true. The script checks every
 process that the caller can read:
@@ -208,10 +211,20 @@ process that the caller can read:
 - A postgres process names it.
 - A mount point is the directory or lies under it (`/proc/self/mountinfo`).
 - Its name holds a newline.
+- It holds a subdirectory that the caller cannot read. With `--apply`, the
+  script opens that subdirectory with `chmod` first and then runs the age
+  check. A dry run prints `keep (unreadable; ...)`.
 
 The scan runs again right before each removal, and removal does not cross a
-mount point. The script cannot see a process that another user runs. If it
-cannot remove a directory, it prints `failed: <directory>` and goes on.
+mount point. Known gaps: the script cannot see a process that another user
+runs, or a process that holds a directory only by a relative path (a unix
+socket bound with a relative path, or a relative argument after a `chdir`).
+If it cannot remove a directory, it prints `failed: <directory>` and goes on.
+
+The script refuses to run as root. It makes one exception: when `GOCACHE`,
+`BAZEL_DISK_CACHE` and `GC_TMP_DIR` are all set and `GC_TMP_DIR` is not `/tmp`,
+a root run touches only those three paths. The tests use that exception.
+
 No timer runs the script. A person decides whether to install one.
 
 ## Network policy
