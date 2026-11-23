@@ -80,6 +80,105 @@ def test_template_listens_on_port_80_with_no_env_and_no_egress() -> None:
     assert t["workerSelector"] == {"matchLabels": {"workload": "gvisor-fork"}}
 
 
+_SECRET_MARKERS = ("TOKEN", "KEY", "SECRET", "PASSWORD")
+_SHORT_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+
+
+def fork_rule_violations(t: dict) -> list[str]:
+    """Every rule the ate API applies to a template with fork_config.
+
+    Source: the fork's cmd/ateapi/internal/apivalidation/fork.go
+    (validateForkTemplate and the seed resources check) and the declarative
+    validation tags of ForkConfig, ActorTemplate, Container and WakeupProbe in
+    api/ateapi/v1/ateapi.proto, at fork commit 1e7a877d0ca3.
+    """
+    bad = []
+    fork = t.get("forkConfig")
+    if not fork:
+        return ["no forkConfig"]
+    if fork.get("mode") != "FORK_MODE_SEED_AND_FORK":
+        bad.append("forkConfig.mode must be FORK_MODE_SEED_AND_FORK")
+    seed = (fork.get("seedResources") or {}).get("limits") or {}
+    if not seed.get("cpuMillicores") or not seed.get("memoryBytes"):
+        bad.append("forkConfig.seedResources.limits needs cpu and memory")
+    if fork.get("singleUse") is not True:
+        bad.append("forkConfig.singleUse must be true")
+    if not 1 <= fork.get("maxLifetimeSeconds", 0) <= 3600:
+        bad.append("forkConfig.maxLifetimeSeconds must be 1 to 3600")
+    if not 32 <= fork.get("pidsLimit", 0) <= 4096:
+        bad.append("forkConfig.pidsLimit must be 32 to 4096")
+    if not 1024 <= int(fork.get("logBytesLimit", 0)) <= 1 << 30:
+        bad.append("forkConfig.logBytesLimit must be 1024 to 1 GiB")
+    if fork.get("egress", "FORK_EGRESS_NONE") not in ("FORK_EGRESS_UNSPECIFIED", "FORK_EGRESS_NONE"):
+        bad.append("forkConfig.egress must be none (GATEWAY is refused)")
+    # validateForkTemplate
+    containers = t.get("containers") or []
+    if len(containers) != 1:
+        bad.append("exactly one container")
+    for c in containers:
+        if not _SHORT_NAME.match(c.get("name", "")):
+            bad.append("container name is not a short name")
+        if not re.search(r"@sha256:[0-9a-f]{64}$", c.get("image", "")):
+            bad.append("container image must be pinned by digest")
+        if not (c.get("wakeupProbe") or {}).get("httpGet"):
+            bad.append("a wakeup probe with httpGet")
+        if not 1 <= (c.get("wakeupProbe") or {}).get("timeoutSeconds", 0) <= 3600:
+            bad.append("wakeupProbe.timeoutSeconds must be 1 to 3600")
+        if ((c.get("securityContext") or {}).get("capabilities") or {}).get("add"):
+            bad.append("no capabilities to add")
+        for env in c.get("env") or []:
+            if any(m in env.get("name", "").upper() for m in _SECRET_MARKERS):
+                bad.append(f"env {env['name']} is named like a secret")
+    if t.get("volumes"):
+        bad.append("no volumes")
+    golden = ((t.get("snapshotConfig") or {}).get("goldenSnapshotConfig") or {}).get("mode")
+    if golden != "GOLDEN_SNAPSHOT_MODE_DISABLED":
+        bad.append("snapshotConfig.goldenSnapshotConfig.mode must be GOLDEN_SNAPSHOT_MODE_DISABLED")
+    # ActorTemplate: template resources need both limits, the name is a short
+    # name, and the golden egress policy needs a preview gate the gate does not use.
+    limits = (t.get("resources") or {}).get("limits") or {}
+    if not limits.get("cpuMillicores") or not limits.get("memoryBytes"):
+        bad.append("resources.limits needs cpu and memory")
+    if not _SHORT_NAME.match((t.get("metadata") or {}).get("name", "")):
+        bad.append("template name is not a short name")
+    if "goldenEgressPolicy" in t:
+        bad.append("goldenEgressPolicy is forbidden without its preview gate")
+    return bad
+
+
+def test_template_satisfies_every_fork_validation_rule() -> None:
+    assert fork_rule_violations(yaml.safe_load(_TEMPLATE)) == []
+
+
+def test_the_rule_check_catches_each_violation() -> None:
+    import copy
+
+    good = yaml.safe_load(_TEMPLATE)
+
+    def mutated(edit) -> dict:
+        t = copy.deepcopy(good)
+        edit(t)
+        return t
+
+    edits = {
+        "golden snapshot mode missing": lambda t: t.pop("snapshotConfig"),
+        "golden snapshot enabled": lambda t: t["snapshotConfig"]["goldenSnapshotConfig"].update(mode="GOLDEN_SNAPSHOT_MODE_ENABLED"),
+        "two containers": lambda t: t["containers"].append(dict(t["containers"][0], name="b")),
+        "no wakeup probe": lambda t: t["containers"][0].pop("wakeupProbe"),
+        "capability added": lambda t: t["containers"][0].update(securityContext={"capabilities": {"add": ["NET_ADMIN"]}}),
+        "secret-named env": lambda t: t["containers"][0].update(env=[{"name": "API_KEY", "value": "x"}]),
+        "volume": lambda t: t.update(volumes=[{"name": "v"}]),
+        "egress gateway": lambda t: t["forkConfig"].update(egress="FORK_EGRESS_GATEWAY"),
+        "single use off": lambda t: t["forkConfig"].update(singleUse=False),
+        "no seed memory": lambda t: t["forkConfig"]["seedResources"]["limits"].pop("memoryBytes"),
+        "lifetime too long": lambda t: t["forkConfig"].update(maxLifetimeSeconds=7200),
+        "tag, not digest": lambda t: t["containers"][0].update(image="ghcr.io/x/engine-pro:1.186.0"),
+        "no template cpu": lambda t: t["resources"]["limits"].pop("cpuMillicores"),
+    }
+    for name, edit in edits.items():
+        assert fork_rule_violations(mutated(edit)), name
+
+
 def test_template_checks_pass_and_catch_each_edit() -> None:
     mod = _load()
     assert mod.template_checks(_TEMPLATE) == []
