@@ -1,0 +1,102 @@
+# Builds the Agent Substrate fork images that the gVisor sandbox-fork slice 1
+# needs, from jomcgi-org/substrate at one commit, and publishes them under their
+# own names. Manual only: nothing runs on a push or a pull request.
+#
+# The fork's release workflow publishes only for agent-substrate/substrate and
+# kagent-dev/substrate, so it cannot do this. These images go to
+# ghcr.io/jomcgi-org/homelab/substrate-fork/<component>:fork-<commit>, never to
+# the ghcr.io/kagent-dev/substrate names the cluster runs. No deployment pin
+# changes here. Switching the control plane to these images is a separate,
+# reviewed step (projects/factory-cluster/README.md, "gVisor sandbox fork
+# (staged, off)").
+name: Substrate fork images
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Full commit of jomcgi-org/substrate to build
+        required: true
+        # fork/seed-slice1 head.
+        default: b6b0ec3e217c4363eaa3f8dda237e90fc3408124
+      publish:
+        description: Push the images (off builds them and discards them)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: substrate-fork-images
+  cancel-in-progress: false
+
+env:
+  KO_DOCKER_REPO: ghcr.io/jomcgi-org/homelab/substrate-fork
+  # ateapi and atecontroller are the control plane, atelet runs on each node,
+  # ateworker-gvisor is the worker image of the kvm pool.
+  COMPONENTS: ateapi atecontroller atelet ateworker-gvisor
+
+jobs:
+  images:
+    name: Build the fork images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check the commit
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          if ! [[ "${REF}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ref must be a full 40-character commit" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: jomcgi-org/substrate
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          # The job can write packages, so it restores no cache.
+          cache: false
+      # atelet builds a seed's root image with this static mkfs.erofs; ko copies
+      # cmd/atelet/kodata into the image.
+      - name: Build mkfs.erofs for the atelet image
+        run: .github/scripts/release/build-mkfs-erofs.sh
+      - name: Log in to ghcr.io
+        if: inputs.publish
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: docker login ghcr.io --username "${ACTOR}" --password-stdin <<<"${TOKEN}"
+      - name: Build the images
+        env:
+          REF: ${{ inputs.ref }}
+          PUBLISH: ${{ inputs.publish }}
+          KO_DEFAULTPLATFORMS: linux/amd64
+        run: |
+          set -euo pipefail
+          ko="$(cd hack/tools/ko && go tool -n ko)"
+          tag="fork-${REF:0:12}"
+          push=false
+          if [[ "${PUBLISH}" == "true" ]]; then push=true; fi
+          {
+            echo "### Substrate fork images at \`${REF}\`"
+            echo
+            echo "Published: ${PUBLISH}. Tag: \`${tag}\`."
+            echo
+          } >>"${GITHUB_STEP_SUMMARY}"
+          for component in ${COMPONENTS}; do
+            ref="$(KO_DOCKER_REPO="${KO_DOCKER_REPO}" "${ko}" build \
+              --base-import-paths --push="${push}" --tags="${tag}" \
+              --image-label="org.opencontainers.image.source=https://github.com/jomcgi-org/substrate" \
+              --image-label="org.opencontainers.image.revision=${REF}" \
+              "./cmd/${component}" | tail -n 1)"
+            echo "${component}: ${ref}"
+            echo "- \`${component}\`: \`${ref}\`" >>"${GITHUB_STEP_SUMMARY}"
+          done
