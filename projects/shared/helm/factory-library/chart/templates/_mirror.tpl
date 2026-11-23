@@ -21,6 +21,12 @@ esac
 run() { rclone --config /dev/null --s3-no-check-bucket "$@"; }
 scratch=$(mktemp -d /tmp/mirror.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT
+# unchanged R2_OBJECT FILE: true when R2 already holds exactly FILE. A read is a
+# Class B operation and a write a Class A one, which costs ten times more, and
+# most runs find the same bytes. A missing object or a failed read means "no".
+unchanged() {
+  run cat "$1" > "$scratch/live" 2>/dev/null && cmp -s "$scratch/live" "$2"
+}
 {{- if .prefix }}
 # Every write and delete below stays under prefix {{ .prefix }}/ of the R2 bucket.
 {{- end }}
@@ -83,8 +89,10 @@ if [ -s "$scratch/missing" ]; then
 fi
 # 2. Publish the captured manifest after every object it names.
 if [ "$manifest" = {{ .manifestName }} ]; then
-  run copyto "$scratch/{{ .manifestName }}" "{{ .dest }}/{{ .manifestName }}" \
-    --ignore-times --header-upload "Cache-Control: public, max-age=60"
+  if ! unchanged "{{ .dest }}/{{ .manifestName }}" "$scratch/{{ .manifestName }}"; then
+    run copyto "$scratch/{{ .manifestName }}" "{{ .dest }}/{{ .manifestName }}" \
+      --ignore-times --header-upload "Cache-Control: public, max-age=60"
+  fi
 else
   # No listing includes this key, so remove it separately when Garage lacks it.
   run delete "{{ .dest }}" --include /{{ .manifestName }}
@@ -94,8 +102,11 @@ fi
 # in place, so it gets the manifest's short cache.
 key=$(run lsf "{{ .remote }}:{{ .bucket }}" --files-only --max-depth 1 --include /{{ .key }})
 if [ "$key" = {{ .key }} ]; then
-  run copyto "{{ .remote }}:{{ .bucket }}/{{ .key }}" "{{ $.dest }}/{{ .key }}" \
-    --ignore-times --header-upload "Cache-Control: public, max-age=60"
+  run cat "{{ .remote }}:{{ .bucket }}/{{ .key }}" > "$scratch/{{ .key }}"
+  if ! unchanged "{{ $.dest }}/{{ .key }}" "$scratch/{{ .key }}"; then
+    run copyto "$scratch/{{ .key }}" "{{ $.dest }}/{{ .key }}" \
+      --ignore-times --header-upload "Cache-Control: public, max-age=60"
+  fi
 else
   run delete "{{ $.dest }}" --include /{{ .key }}
 fi

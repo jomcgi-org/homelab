@@ -501,26 +501,29 @@ def test_private_bucket_and_custom_schedule(chart):
 
 
 # The run without a failure: two Garage listings around the manifest capture,
-# the payload copy, the R2 listing, then the manifest.
-ORDER = ["lsf", "lsf", "cat", "lsf", "copy", "lsf", "copyto"]
+# the payload copy, the R2 listing, a read of the R2 manifest, then the
+# manifest upload. R2 holds no manifest here, so the read finds nothing.
+ORDER = ["lsf", "lsf", "cat", "lsf", "copy", "lsf", "cat", "copyto"]
 
 
 @pytest.mark.parametrize(
-    "manifest,fail,expected",
+    "manifest,fail,expected,r2",
     [
-        ("manifest.json\n", "", ORDER),
-        ("", "", ["lsf", "lsf", "lsf", "copy", "lsf", "delete"]),
-        ("manifest.json\n", "lsf", ["lsf"]),
-        ("manifest.json\n", "cat", ORDER[:3]),
-        ("manifest.json\n", "copy", ORDER[:5]),
-        ("manifest.json\n", "copyto", ORDER),
-        ("", "delete", ["lsf", "lsf", "lsf", "copy", "lsf", "delete"]),
+        ("manifest.json\n", "", ORDER, ""),
+        # R2 already holds these bytes: a read, and no write.
+        ("manifest.json\n", "", ORDER[:-1], "same"),
+        ("", "", ["lsf", "lsf", "lsf", "copy", "lsf", "delete"], ""),
+        ("manifest.json\n", "lsf", ["lsf"], ""),
+        ("manifest.json\n", "cat", ORDER[:3], ""),
+        ("manifest.json\n", "copy", ORDER[:5], ""),
+        ("manifest.json\n", "copyto", ORDER, ""),
+        ("", "delete", ["lsf", "lsf", "lsf", "copy", "lsf", "delete"], ""),
     ],
 )
 @pytest.mark.parametrize("name", ["manifest.json", "latest.json"])
 @pytest.mark.parametrize("source", [False, True])
 def test_mirror_orders_writes_and_propagates_failures(
-    chart, tmp_path, manifest, fail, expected, name, source
+    chart, tmp_path, manifest, fail, expected, r2, name, source
 ):
     config = bucket_config()
     garage, dest = "GARAGE:factory-public", "R2:factory-public"
@@ -547,6 +550,7 @@ def test_mirror_orders_writes_and_propagates_failures(
         RCLONE_CONFIG_R2_ENDPOINT="https://" + env["R2_HOST"],
         FAKE_MANIFEST=manifest.replace("manifest.json", name),
         FAKE_FAIL=fail,
+        FAKE_R2=r2,
         FAKE_LOG=str(tmp_path / "calls.jsonl"),
     )
     binary = tmp_path / "rclone"
@@ -558,6 +562,8 @@ def test_mirror_orders_writes_and_propagates_failures(
         "    out.write(json.dumps(args) + '\\n')\n"
         "command = args[3]\n"
         "if command == os.environ['FAKE_FAIL']: sys.exit(1)\n"
+        "if command == 'cat' and args[4].startswith('R2:') and not os.environ['FAKE_R2']:\n"
+        "    sys.exit(1)\n"
         "if command == 'cat': sys.stdout.buffer.write(b'generation-one\\n')\n"
         "if command == 'copyto':\n"
         "    assert open(args[4], 'rb').read() == b'generation-one\\n'\n"
@@ -596,7 +602,8 @@ def test_mirror_orders_writes_and_propagates_failures(
     )
     for call in calls:
         if call[3] == "cat":
-            assert call[4:] == [f"{garage}/{name}"]
+            # Garage's manifest, then R2's, to skip an upload of the same bytes.
+            assert call[4:] in ([f"{garage}/{name}"], [f"{dest}/{name}"])
         if call[3] == "copy":
             assert call[4:] == [
                 *filters,
@@ -758,9 +765,9 @@ def test_mirror_repairs_cache_metadata_without_changing_payload(chart, tmp_path)
 
     repeated = mirror.run(prior_headers=headers)
     assert repeated.returncode == 0, repeated.stderr
-    assert str(mirror.public() / key) not in json.loads(
-        (repeated.state / "headers.json").read_text()
-    )
+    # The repaired payload and the manifest that R2 already holds need no
+    # upload: a repeat run writes nothing.
+    assert not (repeated.state / "headers.json").exists()
     assert mirror.other.read_text() == "{}"
 
 
@@ -788,9 +795,9 @@ def test_interrupted_mirror_keeps_the_public_manifest_complete(
             break
         assert b"interrupted" in result.stderr, result.stderr
         budget += 1
-    # Four listings and a cat, the copy and its two uploads, the manifest and
-    # its upload, then the delete and its two deletes.
-    assert budget == 13
+    # Four listings and a cat, the copy and its two uploads, a cat of the R2
+    # manifest and its upload, then the delete and its two deletes.
+    assert budget == 14
     # Recovery: the next complete run catches up and removes the old payloads.
     assert mirror.run().returncode == 0
     assert mirror.view() == second
@@ -854,9 +861,10 @@ def test_writer_during_the_run_keeps_the_public_manifest_complete(
         assert mirror.run(garage, r2).returncode == 0
         assert mirror.view(r2) == third
         at += 1
-    # The writer ran before every step of the run: 13 steps when R2 lags,
-    # 8 when the copy uploads nothing and the delete step has nothing to do.
-    assert at == (13 if behind else 8)
+    # The writer ran before every step of the run: 14 steps when R2 lags,
+    # 7 when the copy uploads nothing, R2 already holds the manifest (a read,
+    # no write) and the delete step has nothing to do.
+    assert at == (14 if behind else 7)
     # When R2 lags, a writer that removes the captured generation before the
     # copy stops the run before the manifest.
     assert outcomes == ({0, 1} if behind else {0})
@@ -907,9 +915,17 @@ def test_copied_key_has_its_own_read_claim(chart):
     )
 
 
-@pytest.mark.parametrize("present,last", [("health.json", "copyto"), ("", "delete")])
+@pytest.mark.parametrize(
+    "present,last,r2",
+    [
+        ("health.json", "copyto", ""),
+        # R2 already holds the same bytes: both reads, no write.
+        ("health.json", "cat", "same"),
+        ("", "delete", ""),
+    ],
+)
 def test_mirror_copies_only_the_named_key_with_a_short_cache(
-    chart, tmp_path, present, last
+    chart, tmp_path, present, last, r2
 ):
     container = mirror_container(objects(render(chart, copy_config())))
     env = {
@@ -919,6 +935,7 @@ def test_mirror_copies_only_the_named_key_with_a_short_cache(
     env.update(
         RCLONE_CONFIG_R2_ENDPOINT="https://" + env["R2_HOST"],
         FAKE_PRESENT=present,
+        FAKE_R2=r2,
         FAKE_LOG=str(tmp_path / "calls.jsonl"),
     )
     binary = tmp_path / "rclone"
@@ -928,6 +945,9 @@ def test_mirror_copies_only_the_named_key_with_a_short_cache(
         "args = sys.argv[1:]\n"
         "with open(os.environ['FAKE_LOG'], 'a') as out:\n"
         "    out.write(json.dumps(args) + '\\n')\n"
+        "if args[3] == 'cat' and args[4].startswith('R2:') and not os.environ['FAKE_R2']:\n"
+        "    sys.exit(1)\n"
+        "if args[3] == 'cat': print('{\"status\":\"ok\"}')\n"
         "if args[3] == 'lsf' and args[4].startswith('SRC0:'):\n"
         "    print(os.environ['FAKE_PRESENT'])\n"
     )
@@ -944,7 +964,7 @@ def test_mirror_copies_only_the_named_key_with_a_short_cache(
     assert [call[3] for call in filtered] == ["lsf", "lsf", "copy", "lsf"]
     for call in filtered:
         assert call[4:8] == ["--exclude", "/manifest.json", "--exclude", "/health.json"]
-    assert calls[-2][3:] == [
+    lookup = [
         "lsf",
         "SRC0:factory-health",
         "--files-only",
@@ -953,21 +973,33 @@ def test_mirror_copies_only_the_named_key_with_a_short_cache(
         "--include",
         "/health.json",
     ]
-    if last == "copyto":
-        assert calls[-1][3:] == [
-            "copyto",
-            "SRC0:factory-health/health.json",
-            "R2:factory-public/health.json",
-            "--ignore-times",
-            "--header-upload",
-            "Cache-Control: public, max-age=60",
-        ]
-    else:
+    reads = [
+        ["cat", "SRC0:factory-health/health.json"],
+        ["cat", "R2:factory-public/health.json"],
+    ]
+    if last == "delete":
+        assert calls[-2][3:] == lookup
         assert calls[-1][3:] == [
             "delete",
             "R2:factory-public",
             "--include",
             "/health.json",
+        ]
+    elif last == "cat":
+        # R2 holds the same bytes: both reads, and no write.
+        assert [calls[-3][3:], *[c[3:] for c in calls[-2:]]] == [lookup, *reads]
+    else:
+        assert [calls[-4][3:], *[c[3:] for c in calls[-3:-1]]] == [lookup, *reads]
+        # It uploads the bytes it compared, from a local file.
+        source = calls[-1][4]
+        assert source.startswith("/")
+        assert calls[-1][3:] == [
+            "copyto",
+            source,
+            "R2:factory-public/health.json",
+            "--ignore-times",
+            "--header-upload",
+            "Cache-Control: public, max-age=60",
         ]
 
 
@@ -1059,6 +1091,8 @@ def run_fake_mirror(container, tmp_path, listing=""):
         "args = sys.argv[1:]\n"
         "with open(os.environ['FAKE_LOG'], 'a') as out:\n"
         "    out.write(json.dumps(args) + '\\n')\n"
+        "if args[3] == 'cat' and args[4].startswith('R2:'): sys.exit(1)\n"
+        "if args[3] == 'cat': print('{}')\n"
         "if args[3] == 'lsf' and '--max-depth' in args:\n"
         "    print(os.environ['FAKE_LISTING'], end='')\n"
     )
@@ -1173,7 +1207,7 @@ def test_source_writes_and_deletes_only_under_its_prefix(chart, tmp_path, listin
         ["lsf", "lsf"]
         + (["cat"] if listing else [])
         + ["lsf", "copy", "lsf"]
-        + (["copyto"] if listing else ["delete"])
+        + (["cat", "copyto"] if listing else ["delete"])
     )
     remotes = [arg for call in calls for arg in call if arg.startswith("R2:")]
     assert remotes
