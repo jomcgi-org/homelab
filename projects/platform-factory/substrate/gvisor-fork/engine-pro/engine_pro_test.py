@@ -1149,6 +1149,49 @@ def test_smoke_bodies_have_the_asked_size_and_the_secrets() -> None:
     assert smoke.fake_secrets().count(b"\n") == 24, "ten lines and a 14-line key"
 
 
+def test_a_failed_scan_prints_only_the_status_and_the_length() -> None:
+    """The body of /scan is the engine's stdout: it can hold rule ids and matched text,
+    and the job log of a public repository must not."""
+    smoke = load(HERE / "smoke-pro.py", "smoke_pro_fail")
+    secret_text = "rule.secrets.alpha-token matched ghp_SHOULD-NOT-APPEAR"
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        status = 500
+
+        def log_message(self, *args) -> None:
+            pass
+
+        def do_POST(self) -> None:  # noqa: N802
+            self.rfile.read(int(self.headers["Content-Length"]))
+            body = b"." + secret_text.encode()
+            self.send_response(Handler.status)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    class Smoke:
+        @staticmethod
+        def fail(message: str) -> None:
+            raise RuntimeError(message)
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        for status in (500, 200):
+            Handler.status = status
+            with pytest.raises(RuntimeError) as err:
+                smoke.scan(Smoke, "127.0.0.1", server.server_port, b"{}")
+            message = str(err.value)
+            assert "answered" in message and "bytes" in message
+            for text in ("alpha", "rule.", "ghp_", "SHOULD-NOT"):
+                assert text not in message, (status, message)
+    finally:
+        server.shutdown()
+    source = (HERE / "smoke-pro.py").read_text()
+    assert "raw[:" not in source and "text!r" not in source
+
+
 def test_the_smoke_client_prints_counts_and_never_a_rule_id() -> None:
     smoke = load(HERE / "smoke-pro.py", "smoke_pro_counts")
 
@@ -1367,6 +1410,7 @@ def test_publish_runs_only_on_main_and_never_overwrites(workflow) -> None:
     validate = step_named(steps, "Validate inputs")
     assert validate["env"] == {
         "PUBLISH": "${{ inputs.publish }}",
+        "DEBUG": "${{ inputs.debug }}",
         "REF": "${{ github.ref }}",
     }
     assert 'REF}" != "refs/heads/main"' in validate["run"]
@@ -1403,6 +1447,28 @@ def test_a_content_free_canary_must_pass_the_check_before_the_pro_image(
     # The canary and the Pro image go to the same package name.
     assert "${IMAGE_REPOSITORY}:canary-" in canary["run"]
     assert "build.sh" not in canary["run"]
+
+
+def test_the_engine_log_is_printed_only_with_the_debug_input(workflow) -> None:
+    """The job log of a public repository must not carry a rule id or a finding text."""
+    text, wf = workflow
+    dispatch = wf[True]["workflow_dispatch"]["inputs"]
+    assert dispatch["debug"]["type"] == "boolean"
+    assert dispatch["debug"]["default"] is False
+    steps = wf["jobs"]["image"]["steps"]
+    test = step_named(steps, "Test the image")
+    assert test["env"]["DEBUG"] == "${{ inputs.debug }}"
+    run = test["run"]
+    assert run.count("docker logs") == 1
+    before = run[: run.index("docker logs")].rstrip().splitlines()
+    assert before[-1].strip() == 'if [[ "${DEBUG}" == "true" ]]; then'
+    # A debug run cannot publish.
+    validate = step_named(steps, "Validate inputs")
+    assert '"${DEBUG}" == "true" && "${PUBLISH}" == "true"' in validate["run"]
+    # Nothing else prints an engine answer or a log.
+    for step in steps:
+        if step is not test:
+            assert "docker logs" not in step.get("run", ""), step.get("name")
 
 
 def test_nothing_can_swallow_a_failed_check(workflow) -> None:

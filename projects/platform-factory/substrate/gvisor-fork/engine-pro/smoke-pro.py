@@ -16,7 +16,8 @@ contract as the OSS image. What is new is the engine behind it:
            the OSS shim, which edge.py tests for 25 s in the OSS workflow.
 
 Exit 0 and one line "SMOKE-PRO ok ..." on success; the line holds the findings count
-and the number of distinct rules, for the job summary. It never prints a rule id. The secrets are made at run time from
+and the number of distinct rules, for the job summary. It never prints a rule id, a finding text
+or a byte of an engine answer: a failed run shows the HTTP status and the length. The secrets are made at run time from
 a fixed random seed: the source holds no complete token, so no scanner flags it.
 """
 
@@ -118,14 +119,14 @@ def scan(smoke, host: str, port: int, body: bytes):
     raw = resp.read()
     conn.close()
     if resp.status != 200:
-        smoke.fail(f"/scan answered {resp.status} {raw[:200]!r}")
+        smoke.fail(f"/scan answered {resp.status}, {len(raw)} bytes")
     start = raw.find(b"{")
     try:
         result = json.loads(raw[start:]) if start >= 0 else None
     except ValueError:
         result = None
     if not isinstance(result, dict):
-        smoke.fail(f"/scan body is not JSON: {raw[:200]!r}")
+        smoke.fail(f"/scan answered {resp.status}, {len(raw)} bytes, not JSON")
     return result, len(raw)
 
 
@@ -153,7 +154,7 @@ def healthz_twice(smoke, host: str, port: int) -> float:
         text = resp.read()
         conn.close()
         if resp.status != 200 or text != b"ok\n":
-            smoke.fail(f"/healthz answered {resp.status} {text!r}")
+            smoke.fail(f"/healthz answered {resp.status}, {len(text)} bytes")
     return ready
 
 
@@ -235,7 +236,9 @@ def run_edge(host: str, port: int, minimum: int) -> None:
         while chunk := s.recv(65536):
             raw += chunk
     if not raw.startswith(b"HTTP/1.1 200 OK"):
-        smoke.fail(f"the scan after the bad requests: {raw[:120]!r}")
+        smoke.fail(
+            f"the scan after the bad requests: {raw.split(b'\r\n')[0][:40]!r}, {len(raw)} bytes"
+        )
     start = raw.find(b"{")
     result = json.loads(raw[start:]) if start >= 0 else {}
     summary = check_result(smoke, result, True, minimum)
