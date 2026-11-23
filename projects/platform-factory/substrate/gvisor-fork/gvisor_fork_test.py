@@ -1205,6 +1205,7 @@ def _latency(tmp_path: Path, template=None, router_status=200, **env):
                 "BODY_BYTES": "1024,4096",
                 "LARGE_SAMPLES": "2",
                 "FLOOR_SAMPLES": "2",
+                "ROUNDS": "2",
                 **env,
             },
             capture_output=True,
@@ -1241,7 +1242,10 @@ def test_latency_control_mode_reports_the_api_path_and_skips_requests(
         row = found[("control_seq", "control", metric)]
         assert row["n"] == "3" and row["unit"] == "ms"
         assert {"p50", "p95", "p99", "max"} <= set(row)
-    assert found[("control_k3", "control", "create_to_ready_ms")]["n"] == "3"
+    # A burst of 3 repeats twice: the stats pool 6 samples, so p95 is not the max
+    # of one burst.
+    assert found[("control_k3", "control", "create_to_ready_ms")]["n"] == "6"
+    assert found[("control_k2", "control", "create_to_ready_ms")]["n"] == "4"
     assert ("floor", "api", "cli_floor_ms") in found
     assert "event=burst k=2" in run.stdout and "per_second=" in run.stdout
     assert "event=data_phase result=skipped reason=MODE=control" in run.stdout
@@ -1350,3 +1354,14 @@ def test_latency_skips_the_capacity_check_when_the_worker_reports_none(
     run, state, _ = _latency(tmp_path, MODE="control")
     assert run.returncode == 0, run.stdout + run.stderr
     assert "event=capacity result=unknown" in run.stdout
+
+
+def test_latency_pools_the_rounds_of_a_concurrent_burst(tmp_path: Path) -> None:
+    run, state, router = _latency(tmp_path, MODE="all", ROUNDS="3", CONCURRENCY="2")
+    assert run.returncode == 0, run.stdout + run.stderr
+    found = _stats(run.stdout)
+    assert found[("pool_k2", "pool", "send_to_result_ms")]["n"] == "6"
+    assert found[("ondemand_k2", "ondemand", "total_ms")]["n"] == "6"
+    assert found[("cold_k2", "cold", "total_ms")]["n"] == "6"
+    assert run.stdout.count("event=burst k=2 round=") == 3
+    assert not _left(state)
