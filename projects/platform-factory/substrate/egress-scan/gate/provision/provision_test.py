@@ -56,7 +56,11 @@ def _job(name: str) -> dict:
     """The wired Job comes from the kustomize render. The teardown Job is not
     listed in the kustomization, so it is read from its own file."""
     if name == _TEARDOWN_JOB:
-        (doc,) = [d for d in yaml.safe_load_all((_HERE / "teardown-job.yaml").read_text()) if d]
+        (doc,) = [
+            d
+            for d in yaml.safe_load_all((_HERE / "teardown-job.yaml").read_text())
+            if d
+        ]
         return doc
     return _one("Job", name)
 
@@ -646,8 +650,14 @@ def test_the_apply_job_runs_and_the_teardown_job_is_off() -> None:
     # The apply Job is wired and runs once. The teardown Job is suspended and is
     # not in the kustomization: a suspended Job makes the Application report
     # Suspended.
-    assert not [d for d in _docs() if d["kind"] == "Job" and d["metadata"]["name"] == _TEARDOWN_JOB]
-    assert [d["metadata"]["name"] for d in _docs() if d["kind"] == "Job"] == [_PROVISION_JOB]
+    assert not [
+        d
+        for d in _docs()
+        if d["kind"] == "Job" and d["metadata"]["name"] == _TEARDOWN_JOB
+    ]
+    assert [d["metadata"]["name"] for d in _docs() if d["kind"] == "Job"] == [
+        _PROVISION_JOB
+    ]
     assert _job(_PROVISION_JOB)["spec"]["suspend"] is False
     assert _job(_TEARDOWN_JOB)["spec"]["suspend"] is True
     kustomization = yaml.safe_load((_HERE / "kustomization.yaml").read_text())
