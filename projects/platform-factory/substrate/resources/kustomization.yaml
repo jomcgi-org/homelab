@@ -38,6 +38,10 @@ resources:
   - microvm-assets.yaml
   - microvm-actor-spike.yaml
   - microvm-spike.yaml
+  # gVisor sandbox fork (README "gVisor sandbox fork"): wired, but the worker
+  # holds no seed, the conformance Job is suspended and no template sets
+  # fork_config, so ForkSeed (on since step 7) starts no fork.
+  - ../gvisor-fork
   - network-policy.yaml
   - kagent-identity-guard.yaml
   - ghcr-pull-secret.yaml

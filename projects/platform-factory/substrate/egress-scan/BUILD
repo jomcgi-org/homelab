@@ -6,8 +6,10 @@ go_library(
     srcs = [
         "main.go",
         "metrics.go",
+        "observe.go",
         "rules.go",
         "scan.go",
+        "semgrep.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/platform-factory/substrate/egress-scan",
     visibility = ["//visibility:private"],
@@ -42,7 +44,11 @@ go_image(
 
 go_test(
     name = "egress-scan_test",
-    srcs = ["scan_test.go"],
+    srcs = [
+        "observe_test.go",
+        "scan_test.go",
+        "semgrep_test.go",
+    ],
     embed = [":egress-scan_lib"],
     deps = [
         "@com_github_envoyproxy_go_control_plane_envoy//service/auth/v3:auth",
@@ -56,6 +62,9 @@ go_test(
 
 filegroup(
     name = "repo_docs",
-    srcs = ["README.md"],
+    srcs = [
+        "ARCHITECTURE.md",
+        "README.md",
+    ],
     visibility = ["//projects/monolith:__pkg__"],
 )

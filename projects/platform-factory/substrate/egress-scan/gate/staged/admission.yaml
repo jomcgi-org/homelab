@@ -1,0 +1,135 @@
+# Who may run a pod as ServiceAccount engine-gate. Substrate trusts the pod
+# certificate of ate-system/engine-gate as a router client, and the atespace
+# access policy gives the ServiceAccount the editor role. The certificate is
+# issued to any pod that runs as that ServiceAccount. So any principal who can
+# create a pod, or a workload that makes one, as engine-gate gets the router
+# identity and the editor role. Only ArgoCD may create the ServiceAccount or the
+# StatefulSet. The ServiceAccount rule exempts ArgoCD alone: no controller
+# creates a ServiceAccount for it. The statefulset-controller makes the pod for
+# ArgoCD's StatefulSet, and the garbage collector updates its finalizers. Other
+# controllers (deployment, replicaset, daemonset, job) are not exempt, so a
+# workload of another kind that names the ServiceAccount cannot make a pod.
+# The pattern is projects/platform-factory/substrate/resources/kagent-identity-guard.yaml
+# (PLAT-5).
+#
+# One policy per object shape, so each expression type-checks against its kind.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: engine-gate-serviceaccount
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: ate-system
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: [CREATE, UPDATE]
+        resources: [serviceaccounts]
+  matchConditions:
+    - name: not-an-exempt-identity
+      expression: >-
+        !(request.userInfo.username in [
+          'system:serviceaccount:argocd:argocd-application-controller'
+        ])
+  validations:
+    - expression: >-
+        object.metadata.name != 'engine-gate'
+      message: >-
+        Only ArgoCD may create the engine-gate ServiceAccount or run a workload
+        as it; Substrate gives that identity the router and the editor role.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: engine-gate-serviceaccount
+spec:
+  policyName: engine-gate-serviceaccount
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: engine-gate-pods
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: ate-system
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+  matchConditions:
+    - name: not-an-exempt-identity
+      expression: >-
+        !(request.userInfo.username in [
+          'system:serviceaccount:argocd:argocd-application-controller',
+          'system:serviceaccount:kube-system:statefulset-controller',
+          'system:serviceaccount:kube-system:generic-garbage-collector'
+        ])
+  validations:
+    - expression: >-
+        object.spec.?serviceAccountName.orValue('') != 'engine-gate' &&
+        object.spec.?serviceAccount.orValue('') != 'engine-gate'
+      message: >-
+        Only ArgoCD may create the engine-gate ServiceAccount or run a workload
+        as it; Substrate gives that identity the router and the editor role.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: engine-gate-pods
+spec:
+  policyName: engine-gate-pods
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: engine-gate-workloads
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: ate-system
+    resourceRules:
+      - apiGroups: [apps]
+        apiVersions: ["v1"]
+        operations: [CREATE, UPDATE]
+        resources: [statefulsets, deployments, replicasets, daemonsets]
+      - apiGroups: [batch]
+        apiVersions: ["v1"]
+        operations: [CREATE, UPDATE]
+        resources: [jobs]
+  matchConditions:
+    - name: not-an-exempt-identity
+      expression: >-
+        !(request.userInfo.username in [
+          'system:serviceaccount:argocd:argocd-application-controller',
+          'system:serviceaccount:kube-system:statefulset-controller',
+          'system:serviceaccount:kube-system:generic-garbage-collector'
+        ])
+  validations:
+    # Every kind in the rule has its pod template at spec.template.spec. A
+    # CronJob does not, and needs no rule: it can only make a Job, which this
+    # policy checks, because no other controller is exempt.
+    - expression: >-
+        object.spec.template.spec.?serviceAccountName.orValue('') != 'engine-gate' &&
+        object.spec.template.spec.?serviceAccount.orValue('') != 'engine-gate'
+      message: >-
+        Only ArgoCD may create the engine-gate ServiceAccount or run a workload
+        as it; Substrate gives that identity the router and the editor role.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: engine-gate-workloads
+spec:
+  policyName: engine-gate-workloads
+  validationActions: [Deny]

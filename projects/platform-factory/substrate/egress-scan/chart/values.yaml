@@ -1,3 +1,35 @@
 image:
   repository: ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan
   digest: "" # Supplied by the image build during packaging.
+
+# Second scan tier: each request's scanned text also goes to a Semgrep engine.
+# Off by default. With the tier off, the render and the scanner behave as
+# before. When enabled, the gateway requestTimeout in
+# projects/platform-factory/substrate/resources/egress-scan/gateway-policy.yaml
+# must be at least deadline + 10ms in enforce mode (a test enforces this). See
+# the README.
+semgrep:
+  enabled: false
+  # URL of the engine (cluster address). The scanner adds no TLS or credentials.
+  endpoint: ""
+  # Engine deadline per request. Gitleaks keeps its own 75ms.
+  deadline: 300ms
+  # enforce: the engine verdict can deny a request. observe: the engine runs in
+  # the background, never changes a reply and is only counted and logged. In
+  # observe mode the engine is off the request path, so the gateway
+  # requestTimeout can stay at 80ms.
+  mode: enforce
+  # What happens when the engine gives no verdict in enforce mode: deny or
+  # allow. Observe mode ignores it.
+  failureMode: deny
+  # Largest request body in bytes sent to the engine (512 KiB at most).
+  maxBodyBytes: 524288
+  # Simultaneous engine calls. More are shed (the failure mode applies).
+  concurrency: 8
+  # Largest engine response in bytes.
+  maxResponseBytes: 1048576
+  breaker:
+    # Consecutive engine failures that open the breaker. 0 turns it off.
+    failures: 5
+    # Time the breaker stays open before one probe call.
+    cooldown: 5s

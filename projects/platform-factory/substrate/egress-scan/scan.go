@@ -29,15 +29,26 @@ type scanner struct {
 	authv3.UnimplementedAuthorizationServer
 	detector *requestDetector
 	slots    chan struct{}
+	// semgrep is the optional second scan tier. Nil means the tier is off.
+	semgrep *semgrepTier
 }
 
 func (s *scanner) Check(ctx context.Context, check *authv3.CheckRequest) (*authv3.CheckResponse, error) {
 	select {
 	case s.slots <- struct{}{}:
-		defer func() { <-s.slots }()
 	default:
 		return deny(codes.ResourceExhausted, typev3.StatusCode_ServiceUnavailable, capacityReason), nil
 	}
+	// The slot covers the Gitleaks scan only. The engine tier has its own limit,
+	// so a slow engine cannot hold the slots that Gitleaks needs.
+	held := true
+	release := func() {
+		if held {
+			held = false
+			<-s.slots
+		}
+	}
+	defer release()
 	scanCtx, cancel := context.WithTimeout(ctx, maxScanTime)
 	defer cancel()
 
@@ -128,14 +139,69 @@ func (s *scanner) Check(ctx context.Context, check *authv3.CheckRequest) (*authv
 			return deny(codes.InvalidArgument, typev3.StatusCode_UnsupportedMediaType, "unsupported content type"), nil
 		}
 	}
-	matched, err := s.detector.find(scanCtx, fields.String(), string(body), decoded)
+	if s.semgrep == nil {
+		matched, err := s.detector.find(scanCtx, fields.String(), string(body), decoded)
+		if err != nil {
+			return scanBudgetResponse(ctx)
+		}
+		if matched {
+			return deny(codes.PermissionDenied, typev3.StatusCode_Forbidden, "request contains a credential pattern"), nil
+		}
+		return &authv3.CheckResponse{Status: &statuspb.Status{}}, nil
+	}
+	if s.semgrep.observing() {
+		return s.checkObserved(ctx, scanCtx, fields.String(), body, decoded)
+	}
+	return s.checkTwoTiers(ctx, scanCtx, release, fields.String(), body, decoded)
+}
+
+// checkObserved is the Gitleaks path with an engine call in the background.
+// The reply comes from Gitleaks alone and never waits for the engine, whatever
+// the engine does. See observe.go.
+func (s *scanner) checkObserved(ctx, scanCtx context.Context, fields string, body []byte, decoded string) (*authv3.CheckResponse, error) {
+	obs := s.semgrep.beginObserve(fields, body, decoded)
+	matched, err := s.detector.find(scanCtx, fields, string(body), decoded)
+	if err != nil {
+		obs.setGitleaks(glAborted)
+		return scanBudgetResponse(ctx)
+	}
+	if matched {
+		obs.setGitleaks(glFound)
+		return deny(codes.PermissionDenied, typev3.StatusCode_Forbidden, "request contains a credential pattern"), nil
+	}
+	obs.setGitleaks(glClean)
+	return &authv3.CheckResponse{Status: &statuspb.Status{}}, nil
+}
+
+// checkTwoTiers runs Gitleaks and the engine at the same time. A Gitleaks deny
+// or work-limit result returns at once and ends the engine call. The request
+// is allowed only when both tiers have finished and neither denies.
+func (s *scanner) checkTwoTiers(ctx, scanCtx context.Context, release func(), fields string, body []byte, decoded string) (*authv3.CheckResponse, error) {
+	engineCtx, stopEngine := context.WithCancel(ctx)
+	defer stopEngine()
+	pending := s.semgrep.start(engineCtx, engineText(fields, body, decoded), len(body))
+
+	matched, err := s.detector.find(scanCtx, fields, string(body), decoded)
 	if err != nil {
 		return scanBudgetResponse(ctx)
 	}
 	if matched {
+		// Count the agreement only when the engine already has a verdict.
+		select {
+		case res := <-pending:
+			s.semgrep.metrics.agree(true, res)
+		default:
+		}
 		return deny(codes.PermissionDenied, typev3.StatusCode_Forbidden, "request contains a credential pattern"), nil
 	}
-	return &authv3.CheckResponse{Status: &statuspb.Status{}}, nil
+	release()
+
+	select {
+	case res := <-pending:
+		return s.finishTwoTiers(ctx, res)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func scanBudgetResponse(ctx context.Context) (*authv3.CheckResponse, error) {
@@ -177,4 +243,26 @@ func deny(code codes.Code, status typev3.StatusCode, reason string) *authv3.Chec
 			Body:   reason,
 		}},
 	}
+}
+
+// finishTwoTiers turns the engine result into the reply, after Gitleaks gave a
+// clean verdict.
+func (s *scanner) finishTwoTiers(ctx context.Context, res engineResult) (*authv3.CheckResponse, error) {
+	if res.outcome == engineCancelled {
+		// Defence in depth. Only the caller ends the call before this point, so
+		// ctx is done and the caller gets its error. A cancelled result must
+		// never reach the allow path, so with a live ctx it denies.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return deny(codes.ResourceExhausted, typev3.StatusCode_ServiceUnavailable, engineUnavailableReason), nil
+	}
+	s.semgrep.metrics.agree(false, res)
+	if d := s.semgrep.decide(res); d != nil {
+		if d.found {
+			return deny(codes.PermissionDenied, typev3.StatusCode_Forbidden, d.reason), nil
+		}
+		return deny(codes.ResourceExhausted, typev3.StatusCode_ServiceUnavailable, d.reason), nil
+	}
+	return &authv3.CheckResponse{Status: &statuspb.Status{}}, nil
 }

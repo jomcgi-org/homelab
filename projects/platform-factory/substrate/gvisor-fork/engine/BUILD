@@ -27,3 +27,19 @@ filegroup(
     srcs = ["README.md"],
     visibility = ["//projects/monolith:__pkg__"],
 )
+
+# The sources the Pro engine image (../engine-pro) builds from and tests with:
+# the server, the pins and the client scripts are shared, not copied.
+filegroup(
+    name = "shared_sources",
+    srcs = [
+        "edge.py",
+        "forksrv-net.c",
+        "forksrv-shim.c",
+        "pins.env",
+        "smoke.py",
+        "targets.json",
+        "uname.c",
+    ],
+    visibility = ["//projects/platform-factory/substrate/gvisor-fork/engine-pro:__pkg__"],
+)

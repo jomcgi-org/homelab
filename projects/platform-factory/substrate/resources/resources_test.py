@@ -282,9 +282,11 @@ def test_microvm_sandboxconfig_pins_the_upstream_amd64_assets() -> None:
         assert "/atespaces/" not in asset["url"]
     # The staging Job's pins are the SandboxConfig's pins.
     assert {n: a["sha256"] for n, a in _ASSETS["assets"].items()} == _UPSTREAM_AMD64
-    # gVisor is untouched: its class default stays the only gvisor config.
+    # gVisor is untouched: its class default stays the only default gvisor
+    # config. The fork's config is not a default (see
+    # test_gvisor_fork_slice_is_wired).
     names = {d["metadata"]["name"] for d in docs if d["kind"] == "SandboxConfig"}
-    assert names == {"gvisor-default", "microvm"}
+    assert names == {"gvisor-default", "microvm", "gvisor-fork"}
 
 
 def test_microvm_assets_come_from_pinned_official_releases() -> None:
@@ -398,13 +400,22 @@ def test_microvm_spike_pool_runs_one_pinned_microvm_worker() -> None:
     assert account["automountServiceAccountToken"] is False
     assert template["resources"]["limits"]["memory"] == "1Gi"
     assert template["resources"]["requests"]["memory"] == "256Mi"
-    # No gVisor pool shares the spike namespace.
+    # No other pool shares the spike namespace.
     pools = [d for d in docs if d["kind"] == "WorkerPool"]
-    assert [p["metadata"]["namespace"] for p in pools] == [_SPIKE_NS]
+    assert [
+        p["metadata"]["name"] for p in pools if p["metadata"]["namespace"] == _SPIKE_NS
+    ] == ["microvm-spike"]
 
 
 def test_microvm_spike_namespace_allows_only_the_router_and_the_gateway() -> None:
-    policy = _one(_docs(), "CiliumNetworkPolicy", "substrate-workers")["spec"]
+    # The fork pool's namespace has the same policy, so pick the spike's.
+    (policy,) = [
+        d["spec"]
+        for d in _docs()
+        if d["kind"] == "CiliumNetworkPolicy"
+        and d["metadata"]["name"] == "substrate-workers"
+        and d["metadata"].get("namespace") == _SPIKE_NS
+    ]
     (ingress,) = policy["ingress"]
     (egress,) = policy["egress"]
     assert ingress["fromEndpoints"] == [
@@ -742,51 +753,212 @@ def test_spike_script_logs_a_long_golden_error_in_full(
     assert message in capsys.readouterr().out
 
 
-def test_gvisor_fork_slice_is_staged_and_not_wired() -> None:
+_FORK_NS = "substrate-gvisor-fork"
+# Every object ../gvisor-fork renders (step 5 of the enable steps). A new object
+# there changes the cluster, so it must be listed here in the same change.
+_FORK_OBJECTS = {
+    ("CiliumNetworkPolicy", "ate-system", "ate-api-server-gvisor-fork-conformance"),
+    ("CiliumNetworkPolicy", "ate-system", "gvisor-fork-assets-init"),
+    ("CiliumNetworkPolicy", "ate-system", "gvisor-fork-conformance"),
+    ("CiliumNetworkPolicy", "ate-system", "rustfs-gvisor-fork-assets"),
+    ("CiliumNetworkPolicy", _FORK_NS, "substrate-workers"),
+    ("Job", "ate-system", "gvisor-fork-assets-init"),
+    ("Job", "ate-system", "gvisor-fork-conformance-3"),
+    ("Namespace", None, _FORK_NS),
+    ("SandboxConfig", None, "gvisor-fork"),
+    ("ServiceAccount", _FORK_NS, "fork-worker"),
+    ("WorkerPool", _FORK_NS, "gvisor-fork"),
+}
+_GVISOR_DEFAULT = "sandboxconfig.ate.dev/is-class-default"
+
+
+def test_gvisor_fork_slice_is_wired() -> None:
     # The gVisor sandbox-fork slice lives in ../gvisor-fork. ArgoCD reads only
-    # this directory, so the slice reaches the cluster only when a later change
-    # lists it here (step 5 of the enable steps). The ForkSeed gate is a
-    # separate, later change (step 7): test_fork_seed_gate_is_off.
+    # this directory, and since step 5 of the enable steps it lists the slice.
+    # The slice runs no factory actor: the pool has one worker (step 6), the
+    # ForkSeed gate is on (step 7: test_fork_seed_gate_is_on) and the
+    # conformance Job runs once (step 8). The latency Jobs stay out of the render:
+    # they need a pool restart first, and the data Job a router grant.
     app = yaml.safe_load(Path(os.environ["SCANNER_APPLICATION"]).read_text())
     paths = [s["path"] for s in app["spec"]["sources"] if "path" in s]
     assert paths == ["projects/platform-factory/substrate/resources"]
     kustomization = yaml.safe_load((_HERE / "kustomization.yaml").read_text())
     listed = kustomization["resources"] + kustomization.get("components", [])
-    assert not [r for r in listed if "gvisor-fork" in r or r.startswith("..")]
-    rendered = json.dumps(_docs())
-    for name in ("gvisor-fork", "gvisor-fork-assets-init"):
-        assert name not in rendered, name
+    assert [r for r in listed if r.startswith("..")] == ["../gvisor-fork"]
+    docs = _docs()
+
+    def key(d: dict) -> tuple:
+        return (d["kind"], d["metadata"].get("namespace"), d["metadata"]["name"])
+
+    # Build the slice's own directory, so an object without "gvisor-fork" in
+    # its name cannot slip past: every object it renders is listed here, and
+    # ../resources renders each of them.
+    slice_docs = subprocess.run(
+        [os.environ["KUSTOMIZE_BIN"], "build", str(_HERE.parent / "gvisor-fork")],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    rendered = {key(d) for d in yaml.safe_load_all(slice_docs) if d}
+    assert rendered <= {key(d) for d in docs}
+    # The two generated ConfigMaps carry a content hash in their names.
+    configmaps = {k for k in rendered if k[0] == "ConfigMap"}
+    assert {k[2].rsplit("-", 1)[0] for k in configmaps} == {
+        "gvisor-fork-assets",
+        "gvisor-fork-conformance",
+    }
+    assert rendered - configmaps == _FORK_OBJECTS
     classes = {
         d["metadata"]["name"]: d["spec"]["sandboxClass"]
-        for d in _docs()
+        for d in docs
         if d["kind"] == "SandboxConfig"
     }
-    assert classes == {"gvisor-default": "gvisor", "microvm": "microvm"}
-
-
-def test_fork_seed_gate_is_off() -> None:
-    # The gate stays off until step 7 of the enable steps
-    # (projects/factory-cluster/README.md, "gVisor sandbox fork"): no rendered
-    # component takes it in --preview. The WorkerPool CRD's field text names the
-    # gate, so only container arguments are read.
-    args = [
-        arg
-        for doc in _docs()
-        if doc["kind"] in {"Deployment", "DaemonSet", "StatefulSet"}
-        for container in doc["spec"]["template"]["spec"]["containers"]
-        for arg in container.get("args", [])
+    assert classes == {
+        "gvisor-default": "gvisor",
+        "gvisor-fork": "gvisor",
+        "microvm": "microvm",
+    }
+    # gvisor-default stays the class default, so existing pools resolve it.
+    configs = {d["metadata"]["name"]: d for d in docs if d["kind"] == "SandboxConfig"}
+    assert configs["gvisor-default"]["metadata"]["annotations"][_GVISOR_DEFAULT]
+    assert _GVISOR_DEFAULT not in configs["gvisor-fork"]["metadata"].get(
+        "annotations", {}
+    )
+    # One worker. No template sets fork_config until the conformance Job makes
+    # its own (and deletes it), so the worker holds no seed.
+    pool = _one(docs, "WorkerPool", "gvisor-fork")
+    assert pool["spec"]["replicas"] == 1
+    conformance = _one(docs, "Job", "gvisor-fork-conformance-3")
+    assert conformance["spec"]["suspend"] is False
+    # A Pending Job leaves the Application Degraded and the cluster is request
+    # tight, so the pod requests little.
+    (container,) = conformance["spec"]["template"]["spec"]["containers"]
+    assert container["resources"]["requests"]["memory"] == "64Mi"
+    # The Job's config volume names the generated ConfigMap, whose name carries
+    # a hash of conformance/. The live Job's pod template is immutable, so a
+    # changed hash makes the apply fail and the Job never starts. Editing
+    # conformance/ means a new run suffix: change this name and the Job's together.
+    (conformance_map,) = [
+        k[2] for k in configmaps if k[2].startswith("gvisor-fork-conformance-")
     ]
-    previews = [a for a in args if a.startswith("--preview")]
-    assert previews, "no component reads --preview any more"
-    assert "ForkSeed" not in "".join(previews)
+    (config_volume,) = [
+        v
+        for v in conformance["spec"]["template"]["spec"]["volumes"]
+        if v["name"] == "config"
+    ]
+    assert config_volume["configMap"]["name"] == conformance_map
+    assert conformance_map == "gvisor-fork-conformance-hbht65tgk9"
+    assert not [
+        d for d in docs if d["metadata"]["name"].startswith("gvisor-fork-latency")
+    ]
+    # The namespace is kept when the Application goes, like every Namespace.
+    namespace = _one(docs, "Namespace", _FORK_NS)
+    assert (
+        "Prune=false"
+        in namespace["metadata"]["annotations"]["argocd.argoproj.io/sync-options"]
+    )
+    # The asset Job is a Sync hook, so Argo runs it on the first sync and holds
+    # that sync until its pod is scheduled: keep its pod request small
+    # (the nodes are request-tight; node-2 had 1981Mi left on 2026-11-23).
+    job = _one(docs, "Job", "gvisor-fork-assets-init")
+    assert job["metadata"]["annotations"]["argocd.argoproj.io/hook"] == "Sync"
+    pod = job["spec"]["template"]["spec"]
+    init = max(
+        int(c["resources"]["requests"]["memory"].removesuffix("Mi"))
+        for c in pod["initContainers"]
+    )
+    main = sum(
+        int(c["resources"]["requests"]["memory"].removesuffix("Mi"))
+        for c in pod["containers"]
+    )
+    assert max(init, main) <= 256
 
 
+def test_engine_gate_is_staged_and_not_wired() -> None:
+    # engine-gate lives in ../egress-scan/gate/staged, with no replica. The
+    # directory reaches the cluster only when a later change lists it here
+    # (../egress-scan/gate/README.md, "Enable steps").
+    kustomization = yaml.safe_load((_HERE / "kustomization.yaml").read_text())
+    listed = kustomization["resources"] + kustomization.get("components", [])
+    assert not [r for r in listed if "engine-gate" in r or "egress-scan/gate" in r]
+    rendered = json.dumps(_docs())
+    assert "engine-gate" not in rendered
+
+
+_PREVIEW = ["PerTemplateSnapshotLocation", "GoldenEgressPolicy", "ForkSeed"]
+
+
+def test_fork_seed_gate_is_on() -> None:
+    # Step 7 of the enable steps (projects/factory-cluster/README.md, "gVisor
+    # sandbox fork"): the API server, the controller and atelet all take
+    # ForkSeed in --preview. The controller passes its --preview to worker
+    # pods. An upstream v1.0.1 worker does not know ForkSeed and exits on it,
+    # so the control plane must be the fork build that gives the gate to
+    # workers of KVM pools only (substrate 1e7a877d0ca3, test
+    # TestBuildDeploymentPreviewForkSeed: "non-KVM args equal gate-off
+    # args"). This test cannot run the controller. It pins that build and
+    # checks that the gate is only ever in the three components' --preview
+    # and that no non-KVM pool names a worker image that knows the gate. The
+    # WorkerPool CRD's field text names the gate, so only container arguments
+    # are read.
+    previews = {}
+    for doc in _docs():
+        if doc["kind"] not in {"Deployment", "DaemonSet", "StatefulSet"}:
+            continue
+        for container in doc["spec"]["template"]["spec"]["containers"]:
+            for arg in container.get("args", []):
+                if arg.startswith("--preview"):
+                    previews[doc["metadata"]["name"]] = arg
+    expected = "--preview=" + ",".join(_PREVIEW)
+    assert previews == {
+        "ate-api-server": expected,
+        "ate-controller": expected,
+        "atelet": expected,
+    }
+    # Only the gvisor-fork pool can hold a seed: no other pool runs on the KVM
+    # platform.
+    kvm_pools = [
+        d["metadata"]["name"]
+        for d in _docs()
+        if d["kind"] == "WorkerPool"
+        and any(c.get("platform") == "kvm" for c in d["spec"]["sandboxClasses"])
+    ]
+    assert kvm_pools == ["gvisor-fork"]
+    # ForkSeed is nowhere else: no other container argument or variable of a
+    # rendered workload names it.
+    for doc in _docs():
+        if doc["kind"] not in {"Deployment", "DaemonSet", "StatefulSet", "Job"}:
+            continue
+        pod = doc["spec"]["template"]["spec"]
+        for container in pod.get("initContainers", []) + pod["containers"]:
+            texts = [*container.get("args", []), *container.get("command", [])]
+            texts += [e.get("value", "") for e in container.get("env", [])]
+            named = [x for x in texts if "ForkSeed" in x]
+            if doc["metadata"]["name"] in previews:
+                named = [x for x in named if not x.startswith("--preview=")]
+            assert not named, (doc["metadata"]["name"], named)
+    # The control plane is a build that gives the gate to KVM pools' workers
+    # only: add a later build here when the fork controller changes.
+    controller = _images(_docs())["ate-controller/ate-controller"]
+    assert controller.split("@")[0].rsplit(":", 1)[1] in _KVM_ONLY_GATE_BUILDS
+    # Every other pool in this render (the repository's other WorkerPools are
+    # in the factory chart) runs an upstream v1.0.1 worker, which
+    # does not know ForkSeed. Its --preview must stay as it is with the gate
+    # off, which only the build above guarantees.
+    for doc in _docs():
+        if doc["kind"] == "WorkerPool" and doc["metadata"]["name"] != "gvisor-fork":
+            image = doc["spec"]["workerImage"]
+            assert image.startswith("ghcr.io/kagent-dev/substrate/ateworker-"), image
+            assert ":v1.0.1@sha256:" in image, image
+
+
+_KVM_ONLY_GATE_BUILDS = {"fork-1e7a877d0ca3"}
 _FORK_IMAGES = "ghcr.io/jomcgi-org/homelab/substrate-fork/"
-_FORK_TAG = "fork-b6b0ec3e217c"
+_FORK_TAG = "fork-1e7a877d0ca3"
 _FORK_DIGESTS = {
-    "ateapi": "7e72ec9e879d37c193c08fc061149a8b092c38dcb3629596b713593886c96b23",
-    "atecontroller": "beaef40fc51129077fcfd7bc288f009f47696d8520616de2b0149f079f95e71e",
-    "atelet": "451afacda427d9e811c599655eeaebe6f80bf79821aaa2ee9d7e3eb30d0b7a68",
+    "ateapi": "e75fd2f786480cdaf89714864e00b431ecd8546925c8276dfa9d3efaf347d2df",
+    "atecontroller": "306cc8a469d801599e11fcf669b70498986d04c2c5adcffceb6483da4d024803",
+    "atelet": "f0431ed81243929959d026023515eb2eb3aa470ef296b425d9a2a1a934d90aff",
 }
 
 
@@ -823,6 +995,38 @@ def test_control_plane_and_atelet_run_the_fork_images_by_digest() -> None:
             assert "@sha256:" in image, key
 
 
+def test_fork_images_share_one_fork_commit_tag() -> None:
+    # The control plane, the pool's worker and the conformance Job's kubectl-ate
+    # are built from one fork commit. A worker and a controller from different
+    # commits can disagree on the preview gates or the fork wire (the
+    # controller passes --preview to the worker).
+    docs = _docs()
+    images = _images(docs)
+    refs = {
+        key: images[key]
+        for key in (
+            "ate-api-server/ate-api-server",
+            "ate-controller/ate-controller",
+            "atelet/atelet",
+        )
+    }
+    refs["workerpool/gvisor-fork"] = _one(docs, "WorkerPool", "gvisor-fork")["spec"][
+        "workerImage"
+    ]
+    job = _one(docs, "Job", "gvisor-fork-conformance-3")
+    (cli,) = [
+        v["image"]["reference"]
+        for v in job["spec"]["template"]["spec"]["volumes"]
+        if v["name"] == "cli"
+    ]
+    refs["conformance/cli"] = cli
+    tags = {key: ref.split("@")[0].rsplit(":", 1)[1] for key, ref in refs.items()}
+    assert set(tags.values()) == {_FORK_TAG}, tags
+    for key, ref in refs.items():
+        assert ref.startswith(_FORK_IMAGES), key
+        assert re.search(r"@sha256:[0-9a-f]{64}$", ref), key
+
+
 def test_workerpool_crd_has_the_fork_platform_field() -> None:
     crd = _one(
         _docs(),
@@ -838,3 +1042,118 @@ def test_workerpool_crd_has_the_fork_platform_field() -> None:
     assert rule["rule"] == "!has(self.platform) || self.name == 'gvisor'"
     # Existing pools set no platform, so the new rule changes none of them.
     assert "platform" not in item["required"]
+
+
+# In enforce mode the second scan tier waits for the engine up to
+# semgrep.deadline. The gateway gives the whole check requestTimeout. If the
+# gateway timeout is shorter, the gateway cancels the check first and the tier
+# deadline never applies. In observe mode the engine is off the request path:
+# the reply comes from Gitleaks alone, so the timeout stays at the Gitleaks
+# value or above and does not depend on the deadline.
+_GATEWAY_MARGIN_MS = 10
+_GATEWAY_TIMEOUT_TIER_OFF_MS = 80
+
+
+def _ms(duration: str) -> int:
+    match = re.fullmatch(r"([0-9]+)(ms|s)", duration)
+    assert match, f"use a whole number of ms or s, got {duration!r}"
+    return int(match[1]) * (1000 if match[2] == "s" else 1)
+
+
+def _check_gateway_covers_tier(
+    enabled: bool, deadline: str, gateway_timeout: str, mode: str = "enforce"
+) -> None:
+    assert mode in ("enforce", "observe"), f"unknown semgrep.mode {mode!r}"
+    timeout_ms = _ms(gateway_timeout)
+    if not enabled:
+        # The tier is staged off, so the gateway timeout must not change.
+        assert timeout_ms == _GATEWAY_TIMEOUT_TIER_OFF_MS, (
+            f"requestTimeout is {gateway_timeout} with semgrep.enabled false;"
+            f" it must stay {_GATEWAY_TIMEOUT_TIER_OFF_MS}ms until the tier is on"
+        )
+        return
+    if mode == "observe":
+        # The engine is off the request path. Gitleaks alone needs its 80ms.
+        assert timeout_ms >= _GATEWAY_TIMEOUT_TIER_OFF_MS, (
+            f"requestTimeout {gateway_timeout} is below the Gitleaks value"
+            f" {_GATEWAY_TIMEOUT_TIER_OFF_MS}ms"
+        )
+        return
+    needed = _ms(deadline) + _GATEWAY_MARGIN_MS
+    assert timeout_ms >= needed, (
+        f"requestTimeout {gateway_timeout} is below semgrep.deadline {deadline}"
+        f" + {_GATEWAY_MARGIN_MS}ms in enforce mode; the gateway would cancel"
+        " the check first"
+    )
+
+
+def _semgrep_values() -> dict:
+    """The chart defaults overlaid with the values the Application passes."""
+    chart_values = _HERE.parent / "egress-scan" / "chart" / "values.yaml"
+    values = yaml.safe_load(chart_values.read_text())["semgrep"]
+    app = yaml.safe_load(Path(os.environ["SCANNER_APPLICATION"]).read_text())
+    helm = app["spec"]["sources"][0]["helm"]
+    assert not [
+        p for p in helm.get("parameters", []) if p["name"].startswith("semgrep.")
+    ], "set semgrep values in helm.valuesObject so that this test reads them"
+    given = helm.get("valuesObject", {})
+    if "values" in helm:
+        given = {**yaml.safe_load(helm["values"]), **given}
+    values.update(given.get("semgrep", {}))
+    return values
+
+
+def test_gateway_timeout_is_coupled_to_the_semgrep_deadline() -> None:
+    policy = yaml.safe_load((_HERE / "egress-scan" / "gateway-policy.yaml").read_text())
+    (check,) = policy["conditional"]
+    semgrep = _semgrep_values()
+    _check_gateway_covers_tier(
+        bool(semgrep["enabled"]),
+        semgrep["deadline"],
+        check["policies"]["http"]["requestTimeout"],
+        semgrep["mode"],
+    )
+
+
+def test_the_coupling_check_fails_when_the_gateway_is_too_short() -> None:
+    _check_gateway_covers_tier(False, "300ms", "80ms")
+    _check_gateway_covers_tier(True, "300ms", "310ms")
+    _check_gateway_covers_tier(True, "75ms", "1s")
+    _check_gateway_covers_tier(True, "300ms", "310ms", "enforce")
+    for enabled, deadline, timeout in (
+        (True, "300ms", "80ms"),
+        (True, "300ms", "309ms"),
+        (True, "1s", "1s"),
+        (False, "300ms", "310ms"),
+    ):
+        try:
+            _check_gateway_covers_tier(enabled, deadline, timeout)
+        except AssertionError:
+            continue
+        raise AssertionError(f"accepted {enabled} {deadline} {timeout}")
+
+
+def test_observe_mode_needs_only_the_gitleaks_timeout() -> None:
+    # The engine is off the request path, so a long deadline needs no longer
+    # gateway timeout.
+    _check_gateway_covers_tier(True, "300ms", "80ms", "observe")
+    _check_gateway_covers_tier(True, "10s", "80ms", "observe")
+    _check_gateway_covers_tier(True, "300ms", "310ms", "observe")
+    # The same values fail in enforce mode.
+    for deadline, timeout in (("300ms", "80ms"), ("10s", "80ms"), ("300ms", "309ms")):
+        try:
+            _check_gateway_covers_tier(True, deadline, timeout, "enforce")
+        except AssertionError:
+            continue
+        raise AssertionError(f"enforce accepted {deadline} {timeout}")
+    # Gitleaks needs its 80ms in both modes, and the tier off keeps it exact.
+    for enabled, mode, timeout in (
+        (True, "observe", "79ms"),
+        (False, "observe", "310ms"),
+        (True, "audit", "80ms"),
+    ):
+        try:
+            _check_gateway_covers_tier(enabled, "300ms", timeout, mode)
+        except AssertionError:
+            continue
+        raise AssertionError(f"accepted {enabled} {mode} {timeout}")

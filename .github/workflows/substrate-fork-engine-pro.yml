@@ -1,0 +1,276 @@
+# Builds the PRIVATE Semgrep Pro Secrets engine image for the gVisor sandbox-fork
+# pool (projects/platform-factory/substrate/gvisor-fork/engine-pro). Manual only:
+# nothing runs on a push or a pull request.
+#
+# The image goes to ghcr.io/jomcgi-org/homelab/substrate-fork/engine-pro and to
+# no other name. A run with publish off builds the image, tests it and discards
+# it. A run with publish on, on main only, pushes it under the tag
+# <semgrep version>-<commit>, fails if that tag exists or if the registry answers
+# with anything but "not found". Before the Pro image, a content-free canary
+# goes to the same package: the Pro image is pushed only when an anonymous pull
+# of the canary is refused (and an authenticated one resolves). After the push
+# the same check runs on the Pro image; if it fails, the job tries to delete the
+# version and fails.
+#
+# The real Semgrep token lives in the environment semgrep-pro-build (secret
+# SEMGREP_APP_TOKEN) and is used in two steps only:
+#   1. "Download the Pro engine and the rules": the download with the token.
+#   2. "Scan the layer and the image for the token": reads the token to look for
+#      it in the layer and the image, and fails the job if it is there.
+# Every other step runs without it, and so does the engine in the image: the
+# image holds a PLACEHOLDER token, which the Pro engine accepts because it only
+# checks that a token is present. The tests below run with the placeholder, so a
+# rebuild fails if that stops working. Set the branch rule of the environment to
+# main only (see the README): a branch must not be able to read the secret.
+name: Substrate fork engine image (Pro, private)
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Push the private image (off builds and tests it, then discards it)
+        type: boolean
+        default: false
+      debug:
+        description: 'Print the last lines of the engine log when a smoke run fails (the job log is public and can show a rule id or a finding text; not with publish)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: substrate-fork-engine-pro
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/jomcgi-org/homelab/substrate-fork/engine-pro
+
+jobs:
+  image:
+    name: Build and test the Pro engine image
+    if: github.repository == 'jomcgi-org/homelab'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: semgrep-pro-build
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        working-directory: projects/platform-factory/substrate/gvisor-fork/engine-pro
+    steps:
+      # Before anything uses the token or the network: a publish from a branch
+      # other than main is refused at once.
+      - name: Validate inputs
+        working-directory: .
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          DEBUG: ${{ inputs.debug }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "${PUBLISH}" != "true" && "${PUBLISH}" != "false" ]]; then
+            echo "publish must be true or false, got '${PUBLISH}'" >&2
+            exit 1
+          fi
+          if [[ "${DEBUG}" == "true" && "${PUBLISH}" == "true" ]]; then
+            echo "debug and publish do not go together: a debug log can hold rule text" >&2
+            exit 1
+          fi
+          if [[ "${PUBLISH}" == "true" && "${REF}" != "refs/heads/main" ]]; then
+            echo "publish runs only on main; this run is on ${REF}" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install crane
+        run: |
+          set -euo pipefail
+          . ../engine/pins.env
+          curl --fail --silent --show-error --location --output "${RUNNER_TEMP}/crane.tgz" "${CRANE_URL}"
+          echo "${CRANE_SHA256}  ${RUNNER_TEMP}/crane.tgz" | sha256sum --check --strict
+          mkdir -p "${RUNNER_TEMP}/bin"
+          tar -xzf "${RUNNER_TEMP}/crane.tgz" -C "${RUNNER_TEMP}/bin" crane
+          echo "${RUNNER_TEMP}/bin" >>"${GITHUB_PATH}"
+      # The one step that downloads with the token. Nothing writes the token to
+      # a file, an artifact, a cache or the log; fetch-pro.py sends it only as an
+      # Authorization header over https. The binary and the rules are not
+      # reproducible: they are what Semgrep serves for the pinned version today.
+      - name: Download the Pro engine and the rules
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          if [[ -z "${SEMGREP_APP_TOKEN}" ]]; then
+            echo "The environment secret SEMGREP_APP_TOKEN is empty or missing (environment semgrep-pro-build)." >&2
+            exit 1
+          fi
+          echo "::add-mask::${SEMGREP_APP_TOKEN}"
+          python3 -I fetch-pro.py "${RUNNER_TEMP}/engine/pro"
+      - name: Build the layer
+        run: |
+          set -euo pipefail
+          ./build.sh layer "${RUNNER_TEMP}/engine"
+          {
+            echo "### Downloaded inputs (sizes and sha256, no secret)"
+            echo
+            echo '```json'
+            cat "${RUNNER_TEMP}/engine/pro/fetch.json"
+            echo '```'
+            echo
+            echo "Put binary_sha256 in pins.env as PRO_BINARY_SHA256 once a run is good."
+          } >>"${GITHUB_STEP_SUMMARY}"
+      - name: Build the image
+        run: ./build.sh image "${RUNNER_TEMP}/engine"
+      # One engine start per run: the server is single-use. Two runs scan the
+      # planted secrets (16 KB and 512 KiB), one scans a clean body (0 findings),
+      # one sends bad requests and then a planted scan. The engine runs with the
+      # PLACEHOLDER token. If it does not accept it, there is no server and the
+      # run fails. The network is internal (no route out), so the runs also show
+      # that the image needs none. The container runs as the image user with a
+      # read-only root.
+      - name: Test the image with the placeholder token
+        env:
+          NET: engine-pro-net
+          DEBUG: ${{ inputs.debug }}
+        run: |
+          set -euo pipefail
+          docker load --input "${RUNNER_TEMP}/engine/image.tar"
+          docker network create --internal "${NET}"
+          log="${RUNNER_TEMP}/smoke.log"
+          : >"${log}"
+          check() { # check NAME ARGS...: start the engine, run the client, expect exit 0
+            local name="$1"
+            shift
+            docker run --detach --name "${name}" --network "${NET}" \
+              --read-only --tmpfs /tmp --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --memory 1g --pids-limit 64 \
+              --env FORKSRV_CHECKPOINT=0 \
+              engine-pro:local /usr/local/bin/forksrv-net --listen 0.0.0.0:8080 >/dev/null
+            local ip
+            ip="$(docker inspect --format "{{ (index .NetworkSettings.Networks \"${NET}\").IPAddress }}" "${name}")"
+            if ! python3 -I smoke-pro.py "${ip}" 8080 "$@" | tee -a "${log}"; then
+              # The job log is public and the engine log can hold a rule id or a
+              # finding text: print it only when the run was started with debug.
+              if [[ "${DEBUG}" == "true" ]]; then
+                docker logs "${name}" 2>&1 | tail -n 10 | cut -c1-200 >&2 || true
+              fi
+              exit 1
+            fi
+            local code
+            code="$(timeout 30 docker wait "${name}")"
+            echo "smoke-pro.py ${name} exit_code=${code}"
+            test "${code}" = "0"
+            docker rm "${name}" >/dev/null
+          }
+          check engine-planted-16k planted 16384
+          check engine-planted-512k planted 524288
+          check engine-clean clean 16384
+          check engine-edge edge
+          {
+            echo "### Pro engine smoke tests (placeholder token)"
+            echo
+            echo '```'
+            cat "${log}"
+            echo '```'
+          } >>"${GITHUB_STEP_SUMMARY}"
+      # The second and last step that holds the token. It reads files only: no
+      # network, no output of the token. A hit fails the job before any push.
+      - name: Scan the layer and the image for the token
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          . ./pins.env
+          python3 -I token-scan.py --token-env SEMGREP_APP_TOKEN \
+            --placeholder "${PLACEHOLDER_TOKEN}" --placeholder-member semgrep/.tok \
+            "${RUNNER_TEMP}/engine/layer.tar" "${RUNNER_TEMP}/engine/image.tar"
+          python3 -I token-scan.py --token-env SEMGREP_APP_TOKEN \
+            --placeholder "${PLACEHOLDER_TOKEN}" --placeholder-member semgrep/.tok \
+            --no-require-placeholder "${RUNNER_TEMP}/engine/pro"
+      - name: Refuse to publish from a branch other than main
+        if: inputs.publish && github.ref != 'refs/heads/main'
+        run: |
+          echo "publish runs only on main; this run is on ${GITHUB_REF}" >&2
+          exit 1
+      - name: Log in to ghcr.io
+        if: inputs.publish && github.ref == 'refs/heads/main'
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: crane auth login ghcr.io --username "${ACTOR}" --password-stdin <<<"${TOKEN}"
+      # A content-free canary goes to the package first. It creates the package,
+      # and a new version takes the visibility of the package. The Pro image
+      # follows only when an anonymous pull of the canary is refused and the
+      # authenticated pull resolves. GitHub may refuse to delete a version, so
+      # the check after the push is a second defence, not the first.
+      - name: Publish the canary
+        if: inputs.publish && github.ref == 'refs/heads/main'
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          . ../engine/pins.env
+          ./canary.sh "${IMAGE_REPOSITORY}:canary-${SEMGREP_VERSION}-${COMMIT:0:12}"
+      - name: Check that the canary is private
+        if: inputs.publish && github.ref == 'refs/heads/main'
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          . ../engine/pins.env
+          ./check-private.sh --no-delete "${IMAGE_REPOSITORY}:canary-${SEMGREP_VERSION}-${COMMIT:0:12}"
+      - name: Publish the image
+        id: publish
+        if: inputs.publish && github.ref == 'refs/heads/main'
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          . ../engine/pins.env
+          ref="${IMAGE_REPOSITORY}:${SEMGREP_VERSION}-${COMMIT:0:12}"
+          # Only "not found" means the tag is free. Any other error (network,
+          # auth, a registry fault) stops the run instead of risking an overwrite.
+          if found="$(crane digest "${ref}" 2>&1)"; then
+            echo "${ref} exists (${found}). Never overwrite a published tag: commit a change and run again." >&2
+            exit 1
+          elif ! grep -qE 'MANIFEST_UNKNOWN|NAME_UNKNOWN|status code 404' <<<"${found}"; then
+            echo "Cannot tell whether ${ref} exists: ${found}" >&2
+            exit 1
+          fi
+          ./build.sh push "${RUNNER_TEMP}/engine" "${ref}"
+          echo "pushed ${ref}"
+      # Runs even when the publish step failed after the push. An anonymous pull
+      # (no credentials at all) must be refused. If it is not, the script deletes
+      # the version and this step fails: the image holds Semgrep's proprietary
+      # engine and rules and must never be readable without a login.
+      - name: Check that an anonymous pull is refused
+        if: always() && inputs.publish && github.ref == 'refs/heads/main' && steps.publish.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          . ../engine/pins.env
+          ref="${IMAGE_REPOSITORY}:${SEMGREP_VERSION}-${COMMIT:0:12}"
+          ./check-private.sh "${ref}"
+          # The digest must resolve with the login: a published image with no
+          # digest to pin is a failure, not a summary without a line.
+          digest="$(crane digest "${ref}")"
+          {
+            echo "### Pro engine image published (private)"
+            echo
+            echo "\`${ref}@${digest}\`"
+            echo
+            echo "An anonymous pull is refused. Next: confirm the package settings and the"
+            echo "pull access of atelet once (see the README of this directory)."
+          } >>"${GITHUB_STEP_SUMMARY}"
+          echo "published ${IMAGE_REPOSITORY}@${digest}"
+      - name: Summary
+        if: '!inputs.publish'
+        run: echo "Built and tested. Not published." >>"${GITHUB_STEP_SUMMARY}"

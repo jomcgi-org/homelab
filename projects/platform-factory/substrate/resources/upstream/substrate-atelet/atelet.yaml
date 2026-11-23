@@ -1,6 +1,6 @@
 # Rendered by render-upstream.sh from oci://ghcr.io/kagent-dev/substrate/helm/substrate-atelet:1.0.1
 # (sha256:233e1ed8f74a202abca851c43adee88849482d8ce37760b8be65f4d96fbc8ca3) templates/atelet.yaml. Do not edit.
-# Overlaid by render-upstream.sh from https://github.com/jomcgi-org/substrate b6b0ec3e217c4363eaa3f8dda237e90fc3408124 (fork overlay).
+# Overlaid by render-upstream.sh from https://github.com/jomcgi-org/substrate 1e7a877d0ca30c48deee9957e543ea4eaa2cccd1 (fork overlay).
 # The atelet image is the fork build.
 ---
 # Admit critical atelet pods on clusters that restrict system priority classes.
@@ -209,9 +209,9 @@ spec:
           readOnly: true
       containers:
       - name: atelet
-        image: ghcr.io/jomcgi-org/homelab/substrate-fork/atelet:fork-b6b0ec3e217c@sha256:451afacda427d9e811c599655eeaebe6f80bf79821aaa2ee9d7e3eb30d0b7a68
+        image: ghcr.io/jomcgi-org/homelab/substrate-fork/atelet:fork-1e7a877d0ca3@sha256:f0431ed81243929959d026023515eb2eb3aa470ef296b425d9a2a1a934d90aff
         args:
-        - "--preview=PerTemplateSnapshotLocation,GoldenEgressPolicy"
+        - "--preview=PerTemplateSnapshotLocation,GoldenEgressPolicy,ForkSeed"
         - --objectstore-plugin-socket=/run/objectstore-plugin/node.sock
         - --image-credential-provider-config=/run/image-credential-provider/config.yaml
         - --image-credential-provider-bin-dir=/run/image-credential-provider/bin

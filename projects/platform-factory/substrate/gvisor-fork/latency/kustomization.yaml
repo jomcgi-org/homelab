@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The fork latency Jobs, staged and OFF. This directory is a kustomization of its
+# own, and ../kustomization.yaml does not list it. Two suspended Jobs in a wired
+# directory keep the ArgoCD Application in health Suspended until they run or go,
+# so the change that runs them also lists this directory there. ../gvisor_fork_test.py
+# fails if the parent lists it before then. The design they measure is in
+# projects/platform-factory/substrate/egress-scan/ARCHITECTURE.md, "Measurement".
+resources:
+  - job.yaml
+
+configMapGenerator:
+  # The Jobs' script and template (job.yaml).
+  - name: gvisor-fork-latency
+    namespace: ate-system
+    files:
+      - latency.py
+      - template.yaml

@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# engine-gate, staged and OFF. Nothing here reaches the cluster: ArgoCD applies
+# only ../../../resources (egress-scan/deploy/application.yaml), and that
+# directory does not list this one. staged_test.py checks that this directory
+# renders with no replica, and ../../../resources/resources_test.py checks that
+# nothing of it is wired. The enable steps are in ../README.md.
+resources:
+  - statefulset.yaml
+  - networkpolicy.yaml
+  - admission.yaml
+
+images:
+  # The tag is a placeholder. Nobody pins this image by hand: the wiring change
+  # packages these manifests like the egress-scan chart, and CI pins
+  # repository@digest at build time (the push step skips a digest that is
+  # already published). Never hand-pin a digest for this repository's images.
+  - name: engine-gate
+    newName: ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/gate
+    newTag: unpinned

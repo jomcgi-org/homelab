@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -248,6 +249,23 @@ func (d *Demand) Unbound(pools map[Pool]int) *Demand {
 		d.unbound[p] = struct{}{}
 	}
 	return d
+}
+
+// CheckUnbound reports an unbound pool that is not also a configured pool: a
+// pending series for a pool the census does not publish would give the
+// autoscaler a source with no actors beside it.
+func CheckUnbound(unbound, pools map[Pool]int) error {
+	var missing []string
+	for p := range unbound {
+		if _, ok := pools[p]; !ok {
+			missing = append(missing, p.Namespace+"/"+p.Name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	slices.Sort(missing)
+	return fmt.Errorf("reaper: FACTORY_REAPER_UNBOUND_POOLS names %s, which FACTORY_REAPER_POOLS does not", strings.Join(missing, ", "))
 }
 
 // ParsePools reads "namespace/name=spare,..." into a pool-to-spare map. An

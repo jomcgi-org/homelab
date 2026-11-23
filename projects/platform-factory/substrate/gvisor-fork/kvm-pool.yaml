@@ -1,17 +1,19 @@
 # invariant: PLAT-6
 # The dedicated worker pool for fork slice 1: gVisor on the KVM platform, with
-# no workers (replicas 0). It stays unwired (see kustomization.yaml), and when
-# it is wired it still starts no pod until step 6 of the enable steps raises
-# replicas (projects/factory-cluster/README.md, "gVisor sandbox fork").
+# one worker (replicas 1). The pool is wired (see kustomization.yaml) since
+# step 5, and step 6 of the enable steps raised replicas from 0 to 1 and sized
+# the pod for the egress-scan engine pool
+# (projects/factory-cluster/README.md, "gVisor sandbox fork";
+# projects/platform-factory/substrate/egress-scan/ARCHITECTURE.md, "Capacity").
 #
 # platform: kvm exists only in the fork's WorkerPool CRD (jomcgi-org/substrate
-# fork/seed-slice1), so this file cannot be applied before the CRD, the control
-# plane and atelet images come from the fork (step 4). ForkSeed (preview gate)
-# stays off in ../values/common.yaml until step 7, after a worker has started.
-# The gates X1 to X9 run at step 9 with the gate on cluster-wide. Only this
-# pool's workers can hold seeds. ForkSeed is a process-wide flag that ateapi,
-# atecontroller, atelet and every worker read, and only this pool's workers
-# have --fork-platform=kvm. Factory use of fork templates waits for step 10.
+# fork/seed-slice1), which came with the fork control plane and atelet images
+# (step 4). ForkSeed (preview gate) is on in ../values/common.yaml since
+# step 7, after a worker had started. The gates X1 to X9 run at step 9 with the
+# gate on. Only this pool's workers can hold seeds. ForkSeed is a flag that
+# ateapi, atecontroller and atelet read. The controller gives it to workers of
+# KVM pools only, and only this pool's workers have --fork-platform=kvm.
+# Factory use of fork templates waits for step 10.
 #
 # What the fork's controller gives a worker of this pool (atecontroller
 # workerpool_apply.go, not set here):
@@ -25,15 +27,22 @@
 #     seccomp filter). The container runs as root, not privileged.
 # forkd refuses to start unless these hold, so a missing grant fails closed.
 #
-# The pod holds the seed and every forked child, so its memory limit is the
-# pool's capacity. Measured on node-1 (public engine, production mode): seed
-# 171 MB resident (192 MB peak), template about 150 MB, a waiting child 3.5 MB
-# and a scanning child 37 MB private, 6.5 MB of marginal overhead per child.
-# 192 + 16 scanning children x (37 + 6.5) = 888 MB, plus forkd and the worker
-# (about 64 MB): 1280Mi covers 16 concurrent scans. The request is a scheduling
-# reservation only. On 2026-11-22 the nodes had 509Mi, 257Mi and 13Mi left to
-# request (node-2 is the tightest), so it stays at the microVM spike's 256Mi.
-# A burst above it uses free node memory.
+# The pod holds the seed and every forked child, so its limits are the pool's
+# capacity. The scheduler books a seed (1000m CPU, 512 MiB cap) and each child
+# (1000m CPU, 128 MiB limit plus 16 MiB overhead) against them. The limits are
+# 9 CPU (the seed and 8 children) and 2Gi (512 + 8 x 144 = 1664 MiB booked).
+# Expected use is 586 MB: seed 358 MB, 4 scanning children at 37 MB, 4 waiting
+# at 4 MB, and 64 MB for forkd and the worker. The request, 1Gi and 4 CPU, is a
+# scheduling reservation only. On 2026-11-23 node-1 had 5237Mi of memory and
+# 8235m of CPU left to request, node-3 2857Mi and node-2 1981Mi; a burst above
+# the request uses free node memory. One replica runs, so a drain is an outage.
+#
+# The pod prefers node-1: it has the most request room, and a latency run wants
+# one node. The preference is soft, so a drained or tainted node-1 does not leave
+# the pool pending.
+#
+# A worker pins the atespace of its first seed for the life of the process. The
+# rollout moves from one atespace to the next by restarting the pod.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -89,13 +98,13 @@ metadata:
   labels:
     workload: gvisor-fork
 spec:
-  # Off. Step 6 of the enable steps raises this to 1, with the fork control
-  # plane running and ForkSeed still off. Setting it back to 0 is part of the
-  # rollback, after the fork templates are deleted.
-  replicas: 0
+  # One worker, started at step 6 of the enable steps. Setting it back to 0 is part of the rollback,
+  # after the fork templates are deleted. The pool needs no autoscaler: replicas
+  # stays fixed, and it must never scale to zero while the engine tier is on.
+  replicas: 1
   # The fork build of ateworker-gvisor, published by
-  # .github/workflows/substrate-fork-images.yml at fork commit b6b0ec3e217c.
-  workerImage: ghcr.io/jomcgi-org/homelab/substrate-fork/ateworker-gvisor:fork-b6b0ec3e217c@sha256:65f14b6900ee64c6dae2e03a7063d9fb0384e1f62becca5a275421b891870e94
+  # .github/workflows/substrate-fork-images.yml at fork commit 1e7a877d0ca3.
+  workerImage: ghcr.io/jomcgi-org/homelab/substrate-fork/ateworker-gvisor:fork-1e7a877d0ca3@sha256:f208bf5ae975a2360bfb42a8d38b2eb3fdaba537a2078332af5dcd545a17a7d1
   sandboxClasses:
     - name: gvisor
       platform: kvm
@@ -103,10 +112,18 @@ spec:
         name: gvisor-fork
   template:
     serviceAccountName: fork-worker
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: [node-1]
     resources:
       limits:
-        cpu: "2"
-        memory: 1280Mi
+        cpu: "9"
+        memory: 2Gi
       requests:
-        cpu: 100m
-        memory: 256Mi
+        cpu: "4"
+        memory: 1Gi

@@ -23,7 +23,7 @@ spec:
   sources:
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: factory
-      targetRevision: 0.126.4
+      targetRevision: 0.128.45
       helm:
         releaseName: factory
         # The chart's PreSync hook is the CRDs' only applier, so ArgoCD never
@@ -124,6 +124,15 @@ spec:
       kind: WorkerPool
       namespace: factory-r-homelab
       name: homelab-codex
+      jsonPointers: [/spec/replicas]
+    # The reviewer pool's HorizontalPodAutoscaler owns its replicas
+    # (agents.reviewer.autoscaling in values.yaml), for the same reason.
+    # Remove this entry together with `enabled: false` to put the pool back
+    # at `concurrency` (5).
+    - group: ate.dev
+      kind: WorkerPool
+      namespace: factory-r-homelab-review
+      name: homelab-reviewer
       jsonPointers: [/spec/replicas]
   syncPolicy:
     automated:

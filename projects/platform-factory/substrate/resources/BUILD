@@ -41,8 +41,10 @@ py_test(
     ]) + [
         "//projects/platform-factory/substrate/credential-provider:image_digest",
         "//projects/platform-factory/substrate/egress-scan/chart:image_values",
+        "//projects/platform-factory/substrate/egress-scan/chart:values",
         "//projects/platform-factory/substrate/egress-scan/deploy:application.yaml",
         "//projects/platform-factory/substrate/egress-scan/deploy:manifests/all.yaml",
+        "//projects/platform-factory/substrate/gvisor-fork:kustomize_inputs",
         "@multitool//tools/kustomize",
     ],
     env = {

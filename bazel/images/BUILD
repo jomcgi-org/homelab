@@ -89,6 +89,7 @@ multirun(
         "//projects/platform-factory/prometheus/resources/alert-relay/chart:chart.push",
         "//projects/platform-factory/substrate/credential-provider:image.push",
         "//projects/platform-factory/substrate/egress-scan/chart:chart.push",
+        "//projects/platform-factory/substrate/egress-scan/gate/image:image.push",
         "//projects/platform-factory/substrate/egress-scan:image.push",
         "//projects/scotland-connector/chart:chart.push",
         "//projects/scotland-connector/image:image.push",

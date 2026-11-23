@@ -1,7 +1,7 @@
 {
   "uid": "egress-scanning",
   "title": "Egress secret scanning",
-  "description": "Credential checks that reach the private egress scanner. Check duration covers the authorization handler. The gateway allows 80 ms for the full RPC.",
+  "description": "Credential checks that reach the private egress scanner. Check duration covers the authorization handler. The gateway allows 80 ms for the full RPC, or the engine deadline plus 10 ms when the second scan tier is on in enforce mode. In observe mode the engine is off the request path and the gateway keeps 80 ms.",
   "tags": ["factory", "security"],
   "timezone": "browser",
   "editable": false,
@@ -251,6 +251,617 @@
         }
       },
       "description": "The scanner allows up to 75 ms for scanning. This percentile includes validation and decoding."
+    },
+    {
+      "id": 7,
+      "type": "row",
+      "title": "Second scan tier (Semgrep engine, off by default)",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Engine calls by outcome",
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (outcome) (rate(factory_egress_scan_semgrep_requests_total{job=\"egress-scan\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "found and clean are verdicts. timeout, error, shed, breaker_open and oversize apply the failure mode. cancelled means Gitleaks or the gateway ended the call first. No data while the tier is off."
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Engine latency p95 and p99",
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(factory_egress_scan_semgrep_duration_seconds_bucket{job=\"egress-scan\",outcome=~\"found|clean\"}[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "p95 (verdicts)"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(factory_egress_scan_semgrep_duration_seconds_bucket{job=\"egress-scan\",outcome=~\"found|clean\"}[$__rate_interval])))",
+          "refId": "B",
+          "legendFormat": "p99 (verdicts)"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(factory_egress_scan_semgrep_deadline_seconds{job=\"egress-scan\"})",
+          "refId": "C",
+          "legendFormat": "deadline"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "Calls that returned a verdict. The deadline line is the configured engine deadline. The gateway requestTimeout must stay 10 ms above it."
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Requests decided by the failure mode",
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (action) (rate(factory_egress_scan_semgrep_failure_mode_total{job=\"egress-scan\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{action}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "The engine gave no verdict. Action allow lets the request through without the second tier, so any value above zero needs a look. Action deny blocks the request."
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Gitleaks and engine agreement",
+      "gridPos": {
+        "x": 12,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (gitleaks, semgrep) (rate(factory_egress_scan_semgrep_agreement_total{job=\"egress-scan\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "gitleaks {{gitleaks}} / engine {{semgrep}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "Requests where both tiers gave a verdict. gitleaks clean / engine found is the engine catching what Gitleaks misses. gitleaks found / engine clean is the reverse. Gitleaks answers first on a finding, so that pair is a lower bound."
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Engine calls in flight and breaker",
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(factory_egress_scan_semgrep_inflight{job=\"egress-scan\"})",
+          "refId": "A",
+          "legendFormat": "in flight"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(factory_egress_scan_semgrep_breaker_open{job=\"egress-scan\"})",
+          "refId": "B",
+          "legendFormat": "breaker open"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "In flight is the sum over pods. Shed calls show in the outcome panel when it reaches the concurrency limit of a pod."
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Check latency p95 with the tier on",
+      "gridPos": {
+        "x": 12,
+        "y": 29,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(factory_egress_scan_check_duration_seconds_bucket{job=\"egress-scan\",outcome=~\"allowed|credential_blocked|engine_unavailable\"}[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "The full handler time, which includes the wait for the engine."
+    },
+    {
+      "id": 14,
+      "type": "row",
+      "title": "Observe mode (semgrep.mode = observe)",
+      "gridPos": {
+        "x": 0,
+        "y": 37,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 15,
+      "type": "text",
+      "title": "How to read the observe panels",
+      "gridPos": {
+        "x": 0,
+        "y": 38,
+        "w": 24,
+        "h": 4
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "In observe mode the engine runs in the background and **never changes a reply**: Gitleaks decides alone, and the engine adds no latency. These panels show what enforce mode would have changed. Watch them for 7 days before the switch to enforce.\n\n- **would_deny** is a finding of the engine on a request that Gitleaks allowed. Triage each rule id in the pod log (`semgrep tier observed a finding`) as a true positive or a false positive.\n- **would_fail** is an engine failure (timeout, error, shed, breaker open, oversize). In enforce mode with failure mode deny, each one is a 503.\n- Compare the engine p95 with the deadline. See the README of the egress scanner for the exit criteria. No data in these panels means that the tier is off or in enforce mode."
+      }
+    },
+    {
+      "id": 16,
+      "type": "stat",
+      "title": "Would-deny in range",
+      "gridPos": {
+        "x": 0,
+        "y": 42,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(factory_egress_scan_semgrep_observe_total{job=\"egress-scan\",result=\"would_deny\"}[$__range]))",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value"
+      },
+      "description": "Requests that the engine would have denied and Gitleaks allowed."
+    },
+    {
+      "id": 17,
+      "type": "stat",
+      "title": "Would-fail in range",
+      "gridPos": {
+        "x": 6,
+        "y": 42,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(factory_egress_scan_semgrep_observe_total{job=\"egress-scan\",result=\"would_fail\"}[$__range]))",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value"
+      },
+      "description": "Requests where the engine gave no verdict. Enforce mode with failure mode deny would answer 503."
+    },
+    {
+      "id": 18,
+      "type": "stat",
+      "title": "Observed requests in range",
+      "gridPos": {
+        "x": 12,
+        "y": 42,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(factory_egress_scan_semgrep_observe_total{job=\"egress-scan\"}[$__range]))",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value"
+      },
+      "description": "Requests that Gitleaks decided and the engine call ended for. The denominator of the two rates."
+    },
+    {
+      "id": 19,
+      "type": "stat",
+      "title": "Observe mode active",
+      "gridPos": {
+        "x": 18,
+        "y": 42,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(factory_egress_scan_semgrep_observe_mode{job=\"egress-scan\"}) or vector(0)",
+          "refId": "A",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value"
+      },
+      "description": "1 when a scanner pod runs the tier in observe mode. 0 when the tier is off or in enforce mode."
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Would-deny and would-fail rate",
+      "gridPos": {
+        "x": 0,
+        "y": 46,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (result) (rate(factory_egress_scan_semgrep_observe_total{job=\"egress-scan\",result=~\"would_deny|would_fail\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "Enforce mode would change these requests. The target before the switch: would_deny explained by true positives, would_fail near zero."
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Engine failures by outcome",
+      "gridPos": {
+        "x": 12,
+        "y": 46,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (outcome) (rate(factory_egress_scan_semgrep_requests_total{job=\"egress-scan\",outcome=~\"timeout|error|shed|breaker_open|oversize\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "Which failure the engine tier had. In observe mode each is only counted and logged."
+    },
+    {
+      "id": 22,
+      "type": "heatmap",
+      "title": "Engine latency distribution",
+      "gridPos": {
+        "x": 0,
+        "y": 54,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (le) (increase(factory_egress_scan_semgrep_duration_seconds_bucket{job=\"egress-scan\",outcome=~\"found|clean\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{le}}",
+          "format": "heatmap"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "calculate": false,
+        "cellGap": 1,
+        "color": {
+          "mode": "scheme",
+          "scheme": "Oranges",
+          "fill": "dark-orange",
+          "scale": "exponential",
+          "exponent": 0.5,
+          "steps": 64
+        },
+        "yAxis": {
+          "unit": "s",
+          "axisPlacement": "left"
+        },
+        "legend": {
+          "show": true
+        }
+      },
+      "description": "Engine calls that returned a verdict, by time. Compare the upper band with the deadline in the engine latency panel above: a call near the deadline is a would_fail in waiting."
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Request size p50, p95 and p99",
+      "gridPos": {
+        "x": 0,
+        "y": 62,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, kind) (rate(factory_egress_scan_semgrep_observe_size_bytes_bucket{job=\"egress-scan\"}[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "p50 {{kind}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, kind) (rate(factory_egress_scan_semgrep_observe_size_bytes_bucket{job=\"egress-scan\"}[$__rate_interval])))",
+          "refId": "B",
+          "legendFormat": "p95 {{kind}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, kind) (rate(factory_egress_scan_semgrep_observe_size_bytes_bucket{job=\"egress-scan\"}[$__rate_interval])))",
+          "refId": "C",
+          "legendFormat": "p99 {{kind}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "Observe mode only. raw_body is the request body. engine_text is the text that the engine would get: the address, headers, body and decoded JSON strings. Set semgrep.maxBodyBytes from the raw_body p99 and the highest bucket with traffic. The v1 value is 32 KiB (32768). Quantiles are bucket estimates."
     }
   ]
 }

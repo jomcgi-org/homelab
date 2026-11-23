@@ -1,0 +1,111 @@
+# Network rules of engine-gate, under the cluster-wide default-deny
+# (projects/platform-factory/network-policy/resources/baseline.yaml, which
+# already opens DNS to CoreDNS for every pod). Cilium allows the union of the
+# policies that select a pod. Each rule below adds one flow.
+#
+# The engine children are actors, not pods: Cilium cannot select them. They
+# get no egress from the template (forkConfig.egress FORK_EGRESS_NONE), and a
+# worker pod admits only the router (ate-controller gives each WorkerPool such
+# a NetworkPolicy).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: engine-gate
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: engine-gate
+  ingress:
+    # Only the scanner calls the scan endpoint. The admin port (probes and
+    # metrics) is opened to Prometheus below, and kubelet probes come from the
+    # host, which pod policy does not cover.
+    - fromEndpoints:
+        - matchLabels:
+            app: egress-scan
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    # The ate API: create, resume, get, list and delete the children.
+    - toEndpoints:
+        - matchLabels:
+            app: ate-api-server
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # The router's HTTPS listener: the request to one child.
+    - toEndpoints:
+        - matchLabels:
+            app: atenet-router
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+---
+# Upstream's NetworkPolicy admits ate-api-server callers only from its own
+# components and from namespaces labelled ate.dev/api-access, which ate-system
+# is not. Cilium adds this rule to it: the gate, and nothing else new. The
+# router admits any source on its listener ports already.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ate-api-server-engine-gate
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: ate-api-server
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app: engine-gate
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+# The scanner may reach the gate on its scan port. This is the only egress rule
+# that the scanner gets for the engine path: the scanner has no route to the
+# router, the ate API or the children.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: egress-scan-to-engine-gate
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: egress-scan
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            app: engine-gate
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+---
+# Prometheus's way in, on the admin port only, as in
+# projects/platform-factory/prometheus/resources/scrape-ingress.yaml. The
+# Prometheus egress rule and the scrape job are part of the wiring.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: prometheus-scrape-engine-gate
+spec:
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: ate-system
+      app: engine-gate
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: prometheus
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "9090"
+              protocol: TCP

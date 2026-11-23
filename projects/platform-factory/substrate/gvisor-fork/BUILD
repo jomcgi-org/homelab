@@ -5,6 +5,18 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # through the glob below.
 # gazelle:exclude assets
 # gazelle:exclude conformance
+# gazelle:exclude latency
+
+# The files ../resources renders through its "../gvisor-fork" resource.
+filegroup(
+    name = "kustomize_inputs",
+    srcs = glob([
+        "*.yaml",
+        "assets/*",
+        "conformance/*",
+    ]),
+    visibility = ["//projects/platform-factory/substrate/resources:__pkg__"],
+)
 
 py_test(
     name = "gvisor_fork_test",
@@ -13,6 +25,7 @@ py_test(
         "*.yaml",
         "assets/*",
         "conformance/*",
+        "latency/*",
     ]) + [
         "@multitool//tools/kustomize",
     ],

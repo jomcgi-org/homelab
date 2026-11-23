@@ -946,10 +946,8 @@ def test_reaper_pod_permissions():
         } == namespaces
     for role in (d for d in roles if d["kind"] == "Role"):
         # patch (the deletion cost) only where a pool autoscales: the coder
-        # pool, enabled in the deploy values.
-        verbs = ["get", "list", "watch", "delete"]
-        if role["metadata"]["namespace"] == "factory-r-homelab":
-            verbs.append("patch")
+        # and reviewer pools, enabled in the deploy values.
+        verbs = ["get", "list", "watch", "delete", "patch"]
         assert role["rules"] == [
             {"apiGroups": [""], "resources": ["pods"], "verbs": verbs}
         ]
