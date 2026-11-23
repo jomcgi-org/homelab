@@ -1,13 +1,15 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# The gVisor sandbox-fork slice 1, staged and OFF. Nothing here reaches the
-# cluster: ArgoCD applies only ../resources (egress-scan/deploy/application.yaml,
-# path projects/platform-factory/substrate/resources), and that directory does
-# not list this one. ../resources/resources_test.py is the wiring guard: it
-# fails if ../resources lists this directory, renders ForkSeed or renders a
-# second SandboxConfig. The enable steps, the isolation gates and the rollback
-# are in projects/factory-cluster/README.md, "gVisor sandbox fork (staged, off)".
+# The gVisor sandbox-fork slice 1, wired and OFF. ArgoCD applies it through
+# ../resources/kustomization.yaml (egress-scan/deploy/application.yaml, path
+# projects/platform-factory/substrate/resources), which lists this directory
+# since step 5. It runs no actor: the WorkerPool has replicas 0, the conformance
+# Job is suspended and ForkSeed is not in the preview gates. The asset Job is a
+# Sync hook and runs at once. ../resources/resources_test.py is the wiring guard:
+# it lists the objects rendered here, the off switches and that gvisor-default
+# stays the class default. The enable steps, the isolation gates and the
+# rollback are in projects/factory-cluster/README.md, "gVisor sandbox fork".
 resources:
   - sandboxconfig-gvisor-fork.yaml
   - gvisor-assets-job.yaml

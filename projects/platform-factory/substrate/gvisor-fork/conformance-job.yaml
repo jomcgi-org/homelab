@@ -4,12 +4,12 @@
 # check). Run it only after the enable steps. The log is the result:
 # grep '^CONFORMANCE '.
 #
-# Off twice: this directory is not wired, and the Job is created suspended.
+# Off: the directory is wired since step 5, and the Job is created suspended.
 # ../resources/resources_test.py is the wiring guard. In Argo a suspended Job
 # has health Suspended, and the Application then reports Suspended instead of
-# Healthy until the Job runs or goes. Wire it suspended; step 8
-# of the enable steps sets suspend to false. The enable steps are in
-# projects/factory-cluster/README.md, "gVisor sandbox fork (staged, off)".
+# Healthy until the Job runs or goes. Step 8 of the enable steps sets suspend to
+# false. The enable steps are in projects/factory-cluster/README.md,
+# "gVisor sandbox fork".
 # A Job's pod template is immutable: to run again, change the run suffix in
 # the name. To remove the test, delete this file and its
 # kustomization entries after reading the log; ArgoCD then prunes the Job.

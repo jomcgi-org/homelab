@@ -282,9 +282,11 @@ def test_microvm_sandboxconfig_pins_the_upstream_amd64_assets() -> None:
         assert "/atespaces/" not in asset["url"]
     # The staging Job's pins are the SandboxConfig's pins.
     assert {n: a["sha256"] for n, a in _ASSETS["assets"].items()} == _UPSTREAM_AMD64
-    # gVisor is untouched: its class default stays the only gvisor config.
+    # gVisor is untouched: its class default stays the only default gvisor
+    # config. The fork's config is not a default (see
+    # test_gvisor_fork_slice_is_wired_and_off).
     names = {d["metadata"]["name"] for d in docs if d["kind"] == "SandboxConfig"}
-    assert names == {"gvisor-default", "microvm"}
+    assert names == {"gvisor-default", "microvm", "gvisor-fork"}
 
 
 def test_microvm_assets_come_from_pinned_official_releases() -> None:
@@ -398,13 +400,22 @@ def test_microvm_spike_pool_runs_one_pinned_microvm_worker() -> None:
     assert account["automountServiceAccountToken"] is False
     assert template["resources"]["limits"]["memory"] == "1Gi"
     assert template["resources"]["requests"]["memory"] == "256Mi"
-    # No gVisor pool shares the spike namespace.
+    # No other pool shares the spike namespace.
     pools = [d for d in docs if d["kind"] == "WorkerPool"]
-    assert [p["metadata"]["namespace"] for p in pools] == [_SPIKE_NS]
+    assert [
+        p["metadata"]["name"] for p in pools if p["metadata"]["namespace"] == _SPIKE_NS
+    ] == ["microvm-spike"]
 
 
 def test_microvm_spike_namespace_allows_only_the_router_and_the_gateway() -> None:
-    policy = _one(_docs(), "CiliumNetworkPolicy", "substrate-workers")["spec"]
+    # The fork pool's namespace has the same policy, so pick the spike's.
+    (policy,) = [
+        d["spec"]
+        for d in _docs()
+        if d["kind"] == "CiliumNetworkPolicy"
+        and d["metadata"]["name"] == "substrate-workers"
+        and d["metadata"].get("namespace") == _SPIKE_NS
+    ]
     (ingress,) = policy["ingress"]
     (egress,) = policy["egress"]
     assert ingress["fromEndpoints"] == [
@@ -742,26 +753,102 @@ def test_spike_script_logs_a_long_golden_error_in_full(
     assert message in capsys.readouterr().out
 
 
-def test_gvisor_fork_slice_is_staged_and_not_wired() -> None:
+_FORK_NS = "substrate-gvisor-fork"
+# Every object ../gvisor-fork renders (step 5 of the enable steps). A new object
+# there changes the cluster, so it must be listed here in the same change.
+_FORK_OBJECTS = {
+    ("CiliumNetworkPolicy", "ate-system", "ate-api-server-gvisor-fork-conformance"),
+    ("CiliumNetworkPolicy", "ate-system", "gvisor-fork-assets-init"),
+    ("CiliumNetworkPolicy", "ate-system", "gvisor-fork-conformance"),
+    ("CiliumNetworkPolicy", "ate-system", "rustfs-gvisor-fork-assets"),
+    ("CiliumNetworkPolicy", _FORK_NS, "substrate-workers"),
+    ("Job", "ate-system", "gvisor-fork-assets-init"),
+    ("Job", "ate-system", "gvisor-fork-conformance-2"),
+    ("Namespace", None, _FORK_NS),
+    ("SandboxConfig", None, "gvisor-fork"),
+    ("ServiceAccount", _FORK_NS, "fork-worker"),
+    ("WorkerPool", _FORK_NS, "gvisor-fork"),
+}
+_GVISOR_DEFAULT = "sandboxconfig.ate.dev/is-class-default"
+
+
+def test_gvisor_fork_slice_is_wired_and_off() -> None:
     # The gVisor sandbox-fork slice lives in ../gvisor-fork. ArgoCD reads only
-    # this directory, so the slice reaches the cluster only when a later change
-    # lists it here (step 5 of the enable steps). The ForkSeed gate is a
-    # separate, later change (step 7): test_fork_seed_gate_is_off.
+    # this directory, and since step 5 of the enable steps it lists the slice.
+    # The slice runs nothing: the pool has no workers, the conformance Job is
+    # suspended and the ForkSeed gate is separate (step 7:
+    # test_fork_seed_gate_is_off). Step 6 raises replicas, and step 8 sets
+    # suspend to false: each changes its assertion here in the same change.
     app = yaml.safe_load(Path(os.environ["SCANNER_APPLICATION"]).read_text())
     paths = [s["path"] for s in app["spec"]["sources"] if "path" in s]
     assert paths == ["projects/platform-factory/substrate/resources"]
     kustomization = yaml.safe_load((_HERE / "kustomization.yaml").read_text())
     listed = kustomization["resources"] + kustomization.get("components", [])
-    assert not [r for r in listed if "gvisor-fork" in r or r.startswith("..")]
-    rendered = json.dumps(_docs())
-    for name in ("gvisor-fork", "gvisor-fork-assets-init"):
-        assert name not in rendered, name
+    assert [r for r in listed if r.startswith("..")] == ["../gvisor-fork"]
+    docs = _docs()
+
+    def key(d: dict) -> tuple:
+        return (d["kind"], d["metadata"].get("namespace"), d["metadata"]["name"])
+
+    # Build the slice's own directory, so an object without "gvisor-fork" in
+    # its name cannot slip past: every object it renders is listed here, and
+    # ../resources renders each of them.
+    slice_docs = subprocess.run(
+        [os.environ["KUSTOMIZE_BIN"], "build", str(_HERE.parent / "gvisor-fork")],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    rendered = {key(d) for d in yaml.safe_load_all(slice_docs) if d}
+    assert rendered <= {key(d) for d in docs}
+    # The two generated ConfigMaps carry a content hash in their names.
+    configmaps = {k for k in rendered if k[0] == "ConfigMap"}
+    assert {k[2].rsplit("-", 1)[0] for k in configmaps} == {
+        "gvisor-fork-assets",
+        "gvisor-fork-conformance",
+    }
+    assert rendered - configmaps == _FORK_OBJECTS
     classes = {
         d["metadata"]["name"]: d["spec"]["sandboxClass"]
-        for d in _docs()
+        for d in docs
         if d["kind"] == "SandboxConfig"
     }
-    assert classes == {"gvisor-default": "gvisor", "microvm": "microvm"}
+    assert classes == {
+        "gvisor-default": "gvisor",
+        "gvisor-fork": "gvisor",
+        "microvm": "microvm",
+    }
+    # gvisor-default stays the class default, so existing pools resolve it.
+    configs = {d["metadata"]["name"]: d for d in docs if d["kind"] == "SandboxConfig"}
+    assert configs["gvisor-default"]["metadata"]["annotations"][_GVISOR_DEFAULT]
+    assert _GVISOR_DEFAULT not in configs["gvisor-fork"]["metadata"].get(
+        "annotations", {}
+    )
+    # Off: no worker, and the conformance Job does not run.
+    pool = _one(docs, "WorkerPool", "gvisor-fork")
+    assert pool["spec"]["replicas"] == 0
+    assert _one(docs, "Job", "gvisor-fork-conformance-2")["spec"]["suspend"] is True
+    # The namespace is kept when the Application goes, like every Namespace.
+    namespace = _one(docs, "Namespace", _FORK_NS)
+    assert (
+        "Prune=false"
+        in namespace["metadata"]["annotations"]["argocd.argoproj.io/sync-options"]
+    )
+    # The asset Job is a Sync hook, so Argo runs it on the first sync and holds
+    # that sync until its pod is scheduled: keep its pod request small
+    # (the nodes are request-tight; node-2 had 1981Mi left on 2026-11-23).
+    job = _one(docs, "Job", "gvisor-fork-assets-init")
+    assert job["metadata"]["annotations"]["argocd.argoproj.io/hook"] == "Sync"
+    pod = job["spec"]["template"]["spec"]
+    init = max(
+        int(c["resources"]["requests"]["memory"].removesuffix("Mi"))
+        for c in pod["initContainers"]
+    )
+    main = sum(
+        int(c["resources"]["requests"]["memory"].removesuffix("Mi"))
+        for c in pod["containers"]
+    )
+    assert max(init, main) <= 256
 
 
 def test_fork_seed_gate_is_off() -> None:

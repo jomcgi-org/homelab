@@ -1,7 +1,8 @@
-"""Validate the staged gVisor sandbox-fork slice 1: the SandboxConfig pins the
-fork build, and the staging Job and its script check what they fetch. The
-wired resources' own test (../resources/resources_test.py) checks that none of
-this reaches the cluster."""
+"""Validate the gVisor sandbox-fork slice 1: the SandboxConfig pins the fork
+build, and the staging Job and its script check what they fetch. The slice is
+wired but off; the wired resources' own test (../resources/resources_test.py)
+lists the objects it applies and checks the off switches (replicas 0, the
+suspended Job, no ForkSeed)."""
 
 from __future__ import annotations
 
