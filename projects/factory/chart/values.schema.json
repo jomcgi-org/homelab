@@ -1075,7 +1075,7 @@
                   "periodSeconds": {
                     "type": "integer",
                     "minimum": 15,
-                    "maximum": 3600
+                    "maximum": 1800
                   }
                 }
               }
