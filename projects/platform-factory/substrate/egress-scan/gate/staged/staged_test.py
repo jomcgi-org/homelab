@@ -211,13 +211,20 @@ def test_only_argocd_may_run_a_pod_as_the_gate() -> None:
         assert binding["validationActions"] == ["Deny"]
         selector = policy["matchConstraints"]["namespaceSelector"]["matchLabels"]
         assert selector == {"kubernetes.io/metadata.name": "ate-system"}
-        covered = {r for rule in policy["matchConstraints"]["resourceRules"] for r in rule["resources"]}
+        covered = {
+            r
+            for rule in policy["matchConstraints"]["resourceRules"]
+            for r in rule["resources"]
+        }
         assert covered == resources
         for rule in policy["matchConstraints"]["resourceRules"]:
             assert set(rule["operations"]) == {"CREATE", "UPDATE"}
         (cond,) = policy["matchConditions"]
         # The exempt identities are exactly these and no others.
-        assert set(re.findall(r"'(system:serviceaccount:[^']+)'", cond["expression"])) == exempt
+        assert (
+            set(re.findall(r"'(system:serviceaccount:[^']+)'", cond["expression"]))
+            == exempt
+        )
         (check,) = policy["validations"]
         assert "engine-gate" in check["expression"]
 
@@ -232,7 +239,10 @@ def test_nothing_is_cluster_scoped_except_the_scrape_rule_and_the_guards() -> No
         ("CiliumClusterwideNetworkPolicy", "prometheus-scrape-engine-gate"),
         *{
             (kind, f"engine-gate-{shape}")
-            for kind in ("ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding")
+            for kind in (
+                "ValidatingAdmissionPolicy",
+                "ValidatingAdmissionPolicyBinding",
+            )
             for shape in ("serviceaccount", "pods", "workloads")
         },
     }
