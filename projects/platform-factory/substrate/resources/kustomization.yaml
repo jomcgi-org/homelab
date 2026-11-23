@@ -39,7 +39,7 @@ resources:
   - microvm-actor-spike.yaml
   - microvm-spike.yaml
   # The gVisor sandbox-fork slice (step 5 of the enable steps, projects/factory-cluster/README.md,
-  # "gVisor sandbox fork"). It is wired but off: the pool has no workers, the
+  # "gVisor sandbox fork"). It is wired but off: the pool's one worker holds no seed, the
   # conformance Job is suspended and ForkSeed is not in the preview gates.
   - ../gvisor-fork
   - network-policy.yaml

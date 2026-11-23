@@ -33,7 +33,7 @@ invariants:
   mechanism:
   - projects/platform-factory/substrate/resources/network-policy.yaml
   - projects/platform-factory/substrate/resources/microvm-spike.yaml
-  # Wired but off: kvm-pool.yaml has replicas 0 until step 6
+  # Wired: kvm-pool.yaml runs one worker since step 6
   # (projects/factory-cluster/README.md, "gVisor sandbox fork").
   - projects/platform-factory/substrate/gvisor-fork/kvm-pool.yaml
   state: unproven

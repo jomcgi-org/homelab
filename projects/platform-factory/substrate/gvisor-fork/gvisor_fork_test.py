@@ -442,13 +442,19 @@ def test_kvm_pool_runs_the_fork_worker_image_by_digest() -> None:
 def test_kvm_pool_requests_1gi_and_limits_for_a_seed_and_8_children() -> None:
     resources = _pool()["spec"]["template"]["resources"]
     # The egress-scan design (egress-scan/ARCHITECTURE.md, "Capacity"): a
-    # scheduling reservation of 1Gi and 500m. On 2026-11-23 node-1 had 5493Mi
-    # and 8285m left to request, node-3 2601Mi and node-2 1981Mi.
-    assert resources["requests"] == {"cpu": "500m", "memory": "1Gi"}
+    # scheduling reservation of 1Gi and 4 CPU: with 4 scans in flight, a
+    # smaller CPU request gives them a fraction of a core's shares under
+    # contention. On 2026-11-23 node-1 had 5173Mi and 8275m left to request,
+    # node-3 2601Mi and 6010m, node-2 1981Mi and 6975m.
+    assert resources["requests"] == {"cpu": "4", "memory": "1Gi"}
     # The seed (1000m, 512 MiB cap) and 8 children (1000m, 128 MiB + 16 MiB of
-    # overhead each): 9000m and 512 + 8 x 144 = 1664 MiB booked.
+    # overhead each) are booked against the limits.
     assert resources["limits"] == {"cpu": "9", "memory": "2Gi"}
-    assert 512 + 8 * (128 + 16) <= 2 * 1024
+    cpu_m = int(resources["limits"]["cpu"]) * 1000
+    mem_mi = int(resources["limits"]["memory"].removesuffix("Gi")) * 1024
+    assert cpu_m >= 1000 + 8 * 1000
+    assert mem_mi >= 512 + 8 * (128 + 16)
+    assert int(resources["requests"]["cpu"]) * 1000 <= cpu_m
     assert "ate.dev/kvm" not in resources["limits"]  # the controller adds it
     assert _pool()["spec"]["template"]["serviceAccountName"] == "fork-worker"
 
