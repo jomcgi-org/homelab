@@ -2,7 +2,7 @@
 # Bring up the three-server factory k3s cluster. Run it on node-1: the host
 # firewall (factory-firewall.nft) admits only node IPs and the tailnet.
 #
-# Needs SSH with passwordless sudo to each node. Copies this directory to each
+# Needs SSH to each node and root access on it. Copies this directory to each
 # node, runs install-node.sh (init on the first, join on the rest) and writes
 # an admin kubeconfig to ${KUBECONFIG_OUT:-$HOME/.kube/factory.yaml}.
 # Idempotent: rerun to apply a configuration or version change, one node at a
