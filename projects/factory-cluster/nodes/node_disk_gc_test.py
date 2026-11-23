@@ -1,5 +1,6 @@
 """Run node-disk-gc.sh against a fake home and a fake temporary directory."""
 
+import ctypes
 import os
 import shutil
 import subprocess
@@ -13,6 +14,7 @@ import pytest
 SCRIPT = Path(__file__).with_name("node-disk-gc.sh").resolve()
 GO_README = "This directory holds cached build artifacts from the Go build system.\n"
 DAY = 24 * 3600
+PR_SET_DUMPABLE = 4
 
 
 def age(path, seconds):
@@ -51,6 +53,9 @@ def base(tmp_path):
     os.setgroups([])
     os.setresgid(65534, 65534, 0)
     os.setresuid(65534, 65534, 0)
+    # A process that changed its user is not dumpable, so the script could not
+    # read its /proc entries. Make it dumpable again.
+    ctypes.CDLL(None, use_errno=True).prctl(PR_SET_DUMPABLE, 1, 0, 0, 0)
     try:
         yield path
     finally:
