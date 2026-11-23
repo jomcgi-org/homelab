@@ -452,7 +452,9 @@ def test_router_allows_exactly_the_three_client_identities() -> None:
     # must never be in this list, nor a wildcard. The rendered ConfigMap carries
     # the list values/substrate.yaml sets.
     config = yaml.safe_load(
-        _one(_docs(), "ConfigMap", "atenet-router-agentgateway-config")["data"]["config.yaml"]
+        _one(_docs(), "ConfigMap", "atenet-router-agentgateway-config")["data"][
+            "config.yaml"
+        ]
     )
     (rule,) = config["frontendPolicies"]["networkAuthorization"]["rules"]
     ids = re.search(r"source\.spiffeId in \[(.*?)\]", rule["allow"]).group(1)
