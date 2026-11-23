@@ -1,5 +1,10 @@
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
+exports_files(
+    ["resources/network-policy.yaml"],
+    visibility = ["//projects/platform-factory/network-policy/tests:__pkg__"],
+)
+
 # The adapter's values query, evaluated by promtool against sample series, and
 # the shape of its network policy.
 py_test(
