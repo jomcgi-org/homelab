@@ -543,6 +543,99 @@ sends the actor no request: that needs a router certificate this account lacks.
 To run again, change the run suffix in the Job's name; to remove the test, read
 the log, then delete the Job file and its kustomization entries.
 
+### gVisor sandbox fork (staged, off)
+
+Fork slice 1 starts an actor by forking a per-worker gVisor seed instead of
+booting it: a scanner child answers its first request 109 to 198 ms after the
+fork (N = 1 to 16) and holds about 37 MB of private memory. State: `staged off`. Nothing below runs on the cluster.
+
+| Piece | Where | Off because |
+| --- | --- | --- |
+| SandboxConfig `gvisor-fork` (fork build `0250f9acf`) and its asset Job | `projects/platform-factory/substrate/gvisor-fork/` | `resources/kustomization.yaml` does not list the directory; `resources_test.py` fails if it does |
+| WorkerPool `gvisor-fork` (`platform: kvm`) | `gvisor-fork/kvm-pool.yaml` | unwired, and `replicas: 0` |
+| Conformance Job `gvisor-fork-conformance-1` | `gvisor-fork/conformance-job.yaml` | unwired, and `suspend: true` |
+| Fork images (`ateapi`, `atecontroller`, `atelet`, `ateworker-gvisor`, `kubectl-ate`) | `.github/workflows/substrate-fork-images.yml` | manual dispatch only; no pin changes |
+| `ForkSeed` preview gate | `substrate/values/common.yaml` | not listed |
+
+Existing gVisor pools stay on systrap and `gvisor-default`. The fork's CRD, API
+server, controller and atelet are not deployed, so `platform: kvm` cannot apply.
+
+#### Enable
+
+Joe approves each step that changes the cluster. Steps 1 and 2 touch no
+cluster object. Step 3 rolls the control plane and changes nothing for actors.
+
+```mermaid
+flowchart LR
+  R[1 Publish gVisor release] --> I[2 Publish images]
+  I --> C[3 Fork control plane, gate off]
+  C --> P[4 Wire directory, replicas 1]
+  P --> J[5 Conformance Job]
+  J --> X[6 X1 to X7 in the pod]
+  X --> G[7 Joe turns ForkSeed on]
+```
+
+1. Create the GitHub release `fork-seed-slice1-0250f9acf` on jomcgi-org/gvisor
+   from CI run 45119532914. Its `runsc-release.tar.gz` must hash to
+   `6850279d7a50b7c047fedf1ad631c65d05eb4b091b0b28c9a28a6abfb7534460`.
+2. Dispatch `Substrate fork images` with `publish` off, then on. Record the
+   five digests. Make the packages pullable by atelet.
+3. Cluster-affecting PR: render the fork's charts at `b6b0ec3e2` (CRD with
+   `platform`, then `ateapi`, `atecontroller`, `atelet` at the fork digests).
+   Merge it with the gate off. Verify the control plane and an existing actor
+   behave as before.
+4. Wire `../gvisor-fork` in `resources/kustomization.yaml`. Set the pool's
+   `workerImage` digest to the published one and `replicas` to 1. Add
+   `ForkSeed` to `preview` in `values/common.yaml`. Check that forkd starts in
+   the pod: its `hello` assertions (capabilities, cgroup parent, Unconfined
+   seccomp, `/dev/kvm`) and that `memory`, `pids` and `cpu` are delegated below
+   `/sys/fs/cgroup/forkd`.
+5. Build the public engine image with its listen-after-fork server, pin its
+   digest in `conformance/template.yaml`, set the Job's `suspend` to `false`
+   and read `kubectl -n ate-system logs job/gvisor-fork-conformance-1 | grep '^CONFORMANCE '`.
+6. Re-run X1 to X7 inside the pod from node-1, with a worker restart, a node
+   drain and a forkd crash, and compare `fork_overhead` with the measured use.
+7. Joe decides whether factory work may use fork templates.
+
+#### Isolation gates
+
+All of X1 to X8 pass before step 7. Off-cluster runs on node-1 (production
+mode, real forkd and runsc) passed X1, X3, X4 and X7. No gate has run in the cluster.
+
+| Gate | Checks | State |
+| --- | --- | --- |
+| X1 | Child seccomp equals a normal sandbox's; caps 0; `NoNewPrivs` | node-1 only |
+| X2 | No writable `MAP_SHARED` between children; KSM off | partial |
+| X3 | No inherited descriptors to the seed or siblings | node-1 only |
+| X4 | Random state and identity differ per child | node-1 only |
+| X5 | A 512 KiB body through router and atunnel; egress NONE incl. DNS | partial |
+| X6 | `pids.max`, memory charging, kill paths, no leak after 1000 forks | partial |
+| X7 | A canary in the seed is readable by children (why the seed holds no secret) | node-1 only |
+| X8 | microVM golden is read-only and hash-checked | not done |
+
+The Job checks the API side of X6 and X9 only. A request through the router
+(X5) needs a router client certificate, a new grant for Joe to decide. X1 to X4
+and X7 need node access.
+
+#### Roll back
+
+- Set the pool's `replicas` to 0. Keep the gate on until the fork templates are
+  deleted: deleting a template deletes its seeds, and only the gate-on
+  reconciler and reaper do the cleanup.
+- Then remove `ForkSeed` from `preview`, lower the three image pins to the v1.0.1
+  digests, and unwire the directory.
+
+#### Tenancy
+
+One seed serves one atespace, and the control plane refuses a fork template in
+another atespace. There is no per-tenant pool, because every template runs our
+own pinned engine image (Joe, 2026-11-22). Revisit when any seed or template
+runs code that is not ours, a second tenant appears or an untrusted author
+writes a template. Per-tenant pools are then mandatory: siblings share clean seed
+pages, so they share a cache-timing channel. Request bodies are untrusted input
+to the engine. A child is contained by its own sandbox, single use, no egress
+and short-lived tokens, and every child has the same ASLR.
+
 ## Observability
 
 Useful starting points in the `metrics` dataset, all filtered on
