@@ -2,6 +2,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 # The test needs installer and unit files as runfiles.
 # gazelle:exclude install_t3_socket_test.py
+# gazelle:exclude node_disk_gc_test.py
 # The node installer executes this host helper outside Bazel.
 # gazelle:exclude factory-session-token.py
 
@@ -22,5 +23,12 @@ py_test(
         "t3-cluster.service",
         "t3-cluster.socket",
     ],
+    deps = ["@pip//pytest"],
+)
+
+py_test(
+    name = "node_disk_gc_test",
+    srcs = ["node_disk_gc_test.py"],
+    data = ["node-disk-gc.sh"],
     deps = ["@pip//pytest"],
 )

@@ -177,6 +177,26 @@ the factory inventory. Keep this shell open for the commands below.
    marked it `consumed`. If the fingerprint changes, reconcile the new snapshot
    with the fencing evidence before confirming. Keep old copies fenced after consumption.
 
+## Node disk cleanup
+
+Build and test leftovers on the node-1 workstation filled its root filesystem
+on 2026-11-23, and the kubelet tainted the node for disk pressure.
+[`nodes/node-disk-gc.sh`](nodes/node-disk-gc.sh) removes only Go build cache
+files, Bazel disk cache files, and old test directories (`/tmp/pgdata*` and
+`/tmp/tmp*`). It does nothing until you pass `--apply`. Run it as the node
+operator, never as root:
+
+```bash
+projects/factory-cluster/nodes/node-disk-gc.sh          # list what it would remove
+projects/factory-cluster/nodes/node-disk-gc.sh --apply  # remove it
+```
+
+Options `--go-days` (3), `--tmp-hours` (12) and `--bazel-days` (7) set the age
+limits. A test directory stays if a file in it is newer than the limit, or if
+a process has it open, as its working directory or in its command line, or a
+postgres process names it. No timer runs the script. A person decides whether
+to install one.
+
 ## Network policy
 
 Ordering matters inside an Application. A pod that starts before its policy
