@@ -500,7 +500,7 @@ _TEMPLATE = _HERE / "conformance" / "template.yaml"
 
 
 def _conformance_job() -> dict:
-    return _one(_docs(), "Job", "gvisor-fork-conformance-3")
+    return _one(_docs(), "Job", "gvisor-fork-conformance-4")
 
 
 def test_conformance_job_runs_once_as_ate_client() -> None:
@@ -602,6 +602,226 @@ def test_conformance_template_is_a_fork_template_with_no_egress_and_no_env() -> 
     assert private < fork["seedResources"]["limits"]["memoryBytes"]
 
 
+# The rules a template with fork_config must satisfy, read from the fork source
+# (jomcgi-org/substrate 1e7a877d0ca3): api/ateapi/v1/ateapi.proto (the
+# k8s:required, minimum, maximum and format tags of ActorTemplate, Container,
+# WakeupProbe, HttpGetAction, ResourceRequirements, SnapshotConfig,
+# GoldenSnapshotConfig and ForkConfig), cmd/ateapi/internal/apivalidation/
+# fork.go (validateForkTemplate, ValidateCustom_ForkConfig_SeedResources),
+# actor_template.go (the cross-field rules, ValidateCustom_ActorTemplate_Resources)
+# and internal/resources/validate.go (ValidatePinnedImage, ValidateHTTPGetPath).
+# The error strings are the API's field paths, so a test can say which rule a
+# template breaks. A real run found the golden snapshot rule one run too late:
+# this checks them all offline. The server also applies defaults first
+# (defaults.go: golden mode ENABLED, preferred fidelity MEMORY, probe path "/"
+# and timeout 30), so only the golden mode needs to be set here.
+_FORK_KEYS = {
+    "": {
+        "metadata",
+        "workerSelector",
+        "containers",
+        "volumes",
+        "snapshotConfig",
+        "resources",
+        "goldenEgressPolicy",
+        "forkConfig",
+        "status",
+    },
+    "metadata": {"atespace", "name"},
+    "container": {
+        "name",
+        "image",
+        "command",
+        "args",
+        "env",
+        "wakeupProbe",
+        "volumeMounts",
+        "securityContext",
+        "resources",
+    },
+    "snapshotConfig": {"storageLocation", "preferredFidelity", "goldenSnapshotConfig"},
+    "forkConfig": {
+        "mode",
+        "seedResources",
+        "singleUse",
+        "maxLifetimeSeconds",
+        "pidsLimit",
+        "logBytesLimit",
+        "egress",
+    },
+}
+_DNS_LABEL = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+_LABEL_VALUE = re.compile(r"^([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?)?$")
+_HTTP_PATH = re.compile(r"^/[A-Za-z0-9\-._~!$&'()*+,;=:@%/]*$")
+_SECRET_MARKERS = ("TOKEN", "KEY", "SECRET", "PASSWORD")
+
+
+def _fork_template_errors(tmpl: dict) -> list[str]:
+    errs: list[str] = []
+
+    def need(ok: bool, path: str) -> None:
+        if not ok:
+            errs.append(path)
+
+    def limits_ok(res: object, path: str) -> None:
+        limits = (res or {}).get("limits") or {}
+        need(
+            0 < int(limits.get("cpuMillicores") or 0) <= 999999,
+            path + ".limits.cpu_millicores",
+        )
+        need(int(limits.get("memoryBytes") or 0) > 0, path + ".limits.memory_bytes")
+
+    for key in tmpl:
+        need(key in _FORK_KEYS[""], "unknown field " + key)
+    meta = tmpl.get("metadata") or {}
+    for key in meta:
+        need(key in _FORK_KEYS["metadata"], "unknown field metadata." + key)
+    need(bool(meta.get("atespace")), "metadata.atespace")
+    need(bool(_DNS_LABEL.match(str(meta.get("name", "")))), "metadata.name")
+    labels = (tmpl.get("workerSelector") or {}).get("matchLabels") or {}
+    need(not labels or len(labels) <= 10, "worker_selector.match_labels")
+    for k, v in labels.items():
+        need(
+            bool(_LABEL_VALUE.match(k)) and bool(_LABEL_VALUE.match(v)),
+            "worker_selector.match_labels",
+        )
+    containers = tmpl.get("containers") or []
+    need(1 <= len(containers) <= 10, "containers")
+    limits_ok(tmpl.get("resources"), "resources")
+    need(not tmpl.get("volumes"), "volumes")
+    need(not tmpl.get("goldenEgressPolicy"), "golden_egress_policy")
+    snap = tmpl.get("snapshotConfig") or {}
+    for key in snap:
+        need(key in _FORK_KEYS["snapshotConfig"], "unknown field snapshotConfig." + key)
+    need(not snap.get("storageLocation"), "snapshot_config.storage_location")
+    golden = (snap.get("goldenSnapshotConfig") or {}).get("mode")
+    need(
+        golden == "GOLDEN_SNAPSHOT_MODE_DISABLED",
+        "snapshot_config.golden_snapshot_config.mode",
+    )
+
+    fork = tmpl.get("forkConfig")
+    need(fork is not None, "fork_config")
+    fork = fork or {}
+    for key in fork:
+        need(key in _FORK_KEYS["forkConfig"], "unknown field forkConfig." + key)
+    need(fork.get("mode") == "FORK_MODE_SEED_AND_FORK", "fork_config.mode")
+    limits_ok(fork.get("seedResources"), "fork_config.seed_resources")
+    need(fork.get("singleUse") is True, "fork_config.single_use")
+    need(
+        1 <= int(fork.get("maxLifetimeSeconds") or 0) <= 3600,
+        "fork_config.max_lifetime_seconds",
+    )
+    need(32 <= int(fork.get("pidsLimit") or 0) <= 4096, "fork_config.pids_limit")
+    need(
+        1024 <= int(fork.get("logBytesLimit") or 0) <= 1 << 30,
+        "fork_config.log_bytes_limit",
+    )
+    need(
+        fork.get("egress", "FORK_EGRESS_UNSPECIFIED")
+        in ("FORK_EGRESS_UNSPECIFIED", "FORK_EGRESS_NONE"),
+        "fork_config.egress",
+    )
+
+    need(len(containers) == 1, "containers")
+    for i, ctr in enumerate(containers):
+        at = f"containers[{i}]"
+        for key in ctr:
+            need(key in _FORK_KEYS["container"], f"unknown field {at}.{key}")
+        need(bool(_DNS_LABEL.match(str(ctr.get("name", "")))), at + ".name")
+        image = str(ctr.get("image", ""))
+        need(
+            0 < len(image) <= 512 and bool(re.search(r"@sha256:[0-9a-f]{64}$", image)),
+            at + ".image",
+        )
+        for field in ("command", "args"):
+            items = ctr.get(field) or []
+            need(
+                len(items) <= 64 and all(len(s) <= 4096 for s in items), f"{at}.{field}"
+            )
+        env = ctr.get("env") or []
+        need(len(env) <= 32, at + ".env")
+        for j, var in enumerate(env):
+            name = str(var.get("name", ""))
+            need(
+                0 < len(name) <= 256
+                and "=" not in name
+                and name.isprintable()
+                and name.isascii(),
+                f"{at}.env[{j}].name",
+            )
+            need(
+                any(m in name.upper() for m in _SECRET_MARKERS) is False,
+                f"{at}.env[{j}].name",
+            )
+        probe = ctr.get("wakeupProbe")
+        need(probe is not None, at + ".wakeup_probe")
+        http = (probe or {}).get("httpGet") or {}
+        need(
+            bool(_HTTP_PATH.match(str(http.get("path", "/"))))
+            and len(str(http.get("path", "/"))) <= 1024,
+            at + ".wakeup_probe.http_get.path",
+        )
+        need(
+            1 <= int(http.get("port") or 0) <= 65535, at + ".wakeup_probe.http_get.port"
+        )
+        need(
+            1 <= int((probe or {}).get("timeoutSeconds", 30)) <= 3600,
+            at + ".wakeup_probe.timeout_seconds",
+        )
+        caps = ((ctr.get("securityContext") or {}).get("capabilities") or {}).get(
+            "add"
+        ) or []
+        need(not caps, at + ".security_context.capabilities.add")
+        need(not ctr.get("volumeMounts"), at + ".volume_mounts")
+    return errs
+
+
+def _conformance_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "conformance_under_test", _CONFORMANCE
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("path", [_TEMPLATE, _HERE / "latency" / "template.yaml"])
+def test_fork_templates_satisfy_every_api_fork_rule(path: Path) -> None:
+    assert _fork_template_errors(yaml.safe_load(path.read_text())) == []
+
+
+def test_a_template_without_the_golden_snapshot_setting_is_refused() -> None:
+    # What the first real run hit: the API requires the setting, so the
+    # conformance template must carry it.
+    template = yaml.safe_load(_TEMPLATE.read_text())
+    assert template["snapshotConfig"] == {
+        "goldenSnapshotConfig": {"mode": "GOLDEN_SNAPSHOT_MODE_DISABLED"}
+    }
+    del template["snapshotConfig"]
+    assert _fork_template_errors(template) == [
+        "snapshot_config.golden_snapshot_config.mode"
+    ]
+
+
+def test_each_conformance_variant_breaks_exactly_its_own_rule() -> None:
+    module = _conformance_module()
+    expected = {
+        "secret_env": "containers[0].env[0].name",
+        "single_use_false": "fork_config.single_use",
+        "egress_gateway": "fork_config.egress",
+    }
+    variants = module.variants(_TEMPLATE.read_text())
+    assert set(variants) == set(expected)
+    for name, body in variants.items():
+        got = _fork_template_errors(yaml.safe_load(body))
+        assert got == [expected[name]], name
+        # The reason the Job requires in the API's refusal names that rule.
+        assert re.search(module.VARIANT_REASON[name], expected[name]), name
+
+
 # conformance.py against a fake kubectl-ate that answers in the API's JSON shapes:
 # Actor {metadata, actorTemplate, status: {state, fork: {role}}} and
 # WorkerSeed {seedActor: {atespace, name}, seedActorUid, templateUid, workerEpoch}.
@@ -650,10 +870,29 @@ if verb == ["create", "actor-template"]:
     text = open(a[3]).read()
     bad = ("API_TOKEN" in text or "singleUse: false" in text
            or "FORK_EGRESS_GATEWAY" in text)
+    # apivalidation/fork.go: a template with fork_config must disable golden
+    # snapshots. The real API refused the first conformance run for this.
+    golden = ("GOLDEN_SNAPSHOT_MODE_DISABLED" in text
+              and re.search(r"(?m)^    mode: GOLDEN_SNAPSHOT_MODE_DISABLED$", text))
+    golden_error = ("rpc error: code = InvalidArgument desc = actor_template."
+                    "snapshot_config.golden_snapshot_config.mode: Required value: "
+                    "a template with fork_config must disable golden snapshots")
+    if not golden:
+        fail("failed to create actor template: " + golden_error)
     if bad and env("FAKE_INFRA_REFUSAL"):
         fail("rpc error: code = Unavailable desc = connection refused")
+    if bad and env("FAKE_WRONG_REASON"):
+        fail("failed to create actor template: " + golden_error)
     if bad and not env("FAKE_ACCEPT_BAD"):
-        fail("rpc error: code = InvalidArgument desc = invalid fork template")
+        if "API_TOKEN" in text:
+            why = ("actor_template.containers[0].env[0].name: Forbidden: the template "
+                   "environment is visible to every forked actor and must hold no secret")
+        elif "singleUse: false" in text:
+            why = "actor_template.fork_config.single_use: Required value"
+        else:
+            why = ('actor_template.fork_config.egress: Unsupported value: '
+                   '"FORK_EGRESS_GATEWAY": supported values: "FORK_EGRESS_UNSPECIFIED"')
+        fail("failed to create actor template: rpc error: code = InvalidArgument desc = " + why)
     ns = re.search(r"(?m)^  atespace: (.*)$", text).group(1)
     name = re.search(r"(?m)^  name: (.*)$", text).group(1)
     st["next"] += 1
@@ -684,8 +923,14 @@ if verb == ["create", "actor"]:
     out({})
 if verb == ["resume", "actor"]:
     actor = st["actors"][flag("-a") + "/" + a[2]]
+    # workflow_resume.go: a RUNNING actor is the router's hot path and stays a
+    # no-op that returns the actor. Only a CRASHED or exited one is refused.
     if actor["state"] == "ACTOR_STATE_RUNNING":
-        fail("rpc error: code = FailedPrecondition desc = a forked actor runs once")
+        if env("FAKE_RESUME_CRASHES"):
+            actor["state"] = "ACTOR_STATE_CRASHED"
+        out({})
+    if actor["state"] != "ACTOR_STATE_SUSPENDED":
+        fail("rpc error: code = FailedPrecondition desc = a forked actor starts only once")
     actor["state"] = "ACTOR_STATE_RUNNING"; out({})
 if verb == ["suspend", "actor"]:
     if not env("FAKE_ALLOW_SUSPEND"):
@@ -835,6 +1080,11 @@ def test_conformance_refuses_an_unpinned_engine_image(
             "C5: an actor of another atespace using the template was refused for another reason",
         ),
         ({"FAKE_ALLOW_SUSPEND": "1"}, "C6: the API accepted a suspend"),
+        ({"FAKE_RESUME_CRASHES": "1"}, "C6: after a second resume"),
+        (
+            {"FAKE_WRONG_REASON": "1"},
+            "C2: a template with secret_env was refused for another reason",
+        ),
         ({"FAKE_NO_EXPIRE": "1"}, "forks deleted by their lifetime: not ready"),
         ({"FAKE_WORKER_STATE": "WORKER_STATE_UNAVAILABLE"}, "an ACTIVE gvisor-fork"),
     ],
@@ -958,7 +1208,7 @@ def test_latency_jobs_grant_nothing_new() -> None:
 
 def test_latency_jobs_use_the_conformance_cli_by_digest() -> None:
     reference = {}
-    for name in [*_LATENCY_JOBS, "gvisor-fork-conformance-3"]:
+    for name in [*_LATENCY_JOBS, "gvisor-fork-conformance-4"]:
         pod = (_latency_job(name) if name in _LATENCY_JOBS else _conformance_job())[
             "spec"
         ]["template"]["spec"]

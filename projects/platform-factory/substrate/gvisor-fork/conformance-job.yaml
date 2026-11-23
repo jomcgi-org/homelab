@@ -14,8 +14,9 @@
 # A Job's pod template is immutable: to run again, change the run suffix in
 # the name. Editing anything under conformance/ changes the generated
 # ConfigMap's hash, and so the Job's config volume and its pod template: bump
-# the run suffix in the same change (resources_test.py pins the hash). The suffix is 3 because the fork re-pin changed the kubectl-ate
-# image (-2 named the first fork build). To suspend it again, set suspend back
+# the run suffix in the same change (resources_test.py pins the hash). The
+# suffix is 4: -2 named the first fork build, and -3 failed at its first API call
+# because its template did not disable golden snapshots. To suspend it again, set suspend back
 # to true, which Kubernetes allows before the pod is done. To remove the test,
 # delete this file and its kustomization entries after reading the log; ArgoCD
 # then prunes the Job.
@@ -30,7 +31,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: gvisor-fork-conformance-3
+  name: gvisor-fork-conformance-4
   namespace: ate-system
   annotations:
     argocd.argoproj.io/sync-wave: "2"

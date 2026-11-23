@@ -3,7 +3,7 @@
 Runs in the gvisor-fork-conformance Job as the ate-system/ate-client
 ServiceAccount, with the fork's kubectl-ate (an image volume of the fork build).
 Run it only after the enable steps (projects/factory-cluster/README.md,
-"gVisor sandbox fork (staged, off)"). It checks the control plane and the
+"gVisor sandbox fork"). It checks the control plane and the
 worker, through the API only:
 
   C1  a fork template is accepted                              (I7)
@@ -12,7 +12,8 @@ worker, through the API only:
   C3  the worker holds a ready seed of the template            (seed path)
   C4  N actors fork from the seed and reach RUNNING as FORK    (X10, X6)
   C5  an actor of another atespace cannot use the template     (I2, X9)
-  C6  a forked actor refuses suspend and a second resume       (I4)
+  C6  a forked actor refuses suspend; a second resume of a
+      RUNNING one is a no-op and starts no second fork          (I4)
   C7  every forked actor is deleted by its lifetime            (I4, X6)
   C8  deleting the template removes the seed; no actor is left (X6)
 
@@ -249,6 +250,16 @@ def variants(text: str) -> dict[str, str]:
     return out
 
 
+# What the API's refusal of each variant must say (apivalidation/fork.go): the
+# field path of the rule. A template that breaks another rule is refused too,
+# and must not pass for the wrong cause.
+VARIANT_REASON = {
+    "secret_env": r"env|forked actor",
+    "single_use_false": r"single_use",
+    "egress_gateway": r"egress",
+}
+
+
 def refused(
     check: str,
     done: subprocess.CompletedProcess,
@@ -343,7 +354,14 @@ def run(workdir: Path, text: str) -> None:
         passed(
             "C2",
             refused=name,
-            reason=repr(refused("C2", done, f"a template with {name}")),
+            reason=repr(
+                refused(
+                    "C2",
+                    done,
+                    f"a template with {name}",
+                    expect=VARIANT_REASON[name],
+                )
+            ),
         )
 
     seconds = wait_for("a ready seed", SEED_WAIT, lambda: seeded(uid))
@@ -389,12 +407,18 @@ def run(workdir: Path, text: str) -> None:
         "a suspend of a forked actor",
     )
     passed("C6", refused="suspend", reason=repr(reason))
-    reason = refused(
-        "C6",
-        ate("resume", "actor", first_fork, "-a", ATESPACE),
-        "a second resume of a forked actor",
-    )
-    passed("C6", refused="second resume", reason=repr(reason))
+    # A resume of a RUNNING actor is the router's hot path: the API answers it
+    # with the actor and starts nothing (workflow_resume.go, ResumeActor). It is
+    # refused only for a CRASHED or exited actor. So the check is that the call
+    # changes nothing: the fork is still RUNNING and still a fork.
+    ate_ok("resume", "actor", first_fork, "-a", ATESPACE)
+    again = [a for a in forks() if name_of(a) == first_fork]
+    if len(again) != 1 or state_of(again[0]) != "ACTOR_STATE_RUNNING":
+        raise Failed(
+            f"C6: after a second resume {first_fork} is "
+            f"{[state_of(a) for a in again]!r}, not one RUNNING fork"
+        )
+    passed("C6", noop="second resume", state=state_of(again[0]))
 
     seconds = wait_for(
         "forks deleted by their lifetime",
