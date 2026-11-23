@@ -316,9 +316,10 @@ type semgrepTier struct {
 	breaker *breaker
 	metrics *tierMetrics
 
-	logMu   sync.Mutex
-	lastLog map[string]time.Time
-	now     func() time.Time
+	logMu      sync.Mutex
+	lastLog    map[string]time.Time
+	suppressed map[string]int
+	now        func() time.Time
 }
 
 func newSemgrepTier(cfg semgrepConfig, engine Engine) (*semgrepTier, error) {
@@ -330,7 +331,7 @@ func newSemgrepTier(cfg semgrepConfig, engine Engine) (*semgrepTier, error) {
 		cfg:     cfg,
 		slots:   make(chan struct{}, cfg.Concurrency),
 		now:     time.Now,
-		lastLog: map[string]time.Time{},
+		lastLog: map[string]time.Time{}, suppressed: map[string]int{},
 	}
 	t.breaker = &breaker{threshold: cfg.BreakerFailures, cooldown: cfg.BreakerCooldown, now: time.Now}
 	t.metrics = newTierMetrics(t)
@@ -434,8 +435,37 @@ type denial struct {
 	found  bool
 }
 
+// allowLog limits the log to one line per key in each log interval. An actor
+// controls how many requests the tier sees, so one line per finding or failure
+// would let an actor flood the log. It returns the number of lines that it
+// suppressed since the last line.
+func (t *semgrepTier) allowLog(key string) (int, bool) {
+	t.logMu.Lock()
+	defer t.logMu.Unlock()
+	now := t.now()
+	if last, ok := t.lastLog[key]; ok && now.Sub(last) < logInterval {
+		t.suppressed[key]++
+		return 0, false
+	}
+	n := t.suppressed[key]
+	delete(t.suppressed, key)
+	t.lastLog[key] = now
+	return n, true
+}
+
+func suppressedNote(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (+%d suppressed)", n)
+}
+
 // logFound writes rule ids and positions. It never writes the matched text.
 func (t *semgrepTier) logFound(v Verdict) {
+	n, ok := t.allowLog(engineFound)
+	if !ok {
+		return
+	}
 	parts := make([]string, 0, maxLoggedFindings)
 	for i, f := range v.Findings {
 		if i == maxLoggedFindings {
@@ -443,25 +473,21 @@ func (t *semgrepTier) logFound(v Verdict) {
 		}
 		parts = append(parts, fmt.Sprintf("%s@%d-%d", f.RuleID, f.Start, f.End))
 	}
-	log.Printf("semgrep tier blocked a request: %d finding(s): %s", len(v.Findings), strings.Join(parts, " "))
+	log.Printf("semgrep tier blocked a request: %d finding(s): %s%s", len(v.Findings), strings.Join(parts, " "), suppressedNote(n))
 }
 
 // logFailure writes one line per outcome in each log interval. A failing
 // engine would otherwise write one line per request.
 func (t *semgrepTier) logFailure(res engineResult) {
-	t.logMu.Lock()
-	now := t.now()
-	if last, ok := t.lastLog[res.outcome]; ok && now.Sub(last) < logInterval {
-		t.logMu.Unlock()
+	n, ok := t.allowLog(res.outcome)
+	if !ok {
 		return
 	}
-	t.lastLog[res.outcome] = now
-	t.logMu.Unlock()
 	detail := ""
 	if res.err != nil && res.outcome == engineError {
 		detail = ": " + errorKind(res.err)
 	}
-	log.Printf("semgrep tier %s, failure mode %s%s", res.outcome, t.cfg.FailureMode, detail)
+	log.Printf("semgrep tier %s, failure mode %s%s%s", res.outcome, t.cfg.FailureMode, detail, suppressedNote(n))
 }
 
 // errorKind names an engine error without text that came from the body or
