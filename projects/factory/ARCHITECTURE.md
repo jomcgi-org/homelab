@@ -126,7 +126,19 @@ CRD's scale subresource. Kubernetes 1.37 lets an HPA with `minReplicas: 0`
 scale a workload to and from zero from an Object or External metric
 (`HPAScaleToZero`, beta, on by default;
 [post](https://kubernetes.io/blog/2026/09/02/kubernetes-v1-37-hpa-scale-to-zero-beta/)).
-The feature is staged and off: `agents.<name>.autoscaling.enabled` is false.
+
+**State.** On main today, only this chart switch exists, and it is off:
+`agents.<name>.autoscaling.enabled` is false and the render is unchanged. The
+parts it depends on are open PRs, merged in this order:
+
+| Part | PR | Adds |
+| --- | --- | --- |
+| Connector series | #8591 | `factory_worker_pool_demand{source="pending"}` |
+| Reaper census | #8592 | `demand{source="actors"}`, `factory_worker_pool_spare`, the scrape job |
+| Send wait | #8593 | the `worker_pool_capacity` row and `intervals.workerWait` |
+| Deletion cost | #8596 | `pod-deletion-cost` on workers that host an actor |
+| This switch | #8595 | the HPA, `FACTORY_REAPER_POOLS`, the reaper's `patch` on pods |
+| Adapter | #8594 | the External Metrics API (new component; needs Joe) |
 
 ```mermaid
 flowchart LR
@@ -145,16 +157,26 @@ flowchart LR
 - `actors`: worker pods that host an actor. The reaper counts them from
   Substrate's actor table each 15 s, for every pool, whoever sent the work.
   Substrate's own `ate.workerpool.workers` goes to Honeycomb, not Prometheus.
-- `pending`: delivery attempts the connector recorded and kagent has not
-  accepted. The row commits before the send, so a run that arrives at zero
-  workers raises demand before it is sent.
+  The census fails on a row it cannot read, and then publishes nothing.
+- `pending`: delivery attempts the connector recorded, for live runs, and
+  kagent has not accepted. The row commits before the send, so a run that
+  arrives at zero workers raises demand before it is sent.
 - `spare`: `autoscaling.spare` (default 2), kept while a pool has any
   demand. An idle pool asks for 0.
 
-Prometheus Adapter sums the sources in one rule and serves the result as an
-External metric. The HPA uses `AverageValue: 1`, so replicas equal the metric.
-If a source is missing or stale, the metric has no value and the HPA holds
-the replica count.
+Prometheus Adapter serves the result as an External metric. The HPA uses
+`AverageValue: 1`, so replicas equal the metric. The metric has a value only
+if all three series exist for the pool: `factory_worker_pool_demand` with
+`source="actors"`, the same with `source="pending"`, and
+`factory_worker_pool_spare`. If any is missing or stale, the metric has no
+value and the HPA holds the replica count (`ScalingActive=False`). A sum over
+the remaining series would undercount and remove workers under live actors.
+
+The HPA ignores a gap below its tolerance, 10% by default. With
+`AverageValue: 1` that hides one worker above about 10 replicas. The chart
+sets `tolerance: 0` on both behaviors. The API accepts the field in 1.37
+(`kubectl explain` shows it), but the `HPAConfigurableTolerance` gate drops it
+when off. Check `describe hpa` after enabling.
 
 **Scale-down.** The HPA lowers `spec.replicas` and the ReplicaSet picks the
 pods to remove. A removed worker with a live actor leaves that actor CRASHED.
@@ -178,38 +200,53 @@ HPA's 15 s sync, pod start and worker registration. The connector holds the
 send, which stays `sending` and counts as `pending`, until the reaper's
 capacity row shows a free worker. `intervals.workerWait` bounds the wait
 (unset: off). A missing or stale row sends at once. A new session needs a
-ready worker with no actor. A continuation needs a ready worker.
+ready worker with no actor, less the sends the connector let through since the
+row was written. A continuation needs a ready worker.
+
+Known limit: the reservation counts only the sends of one connector process.
+An actor that another caller places in the same 15 s window can still take the
+worker, and that send fails as it does today.
+
+**Which pools.** Only the coder pool has a `pending` source: its sends go
+through the connector. The reviewer and the Discord bot send to kagent
+themselves, so nothing raises their pools' demand at zero.
+
+- The chart refuses `autoscaling.enabled` on the reviewer pool with
+  `minReplicas: 0`, and defaults it to 1.
+- This chart cannot enable Bosun: its WorkerPool renders no HPA.
+- `microvm-spike` is not part of the factory chart.
 
 **Failure modes.**
 
 | Failure | Effect | Recovery |
 | --- | --- | --- |
-| Adapter or reaper down | The metric has no value. The HPA holds its replicas (`ScalingActive=False`). | A pool at zero stays at zero. Scale it by hand, or set `minReplicas: 1`. |
+| Adapter, reaper or connector series missing | The metric has no value. The HPA holds its replicas (`ScalingActive=False`). | A pool at zero stays at zero. Scale it by hand, or set `minReplicas: 1`. |
 | Reaper capacity row stale | The connector sends without waiting. | The send can fail with "no worker has room", as before. |
 | `HPAScaleToZero` off | A pool at zero reads as paused and stays there. | Set `minReplicas: 1` before any gate change. |
 
 **Rollout.** The chart renders an HPA only for a pool with
 `autoscaling.enabled`. Each step is its own reviewed change:
 
-1. Deploy the adapter, the reaper census and the connector series. Nothing
-   scales.
-2. Set `FACTORY_REAPER_POOLS` through `autoscaling.enabled` with
-   `minReplicas: 1` on one pool. The pool can shrink to one worker and no
-   lower, so a metric failure costs nothing.
-3. Raise that pool to `minReplicas: 0` after a full day of correct metrics.
+1. Merge the parts above in order. Nothing scales.
+2. Enable one pool with `autoscaling.enabled` and `minReplicas: 1`. The pool
+   can shrink to one worker and no lower, so a metric failure costs little.
+3. Raise the coder pool to `minReplicas: 0` after a full day of correct
+   metrics. The reviewer pool stays at 1.
 
-The enabling change also adds an `ignoreDifferences` entry for the pool's
-`/spec/replicas` in `factory/deploy/application.yaml`. Argo CD uses server-side
-apply with self-heal and would reset the HPA's value. `autoscaling_test.py`
-fails when a pool in the deploy values has no entry.
+`maxReplicas` defaults to `concurrency + spare`: 14 for the coder pool, above
+the 12 fixed workers today, on nodes that request 98% of memory. Set
+`maxReplicas` to `concurrency` in the first enabling change.
 
-To revert, set the pool's `minReplicas: 1`, or turn `enabled` off and set
-`spec.replicas` back to `concurrency` by hand. Removing the HPA leaves the
-last replica count in place.
+The enabling change also adds an `ignoreDifferences` entry (group `ate.dev`,
+kind `WorkerPool`, `/spec/replicas`) for the pool in
+`factory/deploy/application.yaml`. Argo CD uses server-side apply with
+self-heal and would reset the HPA's value. `autoscaling_test.py` renders the
+deploy values and fails when an HPA's pool has no entry.
 
-The reviewer and Bosun pools have no `pending` source yet: the reviewer and
-the Discord bot send without the connector. At zero, their first send would
-fail and nothing would wake the pool. Keep them at `minReplicas: 1`.
+To revert, set the pool's `minReplicas: 1`, or set `enabled` to false. With
+`enabled` false the HPA is pruned and the pool keeps its last replica count.
+Removing the `ignoreDifferences` entry then makes Argo CD restore
+`concurrency`.
 
 ### Sandbox checks
 
