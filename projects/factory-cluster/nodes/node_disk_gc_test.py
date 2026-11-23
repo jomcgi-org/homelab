@@ -41,26 +41,26 @@ def old_tree(path, hours=48):
 
 
 @pytest.fixture
-def base(tmp_path):
+def base(tmp_path_factory):
     """A directory for the fixture. When the runner is root, the test process
-    gives up root for the test, because the script refuses to run as root."""
+    gives up root for good, because the script refuses to run as root and
+    reads /proc only for processes of its own user: the real, effective and
+    saved user ids must all match."""
     if os.geteuid() != 0:
-        yield tmp_path
+        yield tmp_path_factory.mktemp("gc")
         return
     path = Path(tempfile.mkdtemp(prefix="gc", dir="/tmp"))
     path.chmod(0o755)
     os.chown(path, 65534, 65534)
     os.setgroups([])
-    os.setresgid(65534, 65534, 0)
-    os.setresuid(65534, 65534, 0)
-    # A process that changed its user is not dumpable, so the script could not
-    # read its /proc entries. Make it dumpable again.
+    os.setresgid(65534, 65534, 65534)
+    os.setresuid(65534, 65534, 65534)
+    # A process that changed its user is not dumpable, so its /proc entries
+    # would be closed to the script. Make it dumpable again.
     ctypes.CDLL(None, use_errno=True).prctl(PR_SET_DUMPABLE, 1, 0, 0, 0)
     try:
         yield path
     finally:
-        os.setresuid(0, 0, 0)
-        os.setresgid(0, 0, 0)
         subprocess.run(["chmod", "-R", "u+rwX", str(path)], check=False)
         shutil.rmtree(path, ignore_errors=True)
 
