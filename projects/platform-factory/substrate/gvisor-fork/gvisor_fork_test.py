@@ -1,8 +1,8 @@
 """Validate the gVisor sandbox-fork slice 1: the SandboxConfig pins the fork
 build, and the staging Job and its script check what they fetch. The slice is
-wired but off; the wired resources' own test (../resources/resources_test.py)
-lists the objects it applies and checks the off switches (replicas 0, the
-suspended Job, no ForkSeed)."""
+wired with one idle worker; the wired resources' own test
+(../resources/resources_test.py) lists the objects it applies and checks the
+off switches (the suspended Job, no ForkSeed)."""
 
 from __future__ import annotations
 
@@ -381,11 +381,12 @@ def _pool() -> dict:
     return _one(_docs(), "WorkerPool", "gvisor-fork")
 
 
-def test_kvm_pool_has_no_workers_and_uses_the_fork_config() -> None:
+def test_kvm_pool_has_one_worker_and_uses_the_fork_config() -> None:
     pool = _pool()
     assert pool["metadata"]["namespace"] == _NS
-    # Off: no pod starts until the enable step raises this.
-    assert pool["spec"]["replicas"] == 0
+    # Step 6 of the enable steps: one worker, with ForkSeed still off. The pool
+    # has no autoscaler, so the count is fixed.
+    assert pool["spec"]["replicas"] == 1
     (klass,) = pool["spec"]["sandboxClasses"]
     assert klass == {
         "name": "gvisor",
@@ -397,10 +398,27 @@ def test_kvm_pool_has_no_workers_and_uses_the_fork_config() -> None:
     assert klass["configRef"]["name"] != "gvisor-default"
 
 
-def test_kvm_pool_template_sets_only_the_account_and_the_resources() -> None:
-    # No tolerations, node selector, volumes, host namespaces or security
+def test_kvm_pool_template_sets_only_the_account_the_placement_and_the_resources() -> (
+    None
+):
+    # No tolerations, hard node selector, volumes, host namespaces or security
     # context: the controller shapes the pod, and a new field is a review item.
-    assert set(_pool()["spec"]["template"]) == {"serviceAccountName", "resources"}
+    template = _pool()["spec"]["template"]
+    assert set(template) == {"serviceAccountName", "nodeAffinity", "resources"}
+    # Node-1 is preferred, not required: a drained or tainted node-1 must not
+    # leave the single worker pending.
+    assert set(template["nodeAffinity"]) == {
+        "preferredDuringSchedulingIgnoredDuringExecution"
+    }
+    (term,) = template["nodeAffinity"][
+        "preferredDuringSchedulingIgnoredDuringExecution"
+    ]
+    assert term["weight"] == 100
+    assert term["preference"] == {
+        "matchExpressions": [
+            {"key": "kubernetes.io/hostname", "operator": "In", "values": ["node-1"]}
+        ]
+    }
 
 
 def test_kvm_pool_with_workers_has_a_real_worker_image_digest() -> None:
@@ -421,13 +439,16 @@ def test_kvm_pool_runs_the_fork_worker_image_by_digest() -> None:
     assert "@sha256:" in image
 
 
-def test_kvm_pool_requests_little_and_limits_for_a_seed_and_16_scans() -> None:
+def test_kvm_pool_requests_1gi_and_limits_for_a_seed_and_8_children() -> None:
     resources = _pool()["spec"]["template"]["resources"]
-    # node-2 had 13Mi left to request on 2026-11-22: keep the reservation at
-    # the microVM spike's size.
-    assert resources["requests"] == {"cpu": "100m", "memory": "256Mi"}
-    # Seed 192 MB + 16 x (37 + 6.5) MB + 64 MB of forkd and worker = 952 MB.
-    assert resources["limits"]["memory"] == "1280Mi"
+    # The egress-scan design (egress-scan/ARCHITECTURE.md, "Capacity"): a
+    # scheduling reservation of 1Gi and 500m. On 2026-11-23 node-1 had 5493Mi
+    # and 8385m left to request, node-3 2601Mi and node-2 1981Mi.
+    assert resources["requests"] == {"cpu": "500m", "memory": "1Gi"}
+    # The seed (1000m, 512 MiB cap) and 8 children (1000m, 128 MiB + 16 MiB of
+    # overhead each): 9000m and 512 + 8 x 144 = 1664 MiB booked.
+    assert resources["limits"] == {"cpu": "9", "memory": "2Gi"}
+    assert 512 + 8 * (128 + 16) <= 2 * 1024
     assert "ate.dev/kvm" not in resources["limits"]  # the controller adds it
     assert _pool()["spec"]["template"]["serviceAccountName"] == "fork-worker"
 

@@ -617,13 +617,13 @@ Fork slice 1 starts an actor by forking a per-worker gVisor seed instead of
 booting it. A scanner child answers its first request 109 to 198 ms after the
 fork (N = 1 to 16). It holds about 37 MB of private memory. State: `off`. The
 fork control plane runs (step 4) and the slice is wired (step 5). No actor
-uses the fork: the pool has no worker, the Job is suspended and the gate is
-off.
+uses the fork: the pool's one worker is idle (step 6), the Job is suspended
+and the gate is off.
 
 | Piece | Where | Off because |
 | --- | --- | --- |
 | SandboxConfig `gvisor-fork` (fork build `0250f9acf`) and its asset Job | `projects/platform-factory/substrate/gvisor-fork/` | wired (step 5). No pool uses the config until step 6. `gvisor-default` stays the class default |
-| WorkerPool `gvisor-fork` (`platform: kvm`) | `gvisor-fork/kvm-pool.yaml` | `replicas: 0` until step 6 |
+| WorkerPool `gvisor-fork` (`platform: kvm`) | `gvisor-fork/kvm-pool.yaml` | one worker (step 6) that holds no seed, because the gate is off |
 | Conformance Job `gvisor-fork-conformance-3` | `gvisor-fork/conformance-job.yaml` | `suspend: true` until step 8 |
 | Latency Jobs `gvisor-fork-latency-1` and `gvisor-fork-latency-data-1` | `gvisor-fork/latency/` | a kustomization the directory does not list, and `suspend: true` |
 | Fork images (`ateapi`, `atecontroller`, `atelet`, `ateworker-gvisor`, `kubectl-ate`) | `.github/workflows/substrate-fork-images.yml` | the three control-plane images are pinned and live (step 4); the other two have no pod until steps 6 and 8 |
@@ -741,11 +741,50 @@ flowchart LR
    object above except the Namespace (`Prune=false`) and the asset Job (a hook,
    which Argo does not prune). Delete `job/gvisor-fork-assets-init` by hand, and
    the Namespace if the slice goes for good. The staged key stays in the bucket.
-6. Set the pool's `replicas` to 1. In `gvisor_fork_test.py`, update
-   `test_kvm_pool_has_no_workers_and_uses_the_fork_config` in the same change:
-   it asserts `replicas == 0`. Check that the worker pod runs with `/dev/kvm`,
+6. Cluster-affecting, Joe approves. Resize the pool and start one worker. In
+   `kvm-pool.yaml`, `replicas` is 1 and the pod template is the design's
+   (`substrate/egress-scan/ARCHITECTURE.md`, "Capacity"):
+
+   | Field | Before | After | Why |
+   | --- | --- | --- | --- |
+   | limits | 2 CPU, 1280Mi | 9 CPU, 2Gi | seed (1000m, 512 MiB cap) and 8 children (1000m, 144 MiB booked each) |
+   | requests | 100m, 256Mi | 500m, 1Gi | the design's scheduling reservation |
+   | `nodeAffinity` | none | prefer `kubernetes.io/hostname: node-1`, weight 100 | node-1 has the most request room. Soft, so a drained node-1 does not leave the pod pending |
+
+   Request room on 2026-11-23 (allocatable minus requests, from `kubectl
+   describe nodes`):
+
+   | Node | Memory left | After 1Gi | CPU left | After 500m |
+   | --- | --- | --- | --- | --- |
+   | node-1 | 5493Mi | 4469Mi | 8385m | 7885m |
+   | node-2 | 1981Mi | 957Mi | 6975m | 6475m |
+   | node-3 | 2601Mi | 1577Mi | 6010m | 5510m |
+
+   The pod fits every node, so the preference never blocks it. The scheduler
+   starts one pod and nothing rolls: no WorkerPool is edited but this one. Read
+   the room again before you merge, because the cluster changes (node-1 held
+   about 5.5 GiB on the day of the check). `kvm-pool.yaml` states the same
+   numbers. In `gvisor_fork_test.py`, the tests that named the staged state
+   change in the same change: `test_kvm_pool_has_one_worker_and_uses_the_fork_config`
+   (was `..._has_no_workers_...`, asserted `replicas == 0`),
+   `test_kvm_pool_template_sets_only_the_account_the_placement_and_the_resources`
+   and `test_kvm_pool_requests_1gi_and_limits_for_a_seed_and_8_children`. In
+   `resources_test.py`, the guard asserts `replicas == 1`.
+
+   Verify, read-only:
+
+   ```sh
+   kubectl -n substrate-gvisor-fork get pod -o wide     # 1 pod, Running, on node-1
+   kubectl get workerpools -A                           # gvisor-fork READY 1; the others unchanged
+   kubectl -n substrate-gvisor-fork get pod -o jsonpath='{.items[0].spec.containers[0].resources}'
+   kubectl -n substrate-gvisor-fork get pod -o yaml | grep -E 'fork-platform|ate.dev/kvm|seccomp|CAP|SYS_ADMIN'
+   kubectl describe node node-1 | sed -n '/Allocated resources/,/Events/p'
+   ```
+
+   The worker pod runs with `/dev/kvm` (the `ate.dev/kvm` limit),
    `--fork-platform=kvm`, the KVM capabilities and seccomp Unconfined. forkd
-   does not start yet: it starts with the first seed.
+   does not start yet: it starts with the first seed. An existing actor still
+   starts. Roll back by setting `replicas` to 0 (the resize can stay).
 7. Cluster-affecting, Joe approves. Add `ForkSeed` to `preview` in
    `values/common.yaml`, then rerun `render-upstream.sh`. The guard test reads
    `resources/upstream/`, so it fails only on the rendered files. The values feed
