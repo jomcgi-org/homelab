@@ -951,6 +951,14 @@ flowchart LR
    pod runs; the pod gets SIGTERM and the script cleans up). After a pass,
    delete `conformance-job.yaml` and its kustomization entries (a separate PR)
    so the Application is not left holding a finished Job.
+
+   Do not merge other `substrate` changes while the Job runs: the sync may wait
+   on it. Argo's behaviour with a running last-wave Job is not tested here. A
+   failed Job leaves `substrate` Degraded until it is removed or replaced.
+   Editing anything under `conformance/` changes the hash in the name of the
+   generated ConfigMap, and so the Job's pod template (its config volume): bump
+   the run suffix in the same change. `resources_test.py` pins the ConfigMap
+   name (`gvisor-fork-conformance-hbht65tgk9`) so such an edit fails CI.
    - When the seed starts, find `forkd started` in the worker log. Check forkd's
      `hello` assertions (capabilities, cgroup parent, Unconfined seccomp,
      `/dev/kvm`) and that `memory`, `pids` and `cpu` are delegated below

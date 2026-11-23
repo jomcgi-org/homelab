@@ -12,7 +12,9 @@
 # Pending one leaves the Application Degraded. The enable steps are in
 # projects/factory-cluster/README.md, "gVisor sandbox fork".
 # A Job's pod template is immutable: to run again, change the run suffix in
-# the name. The suffix is 3 because the fork re-pin changed the kubectl-ate
+# the name. Editing anything under conformance/ changes the generated
+# ConfigMap's hash, and so the Job's config volume and its pod template: bump
+# the run suffix in the same change (resources_test.py pins the hash). The suffix is 3 because the fork re-pin changed the kubectl-ate
 # image (-2 named the first fork build). To suspend it again, set suspend back
 # to true, which Kubernetes allows before the pod is done. To remove the test,
 # delete this file and its kustomization entries after reading the log; ArgoCD
