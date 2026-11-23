@@ -23,7 +23,9 @@
 # the CRD is rendered from the checkout. The images are the ones the manual
 # workflow .github/workflows/substrate-fork-images.yml published, pinned by
 # digest. ForkSeed (values/common.yaml) stays off: with the gate off the fork
-# changes no actor's behaviour.
+# changes no actor's behaviour. The overlay is not optional: every run renders
+# the fork images. To return to the release, revert the change or edit this
+# script.
 #
 # Rerun after changing VERSION, COMMIT, FORK_COMMIT or a chart digest; review
 # the diff of upstream/. Needs git, helm and crane.
@@ -135,7 +137,7 @@ if [[ "$(git -C "${tmp}/fork" rev-parse HEAD)" != "${FORK_COMMIT}" ]]; then
 	exit 1
 fi
 overlay_note="# Overlaid by render-upstream.sh from ${FORK_REPO%.git} ${FORK_COMMIT} (fork overlay)."
-helm template substrate-crds "${tmp}/fork/charts/substrate-crds" --namespace ate-system 	--output-dir "${tmp}/fork-rendered" >/dev/null
+helm template substrate-crds "${tmp}/fork/charts/substrate-crds" --namespace ate-system --output-dir "${tmp}/fork-rendered" >/dev/null
 {
 	echo "# Rendered by render-upstream.sh from ${FORK_REPO%.git} charts/substrate-crds"
 	echo "# at ${FORK_COMMIT} templates/ate.dev_workerpools.yaml. Do not edit."
@@ -153,7 +155,8 @@ for component in "${!FORK_DIGEST[@]}"; do
 		exit 1
 	fi
 	file="${OUT}/${fork_files[${component}]}"
-	old="${pinned[${IMAGES}/${component}:v${VERSION}]}"
+	release_ref="${IMAGES}/${component}:v${VERSION}"
+	old="${pinned[${release_ref}]}"
 	new="${FORK_IMAGES}/${component}:${FORK_TAG}@${FORK_DIGEST[${component}]}"
 	if [[ "$(grep -cF "image: ${old}" "${file}")" != 1 ]]; then
 		echo "${file} does not hold ${old} once" >&2
