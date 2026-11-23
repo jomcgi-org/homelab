@@ -284,8 +284,11 @@ def test_mirror_publishes_only_health_json_from_the_health_bucket():
     assert "  --exclude '/hikes/**' \\\n" in script
     assert "  --exclude '/ships/**' \\\n" in script
     health = (
-        'copyto "SRC0:factory-health/health.json" "R2:$R2_BUCKET/health.json" \\\n'
-        '    --ignore-times --header-upload "Cache-Control: public, max-age=60"'
+        'run cat "SRC0:factory-health/health.json" > "$scratch/health.json"\n'
+        '  if ! unchanged "R2:$R2_BUCKET/health.json" "$scratch/health.json"; then\n'
+        '    run copyto "$scratch/health.json" "R2:$R2_BUCKET/health.json" \\\n'
+        '      --ignore-times --header-upload "Cache-Control: public, max-age=60"\n'
+        "  fi"
     )
     assert health in script
     # Garage listings around the saved manifest, payloads without deletes,
@@ -293,7 +296,7 @@ def test_mirror_publishes_only_health_json_from_the_health_bucket():
     assert (
         script.index('cat "GARAGE:$GARAGE_BUCKET/manifest.json"')
         < script.index('\npayloads copy "GARAGE:$GARAGE_BUCKET" "R2:$R2_BUCKET"')
-        < script.index('copyto "$scratch/manifest.json" "R2:$R2_BUCKET/manifest.json"')
+        < script.index('run copyto "$scratch/manifest.json" "R2:$R2_BUCKET/manifest.json"')
         < script.index(health)
         < script.index('run delete "R2:$R2_BUCKET" --files-from-raw')
     )
@@ -301,11 +304,18 @@ def test_mirror_publishes_only_health_json_from_the_health_bucket():
 
 def test_sources_mirror_writer_buckets_under_their_prefixes():
     docs = render()
-    for prefix in ("stars-forecast", "hikes", "ships"):
+    # Each source changes every few hours, so its mirror runs every 10 minutes
+    # (R2 Class A operations), offset from the others.
+    schedules = {
+        "stars-forecast": "*/10 * * * *",
+        "hikes": "3-59/10 * * * *",
+        "ships": "6-59/10 * * * *",
+    }
+    for prefix, schedule in schedules.items():
         name = f"factory-public-{prefix}-mirror"
         job = docs["CronJob", name]["spec"]
         assert job["suspend"] is False
-        assert job["schedule"] == "* * * * *"
+        assert job["schedule"] == schedule
         container = job["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
         env = {e["name"]: e.get("value") for e in container["env"]}
         assert (env["GARAGE_BUCKET"], env["R2_BUCKET"]) == (prefix, "factory-public")
@@ -500,9 +510,9 @@ def test_ships_mirror_survives_an_interrupted_copy(tmp_path):
     for key in first - second:
         (bucket / key).unlink()
     # Two Garage listings around the manifest lookup and cat, the copy and
-    # its upload of the second track, the R2 listing, copyto and its upload,
-    # then the delete and its two deletes: 12 steps.
-    assert interrupt_at_every_step([first, second]) == 12
+    # its upload of the second track, the R2 listing, a cat of the R2 manifest,
+    # copyto and its upload, then the delete and its two deletes: 13 steps.
+    assert interrupt_at_every_step([first, second]) == 13
 
     # Recovery: the next complete run catches up.
     result, headers = mirror(r2)

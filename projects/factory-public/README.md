@@ -14,7 +14,7 @@ flowchart LR
   health["health CronJob (HOME-260)"] -- "write health.json" --> hgarage[("Garage factory-health")]
   garage -- "rclone, every minute" --> r2[("R2 factory-public")]
   hgarage -- "copy health.json only" --> r2
-  sources[("Garage stars-forecast, hikes and ships")] -- "read-only, one mirror each, under its prefix" --> r2
+  sources[("Garage stars-forecast, hikes and ships")] -- "read-only, one mirror each, every 10 minutes, under its prefix" --> r2
   r2 --> cdn["factory-data.jomcgi.dev"]
 ```
 

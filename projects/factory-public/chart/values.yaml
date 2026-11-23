@@ -21,12 +21,18 @@ buckets:
         - bucket: stars-forecast
           r2Prefix: stars-forecast
           manifestName: latest.json
+          # Every 10 minutes, offset from the other sources: this source changes
+          # every few hours, and each run costs R2 Class A operations.
+          schedule: "*/10 * * * *"
           suspend: false
         # https://factory-data.jomcgi.dev/hikes/latest.json
         # On since HOME-477. Set true to stop it; R2 keeps what it has.
         - bucket: hikes
           r2Prefix: hikes
           manifestName: latest.json
+          # Every 10 minutes, offset from the other sources: this source changes
+          # every few hours, and each run costs R2 Class A operations.
+          schedule: "3-59/10 * * * *"
           suspend: false
         # https://factory-data.jomcgi.dev/ships/latest.json
         # Public by Joe's decision (HOME-256 comment 4484). HOME-410 turns
@@ -34,6 +40,9 @@ buckets:
         - bucket: ships
           r2Prefix: ships
           manifestName: latest.json
+          # Every 10 minutes, offset from the other sources: this source changes
+          # every few hours, and each run costs R2 Class A operations.
+          schedule: "6-59/10 * * * *"
           suspend: false
   # The health publisher's own bucket: its write key covers nothing in
   # factory-public (HOME-260).

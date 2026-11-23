@@ -348,8 +348,11 @@ flowchart LR
    max-age=31536000, immutable. It deletes nothing. Then the run lists R2. If
    a listed payload is not in R2, the writer removed it before the copy. The
    run then stops before the manifest, and the next run saves a new one.
-2. The run uploads the saved manifest with Cache-Control: public, max-age=60.
-   If Garage had no manifest, the run removes the R2 manifest.
+2. The run reads the R2 manifest. If it differs from the saved one, the run
+   uploads the saved manifest with Cache-Control: public, max-age=60. If the
+   bytes are equal, the run writes nothing: an R2 read is a Class B operation
+   and a write is a Class A operation, which costs ten times more. If Garage
+   had no manifest, the run removes the R2 manifest.
 3. `rclone delete --files-from-raw` removes the R2 payloads that neither
    Garage listing holds. The saved manifest names none of them, also when the
    writer removes payloads during the run. The next run deletes those.
