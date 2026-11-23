@@ -40,8 +40,8 @@ py_test(
         "upstream/**",
     ]) + [
         "//projects/platform-factory/substrate/credential-provider:image_digest",
-        "//projects/platform-factory/substrate/egress-scan/chart",
         "//projects/platform-factory/substrate/egress-scan/chart:image_values",
+        "//projects/platform-factory/substrate/egress-scan/chart:values",
         "//projects/platform-factory/substrate/egress-scan/deploy:application.yaml",
         "//projects/platform-factory/substrate/egress-scan/deploy:manifests/all.yaml",
         "@multitool//tools/kustomize",
