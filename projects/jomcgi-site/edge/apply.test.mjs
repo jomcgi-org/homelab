@@ -508,7 +508,9 @@ test("a live rule with an unknown top-level setting is a difference", () => {
 test("routes off on a zone that matches the files writes nothing", async () => {
   // The live rules equal cache-rules.json and routes are off, so the sync
   // needs no write permission at all.
-  const zone = fakeZone({ rules: [MONOLITH] });
+  const zone = fakeZone({
+    rules: RULES.rules.map((rule, i) => ({ id: `r${i}`, version: "1", ...rule })),
+  });
   const log = await apply(zone.call, ROUTES, RULES, { serveRoutes: false });
   assert.deepEqual(zone.state.writes, []);
   assert.deepEqual(log, ["no change", "read-back matches the files"]);
@@ -636,4 +638,14 @@ test("home and machine-readable routes are exact and leave unmigrated paths on t
   ]) {
     assert.ok(!served(`jomcgi.dev${path}`), path);
   }
+});
+
+test("the factory-data rule caches the bucket's JSON by its own Cache-Control", () => {
+  // Cloudflare caches by file extension and skips .json, so R2 objects such as
+  // manifest.json report cf-cache-status DYNAMIC without this rule.
+  const rule = RULES.rules.find((r) => r.description === "Factory data");
+  assert.equal(rule.expression, '(http.host eq "factory-data.jomcgi.dev")');
+  assert.equal(rule.action_parameters.cache, true);
+  assert.equal(rule.action_parameters.edge_ttl.mode, "respect_origin");
+  assert.equal(rule.action_parameters.browser_ttl.mode, "respect_origin");
 });

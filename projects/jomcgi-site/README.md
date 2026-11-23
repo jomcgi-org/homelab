@@ -98,6 +98,10 @@ image ─► run.sh (Sync hook Job, and refresh CronJob every 30 min):
   base path pages read.
 - **Caching.** `/assets/*` files are named by content hash and cached forever.
   A deploy serves new files at once, so routine releases need no cache purge.
+  `factory-data.jomcgi.dev` is an R2 custom domain, not this Worker. Cloudflare
+  caches by file extension and skips `.json`, so the "Factory data" cache rule
+  (`edge/cache-rules.json`) makes its objects cacheable by their own
+  `Cache-Control`: `immutable` for content-named files, 60 s for `manifest.json`.
 - **Performance.** Each page's initial JavaScript must stay under 150 KiB
   gzipped. `budget.mjs` measures it, `:budget_test` runs it on the build, and
   a unit test proves it fails an over-budget page.
