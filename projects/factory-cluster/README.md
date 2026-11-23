@@ -748,22 +748,22 @@ flowchart LR
    | Field | Before | After | Why |
    | --- | --- | --- | --- |
    | limits | 2 CPU, 1280Mi | 9 CPU, 2Gi | seed (1000m, 512 MiB cap) and 8 children (1000m, 144 MiB booked each) |
-   | requests | 100m, 256Mi | 500m, 1Gi | the design's scheduling reservation |
+   | requests | 100m, 256Mi | 4 CPU, 1Gi | the design's scheduling reservation. 4 CPU matches the in-flight cap of 4: a 500m request would give four scans half a core's shares under contention |
    | `nodeAffinity` | none | prefer `kubernetes.io/hostname: node-1`, weight 100 | node-1 has the most request room. Soft, so a drained node-1 does not leave the pod pending |
 
    Request room on 2026-11-23 (allocatable minus requests, from `kubectl
    describe nodes`):
 
-   | Node | Memory left | After 1Gi | CPU left | After 500m |
+   | Node | Memory left | After 1Gi | CPU left | After 4 CPU |
    | --- | --- | --- | --- | --- |
-   | node-1 | 5493Mi | 4469Mi | 8285m | 7785m |
-   | node-2 | 1981Mi | 957Mi | 6975m | 6475m |
-   | node-3 | 2601Mi | 1577Mi | 6010m | 5510m |
+   | node-1 | 5173Mi | 4149Mi | 8275m | 4275m |
+   | node-2 | 1981Mi | 957Mi | 6975m | 2975m |
+   | node-3 | 2601Mi | 1577Mi | 6010m | 2010m |
 
    The pod fits every node, so the preference never blocks it. The scheduler
    starts one pod and nothing rolls: no WorkerPool is edited but this one. Read
    the room again before you merge, because the cluster changes (node-1 held
-   about 5.5 GiB on the day of the check). `kvm-pool.yaml` states the same
+   about 5.1 GiB on the day of the check). `kvm-pool.yaml` states the same
    numbers. In `gvisor_fork_test.py`, the tests that named the staged state
    change in the same change: `test_kvm_pool_has_one_worker_and_uses_the_fork_config`
    (was `..._has_no_workers_...`, asserted `replicas == 0`),
