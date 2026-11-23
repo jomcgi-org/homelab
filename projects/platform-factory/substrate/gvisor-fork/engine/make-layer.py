@@ -78,11 +78,18 @@ def main(wheel: str, bin_dir: str, out: str) -> None:
     with zipfile.ZipFile(io.BytesIO(wheel_bytes)) as zf:
         core = prefix + "semgrep-core"
         files["semgrep/semgrep-core"] = (0o755, zf.read(core))
-        libs = [n for n in zf.namelist() if n.startswith(prefix + "libs/") and not n.endswith("/")]
+        libs = [
+            n
+            for n in zf.namelist()
+            if n.startswith(prefix + "libs/") and not n.endswith("/")
+        ]
         if not libs:
             sys.exit("the wheel has no libs/ directory")
         for name in libs:
-            files["semgrep/libs/" + name[len(prefix + "libs/") :]] = (0o755, zf.read(name))
+            files["semgrep/libs/" + name[len(prefix + "libs/") :]] = (
+                0o755,
+                zf.read(name),
+            )
     bins = Path(bin_dir)
     files["semgrep/shim.so"] = (0o755, (bins / "shim.so").read_bytes())
     files["usr/local/bin/forksrv-net"] = (0o755, (bins / "forksrv-net").read_bytes())
@@ -90,7 +97,9 @@ def main(wheel: str, bin_dir: str, out: str) -> None:
     files["semgrep/rules.json"] = (0o644, (HERE / "rules.json").read_bytes())
     files["semgrep/targets.json"] = (0o644, (HERE / "targets.json").read_bytes())
     files["scan/target.json"] = (0o644, b"x" * PLACEHOLDER_BYTES)
-    notice = NOTICE.format(version=pins["SEMGREP_VERSION"], wheel=pins["WHEEL_FILE"], sha=sha)
+    notice = NOTICE.format(
+        version=pins["SEMGREP_VERSION"], wheel=pins["WHEEL_FILE"], sha=sha
+    )
     files["semgrep/NOTICE"] = (0o644, notice.encode())
 
     dirs = {""}
