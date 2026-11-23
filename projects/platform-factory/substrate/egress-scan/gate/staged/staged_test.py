@@ -56,6 +56,9 @@ def test_pod_is_locked_down() -> None:
     assert pod["securityContext"]["runAsNonRoot"] is True
     assert pod["securityContext"]["runAsUser"] == 65532
     assert pod["securityContext"]["fsGroup"] == 65532
+    # The stop takes DrainDelay (5 s) + ShutdownGrace (10 s) + the cleanup. A
+    # shorter grace period would kill the gate before it deletes its children.
+    assert pod["terminationGracePeriodSeconds"] >= 30
     # The same read login as the live egress-scan Deployment.
     assert pod["imagePullSecrets"] == [{"name": "ghcr-imagepull-secret"}]
     assert pod["securityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
@@ -186,24 +189,55 @@ def test_ports_are_named_as_the_policies_assume() -> None:
     assert sp["targetPort"] == "scan" and ports["scan"] == int(sp["port"])
 
 
+_SA = "object.spec.?serviceAccountName.orValue('')"
+_ALIAS = "object.spec.?serviceAccount.orValue('')"
+_TPL_SA = "object.spec.template.spec.?serviceAccountName.orValue('')"
+_TPL_ALIAS = "object.spec.template.spec.?serviceAccount.orValue('')"
+
+
+def _clauses_hold(expression: str, fields: list[str]) -> bool:
+    """True when the expression is exactly `field != 'engine-gate'` for each
+    field, joined by `&&`: a deny of every spelling of the ServiceAccount."""
+    clauses = [c.strip() for c in " ".join(expression.split()).split("&&")]
+    return clauses == [f"{f} != 'engine-gate'" for f in fields]
+
+
+def test_clause_check_rejects_a_weakened_expression() -> None:
+    # Mutations of the pods expression: each must fail the check, so that the
+    # test below cannot pass on a policy that lets a spelling through.
+    good = f"{_SA} != 'engine-gate' && {_ALIAS} != 'engine-gate'"
+    assert _clauses_hold(good, [_SA, _ALIAS])
+    for bad in (
+        f"{_SA} != 'engine-gate'",  # the alias clause is gone
+        f"{_ALIAS} != 'engine-gate'",  # the name clause is gone
+        f"{_SA} == 'engine-gate' && {_ALIAS} != 'engine-gate'",  # direction
+        f"{_SA} != 'engine-gate' || {_ALIAS} != 'engine-gate'",  # or
+        f"{_SA} != 'engine-gate' && {_ALIAS} != 'engine-gate' && true",
+        f"{_SA} != 'other' && {_ALIAS} != 'engine-gate'",
+    ):
+        assert not _clauses_hold(bad, [_SA, _ALIAS]), bad
+
+
 def test_only_argocd_may_run_a_pod_as_the_gate() -> None:
-    exempt = {
-        "system:serviceaccount:argocd:argocd-application-controller",
-        "system:serviceaccount:kube-system:statefulset-controller",
-        "system:serviceaccount:kube-system:generic-garbage-collector",
-    }
+    argocd = "system:serviceaccount:argocd:argocd-application-controller"
+    sts = "system:serviceaccount:kube-system:statefulset-controller"
+    gc = "system:serviceaccount:kube-system:generic-garbage-collector"
+    # name: (resources, exempt identities, fields the expression must deny)
     shapes = {
-        "engine-gate-serviceaccount": {"serviceaccounts"},
-        "engine-gate-pods": {"pods"},
-        "engine-gate-workloads": {
-            "statefulsets",
-            "deployments",
-            "replicasets",
-            "daemonsets",
-            "jobs",
-        },
+        # No controller creates a ServiceAccount for ArgoCD.
+        "engine-gate-serviceaccount": (
+            {"serviceaccounts"},
+            {argocd},
+            ["object.metadata.name"],
+        ),
+        "engine-gate-pods": ({"pods"}, {argocd, sts, gc}, [_SA, _ALIAS]),
+        "engine-gate-workloads": (
+            {"statefulsets", "deployments", "replicasets", "daemonsets", "jobs"},
+            {argocd, sts, gc},
+            [_TPL_SA, _TPL_ALIAS],
+        ),
     }
-    for name, resources in shapes.items():
+    for name, (resources, exempt, fields) in shapes.items():
         policy = _one("ValidatingAdmissionPolicy", name)["spec"]
         binding = _one("ValidatingAdmissionPolicyBinding", name)["spec"]
         assert policy["failurePolicy"] == "Fail"
@@ -211,22 +245,15 @@ def test_only_argocd_may_run_a_pod_as_the_gate() -> None:
         assert binding["validationActions"] == ["Deny"]
         selector = policy["matchConstraints"]["namespaceSelector"]["matchLabels"]
         assert selector == {"kubernetes.io/metadata.name": "ate-system"}
-        covered = {
-            r
-            for rule in policy["matchConstraints"]["resourceRules"]
-            for r in rule["resources"]
-        }
-        assert covered == resources
-        for rule in policy["matchConstraints"]["resourceRules"]:
+        rules = policy["matchConstraints"]["resourceRules"]
+        assert {r for rule in rules for r in rule["resources"]} == resources
+        for rule in rules:
             assert set(rule["operations"]) == {"CREATE", "UPDATE"}
         (cond,) = policy["matchConditions"]
-        # The exempt identities are exactly these and no others.
-        assert (
-            set(re.findall(r"'(system:serviceaccount:[^']+)'", cond["expression"]))
-            == exempt
-        )
+        assert set(re.findall(r"'(system:serviceaccount:[^']+)'", cond["expression"])) == exempt
+        assert " ".join(cond["expression"].split()).startswith("!(request.userInfo.username in [")
         (check,) = policy["validations"]
-        assert "engine-gate" in check["expression"]
+        assert _clauses_hold(check["expression"], fields), check["expression"]
 
 
 def test_nothing_is_cluster_scoped_except_the_scrape_rule_and_the_guards() -> None:
