@@ -192,11 +192,12 @@ projects/factory-cluster/nodes/node-disk-gc.sh --apply  # remove it
 ```
 
 Options `--go-days` (3), `--tmp-hours` (12) and `--bazel-days` (7) set the age
-limits, in whole units of time (`--go-days 3` keeps a file that is 2.9 days old).
-`--tmp-hours` must be at least 1. The Go fuzz corpus (`fuzz/`) always stays.
-`GOCACHE`, `BAZEL_DISK_CACHE` and `GC_TMP_DIR` set the three paths. The script
-resolves `GC_TMP_DIR` to its real path first, and skips a Go cache that is the
-home directory or holds it.
+limits. Each is a whole number, and `--tmp-hours` must be at least 1. The check
+is exact: with `--go-days 3`, a file 2.9 days old stays. The Go fuzz corpus
+(`fuzz/`) always stays. `GOCACHE`, `BAZEL_DISK_CACHE` and `GC_TMP_DIR` set the
+three paths. The script uses real paths: it resolves `GC_TMP_DIR` first, and it
+skips a Go cache that is the home directory or holds it. `HOME` must be an
+absolute path.
 
 A test directory stays when any of these is true. The script checks every
 process that the caller can read:
@@ -210,20 +211,24 @@ process that the caller can read:
 - A process has bound a unix socket path in it (`/proc/net/unix`).
 - A postgres process names it.
 - A mount point is the directory or lies under it (`/proc/self/mountinfo`).
+- It is the source of a bind mount: another mount of the same filesystem shows
+  the directory, or a path inside it, or a path that holds it. A mount of the
+  whole filesystem counts, so the script keeps too much, never too little.
 - Its name holds a newline.
 - It holds a subdirectory that the caller cannot read. With `--apply`, the
-  script opens that subdirectory with `chmod` first and then runs the age
-  check. A dry run prints `keep (unreadable; ...)`.
+  script opens each one with `chmod`, runs the age check again, and puts the
+  old modes back if it keeps the directory. A dry run keeps it and says so.
 
-The scan runs again right before each removal, and removal does not cross a
-mount point. Known gaps: the script cannot see a process that another user
-runs, or a process that holds a directory only by a relative path (a unix
-socket bound with a relative path, or a relative argument after a `chdir`).
+The scan runs again right before each removal when the last scan is more than
+2 s old. Removal does not cross a mount point. Known gaps: the script cannot
+see a process that another user runs, or a process that holds a directory only
+by a relative path (a unix socket bound with a relative path, or a relative
+argument after a `chdir`). It matches command-line and environment text as
+written, so text that names the directory through a symlink does not match
+(open files, working directories and mappings are real paths, so they do).
 If it cannot remove a directory, it prints `failed: <directory>` and goes on.
 
-The script refuses to run as root. It makes one exception: when `GOCACHE`,
-`BAZEL_DISK_CACHE` and `GC_TMP_DIR` are all set and `GC_TMP_DIR` is not `/tmp`,
-a root run touches only those three paths. The tests use that exception.
+The script refuses to run as root, with no exception.
 
 No timer runs the script. A person decides whether to install one.
 

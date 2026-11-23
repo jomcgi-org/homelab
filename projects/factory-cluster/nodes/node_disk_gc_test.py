@@ -39,7 +39,30 @@ def old_tree(path, hours=48):
 
 
 @pytest.fixture
-def node(tmp_path):
+def base(tmp_path):
+    """A directory for the fixture. When the runner is root, the test process
+    gives up root for the test, because the script refuses to run as root."""
+    if os.geteuid() != 0:
+        yield tmp_path
+        return
+    path = Path(tempfile.mkdtemp(prefix="gc", dir="/tmp"))
+    path.chmod(0o755)
+    os.chown(path, 65534, 65534)
+    os.setgroups([])
+    os.setresgid(65534, 65534, 0)
+    os.setresuid(65534, 65534, 0)
+    try:
+        yield path
+    finally:
+        os.setresuid(0, 0, 0)
+        os.setresgid(0, 0, 0)
+        subprocess.run(["chmod", "-R", "u+rwX", str(path)], check=False)
+        shutil.rmtree(path, ignore_errors=True)
+
+
+@pytest.fixture
+def node(base):
+    tmp_path = base
     home = tmp_path / "home"
     go = home / ".cache" / "go-build"
     bazel = home / ".cache" / "bazel" / "disk_cache"
@@ -154,9 +177,9 @@ def test_directories_in_use_stay(node):
     assert "keep (in use)" in result.stdout
 
 
-def test_a_directory_that_is_not_a_cache_is_refused(node, tmp_path):
+def test_a_directory_that_is_not_a_cache_is_refused(node, base):
     # No Go README marker: skipped. A path that is not named disk_cache: skipped.
-    elsewhere = tmp_path / "home" / "documents"
+    elsewhere = base / "home" / "documents"
     write(elsewhere / "old", old=90 * DAY)
     (node["go"] / "README").write_text("not a Go cache\n")
     env = dict(node["env"], GOCACHE=str(node["go"]), BAZEL_DISK_CACHE=str(elsewhere))
@@ -287,10 +310,10 @@ def test_a_mount_point_under_a_directory_keeps_it(node):
 
 
 @needs_unshare
-def test_a_symlinked_tmp_directory_does_not_hide_a_mount(node, tmp_path):
+def test_a_symlinked_tmp_directory_does_not_hide_a_mount(node, base):
     tmp = node["tmp"]
     sources, mounts, gone = mount_fixture(tmp)
-    link = tmp_path / "link-to-tmp"
+    link = base / "link-to-tmp"
     link.symlink_to(tmp)
     env = dict(node["env"], GC_TMP_DIR=str(link))
     result = run_with_mounts(node, mounts, "--apply", env=env)
@@ -426,7 +449,6 @@ def unlock(path):
     subprocess.run(["chmod", "-R", "u+rwX", str(path)], check=False)
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root reads every directory")
 def test_an_unreadable_subdirectory_is_kept_in_a_dry_run(node):
     locked, _ = locked_tree(node["tmp"] / "pgdata-locked")
     try:
@@ -457,25 +479,32 @@ def test_an_unreadable_subdirectory_does_not_hide_a_newer_file(node):
     tmp = node["tmp"]
     locked, inner = locked_tree(tmp / "pgdata-locked")
     inner.chmod(0o700)
-    write(inner / "fresh")  # a file from the last hour, below the locked directory
+    deep = inner / "deep"
+    write(deep / "fresh")  # a file from the last hour, two levels down
+    deep.chmod(0)
     age(inner, 48 * 3600)
     age(locked, 48 * 3600)
     inner.chmod(0)
     try:
         result = run(node, "--apply")
+        inner_mode = inner.stat().st_mode & 0o777
+        inner.chmod(0o100)  # search only, so that deep can be examined
+        modes = (inner_mode, deep.stat().st_mode & 0o777)
     finally:
         unlock(locked)
     assert result.returncode == 0, result.stderr
     assert locked.exists()
-    assert (inner / "fresh").exists()
-    assert "keep (newer file)" in result.stdout or "keep (unreadable" in result.stdout
+    assert (deep / "fresh").exists()
+    assert "keep (newer file)" in result.stdout
+    # The directory stays, so the modes that the check changed are put back.
+    assert modes == (0, 0)
 
 
-def test_a_failed_removal_is_reported_and_the_run_goes_on(node, tmp_path):
+def test_a_failed_removal_is_reported_and_the_run_goes_on(node, base):
     tmp = node["tmp"]
     stuck = old_tree(tmp / "pgdata-stuck")
     other = old_tree(tmp / "pgdata-other")
-    fake = tmp_path / "bin"
+    fake = base / "bin"
     fake.mkdir()
     (fake / "rm").write_text(
         '#!/bin/sh\ncase "$*" in *pgdata-stuck*) exit 1 ;; esac\nexec /bin/rm "$@"\n'
@@ -500,8 +529,8 @@ def test_a_newline_in_a_name_keeps_the_directory(node):
     assert "keep (name has a newline)" in result.stdout
 
 
-def test_symlinks_in_a_cache_are_not_followed(node, tmp_path):
-    outside = tmp_path / "outside"
+def test_symlinks_in_a_cache_are_not_followed(node, base):
+    outside = base / "outside"
     keep = write(outside / "precious", old=90 * DAY)
     (node["go"] / "ab" / "filelink").symlink_to(keep)
     (node["go"] / "ab" / "dirlink").symlink_to(outside, target_is_directory=True)
@@ -541,8 +570,8 @@ def test_ages_are_exact(node):
 @pytest.mark.parametrize(
     "value", ["/", "relative", "{tmp}/", "{home}", "{parent}", "{link_home}"]
 )
-def test_unsafe_tmp_directories_are_refused(node, tmp_path, value):
-    link = tmp_path / "link-home"
+def test_unsafe_tmp_directories_are_refused(node, base, value):
+    link = base / "link-home"
     link.symlink_to(node["home"])
     path = value.format(
         tmp=node["tmp"],
@@ -566,12 +595,10 @@ def test_a_cache_path_with_trailing_slashes_works(node, suffix):
     assert "ab/new-a" in files(node["go"])
 
 
-@pytest.mark.parametrize("where", ["home", "parent", "root"])
+@pytest.mark.parametrize("where", ["home", "parent"])
 def test_a_go_cache_that_holds_the_home_directory_is_refused(node, where):
     # A Go README in the home directory must not make it a cache.
-    holder = {"home": node["home"], "parent": node["home"].parent}.get(where)
-    if holder is None:
-        pytest.skip("a README in / is not possible here")
+    holder = {"home": node["home"], "parent": node["home"].parent}[where]
     (holder / "README").write_text(GO_README)
     victim = write(node["home"] / "documents" / "old-file", old=90 * DAY)
     for suffix in ("", "/"):
@@ -582,48 +609,73 @@ def test_a_go_cache_that_holds_the_home_directory_is_refused(node, where):
         assert "skipped (not a Go build cache, or it holds the home" in result.stdout
 
 
-def run_as_root(node, *args, env):
-    """Run the script as uid 0: directly when the runner is root, else in a
-    user namespace that maps the caller to root."""
-    command = ["bash", str(SCRIPT), *args]
-    if os.geteuid() != 0:
-        command = ["unshare", "-Ur", *command]
-    return subprocess.run(command, env=env, capture_output=True, text=True, check=False)
-
-
-root_namespace = pytest.mark.skipif(
-    os.geteuid() != 0 and (shutil.which("unshare") is None or not namespaces_work()),
-    reason="cannot become root here",
-)
-
-
-@root_namespace
-@pytest.mark.parametrize("missing", ["GOCACHE", "BAZEL_DISK_CACHE", "GC_TMP_DIR"])
-def test_root_is_refused_unless_every_path_is_explicit(node, missing):
-    env = {k: v for k, v in node["env"].items() if k != missing}
-    env["HOME"] = "/nonexistent"  # a test directory under /tmp holds the real HOME
-    result = run_as_root(node, "--apply", env=env)
-    assert result.returncode == 2
-    assert "not as root" in result.stderr
-    assert "Removed" not in result.stdout
-
-
-@root_namespace
-@pytest.mark.parametrize("path", ["/tmp", "{link}"])
-def test_root_is_refused_on_slash_tmp(node, tmp_path, path):
-    link = tmp_path / "link-to-slash-tmp"
-    link.symlink_to("/tmp")
-    env = dict(node["env"], GC_TMP_DIR=path.format(link=link), HOME="/nonexistent")
-    result = run_as_root(node, "--apply", env=env)
-    assert result.returncode == 2
-    assert "not as root" in result.stderr
-
-
-@root_namespace
-def test_root_runs_when_every_path_is_explicit(node):
+def test_root_is_refused_with_no_exception(node, base):
+    fake = base / "bin"
+    fake.mkdir()
+    real_id = shutil.which("id")
+    (fake / "id").write_text(
+        f'#!/bin/sh\nif [ "$1" = -u ]; then echo 0; else exec {real_id} "$@"; fi\n'
+    )
+    (fake / "id").chmod(0o755)
     old_tree(node["tmp"] / "pgdata-a")
-    result = run_as_root(node, "--apply", env=node["env"])
+    before = files(node["tmp"]), files(node["go"]), files(node["bazel"])
+    # Every path is set, and GC_TMP_DIR is not /tmp: the old exception.
+    env = dict(node["env"], PATH=f"{fake}:{os.environ['PATH']}")
+    result = run(node, "--apply", env=env)
+    assert result.returncode == 2
+    assert "not as root" in result.stderr
+    assert (files(node["tmp"]), files(node["go"]), files(node["bazel"])) == before
+
+
+@pytest.mark.parametrize("home", ["", "relative"])
+def test_home_must_be_an_absolute_path(node, home):
+    env = dict(node["env"], HOME=home)
+    del env["GOCACHE"]
+    result = run(node, "--apply", env=env)
+    assert result.returncode == 2
+    assert "HOME" in result.stderr
+
+
+def test_a_double_slash_path_is_collapsed(node):
+    old_tree(node["tmp"] / "pgdata-a")
+    env = dict(node["env"], GC_TMP_DIR="/" + str(node["tmp"]))
+    result = run(node, env=env)
     assert result.returncode == 0, result.stderr
-    assert "running as root on" in result.stdout
-    assert remaining(node["tmp"]) == []
-    assert files(node["go"]) == {"README", "trim.txt", "ab/new-a"}
+    assert f"Test directories in {node['tmp']} " in result.stdout
+    assert "//" not in result.stdout.split("Test directories in")[1].split(" ")[0]
+
+
+def test_a_proc_root_path_does_not_pass_the_home_guards(node):
+    # /proc/self/root/<home> is the home directory by another name.
+    alias = "/proc/self/root" + str(node["home"])
+    env = dict(node["env"], GC_TMP_DIR=alias)
+    result = run(node, "--apply", env=env)
+    assert result.returncode == 2
+    assert "GC_TMP_DIR" in result.stderr
+    (node["home"] / "README").write_text(GO_README)
+    victim = write(node["home"] / "documents" / "old-file", old=90 * DAY)
+    env = dict(node["env"], GOCACHE=alias)
+    result = run(node, "--apply", env=env)
+    assert result.returncode == 0, result.stderr
+    assert victim.exists()
+    assert "skipped (not a Go build cache" in result.stdout
+
+
+@needs_unshare
+def test_the_source_of_a_bind_mount_keeps_the_directory(node, base):
+    tmp = node["tmp"]
+    source = old_tree(tmp / "pgdata-source")
+    inside = old_tree(tmp / "pgdata-inside")
+    gone = old_tree(tmp / "pgdata-gone")
+    elsewhere = [base / "elsewhere-one", base / "elsewhere-two"]
+    for path in elsewhere:
+        path.mkdir()
+    # One bind mount of the directory, one of a directory inside another one.
+    mounts = [(source, elsewhere[0]), (inside / "base", elsewhere[1])]
+    result = run_with_mounts(node, mounts, "--apply")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert remaining(tmp) == ["pgdata-inside", "pgdata-source"]
+    assert result.stdout.count("keep (mount source)") == 2
+    assert (source / "base" / "1" / "relfile").exists()
+    assert (inside / "base" / "1" / "relfile").exists()
+    assert not gone.exists()
