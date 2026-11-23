@@ -1,12 +1,12 @@
 # invariant: PLAT-6
 # The dedicated worker pool for fork slice 1: gVisor on the KVM platform, with
-# no workers (replicas 0). It stays unwired (see kustomization.yaml), and when
-# it is wired it still starts no pod until step 6 of the enable steps raises
-# replicas (projects/factory-cluster/README.md, "gVisor sandbox fork").
+# no workers (replicas 0). It is wired (see kustomization.yaml) since step 5 and
+# starts no pod until step 6 of the enable steps raises replicas
+# (projects/factory-cluster/README.md, "gVisor sandbox fork").
 #
 # platform: kvm exists only in the fork's WorkerPool CRD (jomcgi-org/substrate
-# fork/seed-slice1), so this file cannot be applied before the CRD, the control
-# plane and atelet images come from the fork (step 4). ForkSeed (preview gate)
+# fork/seed-slice1), which came with the fork control plane and atelet images
+# (step 4). ForkSeed (preview gate)
 # stays off in ../values/common.yaml until step 7, after a worker has started.
 # The gates X1 to X9 run at step 9 with the gate on cluster-wide. Only this
 # pool's workers can hold seeds. ForkSeed is a process-wide flag that ateapi,

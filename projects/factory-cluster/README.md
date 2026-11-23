@@ -615,28 +615,31 @@ the log, then delete the Job file and its kustomization entries.
 
 Fork slice 1 starts an actor by forking a per-worker gVisor seed instead of
 booting it. A scanner child answers its first request 109 to 198 ms after the
-fork (N = 1 to 16). It holds about 37 MB of private memory. State: `staged off`.
-Nothing below runs on the cluster.
+fork (N = 1 to 16). It holds about 37 MB of private memory. State: `off`. The
+fork control plane runs (step 4) and the slice is wired (step 5). No actor
+uses the fork: the pool has no worker, the Job is suspended and the gate is
+off.
 
 | Piece | Where | Off because |
 | --- | --- | --- |
-| SandboxConfig `gvisor-fork` (fork build `0250f9acf`) and its asset Job | `projects/platform-factory/substrate/gvisor-fork/` | `resources/kustomization.yaml` does not list the directory; `resources_test.py` fails if it does |
-| WorkerPool `gvisor-fork` (`platform: kvm`) | `gvisor-fork/kvm-pool.yaml` | unwired, and `replicas: 0` |
-| Conformance Job `gvisor-fork-conformance-2` | `gvisor-fork/conformance-job.yaml` | unwired, and `suspend: true` |
+| SandboxConfig `gvisor-fork` (fork build `0250f9acf`) and its asset Job | `projects/platform-factory/substrate/gvisor-fork/` | wired (step 5). No pool uses the config until step 6. `gvisor-default` stays the class default |
+| WorkerPool `gvisor-fork` (`platform: kvm`) | `gvisor-fork/kvm-pool.yaml` | `replicas: 0` until step 6 |
+| Conformance Job `gvisor-fork-conformance-2` | `gvisor-fork/conformance-job.yaml` | `suspend: true` until step 8 |
 | Latency Jobs `gvisor-fork-latency-1` and `gvisor-fork-latency-data-1` | `gvisor-fork/latency/` | a kustomization the directory does not list, and `suspend: true` |
-| Fork images (`ateapi`, `atecontroller`, `atelet`, `ateworker-gvisor`, `kubectl-ate`) | `.github/workflows/substrate-fork-images.yml` | manual dispatch only; no pin changes |
-| `ForkSeed` preview gate | `substrate/values/common.yaml` | not listed |
+| Fork images (`ateapi`, `atecontroller`, `atelet`, `ateworker-gvisor`, `kubectl-ate`) | `.github/workflows/substrate-fork-images.yml` | the three control-plane images are pinned and live (step 4); the other two have no pod until steps 6 and 8 |
+| `ForkSeed` preview gate | `substrate/values/common.yaml` | not listed until step 7 |
 
 Existing gVisor pools stay on systrap and `gvisor-default`. The fork's CRD, API
-server, controller and atelet are not deployed, so `platform: kvm` cannot apply.
+server, controller and atelet run since step 4, so `platform: kvm` applies.
 
 #### Enable
 
 Joe approves each step that changes the cluster. Steps 1 to 3 touch no cluster
 object. Steps 5, 6 and 8 also change the cluster. Steps 4 and 7
-also roll the control plane: step 4 replaces the `ateapi`, `atecontroller` and
+also roll the control plane: step 4 replaced the `ateapi`, `atecontroller` and
 `atelet` images, and step 7 changes the preview gates that every
 control-plane component and worker reads. Joe approves both before they merge.
+Each step is one PR. Merge it, verify it on the cluster, then start the next.
 
 ```mermaid
 flowchart LR
@@ -662,9 +665,9 @@ flowchart LR
 3. Done. The `Substrate fork engine image` workflow (run 45140818290) published
    `engine-oss:1.186.0-946d07e5597c`, and `conformance/template.yaml` names it by
    digest. The package is public.
-4. Cluster-affecting, Joe approves. Merge the fork overlay that
-   `render-upstream.sh` renders, with the gate off. It changes four rendered
-   objects: the WorkerPool CRD (an optional `platform` field and one validation
+4. Done (PR #8590, merged 2026-11-23 10:05Z). The fork overlay that
+   `render-upstream.sh` renders is merged, with the gate off. It changed four
+   rendered objects: the WorkerPool CRD (an optional `platform` field and one validation
    rule) and the images of Deployments `ate-api-server` and `ate-controller` and
    DaemonSet `atelet`. The roll replaces both `ate-api-server` pods one at a
    time, the `ate-controller` pod, and the `atelet` pod on each of the three
@@ -675,19 +678,67 @@ flowchart LR
    Substrate". The first `ate-api-server` start writes a new OpenFGA authorization
    model (the fork adds `can_create_fork_template`). To roll back, revert the
    PR: the images return to their v1.0.1 digests, and the old server writes its
-   own model again at start.
-5. Wire `../gvisor-fork` in `resources/kustomization.yaml`. The pool's
-   `workerImage` already names the published digest. Keep `replicas` at 0. In
-   `resources_test.py`, replace `test_gvisor_fork_slice_is_staged_and_not_wired`
-   with a test of the wired objects in the same change. Keep
-   `test_fork_seed_gate_is_off` until step 7. The directory renders 13
-   objects: the SandboxConfig, the asset Job (a Sync hook, so it runs at once),
-   the suspended conformance Job, the WorkerPool, the namespace, the
-   ServiceAccount, the two generated ConfigMaps (`gvisor-fork-assets` and
-   `gvisor-fork-conformance`) and five CiliumNetworkPolicies. Two of the
-   policies add ingress rules to existing pods: one on `ate-api-server` (the
-   conformance Job) and one on `rustfs` (the asset Job). Argo shows the
-   suspended Job with health Suspended from this step until step 8.
+   own model again at start. Live check: the three images carry the fork tag
+   `fork-b6b0ec3e217c`, no component reads `ForkSeed`, and the CRD lists
+   `platform`.
+5. Cluster-affecting, Joe approves. Wire `../gvisor-fork` in
+   `resources/kustomization.yaml`. The pool's `workerImage` already names the
+   published digest. Keep `replicas` at 0. In `resources_test.py`,
+   `test_gvisor_fork_slice_is_wired_and_off` replaces
+   `test_gvisor_fork_slice_is_staged_and_not_wired` and lists the objects below.
+   `test_fork_seed_gate_is_off` stays until step 7. The merge applies these 13
+   objects and no others, and rolls no pod:
+
+   | Object | Namespace | Effect |
+   | --- | --- | --- |
+   | Namespace `substrate-gvisor-fork` | | new; labelled `factory.jomcgi.dev/substrate-workers`, so the cluster-wide worker policy covers it; `Prune=false` |
+   | ServiceAccount `fork-worker` | `substrate-gvisor-fork` | new; no API token |
+   | CiliumNetworkPolicy `substrate-workers` | `substrate-gvisor-fork` | new; router in, egress gateway out |
+   | SandboxConfig `gvisor-fork` | cluster | new; not the class default, so no pool resolves it by default |
+   | WorkerPool `gvisor-fork` | `substrate-gvisor-fork` | new; `replicas: 0`, so no pod |
+   | ConfigMaps `gvisor-fork-assets-<hash>` and `gvisor-fork-conformance-<hash>` | `ate-system` | new; the Job scripts and pins |
+   | Job `gvisor-fork-assets-init` | `ate-system` | new Sync hook (wave 1): runs at once, see below |
+   | CiliumNetworkPolicy `gvisor-fork-assets-init` | `ate-system` | new; the asset Job reaches rustfs 9000 and `github.com`, `release-assets.githubusercontent.com`, `objects.githubusercontent.com` 443 |
+   | CiliumNetworkPolicy `rustfs-gvisor-fork-assets` | `ate-system` | adds ingress to the existing `rustfs` pod: the asset Job, port 9000 |
+   | Job `gvisor-fork-conformance-2` | `ate-system` | new, `suspend: true`: no pod. Argo shows health Suspended |
+   | CiliumNetworkPolicy `gvisor-fork-conformance` | `ate-system` | new; matches no pod while the Job is suspended |
+   | CiliumNetworkPolicy `ate-api-server-gvisor-fork-conformance` | `ate-system` | adds ingress to the existing `ate-api-server` pods: the conformance Job, port 443 |
+
+   The two policies that add ingress change what the existing pods accept, but
+   only from a pod labelled `app: gvisor-fork-assets-init` or
+   `app: gvisor-fork-conformance`. Cilium unions them with the existing rules.
+   Only the asset Job runs. It lists the keys under `gvisor-fork-assets/amd64/`
+   in the `ate-snapshots` bucket of rustfs, downloads the release
+   `fork-seed-slice1-0250f9acf` from jomcgi-org/gvisor (public, 43 MB) unless the
+   key exists, checks its sha256, repacks it and uploads
+   `e4372aa444b22a8569d4fd94166da5cc282060e3ea8db9ec7a9833cbc104687c.tar`. Its
+   pod requests 256Mi of memory and 100m of CPU (the nodes had 1981Mi left on
+   node-2, the tightest, and 5493Mi on node-1 on 2026-11-23), the same as
+   `microvm-assets-init`, which runs on each sync. Each later sync runs the Job
+   again and finds the key. A Pending hook Job holds the Argo sync: if
+   `kubectl -n ate-system get pod -l app=gvisor-fork-assets-init` shows Pending,
+   read its events, then roll back.
+
+   Verify, read-only:
+
+   ```sh
+   kubectl -n argocd get application substrate          # Synced; health Suspended until step 8
+   kubectl -n ate-system get job gvisor-fork-assets-init gvisor-fork-conformance-2
+   kubectl -n ate-system logs job/gvisor-fork-assets-init -c upload   # "the pinned gVisor fork tarball is in the bucket"
+   kubectl get sandboxconfig                            # gvisor-default stays DEFAULT v7
+   kubectl -n substrate-gvisor-fork get workerpool,pod  # replicas 0, no pod
+   kubectl get workerpools -A                           # the other pools stay Ready
+   ```
+
+   Also check that an existing actor still starts: the two policies that add
+   ingress are the only change to a running pod's traffic. Expect health
+   Suspended until step 8: Argo takes the worst health of its resources, and a
+   suspended Job without a Complete condition is Suspended. The sync still
+   completes, because the Job is in the last wave. To roll back, remove
+   `../gvisor-fork` from `resources/kustomization.yaml`. Argo prunes every
+   object above except the Namespace (`Prune=false`) and the asset Job (a hook,
+   which Argo does not prune). Delete `job/gvisor-fork-assets-init` by hand, and
+   the Namespace if the slice goes for good. The staged key stays in the bucket.
 6. Set the pool's `replicas` to 1. In `gvisor_fork_test.py`, update
    `test_kvm_pool_has_no_workers_and_uses_the_fork_config` in the same change:
    it asserts `replicas == 0`. Check that the worker pod runs with `/dev/kvm`,
