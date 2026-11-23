@@ -250,8 +250,13 @@ def test_only_argocd_may_run_a_pod_as_the_gate() -> None:
         for rule in rules:
             assert set(rule["operations"]) == {"CREATE", "UPDATE"}
         (cond,) = policy["matchConditions"]
-        assert set(re.findall(r"'(system:serviceaccount:[^']+)'", cond["expression"])) == exempt
-        assert " ".join(cond["expression"].split()).startswith("!(request.userInfo.username in [")
+        assert (
+            set(re.findall(r"'(system:serviceaccount:[^']+)'", cond["expression"]))
+            == exempt
+        )
+        assert " ".join(cond["expression"].split()).startswith(
+            "!(request.userInfo.username in ["
+        )
         (check,) = policy["validations"]
         assert _clauses_hold(check["expression"], fields), check["expression"]
 
