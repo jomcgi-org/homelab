@@ -1,39 +1,46 @@
 package reaper
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/jomcgi/homelab/projects/factory/connector/internal/pgtest"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
-// actorIn encodes an Actor with the given state on the named worker.
+func pbBytes(n protowire.Number, value []byte) []byte {
+	return protowire.AppendBytes(protowire.AppendTag(nil, n, protowire.BytesType), value)
+}
+
+func pbVarint(n protowire.Number, value uint64) []byte {
+	return protowire.AppendVarint(protowire.AppendTag(nil, n, protowire.VarintType), value)
+}
+
+// actorIn encodes an Actor with the given state on the named worker. An empty
+// pod leaves the worker assignment out.
 func actorIn(namespace, pool, pod string, state uint64) []byte {
-	field := func(n protowire.Number, value []byte) []byte {
-		return protowire.AppendBytes(protowire.AppendTag(nil, n, protowire.BytesType), value)
-	}
-	number := func(n protowire.Number, value uint64) []byte {
-		return protowire.AppendVarint(protowire.AppendTag(nil, n, protowire.VarintType), value)
-	}
 	var worker []byte
 	if pod != "" {
-		worker = append(field(1, []byte(namespace)), field(2, []byte(pool))...)
-		worker = append(worker, field(3, []byte(pod))...)
-		worker = append(worker, field(4, []byte("uid-"+pod))...)
+		worker = append(pbBytes(1, []byte(namespace)), pbBytes(2, []byte(pool))...)
+		worker = append(worker, pbBytes(3, []byte(pod))...)
+		worker = append(worker, pbBytes(4, []byte("uid-"+pod))...)
 	}
-	status := number(1, state)
+	status := pbVarint(1, state)
 	if worker != nil {
-		status = append(status, field(2, worker)...)
+		status = append(status, pbBytes(2, worker)...)
 	}
-	return field(5, status)
+	return pbBytes(5, status)
 }
 
 func TestBusyWorkersCountsPodsThatHostAnActor(t *testing.T) {
 	coder := Pool{"factory-r-homelab", "homelab-codex"}
 	review := Pool{"factory-r-homelab-review", "homelab-reviewer"}
-	got := BusyWorkers([][]byte{
+	got, err := BusyWorkers([][]byte{
 		actorIn(coder.Namespace, coder.Name, "homelab-codex-a", stateRunning),
 		actorIn(coder.Namespace, coder.Name, "homelab-codex-a", stateRunning), // same pod counts once
 		actorIn(coder.Namespace, coder.Name, "homelab-codex-b", stateResuming),
@@ -42,12 +49,100 @@ func TestBusyWorkersCountsPodsThatHostAnActor(t *testing.T) {
 		actorIn(coder.Namespace, coder.Name, "homelab-codex-e", 4), // SUSPENDED: no worker
 		actorIn(coder.Namespace, coder.Name, "homelab-codex-f", 5), // CRASHED
 		actorIn(coder.Namespace, coder.Name, "homelab-codex-g", 6), // DELETING
-		actorIn("", "", "", stateRunning),                          // no assignment
+		actorIn("", "", "", 4), // SUSPENDED, no assignment: fine
 		actorIn(review.Namespace, review.Name, "homelab-reviewer-a", stateRunning),
-		{0xff, 0xff}, // malformed
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got[coder] != 4 || got[review] != 1 || len(got) != 2 {
 		t.Fatalf("busy workers = %v, want coder 4 and reviewer 1", got)
+	}
+}
+
+// A row that cannot be read with certainty fails the whole census. Counting it
+// as "no worker" would publish a low demand under a live actor.
+func TestBusyWorkersRefusesAnyRowItCannotRead(t *testing.T) {
+	worker := func(fields ...[]byte) []byte {
+		var w []byte
+		for _, f := range fields {
+			w = append(w, f...)
+		}
+		return pbBytes(5, append(pbVarint(1, stateRunning), pbBytes(2, w)...))
+	}
+	ns, pool, pod := pbBytes(1, []byte("ns")), pbBytes(2, []byte("pool")), pbBytes(3, []byte("pod"))
+	for name, row := range map[string][]byte{
+		"not protobuf":                 {0xff, 0xff},
+		"empty row":                    nil,
+		"no status":                    pbBytes(1, []byte("metadata")),
+		"truncated status":             {0x2a, 0x05, 0x08},
+		"no state":                     pbBytes(5, pbBytes(2, []byte("x"))),
+		"state zero":                   pbBytes(5, pbVarint(1, 0)),
+		"state eight":                  pbBytes(5, pbVarint(1, 8)),
+		"holding state, no assignment": pbBytes(5, pbVarint(1, stateRunning)),
+		"holding state, empty pod":     worker(ns, pool, pbBytes(3, nil)),
+		"holding state, no pod":        worker(ns, pool),
+		"holding state, no pool":       worker(ns, pod),
+		"holding state, no namespace":  worker(pool, pod),
+		"malformed assignment":         pbBytes(5, append(pbVarint(1, stateRunning), pbBytes(2, []byte{0xff})...)),
+	} {
+		good := actorIn("ns", "pool", "pod", stateRunning)
+		got, err := BusyWorkers([][]byte{good, row})
+		if !errors.Is(err, ErrCensus) || got != nil {
+			t.Fatalf("%s: got %v, %v; want ErrCensus and no counts", name, got, err)
+		}
+	}
+	if _, err := BusyWorkers([][]byte{worker(ns, pool, pod)}); err != nil {
+		t.Fatalf("a complete row: %v", err)
+	}
+}
+
+// Census reads the table the reaper's database role may call and counts it.
+// censusDB opens a fresh migrated database.
+func censusDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("postgres", pgtest.NewDB(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+func TestCensusReadsTheActorTable(t *testing.T) {
+	db := censusDB(t)
+	if _, err := db.Exec(`CREATE TABLE actors (name text, proto bytea);
+		CREATE FUNCTION public.reaper_actors() RETURNS TABLE(name text, proto bytea)
+		LANGUAGE sql STABLE AS $$SELECT a.name, a.proto FROM actors a$$`); err != nil {
+		t.Fatal(err)
+	}
+	coder := Pool{"factory-r-homelab", "homelab-codex"}
+	for i, row := range [][]byte{
+		actorIn(coder.Namespace, coder.Name, "a", stateRunning),
+		actorIn(coder.Namespace, coder.Name, "b", stateSuspending),
+		actorIn(coder.Namespace, coder.Name, "c", 4),
+	} {
+		if _, err := db.Exec(`INSERT INTO actors VALUES ($1, $2)`, "session-"+string(rune('a'+i)), row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := Census(context.Background(), db)
+	if err != nil || got[coder] != 2 || len(got) != 1 {
+		t.Fatalf("census = %v, %v; want coder 2", got, err)
+	}
+	// One unreadable row fails the census.
+	if _, err := db.Exec(`INSERT INTO actors VALUES ('session-bad', '\xffff')`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Census(context.Background(), db); !errors.Is(err, ErrCensus) || got != nil {
+		t.Fatalf("census with a bad row = %v, %v; want ErrCensus", got, err)
+	}
+	// A failed read of the table fails it too.
+	if _, err := db.Exec(`DROP TABLE actors CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Census(context.Background(), db); err == nil {
+		t.Fatal("census of a missing table succeeded")
 	}
 }
 
@@ -112,5 +207,18 @@ func TestDemandPublishesIdlePoolsAtZeroAndGoesQuietWhenStale(t *testing.T) {
 	now = now.Add(maxCensusAge + time.Second)
 	if n := testutil.CollectAndCount(d); n != 0 {
 		t.Fatalf("series from a stale census = %d, want none so an autoscaler holds its replicas", n)
+	}
+}
+
+func TestDemandInvalidateDropsTheSeriesAtOnce(t *testing.T) {
+	coder := Pool{"factory-r-homelab", "homelab-codex"}
+	d := NewDemand(map[Pool]int{coder: 2})
+	d.Observe(map[Pool]int{coder: 1})
+	if _, ok := d.Latest(); !ok || testutil.CollectAndCount(d) != 2 {
+		t.Fatal("no census after Observe")
+	}
+	d.Invalidate()
+	if _, ok := d.Latest(); ok || testutil.CollectAndCount(d) != 0 {
+		t.Fatal("series survive Invalidate")
 	}
 }
