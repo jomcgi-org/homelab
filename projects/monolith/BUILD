@@ -259,6 +259,7 @@ filegroup(
         "//projects/platform-factory/hindsight-discord:repo_docs",
         "//projects/platform-factory/network-policy:repo_docs",
         "//projects/platform-factory/substrate/egress-scan:repo_docs",
+        "//projects/platform-factory/substrate/gvisor-fork/engine:repo_docs",
         "//projects/platform/argocd:repo_docs",
         "//projects/platform/authentik:repo_docs",
         "//projects/platform/cert-manager:repo_docs",
