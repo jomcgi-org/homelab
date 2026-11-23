@@ -7,6 +7,8 @@ kind: CiliumNetworkPolicy
 metadata:
   name: prometheus-adapter
   namespace: prometheus-adapter
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
 spec:
   endpointSelector:
     matchLabels:
