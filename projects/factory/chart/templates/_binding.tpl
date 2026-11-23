@@ -104,7 +104,7 @@ spec:
     serviceAccountName: {{ $worker }}
     resources:
       {{- toYaml $a.worker.resources | nindent 6 }}
-{{- include "factory.workerPoolAutoscaler" (dict "root" $ "agent" $a "namespace" $ns "pool" $agent) }}
+{{- include "factory.workerPoolAutoscaler" (dict "root" $ "agent" $a "key" $r.agent "namespace" $ns "pool" $agent) }}
 ---
 apiVersion: api.kagent.dev/v1alpha3
 kind: Harness

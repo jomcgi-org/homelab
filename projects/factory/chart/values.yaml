@@ -349,9 +349,11 @@ agents:
     # reaper's pool list covers it.
     autoscaling:
       enabled: false
-      # 0 lets an idle pool scale to zero. The pool must be at one replica or
+      # At least 1: the reviewer sends to kagent itself, not through the
+      # connector, so nothing wakes this pool from zero. The render fails for
+      # enabled: true with minReplicas: 0. The pool must be at one replica or
       # more when the HPA is created: a pool left at zero by hand is paused.
-      minReplicas: 0
+      minReplicas: 1
       # Workers kept beyond the demand while a pool has any.
       spare: 2
       # Defaults to concurrency + spare when unset.

@@ -104,6 +104,9 @@ def test_enabled_pool_gets_an_hpa_that_scales_the_workerpool_to_zero():
         }
     ]
     up = spec["behavior"]["scaleUp"]
+    # The HPA's default 10% tolerance would hide a one-worker gap above about
+    # 10 replicas at AverageValue 1.
+    assert up["tolerance"] == "0" and spec["behavior"]["scaleDown"]["tolerance"] == "0"
     assert up["stabilizationWindowSeconds"] == 0
     assert up["policies"] == [
         {"type": "Pods", "value": spec["maxReplicas"], "periodSeconds": 15}
@@ -135,6 +138,8 @@ def test_both_pools_and_overrides():
     assert coder["maxReplicas"] == pool["spec"]["replicas"]
     assert coder["behavior"]["scaleDown"]["stabilizationWindowSeconds"] == 600
     assert by_name[_REVIEW[1]]["maxReplicas"] == 6
+    # The reviewer's floor is 1 by default: nothing wakes it from zero.
+    assert by_name[_REVIEW[1]]["minReplicas"] == 1
     assert _reaper_pools(docs) == (
         f"{_CODER[0]}/{_CODER[1]}=0,{_REVIEW[0]}/{_REVIEW[1]}=2"
     )
@@ -154,6 +159,27 @@ def test_reaper_may_patch_pods_only_where_a_pool_autoscales():
     on = _render(["agents.codex.autoscaling.enabled=true"])
     assert _reaper_verbs(on, _CODER[0]) == ["get", "list", "watch", "delete", "patch"]
     assert _reaper_verbs(on, _REVIEW[0]) == ["get", "list", "watch", "delete"]
+
+
+def test_the_reviewer_pool_cannot_scale_to_zero():
+    # The reviewer sends to kagent itself, not through the connector, so no
+    # demand source covers it and nothing wakes the pool from zero.
+    with pytest.raises(RuntimeError, match="reviewer pool needs minReplicas 1"):
+        _render(
+            [
+                "agents.reviewer.autoscaling.enabled=true",
+                "agents.reviewer.autoscaling.minReplicas=0",
+            ]
+        )
+    # Off, the value does not matter.
+    _render(["agents.reviewer.autoscaling.minReplicas=0"])
+
+
+def test_scale_down_period_stays_within_the_hpa_maximum():
+    # autoscaling/v2 allows a policy period of at most 1800 s.
+    _render(["agents.codex.autoscaling.scaleDown.periodSeconds=1800"])
+    with pytest.raises(RuntimeError, match="periodSeconds"):
+        _render(["agents.codex.autoscaling.scaleDown.periodSeconds=1801"])
 
 
 def test_minimum_above_maximum_is_refused():
@@ -190,29 +216,46 @@ def test_worker_wait_is_a_connector_interval():
     assert run.returncode == 0, run.stderr
 
 
-def test_every_autoscaled_pool_in_the_deploy_values_is_ignored_by_argo():
-    # An HPA changes spec.replicas, and a sync with selfHeal would put it back
-    # (ServerSideApply forces the field). RespectIgnoreDifferences leaves it.
-    values = yaml.safe_load(_DEPLOY_VALUES.read_text())
-    on = {
-        name
-        for name, agent in (values.get("agents") or {}).items()
-        if (agent.get("autoscaling") or {}).get("enabled")
-    }
-    pools = set()
-    for repo in values.get("repositories") or []:
-        if repo["agent"] in on:
-            pools.add((repo["namespace"], f"{repo['name']}-{repo['agent']}"))
-        if "reviewer" in on:
-            pools.add((f"{repo['namespace']}-review", f"{repo['name']}-reviewer"))
-    app = yaml.safe_load(_APPLICATION.read_text())
+def _unignored(docs, app):
+    """The pools an HPA scales that Argo CD does not ignore."""
     ignored = {
         (d.get("namespace"), d.get("name"))
         for d in app["spec"].get("ignoreDifferences", [])
-        if d.get("kind") == "WorkerPool"
+        if d.get("group") == "ate.dev"
+        and d.get("kind") == "WorkerPool"
         and "/spec/replicas" in d.get("jsonPointers", [])
     }
-    assert pools <= ignored, (
-        f"{sorted(pools - ignored)} scale without an ignoreDifferences entry"
-    )
+    scaled = {
+        (h["metadata"]["namespace"], h["spec"]["scaleTargetRef"]["name"])
+        for h in _hpas(docs)
+        if h["spec"]["scaleTargetRef"]["kind"] == "WorkerPool"
+    }
+    return scaled - ignored
+
+
+def test_every_pool_an_hpa_scales_is_ignored_by_argo():
+    # An HPA changes spec.replicas, and a sync with selfHeal would put it back
+    # (ServerSideApply forces the field). RespectIgnoreDifferences leaves it.
+    # The check runs on the real render, so a chart default counts too.
+    app = yaml.safe_load(_APPLICATION.read_text())
     assert "RespectIgnoreDifferences=true" in app["spec"]["syncPolicy"]["syncOptions"]
+    assert _unignored(_render(), app) == set()
+
+
+def test_the_ignore_check_catches_a_pool_with_no_entry():
+    app = yaml.safe_load(_APPLICATION.read_text())
+    on = _render(["agents.codex.autoscaling.enabled=true"])
+    assert _unignored(on, app) == {_CODER}
+    # An entry for another kind or group is not enough.
+    app["spec"]["ignoreDifferences"] = [
+        {
+            "group": "apps",
+            "kind": "WorkerPool",
+            "namespace": _CODER[0],
+            "name": _CODER[1],
+            "jsonPointers": ["/spec/replicas"],
+        }
+    ]
+    assert _unignored(on, app) == {_CODER}
+    app["spec"]["ignoreDifferences"][0]["group"] = "ate.dev"
+    assert _unignored(on, app) == set()

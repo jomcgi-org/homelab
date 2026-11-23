@@ -13,8 +13,12 @@ serves (projects/platform-factory/prometheus-adapter).
 {{- $as := $a.autoscaling | default dict -}}
 {{- $spare := 2 -}}
 {{- if hasKey $as "spare" }}{{ $spare = int $as.spare }}{{ end -}}
-{{- $min := 0 -}}
+{{- /* The reviewer's sends bypass the connector, so nothing wakes it from zero: its floor is 1. */ -}}
+{{- $min := ternary 1 0 (eq (.key | default "") "reviewer") -}}
 {{- if hasKey $as "minReplicas" }}{{ $min = int $as.minReplicas }}{{ end -}}
+{{- if and (eq (toString $as.enabled) "true") (eq (.key | default "") "reviewer") (lt $min 1) -}}
+{{- fail "autoscaling: the reviewer pool needs minReplicas 1 or more: the reviewer sends to kagent itself, so nothing wakes the pool from zero" -}}
+{{- end -}}
 {{- $max := add (int $a.concurrency) $spare -}}
 {{- if $as.maxReplicas }}{{ $max = int $as.maxReplicas }}{{ end -}}
 {{- $down := $as.scaleDown | default dict -}}
@@ -34,7 +38,7 @@ The HorizontalPodAutoscaler of one WorkerPool, or nothing. It emits a leading
 off pool renders byte for byte as before.
 */}}
 {{- define "factory.workerPoolAutoscaler" -}}
-{{- $s := include "factory.workerAutoscaling" (dict "agent" .agent) | fromJson -}}
+{{- $s := include "factory.workerAutoscaling" (dict "agent" .agent "key" .key) | fromJson -}}
 {{- if $s.enabled -}}
 {{ "\n" }}---
 # Scales the WorkerPool of the same name on the workers it needs. The HPA owns
@@ -71,8 +75,13 @@ spec:
           type: AverageValue
           averageValue: "1"
   behavior:
+    # tolerance 0: the HPA's default 10% would ignore a gap below 10% of the
+    # current replicas, which with AverageValue 1 hides one worker above about
+    # 10 replicas. Needs the HPAConfigurableTolerance feature gate; the API
+    # drops the field when it is off.
     # A run that arrives at zero wakes the whole pool at once.
     scaleUp:
+      tolerance: "0"
       stabilizationWindowSeconds: 0
       policies:
         - type: Pods
@@ -82,6 +91,7 @@ spec:
     # last stabilizationSeconds, and the reaper marks the workers that host an
     # actor so the ReplicaSet removes idle ones first.
     scaleDown:
+      tolerance: "0"
       stabilizationWindowSeconds: {{ $s.stabilizationSeconds }}
       policies:
         - type: Pods
@@ -98,12 +108,12 @@ reaper publishes demand and capacity for exactly these.
 {{- $ := . -}}
 {{- $out := list -}}
 {{- range $r := .Values.repositories -}}
-{{- $coder := include "factory.workerAutoscaling" (dict "agent" (index $.Values.agents $r.agent)) | fromJson -}}
+{{- $coder := include "factory.workerAutoscaling" (dict "agent" (index $.Values.agents $r.agent) "key" $r.agent) | fromJson -}}
 {{- if $coder.enabled -}}
 {{- $out = append $out (dict "namespace" $r.namespace "name" (include "factory.bindingAgentName" $r) "spare" $coder.spare) -}}
 {{- end -}}
 {{- if $.Values.reviewer.enabled -}}
-{{- $review := include "factory.workerAutoscaling" (dict "agent" (index $.Values.agents "reviewer")) | fromJson -}}
+{{- $review := include "factory.workerAutoscaling" (dict "agent" (index $.Values.agents "reviewer") "key" "reviewer") | fromJson -}}
 {{- if $review.enabled -}}
 {{- $out = append $out (dict "namespace" (include "factory.reviewerNamespace" (dict "root" $ "binding" $r)) "name" (include "factory.bindingAgentName" (dict "name" $r.name "agent" "reviewer")) "spare" $review.spare) -}}
 {{- end -}}
