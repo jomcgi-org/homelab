@@ -198,15 +198,26 @@ above 1 % of calls.
 ### Security
 
 - The body is untrusted. The scanner sends it only to the configured URL. The
-  client uses no proxy, follows no redirect, reuses no connection (an engine
-  child serves one request), has a per-request deadline and reads at most
-  `--semgrep-max-response` bytes.
+  client uses no proxy, follows no redirect, has a per-request deadline and
+  reads at most `--semgrep-max-response` bytes.
+- The client **disables keep-alive**: each call opens a new connection. An
+  engine child serves one request and then exits, so a reused connection would
+  fail. The DNS lookup and the TCP connect of each call count against the
+  deadline (300 ms by default). To remove the DNS lookup, set the endpoint to an
+  IP address (`http://10.0.0.5:8080/`). That fits a service with a stable
+  address, but not a per-request actor.
 - The first version adds **no TLS and no credential**. Reach the engine over
-  the cluster or Substrate network only. The scanner `CiliumNetworkPolicy`
-  has ingress rules only, and this change adds no network rule. Before the tier
-  is enabled, admit the scanner in the ingress policy of the engine, and check
-  that no egress policy of `ate-system` blocks the scanner. mTLS is a
-  follow-up (HOME-254).
+  the cluster or Substrate network only. mTLS is a follow-up (HOME-254).
+- **Two network rules are required before the tier is enabled.** The
+  cluster-wide `default-deny` policy blocks all egress of every pod except DNS
+  (`projects/platform-factory/network-policy/resources/baseline.yaml`). The
+  scanner `CiliumNetworkPolicy` has ingress rules only, and this change adds no
+  network rule. So the tier needs both:
+  1. an egress rule from the scanner to the engine, and
+  2. an ingress rule on the engine that admits the scanner.
+
+  If the tier is enabled without them, every engine call fails to connect and
+  every check times out and returns 503 in deny mode.
 - The engine gets the same text as Gitleaks. This can include header values.
   The credential that the gateway injects upstream is added after the check and
   is never in the text.
