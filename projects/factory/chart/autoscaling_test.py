@@ -372,6 +372,38 @@ def test_deploy_values_let_the_coder_pool_scale_to_zero_behind_a_send_wait():
     assert 3 * 60 <= _seconds(wait) <= 5 * 60
 
 
+def _render_with_trial(sets: list[str]) -> subprocess.CompletedProcess:
+    """The deploy values with the coder trial's arms (files/coder-trial-values.yaml)."""
+    argv = [
+        os.environ.get("HELM_BIN", "helm"),
+        "template",
+        "factory",
+        str(_CHART),
+        "--namespace",
+        "kagent",
+        "--values",
+        str(_DEPLOY_VALUES),
+        "--values",
+        str(_CHART / "files" / "coder-trial-values.yaml"),
+    ]
+    for s in sets:
+        argv += ["--set", s]
+    return subprocess.run(argv, capture_output=True, text=True, check=False)
+
+
+def test_a_binding_with_a_non_control_arm_cannot_scale_to_zero():
+    # A non-control arm stores its sends under the Agent homelab-codex-<arm>.
+    # The send wait reads the capacity row of that pool (none: it sends at
+    # once) and the pending series names it, while the HPA scales
+    # homelab-codex only. At zero such a send has no wake signal and no hold.
+    run = _render_with_trial(["agents.codex.autoscaling.minReplicas=0"])
+    assert run.returncode != 0
+    assert "has the arm" in run.stderr and "cannot scale to zero" in run.stderr
+    # One worker or more is safe: the pool is never empty.
+    ok = _render_with_trial(["agents.codex.autoscaling.minReplicas=1"])
+    assert ok.returncode == 0, ok.stderr
+
+
 def _seconds(duration: str) -> int:
     """A Go duration of whole minutes or seconds, in seconds."""
     unit = {"s": 1, "m": 60}[duration[-1]]
