@@ -120,9 +120,11 @@ fallback only if the live latency Job shows that the wakeup probe on port 80
 fails.
 
 **Cluster grants. This change makes none of them.** Each is a separate cluster
-change. Joe approved the pool resize (Decided 1) and the SPIFFE ID and the
-editor role (Decided 2) on 2026-11-23 (ARCHITECTURE.md, "Decided"). They are
-applied after the isolation gates of the fork README:
+change. Joe approved the pool resize (Decided 1), the SPIFFE ID and the
+editor role (Decided 2), and, in session on 2026-11-23, the router grant PR, the
+X8 waiver and the three grants below (Decided 6). The isolation gates of the
+fork README (X1 to X7 and X9, step 9) still run as a safety check; they no
+longer gate the merges:
 
 1. `atenet-router.ingressAllowedSPIFFEIDs` in
    `projects/platform-factory/substrate/values/substrate.yaml`: add
@@ -257,14 +259,14 @@ PR. "Cluster effect" is what the cluster does when the PR merges.
 | # | Change | Cluster effect on merge | Joe approves |
 | --- | --- | --- | --- |
 | 1 | [`provision/`](provision): suspended Jobs that create the atespace, its access policy and the template `engine`, or remove them (teardown) | None. The directory is not wired and both Jobs are suspended | Nothing at merge |
-| 2 | Router grant: `spiffe://cluster.local/ns/ate-system/sa/engine-gate` in `atenetRouter.ingressAllowedSPIFFEIDs` (`values/substrate.yaml`) | Rolls the atenet router. No traffic uses the new entry, because the gate does not run | Yes, before merge: it lets that ID reach any actor. Decided 2 records the approval, to be applied after the isolation gates (X gates, step 9 of the fork README), which have not run |
-| 3 | Wire `provision/` and set `suspend: false` on `egress-engine-provision-1` (a later PR) | Creates the atespace, the policy and the template. The pool's worker pins the atespace at the first seed, so restart the pool pod first (ARCHITECTURE.md, "Atespace pin") and use the pool for no other atespace | Yes: this creates the editor grant |
+| 2 | Router grant: `spiffe://cluster.local/ns/ate-system/sa/engine-gate` in `atenetRouter.ingressAllowedSPIFFEIDs` (`values/substrate.yaml`) | Rolls the atenet router. No traffic uses the new entry, because the gate does not run | Approved (Joe, 2026-11-23, session; Decided 6). It lets that ID reach any actor. The X gates (step 9 of the fork README) run as a safety check and no longer gate the merge |
+| 3 | Wire `provision/` and set `suspend: false` on `egress-engine-provision-1` (a later PR) | Creates the atespace, the policy and the template. The pool's worker pins the atespace at the first seed, so restart the pool pod first (ARCHITECTURE.md, "Atespace pin") and use the pool for no other atespace | Approved (Decided 6); Joe un-suspends the Job after the X1 to X7 and X9 results and the pool restart order are in |
 | 4 | Wiring change for the gate: package `staged/` like the egress-scan chart, so that CI pins the image as `repository@digest` at build time (never by hand), list it in a source that ArgoCD applies, set `replicas: 1`, and add the items of "Before enabling" | Starts the gate. It deletes its leftovers and fills 2 children | Yes |
 | 5 | Check: `/readyz` is 200, `children{state="waiting"}` is 2, and a test request through `POST /scan` returns the engine JSON | None | |
 | 6 | Point `semgrep.endpoint` of the scanner at `http://engine-gate.ate-system.svc:8080/scan` with the tier still off, then follow the observe period of ARCHITECTURE.md | The scanner calls the gate only when the tier is on | Yes (observe, then enforce) |
 
 Order of 2 and 3: the gate needs both before step 4, but neither needs the
-other. Merge 2 when the X gates have run.
+other.
 
 **Provisioning Jobs.** `egress-engine-provision-1` runs `provision.py` with
 `MODE=apply`. It waits for an ACTIVE worker of the pool, then makes the three
