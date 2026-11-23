@@ -3,8 +3,8 @@
 `engine-gate` is the service behind the Semgrep tier of the egress scanner
 (`semgrep.endpoint`, tier merged as #8612, off by default). It keeps a warm pool
 of single-use gVisor fork children of the engine template and sends each scan
-request to one child. State: **code only, not deployed**. Nothing runs it: the
-image, the manifests and the wiring are separate changes. The design is
+request to one child. State: **built and staged off**. The StatefulSet has no
+replicas and no ArgoCD source lists it. The design is
 [`../ARCHITECTURE.md`](../ARCHITECTURE.md), "Engine path" (path B).
 
 ```mermaid
@@ -94,8 +94,8 @@ parses untrusted bytes) has none.
   `servicedns.podcert.ate.dev/identity` trust bundle and the expected name
   before it sends a byte. `TestAPIClientVerifiesTheServerBeforeSendingItsToken`
   proves it.
-- **The pod needs no Kubernetes API access and no Secret.** The manifests that
-  enforce this are a separate change.
+- **The pod has no Kubernetes API access** and no Secret (see
+  `staged/statefulset.yaml`).
 
 Residual: an editor can create templates and egress policies in its atespace
 (ARCHITECTURE.md, "Why a separate `engine-gate`"). The compensating alert is
@@ -119,7 +119,9 @@ fallback only if the live latency Job shows that the wakeup probe on port 80
 fails.
 
 **Cluster grants. This change makes none of them.** Each is a separate cluster
-change that Joe decides (ARCHITECTURE.md, "Needs Joe", items 3 and 5):
+change. Joe approved the pool resize (Decided 1) and the SPIFFE ID and the
+editor role (Decided 2) on 2026-11-23 (ARCHITECTURE.md, "Decided"). They are
+applied after the isolation gates of the fork README:
 
 1. `atenet-router.ingressAllowedSPIFFEIDs` in
    `projects/platform-factory/substrate/values/substrate.yaml`: add
@@ -200,8 +202,64 @@ The ARCHITECTURE.md failure table names `engine_ready_children`,
 Here they are `children{state="waiting"}`, `pool_misses_total`,
 `requests_total{outcome="shed"}` and `child_errors_total`.
 
+## Staged manifests
+
+[`staged/`](staged) holds the StatefulSet (`replicas: 0`), Service,
+ServiceAccount, network rules and admission guards. `staged/staged_test.py`
+renders them and checks the isolation rules above, and
+`../../resources/resources_test.py` fails if the wired kustomization lists them.
+
+| Item | Choice |
+| --- | --- |
+| Replicas | 1 in v1. The pool books 8 children, and a second replica needs its own pool. A rollout or a drain is an outage, so there is no PodDisruptionBudget: it would block drains. |
+| Service | ClusterIP `engine-gate`, port 8080. It is also the `serviceName`: the pod needs no stable DNS name. |
+| Resources | Request 100m CPU and 128Mi. Memory limit 256Mi. The pool pod is another change. |
+| Pod | `imagePullSecrets: ghcr-imagepull-secret` and `fsGroup: 65532` (read access to the projected files), as the live scanner and the latency Job. |
+| Egress | The ate API on 443 and the router on 8443. DNS is open to every pod by the cluster-wide default-deny. |
+| Ingress | The scanner on 8080. Prometheus on 9090, by a cluster-wide scrape rule as in `prometheus/resources/scrape-ingress.yaml`. The Prometheus egress rule and the scrape job are **not added** here: they are wiring steps. |
+| Admission | `admission.yaml`: only ArgoCD (and the statefulset-controller that serves its StatefulSet) may create the ServiceAccount, the StatefulSet or a pod that runs as `engine-gate`. Same pattern as `kagent-identity-guard.yaml` (PLAT-5). |
+
+## Before enabling
+
+- **Identity.** Any principal who can create a pod as ServiceAccount
+  `engine-gate` in `ate-system` gets the router identity and the editor role of
+  the atespace. `admission.yaml` blocks that. It must be wired in the same
+  change as the StatefulSet, and checked with a denied test pod.
+- **Priority.** The router, the ate API and the scanner set no
+  `priorityClassName`, and the repo has no suitable non-system class for this
+  pod (`homelab-critical` is for the hub). The gate sets none. A class is a
+  decision for the wiring change.
+- **Node room.** The pod requests 100m CPU and 128Mi. The nodes are about 80%
+  requested. Check the room, as the pool resize does.
+- **Prometheus.** Add the egress rule for `app: engine-gate` on 9090 in
+  `prometheus/resources/network-policy.yaml` and the scrape job.
+
+## Enable steps
+
+Each step stays off until the one before it is verified. They follow the
+rollout in ARCHITECTURE.md (step 7 and after).
+
+1. The cluster grants above are made (Decided 1 and 2). The atespace, the
+   access policy and the template exist, the pool pod runs and its seed is
+   ready.
+2. Wiring change: package `staged/` like the egress-scan chart, so that CI pins
+   the image as `repository@digest` at build time (never by hand), list it in a
+   source that ArgoCD applies, set `replicas: 1`, and add the items of "Before
+   enabling".
+3. Check: `/readyz` is 200, `children{state="waiting"}` is 2, and a test
+   request through `POST /scan` returns the engine JSON.
+4. Point `semgrep.endpoint` of the scanner at `http://engine-gate.ate-system.svc:8080/scan`
+   with the tier still off, then follow the observe period of ARCHITECTURE.md.
+
+To roll back, set `semgrep.enabled: false`, then `replicas: 0`. The gate
+deletes its children on SIGTERM. Delete the template only after that.
+
 ## Packaging
 
+- **Image:** apko plus `rules_apko`, `image/`. The config is the one of
+  `projects/factory/alert-relay/image/` with the binary renamed. Its lock file
+  has the same package set and its own config checksum, so
+  `image_lock_test` checks the pair.
 - **Go dependency:** a minimal client in `ateapi/`. It is generated from
   `ateapi/ateapi.proto`, a subset of `api/ateapi/v1/ateapi.proto` at fork commit
   `b6b0ec3e217c` (`jomcgi-org/substrate`, branch `fork/seed-slice1`). It keeps
@@ -216,7 +274,7 @@ Here they are `children{state="waiting"}`, `pool_misses_total`,
 
 ## Tests
 
-`bazel test //projects/platform-factory/substrate/egress-scan/gate:gate_test` runs
+`bazel test //projects/platform-factory/substrate/egress-scan/gate/...` runs
 them, and `go test -race -count=3` passes. No cluster is needed.
 
 - A fake ate API speaks gRPC (`bufconn`), so the real client code runs. It pages
