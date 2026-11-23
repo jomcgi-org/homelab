@@ -364,3 +364,82 @@ def test_stage_script_refuses_a_build_archive_with_the_wrong_hash(
     )
     assert done.returncode != 0
     assert "build archive: sha256" in done.stderr
+
+
+# The kvm pool.
+
+_NS = "substrate-gvisor-fork"
+_FORK_IMAGES = "ghcr.io/jomcgi-org/homelab/substrate-fork/"
+
+
+def _pool() -> dict:
+    return _one(_docs(), "WorkerPool", "gvisor-fork")
+
+
+def test_kvm_pool_has_no_workers_and_uses_the_fork_config() -> None:
+    pool = _pool()
+    assert pool["metadata"]["namespace"] == _NS
+    # Off: no pod starts until the enable step raises this.
+    assert pool["spec"]["replicas"] == 0
+    (klass,) = pool["spec"]["sandboxClasses"]
+    assert klass == {
+        "name": "gvisor",
+        "platform": "kvm",
+        "configRef": {"name": "gvisor-fork"},
+    }
+    # Dedicated: no other pool or SandboxConfig is named, and gvisor-default
+    # is not this pool's config.
+    assert klass["configRef"]["name"] != "gvisor-default"
+
+
+def test_kvm_pool_runs_the_fork_worker_image_by_digest() -> None:
+    image = _pool()["spec"]["workerImage"]
+    assert image.startswith(_FORK_IMAGES + "ateworker-gvisor:")
+    # Never one of the production names the cluster runs.
+    assert "ghcr.io/kagent-dev/" not in image
+    assert "@sha256:" in image
+
+
+def test_kvm_pool_requests_little_and_limits_for_a_seed_and_16_scans() -> None:
+    resources = _pool()["spec"]["template"]["resources"]
+    # node-2 had 13Mi left to request on 2026-11-22: keep the reservation at
+    # the microVM spike's size.
+    assert resources["requests"] == {"cpu": "100m", "memory": "256Mi"}
+    # Seed 192 MB + 16 x (37 + 6.5) MB + 64 MB of forkd and worker = 952 MB.
+    assert resources["limits"]["memory"] == "1280Mi"
+    assert "ate.dev/kvm" not in resources["limits"]  # the controller adds it
+    assert _pool()["spec"]["template"]["serviceAccountName"] == "fork-worker"
+
+
+def test_kvm_pool_namespace_allows_only_the_router_and_the_gateway() -> None:
+    docs = _docs()
+    namespace = _one(docs, "Namespace", _NS)
+    assert namespace["metadata"]["labels"] == {
+        "factory.jomcgi.dev/substrate-workers": "true"
+    }
+    account = _one(docs, "ServiceAccount", "fork-worker")
+    assert account["automountServiceAccountToken"] is False
+    policy = _one(docs, "CiliumNetworkPolicy", "substrate-workers")["spec"]
+    assert policy["endpointSelector"]["matchExpressions"] == [
+        {"key": "ate.dev/worker-pool", "operator": "Exists"}
+    ]
+    (ingress,) = policy["ingress"]
+    assert ingress["fromEndpoints"] == [
+        {
+            "matchLabels": {
+                "k8s:io.kubernetes.pod.namespace": "ate-system",
+                "app": "atenet-router",
+            }
+        }
+    ]
+    (egress,) = policy["egress"]
+    assert egress["toEndpoints"] == [
+        {
+            "matchLabels": {
+                "k8s:io.kubernetes.pod.namespace": "ate-system",
+                "app": "atenet-egress",
+            }
+        }
+    ]
+    for rule in (ingress, egress):
+        assert rule["toPorts"] == [{"ports": [{"port": "8443", "protocol": "TCP"}]}]

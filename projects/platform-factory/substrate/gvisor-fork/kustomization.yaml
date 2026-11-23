@@ -10,6 +10,7 @@ kind: Kustomization
 resources:
   - sandboxconfig-gvisor-fork.yaml
   - gvisor-assets-job.yaml
+  - kvm-pool.yaml
 
 configMapGenerator:
   # The fork build pins and the script that stages them (gvisor-assets-job.yaml).
