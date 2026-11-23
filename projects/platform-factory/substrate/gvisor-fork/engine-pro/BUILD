@@ -14,7 +14,10 @@ py_test(
             "BUILD",
             "engine_pro_test.py",
         ],
-    ) + ["//projects/platform-factory/substrate/gvisor-fork/engine:shared_sources"],
+    ) + [
+        "//:.github/workflows/substrate-fork-engine-pro.yml",
+        "//projects/platform-factory/substrate/gvisor-fork/engine:shared_sources",
+    ],
     deps = [
         "@pip//pytest",
         "@pip//pyyaml",

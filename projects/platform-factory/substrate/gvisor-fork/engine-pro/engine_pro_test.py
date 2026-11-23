@@ -4,8 +4,8 @@ They check the pins and the shared sources, the layer maker (byte-reproducible, 
 placeholder and not the token, right files), the token scan (fake token in a layer,
 nested layers, encodings), the privacy guard (stub crane and gh), the fetch script
 (a local fake of the two Semgrep endpoints), the smoke client's bodies and, when the
-repository checkout is visible (a plain `pytest` run from the repository; under Bazel
-the runfiles hold no `.github`, so the workflow tests skip there), the guards of the
+workflow file is visible (in the repository, and in the Bazel runfiles through the data
+dependency `//:.github/workflows/substrate-fork-engine-pro.yml`), the guards of the
 workflow. The image itself is tested by the workflow ("Test the image with the
 placeholder token"): that needs the Pro engine, which only the token gets.
 """
@@ -1386,7 +1386,11 @@ def workflow_path() -> Path | None:
 def workflow() -> tuple[str, dict]:
     path = workflow_path()
     if path is None:
-        pytest.skip("the workflow file is outside this test's runfiles")
+        if os.environ.get("TEST_SRCDIR"):
+            pytest.fail(
+                "under Bazel the workflow file must be in the test data (BUILD)"
+            )
+        pytest.skip("the workflow file is outside this test's tree")
     text = path.read_text()
     return text, yaml.safe_load(text)
 
