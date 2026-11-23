@@ -469,8 +469,10 @@ The story opens with a statement and the floor: one square for each issue,
 coloured by state, linked to that issue. Each measure is one row: a sentence
 written from the snapshot, then its chart. The exporter's narrative shows
 when the snapshot has one.
-The layout uses the shared light/dark palette, the home page's typeface and
-16px phone gutters.
+The Factory pages share one look: warm paper, ink outlines, white panels,
+upper-case display type in the home page's typeface, and one flat fill for
+each state (`--factory-*` in `palette.css`, light and dark). The measures sit
+on a full-width band. Phone gutters are 16px.
 
 The [Factory acceptance evidence](validation/factory.md) maps each required
 case to its test and records the local commands and results.

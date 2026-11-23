@@ -8,9 +8,10 @@
 }
 .dashboard-chart-plot [aria-label="bottom axis"] line {
   stroke: var(--color-text-primary);
+  stroke-width: 2;
 }
 .dashboard-chart-plot .dashboard-chart-values text {
   fill: var(--color-text-primary);
   font-size: 0.9375rem;
-  font-weight: 700;
+  font-weight: 600;
 }

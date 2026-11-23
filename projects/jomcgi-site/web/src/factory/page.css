@@ -1,5 +1,6 @@
-/* Factory pages. Type size and weight carry the structure; a rule only
- * separates rows. The one loud mark is the line: a block for each state. */
+/* Factory pages. One system: warm paper, ink outlines, white panels, a flat
+ * fill for each state, and upper-case display type. A coloured band marks
+ * the measures. */
 @font-face {
   font-family: "Schibsted Grotesk";
   src: url("../../../../monolith/frontend/preview/fonts/SchibstedGrotesk.ttf")
@@ -8,8 +9,13 @@
   font-style: normal;
   font-display: swap;
 }
+body:has(.factory) {
+  background: var(--factory-paper);
+  overflow-x: clip;
+}
 .factory {
-  font: 1rem/1.55 var(--font-family-home);
+  font: 1rem/1.6 var(--font-family-home);
+  letter-spacing: 0.01em;
   overflow-wrap: anywhere;
 }
 .factory * {
@@ -19,9 +25,9 @@
   min-width: 0;
 }
 .factory a {
-  color: var(--color-text-accent);
+  color: var(--color-text-primary);
   text-decoration-thickness: 1px;
-  text-underline-offset: 0.2em;
+  text-underline-offset: 0.25em;
 }
 .factory a:hover {
   text-decoration-thickness: 2px;
@@ -56,43 +62,73 @@
 .factory .factory-footer p {
   font-size: inherit;
 }
+/* Display type: regular weight, upper case, open spacing. */
 .factory h1,
 .factory h2,
-.factory h3 {
+.factory h3,
+.factory .statement,
+.factory .count {
   font-family: var(--font-family-home);
-  font-weight: 800;
-  letter-spacing: -0.03em;
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
   margin: 0;
 }
-.factory h2 {
-  font-size: 2rem;
-  line-height: 1.1;
+.factory h2,
+.factory .count {
+  font-size: 1.75rem;
+  line-height: 1.15;
 }
-.factory h3 {
-  font-size: 1.25rem;
-  line-height: 1.25;
+.factory h3,
+.factory .state-group .count {
+  font-size: 1.125rem;
+  line-height: 1.3;
 }
 .factory strong {
-  font-weight: 700;
+  font-weight: 600;
 }
-/* Small supporting text. */
+/* Labels: small, mono, upper case. */
+.factory .eyebrow,
+.factory .state,
+.factory time,
+.factory nav,
+.factory summary,
+.factory figcaption,
+.factory .chart-note,
+.factory .progress-label,
+.factory .record-parent,
+.factory .event-heading > span,
+.factory .key,
+.factory caption,
+.factory thead th,
+.factory-footer {
+  font: 0.75rem/1.5 var(--font-family-home-code);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+}
 .factory .eyebrow,
 .factory time,
-.factory .record-parent,
-.factory .progress-label,
 .factory .chart-note,
+.factory .progress-label,
+.factory .record-parent,
 .factory .event-heading > span,
-.factory caption,
-.factory-footer {
-  font-size: 0.875rem;
+.factory .key,
+.factory caption {
   color: var(--color-text-secondary);
-  font-variant-numeric: tabular-nums;
 }
-.factory .key {
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--color-text-secondary);
-  font-variant-numeric: tabular-nums;
+
+/* Panels: white, with an ink outline. */
+.factory .floor-grid,
+.factory .chapters,
+.factory .measures,
+.factory .records,
+.factory .burn-up,
+.factory .timeline,
+.factory #transcript,
+.factory .record-lead .text {
+  background: var(--color-background-body);
+  border: 2px solid var(--color-text-primary);
 }
 
 /* Notices and missing records */
@@ -102,8 +138,11 @@
   padding: 0.6rem 0.75rem;
   font-size: 0.875rem;
   white-space: pre-wrap;
-  background: var(--color-background-muted);
-  border-left: 3px solid var(--color-text-primary);
+  background: var(--factory-sun);
+  border: 2px solid var(--color-text-primary);
+}
+.factory .records .unavailable {
+  border-width: 2px 0 0;
 }
 
 /* Breadcrumb and transcript jumps */
@@ -111,7 +150,6 @@
   display: flex;
   flex-wrap: wrap;
   gap: 0 0.75rem;
-  font-size: 0.875rem;
 }
 .factory nav a {
   max-width: 100%;
@@ -132,42 +170,37 @@
 
 /* Page lead */
 .factory .lead {
-  margin-block: 2rem 5rem;
+  margin-block: 2rem 4rem;
 }
 .factory .lead h1 {
-  font-size: clamp(3rem, 10vw, 7.5rem);
-  font-weight: 900;
-  line-height: 0.9;
-  letter-spacing: -0.05em;
-  margin-block: 0 1.5rem;
+  font-size: clamp(2.5rem, 8vw, 5.5rem);
+  line-height: 1;
+  margin-block: 0.25rem 1.25rem;
 }
 .factory .record-lead h1 {
-  font-size: clamp(1.875rem, 4.5vw, 3rem);
-  font-weight: 800;
-  line-height: 1.05;
-  letter-spacing: -0.035em;
-  max-width: 26ch;
-  margin-top: 0.25rem;
+  font-size: clamp(1.625rem, 3.6vw, 2.5rem);
+  line-height: 1.15;
+  max-width: 30ch;
 }
 /* The story's title is a label; its statement is the headline. */
 .factory .story-lead h1 {
-  font-size: 1.125rem;
-  font-weight: 700;
-  line-height: 1.4;
-  letter-spacing: 0;
+  font: 0.75rem/1.5 var(--font-family-home-code);
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
   margin-block: 0 0.75rem;
 }
 .factory .statement {
-  margin: 0 0 1.5rem;
-  max-width: 14ch;
-  font-size: clamp(3rem, 10vw, 7.5rem);
-  font-weight: 900;
-  line-height: 0.92;
-  letter-spacing: -0.05em;
+  margin: 0 0 2rem;
+  max-width: 16ch;
+  font-size: clamp(2.5rem, 8.5vw, 6.5rem);
+  line-height: 1;
   text-wrap: balance;
 }
 .factory .lead .eyebrow {
   margin: 0;
+}
+.factory .lead .state {
+  margin-bottom: 1rem;
 }
 .factory .narrative {
   max-width: 42rem;
@@ -179,13 +212,16 @@
 
 /* Markdown text: issue descriptions and transcript turns */
 .factory .text {
-  max-width: 42rem;
+  max-width: 46rem;
+}
+.factory .record-lead .text {
+  padding: 0.75rem 1.5rem;
 }
 .factory .text p {
   white-space: pre-wrap;
 }
 .factory .text .text-heading {
-  font-weight: 700;
+  font-weight: 600;
   margin-top: 1.25rem;
 }
 .factory .text :is(ul, ol) {
@@ -204,13 +240,16 @@
 }
 .factory .text code {
   font: 0.875em var(--font-family-code);
-  background: var(--color-background-muted);
+  background: var(--factory-paper);
   padding: 0.1em 0.3em;
 }
+.factory .text a {
+  text-decoration-color: var(--color-text-secondary);
+}
 
-/* Sections: space above, a heavy heading, its count beside it. */
+/* Sections */
 .factory #factory-content > section {
-  margin-block: 5rem;
+  margin-block: 4rem;
 }
 .factory .section-head,
 .factory .section-band {
@@ -223,113 +262,118 @@
   margin-bottom: 1.25rem;
 }
 .factory .count {
-  margin: 0;
-  font-size: 2rem;
-  font-weight: 800;
-  line-height: 1.1;
-  letter-spacing: -0.03em;
-  color: var(--color-border-emphasized);
+  color: var(--color-text-secondary);
   font-variant-numeric: tabular-nums;
 }
-.factory .state-group .count {
-  font-size: 1.25rem;
-  line-height: 1.25;
+/* The measures sit on a full-width band. */
+.factory #factory-content > section:has(.measures) {
+  position: relative;
+  padding-block: 4rem;
+  margin-block: 5rem;
+}
+.factory #factory-content > section:has(.measures)::before {
+  content: "";
+  position: absolute;
+  inset: 0 -100vw;
+  z-index: -1;
+  background: var(--factory-sky);
+  border-block: 2px solid var(--color-text-primary);
+}
+.factory #factory-content {
+  position: relative;
+  z-index: 0;
 }
 
-/* State: a square marker and a word */
+/* State: an outlined square in the state's fill, and a word. */
 .factory .state {
-  display: inline-block;
-  font-size: 0.875rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
   white-space: nowrap;
 }
-.factory .state::before {
+.factory .state::before,
+.factory .floor-key li::before {
   content: "";
-  display: inline-block;
-  width: 0.5rem;
-  height: 0.5rem;
-  margin-right: 0.5rem;
-  background: var(--color-accent);
+  flex: none;
+  width: 0.75rem;
+  height: 0.75rem;
+  background: var(--factory-sky);
+  border: 1.5px solid var(--color-text-primary);
 }
-.factory .state[data-state="Working"]::before {
-  opacity: 0.45;
+.factory .state[data-state="Working"]::before,
+.factory .floor-key [data-state="Working"]::before {
+  background: var(--factory-sun);
 }
-.factory .state[data-state="Shipped"]::before {
+.factory .state[data-state="Shipped"]::before,
+.factory .floor-key [data-state="Shipped"]::before {
+  background: var(--factory-mint);
+}
+.factory .state[data-state="In merge queue"]::before,
+.factory .floor-key [data-state="In merge queue"]::before {
   background: var(--color-text-primary);
 }
-.factory .state[data-state="Stopped"] {
-  color: var(--color-text-secondary);
-}
-.factory .state[data-state="Stopped"]::before {
-  background: var(--color-border-emphasized);
+.factory .state[data-state="Stopped"]::before,
+.factory .floor-key [data-state="Stopped"]::before {
+  background: none;
 }
 
-/* The floor: a square for each issue. Lighter blue is earlier in the
- * line; ink is shipped; an outline is stopped. */
+/* The floor: a square for each issue, in its state's fill. */
 .factory .floor {
-  margin-top: 2.5rem;
+  margin-top: 2rem;
 }
 .factory .floor-grid {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+  padding: 1.25rem;
 }
 .factory .floor-grid a {
   width: 20px;
   height: 20px;
-  background: var(--color-accent);
+  background: var(--factory-sky);
+  border: 1.5px solid var(--color-text-primary);
 }
 .factory .floor-grid a:hover {
   outline: 2px solid var(--color-text-primary);
-  outline-offset: 2px;
+  outline-offset: 1px;
 }
-.factory .floor-grid [data-state="Working"],
-.factory .floor-key [data-state="Working"]::before {
-  opacity: 0.45;
+.factory .floor-grid [data-state="Working"] {
+  background: var(--factory-sun);
 }
-.factory .floor-grid [data-state="In merge queue"],
-.factory .floor-key [data-state="In merge queue"]::before {
-  opacity: 0.7;
+.factory .floor-grid [data-state="Shipped"] {
+  background: var(--factory-mint);
 }
-.factory .floor-grid [data-state="Shipped"],
-.factory .floor-key [data-state="Shipped"]::before {
+.factory .floor-grid [data-state="In merge queue"] {
   background: var(--color-text-primary);
 }
 .factory .floor-grid a:not([data-state]),
-.factory .floor-grid [data-state="Stopped"],
-.factory .floor-key [data-state="Stopped"]::before {
+.factory .floor-grid [data-state="Stopped"] {
   background: none;
-  box-shadow: inset 0 0 0 1px var(--color-border-emphasized);
+  border-color: var(--color-border-emphasized);
 }
 .factory .floor-key {
   list-style: none;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.75rem 3rem;
-  margin: 1.25rem 0 0;
+  gap: 0.5rem 2.5rem;
+  margin: 1rem 0 0;
   padding: 0;
 }
 .factory .floor-key li {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  column-gap: 0.5rem;
-  align-items: baseline;
-}
-.factory .floor-key li::before {
-  content: "";
-  width: 0.75rem;
-  height: 0.75rem;
-  background: var(--color-accent);
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font: 0.75rem/1.5 var(--font-family-home-code);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 .factory .floor-key strong {
-  font-size: 2.5rem;
-  font-weight: 800;
-  line-height: 1;
-  letter-spacing: -0.04em;
-  margin-right: 0.35rem;
+  font: 400 1.75rem/1 var(--font-family-home);
+  letter-spacing: 0.02em;
+  margin-right: 0.25rem;
   font-variant-numeric: tabular-nums;
 }
 .factory .floor-key a {
-  color: inherit;
   text-decoration: none;
 }
 .factory .floor-key a:hover {
@@ -340,16 +384,15 @@
 }
 
 /* Goals: a row for each */
-.factory .chapters {
-  border-top: 1px solid var(--color-text-primary);
-}
 .factory .chapter {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   gap: 0.25rem 2rem;
   align-items: start;
-  padding-block: 1.25rem;
-  border-bottom: 1px solid var(--color-border);
+  padding: 1.25rem 1.5rem;
+}
+.factory .chapter + .chapter {
+  border-top: 2px solid var(--color-text-primary);
 }
 .factory .chapter .section-band {
   justify-content: space-between;
@@ -357,13 +400,15 @@
 .factory .chapter h3 {
   font-size: 1.5rem;
 }
-.factory .chapter h3 a {
-  color: inherit;
-}
 .factory .chapter .narrative,
 .factory .chapter .more,
 .factory .chapter .unavailable {
   grid-column: 1;
+}
+.factory .more {
+  font: 0.75rem/1.5 var(--font-family-home-code);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 .factory .progress {
   grid-column: 2;
@@ -379,27 +424,26 @@
 .factory progress {
   display: block;
   width: 100%;
-  height: 0.75rem;
-  margin-top: 0.6rem;
-  border: 0;
+  height: 1.25rem;
+  margin-top: 0.4rem;
+  border: 2px solid var(--color-text-primary);
   appearance: none;
-  background: var(--color-border);
-  accent-color: var(--color-text-primary);
+  background: var(--color-background-body);
+  accent-color: var(--factory-mint);
 }
 .factory progress::-webkit-progress-bar {
-  background: var(--color-border);
+  background: var(--color-background-body);
 }
 .factory progress::-webkit-progress-value {
-  background: var(--color-text-primary);
+  background: var(--factory-mint);
+  border-right: 2px solid var(--color-text-primary);
 }
 .factory progress::-moz-progress-bar {
-  background: var(--color-text-primary);
+  background: var(--factory-mint);
+  border-right: 2px solid var(--color-text-primary);
 }
 
-/* Measures: name and figure on the left, the evidence on the right. */
-.factory .measures {
-  border-top: 1px solid var(--color-text-primary);
-}
+/* Measures: the sentence on the left, the evidence on the right. */
 .factory .chart {
   margin: 0;
 }
@@ -408,8 +452,10 @@
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   grid-template-rows: auto auto auto 1fr;
   column-gap: 2rem;
-  padding-block: 2.5rem 1rem;
-  border-bottom: 1px solid var(--color-border);
+  padding: 2rem 1.5rem 1rem;
+}
+.factory .measures .chart + .chart {
+  border-top: 2px solid var(--color-text-primary);
 }
 .factory .measures .chart > * {
   grid-column: 1;
@@ -424,24 +470,16 @@
 .factory .measures details[open] {
   grid-column: 1 / -1;
 }
-.factory figcaption {
-  font-size: 1rem;
-  font-weight: 700;
-}
-/* The sentence leads; the chart's name sits under it. */
 .factory .measures .chart-headline {
   grid-row: 1;
   margin: 0 0 0.75rem;
-  max-width: 22ch;
-  font-size: clamp(1.5rem, 2.6vw, 2.125rem);
-  font-weight: 800;
-  line-height: 1.1;
-  letter-spacing: -0.03em;
+  max-width: 24ch;
+  font-size: clamp(1.375rem, 2.3vw, 1.75rem);
+  line-height: 1.25;
   text-wrap: balance;
 }
 .factory .measures figcaption {
   grid-row: 2;
-  font-weight: 400;
   color: var(--color-text-secondary);
 }
 .factory .measures .chart-note {
@@ -450,10 +488,17 @@
 .factory .chart-note {
   margin: 0;
 }
-.factory .burn-up {
-  margin-bottom: 1rem;
+/* Columns: the working fill inside an ink outline. */
+.factory .dashboard-chart-plot path[fill] {
+  fill: var(--factory-sun);
+  stroke: var(--color-text-primary);
+  stroke-width: 2;
 }
 /* Burn-up: a quiet grid, an ink baseline, a name at the end of each line. */
+.factory .burn-up {
+  padding: 1.25rem 1.5rem 0.5rem;
+  margin-bottom: 1rem;
+}
 .factory .burn-up-plot svg text {
   font: 0.8125rem var(--font-family-home);
   fill: var(--color-text-secondary);
@@ -465,26 +510,31 @@
 .factory .burn-up-plot svg line[pointer-events] {
   stroke: var(--color-text-primary);
 }
+.factory .burn-up-plot svg path[fill-opacity] {
+  fill: var(--factory-mint);
+  fill-opacity: 1;
+}
+.factory .burn-up-plot svg path[stroke] {
+  stroke: var(--color-text-primary);
+}
 .factory .burn-up-ends circle {
-  fill: var(--color-accent);
-  stroke: var(--color-background-body);
+  fill: var(--factory-mint);
+  stroke: var(--color-text-primary);
   stroke-width: 2;
 }
 .factory .burn-up-ends [data-series="scope"] {
-  fill: var(--color-text-secondary);
+  fill: var(--color-background-body);
 }
 .factory .burn-up-plot .burn-up-ends tspan {
   fill: var(--color-text-primary);
   font-size: 0.9375rem;
-  font-weight: 700;
+  font-weight: 600;
 }
 .factory summary {
   display: list-item;
   list-style-position: inside;
   padding-block: 0.6rem;
   cursor: pointer;
-  font-size: 0.875rem;
-  color: var(--color-text-accent);
 }
 .factory table {
   width: 100%;
@@ -506,8 +556,7 @@
   font-variant-numeric: tabular-nums;
 }
 .factory thead th {
-  font-weight: 700;
-  border-bottom-color: var(--color-text-primary);
+  border-bottom: 2px solid var(--color-text-primary);
 }
 
 /* Record lists: key, title, goal, state on one line */
@@ -515,17 +564,19 @@
   list-style: none;
   margin: 0;
   padding: 0;
-  border-top: 1px solid var(--color-text-primary);
 }
 .factory .records li {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0 1.5rem;
-  border-bottom: 1px solid var(--color-border);
+  padding-inline: 1rem;
+}
+.factory .records li + li {
+  border-top: 1px solid var(--color-text-primary);
 }
 .factory .records li:hover {
-  background: var(--color-background-muted);
+  background: var(--factory-paper);
 }
 .factory .record-row {
   display: contents;
@@ -537,8 +588,6 @@
   align-items: baseline;
   padding-block: 0.6rem;
   min-height: 44px;
-  color: var(--color-text-primary);
-  font-weight: 500;
   text-decoration: none;
 }
 .factory .record:hover {
@@ -551,18 +600,32 @@
 }
 .factory .records .state {
   order: 1;
-  min-width: 6.5rem;
+  min-width: 7.5rem;
 }
 .factory .records .unavailable {
   flex-basis: 100%;
-  margin-top: 0;
+  margin: 0 -1rem;
 }
-/* The rest of a long list opens on request. */
+/* The rest of a long list opens from an outlined button. */
 .factory .more-records > summary {
-  padding-block: 0.9rem;
+  display: inline-block;
+  list-style: none;
+  margin-top: 1rem;
+  padding: 0.7rem 1.25rem;
+  background: var(--color-background-body);
+  border: 2px solid var(--color-text-primary);
+}
+.factory .more-records > summary::-webkit-details-marker {
+  display: none;
+}
+.factory .more-records > summary:hover {
+  background: var(--factory-sun);
+}
+.factory .more-records[open] > summary {
+  display: none;
 }
 .factory .more-records .records {
-  border-top-color: var(--color-border);
+  border-top-width: 0;
 }
 
 /* A goal page lists each state. A row repeats neither state nor goal. */
@@ -571,7 +634,7 @@
   scroll-margin-top: 1rem;
 }
 .factory .state-group .section-band {
-  margin-bottom: 0.6rem;
+  margin-bottom: 0.75rem;
 }
 .factory .state-group .state {
   display: none;
@@ -581,32 +644,35 @@
 .factory .timeline {
   list-style: none;
   margin: 1rem 0 0;
-  padding: 0;
+  padding: 1rem 1.5rem;
 }
 .factory .timeline > li {
   display: grid;
   grid-template-columns: 12.5rem 1fr;
 }
 .factory .timeline time {
-  padding-top: 0.75rem;
+  padding-top: 0.85rem;
 }
 .factory .event {
   position: relative;
-  border-left: 1px solid var(--color-text-primary);
+  border-left: 2px solid var(--color-text-primary);
   padding: 0 0 1rem 1.5rem;
 }
 .factory .event::before {
   content: "";
   position: absolute;
-  top: 1.05rem;
-  left: calc(-0.25rem - 0.5px);
-  width: 0.5rem;
-  height: 0.5rem;
-  background: var(--color-text-primary);
+  top: 0.95rem;
+  left: calc(-0.375rem - 1px);
+  width: 0.75rem;
+  height: 0.75rem;
+  background: var(--factory-sky);
+  border: 1.5px solid var(--color-text-primary);
 }
 .factory [data-kind="session"] .event::before {
-  background: var(--color-background-body);
-  border: 1px solid var(--color-text-primary);
+  background: var(--factory-sun);
+}
+.factory [data-kind="merged"] .event::before {
+  background: var(--factory-mint);
 }
 .factory .timeline > li:last-child .event {
   padding-bottom: 0;
@@ -617,10 +683,7 @@
   align-items: center;
   gap: 0 1rem;
   min-height: 44px;
-  font-weight: 700;
-}
-.factory .event-heading > span {
-  font-weight: 400;
+  font-weight: 600;
 }
 .factory .event-heading > a {
   display: inline-flex;
@@ -645,73 +708,63 @@
   min-width: 2rem;
   height: 2rem;
   padding-inline: 0.25rem;
-  background: var(--color-background-muted);
-  color: var(--color-text-primary);
-  font-size: 0.8125rem;
-  font-variant-numeric: tabular-nums;
+  border: 1.5px solid var(--color-text-primary);
+  font: 0.75rem var(--font-family-home-code);
   text-decoration: none;
 }
 .factory .turns a:hover {
-  background: var(--color-text-primary);
-  color: var(--color-background-body);
+  background: var(--factory-sun);
 }
 
 /* Transcript: the speaker in the margin, the words beside. */
-.factory #transcript {
-  border-top: 1px solid var(--color-text-primary);
-}
 .factory .turn {
   display: grid;
   grid-template-columns: 12.5rem minmax(0, 1fr);
-  padding-block: 1.25rem;
-  border-bottom: 1px solid var(--color-border);
+  padding: 1.25rem 1.5rem;
   scroll-margin-top: 1rem;
 }
-.factory .turn-head h2 {
-  font-size: 1rem;
-  font-weight: 700;
-  letter-spacing: 0;
-  line-height: 1.55;
-  text-transform: capitalize;
+.factory .turn + .turn {
+  border-top: 2px solid var(--color-text-primary);
 }
-.factory .turn[data-role="user"] .turn-head h2::before {
-  content: "";
-  display: inline-block;
-  width: 0.5rem;
-  height: 0.5rem;
-  margin-right: 0.5rem;
-  background: var(--color-accent);
+.factory .turn[data-role="user"] {
+  background: var(--factory-paper);
+}
+.factory .turn-head h2 {
+  font: 0.75rem/1.5 var(--font-family-home-code);
+  letter-spacing: 0.04em;
+  margin-top: 0.2rem;
 }
 .factory .turn-body {
-  max-width: 44rem;
+  max-width: 46rem;
 }
 .factory .turn-body > :first-child,
 .factory .turn-body > .text > :first-child {
   margin-top: 0;
 }
 .factory .tool {
-  border-top: 1px solid var(--color-border);
+  border: 1.5px solid var(--color-text-primary);
+  padding-inline: 0.75rem;
   margin-top: 0.5rem;
 }
 .factory .tool summary {
-  font-family: var(--font-family-code);
-  font-size: 0.8125rem;
+  text-transform: none;
 }
 .factory .tool h3,
 .factory .diff h3 {
-  font-size: 0.875rem;
-  font-weight: 700;
-  letter-spacing: 0;
+  font: 0.75rem/1.5 var(--font-family-home-code);
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
 }
 .factory .diff {
   margin-top: 1rem;
 }
 .factory pre {
   font: 0.8125rem/1.65 var(--font-family-code);
+  letter-spacing: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
-  background: var(--color-background-muted);
+  background: var(--factory-paper);
   padding: 0.75rem;
   margin-block: 0.5rem 0.75rem;
   max-width: 100%;
@@ -725,9 +778,9 @@
 }
 
 .factory-footer {
-  border-top: 1px solid var(--color-text-primary);
+  border-top: 2px solid var(--color-text-primary);
   padding-block: 0.5rem;
-  margin-top: 5rem;
+  margin-top: 4rem;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -740,16 +793,20 @@
   .site:has(.factory) {
     padding-inline: 16px;
   }
-  .factory .floor-key {
-    gap: 0.75rem 2rem;
+  .factory .floor-grid {
+    padding: 0.75rem;
   }
-  .factory .measures .chart > * {
-    grid-row: auto;
+  .factory .floor-key {
+    gap: 0.5rem 1.5rem;
   }
   .factory .chapter,
   .factory .measures .chart,
   .factory .turn {
     grid-template-columns: minmax(0, 1fr);
+    padding-inline: 1rem;
+  }
+  .factory .measures .chart > * {
+    grid-row: auto;
   }
   .factory .progress,
   .factory .measures .dashboard-chart-plot {
@@ -767,12 +824,16 @@
   }
   .factory .records .state {
     margin-left: auto;
+    min-width: 0;
+  }
+  .factory .timeline {
+    padding-inline: 1rem;
   }
   .factory .timeline > li {
     grid-template-columns: 1fr;
   }
   .factory .timeline time {
     padding: 0.5rem 0 0 1.5rem;
-    border-left: 1px solid var(--color-text-primary);
+    border-left: 2px solid var(--color-text-primary);
   }
 }

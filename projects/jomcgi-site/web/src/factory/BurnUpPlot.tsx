@@ -41,15 +41,15 @@ export default function BurnUpPlot({ points }: { points: BurnPoint[] }) {
       series={[
         line("total", {
           label: "Scope",
-          color: "var(--color-text-secondary)",
+          color: "var(--color-text-primary)",
           strokeWidth: 2,
           curve: "linear",
         }),
         // One series draws the wash and its line, so the tooltip lists it once.
         area("shipped", {
           label: "Shipped",
-          color: "var(--color-accent)",
-          opacity: 0.12,
+          color: "var(--factory-mint)",
+          opacity: 1,
           curve: "linear",
         }),
       ]}
