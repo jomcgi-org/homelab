@@ -81,6 +81,10 @@ type Intervals struct {
 	// without a task event, and ToolLease how long while a tool call is open
 	// (HOME-159). ForceDelete is how long a cancellation waits for kagent
 	// before the session is deleted with force.
+	// WorkerWait is how long a send waits for its WorkerPool to have a free
+	// worker before it goes anyway. Zero turns the wait off (worker pool
+	// autoscaling, ARCHITECTURE.md).
+	WorkerWait    Duration `yaml:"workerWait"`
 	TaskLease     Duration `yaml:"taskLease"`
 	ProgressLease Duration `yaml:"progressLease"`
 	ToolLease     Duration `yaml:"toolLease"`
@@ -305,6 +309,9 @@ func Parse(b []byte) (*File, error) {
 	}
 	if f.Intervals.ToolLease < 0 {
 		return nil, fmt.Errorf("config: toolLease must be positive")
+	}
+	if f.Intervals.WorkerWait < 0 {
+		return nil, fmt.Errorf("config: workerWait must not be negative")
 	}
 	if f.Intervals.ForceDelete == 0 {
 		f.Intervals.ForceDelete = Duration(10 * time.Minute)

@@ -34,6 +34,7 @@ type Metrics struct {
 	SessionRecoveries *prometheus.CounterVec // kind
 	SessionsDeleted   *prometheus.CounterVec // reason
 	StuckTurns        *prometheus.CounterVec // step
+	WorkerWaits       *prometheus.CounterVec // outcome
 
 	CredentialRefusals *prometheus.CounterVec // role, kind
 }
@@ -149,6 +150,10 @@ func New(reg prometheus.Registerer) *Metrics {
 			Help: "Steps that free a turn past its liveness lease (HOME-141): lease, not_started, force_delete, " +
 				"refused, revert, deleted.",
 		}, []string{"step"}),
+		WorkerWaits: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "factory_connector_worker_waits_total",
+			Help: "Send decisions against a pool's free workers by outcome: ready, waiting (send held), timeout (sent after the wait bound) and unknown (no fresh reading; sent).",
+		}, []string{"outcome"}),
 		CredentialRefusals: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "factory_connector_credential_refusals_total",
 			Help: "itsaplan 401 and 403 answers by key role (agent, coordinator) and kind: an outbox kind " +
@@ -159,7 +164,7 @@ func New(reg prometheus.Registerer) *Metrics {
 	if reg != nil {
 		reg.MustRegister(m.Claims, m.Sends, m.Heartbeats, m.Results, m.Blocked, m.Retries,
 			m.DeferredStarted, m.Cancellations, m.Events, m.Reassignments, m.WriterEpoch, m.ItsaplanUnavailable, m.TickErrors,
-			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.RebaseRounds, m.SplitRounds, m.IdleRounds, m.MergeQueue, m.CILogReads, m.GoalReasonReads, m.SessionRecoveries, m.SessionsDeleted, m.StuckTurns, m.CredentialRefusals,
+			m.PullRequests, m.ReviewEvents, m.ReviewRounds, m.RebaseRounds, m.SplitRounds, m.IdleRounds, m.MergeQueue, m.CILogReads, m.GoalReasonReads, m.SessionRecoveries, m.SessionsDeleted, m.StuckTurns, m.WorkerWaits, m.CredentialRefusals,
 			m.HeldRuns, m.OldestHold)
 	}
 	return m

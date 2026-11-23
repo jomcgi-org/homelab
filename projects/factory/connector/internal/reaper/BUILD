@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "reaper",
     srcs = [
+        "capacity.go",
         "census.go",
         "lease.go",
         "reaper.go",
@@ -11,6 +12,7 @@ go_library(
     visibility = ["//projects/factory/connector:__subpackages__"],
     deps = [
         "@com_github_prometheus_client_golang//prometheus",
+        "@io_k8s_api//core/v1:core",
         "@io_k8s_apimachinery//pkg/api/errors",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
         "@io_k8s_apimachinery//pkg/types",
@@ -22,6 +24,7 @@ go_library(
 go_test(
     name = "reaper_test",
     srcs = [
+        "capacity_test.go",
         "census_test.go",
         "reaper_test.go",
     ],
@@ -31,7 +34,9 @@ go_test(
         "//projects/factory/connector/internal/pgtest",
         "@com_github_prometheus_client_golang//prometheus",
         "@com_github_prometheus_client_golang//prometheus/testutil",
+        "@io_k8s_api//core/v1:core",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_client_go//kubernetes/fake",
         "@io_k8s_client_go//kubernetes/typed/core/v1:core",
         "@io_k8s_client_go//rest",
         "@org_golang_google_protobuf//encoding/protowire",
