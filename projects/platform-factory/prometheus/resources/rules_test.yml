@@ -920,6 +920,37 @@ tests:
         alertname: FactoryItsaplanOutage
         exp_alerts: []
 
+  # The send wait works while every send is "ready" or "waiting". A "timeout"
+  # or an "unknown" in the last 15 min fires the alert, and it clears 15 min
+  # after the last one.
+  - interval: 1m
+    input_series:
+      - series: 'factory_connector_worker_waits_total{job="factory-connector",outcome="ready"}'
+        values: "0+1x40"
+      - series: 'factory_connector_worker_waits_total{job="factory-connector",outcome="waiting"}'
+        values: "0+3x40"
+      - series: 'factory_connector_worker_waits_total{job="factory-connector",outcome="timeout"}'
+        values: "0x10 1x30"
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: FactoryWorkerWaitNotHolding
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: FactoryWorkerWaitNotHolding
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              outcome: timeout
+            exp_annotations:
+              action: "Check the capacity row (ready, busy, age) and the reaper, then the HPA of the pool (describe hpa, ScaledToZero, events)."
+              graph: 'sum(increase(factory_connector_worker_waits_total{job="factory-connector",outcome="timeout"}[15m]))'
+              threshold: "0"
+              runbook: "https://github.com/jomcgi-org/homelab/blob/main/projects/factory/ARCHITECTURE.md#worker-pool-autoscaling"
+              summary: "The connector's worker wait ended as timeout 1 time(s) in the last 15 min"
+      - eval_time: 40m
+        alertname: FactoryWorkerWaitNotHolding
+        exp_alerts: []
+
   # The egress IP changes at 31 min: the old series goes stale and a new one
   # starts. The alert fires at the first scrape of the new address, names
   # both addresses even after the exporter stops, and clears when the old
