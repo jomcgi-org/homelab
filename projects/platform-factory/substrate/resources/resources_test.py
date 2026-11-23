@@ -883,6 +883,10 @@ def test_engine_gate_is_staged_and_not_wired() -> None:
     assert not [r for r in listed if "engine-gate" in r or "egress-scan/gate" in r]
     rendered = json.dumps(_docs())
     assert "engine-gate" not in rendered
+    # The provisioning Jobs of the engine atespace and template are staged the
+    # same way (../egress-scan/gate/provision, suspended and unwired).
+    assert "egress-engine" not in rendered
+    assert "egress-scan-engine" not in rendered
 
 
 _PREVIEW = ["PerTemplateSnapshotLocation", "GoldenEgressPolicy", "ForkSeed"]

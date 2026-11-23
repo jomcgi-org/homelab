@@ -1,0 +1,66 @@
+# ActorTemplate (protojson ateapi.ActorTemplate) of the egress scanner's engine:
+# the private Semgrep Pro Secrets engine (engine-pro, all Secrets rules baked in
+# the image). engine-gate forks one child of it for each request
+# (../README.md, "Pool"). provision.py creates it, in the atespace
+# egress-scan-engine, after the atespace and its access policy exist.
+#
+# image: the digest-pinned engine-pro image of the workflow "Substrate fork
+# engine image (Pro, private)" (../../../gvisor-fork/engine-pro/README.md). The
+# package is private. atelet must hold a registry login that can read it
+# (../README.md, "Enable steps"). The image holds a PLACEHOLDER token in
+# /semgrep/.tok, mode 0444; forksrv-net reads the file and sets the engine's
+# variable itself. So this template names no env: the API refuses an env name
+# that holds TOKEN, KEY, SECRET or PASSWORD, and every child can read the
+# template env. The real Semgrep token is never in the image or the cluster.
+#
+# listens on port 80, because that is the port the router sends a request to
+# when the client names no other (atenet router ingress.go defaultActorPort).
+# gVisor checks no capability when a guest binds a low port, so uid 65532 can
+# bind it (the latency template does the same). The wakeup probe uses port 80
+# too. forksrv-net takes the rules, the target and the engine flags from the
+# image (engine-pro/README.md): the command has only --listen.
+#
+# The names are what engine-gate takes by flag: --atespace egress-scan-engine
+# and --template engine. A rebuild is a new template name (engine-v2) and a new
+# gate flag, not an edit of this one.
+metadata:
+  atespace: egress-scan-engine
+  name: engine
+workerSelector:
+  matchLabels:
+    workload: gvisor-fork
+containers:
+  - name: engine
+    image: ghcr.io/jomcgi-org/homelab/substrate-fork/engine-pro:1.186.0-0adcac4b1419@sha256:2235edd728528d00ae623be2200d9c29e44e8015300ad2368f7a303b4492f481
+    command:
+      - /usr/local/bin/forksrv-net
+      - --listen
+      - 0.0.0.0:80
+    wakeupProbe:
+      httpGet:
+        path: /healthz
+        port: 80
+      timeoutSeconds: 45
+# The private limits of one forked actor (ARCHITECTURE.md, "Capacity and
+# scheduling"): 1000m, because a cpu.max below it throttles a 60 to 80 ms scan,
+# and 128 MiB, which covers 80 MB at a 512 KiB body. The kernel kills a child
+# above its limit plus the 16 MiB fork overhead. A scanning child holds about
+# 37 MB. The scheduler books these limits for every child, waiting or not.
+resources:
+  limits:
+    cpuMillicores: 1000
+    memoryBytes: 134217728
+forkConfig:
+  mode: FORK_MODE_SEED_AND_FORK
+  # What the seed holds on the worker: 358 MB resident (PSS) with 1586 rules.
+  seedResources:
+    limits:
+      cpuMillicores: 1000
+      memoryBytes: 536870912
+  singleUse: true
+  # engine-gate recycles a waiting child at 600 s and never hands one out after
+  # 780 s. The worker reports an expiry as a crash, and a delete is no crash.
+  maxLifetimeSeconds: 900
+  pidsLimit: 256
+  logBytesLimit: 1048576
+  egress: FORK_EGRESS_NONE
