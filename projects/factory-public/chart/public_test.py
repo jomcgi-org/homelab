@@ -296,7 +296,9 @@ def test_mirror_publishes_only_health_json_from_the_health_bucket():
     assert (
         script.index('cat "GARAGE:$GARAGE_BUCKET/manifest.json"')
         < script.index('\npayloads copy "GARAGE:$GARAGE_BUCKET" "R2:$R2_BUCKET"')
-        < script.index('run copyto "$scratch/manifest.json" "R2:$R2_BUCKET/manifest.json"')
+        < script.index(
+            'run copyto "$scratch/manifest.json" "R2:$R2_BUCKET/manifest.json"'
+        )
         < script.index(health)
         < script.index('run delete "R2:$R2_BUCKET" --files-from-raw')
     )
