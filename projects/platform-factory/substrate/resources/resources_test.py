@@ -753,7 +753,7 @@ def test_gvisor_fork_slice_is_staged_and_not_wired() -> None:
     listed = kustomization["resources"] + kustomization.get("components", [])
     assert not [r for r in listed if "gvisor-fork" in r or r.startswith("..")]
     rendered = json.dumps(_docs())
-    for name in ("gvisor-fork", "gvisor-fork-assets-init", "ForkSeed"):
+    for name in ("gvisor-fork", "gvisor-fork-assets-init"):
         assert name not in rendered, name
     classes = {
         d["metadata"]["name"]: d["spec"]["sandboxClass"]
@@ -761,3 +761,10 @@ def test_gvisor_fork_slice_is_staged_and_not_wired() -> None:
         if d["kind"] == "SandboxConfig"
     }
     assert classes == {"gvisor-default": "gvisor", "microvm": "microvm"}
+
+
+def test_fork_seed_gate_is_off() -> None:
+    # The gate stays off until step 7 of the enable steps
+    # (projects/factory-cluster/README.md, "gVisor sandbox fork"): no rendered
+    # component takes it in --preview.
+    assert "ForkSeed" not in json.dumps(_docs())
