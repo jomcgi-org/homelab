@@ -88,6 +88,8 @@ spec:
               value: "2,4"
             - name: POOL_BATCH
               value: "4"
+            - name: ROUNDS
+              value: "5"
           resources:
             requests:
               cpu: 100m
@@ -185,6 +187,8 @@ spec:
               value: "2,4"
             - name: POOL_BATCH
               value: "4"
+            - name: ROUNDS
+              value: "5"
           resources:
             requests:
               cpu: 100m

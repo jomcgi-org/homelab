@@ -32,6 +32,8 @@ Every result line starts with "LATENCY " and holds key=value pairs, so
 `kubectl -n ate-system logs job/<name> | grep '^LATENCY '` reads the run.
 A line with event=sample is one measurement; a line with event=stats is the
 nearest-rank p50, p95 and p99 of one metric (p99 equals max below 100 samples).
+A concurrent burst of K runs ROUNDS times, and its stats pool the rounds, because
+the p95 of one burst of 2 to 4 samples is its maximum.
 The pool books every child at the template's CPU and memory limits, and a
 child that served its request keeps its booking until the worker reports its
 exit and the API deletes the actor. The script reads the worker's free capacity
@@ -73,6 +75,9 @@ SEQUENTIAL = int(os.environ.get("SEQUENTIAL", "20"))
 CONCURRENCY = [int(k) for k in os.environ.get("CONCURRENCY", "2,4").split(",") if k]
 # Waiting children prepared at once in the sequential pool phase.
 POOL_BATCH = int(os.environ.get("POOL_BATCH", "4"))
+# Each concurrent burst repeats this many times. The p95 of one burst of 2 to 4
+# samples is its maximum, so the stats of a burst pool the rounds.
+ROUNDS = int(os.environ.get("ROUNDS", "5"))
 BODY_BYTES = [int(b) for b in os.environ.get("BODY_BYTES", "16384,524288").split(",")]
 LARGE_SAMPLES = int(os.environ.get("LARGE_SAMPLES", "10"))
 FLOOR_SAMPLES = int(os.environ.get("FLOOR_SAMPLES", "10"))
@@ -466,15 +471,20 @@ def phase_control() -> None:
         deletes.append(delete(row["name"]))
     control_stats("control_seq", 1, rows, deletes)
     for k in CONCURRENCY:
-        rows, wall = run_k(k, prepare, [NAMES() for _ in range(k)])
-        deletes, _ = run_k(k, delete, [r["name"] for r in rows])
+        rows, deletes = [], []
+        for round_ in range(ROUNDS):
+            burst, wall = run_k(k, prepare, [NAMES() for _ in range(k)])
+            gone, _ = run_k(k, delete, [r["name"] for r in burst])
+            rows += burst
+            deletes += gone
+            log(
+                event="burst",
+                k=k,
+                round=round_ + 1,
+                wall_ms=f"{wall:.1f}",
+                per_second=f"{k / wall * 1000:.2f}",
+            )
         control_stats(f"control_k{k}", k, rows, deletes)
-        log(
-            event="burst",
-            k=k,
-            wall_ms=f"{wall:.1f}",
-            per_second=f"{k / wall * 1000:.2f}",
-        )
 
 
 def drained(timeout: float) -> float:
@@ -531,9 +541,21 @@ def phase_pool(router: Router) -> None:
         )
     size = BODY_BYTES[0]
     for k in CONCURRENCY:
-        names = [NAMES() for _ in range(k)]
-        run_k(k, prepare, names)
-        rows, wall = run_k(k, lambda n: send(router, n, size), names)
+        rows = []
+        for round_ in range(ROUNDS):
+            names = [NAMES() for _ in range(k)]
+            run_k(k, prepare, names)
+            burst, wall = run_k(k, lambda n: send(router, n, size), names)
+            rows += burst
+            log(
+                event="burst",
+                phase=f"pool_k{k}",
+                k=k,
+                round=round_ + 1,
+                wall_ms=f"{wall:.1f}",
+            )
+            # Served children keep their booking until deleted.
+            drained(STATE_WAIT)
         stats(
             f"pool_k{k}",
             "pool",
@@ -542,8 +564,6 @@ def phase_pool(router: Router) -> None:
             [r["send_to_result_ms"] for r in rows],
             body=size,
         )
-        log(event="burst", phase=f"pool_k{k}", k=k, wall_ms=f"{wall:.1f}")
-        log(event="drain", phase=f"pool_k{k}", wait_ms=f"{drained(STATE_WAIT):.1f}")
 
 
 def on_demand(router: Router, size: int, name: str) -> dict:
@@ -575,7 +595,15 @@ def phase_requests(router: Router, phase: str, work) -> None:
                 rows.append(row)
                 sample(phase, phase, 1, **row)
         else:
-            rows, _ = run_k(k, lambda n: work(router, size, n), names)
+            rows = []
+            for _ in range(ROUNDS):
+                burst, _ = run_k(
+                    k,
+                    lambda n: work(router, size, n),
+                    [NAMES() for _ in range(k)],
+                )
+                rows += burst
+                drained(STATE_WAIT)
         for metric in (
             "create_ms",
             "create_to_ready_ms",
