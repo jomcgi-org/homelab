@@ -15,6 +15,21 @@
         }
       },
       "enabled": true
+    },
+    {
+      "description": "Factory data",
+      "expression": "(http.host eq \"factory-data.jomcgi.dev\")",
+      "action": "set_cache_settings",
+      "action_parameters": {
+        "cache": true,
+        "edge_ttl": {
+          "mode": "respect_origin"
+        },
+        "browser_ttl": {
+          "mode": "respect_origin"
+        }
+      },
+      "enabled": true
     }
   ]
 }
