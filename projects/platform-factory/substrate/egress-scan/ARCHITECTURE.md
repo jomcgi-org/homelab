@@ -336,7 +336,7 @@ flowchart LR
 | How the build gets the rules | The Secrets config of the Semgrep deployment, fetched with the real token | The spike used `GET /api/agent/deployments/scans/config?is_secrets_scan=true` |
 | What is pinned | The Pro binary sha256 in `pins.env` after the first build. The rules sha256 as an image label and in the tag | The rules are proprietary content and stay out of the public repo |
 | What the build checks | Fail if the engine download or the rules fetch fails. Run the engine once, expect exit 0 and a finding on a fake secret | The build proves the engine works with the token file the image holds |
-| Private package check | A content-free canary goes to the package first. The pull with the workflow login must resolve, and then an anonymous pull must be refused. Only then the Pro image is pushed, and the same check runs on it | The repo is public, and a package published by a workflow can inherit the repo's visibility. A refusal proves nothing for a name that does not exist, and GitHub may not allow the delete of a version |
+| Private package check | A content-free canary goes to the package first. The pull with the workflow login must resolve, and then an anonymous pull must be refused. Only then the Pro image is pushed, and the same check runs on it | The repo is public, and a package published by a workflow can inherit the repo's visibility. A refusal proves nothing for a name that does not exist, and GitHub may not allow the delete of a version. Only a registry error code UNAUTHORIZED or DENIED counts as a refusal, from the manifest request or from the ghcr.io token endpoint, where GHCR refuses an anonymous client of a private package |
 
 Details of the check:
 
