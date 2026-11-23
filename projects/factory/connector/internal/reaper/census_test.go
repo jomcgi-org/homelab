@@ -173,7 +173,7 @@ func TestDemandPublishesIdlePoolsAtZeroAndGoesQuietWhenStale(t *testing.T) {
 	if n := testutil.CollectAndCount(d); n != 0 {
 		t.Fatalf("series before the first census = %d, want none", n)
 	}
-	d.Observe(map[Pool]int{coder: 3})
+	d.Observe(Snapshot{Busy: map[Pool]int{coder: 3}})
 	// Two demand series (the idle reviewer pool at 0) and two spare series.
 	if n := testutil.CollectAndCount(d); n != 4 {
 		t.Fatalf("series = %d, want 4", n)
@@ -213,7 +213,7 @@ func TestDemandPublishesIdlePoolsAtZeroAndGoesQuietWhenStale(t *testing.T) {
 func TestDemandInvalidateDropsTheSeriesAtOnce(t *testing.T) {
 	coder := Pool{"factory-r-homelab", "homelab-codex"}
 	d := NewDemand(map[Pool]int{coder: 2})
-	d.Observe(map[Pool]int{coder: 1})
+	d.Observe(Snapshot{Busy: map[Pool]int{coder: 1}})
 	if _, ok := d.Latest(); !ok || testutil.CollectAndCount(d) != 2 {
 		t.Fatal("no census after Observe")
 	}

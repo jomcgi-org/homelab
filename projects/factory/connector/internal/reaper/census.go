@@ -106,13 +106,12 @@ func decodeHolder(proto []byte) (holds bool, pool Pool, pod string, err error) {
 	return true, Pool{string(parts[0]), string(parts[1])}, string(parts[2]), nil
 }
 
-// BusyWorkers counts, for each pool, the worker pods that host an actor. A
-// pool's worker runs one actor at a time (ARCHITECTURE.md "Repository
-// bindings"), so distinct pods are the workers a pool cannot lose. Unlike the
-// deletion path, which ignores what it cannot read, the count fails on any
-// row it cannot read (ErrCensus): a low count under a live actor would let an
-// autoscaler remove its worker.
-func BusyWorkers(protos [][]byte) (map[Pool]int, error) {
+// BusyPods lists, for each pool, the worker pods that host an actor. A pool's
+// worker runs one actor at a time (ARCHITECTURE.md "Repository bindings"), so
+// these are the workers a pool cannot lose. Unlike the deletion path, which
+// ignores what it cannot read, it fails on any row it cannot read (ErrCensus):
+// a low count under a live actor would let an autoscaler remove its worker.
+func BusyPods(protos [][]byte) (map[Pool]map[string]struct{}, error) {
 	pods := make(map[Pool]map[string]struct{})
 	for _, proto := range protos {
 		holds, pool, pod, err := decodeHolder(proto)
@@ -127,6 +126,15 @@ func BusyWorkers(protos [][]byte) (map[Pool]int, error) {
 		}
 		pods[pool][pod] = struct{}{}
 	}
+	return pods, nil
+}
+
+// BusyWorkers counts, for each pool, the worker pods that host an actor.
+func BusyWorkers(protos [][]byte) (map[Pool]int, error) {
+	pods, err := BusyPods(protos)
+	if err != nil {
+		return nil, err
+	}
 	out := make(map[Pool]int, len(pods))
 	for pool, set := range pods {
 		out[pool] = len(set)
@@ -134,25 +142,48 @@ func BusyWorkers(protos [][]byte) (map[Pool]int, error) {
 	return out, nil
 }
 
-// Census reads every session actor and counts the busy workers per pool.
-func Census(ctx context.Context, actors *sql.DB) (map[Pool]int, error) {
+// Snapshot is one census: the busy workers of each pool, by count and by name.
+type Snapshot struct {
+	Busy map[Pool]int
+	Pods map[Pool]map[string]struct{}
+}
+
+// Take reads every session actor once.
+func Take(ctx context.Context, actors *sql.DB) (Snapshot, error) {
 	rows, err := actors.QueryContext(ctx, `SELECT proto FROM public.reaper_actors()`)
 	if err != nil {
-		return nil, err
+		return Snapshot{}, err
 	}
 	defer rows.Close()
 	var protos [][]byte
 	for rows.Next() {
 		var proto []byte
 		if err := rows.Scan(&proto); err != nil {
-			return nil, err
+			return Snapshot{}, err
 		}
 		protos = append(protos, proto)
 	}
 	if err := rows.Err(); err != nil {
+		return Snapshot{}, err
+	}
+	pods, err := BusyPods(protos)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	busy := make(map[Pool]int, len(pods))
+	for pool, set := range pods {
+		busy[pool] = len(set)
+	}
+	return Snapshot{Busy: busy, Pods: pods}, nil
+}
+
+// Census counts the busy workers per pool.
+func Census(ctx context.Context, actors *sql.DB) (map[Pool]int, error) {
+	snap, err := Take(ctx, actors)
+	if err != nil {
 		return nil, err
 	}
-	return BusyWorkers(protos)
+	return snap.Busy, nil
 }
 
 // DemandSourceActors is the source label of the workers that host actors. The
@@ -175,6 +206,7 @@ type Demand struct {
 
 	mu    sync.Mutex
 	busy  map[Pool]int
+	pods  map[Pool]map[string]struct{}
 	taken time.Time
 
 	demand *prometheus.Desc
@@ -229,10 +261,10 @@ func (e *parseError) Error() string {
 }
 
 // Observe records a successful census.
-func (d *Demand) Observe(busy map[Pool]int) {
+func (d *Demand) Observe(snap Snapshot) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.busy, d.taken = busy, d.now()
+	d.busy, d.pods, d.taken = snap.Busy, snap.Pods, d.now()
 }
 
 // Invalidate drops the last census, so the series disappear at once. A census
@@ -242,17 +274,17 @@ func (d *Demand) Observe(busy map[Pool]int) {
 func (d *Demand) Invalidate() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.busy = nil
+	d.busy, d.pods = nil, nil
 }
 
 // Latest returns the last census, or false when there is none or it is too old.
-func (d *Demand) Latest() (map[Pool]int, bool) {
+func (d *Demand) Latest() (Snapshot, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.busy == nil || d.now().Sub(d.taken) > maxCensusAge {
-		return nil, false
+		return Snapshot{}, false
 	}
-	return d.busy, true
+	return Snapshot{Busy: d.busy, Pods: d.pods}, true
 }
 
 // Describe implements prometheus.Collector.

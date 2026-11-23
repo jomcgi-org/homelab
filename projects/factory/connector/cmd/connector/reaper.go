@@ -97,12 +97,16 @@ func runReaper(log *slog.Logger) error {
 			// The connector holds a send until its pool has a free worker. It
 			// reads this row, so a stale or failed census writes none and the
 			// row ages out to "unknown".
-			if busy, fresh := demand.Latest(); lease != nil && fresh {
-				if err := reaper.RecordCapacity(pass, lease, client, poolList, busy); errors.Is(err, reaper.ErrNotLeader) {
+			if census, fresh := demand.Latest(); lease != nil && fresh {
+				if err := reaper.RecordCapacity(pass, lease, client, poolList, census.Busy); errors.Is(err, reaper.ErrNotLeader) {
 					lease.Close()
 					lease = nil
 				} else if err != nil {
 					log.Error("worker pool capacity", "error", err)
+				}
+				// Idle workers go first when the autoscaler lowers replicas.
+				if err := reaper.ProtectBusyWorkers(pass, client, poolList, census.Pods); err != nil {
+					log.Error("worker deletion cost", "error", err)
 				}
 			}
 		}
@@ -123,13 +127,13 @@ func runCensus(ctx context.Context, log *slog.Logger, actors *sql.DB, demand *re
 	defer ticker.Stop()
 	for {
 		pass, cancel := context.WithTimeout(ctx, 10*time.Second)
-		busy, err := reaper.Census(pass, actors)
+		snap, err := reaper.Take(pass, actors)
 		cancel()
 		if err != nil {
 			demand.Invalidate()
 			log.Error("worker pool census", "error", err)
 		} else {
-			demand.Observe(busy)
+			demand.Observe(snap)
 		}
 		select {
 		case <-ctx.Done():
