@@ -412,11 +412,16 @@ def run(workdir: Path, text: str) -> None:
     # refused only for a CRASHED or exited actor. So the check is that the call
     # changes nothing: the fork is still RUNNING and still a fork.
     ate_ok("resume", "actor", first_fork, "-a", ATESPACE)
-    again = [a for a in forks() if name_of(a) == first_fork]
+    now = forks()
+    again = [a for a in now if name_of(a) == first_fork]
     if len(again) != 1 or state_of(again[0]) != "ACTOR_STATE_RUNNING":
         raise Failed(
             f"C6: after a second resume {first_fork} is "
             f"{[state_of(a) for a in again]!r}, not one RUNNING fork"
+        )
+    if len(now) != FORKS:
+        raise Failed(
+            f"C6: after a second resume there are {len(now)} forks, not {FORKS}"
         )
     passed("C6", noop="second resume", state=state_of(again[0]))
 

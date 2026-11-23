@@ -625,7 +625,7 @@ makes a fork template, in its own atespace, and deletes it.
 | --- | --- | --- |
 | SandboxConfig `gvisor-fork` (fork build `0250f9acf`) and its asset Job | `projects/platform-factory/substrate/gvisor-fork/` | wired (step 5). No pool uses the config until step 6. `gvisor-default` stays the class default |
 | WorkerPool `gvisor-fork` (`platform: kvm`) | `gvisor-fork/kvm-pool.yaml` | one worker (step 6). It holds no seed while no template sets `fork_config` (the conformance Job makes one for its run) |
-| Conformance Job `gvisor-fork-conformance-4` | `gvisor-fork/conformance-job.yaml` | runs once (step 8); `suspend: false` |
+| Conformance Job `gvisor-fork-conformance-5` | `gvisor-fork/conformance-job.yaml` | runs once (step 8); `suspend: false` |
 | Latency Jobs `gvisor-fork-latency-1` and `gvisor-fork-latency-data-1` | `gvisor-fork/latency/` | a kustomization the directory does not list, and `suspend: true` |
 | Fork images (`ateapi`, `atecontroller`, `atelet`, `ateworker-gvisor`, `kubectl-ate`) | `.github/workflows/substrate-fork-images.yml` | the three control-plane images are pinned and live (step 4); `ateworker-gvisor` runs in the pool (step 6) and `kubectl-ate` in the conformance Job (step 8) |
 | `ForkSeed` preview gate | `substrate/values/common.yaml` | on (step 7). The controller gives it to KVM pools' workers only. It starts no fork until a template sets `fork_config` (step 10) |
@@ -706,7 +706,7 @@ flowchart LR
    | Job `gvisor-fork-assets-init` | `ate-system` | new Sync hook (wave 1): runs at once, see below |
    | CiliumNetworkPolicy `gvisor-fork-assets-init` | `ate-system` | new; the asset Job reaches rustfs 9000 and `github.com`, `release-assets.githubusercontent.com`, `objects.githubusercontent.com` 443 |
    | CiliumNetworkPolicy `rustfs-gvisor-fork-assets` | `ate-system` | adds ingress to the existing `rustfs` pod: the asset Job, port 9000 |
-   | Job `gvisor-fork-conformance-3` | `ate-system` | new, `suspend: true`: no pod. Argo shows health Suspended |
+   | Job `gvisor-fork-conformance-3` (history: replaced at step 8) | `ate-system` | new, `suspend: true`: no pod. Argo shows health Suspended |
    | CiliumNetworkPolicy `gvisor-fork-conformance` | `ate-system` | new; matches no pod while the Job is suspended |
    | CiliumNetworkPolicy `ate-api-server-gvisor-fork-conformance` | `ate-system` | adds ingress to the existing `ate-api-server` pods: the conformance Job, port 443 |
 
@@ -729,7 +729,7 @@ flowchart LR
 
    ```sh
    kubectl -n argocd get application substrate          # Synced; health Suspended until step 8
-   kubectl -n ate-system get job gvisor-fork-assets-init gvisor-fork-conformance-3
+   kubectl -n ate-system get job gvisor-fork-assets-init            # and the suspended conformance Job (history: step 8 renames it)
    kubectl -n ate-system logs job/gvisor-fork-assets-init -c upload   # "the pinned gVisor fork tarball is in the bucket"
    kubectl get sandboxconfig                            # gvisor-default stays DEFAULT v7
    kubectl -n substrate-gvisor-fork get workerpool,pod  # replicas 0, no pod
@@ -883,19 +883,21 @@ flowchart LR
    a reviewer session on an idle pool, and the smoke test in "Agent Substrate".
    Run the fork conformance Job only at step 8.
 8. Cluster-affecting, Joe approves. Run the conformance Job. The engine image,
-   the `kubectl-ate` digest, the Job name (`gvisor-fork-conformance-4`) and the
+   the `kubectl-ate` digest, the Job name (`gvisor-fork-conformance-5`) and the
    placeholder test are already in git.
 
    History: `-3` failed at its first API call. The API refuses a fork template
    unless `snapshotConfig.goldenSnapshotConfig.mode` is `GOLDEN_SNAPSHOT_MODE_DISABLED`
-   (`apivalidation/fork.go`, `validateForkTemplate`). `-4` has that field, the
+   (`apivalidation/fork.go`, `validateForkTemplate`). `-4` was never applied.
+   `-5` has that field, a seed limit of 512 MiB (the seed measured 171 MB
+   resident and 192 MB peak, and the pool books 512 MiB for it), the
    other fork rules checked against the API source (every rule is mirrored in
    `gvisor_fork_test.py`, `_fork_template_errors`), and a C6 that expects a
    second resume of a RUNNING fork to be a no-op, which is what the API does.
 
    What changes: Argo prunes the Failed Job `gvisor-fork-conformance-3` and
-   creates `gvisor-fork-conformance-4` (not suspended) with the new ConfigMap
-   `gvisor-fork-conformance-kh98262d7c`. No other object, value or grant
+   creates `gvisor-fork-conformance-5` (not suspended) with the new ConfigMap
+   `gvisor-fork-conformance-tgf4tdtbht`. No other object, value or grant
    changes, and no pod rolls. The test `test_conformance_job_runs_once_as_ate_client`
    and the wiring guard assert `suspend` is `false`.
 
@@ -936,8 +938,8 @@ flowchart LR
    Read the result:
 
    ```sh
-   kubectl -n ate-system get job gvisor-fork-conformance-4          # Complete 1/1, or Failed
-   kubectl -n ate-system logs job/gvisor-fork-conformance-4 | grep '^CONFORMANCE '
+   kubectl -n ate-system get job gvisor-fork-conformance-5          # Complete 1/1, or Failed
+   kubectl -n ate-system logs job/gvisor-fork-conformance-5 | grep '^CONFORMANCE '
    kubectl -n argocd get application substrate                      # Healthy again once the Job is Complete
    ```
 
@@ -954,7 +956,7 @@ flowchart LR
 
    On failure: read the log, then fix the cause in a PR. A Failed Job does not
    run again, and its pod template is immutable: bump the run suffix in the name
-   (`-5`) and in the tests, which prunes `-4` and creates the new Job. To stop a
+   (`-6`) and in the tests, which prunes `-5` and creates the new Job. To stop a
    run in progress, set `suspend` back to `true` (Kubernetes allows it while the
    pod runs; the pod gets SIGTERM and the script cleans up). After a pass,
    delete `conformance-job.yaml` and its kustomization entries (a separate PR)
@@ -966,7 +968,7 @@ flowchart LR
    Editing anything under `conformance/` changes the hash in the name of the
    generated ConfigMap, and so the Job's pod template (its config volume): bump
    the run suffix in the same change. `resources_test.py` pins the ConfigMap
-   name (`gvisor-fork-conformance-kh98262d7c`) so such an edit fails CI.
+   name (`gvisor-fork-conformance-tgf4tdtbht`) so such an edit fails CI.
    - When the seed starts, find `forkd started` in the worker log. Check forkd's
      `hello` assertions (capabilities, cgroup parent, Unconfined seccomp,
      `/dev/kvm`) and that `memory`, `pids` and `cpu` are delegated below
