@@ -1,13 +1,13 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# The engine atespace and template provisioning, staged and OFF. Nothing here
-# reaches the cluster: ArgoCD applies only ../../../resources
-# (egress-scan/deploy/application.yaml), and that directory does not list this
-# one. provision_test.py checks the manifests, and
-# ../../../resources/resources_test.py fails if the wired kustomization lists
-# them. Both Jobs are suspended. What the wiring changes, and what Joe approves:
-# ../README.md, "Enable steps".
+# The engine atespace and template provisioning, wired by ../../../resources.
+# It runs egress-engine-provision-1 once. teardown-job.yaml is not listed (it is
+# suspended, which makes the Application report Suspended). Editing a file here
+# changes the generated ConfigMap's hash and the Job's pod template, which is
+# immutable: bump the run suffix in job.yaml in the same change.
+# provision_test.py checks the manifests, and
+# ../../../resources/resources_test.py lists what the wired render holds.
 resources:
   - job.yaml
 

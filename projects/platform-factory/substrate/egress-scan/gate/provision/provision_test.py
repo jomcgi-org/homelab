@@ -1,6 +1,7 @@
 """Validate the staged engine provisioning: the template says what engine-gate
 needs, the script is idempotent and removes what it made, and the Jobs are
-suspended, unprivileged and limited to the ate API."""
+unprivileged and limited to the ate API; the apply Job runs once and the
+teardown Job is off."""
 
 from __future__ import annotations
 
@@ -47,6 +48,17 @@ def _one(kind: str, name: str) -> dict:
 
 
 _TEMPLATE = (_HERE / "template.yaml").read_text()
+_PROVISION_JOB = "egress-engine-provision-1"
+_TEARDOWN_JOB = "egress-engine-teardown-1"
+
+
+def _job(name: str) -> dict:
+    """The wired Job comes from the kustomize render. The teardown Job is not
+    listed in the kustomization, so it is read from its own file."""
+    if name == _TEARDOWN_JOB:
+        (doc,) = [d for d in yaml.safe_load_all((_HERE / "teardown-job.yaml").read_text()) if d]
+        return doc
+    return _one("Job", name)
 
 
 # --- the template -----------------------------------------------------------
@@ -630,13 +642,24 @@ def test_teardown_treats_an_object_that_is_gone_as_done(tmp_path: Path) -> None:
 # --- the manifests ----------------------------------------------------------
 
 
-def test_both_jobs_are_suspended_and_use_the_ate_client() -> None:
+def test_the_apply_job_runs_and_the_teardown_job_is_off() -> None:
+    # The apply Job is wired and runs once. The teardown Job is suspended and is
+    # not in the kustomization: a suspended Job makes the Application report
+    # Suspended.
+    assert not [d for d in _docs() if d["kind"] == "Job" and d["metadata"]["name"] == _TEARDOWN_JOB]
+    assert [d["metadata"]["name"] for d in _docs() if d["kind"] == "Job"] == [_PROVISION_JOB]
+    assert _job(_PROVISION_JOB)["spec"]["suspend"] is False
+    assert _job(_TEARDOWN_JOB)["spec"]["suspend"] is True
+    kustomization = yaml.safe_load((_HERE / "kustomization.yaml").read_text())
+    assert kustomization["resources"] == ["job.yaml"]
+
+
+def test_both_jobs_use_the_ate_client_and_the_right_mode() -> None:
     for name, mode in (
         ("egress-engine-provision-1", "apply"),
         ("egress-engine-teardown-1", "teardown"),
     ):
-        job = _one("Job", name)
-        assert job["spec"]["suspend"] is True
+        job = _job(name)
         assert job["spec"]["backoffLimit"] == 0
         pod = job["spec"]["template"]["spec"]
         assert pod["serviceAccountName"] == "ate-client"
@@ -649,7 +672,7 @@ def test_both_jobs_are_suspended_and_use_the_ate_client() -> None:
 
 def test_jobs_are_unprivileged_and_hold_no_secret() -> None:
     for name in ("egress-engine-provision-1", "egress-engine-teardown-1"):
-        pod = _one("Job", name)["spec"]["template"]["spec"]
+        pod = _job(name)["spec"]["template"]["spec"]
         assert pod["securityContext"]["runAsNonRoot"] is True
         assert pod["securityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
         (c,) = pod["containers"]
@@ -678,10 +701,15 @@ def test_config_map_holds_the_script_and_the_template() -> None:
     for name in ("egress-engine-provision-1", "egress-engine-teardown-1"):
         vol = [
             v
-            for v in _one("Job", name)["spec"]["template"]["spec"]["volumes"]
+            for v in _job(name)["spec"]["template"]["spec"]["volumes"]
             if v["name"] == "config"
         ][0]
-        assert vol["configMap"]["name"] == cm["metadata"]["name"]
+        if name == _TEARDOWN_JOB:
+            # Read from its own file: the name has no hash. It is the same
+            # ConfigMap once a kustomization that lists the file renders it.
+            assert vol["configMap"]["name"] == cm["metadata"]["name"].rsplit("-", 1)[0]
+        else:
+            assert vol["configMap"]["name"] == cm["metadata"]["name"]
 
 
 def test_jobs_reach_only_the_kubernetes_api_and_the_ate_api() -> None:
@@ -706,5 +734,5 @@ def test_jobs_reach_only_the_kubernetes_api_and_the_ate_api() -> None:
     ]
     assert rule["toPorts"][0]["ports"] == [{"port": "443", "protocol": "TCP"}]
     for name in ("egress-engine-provision-1", "egress-engine-teardown-1"):
-        labels = _one("Job", name)["spec"]["template"]["metadata"]["labels"]
+        labels = _job(name)["spec"]["template"]["metadata"]["labels"]
         assert labels == {"app": "egress-engine-provision"}

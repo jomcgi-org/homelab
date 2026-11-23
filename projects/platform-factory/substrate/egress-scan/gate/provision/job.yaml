@@ -4,27 +4,27 @@
 # lists the steps. Design: ../../ARCHITECTURE.md, "Engine path". What it changes
 # and what Joe approves: ../README.md, "Enable steps".
 #
-# Off twice: this directory is not wired, and both Jobs are created suspended.
-# ../../../resources/resources_test.py is the wiring guard. The wiring change
-# lists this directory in ../../../gvisor-fork or ../../../resources, and a later
-# change sets suspend to false on the apply Job. In Argo a suspended Job has
-# health Suspended, and the Application then reports Suspended instead of
-# Healthy until the Job runs or goes. A Job's pod template is immutable: to run
-# again, change the run suffix in the name.
+# Wired, and it runs once: egress-engine-provision-1 is not suspended. Merge the
+# change that wired it only after the pool pod restarted (a worker pins the
+# atespace of its first seed for the life of its process, ARCHITECTURE.md,
+# "Atespace pin") and before engine-gate is wired (the gate has nothing to claim
+# until the seed of this template is ready). The Job waits up to 900 s for an
+# ACTIVE worker, then makes the three objects (each only if missing) and waits
+# up to 600 s for the seed.
 #
-# Two Jobs, one pod shape:
-#   egress-engine-provision-1   MODE=apply     get-or-create, safe to run again
-#   egress-engine-teardown-1    MODE=teardown  delete actors, templates, policy,
-#                                              atespace. Stop engine-gate first.
+# A Job's pod template is immutable. Editing anything in this directory
+# (provision.py, template.yaml, template.json) changes the generated ConfigMap's
+# hash, and with it the Job's config volume: bump the run suffix in the name in
+# the same change (resources_test.py pins the hash). The teardown Job is in
+# teardown-job.yaml, which the kustomization does not list: a suspended Job makes
+# the Application report Suspended. To run a teardown, list that file in a PR.
 #
 # They run as ate-system/ate-client, which the ate API already authorizes
 # (ateApi.authorization.bootstrapOwners in ../../../values/substrate.yaml), so
 # they grant nobody anything. They reach the ate API (443) and the Kubernetes
 # API (kubectl-ate lists the ClusterTrustBundles that verify the API's
 # certificate). They need no router identity: nothing here sends a request to an
-# actor. The apply Job needs the pool's worker ACTIVE, and a worker pins the
-# atespace of its first seed for the life of its process: restart the pool pod
-# between atespaces (ARCHITECTURE.md, "Atespace pin").
+# actor.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -33,7 +33,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "2"
 spec:
-  suspend: true
+  suspend: false
   backoffLimit: 0
   # The worker wait (900 s), the seed wait (600 s) and the calls between them.
   activeDeadlineSeconds: 2000
@@ -70,102 +70,6 @@ spec:
               value: /tmp
             - name: MODE
               value: apply
-          resources:
-            requests:
-              cpu: 50m
-              memory: 64Mi
-              ephemeral-storage: 64Mi
-            limits:
-              memory: 256Mi
-              ephemeral-storage: 256Mi
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: [ALL]
-          volumeMounts:
-            - name: work
-              mountPath: /work
-            - name: tmp
-              mountPath: /tmp
-            - name: config
-              mountPath: /config
-              readOnly: true
-            - name: cli
-              mountPath: /cli
-              readOnly: true
-            - name: ate-token
-              mountPath: /var/run/ate
-              readOnly: true
-      volumes:
-        - name: work
-          emptyDir:
-            sizeLimit: 64Mi
-        - name: tmp
-          emptyDir:
-            sizeLimit: 64Mi
-        - name: config
-          configMap:
-            name: egress-engine-provision
-        # The fork build of kubectl-ate, as in gvisor-fork/conformance-job.yaml.
-        - name: cli
-          image:
-            reference: ghcr.io/jomcgi-org/homelab/substrate-fork/kubectl-ate:fork-8cf248b96e08@sha256:bfb9cf01712dd691232298cc19767a7536c00f2cfe0c76b41ac6945f2d2885f7
-            pullPolicy: IfNotPresent
-        # The ate API's JWT provider accepts this audience (api-server-config.yaml).
-        - name: ate-token
-          projected:
-            sources:
-              - serviceAccountToken:
-                  audience: api.ate-system.svc
-                  expirationSeconds: 3600
-                  path: token
----
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: egress-engine-teardown-1
-  namespace: ate-system
-  annotations:
-    argocd.argoproj.io/sync-wave: "2"
-spec:
-  suspend: true
-  backoffLimit: 0
-  # The deletes and the wait for the seeds to go (120 s).
-  activeDeadlineSeconds: 900
-  template:
-    metadata:
-      labels:
-        app: egress-engine-provision
-    spec:
-      serviceAccountName: ate-client
-      restartPolicy: Never
-      terminationGracePeriodSeconds: 30
-      # The in-cluster Kubernetes config kubectl-ate needs for the
-      # ClusterTrustBundles. The ate API takes the audience token below.
-      automountServiceAccountToken: true
-      imagePullSecrets:
-        - name: ghcr-imagepull-secret
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65534
-        runAsGroup: 65534
-        fsGroup: 65534
-        seccompProfile:
-          type: RuntimeDefault
-      containers:
-        - name: provision
-          image: python:3.14.10-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f
-          command: [python3, -I, /config/provision.py]
-          env:
-            - name: PYTHONDONTWRITEBYTECODE
-              value: "1"
-            - name: PYTHONUNBUFFERED
-              value: "1"
-            - name: HOME
-              value: /tmp
-            - name: MODE
-              value: teardown
           resources:
             requests:
               cpu: 50m

@@ -822,7 +822,10 @@ def test_gvisor_fork_slice_is_wired() -> None:
     assert paths == ["projects/platform-factory/substrate/resources"]
     kustomization = yaml.safe_load((_HERE / "kustomization.yaml").read_text())
     listed = kustomization["resources"] + kustomization.get("components", [])
-    assert [r for r in listed if r.startswith("..")] == ["../gvisor-fork"]
+    assert [r for r in listed if r.startswith("..")] == [
+        "../gvisor-fork",
+        "../egress-scan/gate/provision",
+    ]
     docs = _docs()
 
     def key(d: dict) -> tuple:
@@ -912,15 +915,40 @@ def test_gvisor_fork_slice_is_wired() -> None:
     assert max(init, main) <= 256
 
 
-def test_engine_provisioning_is_staged_and_not_wired() -> None:
-    # The provisioning Jobs of the engine atespace and template live in
-    # ../egress-scan/gate/provision, suspended and unwired.
-    kustomization = yaml.safe_load((_HERE / "kustomization.yaml").read_text())
-    listed = kustomization["resources"] + kustomization.get("components", [])
-    assert not [r for r in listed if "egress-scan/gate" in r]
-    rendered = json.dumps(_docs())
-    assert "egress-engine" not in rendered
-    assert "egress-scan-engine" not in rendered
+_PROVISION_JOB = "egress-engine-provision-1"
+# The ConfigMap's hash covers provision.py, template.yaml and template.json. The
+# live Job's pod template is immutable: a changed hash makes the apply fail. A
+# change under egress-scan/gate/provision/ must bump the Job's run suffix and
+# this name in the same change.
+_PROVISION_CONFIGMAP = "egress-engine-provision-fbd755b448"
+
+
+def test_engine_provisioning_is_wired_and_runs_once() -> None:
+    # ../egress-scan/gate/provision is listed (test_gvisor_fork_slice_is_wired
+    # pins the list). It renders one Job that runs, two network policies and the
+    # generated ConfigMap. The teardown Job is not listed: a suspended Job would
+    # make the Application report Suspended.
+    docs = _docs()
+    names = {(d["kind"], d["metadata"]["name"]) for d in docs}
+    assert ("Job", _PROVISION_JOB) in names
+    assert ("Job", "egress-engine-teardown-1") not in names
+    assert ("ConfigMap", _PROVISION_CONFIGMAP) in names, [
+        n for k, n in names if k == "ConfigMap" and n.startswith("egress-engine")
+    ]
+    assert {n for k, n in names if k == "CiliumNetworkPolicy" and "engine-provision" in n} == {
+        "egress-engine-provision",
+        "ate-api-server-egress-engine-provision",
+    }
+    job = _one(docs, "Job", _PROVISION_JOB)
+    assert job["spec"]["suspend"] is False
+    pod = job["spec"]["template"]["spec"]
+    assert pod["serviceAccountName"] == "ate-client"
+    (config,) = [v for v in pod["volumes"] if v["name"] == "config"]
+    assert config["configMap"]["name"] == _PROVISION_CONFIGMAP
+    # The Job holds the ate-client token only as a projected file.
+    (c,) = pod["containers"]
+    assert {e["name"]: e["value"] for e in c["env"]}["MODE"] == "apply"
+    assert "envFrom" not in c
 
 
 def test_engine_gate_is_staged_and_not_wired() -> None:
@@ -929,7 +957,7 @@ def test_engine_gate_is_staged_and_not_wired() -> None:
     # (../egress-scan/gate/README.md, "Enable steps").
     kustomization = yaml.safe_load((_HERE / "kustomization.yaml").read_text())
     listed = kustomization["resources"] + kustomization.get("components", [])
-    assert not [r for r in listed if "engine-gate" in r or "egress-scan/gate" in r]
+    assert not [r for r in listed if "engine-gate" in r or r.endswith("gate/staged")]
     # No object of the gate renders. The router ConfigMap names the gate's
     # SPIFFE ID since the router grant, so the check is on object names.
     names = {d["metadata"]["name"] for d in _docs()}
