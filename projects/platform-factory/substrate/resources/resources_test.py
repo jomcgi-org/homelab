@@ -834,6 +834,20 @@ def test_gvisor_fork_slice_is_wired() -> None:
     # tight, so the pod requests little.
     (container,) = conformance["spec"]["template"]["spec"]["containers"]
     assert container["resources"]["requests"]["memory"] == "64Mi"
+    # The Job's config volume names the generated ConfigMap, whose name carries
+    # a hash of conformance/. The live Job's pod template is immutable, so a
+    # changed hash makes the apply fail and the Job never starts. Editing
+    # conformance/ means a new run suffix: change this name and the Job's together.
+    (conformance_map,) = [
+        k[2] for k in configmaps if k[2].startswith("gvisor-fork-conformance-")
+    ]
+    (config_volume,) = [
+        v
+        for v in conformance["spec"]["template"]["spec"]["volumes"]
+        if v["name"] == "config"
+    ]
+    assert config_volume["configMap"]["name"] == conformance_map
+    assert conformance_map == "gvisor-fork-conformance-hbht65tgk9"
     assert not [
         d for d in docs if d["metadata"]["name"].startswith("gvisor-fork-latency")
     ]
