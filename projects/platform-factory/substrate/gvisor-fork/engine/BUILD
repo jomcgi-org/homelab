@@ -19,3 +19,11 @@ py_test(
         "@pip//pyyaml",
     ],
 )
+
+# Markdown read by the monolith doc-manifest genrules. See
+# //projects/monolith:repo_docs_srcs.
+filegroup(
+    name = "repo_docs",
+    srcs = ["README.md"],
+    visibility = ["//projects/monolith:__pkg__"],
+)
