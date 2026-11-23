@@ -14,6 +14,9 @@ with SEMGREP_REPO_NAME unset), made with the standard library:
       the Secrets rules of the deployment; the body holds "rules" or "rule_config"
       (a JSON string); the file is rules.json with the key "rules" only, sorted by id
 
+Both calls send `User-Agent: Semgrep/<version>`: the API reads the Semgrep version from it
+and answers the rules call with HTTP 400 "Invalid Semgrep Version" otherwise.
+
 The token goes only to https://semgrep.dev (the host is fixed in this file,
 not in pins.env), only in the Authorization header, over https, and is dropped when a
 redirect leaves the host. Nothing here prints it, and an error shows only the class of
@@ -86,23 +89,36 @@ class KeepAuthOnSameHost(urllib.request.HTTPRedirectHandler):
         return new
 
 
-def open_url(url: str, token: str, accept: str):
+def user_agent(version: str) -> str:
+    """The Semgrep API reads the Semgrep version from the User-Agent, not only from the
+    query: the rules endpoint answers 400 {"error": "Invalid Semgrep Version"} to any
+    other User-Agent. Both downloads send the one of the Semgrep CLI."""
+    return f"Semgrep/{version}"
+
+
+def build_request(url: str, token: str, accept: str, version: str):
+    request = urllib.request.Request(
+        url, headers={"Accept": accept, "User-Agent": user_agent(version)}
+    )
+    request.add_unredirected_header("Authorization", f"Bearer {token}")
+    return request
+
+
+def open_url(url: str, token: str, accept: str, version: str):
     if not url.startswith("https://"):
         sys.exit("fetch-pro: refusing a URL that is not https")
     check_token_host(url)
-    request = urllib.request.Request(
-        url, headers={"Accept": accept, "User-Agent": "substrate-fork-engine-pro"}
-    )
-    request.add_unredirected_header("Authorization", f"Bearer {token}")
     opener = urllib.request.build_opener(KeepAuthOnSameHost)
-    return opener.open(request, timeout=180)
+    return opener.open(build_request(url, token, accept, version), timeout=180)
 
 
-def get(url: str, token: str, accept: str, what: str):
+def get(url: str, token: str, accept: str, what: str, version: str):
     try:
-        return open_url(url, token, accept)
+        return open_url(url, token, accept, version)
     except urllib.error.HTTPError as err:
+        # The status and a hint only: never the body of the answer.
         hint = {
+            400: f"check the User-Agent Semgrep/{version} and semgrep_version",
             401: "the token is not valid",
             403: "the deployment has no access to the Pro engine",
         }.get(err.code, "")
@@ -119,7 +135,9 @@ def download_binary(base: str, platform: str, version: str, token: str, out: Pat
         f"?{urllib.parse.urlencode({'version': version})}"
     )
     digest, size = hashlib.sha256(), 0
-    with get(url, token, "application/octet-stream", "engine download") as resp:
+    with get(
+        url, token, "application/octet-stream", "engine download", version
+    ) as resp:
         tmp = out.with_suffix(".part")
         with tmp.open("wb") as fh:
             while chunk := resp.read(CHUNK):
@@ -143,7 +161,7 @@ def download_rules(base: str, version: str, token: str, out: Path):
         }
     )
     url = f"{base}/api/agent/deployments/scans/config?{query}"
-    with get(url, token, "application/json", "rules download") as resp:
+    with get(url, token, "application/json", "rules download", version) as resp:
         raw = resp.read(MAX_RULES_BYTES + 1)
     if len(raw) > MAX_RULES_BYTES:
         sys.exit("fetch-pro: the rules download is over 256 MiB")
