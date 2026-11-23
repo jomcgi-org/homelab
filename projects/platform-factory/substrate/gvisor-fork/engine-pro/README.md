@@ -148,9 +148,15 @@ cost. The Pro image goes there only after the canary is proven private.
    is wrong. A package that does not exist is refused to an anonymous pull in the
    same way as a private one, so without this step "refused" proves nothing.
 2. The same call with no credentials at all (an empty Docker config, an empty
-   environment). Only `UNAUTHORIZED`, `DENIED`, `NAME_UNKNOWN`,
-   `MANIFEST_UNKNOWN` or HTTP 401, 403, 404 pass. If the manifest comes back, or
-   the answer is unclear three times, the image is not proven private.
+   environment). Only the registry error code `UNAUTHORIZED` or `DENIED` of the
+   manifest request passes. Nothing else counts, because step 1 already shows
+   that the image exists: a 404, `MANIFEST_UNKNOWN` or `NAME_UNKNOWN` (a stale
+   negative cache, a flaky read of a public package), a 401 or 403 with no
+   registry error code, and any error of the token endpoint (a rate limit) say
+   nothing about the visibility. They and any other answer are "unclear": three
+   tries, then the image is not proven private. If a private package fails here
+   with an answer that the script calls unclear, read the error in the job log
+   before changing the script.
 
 On the Pro image, a failed step 2 makes the script try to delete the version
 with `gh api` before the job fails. The delete is best effort. On the canary the
