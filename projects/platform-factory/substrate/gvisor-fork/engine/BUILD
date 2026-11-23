@@ -34,9 +34,11 @@ filegroup(
     name = "shared_sources",
     srcs = [
         "edge.py",
+        "forksrv-net.c",
         "forksrv-shim.c",
         "pins.env",
         "smoke.py",
+        "targets.json",
         "uname.c",
     ],
     visibility = ["//projects/platform-factory/substrate/gvisor-fork/engine-pro:__pkg__"],
