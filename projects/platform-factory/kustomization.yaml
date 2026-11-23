@@ -33,6 +33,7 @@ resources:
   - ./hindsight-discord # Discord memory on its dedicated OpenRouter key (HOME-163)
   - ../factory/deploy # The software factory: kagent (projects/factory/)
   - ./prometheus # Prometheus and kube-state-metrics: the operators' metrics store
+  - ./prometheus-adapter # External Metrics API for worker pool autoscaling; no HPA uses it yet
   - ./grafana # Grafana at factory-grafana.jomcgi.dev: dashboards over Prometheus
   - ../stars-forecast/deploy
   - ../trips/deploy # HOME-560 staged Trips service; HOME-554 enables it

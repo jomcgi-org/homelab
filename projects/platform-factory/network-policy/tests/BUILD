@@ -10,6 +10,7 @@ py_test(
         "//projects:platform-factory/cfgate/resources/network-policy.yaml",
         "//projects:platform-factory/cloudnative-pg/resources/network-policy.yaml",
         "//projects:platform-factory/kargo/resources/network-policy.yaml",
+        "//projects:platform-factory/prometheus-adapter/resources/network-policy.yaml",
         "//projects/factory-explore/chart",
         "//projects/factory/chart",
         "//projects/platform-factory/authentik/resources:network-policy.yaml",

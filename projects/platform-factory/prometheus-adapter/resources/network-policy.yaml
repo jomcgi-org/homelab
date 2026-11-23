@@ -1,0 +1,36 @@
+# The adapter's allowlist under the cluster-wide default-deny
+# (projects/platform-factory/network-policy/). The API server reaches it on the
+# aggregated API port, and it reaches Prometheus and the API server only.
+# Prometheus admits it at the other end (prometheus/resources/network-policy.yaml).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: prometheus-adapter
+  namespace: prometheus-adapter
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus-adapter
+  ingress:
+    # The aggregation layer (APIService v1beta1.external.metrics.k8s.io) and
+    # the kubelet's probes.
+    - fromEntities: [kube-apiserver, host, remote-node]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+  egress:
+    # Delegated authentication and authorization of each API request.
+    - toEntities: [kube-apiserver]
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: prometheus
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "9090"
+              protocol: TCP
