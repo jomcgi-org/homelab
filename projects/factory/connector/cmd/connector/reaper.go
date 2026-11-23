@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -63,19 +64,15 @@ func runReaper(log *slog.Logger) error {
 	defer actors.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	// The census runs on its own timer, so a slow scan cannot let the census
+	// age past the point where the series disappear.
+	go runCensus(ctx, log, actors, demand)
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	var lease *reaper.Lease
 	defer func() { lease.Close() }()
 	for {
 		pass, cancel := context.WithTimeout(ctx, 45*time.Second)
-		// The census only reads, so it runs without the lease. A failed one
-		// leaves the last census to age out and publish nothing.
-		if busy, cerr := reaper.Census(pass, actors); cerr != nil {
-			log.Error("worker pool census", "error", cerr)
-		} else {
-			demand.Observe(busy)
-		}
 		if lease == nil {
 			lease, err = reaper.TryLease(pass, st.DB)
 		}
@@ -99,6 +96,29 @@ func runReaper(log *slog.Logger) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// runCensus counts the busy workers of every pool each 15 s and publishes them.
+// It only reads. A failed or unreadable census drops the published series.
+func runCensus(ctx context.Context, log *slog.Logger, actors *sql.DB, demand *reaper.Demand) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		pass, cancel := context.WithTimeout(ctx, 10*time.Second)
+		busy, err := reaper.Census(pass, actors)
+		cancel()
+		if err != nil {
+			demand.Invalidate()
+			log.Error("worker pool census", "error", err)
+		} else {
+			demand.Observe(busy)
+		}
+		select {
+		case <-ctx.Done():
+			return
 		case <-ticker.C:
 		}
 	}
