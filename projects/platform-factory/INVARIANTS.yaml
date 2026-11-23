@@ -2,6 +2,14 @@
 # docs/templates/INVARIANTS.yaml describes the fields. IDs are permanent:
 # never reuse or renumber one. docs/THREAT-MODEL.md cites them.
 invariants:
+- id: PLAT-RENOVATE-1
+  statement: Renovate tracks factory manifest images directly and updates the generated Substrate manifests
+    through their chart release together with the kagent charts.
+  mechanism:
+  - projects/platform/renovate/dependency_policy_test.py
+  - projects/platform-factory/substrate/render-upstream.sh
+  test: //projects/platform/renovate:dependency_policy_test
+  state: live
 - id: PLAT-1
   statement: A pod sends and receives nothing unless a network policy names the peer.
   mechanism:

@@ -698,6 +698,7 @@ def test_active_managers_and_upstream_chart_updates_remain_available():
         "First-party image versions are published and promoted by CI and Kargo.",
         "Hold the Envoy Gateway and Proxy family while the header regression and paired guard are resolved.",
         "The custom manager owns Polylane cloudflared tag and separate digest together.",
+        "Keep the checksum-verified cfgate release manifest intact. Its Kustomize override owns the deployed image.",
     ]
 
 
@@ -807,7 +808,7 @@ def test_overlays_are_scanned_and_python_regeneration_is_root_only(values_files)
         )
     assert config["kubernetes"]["managerFilePatterns"]
     tasks = [r for r in config["packageRules"] if "postUpgradeTasks" in r]
-    assert len(tasks) == 1
+    assert len(tasks) == 3
     assert tasks[0]["matchManagers"] == ["pep621", "pip_requirements"]
     assert tasks[0]["matchFileNames"] == [
         "pyproject.toml",
@@ -840,7 +841,9 @@ def test_overlays_are_scanned_and_python_regeneration_is_root_only(values_files)
     env = {entry["name"]: entry for entry in container["env"]}
     assert env["RENOVATE_REPOSITORIES"]["value"] == "jomcgi-org/homelab"
     assert json.loads(env["RENOVATE_ALLOWED_COMMANDS"]["value"]) == [
-        r"^bazel/tools/format/update-python-requirements\.sh$"
+        r"^bazel/tools/format/update-python-requirements\.sh$",
+        r"^projects/platform-factory/substrate/render-upstream\.sh --refresh$",
+        r"^projects/platform-factory/cfgate/refresh-release\.sh$",
     ]
 
 
@@ -1426,3 +1429,47 @@ def test_default_and_hub_workflows_cannot_enable_maintenance_automerge(tmp_path)
         if row["name"] == "MAINTENANCE_AUTOMERGE_ENABLED"
     ] == ["true"]
     assert workflow["spec"]["suspend"] is True
+
+
+# invariant: PLAT-RENOVATE-1
+def test_factory_image_and_substrate_release_coverage():
+    config = json.loads((ROOT / "renovate.json").read_text())
+    manager = config["kubernetes"]
+    upstream = "projects/platform-factory/substrate/resources/upstream"
+    assert upstream + "/**" in manager["ignorePaths"]
+    for path in (
+        "cfgate/resources/upstream/install.yaml",
+        "substrate/resources/snapshot-store.yaml",
+    ):
+        assert any(
+            re.search(p[1:-1], "projects/platform-factory/" + path)
+            for p in manager["managerFilePatterns"]
+        )
+    assert (
+        _custom_extract(
+            config,
+            "projects/platform-factory/factory-db/resources/cluster.yaml",
+            "imageName: ghcr.io/cloudnative-pg/postgresql:18",
+        )[0]["currentValue"]
+        == "18"
+    )
+    script = "projects/platform-factory/substrate/render-upstream.sh"
+    assert _custom_extract(config, script, 'VERSION="1.2.3"') == [
+        {"currentValue": "1.2.3"}
+    ]
+    group = next(
+        r for r in config["packageRules"] if "kagent-crds" in r.get("matchDepNames", [])
+    )
+    assert set(group["matchDepNames"]) == {
+        "kagent",
+        "kagent-crds",
+        "ghcr.io/kagent-dev/substrate/helm/substrate",
+    }
+    task = next(
+        r["postUpgradeTasks"]
+        for r in config["packageRules"]
+        if r.get("matchDepNames") == ["ghcr.io/kagent-dev/substrate/helm/substrate"]
+    )
+    assert task["commands"] == [script + " --refresh"]
+    assert upstream + "/**" in task["fileFilters"]
+    assert "projects/factory/chart/crds/**" in task["fileFilters"]

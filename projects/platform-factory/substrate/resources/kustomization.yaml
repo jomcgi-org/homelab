@@ -7,6 +7,14 @@ kind: Kustomization
 # PostgreSQL. The patches below and the files beside this one are what this
 # cluster adds; the generated CA and JWT pools and the snapshot store's key
 # come from projects/factory-cluster/bootstrap-substrate.sh.
+images:
+  - name: cr.agentgateway.dev/agentgateway
+    newTag: v1.7.0
+    digest: sha256:60216aafb03d37f94e952ff3d51d2f630a65b10ecaebdc0a864882f92610c45b
+  - name: postgres
+    newTag: 18-alpine
+    digest: sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+
 resources:
   - upstream/substrate-crds/ate.dev_csidriverconfigs.yaml
   - upstream/substrate-crds/ate.dev_sandboxconfigs.yaml

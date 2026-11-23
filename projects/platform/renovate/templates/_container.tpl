@@ -47,7 +47,7 @@ env:
   - name: RENOVATE_ALLOW_PLUGINS
     value: "false"
   - name: RENOVATE_ALLOWED_COMMANDS
-    value: '["^bazel/tools/format/update-python-requirements\\.sh$"]'
+    value: '["^bazel/tools/format/update-python-requirements\\.sh$","^projects/platform-factory/substrate/render-upstream\\.sh --refresh$","^projects/platform-factory/cfgate/refresh-release\\.sh$"]'
   - name: RENOVATE_ALLOWED_UNSAFE_EXECUTIONS
     value: '["bazelModDeps"]'
   - name: RENOVATE_BASE_DIR

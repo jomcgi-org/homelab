@@ -157,6 +157,39 @@
         "(?<depName>playwright|PyYAML)==(?<currentValue>\\d+\\.\\d+\\.\\d+)"
       ],
       "datasourceTemplate": "pypi"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^projects/platform-factory/substrate/render-upstream\\.sh$/"
+      ],
+      "matchStrings": ["(?:^|\\n)VERSION=\"(?<currentValue>[^\"]+)\""],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "ghcr.io/kagent-dev/substrate/helm/substrate",
+      "versioningTemplate": "semver",
+      "packageNameTemplate": "kagent-dev/substrate",
+      "extractVersionTemplate": "^v(?<version>.+)$"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^projects/platform-factory/.+/resources/[^/]+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "(?:imageName:|image:\\s+reference:)\\s+(?<depName>[^\\s:@]+):(?<currentValue>[^\\s@]+)(?:@(?<currentDigest>sha256:[a-f0-9]{64}))?"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "description": "Update factory Kustomize image overrides with separate tag and digest fields.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^projects/platform-factory/.+/kustomization\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "- name: (?<depName>[^\\s]+)\\s+newTag: (?<currentValue>[^\\s]+)\\s+digest: (?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker"
     }
   ],
   "packageRules": [
@@ -366,6 +399,72 @@
       "description": "Preserve the pytest-asyncio major bound in the compiled requirement security floors.",
       "matchPackageNames": ["pytest-asyncio"],
       "allowedVersions": "<2"
+    },
+    {
+      "matchFileNames": [
+        "projects/platform-factory/substrate/render-upstream.sh",
+        "projects/factory/chart/Chart.yaml"
+      ],
+      "matchDepNames": [
+        "ghcr.io/kagent-dev/substrate/helm/substrate",
+        "kagent",
+        "kagent-crds"
+      ],
+      "groupName": "factory kagent and Substrate",
+      "minimumGroupSize": 3,
+      "description": "Upgrade the Substrate release alongside both factory kagent charts."
+    },
+    {
+      "matchDepNames": ["ghcr.io/kagent-dev/substrate/helm/substrate"],
+      "postUpgradeTasks": {
+        "commands": [
+          "projects/platform-factory/substrate/render-upstream.sh --refresh"
+        ],
+        "fileFilters": [
+          "projects/platform-factory/substrate/resources/upstream/**",
+          "projects/platform-factory/substrate/render-upstream.sh",
+          "projects/factory-cluster/bootstrap-substrate.sh",
+          "projects/factory/chart/crds/**"
+        ],
+        "executionMode": "branch"
+      },
+      "pinDigests": false,
+      "description": "Render the Substrate release and refresh its verified pins on the update branch."
+    },
+    {
+      "description": "Keep the checksum-verified cfgate release manifest intact. Its Kustomize override owns the deployed image.",
+      "matchFileNames": [
+        "projects/platform-factory/cfgate/resources/upstream/**"
+      ],
+      "matchDepNames": ["ghcr.io/cfgate/cfgate"],
+      "enabled": false
+    },
+    {
+      "description": "Keep the release-age window where the OCI registry supplies a timestamp.",
+      "matchDatasources": ["docker"],
+      "matchFileNames": [
+        "projects/platform-factory/**",
+        "projects/factory/chart/Chart.yaml"
+      ],
+      "matchPackageNames": [
+        "ghcr.io/**",
+        "quay.io/**",
+        "registry.k8s.io/**",
+        "cr.agentgateway.dev/**"
+      ],
+      "minimumReleaseAgeBehaviour": "timestamp-optional"
+    },
+    {
+      "description": "Vendor the matching cfgate CRDs and controller with its image update.",
+      "matchFileNames": [
+        "projects/platform-factory/cfgate/resources/kustomization.yaml"
+      ],
+      "matchDepNames": ["ghcr.io/cfgate/cfgate"],
+      "postUpgradeTasks": {
+        "commands": ["projects/platform-factory/cfgate/refresh-release.sh"],
+        "fileFilters": ["projects/platform-factory/cfgate/resources/**"],
+        "executionMode": "branch"
+      }
     }
   ],
   "automergeType": "pr",
@@ -380,8 +479,10 @@
   "kubernetes": {
     "managerFilePatterns": [
       "/^projects/(?:platform-gke|gke-apps)/.+\\.ya?ml$/",
-      "/^projects/[^/]+/deploy/[^/]+\\.ya?ml$/"
-    ]
+      "/^projects/[^/]+/deploy/[^/]+\\.ya?ml$/",
+      "/^projects/platform-factory/.+\\.ya?ml$/"
+    ],
+    "ignorePaths": ["projects/platform-factory/substrate/resources/upstream/**"]
   },
   "pip_requirements": {
     "managerFilePatterns": [

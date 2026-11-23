@@ -76,6 +76,7 @@ py_test(
         "//projects/factory/deploy:deploy_values",
         "//projects/factory/deploy:render_lock",
         # :chart carries the chart's Python tests, including the Node transaction suite.
+        "//projects:platform-factory/substrate/render-upstream.sh",
         "//projects/platform-factory/substrate/resources:network-policy.yaml",
         "@multitool//tools/helm",
         "@nodejs_linux_amd64//:node_bin",
@@ -87,6 +88,7 @@ py_test(
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "NODE_BIN": "$(rootpath @nodejs_linux_amd64//:node_bin)",
         "RENDER_LOCK": "$(rootpath //projects/factory/deploy:render_lock)",
+        "SUBSTRATE_RENDERER": "$(rootpath //projects:platform-factory/substrate/render-upstream.sh)",
         "SUBSTRATE_NETWORK_POLICY": "$(rootpath //projects/platform-factory/substrate/resources:network-policy.yaml)",
     },
     deps = [
@@ -103,6 +105,7 @@ py_test(
         "Chart.yaml",
         "values.schema.json",
         "values.yaml",
+        "//projects:platform-factory/substrate/render-upstream.sh",
         "//projects/factory/deploy:deploy_values",
         "//projects/platform-factory/substrate/resources:network-policy.yaml",
         "@multitool//tools/helm",
@@ -115,6 +118,7 @@ py_test(
     env = {
         "DEPLOY_VALUES": "$(rootpath //projects/factory/deploy:deploy_values)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "SUBSTRATE_RENDERER": "$(rootpath //projects:platform-factory/substrate/render-upstream.sh)",
         "SUBSTRATE_NETWORK_POLICY": "$(rootpath //projects/platform-factory/substrate/resources:network-policy.yaml)",
     },
     deps = [

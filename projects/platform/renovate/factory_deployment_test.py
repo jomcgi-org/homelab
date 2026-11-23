@@ -133,7 +133,7 @@ def test_factory_renders_only_a_scheduled_job_and_app_credential():
         "UV_NO_BUILD": "true"
     }
     commands = json.loads(env["RENOVATE_ALLOWED_COMMANDS"]["value"])
-    assert len(commands) == 1
+    assert len(commands) == 3
     command = "bazel/tools/format/update-python-requirements.sh"
     assert re.fullmatch(commands[0], command)
     for unsafe in [command + "; id", command + " extra", command.replace(".sh", "Xsh")]:

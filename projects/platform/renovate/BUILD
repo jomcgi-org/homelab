@@ -2,6 +2,10 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/helm:defs.bzl", "argocd_app", "helm_chart")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
+# check_factory_extraction.py is a manual helper with no Bazel target. Without
+# this, Gazelle names its library "renovate" and clashes with the argocd_app.
+# gazelle:exclude check_factory_extraction.py
+
 helm_chart(
     name = "chart",
     visibility = ["//visibility:public"],
