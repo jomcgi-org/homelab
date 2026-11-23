@@ -26,7 +26,7 @@ One endpoint: `POST /scan` on port 8080. It is the whole contract of
 
 | Item | Rule |
 | --- | --- |
-| Request | The text body, `Content-Length` set. At most `--max-body` (1.2 MiB; the tier sends at most about 1.1 MiB). Empty gets 400. A body over the limit gets 413 from `Content-Length` before the gate reads a byte or takes a scan slot. |
+| Request | The text body, `Content-Length` set. At most `--max-body` (1.2 MiB; the tier sends at most about 1.1 MiB). Empty gets 400. A body over the limit gets 413 from `Content-Length` before the gate reads a byte or takes a scan slot. The answer closes the connection, so the gate never reads the rest of the body. A scanner that is still writing can then see a reset or EPIPE instead of the 413. The tier treats both the same: a non-200 status is `errEngineStatus` and a transport error is an engine error, and both end as the outcome `error`, which gets the failure mode (the same as `oversize`, which the tier raises itself above its own `--semgrep-max-body`). The tier limit is below the gate limit, so the gate 413 is a second guard and normally never fires. |
 | Deadline | `X-Deadline-Ms` (1 or more, capped at `--max-deadline`), else `--default-deadline` (300 ms). The scanner cancels the request when its own deadline passes. The gate stops at the first of the two. |
 | Success | `200`, `Content-Type: application/json`, the engine reply byte for byte: the `.` progress line, then the JSON. The gate never parses it. |
 | Failure | Any other status. The body is one word (the outcome), never a detail. The tier counts every non-200 status as `error`. |
@@ -61,6 +61,7 @@ under one mutex, and no two requests can get the same child.
 | If the child fails after the body left, the gate deletes it and sends the same body to the next child once, when more than `--retry-min-remaining` (120 ms) is left. | A dead or spent child holds nothing the next one needs. Both children belong to the gate. |
 | An empty pool is path A: create and fork now, at most `--max-fallback` (2) at once, only with `--fallback-min-remaining` (200 ms) left. After a failed create, path A is refused for `--fail-fast` (5 s). | One create code path, and no queue of slow creates. |
 | On SIGTERM `/readyz` fails first. After `--drain-delay` (5 s) the gate closes the scan listener, finishes the requests in flight (at most `--shutdown-grace`, 10 s) and deletes every child with its prefix. | The Service drops the pod before the listener closes, and no child is left after a normal stop. |
+| The stop takes about 15 s (drain delay and shutdown grace) plus the cleanup. | `terminationGracePeriodSeconds` must stay at 30 or more. The manifest sets 30 and `staged_test.py` asserts it. |
 
 Admission: `--max-inflight` (4) scans at once. A fifth request waits
 `--queue-wait` (25 ms) for a slot, then gets 503.
@@ -181,7 +182,7 @@ All values are flags. Defaults suit the design.
 the pool has held a waiting child at least once, and the ate API answered within
 two sweep intervals. After the first fill an empty pool does not make the pod
 unready, because path A still serves and a burst must not take the only replica
-out of the Service. While the pod drains, `/readyz` fails.
+out of the Service. It does turn unready when the pool is empty and creates are failing (the back-off is active), because every request would then get 503. A create that works makes it ready again. While the pod drains, `/readyz` fails.
 
 Series on the admin port. No label holds a request value.
 
@@ -225,6 +226,17 @@ renders them and checks the isolation rules above, and
   `engine-gate` in `ate-system` gets the router identity and the editor role of
   the atespace. `admission.yaml` blocks that. It must be wired in the same
   change as the StatefulSet, and checked with a denied test pod.
+- **What the admission guard does not cover.** It checks the creation of a
+  ServiceAccount, a StatefulSet (and other workloads) and a pod. It does not
+  cover a TokenRequest (`serviceaccounts/token`) for `engine-gate`, nor
+  `pods/exec` and ephemeral containers in a running gate pod. RBAC covers those.
+  Before enabling, check that no `edit` or `admin` RoleBinding or
+  ClusterRoleBinding reaches `ate-system`, and that nobody holds `create` on
+  `serviceaccounts/token`, `pods/exec` or `pods/ephemeralcontainers` there.
+- **Changes go through GitOps.** An edit of the gate StatefulSet or pod goes
+  through ArgoCD. The guard denies UPDATE for every identity except ArgoCD and
+  its controllers, even `system:masters`. For break-glass, remove the binding
+  (`engine-gate-workloads` and `engine-gate-pods`), then change the object.
 - **Priority.** The router, the ate API and the scanner set no
   `priorityClassName`, and the repo has no suitable non-system class for this
   pod (`homelab-critical` is for the hub). The gate sets none. A class is a
