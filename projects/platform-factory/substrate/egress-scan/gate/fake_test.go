@@ -38,7 +38,8 @@ type fakeAPI struct {
 	actors  map[string]*ateapi.Actor
 	pageMax int
 
-	createDelay, resumeDelay atomic.Int64 // nanoseconds
+	createDelay, resumeDelay, deleteDelay atomic.Int64 // nanoseconds
+	deleteActive, deleteMax               atomic.Int64
 	// failure injection: a gRPC code per operation, OK means none
 	failCreate, failResume, failList, failDelete atomic.Uint32
 	down                                         atomic.Bool
@@ -207,6 +208,17 @@ func (f *fakeAPI) DeleteActor(ctx context.Context, req *ateapi.DeleteActorReques
 		return nil, err
 	}
 	f.deletes.Add(1)
+	active := f.deleteActive.Add(1)
+	defer f.deleteActive.Add(-1)
+	for {
+		m := f.deleteMax.Load()
+		if active <= m || f.deleteMax.CompareAndSwap(m, active) {
+			break
+		}
+	}
+	if err := sleepCtx(ctx, time.Duration(f.deleteDelay.Load())); err != nil {
+		return nil, err
+	}
 	if f.failDelete.Load() != 0 {
 		return nil, status.Error(codes.Code(f.failDelete.Load()), "delete failed")
 	}

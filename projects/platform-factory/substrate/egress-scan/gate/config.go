@@ -47,6 +47,7 @@ type config struct {
 	SweepInterval  time.Duration
 	SweepGrace     time.Duration
 	ShutdownGrace  time.Duration
+	DrainDelay     time.Duration
 
 	MaxBody     int64
 	MaxResponse int64
@@ -89,7 +90,9 @@ func parseConfig(args []string) (config, error) {
 	fs.DurationVar(&c.SweepInterval, "sweep-interval", 15*time.Second, "interval of the orphan sweep and the API probe")
 	fs.DurationVar(&c.SweepGrace, "sweep-grace", 60*time.Second, "a served child is never swept before this age")
 	fs.DurationVar(&c.ShutdownGrace, "shutdown-grace", 10*time.Second, "time to finish requests and delete the pool")
-	fs.Int64Var(&c.MaxBody, "max-body", 2<<20, "largest request body in bytes")
+	fs.DurationVar(&c.DrainDelay, "drain-delay", 5*time.Second, "time between /readyz failing and the listener closing, on SIGTERM")
+	// The tier sends at most about 1.1 MiB (the text it builds for Gitleaks).
+	fs.Int64Var(&c.MaxBody, "max-body", 1258291, "largest request body in bytes (1.2 MiB)")
 	fs.Int64Var(&c.MaxResponse, "max-response", 1<<20, "largest engine response in bytes")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
@@ -131,6 +134,8 @@ func (c config) validate() error {
 		return errors.New("recycle-after must be at least 10s and at most hard-after")
 	case c.APICallTimeout < time.Second || c.SweepInterval < time.Second || c.SweepGrace < time.Second:
 		return errors.New("api-call-timeout, sweep-interval and sweep-grace must be at least 1s")
+	case c.DrainDelay < 0 || c.DrainDelay > 30*time.Second:
+		return errors.New("drain-delay must be between 0 and 30s")
 	case c.MaxBody < 1 || c.MaxBody > 16<<20:
 		return errors.New("max-body must be between 1 and 16 MiB")
 	case c.MaxResponse < 1<<10 || c.MaxResponse > 16<<20:

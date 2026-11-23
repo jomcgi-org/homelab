@@ -82,7 +82,11 @@ func run(cfg config, logger *slog.Logger) error {
 			return err
 		}
 	}
-	// Stop taking requests, finish the ones in flight, then delete the pool.
+	// Fail /readyz first and wait, so that the Service drops the pod before the
+	// listener closes. Then stop taking requests, finish the ones in flight and
+	// delete the pool. The admin port stays up until the end.
+	p.drain()
+	time.Sleep(cfg.DrainDelay)
 	grace, cancel := context.WithTimeout(context.Background(), cfg.ShutdownGrace)
 	defer cancel()
 	_ = scan.Shutdown(grace)

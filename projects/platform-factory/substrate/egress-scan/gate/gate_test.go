@@ -507,15 +507,68 @@ func TestProbes(t *testing.T) {
 	if get("/readyz") != 200 {
 		t.Fatal("readyz with a full pool")
 	}
-	// No waiting child: not ready, though the process is healthy.
+	// After the first fill, an empty pool is still ready: path A serves.
 	e.pool.mu.Lock()
 	saved := e.pool.waiting
 	e.pool.waiting = nil
 	e.pool.mu.Unlock()
+	if get("/readyz") != 200 {
+		t.Fatal("readyz with an empty pool after the first fill")
+	}
+	e.pool.drain()
 	if get("/readyz") != 503 || get("/healthz") != 200 {
-		t.Fatal("probes with an empty pool")
+		t.Fatal("probes while draining")
 	}
 	e.pool.mu.Lock()
 	e.pool.waiting = saved
 	e.pool.mu.Unlock()
+}
+
+func TestDeadlineHeaderCannotOverflow(t *testing.T) {
+	e := newEnv(t, func(c *config) { c.DefaultDeadline = 200 * time.Millisecond; c.MaxDeadline = 400 * time.Millisecond })
+	e.start()
+	var d time.Duration
+	e.rt.fn = func(ctx context.Context, child string, n int) (sendResult, error) {
+		dl, _ := ctx.Deadline()
+		d = time.Until(dl)
+		return sendResult{Body: cleanReply}, nil
+	}
+	// 9223372036855 ms times 1e6 wraps negative in a time.Duration.
+	for _, v := range []string{"9223372036855", "9223372036854775807"} {
+		if r := post(t, e, "x", map[string]string{"X-Deadline-Ms": v}); r.status != 200 {
+			t.Fatalf("deadline %s = %d", v, r.status)
+		}
+		if d < 300*time.Millisecond || d > 400*time.Millisecond {
+			t.Fatalf("deadline %s gave %v, want the cap", v, d)
+		}
+	}
+	// Beyond int64 is a bad value.
+	if r := post(t, e, "x", map[string]string{"X-Deadline-Ms": "99999999999999999999"}); r.status != http.StatusBadRequest {
+		t.Fatalf("status %d", r.status)
+	}
+}
+
+func TestBodyLimitDefaultAndEarlyRejection(t *testing.T) {
+	if got := testConfig(t).MaxBody; got != 1258291 {
+		t.Fatalf("default max body %d", got)
+	}
+	e := newEnv(t, func(c *config) { c.MaxInFlight = 1; c.MaxFallback = 0; c.MaxBody = 1024 })
+	e.start()
+	release := make(chan struct{})
+	e.rt.fn = func(ctx context.Context, child string, n int) (sendResult, error) {
+		<-release
+		return sendResult{Body: cleanReply}, nil
+	}
+	srv := httptest.NewServer(e.gate.handler())
+	defer srv.Close()
+	done := make(chan reply, 1)
+	go func() { done <- postTo(t, srv.URL+"/scan", "x", nil) }()
+	e.eventually("slot taken", func() bool { return len(e.gate.slots) == 1 })
+	// With every slot busy, a body over the limit is a 413 at once, not a shed.
+	r := postTo(t, srv.URL+"/scan", strings.Repeat("a", 2048), nil)
+	if r.status != http.StatusRequestEntityTooLarge || r.took > 15*time.Millisecond {
+		t.Fatalf("oversize with a full gate: %d after %v", r.status, r.took)
+	}
+	close(release)
+	<-done
 }
