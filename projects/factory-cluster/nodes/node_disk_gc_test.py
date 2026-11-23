@@ -59,6 +59,8 @@ def node(tmp_path):
         "GOCACHE": str(go),
         "BAZEL_DISK_CACHE": str(bazel),
         "GC_TMP_DIR": str(tmp),
+        # The test runner can be root. The script refuses root without this.
+        "GC_ALLOW_ROOT": "1",
     }
     return {"home": home, "go": go, "bazel": bazel, "tmp": tmp, "env": env}
 
@@ -231,7 +233,7 @@ def test_a_mount_point_under_a_directory_keeps_it(node, tmp_path):
 
 def test_a_unix_socket_path_keeps_the_directory(node):
     tmp = node["tmp"]
-    held = old_tree(tmp / "pgdata-socket")
+    held = old_tree(tmp / "pgdata-sock")
     gone = old_tree(tmp / "pgdata-gone")
     code = (
         "import socket, sys, time\n"
@@ -247,17 +249,17 @@ def test_a_unix_socket_path_keeps_the_directory(node):
         text=True,
     )
     try:
-        holder.stdin.write(f"{held}/.s.PGSQL.5432\n")
+        holder.stdin.write(f"{held}/.s\n")
         holder.stdin.flush()
         assert holder.stdout.readline().strip() == "bound"
         # The new socket file and directory time would keep the directory.
-        age(held / ".s.PGSQL.5432", 48 * 3600)
+        age(held / ".s", 48 * 3600)
         age(held, 48 * 3600)
         result = run(node, "--apply")
     finally:
         stop(holder)
     assert result.returncode == 0, result.stderr
-    assert remaining(tmp) == ["pgdata-socket"]
+    assert remaining(tmp) == ["pgdata-sock"]
     assert not gone.exists()
 
 
@@ -285,7 +287,10 @@ def test_a_mapped_library_keeps_the_directory(node):
     tmp = node["tmp"]
     held = old_tree(tmp / "pgdata-maps")
     library = held / "libm-copy.so"
-    shutil.copy2(next(Path("/lib").rglob("libm.so.6")).resolve(), library)
+    libm = next(Path("/lib").rglob("libm.so.6"), None)
+    if libm is None:
+        pytest.skip("no libm.so.6 on this host")
+    shutil.copy2(libm.resolve(), library)
     age(library, 48 * 3600)
     age(held, 48 * 3600)
     gone = old_tree(tmp / "pgdata-gone")
@@ -426,3 +431,11 @@ def test_unsafe_tmp_directories_are_refused(node, value):
     result = run(node, "--apply", env=dict(env, HOME=str(node["home"])))
     assert result.returncode == 2
     assert "GC_TMP_DIR" in result.stderr
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="the refusal is for root")
+def test_root_is_refused(node):
+    env = {k: v for k, v in node["env"].items() if k != "GC_ALLOW_ROOT"}
+    result = run(node, "--apply", env=env)
+    assert result.returncode == 2
+    assert "not as root" in result.stderr

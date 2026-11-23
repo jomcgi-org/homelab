@@ -34,6 +34,8 @@
 #   GC_TMP_DIR         Directory that holds the test directories (default: /tmp)
 #   GC_MOUNTINFO       Mount table to read (default: /proc/self/mountinfo; a
 #                      test hook)
+#   GC_ALLOW_ROOT      Set to 1 to run as root (a test hook: CI runs the tests
+#                      as root)
 set -euo pipefail
 
 apply=false
@@ -82,7 +84,7 @@ while [[ $# -gt 0 ]]; do
 	shift
 done
 
-if [[ "$(id -u)" == 0 ]]; then
+if [[ "$(id -u)" == 0 && "${GC_ALLOW_ROOT:-}" != 1 ]]; then
 	echo "run as the node operator, not as root" >&2
 	exit 2
 fi
