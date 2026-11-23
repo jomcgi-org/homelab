@@ -10,10 +10,13 @@
 #      name is wrong, and an anonymous refusal would prove nothing. (A package
 #      that does not exist is refused the same way as a private one.)
 #   2. With NO credentials (an empty Docker config, an empty environment): the
-#      same call must be refused: UNAUTHORIZED, DENIED, NAME_UNKNOWN,
-#      MANIFEST_UNKNOWN or an HTTP 401, 403 or 404. Only after step 1 does this
-#      refusal mean "private". If the manifest comes back, or the answer is
-#      unclear three times, the image is not proven private.
+#      same call must be refused by the manifest request of the registry with
+#      the error code UNAUTHORIZED or DENIED. Only after step 1 does this refusal
+#      mean "private". Nothing else counts: a 404, MANIFEST_UNKNOWN or
+#      NAME_UNKNOWN (a stale negative cache, a flaky read), a 401 or 403 with no
+#      registry error code, or an error of the token endpoint (a rate limit)
+#      says nothing about the visibility. Those and any other answer are
+#      "unclear": three tries, then the image is not proven private.
 #
 # A reference that is not proven private fails the job. Then the script tries to
 # delete the version with `gh api` (GH_TOKEN), unless --no-delete is given (the
@@ -30,13 +33,14 @@ if [[ ${1:-} == --no-delete ]]; then
 	shift
 fi
 ref=${1:?usage: check-private.sh [--no-delete] ghcr.io/OWNER/PATH/NAME:TAG}
-if [[ ! "$ref" =~ ^ghcr\.io/([a-z0-9-]+)/([a-z0-9/._-]+):([A-Za-z0-9._-]+)$ ]]; then
+# 127.0.0.1:PORT is for the tests, which run this script against a fake registry.
+if [[ ! "$ref" =~ ^(ghcr\.io|127\.0\.0\.1:[0-9]+)/([a-z0-9-]+)/([a-z0-9/._-]+):([A-Za-z0-9._-]+)$ ]]; then
 	echo "check-private: $ref is not ghcr.io/OWNER/PATH:TAG" >&2
 	exit 64
 fi
-owner=${BASH_REMATCH[1]}
-package=${BASH_REMATCH[2]}
-tag=${BASH_REMATCH[3]}
+owner=${BASH_REMATCH[2]}
+package=${BASH_REMATCH[3]}
+tag=${BASH_REMATCH[4]}
 
 empty=$(mktemp -d)
 trap 'rm -rf "$empty"' EXIT
@@ -67,7 +71,8 @@ for attempt in 1 2 3; do
 	if [[ $status -eq 0 ]]; then
 		verdict=exposed
 		break
-	elif grep -qE 'UNAUTHORIZED|DENIED|NAME_UNKNOWN|MANIFEST_UNKNOWN|status code 40[134]' <<<"$answer"; then
+	elif grep -qE '/manifests/[^ ]*: (UNAUTHORIZED|DENIED):' <<<"$answer"; then
+		# The error code of the manifest request, not of the token endpoint.
 		verdict=refused
 		break
 	fi

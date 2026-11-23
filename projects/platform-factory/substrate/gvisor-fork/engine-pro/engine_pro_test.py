@@ -591,8 +591,14 @@ def stubs(tmp_path: Path) -> Path:
         'if [[ $kind == anon ]]; then env | grep -q -E "^(GH_TOKEN|GITHUB_TOKEN)=" && echo LEAK >>"$dir/log"; fi\n'
         'case "$mode" in\n'
         "  open) echo '{\"schemaVersion\": 2}'; exit 0 ;;\n"
-        '  denied) echo "Error: GET https://ghcr.io/v2/x/manifests/y: UNAUTHORIZED: authentication required" >&2; exit 1 ;;\n'
-        '  notfound) echo "Error: GET https://ghcr.io/v2/x/manifests/y: NAME_UNKNOWN: not found" >&2; exit 1 ;;\n'
+        '  denied) echo "Error: fetching manifest x/y:t: GET https://ghcr.io/v2/x/y/manifests/t: UNAUTHORIZED: authentication required" >&2; exit 1 ;;\n'
+        '  denied403) echo "Error: fetching manifest x/y:t: GET https://ghcr.io/v2/x/y/manifests/t: DENIED: denied" >&2; exit 1 ;;\n'
+        '  notfound) echo "Error: fetching manifest x/y:t: GET https://ghcr.io/v2/x/y/manifests/t: NAME_UNKNOWN: repo not found" >&2; exit 1 ;;\n'
+        '  manifest_unknown) echo "Error: fetching manifest x/y:t: GET https://ghcr.io/v2/x/y/manifests/t: MANIFEST_UNKNOWN: manifest unknown" >&2; exit 1 ;;\n'
+        '  plain404) echo "Error: fetching manifest x/y:t: GET https://ghcr.io/v2/x/y/manifests/t: unexpected status code 404 Not Found: x" >&2; exit 1 ;;\n'
+        '  plain403) echo "Error: fetching manifest x/y:t: GET https://ghcr.io/v2/x/y/manifests/t: unexpected status code 403 Forbidden: x" >&2; exit 1 ;;\n'
+        '  token403) echo "Error: fetching manifest x/y:t: GET https://ghcr.io/token?scope=repository%3Ax%2Fy%3Apull&service=ghcr.io: unexpected status code 403 Forbidden: x" >&2; exit 1 ;;\n'
+        '  token_denied) echo "Error: fetching manifest x/y:t: GET https://ghcr.io/token?scope=repository%3Ax%2Fy%3Apull&service=ghcr.io: DENIED: denied" >&2; exit 1 ;;\n'
         '  unknown) echo "Error: dial tcp: i/o timeout" >&2; exit 1 ;;\n'
         "esac\n"
     )
@@ -638,7 +644,7 @@ def run_guard(
     return done, (stubs / "log").read_text()
 
 
-@pytest.mark.parametrize("mode", ["denied", "notfound"])
+@pytest.mark.parametrize("mode", ["denied", "denied403"])
 def test_guard_passes_when_the_image_resolves_and_the_anonymous_pull_is_refused(
     stubs: Path, mode: str
 ) -> None:
@@ -682,6 +688,34 @@ def test_guard_deletes_and_fails_when_the_image_is_public(stubs: Path) -> None:
     assert "LEAK" not in log
 
 
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "notfound",
+        "manifest_unknown",
+        "plain404",
+        "plain403",
+        "token403",
+        "token_denied",
+        "unknown",
+    ],
+)
+def test_guard_does_not_count_a_404_or_a_token_endpoint_error_as_a_refusal(
+    stubs: Path, mode: str
+) -> None:
+    """A public package can answer 404 or MANIFEST_UNKNOWN to one call (a stale negative
+    cache, a flaky read), and the token endpoint can answer 403 (a rate limit). None of
+    these says that the package is private: three tries, then the job fails."""
+    done, log = run_guard(stubs, mode)
+    assert done.returncode == 1, done.stdout
+    assert "is private" not in done.stdout
+    assert log.count("crane-anon manifest") == 3, "three tries, not a pass"
+    assert "no clear answer" in done.stderr
+    assert "DELETE" in log, (
+        "the Pro image version is deleted when it is not proven private"
+    )
+
+
 def test_guard_with_no_delete_fails_without_calling_gh(stubs: Path) -> None:
     """The canary holds no proprietary byte: a public package is fixed in the
     package settings, not by deleting a version."""
@@ -712,6 +746,168 @@ def test_guard_says_so_when_it_cannot_delete(stubs: Path) -> None:
 def test_guard_rejects_a_reference_it_does_not_understand(stubs: Path) -> None:
     done, _ = run_guard(stubs, "denied", "docker.io/library/x:1")
     assert done.returncode == 64
+
+
+# --- the guard against a fake registry, with the real crane ------------------
+
+FAKE_REGISTRY = r"""
+import base64, http.server, json, os, sys, threading
+MODE = {"m": "unauthorized"}
+
+
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def send(self, code, body=b"", extra=()):
+        self.send_response(code)
+        for k, v in extra:
+            self.send_header(k, v)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def err(self, status, code):
+        body = json.dumps({"errors": [{"code": code, "message": "x"}]}).encode()
+        self.send(status, body, [("Content-Type", "application/json")])
+
+    def do_GET(self):
+        port = self.server.server_port
+        auth = self.headers.get("Authorization", "")
+        m = MODE["m"]
+        if self.path.startswith("/token"):
+            if auth.startswith("Basic "):
+                return self.send(200, b'{"token":"ok"}')
+            if m == "token403":
+                return self.send(403, b"forbidden")
+            return self.send(200, b'{"token":"anon"}')
+        if self.path == "/v2/":
+            if auth in ("Bearer ok", "Bearer anon"):
+                return self.send(200, b"{}")
+            realm = 'Bearer realm="http://127.0.0.1:%d/token",service="reg"' % port
+            return self.send(401, b"", [("WWW-Authenticate", realm)])
+        if "/manifests/" in self.path:
+            if auth == "Bearer ok" or m == "public":
+                return self.send(200, b'{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json"}', [("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")])
+            table = {"unauthorized": (401, "UNAUTHORIZED"), "denied": (403, "DENIED"),
+                     "manifest_unknown": (404, "MANIFEST_UNKNOWN"), "name_unknown": (404, "NAME_UNKNOWN")}
+            if m in table:
+                return self.err(*table[m])
+            if m == "plain404":
+                return self.send(404, b"not found")
+            if m == "plain403":
+                return self.send(403, b"nope")
+        return self.send(404, b"")
+
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+cfg = sys.argv[1]
+os.makedirs(cfg, exist_ok=True)
+auth = base64.b64encode(b"u:p").decode()
+open(cfg + "/config.json", "w").write(json.dumps({"auths": {"127.0.0.1:%d" % server.server_port: {"auth": auth}}}))
+print(server.server_port, flush=True)
+
+
+def read_modes():
+    for line in sys.stdin:
+        MODE["m"] = line.strip()
+        print("ok", flush=True)
+
+
+threading.Thread(target=read_modes, daemon=True).start()
+server.serve_forever()
+"""
+
+
+@pytest.fixture
+def fake_registry(tmp_path: Path):
+    """A registry that answers like GHCR to a client with the login and, by mode, in
+    several ways to an anonymous one. Yields (port, docker_config_dir, set_mode)."""
+    if shutil.which("crane") is None:
+        pytest.skip("no crane")
+    script = tmp_path / "fakereg.py"
+    script.write_text(FAKE_REGISTRY)
+    cfg = tmp_path / "dockercfg"
+    proc = subprocess.Popen(
+        [sys.executable, "-I", str(script), str(cfg)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    port = int(proc.stdout.readline())
+
+    def set_mode(mode: str) -> None:
+        proc.stdin.write(mode + "\n")
+        proc.stdin.flush()
+        assert proc.stdout.readline().strip() == "ok"
+
+    try:
+        yield port, cfg, set_mode
+    finally:
+        proc.terminate()
+        proc.wait()
+
+
+def run_guard_real(
+    tmp_path: Path, port: int, cfg: Path, flags: tuple[str, ...] = ()
+) -> tuple[subprocess.CompletedProcess, str]:
+    stubs = tmp_path / "ghstub"
+    stubs.mkdir(exist_ok=True)
+    (stubs / "gh").write_text(
+        '#!/usr/bin/env bash\necho "gh $*" >>"$(dirname "$0")/log"\n'
+        '[[ "$*" == *versions\\?per_page* ]] && echo 424242\nexit 0\n'
+    )
+    (stubs / "gh").chmod(0o755)
+    (stubs / "log").write_text("")
+    env = {
+        "PATH": f"{stubs}:{os.environ['PATH']}",
+        "HOME": str(stubs),
+        "DOCKER_CONFIG": str(cfg),
+        "GH_TOKEN": "gh-token-for-delete-only",
+        "CHECK_PRIVATE_SLEEP": "0",
+    }
+    ref = f"127.0.0.1:{port}/jomcgi-org/homelab/substrate-fork/engine-pro:1.186.0-abcdef123456"
+    done = subprocess.run(
+        ["bash", str(HERE / "check-private.sh"), *flags, ref],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    return done, (stubs / "log").read_text()
+
+
+@pytest.mark.parametrize("mode", ["unauthorized", "denied"])
+def test_real_crane_a_registry_error_code_of_the_manifest_request_is_a_refusal(
+    tmp_path: Path, fake_registry, mode: str
+) -> None:
+    port, cfg, set_mode = fake_registry
+    set_mode(mode)
+    done, log = run_guard_real(tmp_path, port, cfg)
+    assert done.returncode == 0, done.stderr
+    assert "is private" in done.stdout
+    assert "gh " not in log
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["manifest_unknown", "name_unknown", "plain404", "plain403", "token403", "public"],
+)
+def test_real_crane_everything_else_fails_the_gate(
+    tmp_path: Path, fake_registry, mode: str
+) -> None:
+    """404, MANIFEST_UNKNOWN, NAME_UNKNOWN, a 403 without a registry error code, a 403
+    of the token endpoint and a public manifest: none is proof that the package is private."""
+    port, cfg, set_mode = fake_registry
+    set_mode(mode)
+    done, log = run_guard_real(tmp_path, port, cfg)
+    assert done.returncode == 1, (mode, done.stdout, done.stderr)
+    assert "is private" not in done.stdout
+    if mode == "public":
+        assert "NOT refused" in done.stderr
+    else:
+        assert "no clear answer" in done.stderr
+    assert "DELETE" in log
 
 
 # --- the canary --------------------------------------------------------------
