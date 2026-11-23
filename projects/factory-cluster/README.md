@@ -554,7 +554,7 @@ Nothing below runs on the cluster.
 | --- | --- | --- |
 | SandboxConfig `gvisor-fork` (fork build `0250f9acf`) and its asset Job | `projects/platform-factory/substrate/gvisor-fork/` | `resources/kustomization.yaml` does not list the directory; `resources_test.py` fails if it does |
 | WorkerPool `gvisor-fork` (`platform: kvm`) | `gvisor-fork/kvm-pool.yaml` | unwired, and `replicas: 0` |
-| Conformance Job `gvisor-fork-conformance-1` | `gvisor-fork/conformance-job.yaml` | unwired, and `suspend: true` |
+| Conformance Job `gvisor-fork-conformance-1` (renamed `-2` at step 8) | `gvisor-fork/conformance-job.yaml` | unwired, and `suspend: true` |
 | Fork images (`ateapi`, `atecontroller`, `atelet`, `ateworker-gvisor`, `kubectl-ate`) | `.github/workflows/substrate-fork-images.yml` | manual dispatch only; no pin changes |
 | `ForkSeed` preview gate | `substrate/values/common.yaml` | not listed |
 
@@ -588,12 +588,18 @@ flowchart LR
 2. Dispatch `Substrate fork images` with `publish` off, then on. The workflow
    file comes from #8584 (merged). Record the five digests. Make the
    packages pullable by atelet.
-3. Publish the public engine image with its listen-after-fork server. The
-   engine-image PR (#8588) builds it. Record its digest.
+3. Publish the public engine image with its listen-after-fork server. Run the
+   workflow `Substrate fork engine image` with `publish` on (#8588, merged).
+   In the GitHub package settings of `substrate-fork/engine-oss`, make the
+   package public. The workflow token cannot do that. Record the reference from
+   the run summary. `projects/platform-factory/substrate/gvisor-fork/engine/README.md`,
+   "Replace the placeholder digest", lists how it replaces the placeholder.
 4. Cluster-affecting, Joe approves. Render the fork's charts at `b6b0ec3e2`:
    the CRD with `platform`, then `ateapi`, `atecontroller` and `atelet` at the
-   fork digests. Merge it with the gate off. After the merge, verify that an
-   existing actor still starts and runs, and that the control plane is healthy.
+   fork digests. Check that no factory runs are dispatched before the roll, as
+   it replaces workers. Merge it with the gate off. After the merge, verify that
+   an existing actor still starts and runs, and that the control plane is
+   healthy.
 5. Wire `../gvisor-fork` in `resources/kustomization.yaml`. Set the pool's
    `workerImage` to the published digest. Keep `replicas` at 0. In
    `resources_test.py`, replace `test_gvisor_fork_slice_is_staged_and_not_wired`
@@ -606,35 +612,55 @@ flowchart LR
    policies add ingress rules to existing pods: one on `ate-api-server` (the
    conformance Job) and one on `rustfs` (the asset Job). Argo shows the
    suspended Job with health Suspended from this step until step 8.
-6. Set the pool's `replicas` to 1. Check that the worker pod runs with
-   `/dev/kvm`, `--fork-platform=kvm`, the KVM capabilities and seccomp
-   Unconfined. forkd does not start yet: it starts with the first seed.
+6. Set the pool's `replicas` to 1. In `gvisor_fork_test.py`, update
+   `test_kvm_pool_has_no_workers_and_uses_the_fork_config` in the same change:
+   it asserts `replicas == 0`. Check that the worker pod runs with `/dev/kvm`,
+   `--fork-platform=kvm`, the KVM capabilities and seccomp Unconfined. forkd
+   does not start yet: it starts with the first seed.
 7. Cluster-affecting, Joe approves. Add `ForkSeed` to `preview` in
-   `values/common.yaml`. The values feed `ateapi`, `atecontroller` and
-   `atelet`, and the controller passes `--preview=` to every worker pod. The
-   change rolls the control plane and the workers of every WorkerPool. After the
-   roll, verify that an existing actor still starts and runs. Only the dev pool
-   holds fork-capable workers, and no factory template has `fork_config` until
-   step 10.
-8. Replace the engine digest in `conformance/template.yaml` and the
-   `kubectl-ate` digest in `conformance-job.yaml`. Set `suspend` to `false`.
-   Read `kubectl -n ate-system logs job/gvisor-fork-conformance-1 | grep '^CONFORMANCE '`.
-   When the seed starts, find `forkd started` in the worker log. Check forkd's
-   `hello` assertions (capabilities, cgroup parent, Unconfined seccomp,
-   `/dev/kvm`) and that `memory`, `pids` and `cpu` are delegated below
-   `/sys/fs/cgroup/forkd`.
+   `values/common.yaml`, then rerun `render-upstream.sh`. The guard test reads
+   `resources/upstream/`, so it fails only on the rendered files. The values feed
+   `ateapi`, `atecontroller` and `atelet`, and the controller passes
+   `--preview=` to every worker pod. The change rolls the control plane and the
+   workers of every WorkerPool. Check that no factory runs are dispatched before
+   the roll. After the roll, verify that an existing actor still starts and
+   runs. The gate is cluster-wide once on. Only the dev pool holds fork-capable
+   workers, and no factory template has `fork_config` until step 10. A client
+   must opt in to preview features (`kubectl-ate --preview`) to use a fork
+   template.
+8. Prepare the Job, then run it.
+   - Replace the `image:` line (`conformance/template.yaml:23`) with the
+     reference from the engine run summary. The staged name
+     `semgrep-engine:1.186.0` differs from the published
+     `substrate-fork/engine-oss:<tag>`.
+   - Replace the `kubectl-ate` digest in `conformance-job.yaml`.
+   - Change the Job name to `gvisor-fork-conformance-2`, and set `suspend` to
+     `false`. The pod template and the generated ConfigMap name change, and a
+     Job's pod template is immutable, so the same name fails to sync.
+   - In `gvisor_fork_test.py`, update
+     `test_conformance_job_is_suspended_and_runs_as_ate_client`, which asserts
+     `suspend is True`. Change the `_conformance_job()` name to `-2`. Give
+     `test_conformance_refuses_a_placeholder_engine_image_before_any_api_call`
+     its own placeholder digest, as the engine README step 4 says.
+   - Read `kubectl -n ate-system logs job/gvisor-fork-conformance-2 | grep '^CONFORMANCE '`.
+   - When the seed starts, find `forkd started` in the worker log. Check forkd's
+     `hello` assertions (capabilities, cgroup parent, Unconfined seccomp,
+     `/dev/kvm`) and that `memory`, `pids` and `cpu` are delegated below
+     `/sys/fs/cgroup/forkd`.
 9. Run X1 to X7 and X9 inside the pod from node-1. Add a worker restart, a node
    drain and a forkd crash. Compare `fork_overhead` with the measured use.
 10. Joe allows factory use of fork templates. This needs Joe's waiver of X8 as
     well as X1 to X7 and X9. Creating a fork template needs the
-    `can_create_fork_template` relation, which only the owner holds. Factory
-    use means Joe grants it, or creates the templates as owner. Joe's rule from
-    the 2026-11-22 design session is that nothing is enabled on the factory
-    until the gates pass. No HOME ticket or decision comment records it yet.
+    `can_create_fork_template` relation, which only a global owner holds. Today
+    the owners are `ate-client` and the kagent controller
+    (`values/substrate.yaml`, `bootstrapOwners`). Factory use means Joe grants
+    the relation, or creates the templates as an owner. Joe's rule from the
+    2026-11-22 design session is that nothing is enabled on the factory until
+    the gates pass. No HOME ticket or decision comment records it yet.
 
 #### Isolation gates
 
-X1 to X7 and X9 pass in the cluster before step 10. Joe also waives X8, which
+X1 to X7 and X9 pass in the cluster before step 10. Joe must also waive X8, which
 covers the microVM fallback only, for gVisor-only use. Off-cluster runs on
 node-1 (production mode, real forkd and runsc) covered X1, X3, X4 and X7. No
 gate has run in the cluster.
