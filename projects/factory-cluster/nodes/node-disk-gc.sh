@@ -29,11 +29,10 @@
 #      Known gaps: a process that holds a directory only by a relative path (a
 #      unix socket bound with a relative path, a relative argument after a
 #      chdir) is not seen, a process that is not dumpable (a setuid program)
-#      is not seen, and a command-line argument or environment value
-#      that names the directory through a symlink is not matched (open files,
-#      working directories and mappings are real paths, so they match), and a
-#      mount in another mount namespace is not seen (the mount table is the
-#      caller's own).
+#      is not seen, a mount in another mount namespace is not seen (the mount
+#      table is the caller's own), and a command-line argument or environment
+#      value that names the directory through a symlink is not matched (open
+#      files, working directories and mappings are real paths, so they match).
 #   3. Bazel disk cache files (ac/ and cas/ only) not modified for
 #      --bazel-days (default 7), under BAZEL_DISK_CACHE.
 #
@@ -98,9 +97,24 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Root is refused with no exception: as root, -uid would match root-owned
-# directories, and rm ignores permission barriers. $EUID is a shell variable,
-# so a shim or a function named id cannot change it.
-if [[ $EUID -eq 0 ]]; then
+# directories, and rm ignores permission barriers. The user ids come from the
+# kernel (/proc/self/status). Not from $EUID: bash imports EUID from the
+# environment, so a caller could set it. Not from id: a shim or an exported
+# function named id could answer for it.
+proc_ruid=""
+proc_euid=""
+uid_found=false
+while read -r key proc_ruid proc_euid _; do
+	if [[ "$key" == "Uid:" ]]; then
+		uid_found=true
+		break
+	fi
+done </proc/self/status
+if ! $uid_found || [[ ! "$proc_ruid" =~ ^[0-9]+$ || ! "$proc_euid" =~ ^[0-9]+$ ]]; then
+	echo "cannot read the user ids from /proc/self/status" >&2
+	exit 2
+fi
+if [[ "$proc_ruid" -eq 0 || "$proc_euid" -eq 0 ]]; then
 	echo "run as the node operator, not as root" >&2
 	exit 2
 fi
@@ -443,7 +457,7 @@ if [[ -n "$tmp_real" ]]; then
 				echo "  failed: $dir"
 			fi
 		fi
-	done < <(find "$tmp_root" -mindepth 1 -maxdepth 1 -type d -uid "$EUID" \
+	done < <(find "$tmp_root" -mindepth 1 -maxdepth 1 -type d -uid "$proc_euid" \
 		\( -name 'pgdata*' -o -name 'tmp*' \) -mmin "+$((tmp_hours * 60))" -print0 2>/dev/null)
 fi
 echo "Test directories in $tmp_root (older than $tmp_hours h): $tmp_count, $(human "$tmp_total")"

@@ -222,17 +222,25 @@ process that the caller can read:
   old modes back if it keeps the directory. A dry run keeps it and says so.
 
 The scan runs again right before each removal when the last scan is more than
-2 s old. Removal does not cross a mount point. Known gaps: the script cannot
-see a process that another user runs, or a process that holds a directory only
-by a relative path (a unix socket bound with a relative path, or a relative
-argument after a `chdir`), or a process that is not dumpable (a setuid
-program), or a mount in another mount namespace (the script reads its own
-mount table). It matches command-line and environment text as
-written, so text that names the directory through a symlink does not match
-(open files, working directories and mappings are real paths, so they do).
-If it cannot remove a directory, it prints `failed: <directory>` and goes on.
+2 s old. Removal does not cross a mount point. If it cannot remove a directory,
+it prints `failed: <directory>` and goes on.
 
-The script refuses to run as root, with no exception.
+Known gaps:
+
+- The script cannot see a process that another user runs.
+- It cannot see a process that holds a directory only by a relative path (a
+  unix socket bound with a relative path, or a relative argument after a
+  `chdir`).
+- It cannot see a process that is not dumpable (a setuid program).
+- It reads its own mount table, so it cannot see a mount in another mount
+  namespace.
+- It matches command-line and environment text as written, so text that names
+  the directory through a symlink does not match. Open files, working
+  directories and mappings are real paths, so they do.
+
+The script refuses to run as root, with no exception. It reads its user ids
+from `/proc/self/status`, so neither the environment nor a program named `id`
+can change them.
 
 No timer runs the script. A person decides whether to install one.
 

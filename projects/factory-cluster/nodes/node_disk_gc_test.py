@@ -617,29 +617,53 @@ def test_a_go_cache_that_holds_the_home_directory_is_refused(node, where):
         assert "skipped (not a Go build cache, or it holds the home" in result.stdout
 
 
-@pytest.mark.skipif(
+needs_root_probe = pytest.mark.skipif(
     shutil.which("unshare") is None or not namespaces_work(),
     reason="no user namespace on this host: root cannot be tested",
 )
-def test_root_is_refused_with_no_exception(node, base):
-    # A shim named id and an exported function named id cannot hide root.
+
+
+def run_as_root_namespace(node, base, env, clean_env=False):
+    """Run the script as uid 0 in a user namespace, optionally with env -i."""
+    command = ["unshare", "-Ur"]
+    if clean_env:
+        command += ["env", "-i", *[f"{k}={v}" for k, v in env.items()]]
+    command += ["bash", str(SCRIPT), "--apply"]
+    return subprocess.run(
+        command,
+        env=None if clean_env else env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@needs_root_probe
+@pytest.mark.parametrize("clean_env", [False, True])
+@pytest.mark.parametrize(
+    "disguise", ["shim", "function", "euid", "euid and uid", "all of them"]
+)
+def test_root_is_refused_with_no_exception(node, base, clean_env, disguise):
+    # Nothing the caller controls may hide root: a program named id, an
+    # exported function named id, or EUID and UID in the environment (bash
+    # imports them).
     fake = base / "bin"
     fake.mkdir()
     (fake / "id").write_text("#!/bin/sh\necho 1000\n")
     (fake / "id").chmod(0o755)
     old_tree(node["tmp"] / "pgdata-a")
     before = files(node["tmp"]), files(node["go"]), files(node["bazel"])
-    # Every path is set, and GC_TMP_DIR is not /tmp: the old exception.
-    env = dict(node["env"], PATH=f"{fake}:{os.environ['PATH']}")
-    env["BASH_FUNC_id%%"] = "() { echo 1000; }"
-    result = subprocess.run(
-        ["unshare", "-Ur", "bash", str(SCRIPT), "--apply"],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 2
+    env = dict(node["env"])
+    if disguise in ("shim", "all of them"):
+        env["PATH"] = f"{fake}:{env['PATH']}"
+    if disguise in ("function", "all of them"):
+        env["BASH_FUNC_id%%"] = "() { echo 1000; }"
+    if disguise in ("euid", "euid and uid", "all of them"):
+        env["EUID"] = "1000"
+    if disguise in ("euid and uid", "all of them"):
+        env["UID"] = "1000"
+    result = run_as_root_namespace(node, base, env, clean_env)
+    assert result.returncode == 2, result.stdout + result.stderr
     assert "not as root" in result.stderr
     assert (files(node["tmp"]), files(node["go"]), files(node["bazel"])) == before
 
@@ -736,3 +760,16 @@ def test_a_bazel_cache_that_holds_the_home_directory_is_refused(node, base):
     assert result.returncode == 0, result.stderr
     assert victim.exists()
     assert "skipped (not a disk_cache directory, or it holds the home" in result.stdout
+
+
+def test_a_bazel_cache_link_to_a_directory_not_named_disk_cache(node, base):
+    # The link is named disk_cache, but the real directory is named x.
+    real = base / "x"
+    victim = write(real / "ac" / "q" / "f", old=90 * DAY)
+    link = base / "disk_cache"
+    link.symlink_to(real, target_is_directory=True)
+    env = dict(node["env"], BAZEL_DISK_CACHE=str(link))
+    result = run(node, "--apply", env=env)
+    assert result.returncode == 0, result.stderr
+    assert victim.exists()
+    assert "skipped (not a disk_cache directory" in result.stdout
