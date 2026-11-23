@@ -31,7 +31,9 @@
 #      chdir) is not seen, a process that is not dumpable (a setuid program)
 #      is not seen, and a command-line argument or environment value
 #      that names the directory through a symlink is not matched (open files,
-#      working directories and mappings are real paths, so they match).
+#      working directories and mappings are real paths, so they match), and a
+#      mount in another mount namespace is not seen (the mount table is the
+#      caller's own).
 #   3. Bazel disk cache files (ac/ and cas/ only) not modified for
 #      --bazel-days (default 7), under BAZEL_DISK_CACHE.
 #
@@ -58,9 +60,10 @@ usage() {
 	exit 2
 }
 
-# A whole number without leading zeros (bash reads 08 as an octal error).
+# A whole number of at most 6 digits, without leading zeros (bash reads 08 as
+# an octal error, and a huge number wraps around in the minutes arithmetic).
 number() {
-	[[ "$1" =~ ^(0|[1-9][0-9]*)$ ]] || {
+	[[ "$1" =~ ^(0|[1-9][0-9]{0,5})$ ]] || {
 		echo "not a number: $1" >&2
 		usage
 	}
@@ -95,8 +98,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Root is refused with no exception: as root, -uid would match root-owned
-# directories, and rm ignores permission barriers.
-if [[ "$(id -u)" == 0 ]]; then
+# directories, and rm ignores permission barriers. $EUID is a shell variable,
+# so a shim or a function named id cannot change it.
+if [[ $EUID -eq 0 ]]; then
 	echo "run as the node operator, not as root" >&2
 	exit 2
 fi
@@ -346,8 +350,8 @@ newer_file() {
 # separated). Prints a newer file when the check then finds one. Stops at a
 # directory it cannot open or parse; $scratch/err then still holds the error.
 open_and_check() {
-	local dir=$1 newer round path mode
-	for round in $(seq 1 200); do
+	local dir=$1 newer path mode
+	for _ in $(seq 1 200); do
 		newer=$(newer_file "$dir")
 		if [[ -n "$newer" || ! -s "$scratch/err" ]]; then
 			echo "$newer"
@@ -439,23 +443,25 @@ if [[ -n "$tmp_real" ]]; then
 				echo "  failed: $dir"
 			fi
 		fi
-	done < <(find "$tmp_root" -mindepth 1 -maxdepth 1 -type d -uid "$(id -u)" \
+	done < <(find "$tmp_root" -mindepth 1 -maxdepth 1 -type d -uid "$EUID" \
 		\( -name 'pgdata*' -o -name 'tmp*' \) -mmin "+$((tmp_hours * 60))" -print0 2>/dev/null)
 fi
 echo "Test directories in $tmp_root (older than $tmp_hours h): $tmp_count, $(human "$tmp_total")"
 total_bytes=$((total_bytes + tmp_total))
 
-# 3. Bazel disk cache. Only ac/ and cas/ hold cache entries.
-if [[ "$bazel_cache" == /* && "${bazel_cache##*/}" == disk_cache && -d "$bazel_cache" ]]; then
+# 3. Bazel disk cache. Only ac/ and cas/ hold cache entries. The real path
+# must be named disk_cache and must not be the home directory or hold it.
+bazel_real="$(realdir "$bazel_cache" || true)"
+if [[ "$bazel_cache" == /* && -n "$bazel_real" && "${bazel_real##*/}" == disk_cache ]] && ! holds_home "$bazel_real"; then
 	: >"$scratch/bazel"
 	for sub in ac cas; do
-		if [[ -d "$bazel_cache/$sub" ]]; then
-			find "$bazel_cache/$sub" -xdev -type f -mmin "+$((bazel_days * 1440))" -print0 >>"$scratch/bazel" 2>/dev/null || true
+		if [[ -d "$bazel_real/$sub" ]]; then
+			find "$bazel_real/$sub" -xdev -type f -mmin "+$((bazel_days * 1440))" -print0 >>"$scratch/bazel" 2>/dev/null || true
 		fi
 	done
-	report_files "Bazel disk cache $bazel_cache (older than $bazel_days days)" "$scratch/bazel"
+	report_files "Bazel disk cache $bazel_real (older than $bazel_days days)" "$scratch/bazel"
 else
-	echo "Bazel disk cache $bazel_cache: skipped (not a disk_cache directory)"
+	echo "Bazel disk cache $bazel_cache: skipped (not a disk_cache directory, or it holds the home directory)"
 fi
 
 echo "Reclaimable: $(human "$total_bytes")"

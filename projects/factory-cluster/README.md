@@ -192,11 +192,13 @@ projects/factory-cluster/nodes/node-disk-gc.sh --apply  # remove it
 ```
 
 Options `--go-days` (3), `--tmp-hours` (12) and `--bazel-days` (7) set the age
-limits. Each is a whole number, and `--tmp-hours` must be at least 1. The check
+limits. Each is a whole number of at most 6 digits, and `--tmp-hours` must be
+at least 1. The check
 is exact: with `--go-days 3`, a file 2.9 days old stays. The Go fuzz corpus
 (`fuzz/`) always stays. `GOCACHE`, `BAZEL_DISK_CACHE` and `GC_TMP_DIR` set the
 three paths. The script uses real paths: it resolves `GC_TMP_DIR` first, and it
-skips a Go cache that is the home directory or holds it. `HOME` must be an
+skips a Go cache or Bazel disk cache that is the home directory or holds it
+(the Bazel path must also be named `disk_cache` after symlinks). `HOME` must be an
 absolute path.
 
 A test directory stays when any of these is true. The script checks every
@@ -224,7 +226,8 @@ The scan runs again right before each removal when the last scan is more than
 see a process that another user runs, or a process that holds a directory only
 by a relative path (a unix socket bound with a relative path, or a relative
 argument after a `chdir`), or a process that is not dumpable (a setuid
-program). It matches command-line and environment text as
+program), or a mount in another mount namespace (the script reads its own
+mount table). It matches command-line and environment text as
 written, so text that names the directory through a symlink does not match
 (open files, working directories and mappings are real paths, so they do).
 If it cannot remove a directory, it prints `failed: <directory>` and goes on.
