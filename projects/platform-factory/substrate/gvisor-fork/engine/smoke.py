@@ -33,7 +33,9 @@ def body_of(size: int) -> bytes:
     head = b'{"items": ["'
     room = size - len(head) - len(TAIL)
     if room < 0:
-        raise SystemExit(f"body size {size} is below the minimum {len(head) + len(TAIL)}")
+        raise SystemExit(
+            f"body size {size} is below the minimum {len(head) + len(TAIL)}"
+        )
     filler = (UNIT * (room // len(UNIT) + 1))[:room]
     return head + filler.replace(b'"', b"'") + TAIL
 
@@ -75,7 +77,9 @@ def main(host: str, port: int, size: int, expected: int) -> None:
     body = body_of(size)
     start = time.monotonic()
     conn = http.client.HTTPConnection(host, port, timeout=120)
-    conn.request("POST", "/scan", body=body, headers={"Content-Type": "application/json"})
+    conn.request(
+        "POST", "/scan", body=body, headers={"Content-Type": "application/json"}
+    )
     resp = conn.getresponse()
     raw = resp.read()
     conn.close()

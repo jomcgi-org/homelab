@@ -1,1 +1,13 @@
-["Targets",[["CodeTarget",{"path":{"fpath":"/scan/target.json","ppath":"/body.json"},"analyzer":"regex","products":["sast"]}]]]
+[
+  "Targets",
+  [
+    [
+      "CodeTarget",
+      {
+        "path": { "fpath": "/scan/target.json", "ppath": "/body.json" },
+        "analyzer": "regex",
+        "products": ["sast"]
+      }
+    ]
+  ]
+]
