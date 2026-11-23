@@ -756,7 +756,7 @@ flowchart LR
 
    | Node | Memory left | After 1Gi | CPU left | After 500m |
    | --- | --- | --- | --- | --- |
-   | node-1 | 5493Mi | 4469Mi | 8385m | 7885m |
+   | node-1 | 5493Mi | 4469Mi | 8285m | 7785m |
    | node-2 | 1981Mi | 957Mi | 6975m | 6475m |
    | node-3 | 2601Mi | 1577Mi | 6010m | 5510m |
 

@@ -443,7 +443,7 @@ def test_kvm_pool_requests_1gi_and_limits_for_a_seed_and_8_children() -> None:
     resources = _pool()["spec"]["template"]["resources"]
     # The egress-scan design (egress-scan/ARCHITECTURE.md, "Capacity"): a
     # scheduling reservation of 1Gi and 500m. On 2026-11-23 node-1 had 5493Mi
-    # and 8385m left to request, node-3 2601Mi and node-2 1981Mi.
+    # and 8285m left to request, node-3 2601Mi and node-2 1981Mi.
     assert resources["requests"] == {"cpu": "500m", "memory": "1Gi"}
     # The seed (1000m, 512 MiB cap) and 8 children (1000m, 128 MiB + 16 MiB of
     # overhead each): 9000m and 512 + 8 x 144 = 1664 MiB booked.
