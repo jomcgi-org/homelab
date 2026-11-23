@@ -50,6 +50,14 @@ resources:
   limits:
     cpuMillicores: 1000
     memoryBytes: 134217728
+# A template with fork_config must disable golden snapshots: a forked actor has
+# no snapshot to restore (apivalidation/fork.go, validateForkTemplate). The
+# other rules of that file: exactly one container, with a wakeup probe, no
+# capabilities to add and no env named like a secret; no volumes; egress not
+# GATEWAY. provision_test.py checks every one of them.
+snapshotConfig:
+  goldenSnapshotConfig:
+    mode: GOLDEN_SNAPSHOT_MODE_DISABLED
 forkConfig:
   mode: FORK_MODE_SEED_AND_FORK
   # What the seed holds on the worker: 358 MB resident (PSS) with 1586 rules.
