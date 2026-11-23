@@ -5,6 +5,18 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # its path (below) and reads the manifests through the glob.
 # gazelle:exclude provision.py
 
+# The files ../../../resources renders through its "../egress-scan/gate/provision"
+# resource.
+filegroup(
+    name = "kustomize_inputs",
+    srcs = glob([
+        "*.yaml",
+        "provision.py",
+        "template.json",
+    ]),
+    visibility = ["//projects/platform-factory/substrate/resources:__pkg__"],
+)
+
 py_test(
     name = "provision_test",
     srcs = ["provision_test.py"],

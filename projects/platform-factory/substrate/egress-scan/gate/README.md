@@ -258,15 +258,31 @@ PR. "Cluster effect" is what the cluster does when the PR merges.
 
 | # | Change | Cluster effect on merge | Joe approves |
 | --- | --- | --- | --- |
-| 1 | [`provision/`](provision): suspended Jobs that create the atespace, its access policy and the template `engine`, or remove them (teardown) | None. The directory is not wired and both Jobs are suspended | Nothing at merge |
-| 2 | Router grant: `spiffe://cluster.local/ns/ate-system/sa/engine-gate` in `atenetRouter.ingressAllowedSPIFFEIDs` (`values/substrate.yaml`) | Rolls the atenet router. No traffic uses the new entry, because the gate does not run | Approved (Joe, 2026-11-23, session; Decided 6). It lets that ID reach any actor. The X gates (step 9 of the fork README) run as a safety check and no longer gate the merge |
-| 3 | Wire `provision/` and set `suspend: false` on `egress-engine-provision-1` (a later PR) | Creates the atespace, the policy and the template. The pool's worker pins the atespace at the first seed, so restart the pool pod first (ARCHITECTURE.md, "Atespace pin") and use the pool for no other atespace | Approved (Decided 6); Joe un-suspends the Job after the X1 to X7 and X9 results and the pool restart order are in |
-| 4 | Wiring change for the gate: package `staged/` like the egress-scan chart, so that CI pins the image as `repository@digest` at build time (never by hand), list it in a source that ArgoCD applies, set `replicas: 1`, and add the items of "Before enabling" | Starts the gate. It deletes its leftovers and fills 2 children | Yes |
+| 1 | [`provision/`](provision): Jobs that create the atespace, its access policy and the template `engine`, or remove them (teardown) | None when it merged: not wired, suspended | Nothing at merge |
+| 2 | Router grant: `spiffe://cluster.local/ns/ate-system/sa/engine-gate` in `atenetRouter.ingressAllowedSPIFFEIDs` (`values/substrate.yaml`) | Added to the router ConfigMap (merged, #8627) | Approved (Joe, 2026-11-23, session; Decided 6) |
+| 3 | Wire `provision/` into `resources/` with `egress-engine-provision-1` not suspended | Creates the atespace, the policy and the template, once. The worker pins the atespace at the first seed, so the pool pod must have restarted before | Joe merges it (Decided 6), after the pool restart |
+| 4 | Wire the gate (`staged/`), its image pin, the Prometheus rules and the observe-mode switch of the scanner | Starts the gate, then the scanner calls it in observe mode | Yes |
 | 5 | Check: `/readyz` is 200, `children{state="waiting"}` is 2, and a test request through `POST /scan` returns the engine JSON | None | |
-| 6 | Point `semgrep.endpoint` of the scanner at `http://engine-gate.ate-system.svc:8080/scan` with the tier still off, then follow the observe period of ARCHITECTURE.md | The scanner calls the gate only when the tier is on | Yes (observe, then enforce) |
 
-Order of 2 and 3: the gate needs both before step 4, but neither needs the
-other.
+**When to run step 3.** After the pool pod restart (it clears the atespace pin
+of the conformance run) and before step 4 (the gate has nothing to claim until
+the seed of the template is ready). Step 4 merges only after the Job succeeded.
+
+**Verify step 3** (read-only):
+
+```bash
+export KUBECONFIG=~/.kube/factory-sessions.yaml
+kubectl -n ate-system get job egress-engine-provision-1        # COMPLETIONS 1/1
+kubectl -n ate-system logs job/egress-engine-provision-1 | grep '^PROVISION '
+```
+
+The log shows `step=atespace`, `step=access_policy` and `step=template` (each
+`created`, or `exists` on a re-run), then `step=seed result=ready` (about 25 s
+after the template, more on the first pull of the private image), then
+`event=summary mode=apply result=ok`. A line `event=waiting` every minute names
+the worker and seed state. On a failure the log names the call that failed. A
+Job's pod template is immutable: to run it again, bump the suffix in the name
+(and in `resources_test.py`), and the same for any edit under `provision/`.
 
 **Provisioning Jobs.** `egress-engine-provision-1` runs `provision.py` with
 `MODE=apply`. It waits for an ACTIVE worker of the pool, then makes the three
@@ -279,14 +295,16 @@ A Job's pod template is immutable, so to run again change the number in the
 name.
 
 **Teardown.** Stop the gate first (`replicas: 0`: it deletes its children on
-SIGTERM). Then un-suspend `egress-engine-teardown-1` (`MODE=teardown`). It
-deletes what is left of the actors, then the templates (which removes the
-seeds), waits for the seeds to go, then deletes the access policy and the
-atespace, which the API refuses to delete while it holds an actor or a
-template. By hand, the same steps are `kubectl ate delete actor`, `delete
-actor-template`, `delete access-policy -a egress-scan-engine` and `delete
-atespace egress-scan-engine`, as `ate-client`. The pool's worker keeps the
-atespace pin until its pod restarts.
+SIGTERM). Then list `provision/teardown-job.yaml` in `provision/kustomization.yaml`
+and set `suspend: false` in a PR (the file is not listed while it is suspended,
+because a suspended Job makes the Application report Suspended). The Job
+(`MODE=teardown`) deletes what is left of the actors, then the templates (which
+removes the seeds), waits for the seeds to go, then deletes the access policy and
+the atespace, which the API refuses to delete while it holds an actor or a
+template. It fails if a delete fails. By hand, the same steps are `kubectl ate
+delete actor`, `delete actor-template`, `delete access-policy -a egress-scan-engine`
+and `delete atespace egress-scan-engine`, as `ate-client`. The pool's worker
+keeps the atespace pin until its pod restarts.
 
 **Blue/green rebuild.** A new image is a new template name, for example
 `engine-v2`: copy `provision/template.yaml` with the new name and digest, run
