@@ -93,10 +93,9 @@ spec:
   # plane running and ForkSeed still off. Setting it back to 0 is part of the
   # rollback, after the fork templates are deleted.
   replicas: 0
-  # The fork build of ateworker-gvisor from .github/workflows/substrate-fork-images.yml.
-  # The digest is a placeholder until that workflow publishes the image; the
-  # enable step replaces it with the published digest.
-  workerImage: ghcr.io/jomcgi-org/homelab/substrate-fork/ateworker-gvisor:fork-b6b0ec3e217c@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  # The fork build of ateworker-gvisor, published by
+  # .github/workflows/substrate-fork-images.yml at fork commit b6b0ec3e217c.
+  workerImage: ghcr.io/jomcgi-org/homelab/substrate-fork/ateworker-gvisor:fork-b6b0ec3e217c@sha256:65f14b6900ee64c6dae2e03a7063d9fb0384e1f62becca5a275421b891870e94
   sandboxClasses:
     - name: gvisor
       platform: kvm

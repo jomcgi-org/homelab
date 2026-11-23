@@ -74,22 +74,17 @@ Locally, with Docker and `crane`: `./build.sh layer OUT`, `./build.sh image OUT`
 with `FORKSRV_CHECKPOINT=0` for a plain run outside gVisor, then run
 `python3 -I smoke.py HOST 8080 16384`.
 
-## Replace the placeholder digest
+## Digest in the conformance template
 
-1. Run the workflow with `publish` on. Read the reference in the run summary:
-   `ghcr.io/jomcgi-org/homelab/substrate-fork/engine-oss:<tag>@sha256:<digest>`.
-2. In the GitHub package settings of `substrate-fork/engine-oss`, set the
-   visibility to public. The workflow token cannot do this.
-3. In `conformance/template.yaml` of PR #8586, replace the `image:` line
-   (line 23 at head `e1c6ca29063e`) with that reference. The old line holds
-   the repository `substrate-fork/semgrep-engine` and an all-zero digest.
-   Change nothing else: `command`, the probe and the limits already match.
-4. In `gvisor_fork_test.py` of PR #8586, change
-   `test_conformance_refuses_a_placeholder_engine_image_before_any_api_call`
-   (line 751). It reads the repository template, which now holds a real digest.
-   Give it a placeholder instead:
-   `_conformance(tmp_path, re.sub(r"@sha256:[0-9a-f]{64}", "@sha256:" + "0" * 64, _TEMPLATE.read_text()))`.
-5. Run `bazel test //projects/platform-factory/substrate/gvisor-fork/...`.
+Done. Workflow run 45140818290 published
+`ghcr.io/jomcgi-org/homelab/substrate-fork/engine-oss:1.186.0-946d07e5597c@sha256:dbffb4d73f072b2a71a05356a657a595bd147357bc85a538139f2634be47b238`,
+and the package is public. `../conformance/template.yaml` names that reference on
+its `image:` line. The test
+`test_conformance_refuses_a_placeholder_engine_image_before_any_api_call` builds
+its own placeholder from the template. To publish a new engine image, run the
+workflow with `publish` on, read the reference in the run summary and replace
+the `image:` line. `test_staged_images_name_the_published_fork_digests` in
+`../gvisor_fork_test.py` pins the reference.
 
 ## Tested where
 

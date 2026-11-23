@@ -24,7 +24,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: gvisor-fork-conformance-1
+  name: gvisor-fork-conformance-2
   namespace: ate-system
   annotations:
     argocd.argoproj.io/sync-wave: "2"
@@ -106,12 +106,11 @@ spec:
         - name: config
           configMap:
             name: gvisor-fork-conformance
-        # The fork build of kubectl-ate: /cli/ko-app/kubectl-ate. The digest is
-        # a placeholder until substrate-fork-images.yml publishes the image; the
-        # enable step replaces it (PR #8584).
+        # The fork build of kubectl-ate: /cli/ko-app/kubectl-ate, published by
+        # substrate-fork-images.yml at fork commit b6b0ec3e217c.
         - name: cli
           image:
-            reference: ghcr.io/jomcgi-org/homelab/substrate-fork/kubectl-ate:fork-b6b0ec3e217c@sha256:0000000000000000000000000000000000000000000000000000000000000000
+            reference: ghcr.io/jomcgi-org/homelab/substrate-fork/kubectl-ate:fork-b6b0ec3e217c@sha256:ea22fcf01640627601669506be390d614122f131fadd39de33e1e6da1a7e614f
             pullPolicy: IfNotPresent
         # The ate API's JWT provider accepts this audience (api-server-config.yaml).
         - name: ate-token
