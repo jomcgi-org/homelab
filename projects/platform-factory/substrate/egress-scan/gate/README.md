@@ -131,19 +131,21 @@ applied after the isolation gates of the fork README:
 2. As a global owner (`ate-client`): create the atespace `egress-scan-engine`
    and its access policy, with the binding below. An editor cannot create the
    fork template (`can_create_fork_template` needs a global owner), so the
-   owner creates the template `engine` too.
+   owner creates the template `engine` too. [`provision/`](provision) does all
+   three (see "Enable steps"). The API wants a member as `user:<principal>`, and
+   the principal of a ServiceAccount token is `system:serviceaccount:<ns>:<name>`.
 
    ```yaml
    # Atespace access policy of egress-scan-engine
    bindings:
      - role: editor
        members:
-         - system:serviceaccount:ate-system:engine-gate
+         - user:system:serviceaccount:ate-system:engine-gate
    ```
 
 3. The WorkerPool `gvisor-fork` pinned to the atespace `egress-scan-engine`
-   (the pool restarts between atespaces) and the Pro engine image. Both are
-   other changes.
+   (the pool restarts between atespaces) and the Pro engine image. The pool is
+   live (fork steps 5 to 7); the image is published (see "Private image pull").
 
 The template the gate depends on:
 
@@ -249,22 +251,81 @@ renders them and checks the isolation rules above, and
 ## Enable steps
 
 Each step stays off until the one before it is verified. They follow the
-rollout in ARCHITECTURE.md (step 7 and after).
+rollout in ARCHITECTURE.md (step 7 and after). Every change below is its own
+PR. "Cluster effect" is what the cluster does when the PR merges.
 
-1. The cluster grants above are made (Decided 1 and 2). The atespace, the
-   access policy and the template exist, the pool pod runs and its seed is
-   ready.
-2. Wiring change: package `staged/` like the egress-scan chart, so that CI pins
-   the image as `repository@digest` at build time (never by hand), list it in a
-   source that ArgoCD applies, set `replicas: 1`, and add the items of "Before
-   enabling".
-3. Check: `/readyz` is 200, `children{state="waiting"}` is 2, and a test
-   request through `POST /scan` returns the engine JSON.
-4. Point `semgrep.endpoint` of the scanner at `http://engine-gate.ate-system.svc:8080/scan`
-   with the tier still off, then follow the observe period of ARCHITECTURE.md.
+| # | Change | Cluster effect on merge | Joe approves |
+| --- | --- | --- | --- |
+| 1 | [`provision/`](provision): suspended Jobs that create the atespace, its access policy and the template `engine`, or remove them (teardown) | None. The directory is not wired and both Jobs are suspended | Nothing at merge |
+| 2 | Router grant: `spiffe://cluster.local/ns/ate-system/sa/engine-gate` in `atenetRouter.ingressAllowedSPIFFEIDs` (`values/substrate.yaml`) | Rolls the atenet router. No traffic uses the new entry, because the gate does not run | Yes, before merge: it lets that ID reach any actor. Decided 2 records the approval, to be applied after the isolation gates (X gates, step 9 of the fork README), which have not run |
+| 3 | Wire `provision/` and set `suspend: false` on `egress-engine-provision-1` (a later PR) | Creates the atespace, the policy and the template. The pool's worker pins the atespace at the first seed, so restart the pool pod first (ARCHITECTURE.md, "Atespace pin") and use the pool for no other atespace | Yes: this creates the editor grant |
+| 4 | Wiring change for the gate: package `staged/` like the egress-scan chart, so that CI pins the image as `repository@digest` at build time (never by hand), list it in a source that ArgoCD applies, set `replicas: 1`, and add the items of "Before enabling" | Starts the gate. It deletes its leftovers and fills 2 children | Yes |
+| 5 | Check: `/readyz` is 200, `children{state="waiting"}` is 2, and a test request through `POST /scan` returns the engine JSON | None | |
+| 6 | Point `semgrep.endpoint` of the scanner at `http://engine-gate.ate-system.svc:8080/scan` with the tier still off, then follow the observe period of ARCHITECTURE.md | The scanner calls the gate only when the tier is on | Yes (observe, then enforce) |
 
-To roll back, set `semgrep.enabled: false`, then `replicas: 0`. The gate
-deletes its children on SIGTERM. Delete the template only after that.
+Order of 2 and 3: the gate needs both before step 4, but neither needs the
+other. Merge 2 when the X gates have run.
+
+**Provisioning Jobs.** `egress-engine-provision-1` runs `provision.py` with
+`MODE=apply`. It waits for an ACTIVE worker of the pool, then makes the three
+objects, each only if it is not there, and waits for a ready seed. Run it again
+at any time: an object that exists is left alone, an access policy without the
+editor member gets it added (the other bindings stay), and a template with
+another image is an error, because a template is replaced blue/green. Read the
+run with `kubectl -n ate-system logs job/egress-engine-provision-1 | grep '^PROVISION '`.
+A Job's pod template is immutable, so to run again change the number in the
+name.
+
+**Teardown.** Stop the gate first (`replicas: 0`: it deletes its children on
+SIGTERM). Then un-suspend `egress-engine-teardown-1` (`MODE=teardown`). It
+deletes what is left of the actors, then the templates (which removes the
+seeds), waits for the seeds to go, then deletes the access policy and the
+atespace, which the API refuses to delete while it holds an actor or a
+template. By hand, the same steps are `kubectl ate delete actor`, `delete
+actor-template`, `delete access-policy -a egress-scan-engine` and `delete
+atespace egress-scan-engine`, as `ate-client`. The pool's worker keeps the
+atespace pin until its pod restarts.
+
+**Blue/green rebuild.** A new image is a new template name, for example
+`engine-v2`: copy `provision/template.yaml` with the new name and digest, run
+the provisioning, wait for its seed, set `--template=engine-v2` on the gate,
+drain, then delete `engine` with the teardown steps.
+
+### Private image pull
+
+The template names `engine-pro`, a PRIVATE package
+(`ghcr.io/jomcgi-org/homelab/substrate-fork/engine-pro`, anonymous pull
+refused). The atelet pulls actor and seed images itself, so a pod
+`imagePullSecrets` entry does not apply to it. It already has what it needs, and
+**the change is on the GitHub side only**:
+
+- **Where it is configured.** `values/atelet.yaml` (`imageCredentialProviderConfigYAML`)
+  runs a kubelet credential plugin for every `ghcr.io` image (HOME-539). The
+  plugin reads the login from the Secret `ghcr-imagepull-secret` in
+  `ate-system`, mounted at `/run/ghcr-pull` in the atelet container only
+  (`resources/patches/atelet-image-credentials.yaml`). The Secret is a
+  `OnePasswordItem` (`resources/ghcr-pull-secret.yaml`, item
+  `vaults/k8s-homelab/items/ghcr-read-permissions`). The 1Password Operator makes
+  it; External Secrets Operator is not involved (it did not run on the cluster
+  on 2026-11-18, HOME-67). No SandboxConfig or atelet flag changes.
+- **What must be true.** The account of that login can read the package. The
+  image has no source label, so the package does not inherit access from the
+  public repository, and the login needs its own grant: in GitHub,
+  Packages, `homelab/substrate-fork/engine-pro`, Package settings, Manage
+  access, give the account (or a team that holds it) the **Read** role. The
+  token itself stays a classic token with `read:packages` only (fine-grained
+  tokens do not cover GitHub packages). Joe is the package admin and creates
+  nothing in the cluster. If the existing login belongs to another account than
+  the one that can read `jomcgi-org` packages, Joe adds a 1Password item field
+  and the operator syncs it. That is not known today.
+- **Check once, before step 3.** With the read login, `crane manifest
+  ghcr.io/jomcgi-org/homelab/substrate-fork/engine-pro:1.186.0-0adcac4b1419`
+  must resolve (the workflow checked the push with its own login, not this one).
+  If it does not, the seed never becomes ready: `provision.py` times out at the
+  seed wait, and the atelet log shows an `UNAUTHORIZED` pull. The plugin caches a
+  login for 5 minutes (`defaultCacheDuration`).
+- **What it does not need.** No new Secret, namespace or RBAC. The real Semgrep
+  token is never in the cluster.
 
 ## Packaging
 
