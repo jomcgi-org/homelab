@@ -16,7 +16,7 @@ contract as the OSS image. What is new is the engine behind it:
            the OSS shim, which edge.py tests for 25 s in the OSS workflow.
 
 Exit 0 and one line "SMOKE-PRO ok ..." on success; the line holds the findings count
-and the distinct rule ids, for the job summary. The secrets are made at run time from
+and the number of distinct rules, for the job summary. It never prints a rule id. The secrets are made at run time from
 a fixed random seed: the source holds no complete token, so no scanner flags it.
 """
 
@@ -132,14 +132,16 @@ def scan(smoke, host: str, port: int, body: bytes):
 def check_result(smoke, result: dict, planted: bool, minimum: int) -> str:
     found = result.get("results", [])
     errors = result.get("errors", [])
-    ids = sorted({r.get("check_id", "?").rsplit(".", 1)[-1] for r in found})
+    # The rules are Semgrep's proprietary content and the job log is public: print
+    # counts only, never a rule id, a message or a matched text.
+    rules = len({r.get("check_id", "?") for r in found})
     if errors:
-        smoke.fail(f"errors={errors[:2]!r}")
+        smoke.fail(f"errors={len(errors)}")
     if planted and len(found) < minimum:
         smoke.fail(f"results={len(found)}, want at least {minimum} on the planted body")
     if not planted and found:
-        smoke.fail(f"results={len(found)} on a clean body, want 0: {ids[:5]!r}")
-    return f"findings={len(found)} rules={len(ids)} ids={','.join(ids[:12])}"
+        smoke.fail(f"results={len(found)} on a clean body, want 0")
+    return f"findings={len(found)} rules={rules}"
 
 
 def healthz_twice(smoke, host: str, port: int) -> float:

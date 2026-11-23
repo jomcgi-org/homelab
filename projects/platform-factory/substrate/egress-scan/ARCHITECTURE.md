@@ -332,22 +332,25 @@ flowchart LR
 | How atelet pulls it | The same credential plugin. No change | Check once that the read login can read an `engine-pro` test tag |
 | Where it is built | A manual workflow, `main` only, in a GitHub environment with a required reviewer | PR workflows and forks cannot read an environment secret. No workflow reads a repository secret today |
 | Where the real token lives | Joe copies a dedicated Semgrep token from 1Password into the environment secret | An in-cluster build needs a registry write login and a builder. The repo has no builder such as kaniko, buildkit or buildah |
-| How the build gets the engine | `semgrep login`, then `semgrep install-semgrep-pro`, with the wheel pinned in `engine/pins.env` | The CLI documents this path. The Pro binary must match `1.186.0` |
+| How the build gets the engine | A standard-library download (`fetch-pro.py`) of the same endpoint that `semgrep install-semgrep-pro` calls, with the version pinned in `engine/pins.env` | The token goes only in an `Authorization` header and never lands in `~/.semgrep/settings.yml`. The Pro binary must match `1.186.0`. Untested against the real Semgrep until the first run |
 | How the build gets the rules | The Secrets config of the Semgrep deployment, fetched with the real token | The spike used `GET /api/agent/deployments/scans/config?is_secrets_scan=true` |
 | What is pinned | The Pro binary sha256 in `pins.env` after the first build. The rules sha256 as an image label and in the tag | The rules are proprietary content and stay out of the public repo |
-| What the build checks | Fail if `install-semgrep-pro` or the rules fetch fails. Run the engine once, expect exit 0 and a finding on a fake secret | The build proves the engine works with the token file the image holds |
-| Private package check | After the push, an anonymous pull must be refused. If it succeeds, the workflow fails and deletes the pushed version | The repo is public, and a package published by a workflow can inherit the repo's visibility |
+| What the build checks | Fail if the engine download or the rules fetch fails. Run the engine once, expect exit 0 and a finding on a fake secret | The build proves the engine works with the token file the image holds |
+| Private package check | A content-free canary goes to the package first. The pull with the workflow login must resolve, and then an anonymous pull must be refused. Only then the Pro image is pushed, and the same check runs on it | The repo is public, and a package published by a workflow can inherit the repo's visibility. A refusal proves nothing for a name that does not exist, and GitHub may not allow the delete of a version |
 
 Details of the check:
 
 - The workflow uses `GITHUB_TOKEN` with `packages: write`, as
-  `substrate-fork-engine.yml` does. Whether that token can delete a version it
-  just created is unverified.
+  `substrate-fork-engine.yml` does. A delete needs admin rights on the package,
+  and GitHub refuses to delete a version of a public package with more than
+  5000 downloads. So the delete is a second defence, and the canary is the
+  first. If the delete fails, Joe deletes the version by hand.
 - The anonymous `crane manifest` runs with a fresh, empty `DOCKER_CONFIG`.
 - The package API URL needs the slashes of the package name encoded (`%2F`).
-- The image is public between the push and the check. With the placeholder
-  token, that exposes the Pro binary and the rules. With option (a), a failed
-  check forces a token rotation.
+- Before the canary check passes, no proprietary byte is in the package. After
+  a failed check of the Pro image, the Pro binary and the rules are exposed
+  until the version is gone. With the placeholder token the real token is not.
+  With option (a), a failed check forces a token rotation.
 - Confirm that the package setting "inherit access from repository" is off. That
   state lives outside the repo and is unverified here.
 
@@ -374,7 +377,7 @@ engine accepts the placeholder on every build, and the build fails if it does
 not. A failure then returns the choice to option (a).
 
 The real token is a dedicated token, not a personal one, with the narrowest scope
-that `install-semgrep-pro` and the rules fetch accept. Rotate it on any change of
+that the engine download and the rules fetch accept. Rotate it on any change of
 package access.
 
 **Rule set: use all 1586.** Detection coverage is the point of an egress
