@@ -149,7 +149,28 @@ func (s *scanner) Check(ctx context.Context, check *authv3.CheckRequest) (*authv
 		}
 		return &authv3.CheckResponse{Status: &statuspb.Status{}}, nil
 	}
+	if s.semgrep.observing() {
+		return s.checkObserved(ctx, scanCtx, fields.String(), body, decoded)
+	}
 	return s.checkTwoTiers(ctx, scanCtx, release, fields.String(), body, decoded)
+}
+
+// checkObserved is the Gitleaks path with an engine call in the background.
+// The reply comes from Gitleaks alone and never waits for the engine, whatever
+// the engine does. See observe.go.
+func (s *scanner) checkObserved(ctx, scanCtx context.Context, fields string, body []byte, decoded string) (*authv3.CheckResponse, error) {
+	obs := s.semgrep.beginObserve(fields, body, decoded)
+	matched, err := s.detector.find(scanCtx, fields, string(body), decoded)
+	if err != nil {
+		obs.setGitleaks(glAborted)
+		return scanBudgetResponse(ctx)
+	}
+	if matched {
+		obs.setGitleaks(glFound)
+		return deny(codes.PermissionDenied, typev3.StatusCode_Forbidden, "request contains a credential pattern"), nil
+	}
+	obs.setGitleaks(glClean)
+	return &authv3.CheckResponse{Status: &statuspb.Status{}}, nil
 }
 
 // checkTwoTiers runs Gitleaks and the engine at the same time. A Gitleaks deny

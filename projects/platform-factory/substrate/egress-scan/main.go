@@ -35,6 +35,7 @@ func main() {
 	flag.StringVar(&semgrep.Endpoint, "semgrep-endpoint", "", "URL of the Semgrep engine (a cluster address; no TLS or credentials are added)")
 	flag.DurationVar(&semgrep.Deadline, "semgrep-deadline", 300*time.Millisecond, "engine deadline per request; keep the gateway requestTimeout at least 10ms above it")
 	flag.StringVar(&semgrep.FailureMode, "semgrep-failure-mode", failureDeny, "when the engine gives no verdict: deny or allow")
+	flag.StringVar(&semgrep.Mode, "semgrep-mode", modeEnforce, "enforce: the engine verdict can deny; observe: the engine runs in the background, never changes a reply and is only counted and logged")
 	flag.IntVar(&semgrep.MaxBody, "semgrep-max-body", maxBody, "largest request body in bytes that is sent to the engine")
 	flag.IntVar(&semgrep.Concurrency, "semgrep-concurrency", 8, "maximum simultaneous engine calls; more are shed")
 	flag.Int64Var(&semgrep.MaxResponse, "semgrep-max-response", 1<<20, "largest engine response in bytes")

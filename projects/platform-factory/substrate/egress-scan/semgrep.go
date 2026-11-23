@@ -23,6 +23,11 @@ const (
 	failureDeny  = "deny"
 	failureAllow = "allow"
 
+	// Tier modes. Enforce merges the engine verdict into the reply. Observe
+	// runs the engine off the request path and never changes the reply.
+	modeEnforce = "enforce"
+	modeObserve = "observe"
+
 	// The engine child reads at most 16 MiB. The scanner sends at most
 	// maxBody + maxAddressAndHeaders + the decoded JSON text.
 	maxEngineRequest = 16 << 20
@@ -82,9 +87,11 @@ type Engine interface {
 
 // semgrepConfig is the operator configuration of the tier.
 type semgrepConfig struct {
-	Endpoint        string
-	Deadline        time.Duration
-	FailureMode     string
+	Endpoint    string
+	Deadline    time.Duration
+	FailureMode string
+	// Mode is enforce (default) or observe. An empty Mode means enforce.
+	Mode            string
 	MaxBody         int
 	Concurrency     int
 	MaxResponse     int64
@@ -98,6 +105,9 @@ func (c semgrepConfig) validate() error {
 	}
 	if c.FailureMode != failureDeny && c.FailureMode != failureAllow {
 		return errors.New("semgrep failure mode must be deny or allow")
+	}
+	if c.Mode != modeEnforce && c.Mode != modeObserve {
+		return errors.New("semgrep mode must be enforce or observe")
 	}
 	if c.MaxBody < 1 || c.MaxBody > maxBody {
 		return fmt.Errorf("semgrep max body must be between 1 and %d bytes", maxBody)
@@ -323,6 +333,9 @@ type semgrepTier struct {
 }
 
 func newSemgrepTier(cfg semgrepConfig, engine Engine) (*semgrepTier, error) {
+	if cfg.Mode == "" {
+		cfg.Mode = modeEnforce
+	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -375,18 +388,36 @@ func (t *semgrepTier) run(ctx context.Context, payload []byte, bodyLen int) engi
 }
 
 func (t *semgrepTier) call(ctx context.Context, payload []byte, bodyLen int) engineResult {
-	if bodyLen > t.cfg.MaxBody || len(payload) > maxEngineRequest {
-		return engineResult{outcome: engineOversize}
+	release, refused := t.admit(bodyLen, len(payload))
+	if refused != "" {
+		return engineResult{outcome: refused}
+	}
+	defer release()
+	return t.exec(ctx, payload)
+}
+
+// admit applies the size limit, the in-flight limit and the breaker, in this
+// order. It returns a refusal outcome, or a release function for the slot. A
+// caller that gets a release function must call exec once, and then release.
+func (t *semgrepTier) admit(bodyLen, textLen int) (release func(), refused string) {
+	if bodyLen > t.cfg.MaxBody || textLen > maxEngineRequest {
+		return nil, engineOversize
 	}
 	select {
 	case t.slots <- struct{}{}:
-		defer func() { <-t.slots }()
 	default:
-		return engineResult{outcome: engineShed}
+		return nil, engineShed
 	}
 	if !t.breaker.allow() {
-		return engineResult{outcome: engineBreakerOpen}
+		<-t.slots
+		return nil, engineBreakerOpen
 	}
+	return func() { <-t.slots }, ""
+}
+
+// exec runs one admitted engine call under the deadline and settles the
+// breaker.
+func (t *semgrepTier) exec(ctx context.Context, payload []byte) engineResult {
 	t.metrics.inflight.Inc()
 	defer t.metrics.inflight.Dec()
 

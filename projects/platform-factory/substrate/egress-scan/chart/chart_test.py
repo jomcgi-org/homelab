@@ -43,6 +43,7 @@ def test_tier_is_off_by_default() -> None:
     values = yaml.safe_load((_CHART / "values.yaml").read_text())["semgrep"]
     assert values["enabled"] is False
     assert values["failureMode"] == "deny"
+    assert values["mode"] == "enforce"
     assert values["deadline"] == "300ms"
     assert values["maxBodyBytes"] == 524288
 
@@ -71,6 +72,7 @@ def test_enabled_tier_passes_every_flag() -> None:
         f"--semgrep-endpoint={_ENDPOINT}",
         "--semgrep-deadline=300ms",
         "--semgrep-failure-mode=deny",
+        "--semgrep-mode=enforce",
         "--semgrep-max-body=524288",
         "--semgrep-concurrency=8",
         "--semgrep-max-response=1048576",
@@ -90,6 +92,29 @@ def test_enabled_tier_follows_the_values() -> None:
     assert "--semgrep-deadline=75ms" in args
     assert "--semgrep-failure-mode=allow" in args
     assert "--semgrep-breaker-failures=0" in args
+
+
+def test_observe_mode_passes_its_flag() -> None:
+    args = _scanner(
+        "semgrep.enabled=true", f"semgrep.endpoint={_ENDPOINT}", "semgrep.mode=observe"
+    )["args"]
+    assert "--semgrep-mode=observe" in args
+    assert "--semgrep-mode=enforce" not in args
+
+
+def test_mode_is_ignored_while_the_tier_is_off() -> None:
+    assert _render("semgrep.mode=observe").stdout == _render().stdout
+
+
+def test_mode_must_be_enforce_or_observe() -> None:
+    for bad in ("audit", "Observe", ""):
+        result = _render(
+            "semgrep.enabled=true",
+            f"semgrep.endpoint={_ENDPOINT}",
+            f"semgrep.mode={bad}",
+        )
+        assert result.returncode != 0, bad
+        assert "semgrep.mode must be enforce or observe" in result.stderr
 
 
 def test_enabled_tier_needs_an_endpoint() -> None:
