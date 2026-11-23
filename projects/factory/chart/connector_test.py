@@ -498,9 +498,11 @@ def test_bindings_derive_from_repositories() -> None:
                     "weight": weight,
                 }
                 for name, model, effort, weight in [
-                    ("control", "gpt-6.2-astra", "xhigh", 70),
-                    ("astra-high", "gpt-6.2-astra", "high", 15),
-                    ("luna", "gpt-6-luna", "xhigh", 15),
+                    ("control", "gpt-6.2-astra", "xhigh", 100),
+                    ("sol-medium", "gpt-6.2-sol", "medium", 0),
+                    ("sol-high", "gpt-6.2-sol", "high", 0),
+                    ("astra-medium", "gpt-6.2-astra", "medium", 0),
+                    ("astra-high", "gpt-6.2-astra", "high", 0),
                 ]
             ],
             "runtime": {

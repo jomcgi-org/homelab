@@ -796,8 +796,10 @@ def test_binding_relays_through_the_broker_with_an_actor_jwt() -> None:
     assert agent["harnessRef"] == {"name": "codex"}
     assert agent["template"]["inline"]["modelConfig"] == {"name": "codex"}
     for suffix, model, effort in [
+        ("sol-medium", "gpt-6.2-sol", "medium"),
+        ("sol-high", "gpt-6.2-sol", "high"),
+        ("astra-medium", "gpt-6.2-astra", "medium"),
         ("astra-high", "gpt-6.2-astra", "high"),
-        ("luna", "gpt-6-luna", "xhigh"),
     ]:
         for kind, name in [
             ("ModelConfig", f"codex-{suffix}"),

@@ -2,6 +2,8 @@ connector:
   bindings:
     homelab:
       arms:
-        - { name: control, model: gpt-6.2-astra, reasoningEffort: xhigh, weight: 70 }
-        - { name: astra-high, model: gpt-6.2-astra, reasoningEffort: high, weight: 15 }
-        - { name: luna, model: gpt-6-luna, reasoningEffort: xhigh, weight: 15 }
+        - { name: control, model: gpt-6.2-astra, reasoningEffort: xhigh, weight: 100 }
+        - { name: sol-medium, model: gpt-6.2-sol, reasoningEffort: medium, weight: 0 }
+        - { name: sol-high, model: gpt-6.2-sol, reasoningEffort: high, weight: 0 }
+        - { name: astra-medium, model: gpt-6.2-astra, reasoningEffort: medium, weight: 0 }
+        - { name: astra-high, model: gpt-6.2-astra, reasoningEffort: high, weight: 0 }

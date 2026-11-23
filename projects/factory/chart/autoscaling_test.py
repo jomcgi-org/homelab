@@ -450,7 +450,7 @@ def test_a_binding_with_a_non_control_arm_cannot_scale_to_zero():
     assert run.returncode != 0
     # The message names the binding and the arm's Agent, not "<nil>".
     assert "binding homelab has the arm" in run.stderr, run.stderr
-    assert "Agent homelab-codex-astra-high" in run.stderr, run.stderr
+    assert "Agent homelab-codex-sol-medium" in run.stderr, run.stderr
     assert "cannot scale to zero" in run.stderr
     # One worker or more is safe: the pool is never empty.
     ok = _render_with_trial(["agents.codex.autoscaling.minReplicas=1"])
