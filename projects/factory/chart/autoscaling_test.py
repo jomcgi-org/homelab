@@ -388,7 +388,13 @@ def test_deploy_values_let_the_reviewer_pool_follow_its_reviews():
     assert hpa["maxReplicas"] == 5 == pool["spec"]["replicas"]
     assert _reaper_unbound(docs) == f"{_REVIEW[0]}/{_REVIEW[1]}"
     # The reaper may patch pods (the deletion cost) in the review namespace.
-    assert _reaper_verbs(docs, _REVIEW[0]) == ["get", "list", "watch", "delete", "patch"]
+    assert _reaper_verbs(docs, _REVIEW[0]) == [
+        "get",
+        "list",
+        "watch",
+        "delete",
+        "patch",
+    ]
     # The values and the chart's concurrency floor agree.
     values = yaml.safe_load(_DEPLOY_VALUES.read_text())
     assert hpa["minReplicas"] >= values["reviewer"]["concurrency"]
