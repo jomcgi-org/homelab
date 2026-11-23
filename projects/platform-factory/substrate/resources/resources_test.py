@@ -825,6 +825,7 @@ def test_gvisor_fork_slice_is_wired() -> None:
     assert [r for r in listed if r.startswith("..")] == [
         "../gvisor-fork",
         "../egress-scan/gate/provision",
+        "../egress-scan/gate/manifests",
     ]
     docs = _docs()
 
@@ -953,17 +954,43 @@ def test_engine_provisioning_is_wired_and_runs_once() -> None:
     assert "envFrom" not in c
 
 
-def test_engine_gate_is_staged_and_not_wired() -> None:
-    # engine-gate lives in ../egress-scan/gate/staged, with no replica. The
-    # directory reaches the cluster only when a later change lists it here
-    # (../egress-scan/gate/README.md, "Enable steps").
-    kustomization = yaml.safe_load((_HERE / "kustomization.yaml").read_text())
-    listed = kustomization["resources"] + kustomization.get("components", [])
-    assert not [r for r in listed if "engine-gate" in r or "gate/staged" in r]
-    # No object of the gate renders. The router ConfigMap names the gate's
-    # SPIFFE ID since the router grant, so the check is on object names.
-    names = {d["metadata"]["name"] for d in _docs()}
-    assert not [n for n in names if "engine-gate" in n]
+_GATE_IMAGE = "ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/gate"
+# Every object ../egress-scan/gate/manifests renders. A new object there changes
+# the cluster, so it must be listed here in the same change.
+_GATE_OBJECTS = {
+    ("CiliumClusterwideNetworkPolicy", None, "prometheus-scrape-engine-gate"),
+    ("CiliumNetworkPolicy", "ate-system", "ate-api-server-engine-gate"),
+    ("CiliumNetworkPolicy", "ate-system", "egress-scan-to-engine-gate"),
+    ("CiliumNetworkPolicy", "ate-system", "engine-gate"),
+    ("Service", "ate-system", "engine-gate"),
+    ("ServiceAccount", "ate-system", "engine-gate"),
+    ("StatefulSet", "ate-system", "engine-gate"),
+    ("ValidatingAdmissionPolicy", None, "engine-gate-pods"),
+    ("ValidatingAdmissionPolicy", None, "engine-gate-serviceaccount"),
+    ("ValidatingAdmissionPolicy", None, "engine-gate-workloads"),
+    ("ValidatingAdmissionPolicyBinding", None, "engine-gate-pods"),
+    ("ValidatingAdmissionPolicyBinding", None, "engine-gate-serviceaccount"),
+    ("ValidatingAdmissionPolicyBinding", None, "engine-gate-workloads"),
+}
+
+
+def test_engine_gate_is_wired_with_its_image_pinned_to_the_build() -> None:
+    docs = _docs()
+
+    def key(d: dict) -> tuple:
+        return (d["kind"], d["metadata"].get("namespace"), d["metadata"]["name"])
+
+    rendered = {key(d) for d in docs}
+    assert _GATE_OBJECTS <= rendered
+    sts = _one(docs, "StatefulSet", "engine-gate")
+    assert sts["spec"]["replicas"] == 1
+    (container,) = sts["spec"]["template"]["spec"]["containers"]
+    digest = Path(os.environ["GATE_DIGEST"]).read_text().strip()
+    # The pin is the digest of the image that main's CI pushed. A change to the
+    # gate's code or its image config changes the digest: update the pin in
+    # egress-scan/gate/manifests/kustomization.yaml in the same change.
+    assert container["image"] == f"{_GATE_IMAGE}@{digest}"
+    assert {"name": "ghcr-imagepull-secret"} in sts["spec"]["template"]["spec"]["imagePullSecrets"]
 
 
 _PREVIEW = ["PerTemplateSnapshotLocation", "GoldenEgressPolicy", "ForkSeed"]

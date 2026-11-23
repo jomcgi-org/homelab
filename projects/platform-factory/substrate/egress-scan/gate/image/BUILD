@@ -32,3 +32,11 @@ build_test(
     name = "image_build_test",
     targets = [":image"],
 )
+
+# The pushed image's digest, which resources/ pins (../manifests/kustomization.yaml)
+# and resources_test checks.
+filegroup(
+    name = "image_digest",
+    srcs = [":image.digest"],
+    visibility = ["//projects/platform-factory/substrate/resources:__pkg__"],
+)

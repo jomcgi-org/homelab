@@ -1,4 +1,4 @@
-"""Validate the staged engine-gate manifests: they render, stay off, give the
+"""Validate the engine-gate manifests: they render with one replica, give the
 gate the identity it needs and the scanner none, and open only the flows that
 the design names."""
 
@@ -36,17 +36,17 @@ def _pod() -> dict:
     return _one("StatefulSet", "engine-gate")["spec"]["template"]["spec"]
 
 
-def test_statefulset_has_no_replicas() -> None:
+def test_statefulset_runs_one_replica() -> None:
     sts = _one("StatefulSet", "engine-gate")
-    assert sts["spec"]["replicas"] == 0
+    assert sts["spec"]["replicas"] == 1
     assert sts["spec"]["serviceName"] == "engine-gate"
     assert sts["metadata"]["namespace"] == "ate-system"
 
 
-def test_image_is_ours_and_not_pinned_by_hand() -> None:
+def test_image_is_ours_and_pinned_by_digest() -> None:
+    # resources_test.py compares the digest with the Bazel image digest.
     image = _pod()["containers"][0]["image"]
-    assert image == f"{_IMAGE}:unpinned"
-    assert "@sha256" not in image
+    assert re.fullmatch(rf"{re.escape(_IMAGE)}@sha256:[0-9a-f]{{64}}", image), image
 
 
 def test_pod_is_locked_down() -> None:

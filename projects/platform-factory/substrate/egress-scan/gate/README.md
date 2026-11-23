@@ -3,8 +3,8 @@
 `engine-gate` is the service behind the Semgrep tier of the egress scanner
 (`semgrep.endpoint`, tier merged as #8612, off by default). It keeps a warm pool
 of single-use gVisor fork children of the engine template and sends each scan
-request to one child. State: **built and staged off**. The StatefulSet has no
-replicas and no ArgoCD source lists it. The design is
+request to one child. State: **wired, one replica**, called by the scanner in
+observe mode (see "Enable steps"). The design is
 [`../ARCHITECTURE.md`](../ARCHITECTURE.md), "Engine path" (path B).
 
 ```mermaid
@@ -61,7 +61,7 @@ under one mutex, and no two requests can get the same child.
 | If the child fails after the body left, the gate deletes it and sends the same body to the next child once, when more than `--retry-min-remaining` (120 ms) is left. | A dead or spent child holds nothing the next one needs. Both children belong to the gate. |
 | An empty pool is path A: create and fork now, at most `--max-fallback` (2) at once, only with `--fallback-min-remaining` (200 ms) left. After a failed create, path A is refused for `--fail-fast` (5 s). | One create code path, and no queue of slow creates. |
 | On SIGTERM `/readyz` fails first. After `--drain-delay` (5 s) the gate closes the scan listener, finishes the requests in flight (at most `--shutdown-grace`, 10 s) and deletes every child with its prefix. | The Service drops the pod before the listener closes, and no child is left after a normal stop. |
-| The stop takes about 15 s (drain delay and shutdown grace) plus the cleanup. | `terminationGracePeriodSeconds` must stay at 30 or more. The manifest sets 30 and `staged_test.py` asserts it. |
+| The stop takes about 15 s (drain delay and shutdown grace) plus the cleanup. | `terminationGracePeriodSeconds` must stay at 30 or more. The manifest sets 30 and `manifests_test.py` asserts it. |
 
 Admission: `--max-inflight` (4) scans at once. A fifth request waits
 `--queue-wait` (25 ms) for a slot, then gets 503.
@@ -96,7 +96,7 @@ parses untrusted bytes) has none.
   before it sends a byte. `TestAPIClientVerifiesTheServerBeforeSendingItsToken`
   proves it.
 - **The pod has no Kubernetes API access** and no Secret (see
-  `staged/statefulset.yaml`).
+  `manifests/statefulset.yaml`).
 
 Residual: an editor can create templates and egress policies in its atespace
 (ARCHITECTURE.md, "Why a separate `engine-gate`"). The compensating alert is
@@ -207,66 +207,81 @@ The ARCHITECTURE.md failure table names `engine_ready_children`,
 Here they are `children{state="waiting"}`, `pool_misses_total`,
 `requests_total{outcome="shed"}` and `child_errors_total`.
 
-## Staged manifests
+## Manifests
 
-[`staged/`](staged) holds the StatefulSet (`replicas: 0`), Service,
-ServiceAccount, network rules and admission guards. `staged/staged_test.py`
-renders them and checks the isolation rules above, and
-`../../resources/resources_test.py` fails if the wired kustomization lists them.
+[`manifests/`](manifests) holds the StatefulSet (one replica), Service,
+ServiceAccount, network rules and admission guards. `manifests/manifests_test.py`
+renders them and checks the isolation rules above. `../../resources/resources_test.py`
+lists every object that the wired render holds and checks that the image pin
+equals the Bazel image digest.
 
 | Item | Choice |
 | --- | --- |
 | Replicas | 1 in v1. The pool books 8 children, and a second replica needs its own pool. A rollout or a drain is an outage, so there is no PodDisruptionBudget: it would block drains. |
-| Service | ClusterIP `engine-gate`, port 8080. It is also the `serviceName`: the pod needs no stable DNS name. |
+| Service | ClusterIP `engine-gate`, port `scan` (8080). It is also the `serviceName`: the pod needs no stable DNS name. The scanner calls `http://engine-gate.ate-system.svc:8080/scan`. |
+| Image | `repository@digest`, pinned in `manifests/kustomization.yaml`. CI pushes the image on main, with a content-stable digest (a digest that is already published is not pushed again). The pin is the one place that is not CI-owned: `resources_test.py` fails when it differs from `//.../gate/image:image.digest`, and its failure shows the new value. A change to the gate's code or its image config updates the pin in the same PR, as for the credential plugin pin (`resources/patches/atelet-image-credentials.yaml`). Packaging the manifests as a Helm chart would let CI own it, and is not done. |
 | Resources | Request 100m CPU and 128Mi. Memory limit 256Mi. The pool pod is another change. |
 | Pod | `imagePullSecrets: ghcr-imagepull-secret` and `fsGroup: 65532` (read access to the projected files), as the live scanner and the latency Job. |
 | Egress | The ate API on 443 and the router on 8443. DNS is open to every pod by the cluster-wide default-deny. |
-| Ingress | The scanner on 8080. Prometheus on 9090, by a cluster-wide scrape rule as in `prometheus/resources/scrape-ingress.yaml`. The Prometheus egress rule and the scrape job are **not added** here: they are wiring steps. |
+| Ingress | The scanner on 8080 (`app: egress-scan`). Prometheus on 9090 (`admin`), by `prometheus-scrape-engine-gate`. |
+| Scanner side | `egress-scan-to-engine-gate` lets `app: egress-scan` pods reach `app: engine-gate` on 8080. It is the scanner's only egress rule besides DNS. |
+| Prometheus side | `prometheus/resources/network-policy.yaml` lets Prometheus reach `app: engine-gate` on 9090, and `prometheus.yml` has the job `engine-gate` (port name `admin`). |
 | Admission | `admission.yaml`: only ArgoCD (and the statefulset-controller that serves its StatefulSet) may create the ServiceAccount, the StatefulSet or a pod that runs as `engine-gate`. Same pattern as `kagent-identity-guard.yaml` (PLAT-5). |
 
-## Before enabling
+## Alerts
 
-- **Identity.** Any principal who can create a pod as ServiceAccount
-  `engine-gate` in `ate-system` gets the router identity and the editor role of
-  the atespace. `admission.yaml` blocks that. It must be wired in the same
-  change as the StatefulSet, and checked with a denied test pod.
-- **What the admission guard does not cover.** It checks the creation of a
-  ServiceAccount, a StatefulSet (and other workloads) and a pod. It does not
-  cover a TokenRequest (`serviceaccounts/token`) for `engine-gate`, nor
-  `pods/exec` and ephemeral containers in a running gate pod. RBAC covers those.
-  Before enabling, check that no `edit` or `admin` RoleBinding or
-  ClusterRoleBinding reaches `ate-system`, and that nobody holds `create` on
-  `serviceaccounts/token`, `pods/exec` or `pods/ephemeralcontainers` there.
-- **Changes go through GitOps.** An edit of the gate StatefulSet or pod goes
-  through ArgoCD. The guard denies UPDATE for every identity except ArgoCD and
-  its controllers, even `system:masters`. For break-glass, remove the binding
-  (`engine-gate-workloads` and `engine-gate-pods`), then change the object.
-- **Priority.** The router, the ate API and the scanner set no
-  `priorityClassName`, and the repo has no suitable non-system class for this
-  pod (`homelab-critical` is for the hub). The gate sets none. A class is a
-  decision for the wiring change.
-- **Node room.** The pod requests 100m CPU and 128Mi. The nodes are about 80%
-  requested. Check the room, as the pool resize does.
-- **Prometheus.** Add the egress rule for `app: engine-gate` on 9090 in
-  `prometheus/resources/network-policy.yaml` and the scrape job.
+`prometheus/resources/rules.yml`, group `engine-gate`. The alert table is in
+`projects/factory-cluster/README.md`, "Alerts".
+
+| Alert | Look at | Usual cause |
+| --- | --- | --- |
+| `EngineGateDown` | `kubectl -n ate-system get pod -l app=engine-gate`, `describe`, `logs` | Pod Pending (node room), image pull, crash. The metrics port is open to Prometheus only. |
+| `EngineGateNotReady` | The pod log: the startup cleanup (`startup cleanup failed`), the pool (`creating a waiting child failed`), the ate API | The atespace or the template is missing (run the provisioning), the seed is not ready, the ate API is down, or creates fail with no capacity. |
+| `EngineGatePoolEmpty` | `factory_engine_gate_replenish_failures_total{op}`, `factory_engine_gate_children`, the pool worker | The worker has no room (the seed and 8 children book 9 CPU), the seed is rebuilding, or the template was deleted. |
+| `EngineGateFailing` | `factory_engine_gate_requests_total{outcome}`: `shed` (raise the scanner and gate limits together), `pool_empty` and `no_worker` (as above), `router_error` (the router or its grant), `child_error` (child crashes: `child_errors_total`), `deadline` (slow engine: `send_to_result_seconds`) | See the outcome table in "What the scanner sees". |
+
+## Before merging the wiring
+
+Read-only checks, with `KUBECONFIG=~/.kube/factory-sessions.yaml`:
+
+- The provisioning Job succeeded: `kubectl -n ate-system logs job/egress-engine-provision-1 | grep '^PROVISION '` ends with `event=summary mode=apply result=ok`, and `step=seed result=ready`.
+- Node room for the pod (100m CPU, 128Mi memory): `kubectl describe nodes | grep -A8 'Allocated resources'`. On 2026-11-23 the nodes were about 98% requested; if no node has room the pod stays Pending (`EngineGateDown`).
+- No `edit` or `admin` binding reaches `ate-system`, and nobody holds `create` on `serviceaccounts/token`, `pods/exec` or `pods/ephemeralcontainers` there (the admission guard does not cover them).
+- The priority class: the router, the ate API and the scanner set none, and the repo has no suitable non-system class. The gate sets none.
+- The read login can pull the private image (see "Private image pull").
+
+## Verify the admission guard
+
+After the merge, two dry runs against the API server run its admission policies and change nothing. Run them as a user that is not ArgoCD. Each must be denied by a policy named `engine-gate-*`, not by RBAC:
+
+```bash
+export KUBECONFIG=~/.kube/factory-sessions.yaml
+kubectl -n ate-system run guard-test --image=busybox --restart=Never --dry-run=server \
+  --overrides='{"spec":{"serviceAccountName":"engine-gate","containers":[{"name":"x","image":"busybox"}]}}'
+kubectl -n ate-system create serviceaccount engine-gate --dry-run=server
+```
+
+The expected answer is `ValidatingAdmissionPolicy 'engine-gate-pods' with binding 'engine-gate-pods' denied request: Only ArgoCD may create the engine-gate ServiceAccount or run a workload as it` (and `engine-gate-serviceaccount` for the second). The `engine-gate-workloads` policy (a Deployment, DaemonSet, ReplicaSet or Job that names the ServiceAccount) has the same expression shape, and `manifests_test.py` checks it. A `Forbidden` from RBAC instead proves nothing: ask an operator to run them. A dry run that succeeds means the guard is not in force: stop and revert.
 
 ## Enable steps
 
 Each step stays off until the one before it is verified. They follow the
 rollout in ARCHITECTURE.md (step 7 and after). Every change below is its own
-PR. "Cluster effect" is what the cluster does when the PR merges.
+PR. "Cluster effect" is what the cluster does when the PR merges. Joe decided to
+skip the X gates for now and to wire the scanner in observe mode
+(ARCHITECTURE.md "Decided" 6 and 7); they run during the observe window.
 
 | # | Change | Cluster effect on merge | Joe approves |
 | --- | --- | --- | --- |
 | 1 | [`provision/`](provision): Jobs that create the atespace, its access policy and the template `engine`, or remove them (teardown) | None when it merged: not wired, suspended | Nothing at merge |
 | 2 | Router grant: `spiffe://cluster.local/ns/ate-system/sa/engine-gate` in `atenetRouter.ingressAllowedSPIFFEIDs` (`values/substrate.yaml`) | Added to the router ConfigMap (merged, #8627) | Approved (Joe, 2026-11-23, session; Decided 6) |
 | 3 | Wire `provision/` into `resources/` with `egress-engine-provision-1` not suspended | Creates the atespace, the policy and the template, once. The worker pins the atespace at the first seed, so the pool pod must have restarted before | Joe merges it (Decided 6), after the pool restart |
-| 4 | Wire the gate (`staged/`), its image pin, the Prometheus rules and the observe-mode switch of the scanner | Starts the gate, then the scanner calls it in observe mode | Yes |
-| 5 | Check: `/readyz` is 200, `children{state="waiting"}` is 2, and a test request through `POST /scan` returns the engine JSON | None | |
+| 4 | Wire the gate (`manifests/`), its image pin, the Prometheus job, rules and egress rule, and the observe-mode switch of the scanner | Starts the gate (one pod, 2 children), its network rules and the admission guard, and rolls the scanner pods (2) with `semgrep.mode=observe`. The scanner calls the gate off the request path. Replies do not change | Yes |
+| 5 | Check (below) | None | |
 
-**When to run step 3.** After the pool pod restart (it clears the atespace pin
-of the conformance run) and before step 4 (the gate has nothing to claim until
-the seed of the template is ready). Step 4 merges only after the Job succeeded.
+**Order.** Provisioning script hardening (#8631), then step 3, whose Job must
+succeed, then step 4. Step 3 comes after the pool pod restart and before step 4:
+the gate has nothing to claim until the seed of the template is ready.
 
 **Verify step 3** (read-only):
 
@@ -284,15 +299,47 @@ the worker and seed state. On a failure the log names the call that failed. A
 Job's pod template is immutable: to run it again, bump the suffix in the name
 (and in `resources_test.py`), and the same for any edit under `provision/`.
 
+**What step 4 does, in order.** ArgoCD applies the `substrate` Application: the
+admission guard and the network rules, the ServiceAccount and the Service, then
+the StatefulSet (the pod pulls the image, deletes its leftovers, creates and
+forks 2 children, and turns Ready), and the scanner Deployment rolls to the new
+arguments (`--semgrep-enabled`, observe mode, 300 ms, concurrency 2, body limit
+64 KiB). The gateway timeout stays 80 ms. The scanner and the gate do not wait
+for each other: until the gate is Ready, the scanner counts `error` outcomes of
+the tier and no reply changes.
+
+**Verify step 4** (read-only):
+
+```bash
+export KUBECONFIG=~/.kube/factory-sessions.yaml
+kubectl -n ate-system get statefulset engine-gate               # READY 1/1
+kubectl -n ate-system get pod -l app=engine-gate -o wide
+kubectl -n ate-system logs statefulset/engine-gate | tail -20   # JSON lines, no bodies
+kubectl -n ate-system get pod -l app=egress-scan -o jsonpath='{.items[*].spec.containers[0].args}'
+```
+
+Then in Prometheus (or Grafana Explore):
+
+- `factory_engine_gate_children{state="waiting"}` is 2 and `up{job="engine-gate"}` is 1.
+- `rate(factory_engine_gate_requests_total{outcome="ok"}[5m])` rises with traffic, and the failing outcomes stay near zero.
+- `factory_egress_scan_semgrep_observe_total` moves (`no_change` most of the time) and `factory_egress_scan_semgrep_observe_mode` is 1.
+- `kubectl -n ate-system get pod -l app=engine-gate` shows no restarts, and the admission dry runs above are denied.
+
+**Rollback.** In one PR: set `semgrep.enabled: false` in
+`egress-scan/deploy/application.yaml` (the scanner stops calling the gate and the
+render is the old one), and remove `../egress-scan/gate/manifests` from
+`resources/kustomization.yaml` (ArgoCD prunes the StatefulSet, which deletes its
+children on SIGTERM, the Service, the policies and the guard). The atespace, the
+policy and the template stay until the teardown Job runs (below). To pause the
+gate only, set `replicas: 0` in `manifests/statefulset.yaml`. Delete the template
+only after the scanner stopped calling the gate.
+
 **Provisioning Jobs.** `egress-engine-provision-1` runs `provision.py` with
 `MODE=apply`. It waits for an ACTIVE worker of the pool, then makes the three
 objects, each only if it is not there, and waits for a ready seed. Run it again
 at any time: an object that exists is left alone, an access policy without the
-editor member gets it added (the other bindings stay), and a template with
-another image is an error, because a template is replaced blue/green. Read the
-run with `kubectl -n ate-system logs job/egress-engine-provision-1 | grep '^PROVISION '`.
-A Job's pod template is immutable, so to run again change the number in the
-name.
+editor member gets it added (the other bindings stay), and a template that
+differs in any value is an error, because a template is replaced blue/green.
 
 **Teardown.** Stop the gate first (`replicas: 0`: it deletes its children on
 SIGTERM). Then list `provision/teardown-job.yaml` in `provision/kustomization.yaml`
