@@ -129,7 +129,7 @@ longer gate the merges:
 1. `atenet-router.ingressAllowedSPIFFEIDs` in
    `projects/platform-factory/substrate/values/substrate.yaml`: add
    `spiffe://cluster.local/ns/ate-system/sa/engine-gate`. This allows the gate
-   to send a request to any actor. The change rolls the router.
+   to send a request to any actor. The router needs no restart: agentgateway reloads the ConfigMap (observed on 2026-11-23 at 22:01:00Z).
 2. As a global owner (`ate-client`): create the atespace `egress-scan-engine`
    and its access policy, with the binding below. An editor cannot create the
    fork template (`can_create_fork_template` needs a global owner), so the
@@ -245,7 +245,7 @@ equals the Bazel image digest.
 Read-only checks, with `KUBECONFIG=~/.kube/factory-sessions.yaml`:
 
 - The provisioning Job succeeded: `kubectl -n ate-system logs job/egress-engine-provision-1 | grep '^PROVISION '` ends with `event=summary mode=apply result=ok`, and `step=seed result=ready`.
-- Node room for the pod (100m CPU, 128Mi memory): `kubectl describe nodes | grep -A8 'Allocated resources'`. On 2026-11-23 the nodes were about 98% requested; if no node has room the pod stays Pending (`EngineGateDown`).
+- Node room for the pod (100m CPU, 128Mi memory): `kubectl describe nodes | grep -A8 'Allocated resources'`. If no node has room the pod stays Pending (`EngineGateDown`).
 - No `edit` or `admin` binding reaches `ate-system`, and nobody holds `create` on `serviceaccounts/token`, `pods/exec` or `pods/ephemeralcontainers` there (the admission guard does not cover them).
 - The priority class: the router, the ate API and the scanner set none, and the repo has no suitable non-system class. The gate sets none.
 - The read login can pull the private engine image (see "Private image pull"), and the gate image exists: `crane manifest ghcr.io/jomcgi/homelab/projects/platform-factory/substrate/egress-scan/gate@sha256:7cb0f51e767b45eb75de72e75d2788eb7d7d1603b525ea807bfb4da6102e0f83` with the same login resolves (the package is private; main's CI pushed the image when the gate image merged, and the digest is the Bazel image digest that `resources_test.py` checks).
@@ -299,14 +299,28 @@ the worker and seed state. On a failure the log names the call that failed. A
 Job's pod template is immutable: to run it again, bump the suffix in the name
 (and in `resources_test.py`), and the same for any edit under `provision/`.
 
-**What step 4 does, in order.** ArgoCD applies the `substrate` Application: the
-admission guard and the network rules, the ServiceAccount and the Service, then
-the StatefulSet (the pod pulls the image, deletes its leftovers, creates and
-forks 2 children, and turns Ready), and the scanner Deployment rolls to the new
-arguments (`--semgrep-enabled`, observe mode, 300 ms, concurrency 2, body limit
-64 KiB). The gateway timeout stays 80 ms. The scanner and the gate do not wait
-for each other: until the gate is Ready, the scanner counts `error` outcomes of
-the tier and no reply changes.
+**What step 4 does.** ArgoCD applies the `substrate` Application: the admission
+guard, the network rules, the ServiceAccount, the Service and the StatefulSet
+(the pod pulls the image, deletes its leftovers, creates and forks 2 children, and
+turns Ready), and the scanner Deployment rolls to the new arguments
+(`--semgrep-enabled`, observe mode, 300 ms, concurrency 2, body limit 64 KiB).
+There is no sync-wave order between the guard and the StatefulSet, and none is
+needed: the guard exempts ArgoCD and the statefulset-controller. The gateway
+timeout stays 80 ms. The scanner and the gate do not wait for each other: until
+the gate is Ready, the scanner counts `error` outcomes of the tier and no reply
+changes.
+
+The scanner is called by the egress gateway for the Hindsight route only
+(`resources/atenet-egress-config.yaml`, `hindsight-api.hindsight.svc:8888`), not
+for all egress. So the gate sees the text of Hindsight requests, and the 7 days of
+observe data describe that traffic only.
+
+**Reading `would_fail`.** In observe mode `observe_total{result="would_fail"}`
+counts every call that gave no verdict, and that includes `shed`: each scanner
+pod admits 2 calls, a rolling update runs up to 3 pods (6 slots) against the
+gate's 4 in flight, so a roll can shed. Read
+`factory_egress_scan_semgrep_requests_total{outcome}` to separate `shed` from
+`error` and `timeout` in the 7-day analysis.
 
 **Verify step 4** (read-only):
 
@@ -327,12 +341,21 @@ Then in Prometheus (or Grafana Explore):
 
 **Rollback.** In one PR: set `semgrep.enabled: false` in
 `egress-scan/deploy/application.yaml` (the scanner stops calling the gate and the
-render is the old one), and remove `../egress-scan/gate/manifests` from
+render is the old one), remove `../egress-scan/gate/manifests` from
 `resources/kustomization.yaml` (ArgoCD prunes the StatefulSet, which deletes its
-children on SIGTERM, the Service, the policies and the guard). The atespace, the
-policy and the template stay until the teardown Job runs (below). To pause the
-gate only, set `replicas: 0` in `manifests/statefulset.yaml`. Delete the template
-only after the scanner stopped calling the gate.
+children on SIGTERM, the Service, the policies and the guard), and remove the
+`engine-gate` alert group (`rules.yml`, `rules_test.yml`) and the scrape job
+(`prometheus.yml`) with Prometheus's egress rule: with no pod `EngineGateDown`
+would fire for good. The atespace, the policy and the template stay until the
+teardown Job runs (below). To pause the gate only, set `replicas: 0` in
+`manifests/statefulset.yaml` (the alerts then fire, so silence them). Delete the
+template only after the scanner stopped calling the gate.
+
+**Restarting the gate.** The admission guard denies `kubectl rollout restart
+statefulset/engine-gate` (an update of the StatefulSet) for anyone but ArgoCD.
+To restart, delete the pod: `kubectl -n ate-system delete pod engine-gate-0` (the
+StatefulSet controller makes it again; the gate deletes its children on SIGTERM
+and the new pod cleans up what is left). To change the spec, change git.
 
 **Provisioning Jobs.** `egress-engine-provision-1` runs `provision.py` with
 `MODE=apply`. It waits for an ACTIVE worker of the pool, then makes the three
