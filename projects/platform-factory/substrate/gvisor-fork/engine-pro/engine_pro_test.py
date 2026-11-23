@@ -1068,6 +1068,8 @@ def test_canary_script_never_reads_the_build_directory_or_the_token() -> None:
 
 class FakeSemgrep(http.server.BaseHTTPRequestHandler):
     calls: list[tuple[str, str]] = []
+    agents: list[tuple[str, str]] = []
+    version = "1.186.0"
     binary = b"\x7fELF" + b"p" * 2000
 
     def log_message(self, *args) -> None:
@@ -1075,6 +1077,19 @@ class FakeSemgrep(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         FakeSemgrep.calls.append((self.path, self.headers.get("Authorization", "")))
+        agent = self.headers.get("User-Agent", "")
+        FakeSemgrep.agents.append((self.path.split("?")[0], agent))
+        # Like the real API: the Semgrep version comes from the User-Agent. Any other
+        # agent gets HTTP 400, whatever the query says. (The real engine download
+        # accepted another agent; the fake is stricter on purpose.)
+        if agent != f"Semgrep/{FakeSemgrep.version}":
+            body = b'{"error":"Invalid Semgrep Version"}'
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.headers.get("Authorization") != f"Bearer {FAKE_TOKEN}":
             self.send_response(401)
             self.end_headers()
@@ -1154,16 +1169,17 @@ def test_fetch_downloads_with_the_header_only_and_writes_no_token(
         # plain http by calling the lower level pieces with the fake base URL.
         with pytest.raises(SystemExit, match="not https"):
             fetch.open_url(
-                f"http://127.0.0.1:{server.server_port}/x", FAKE_TOKEN, "*/*"
+                f"http://127.0.0.1:{server.server_port}/x", FAKE_TOKEN, "*/*", "1.186.0"
             )
         base = f"http://127.0.0.1:{server.server_port}"
         original = fetch.open_url
 
-        def http_open(url: str, token: str, accept: str):
+        def http_open(url: str, token: str, accept: str, version: str):
             import urllib.request
 
-            req = urllib.request.Request(url, headers={"Accept": accept})
-            req.add_unredirected_header("Authorization", f"Bearer {token}")
+            # The request is the real one (headers and User-Agent); only the scheme
+            # differs, because the fake server speaks plain http.
+            req = fetch.build_request(url, token, accept, version)
             return urllib.request.build_opener(fetch.KeepAuthOnSameHost).open(
                 req, timeout=10
             )
@@ -1189,6 +1205,12 @@ def test_fetch_downloads_with_the_header_only_and_writes_no_token(
             for p, _ in FakeSemgrep.calls
         )
         assert calls  # both endpoints were called
+        # Both downloads send the User-Agent of the Semgrep CLI for the pinned version.
+        agents = dict(FakeSemgrep.agents)
+        assert agents == {
+            "/api/agent/deployments/deepbinary/manylinux-x86": "Semgrep/1.186.0",
+            "/api/agent/deployments/scans/config": "Semgrep/1.186.0",
+        }
         # A wrong token ends with the status and without the token.
         with pytest.raises(SystemExit) as err:
             fetch.download_binary(
@@ -1206,6 +1228,70 @@ def test_fetch_downloads_with_the_header_only_and_writes_no_token(
             )
     finally:
         server.shutdown()
+
+
+def test_the_rules_call_needs_the_semgrep_user_agent_and_a_400_prints_a_hint_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real API answers 400 "Invalid Semgrep Version" to the rules call unless the
+    User-Agent is Semgrep/<version>. The first real run found it, because the fake did
+    not check it. A mutation that reverts the agent must fail here."""
+    fetch = load(HERE / "fetch-pro.py", "fetch_pro_agent")
+    server = http.server.HTTPServer(("127.0.0.1", 0), FakeSemgrep)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+
+    def http_open(url: str, token: str, accept: str, version: str):
+        import urllib.request
+
+        req = fetch.build_request(url, token, accept, version)
+        return urllib.request.build_opener(fetch.KeepAuthOnSameHost).open(
+            req, timeout=10
+        )
+
+    try:
+        monkeypatch.setattr(fetch, "open_url", http_open)
+        # The request builder sends Semgrep/<version>, for any version.
+        req = fetch.build_request("https://semgrep.dev/x", FAKE_TOKEN, "*/*", "1.200.1")
+        assert req.get_header("User-agent") == "Semgrep/1.200.1"
+        assert fetch.user_agent("1.186.0") == "Semgrep/1.186.0"
+        # With the right agent the call works (the test above checks the content).
+        _, count = fetch.download_rules(
+            base, "1.186.0", FAKE_TOKEN, tmp_path / "ok.json"
+        )
+        assert count == 3
+        # With any other agent the fake answers 400 like the API, and the script prints
+        # the status and the hint, never the body.
+        monkeypatch.setattr(
+            fetch, "user_agent", lambda version: "substrate-fork-engine-pro"
+        )
+        for call in (
+            lambda: fetch.download_rules(
+                base, "1.186.0", FAKE_TOKEN, tmp_path / "x.json"
+            ),
+            lambda: fetch.download_binary(
+                base, "manylinux-x86", "1.186.0", FAKE_TOKEN, tmp_path / "x"
+            ),
+        ):
+            with pytest.raises(SystemExit) as err:
+                call()
+            message = str(err.value)
+            assert "HTTP 400" in message
+            assert "check the User-Agent Semgrep/1.186.0 and semgrep_version" in message
+            assert "Invalid Semgrep Version" not in message, "the body is not printed"
+            assert FAKE_TOKEN not in message
+        # The pinned version is the one the fake wants, and the pins file names it.
+        assert pins()["SEMGREP_VERSION"] == FakeSemgrep.version
+    finally:
+        server.shutdown()
+
+
+def test_both_downloads_take_the_agent_from_the_pinned_version() -> None:
+    source = (HERE / "fetch-pro.py").read_text()
+    assert source.count("open_url(url, token, accept, version)") == 1
+    assert 'get(url, token, "application/json", "rules download", version)' in source
+    assert "substrate-fork-engine-pro" not in source, "no custom User-Agent is left"
 
 
 def test_fetch_stops_without_a_token_and_never_prints_it(tmp_path: Path) -> None:

@@ -274,12 +274,16 @@ of the template in the same change that uses it.
   other than gzip (zstd, for example), which it reads as plain bytes. The main
   defence is that no step writes the token anywhere: only `fetch-pro.py`
   reads it, and the layer build refuses to run with it in the environment.
-- **`fetch-pro.py` is not tested against the real Semgrep.** The header
+- **`fetch-pro.py` is only tested against a fake Semgrep.** The header
   (`Authorization: Bearer <token>`) and the two endpoints are copied from the
   Semgrep CLI of the pinned version (`install-semgrep-pro` and the scan
-  configuration call). The test uses a local fake of both. The first workflow
-  run is the first real call. The download uses the standard library, not
-  `semgrep login`, so the token never goes to `~/.semgrep/settings.yml`.
+  configuration call). The first real run (dry run 45260867821) found a gap in
+  the fake: **the Semgrep API requires the Semgrep User-Agent.** It reads the
+  version from `User-Agent: Semgrep/<version>`, and the rules call answers HTTP
+  400 `Invalid Semgrep Version` to any other agent, whatever `semgrep_version`
+  says. Both downloads now send it, and the fake answers 400 like the API. The
+  download uses the standard library, not `semgrep login`, so the token never
+  goes to `~/.semgrep/settings.yml`.
 - **The delete is best effort** (see "Publish and the private package").
 - **The job log is public.** It shows sizes, hashes, the findings count and the
   rule count. A failed smoke run shows the HTTP status and the length of the
