@@ -58,6 +58,7 @@ var (
 	errEngineTooLarge   = errors.New("engine response exceeds the size limit")
 	errEngineGarbage    = errors.New("engine response is not a scan result")
 	errEngineIncomplete = errors.New("engine reported a scan error")
+	errEnginePanic      = errors.New("engine panicked")
 )
 
 // Finding is one engine result. It holds the rule id and the position in the
@@ -340,8 +341,28 @@ func newSemgrepTier(cfg semgrepConfig, engine Engine) (*semgrepTier, error) {
 // the goroutine never blocks if the caller stops reading.
 func (t *semgrepTier) start(ctx context.Context, payload []byte, bodyLen int) <-chan engineResult {
 	done := make(chan engineResult, 1)
-	go func() { done <- t.run(ctx, payload, bodyLen) }()
+	go func() {
+		// run recovers an Engine panic. This is the last guard: a panic in a
+		// goroutine would end the whole scanner and deny all egress.
+		defer func() {
+			if recover() != nil {
+				done <- engineResult{outcome: engineError, err: errEnginePanic}
+			}
+		}()
+		done <- t.run(ctx, payload, bodyLen)
+	}()
 	return done
+}
+
+// scan calls the engine and turns a panic into an error. The panic value is
+// dropped: it can hold part of the body.
+func (t *semgrepTier) scan(ctx context.Context, payload []byte) (verdict Verdict, err error) {
+	defer func() {
+		if recover() != nil {
+			verdict, err = Verdict{}, errEnginePanic
+		}
+	}()
+	return t.engine.Scan(ctx, payload)
 }
 
 func (t *semgrepTier) run(ctx context.Context, payload []byte, bodyLen int) engineResult {
@@ -369,7 +390,7 @@ func (t *semgrepTier) call(ctx context.Context, payload []byte, bodyLen int) eng
 
 	callCtx, cancel := context.WithTimeout(ctx, t.cfg.Deadline)
 	defer cancel()
-	verdict, err := t.engine.Scan(callCtx, payload)
+	verdict, err := t.scan(callCtx, payload)
 	switch {
 	case err == nil:
 		t.breaker.success()
@@ -446,7 +467,7 @@ func (t *semgrepTier) logFailure(res engineResult) {
 // from the response.
 func errorKind(err error) string {
 	switch {
-	case errors.Is(err, errEngineStatus), errors.Is(err, errEngineTooLarge), errors.Is(err, errEngineGarbage), errors.Is(err, errEngineIncomplete):
+	case errors.Is(err, errEngineStatus), errors.Is(err, errEngineTooLarge), errors.Is(err, errEngineGarbage), errors.Is(err, errEngineIncomplete), errors.Is(err, errEnginePanic):
 		return err.Error()
 	}
 	var urlErr *url.Error
