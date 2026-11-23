@@ -55,7 +55,7 @@ tests:
               threshold: "0.78"
               runbook: "https://factory-runbooks.jomcgi.dev/NodeDiskCritical"
               summary: "node-1's root filesystem is 84.21% full by df (threshold 78%)"
-              description: 'The kubelet taints the node at about 80% by df. Runbook: projects/factory-cluster/README.md, "Alerts".'
+              description: 'The disk-pressure taint was observed at about 80% by df. Runbook: projects/factory-cluster/README.md, "Alerts".'
       - eval_time: 20m
         alertname: NodeDiskFilling
         exp_alerts:
@@ -68,7 +68,7 @@ tests:
               threshold: "0.72"
               runbook: "https://factory-runbooks.jomcgi.dev/NodeDiskFilling"
               summary: "node-1's root filesystem is 84.21% full by df (threshold 72%)"
-              description: 'The kubelet adds the disk-pressure taint at about 80% by df, and then no new pod starts on the node. Image garbage collection starts at 85% and the kubelet evicts pods at 90% (the same file). Runbook: projects/factory-cluster/README.md, "Alerts".'
+              description: 'The disk-pressure taint was observed at about 80% by df, and then no new pod starts on the node. Image garbage collection starts at 85% and the kubelet evicts pods at 90% (the same file). Runbook: projects/factory-cluster/README.md, "Alerts".'
           - exp_labels:
               severity: warning
               node: node-3
@@ -78,7 +78,7 @@ tests:
               threshold: "0.72"
               runbook: "https://factory-runbooks.jomcgi.dev/NodeDiskFilling"
               summary: "node-3's root filesystem is 75.79% full by df (threshold 72%)"
-              description: 'The kubelet adds the disk-pressure taint at about 80% by df, and then no new pod starts on the node. Image garbage collection starts at 85% and the kubelet evicts pods at 90% (the same file). Runbook: projects/factory-cluster/README.md, "Alerts".'
+              description: 'The disk-pressure taint was observed at about 80% by df, and then no new pod starts on the node. Image garbage collection starts at 85% and the kubelet evicts pods at 90% (the same file). Runbook: projects/factory-cluster/README.md, "Alerts".'
       - eval_time: 20m
         alertname: NodeDiskCritical
         exp_alerts:
@@ -91,7 +91,7 @@ tests:
               threshold: "0.78"
               runbook: "https://factory-runbooks.jomcgi.dev/NodeDiskCritical"
               summary: "node-1's root filesystem is 84.21% full by df (threshold 78%)"
-              description: 'The kubelet taints the node at about 80% by df. Runbook: projects/factory-cluster/README.md, "Alerts".'
+              description: 'The disk-pressure taint was observed at about 80% by df. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
   # The disk-pressure condition or taint fires after 2 min, once per node. A
   # node with the condition false and no taint, and a taint with another

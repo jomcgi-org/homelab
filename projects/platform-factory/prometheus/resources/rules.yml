@@ -33,7 +33,7 @@ groups:
           runbook: "https://factory-runbooks.jomcgi.dev/NodeDiskFilling"
           summary: "{{ $labels.node }}'s root filesystem is {{ $value | humanizePercentage }} full by df (threshold 72%)"
           description: >-
-            The kubelet adds the disk-pressure taint at about 80% by df, and
+            The disk-pressure taint was observed at about 80% by df, and
             then no new pod starts on the node. Image garbage collection
             starts at 85% and the kubelet evicts pods at 90% (the same file).
             Runbook: projects/factory-cluster/README.md, "Alerts".
@@ -53,7 +53,7 @@ groups:
           runbook: "https://factory-runbooks.jomcgi.dev/NodeDiskCritical"
           summary: "{{ $labels.node }}'s root filesystem is {{ $value | humanizePercentage }} full by df (threshold 78%)"
           description: >-
-            The kubelet taints the node at about 80% by df. Runbook:
+            The disk-pressure taint was observed at about 80% by df. Runbook:
             projects/factory-cluster/README.md, "Alerts".
       # kube-state-metrics reports the kubelet's DiskPressure condition and
       # the taint that the node lifecycle controller adds with it. Either one
