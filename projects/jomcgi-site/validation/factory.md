@@ -10,26 +10,26 @@ The [registry](../web/src/pages.tsx) and [Vite entries](../web/vite.config.ts) b
 descendants. [App.test.tsx](../web/src/factory/App.test.tsx) hydrates the site's
 registered shell at all four fixture routes, with no recoverable hydration errors.
 
-| Route | Content in [Pages.tsx](../web/src/factory/Pages.tsx) | Fixture assertion in [App.test.tsx](../web/src/factory/App.test.tsx) |
-| --- | --- | --- |
-| `/factory` | `StoryPage`: headline, goal chapters and progress, stats, four charts, work in progress and recently shipped | Four chart tables, unknown stat substitution and both work lists |
-| `/factory/goals/reading-list` | `GoalPage`: chapter, issues by state and burn-up | Every issue state, burn-up, and the empty `quiet-shelf` goal |
-| `/factory/issues/DEMO-104` | `IssuePage`: creation, turns, PR, reviews, checks, queue and merge in one timeline | Both review rounds, failed and passed checks, queue entry, PR and session links |
-| `/factory/sessions/demo-build` | `SessionPage`: transcript, folded tools and inline diffs | 28 turns, withheld content, closed tool details and the literal diff |
+| Route                          | Content in [Pages.tsx](../web/src/factory/Pages.tsx)                                                         | Fixture assertion in [App.test.tsx](../web/src/factory/App.test.tsx)            |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| `/factory`                     | `StoryPage`: headline, goal chapters and progress, stats, four charts, work in progress and recently shipped | Four chart tables, unknown stat substitution and both work lists                |
+| `/factory/goals/reading-list`  | `GoalPage`: chapter, issues by state and burn-up                                                             | Every issue state, burn-up, and the empty `quiet-shelf` goal                    |
+| `/factory/issues/DEMO-104`     | `IssuePage`: creation, turns, PR, reviews, checks, queue and merge in one timeline                           | Both review rounds, failed and passed checks, queue entry, PR and session links |
+| `/factory/sessions/demo-build` | `SessionPage`: transcript, folded tools and inline diffs                                                     | 28 turns, withheld content, closed tool details and the literal diff            |
 
 The [reader](../web/src/factory/data.ts) validates HOME-68 schema and hashes,
 fetches `/data/factory/` on this origin and polls the manifest every 60 seconds.
 
 ## Criterion 1: fixture and contract tests
 
-| Required case | Checkable assertion |
-| --- | --- |
-| Every page renders from fixtures | `App.test.tsx`, `hydrates the site's pre-rendered Factory shell from fixtures at %s`, checks all four headings and document titles. [schema.test.tsx](../web/src/factory/schema.test.tsx) checks every fixture, hash and cross-link. |
-| Unknown stat placeholder | [data.test.tsx](../web/src/factory/data.test.tsx), `fills repeated, zero and fractional stats and uses a dash for unknown keys`, checks exact output. |
-| Malformed object preserves other content | `App.test.tsx`, `shows a malformed issue inline and keeps sibling issues visible`, requires `Issue DEMO-101 not available.` and the valid DEMO-104 link together. |
-| Script-looking fixture text stays text | `App.test.tsx`, `renders withheld turns, folded tool calls and inline diffs as text`, requires the literal `<script>alert("fixture")</script>` and no script element. |
-| Axe on each page | [contracts.test.tsx](../web/src/factory/contracts.test.tsx) checks the four fixture routes in both themes, with chart tables and tool details open. |
-| CSP and palette | `contracts.test.tsx` rejects inline style elements and attributes and checks `style-src 'self'`. [contrast.test.tsx](../web/src/contrast.test.tsx) scans nested CSS and TypeScript, restricts colours to `palette.css`, and checks both themes' token contrast. |
+| Required case                            | Checkable assertion                                                                                                                                                                                                                                             |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Every page renders from fixtures         | `App.test.tsx`, `hydrates the site's pre-rendered Factory shell from fixtures at %s`, checks all four headings and document titles. [schema.test.tsx](../web/src/factory/schema.test.tsx) checks every fixture, hash and cross-link.                            |
+| Unknown stat placeholder                 | [data.test.tsx](../web/src/factory/data.test.tsx), `fills repeated, zero and fractional stats and uses a dash for unknown keys`, checks exact output.                                                                                                           |
+| Malformed object preserves other content | `App.test.tsx`, `shows a malformed issue inline and keeps sibling issues visible`, requires `Issue DEMO-101 not available.` and the valid DEMO-104 link together.                                                                                               |
+| Script-looking fixture text stays text   | `App.test.tsx`, `renders withheld turns, folded tool calls and inline diffs as text`, requires the literal `<script>alert("fixture")</script>` and no script element.                                                                                           |
+| Axe on each page                         | [contracts.test.tsx](../web/src/factory/contracts.test.tsx) checks the four fixture routes in both themes, with chart tables and tool details open.                                                                                                             |
+| CSP and palette                          | `contracts.test.tsx` rejects inline style elements and attributes and checks `style-src 'self'`. [contrast.test.tsx](../web/src/contrast.test.tsx) scans nested CSS and TypeScript, restricts colours to `palette.css`, and checks both themes' token contrast. |
 
 [`web:test`](../web/BUILD) includes these tests and fixture inputs. Axe disables
 `color-contrast` in happy-dom; token contrast has separate assertions.
@@ -66,4 +66,5 @@ Against merge base `3539b94077e00547fad230e769fcf768d2b142cc`, `edge/routes.json
 Factory remains `live: false`; HOME-213 supplies data and HOME-225 activates routes.
 The goal and criterion 4 remain pending: after dev rollout, the delivery owner checks
 `https://next.jomcgi.dev/factory` and `https://next.jomcgi.dev/factory/goals/x`
-for HTTP 200 and the rendered shell with unavailable states.
+for HTTP 200 and the rendered shell: each section heading, with a quiet
+placeholder while the snapshot loads and "not available" after a failure.

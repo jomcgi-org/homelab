@@ -447,7 +447,7 @@ the same on a phone and a desktop:
 | Ground | A near-white page (`--color-background-body`). A surface is white. |
 | Lines | Hairlines (`--color-border`) separate rows and outline a panel. Nothing is boxed in ink. Corners are soft (`--radius-*`). |
 | Type | Inter, self-hosted (`web/src/assets/fonts`, SIL OFL 1.1). Size and tight tracking carry the hierarchy: title (`h1`, 2rem to 3.25rem, semibold), section (`h2`, 1.25rem), heading (`h3`, 1rem), body (1rem / 1.6), small (0.875rem). A page sets no heading size of its own. |
-| Colour | Ink for text, links and selected controls. Blue is the one accent: the focus ring. |
+| Colour | Ink for text, links and selected controls. Blue is the one accent: the focus ring, and on Factory the mark for work in review and work in progress. |
 | Space | The page gutter is 1rem on a phone and 1.5rem above it. The title is the first thing under the nav. On a phone, secondary navigation becomes one row so it does not push the title down. |
 | Nav | One row of quiet links. A group with more than three links folds into one menu. |
 | Loading | A page shows its value on arrival. Maps, the hike planner and the full star forecast load without a click. A map holds its space while it loads. On Hikes the published walks fold away when the planner arrives. A button shows only to retry a failure. Star history waits for the Historical view. A blog recording loads as it nears the screen. |
@@ -479,8 +479,19 @@ numbers come from the story's named stats. Unknown stats show an en dash.
 
 Vite serves the invented fixtures on `/data/factory/` in development. Tests
 use the same files. Production builds include no fixtures and show unavailable
-states until HOME-213 publishes snapshots. SVG charts have value tables;
-the layout uses the shared light/dark palette and 16px phone gutters.
+states until HOME-213 publishes snapshots. Charts use the shared chart
+library and have value tables. Per-issue and per-PR measurements show as
+counts in fixed columns, with the median in the caption. Issue and transcript
+text renders a Markdown subset as elements, and links only this repository.
+The story opens with a statement and the floor: one square for each issue,
+coloured by state, linked to that issue. Each measure is one row: a sentence
+written from the snapshot, then its chart. The exporter's narrative shows
+when the snapshot has one.
+The Factory pages use the site look (see "Site look" below). On the floor a
+shipped issue is solid ink and work in review is solid blue. Work in
+progress is a blue outline and stopped work is a grey outline
+(`--factory-*` in `palette.css`), so shape tells the states apart as well as
+colour. Each mark meets 3:1 on every background and has its name beside it.
 
 The [Factory acceptance evidence](validation/factory.md) maps each required
 case to its test and records the local commands and results.

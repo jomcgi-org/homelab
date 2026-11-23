@@ -169,6 +169,8 @@ const ROLES: Record<string, Role> = {
   "--color-stars-low": "non-text",
   "--color-stars-mid": "non-text",
   "--color-stars-high": "non-text",
+  "--factory-review": "non-text",
+  "--factory-stopped": "non-text",
   "--color-accent": "non-text",
   "--color-on-accent": "on-accent",
   "--color-text-accent": "text",
