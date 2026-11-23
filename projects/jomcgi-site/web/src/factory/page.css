@@ -1,7 +1,7 @@
-/* Factory pages. One system: warm paper, ink outlines, white panels, a flat
- * fill for each state, and upper-case display type. A coloured band marks
- * the measures. Body text never sits on a state fill: the fills have no
- * text contrast in dark mode. */
+/* Factory pages. One system: warm paper, open space, white panels with no
+ * outline, upper-case display type, and one flat fill for each state. The
+ * fills are loud on the dark floor and carry no text. A coloured band marks
+ * the measures. */
 @font-face {
   font-family: "Schibsted Grotesk";
   src: url("../../../../monolith/frontend/preview/fonts/SchibstedGrotesk.ttf")
@@ -119,8 +119,7 @@ body:has(.factory) {
   color: var(--color-text-secondary);
 }
 
-/* Panels: white, with an ink outline. */
-.factory .floor-grid,
+/* Panels: a white surface on the paper. No outline. */
 .factory .chapters,
 .factory .measures,
 .factory .records,
@@ -129,7 +128,6 @@ body:has(.factory) {
 .factory #transcript,
 .factory .record-lead .text {
   background: var(--color-background-body);
-  border: 2px solid var(--color-text-primary);
 }
 
 /* Notices and missing records */
@@ -140,10 +138,7 @@ body:has(.factory) {
   font-size: 0.875rem;
   white-space: pre-wrap;
   background: var(--color-background-body);
-  border: 2px solid var(--color-text-primary);
-}
-.factory .records .unavailable {
-  border-width: 2px 0 0;
+  border-left: 4px solid var(--factory-sun);
 }
 
 /* Breadcrumb and transcript jumps */
@@ -277,15 +272,15 @@ body:has(.factory) {
   position: absolute;
   inset: 0 -100vw;
   z-index: -1;
-  background: var(--factory-sky);
-  border-block: 2px solid var(--color-text-primary);
+  background: var(--factory-band);
 }
 .factory #factory-content {
   position: relative;
   z-index: 0;
 }
 
-/* State: an outlined square in the state's fill, and a word. */
+/* State: a small square in the state's fill, and a word. On a light
+ * surface the square keeps a thin edge so a pale fill stays visible. */
 .factory .state {
   display: inline-flex;
   align-items: center;
@@ -298,66 +293,67 @@ body:has(.factory) {
   flex: none;
   width: 0.75rem;
   height: 0.75rem;
-  background: var(--factory-sky);
-  border: 1.5px solid var(--color-text-primary);
+  background: var(--factory-coral);
+  box-shadow: inset 0 0 0 1px var(--color-text-primary);
 }
 .factory .state[data-state="Working"]::before,
 .factory .floor-key [data-state="Working"]::before {
-  background: var(--factory-sun);
+  background: var(--factory-sky);
 }
 .factory .state[data-state="Shipped"]::before,
 .factory .floor-key [data-state="Shipped"]::before {
-  background: var(--factory-mint);
+  background: var(--factory-sun);
 }
 .factory .state[data-state="In merge queue"]::before,
 .factory .floor-key [data-state="In merge queue"]::before {
-  background: var(--color-text-primary);
+  background: var(--color-background-body);
 }
 .factory .state[data-state="Stopped"]::before,
 .factory .floor-key [data-state="Stopped"]::before {
-  background: none;
+  background: var(--factory-idle);
 }
 
-/* The floor: a square for each issue, in its state's fill. */
+/* The floor: a dark field with a square for each issue, in its state's
+ * fill. Shipped is the sun; work in review is coral. */
 .factory .floor {
   margin-top: 2rem;
 }
 .factory .floor-grid {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  padding: 1.25rem;
+  gap: 3px;
+  padding: 1.5rem;
+  background: var(--factory-night);
 }
 .factory .floor-grid a {
-  width: 20px;
-  height: 20px;
-  background: var(--factory-sky);
-  border: 1.5px solid var(--color-text-primary);
+  width: 22px;
+  height: 22px;
+  background: var(--factory-coral);
 }
 .factory .floor-grid a:hover {
-  outline: 2px solid var(--color-text-primary);
+  outline: 2px solid var(--color-background-body);
   outline-offset: 1px;
 }
 .factory .floor-grid [data-state="Working"] {
-  background: var(--factory-sun);
+  background: var(--factory-sky);
 }
 .factory .floor-grid [data-state="Shipped"] {
-  background: var(--factory-mint);
+  background: var(--factory-sun);
 }
 .factory .floor-grid [data-state="In merge queue"] {
-  background: var(--color-text-primary);
+  background: var(--color-background-body);
 }
 .factory .floor-grid a:not([data-state]),
 .factory .floor-grid [data-state="Stopped"] {
-  background: none;
-  border-color: var(--color-border-emphasized);
+  background: var(--factory-idle);
+  opacity: 0.45;
 }
 .factory .floor-key {
   list-style: none;
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem 2.5rem;
-  margin: 1rem 0 0;
+  margin: 1.25rem 0 0;
   padding: 0;
 }
 .factory .floor-key li {
@@ -393,7 +389,7 @@ body:has(.factory) {
   padding: 1.25rem 1.5rem;
 }
 .factory .chapter + .chapter {
-  border-top: 2px solid var(--color-text-primary);
+  border-top: 1px solid var(--color-border);
 }
 .factory .chapter .section-band {
   justify-content: space-between;
@@ -425,23 +421,21 @@ body:has(.factory) {
 .factory progress {
   display: block;
   width: 100%;
-  height: 1.25rem;
+  height: 1rem;
   margin-top: 0.4rem;
-  border: 2px solid var(--color-text-primary);
+  border: 0;
   appearance: none;
-  background: var(--color-background-body);
-  accent-color: var(--factory-mint);
+  background: var(--factory-night);
+  accent-color: var(--factory-sun);
 }
 .factory progress::-webkit-progress-bar {
-  background: var(--color-background-body);
+  background: var(--factory-night);
 }
 .factory progress::-webkit-progress-value {
-  background: var(--factory-mint);
-  border-right: 2px solid var(--color-text-primary);
+  background: var(--factory-sun);
 }
 .factory progress::-moz-progress-bar {
-  background: var(--factory-mint);
-  border-right: 2px solid var(--color-text-primary);
+  background: var(--factory-sun);
 }
 
 /* Measures: the sentence on the left, the evidence on the right. */
@@ -456,7 +450,7 @@ body:has(.factory) {
   padding: 2rem 1.5rem 1rem;
 }
 .factory .measures .chart + .chart {
-  border-top: 2px solid var(--color-text-primary);
+  border-top: 1px solid var(--color-border);
 }
 .factory .measures .chart > * {
   grid-column: 1;
@@ -489,11 +483,9 @@ body:has(.factory) {
 .factory .chart-note {
   margin: 0;
 }
-/* Columns: the working fill inside an ink outline. */
+/* Columns: solid ink. */
 .factory .dashboard-chart-plot path[fill] {
-  fill: var(--factory-sun);
-  stroke: var(--color-text-primary);
-  stroke-width: 2;
+  fill: var(--color-text-primary);
 }
 /* Burn-up: a quiet grid, an ink baseline, a name at the end of each line. */
 .factory .burn-up {
@@ -512,14 +504,14 @@ body:has(.factory) {
   stroke: var(--color-text-primary);
 }
 .factory .burn-up-plot svg path[fill-opacity] {
-  fill: var(--factory-mint);
+  fill: var(--factory-sun);
   fill-opacity: 1;
 }
 .factory .burn-up-plot svg path[stroke] {
   stroke: var(--color-text-primary);
 }
 .factory .burn-up-ends circle {
-  fill: var(--factory-mint);
+  fill: var(--factory-sun);
   stroke: var(--color-text-primary);
   stroke-width: 2;
 }
@@ -557,7 +549,7 @@ body:has(.factory) {
   font-variant-numeric: tabular-nums;
 }
 .factory thead th {
-  border-bottom: 2px solid var(--color-text-primary);
+  border-bottom: 1px solid var(--color-text-primary);
 }
 
 /* Record lists: key, title, goal, state on one line */
@@ -574,7 +566,7 @@ body:has(.factory) {
   padding-inline: 1rem;
 }
 .factory .records li + li {
-  border-top: 1px solid var(--color-text-primary);
+  border-top: 1px solid var(--color-border);
 }
 .factory .records li:hover {
   background: var(--factory-paper);
@@ -607,27 +599,26 @@ body:has(.factory) {
   flex-basis: 100%;
   margin: 0 -1rem;
 }
-/* The rest of a long list opens from an outlined button. */
+/* The rest of a long list opens from a solid button. */
 .factory .more-records > summary {
   display: inline-block;
   list-style: none;
   margin-top: 1rem;
-  padding: 0.7rem 1.25rem;
-  background: var(--color-background-body);
-  border: 2px solid var(--color-text-primary);
+  padding: 0.75rem 1.25rem;
+  background: var(--color-text-primary);
+  color: var(--color-background-body);
 }
 .factory .more-records > summary::-webkit-details-marker {
   display: none;
 }
 .factory .more-records > summary:hover {
-  background: var(--color-text-primary);
-  color: var(--color-background-body);
+  text-decoration: underline;
 }
 .factory .more-records[open] > summary {
   display: none;
 }
 .factory .more-records .records {
-  border-top-width: 0;
+  border-top: 1px solid var(--color-border);
 }
 
 /* A goal page lists each state. A row repeats neither state nor goal. */
@@ -657,24 +648,24 @@ body:has(.factory) {
 }
 .factory .event {
   position: relative;
-  border-left: 2px solid var(--color-text-primary);
+  border-left: 1px solid var(--color-border-emphasized);
   padding: 0 0 1rem 1.5rem;
 }
 .factory .event::before {
   content: "";
   position: absolute;
   top: 0.95rem;
-  left: calc(-0.375rem - 1px);
+  left: calc(-0.375rem - 0.5px);
   width: 0.75rem;
   height: 0.75rem;
-  background: var(--factory-sky);
-  border: 1.5px solid var(--color-text-primary);
+  background: var(--factory-coral);
+  box-shadow: inset 0 0 0 1px var(--color-text-primary);
 }
 .factory [data-kind="session"] .event::before {
-  background: var(--factory-sun);
+  background: var(--factory-sky);
 }
 .factory [data-kind="merged"] .event::before {
-  background: var(--factory-mint);
+  background: var(--factory-sun);
 }
 .factory .timeline > li:last-child .event {
   padding-bottom: 0;
@@ -710,7 +701,7 @@ body:has(.factory) {
   min-width: 2rem;
   height: 2rem;
   padding-inline: 0.25rem;
-  border: 1.5px solid var(--color-text-primary);
+  background: var(--factory-paper);
   font: 0.75rem var(--font-family-home-code);
   text-decoration: none;
 }
@@ -727,7 +718,7 @@ body:has(.factory) {
   scroll-margin-top: 1rem;
 }
 .factory .turn + .turn {
-  border-top: 2px solid var(--color-text-primary);
+  border-top: 1px solid var(--color-border);
 }
 .factory .turn[data-role="user"] {
   background: var(--factory-paper);
@@ -745,7 +736,7 @@ body:has(.factory) {
   margin-top: 0;
 }
 .factory .tool {
-  border: 1.5px solid var(--color-text-primary);
+  border: 1px solid var(--color-border);
   padding-inline: 0.75rem;
   margin-top: 0.5rem;
 }
@@ -781,7 +772,7 @@ body:has(.factory) {
 }
 
 .factory-footer {
-  border-top: 2px solid var(--color-text-primary);
+  border-top: 1px solid var(--color-border-emphasized);
   padding-block: 0.5rem;
   margin-top: 4rem;
   display: flex;
@@ -797,7 +788,7 @@ body:has(.factory) {
     padding-inline: 16px;
   }
   .factory .floor-grid {
-    padding: 0.75rem;
+    padding: 1rem;
   }
   .factory .floor-key {
     gap: 0.5rem 1.5rem;
@@ -837,6 +828,6 @@ body:has(.factory) {
   }
   .factory .timeline time {
     padding: 0.5rem 0 0 1.5rem;
-    border-left: 2px solid var(--color-text-primary);
+    border-left: 1px solid var(--color-border-emphasized);
   }
 }

@@ -30,12 +30,15 @@
   --color-stars-low: light-dark(#155e75, #67e8f9);
   --color-stars-mid: light-dark(#854d0e, #fde047);
   --color-stars-high: light-dark(#9f1239, #fda4af);
-  /* Factory: warm paper, and one flat fill for each state. A fill always
-   * sits inside an ink outline and beside its name. */
+  /* Factory: warm paper, a dark floor, and one flat fill for each state.
+   * A fill carries no text; its name sits beside it. */
   --factory-paper: light-dark(#f4efea, #201f1d);
-  --factory-sky: light-dark(#97d4ff, #2a6f9f);
-  --factory-sun: light-dark(#ffde00, #a88f00);
-  --factory-mint: light-dark(#53dbc9, #1d8f82);
+  --factory-night: light-dark(#26231c, #0e0e0d);
+  --factory-band: light-dark(#97d4ff, #2a6f9f);
+  --factory-sun: #ffde00;
+  --factory-coral: #ff7169;
+  --factory-sky: #6fc2ff;
+  --factory-idle: #7d7970;
   --font-family-body: "Avenir Next", "Segoe UI", system-ui, sans-serif;
   --font-family-heading:
     "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
