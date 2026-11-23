@@ -1405,6 +1405,42 @@ def test_a_content_free_canary_must_pass_the_check_before_the_pro_image(
     assert "build.sh" not in canary["run"]
 
 
+def test_nothing_can_swallow_a_failed_check(workflow) -> None:
+    """Three mutations that a review found undetected: continue-on-error, an `||` after
+    the canary check, and a canary check that tests another reference than the one pushed."""
+    text, wf = workflow
+    assert "continue-on-error" not in text
+    steps = wf["jobs"]["image"]["steps"]
+    assert "continue-on-error" not in wf["jobs"]["image"]
+    for step in steps:
+        assert "continue-on-error" not in step, step.get("name")
+    push = step_named(steps, "Publish the canary")
+    check = step_named(steps, "Check that the canary is private")
+    final = step_named(steps, "Check that an anonymous pull is refused")
+    for step in (push, check, final, step_named(steps, "Publish the image")):
+        for line in step["run"].splitlines():
+            code = line.split("#", 1)[0]
+            assert "||" not in code, (step["name"], line)
+            assert not code.rstrip().endswith("&") and "set +e" not in code, line
+    assert "set -euo pipefail" in check["run"] and "set -euo pipefail" in push["run"]
+
+    def ref_arg(run: str, script: str) -> str:
+        (arg,) = re.findall(rf'{re.escape(script)}(?: --no-delete)? ("[^"]+")', run)
+        return arg
+
+    pushed = ref_arg(push["run"], "./canary.sh")
+    checked = ref_arg(check["run"], "./check-private.sh")
+    assert pushed == checked, (
+        "the canary check must test the reference that the canary push made"
+    )
+    assert pushed == '"${IMAGE_REPOSITORY}:canary-${SEMGREP_VERSION}-${COMMIT:0:12}"'
+    # Both steps read the same COMMIT and the same pins.
+    assert push["env"] == check["env"] == {"COMMIT": "${{ github.sha }}"}
+    assert (
+        ". ../engine/pins.env" in push["run"] and ". ../engine/pins.env" in check["run"]
+    )
+
+
 def test_the_anonymous_pull_must_be_refused_after_the_push(workflow) -> None:
     _, wf = workflow
     steps = wf["jobs"]["image"]["steps"]
