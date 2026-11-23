@@ -92,7 +92,7 @@ The Substrate control plane and atelet run in `ate-system`. Workers run in label
 | Spread cloudflared replicas explicitly across nodes | — | Designed |
 | Alert on stuck connector runs, CNPG archive and backup age, and alert-path heartbeat | HOME-141 (connector) | Designed |
 | Preserve Prometheus metrics across cluster loss | — | Designed |
-| Fork scanner actors from a per-worker gVisor seed on a KVM pool (see the factory-cluster README, "gVisor sandbox fork") | — | Staged off |
+| Fork scanner actors from a per-worker gVisor seed on a KVM pool (see the factory-cluster README, "gVisor sandbox fork") | — | `staged off` behind `ForkSeed` |
 | Add security-control states and design rationale, and check each kept claim | [HOME-390](https://factory-plan.jomcgi.dev/factory/issue/HOME-390), [decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-267#comment-3950) | Planned |
 
 ## Decision history

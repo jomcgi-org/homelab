@@ -7,8 +7,8 @@
 # Off twice: this directory is not wired, and the Job is created suspended.
 # ../resources/resources_test.py is the wiring guard. In Argo a suspended Job
 # has health Suspended, and the Application then reports Suspended instead of
-# Healthy until the Job runs or goes. Wire it, set suspend to false and read
-# the log in one sequence. The enable steps are in
+# Healthy until the Job runs or goes. Wire it suspended; step 8
+# of the enable steps sets suspend to false. The enable steps are in
 # projects/factory-cluster/README.md, "gVisor sandbox fork (staged, off)".
 # A Job's pod template is immutable: to run again, change the run suffix in
 # the name. To remove the test, delete this file and its
@@ -20,7 +20,7 @@
 # (kubectl-ate lists the ClusterTrustBundles that verify the API's
 # certificate). It needs no rustfs: kubectl-ate comes from the fork build as an
 # image volume. The image is built by .github/workflows/substrate-fork-images.yml
-# (PR #8584, not in git until it merges).
+# (PR #8584).
 apiVersion: batch/v1
 kind: Job
 metadata:

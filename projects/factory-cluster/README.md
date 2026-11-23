@@ -564,10 +564,10 @@ server, controller and atelet are not deployed, so `platform: kvm` cannot apply.
 #### Enable
 
 Joe approves each step that changes the cluster. Steps 1 to 3 touch no cluster
-object. Steps 4 and 7 are cluster-affecting: step 4 replaces the `ateapi`,
-`atecontroller` and `atelet` images, and step 7 changes the preview gates that
-every control-plane component and worker reads. Joe approves both before they
-merge.
+object. Steps 5, 6 and 8 also change the cluster. Steps 4 and 7
+also roll the control plane: step 4 replaces the `ateapi`, `atecontroller` and
+`atelet` images, and step 7 changes the preview gates that every
+control-plane component and worker reads. Joe approves both before they merge.
 
 ```mermaid
 flowchart LR
@@ -578,7 +578,7 @@ flowchart LR
   W --> S[6 Start one worker]
   S --> G[7 Gate on]
   G --> J[8 Conformance Job, forkd check]
-  J --> X[9 X1 to X9 in the pod]
+  J --> X[9 X1 to X7, X9 in the pod]
   X --> F[10 Joe allows factory use]
 ```
 
@@ -586,21 +586,26 @@ flowchart LR
    from CI run 45119532914. Its `runsc-release.tar.gz` must hash to
    `6850279d7a50b7c047fedf1ad631c65d05eb4b091b0b28c9a28a6abfb7534460`.
 2. Dispatch `Substrate fork images` with `publish` off, then on. The workflow
-   file comes from #8584, which merges first. Record the five digests. Make the
+   file comes from #8584 (merged). Record the five digests. Make the
    packages pullable by atelet.
 3. Publish the public engine image with its listen-after-fork server. The
-   engine-image PR (#TBD) builds it. Record its digest.
+   engine-image PR (#8588) builds it. Record its digest.
 4. Cluster-affecting, Joe approves. Render the fork's charts at `b6b0ec3e2`:
    the CRD with `platform`, then `ateapi`, `atecontroller` and `atelet` at the
    fork digests. Merge it with the gate off. After the merge, verify that an
    existing actor still starts and runs, and that the control plane is healthy.
 5. Wire `../gvisor-fork` in `resources/kustomization.yaml`. Set the pool's
-   `workerImage` to the published digest. Keep `replicas` at 0. Invert the
-   wiring guard in `resources_test.py` in the same change. The sync also applies
-   the SandboxConfig, the asset Job (a Sync hook, so it runs at once), the
-   suspended conformance Job, the namespace, the ServiceAccount and the
-   CiliumNetworkPolicies. Argo shows the suspended Job with health Suspended
-   from this step until step 8.
+   `workerImage` to the published digest. Keep `replicas` at 0. In
+   `resources_test.py`, replace `test_gvisor_fork_slice_is_staged_and_not_wired`
+   with a test of the wired objects in the same change. Keep
+   `test_fork_seed_gate_is_off` until step 7. The directory renders 13
+   objects: the SandboxConfig, the asset Job (a Sync hook, so it runs at once),
+   the suspended conformance Job, the WorkerPool, the namespace, the
+   ServiceAccount, the two generated ConfigMaps (`gvisor-fork-assets` and
+   `gvisor-fork-conformance`) and five CiliumNetworkPolicies. Two of the
+   policies add ingress rules to existing pods: one on `ate-api-server` (the
+   conformance Job) and one on `rustfs` (the asset Job). Argo shows the
+   suspended Job with health Suspended from this step until step 8.
 6. Set the pool's `replicas` to 1. Check that the worker pod runs with
    `/dev/kvm`, `--fork-platform=kvm`, the KVM capabilities and seccomp
    Unconfined. forkd does not start yet: it starts with the first seed.
@@ -655,8 +660,14 @@ Known gaps against a normal sandbox stay open.
 - The worker keeps `CAP_SYS_ADMIN`.
 - Siblings share clean seed pages.
 - Every child has the same ASLR, canary and `AT_RANDOM`.
-- A seed that opens a listener before its checkpoint passes it to every child.
-  A template must listen only after the fork.
+- The fork build refuses non-AF_UNIX sockets before the checkpoint. A template
+  still listens only after the fork. A seed's AF_UNIX listener passes to every
+  child.
+- Children share read-write `/dev/null` descriptors. They also share
+  append-only log descriptors if debug logs are set.
+- A child's memory limit covers private pages only. The seed cgroup is charged
+  for the shared seed pages.
+- The KVM platform adds host kernel surface (accepted).
 
 The Job checks the API side of X6 and X9 only. A request through the router
 (X5) needs a router client certificate, which is a new grant for Joe to decide.
