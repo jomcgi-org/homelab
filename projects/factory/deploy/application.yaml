@@ -115,6 +115,16 @@ spec:
       kind: Job
       namespace: factory-discord
       jsonPointers: [/spec]
+    # The coder pool's HorizontalPodAutoscaler owns its replicas
+    # (agents.codex.autoscaling in values.yaml). The chart keeps spec.replicas
+    # as the first value, and a sync with self-heal would reset the HPA's.
+    # Remove this entry together with `enabled: false` to put the pool back
+    # at `concurrency`.
+    - group: ate.dev
+      kind: WorkerPool
+      namespace: factory-r-homelab
+      name: homelab-codex
+      jsonPointers: [/spec/replicas]
   syncPolicy:
     automated:
       prune: true

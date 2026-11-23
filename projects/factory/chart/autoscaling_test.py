@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,24 @@ _CODER = ("factory-r-homelab", "homelab-codex")
 _REVIEW = ("factory-r-homelab-review", "homelab-reviewer")
 
 
-def _render(sets: list[str] | None = None) -> list[dict[str, Any]]:
+def _without_autoscaling() -> Path:
+    """The deploy values with the coder pool's autoscaling removed, so a test
+    of the chart's behavior starts from the chart's own defaults, whatever the
+    deploy values enable. The one test of the deploy values themselves renders
+    them as they are."""
+    values = yaml.safe_load(_DEPLOY_VALUES.read_text())
+    values["agents"]["codex"].pop("autoscaling", None)
+    path = Path(tempfile.mkdtemp()) / "values.yaml"
+    path.write_text(yaml.safe_dump(values))
+    return path
+
+
+_BASE_VALUES = _without_autoscaling()
+
+
+def _render(
+    sets: list[str] | None = None, defaults: bool = True
+) -> list[dict[str, Any]]:
     argv = [
         os.environ.get("HELM_BIN", "helm"),
         "template",
@@ -32,7 +50,7 @@ def _render(sets: list[str] | None = None) -> list[dict[str, Any]]:
         "--namespace",
         "kagent",
         "--values",
-        str(_DEPLOY_VALUES),
+        str(_BASE_VALUES if defaults else _DEPLOY_VALUES),
     ]
     for s in sets or []:
         argv += ["--set", s]
@@ -233,11 +251,15 @@ def test_every_pool_an_hpa_scales_is_ignored_by_argo():
     # The check runs on the real render, so a chart default counts too.
     app = yaml.safe_load(_APPLICATION.read_text())
     assert "RespectIgnoreDifferences=true" in app["spec"]["syncPolicy"]["syncOptions"]
-    assert _unignored(_render(), app) == set()
+    assert _unignored(_render(defaults=False), app) == set()
 
 
 def test_the_ignore_check_catches_a_pool_with_no_entry():
     app = yaml.safe_load(_APPLICATION.read_text())
+    # The deploy values' own entry would hide the gap: start without entries.
+    app["spec"]["ignoreDifferences"] = [
+        d for d in app["spec"]["ignoreDifferences"] if d.get("group") != "ate.dev"
+    ]
     on = _render(["agents.codex.autoscaling.enabled=true"])
     assert _unignored(on, app) == {_CODER}
     # An entry for another kind or group is not enough.
@@ -253,3 +275,17 @@ def test_the_ignore_check_catches_a_pool_with_no_entry():
     assert _unignored(on, app) == {_CODER}
     app["spec"]["ignoreDifferences"][0]["group"] = "ate.dev"
     assert _unignored(on, app) == set()
+
+
+def test_deploy_values_keep_the_coder_pool_at_one_worker_or_more():
+    # The first enabling change: minReplicas 1, so a pool never reaches zero
+    # and needs no send wait; maxReplicas 12 is the fixed pool's size today.
+    docs = _render(defaults=False)
+    (hpa,) = _hpas(docs)
+    assert hpa["metadata"]["name"] == _CODER[1]
+    assert hpa["spec"]["minReplicas"] == 1
+    assert (
+        hpa["spec"]["maxReplicas"]
+        == _one(docs, "WorkerPool", *_CODER)["spec"]["replicas"]
+    )
+    assert _reaper_pools(docs) == f"{_CODER[0]}/{_CODER[1]}=2"
