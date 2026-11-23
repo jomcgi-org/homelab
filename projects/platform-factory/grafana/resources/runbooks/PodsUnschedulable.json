@@ -1,0 +1,7 @@
+{
+  "graph": "count by (namespace) (kube_pod_status_unschedulable{job=\"kube-state-metrics\"} == 1)",
+  "check": "count(kube_pod_status_unschedulable{job=\"kube-state-metrics\"} == 1) or vector(0)",
+  "condition": "lt",
+  "limit": 1.0,
+  "steps": "Find the pods and the reason, then check the node taints. The usual cause is the disk-pressure taint on a node (see NodeDiskPressure).\n\nexport KUBECONFIG=~/.kube/factory-sessions.yaml\nkubectl get pods -A --field-selector=status.phase=Pending\nkubectl get events -A --field-selector reason=FailedScheduling --sort-by=.lastTimestamp | tail\nkubectl get nodes -o custom-columns='NODE:.metadata.name,TAINTS:.spec.taints[*].key'"
+}

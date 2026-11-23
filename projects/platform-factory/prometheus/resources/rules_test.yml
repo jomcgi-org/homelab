@@ -5,8 +5,11 @@ rule_files:
 evaluation_interval: 1m
 
 tests:
-  # A root filesystem over 75% for 15 min fires once per node. One under it,
-  # /boot, a loop device and the device of another mount do not.
+  # A root filesystem over 72% by df for 10 min is a warning, and over 78%
+  # for 5 min is also critical. df reads cAdvisor's ratio divided by 0.95.
+  # node-1 (84.2%) fires both. node-3 (75.8%) fires the warning only. node-2
+  # (68.4%) and the other devices (/boot, a loop device, and another mount
+  # that is over the threshold) fire neither.
   - interval: 1m
     input_series:
       - series: 'container_fs_usage_bytes{job="kubelet-cadvisor", id="/", node="node-1", device="overlay_0-72"}'
@@ -18,21 +21,41 @@ tests:
       - series: 'container_fs_limit_bytes{job="kubelet-cadvisor", id="/", node="node-1", device="overlay_0-79"}'
         values: "100x30"
       - series: 'container_fs_usage_bytes{job="kubelet-cadvisor", id="/", node="node-2", device="overlay_0-59"}'
-        values: "70x30"
+        values: "65x30"
       - series: 'container_fs_limit_bytes{job="kubelet-cadvisor", id="/", node="node-2", device="overlay_0-59"}'
         values: "100x30"
       - series: 'container_fs_usage_bytes{job="kubelet-cadvisor", id="/", node="node-2", device="/dev/nvme0n1p2"}'
         values: "90x30"
       - series: 'container_fs_limit_bytes{job="kubelet-cadvisor", id="/", node="node-2", device="/dev/nvme0n1p2"}'
         values: "100x30"
+      - series: 'container_fs_usage_bytes{job="kubelet-cadvisor", id="/", node="node-3", device="overlay_0-41"}'
+        values: "72x30"
+      - series: 'container_fs_limit_bytes{job="kubelet-cadvisor", id="/", node="node-3", device="overlay_0-41"}'
+        values: "100x30"
       - series: 'container_fs_usage_bytes{job="kubelet-cadvisor", id="/", node="node-1", device="/dev/loop0"}'
         values: "100x30"
       - series: 'container_fs_limit_bytes{job="kubelet-cadvisor", id="/", node="node-1", device="/dev/loop0"}'
         values: "100x30"
     alert_rule_test:
-      - eval_time: 10m
+      - eval_time: 4m
+        alertname: NodeDiskCritical
+        exp_alerts: []
+      - eval_time: 9m
         alertname: NodeDiskFilling
         exp_alerts: []
+      - eval_time: 10m
+        alertname: NodeDiskCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              node: node-1
+            exp_annotations:
+              action: "Free space on the node now, before the kubelet taints it."
+              graph: "max(container_fs_usage_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node=\"node-1\"} / container_fs_limit_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node=\"node-1\"}) / 0.95"
+              threshold: "0.78"
+              runbook: "https://factory-runbooks.jomcgi.dev/NodeDiskCritical"
+              summary: "node-1's root filesystem is 84.21% full by df (threshold 78%)"
+              description: 'The kubelet taints the node at about 80% by df. Runbook: projects/factory-cluster/README.md, "Alerts".'
       - eval_time: 20m
         alertname: NodeDiskFilling
         exp_alerts:
@@ -40,12 +63,123 @@ tests:
               severity: warning
               node: node-1
             exp_annotations:
-              action: "Inspect the largest directories on the root filesystem."
-              graph: "max(container_fs_usage_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node=\"node-1\"} / container_fs_limit_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node=\"node-1\"})"
-              threshold: "0.75"
+              action: "Remove build and test leftovers from the node; the runbook lists them."
+              graph: "max(container_fs_usage_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node=\"node-1\"} / container_fs_limit_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node=\"node-1\"}) / 0.95"
+              threshold: "0.72"
               runbook: "https://factory-runbooks.jomcgi.dev/NodeDiskFilling"
-              summary: "node-1's root filesystem is 80% full (threshold 75%)"
-              description: 'Image garbage collection starts at 85% and the kubelet evicts pods at 90%. Runbook: projects/factory-cluster/README.md, "Alerts".'
+              summary: "node-1's root filesystem is 84.21% full by df (threshold 72%)"
+              description: 'The kubelet adds the disk-pressure taint at about 80% by df, and then no new pod starts on the node. Image garbage collection starts at 85% and the kubelet evicts pods at 90% (the same file). Runbook: projects/factory-cluster/README.md, "Alerts".'
+          - exp_labels:
+              severity: warning
+              node: node-3
+            exp_annotations:
+              action: "Remove build and test leftovers from the node; the runbook lists them."
+              graph: "max(container_fs_usage_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node=\"node-3\"} / container_fs_limit_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node=\"node-3\"}) / 0.95"
+              threshold: "0.72"
+              runbook: "https://factory-runbooks.jomcgi.dev/NodeDiskFilling"
+              summary: "node-3's root filesystem is 75.79% full by df (threshold 72%)"
+              description: 'The kubelet adds the disk-pressure taint at about 80% by df, and then no new pod starts on the node. Image garbage collection starts at 85% and the kubelet evicts pods at 90% (the same file). Runbook: projects/factory-cluster/README.md, "Alerts".'
+      - eval_time: 20m
+        alertname: NodeDiskCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              node: node-1
+            exp_annotations:
+              action: "Free space on the node now, before the kubelet taints it."
+              graph: "max(container_fs_usage_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node=\"node-1\"} / container_fs_limit_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node=\"node-1\"}) / 0.95"
+              threshold: "0.78"
+              runbook: "https://factory-runbooks.jomcgi.dev/NodeDiskCritical"
+              summary: "node-1's root filesystem is 84.21% full by df (threshold 78%)"
+              description: 'The kubelet taints the node at about 80% by df. Runbook: projects/factory-cluster/README.md, "Alerts".'
+
+  # The disk-pressure condition or taint fires after 2 min, once per node. A
+  # node with the condition false and no taint, and a taint with another
+  # key, do not fire. A node with the taint but no condition series (an
+  # outage of the condition metric) still fires.
+  - interval: 1m
+    input_series:
+      - series: 'kube_node_status_condition{job="kube-state-metrics", node="node-1", condition="DiskPressure", status="true"}'
+        values: "0 0 1x10"
+      - series: 'kube_node_status_condition{job="kube-state-metrics", node="node-1", condition="DiskPressure", status="false"}'
+        values: "1 1 0x10"
+      - series: 'kube_node_spec_taint{job="kube-state-metrics", node="node-1", key="node.kubernetes.io/disk-pressure", value="", effect="NoSchedule"}'
+        values: "_ _ _ 1x9"
+      - series: 'kube_node_status_condition{job="kube-state-metrics", node="node-2", condition="DiskPressure", status="true"}'
+        values: "0x12"
+      - series: 'kube_node_status_condition{job="kube-state-metrics", node="node-2", condition="MemoryPressure", status="true"}'
+        values: "1x12"
+      - series: 'kube_node_spec_taint{job="kube-state-metrics", node="node-2", key="node.kubernetes.io/unschedulable", value="", effect="NoSchedule"}'
+        values: "1x12"
+      - series: 'kube_node_spec_taint{job="kube-state-metrics", node="node-3", key="node.kubernetes.io/disk-pressure", value="", effect="NoSchedule"}'
+        values: "1x12"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: NodeDiskPressure
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              node: node-3
+            exp_annotations:
+              action: "Free space on the node; the taint clears a few minutes later."
+              graph: 'max(kube_node_status_condition{job="kube-state-metrics",condition="DiskPressure",status="true",node="node-3"})'
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/NodeDiskPressure"
+              summary: "node-3 has the disk-pressure condition or taint (flag 1, threshold 1)"
+              description: 'No new pod starts on the node. Pods that need a volume or a worker slot there stay Pending. Runbook: projects/factory-cluster/README.md, "Alerts".'
+      - eval_time: 6m
+        alertname: NodeDiskPressure
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              node: node-1
+            exp_annotations:
+              action: "Free space on the node; the taint clears a few minutes later."
+              graph: 'max(kube_node_status_condition{job="kube-state-metrics",condition="DiskPressure",status="true",node="node-1"})'
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/NodeDiskPressure"
+              summary: "node-1 has the disk-pressure condition or taint (flag 1, threshold 1)"
+              description: 'No new pod starts on the node. Pods that need a volume or a worker slot there stay Pending. Runbook: projects/factory-cluster/README.md, "Alerts".'
+          - exp_labels:
+              severity: critical
+              node: node-3
+            exp_annotations:
+              action: "Free space on the node; the taint clears a few minutes later."
+              graph: 'max(kube_node_status_condition{job="kube-state-metrics",condition="DiskPressure",status="true",node="node-3"})'
+              threshold: "1"
+              runbook: "https://factory-runbooks.jomcgi.dev/NodeDiskPressure"
+              summary: "node-3 has the disk-pressure condition or taint (flag 1, threshold 1)"
+              description: 'No new pod starts on the node. Pods that need a volume or a worker slot there stay Pending. Runbook: projects/factory-cluster/README.md, "Alerts".'
+
+  # Pods that stay unschedulable for 20 min fire one alert for the cluster,
+  # with the count. A pod that fits again, or that was never unschedulable,
+  # does not count.
+  - interval: 1m
+    input_series:
+      - series: 'kube_pod_status_unschedulable{job="kube-state-metrics", namespace="factory", pod="worker-a"}'
+        values: "1x40"
+      - series: 'kube_pod_status_unschedulable{job="kube-state-metrics", namespace="prometheus", pod="prometheus-0"}'
+        values: "1x40"
+      - series: 'kube_pod_status_unschedulable{job="kube-state-metrics", namespace="factory", pod="worker-b"}'
+        values: "1x5 0x35"
+      - series: 'kube_pod_status_unschedulable{job="kube-state-metrics", namespace="factory", pod="worker-c"}'
+        values: "0x40"
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: PodsUnschedulable
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: PodsUnschedulable
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              action: "Find the pods and the event that says why they do not fit."
+              graph: 'count by (namespace) (kube_pod_status_unschedulable{job="kube-state-metrics"} == 1)'
+              threshold: "0"
+              runbook: "https://factory-runbooks.jomcgi.dev/PodsUnschedulable"
+              summary: "2 pods have been unschedulable for 20 min (threshold 0)"
+              description: 'The usual causes are a node with disk pressure or too few CPU, memory or volume resources. Runbook: projects/factory-cluster/README.md, "Alerts".'
 
   # A new pod's first timeout: its counter appears at 1. It fires for an
   # hour, then stops. Successful suspends never fire.

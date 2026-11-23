@@ -44,6 +44,9 @@ configMapGenerator:
     files:
       - runbooks/server.py
       - runbooks/NodeDiskFilling.json
+      - runbooks/NodeDiskCritical.json
+      - runbooks/NodeDiskPressure.json
+      - runbooks/PodsUnschedulable.json
       - runbooks/KagentSuspendTimedOut.json
       - runbooks/FactoryCodexQuotaLow.json
       - runbooks/FactoryCodexQuotaExhausted.json

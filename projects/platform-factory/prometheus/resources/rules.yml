@@ -9,26 +9,91 @@ groups:
       # containerd's images and layers. k3s keeps containerd, the kubelet
       # directory and the local-path volumes on the root filesystem, because
       # projects/factory-cluster/nodes/k3s-config.yaml sets no other data
-      # directory. Image garbage collection starts at 85% and the kubelet
-      # evicts pods at 90% (the same file).
+      # directory. cAdvisor divides used bytes by all blocks. `df` divides
+      # them by the blocks that ext4 does not reserve for root (5%), so `df`
+      # reads about 4 points higher. Dividing by 0.95 gives the `df` value
+      # that a person sees on the node.
+      # On 2026-11-23 the kubelet tainted node-1 for disk pressure at 86% and
+      # again at 80% by `df`, and the factory had no alert for it.
+      # The warning fires 8 points before the second taint and the critical
+      # alert 2 points before it.
       - alert: NodeDiskFilling
         expr: |
           max by (node) (
             container_fs_usage_bytes{job="kubelet-cadvisor", id="/", device=~"overlay_.+"}
               / container_fs_limit_bytes{job="kubelet-cadvisor", id="/", device=~"overlay_.+"}
-          ) > 0.75
-        for: 15m
+          ) / 0.95 > 0.72
+        for: 10m
         labels:
           severity: warning
         annotations:
-          action: "Inspect the largest directories on the root filesystem."
-          graph: "max(container_fs_usage_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node={{ printf \"%q\" $labels.node }}} / container_fs_limit_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node={{ printf \"%q\" $labels.node }}})"
-          threshold: "0.75"
+          action: "Remove build and test leftovers from the node; the runbook lists them."
+          graph: "max(container_fs_usage_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node={{ printf \"%q\" $labels.node }}} / container_fs_limit_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node={{ printf \"%q\" $labels.node }}}) / 0.95"
+          threshold: "0.72"
           runbook: "https://factory-runbooks.jomcgi.dev/NodeDiskFilling"
-          summary: "{{ $labels.node }}'s root filesystem is {{ $value | humanizePercentage }} full (threshold 75%)"
+          summary: "{{ $labels.node }}'s root filesystem is {{ $value | humanizePercentage }} full by df (threshold 72%)"
           description: >-
-            Image garbage collection starts at 85% and the kubelet evicts pods
-            at 90%. Runbook: projects/factory-cluster/README.md, "Alerts".
+            The kubelet adds the disk-pressure taint at about 80% by df, and
+            then no new pod starts on the node. Image garbage collection
+            starts at 85% and the kubelet evicts pods at 90% (the same file).
+            Runbook: projects/factory-cluster/README.md, "Alerts".
+      - alert: NodeDiskCritical
+        expr: |
+          max by (node) (
+            container_fs_usage_bytes{job="kubelet-cadvisor", id="/", device=~"overlay_.+"}
+              / container_fs_limit_bytes{job="kubelet-cadvisor", id="/", device=~"overlay_.+"}
+          ) / 0.95 > 0.78
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          action: "Free space on the node now, before the kubelet taints it."
+          graph: "max(container_fs_usage_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node={{ printf \"%q\" $labels.node }}} / container_fs_limit_bytes{job=\"kubelet-cadvisor\",id=\"/\",device=~\"overlay_.+\",node={{ printf \"%q\" $labels.node }}}) / 0.95"
+          threshold: "0.78"
+          runbook: "https://factory-runbooks.jomcgi.dev/NodeDiskCritical"
+          summary: "{{ $labels.node }}'s root filesystem is {{ $value | humanizePercentage }} full by df (threshold 78%)"
+          description: >-
+            The kubelet taints the node at about 80% by df. Runbook:
+            projects/factory-cluster/README.md, "Alerts".
+      # kube-state-metrics reports the kubelet's DiskPressure condition and
+      # the taint that the node lifecycle controller adds with it. Either one
+      # means that the scheduler places no new pod on the node.
+      - alert: NodeDiskPressure
+        expr: |
+          max by (node) (kube_node_status_condition{job="kube-state-metrics", condition="DiskPressure", status="true"} == 1)
+          or
+          max by (node) (kube_node_spec_taint{job="kube-state-metrics", key="node.kubernetes.io/disk-pressure"} == 1)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          action: "Free space on the node; the taint clears a few minutes later."
+          graph: "max(kube_node_status_condition{job=\"kube-state-metrics\",condition=\"DiskPressure\",status=\"true\",node={{ printf \"%q\" $labels.node }}})"
+          threshold: "1"
+          runbook: "https://factory-runbooks.jomcgi.dev/NodeDiskPressure"
+          summary: "{{ $labels.node }} has the disk-pressure condition or taint (flag {{ $value }}, threshold 1)"
+          description: >-
+            No new pod starts on the node. Pods that need a volume or a
+            worker slot there stay Pending. Runbook:
+            projects/factory-cluster/README.md, "Alerts".
+      # kube-state-metrics sets this flag when the PodScheduled condition is
+      # False with reason Unschedulable. That is the state that the scheduler's
+      # FailedScheduling event reports. Kubernetes events are not metrics.
+      - alert: PodsUnschedulable
+        expr: count(kube_pod_status_unschedulable{job="kube-state-metrics"} == 1) > 0
+        for: 20m
+        labels:
+          severity: warning
+        annotations:
+          action: "Find the pods and the event that says why they do not fit."
+          graph: "count by (namespace) (kube_pod_status_unschedulable{job=\"kube-state-metrics\"} == 1)"
+          threshold: "0"
+          runbook: "https://factory-runbooks.jomcgi.dev/PodsUnschedulable"
+          summary: "{{ $value }} pods have been unschedulable for 20 min (threshold 0)"
+          description: >-
+            The usual causes are a node with disk pressure or too few CPU,
+            memory or volume resources. Runbook:
+            projects/factory-cluster/README.md, "Alerts".
 
   - name: kagent
     rules:
