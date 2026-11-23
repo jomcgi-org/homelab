@@ -5,6 +5,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # through the glob below.
 # gazelle:exclude assets
 # gazelle:exclude conformance
+# gazelle:exclude latency
 
 py_test(
     name = "gvisor_fork_test",
@@ -13,6 +14,7 @@ py_test(
         "*.yaml",
         "assets/*",
         "conformance/*",
+        "latency/*",
     ]) + [
         "@multitool//tools/kustomize",
     ],

@@ -1,0 +1,53 @@
+# ActorTemplate (protojson ateapi.ActorTemplate) for the fork latency Jobs: the
+# same public Semgrep OSS engine image as ../conformance/template.yaml, listening
+# on port 80 because that is the port the router sends a request to when the
+# client names no other (atenet router ingress.go defaultActorPort). latency.py
+# creates it in its own atespace and deletes it again.
+#
+# image: the digest-pinned engine of the "Substrate fork engine image" workflow
+# (../engine/README.md). The Pro engine of the egress scanner is a different,
+# private image: this template measures the control plane and the request path,
+# and the scan itself is the public engine's.
+#
+# gVisor checks no capability when a guest binds a low port (a search of
+# pkg/sentry and pkg/tcpip in the fork build finds no CAP_NET_BIND_SERVICE or
+# privileged-port check), so uid 65532 can bind port 80. If it cannot, the
+# wakeup probe fails and the first create_to_ready call reports it. A client
+# reaches another actor port only through the router's CONNECT listener
+# (port 8444), which latency.py does not use yet.
+metadata:
+  atespace: fork-latency
+  name: engine
+workerSelector:
+  matchLabels:
+    workload: gvisor-fork
+containers:
+  - name: engine
+    image: ghcr.io/jomcgi-org/homelab/substrate-fork/engine-oss:1.186.0-946d07e5597c@sha256:dbffb4d73f072b2a71a05356a657a595bd147357bc85a538139f2634be47b238
+    command:
+      - /usr/local/bin/forksrv-net
+      - --listen
+      - 0.0.0.0:80
+    wakeupProbe:
+      httpGet:
+        path: /healthz
+        port: 80
+      timeoutSeconds: 20
+# The private limits of one forked actor. The kernel kills it above the limit
+# plus the 16 MiB fork overhead. A scanning child holds about 37 MB.
+resources:
+  limits:
+    cpuMillicores: 1000
+    memoryBytes: 134217728
+forkConfig:
+  mode: FORK_MODE_SEED_AND_FORK
+  seedResources:
+    limits:
+      cpuMillicores: 1000
+      memoryBytes: 268435456
+  singleUse: true
+  # A pool child waits for its request: the worker kills it at this deadline.
+  maxLifetimeSeconds: 300
+  pidsLimit: 256
+  logBytesLimit: 1048576
+  egress: FORK_EGRESS_NONE

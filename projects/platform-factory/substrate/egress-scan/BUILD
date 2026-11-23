@@ -60,6 +60,9 @@ go_test(
 
 filegroup(
     name = "repo_docs",
-    srcs = ["README.md"],
+    srcs = [
+        "ARCHITECTURE.md",
+        "README.md",
+    ],
     visibility = ["//projects/monolith:__pkg__"],
 )
