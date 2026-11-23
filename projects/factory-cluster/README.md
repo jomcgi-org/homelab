@@ -192,10 +192,27 @@ projects/factory-cluster/nodes/node-disk-gc.sh --apply  # remove it
 ```
 
 Options `--go-days` (3), `--tmp-hours` (12) and `--bazel-days` (7) set the age
-limits. A test directory stays if a file in it is newer than the limit, or if
-a process has it open, as its working directory or in its command line, or a
-postgres process names it. No timer runs the script. A person decides whether
-to install one.
+limits, in whole units of time (`--go-days 3` keeps a file that is 2.9 days old).
+`--tmp-hours` must be at least 1. The Go fuzz corpus (`fuzz/`) always stays.
+
+A test directory stays when any of these is true. The script checks every
+process that the caller can read:
+
+- A file in it is newer than the age limit.
+- A process has a file in it open, or has it as its working directory or
+  executable.
+- A process maps a file from it (`/proc/PID/maps`), such as a library.
+- A command-line argument or an environment value (for example `TMPDIR`)
+  names it.
+- A process has bound a unix socket path in it (`/proc/net/unix`).
+- A postgres process names it.
+- A mount point is the directory or lies under it (`/proc/self/mountinfo`).
+- Its name holds a newline.
+
+The scan runs again right before each removal, and removal does not cross a
+mount point. The script cannot see a process that another user runs. If it
+cannot remove a directory, it prints `failed: <directory>` and goes on.
+No timer runs the script. A person decides whether to install one.
 
 ## Network policy
 
