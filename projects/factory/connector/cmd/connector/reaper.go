@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -28,7 +29,20 @@ func runReaper(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	demand := reaper.NewDemand(pools)
+	// FACTORY_REAPER_UNBOUND_POOLS lists the pools no connector binding sends
+	// to, as "namespace/name,...": the reaper publishes their pending demand
+	// at 0 (the connector publishes none for them). Each must also be in
+	// FACTORY_REAPER_POOLS.
+	unbound, err := reaper.ParsePools(os.Getenv("FACTORY_REAPER_UNBOUND_POOLS"))
+	if err != nil {
+		return err
+	}
+	for p := range unbound {
+		if _, ok := pools[p]; !ok {
+			return fmt.Errorf("FACTORY_REAPER_UNBOUND_POOLS names %s/%s, which FACTORY_REAPER_POOLS does not", p.Namespace, p.Name)
+		}
+	}
+	demand := reaper.NewDemand(pools).Unbound(unbound)
 	poolList := make([]reaper.Pool, 0, len(pools))
 	for p := range pools {
 		poolList = append(poolList, p)

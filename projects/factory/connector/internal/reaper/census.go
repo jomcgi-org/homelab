@@ -190,6 +190,11 @@ func Census(ctx context.Context, actors *sql.DB) (map[Pool]int, error) {
 // connector publishes the "pending" source of the same series.
 const DemandSourceActors = "actors"
 
+// DemandSourcePending is the source label of unsent sends. The connector
+// publishes it for the pools it dispatches to. The reaper publishes it, at 0,
+// only for a pool no connector binding sends to (Demand.Unbound).
+const DemandSourcePending = "pending"
+
 // maxCensusAge is how long a census stays valid. An older one publishes
 // nothing, which an autoscaler reads as "no data" and answers by holding its
 // replica count. Three scan intervals.
@@ -201,8 +206,9 @@ const maxCensusAge = 45 * time.Second
 // missing for a quiet pool (a missing series stops an autoscaler from scaling
 // down). Labels come from configuration and Substrate, never from run data.
 type Demand struct {
-	spare map[Pool]int
-	now   func() time.Time
+	spare   map[Pool]int
+	unbound map[Pool]struct{}
+	now     func() time.Time
 
 	mu    sync.Mutex
 	busy  map[Pool]int
@@ -220,12 +226,28 @@ func NewDemand(spare map[Pool]int) *Demand {
 	return &Demand{
 		spare: spare, now: time.Now,
 		demand: prometheus.NewDesc("factory_worker_pool_demand",
-			"Workers a WorkerPool needs, by source. Sum the sources for the pool's demand (actors: worker pods that host an actor).",
+			"Workers a WorkerPool needs, by source. Sum the sources for the pool's demand (actors: worker pods that host an actor; pending: 0 for a pool no connector binding sends to).",
 			[]string{"pool_namespace", "pool", "source"}, nil),
 		spares: prometheus.NewDesc("factory_worker_pool_spare",
 			"Spare workers an autoscaler adds to a pool's demand while the pool has any.",
 			[]string{"pool_namespace", "pool"}, nil),
 	}
+}
+
+// Unbound names pools that no connector binding sends to (the reviewer's pool:
+// the reviewer sends to kagent itself). The connector publishes no "pending"
+// series for them, and the autoscaler's metric has no value without one, so
+// the reaper publishes pending=0 for them, with the same age and invalidation
+// rules as the actors series. The 0 is honest only in that the connector has
+// no unsent send for the pool: the pool's own caller can still be waiting for
+// a worker, which no series shows. Its minReplicas and spare must cover that
+// caller's burst. Call it before the first scrape.
+func (d *Demand) Unbound(pools map[Pool]int) *Demand {
+	d.unbound = make(map[Pool]struct{}, len(pools))
+	for p := range pools {
+		d.unbound[p] = struct{}{}
+	}
+	return d
 }
 
 // ParsePools reads "namespace/name=spare,..." into a pool-to-spare map. An
@@ -308,6 +330,10 @@ func (d *Demand) Collect(ch chan<- prometheus.Metric) {
 	for p := range pools {
 		ch <- prometheus.MustNewConstMetric(d.demand, prometheus.GaugeValue, float64(busy[p]),
 			p.Namespace, p.Name, DemandSourceActors)
+	}
+	for p := range d.unbound {
+		ch <- prometheus.MustNewConstMetric(d.demand, prometheus.GaugeValue, 0,
+			p.Namespace, p.Name, DemandSourcePending)
 	}
 	for p, n := range d.spare {
 		ch <- prometheus.MustNewConstMetric(d.spares, prometheus.GaugeValue, float64(n), p.Namespace, p.Name)

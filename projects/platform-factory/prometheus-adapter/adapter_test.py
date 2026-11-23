@@ -149,6 +149,26 @@ OTHER = 'factory_worker_pool_demand{pool_namespace="factory-r-homelab-review",po
             {demand("actors"): "3 3 stale", demand("pending"): "0 0 0", SPARE: "1 1 1"},
             None,
         ),
+        # A pool no connector binding sends to (the reviewer's): the reaper
+        # publishes actors and pending 0, both from its own instance. Three
+        # actors and a spare of 2 ask for five workers; idle asks for none, and
+        # the HPA's minReplicas then holds the floor.
+        (
+            {
+                demand("actors").replace("{", '{instance="reaper",'): "3 3 3",
+                demand("pending").replace("{", '{instance="reaper",'): "0 0 0",
+                SPARE.replace("{", '{instance="reaper",'): "2 2 2",
+            },
+            5,
+        ),
+        (
+            {
+                demand("actors").replace("{", '{instance="reaper",'): "0 0 0",
+                demand("pending").replace("{", '{instance="reaper",'): "0 0 0",
+                SPARE.replace("{", '{instance="reaper",'): "2 2 2",
+            },
+            0,
+        ),
         # Two scrapes of one source (an instance label) count once.
         (
             {
@@ -171,6 +191,8 @@ OTHER = 'factory_worker_pool_demand{pool_namespace="factory-r-homelab-review",po
         "spare-missing",
         "nothing",
         "stale-source",
+        "reaper-pending-zero",
+        "reaper-pending-zero-idle",
         "duplicate-scrape",
     ],
 )

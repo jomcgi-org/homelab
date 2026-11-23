@@ -357,11 +357,12 @@ agents:
     # together with enabled: false so Argo CD restores `concurrency`.
     autoscaling:
       enabled: false
-      # The render refuses enabled: true for the reviewer pool. The reviewer
-      # sends to kagent itself, not through the connector, so no pending demand
-      # series exists for it and the metric never has a value. With one, the
-      # default maxReplicas would be concurrency + spare = 7, above the 5 fixed
-      # workers today.
+      # The reviewer pool needs minReplicas of at least reviewer.concurrency
+      # and a spare of at least 1, or the render fails. The reviewer sends to
+      # kagent itself, not through the connector, so the reaper publishes its
+      # pending demand at 0, and nothing signals a burst of reviews. Set
+      # maxReplicas to the fixed size: the default concurrency + spare would
+      # be 7, above the 5 fixed workers today.
       minReplicas: 1
       # Workers kept beyond the demand while a pool has any.
       spare: 2

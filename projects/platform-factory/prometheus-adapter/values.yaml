@@ -7,6 +7,8 @@
 # (ARCHITECTURE.md, "Worker pool autoscaling"):
 #   factory_worker_pool_demand{source="pending"}  the connector's unsent sends
 #   factory_worker_pool_demand{source="actors"}   the reaper's workers that host an actor
+# A pool no connector binding sends to (the reviewer's) has pending 0 from the
+# reaper instead (FACTORY_REAPER_UNBOUND_POOLS).
 # Spare workers (factory_worker_pool_spare, the reaper's) join only while the
 # pool has demand, so an idle pool asks for 0.
 #

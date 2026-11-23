@@ -222,3 +222,69 @@ func TestDemandInvalidateDropsTheSeriesAtOnce(t *testing.T) {
 		t.Fatal("series survive Invalidate")
 	}
 }
+
+// A pool no connector binding sends to has no pending series from the
+// connector, and the autoscaler's metric needs one. The reaper publishes
+// pending=0 for exactly those pools, and drops it with the actors series.
+func TestDemandPublishesPendingZeroOnlyForUnboundPools(t *testing.T) {
+	coder := Pool{"factory-r-homelab", "homelab-codex"}
+	review := Pool{"factory-r-homelab-review", "homelab-reviewer"}
+	now := time.Unix(1000, 0)
+	d := NewDemand(map[Pool]int{coder: 2, review: 2}).Unbound(map[Pool]int{review: 0})
+	d.now = func() time.Time { return now }
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(d)
+
+	d.Observe(Snapshot{Busy: map[Pool]int{review: 2}})
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := map[string]float64{}
+	for _, f := range families {
+		if f.GetName() != "factory_worker_pool_demand" {
+			continue
+		}
+		for _, m := range f.Metric {
+			var pool, source string
+			for _, l := range m.Label {
+				switch l.GetName() {
+				case "pool":
+					pool = l.GetValue()
+				case "source":
+					source = l.GetValue()
+				}
+			}
+			if source == DemandSourcePending {
+				pending[pool] = m.Gauge.GetValue()
+			}
+		}
+	}
+	if len(pending) != 1 || pending["homelab-reviewer"] != 0 {
+		t.Fatalf("pending series = %v, want only homelab-reviewer at 0 (the connector owns the coder pool's)", pending)
+	}
+	// Actors for both pools, pending for the reviewer, spare for both.
+	if n := testutil.CollectAndCount(d); n != 5 {
+		t.Fatalf("series = %d, want 5", n)
+	}
+
+	d.Invalidate()
+	if n := testutil.CollectAndCount(d); n != 0 {
+		t.Fatalf("series after Invalidate = %d, want none: a pending 0 must not outlive the census", n)
+	}
+	d.Observe(Snapshot{Busy: map[Pool]int{}})
+	now = now.Add(maxCensusAge + time.Second)
+	if n := testutil.CollectAndCount(d); n != 0 {
+		t.Fatalf("series from a stale census = %d, want none", n)
+	}
+}
+
+// Without Unbound the reaper publishes no pending series, as before.
+func TestDemandPublishesNoPendingByDefault(t *testing.T) {
+	review := Pool{"factory-r-homelab-review", "homelab-reviewer"}
+	d := NewDemand(map[Pool]int{review: 2})
+	d.Observe(Snapshot{Busy: map[Pool]int{}})
+	if n := testutil.CollectAndCount(d); n != 2 {
+		t.Fatalf("series = %d, want actors and spare only", n)
+	}
+}

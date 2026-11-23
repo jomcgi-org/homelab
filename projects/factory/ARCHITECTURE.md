@@ -212,16 +212,40 @@ worker, and that send fails as it does today.
 
 **Which pools.** Only the coder pool has a `pending` source: its sends go
 through the connector. The reviewer and the Discord bot send to kagent
-themselves. No `pending` series exists for their pools, so the metric never
-has a value there.
+themselves, so the connector publishes no `pending` series for their pools.
 
-- The chart refuses `autoscaling.enabled` on the reviewer pool, at any
-  `minReplicas`. Its default `maxReplicas` would be `concurrency + spare` = 7,
-  above the 5 fixed workers.
+- The reviewer pool can autoscale. The reaper publishes `pending` at 0 for a
+  pool listed in `FACTORY_REAPER_UNBOUND_POOLS` (the chart lists the pools of
+  an autoscaled reviewer). The 0 means "no unsent connector send", not "no
+  waiting caller": the reviewer's own sends are invisible, so two floors cover
+  them.
+  - `minReplicas` at least `reviewer.concurrency` (3). A review send is
+    never left to a scale-up, because nothing signals it. The chart refuses a
+    lower value.
+  - `spare` at least 1 (2 in the plan). The pool grows only from the actors
+    it hosts, so with a spare of 0 it never grows past `minReplicas`. A goal
+    check session runs after its review turn, while the review session's
+    actor still holds a worker, so each review needs a second worker. The
+    spare supplies it. The chart refuses a spare of 0.
+- The reviewer pool's `maxReplicas` is its fixed size today (5):
+  `concurrency + spare` would give 7.
+- A static cut below 5 workers is not safe. On 2026-11-22 five reviews on five
+  workers left 23 of 70 goal checks without an answer in 2 h. The cut to 3
+  reviews plus 2 spare workers fixed it, and no measurement shows 4 workers
+  are enough.
 - This chart cannot enable Bosun: its WorkerPool renders no HPA.
 - `microvm-spike` is not part of the factory chart.
 
-The reviewer needs its own `pending` publisher first: a follow-up.
+**Reviewer pool sizing.** Idle, the pool holds 3 workers: 1.25 GiB less
+requested memory than 5 (2 × 640Mi). The workers use far less than they
+request (7 to 51 Mi each on 2026-11-23), but the nodes request 98% of memory,
+so the request is what costs. During reviews the pool still grows to 5, so
+the peak does not change. A burst after idle finds 3 workers for its 3
+reviews. The 2 extra workers start within about 2 min (reaper pass 15 s, HPA
+sync 15 s, pod start), before the first goal check send, which follows a
+review turn of minutes. Only a review turn shorter than that lag can find no
+free worker for its goal send. The result is "goal check unavailable", as
+before the 11-22 fix. The pool leaves 5 only after 30 min with no actor.
 
 **Failure modes.**
 
@@ -239,7 +263,16 @@ The reviewer needs its own `pending` publisher first: a follow-up.
 2. Enable one pool with `autoscaling.enabled` and `minReplicas: 1`. The pool
    can shrink to one worker and no lower, so a metric failure costs little.
 3. Raise the coder pool to `minReplicas: 0` after a full day of correct
-   metrics. The reviewer pool stays fixed.
+   metrics.
+4. Enable the reviewer pool, after the chart and connector image that
+   publish `pending` at 0 are live: `autoscaling: {enabled: true,
+   minReplicas: 3, spare: 2, maxReplicas: 5}` under `agents.reviewer` in
+   `deploy/values.yaml` (and its `values-homelab.yaml` mirror), an
+   `ignoreDifferences` entry for `homelab-reviewer` in
+   `application.yaml`, and the new `render.sha256`. The values must not
+   merge before the chart that accepts them is pinned (REVIEW.md "Chart
+   before values"). To roll back, revert that change: Argo CD then restores
+   `concurrency` (5).
 
 `maxReplicas` defaults to `concurrency + spare`: 14 for the coder pool, above
 the 12 fixed workers today, on nodes that request 98% of memory. Set
