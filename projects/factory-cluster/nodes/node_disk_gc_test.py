@@ -1,6 +1,7 @@
 """Run node-disk-gc.sh against a fake home and a fake temporary directory."""
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -175,10 +176,253 @@ def test_age_options(node):
 
 @pytest.mark.parametrize(
     "args",
-    [["--delete"], ["--go-days"], ["--go-days", "x"], ["--tmp-hours", "-1"], ["extra"]],
+    [
+        ["--delete"],
+        ["--go-days"],
+        ["--go-days", "x"],
+        ["--tmp-hours", "-1"],
+        ["--tmp-hours", "0"],
+        ["--tmp-hours", "08"],
+        ["extra"],
+    ],
 )
 def test_bad_arguments_exit_2(node, args):
     result = run(node, *args)
     assert result.returncode == 2
     assert "usage:" in result.stderr
     assert "Go build cache" not in result.stdout
+
+
+SLEEPER = "import time; time.sleep(60)"
+
+
+def stop(*processes):
+    for process in processes:
+        process.kill()
+        process.wait()
+
+
+def remaining(tmp):
+    return sorted(p.name for p in tmp.iterdir())
+
+
+def test_a_mount_point_under_a_directory_keeps_it(node, tmp_path):
+    tmp = node["tmp"]
+    mounted = old_tree(tmp / "pgdata-mounted")
+    exact = old_tree(tmp / "tmp-exact")
+    # Octal escapes: a mount point named "/.../pgdata-space/a b".
+    spaced = old_tree(tmp / "pgdata-space")
+    gone = old_tree(tmp / "pgdata-gone")
+    table = tmp_path / "mountinfo"
+    table.write_text(
+        f"1 0 8:1 / / rw - ext4 /dev/sda1 rw\n"
+        f"2 1 0:30 / {mounted}/base/1 rw - tmpfs tmpfs rw\n"
+        f"3 1 0:31 / {exact} rw - tmpfs tmpfs rw\n"
+        f"4 1 0:32 / {spaced}/a\\040b rw - tmpfs tmpfs rw\n"
+        f"5 1 0:33 / {tmp}/pgdata-goneX rw - tmpfs tmpfs rw\n"
+    )
+    env = dict(node["env"], GC_MOUNTINFO=str(table))
+    result = run(node, "--apply", env=env)
+    assert result.returncode == 0, result.stderr
+    assert remaining(tmp) == ["pgdata-mounted", "pgdata-space", "tmp-exact"]
+    assert result.stdout.count("keep (mount)") == 3
+    assert not gone.exists()
+
+
+def test_a_unix_socket_path_keeps_the_directory(node):
+    tmp = node["tmp"]
+    held = old_tree(tmp / "pgdata-socket")
+    gone = old_tree(tmp / "pgdata-gone")
+    code = (
+        "import socket, sys, time\n"
+        "s = socket.socket(socket.AF_UNIX)\n"
+        "s.bind(sys.stdin.readline().strip())\n"
+        "print('bound', flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    holder = subprocess.Popen(
+        [sys.executable, "-c", code],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        holder.stdin.write(f"{held}/.s.PGSQL.5432\n")
+        holder.stdin.flush()
+        assert holder.stdout.readline().strip() == "bound"
+        # The new socket file and directory time would keep the directory.
+        age(held / ".s.PGSQL.5432", 48 * 3600)
+        age(held, 48 * 3600)
+        result = run(node, "--apply")
+    finally:
+        stop(holder)
+    assert result.returncode == 0, result.stderr
+    assert remaining(tmp) == ["pgdata-socket"]
+    assert not gone.exists()
+
+
+def test_a_binary_run_from_the_directory_keeps_it(node):
+    tmp = node["tmp"]
+    held = old_tree(tmp / "pgdata-exe")
+    binary = held / "sleep"
+    shutil.copy2(shutil.which("sleep"), binary)
+    age(binary, 48 * 3600)
+    age(held, 48 * 3600)
+    gone = old_tree(tmp / "pgdata-gone")
+    # argv[0] is "sleep", so only the executable and its mappings name the path.
+    holder = subprocess.Popen(["sleep", "60"], executable=str(binary))
+    try:
+        time.sleep(0.3)
+        result = run(node, "--apply")
+    finally:
+        stop(holder)
+    assert result.returncode == 0, result.stderr
+    assert remaining(tmp) == ["pgdata-exe"]
+    assert not gone.exists()
+
+
+def test_a_mapped_library_keeps_the_directory(node):
+    tmp = node["tmp"]
+    held = old_tree(tmp / "pgdata-maps")
+    library = held / "libm-copy.so"
+    shutil.copy2(next(Path("/lib").rglob("libm.so.6")).resolve(), library)
+    age(library, 48 * 3600)
+    age(held, 48 * 3600)
+    gone = old_tree(tmp / "pgdata-gone")
+    # The path comes through stdin, so no argument, variable or open file has it.
+    code = (
+        "import ctypes, sys, time\n"
+        "ctypes.CDLL(sys.stdin.readline().strip())\n"
+        "print('loaded', flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    holder = subprocess.Popen(
+        [sys.executable, "-c", code],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        holder.stdin.write(f"{library}\n")
+        holder.stdin.flush()
+        assert holder.stdout.readline().strip() == "loaded"
+        result = run(node, "--apply")
+    finally:
+        stop(holder)
+    assert result.returncode == 0, result.stderr
+    assert remaining(tmp) == ["pgdata-maps"]
+    assert not gone.exists()
+
+
+def test_an_environment_value_keeps_the_directory(node):
+    tmp = node["tmp"]
+    held = old_tree(tmp / "pgdata-env")
+    gone = old_tree(tmp / "pgdata-gone")
+    env = {"PATH": os.environ["PATH"], "TMPDIR": str(held)}
+    holder = subprocess.Popen([sys.executable, "-c", SLEEPER], env=env)
+    try:
+        time.sleep(0.3)
+        result = run(node, "--apply")
+    finally:
+        stop(holder)
+    assert result.returncode == 0, result.stderr
+    assert remaining(tmp) == ["pgdata-env"]
+    assert not gone.exists()
+
+
+def test_an_unreadable_subdirectory_does_not_stop_the_run(node):
+    tmp = node["tmp"]
+    locked = old_tree(tmp / "pgdata-locked")
+    inner = locked / "private"
+    write(inner / "file", old=48 * 3600)
+    age(inner, 48 * 3600)
+    age(locked, 48 * 3600)
+    inner.chmod(0)
+    other = old_tree(tmp / "pgdata-other")
+    try:
+        result = run(node, "--apply")
+    finally:
+        if inner.exists():
+            inner.chmod(0o700)
+    assert result.returncode == 0, result.stderr
+    assert not other.exists()
+    assert not locked.exists()
+    assert "failed:" not in result.stdout
+
+
+def test_a_failed_removal_is_reported_and_the_run_goes_on(node, tmp_path):
+    tmp = node["tmp"]
+    stuck = old_tree(tmp / "pgdata-stuck")
+    other = old_tree(tmp / "pgdata-other")
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "rm").write_text(
+        '#!/bin/sh\ncase "$*" in *pgdata-stuck*) exit 1 ;; esac\nexec /bin/rm "$@"\n'
+    )
+    (fake / "rm").chmod(0o755)
+    env = dict(node["env"], PATH=f"{fake}:{os.environ['PATH']}")
+    result = run(node, "--apply", env=env)
+    assert result.returncode == 0, result.stderr
+    assert f"failed: {stuck}" in result.stdout
+    assert stuck.exists() and not other.exists()
+    # Only the removed directory counts: 100 B in one file, not 200 B.
+    assert "Removed:" in result.stdout
+
+
+def test_a_newline_in_a_name_keeps_the_directory(node):
+    tmp = node["tmp"]
+    odd = old_tree(tmp / "pgdata-a\nb")
+    other = old_tree(tmp / "pgdata-other")
+    result = run(node, "--apply")
+    assert result.returncode == 0, result.stderr
+    assert odd.exists() and not other.exists()
+    assert "keep (name has a newline)" in result.stdout
+
+
+def test_symlinks_in_a_cache_are_not_followed(node, tmp_path):
+    outside = tmp_path / "outside"
+    keep = write(outside / "precious", old=90 * DAY)
+    (node["go"] / "ab" / "filelink").symlink_to(keep)
+    (node["go"] / "ab" / "dirlink").symlink_to(outside, target_is_directory=True)
+    (node["bazel"] / "cas" / "cd" / "dirlink").symlink_to(
+        outside, target_is_directory=True
+    )
+    for link in (
+        node["go"] / "ab" / "filelink",
+        node["go"] / "ab" / "dirlink",
+        node["bazel"] / "cas" / "cd" / "dirlink",
+    ):
+        age(link, 90 * DAY)
+    result = run(node, "--apply")
+    assert result.returncode == 0, result.stderr
+    assert keep.exists()
+    assert (node["go"] / "ab" / "dirlink").is_symlink()
+    assert (node["go"] / "ab" / "filelink").is_symlink()
+
+
+def test_the_go_fuzz_corpus_stays(node):
+    write(node["go"] / "fuzz" / "pkg" / "Fuzz" / "seed", old=30 * DAY)
+    result = run(node, "--apply")
+    assert result.returncode == 0, result.stderr
+    assert "fuzz/pkg/Fuzz/seed" in files(node["go"])
+
+
+def test_ages_are_exact(node):
+    write(node["go"] / "ab" / "two-and-a-half", old=int(2.5 * DAY))
+    write(node["go"] / "ab" / "one-and-a-half", old=int(1.5 * DAY))
+    result = run(node, "--apply", "--go-days", "2")
+    assert result.returncode == 0, result.stderr
+    names = files(node["go"])
+    assert "ab/two-and-a-half" not in names
+    assert "ab/one-and-a-half" in names
+
+
+@pytest.mark.parametrize("value", ["/", "relative", "{tmp}/", "{home}"])
+def test_unsafe_tmp_directories_are_refused(node, value):
+    env = dict(
+        node["env"],
+        GC_TMP_DIR=value.format(tmp=node["tmp"], home=node["home"]),
+    )
+    result = run(node, "--apply", env=dict(env, HOME=str(node["home"])))
+    assert result.returncode == 2
+    assert "GC_TMP_DIR" in result.stderr
