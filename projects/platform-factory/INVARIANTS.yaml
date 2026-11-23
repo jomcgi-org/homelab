@@ -33,6 +33,7 @@ invariants:
   mechanism:
   - projects/platform-factory/substrate/resources/network-policy.yaml
   - projects/platform-factory/substrate/resources/microvm-spike.yaml
+  - projects/platform-factory/substrate/gvisor-fork/kvm-pool.yaml
   state: unproven
 - id: PLAT-7
   statement: 1Password Connect, ArgoCD redis and the repo-server accept requests only from their own controllers.

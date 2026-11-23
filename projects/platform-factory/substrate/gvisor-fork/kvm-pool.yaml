@@ -1,0 +1,106 @@
+# invariant: PLAT-6
+# The dedicated worker pool for fork slice 1: gVisor on the KVM platform, with
+# no workers (replicas 0). It stays unwired (see kustomization.yaml), and when
+# it is wired it still starts no pod until the enable step raises replicas.
+#
+# platform: kvm exists only in the fork's WorkerPool CRD (jomcgi-org/substrate
+# fork/seed-slice1), so this file cannot be applied before the CRD, the control
+# plane and atelet images come from the fork. ForkSeed (preview gate) stays off
+# in ../values/common.yaml until the isolation gates X1 to X8 pass in the
+# cluster.
+#
+# What the fork's controller gives a worker of this pool (atecontroller
+# workerpool_apply.go, not set here):
+#   - the ate.dev/kvm extended resource as a limit, so /dev/kvm and node
+#     placement come from the device plugin (all three nodes advertise it);
+#   - the gVisor worker capabilities NET_ADMIN, SYS_ADMIN, SETUID, SETGID,
+#     DAC_OVERRIDE, FOWNER, CHOWN, NET_RAW, SETFCAP, plus SYS_CHROOT and SETPCAP
+#     for forkd's chroot and bounding-set drop;
+#   - seccomp Unconfined at pod level (the sentry installs its own filter).
+# forkd refuses to start unless these hold, so a missing grant fails closed.
+#
+# The pod holds the seed and every forked child, so its memory limit is the
+# pool's capacity. Measured on node-1 (public engine, production mode): seed
+# 171 MB resident (192 MB peak), template about 150 MB, a waiting child 3.5 MB
+# and a scanning child 37 MB private, 6.5 MB of marginal overhead per child.
+# 192 + 16 scanning children x (37 + 6.5) = 888 MB, plus forkd and the worker
+# (about 64 MB): 1280Mi covers 16 concurrent scans. The request is a scheduling
+# reservation only. On 2026-11-22 the nodes had 509Mi, 257Mi and 13Mi left to
+# request (node-2 is the tightest), so it stays at the microVM spike's 256Mi.
+# A burst above it uses free node memory.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: substrate-gvisor-fork
+  labels:
+    factory.jomcgi.dev/substrate-workers: "true"
+---
+# Worker pods run as this account, with no API token.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fork-worker
+  namespace: substrate-gvisor-fork
+automountServiceAccountToken: false
+---
+# The same allowlist every binding namespace has: actor traffic arrives only
+# from the router and leaves only through the egress gateway. A forked actor
+# has no egress (egress NONE), so the gateway rule serves only the worker.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: substrate-workers
+  namespace: substrate-gvisor-fork
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: ate.dev/worker-pool
+        operator: Exists
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: ate-system
+            app: atenet-router
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: ate-system
+            app: atenet-egress
+      toPorts:
+        - ports:
+            - port: "8443"
+              protocol: TCP
+---
+apiVersion: ate.dev/v1
+kind: WorkerPool
+metadata:
+  name: gvisor-fork
+  namespace: substrate-gvisor-fork
+  labels:
+    workload: gvisor-fork
+spec:
+  # Off. The enable step raises this to 1, after ForkSeed is on and the fork
+  # control plane runs. Setting it back to 0 is the rollback.
+  replicas: 0
+  # The fork build of ateworker-gvisor from .github/workflows/substrate-fork-images.yml.
+  # The digest is a placeholder until that workflow publishes the image; the
+  # enable step replaces it with the published digest.
+  workerImage: ghcr.io/jomcgi-org/homelab/substrate-fork/ateworker-gvisor:fork-b6b0ec3e217c@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  sandboxClasses:
+    - name: gvisor
+      platform: kvm
+      configRef:
+        name: gvisor-fork
+  template:
+    serviceAccountName: fork-worker
+    resources:
+      limits:
+        cpu: "2"
+        memory: 1280Mi
+      requests:
+        cpu: 100m
+        memory: 256Mi
