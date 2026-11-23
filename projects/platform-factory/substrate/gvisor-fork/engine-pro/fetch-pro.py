@@ -14,7 +14,8 @@ with SEMGREP_REPO_NAME unset), made with the standard library:
       the Secrets rules of the deployment; the body holds "rules" or "rule_config"
       (a JSON string); the file is rules.json with the key "rules" only, sorted by id
 
-The token goes only in the Authorization header, over https, and is dropped when a
+The token goes only to https://semgrep.dev (the host is fixed in this file,
+not in pins.env), only in the Authorization header, over https, and is dropped when a
 redirect leaves the host. Nothing here prints it, and an error shows only the class of
 the error and the HTTP status. The token never goes to a file, a log or an artifact.
 """
@@ -47,6 +48,26 @@ def read_pins() -> dict[str, str]:
     return pins
 
 
+TOKEN_HOST = "semgrep.dev"
+
+
+def check_token_host(url: str) -> None:
+    """The token goes to semgrep.dev and nowhere else. The host is fixed here, not
+    read from pins.env: a change of a pins file alone must not send the token to
+    another host. Port, user info and a non-https scheme are refused too."""
+    parts = urllib.parse.urlsplit(url)
+    if (
+        parts.scheme != "https"
+        or parts.hostname != TOKEN_HOST
+        or parts.port is not None
+        or parts.username is not None
+        or parts.password is not None
+    ):
+        sys.exit(
+            f"fetch-pro: the token goes only to https://{TOKEN_HOST}, not to this host"
+        )
+
+
 class KeepAuthOnSameHost(urllib.request.HTTPRedirectHandler):
     """urllib copies the request headers to a redirect target, whatever the host. This
     handler sends the token only to the host it was meant for."""
@@ -68,6 +89,7 @@ class KeepAuthOnSameHost(urllib.request.HTTPRedirectHandler):
 def open_url(url: str, token: str, accept: str):
     if not url.startswith("https://"):
         sys.exit("fetch-pro: refusing a URL that is not https")
+    check_token_host(url)
     request = urllib.request.Request(
         url, headers={"Accept": accept, "User-Agent": "substrate-fork-engine-pro"}
     )
@@ -150,6 +172,8 @@ def main(out_dir: str) -> None:
     if token != token.strip() or len(token) < 16 or any(c.isspace() for c in token):
         sys.exit("fetch-pro: SEMGREP_APP_TOKEN does not look like a token")
     pins = read_pins()
+    # Before any request: the pinned URL must name the one host that may see the token.
+    check_token_host(pins["SEMGREP_URL"])
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     version = pins["SEMGREP_VERSION"]

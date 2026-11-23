@@ -62,8 +62,10 @@ tag check, push, anonymous pull must be refused (else delete the version, fail)
 
 - The token is in two steps only. A test (`engine_pro_test.py`) checks this.
   The steps use `set +x`; the download step also uses `::add-mask::`.
-- `fetch-pro.py` sends the token as an `Authorization` header over https and
-  drops it on a redirect to another host. It prints sizes and hashes only. It
+- `fetch-pro.py` sends the token as an `Authorization` header over https, only to
+  `semgrep.dev` (the host is fixed in the script, not read from `pins.env`, so a
+  pins change alone cannot send the token elsewhere), and drops it on a redirect
+  to another host. It prints sizes and hashes only. It
   writes the token to no file. No step uploads an artifact or uses a cache.
 - `build.sh` and `make-layer.py` stop when `SEMGREP_APP_TOKEN` is in their
   environment, so a mistake in the workflow cannot put it into the layer.

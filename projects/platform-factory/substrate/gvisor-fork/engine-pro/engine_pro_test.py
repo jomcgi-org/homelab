@@ -1098,6 +1098,50 @@ class FakeSemgrep(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://evil.example.com",
+        "https://semgrep.dev.evil.example.com",
+        "https://semgrep.dev@evil.example.com",
+        "https://user:pw@semgrep.dev",
+        "https://evil.example.com/semgrep.dev",
+        "https://semgrep.dev:8443",
+        "https://app.semgrep.dev",
+        "http://semgrep.dev",
+        "",
+    ],
+)
+def test_fetch_sends_the_token_to_semgrep_dev_only(
+    url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The token host is fixed in fetch-pro.py. A changed SEMGREP_URL in pins.env alone
+    must stop the script before any request."""
+    fetch = load(HERE / "fetch-pro.py", "fetch_pro_host")
+    with pytest.raises(SystemExit, match="token goes only to https://semgrep.dev"):
+        fetch.check_token_host(url)
+    pinned = pins()
+    pinned["SEMGREP_URL"] = url
+    monkeypatch.setattr(fetch, "read_pins", lambda: pinned)
+    monkeypatch.setenv("SEMGREP_APP_TOKEN", FAKE_TOKEN)
+
+    def no_request(*args, **kwargs):
+        raise AssertionError("a request was made before the host check")
+
+    monkeypatch.setattr(fetch.urllib.request.OpenerDirector, "open", no_request)
+    with pytest.raises(SystemExit) as err:
+        fetch.main(str(tmp_path / "out"))
+    assert "token goes only to" in str(err.value) and FAKE_TOKEN not in str(err.value)
+    assert not (tmp_path / "out").exists(), "nothing is created before the check"
+
+
+def test_fetch_accepts_the_pinned_host_and_pins_name_it() -> None:
+    fetch = load(HERE / "fetch-pro.py", "fetch_pro_host_ok")
+    fetch.check_token_host("https://semgrep.dev")
+    fetch.check_token_host("https://semgrep.dev/api/agent/deployments/scans/config?x=1")
+    assert pins()["SEMGREP_URL"] == "https://semgrep.dev"
+
+
 def test_fetch_downloads_with_the_header_only_and_writes_no_token(
     tmp_path: Path,
 ) -> None:
