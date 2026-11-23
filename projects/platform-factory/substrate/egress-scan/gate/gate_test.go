@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -566,9 +568,84 @@ func TestBodyLimitDefaultAndEarlyRejection(t *testing.T) {
 	e.eventually("slot taken", func() bool { return len(e.gate.slots) == 1 })
 	// With every slot busy, a body over the limit is a 413 at once, not a shed.
 	r := postTo(t, srv.URL+"/scan", strings.Repeat("a", 2048), nil)
-	if r.status != http.StatusRequestEntityTooLarge || r.took > 15*time.Millisecond {
-		t.Fatalf("oversize with a full gate: %d after %v", r.status, r.took)
+	if r.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversize with a full gate: %d", r.status)
 	}
 	close(release)
 	<-done
 }
+
+// The Content-Length check does not depend on reading the body: a request that
+// announces 2048 bytes and sends none gets its 413 at once. Without the early
+// check the handler would wait in the body read (MaxBytesReader only acts on
+// bytes that arrive).
+func TestOversizeContentLengthIsRefusedBeforeAnyBodyByte(t *testing.T) {
+	e := newEnv(t, func(c *config) { c.MaxBody = 1024 })
+	e.start()
+	srv := httptest.NewServer(e.gate.handler())
+	defer srv.Close()
+	conn, err := net.Dial("tcp", strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, _ = io.WriteString(conn, "POST /scan HTTP/1.1\r\nHost: gate\r\nContent-Length: 2048\r\n\r\n")
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("no answer before any body byte: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	if len(e.rt.targets()) != 0 {
+		t.Fatal("the router was called")
+	}
+}
+
+func TestShutdownOrderIsDrainDelayThenListenersThenPoolThenAdmin(t *testing.T) {
+	e := newEnv(t, func(c *config) { c.ShutdownGrace = time.Second })
+	e.cfg.DrainDelay = 150 * time.Millisecond
+	e.start()
+	e.api.add("eg-gate-0-5-5", 2)
+	began := time.Now()
+	var mu sync.Mutex
+	var events []string
+	type snap struct {
+		ready   bool
+		elapsed time.Duration
+		kids    int
+	}
+	snaps := map[string]snap{}
+	record := func(name string) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, name)
+		snaps[name] = snap{e.pool.ready(), time.Since(began), len(e.api.names("eg-gate-0-"))}
+	}
+	shutdownInOrder(e.cfg, e.pool, fakeServer(func() { record("scan") }), fakeServer(func() { record("admin") }), func() {
+		e.cancel()
+		<-e.done
+		e.cancel = nil
+		record("loop")
+	})
+	if got := strings.Join(events, ","); got != "scan,loop,admin" {
+		t.Fatalf("order %s", got)
+	}
+	// /readyz failed before the scan listener closed, and after the drain delay.
+	if s := snaps["scan"]; s.ready || s.elapsed < 150*time.Millisecond {
+		t.Fatalf("scan shutdown: ready %v after %v", s.ready, s.elapsed)
+	}
+	// The pool is deleted after the loop stopped and before the admin port closes.
+	if snaps["loop"].kids == 0 {
+		t.Fatal("children were deleted before the loop stopped")
+	}
+	if snaps["admin"].kids != 0 {
+		t.Fatalf("%d children left when the admin port closed", snaps["admin"].kids)
+	}
+}
+
+type fakeServer func()
+
+func (f fakeServer) Shutdown(context.Context) error { f(); return nil }

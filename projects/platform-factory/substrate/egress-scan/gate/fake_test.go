@@ -40,6 +40,7 @@ type fakeAPI struct {
 
 	createDelay, resumeDelay, deleteDelay atomic.Int64 // nanoseconds
 	deleteActive, deleteMax               atomic.Int64
+	deleteGate                            atomic.Pointer[chan struct{}] // a Delete waits for this channel to close
 	// failure injection: a gRPC code per operation, OK means none
 	failCreate, failResume, failList, failDelete atomic.Uint32
 	down                                         atomic.Bool
@@ -218,6 +219,13 @@ func (f *fakeAPI) DeleteActor(ctx context.Context, req *ateapi.DeleteActorReques
 	}
 	if err := sleepCtx(ctx, time.Duration(f.deleteDelay.Load())); err != nil {
 		return nil, err
+	}
+	if g := f.deleteGate.Load(); g != nil {
+		select {
+		case <-*g:
+		case <-ctx.Done():
+			return nil, status.FromContextError(ctx.Err()).Err()
+		}
 	}
 	if f.failDelete.Load() != 0 {
 		return nil, status.Error(codes.Code(f.failDelete.Load()), "delete failed")

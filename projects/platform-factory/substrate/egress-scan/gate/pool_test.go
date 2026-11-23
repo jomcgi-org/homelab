@@ -377,3 +377,55 @@ func TestDeletesRunOnAFewWorkers(t *testing.T) {
 		t.Fatalf("up to %d deletes at once, want 2 to %d", got, deleteWorkers)
 	}
 }
+
+func TestFullDeleteQueueDropsAtOnceAndTheSweepFindsTheChild(t *testing.T) {
+	e := newEnv(t, nil)
+	gate := make(chan struct{})
+	e.api.deleteGate.Store(&gate)
+	// The four workers block inside Delete, then 256 more fill the queue.
+	for i := 0; i < deleteWorkers; i++ {
+		e.pool.deleteAsync(fmt.Sprintf("eg-gate-0-8-%d", i))
+	}
+	e.eventually("workers blocked", func() bool { return e.api.deleteActive.Load() == deleteWorkers })
+	for i := 0; i < cap(e.pool.delQ); i++ {
+		e.pool.deleteAsync(fmt.Sprintf("eg-gate-0-8-q%d", i))
+	}
+	// The child that does not fit stays in the API.
+	e.api.add("eg-gate-0-8-late", 2)
+	returned := make(chan struct{})
+	go func() { e.pool.deleteAsync("eg-gate-0-8-late"); close(returned) }()
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("deleteAsync blocked on a full queue")
+	}
+	if len(e.api.names("eg-gate-0-8-late")) != 1 {
+		t.Fatal("the dropped delete ran")
+	}
+	// Unblock the workers. The queue drains, and the child is still there.
+	close(gate)
+	e.eventually("queue drained", func() bool { return len(e.pool.delQ) == 0 && e.api.deleteActive.Load() == 0 })
+	if len(e.api.names("eg-gate-0-8-late")) != 1 {
+		t.Fatal("the dropped child was deleted without the sweep")
+	}
+	e.pool.sweep(context.Background())
+	e.pool.sweep(context.Background())
+	e.eventually("the sweep deleted the child", func() bool { return len(e.api.names("eg-gate-0-8-late")) == 0 })
+}
+
+func TestEmptyPoolWithFailingCreatesIsNotReady(t *testing.T) {
+	e := newEnv(t, nil)
+	e.start()
+	if !e.pool.ready() {
+		t.Fatal("not ready with a full pool")
+	}
+	// A burst empties the pool and the creates fail: every request would get
+	// 503, so the pod must leave the Service.
+	e.api.failCreate.Store(uint32(codes.Unavailable))
+	e.pool.claim()
+	e.pool.claim()
+	e.eventually("unready while creates fail", func() bool { return e.waitingCount() == 0 && !e.pool.ready() })
+	// A create that works ends it.
+	e.api.failCreate.Store(uint32(codes.OK))
+	e.eventually("ready again", func() bool { return e.pool.ready() && e.waitingCount() == 2 })
+}
