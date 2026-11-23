@@ -465,8 +465,10 @@ states until HOME-213 publishes snapshots. Charts use the shared chart
 library and have value tables. Per-issue and per-PR measurements show as
 counts in fixed columns, with the median in the caption. Issue and transcript
 text renders a Markdown subset as elements, and links only this repository.
-The layout uses the shared light/dark palette, ink rules and joined panels,
-and 16px phone gutters.
+The story opens with the line: one block for each state, as wide as its
+share of the issues. Each measure is one row: its name, its figure, its chart.
+The layout uses the shared light/dark palette, the home page's typeface and
+16px phone gutters.
 
 The [Factory acceptance evidence](validation/factory.md) maps each required
 case to its test and records the local commands and results.

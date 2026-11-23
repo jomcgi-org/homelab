@@ -1,8 +1,8 @@
 .dashboard-chart-plot {
-  min-block-size: 200px;
+  min-block-size: 176px;
 }
 .dashboard-chart-values text {
   fill: var(--color-text-primary);
-  font: 700 0.8125rem var(--font-family-body);
+  font: 700 0.8125rem var(--font-family-home);
   font-variant-numeric: tabular-nums;
 }

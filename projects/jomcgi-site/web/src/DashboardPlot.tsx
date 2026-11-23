@@ -83,7 +83,7 @@ export default function DashboardPlot({
       data={data}
       xKey="slot"
       series={[valueBars]}
-      height={200}
+      height={176}
       margin={{ top: 24, right: 0, left: 0 }}
       yDomain={[0, top]}
       axes={<ChartAxis position="bottom" tickFormat={labelFor} />}

@@ -151,6 +151,59 @@ function IssueList({
     </>
   );
 }
+/** The line: one block for each state, as wide as its share of the issues. */
+function Flow({
+  counts,
+  anchors = false,
+}: {
+  counts: { state: State; count: number }[];
+  anchors?: boolean;
+}) {
+  const shown = counts.filter(({ count }) => count > 0);
+  const total = shown.reduce((sum, { count }) => sum + count, 0);
+  if (!total) return null;
+  let start = 0;
+  return (
+    <div className="flow">
+      <svg
+        className="flow-bar"
+        viewBox={`0 0 ${total} 1`}
+        preserveAspectRatio="none"
+        aria-hidden="true"
+      >
+        {shown.map(({ state, count }) => {
+          const x = start;
+          start += count;
+          return (
+            <rect
+              key={state}
+              data-state={state}
+              x={x}
+              y="0"
+              width={count}
+              height="1"
+            />
+          );
+        })}
+      </svg>
+      <ul className="flow-key">
+        {shown.map(({ state, count }) => (
+          <li key={state} data-state={state}>
+            {anchors ? (
+              <a href={`#${stateId(state)}`}>
+                <strong>{count}</strong> {state}
+              </a>
+            ) : (
+              <span>
+                <strong>{count}</strong> {state}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 function Progress({
   title,
   shipped,
@@ -163,17 +216,14 @@ function Progress({
   if (total <= 0) return <p>No issues yet.</p>;
   return (
     <div className="progress">
-      <p className="progress-figure">
-        {Math.round((shipped / total) * 100)}
-        <span>%</span>
-      </p>
       <progress
         max={total}
         value={shipped}
         aria-label={`${title}: ${shipped} shipped of ${total} issues`}
       />
       <p className="progress-label">
-        {shipped} shipped of {total} issues
+        <strong>{Math.round((shipped / total) * 100)}%</strong> {shipped}{" "}
+        shipped of {total} issues
       </p>
     </div>
   );
@@ -189,12 +239,30 @@ export function StoryPage({
   const mergeHours = story.charts.issueToMergeHours.map(({ value }) => value);
   const reviewRounds = story.charts.reviewRounds.map(({ value }) => value);
   const manyGoals = story.goals.length > 1;
+  const shipped = story.goals.length
+    ? story.goals.reduce((sum, goal) => sum + goal.shipped, 0)
+    : story.recentlyShipped.length;
+  const line = states.map((state) => ({
+    state,
+    count:
+      state === "Shipped"
+        ? shipped
+        : story.workInProgress.filter((issue) => issue.state === state).length,
+  }));
+  // A measure reads as one row: its name, its figure, then its chart.
+  const charted = new Set([
+    "shipped",
+    "firstPass",
+    "mergeHours",
+    "reviewRounds",
+  ]);
+  const figure = (key: string) => lookup(story.stats, key);
   return (
     <>
       <header className="lead">
-        <p className="eyebrow">Homelab / Factory</p>
         <Heading level={1}>{fillStats(story.headline, story.stats)}</Heading>
         <Narrative paragraphs={story.narrative} stats={story.stats} />
+        <Flow counts={line} />
       </header>
       <section aria-labelledby="goals-heading">
         <SectionHead
@@ -230,22 +298,13 @@ export function StoryPage({
       </section>
       <section aria-labelledby="numbers-heading">
         <SectionHead id="numbers-heading" title="The numbers" />
-        <dl className="stats">
-          {Object.entries(story.stats).map(([key, stat]) => (
-            <div key={key}>
-              <dt>{stat.label}</dt>
-              <dd>
-                {formatShort(stat.value)}
-                <span data-unit={stat.unit}>{stat.unit}</span>
-              </dd>
-            </div>
-          ))}
-        </dl>
-        <div className="charts">
+        <div className="measures">
           <DashboardChart
             formatValue={formatShort}
             formatLabel={axisLabel}
             title="Shipped per week"
+            figure={figure("shipped")}
+            note="Total to date"
             unit="issues"
             category="Week"
             points={story.charts.shippedPerWeek}
@@ -254,6 +313,7 @@ export function StoryPage({
             formatValue={formatShort}
             formatLabel={axisLabel}
             title="First-pass review rate"
+            figure={figure("firstPass")}
             unit="%"
             category="Week"
             points={story.charts.firstPassReviewRate}
@@ -262,6 +322,7 @@ export function StoryPage({
           <DashboardChart
             formatValue={formatShort}
             title="Issue-to-merge time"
+            figure={figure("mergeHours")}
             note={medianNote(mergeHours, "hours")}
             unit="issues"
             category="Time from issue to merge"
@@ -270,12 +331,29 @@ export function StoryPage({
           <DashboardChart
             formatValue={formatShort}
             title="Review rounds per PR"
+            figure={figure("reviewRounds")}
             note={medianNote(reviewRounds, "rounds")}
             unit="PRs"
             category="Review rounds"
             points={tallyCounts(reviewRounds)}
           />
         </div>
+        {Object.keys(story.stats).some((key) => !charted.has(key)) && (
+          <dl className="stats">
+            {Object.entries(story.stats).map(
+              ([key, stat]) =>
+                !charted.has(key) && (
+                  <div key={key}>
+                    <dt>{stat.label}</dt>
+                    <dd>
+                      {formatShort(stat.value)}
+                      <span data-unit={stat.unit}>{stat.unit}</span>
+                    </dd>
+                  </div>
+                ),
+            )}
+          </dl>
+        )}
       </section>
       <section aria-labelledby="working-heading">
         <SectionHead
@@ -360,15 +438,13 @@ export function GoalPage({
           count={issues.length}
         />
         {!issues.length && <p>No issues yet.</p>}
-        {groups.length > 1 && (
-          <nav className="tally" aria-label="Issue states">
-            {groups.map(({ state, members }) => (
-              <a key={state} href={`#${stateId(state)}`} data-state={state}>
-                <strong>{members.length}</strong> {state}
-              </a>
-            ))}
-          </nav>
-        )}
+        <Flow
+          anchors
+          counts={groups.map(({ state, members }) => ({
+            state,
+            count: members.length,
+          }))}
+        />
         {groups.map(({ state, members }) => (
           <section
             className="state-group"
@@ -543,53 +619,55 @@ export function TranscriptTurn({ turn }: { turn: Turn }) {
       tabIndex={-1}
       data-role={turn.role}
     >
-      <div className="section-band">
+      <div className="turn-head">
         <h2>
           Turn {turn.number} / {turn.role}
         </h2>
         <time dateTime={turn.at}>{formatInstant(turn.at)}</time>
       </div>
-      {turn.withheld ? (
-        <p className="withheld">{withheldMessage}</p>
-      ) : (
-        <>
-          <Text text={turn.text} />
-          {turn.toolCalls.map((tool, index) => (
-            <details className="tool" key={index}>
-              <summary>Tool call: {tool.name}</summary>
-              <h3>Input</h3>
-              <pre>{tool.input}</pre>
-              <h3>Output</h3>
-              <pre>{tool.output}</pre>
-            </details>
-          ))}
-          {turn.diff !== undefined && (
-            <section
-              className="diff"
-              aria-label={`Diff for turn ${turn.number}`}
-            >
-              <h3>Diff</h3>
-              <pre>
-                {turn.diff.split("\n").map((line, index) => (
-                  <span
-                    key={index}
-                    className={
-                      line.startsWith("+")
-                        ? "addition"
-                        : line.startsWith("-")
-                          ? "deletion"
-                          : undefined
-                    }
-                  >
-                    {line}
-                    {"\n"}
-                  </span>
-                ))}
-              </pre>
-            </section>
-          )}
-        </>
-      )}
+      <div className="turn-body">
+        {turn.withheld ? (
+          <p className="withheld">{withheldMessage}</p>
+        ) : (
+          <>
+            <Text text={turn.text} />
+            {turn.toolCalls.map((tool, index) => (
+              <details className="tool" key={index}>
+                <summary>Tool call: {tool.name}</summary>
+                <h3>Input</h3>
+                <pre>{tool.input}</pre>
+                <h3>Output</h3>
+                <pre>{tool.output}</pre>
+              </details>
+            ))}
+            {turn.diff !== undefined && (
+              <section
+                className="diff"
+                aria-label={`Diff for turn ${turn.number}`}
+              >
+                <h3>Diff</h3>
+                <pre>
+                  {turn.diff.split("\n").map((line, index) => (
+                    <span
+                      key={index}
+                      className={
+                        line.startsWith("+")
+                          ? "addition"
+                          : line.startsWith("-")
+                            ? "deletion"
+                            : undefined
+                      }
+                    >
+                      {line}
+                      {"\n"}
+                    </span>
+                  ))}
+                </pre>
+              </section>
+            )}
+          </>
+        )}
+      </div>
     </article>
   );
 }

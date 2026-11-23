@@ -1,7 +1,15 @@
-/* Factory pages: ink rules, joined panels, mono labels, heavy figures.
- * Each border and block marks a boundary or carries a value. */
+/* Factory pages. Type size and weight carry the structure; a rule only
+ * separates rows. The one loud mark is the line: a block for each state. */
+@font-face {
+  font-family: "Schibsted Grotesk";
+  src: url("../../../../monolith/frontend/preview/fonts/SchibstedGrotesk.ttf")
+    format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
 .factory {
-  font: 1rem/1.6 var(--font-family-body);
+  font: 1rem/1.55 var(--font-family-home);
   overflow-wrap: anywhere;
 }
 .factory * {
@@ -51,57 +59,40 @@
 .factory h1,
 .factory h2,
 .factory h3 {
-  font-family: var(--font-family-body);
+  font-family: var(--font-family-home);
   font-weight: 800;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
   margin: 0;
 }
 .factory h2 {
-  font-size: 1.5rem;
-  line-height: 1.2;
+  font-size: 2rem;
+  line-height: 1.1;
 }
 .factory h3 {
-  font-size: 1.125rem;
-  line-height: 1.3;
+  font-size: 1.25rem;
+  line-height: 1.25;
 }
-/* Labels: small, mono, upper case. */
+.factory strong {
+  font-weight: 700;
+}
+/* Small supporting text. */
 .factory .eyebrow,
-.factory .stats dt,
-.factory figcaption,
-.factory .state,
-.factory .count,
-.factory .trail,
-.factory .jump,
-.factory summary,
-.factory thead th,
-.factory .progress-label,
-.factory .event-heading > span,
-.factory .legend,
-.factory-footer {
-  font: 600 0.75rem/1.5 var(--font-family-code);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.factory .eyebrow,
-.factory .stats dt,
-.factory .progress-label,
-.factory .event-heading > span {
-  color: var(--color-text-secondary);
-}
 .factory time,
 .factory .record-parent,
-.factory figure p {
+.factory .progress-label,
+.factory .chart-note,
+.factory .event-heading > span,
+.factory caption,
+.factory-footer {
   font-size: 0.875rem;
   color: var(--color-text-secondary);
   font-variant-numeric: tabular-nums;
 }
-.factory time {
-  font-family: var(--font-family-code);
-  font-size: 0.8125rem;
-}
 .factory .key {
-  font: 600 0.8125rem/1.95 var(--font-family-code);
-  color: var(--color-text-accent);
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Notices and missing records */
@@ -112,7 +103,7 @@
   font-size: 0.875rem;
   white-space: pre-wrap;
   background: var(--color-background-muted);
-  border-left: 0.5rem solid var(--color-text-primary);
+  border-left: 3px solid var(--color-text-primary);
 }
 
 /* Breadcrumb and transcript jumps */
@@ -120,6 +111,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 0 0.75rem;
+  font-size: 0.875rem;
 }
 .factory nav a {
   max-width: 100%;
@@ -140,38 +132,37 @@
 
 /* Page lead */
 .factory .lead {
-  margin-block: 1.5rem 3rem;
+  margin-block: 2rem 5rem;
 }
 .factory .lead h1 {
-  font-size: clamp(2.5rem, 7vw, 4.5rem);
-  line-height: 1;
-  letter-spacing: -0.04em;
-  margin-block: 0.5rem 1rem;
-  max-width: 18ch;
+  font-size: clamp(3rem, 10vw, 7.5rem);
+  font-weight: 900;
+  line-height: 0.9;
+  letter-spacing: -0.05em;
+  margin-block: 0 1.5rem;
 }
 .factory .record-lead h1 {
-  font-size: clamp(1.75rem, 4vw, 2.5rem);
-  line-height: 1.1;
-  letter-spacing: -0.03em;
-  max-width: 30ch;
+  font-size: clamp(1.875rem, 4.5vw, 3rem);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.035em;
+  max-width: 26ch;
+  margin-top: 0.25rem;
 }
 .factory .lead .eyebrow {
   margin: 0;
 }
-.factory .lead .state {
-  margin-bottom: 0.5rem;
-}
 .factory .narrative {
-  max-width: 44rem;
+  max-width: 42rem;
   white-space: pre-wrap;
 }
 .factory .lead .narrative p:first-child {
-  font-size: 1.125rem;
+  font-size: 1.25rem;
 }
 
 /* Markdown text: issue descriptions and transcript turns */
 .factory .text {
-  max-width: 44rem;
+  max-width: 42rem;
 }
 .factory .text p {
   white-space: pre-wrap;
@@ -199,40 +190,39 @@
   background: var(--color-background-muted);
   padding: 0.1em 0.3em;
 }
-.factory .text strong {
-  font-weight: 700;
-}
 
-/* A section starts at an ink rule. The heading names it; the box counts it. */
+/* Sections: space above, a heavy heading, its count beside it. */
 .factory #factory-content > section {
-  margin-block: 4rem;
-  border-top: 2px solid var(--color-text-primary);
-  padding-top: 0.75rem;
+  margin-block: 5rem;
 }
 .factory .section-head,
 .factory .section-band {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.25rem 1rem;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
 }
 .factory .section-head {
   margin-bottom: 1.25rem;
 }
 .factory .count {
   margin: 0;
-  padding: 0.1rem 0.5rem;
-  background: var(--color-text-primary);
-  color: var(--color-background-body);
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  color: var(--color-border-emphasized);
   font-variant-numeric: tabular-nums;
 }
+.factory .state-group .count {
+  font-size: 1.25rem;
+  line-height: 1.25;
+}
 
-/* State: a square marker and a word, in a box */
+/* State: a square marker and a word */
 .factory .state {
   display: inline-block;
-  padding: 0.15rem 0.45rem;
-  border: 1px solid var(--color-text-primary);
+  font-size: 0.875rem;
   white-space: nowrap;
 }
 .factory .state::before {
@@ -240,46 +230,113 @@
   display: inline-block;
   width: 0.5rem;
   height: 0.5rem;
-  margin-right: 0.45rem;
+  margin-right: 0.5rem;
   background: var(--color-accent);
 }
+.factory .state[data-state="Working"]::before {
+  opacity: 0.45;
+}
 .factory .state[data-state="Shipped"]::before {
-  background: var(--color-blog-success);
+  background: var(--color-text-primary);
 }
 .factory .state[data-state="Stopped"] {
   color: var(--color-text-secondary);
-  border-color: var(--color-border-emphasized);
 }
 .factory .state[data-state="Stopped"]::before {
   background: var(--color-border-emphasized);
 }
 
-/* Joined panels. Each cell draws its own 2px ink edge; the gap makes
- * neighbours share one, at any column count. */
-.factory .chapters,
-.factory .stats,
-.factory .charts,
-.factory .tally {
-  display: grid;
-  gap: 2px;
-  padding: 2px;
+/* The line. Lighter blocks are earlier states; ink is shipped. */
+.factory .flow {
+  margin-top: 2.5rem;
 }
-.factory .chapter,
-.factory .stats > div,
-.factory .charts > .chart,
-.factory .tally > a,
-.factory .burn-up {
-  box-shadow: 0 0 0 2px var(--color-text-primary);
+.factory .flow-bar {
+  display: block;
+  width: 100%;
+  height: 4.5rem;
+}
+.factory .flow-bar rect {
+  fill: var(--color-accent);
+  stroke: var(--color-background-body);
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+}
+.factory .flow-bar [data-state="Working"],
+.factory .flow-key [data-state="Working"]::before {
+  opacity: 0.45;
+}
+.factory .flow-bar [data-state="In merge queue"],
+.factory .flow-key [data-state="In merge queue"]::before {
+  opacity: 0.7;
+}
+.factory .flow-bar [data-state="Shipped"] {
+  fill: var(--color-text-primary);
+}
+.factory .flow-bar [data-state="Stopped"] {
+  fill: var(--color-border);
+}
+.factory .flow-key {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 3rem;
+  margin: 1rem 0 0;
+  padding: 0;
+}
+.factory .flow-key li {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 0.5rem;
+  align-items: baseline;
+}
+.factory .flow-key li::before {
+  content: "";
+  width: 0.75rem;
+  height: 0.75rem;
+  background: var(--color-accent);
+}
+.factory .flow-key [data-state="Shipped"]::before {
+  background: var(--color-text-primary);
+}
+.factory .flow-key [data-state="Stopped"]::before {
+  background: var(--color-border);
+}
+.factory .flow-key strong {
+  font-size: 2.5rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  margin-right: 0.35rem;
+  font-variant-numeric: tabular-nums;
+}
+.factory .flow-key a {
+  color: inherit;
+  text-decoration: none;
+}
+.factory .flow-key a:hover {
+  text-decoration: underline;
+}
+.factory section > .flow {
+  margin-block: 0 3rem;
+}
+.factory section > .flow .flow-bar {
+  height: 2.5rem;
 }
 
-/* Goal chapters */
+/* Goals: a row for each */
 .factory .chapters {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+  border-top: 1px solid var(--color-text-primary);
 }
 .factory .chapter {
-  display: flex;
-  flex-direction: column;
-  padding: 1rem 1.25rem 0.5rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 0.25rem 2rem;
+  align-items: start;
+  padding-block: 1.25rem;
+  border-bottom: 1px solid var(--color-border);
+}
+.factory .chapter .section-band {
+  justify-content: space-between;
 }
 .factory .chapter h3 {
   font-size: 1.5rem;
@@ -287,85 +344,123 @@
 .factory .chapter h3 a {
   color: inherit;
 }
+.factory .chapter .narrative,
+.factory .chapter .more,
+.factory .chapter .unavailable {
+  grid-column: 1;
+}
 .factory .progress {
-  margin-top: auto;
-  padding-top: 0.75rem;
+  grid-column: 2;
+  grid-row: 1 / span 3;
 }
 .factory .progress p {
-  margin: 0;
+  margin: 0.5rem 0 0;
 }
-.factory .progress .progress-figure {
-  font: 800 4rem/1 var(--font-family-body);
-  letter-spacing: -0.04em;
-  margin-bottom: 0.75rem;
-}
-.factory .progress-figure span {
-  font-size: 0.5em;
-  letter-spacing: 0;
-}
-.factory .progress .progress-label {
-  margin-top: 0.5rem;
+.factory .progress-label strong {
+  color: var(--color-text-primary);
+  margin-right: 0.35rem;
 }
 .factory progress {
   display: block;
   width: 100%;
-  height: 1.25rem;
-  border: 2px solid var(--color-text-primary);
+  height: 0.75rem;
+  margin-top: 0.6rem;
+  border: 0;
   appearance: none;
-  background: var(--color-background-body);
-  accent-color: var(--color-accent);
+  background: var(--color-border);
+  accent-color: var(--color-text-primary);
 }
 .factory progress::-webkit-progress-bar {
-  background: var(--color-background-body);
+  background: var(--color-border);
 }
 .factory progress::-webkit-progress-value {
-  background: var(--color-accent);
+  background: var(--color-text-primary);
 }
 .factory progress::-moz-progress-bar {
-  background: var(--color-accent);
+  background: var(--color-text-primary);
 }
 
-/* Numbers */
-.factory .stats {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
-  margin-block: 0 2rem;
-}
-.factory .stats > div {
-  padding: 0.75rem 1rem 1rem;
-}
-.factory .stats dd {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.25rem 0.4rem;
-  margin: 0.5rem 0 0;
-  font: 800 3rem/1 var(--font-family-body);
-  letter-spacing: -0.04em;
-}
-.factory .stats dd span {
-  white-space: nowrap;
-  font: 600 0.75rem var(--font-family-code);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--color-text-secondary);
-}
-.factory .stats dd span[data-unit="%"] {
-  margin-left: -0.3rem;
-  font: 800 1.5rem var(--font-family-body);
-  color: inherit;
-}
-.factory .charts {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 28rem), 1fr));
+/* Measures: name and figure on the left, the evidence on the right. */
+.factory .measures {
+  border-top: 1px solid var(--color-text-primary);
 }
 .factory .chart {
   margin: 0;
-  padding: 0.75rem 1rem 0.25rem;
 }
-.factory figure .chart-note {
-  margin: 0.15rem 0 0;
+.factory .measures .chart {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  grid-template-rows: auto auto auto 1fr;
+  column-gap: 2rem;
+  padding-block: 1.5rem 0.5rem;
+  border-bottom: 1px solid var(--color-border);
+}
+.factory .measures .chart > * {
+  grid-column: 1;
+}
+.factory .measures .dashboard-chart-plot {
+  grid-column: 2;
+  grid-row: 1 / span 4;
+}
+.factory .measures details {
+  align-self: end;
+}
+.factory .measures details[open] {
+  grid-column: 1 / -1;
+}
+.factory figcaption {
+  font-size: 1rem;
+  font-weight: 700;
+}
+.factory .chart-figure {
+  margin: 0.75rem 0 0;
+  color: var(--color-text-secondary);
+}
+.factory .chart-figure strong {
+  display: block;
+  font-size: clamp(3rem, 6vw, 4.5rem);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.05em;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.factory .chart-note {
+  margin: 0.25rem 0 0;
+}
+/* Figures with no chart */
+.factory .stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem 4rem;
+  margin: 1.5rem 0 0;
+}
+.factory .stats dt {
+  font-weight: 700;
+}
+.factory .stats dd {
+  margin: 0.5rem 0 0;
+  font-size: 3rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.05em;
+}
+.factory .stats dd span {
+  margin-left: 0.4rem;
+  font-size: 1rem;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--color-text-secondary);
+}
+.factory .stats dd span[data-unit="%"] {
+  margin-left: 0;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  color: inherit;
 }
 .factory .burn-up {
-  margin: 2px;
+  margin-bottom: 1rem;
 }
 .factory .legend {
   list-style: none;
@@ -374,11 +469,11 @@
   gap: 0.25rem 1.5rem;
   margin: 0.5rem 0;
   padding: 0;
+  font-size: 0.875rem;
   color: var(--color-text-secondary);
 }
 .factory .legend strong {
   color: var(--color-text-primary);
-  font-weight: 700;
 }
 .factory .legend li::before {
   content: "";
@@ -397,10 +492,12 @@
   list-style-position: inside;
   padding-block: 0.6rem;
   cursor: pointer;
+  font-size: 0.875rem;
   color: var(--color-text-accent);
 }
 .factory table {
   width: 100%;
+  max-width: 34rem;
   table-layout: fixed;
   border-collapse: collapse;
   font-size: 0.875rem;
@@ -408,7 +505,6 @@
 .factory caption {
   text-align: left;
   padding-block: 0.5rem;
-  color: var(--color-text-secondary);
 }
 .factory th,
 .factory td {
@@ -419,7 +515,8 @@
   font-variant-numeric: tabular-nums;
 }
 .factory thead th {
-  border-bottom: 2px solid var(--color-text-primary);
+  font-weight: 700;
+  border-bottom-color: var(--color-text-primary);
 }
 
 /* Record lists: key, title, goal, state on one line */
@@ -427,14 +524,14 @@
   list-style: none;
   margin: 0;
   padding: 0;
-  border-top: 2px solid var(--color-text-primary);
+  border-top: 1px solid var(--color-text-primary);
 }
 .factory .records li {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0 1.5rem;
-  border-bottom: 1px solid var(--color-border-emphasized);
+  border-bottom: 1px solid var(--color-border);
 }
 .factory .records li:hover {
   background: var(--color-background-muted);
@@ -447,9 +544,10 @@
   display: grid;
   grid-template-columns: 6rem 1fr;
   align-items: baseline;
-  padding: 0.6rem 0.5rem;
+  padding-block: 0.6rem;
   min-height: 44px;
   color: var(--color-text-primary);
+  font-weight: 500;
   text-decoration: none;
 }
 .factory .record:hover {
@@ -462,65 +560,27 @@
 }
 .factory .records .state {
   order: 1;
-  margin-right: 0.5rem;
+  min-width: 6.5rem;
 }
 .factory .records .unavailable {
   flex-basis: 100%;
   margin-top: 0;
 }
-/* The rest of a long list opens under a full-width bar. */
+/* The rest of a long list opens on request. */
 .factory .more-records > summary {
-  list-style: none;
-  padding: 0.75rem 0.5rem;
-  border-bottom: 2px solid var(--color-text-primary);
-  color: var(--color-text-primary);
-}
-.factory .more-records > summary::-webkit-details-marker {
-  display: none;
-}
-.factory .more-records > summary::before {
-  content: "+ ";
-}
-.factory .more-records[open] > summary::before {
-  content: "− ";
-}
-.factory .more-records > summary:hover {
-  background: var(--color-text-primary);
-  color: var(--color-background-body);
+  padding-block: 0.9rem;
 }
 .factory .more-records .records {
-  border-top: 0;
+  border-top-color: var(--color-border);
 }
 
-/* A goal page counts its states, then lists each. A row repeats neither. */
-.factory .tally {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
-  margin-bottom: 2.5rem;
-}
-.factory .tally > a {
-  display: block;
-  padding: 0.75rem 1rem;
-  color: var(--color-text-primary);
-  text-decoration: none;
-  font: 600 0.75rem/1.5 var(--font-family-code);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.factory .tally strong {
-  display: block;
-  font: 800 2.25rem/1.1 var(--font-family-body);
-  letter-spacing: -0.04em;
-}
-.factory .tally > a:hover {
-  background: var(--color-text-primary);
-  color: var(--color-background-body);
-}
+/* A goal page lists each state. A row repeats neither state nor goal. */
 .factory .state-group {
-  margin-top: 2.5rem;
+  margin-top: 3rem;
   scroll-margin-top: 1rem;
 }
 .factory .state-group .section-band {
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.6rem;
 }
 .factory .state-group .state {
   display: none;
@@ -541,24 +601,21 @@
 }
 .factory .event {
   position: relative;
-  border-left: 2px solid var(--color-text-primary);
+  border-left: 1px solid var(--color-text-primary);
   padding: 0 0 1rem 1.5rem;
 }
 .factory .event::before {
   content: "";
   position: absolute;
-  top: 0.95rem;
-  left: calc(-0.375rem - 1px);
-  width: 0.75rem;
-  height: 0.75rem;
+  top: 1.05rem;
+  left: calc(-0.25rem - 0.5px);
+  width: 0.5rem;
+  height: 0.5rem;
   background: var(--color-text-primary);
 }
 .factory [data-kind="session"] .event::before {
   background: var(--color-background-body);
-  border: 2px solid var(--color-text-primary);
-}
-.factory [data-kind="merged"] .event::before {
-  background: var(--color-blog-success);
+  border: 1px solid var(--color-text-primary);
 }
 .factory .timeline > li:last-child .event {
   padding-bottom: 0;
@@ -569,12 +626,15 @@
   align-items: center;
   gap: 0 1rem;
   min-height: 44px;
+  font-weight: 700;
+}
+.factory .event-heading > span {
+  font-weight: 400;
 }
 .factory .event-heading > a {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
-  font-weight: 700;
 }
 .factory .event p {
   margin-block: 0 0.5rem;
@@ -594,9 +654,10 @@
   min-width: 2rem;
   height: 2rem;
   padding-inline: 0.25rem;
-  border: 1px solid var(--color-text-primary);
+  background: var(--color-background-muted);
   color: var(--color-text-primary);
-  font: 600 0.75rem var(--font-family-code);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
   text-decoration: none;
 }
 .factory .turns a:hover {
@@ -604,54 +665,52 @@
   color: var(--color-background-body);
 }
 
-/* Transcript: one ink box for each turn. The band names the speaker. */
+/* Transcript: the speaker in the margin, the words beside. */
 .factory #transcript {
-  max-width: 50rem;
+  border-top: 1px solid var(--color-text-primary);
 }
 .factory .turn {
-  margin-block: 0 1rem;
-  border: 2px solid var(--color-text-primary);
+  display: grid;
+  grid-template-columns: 12.5rem minmax(0, 1fr);
+  padding-block: 1.25rem;
+  border-bottom: 1px solid var(--color-border);
   scroll-margin-top: 1rem;
 }
-.factory .turn > :not(.section-band) {
-  margin-inline: 1rem;
+.factory .turn-head h2 {
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.55;
+  text-transform: capitalize;
 }
-.factory .turn > :last-child {
-  margin-bottom: 1rem;
+.factory .turn[data-role="user"] .turn-head h2::before {
+  content: "";
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.5rem;
+  background: var(--color-accent);
 }
-.factory .turn .section-band {
-  padding: 0.4rem 1rem;
-  margin-bottom: 0.75rem;
-  border-bottom: 2px solid var(--color-text-primary);
-  background: var(--color-background-muted);
+.factory .turn-body {
+  max-width: 44rem;
 }
-.factory .turn[data-role="user"] .section-band {
-  background: var(--color-text-primary);
-  color: var(--color-background-body);
-}
-.factory .turn[data-role="user"] time {
-  color: inherit;
-}
-.factory .turn .section-band h2 {
-  font: 600 0.75rem/1.5 var(--font-family-code);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+.factory .turn-body > :first-child,
+.factory .turn-body > .text > :first-child {
+  margin-top: 0;
 }
 .factory .tool {
-  border: 1px solid var(--color-text-primary);
-  padding-inline: 0.75rem;
+  border-top: 1px solid var(--color-border);
   margin-top: 0.5rem;
 }
 .factory .tool summary {
-  text-transform: none;
-  letter-spacing: 0;
+  font-family: var(--font-family-code);
+  font-size: 0.8125rem;
 }
 .factory .tool h3,
 .factory .diff h3 {
-  font: 600 0.75rem/1.5 var(--font-family-code);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+  font-weight: 700;
+  letter-spacing: 0;
 }
 .factory .diff {
   margin-top: 1rem;
@@ -675,9 +734,9 @@
 }
 
 .factory-footer {
-  border-top: 2px solid var(--color-text-primary);
+  border-top: 1px solid var(--color-text-primary);
   padding-block: 0.5rem;
-  margin-top: 4rem;
+  margin-top: 5rem;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -685,10 +744,29 @@
   gap: 0 1rem;
 }
 
-/* Wrap transcripts and table cells inside the phone gutters, without clipping. */
+/* Phones: one column, inside the gutters, without clipping. */
 @media (max-width: 40rem) {
   .site:has(.factory) {
     padding-inline: 16px;
+  }
+  .factory .flow-key {
+    gap: 0.75rem 2rem;
+  }
+  .factory .chapter,
+  .factory .measures .chart,
+  .factory .turn {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .factory .progress,
+  .factory .measures .dashboard-chart-plot {
+    grid-column: 1;
+    grid-row: auto;
+  }
+  .factory .measures .dashboard-chart-plot {
+    margin-top: 1rem;
+  }
+  .factory .turn-head {
+    margin-bottom: 0.5rem;
   }
   .factory .record {
     grid-template-columns: 1fr;
@@ -701,6 +779,6 @@
   }
   .factory .timeline time {
     padding: 0.5rem 0 0 1.5rem;
-    border-left: 2px solid var(--color-text-primary);
+    border-left: 1px solid var(--color-text-primary);
   }
 }
