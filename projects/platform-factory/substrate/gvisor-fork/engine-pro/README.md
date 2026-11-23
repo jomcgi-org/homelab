@@ -105,8 +105,10 @@ out, read-only root, no capabilities, 1 GiB, 64 processes:
 
 The secrets are made at run time from a fixed seed (the recipe of the spike,
 which got 10 results from 9 rules on all 1586). The source holds no complete
-token, so secret scanners do not flag it. The count and the rule ids go to the
-job summary. The floor of 5 is a trip wire, not a measurement: after the first
+token, so secret scanners do not flag it. The findings count and the number of
+distinct rules go to the job summary. No rule id, message or matched text is
+printed: the repository is public, so its job logs are too, and the rules are
+Semgrep's. The floor of 5 is a trip wire, not a measurement: after the first
 good run, Joe or a later change can pin the real count.
 
 The slow-client checks of `edge.py` (25 s) are not repeated. They test the OSS
@@ -119,24 +121,48 @@ Workflow `Substrate fork engine image (Pro, private)`
 
 - `publish` off: build, test, scan, discard. Safe to run any time.
 - `publish` on, on `main` only (a run from another branch fails in the first
-  step): the tag `<semgrep version>-<commit12>` must be free. The step fails if
-  the tag exists or if the registry answers with anything but "not found".
-- Then `check-private.sh` asks the registry for the manifest with no
-  credentials (an empty Docker config, an empty environment). Only
-  `UNAUTHORIZED`, `DENIED`, `NAME_UNKNOWN`, `MANIFEST_UNKNOWN` or HTTP 401, 403,
-  404 pass. If the manifest comes back, or the answer is unclear three times,
-  the script deletes the version with `gh api` and the job fails.
+  step), in this order:
 
-Deleting a version with `GITHUB_TOKEN` and `packages: write` is not verified.
-It works only when the workflow's repository has write access to the package,
-which GitHub gives to a package that a workflow created. If the delete fails,
-the job says "DELETE IT BY HAND" in an error: delete the version in the
-package settings and set the package private. A token with more rights is not
-needed for a package this workflow created.
+```text
+canary.sh        push a content-free canary to the package (empty layer, label PRIVATE-CANARY)
+check-private    canary: the pull WITH the login must resolve, then
+                 the pull with NO credentials must be refused
+                 -- not refused: the job fails, the Pro image is NOT pushed --
+tag check        the Pro tag <semgrep version>-<commit12> must be free
+push             the Pro image, to the same package name
+check-private    the same two checks on the Pro image; a digest that does not resolve fails the job
+```
 
-Between the push and the check the image can be public for a few seconds. The
-placeholder token means the real token is not exposed. The Pro binary and the
-rules are, if the check fails. That is part of the licence open item below.
+Why a canary: GitHub does not let `packages: write` delete a version (that
+needs admin rights on the package), and it refuses to delete a version of a
+public package with more than 5000 downloads. So a delete after the push cannot
+be the first defence. The first push to a new package name creates the package,
+and a new version takes the visibility of the package. The canary has no
+proprietary byte, so it can create the package and be public by mistake at no
+cost. The Pro image goes there only after the canary is proven private.
+
+`check-private.sh` has two steps:
+
+1. `crane manifest` of the reference with the login of the workflow. It must
+   resolve. If it does not, the job fails: the push did not land or the name
+   is wrong. A package that does not exist is refused to an anonymous pull in the
+   same way as a private one, so without this step "refused" proves nothing.
+2. The same call with no credentials at all (an empty Docker config, an empty
+   environment). Only `UNAUTHORIZED`, `DENIED`, `NAME_UNKNOWN`,
+   `MANIFEST_UNKNOWN` or HTTP 401, 403, 404 pass. If the manifest comes back, or
+   the answer is unclear three times, the image is not proven private.
+
+On the Pro image, a failed step 2 makes the script try to delete the version
+with `gh api` before the job fails. The delete is best effort. On the canary the
+script does not delete (`--no-delete`): fix the package visibility instead.
+
+**If the check fails, Joe deletes by hand.** The error says "DELETE IT BY HAND".
+Joe (package admin) opens the package in the organisation, deletes the Pro
+version, and sets the package private. If the package was public and the
+version has more than 5000 downloads, GitHub refuses the delete: contact GitHub
+support and rotate nothing else, since the real token was never in the image.
+Until the version is gone, treat the Pro binary and the rules as exposed. That
+is part of the licence open item below.
 
 The image has no `org.opencontainers.image.source` label. The label links a
 package to the public repository, and the package could inherit its access.
@@ -161,17 +187,27 @@ package to the public repository, and the package could inherit its access.
    Read the job summary: the downloaded sizes, the sha256 of the binary, the
    smoke results. Copy `binary_sha256` into `PRO_BINARY_SHA256` in `pins.env`
    (a change through a PR).
-4. **Run with `publish` on.** The job pushes, checks the anonymous pull and
-   prints `engine-pro:<tag>@sha256:...` in the summary.
-5. **Check the package settings once**, in GitHub, Packages, `homelab/substrate-fork/engine-pro`,
-   Package settings:
+4. **Look for an organisation setting that blocks public packages**, before the
+   first publish: GitHub organisation settings, Packages, "Package creation".
+   If it offers a choice, allow only Private for members. This change could not
+   read that setting (it needs organisation admin rights). With public creation
+   off, a new package cannot start public, which is the best protection.
+5. **Run with `publish` on.** The job pushes the canary and checks it, then
+   pushes the Pro image and checks it, and prints `engine-pro:<tag>@sha256:...`
+   in the summary. This first run creates the package.
+6. **Check the package settings right after the first publish**, in GitHub,
+   Packages, `homelab/substrate-fork/engine-pro`, Package settings:
    - visibility is **Private**;
    - "Inherit access from source repository" is **off** (if it is on, switch it
-     off: the repository is public);
+     off: the repository is public). The image has no source label, so it
+     should be off;
    - the package grants the atelet's login read access (below).
 
-   These settings live outside the repository. This change could not verify them.
-6. **Check that atelet can read it.** See the next section.
+   These settings live outside the repository. This change could not verify
+   them. A new version takes the visibility of the package, so a package that
+   is private stays private for later runs, and a later run fails at the canary
+   if someone makes it public.
+7. **Check that atelet can read it.** See the next section.
 
 ## How atelet pulls the private image
 
@@ -204,6 +240,26 @@ Rebuild (a run with `publish` on, on a new commit) only to get a newer engine,
 newer rules or a changed launcher. A rebuild needs a new commit: the tag holds
 the commit and is never overwritten. After a rebuild, change the `image:` line
 of the template in the same change that uses it.
+
+## Known limits
+
+- **The token scan is a net, not a proof.** `token-scan.py` finds the token as
+  it is, backwards, as hex and as base64 (three offsets, also URL-safe). It
+  misses a token that is split into pieces or wrapped over lines (a base64 text
+  with line breaks every 76 characters), and a layer that uses a compression
+  other than gzip (zstd, for example), which it reads as plain bytes. The main
+  defence is that no step writes the token anywhere: only `fetch-pro.py`
+  reads it, and the layer build refuses to run with it in the environment.
+- **`fetch-pro.py` is not tested against the real Semgrep.** The header
+  (`Authorization: Bearer <token>`) and the two endpoints are copied from the
+  Semgrep CLI of the pinned version (`install-semgrep-pro` and the scan
+  configuration call). The test uses a local fake of both. The first workflow
+  run is the first real call. The download uses the standard library, not
+  `semgrep login`, so the token never goes to `~/.semgrep/settings.yml`.
+- **The delete is best effort** (see "Publish and the private package").
+- **The counts in the job log are public.** The log shows sizes, hashes, the
+  findings count and the rule count, not a rule id. The engine's own stderr
+  (last 10 lines, cut to 200 characters) shows only when a smoke run fails.
 
 ## What is reproducible
 
@@ -239,7 +295,8 @@ Until Joe decides, run the workflow with `publish` off only.
 | `forksrv-net.c` | the entrypoint: placeholder token, the Pro flags, exec |
 | `compile.sh`, `make-layer.py`, `build.sh` | build steps; they refuse a token in the environment |
 | `token-scan.py` | looks for the real token in a layer, an image or a directory |
-| `check-private.sh` | the anonymous pull check and the delete |
+| `canary.sh` | pushes the content-free canary image |
+| `check-private.sh` | the authenticated and the anonymous pull check, and the delete |
 | `smoke-pro.py` | planted, clean and edge checks from outside |
 | `targets.json`, `pins.env` | the target (product `secrets`) and the pins of this image |
 | `engine_pro_test.py` | tests that need no Docker, no network and no token (`bazel test` target `engine_pro_test`) |
@@ -251,8 +308,9 @@ Until Joe decides, run the workflow with `publish` off only.
 | Pins, shared sources, launcher contract, launcher with a fake engine | `engine_pro_test.py` |
 | Layer: reproducible, files, modes, placeholder only in `/semgrep/.tok`, token refused | `engine_pro_test.py` |
 | Token scan: plain, reversed, hex, base64, nested layers, chunk edges, placeholder place | `engine_pro_test.py` |
-| Private check: stub `crane` and `gh`: pass, delete and fail, delete fails | `engine_pro_test.py` |
+| Private check: stub `crane` and `gh`: proof first, then refusal; pass, no-proof fail, delete and fail, delete fails | `engine_pro_test.py` |
+| Canary: pushed to a local `crane registry serve`, one empty layer, the label | `engine_pro_test.py` (skips without `crane`) |
 | Download: local fake of the two endpoints; header only, sorted rules, no token in files | `engine_pro_test.py` |
-| Workflow guards: manual only, token in two steps, no `${{ }}` in `run`, main-only publish, check present | `engine_pro_test.py`, only in a plain `pytest` run from a checkout: the Bazel runfiles hold no `.github`, so the test skips there |
+| Workflow guards: manual only, `persist-credentials: false`, job permissions, token in two steps, no `${{ }}` in `run`, main-only publish, canary before the Pro push, check present | `engine_pro_test.py`, only in a plain `pytest` run from a checkout: the Bazel runfiles hold no `.github`, so the test skips there |
 | The Pro engine starts with the placeholder, finds planted secrets, finds none in a clean body | the workflow only (it needs the Pro engine) |
 | The real download, the real push, the anonymous refusal | the workflow only; not run yet |

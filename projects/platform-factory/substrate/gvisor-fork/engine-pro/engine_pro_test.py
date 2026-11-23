@@ -191,7 +191,7 @@ def test_targets_name_the_secrets_product_and_the_same_path() -> None:
 
 
 def test_shell_scripts_parse() -> None:
-    for script in ("build.sh", "compile.sh", "check-private.sh"):
+    for script in ("build.sh", "compile.sh", "check-private.sh", "canary.sh"):
         subprocess.run(["bash", "-n", str(HERE / script)], check=True)
 
 
@@ -575,15 +575,20 @@ REF = "ghcr.io/jomcgi-org/homelab/substrate-fork/engine-pro:1.186.0-abcdef123456
 
 @pytest.fixture
 def stubs(tmp_path: Path) -> Path:
+    """Stub crane and gh. The stub crane tells the two calls of the guard apart: the
+    anonymous one has DOCKER_CONFIG set (an empty dir) and nothing else in its
+    environment; the authenticated one has neither. Each call has its own mode file:
+    `auth` (the call with the login) and `mode` (the anonymous call)."""
     bin_dir = tmp_path / "stubs"
     bin_dir.mkdir()
     (bin_dir / "crane").write_text(
         "#!/usr/bin/env bash\n"
         'dir=$(dirname "$0")\n'
-        "# the guard must call crane with no credentials and no inherited env\n"
-        'env | grep -q -E "^(GH_TOKEN|GITHUB_TOKEN)=" && { echo "LEAK" >>"$dir/log"; }\n'
-        'echo "crane $*" >>"$dir/log"\n'
-        'mode=$(cat "$dir/mode")\n'
+        'if [[ -n "${DOCKER_CONFIG:-}" ]]; then kind=anon; mode=$(cat "$dir/mode"); '
+        'else kind=auth; mode=$(cat "$dir/auth"); fi\n'
+        'echo "crane-$kind $*" >>"$dir/log"\n'
+        "# the anonymous call must have no token and no inherited env\n"
+        'if [[ $kind == anon ]]; then env | grep -q -E "^(GH_TOKEN|GITHUB_TOKEN)=" && echo LEAK >>"$dir/log"; fi\n'
         'case "$mode" in\n'
         "  open) echo '{\"schemaVersion\": 2}'; exit 0 ;;\n"
         '  denied) echo "Error: GET https://ghcr.io/v2/x/manifests/y: UNAUTHORIZED: authentication required" >&2; exit 1 ;;\n'
@@ -609,9 +614,14 @@ def stubs(tmp_path: Path) -> Path:
 
 
 def run_guard(
-    stubs: Path, mode: str, ref: str = REF
+    stubs: Path,
+    mode: str,
+    ref: str = REF,
+    auth: str = "open",
+    flags: tuple[str, ...] = (),
 ) -> tuple[subprocess.CompletedProcess, str]:
     (stubs / "mode").write_text(mode)
+    (stubs / "auth").write_text(auth)
     env = {
         "PATH": f"{stubs}:{os.environ['PATH']}",
         "HOME": str(stubs),
@@ -619,7 +629,7 @@ def run_guard(
         "CHECK_PRIVATE_SLEEP": "0",
     }
     done = subprocess.run(
-        ["bash", str(HERE / "check-private.sh"), ref],
+        ["bash", str(HERE / "check-private.sh"), *flags, ref],
         capture_output=True,
         text=True,
         env=env,
@@ -629,21 +639,38 @@ def run_guard(
 
 
 @pytest.mark.parametrize("mode", ["denied", "notfound"])
-def test_guard_passes_when_the_anonymous_pull_is_refused(
+def test_guard_passes_when_the_image_resolves_and_the_anonymous_pull_is_refused(
     stubs: Path, mode: str
 ) -> None:
     done, log = run_guard(stubs, mode)
     assert done.returncode == 0, done.stderr
-    assert "is refused" in done.stdout
+    assert "is private" in done.stdout
+    # The authenticated call comes first, then the anonymous one.
+    assert log.index("crane-auth manifest") < log.index("crane-anon manifest")
     assert "gh " not in log, "nothing is deleted"
     assert "LEAK" not in log, "crane saw a token in its environment"
+
+
+@pytest.mark.parametrize("auth", ["denied", "notfound", "unknown"])
+def test_guard_fails_when_the_image_does_not_resolve_with_the_login(
+    stubs: Path, auth: str
+) -> None:
+    """A package that does not exist is refused like a private one. Without the
+    authenticated proof the anonymous refusal means nothing."""
+    done, log = run_guard(stubs, "denied", auth=auth)
+    assert done.returncode == 1
+    assert "does not resolve with the workflow's login" in done.stderr
+    assert "NOT proven private" in done.stderr
+    assert log.count("crane-auth manifest") == 3, "three tries"
+    assert "crane-anon" not in log, "no anonymous call after a failed proof"
+    assert "gh " not in log, "no delete: there is nothing to delete"
 
 
 def test_guard_deletes_and_fails_when_the_image_is_public(stubs: Path) -> None:
     done, log = run_guard(stubs, "open")
     assert done.returncode == 1
     assert "NOT refused" in done.stderr
-    assert "crane manifest " + REF in log
+    assert "crane-anon manifest " + REF in log
     assert (
         "gh api --paginate /orgs/jomcgi-org/packages/container/homelab%2Fsubstrate-fork%2Fengine-pro/versions"
         in log
@@ -655,10 +682,19 @@ def test_guard_deletes_and_fails_when_the_image_is_public(stubs: Path) -> None:
     assert "LEAK" not in log
 
 
+def test_guard_with_no_delete_fails_without_calling_gh(stubs: Path) -> None:
+    """The canary holds no proprietary byte: a public package is fixed in the
+    package settings, not by deleting a version."""
+    done, log = run_guard(stubs, "open", flags=("--no-delete",))
+    assert done.returncode == 1
+    assert "Set the package private" in done.stderr
+    assert "gh " not in log
+
+
 def test_guard_treats_an_unclear_answer_as_not_private(stubs: Path) -> None:
     done, log = run_guard(stubs, "unknown")
     assert done.returncode == 1
-    assert log.count("crane manifest") == 3, "three tries"
+    assert log.count("crane-anon manifest") == 3, "three tries"
     assert "DELETE" in log
 
 
@@ -666,6 +702,7 @@ def test_guard_says_so_when_it_cannot_delete(stubs: Path) -> None:
     (stubs / "delete-fails").write_text("")
     done, _ = run_guard(stubs, "open")
     assert done.returncode == 1 and "DELETE IT BY HAND" in done.stderr
+    assert "package admin" in done.stderr and "5000" in done.stderr
     (stubs / "delete-fails").unlink()
     (stubs / "no-version").write_text("")
     done, _ = run_guard(stubs, "open")
@@ -675,6 +712,82 @@ def test_guard_says_so_when_it_cannot_delete(stubs: Path) -> None:
 def test_guard_rejects_a_reference_it_does_not_understand(stubs: Path) -> None:
     done, _ = run_guard(stubs, "denied", "docker.io/library/x:1")
     assert done.returncode == 64
+
+
+# --- the canary --------------------------------------------------------------
+
+
+@pytest.mark.skipif(shutil.which("crane") is None, reason="no crane")
+def test_canary_is_content_free_and_labelled(tmp_path: Path) -> None:
+    """Push the canary to a local registry (`crane registry serve`) and read it back."""
+    import socket
+    import time
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    server = subprocess.Popen(
+        ["crane", "registry", "serve", "--address", f"127.0.0.1:{port}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        ref = f"127.0.0.1:{port}/x/engine-pro:canary-test"
+        for _ in range(50):
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        done = subprocess.run(
+            ["bash", str(HERE / "canary.sh"), ref],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=tmp_path,
+        )
+        assert done.returncode == 0, done.stderr
+        manifest = json.loads(
+            subprocess.run(
+                ["crane", "manifest", ref], capture_output=True, check=True
+            ).stdout
+        )
+        config = json.loads(
+            subprocess.run(
+                ["crane", "config", ref], capture_output=True, check=True
+            ).stdout
+        )
+        assert "PRIVATE-CANARY" in config["config"]["Labels"]
+        assert len(manifest["layers"]) == 1 and manifest["layers"][0]["size"] < 1024
+        layer = subprocess.run(
+            [
+                "crane",
+                "blob",
+                f"127.0.0.1:{port}/x/engine-pro@{manifest['layers'][0]['digest']}",
+            ],
+            capture_output=True,
+            check=True,
+        ).stdout
+        tar_bytes = gzip.decompress(layer)
+        with tarfile.open(fileobj=io.BytesIO(tar_bytes)) as tar:
+            assert tar.getmembers() == [], "the canary layer has no member"
+    finally:
+        server.terminate()
+        server.wait()
+
+
+def test_canary_script_never_reads_the_build_directory_or_the_token() -> None:
+    script = (HERE / "canary.sh").read_text()
+    for needle in (
+        "RUNNER_TEMP",
+        "layer.tar",
+        "image.tar",
+        "/pro",
+        "SEMGREP_APP_TOKEN",
+        "semgrep-core",
+        "rules.json",
+    ):
+        assert needle not in script.replace("# ", ""), needle
 
 
 # --- the fetch script, against a local fake of the two endpoints --------------
@@ -840,6 +953,40 @@ def test_smoke_bodies_have_the_asked_size_and_the_secrets() -> None:
     assert smoke.fake_secrets().count(b"\n") == 24, "ten lines and a 14-line key"
 
 
+def test_the_smoke_client_prints_counts_and_never_a_rule_id() -> None:
+    smoke = load(HERE / "smoke-pro.py", "smoke_pro_counts")
+
+    class Fail(Exception):
+        pass
+
+    class Smoke:
+        @staticmethod
+        def fail(message: str) -> None:
+            raise Fail(message)
+
+    found = [
+        {"check_id": "secret.rules.alpha-token"},
+        {"check_id": "secret.rules.beta-key"},
+    ]
+    line = smoke.check_result(Smoke, {"results": found, "errors": []}, True, 1)
+    assert line == "findings=2 rules=2"
+    for text in ("alpha", "beta", "secret.rules", "ids="):
+        assert text not in line
+    with pytest.raises(Fail) as err:
+        smoke.check_result(Smoke, {"results": found, "errors": []}, False, 1)
+    assert "alpha" not in str(err.value) and "secret.rules" not in str(err.value)
+    with pytest.raises(Fail) as err:
+        smoke.check_result(
+            Smoke,
+            {"results": [], "errors": [{"message": "rule secret.rules.alpha failed"}]},
+            True,
+            1,
+        )
+    assert "alpha" not in str(err.value) and "errors=1" in str(err.value)
+    source = (HERE / "smoke-pro.py").read_text()
+    assert "ids=" not in source.replace("It never prints a rule id", "")
+
+
 def test_no_source_file_holds_a_complete_fake_token() -> None:
     """A complete token in the repository would be flagged by secret scanners; the
     smoke client joins its parts at run time."""
@@ -896,6 +1043,8 @@ def test_workflow_is_manual_one_repository_and_one_image_name(workflow) -> None:
         wf["env"]["IMAGE_REPOSITORY"]
         == "ghcr.io/jomcgi-org/homelab/substrate-fork/engine-pro"
     )
+    # Read-only at the top. The one job has the one write scope it needs: the
+    # publish steps (canary, image, checks) are in it. No other job exists.
     assert wf["permissions"] == {"contents": "read"}
     job = wf["jobs"]["image"]
     assert job["if"] == "github.repository == 'jomcgi-org/homelab'"
@@ -911,6 +1060,11 @@ def test_workflow_is_manual_one_repository_and_one_image_name(workflow) -> None:
         "docker login",
     ):
         assert banned not in text, banned
+    checkouts = [s for s in job["steps"] if "uses" in s]
+    assert len(checkouts) == 1
+    assert checkouts[0]["with"] == {"persist-credentials": False}, (
+        "the checkout must not leave the token in .git/config"
+    )
     for step in job["steps"]:
         if "uses" in step:
             assert step["uses"].startswith("actions/checkout@")
@@ -981,6 +1135,8 @@ def test_the_layer_and_the_test_steps_run_after_the_download_without_the_token(
         "Scan the layer and the image for the token",
         "Refuse to publish from a branch other than main",
         "Log in to ghcr.io",
+        "Publish the canary",
+        "Check that the canary is private",
         "Publish the image",
         "Check that an anonymous pull is refused",
     ]
@@ -1005,7 +1161,7 @@ def test_publish_runs_only_on_main_and_never_overwrites(workflow) -> None:
     main_only = "inputs.publish && github.ref == 'refs/heads/main'"
     for step in steps:
         run = step.get("run", "")
-        if re.search(r"crane auth login|build\.sh push|crane push", run):
+        if re.search(r"crane auth login|build\.sh push|crane push|canary\.sh", run):
             assert step["if"] == main_only, step["name"]
     assert (
         step_named(steps, "Refuse to publish")["if"]
@@ -1027,6 +1183,32 @@ def test_publish_runs_only_on_main_and_never_overwrites(workflow) -> None:
     assert "${SEMGREP_VERSION}-${COMMIT:0:12}" in publish["run"]
 
 
+def test_a_content_free_canary_must_pass_the_check_before_the_pro_image(
+    workflow,
+) -> None:
+    _, wf = workflow
+    steps = wf["jobs"]["image"]["steps"]
+    names = [s.get("name") for s in steps]
+    canary = step_named(steps, "Publish the canary")
+    check = step_named(steps, "Check that the canary is private")
+    publish = step_named(steps, "Publish the image")
+    main_only = "inputs.publish && github.ref == 'refs/heads/main'"
+    assert canary["if"] == main_only and check["if"] == main_only
+    assert names.index("Publish the canary") < names.index(
+        "Check that the canary is private"
+    )
+    assert names.index("Check that the canary is private") < names.index(
+        "Publish the image"
+    )
+    # No "always()" on the canary check or the Pro publish: a failed check skips the push.
+    assert "always()" not in check["if"] and "always()" not in publish["if"]
+    assert "./canary.sh" in canary["run"] and "canary-" in canary["run"]
+    assert "./check-private.sh --no-delete" in check["run"]
+    # The canary and the Pro image go to the same package name.
+    assert "${IMAGE_REPOSITORY}:canary-" in canary["run"]
+    assert "build.sh" not in canary["run"]
+
+
 def test_the_anonymous_pull_must_be_refused_after_the_push(workflow) -> None:
     _, wf = workflow
     steps = wf["jobs"]["image"]["steps"]
@@ -1040,8 +1222,14 @@ def test_the_anonymous_pull_must_be_refused_after_the_push(workflow) -> None:
         "runs after a failed publish that pushed"
     )
     assert "SEMGREP_APP_TOKEN" not in str(guard)
+    # A digest that does not resolve fails the job (no "if digest=..." around it).
+    assert 'digest="$(crane digest "${ref}")"' in guard["run"]
+    assert "if digest=" not in guard["run"] and "2>/dev/null" not in guard["run"]
     script = (HERE / "check-private.sh").read_text()
     assert "env -i" in script and "DOCKER_CONFIG" in script
+    # The authenticated resolve comes before the anonymous call.
+    assert script.index("# Step 1") < script.index("# Step 2")
+    assert script.index('crane manifest "$ref"') < script.index("env -i PATH")
     assert "--method DELETE" in script and "exit 1" in script
 
 

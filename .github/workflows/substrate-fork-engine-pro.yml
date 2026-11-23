@@ -6,8 +6,11 @@
 # no other name. A run with publish off builds the image, tests it and discards
 # it. A run with publish on, on main only, pushes it under the tag
 # <semgrep version>-<commit>, fails if that tag exists or if the registry answers
-# with anything but "not found", and then checks that an anonymous pull is
-# refused. If it is not, the job deletes the version and fails.
+# with anything but "not found". Before the Pro image, a content-free canary
+# goes to the same package: the Pro image is pushed only when an anonymous pull
+# of the canary is refused (and an authenticated one resolves). After the push
+# the same check runs on the Pro image; if it fails, the job tries to delete the
+# version and fails.
 #
 # The real Semgrep token lives in the environment semgrep-pro-build (secret
 # SEMGREP_APP_TOKEN) and is used in two steps only:
@@ -141,7 +144,7 @@ jobs:
             local ip
             ip="$(docker inspect --format "{{ (index .NetworkSettings.Networks \"${NET}\").IPAddress }}" "${name}")"
             if ! python3 -I smoke-pro.py "${ip}" 8080 "$@" | tee -a "${log}"; then
-              docker logs "${name}" >&2 || true
+              docker logs "${name}" 2>&1 | tail -n 10 | cut -c1-200 >&2 || true
               exit 1
             fi
             local code
@@ -187,6 +190,27 @@ jobs:
           TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
         run: crane auth login ghcr.io --username "${ACTOR}" --password-stdin <<<"${TOKEN}"
+      # A content-free canary goes to the package first. It creates the package,
+      # and a new version takes the visibility of the package. The Pro image
+      # follows only when an anonymous pull of the canary is refused and the
+      # authenticated pull resolves. GitHub may refuse to delete a version, so
+      # the check after the push is a second defence, not the first.
+      - name: Publish the canary
+        if: inputs.publish && github.ref == 'refs/heads/main'
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          . ../engine/pins.env
+          ./canary.sh "${IMAGE_REPOSITORY}:canary-${SEMGREP_VERSION}-${COMMIT:0:12}"
+      - name: Check that the canary is private
+        if: inputs.publish && github.ref == 'refs/heads/main'
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          . ../engine/pins.env
+          ./check-private.sh --no-delete "${IMAGE_REPOSITORY}:canary-${SEMGREP_VERSION}-${COMMIT:0:12}"
       - name: Publish the image
         id: publish
         if: inputs.publish && github.ref == 'refs/heads/main'
@@ -221,17 +245,18 @@ jobs:
           . ../engine/pins.env
           ref="${IMAGE_REPOSITORY}:${SEMGREP_VERSION}-${COMMIT:0:12}"
           ./check-private.sh "${ref}"
-          if digest="$(crane digest "${ref}" 2>/dev/null)"; then
-            {
-              echo "### Pro engine image published (private)"
-              echo
-              echo "\`${ref}@${digest}\`"
-              echo
-              echo "An anonymous pull is refused. Next: confirm the package settings and the"
-              echo "pull access of atelet once (see the README of this directory)."
-            } >>"${GITHUB_STEP_SUMMARY}"
-            echo "published ${IMAGE_REPOSITORY}@${digest}"
-          fi
+          # The digest must resolve with the login: a published image with no
+          # digest to pin is a failure, not a summary without a line.
+          digest="$(crane digest "${ref}")"
+          {
+            echo "### Pro engine image published (private)"
+            echo
+            echo "\`${ref}@${digest}\`"
+            echo
+            echo "An anonymous pull is refused. Next: confirm the package settings and the"
+            echo "pull access of atelet once (see the README of this directory)."
+          } >>"${GITHUB_STEP_SUMMARY}"
+          echo "published ${IMAGE_REPOSITORY}@${digest}"
       - name: Summary
         if: '!inputs.publish'
         run: echo "Built and tested. Not published." >>"${GITHUB_STEP_SUMMARY}"
