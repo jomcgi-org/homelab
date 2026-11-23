@@ -744,8 +744,9 @@ def test_spike_script_logs_a_long_golden_error_in_full(
 
 def test_gvisor_fork_slice_is_staged_and_not_wired() -> None:
     # The gVisor sandbox-fork slice lives in ../gvisor-fork. ArgoCD reads only
-    # this directory, so the slice reaches the cluster only when a later
-    # change lists it here and turns the ForkSeed gate on together.
+    # this directory, so the slice reaches the cluster only when a later change
+    # lists it here (step 5 of the enable steps). The ForkSeed gate is a
+    # separate, later change (step 7): test_fork_seed_gate_is_off.
     app = yaml.safe_load(Path(os.environ["SCANNER_APPLICATION"]).read_text())
     paths = [s["path"] for s in app["spec"]["sources"] if "path" in s]
     assert paths == ["projects/platform-factory/substrate/resources"]
