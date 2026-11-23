@@ -17,22 +17,26 @@
 #        - a command-line argument or an environment value (TMPDIR=...)
 #        - a bound unix socket path (/proc/net/unix)
 #      A directory also stays if a postgres process names it, if a mount
-#      point lies under it, or if its name holds a newline. The scan runs again
-#      right before each removal. Removal never crosses a mount point.
-#      GC_TMP_DIR is resolved to its real path first, so a symlinked path
-#      cannot hide a mount point. A subdirectory that the caller cannot read
-#      is opened with chmod before the age check (only with --apply), and a
-#      directory that stays unreadable is kept.
-#      Known gap: a process that holds a directory only by a relative path (a
+#      point lies under it, if it is the source of a bind mount (another
+#      mount of the same filesystem shows the directory or a path inside it),
+#      or if its name holds a newline. The scan runs again right before each
+#      removal if the last scan is more than 2 s old. Removal never crosses a
+#      mount point. Paths are real paths: GC_TMP_DIR is resolved first, so a
+#      symlinked path cannot hide a mount point.
+#      A subdirectory that the caller cannot read hides its files from the age
+#      check. With --apply, the script opens it with chmod, checks again, and
+#      puts the old mode back if it keeps the directory. A dry run keeps it.
+#      Known gaps: a process that holds a directory only by a relative path (a
 #      unix socket bound with a relative path, a relative argument after a
-#      chdir) is not seen.
+#      chdir) is not seen, and a command-line argument or environment value
+#      that names the directory through a symlink is not matched (open files,
+#      working directories and mappings are real paths, so they match).
 #   3. Bazel disk cache files (ac/ and cas/ only) not modified for
 #      --bazel-days (default 7), under BAZEL_DISK_CACHE.
 #
 # It touches nothing else. It does not install a timer. Dry run is the default.
-# It refuses to run as root, unless GOCACHE, BAZEL_DISK_CACHE and GC_TMP_DIR are
-# all set and GC_TMP_DIR is not /tmp. A root run then touches only those three
-# paths, and GC_TMP_DIR matches directories that root owns.
+# It refuses to run as root, with no exception, and it needs HOME to be an
+# absolute path.
 #
 # Usage:
 #   node-disk-gc.sh [--apply] [--go-days N] [--tmp-hours N] [--bazel-days N]
@@ -89,6 +93,18 @@ while [[ $# -gt 0 ]]; do
 	shift
 done
 
+# Root is refused with no exception: as root, -uid would match root-owned
+# directories, and rm ignores permission barriers.
+if [[ "$(id -u)" == 0 ]]; then
+	echo "run as the node operator, not as root" >&2
+	exit 2
+fi
+
+if [[ -z "${HOME:-}" || "$HOME" != /* ]]; then
+	echo "HOME must be an absolute path: '${HOME:-}'" >&2
+	exit 2
+fi
+
 go_cache="${GOCACHE:-$HOME/.cache/go-build}"
 bazel_cache="${BAZEL_DISK_CACHE:-$HOME/.cache/bazel/disk_cache}"
 tmp_root="${GC_TMP_DIR:-/tmp}"
@@ -101,18 +117,28 @@ if [[ "$tmp_root" != /* || "$tmp_root" == / || "$tmp_root" == */ ]]; then
 	exit 2
 fi
 
+# The real path of a directory. bash keeps a leading // (for example from
+# /proc/self/root/tmp), which would defeat the string comparisons below, so
+# the extra slashes go.
 realdir() {
-	(cd "$1" 2>/dev/null && pwd -P)
+	local dir
+	dir="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
+	while [[ "$dir" == //* ]]; do dir=${dir#/}; done
+	printf '%s\n' "$dir"
 }
 
 # Real paths: a symlink in a path must not hide a mount point, and the checks
 # on HOME must see through one.
 home_real="$(realdir "$HOME" || true)"
+if [[ -z "$home_real" ]]; then
+	echo "HOME is not a directory: $HOME" >&2
+	exit 2
+fi
 tmp_real="$(realdir "$tmp_root" || true)"
 
 # Neither / nor the home directory nor a directory that holds it.
 holds_home() {
-	[[ -n "$home_real" && ("$1" == / || "$1" == "$home_real" || "$home_real" == "$1"/*) ]]
+	[[ "$1" == / || "$1" == "$home_real" || "$home_real" == "$1"/* ]]
 }
 
 if [[ -n "$tmp_real" ]] && holds_home "$tmp_real"; then
@@ -122,14 +148,6 @@ fi
 
 # From here on, every path in the test directories is a real path.
 [[ -z "$tmp_real" ]] || tmp_root=$tmp_real
-
-if [[ "$(id -u)" == 0 ]]; then
-	if [[ -z "${GOCACHE:-}" || -z "${BAZEL_DISK_CACHE:-}" || -z "${GC_TMP_DIR:-}" || "$tmp_real" == /tmp || -z "$tmp_real" ]]; then
-		echo "run as the node operator, not as root (a root run needs GOCACHE, BAZEL_DISK_CACHE and GC_TMP_DIR set, and GC_TMP_DIR not /tmp)" >&2
-		exit 2
-	fi
-	echo "running as root on $tmp_real, $go_cache and $bazel_cache only"
-fi
 
 # The checks below read /proc and the mount table. Without them the script
 # cannot tell what is in use, so it stops.
@@ -266,14 +284,97 @@ has_mount() {
 	' "$mountinfo"
 }
 
+# Succeeds when another mount of the same filesystem shows the directory or a
+# path inside it, or a path that holds it (a bind mount whose source is the
+# directory). The directory's own mount is the longest mount point that holds
+# it. Field 3 of the mount table is the device, and field 4 is the root of the
+# mount within the filesystem. A mount of the whole filesystem (root /) counts,
+# so the script keeps too much, never too little.
+is_bind_source() {
+	DIR=$1 awk '
+		function unescape(s,   out, n) {
+			out = ""
+			while (match(s, /\\[0-7][0-7][0-7]/)) {
+				n = substr(s, RSTART + 1, 1) * 64 + substr(s, RSTART + 2, 1) * 8 + substr(s, RSTART + 3, 1)
+				out = out substr(s, 1, RSTART - 1) sprintf("%c", n)
+				s = substr(s, RSTART + RLENGTH)
+			}
+			return out s
+		}
+		BEGIN { dir = ENVIRON["DIR"]; best = -1 }
+		{
+			dev[NR] = $3; root[NR] = unescape($4); mp[NR] = unescape($5)
+			if ((mp[NR] == "/" || mp[NR] == dir || index(dir, mp[NR] "/") == 1) && length(mp[NR]) >= best) {
+				best = length(mp[NR]); own = NR
+			}
+		}
+		END {
+			if (!own) exit 1
+			rel = (mp[own] == "/") ? dir : substr(dir, length(mp[own]) + 1)
+			path = (root[own] == "/") ? rel : root[own] rel
+			for (i = 1; i <= NR; i++) {
+				if (i == own || dev[i] != dev[own]) continue
+				r = root[i]
+				if (r == "/" || r == path || index(path, r "/") == 1 || index(r, path "/") == 1) found = 1
+			}
+			exit !found
+		}
+	' "$mountinfo"
+}
+
 # Prints the reason that a directory must stay, or nothing.
 keep_reason() {
 	local dir=$1
 	if has_mount "$dir"; then
 		echo "mount"
+	elif is_bind_source "$dir"; then
+		echo "mount source"
 	elif in_use "$dir"; then
 		echo "in use"
 	fi
+}
+
+# Prints a file under the directory that is newer than the age limit. The
+# errors of find (an unreadable subdirectory) go to $scratch/err.
+newer_file() {
+	LC_ALL=C find "$1" -mmin "-$((tmp_hours * 60))" -print -quit 2>"$scratch/err" || true
+}
+
+# Opens the unreadable subdirectories that find reports, one at a time, and
+# records each one's mode in $scratch/modes (a path and a mode, null
+# separated). Prints a newer file when the check then finds one. Stops at a
+# directory it cannot open or parse; $scratch/err then still holds the error.
+open_and_check() {
+	local dir=$1 newer round path mode
+	for round in $(seq 1 200); do
+		newer=$(newer_file "$dir")
+		if [[ -n "$newer" || ! -s "$scratch/err" ]]; then
+			echo "$newer"
+			return
+		fi
+		path=$(sed -n "s/^find: '\(.*\)': Permission denied\$/\1/p" "$scratch/err" | head -n 1)
+		if [[ -z "$path" || ! -d "$path" || "$path" != "$dir"/* ]]; then
+			return
+		fi
+		mode=$(stat -c %a -- "$path") || return
+		printf '%s\0%s\0' "$path" "$mode" >>"$scratch/modes"
+		chmod u+rwX -- "$path" 2>/dev/null || return
+	done
+}
+
+# Puts back the modes that open_and_check changed, last change first.
+restore_modes() {
+	local path mode
+	local -a paths=() modes=()
+	while IFS= read -r -d '' path && IFS= read -r -d '' mode; do
+		paths+=("$path")
+		modes+=("$mode")
+	done <"$scratch/modes"
+	local i
+	for ((i = ${#paths[@]} - 1; i >= 0; i--)); do
+		chmod "${modes[i]}" -- "${paths[i]}" 2>/dev/null || true
+	done
+	: >"$scratch/modes"
 }
 
 tmp_total=0
@@ -294,21 +395,24 @@ if [[ -n "$tmp_real" ]]; then
 			continue
 		fi
 		# A subdirectory that the caller cannot read hides its files from the
-		# age check. With --apply, chmod opens it and the check runs again.
-		newer=$(find "$dir" -mmin "-$((tmp_hours * 60))" -print -quit 2>"$scratch/err" || true)
-		if [[ -s "$scratch/err" && -z "$newer" ]]; then
+		# age check. With --apply, open each one with chmod, check again, and
+		# put the old modes back if the directory stays.
+		: >"$scratch/modes"
+		newer=$(newer_file "$dir")
+		if [[ -z "$newer" && -s "$scratch/err" ]]; then
 			if ! $apply; then
 				echo "  keep (unreadable; --apply opens it first): $dir"
 				continue
 			fi
-			chmod -R u+rwX -- "$dir" 2>/dev/null || true
-			newer=$(find "$dir" -mmin "-$((tmp_hours * 60))" -print -quit 2>"$scratch/err" || true)
-			if [[ -s "$scratch/err" && -z "$newer" ]]; then
+			newer=$(open_and_check "$dir")
+			if [[ -z "$newer" && -s "$scratch/err" ]]; then
+				restore_modes
 				echo "  keep (unreadable): $dir"
 				continue
 			fi
 		fi
 		if [[ -n "$newer" ]]; then
+			restore_modes
 			echo "  keep (newer file): $dir"
 			continue
 		fi
