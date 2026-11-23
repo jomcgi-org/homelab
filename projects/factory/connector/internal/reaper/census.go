@@ -3,12 +3,15 @@ package reaper
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 // Pool names a Substrate WorkerPool.
@@ -31,39 +34,104 @@ func holdsWorker(state uint64) bool {
 	return false
 }
 
-// workerPool returns the pool named in an actor's worker assignment
-// (WorkerAssignment.worker_pool, field 2).
-func workerPool(proto []byte) Pool {
-	w := bytesField(bytesField(proto, 5), 2)
-	return Pool{string(bytesField(w, 1)), string(bytesField(w, 2))}
+// ErrCensus means an actor row could not be read with certainty. The census
+// then publishes nothing: a row that decodes to "no worker" would otherwise
+// lower the demand under a live actor.
+var ErrCensus = errors.New("reaper: actor row unreadable")
+
+// strictField returns the bytes of the first field number of the wire type in
+// msg, whether it is present, and an error when msg is not well-formed protobuf.
+func strictField(msg []byte, number protowire.Number, typ protowire.Type) ([]byte, bool, error) {
+	var found []byte
+	var ok bool
+	for len(msg) > 0 {
+		n, t, k := protowire.ConsumeTag(msg)
+		if k < 0 {
+			return nil, false, protowire.ParseError(k)
+		}
+		msg = msg[k:]
+		size := protowire.ConsumeFieldValue(n, t, msg)
+		if size < 0 {
+			return nil, false, protowire.ParseError(size)
+		}
+		if n == number && t == typ && !ok {
+			ok = true
+			switch t {
+			case protowire.BytesType:
+				found, _ = protowire.ConsumeBytes(msg)
+			default:
+				found = msg[:size]
+			}
+		}
+		msg = msg[size:]
+	}
+	return found, ok, nil
+}
+
+// decodeHolder reads the state of one actor row and, when the actor holds a
+// worker, the pool and pod. Every field that decides the count must be present
+// and well-formed: the actor's state (1 to 7), and for a holding state the
+// worker's namespace, pool and pod.
+func decodeHolder(proto []byte) (holds bool, pool Pool, pod string, err error) {
+	bad := func(why string) (bool, Pool, string, error) {
+		return false, Pool{}, "", fmt.Errorf("%w: %s", ErrCensus, why)
+	}
+	status, ok, err := strictField(proto, 5, protowire.BytesType)
+	if err != nil || !ok {
+		return bad("no readable status")
+	}
+	raw, ok, err := strictField(status, 1, protowire.VarintType)
+	if err != nil || !ok {
+		return bad("no readable state")
+	}
+	state, n := protowire.ConsumeVarint(raw)
+	if n < 0 || state < 1 || state > 7 {
+		return bad("state outside 1 to 7")
+	}
+	if !holdsWorker(state) {
+		return false, Pool{}, "", nil
+	}
+	worker, ok, err := strictField(status, 2, protowire.BytesType)
+	if err != nil || !ok {
+		return bad("holding state without a readable worker assignment")
+	}
+	var parts [3][]byte
+	for i, field := range []protowire.Number{1, 2, 3} {
+		v, ok, err := strictField(worker, field, protowire.BytesType)
+		if err != nil || !ok || len(v) == 0 {
+			return bad("holding state with an empty worker namespace, pool or pod")
+		}
+		parts[i] = v
+	}
+	return true, Pool{string(parts[0]), string(parts[1])}, string(parts[2]), nil
 }
 
 // BusyWorkers counts, for each pool, the worker pods that host an actor. A
 // pool's worker runs one actor at a time (ARCHITECTURE.md "Repository
-// bindings"), so distinct pods are the workers a pool cannot lose. Absent,
-// unknown or malformed fields count nothing: this only keeps a worker, it
-// never authorizes an action against one.
-func BusyWorkers(protos [][]byte) map[Pool]int {
+// bindings"), so distinct pods are the workers a pool cannot lose. Unlike the
+// deletion path, which ignores what it cannot read, the count fails on any
+// row it cannot read (ErrCensus): a low count under a live actor would let an
+// autoscaler remove its worker.
+func BusyWorkers(protos [][]byte) (map[Pool]int, error) {
 	pods := make(map[Pool]map[string]struct{})
 	for _, proto := range protos {
-		p, state, _ := actorPlacement(proto)
-		if p.pod == "" || !holdsWorker(state) {
-			continue
+		holds, pool, pod, err := decodeHolder(proto)
+		if err != nil {
+			return nil, err
 		}
-		pool := workerPool(proto)
-		if pool.Name == "" {
+		if !holds {
 			continue
 		}
 		if pods[pool] == nil {
 			pods[pool] = make(map[string]struct{})
 		}
-		pods[pool][p.namespace+"/"+p.pod] = struct{}{}
+		pods[pool][pod] = struct{}{}
 	}
 	out := make(map[Pool]int, len(pods))
 	for pool, set := range pods {
 		out[pool] = len(set)
 	}
-	return out
+	return out, nil
 }
 
 // Census reads every session actor and counts the busy workers per pool.
@@ -84,7 +152,7 @@ func Census(ctx context.Context, actors *sql.DB) (map[Pool]int, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return BusyWorkers(protos), nil
+	return BusyWorkers(protos)
 }
 
 // DemandSourceActors is the source label of the workers that host actors. The
@@ -165,6 +233,26 @@ func (d *Demand) Observe(busy map[Pool]int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.busy, d.taken = busy, d.now()
+}
+
+// Invalidate drops the last census, so the series disappear at once. A census
+// that fails or cannot be read calls it: the metric then has no value and an
+// autoscaler holds its replicas, instead of waiting out maxCensusAge on a
+// number that may be too low.
+func (d *Demand) Invalidate() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.busy = nil
+}
+
+// Latest returns the last census, or false when there is none or it is too old.
+func (d *Demand) Latest() (map[Pool]int, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.busy == nil || d.now().Sub(d.taken) > maxCensusAge {
+		return nil, false
+	}
+	return d.busy, true
 }
 
 // Describe implements prometheus.Collector.
