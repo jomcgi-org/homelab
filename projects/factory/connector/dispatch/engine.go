@@ -146,7 +146,10 @@ type Config struct {
 	ToolLease     time.Duration
 	ForceDelete   time.Duration
 	Links         Links
-	Now           func() time.Time
+	// WorkerWait bounds how long a send waits for its WorkerPool to have a
+	// free worker (workers.go). Zero turns the wait off.
+	WorkerWait time.Duration
+	Now        func() time.Time
 	// AdmissionBudget bounds how long a tick waits for the admission worker.
 	// Reads continue independently when it expires. Zero selects two seconds.
 	AdmissionBudget time.Duration
@@ -184,7 +187,9 @@ type Engine struct {
 	locks                    sync.Map   // run ID -> *sync.Mutex
 	starts                   sync.Mutex // serialize slot checks and starts across admission and delivery
 	// checked holds when each running attempt's session was last checked.
-	checked         sync.Map // attempt ID -> sessionCheck
+	checked sync.Map // attempt ID -> sessionCheck
+	// workerWaits holds when each held send first found no worker.
+	workerWaits     sync.Map // attempt ID -> time.Time
 	admissionPolled sync.Map // run ID -> wall time; oldest admission is polled first
 	admissionCtx    context.Context
 	admissionCancel context.CancelFunc
@@ -1720,6 +1725,9 @@ func (e *Engine) issue(ctx context.Context, r *store.Run, wi *store.WorkItem, b 
 		if err != nil || !ok {
 			return err
 		}
+	}
+	if e.awaitWorker(ctx, a) {
+		return nil
 	}
 	if err := e.guardAttempt(ctx, a, wi); err != nil {
 		return err

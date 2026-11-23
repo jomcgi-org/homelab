@@ -29,6 +29,10 @@ func runReaper(log *slog.Logger) error {
 		return err
 	}
 	demand := reaper.NewDemand(pools)
+	poolList := make([]reaper.Pool, 0, len(pools))
+	for p := range pools {
+		poolList = append(poolList, p)
+	}
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}), demand)
 	addr := os.Getenv("FACTORY_REAPER_METRICS_ADDR")
@@ -89,6 +93,17 @@ func runReaper(log *slog.Logger) error {
 			}
 			if err != nil {
 				log.Error("worker reaper scan", "error", err)
+			}
+			// The connector holds a send until its pool has a free worker. It
+			// reads this row, so a stale or failed census writes none and the
+			// row ages out to "unknown".
+			if busy, fresh := demand.Latest(); lease != nil && fresh {
+				if err := reaper.RecordCapacity(pass, lease, client, poolList, busy); errors.Is(err, reaper.ErrNotLeader) {
+					lease.Close()
+					lease = nil
+				} else if err != nil {
+					log.Error("worker pool capacity", "error", err)
+				}
 			}
 		}
 		cancel()

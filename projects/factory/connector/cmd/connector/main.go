@@ -305,6 +305,7 @@ func run(log *slog.Logger) error {
 		ProgressLease:   time.Duration(cfg.File.Intervals.ProgressLease),
 		ToolLease:       time.Duration(cfg.File.Intervals.ToolLease),
 		ForceDelete:     time.Duration(cfg.File.Intervals.ForceDelete),
+		WorkerWait:      time.Duration(cfg.File.Intervals.WorkerWait),
 		Links:           dispatch.Links(cfg.File.Links),
 		CILogs:          ciLogs,
 		GoalReasons:     goalReasons,

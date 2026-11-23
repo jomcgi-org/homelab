@@ -12,6 +12,7 @@ go_library(
         "human_gate.go",
         "notify.go",
         "planner.go",
+        "poolcapacity.go",
         "pooldemand.go",
         "provenance.go",
         "recovery.go",
@@ -40,6 +41,7 @@ go_test(
     srcs = [
         "deferred_test.go",
         "planner_test.go",
+        "poolcapacity_test.go",
         "pooldemand_test.go",
         "provenance_test.go",
         "recovery_test.go",
