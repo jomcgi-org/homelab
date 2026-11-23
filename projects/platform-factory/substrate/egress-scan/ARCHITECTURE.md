@@ -457,7 +457,7 @@ p95 of one burst of 4 would equal its maximum.
 ## Rollout
 
 Each step stays off until its predecessor is verified. Steps 1 to 8 of
-[gVisor sandbox fork](../../../factory-cluster/README.md#gvisor-sandbox-fork-staged-off)
+[gVisor sandbox fork](../../../factory-cluster/README.md#gvisor-sandbox-fork)
 come first: they end with the conformance Job. The isolation gates X1 to X7 and
 X9, and the X8 waiver (README steps 9 and 10), come before step 6 below, the
 engine atespace. They do not come before the latency runs.
@@ -527,6 +527,6 @@ closes.
 | --- | --- | --- |
 | Fork pools run on the KVM platform in a dedicated WorkerPool | 2026-11-22 | [Fork README, Tenancy](../../../factory-cluster/README.md#tenancy) |
 | One seed serves one atespace. No per-tenant pool, because the code is ours | 2026-11-22 | [Fork README, Tenancy](../../../factory-cluster/README.md#tenancy) |
-| The request body travels over HTTP into the child's own network | 2026-11-22 | [Fork README, enable steps](../../../factory-cluster/README.md#gvisor-sandbox-fork-staged-off) |
+| The request body travels over HTTP into the child's own network | 2026-11-22 | [Fork README, enable steps](../../../factory-cluster/README.md#gvisor-sandbox-fork) |
 | Request path B with a separate gate | 2026-11-23 | This note, reviewed with the cluster steps package |
 | Cluster steps, policy, placeholder token and private package | 2026-11-23 | The "Decided" table above. No HOME issue yet |

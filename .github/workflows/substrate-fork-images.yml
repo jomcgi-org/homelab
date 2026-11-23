@@ -8,8 +8,7 @@
 # the ghcr.io/kagent-dev/substrate names the cluster runs. Tags are not
 # immutable: a later run with the same commit replaces them, so consumers pin
 # the digest the job summary prints. No deployment pin changes here. Switching the control plane to these images is a separate,
-# reviewed step (projects/factory-cluster/README.md, "gVisor sandbox fork
-# (staged, off)").
+# reviewed step (projects/factory-cluster/README.md, "gVisor sandbox fork").
 name: Substrate fork images
 
 on:

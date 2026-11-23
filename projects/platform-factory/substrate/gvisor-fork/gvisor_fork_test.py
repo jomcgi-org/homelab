@@ -2,7 +2,7 @@
 build, and the staging Job and its script check what they fetch. The slice is
 wired with one idle worker; the wired resources' own test
 (../resources/resources_test.py) lists the objects it applies and checks the
-off switches (the suspended Job, ForkSeed on with no fork template)."""
+wiring (the conformance Job runs once, ForkSeed is on with no fork template)."""
 
 from __future__ import annotations
 
@@ -503,9 +503,10 @@ def _conformance_job() -> dict:
     return _one(_docs(), "Job", "gvisor-fork-conformance-3")
 
 
-def test_conformance_job_is_suspended_and_runs_as_ate_client() -> None:
+def test_conformance_job_runs_once_as_ate_client() -> None:
     job = _conformance_job()
-    assert job["spec"]["suspend"] is True
+    # Step 8 of the enable steps: it runs. One pod, no retry.
+    assert job["spec"]["suspend"] is False
     assert job["spec"]["backoffLimit"] == 0
     assert job["spec"]["activeDeadlineSeconds"] <= 3600
     pod = job["spec"]["template"]["spec"]

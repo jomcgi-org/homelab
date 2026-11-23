@@ -4,16 +4,19 @@
 # check). Run it only after the enable steps. The log is the result:
 # grep '^CONFORMANCE '.
 #
-# Off: the directory is wired since step 5, and the Job is created suspended.
-# ../resources/resources_test.py is the wiring guard. In Argo a suspended Job
-# has health Suspended, and the Application then reports Suspended instead of
-# Healthy until the Job runs or goes. Step 8 of the enable steps sets suspend to
-# false. The enable steps are in projects/factory-cluster/README.md,
-# "gVisor sandbox fork".
+# Runs once: the directory is wired since step 5, the Job was created suspended,
+# and step 8 of the enable steps sets suspend to false. ../resources/
+# resources_test.py is the wiring guard. While the Job was suspended, Argo showed
+# health Suspended. It runs one pod (backoffLimit 0) and stays Complete or
+# Failed until it is removed: a Complete Job is Healthy, and a Failed or
+# Pending one leaves the Application Degraded. The enable steps are in
+# projects/factory-cluster/README.md, "gVisor sandbox fork".
 # A Job's pod template is immutable: to run again, change the run suffix in
 # the name. The suffix is 3 because the fork re-pin changed the kubectl-ate
-# image (-2 named the first fork build). To remove the test, delete this file and its
-# kustomization entries after reading the log; ArgoCD then prunes the Job.
+# image (-2 named the first fork build). To suspend it again, set suspend back
+# to true, which Kubernetes allows before the pod is done. To remove the test,
+# delete this file and its kustomization entries after reading the log; ArgoCD
+# then prunes the Job.
 #
 # It runs as ate-system/ate-client, which the ate API already authorizes
 # (ateApi.authorization.bootstrapOwners in ../values/substrate.yaml), so it
@@ -30,7 +33,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "2"
 spec:
-  suspend: true
+  suspend: false
   backoffLimit: 0
   # The worker wait (900 s), the seed (600 s), the forks (120 s), their
   # lifetime (300 s) and the checks around them.
