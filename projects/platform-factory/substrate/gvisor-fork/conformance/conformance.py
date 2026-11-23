@@ -74,7 +74,17 @@ class Failed(Exception):
 
 
 def ate(*args: str) -> subprocess.CompletedProcess:
-    cmd = [str(ATE_BIN), "--endpoint", ENDPOINT, "--token-file", TOKEN_FILE, *args]
+    # --preview sends the Ate-Preview-Allowed header. The API refuses to create
+    # an Actor of a fork template without it (controlapi/fork.go forkForCreate).
+    cmd = [
+        str(ATE_BIN),
+        "--endpoint",
+        ENDPOINT,
+        "--token-file",
+        TOKEN_FILE,
+        "--preview",
+        *args,
+    ]
     try:
         return subprocess.run(
             cmd, capture_output=True, text=True, timeout=CALL_TIMEOUT, check=False
@@ -239,13 +249,24 @@ def variants(text: str) -> dict[str, str]:
     return out
 
 
-def refused(check: str, done: subprocess.CompletedProcess, what: str) -> str:
-    """Fail unless the API refused the call for a reason, and return the reason."""
+def refused(
+    check: str,
+    done: subprocess.CompletedProcess,
+    what: str,
+    expect: str | None = None,
+) -> str:
+    """Fail unless the API refused the call for the right reason; return it.
+
+    expect is a regex the refusal text must match, for a check whose reason
+    matters: a refusal for another reason would pass it for the wrong cause.
+    """
     if done.returncode == 0:
         raise Failed(f"{check}: the API accepted {what}")
     reason = " ".join((done.stderr or done.stdout).split())[:300]
     if not reason or INFRASTRUCTURE.search(reason):
         raise Failed(f"{check}: {what} failed, but not as a refusal: {reason!r}")
+    if expect and not re.search(expect, reason):
+        raise Failed(f"{check}: {what} was refused for another reason: {reason!r}")
     return reason
 
 
@@ -261,26 +282,28 @@ def cleanup() -> None:
     refuses while it holds an actor or a template.
     """
     for atespace in (ATESPACE, OTHER_ATESPACE):
-        listed = ate("get", "actors", "-a", atespace, "-o", "json")
-        if listed.returncode != 0:
-            log(
-                event="cleanup",
-                atespace=atespace,
-                code=listed.returncode,
-                note="absent",
-            )
-            continue
-        for actor in actors(atespace):
-            if role(actor) != "FORK_ROLE_SEED":
-                ate("delete", "actor", name_of(actor), "-a", atespace)
-        for template in templates(atespace):
-            ate("delete", "actor-template", name_of(template), "-a", atespace)
         try:
-            wait_for("the seed removed", STATE_WAIT, lambda a=atespace: seed_gone(a))
+            clean_atespace(atespace)
         except Failed as err:
-            log(event="cleanup_wait", message=repr(str(err)))
-        done = ate("delete", "atespace", atespace)
-        log(event="cleanup", atespace=atespace, code=done.returncode)
+            log(event="cleanup_error", atespace=atespace, message=repr(str(err)))
+
+
+def clean_atespace(atespace: str) -> None:
+    listed = ate("get", "actors", "-a", atespace, "-o", "json")
+    if listed.returncode != 0:
+        log(event="cleanup", atespace=atespace, code=listed.returncode, note="absent")
+        return
+    for actor in actors(atespace):
+        if role(actor) != "FORK_ROLE_SEED":
+            ate("delete", "actor", name_of(actor), "-a", atespace)
+    for template in templates(atespace):
+        ate("delete", "actor-template", name_of(template), "-a", atespace)
+    try:
+        wait_for("the seed removed", STATE_WAIT, lambda: seed_gone(atespace))
+    except Failed as err:
+        log(event="cleanup_wait", message=repr(str(err)))
+    done = ate("delete", "atespace", atespace)
+    log(event="cleanup", atespace=atespace, code=done.returncode)
 
 
 def engine_image_is_pinned(text: str) -> bool:
@@ -348,7 +371,15 @@ def run(workdir: Path, text: str) -> None:
         "--template",
         f"{ATESPACE}/{TEMPLATE}",
     )
-    reason = refused("C5", done, "an actor of another atespace using the template")
+    # The cross-atespace rule (forkForCreate): PermissionDenied, "only Actors in
+    # atespace ... may use it". Another reason (the preview gate, a missing
+    # template) would also refuse the call, so the text is checked.
+    reason = refused(
+        "C5",
+        done,
+        "an actor of another atespace using the template",
+        expect=r"only Actors in atespace",
+    )
     passed("C5", refused="cross-atespace create", reason=repr(reason))
 
     first_fork = names[0]
