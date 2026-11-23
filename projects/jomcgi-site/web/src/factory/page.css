@@ -242,7 +242,9 @@
   line-height: 1.4;
 }
 
-/* State: a small square and a word. Shipped is ink, in review is blue. */
+/* State: a small square and a word. Shipped is solid ink and in review is
+ * solid blue. Working is a blue outline and stopped is a grey outline, so
+ * shape tells the states apart as well as colour. */
 .factory .state {
   display: inline-flex;
   align-items: center;
@@ -261,7 +263,8 @@
 }
 .factory .state[data-state="Working"]::before,
 .factory .floor-key [data-state="Working"]::before {
-  background: var(--factory-working);
+  background: none;
+  box-shadow: inset 0 0 0 2px var(--factory-review);
 }
 .factory .state[data-state="Shipped"]::before,
 .factory .floor-key [data-state="Shipped"]::before,
@@ -275,10 +278,11 @@
 }
 .factory .state[data-state="Stopped"]::before,
 .factory .floor-key [data-state="Stopped"]::before {
-  background: var(--factory-stopped);
+  background: none;
+  box-shadow: inset 0 0 0 2px var(--factory-stopped);
 }
 
-/* The floor: a square for each issue. Ink is shipped; blue is in review. */
+/* The floor: a square for each issue, marked as the states are above. */
 .factory .floor {
   margin-top: 2rem;
 }
@@ -298,7 +302,8 @@
   outline-offset: 1px;
 }
 .factory .floor-grid [data-state="Working"] {
-  background: var(--factory-working);
+  background: none;
+  box-shadow: inset 0 0 0 2px var(--factory-review);
 }
 .factory .floor-grid [data-state="Shipped"],
 .factory .floor-grid [data-state="In merge queue"] {
@@ -309,7 +314,8 @@
 }
 .factory .floor-grid a:not([data-state]),
 .factory .floor-grid [data-state="Stopped"] {
-  background: var(--factory-stopped);
+  background: none;
+  box-shadow: inset 0 0 0 2px var(--factory-stopped);
 }
 .factory .floor-key {
   list-style: none;

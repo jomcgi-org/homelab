@@ -487,8 +487,10 @@ coloured by state, linked to that issue. Each measure is one row: a sentence
 written from the snapshot, then its chart. The exporter's narrative shows
 when the snapshot has one.
 The Factory pages use the site look (see "Site look" below). On the floor a
-shipped issue is ink, work in review is blue and work in progress is a
-lighter blue (`--factory-*` in `palette.css`). A fill carries no text.
+shipped issue is solid ink and work in review is solid blue. Work in
+progress is a blue outline and stopped work is a grey outline
+(`--factory-*` in `palette.css`), so shape tells the states apart as well as
+colour. Each mark meets 3:1 on every background and has its name beside it.
 
 The [Factory acceptance evidence](validation/factory.md) maps each required
 case to its test and records the local commands and results.

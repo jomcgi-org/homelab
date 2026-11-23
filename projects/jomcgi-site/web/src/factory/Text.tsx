@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
  * an anchor only when it points at this repository; elsewhere its text stays. */
 const repository = "https://github.com/jomcgi-org/homelab/";
 const inlinePattern =
-  /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\s][^*\n]*)\*|\[([^\]\n]+)\]\((https:\/\/[^\s)]+)\)/g;
+  /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\s][^*\n]*)\*|\[([^[\]\n]{1,300})\]\((https:\/\/[^\s)]{1,2000})\)/g;
 
 function inline(text: string): ReactNode[] {
   const nodes: ReactNode[] = [];
@@ -31,6 +31,8 @@ function inline(text: string): ReactNode[] {
   return nodes;
 }
 
+const fencePattern = /^\s*```/;
+const headingPattern = /^#{1,6}\s/;
 const itemPattern = /^(\s*)(?:([-*])|(\d+)[.)])\s+(.*)$/;
 type Item = { indent: number; ordered: boolean; lines: string[] };
 
@@ -79,7 +81,14 @@ export function Text({ text }: { text: string }) {
       index++;
     } else if (itemPattern.test(line)) {
       const items: Item[] = [];
-      for (; index < lines.length && lines[index]!.trim(); index++) {
+      for (
+        ;
+        index < lines.length &&
+        lines[index]!.trim() &&
+        !fencePattern.test(lines[index]!) &&
+        !headingPattern.test(lines[index]!);
+        index++
+      ) {
         const match = itemPattern.exec(lines[index]!);
         if (match)
           items.push({

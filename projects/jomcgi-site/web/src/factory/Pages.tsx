@@ -159,8 +159,10 @@ function IssueList({
   );
 }
 const natural = new Intl.Collator("en", { numeric: true });
-/** The floor: one square for each issue, in key order, coloured by state.
- * The squares are a pointer shortcut; the lists hold the same links. */
+/** The floor: one square for each issue, in key order, marked by state.
+ * The squares are a pointer shortcut, outside the tab order. A goal page
+ * lists every issue as a link; the story page lists work in progress and
+ * recent work, and links to each goal. */
 function Floor({
   issues,
   anchors = false,

@@ -51,6 +51,25 @@ it("links only this repository and keeps other link text", () => {
   expect(container.textContent).toBe("a b [c](javascript:alert(1))");
 });
 
+it("ends a list at a code fence or a heading", () => {
+  const { container } = render(
+    <Text
+      text={["- one", "```", "code", "```", "- two", "## Next"].join("\n")}
+    />,
+  );
+  expect(container.querySelectorAll("ul")).toHaveLength(2);
+  expect(container.querySelector("pre")?.textContent).toBe("code");
+  expect(container.querySelector(".text-heading")?.textContent).toBe("Next");
+});
+
+it("reads a long run of brackets in linear time", () => {
+  // An unbounded link pattern took seconds on input like this.
+  const started = performance.now();
+  const { container } = render(<Text text={"[".repeat(100_000)} />);
+  expect(performance.now() - started).toBeLessThan(1_000);
+  expect(container.textContent).toHaveLength(100_000);
+});
+
 it("tallies durations and counts into fixed columns", () => {
   expect(tallyHours([0.5, 6, 23.9, 24, 500]).map(({ value }) => value)).toEqual(
     [1, 1, 1, 1, 0, 1],
