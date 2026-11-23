@@ -373,7 +373,7 @@ def test_deploy_values_let_the_coder_pool_scale_to_zero_behind_a_send_wait():
 
 
 def _render_with_trial(sets: list[str]) -> subprocess.CompletedProcess:
-    """The deploy values with the coder trial's arms (files/coder-trial-values.yaml)."""
+    """The deploy values with the coder trial's arms."""
     argv = [
         os.environ.get("HELM_BIN", "helm"),
         "template",
@@ -398,7 +398,10 @@ def test_a_binding_with_a_non_control_arm_cannot_scale_to_zero():
     # homelab-codex only. At zero such a send has no wake signal and no hold.
     run = _render_with_trial(["agents.codex.autoscaling.minReplicas=0"])
     assert run.returncode != 0
-    assert "has the arm" in run.stderr and "cannot scale to zero" in run.stderr
+    # The message names the binding and the arm's Agent, not "<nil>".
+    assert "binding homelab has the arm" in run.stderr, run.stderr
+    assert "Agent homelab-codex-astra-high" in run.stderr, run.stderr
+    assert "cannot scale to zero" in run.stderr
     # One worker or more is safe: the pool is never empty.
     ok = _render_with_trial(["agents.codex.autoscaling.minReplicas=1"])
     assert ok.returncode == 0, ok.stderr

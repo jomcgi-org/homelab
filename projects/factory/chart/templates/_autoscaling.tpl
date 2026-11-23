@@ -47,9 +47,11 @@ off pool renders byte for byte as before.
 {{- $s := include "factory.workerAutoscaling" (dict "agent" .agent "key" .key "root" .root) | fromJson -}}
 {{- /* A non-control arm stores its sends under the Agent homelab-codex-<arm>, so the capacity row, the pending series and the send wait name a pool the HPA does not scale. At zero, such a send has no wake signal and no hold. */ -}}
 {{- if and $s.enabled (eq (int $s.minReplicas) 0) .binding -}}
+{{- $binding := .binding -}}
+{{- $pool := .pool -}}
 {{- range $arm := (index (.root.Values.connector.bindings | default dict) .binding | default dict).arms -}}
 {{- if ne $arm.name "control" -}}
-{{- fail (printf "autoscaling: binding %s has the arm %q, so its pool cannot scale to zero: a non-control arm sends to the Agent %s-%s, a pool no HPA scales and no capacity row covers; set minReplicas to 1 or more" .binding $arm.name .pool $arm.name) -}}
+{{- fail (printf "autoscaling: binding %s has the arm %q, so its pool cannot scale to zero: a non-control arm sends to the Agent %s-%s, a pool no HPA scales and no capacity row covers; set minReplicas to 1 or more" $binding $arm.name $pool $arm.name) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

@@ -78,6 +78,9 @@ def _render(
         ]
     if trial:
         argv += ["--values", str(_CHART_DIR / "files/coder-trial-values.yaml")]
+        # The deploy values let the coder pool scale to zero, which the chart
+        # refuses with a trial's non-control arms (autoscaling_test.py).
+        argv += ["--set", "agents.codex.autoscaling.minReplicas=1"]
     for override in overrides or []:
         # "string:" sets the value as a string (helm --set-string).
         if override.startswith("string:"):
