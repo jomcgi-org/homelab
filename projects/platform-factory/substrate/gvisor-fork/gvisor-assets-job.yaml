@@ -1,7 +1,9 @@
 # Stages the gVisor fork build (sandboxconfig-gvisor-fork.yaml) in rustfs.
 #
 # Not wired: ../resources/kustomization.yaml does not list this directory, so
-# ArgoCD never applies it (see "Enable" in projects/factory-cluster/README.md).
+# ArgoCD never applies it. ../resources/resources_test.py is the wiring guard;
+# the enable steps are in projects/factory-cluster/README.md, "gVisor sandbox
+# fork (staged, off)".
 # Once wired it is a Sync hook in wave 1, as microvm-assets-init is. Recreated
 # on each sync because a Job's pod template is immutable. Three steps share one
 # volume:

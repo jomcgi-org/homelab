@@ -4,9 +4,10 @@ kind: Kustomization
 # The gVisor sandbox-fork slice 1, staged and OFF. Nothing here reaches the
 # cluster: ArgoCD applies only ../resources (egress-scan/deploy/application.yaml,
 # path projects/platform-factory/substrate/resources), and that directory does
-# not list this one. gvisor_fork_test.py fails if it ever does. The enable
-# steps, the isolation gates and the rollback are in
-# projects/factory-cluster/README.md, "gVisor sandbox fork (staged, off)".
+# not list this one. ../resources/resources_test.py is the wiring guard: it
+# fails if ../resources lists this directory, renders ForkSeed or renders a
+# second SandboxConfig. The enable steps, the isolation gates and the rollback
+# are in projects/factory-cluster/README.md, "gVisor sandbox fork (staged, off)".
 resources:
   - sandboxconfig-gvisor-fork.yaml
   - gvisor-assets-job.yaml
