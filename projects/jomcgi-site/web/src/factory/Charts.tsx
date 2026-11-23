@@ -13,14 +13,6 @@ export function BurnUp({ points }: { points: BurnPoint[] }) {
         <p>No measurements yet.</p>
       ) : (
         <>
-          <ul className="legend">
-            <li data-series="shipped">
-              Shipped <strong>{last.shipped}</strong>
-            </li>
-            <li data-series="scope">
-              Scope <strong>{last.total}</strong>
-            </li>
-          </ul>
           <div
             className="burn-up-plot"
             role="img"

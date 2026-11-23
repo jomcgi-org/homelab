@@ -64,13 +64,15 @@ describe.each(["light", "dark"] as const)("%s theme", (mode) => {
         const bar = screen
           .getByRole("img", { name: /^Shipped per week\./ })
           .querySelector("svg path[fill]");
-        // Three columns in 360px are wider than the cap. The square path
-        // runs from the left edge to the right edge of one column.
+        // The square path runs from the left edge to the right edge of
+        // one column. A column is never wider than the cap.
         const edges = bar
           ?.getAttribute("d")
           ?.match(/^M([\d.]+),[^H]+H([\d.]+)V/);
         expect(edges).not.toBeNull();
-        expect(Number(edges?.[2]) - Number(edges?.[1])).toBeCloseTo(48);
+        const width = Number(edges?.[2]) - Number(edges?.[1]);
+        expect(width).toBeGreaterThan(0);
+        expect(width).toBeLessThanOrEqual(48);
       }
       // Include every chart table and tool call in the accessibility check.
       for (const details of container.querySelectorAll("details"))

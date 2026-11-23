@@ -14,6 +14,7 @@ export function DashboardChart({
   category = "Period",
   points,
   maximum,
+  slots,
   formatValue,
   formatLabel,
 }: {
@@ -27,6 +28,8 @@ export function DashboardChart({
   category?: string;
   points: readonly ChartPoint[];
   maximum?: number;
+  /** The fewest column slots. A shorter series leaves the rest empty. */
+  slots?: number;
   formatValue: (value: number) => string;
   /** A shorter label for the axis. The table keeps the full label. */
   formatLabel?: (label: string) => string;
@@ -52,6 +55,7 @@ export function DashboardChart({
                 points={points}
                 unit={unit}
                 maximum={maximum}
+                slots={slots}
                 formatValue={formatValue}
                 formatLabel={formatLabel}
               />

@@ -21,6 +21,7 @@ function CapValues({ format }: { format: (value: number) => string }) {
       {data.map((row) => {
         const slot = String(row.slot);
         const value = Number(row.value);
+        if (row.value === null) return null;
         return (
           <text
             key={slot}
@@ -40,20 +41,27 @@ export default function DashboardPlot({
   points,
   unit,
   maximum,
+  slots = 0,
   formatValue,
   formatLabel = (label) => label,
 }: {
   points: readonly ChartPoint[];
   unit: string;
   maximum?: number;
+  slots?: number;
   formatValue: (value: number) => string;
   formatLabel?: (label: string) => string;
 }) {
   // Consecutive measurements can share a label. Keep each in its own slot.
-  const data = points.map(({ value }, index) => ({
-    slot: String(index),
-    value,
-  }));
+  // Empty slots after a short series keep each column the same width as
+  // the series grows.
+  const data = Array.from(
+    { length: Math.max(points.length, slots) },
+    (_, index) => ({
+      slot: String(index),
+      value: points[index]?.value ?? null,
+    }),
+  );
   const labelFor = (slot: unknown) =>
     formatLabel(points[Number(slot)]?.label ?? "");
   const valueBars = bar("value", {

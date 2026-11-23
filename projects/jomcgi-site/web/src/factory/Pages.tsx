@@ -33,6 +33,9 @@ import { Text } from "./Text";
 
 /** A long list shows this many rows; the rest open on request. */
 const listLimit = 12;
+/** A weekly chart shows at least this many weeks, so a new series starts
+ * at the left and grows to the right. */
+const weekSlots = 8;
 
 export const withheldMessage =
   "This turn was withheld because it matched the secret scan.";
@@ -296,6 +299,7 @@ export function StoryPage({
             unit="issues"
             category="Week"
             points={story.charts.shippedPerWeek}
+            slots={weekSlots}
           />
           <DashboardChart
             formatValue={formatShort}
@@ -316,7 +320,7 @@ export function StoryPage({
             points={tallyCounts(reviewRounds)}
           />
           <DashboardChart
-            formatValue={formatShort}
+            formatValue={(value) => `${formatShort(value)}%`}
             formatLabel={axisLabel}
             title="First-pass review rate"
             headline={firstPassSentence(story.charts.firstPassReviewRate)}
@@ -324,6 +328,7 @@ export function StoryPage({
             category="Week"
             points={story.charts.firstPassReviewRate}
             maximum={100}
+            slots={weekSlots}
           />
         </div>
       </section>

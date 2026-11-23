@@ -453,30 +453,30 @@
 .factory .burn-up {
   margin-bottom: 1rem;
 }
-.factory .legend {
-  list-style: none;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem 1.5rem;
-  margin: 0.5rem 0;
-  padding: 0;
-  font-size: 0.875rem;
-  color: var(--color-text-secondary);
+/* Burn-up: a quiet grid, an ink baseline, a name at the end of each line. */
+.factory .burn-up-plot svg text {
+  font: 0.8125rem var(--font-family-home);
+  fill: var(--color-text-secondary);
 }
-.factory .legend strong {
-  color: var(--color-text-primary);
+.factory .burn-up-plot svg line {
+  stroke: var(--color-border);
 }
-.factory .legend li::before {
-  content: "";
-  display: inline-block;
-  width: 0.75rem;
-  height: 0.75rem;
-  margin-right: 0.5rem;
-  vertical-align: -0.05rem;
-  background: var(--color-accent);
+.factory .burn-up-plot svg [aria-label="bottom axis"] line,
+.factory .burn-up-plot svg line[pointer-events] {
+  stroke: var(--color-text-primary);
 }
-.factory .legend [data-series="scope"]::before {
-  background: var(--color-text-secondary);
+.factory .burn-up-ends circle {
+  fill: var(--color-accent);
+  stroke: var(--color-background-body);
+  stroke-width: 2;
+}
+.factory .burn-up-ends [data-series="scope"] {
+  fill: var(--color-text-secondary);
+}
+.factory .burn-up-plot .burn-up-ends tspan {
+  fill: var(--color-text-primary);
+  font-size: 0.9375rem;
+  font-weight: 700;
 }
 .factory summary {
   display: list-item;
