@@ -152,16 +152,18 @@ verification needs the deployed services and is a separate acceptance step.
 
 ### Activating and rolling back the Homelab trial
 
-The first release ships arm support with one active control. The split stays
-off until HOME-444, after HOME-246's outcome data is correct
-([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-247#comment-4565)). After the Application
-pins that release and the broker and connector are healthy, copy the bindings
-from `chart/files/coder-trial-values.yaml` into both Homelab values files. The
-scoped chart tests render this overlay. Codex CLI 0.169.1 reports
-`slug=gpt-6-luna` and `apply_patch_tool_type=freeform` in
-`codex debug models --bundled`. [Pinned catalogue entry](https://github.com/openai/codex/blob/c376cf7396eff83ce4c6ac61b9553df142e7a0be/codex-rs/models-manager/models.json#L1045)
+The first release ships arm support with one active control. HOME-444
+defines one arm for each Codex setting on the cost-quality frontier: Sol
+medium, Sol high, Astra medium, Astra high and Astra xhigh (control). The trial
+arms have weight 0, so all new work goes to control. The complexity router
+(HOME-811) assigns the trial arms by a rating of each item
+([decision](https://factory-plan.jomcgi.dev/factory/issue/HOME-444#comment-11016)). The arms stay
+staged in `chart/files/coder-trial-values.yaml` until HOME-811 ships. The
+Homelab coder pool scales to zero, and the chart refuses that with any
+non-control arm. Then copy the bindings into both Homelab values files. The
+scoped chart tests render this overlay.
 
-To stop the trial, set both trial weights to zero and retain their definitions
+To stop the trial, set every trial weight to zero and retain their definitions
 on the arm-capable release. New work goes to control. Assigned work continues
 with its Agent, ModelConfig and broker effort endpoint. Trial resources carry
 ArgoCD prune protection. Keep the compatible connector and broker running
@@ -197,7 +199,8 @@ must have at least one run on the released configuration. Supply the rollout
 timestamp as the psql variable `rollout`.
 
 ```sql
-WITH arms(name) AS (VALUES ('control'), ('astra-high'), ('luna'))
+WITH arms(name) AS (VALUES ('control'), ('sol-medium'), ('sol-high'),
+  ('astra-medium'), ('astra-high'))
 SELECT arms.name, count(DISTINCT r.id) AS coder_runs
 FROM arms
 LEFT JOIN delivery_attempt a ON a.arm = arms.name AND a.task_id IS NOT NULL
