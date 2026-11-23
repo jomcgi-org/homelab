@@ -82,6 +82,10 @@ def _helm(
         # tests that cover them opt in with an override.
         "--set",
         "reviewer.goalReasons.enabled=false",
+        # The reaper's pod access covers the two real pool namespaces; these
+        # tests rename namespaces, so they leave autoscaling to its own tests.
+        "--set",
+        "agents.codex.autoscaling.enabled=false",
     ]
     if enable:
         args += [
