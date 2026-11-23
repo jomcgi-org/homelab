@@ -18,3 +18,4 @@ configMapGenerator:
     files:
       - provision.py=provision.py
       - template.yaml=template.yaml
+      - template.json=template.json
