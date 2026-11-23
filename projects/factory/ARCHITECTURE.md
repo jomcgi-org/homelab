@@ -281,6 +281,7 @@ before the 11-22 fix. The pool leaves 5 only after 30 min with no actor.
 | Adapter, reaper or connector series missing | The metric has no value. The HPA holds its replicas (`ScalingActive=False`). | A pool above zero keeps its workers. A pool at zero stays at zero until someone revives it (see below). |
 | Reaper capacity row stale | The connector sends without waiting. | The send can fail with "no worker has room", as before. |
 | `workerWait` passes with no worker | The send goes and can fail as above. | Find why the pool did not start: `describe hpa`, pod events. |
+| A binding with a non-control arm at `minReplicas: 0` | The arm's sends have no wake signal and no hold. | The chart refuses the render; set `minReplicas: 1`. |
 | `HPAScaleToZero` off | A pool at zero reads as paused and stays there. | Set `minReplicas: 1` while the pool is still at 1 or more. |
 
 **Rollout.** Each step is its own reviewed change:
@@ -290,9 +291,13 @@ before the 11-22 fix. The pool leaves 5 only after 30 min with no actor.
    (#8597).
 3. Raise the coder pool to `minReplicas: 0` and set `intervals.workerWait` in
    the same change. Check the metric first.
-   The HPA takes the pool from 1 to 0 itself after the 30 min scale-down
-   window, so the connector rolls out with `workerWait` well before the first
-   zero.
+   The Argo CD waves put the connector first: the ConfigMap (wave -1), then
+   the connector Deployment (wave 1, which restarts through
+   `checksum/config`), then the HPA (wave 3). So `workerWait` is live before
+   the pool can reach zero. The HPA's 1800 s scale-down window holds the
+   highest recommendation of the last 30 min, so a pool that has read 0 for
+   that long goes from 1 to 0 at the first HPA sync after the new spec
+   applies, not 30 min later.
 4. Enable the reviewer pool, after the chart and connector image that
    publish `pending` at 0 are live: `autoscaling: {enabled: true,
    minReplicas: 3, spare: 2, maxReplicas: 5}` under `agents.reviewer` in
@@ -302,6 +307,15 @@ before the 11-22 fix. The pool leaves 5 only after 30 min with no actor.
    merge before the chart that accepts them is pinned (REVIEW.md "Chart
    before values"). To roll back, revert that change: Argo CD then restores
    `concurrency` (5).
+
+**Precondition for trial arms.** A coder pool with `minReplicas: 0` cannot
+serve a binding that has a non-control arm. The connector stores such a send
+under the Agent `<pool>-<arm>`. The capacity row, the `pending` series and the
+send wait then name a pool that no HPA scales, so at zero the send has no wake
+signal and no hold. The chart fails the render for this combination. A change
+that adds non-control arms (#8582, HOME-811) must set the coder pool's
+`minReplicas` to 1 or more in the same PR, or first make the wait and the
+`pending` series follow the arm's pool to the base pool.
 
 `maxReplicas` is 12 for the coder pool, the fixed pool's size, on nodes that
 request 98% of memory.
@@ -342,10 +356,16 @@ kubectl -n factory-r-homelab get workerpool homelab-codex
 kubectl -n factory-r-homelab get pods -l ate.dev/worker-pool=homelab-codex
 ```
 
-A cold start leaves these traces: the pool's `describe` events show
-`New size: 3`, a pod reaches Ready in about 2 min, and the connector's
-`factory_connector_worker_waits_total` counts `waiting` then `ready`.
-`timeout` means the bound passed.
+After the change that sets `minReplicas: 0`, watch in this order:
+
+1. The connector rolls first (new pod, `workerWait` in its ConfigMap).
+2. The HPA shows `Min replicas: 0`.
+3. The pool reaches 0 in 1 to 3 min, and the HPA records `ScaledToZero=True`.
+4. On the first run at zero, the HPA events show `New size: 3`, a pod is Ready
+   in about 2 min, and `factory_connector_worker_waits_total` counts `waiting`
+   then `ready`.
+
+`timeout` or `unknown` means the gate did not hold.
 
 ### Sandbox checks
 
