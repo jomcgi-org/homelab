@@ -193,7 +193,7 @@ def test_a_directory_that_is_not_a_cache_is_refused(node, base):
     assert result.returncode == 0, result.stderr
     assert (files(node["go"]), files(elsewhere)) == before
     assert "skipped (not a Go build cache" in result.stdout
-    assert "skipped (not a disk_cache directory)" in result.stdout
+    assert "skipped (not a disk_cache directory" in result.stdout
 
 
 def test_age_options(node):
@@ -212,6 +212,9 @@ def test_age_options(node):
         ["--tmp-hours", "-1"],
         ["--tmp-hours", "0"],
         ["--tmp-hours", "08"],
+        ["--tmp-hours", "1000000"],
+        ["--go-days", "99999999999999999999"],
+        ["--bazel-days", "1000000"],
         ["extra"],
     ],
 )
@@ -614,19 +617,28 @@ def test_a_go_cache_that_holds_the_home_directory_is_refused(node, where):
         assert "skipped (not a Go build cache, or it holds the home" in result.stdout
 
 
+@pytest.mark.skipif(
+    shutil.which("unshare") is None or not namespaces_work(),
+    reason="no user namespace on this host: root cannot be tested",
+)
 def test_root_is_refused_with_no_exception(node, base):
+    # A shim named id and an exported function named id cannot hide root.
     fake = base / "bin"
     fake.mkdir()
-    real_id = shutil.which("id")
-    (fake / "id").write_text(
-        f'#!/bin/sh\nif [ "$1" = -u ]; then echo 0; else exec {real_id} "$@"; fi\n'
-    )
+    (fake / "id").write_text("#!/bin/sh\necho 1000\n")
     (fake / "id").chmod(0o755)
     old_tree(node["tmp"] / "pgdata-a")
     before = files(node["tmp"]), files(node["go"]), files(node["bazel"])
     # Every path is set, and GC_TMP_DIR is not /tmp: the old exception.
     env = dict(node["env"], PATH=f"{fake}:{os.environ['PATH']}")
-    result = run(node, "--apply", env=env)
+    env["BASH_FUNC_id%%"] = "() { echo 1000; }"
+    result = subprocess.run(
+        ["unshare", "-Ur", "bash", str(SCRIPT), "--apply"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     assert result.returncode == 2
     assert "not as root" in result.stderr
     assert (files(node["tmp"]), files(node["go"]), files(node["bazel"])) == before
@@ -684,3 +696,43 @@ def test_the_source_of_a_bind_mount_keeps_the_directory(node, base):
     assert (source / "base" / "1" / "relfile").exists()
     assert (inside / "base" / "1" / "relfile").exists()
     assert not gone.exists()
+
+
+def test_a_bazel_cache_symlink_to_the_home_directory_is_refused(node, base):
+    # A link named disk_cache that points at $HOME must not make it a cache.
+    home = node["home"]
+    victim = write(home / "ac" / "f", old=90 * DAY)
+    link = base / "disk_cache"
+    link.symlink_to(home, target_is_directory=True)
+    for path in (link, str(link) + "/"):
+        env = dict(node["env"], BAZEL_DISK_CACHE=str(path))
+        result = run(node, "--apply", env=env)
+        assert result.returncode == 0, result.stderr
+        assert victim.exists()
+        assert "Bazel disk cache" in result.stdout
+        assert (
+            "skipped (not a disk_cache directory, or it holds the home" in result.stdout
+        )
+
+
+def test_a_bazel_cache_symlink_to_a_real_cache_works(node, base):
+    link = base / "disk_cache"
+    link.symlink_to(node["bazel"], target_is_directory=True)
+    env = dict(node["env"], BAZEL_DISK_CACHE=str(link))
+    result = run(node, "--apply", env=env)
+    assert result.returncode == 0, result.stderr
+    assert files(node["bazel"]) == {"cas/cd/new", "gc/lock", "other/old"}
+
+
+def test_a_bazel_cache_that_holds_the_home_directory_is_refused(node, base):
+    # A directory named disk_cache that holds the home directory.
+    holder = base / "holder" / "disk_cache"
+    home = holder / "home"
+    home.mkdir(parents=True)
+    victim = write(holder / "ac" / "f", old=90 * DAY)
+    env = dict(node["env"], HOME=str(home), BAZEL_DISK_CACHE=str(holder))
+    del env["GOCACHE"]
+    result = run(node, "--apply", env=env)
+    assert result.returncode == 0, result.stderr
+    assert victim.exists()
+    assert "skipped (not a disk_cache directory, or it holds the home" in result.stdout
