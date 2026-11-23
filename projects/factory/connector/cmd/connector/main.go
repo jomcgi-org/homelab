@@ -180,6 +180,28 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
+	// Workers the connector's unfinished sends need, per pool (HOME-TBD).
+	// The collector reads on each scrape, so a recorded send shows at once.
+	var pools []metrics.Pool
+	seenPools := map[metrics.Pool]bool{}
+	for _, b := range cfg.File.Bindings {
+		if p := (metrics.Pool{Namespace: b.KagentNamespace, Name: b.KagentAgent}); !seenPools[p] {
+			seenPools[p] = true
+			pools = append(pools, p)
+		}
+	}
+	reg.MustRegister(metrics.NewPoolDemand(pools, func(ctx context.Context) (map[metrics.Pool]int64, error) {
+		attempts, err := st.PendingAttempts(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := make(map[metrics.Pool]int64, len(attempts))
+		for _, a := range attempts {
+			out[metrics.Pool{Namespace: a.Namespace, Name: a.Agent}] += a.Attempts
+		}
+		return out, nil
+	}, func() { m.TickErrors.WithLabelValues("pool_demand").Inc() }))
+
 	var agents []dispatch.Agent
 	for _, a := range cfg.File.Agents {
 		agents = append(agents, dispatch.Agent{Key: a.Key, Concurrency: a.Concurrency})
