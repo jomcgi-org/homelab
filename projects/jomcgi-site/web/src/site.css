@@ -68,14 +68,14 @@
   border-radius: var(--radius-element);
 }
 
-/* Header: the name on the left, one quiet row of links on the right.
- * A hairline separates the groups; their names stay for screen readers. */
+/* Header: the name on the left, a few quiet links on the right. A long
+ * group folds into one menu, so the row is the same on a phone. */
 .site-header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--spacing-3) var(--spacing-6);
+  gap: var(--spacing-2) var(--spacing-6);
 }
 
 .site-brand {
@@ -96,44 +96,77 @@
 .site-nav {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--spacing-2) 0;
+  align-items: center;
+  gap: var(--spacing-1) 1.25rem;
   font-size: 0.9375rem;
 }
 
-.site-nav > li {
-  display: flex;
-  align-items: center;
-}
-
-.site-nav > li + li {
-  margin-left: var(--spacing-4);
-  padding-left: var(--spacing-4);
-  border-left: 1px solid var(--color-border);
-}
-
-.site-nav ul {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--spacing-1) var(--spacing-4);
-}
-
-.site-nav-group {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
-.site-nav a {
+.site-nav a,
+.site-menu summary {
+  display: inline-block;
+  padding-block: var(--spacing-2);
   color: var(--color-text-secondary);
   text-decoration: none;
-  text-underline-offset: 0.3em;
+  cursor: pointer;
 }
 
-.site-nav a:hover {
+.site-nav a:hover,
+.site-menu summary:hover,
+.site-menu[open] summary {
   color: var(--color-text-primary);
+}
+
+.site-menu {
+  position: relative;
+}
+
+.site-menu summary {
+  list-style: none;
+}
+
+.site-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+/* A small chevron, drawn with two borders. */
+.site-menu summary::after {
+  content: "";
+  display: inline-block;
+  width: 0.35em;
+  height: 0.35em;
+  margin-left: 0.45em;
+  border-right: 1.5px solid currentcolor;
+  border-bottom: 1.5px solid currentcolor;
+  transform: translateY(-0.2em) rotate(45deg);
+}
+
+.site-menu ul {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 10;
+  min-width: 11rem;
+  padding: var(--spacing-2);
+  background: var(--color-background-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-container);
+}
+
+.site-menu li a {
+  display: block;
+  padding: var(--spacing-2) var(--spacing-3);
+  border-radius: var(--radius-element);
+  color: var(--color-text-primary);
+}
+
+.site-menu li a:hover {
+  background: var(--color-background-muted);
+}
+
+.site-nav :focus-visible {
+  outline: 2px solid var(--focus-outline-color);
+  outline-offset: 2px;
+  border-radius: var(--radius-inner);
 }
 
 .site-card-link {
@@ -161,47 +194,10 @@
     padding: 1rem;
   }
 
-  /* The nav is one row that scrolls sideways, so it takes one line on any
-   * phone. A link cut by the right edge shows that more follow. */
-  .site-header {
-    flex-direction: column;
-    align-items: stretch;
-    gap: var(--spacing-1);
-  }
-
-  /* Without these the row sets the page's width instead of scrolling. */
-  .site-header,
-  .site-header nav {
-    min-width: 0;
-    max-width: 100%;
-  }
-
-  .site-nav {
-    flex-wrap: nowrap;
-    gap: 0 1.25rem;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  .site-nav::-webkit-scrollbar {
-    display: none;
-  }
-
-  .site-nav > li,
-  .site-nav ul,
-  .site-nav ul > li {
-    display: contents;
-  }
-
-  .site-nav > li + li {
-    margin: 0;
-    padding: 0;
-    border: 0;
-  }
-
-  .site-nav a {
-    padding-block: var(--spacing-2);
-    white-space: nowrap;
+  /* On a phone the menu opens from its left edge, inside the gutter. */
+  .site-menu ul {
+    right: auto;
+    left: 0;
   }
 }
 
