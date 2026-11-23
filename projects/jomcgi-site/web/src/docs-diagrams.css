@@ -1,8 +1,9 @@
 .docs-diagram {
   max-width: 100%;
   overflow-x: auto;
-  font-family: var(--font-family-body);
+  font-family: var(--font-family-diagram);
   font-size: 16px;
+  letter-spacing: normal;
   line-height: 1.5;
   color: var(--color-text-primary);
 }

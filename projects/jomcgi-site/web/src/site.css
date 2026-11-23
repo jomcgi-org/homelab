@@ -8,6 +8,25 @@
   gap: var(--spacing-8);
 }
 
+/* Type: one family. A page title is upper case at regular weight; other
+ * headings are sentence case at medium weight. */
+.site {
+  font-family: var(--font-family-body);
+  letter-spacing: 0.01em;
+}
+
+.site-main h1 {
+  font-size: clamp(2rem, 4.5vw, 3.25rem);
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  line-height: 1.1;
+}
+
+.site-main :is(h2, h3, h4) {
+  font-weight: 500;
+}
+
 /* Header: the name on the left, one quiet row of links on the right.
  * A hairline separates the groups; their names stay for screen readers. */
 .site-header {

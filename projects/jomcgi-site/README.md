@@ -436,6 +436,19 @@ After the dev deploy, the HOME-207 delivery owner verifies these six URLs on
 meta/header rules, catalog bytes and browser accessibility. That live check
 remains pending until this revision is deployed.
 
+## Site look
+
+`web/src/palette.css` and `web/src/site.css` set one look for every page:
+
+| Part | Rule |
+| --- | --- |
+| Ground | Warm paper (`--color-background-body`). A surface is white (`--color-background-surface`). |
+| Lines | No outline around a panel. A hairline separates rows. |
+| Type | Schibsted Grotesk, self-hosted. A page title is upper case at regular weight. |
+| Links | Ink, underlined in text. The accent tokens are ink. |
+| Nav | One row of ink links. A hairline separates the groups. |
+| Diagrams | Keep `--font-family-diagram`, the stack their layouts are measured with. |
+
 ## Factory preview (HOME-224)
 
 `web/factory/index.html` is the pre-rendered shell for `/factory`.
@@ -469,8 +482,7 @@ The story opens with a statement and the floor: one square for each issue,
 coloured by state, linked to that issue. Each measure is one row: a sentence
 written from the snapshot, then its chart. The exporter's narrative shows
 when the snapshot has one.
-The Factory pages share one look: warm paper, open space, white panels with
-no outline, upper-case display type in the home page's typeface, and one flat
+The Factory pages use the site look (see "Site look" below) and add one flat
 fill for each state (`--factory-*` in `palette.css`). The fills sit on the
 dark floor and carry no text. The measures sit on a full-width band. Phone
 gutters are 16px.

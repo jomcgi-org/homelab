@@ -49,10 +49,16 @@
   list-style: none;
   padding: 0;
 }
+/* A tag is a white chip on the paper. The current one is solid ink. */
 .blog-tags a {
   display: inline-block;
-  padding: 0.35rem 0.6rem;
-  border: 1px solid var(--color-border-emphasized);
+  padding: 0.35rem 0.75rem;
+  background: var(--color-background-surface);
+  font-size: 0.875rem;
+  text-decoration: none;
+}
+.blog-tags a:hover {
+  text-decoration: underline;
 }
 .blog-tags [aria-current] {
   color: var(--color-on-accent);
@@ -101,7 +107,7 @@
 }
 .blog .fig {
   margin: 1.5rem 0;
-  border: 1px solid var(--color-border);
+  background: var(--color-background-surface);
 }
 .blog figcaption {
   padding: 0.75rem 1rem;

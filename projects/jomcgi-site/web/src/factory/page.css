@@ -2,16 +2,7 @@
  * outline, upper-case display type, and one flat fill for each state. The
  * fills are loud on the dark floor and carry no text. A coloured band marks
  * the measures. */
-@font-face {
-  font-family: "Schibsted Grotesk";
-  src: url("../../../../monolith/frontend/preview/fonts/SchibstedGrotesk.ttf")
-    format("truetype");
-  font-weight: 100 900;
-  font-style: normal;
-  font-display: swap;
-}
 body:has(.factory) {
-  background: var(--factory-paper);
   overflow-x: clip;
 }
 .factory {
@@ -48,7 +39,7 @@ body:has(.factory) {
   left: 16px;
   padding: 0.75rem;
   transform: translateY(-200%);
-  background: var(--color-background-body);
+  background: var(--color-background-surface);
   z-index: 2;
 }
 .factory .skip-link:focus {
@@ -127,7 +118,7 @@ body:has(.factory) {
 .factory .timeline,
 .factory #transcript,
 .factory .record-lead .text {
-  background: var(--color-background-body);
+  background: var(--color-background-surface);
 }
 
 /* Notices and missing records */
@@ -137,7 +128,7 @@ body:has(.factory) {
   padding: 0.6rem 0.75rem;
   font-size: 0.875rem;
   white-space: pre-wrap;
-  background: var(--color-background-body);
+  background: var(--color-background-surface);
   border-left: 4px solid var(--factory-sun);
 }
 
@@ -236,7 +227,7 @@ body:has(.factory) {
 }
 .factory .text code {
   font: 0.875em var(--font-family-code);
-  background: var(--factory-paper);
+  background: var(--color-background-body);
   padding: 0.1em 0.3em;
 }
 .factory .text a {
@@ -306,7 +297,7 @@ body:has(.factory) {
 }
 .factory .state[data-state="In merge queue"]::before,
 .factory .floor-key [data-state="In merge queue"]::before {
-  background: var(--color-background-body);
+  background: var(--color-background-surface);
 }
 .factory .state[data-state="Stopped"]::before,
 .factory .floor-key [data-state="Stopped"]::before {
@@ -331,7 +322,7 @@ body:has(.factory) {
   background: var(--factory-coral);
 }
 .factory .floor-grid a:hover {
-  outline: 2px solid var(--color-background-body);
+  outline: 2px solid var(--color-background-surface);
   outline-offset: 1px;
 }
 .factory .floor-grid [data-state="Working"] {
@@ -341,7 +332,7 @@ body:has(.factory) {
   background: var(--factory-sun);
 }
 .factory .floor-grid [data-state="In merge queue"] {
-  background: var(--color-background-body);
+  background: var(--color-background-surface);
 }
 .factory .floor-grid a:not([data-state]),
 .factory .floor-grid [data-state="Stopped"] {
@@ -516,7 +507,7 @@ body:has(.factory) {
   stroke-width: 2;
 }
 .factory .burn-up-ends [data-series="scope"] {
-  fill: var(--color-background-body);
+  fill: var(--color-background-surface);
 }
 .factory .burn-up-plot .burn-up-ends tspan {
   fill: var(--color-text-primary);
@@ -569,7 +560,7 @@ body:has(.factory) {
   border-top: 1px solid var(--color-border);
 }
 .factory .records li:hover {
-  background: var(--factory-paper);
+  background: var(--color-background-body);
 }
 .factory .record-row {
   display: contents;
@@ -606,7 +597,7 @@ body:has(.factory) {
   margin-top: 1rem;
   padding: 0.75rem 1.25rem;
   background: var(--color-text-primary);
-  color: var(--color-background-body);
+  color: var(--color-background-surface);
 }
 .factory .more-records > summary::-webkit-details-marker {
   display: none;
@@ -701,13 +692,13 @@ body:has(.factory) {
   min-width: 2rem;
   height: 2rem;
   padding-inline: 0.25rem;
-  background: var(--factory-paper);
+  background: var(--color-background-body);
   font: 0.75rem var(--font-family-home-code);
   text-decoration: none;
 }
 .factory .turns a:hover {
   background: var(--color-text-primary);
-  color: var(--color-background-body);
+  color: var(--color-background-surface);
 }
 
 /* Transcript: the speaker in the margin, the words beside. */
@@ -721,7 +712,7 @@ body:has(.factory) {
   border-top: 1px solid var(--color-border);
 }
 .factory .turn[data-role="user"] {
-  background: var(--factory-paper);
+  background: var(--color-background-body);
 }
 .factory .turn-head h2 {
   font: 0.75rem/1.5 var(--font-family-home-code);
@@ -758,7 +749,7 @@ body:has(.factory) {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
-  background: var(--factory-paper);
+  background: var(--color-background-body);
   padding: 0.75rem;
   margin-block: 0.5rem 0.75rem;
   max-width: 100%;

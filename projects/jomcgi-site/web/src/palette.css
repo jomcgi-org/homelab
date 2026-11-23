@@ -1,15 +1,24 @@
+@font-face {
+  font-family: "Schibsted Grotesk";
+  src: url("../../../monolith/frontend/preview/fonts/SchibstedGrotesk.ttf")
+    format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* Sheet palette and typography, copied as values so this app stands alone.
  * The pinned neutral theme supplies the built component CSS and spacing.
  */
 [data-astryx-theme="neutral"] {
-  --color-accent: light-dark(#1f4f9f, #d3a45f);
+  --color-accent: light-dark(#26231c, #e8e5dc);
   --color-on-accent: light-dark(#ffffff, #181a20);
-  --color-text-accent: light-dark(#1f4f9f, #d3a45f);
-  --color-icon-accent: light-dark(#1f4f9f, #d3a45f);
-  --color-background-body: light-dark(#ffffff, #181a20);
+  --color-text-accent: light-dark(#26231c, #e8e5dc);
+  --color-icon-accent: light-dark(#26231c, #e8e5dc);
+  --color-background-body: light-dark(#f4efea, #201f1d);
   --color-background-surface: light-dark(#ffffff, #181a20);
   --color-background-card: light-dark(#ffffff, #181a20);
-  --color-background-muted: light-dark(#f5f6f8, #1c1e26);
+  --color-background-muted: light-dark(#ebe5de, #2a2927);
   --color-text-primary: light-dark(#26231c, #e8e5dc);
   --color-text-secondary: light-dark(#625d50, #a5a297);
   --color-border: light-dark(#d5d7dc, #393b43);
@@ -30,18 +39,22 @@
   --color-stars-low: light-dark(#155e75, #67e8f9);
   --color-stars-mid: light-dark(#854d0e, #fde047);
   --color-stars-high: light-dark(#9f1239, #fda4af);
-  /* Factory: warm paper, a dark floor, and one flat fill for each state.
-   * A fill carries no text; its name sits beside it. */
-  --factory-paper: light-dark(#f4efea, #201f1d);
+  /* The site: warm paper for the page, white for a surface, ink for text and
+   * links. Factory adds a dark floor and one flat fill for each state. A
+   * fill carries no text; its name sits beside it. */
   --factory-night: light-dark(#26231c, #0e0e0d);
   --factory-band: light-dark(#97d4ff, #2a6f9f);
   --factory-sun: #ffde00;
   --factory-coral: #ff7169;
   --factory-sky: #6fc2ff;
   --factory-idle: #7d7970;
-  --font-family-body: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --font-family-body:
+    "Schibsted Grotesk", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  /* Diagram layouts are measured with this stack. Keep it apart from the
+   * page typeface so a label still fits its node. */
+  --font-family-diagram: "Avenir Next", "Segoe UI", system-ui, sans-serif;
   --font-family-heading:
-    "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    "Schibsted Grotesk", "Avenir Next", "Segoe UI", system-ui, sans-serif;
   --font-family-home:
     "Schibsted Grotesk", "Avenir Next", "Segoe UI", system-ui, sans-serif;
   --font-family-home-code: ui-monospace, "SF Mono", "Cascadia Mono", monospace;
