@@ -34,8 +34,9 @@ concurrency:
 env:
   KO_DOCKER_REPO: ghcr.io/jomcgi-org/homelab/substrate-fork
   # ateapi and atecontroller are the control plane, atelet runs on each node,
-  # ateworker-gvisor is the worker image of the kvm pool.
-  COMPONENTS: ateapi atecontroller atelet ateworker-gvisor
+  # ateworker-gvisor is the worker image of the kvm pool, and kubectl-ate is the
+  # CLI of the conformance Job (the fork's API has fields v1.0.1's CLI rejects).
+  COMPONENTS: ateapi atecontroller atelet ateworker-gvisor kubectl-ate
 
 jobs:
   images:
