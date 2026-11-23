@@ -1,0 +1,226 @@
+# Stages the gVisor fork build (sandboxconfig-gvisor-fork.yaml) in rustfs.
+#
+# Not wired: ../resources/kustomization.yaml does not list this directory, so
+# ArgoCD never applies it (see "Enable" in projects/factory-cluster/README.md).
+# Once wired it is a Sync hook in wave 1, as microvm-assets-init is. Recreated
+# on each sync because a Job's pod template is immutable. Three steps share one
+# volume:
+#   list   the keys already under the asset prefix (aws-cli)
+#   fetch  the fork build release, checked against its sha256 and repacked
+#          without the release/ prefix (assets/stage.py), unless the key is there
+#   upload what fetch kept, then check the pinned key exists (aws-cli)
+# A sync that finds the key downloads nothing.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gvisor-fork-assets-init
+  namespace: ate-system
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        app: gvisor-fork-assets-init
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: list
+          image: amazon/aws-cli:2.38.5@sha256:c8156a0e74e13929a42d7e60f0d4e14e7d28d980cd21822505d4bff80e5460c1
+          env:
+            - name: HOME
+              value: /tmp
+            - name: AWS_REGION
+              value: us-east-1
+            - name: AWS_ENDPOINT_URL
+              value: http://rustfs.ate-system.svc:9000
+            - name: BUCKET
+              value: ate-snapshots
+            - name: PREFIX
+              value: gvisor-fork-assets
+            - name: ARCH
+              value: amd64
+          envFrom:
+            - secretRef:
+                name: snapshot-store-credentials
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              for i in $(seq 1 60); do
+                if aws s3api list-objects-v2 --bucket "$BUCKET" \
+                    --prefix "$PREFIX/$ARCH/" --query 'Contents[].Key' \
+                    --output text >/work/existing.raw; then
+                  tr '\t' '\n' </work/existing.raw >/work/existing.txt
+                  echo "keys already staged:"; cat /work/existing.txt
+                  exit 0
+                fi
+                echo "waiting for rustfs ($i/60)"
+                sleep 5
+              done
+              echo "timed out waiting for rustfs"
+              exit 1
+          resources:
+            requests:
+              cpu: 10m
+              memory: 128Mi
+              ephemeral-storage: 64Mi
+            limits:
+              memory: 256Mi
+              ephemeral-storage: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: work
+              mountPath: /work
+        - name: fetch
+          # The standard library reads the .tar.gz and writes the .tar, so
+          # nothing is installed at run time.
+          image: python:3.14.10-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f
+          command: [python3, -I, /config/stage.py]
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+          # The 43 MB archive and the 124 MB repacked tar land on the volume.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+              ephemeral-storage: 512Mi
+            limits:
+              memory: 1Gi
+              ephemeral-storage: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: work
+              mountPath: /work
+            - name: config
+              mountPath: /config
+              readOnly: true
+      containers:
+        - name: upload
+          image: amazon/aws-cli:2.38.5@sha256:c8156a0e74e13929a42d7e60f0d4e14e7d28d980cd21822505d4bff80e5460c1
+          env:
+            - name: HOME
+              value: /tmp
+            - name: AWS_REGION
+              value: us-east-1
+            - name: AWS_ENDPOINT_URL
+              value: http://rustfs.ate-system.svc:9000
+            - name: BUCKET
+              value: ate-snapshots
+            - name: PREFIX
+              value: gvisor-fork-assets
+            - name: ARCH
+              value: amd64
+          envFrom:
+            - secretRef:
+                name: snapshot-store-credentials
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              for f in /work/assets/*; do
+                [ -f "$f" ] || continue
+                sha="$(basename "$f")"
+                aws s3 cp --only-show-errors "$f" "s3://$BUCKET/$PREFIX/$ARCH/$sha"
+                echo "uploaded $PREFIX/$ARCH/$sha"
+              done
+              aws s3api list-objects-v2 --bucket "$BUCKET" \
+                --prefix "$PREFIX/$ARCH/" --query 'Contents[].[Key,Size]' \
+                --output text | tee /work/final.txt
+              while read -r key; do
+                grep -q "^$key[[:space:]]" /work/final.txt || { echo "missing $key"; exit 1; }
+              done </work/expected.txt
+              echo "the pinned gVisor fork tarball is in the bucket"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+              ephemeral-storage: 512Mi
+            limits:
+              memory: 512Mi
+              ephemeral-storage: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: work
+              mountPath: /work
+      volumes:
+        - name: work
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: config
+          configMap:
+            name: gvisor-fork-assets
+---
+# Public release downloads and rustfs only. GitHub serves release files
+# through a redirect to its release-assets host.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: gvisor-fork-assets-init
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: gvisor-fork-assets-init
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            app: rustfs
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP
+    - toFQDNs:
+        - matchName: github.com
+        - matchName: release-assets.githubusercontent.com
+        - matchName: objects.githubusercontent.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+# Admits the staging Job to rustfs. Cilium unions policies, so this adds to
+# the rustfs policy in ../resources/network-policy.yaml and leaves that file
+# alone.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: rustfs-gvisor-fork-assets
+  namespace: ate-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: rustfs
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app: gvisor-fork-assets-init
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP

@@ -1,0 +1,34 @@
+# The gVisor sandbox class built from the jomcgi-org/gvisor fork, for fork
+# slice 1 (jomcgi-org/gvisor branch fork/seed-slice1, head 0250f9acf, CI run
+# 45119532914). Its tarball holds runsc and gvisor-bin/ with the forkd helper
+# beside runsc, as atelet extracts it. It is public build output of the fork;
+# it holds no engine, rule or secret.
+#
+# This is not the class default: gvisor-default keeps that annotation, so every
+# existing WorkerPool resolves gvisor-default as before. Only a pool that names
+# configRef gvisor-fork (kvm-pool.yaml) uses this one.
+#
+# atelet fetches the tarball through its objectstore plugin from rustfs, at a
+# digest-keyed path outside /atespaces/. gvisor-assets-job.yaml stages it there
+# from the release that assets.json names and repacks it so runsc sits at the top
+# of the archive. The key ends in .tar because atelet reads the archive format
+# from the suffix. sha256 is that of the repacked tar (assets/stage.py makes the
+# same bytes on every run); assets.json holds the same pin.
+#
+# A bump adds a version and points defaultVersion at it. Keep the previous one:
+# a seed and its actors run on one version.
+apiVersion: ate.dev/v1
+kind: SandboxConfig
+metadata:
+  name: gvisor-fork
+spec:
+  sandboxClass: gvisor
+  defaultVersion: v1
+  versions:
+    - name: v1
+      state: Enabled
+      assets:
+        amd64:
+          gvisor:
+            url: "s3://ate-snapshots/gvisor-fork-assets/amd64/e4372aa444b22a8569d4fd94166da5cc282060e3ea8db9ec7a9833cbc104687c.tar"
+            sha256: "e4372aa444b22a8569d4fd94166da5cc282060e3ea8db9ec7a9833cbc104687c"

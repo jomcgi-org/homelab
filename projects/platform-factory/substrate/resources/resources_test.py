@@ -740,3 +740,24 @@ def test_spike_script_logs_a_long_golden_error_in_full(
     module, _ = _run_spike(tmp_path, monkeypatch, env={"FAKE_GOLDEN_ERROR": message})
     assert module.main() == 1
     assert message in capsys.readouterr().out
+
+
+def test_gvisor_fork_slice_is_staged_and_not_wired() -> None:
+    # The gVisor sandbox-fork slice lives in ../gvisor-fork. ArgoCD reads only
+    # this directory, so the slice reaches the cluster only when a later
+    # change lists it here and turns the ForkSeed gate on together.
+    app = yaml.safe_load(Path(os.environ["SCANNER_APPLICATION"]).read_text())
+    paths = [s["path"] for s in app["spec"]["sources"] if "path" in s]
+    assert paths == ["projects/platform-factory/substrate/resources"]
+    kustomization = yaml.safe_load((_HERE / "kustomization.yaml").read_text())
+    listed = kustomization["resources"] + kustomization.get("components", [])
+    assert not [r for r in listed if "gvisor-fork" in r or r.startswith("..")]
+    rendered = json.dumps(_docs())
+    for name in ("gvisor-fork", "gvisor-fork-assets-init", "ForkSeed"):
+        assert name not in rendered, name
+    classes = {
+        d["metadata"]["name"]: d["spec"]["sandboxClass"]
+        for d in _docs()
+        if d["kind"] == "SandboxConfig"
+    }
+    assert classes == {"gvisor-default": "gvisor", "microvm": "microvm"}
