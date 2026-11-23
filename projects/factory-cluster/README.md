@@ -745,8 +745,10 @@ flowchart LR
    object above except the Namespace (`Prune=false`) and the asset Job (a hook,
    which Argo does not prune). Delete `job/gvisor-fork-assets-init` by hand, and
    the Namespace if the slice goes for good. The staged key stays in the bucket.
-6. Cluster-affecting, Joe approves. Resize the pool and start one worker. In
-   `kvm-pool.yaml`, `replicas` is 1 and the pod template is the design's
+6. Done (PR #8617, merged and live 2026-11-23 20:44Z: the worker pod runs on
+   node-1 with imageID `f208bf5a…`, its args carry no `ForkSeed`, and every pool
+   is Ready). The pool is resized and runs one worker. In `kvm-pool.yaml`,
+   `replicas` is 1 and the pod template is the design's
    (`substrate/egress-scan/ARCHITECTURE.md`, "Capacity"):
 
    | Field | Before | After | Why |
@@ -803,8 +805,8 @@ flowchart LR
    `--fork-platform=kvm`, the KVM capabilities and seccomp Unconfined. forkd
    does not start yet: it starts with the first seed. An existing actor still
    starts. Roll back by setting `replicas` to 0 (the resize can stay).
-7. Cluster-affecting, Joe approves. Needs the re-pin (fork `1e7a877d0ca3`) and
-   step 6 live. Add `ForkSeed` to `preview` in `values/common.yaml`, then rerun
+7. Cluster-affecting, Joe approves. The re-pin (fork `1e7a877d0ca3`, #8623) and
+   step 6 (#8617) are merged and live. Add `ForkSeed` to `preview` in `values/common.yaml`, then rerun
    `render-upstream.sh`. The guard test reads `resources/upstream/`:
    `test_fork_seed_gate_is_off` becomes `test_fork_seed_gate_is_on` in the same
    change. The render changes three lines and nothing else: `--preview=` gains
